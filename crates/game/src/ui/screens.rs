@@ -54,6 +54,10 @@ pub enum Do {
     Group(&'static str),
     /// Move the camera to a map cell without changing the selection.
     Focus(usize, usize),
+    /// Switch the map mode (the same mode again switches back to the plain map).
+    Mode(super::mapmodes::MapMode),
+    /// Trigger a map-mode action.
+    ModeAct(super::mapmodes::ModeAction),
 }
 
 /// A button: always has an icon, the label is a short caption.
@@ -608,6 +612,18 @@ fn store_tone(amount: f32, capacity: f32, net: f32) -> Tone {
         Tone::Warn
     } else {
         Tone::Normal
+    }
+}
+
+/// Marks the building chosen as the current build tool on the Buildings screen's menu table.
+pub fn mark_chosen(scr: &mut Screen, kind: sim::buildings::BuildingKind) {
+    let name = kind.spec().name;
+    for t in scr.tables.iter_mut().filter(|t| t.title == "Build something") {
+        for r in t.rows.iter_mut().filter(|r| r.name == name) {
+            if let Some(c) = r.cells.get_mut(1) {
+                *c = Cell::Text("chosen: draw it on the map".into(), Tone::Good);
+            }
+        }
     }
 }
 

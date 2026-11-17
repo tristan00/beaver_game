@@ -5,6 +5,7 @@ mod build_logic;
 mod camera;
 mod lake_cam;
 mod map_orders;
+mod map_overlay;
 mod cli;
 mod entities_render;
 mod flow;
@@ -56,6 +57,7 @@ fn main() -> AppExit {
         showcase::ShowcasePlugin,
         input::InputPlugin,
         map_orders::MapOrdersPlugin,
+        map_overlay::MapOverlayPlugin,
         startflow::StartPlugin,
     ))
     .add_plugins((

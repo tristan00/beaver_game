@@ -12,8 +12,8 @@ pub mod gestures;
 pub mod icons;
 pub mod menu;
 mod kit;
-#[allow(dead_code)] // stub until its owner task lands
 pub mod mapmodes;
+pub mod modebar;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod orders;
 mod panels;
@@ -34,7 +34,7 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NoticesRes>().add_systems(Update, (events::stage_demo, events::draw_pins)).add_plugins((panels::PanelsPlugin, icons::IconsPlugin))
+        app.init_resource::<NoticesRes>().add_systems(Update, (events::stage_demo, events::draw_pins)).add_plugins((panels::PanelsPlugin, icons::IconsPlugin, modebar::ModeBarPlugin))
             .add_systems(PostUpdate, kit::apply_round.before(bevy::ui::UiSystems::Prepare));
     }
 }

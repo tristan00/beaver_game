@@ -225,6 +225,20 @@ impl Water {
     /// Total water volume on the map.
     pub fn total_volume(&self) -> f64 { self.depth.as_slice().iter().map(|&d| d as f64).sum() }
 
+    /// Net water movement through a cell as (east, south) per sim step, from the stored pipe
+    /// fluxes: what leaves it eastward minus westward, southward minus northward, averaged with
+    /// what enters. Zero outside the map or where the water is still.
+    pub fn flow_at(&self, x: usize, y: usize) -> (f32, f32) {
+        if !self.depth.in_bounds(x, y) {
+            return (0.0, 0.0);
+        }
+        let p = (y + 1) * (self.depth.width() + 2) + x + 1;
+        let s = self.depth.width() + 2;
+        let ex = 0.5 * ((self.fr[p] - self.fl[p]) + (self.fr[p - 1] - self.fl[p + 1]));
+        let ey = 0.5 * ((self.fd[p] - self.fu[p]) + (self.fd[p - s] - self.fu[p + s]));
+        (ex, ey)
+    }
+
     pub fn has_dam(&self, x: usize, y: usize) -> bool {
         self.dam_height.get(x, y).is_some_and(|&h| h > 0.0)
     }

@@ -10,6 +10,7 @@ use crate::cli::Cli;
 use crate::flow::{cell_world, ray_heightfield, CaptureGate, Flow, Phase, Selection};
 use crate::flow_view::{ClickSet, UiLayout};
 use crate::state::Sim;
+use crate::ui::ShellUi;
 use crate::ui::gestures::{area_between, dominant_kind, work_area_hit, Handle, MapPointer};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -109,8 +110,10 @@ pub fn map_orders(
     mut sim: ResMut<Sim>,
     mut ui: ResMut<BuildUi>,
     mut orders: ResMut<MapOrders>,
+    mut shell: ResMut<ShellUi>,
 ) {
     let o = &mut *orders;
+    o.pointer.armed = shell.shell.armed;
     if !sim.0.colony.is_founded() || matches!(flow.phase, Phase::GameOver | Phase::Scouting) || ui.tool.is_some() {
         o.pointer.cancel();
         o.capture = false;
@@ -127,9 +130,12 @@ pub fn map_orders(
             ray_heightfield(ray.origin, *ray.direction, &sim.0.height).map(|t| t.0)
         })
     };
-    let who = selected(&sel);
+    let mut who = selected(&sel);
+    if who.is_empty() && shell.shell.armed.is_some() {
+        who = crate::ui::mapmodes::crew(&sim.0, crate::ui::mapmodes::CREW);
+    }
     if buttons.just_pressed(MouseButton::Left) {
-        o.capture = cell.is_some_and(|c| o.pointer.left_down(&sim.0, !who.is_empty(), c));
+        o.capture = cell.is_some_and(|c| o.pointer.left_down(&sim.0, !who.is_empty() || shell.shell.armed.is_some(), c));
     }
     if let (true, Some(c)) = (buttons.pressed(MouseButton::Left), cell) {
         o.pointer.moved(c);
@@ -139,9 +145,18 @@ pub fn map_orders(
             Some(c) => o.pointer.left_up(&sim.0, &who, c),
             None => Vec::new(),
         };
+        let armed = o.pointer.armed;
         o.pointer.cancel();
         o.capture = false;
+        let issued = !cmds.is_empty();
         apply(&mut sim.0, &mut ui, cmds);
+        if armed.is_some() {
+            if issued {
+                shell.shell.armed = None; // one drag, one order
+            } else if who.is_empty() {
+                ui.message = "Nobody free to assign: select a beaver first.".into();
+            }
+        }
     }
     if buttons.just_pressed(MouseButton::Right) && !over_ui {
         o.right_press = Some(cursor);
