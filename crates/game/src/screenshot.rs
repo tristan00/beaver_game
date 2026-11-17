@@ -180,6 +180,9 @@ fn drive_screenshot(
     shared: Res<SharedReadiness>,
     mut p: Local<Progress>,
     gate: Option<Res<crate::flow::CaptureGate>>,
+    lake: Res<crate::lake_cam::LakeView>,
+    sim: Res<crate::state::Sim>,
+    cams: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let path: &PathBuf = cli.screenshot.as_ref().expect("system only added in screenshot mode");
@@ -217,6 +220,12 @@ fn drive_screenshot(
                 }
             }
             info!("terrain ready at frame {}; capturing", p.frame);
+            // `--cam lake`: where the dam and lake land in the window, from the real camera.
+            if let (true, Some(cells), Some((camera, at))) = (cli.cam == "lake", lake.0.as_ref(), cams.iter().next()) {
+                for line in crate::lake_cam::report(cells, &sim.0.height, camera, at) {
+                    println!("{line}");
+                }
+            }
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
             p.requested_at = Some(p.frame);
         }
