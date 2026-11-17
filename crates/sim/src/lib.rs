@@ -164,7 +164,7 @@ impl SimState {
         }
         self.resources.step(dt_days).expect("dt validated above");
         agents::step(self, dt_days);
-        self.society.step(dt_days, self.time_days);
+        self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         Ok(())
     }
@@ -268,7 +268,7 @@ impl SimState {
                 Ok(())
             }
             Command::AnswerJoin { id, answer } => {
-                self.society.answer(id, answer).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                self.society.answer(id, answer, &mut self.colony).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
         }
     }

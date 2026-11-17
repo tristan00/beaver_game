@@ -5,6 +5,8 @@
 pub mod colony {
     pub const KIT_DAYS: f32 = 365.0;
     pub const ADULT_DAYS: f32 = 730.0;
+    /// Age at which an adult becomes an elder (the age old-age wear starts).
+    pub const ELDER_DAYS: f32 = 2920.0;
     pub const LODGE_CAPACITY: usize = 12;
     pub const LODGE_WOOD_COST: f32 = 8.0;
     pub const MIN_LODGE_SPACING: f32 = 5.0;
@@ -30,6 +32,8 @@ pub mod colony {
     pub const YEARLING_WORK_WEIGHT: f32 = 0.5;
     pub const KIT_FOOD_WEIGHT: f32 = 0.4;
     pub const YEARLING_FOOD_WEIGHT: f32 = 0.7;
+    pub const ELDER_WORK_WEIGHT: f32 = 0.6;
+    pub const ELDER_FOOD_WEIGHT: f32 = 0.9;
 
     // Founding and newcomers.
     pub const FOUNDER_ADULT_AGE_YEARS: f32 = 3.0;
@@ -65,9 +69,9 @@ pub mod colony {
     // Job choice.
     /// Below this food per head unassigned workers forage, and no kits are born.
     pub const HUNGRY_FOOD_PER_CAPITA: f32 = 4.0;
-    /// Spring litters only fill the room left by this much stored food per head: enough to carry the whole colony,
-    /// kits included, through a winter when foraging yields little.
-    pub const BIRTH_MIN_FOOD_PER_CAPITA: f32 = 12.0;
+    /// Spring litters only fill the room left by this many days of stored food per head (at `HUNGER_PER_DAY`
+    /// units a day): enough to carry the whole colony, kits included, through a winter.
+    pub const BIRTH_MIN_FOOD_DAYS: f32 = 30.0;
     /// Litters stop once the population reaches this multiple of `FORAGE_CROWDING_POPULATION`.
     pub const BIRTH_MAX_CROWDING: f32 = 1.0;
     /// Lodges below this condition draw unassigned builders, if this much wood is stored.
@@ -182,6 +186,11 @@ pub mod colony {
 
     // Breeding and pairing.
     pub const MAX_BIRTH_AGE_YEARS: f32 = 10.0;
+    /// Wanderers asking to join: arrival chance per day, and how many may wait at once.
+    pub const JOIN_REQUEST_CHANCE_PER_DAY: f32 = 0.02;
+    pub const JOIN_MAX_PENDING: usize = 3;
+    /// Chance that a wanderer is an adult (otherwise a yearling).
+    pub const JOIN_ADULT_SHARE: f32 = 0.8;
     pub const BREED_MIN_HEALTH: f32 = 0.5;
     pub const BREED_MIN_FOOD: f32 = 0.4;
     /// A litter has `MIN_LITTER + 0..LITTER_SPREAD` kits.
