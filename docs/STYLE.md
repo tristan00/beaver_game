@@ -172,7 +172,7 @@ Each fix names the screenshot that shows the problem. Screenshots: **A** `docs/m
 
 **Tooltips**
 19. Hover info is a block of coloured monospace lines (B, bottom: POND, Cost, Ready). Use the cream tooltip card, radius 16, a small pointer toward the object, Ink title, DIM body, resource icons with counts instead of "log / stk / mud" abbreviations.
-20. Floating hint text over the map (C, "Scouts arrive at the valley mouth...") has no backing and is hard to read on rock. Put every on-map message in a cream pill.
+20. Floating hint text over the map (C, the line at the top of the view) has no backing and is hard to read on rock. Put every on-map message in a cream pill.
 
 ## 9. Checking against this guide
 
