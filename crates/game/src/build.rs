@@ -472,10 +472,13 @@ fn compute_preview(sim: &SimState, ui: &mut BuildUi) {
                 dam,
             })
         }
+        // No path drawn yet: the canal under the cursor, judged by the catalogue site rule.
+        BuildingKind::Canal if ui.path.is_empty() => ui.hover.map(|c| {
+            let sp = site_preview(sim, kind, c);
+            Preview { result: sp.verdict, cost: sp.cost, order: Some(BuildOrder::Building { kind, pos: sp.pos }), cells: sp.cells, dam: None }
+        }),
         BuildingKind::Canal => {
-            if ui.path.is_empty() {
-                None
-            } else {
+            {
                 let cells = ui.path.clone();
                 Some(Preview { result: check_canal(sim, &cells), cost: path_cost(kind, cells.len()), order: Some(BuildOrder::Canal { cells: cells.clone() }), cells, dam: None })
             }
@@ -644,17 +647,22 @@ pub fn build_input(
             }
         }
         if ui.drawing && buttons.just_released(MouseButton::Left) {
-            ui.drawing = false;
-            ui.awaiting = ui.path.len() > 1 || tool == BuildingKind::Canal;
-            ui.message.clear();
-            if tool == BuildingKind::Dam && !ui.awaiting {
-                // A plain click: the standard dam spot under the cursor.
-                ui.path.clear();
-                place_hovered(&mut sim.0, &mut ui);
-            }
+            end_stroke(&mut sim.0, &mut ui);
         }
     } else if clicked && !over_ui {
         place_hovered(&mut sim.0, &mut ui);
+    }
+}
+
+/// Mouse release after a path tool's press. A drag leaves the path waiting for confirmation;
+/// a plain click (one cell) places the standard site under the cursor, like any other building.
+fn end_stroke(sim: &mut SimState, ui: &mut BuildUi) {
+    ui.drawing = false;
+    ui.awaiting = ui.path.len() > 1;
+    ui.message.clear();
+    if !ui.awaiting {
+        ui.path.clear();
+        place_hovered(sim, ui);
     }
 }
 
@@ -1247,4 +1255,56 @@ mod tests {
             assert!(texts.contains(&line.as_str()), "tooltip shows {line:?}");
         }
     }
+
+    /// The game's own hover and click path, for every catalogue building (path tools included):
+    /// `compute_preview` on the hovered cell gives the catalogue site rule's verdict, and a click
+    /// through the input path (`place_hovered`, or press + release for the dam and canal tools)
+    /// adds exactly one site on a valid cell and none on an invalid one.
+    #[test]
+    fn game_hover_and_click_follow_the_catalogue_site_rule_for_every_building() {
+        use crate::build_logic::tests::{catalogue_rule, found, window};
+        for kind in BuildingKind::ALL {
+            // a fresh seed-1 colony per kind, with one building already standing so overlap counts
+            let mut sim = SimState::new(1);
+            found(&mut sim);
+            sim.tech.unlock_all();
+            let d = crate::build_logic::dry_sites(&sim)[0];
+            sim.apply(sim::Command::PlaceSite { kind: BuildingKind::Warehouse, pos: d }).unwrap();
+            let cells = window(&sim);
+            assert_eq!(cells.len(), 32 * 32);
+            let mut ui = BuildUi::default();
+            ui.tool = Some(kind);
+            let (mut placed, mut refused) = (0, 0);
+            for &hover in &cells {
+                ui.hover = Some(hover);
+                compute_preview(&sim, &mut ui);
+                let p = ui.preview.as_ref().unwrap_or_else(|| panic!("{kind:?} hovering {hover:?}: no preview"));
+                let want = catalogue_rule(&sim, kind, hover);
+                assert_eq!(p.result.is_ok(), want, "{kind:?} hovering {hover:?}: preview {:?}", p.result);
+                let before = sim.buildings.buildings.len();
+                if is_path_tool(kind) {
+                    // press and release on the same cell: a plain click
+                    ui.path = vec![hover];
+                    ui.drawing = true;
+                    end_stroke(&mut sim, &mut ui);
+                    assert!(ui.path.is_empty() && !ui.awaiting, "{kind:?}: a plain click leaves no path waiting");
+                } else {
+                    place_hovered(&mut sim, &mut ui);
+                }
+                let added = sim.buildings.buildings.len() - before;
+                assert_eq!(added, want as usize, "{kind:?} click at {hover:?}: {} ({})", added, ui.message);
+                if want {
+                    let b = sim.buildings.buildings.last().unwrap();
+                    assert_eq!((b.kind, b.status), (kind, sim::buildings::Status::Site));
+                    placed += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+            if kind != BuildingKind::Barge {
+                assert!(placed > 0 && refused > 0, "{kind:?}: {placed} placed, {refused} refused");
+            }
+        }
+    }
+
 }

@@ -597,11 +597,11 @@ pub fn promote_priority(colony: &mut Colony, fam: FamilyId, index: usize) -> Res
 // ───────────────────────────── tests ─────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use sim::SimState;
 
-    fn found(sim: &mut SimState) {
+    pub(crate) fn found(sim: &mut SimState) {
         let c = sim.world.valleys[sim.world.start.0 as usize].center;
         struct Dry;
         impl sim::colony::Landscape for Dry {
@@ -678,7 +678,7 @@ mod tests {
     // ── placement preview and dam hover (task R19-22) ──
 
     /// A 32 by 32 window of cells around the start valley's river (wet and dry cells both appear).
-    fn window(sim: &SimState) -> Vec<Cell> {
+    pub(crate) fn window(sim: &SimState) -> Vec<Cell> {
         let c = river_cell(sim);
         let n = sim.world.size;
         let (x0, y0) = (c.0.saturating_sub(16).min(n - 32), c.1.saturating_sub(16).min(n - 32));
@@ -686,7 +686,7 @@ mod tests {
     }
 
     /// The catalogue site rule, written out from the spec alone (footprint, `Site`, water depth).
-    fn catalogue_rule(sim: &SimState, kind: BuildingKind, hover: Cell) -> bool {
+    pub(crate) fn catalogue_rule(sim: &SimState, kind: BuildingKind, hover: Cell) -> bool {
         let spec = kind.spec();
         let (w, h) = spec.footprint;
         let pos = (hover.0.saturating_sub(w / 2), hover.1.saturating_sub(h / 2));
