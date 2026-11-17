@@ -215,7 +215,7 @@ pub fn check_building(sim: &SimState, kind: BuildingKind, pos: Cell) -> Result<(
 
 /// Cells one catalogue cost buys: a standard 6-cell dam span, or a single canal cell.
 pub fn unit_cells(kind: BuildingKind) -> f32 {
-    if kind == BuildingKind::Dam { 6.0 } else { (kind.spec().footprint.0 * kind.spec().footprint.1) as f32 }
+    if kind == BuildingKind::Dam { sim::dam_preview::DAM_SPAN_CELLS } else { (kind.spec().footprint.0 * kind.spec().footprint.1) as f32 }
 }
 
 /// Cost of a dam or canal of `n` cells.
