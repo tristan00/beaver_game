@@ -8,9 +8,9 @@ mod entities_render;
 mod flow;
 mod flow_view;
 mod input;
-mod midgame;
 mod screenshot;
 mod sim_driver;
+mod startflow;
 mod state;
 mod terrain_render;
 mod ui;
@@ -49,7 +49,7 @@ fn main() -> AppExit {
         build::BuildPlugin,
         camera::CameraPlugin,
         input::InputPlugin,
-        midgame::MidgamePlugin,
+        startflow::StartPlugin,
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,

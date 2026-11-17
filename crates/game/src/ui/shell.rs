@@ -88,3 +88,16 @@ pub fn start_menu() -> Vec<StartCard> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod start_menu_tests {
+    use super::*;
+
+    #[test]
+    fn menu_lists_starts_one_two_three_in_order() {
+        let cards = start_menu();
+        let nums: Vec<u8> = cards.iter().map(|c| c.start.number()).collect();
+        assert_eq!(nums, [1, 2, 3]);
+        assert!(cards.iter().all(|c| !c.title.is_empty() && !c.pitch.is_empty()));
+    }
+}

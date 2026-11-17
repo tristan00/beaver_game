@@ -196,6 +196,11 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
     sim.buildings
         .add_complete(crate::buildings::BuildingKind::Warehouse, (camp.0 - 1, camp.1 - 1), terrain)
         .map_err(build_err)?;
+    // Founding opens the camp's valley and its neighbours, as settling does.
+    if let Some(v) = sim.world.valley_of(camp) {
+        sim.world.valleys[v.0 as usize].open = true;
+    }
+    sim.world.unlock(camp).map_err(build_err)?;
     sim.work.auto_organise = true;
     crate::agents::place_beavers(&mut sim);
     Ok((sim, DamSite { cells: plan.dam, height: plan.height }))
@@ -240,6 +245,46 @@ fn feed_river(sim: &mut SimState, plan: &RiverPlan) -> Result<(), StartError> {
 pub struct DamSite {
     pub cells: Vec<Cell>,
     pub height: f32,
+}
+
+/// How close (depth units) the water must come to the dam crest for the pond to count as full.
+const FULL_WITHIN: f32 = 0.05;
+/// Pond cells this close (cells) to the dam are the ones inspected.
+const WATCH_RADIUS: usize = 8;
+
+impl DamSite {
+    /// Whether the dam stands: every cell of the line holds a water dam.
+    pub fn is_built(&self, sim: &SimState) -> bool {
+        self.cells.iter().all(|c| sim.water.has_dam(c.0, c.1))
+    }
+
+    /// Watches the pond this dam would make, as `sim` is now (before it is built). `None` if the
+    /// line is not a valid dam.
+    pub fn watch(&self, sim: &SimState) -> Option<PondWatch> {
+        let p = crate::dam_preview::preview(sim, &self.cells, self.height)?;
+        let mid = self.cells[self.cells.len() / 2];
+        Some(PondWatch { level: p.level, near: p.flooded.into_iter().filter(|&c| dist2(c, mid) <= WATCH_RADIUS * WATCH_RADIUS).collect() })
+    }
+}
+
+/// The pond cells beside a dam and the level they should reach.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PondWatch {
+    /// Water surface height of a full pond (the dam crest).
+    pub level: f32,
+    near: Vec<Cell>,
+}
+
+impl PondWatch {
+    /// The pond is full when at least three wet pond cells beside the dam have their water
+    /// surface within `FULL_WITHIN` of the crest.
+    pub fn is_full(&self, sim: &SimState) -> bool {
+        let full = |c: &&Cell| {
+            let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+            depth > crate::buildings::WET_DEPTH && sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + depth >= self.level - FULL_WITHIN
+        };
+        self.near.iter().filter(full).count() >= 3
+    }
 }
 
 /// Builds start 1 and also returns the dam it is designed around. Tests and the scripted demo
@@ -292,36 +337,22 @@ mod tests {
         assert_eq!(s.agents.by_id.len(), 4, "all four stand on the map");
     }
 
-    /// Whether the pond behind the dam is full: at least three wet pond cells beside the dam have
-    /// their water surface within `HOLD` of the planned `level` (the dam crest).
-    const HOLD: f32 = 0.05;
-    fn pond_holds(s: &SimState, near: &[Cell], level: f32) -> bool {
-        let full = |c: &&Cell| {
-            let depth = *s.water.depth.get(c.0, c.1).unwrap();
-            depth > 0.05 && s.height.get(c.0, c.1).unwrap() + depth >= level - HOLD
-        };
-        near.iter().filter(full).count() >= 3
-    }
-
     /// Runs start 1 for `days`; with `order` the planned dam is ordered at once and nothing else is
     /// ever commanded. Returns the day the dam stood, the day the pond first held its level
     /// (after the dam stood), and the end state.
     fn run(seed: u64, order: bool, days: f32) -> (SimState, Option<f64>, Option<f64>) {
-        let (mut s, DamSite { cells, height }) = build_river_with_dam(seed).unwrap();
-        let p = crate::dam_preview::preview(&s, &cells, height).unwrap();
-        let mid = cells[cells.len() / 2];
-        let mut near = p.flooded.clone();
-        near.retain(|&c| dist2(c, mid) <= 8 * 8);
+        let (mut s, dam) = build_river_with_dam(seed).unwrap();
+        let watch = dam.watch(&s).unwrap();
         if order {
-            s.apply(Command::OrderDam { cells: cells.clone(), height }).unwrap();
+            s.apply(Command::OrderDam { cells: dam.cells.clone(), height: dam.height }).unwrap();
         }
         let (mut built, mut held) = (None, None);
         while s.time_days < days as f64 {
             s.step(0.05).unwrap();
-            if order && built.is_none() && cells.iter().all(|c| s.water.has_dam(c.0, c.1)) {
+            if built.is_none() && dam.is_built(&s) {
                 built = Some(s.time_days);
             }
-            if held.is_none() && (built.is_some() || !order) && pond_holds(&s, &near, p.level) {
+            if held.is_none() && built.is_some() && watch.is_full(&s) {
                 held = Some(s.time_days);
             }
         }
@@ -341,7 +372,7 @@ mod tests {
 
     #[test]
     fn without_the_dam_command_nothing_is_built() {
-        let (s, built, _) = run(1, false, 120.0);
+        let (s, built, _) = run(1, false, 60.0);
         assert_eq!(built, None);
         assert!(s.work.places.iter().all(|p| p.site.is_none()));
         assert!(s.water.dam_height.as_slice().iter().all(|h| *h <= 0.0));

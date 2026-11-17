@@ -270,7 +270,8 @@ pub fn check_dam(sim: &SimState, cells: &[Cell], height: f32) -> Result<(), Plac
     if !(MIN_DAM_HEIGHT..=MAX_DAM_HEIGHT).contains(&height) {
         return Err(PlaceError::Sim(format!("Dam height must be {MIN_DAM_HEIGHT}..{MAX_DAM_HEIGHT}")));
     }
-    lack(sim, &path_cost(BuildingKind::Dam, cells.len()))
+    // No affordability check: a dam is a construction site and the family hauls the wood in.
+    Ok(())
 }
 
 pub fn check_canal(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
@@ -325,7 +326,8 @@ fn centre(cells: &[Cell]) -> (f32, f32) {
 }
 
 /// Turns a player order into sim state: buildings are placed (cost paid, builder work order queued);
-/// dams and canals queue a builder/digger work order and apply their `Command` once it completes.
+/// dams become construction sites the family builds (`Command::OrderDam`); canals queue a digger
+/// work order and apply their `Command` once it completes.
 pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Result<String, PlaceError> {
     match order {
         BuildOrder::Building { kind, pos } => {
@@ -338,8 +340,10 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
         }
         BuildOrder::Dam { cells, height } => {
             check_dam(sim, cells, *height)?;
-            let kind = BuildingKind::Dam;
-            queue_path(sim, pending, kind, cells, Command::BuildDam { cells: cells.clone(), height: *height })
+            // A construction site: the family fells, hauls and builds; the sim raises the water dam
+            // when the site is finished (`Command::OrderDam`).
+            sim.apply(Command::OrderDam { cells: cells.clone(), height: *height }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+            Ok(format!("Dam of {} cells ordered", cells.len()))
         }
         BuildOrder::Canal { cells } => {
             check_canal(sim, cells)?;
@@ -606,25 +610,21 @@ mod tests {
     }
 
     #[test]
-    fn dam_order_queues_work_then_emits_build_dam_command() {
+    fn dam_order_places_a_site_and_builds_the_water_dam_only_when_it_completes() {
         let mut sim = SimState::new(1);
         found(&mut sim);
-        stock(&mut sim);
         let c = river_cell(&sim);
         let cells = line_cells((c.0 - 2, c.1), (c.0 + 2, c.1));
         let mut p = Pending::default();
+        let ledger = sim.buildings.stores.amount(Good::Logs);
         emit(&mut sim, &mut p, &BuildOrder::Dam { cells: cells.clone(), height: 1.5 }).unwrap();
-        assert_eq!(p.0.len(), 1);
-        assert_eq!(p.0[0].command, Command::BuildDam { cells: cells.clone(), height: 1.5 });
+        assert!(p.0.is_empty(), "a dam is a site, not a queued colony order");
+        assert_eq!(sim.work.dam_plans.len(), 1);
+        let site = sim.work.dam_plans[0].building;
+        assert_eq!(sim.buildings.building(site).map(|b| b.is_complete()), Some(false));
         assert!(!sim.water.has_dam(c.0, c.1), "nothing is built before the work is done");
-        assert_eq!(sim.buildings.stores.amount(Good::Logs), 100.0 - 15.0 * 5.0 / 6.0);
-        assert!(poll_pending(&mut sim, &mut p).is_empty());
-        // builders finish the order
-        let id = p.0[0].order;
-        sim.colony.cancel_order(id).unwrap_or(()); // simulate completion: order leaves the queue
-        let msgs = poll_pending(&mut sim, &mut p);
-        assert_eq!(msgs.len(), 1);
-        assert!(sim.water.has_dam(c.0, c.1));
+        assert_eq!(sim.buildings.stores.amount(Good::Logs), ledger, "nothing is paid up front");
+        assert_eq!(emit(&mut sim, &mut p, &BuildOrder::Dam { cells: vec![], height: 1.5 }), Err(PlaceError::NoCells));
     }
 
     #[test]

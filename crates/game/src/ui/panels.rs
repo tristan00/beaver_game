@@ -577,6 +577,38 @@ mod tests {
     use sim::events::EventKind;
     use sim::region::Resource;
 
+    /// Test fixture (not a start): a settled colony that has lived 420 days with two trade routes
+    /// open and two events pending, so the ledgers have numbers to show.
+    fn lived_in_colony(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut History) -> Result<(), String> {
+        use crate::flow::{best_site, settle, Phase};
+        use sim::region::Link;
+        flow.phase = Phase::Scouting;
+        flow.fog.reveal_valley(&sim.world, sim.world.start);
+        let site = best_site(&sim.world, &sim.water.depth, &flow.fog).ok_or("no settleable site")?;
+        settle(sim, flow, site)?;
+        for id in 0..2 {
+            let _ = sim.region.connect(id, Link::Path);
+        }
+        for _ in 0..(420.0 / 0.25) as u32 {
+            sim.step(0.25).map_err(|e| e.to_string())?;
+            hist.record(sim);
+        }
+        {
+            use sim::buildings::Good;
+            let st = &mut sim.buildings.stores;
+            for (g, a) in [(Good::Logs, 64.0), (Good::Sticks, 41.0), (Good::Mud, 28.0), (Good::Stone, 12.0), (Good::Baskets, 6.0)] {
+                let _ = st.deposit(g, a);
+            }
+            let _ = st.withdraw(Good::Logs, 18.0);
+        }
+        let ctx = sim.event_context();
+        for kind in [EventKind::WanderingBeaver, EventKind::Fire] {
+            let mut host = sim::ColonyHost { colony: &mut sim.colony };
+            sim.events.trigger(kind, &ctx, &mut host).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     struct Rig {
         sim: Sim,
         flow: Flow,
@@ -594,7 +626,7 @@ mod tests {
         let mut sim = Sim(sim::SimState::new(4));
         sim.0.set_features(features);
         let mut flow = Flow::new(&sim.0.world);
-        crate::midgame::build_midgame(&mut sim.0, &mut flow, &mut History::default()).expect("midgame");
+        lived_in_colony(&mut sim.0, &mut flow, &mut History::default()).expect("fixture colony");
         Rig { sim, flow, sel: Selection::None, ui: LedgerUi::default(), cards: CardState::default(), old: UiState::default() }
     }
 
@@ -647,7 +679,7 @@ mod tests {
     #[test]
     fn ledgers_click_accept_trades_and_reports_failure() {
         let mut r = rig_with(sim::features::Features::everything());
-        let offer = r.sim.0.region.offers().first().cloned().expect("midgame has open offers");
+        let offer = r.sim.0.region.offers().first().cloned().expect("fixture has open offers");
         let have = |r: &Rig, res: Resource| match res {
             Resource::Food => r.sim.0.colony.food,
             Resource::Wood => r.sim.0.colony.wood,
@@ -687,7 +719,7 @@ mod tests {
     #[test]
     fn ledgers_click_choose_resolves_pending_event() {
         let mut r = rig();
-        let p = r.sim.0.events.pending().first().cloned().expect("midgame has a pending choice");
+        let p = r.sim.0.events.pending().first().cloned().expect("fixture has a pending choice");
         click(&mut r, Act::Choose(p.id, 1));
         assert!(r.sim.0.events.pending().iter().all(|x| x.id != p.id));
         assert_eq!(r.ui.status, "Decision made.");

@@ -8,6 +8,7 @@ pub mod events;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod explain;
 pub mod icons;
+pub mod menu;
 mod kit;
 pub mod ledgers;
 #[allow(dead_code)] // stub until its owner task lands
