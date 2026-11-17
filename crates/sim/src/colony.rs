@@ -253,6 +253,26 @@ impl Beaver {
     pub fn skill(&self, job: Job) -> f32 {
         self.skills[job.index()]
     }
+    /// Job this beaver is a specialist in (best skill at or above `SPECIALIST_SKILL`), if any.
+    pub fn specialty(&self) -> Option<Job> {
+        Job::ALL
+            .iter()
+            .copied()
+            .filter(|&j| self.skill(j) >= SPECIALIST_SKILL)
+            .max_by(|&a, &b| self.skill(a).total_cmp(&self.skill(b)))
+    }
+    /// Title shown for a specialist, e.g. "Logger specialist".
+    pub fn title(&self) -> Option<String> {
+        self.specialty().map(|j| format!("{j:?} specialist"))
+    }
+    pub fn is_elder(&self) -> bool {
+        self.stage == Stage::Adult && self.age_years() >= ELDER_AGE_YEARS
+    }
+    /// Output multiplier for `job`: `SKILL_BASE + skill`, times `SPECIALIST_BONUS` for a specialist.
+    pub fn output_factor(&self, job: Job) -> f32 {
+        let s = self.skill(job);
+        (SKILL_BASE + s) * if s >= SPECIALIST_SKILL { SPECIALIST_BONUS } else { 1.0 }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -617,6 +637,7 @@ impl Colony {
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
         self.do_work(dt, &plan, forage_season);
+        self.teach_young(dt);
         self.roll_hazards(dt, &plan);
         self.update_needs(dt, cold);
         self.wear(dt, cold);
@@ -684,7 +705,16 @@ impl Colony {
         let mut plan = Vec::with_capacity(self.beavers.len());
         for i in 0..self.beavers.len() {
             let b = self.beavers[i].clone();
-            let rank = *ranks.entry(b.family).and_modify(|r| *r += 1).or_insert(0);
+            // Only workers without a personal job take a priority slot, so kits, resting and
+            // assigned beavers never use up a higher-priority job when workers are short.
+            let takes_slot = b.stage != Stage::Kit && !b.resting && b.job.is_none();
+            let rank = if takes_slot {
+                let r = ranks.entry(b.family).or_insert(0);
+                *r += 1;
+                *r - 1
+            } else {
+                0
+            };
             let Some(job) = self.effective_job(&b, rank) else {
                 plan.push(None);
                 continue;
@@ -707,7 +737,7 @@ impl Colony {
                 * efficiency
                 * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
                 * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health)
-                * (WORK_MOOD_BASE + WORK_MOOD_SCALE * b.mood);
+                * crate::society::work_speed(b.mood);
             plan.push(Some(Work { job, units, order: order.map(|o| o.0), eval, site }));
         }
         plan
@@ -718,7 +748,7 @@ impl Colony {
         let (mut carry, mut guard) = (0.0, 0.0);
         for (b, w) in self.beavers.iter().zip(plan) {
             if let Some(w) = w {
-                let effort = w.units / dt * (SKILL_BASE + b.skill(w.job));
+                let effort = w.units / dt * b.output_factor(w.job);
                 match w.job {
                     Job::Hauler => carry += effort,
                     Job::Guard => guard += effort,
@@ -740,7 +770,7 @@ impl Colony {
                 self.beavers[i].current_job = None;
                 continue;
             };
-            let power = w.units * (SKILL_BASE + self.beavers[i].skill(w.job));
+            let power = w.units * self.beavers[i].output_factor(w.job);
             match w.job {
                 Job::Forager => self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap),
                 Job::Logger => self.wood = (self.wood + power * LOG_YIELD * boost).min(wood_cap),
@@ -772,6 +802,28 @@ impl Colony {
         self.orders.retain(|o| o.remaining > 0.0);
         for (id, job) in done {
             self.log(Event::OrderDone { id, job });
+        }
+    }
+
+    /// Kits and yearlings learn by watching a working lodge mate; an elder of the lodge teaches
+    /// (their best job) `ELDER_TEACH_FACTOR` times faster than a working adult.
+    fn teach_young(&mut self, dt: f32) {
+        let mut lessons: Vec<(usize, Job, f32)> = Vec::new();
+        for (i, b) in self.beavers.iter().enumerate() {
+            let (Some(lodge), true) = (b.lodge, b.stage != Stage::Adult) else { continue };
+            let mates = || self.beavers.iter().filter(move |m| m.id != b.id && m.lodge == Some(lodge) && m.stage == Stage::Adult);
+            let elder = mates().filter(|m| m.is_elder()).filter_map(|m| m.specialty().or(m.current_job)).next();
+            let lesson = match elder {
+                Some(job) => Some((job, ELDER_TEACH_FACTOR)),
+                None => mates().find_map(|m| m.current_job).map(|job| (job, 1.0)),
+            };
+            if let Some((job, factor)) = lesson {
+                lessons.push((i, job, factor));
+            }
+        }
+        for (i, job, factor) in lessons {
+            let s = &mut self.beavers[i].skills[job.index()];
+            *s = (*s + dt * YOUNG_LEARN_RATE * factor * (1.0 - *s)).min(1.0);
         }
     }
 
@@ -1362,5 +1414,120 @@ mod tests {
         run(&mut b, &land, 800);
         assert_eq!(a.population(), b.population());
         assert_eq!(a.food, b.food);
+    }
+
+    #[test]
+    fn colony_unsheltered_unfed_beaver_loses_mood_and_work_speed_follows_documented_factor() {
+        let (mut c, land) = founded(2);
+        let id = c.beavers[0].id;
+        c.food = 0.0;
+        c.beavers[0].lodge = None; // no shelter
+        let start = c.beaver(id).unwrap().mood;
+        run(&mut c, &land, 10);
+        let low = c.beaver(id).unwrap().mood;
+        assert!(low < start - 0.1, "mood {start} -> {low}");
+        // Documented factor: WORK_MOOD_BASE + WORK_MOOD_SCALE * mood.
+        let speed = |m: f32| crate::society::work_speed(m);
+        assert_eq!(speed(0.0), WORK_MOOD_BASE);
+        assert_eq!(speed(1.0), WORK_MOOD_BASE + WORK_MOOD_SCALE);
+        assert!(speed(low) < speed(start));
+        // The colony applies exactly that factor to work output.
+        let mut c2 = c.clone();
+        let units = |c: &mut Colony, m: f32| {
+            c.beavers[0].mood = m;
+            c.beavers[0].resting = false;
+            c.plan_work(0.1, &land)[0].expect("works").units
+        };
+        let (lo, hi) = (units(&mut c2, 0.0), units(&mut c2, 1.0));
+        assert!((lo / hi - speed(0.0) / speed(1.0)).abs() < 1e-4, "{lo} / {hi}");
+    }
+
+    #[test]
+    fn colony_skill_makes_specialists_and_elders_speed_up_kits() {
+        let (mut c, land) = founded(1);
+        let id = c.beavers[0].id;
+        c.set_job(id, Some(Job::Logger)).unwrap();
+        for s in c.beavers[0].skills.iter_mut() {
+            *s = 0.0;
+        }
+        assert!(c.beaver(id).unwrap().title().is_none());
+        let factor_before = c.beaver(id).unwrap().output_factor(Job::Logger);
+        for _ in 0..6000 {
+            c.step_on(0.5, &land).unwrap();
+            if c.beaver(id).is_none() || c.beaver(id).unwrap().specialty().is_some() {
+                break;
+            }
+        }
+        let b = c.beaver(id).expect("alive");
+        assert_eq!(b.specialty(), Some(Job::Logger));
+        assert_eq!(b.title().as_deref(), Some("Logger specialist"));
+        assert!(b.skill(Job::Logger) >= SPECIALIST_SKILL);
+        assert!(b.output_factor(Job::Logger) > factor_before + 0.5 * 0.0 + SKILL_BASE, "specialist bonus applies");
+        assert!(b.output_factor(Job::Logger) > (SKILL_BASE + b.skill(Job::Logger)) * 1.2);
+
+        // Kits learn faster in a lodge with an elder.
+        let (mut c, _) = founded(4);
+        let fam = c.families[0].id;
+        let lodge = c.lodges[0].id;
+        let pos = c.lodges[0].pos;
+        let kit = |c: &mut Colony| c.spawn(Sex::Male, 100.0, fam, Some(lodge), pos, None, None);
+        let k_no = kit(&mut c);
+        for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
+            b.age_days = 3.0 * 365.0; // adults but not elders
+            b.job = Some(Job::Logger);
+            b.current_job = Some(Job::Logger);
+            b.lodge = Some(lodge);
+        }
+        for _ in 0..20 {
+            c.teach_young(1.0);
+        }
+        let plain = c.beaver(k_no).unwrap().skill(Job::Logger);
+        assert!(plain > 0.0, "kits learn from working adults");
+        for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
+            b.age_days = (ELDER_AGE_YEARS + 1.0) * 365.0;
+            b.skills[Job::Logger.index()] = 0.6;
+        }
+        assert!(c.beavers.iter().any(|b| b.is_elder()));
+        for _ in 0..20 {
+            c.teach_young(1.0);
+        }
+        let with_elder = c.beaver(k_no).unwrap().skill(Job::Logger) - plain;
+        assert!(with_elder > 2.0 * plain, "elder lessons {with_elder} vs plain {plain}");
+    }
+
+    #[test]
+    fn colony_short_of_workers_fills_high_priority_jobs_and_lodges_share_stores() {
+        let (mut c, land) = founded(3);
+        let fam = c.families[0].id;
+        c.food = 500.0;
+        c.set_family_priorities(fam, vec![Job::Guard, Job::Crafter, Job::Scout, Job::Logger]).unwrap();
+        let kids = c.beavers.iter().filter(|b| b.family == fam).count();
+        assert!(kids >= 3, "founding family has kits/yearlings");
+        // A kit first in the list must not use up the top-priority slot.
+        let workers: Vec<usize> =
+            (0..c.beavers.len()).filter(|&i| c.beavers[i].family == fam && c.beavers[i].stage != Stage::Kit).collect();
+        for (i, b) in c.beavers.iter_mut().enumerate() {
+            b.job = None;
+            b.resting = !workers.contains(&i);
+        }
+        c.beavers.iter_mut().for_each(|b| b.resting = false);
+        c.beavers.iter_mut().filter(|b| b.stage == Stage::Kit).for_each(|b| b.resting = true);
+        let plan = c.plan_work(0.1, &land);
+        let jobs: Vec<Job> = workers.iter().map(|&i| plan[i].unwrap().job).collect();
+        let order = [Job::Guard, Job::Crafter, Job::Scout, Job::Logger];
+        assert_eq!(jobs, order[..jobs.len()].to_vec(), "highest priorities fill first, no job skipped");
+
+        // Every lodge eats from the one shared stockpile.
+        let (f2, pos) = (c.families[0].id, c.lodges[0].pos);
+        let lodge2 = LodgeId(c.lodges.iter().map(|l| l.id.0).max().unwrap() + 1);
+        c.lodges.push(Lodge { id: lodge2, family: f2, pos, condition: 1.0 });
+        let other = c.spawn(Sex::Female, 4.0 * 365.0, f2, Some(lodge2), pos, None, None);
+        for b in c.beavers.iter_mut() {
+            b.needs.food = 0.3;
+        }
+        let before = c.food;
+        c.step_on(0.1, &land).unwrap();
+        assert!(c.food < before, "stores were eaten");
+        assert!(c.beaver(other).unwrap().needs.food > 0.3 - HUNGER_PER_DAY * 0.1 + 0.01, "other lodge's beaver ate too");
     }
 }
