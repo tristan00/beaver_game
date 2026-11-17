@@ -88,6 +88,10 @@ pub enum Selection {
     Lodge(LodgeId),
     /// A dam or other structure on the water grid.
     Building(Cell),
+    /// A standing tree (opens its panel).
+    Tree(sim::resources::ResourceId),
+    /// A building or construction site (opens its panel).
+    Site(sim::buildings::BuildingId),
 }
 
 // ───────────────────────────── picking math ─────────────────────────────
@@ -658,6 +662,12 @@ fn pick_world(
     }
     for b in &sim.0.colony.beavers {
         cands.push((Selection::Beaver(b.id), cell_world(h, b.pos) + up, 0.9));
+    }
+    for r in sim.0.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree) {
+        cands.push((Selection::Tree(r.id), cell_world(h, (r.cell.0 as f32, r.cell.1 as f32)) + up * 3.0, 1.1));
+    }
+    for b in sim.0.buildings.buildings.iter().filter(|b| b.kind != sim::buildings::BuildingKind::Dam) {
+        cands.push((Selection::Site(b.id), cell_world(h, (b.pos.0 as f32 + 1.0, b.pos.1 as f32 + 1.0)) + up * 2.0, 2.0));
     }
     let entity = pick_entities(origin, dir, &cands);
     if let Some((s, t)) = entity {

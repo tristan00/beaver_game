@@ -220,7 +220,7 @@ fn layout_ui(
 ) {
     let Ok(w) = windows.single() else { return };
     let extra = std::mem::take(&mut layout.extra);
-    *layout = compute_layout(Vec2::new(w.width(), w.height()), !sim.0.colony.is_founded() || *sel != Selection::None, flow.phase == Phase::GameOver);
+    *layout = compute_layout(Vec2::new(w.width(), w.height()), !sim.0.colony.is_founded() || matches!(*sel, Selection::Cell(_)), flow.phase == Phase::GameOver);
     layout.extra = extra;
     for (mut node, btn, panel) in &mut nodes {
         let rect = btn.and_then(|b| layout.rect(b.0)).or_else(|| panel.and_then(|p| layout.panel(p.0 )));
@@ -316,6 +316,7 @@ pub fn selection_text(sim: &Sim, sel: Selection, hint: Option<SiteHint>) -> Stri
             None => "That lodge is gone".into(),
         },
         Selection::Building(cell) => format!("Dam at ({}, {})", cell.0, cell.1),
+        Selection::Tree(_) | Selection::Site(_) => String::new(),
         Selection::Cell(cell) => {
             let w = &sim.0.world;
             let valley = w.valley_of(cell).map(|v| format!("valley {}{}", v.0, if w.is_open(v) { "" } else { " (locked)" })).unwrap_or_default();
@@ -556,6 +557,8 @@ fn draw_gizmos(mut gizmos: Gizmos, sim: Res<Sim>, sel: Res<Selection>, hover: Re
         Selection::Cell(c) | Selection::Building(c) => Some((cell_world(h, (c.0 as f32, c.1 as f32)), 1.0)),
         Selection::Beaver(id) => sim.0.colony.beaver(id).map(|b| (cell_world(h, b.pos), 1.0)),
         Selection::Lodge(id) => sim.0.colony.lodges.iter().find(|l| l.id == id).map(|l| (cell_world(h, l.pos), 3.2)),
+        Selection::Tree(id) => sim.0.resources.get(id).map(|r| (cell_world(h, (r.cell.0 as f32, r.cell.1 as f32)), 1.0)),
+        Selection::Site(id) => sim.0.buildings.building(id).map(|b| (cell_world(h, (b.pos.0 as f32 + 1.0, b.pos.1 as f32 + 1.0)), 2.0)),
         Selection::None => None,
     };
     if let Some((p, r)) = target {

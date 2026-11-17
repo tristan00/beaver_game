@@ -1,12 +1,15 @@
 //! Draws the navigation bar, the time label, the open screen and the hover explanations from the
 //! view-models in `screens.rs`, and runs what the player clicks. Content is rebuilt only when its
 //! view-model changed, so hover and scroll state survive between sim updates.
+mod entity;
 use super::explain::Explained;
 use super::icons::{Icon, IconAssets};
 use super::kit::*;
 use super::screens::*;
 use super::shell::{NavItem, Shell};
 use crate::flow::{cell_world, Flow, Selection};
+use entity::PanelShown;
+use super::selection::{self as sel2, Selection as Selection2};
 use crate::flow_view::{Action, UiLayout};
 use crate::state::Sim;
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
@@ -31,6 +34,12 @@ pub struct ShellUi {
     pub sort: HashMap<(NavItem, usize), (usize, bool)>,
     pub status: String,
     pub hist: History,
+    /// The entity whose panel is open (beaver, family, building, dam or tree).
+    pub panel: Option<Selection2>,
+    /// Detail groups the person opened on the panel.
+    pub groups_open: std::collections::HashSet<&'static str>,
+    last_panel: Option<PanelShown>,
+    panel_timer: f32,
     dirty: bool,
     timer: f32,
     last_nav: Option<NavBar>,
@@ -40,7 +49,7 @@ pub struct ShellUi {
 
 impl Default for ShellUi {
     fn default() -> Self {
-        ShellUi { shell: Shell::default(), sort: HashMap::new(), status: String::new(), hist: History::default(), dirty: true, timer: 0.0, last_nav: None, last_time: None, last_screen: None }
+        ShellUi { shell: Shell::default(), sort: HashMap::new(), status: String::new(), hist: History::default(), panel: None, groups_open: Default::default(), last_panel: None, panel_timer: 0.0, dirty: true, timer: 0.0, last_nav: None, last_time: None, last_screen: None }
     }
 }
 
@@ -104,6 +113,7 @@ impl Plugin for PanelsPlugin {
                 publish_blockers.before(crate::flow_view::ClickSet),
                 handle_clicks.after(crate::flow_view::ClickSet),
                 close_on_escape,
+                (entity::sync_flow_selection, entity::select_for_screenshot, entity::layout_entity, entity::refresh_entity).chain(),
             ),
         );
     }
@@ -153,6 +163,7 @@ fn spawn_roots(mut commands: Commands) {
             ));
             p.spawn((ScreenFooter, Node { min_height: px(14), flex_shrink: 0.0, ..default() }));
         });
+    entity::spawn_root(&mut commands);
     commands.spawn((
         ToastRoot,
         Blocker,
@@ -662,6 +673,31 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
                 Err(e) => e,
             };
         }
+        Do::Select(x) => {
+            ui.panel = Some(x);
+            *sel = entity::to_flow(s, x);
+            if let Some(at) = sel2::locate(s, x) {
+                flow.focus = Some(cell_world(&s.height, (at.0 as f32, at.1 as f32)));
+            }
+            ui.status.clear();
+        }
+        Do::ClosePanel => {
+            ui.panel = None;
+            *sel = Selection::None;
+            ui.status.clear();
+        }
+        Do::Cmd(cmd) => {
+            ui.status = match s.apply(cmd) {
+                Ok(()) => "Done.".into(),
+                Err(e) => format!("Cannot do that: {e}."),
+            };
+        }
+        Do::Group(g) => {
+            if !ui.groups_open.remove(g) {
+                ui.groups_open.insert(g);
+            }
+        }
+        Do::Focus(x, y) => flow.focus = Some(cell_world(&s.height, (x as f32, y as f32))),
         Do::Sort(table, col) => {
             if let Some(item) = ui.shell.open {
                 let key = (item, table);
