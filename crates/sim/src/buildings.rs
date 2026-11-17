@@ -182,6 +182,14 @@ pub enum BuildingKind {
     Warehouse,
     Dock,
     Barge,
+    // Early-lake elementary gathering camps.
+    LoggingCamp,
+    ForagerHut,
+    MudPit,
+    QuarryCamp,
+    // Industrial lake.
+    Mill,
+    Storehouse,
 }
 
 /// Terrain rule for a footprint.
@@ -207,11 +215,12 @@ pub struct Spec {
 }
 
 impl BuildingKind {
-    pub const ALL: [BuildingKind; 13] = [
+    pub const ALL: [BuildingKind; 19] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
-        BuildingKind::Barge,
+        BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
+        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse,
     ];
 
     /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
@@ -230,6 +239,12 @@ impl BuildingKind {
             BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Dry),
             BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
             BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
+            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Dry),
+            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Dry),
+            BuildingKind::MudPit => ("Mud pit", (2, 2), Site::Dry),
+            BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
+            BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
+            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
         };
         let (cost, work) = cost_and_work(self);
         Spec { name, cost, footprint, work, site }
@@ -509,7 +524,7 @@ impl Buildings {
 
     pub fn set_recipe(&mut self, id: BuildingId, recipe: Option<Recipe>) -> Result<(), BuildError> {
         let b = self.buildings.iter_mut().find(|b| b.id == id).ok_or(BuildError::UnknownBuilding(id))?;
-        if b.kind != BuildingKind::Workshop {
+        if crate::catalogue::def(b.kind).batches_per_day <= 0.0 {
             return Err(BuildError::WrongKind("only workshops craft"));
         }
         b.recipe = recipe;
@@ -594,16 +609,17 @@ impl Buildings {
         }
     }
 
+    /// Capacity per good: the base plus every complete store's catalogue capacity for goods it takes.
     fn update_capacity(&mut self, tech: &Tech) {
         let f = tech.storage_factor();
-        let warehouses = self.count_complete(BuildingKind::Warehouse) as f32;
-        let caches = self.count_complete(BuildingKind::FoodCache) as f32;
         for g in Good::ALL {
-            let mut c = BASE_CAPACITY + warehouses * WAREHOUSE_CAPACITY;
-            if g == Good::Food {
-                c += caches * FOOD_CACHE_CAPACITY;
-            }
-            self.stores.capacity[g.index()] = c * f;
+            let stored: f32 = self
+                .buildings
+                .iter()
+                .filter(|b| b.is_complete() && crate::agents::accepts(b.kind, g))
+                .map(|b| crate::catalogue::def(b.kind).capacity)
+                .sum();
+            self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;
         }
     }
 
@@ -620,20 +636,20 @@ impl Buildings {
         if dt <= 0.0 {
             return;
         }
-        let recipes: Vec<Recipe> = self
+        let recipes: Vec<(Recipe, f32)> = self
             .buildings
             .iter()
-            .filter(|b| b.kind == BuildingKind::Workshop && b.is_complete())
-            .filter_map(|b| b.recipe)
+            .filter(|b| b.is_complete())
+            .filter_map(|b| b.recipe.map(|r| (r, crate::catalogue::def(b.kind).batches_per_day)))
             .collect();
         if recipes.is_empty() {
             return;
         }
         // Wheel power is shared evenly; a fully powered workshop gains `WHEEL_MAX_BOOST`.
         let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
-        for r in recipes {
+        for (r, rate) in recipes {
             let (inputs, (out, per)) = r.batch();
-            let mut batches = CRAFT_BATCHES_PER_DAY * dt * boost * tech.craft_speed_factor();
+            let mut batches = rate * dt * boost * tech.craft_speed_factor();
             for &(g, a) in inputs {
                 batches = batches.min(self.stores.amount(g) / a);
             }

@@ -333,6 +333,27 @@ pub mod buildings {
     pub const CRAFT_BATCHES_PER_DAY: f32 = 2.0;
     /// Extra crafting speed of a workshop with a full share of wheel power (1.0 doubles it).
     pub const WHEEL_MAX_BOOST: f32 = 1.0;
+    /// Mill (advanced workshop) batches per day at base speed, shared by its two workers.
+    pub const MILL_BATCHES_PER_DAY: f32 = 6.0;
+    pub const STOREHOUSE_CAPACITY: f32 = 400.0;
+
+    /// Workshop-style batches per day of `kind` (0 if it does not craft).
+    pub fn batches_per_day(kind: BuildingKind) -> f32 {
+        match kind {
+            BuildingKind::Workshop => CRAFT_BATCHES_PER_DAY,
+            BuildingKind::Mill => MILL_BATCHES_PER_DAY,
+            _ => 0.0,
+        }
+    }
+    /// Storage `kind` adds per good it accepts (0 if it is not a store).
+    pub fn store_capacity(kind: BuildingKind) -> f32 {
+        match kind {
+            BuildingKind::Warehouse => WAREHOUSE_CAPACITY,
+            BuildingKind::FoodCache => FOOD_CACHE_CAPACITY,
+            BuildingKind::Storehouse => STOREHOUSE_CAPACITY,
+            _ => 0.0,
+        }
+    }
 
     use crate::buildings::{Amount, BuildingKind, Good::*, Recipe};
 
@@ -352,6 +373,12 @@ pub mod buildings {
             BuildingKind::Warehouse => (&[(Logs, 25.0), (Sticks, 15.0), (Mud, 10.0), (Rope, 2.0)], 10.0),
             BuildingKind::Dock => (&[(Logs, 10.0), (Rope, 2.0)], 4.0),
             BuildingKind::Barge => (&[(Logs, 8.0), (Rope, 3.0), (Baskets, 2.0)], 5.0),
+            BuildingKind::LoggingCamp => (&[(Logs, 4.0), (Sticks, 6.0)], 2.0),
+            BuildingKind::ForagerHut => (&[(Sticks, 8.0), (Mud, 4.0)], 2.0),
+            BuildingKind::MudPit => (&[(Logs, 3.0), (Sticks, 4.0)], 2.0),
+            BuildingKind::QuarryCamp => (&[(Logs, 5.0), (Sticks, 6.0), (Mud, 3.0)], 3.0),
+            BuildingKind::Mill => (&[(Logs, 30.0), (Stone, 10.0), (Rope, 4.0), (Tools, 3.0)], 14.0),
+            BuildingKind::Storehouse => (&[(Logs, 40.0), (Sticks, 20.0), (Stone, 12.0), (Rope, 4.0)], 16.0),
         }
     }
 
@@ -507,6 +534,8 @@ pub mod tech {
     pub const TIER1_XP: f32 = 3.0;
     /// Branch experience needed for a tier-2 tech.
     pub const TIER2_XP: f32 = 15.0;
+    /// Branch experience needed for a tier-3 (industrial) tech.
+    pub const TIER3_XP: f32 = 40.0;
     /// Forest Lore: storage capacity multiplier.
     pub const STORAGE_BONUS: f32 = 1.25;
     /// Master Builders: build work multiplier.
