@@ -103,6 +103,12 @@ fn cell_of(p: (f32, f32)) -> Cell {
     (p.0.max(0.0).round() as usize, p.1.max(0.0).round() as usize)
 }
 
+/// The middle cell of a building's footprint, so an alert about it points at the building itself.
+pub fn centre(b: &sim::buildings::Building) -> Cell {
+    let (w, h) = b.kind.spec().footprint;
+    (b.pos.0 + w / 2, b.pos.1 + h / 2)
+}
+
 fn name_of(sim: &SimState, id: BeaverId) -> String {
     sim.colony.beaver(id).map(|b| super::screens::beaver_name(&sim.colony, b)).unwrap_or_else(|| format!("Beaver {}", id.0))
 }
@@ -149,7 +155,7 @@ pub fn alerts(sim: &SimState) -> Vec<Alert> {
     for p in &sim.work.places {
         let idle = !p.slots.is_empty() && p.slots.iter().all(|s| s.worker.is_none());
         if let Some(b) = sim.buildings.building(p.building).filter(|b| idle && b.status != Status::Complete) {
-            standing(AlertKind::TooFewWorkers, format!("{:?} site has no workers", b.kind), b.pos);
+            standing(AlertKind::TooFewWorkers, format!("{:?} site has no workers", b.kind), centre(b));
             break;
         }
     }
@@ -185,7 +191,7 @@ impl Notices {
         let now_unfinished: HashSet<BuildingId> = sim.buildings.buildings.iter().filter(|b| b.status != Status::Complete).map(|b| b.id).collect();
         for id in self.unfinished.difference(&now_unfinished) {
             if let Some(b) = sim.buildings.building(*id) {
-                add(AlertKind::SiteFinished, format!("{:?} is finished", b.kind), b.pos);
+                add(AlertKind::SiteFinished, format!("{:?} is finished", b.kind), centre(b));
             }
         }
         self.unfinished = now_unfinished;
@@ -320,6 +326,18 @@ pub mod tests {
     }
 
     #[test]
+    fn building_alerts_point_inside_the_building() {
+        let mut sim = super::super::screens::tests::lived_in(3);
+        let n = every_kind(&mut sim);
+        let mut checked = 0;
+        for a in alerts(&sim).into_iter().chain(n.items.iter().cloned()).filter(|a| matches!(a.kind, AlertKind::TooFewWorkers | AlertKind::SiteFinished)) {
+            assert!(sim.buildings.buildings.iter().any(|b| b.cells().any(|c| c == a.at)), "{:?} at {:?} is not on a building", a.kind, a.at);
+            checked += 1;
+        }
+        assert_eq!(checked, 2);
+    }
+
+    #[test]
     fn event_notices_expire() {
         let mut sim = super::super::screens::tests::lived_in(3);
         let n = every_kind(&mut sim);
@@ -341,14 +359,79 @@ pub mod tests {
     }
 }
 
-/// `BC_DEMO_ALERTS=1` (screenshots): once the colony is founded, a stranger asks to join and a lodge
-/// site is placed near the first lodge with nobody on it, so a join request and a located alert show.
-pub fn stage_demo(mut sim: bevy::prelude::ResMut<crate::state::Sim>, mut done: bevy::prelude::Local<bool>) {
-    if *done || std::env::var_os("BC_DEMO_ALERTS").is_none() || !sim.0.colony.is_founded() {
+/// Map pins: every toast on screen marks its place on the terrain with a stem and ring in its tone,
+/// so an alert visibly points at the building, beaver or spot it is about.
+pub fn draw_pins(mut gizmos: bevy::prelude::Gizmos, sim: bevy::prelude::Res<crate::state::Sim>, notices: bevy::prelude::Res<super::NoticesRes>) {
+    use bevy::prelude::*;
+    if !sim.0.colony.is_founded() {
         return;
     }
-    *done = true;
-    let s = &mut sim.0;
+    let h = &sim.0.height;
+    let flat = Quat::from_rotation_arc(Vec3::Z, Vec3::Y);
+    for t in toasts(&sim.0, &notices.0) {
+        let color = super::kit::tone_color(t.alert.kind.tone());
+        let ground = crate::flow::cell_world(h, (t.alert.at.0 as f32, t.alert.at.1 as f32)) + Vec3::Y * 0.2;
+        let top = ground + Vec3::Y * 6.0;
+        gizmos.line(ground, top, color);
+        gizmos.sphere(Isometry3d::from_translation(top), 0.7, color);
+        for r in [1.6, 1.9, 2.2] {
+            gizmos.circle(Isometry3d::new(ground, flat), r, color);
+        }
+    }
+}
+
+/// `BC_DEMO_ALERTS=1` (screenshots): once the colony is founded, a stranger asks to join and a lodge
+/// site is placed near the first lodge with nobody on it, so a join request and a located alert show.
+/// `BC_DEMO_ALERTS=jump` then activates the "no workers" toast exactly as a click does, and holds the
+/// screenshot until the camera has flown to the site and zoomed in.
+#[allow(clippy::too_many_arguments)]
+pub fn stage_demo(
+    mut sim: bevy::prelude::ResMut<crate::state::Sim>,
+    mut flow: bevy::prelude::ResMut<crate::flow::Flow>,
+    mut sel: bevy::prelude::ResMut<crate::flow::Selection>,
+    mut ui: bevy::prelude::ResMut<super::ShellUi>,
+    mut build: bevy::prelude::ResMut<crate::build::BuildUi>,
+    notices: bevy::prelude::Res<super::NoticesRes>,
+    gate: Option<bevy::prelude::ResMut<crate::flow::CaptureGate>>,
+    mut orbit: bevy::prelude::ResMut<crate::camera::OrbitCamera>,
+    mut step: bevy::prelude::Local<u8>,
+) {
+    let Some(mode) = std::env::var_os("BC_DEMO_ALERTS") else { return };
+    let jump = mode == "jump";
+    match *step {
+        0 if sim.0.colony.is_founded() => {
+            stage(&mut sim.0);
+            *step = 1;
+            if jump {
+                if let Some(mut g) = gate {
+                    g.0 = false;
+                }
+            }
+        }
+        1 if jump && flow.focus.is_none() => {
+            // the settle fly-in has finished; now activate the building alert like a click would
+            if let Some(t) = toasts(&sim.0, &notices.0).into_iter().find(|t| t.alert.kind == AlertKind::TooFewWorkers) {
+                let mut reset = false;
+                super::panels::apply(t.jump, &mut sim, &mut flow, &mut sel, &mut ui, &mut build, &mut reset);
+                *step = 2;
+            }
+        }
+        2 if flow.focus.is_none() => {
+            // arrived over the site; the player scrolls in for a closer look
+            orbit.distance = 38.0;
+            *step = 3;
+        }
+        3 => {
+            if let Some(mut g) = gate {
+                g.0 = true;
+            }
+            *step = 4;
+        }
+        _ => {}
+    }
+}
+
+fn stage(s: &mut SimState) {
     let colony = s.colony.clone();
     let _ = s.society.raise(&colony, true, s.time_days);
     let (lx, ly) = home(s);

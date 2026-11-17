@@ -33,7 +33,7 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NoticesRes>().add_systems(Update, events::stage_demo).add_plugins((panels::PanelsPlugin, icons::IconsPlugin))
+        app.init_resource::<NoticesRes>().add_systems(Update, (events::stage_demo, events::draw_pins)).add_plugins((panels::PanelsPlugin, icons::IconsPlugin))
             .add_systems(PostUpdate, kit::apply_round.before(bevy::ui::UiSystems::Prepare));
     }
 }
