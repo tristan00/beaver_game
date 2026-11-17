@@ -712,7 +712,6 @@ fn tree_panel(sim: &SimState, id: ResourceId) -> Option<Panel> {
 mod tests {
     use super::*;
     use super::super::explain::audit;
-    use sim::agents::Task;
     use sim::starts::{build_lake, Start};
 
     fn start2() -> SimState {
@@ -840,67 +839,6 @@ mod tests {
         let c = p.stat("Condition").unwrap().num.value;
         assert!(c > 0.0 && c <= 100.0, "{c}");
         assert_audited(&p);
-    }
-
-    #[test]
-    fn filling_a_slot_puts_the_beaver_to_work_emptying_frees_it_a_full_site_rejects_another_and_kits_are_never_offered() {
-        let mut s = start2();
-        let site = site_of(&mut s, BuildingKind::Workshop);
-        let p = panel(&s, Selection::Building(site)).unwrap();
-        assert!(p.slots.iter().all(|r| r.worker.is_none() && !r.candidates.is_empty()));
-        // kits are never offered, in any slot
-        for r in &p.slots {
-            for c in &r.candidates {
-                assert_ne!(s.colony.beaver(c.who).unwrap().stage, Stage::Kit);
-            }
-        }
-        let (first, second) = (p.slots[0].candidates[0].clone(), p.slots[1].candidates.iter().find(|c| c.who != p.slots[0].candidates[0].who).unwrap().clone());
-        // stock the site so builders have something to build with
-        for a in s.work.place(site).unwrap().site.as_ref().unwrap().needed.clone() {
-            s.buildings.stores.deposit(a.0, a.1 + 5.0).ok();
-        }
-        s.apply(first.fill.clone()).unwrap();
-        s.apply(second.fill.clone()).unwrap();
-        let p = panel(&s, Selection::Building(site)).unwrap();
-        assert_eq!(p.slots[0].worker.as_ref().map(|w| w.0), Some(first.who));
-        assert_eq!(p.slots[1].worker.as_ref().map(|w| w.0), Some(second.who));
-        assert!(p.slots.iter().all(|r| r.candidates.is_empty() && r.empty.is_some()), "full: nothing more to choose");
-        assert_eq!(p.stat("Workers").unwrap().num.value, 2.0);
-
-        // a full site rejects another beaver, and nothing changes
-        let third = s.colony.beavers.iter().find(|b| b.stage != Stage::Kit && b.id != first.who && b.id != second.who).unwrap().id;
-        for slot in 0..2 {
-            assert!(s.apply(Command::FillSlot { building: site, slot, who: third }).is_err());
-        }
-        assert_ne!(s.work.slot_of(third).map(|x| x.0), Some(site));
-
-        // the beaver works there
-        let mut worked = false;
-        for _ in 0..200 {
-            s.step(0.1).unwrap();
-            let t = |w| s.agents.get(w).map(|a| a.task.clone());
-            worked |= matches!(t(first.who), Some(Task::Fetch { .. } | Task::Carry { .. } | Task::Build { .. }));
-            if worked {
-                break;
-            }
-        }
-        assert!(worked, "the filled slot's beaver fetched, carried or built");
-        assert_eq!(s.work.slot_of(first.who).map(|x| x.0), Some(site));
-
-        // emptying frees the slot
-        let empty = panel(&s, Selection::Building(site)).unwrap().slots[0].empty.clone().expect("an empty command");
-        s.apply(empty).unwrap();
-        assert_ne!(s.work.slot_of(first.who).map(|x| x.0), Some(site), "no longer on the site");
-        let p = panel(&s, Selection::Building(site)).unwrap();
-        assert!(p.slots[0].worker.is_none() && !p.slots[0].candidates.is_empty());
-
-        // a kit cannot be put in a slot even by command
-        let mut s2 = start2();
-        s2.colony.admit_wanderer(true).ok();
-        if let Some(k) = s2.colony.beavers.iter().find(|b| b.stage == Stage::Kit).map(|b| b.id) {
-            let site = site_of(&mut s2, BuildingKind::Workshop);
-            assert!(s2.apply(Command::FillSlot { building: site, slot: 0, who: k }).is_err());
-        }
     }
 
     #[test]

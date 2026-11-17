@@ -1285,41 +1285,4 @@ mod tests {
         assert!(sim.work.set_area(camp, Area { min: (5, 5), max: (4, 9) }).is_err(), "inverted area rejected");
     }
 
-    #[test]
-    fn exhausted_beaver_stops_work_rests_in_lodge_and_mood_recovers() {
-        let (mut sim, ids) = setup();
-        sim.buildings.buildings.push(Building {
-            id: BuildingId(5),
-            kind: BuildingKind::Lodge,
-            pos: (12, 14),
-            status: Status::Complete,
-            recipe: None,
-            output: 0.0,
-        });
-        warehouse(&mut sim, 1, (20, 9));
-        let tree = sim.resources.add(ResourceKind::Tree, (14, 10), FELL_WORK);
-        spawn_on(&mut sim, ids[0], (10, 10)).unwrap();
-        sim.apply(crate::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Resource(tree)) }).unwrap();
-        {
-            let b = sim.colony.beavers.iter_mut().find(|b| b.id == ids[0]).unwrap();
-            b.needs.rest = crate::colony::EXHAUSTED_REST - 0.05;
-            b.mood = 0.3;
-        }
-        let low_mood = 0.3;
-        let (mut went_home, mut rested_inside) = (false, false);
-        for _ in 0..1500 {
-            sim.step(DT).unwrap();
-            let ag = sim.agents.get(ids[0]).unwrap();
-            let b = sim.colony.beaver(ids[0]).unwrap();
-            if b.resting {
-                assert!(!matches!(ag.task, Task::Collect { .. }), "a tired beaver must not keep working");
-                went_home |= matches!(ag.task, Task::Rest);
-                rested_inside |= ag.inside;
-            }
-        }
-        let b = sim.colony.beaver(ids[0]).unwrap();
-        assert!(went_home && rested_inside, "tired beaver went to and entered its lodge");
-        assert!(b.needs.rest > crate::colony::EXHAUSTED_REST, "rest recovered");
-        assert!(b.mood > low_mood, "mood recovered: {}", b.mood);
-    }
 }

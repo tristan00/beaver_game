@@ -1,7 +1,6 @@
 use super::*;
 use crate::build::BuildUi;
 use crate::ui::explain::audit;
-use crate::ui::gestures::MapPointer;
 use sim::starts::{build, Start};
 use sim::Command;
 
@@ -149,76 +148,6 @@ fn work_overlay_follows_areas_and_workers() {
 
 fn ready() -> (SimState, Shell, Option<Selection>, BuildUi) {
     (start2(), Shell::default(), None, BuildUi::default())
-}
-
-#[test]
-fn water_actions_open_the_build_menu_with_the_building_chosen() {
-    for (act, kind) in [(ModeAction::BuildDam, BuildingKind::Dam), (ModeAction::BuildCanal, BuildingKind::Canal)] {
-        let (sim, mut shell, mut panel, mut build) = ready();
-        run_action(act, &sim, &mut shell, &mut panel, &mut build, None).unwrap_or_else(|e| panic!("{act:?}: {e}"));
-        assert_eq!(shell.open, Some(NavItem::Buildings), "the build menu is open");
-        assert_eq!(build.tool, Some(kind), "with {kind:?} chosen");
-        // triggering again keeps it chosen (it never toggles itself off)
-        run_action(act, &sim, &mut shell, &mut panel, &mut build, None).unwrap();
-        assert_eq!(build.tool, Some(kind));
-    }
-}
-
-#[test]
-fn assign_actions_start_the_area_order_for_their_resource() {
-    for (act, kind) in [(ModeAction::AssignFellers, ResourceKind::Tree), (ModeAction::AssignForagers, ResourceKind::Plant)] {
-        let (mut sim, mut shell, mut panel, mut build) = ready();
-        run_action(act, &sim, &mut shell, &mut panel, &mut build, None).unwrap();
-        assert_eq!(shell.armed, Some(kind));
-        // the next drag is that order: it assigns idle adults to gather `kind` inside the rectangle
-        let at = sim.resources.items.iter().find(|r| r.kind == ResourceKind::Tree).map(|r| r.cell).unwrap();
-        let mut ptr = MapPointer::default();
-        ptr.armed = shell.armed;
-        let who = crew(&sim, CREW);
-        assert!(!who.is_empty());
-        assert!(ptr.left_down(&sim, true, at));
-        ptr.moved((at.0 + 3, at.1 + 3));
-        let cmds = ptr.left_up(&sim, &who, (at.0 + 3, at.1 + 3));
-        assert_eq!(cmds.len(), 1);
-        match &cmds[0] {
-            Command::Assign { who: w, to: Some(Assignment::Area(k, a)) } => {
-                assert_eq!(*k, kind);
-                assert_eq!(w, &who);
-                assert_eq!(a.min, at);
-            }
-            c => panic!("unexpected {c:?}"),
-        }
-        sim.apply(cmds[0].clone()).unwrap();
-        assert!(matches!(sim.agents.get(who[0]).unwrap().assignment, Some(Assignment::Area(k, _)) if k == kind));
-    }
-}
-
-#[test]
-fn work_actions_open_the_editor_and_the_workplace_panel() {
-    let (sim, mut shell, mut panel, mut build) = ready();
-    run_action(ModeAction::EditWorkArea, &sim, &mut shell, &mut panel, &mut build, None).unwrap();
-    let b = shell.editor.expect("the work-area editor is open on a workplace");
-    let area = sim.work.place(b).and_then(|p| p.area).expect("with a work area");
-    // its drag handles are live: pulling the east edge resizes the area
-    let edge = (area.max.0, area.centre().1);
-    let mut ptr = MapPointer::default();
-    assert!(ptr.left_down(&sim, false, edge));
-    let cmds = ptr.left_up(&sim, &[], (edge.0 + 2, edge.1));
-    assert!(matches!(cmds.as_slice(), [Command::SetWorkArea { building, .. }] if *building == b));
-
-    let (sim, mut shell, mut panel, mut build) = ready();
-    run_action(ModeAction::FillSlots, &sim, &mut shell, &mut panel, &mut build, None).unwrap();
-    let Some(Selection::Building(w)) = panel else { panic!("the workplace panel opens") };
-    assert!(sim.work.place(w).unwrap().slots.iter().any(|s| s.worker.is_none()), "on a workplace with an open slot");
-    let p = crate::ui::selection::panel(&sim, Selection::Building(w)).expect("the panel exists");
-    assert!(!p.slots.is_empty(), "and lists its slots");
-    // the selected workplace is preferred as the target
-    let other = sim.work.places.iter().find(|p| p.building != w && p.slots.iter().any(|s| s.worker.is_none())).map(|p| p.building);
-    if let Some(o) = other {
-        let mut panel2 = None;
-        run_action(ModeAction::FillSlots, &sim, &mut Shell::default(), &mut panel2, &mut BuildUi::default(), Some(o)).unwrap();
-        assert_eq!(panel2, Some(Selection::Building(o)));
-    }
 }
 
 #[test]

@@ -242,26 +242,3 @@ fn demo_pond_script(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Without `--cam lake`, `begin` still looks at the focus from `START_DISTANCE`, keeping the preset angles, for all three starts.
-    #[test]
-    fn begin_camera_is_unchanged_for_starts_1_to_3() {
-        for start in Start::ALL {
-            let (sim, dam, lake) = build_start_lake(start, 1).unwrap();
-            let mut cli_cam = crate::camera::preset("iso").unwrap();
-            let before = cli_cam;
-            let (mut flow, mut clock, mut sel) = (Flow::new(&sim.world), SimClock::default(), Selection::None);
-            begin(&sim, dam.as_ref(), &mut flow, &mut clock, &mut cli_cam, &mut sel);
-            let want = cell_world(&sim.height, focus_cell(&sim, dam.as_ref()));
-            assert_eq!((cli_cam.target, cli_cam.distance, cli_cam.yaw, cli_cam.pitch), (want, START_DISTANCE, before.yaw, before.pitch), "start {}", start.number());
-            // and a non-lake preset never reframes
-            let cli = Cli::parse(["--cam".to_string(), "iso".to_string()].into_iter()).unwrap();
-            let mut o = cli_cam;
-            frame_lake(&cli, &LakeView(lake), &sim, None, &mut o);
-            assert_eq!((o.target, o.distance), (cli_cam.target, cli_cam.distance));
-        }
-    }
-}

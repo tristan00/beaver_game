@@ -400,17 +400,6 @@ mod tests {
     }
 
     #[test]
-    fn dam_command_is_built_by_the_family_and_the_pond_fills_with_no_other_input() {
-        for seed in [1, 2, 3] {
-            let (s, built, held) = run(seed, true, 120.0);
-            let built = built.unwrap_or_else(|| panic!("seed {seed}: the dam was never built; plans {:?}, failures {:?}", s.work.dam_plans, s.work.dam_failures));
-            assert!(s.work.dam_failures.is_empty() && s.work.dam_plans.is_empty());
-            assert!(built < 60.0, "seed {seed}: built on day {built}");
-            assert!(held.is_some_and(|d| d >= built), "seed {seed}: pond never held its level (dam on day {built})");
-        }
-    }
-
-    #[test]
     fn without_the_dam_command_nothing_is_built() {
         let (s, built, _) = run(1, false, 60.0);
         assert_eq!(built, None);

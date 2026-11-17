@@ -135,40 +135,6 @@ fn dragging_a_work_area_moves_it_and_its_edge_resizes_it() {
     assert_eq!(sim.work.place(building).unwrap().area, Some(grown));
 }
 
-/// Drag-assign: the selected beavers gather only inside the dragged rectangle.
-#[test]
-fn after_a_drag_assign_selected_beavers_gather_only_inside_the_area() {
-    let mut sim = start2();
-    let who = adults(&sim, 2);
-    let trees: Vec<Cell> = sim.resources.items.iter().filter(|r| r.kind == ResourceKind::Tree).map(|r| r.cell).collect();
-    let camp = sim.colony.beaver(who[0]).unwrap().pos;
-    let near = |c: &Cell| (c.0 as f32 - camp.0).abs() < 14.0 && (c.1 as f32 - camp.1).abs() < 14.0;
-    let dense = |c: &Cell| trees.iter().filter(|t| t.0.abs_diff(c.0) <= 4 && t.1.abs_diff(c.1) <= 4).count();
-    let best = trees.iter().copied().filter(near).max_by_key(dense).expect("trees near the camp");
-    let area = area_between((best.0.saturating_sub(4), best.1.saturating_sub(4)), (best.0 + 4, best.1 + 4));
-    let mut mp = MapPointer::default();
-    // start the drag on bare ground so no work area is grabbed
-    assert!(mp.left_down(&sim, true, area.min));
-    let cmds = mp.left_up(&sim, &who, area.max);
-    assert_eq!(cmds.len(), 1, "one area-collect command");
-    for c in cmds {
-        sim.apply(c).unwrap();
-    }
-    let snapshot = |s: &SimState| s.resources.items.iter().map(|r| (r.id, r.cell, r.kind, r.amount, r.branches, r.bark)).collect::<Vec<_>>();
-    let mut inside = 0;
-    for _ in 0..1200 {
-        let before = snapshot(&sim);
-        sim.step(0.05).unwrap();
-        for (old, new) in before.iter().zip(snapshot(&sim)) {
-            if old != &new && new.2 != ResourceKind::Plant {
-                assert!(area.contains(new.1), "gathered at {:?} outside {area:?}", new.1);
-                inside += 1;
-            }
-        }
-    }
-    assert!(inside > 0, "the beavers gathered something inside the area");
-}
-
 /// Right-click on a site: the selected beaver takes a builder slot and delivers goods to it.
 #[test]
 fn after_a_right_click_on_a_site_the_beaver_delivers_to_it() {

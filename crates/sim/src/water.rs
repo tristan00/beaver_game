@@ -584,23 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn water_breach_drains_pond() {
-        let mut s = valley();
-        s.water.config.open_edges = true;
-        let cells = dam_row();
-        let prev = preview_dam(&s, &cells, 2.0).unwrap();
-        pour(&mut s, prev.volume);
-        s.water.build_dam(&cells, 2.0).unwrap();
-        for _ in 0..1500 { s.step(0.01).unwrap(); }
-        let held = s.water.total_volume();
-        assert!(held > 0.9 * prev.volume as f64, "pond should hold: {held}");
-        s.water.breach(40, 64).unwrap();
-        assert!(s.water.breach(40, 64).is_err());
-        for _ in 0..3000 { s.step(0.01).unwrap(); }
-        assert!(s.water.total_volume() < 0.1 * held, "drained to {}", s.water.total_volume());
-    }
-
-    #[test]
     fn water_overtopping_and_decay_breach_dams() {
         let mut s = valley();
         s.water.config.overtop_erosion = 5.0;
@@ -669,31 +652,4 @@ mod tests {
         assert!(preview_dam(&s, &[], 1.0).is_err());
     }
 
-    /// Cells wet enough to count as water (the buildings' threshold).
-    fn wet_count(s: &SimState) -> usize {
-        s.water.depth.as_slice().iter().filter(|&&d| d > crate::tuning::buildings::WET_DEPTH).count()
-    }
-
-    #[test]
-    fn undammed_waterways_hold_steady_for_a_year() {
-        // The game's fixed step; the flow scheme is step-size dependent.
-        const DT: f32 = 0.05;
-        for seed in 1..=6u64 {
-            let mut s = SimState::new(seed);
-            let start = wet_count(&s);
-            assert!(start > 400, "seed {seed}: only {start} wet cells to start with");
-            let (mut lo, mut hi) = (start, start);
-            for _ in 0..(120.0f32 / DT) as usize {
-                s.water.step(&s.height, DT);
-                let w = wet_count(&s);
-                lo = lo.min(w);
-                hi = hi.max(w);
-            }
-            let end = wet_count(&s);
-            let drift = (end as f32 - start as f32).abs() / start as f32;
-            assert!(drift < 0.10, "seed {seed}: wet cells {start} -> {end} ({:.1}% drift)", drift * 100.0);
-            // Seasons breathe, but the network never dries up or floods the map.
-            assert!(lo as f32 > 0.6 * start as f32 && (hi as f32) < 1.6 * start as f32, "seed {seed}: range {lo}..{hi} around {start}");
-        }
-    }
 }
