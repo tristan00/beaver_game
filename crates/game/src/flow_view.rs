@@ -9,14 +9,16 @@ use crate::state::Sim;
 use crate::terrain_render::{build_mesh, Terrain};
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use crate::ui::kit::font;
 use bevy::window::PrimaryWindow;
 use sim::colony::{Beaver, BeaverId, LodgeId};
 use std::collections::HashMap;
 
-const PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.10, 0.82);
-const BTN_BG: Color = Color::srgba(0.16, 0.20, 0.26, 0.92);
-const BTN_HOT: Color = Color::srgba(0.30, 0.38, 0.50, 0.95);
-const BTN_ON: Color = Color::srgba(0.20, 0.48, 0.30, 0.95);
+const PANEL_BG: Color = crate::ui::kit::BARK;
+const BTN_BG: Color = crate::ui::kit::RAISED;
+const BTN_HOT: Color = crate::ui::kit::LINE;
+/// Pond, darkened so Pith text stays readable on it.
+const BTN_ON: Color = Color::srgb(0.153, 0.416, 0.459);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -152,22 +154,18 @@ impl Plugin for FlowViewPlugin {
 
 // ───────────────────────────── spawn ─────────────────────────────
 
-fn font(size: f32) -> TextFont {
-    TextFont::from_font_size(size)
-}
-
 fn spawn_ui(mut commands: Commands) {
     let abs = |_: ()| Node { position_type: PositionType::Absolute, ..default() };
     // panels
     commands
         .spawn((PanelNode(PanelKind::Info), Node { padding: UiRect::all(px(10)), ..abs(()) }, BackgroundColor(PANEL_BG)))
         .with_children(|p| {
-            p.spawn((Text::new(""), font(14.0), InfoText));
+            p.spawn((Text::new(""), font(14.0), TextColor(crate::ui::kit::PITH), InfoText));
         });
     commands
         .spawn((PanelNode(PanelKind::GameOver), Node { padding: UiRect::all(px(16)), ..abs(()) }, BackgroundColor(Color::srgba(0.12, 0.05, 0.05, 0.93))))
         .with_children(|p| {
-            p.spawn((Text::new(""), font(15.0), GameOverText));
+            p.spawn((Text::new(""), font(15.0), TextColor(crate::ui::kit::PITH), GameOverText));
         });
     // banner
     commands.spawn((
@@ -182,7 +180,7 @@ fn spawn_ui(mut commands: Commands) {
         commands
             .spawn((Btn(a), Node { position_type: PositionType::Absolute, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(BTN_BG)))
             .with_children(|p| {
-                p.spawn((Text::new(label), font(14.0), BtnLabel(a)));
+                p.spawn((Text::new(label), font(14.0), TextColor(crate::ui::kit::PITH), BtnLabel(a)));
             });
     };
     spawn_btn(Action::Pause, "Pause");

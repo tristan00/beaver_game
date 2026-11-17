@@ -18,17 +18,12 @@ pub struct MenuCard(pub Start);
 const CARD_W: f32 = 290.0;
 
 fn text(p: &mut Kids, s: impl Into<String>, size: f32, color: Color) {
-    p.spawn((Text::new(s), TextFont::from_font_size(size), TextColor(color)));
+    label(p, s, size, color);
 }
 
-/// A rounded card: soft shadow, rounded corners, flex column.
+/// A start card: a bark panel.
 fn card_node(width: f32) -> impl Bundle {
-    (
-        Node { width: px(width), flex_direction: FlexDirection::Column, padding: UiRect::all(px(9)), row_gap: px(4), ..default() },
-        BackgroundColor(PANEL),
-        Round(16.0),
-        BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.28), px(0), px(3), px(0), px(9)),
-    )
+    panel(Node { width: px(width), row_gap: px(GRID / 2.0), ..default() })
 }
 
 /// Spawns the overlay with one card per start.
@@ -46,29 +41,29 @@ pub fn spawn(commands: &mut Commands, error: Option<&str>) {
                 row_gap: px(22),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.30, 0.20, 0.13, 0.45)),
+            BackgroundColor(Color::srgba(0.16, 0.12, 0.10, 0.55)),
             GlobalZIndex(60),
         ))
         .with_children(|root| {
-            text(root, "Beaver Colony", 38.0, PANEL);
-            text(root, "Choose how your story begins", 16.0, PANEL_SOFT);
+            label_bold(root, "Beaver Colony", 40.0, PITH);
+            text(root, "Choose how your story begins", T_TITLE, DIM);
             root.spawn(Node { column_gap: px(18), align_items: AlignItems::Stretch, ..default() }).with_children(|row| {
                 for card in start_menu() {
                     spawn_card(row, &card);
                 }
             });
             if let Some(e) = error {
-                text(root, e, 14.0, BAD);
+                text(root, e, T_BODY, BERRY);
             }
         });
 }
 
 fn spawn_card(row: &mut Kids, card: &StartCard) {
     row.spawn((card_node(CARD_W), MenuCard(card.start))).with_children(|c| {
-        text(c, format!("{}", card.start.number()), 34.0, WARN);
-        text(c, card.title, 20.0, INK);
-        text(c, card.pitch, 14.0, DIM);
-        text(c, format!("click, or press {}", card.start.number()), 12.0, GOOD);
+        text(c, format!("{}", card.start.number()), 34.0, AMBER);
+        label_bold(c, card.title, 20.0, PITH);
+        text(c, card.pitch, T_BODY, DIM);
+        text(c, format!("click, or press {}", card.start.number()), T_MIN, MOSS);
     });
 }
 
@@ -83,7 +78,7 @@ fn hovered(cards: &CardQuery<'_, '_>, windows: &Query<&Window, With<PrimaryWindo
 pub fn hover(cards: CardQuery, windows: Query<&Window, With<PrimaryWindow>>, mut colours: Query<(&MenuCard, &mut BackgroundColor)>) {
     let hot = hovered(&cards, &windows);
     for (c, mut bg) in &mut colours {
-        let want = if Some(c.0) == hot { ROW_HOT } else { PANEL };
+        let want = if Some(c.0) == hot { LINE } else { BARK };
         if bg.0 != want {
             bg.0 = want;
         }
