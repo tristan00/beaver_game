@@ -5,10 +5,11 @@ use bevy::mesh::Indices;
 use bevy::prelude::*;
 use bevy::render::render_resource::PrimitiveTopology;
 
-/// Linear-RGB colour from an sRGB hex value (so palettes can be picked by eye).
+/// Vertex colour for an sRGB hex value (so palette colours can be picked by eye): the scene-linear colour
+/// that the tone-mapped camera shows as exactly that hex, before the shared material's lighting gain
+/// (docs/STYLE.md fix 18: fur on screen is `#B9783F`, not a paler brown).
 pub fn hex(rgb: u32) -> [f32; 3] {
-    let ch = |s: u32| (((rgb >> s) & 0xff) as f32 / 255.0).powf(2.2);
-    [ch(16), ch(8), ch(0)]
+    crate::palette::display_linear(crate::palette::rgb(rgb))
 }
 
 pub fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {

@@ -119,6 +119,10 @@ const SHORE_SEARCH: i32 = 3;
 /// Rings measured inward from the shore, in cells (docs/STYLE.md §4 and `docs/style_mockup.png`):
 /// a solid Foam ring, then a Deep rim, the Shallow body and a Mid glow centre.
 pub const FOAM_W: f32 = 0.2;
+/// Water vertex colours are the palette colours seen through the tone mapping (`palette::display_linear`);
+/// the lit surface then multiplies them by this gain (same sun and ambient as `ENTITY_GAIN`) so a flat
+/// sun-facing patch shows its palette hex (docs/STYLE.md fixes 7 and 8).
+const WATER_GAIN: f32 = crate::entities_render::ENTITY_GAIN;
 /// Extra cuts through the surface (shore distance, cells) so colour ramps follow the rings
 /// instead of zig-zagging across the grid's triangles.
 const RING_CUTS: [f32; 6] = [0.6, 0.9, 1.2, 1.6, 2.0, 2.5];
@@ -230,9 +234,9 @@ pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32
     let deep = rim.max(very_deep);
     let glow = smooth_step(1.5, 2.5, f) * (1.0 - very_deep);
     let mut c = mix_rgb(p.water_shallow, WATER_MID_GLOW, glow * 0.85);
-    c = mix_rgb(c, p.water_deep, deep * 0.95);
+    c = mix_rgb(c, p.water_deep, deep);
     c = mix_rgb(c, FOAM, foam);
-    let mut a = 0.8 + 0.1 * deep + 0.15 * foam;
+    let mut a = 0.8 + 0.2 * deep + 0.15 * foam;
     // ice: freezes from the shore inwards as winter deepens
     let ice = if p.winter > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { 0.0 };
     c = mix_rgb(c, p.ice, ice);
@@ -325,7 +329,8 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
                 pos.push(v.p);
                 uv.push([v.p[0] * 0.045, v.p[2] * 0.045]);
                 let (c, a) = water_color(p, v.f, v.d, in_foam);
-                col.push(lin(c, a));
+                let s = crate::palette::display_linear(c).map(|v| v * WATER_GAIN);
+                col.push([s[0], s[1], s[2], a]);
             }
         }
     };
@@ -638,7 +643,7 @@ mod tests {
         let s = SimState::new(1);
         let p = Palette::at(0.3);
         let (cols, rows) = chunk_dims(&s);
-        let foam = lin(crate::palette::FOAM, 1.0);
+        let foam = crate::palette::display_linear(crate::palette::FOAM).map(|v| v * WATER_GAIN);
         for step in [1, 2] {
             let t = std::time::Instant::now();
             let (mut wet, mut with_foam, mut tris) = (0, 0, 0);

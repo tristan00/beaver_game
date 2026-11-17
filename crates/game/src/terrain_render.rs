@@ -625,8 +625,12 @@ fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, l
     }
 }
 
+/// Share of open-grass cells that get an item. A cell is about 36 px across in the close views (`--cam pond`),
+/// so this gives about one item per 40x40 px there (docs/STYLE.md fix 5; measured in `artifacts/R19-29`).
+const DETAIL_DENSITY: f32 = 0.7;
+
 /// Sparse small ground detail on open grass (`docs/STYLE.md` §4): grass tufts (two crossed
-/// strokes), flowers (white, pink, yellow) and pebbles, about one item per 9 cells. Never on
+/// strokes), flowers (white, pink, yellow) and pebbles, about one item per 1.4 cells (`DETAIL_DENSITY`). Never on
 /// water, wet banks, rock or snow. Deterministic per cell.
 fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {
     let (w, h) = (s.height.width() as i32, s.height.height() as i32);
@@ -636,7 +640,7 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
                 continue;
             }
             let r = (noise(x * 7 + 3, y * 5 - 11) * 0.5 + 0.5, noise(x * 13 - 5, y * 3 + 17) * 0.5 + 0.5, noise(x - 29, y * 11 + 2) * 0.5 + 0.5);
-            if r.0 > 0.14 {
+            if r.0 > DETAIL_DENSITY {
                 continue;
             }
             let (fx, fz) = (r.1 * 0.8 + 0.1, r.2 * 0.8 + 0.1);
@@ -657,19 +661,19 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
             let ground = top + (bot - top) * fz;
             let (wx, wz) = world_pos(s, x, y);
             let c = Vec3::new(wx + fx * CELL_SIZE, ground, wz + fz * CELL_SIZE);
-            let kind = r.0 / 0.14; // 0..1 deterministic pick
+            let kind = r.0 / DETAIL_DENSITY; // 0..1 deterministic pick
             let yaw = r.2 * std::f32::consts::TAU;
             if kind < 0.5 {
                 // tuft: two crossed strokes, Lily at the tip fading to Meadow deep
                 for k in 0..2 {
-                    blob(d, c + Vec3::Y * 0.2, Vec3::new(0.08, 0.3, 0.26), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, pal::MEADOW_DEEP, pal::LILY);
+                    blob(d, c + Vec3::Y * 0.1, Vec3::new(0.04, 0.17, 0.15), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, pal::MEADOW_DEEP, pal::LILY);
                 }
             } else if kind < 0.8 {
                 let petal = if r.1 < 0.34 { pal::FLOWER_WHITE } else if r.1 < 0.67 { pal::FLOWER_PINK } else { pal::FLOWER_YELLOW };
-                blob(d, c + Vec3::Y * 0.18, Vec3::new(0.04, 0.16, 0.04), 0.0, 0.0, pal::MEADOW_DEEP, pal::MEADOW_DEEP);
-                blob(d, c + Vec3::Y * 0.36, Vec3::new(0.23, 0.14, 0.23), yaw, 0.0, petal, petal);
+                blob(d, c + Vec3::Y * 0.09, Vec3::new(0.025, 0.09, 0.025), 0.0, 0.0, pal::MEADOW_DEEP, pal::MEADOW_DEEP);
+                blob(d, c + Vec3::Y * 0.19, Vec3::new(0.12, 0.08, 0.12), yaw, 0.0, petal, petal);
             } else {
-                blob(d, c + Vec3::Y * 0.05, Vec3::new(0.3, 0.17, 0.2), yaw, 0.0, pal::STONE_SHADE, pal::STONE);
+                blob(d, c + Vec3::Y * 0.07, Vec3::new(0.16, 0.1, 0.11), yaw, 0.0, pal::STONE_SHADE, pal::STONE);
             }
         }
     }

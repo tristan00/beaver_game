@@ -17,14 +17,17 @@ pub const TAIL_PIVOT: Vec3 = Vec3::new(0.0, 0.36, -0.6);
 /// Hip/shoulder pivots: front-left, front-right, hind-left, hind-right.
 pub const LEG_PIVOTS: [Vec3; 4] = [Vec3::new(-0.3, 0.34, 0.4), Vec3::new(0.3, 0.34, 0.4), Vec3::new(-0.33, 0.36, -0.28), Vec3::new(0.33, 0.36, -0.28)];
 
-const FUR: u32 = 0x9a6532;
-const FUR_DARK: u32 = 0x6d4423;
-const BELLY: u32 = 0xe8c795;
+use crate::palette::{self, pack};
+// Beaver colours come from the shared palette (docs/STYLE.md fix 18), never hard-coded browns.
+const FUR: u32 = pack(palette::FUR);
+const FUR_DARK: u32 = pack(palette::FUR_DARK);
+const FUR_LIGHT: u32 = pack(palette::FUR_LIGHT);
+const INK: u32 = pack(palette::INK);
 
 pub fn beaver_body(mb: &mut Mb, o: Vec3) {
     let (fd, f) = (hex(FUR_DARK), hex(FUR));
-    mb.ellipsoid_g(o + v(0.0, 0.56, 0.0), v(0.5, 0.47, 0.74), fd, mix(f, hex(0xb98048), 0.5), 12, 8);
-    mb.ellipsoid_g(o + v(0.0, 0.46, 0.1), v(0.43, 0.34, 0.62), hex(0xd2ab78), hex(BELLY), 10, 6);
+    mb.ellipsoid_g(o + v(0.0, 0.56, 0.0), v(0.5, 0.47, 0.74), fd, f, 12, 8);
+    mb.ellipsoid_g(o + v(0.0, 0.46, 0.1), v(0.43, 0.34, 0.62), mix(f, hex(FUR_LIGHT), 0.5), hex(FUR_LIGHT), 10, 6);
     for s in [-1.0, 1.0] {
         mb.ellipsoid_g(o + v(0.38 * s, 0.46, -0.3), v(0.24, 0.3, 0.34), fd, f, 8, 5);
     }
@@ -32,27 +35,27 @@ pub fn beaver_body(mb: &mut Mb, o: Vec3) {
 
 pub fn beaver_head(mb: &mut Mb, o: Vec3) {
     let (f, fd) = (hex(FUR), hex(FUR_DARK));
-    mb.ellipsoid_g(o + v(0.0, 0.05, 0.26), v(0.41, 0.37, 0.39), hex(0x84552b), hex(0xb27a45), 12, 8);
-    mb.ellipsoid(o + v(0.0, -0.1, 0.56), v(0.23, 0.17, 0.21), hex(BELLY));
-    mb.ellipsoid(o + v(0.0, -0.01, 0.75), v(0.08, 0.06, 0.06), hex(0x2b1a18));
+    mb.ellipsoid_g(o + v(0.0, 0.05, 0.26), v(0.41, 0.37, 0.39), f, hex(FUR_LIGHT), 12, 8);
+    mb.ellipsoid(o + v(0.0, -0.1, 0.56), v(0.23, 0.17, 0.21), hex(FUR_LIGHT));
+    mb.ellipsoid(o + v(0.0, -0.01, 0.75), v(0.08, 0.06, 0.06), hex(INK));
     for s in [-1.0, 1.0] {
-        mb.ellipsoid(o + v(0.21 * s, 0.14, 0.5), v(0.095, 0.105, 0.075), hex(0x15100f)); // big shiny eyes
+        mb.ellipsoid(o + v(0.21 * s, 0.14, 0.5), v(0.095, 0.105, 0.075), hex(INK)); // big shiny eyes
         mb.ellipsoid(o + v(0.185 * s, 0.185, 0.565), v(0.032, 0.036, 0.03), hex(0xffffff));
         mb.ellipsoid(o + v(0.27 * s, 0.37, 0.1), v(0.12, 0.11, 0.07), fd); // ears
         mb.ellipsoid(o + v(0.27 * s, 0.37, 0.12), v(0.07, 0.06, 0.05), hex(0xd89a8a));
-        mb.ellipsoid(o + v(0.3 * s, -0.05, 0.42), v(0.1, 0.09, 0.09), mix(f, hex(BELLY), 0.5)); // cheeks
+        mb.ellipsoid(o + v(0.3 * s, -0.05, 0.42), v(0.1, 0.09, 0.09), hex(FUR_LIGHT)); // cheeks
         mb.cuboid(o + v(0.047 * s, -0.31, 0.71), v(0.044, 0.095, 0.03), Quat::IDENTITY, hex(0xfff0c8), hex(0xffffff)); // buck teeth
     }
 }
 
 pub fn beaver_tail(mb: &mut Mb, o: Vec3) {
     mb.ellipsoid(o + v(0.0, 0.0, -0.08), v(0.15, 0.11, 0.2), hex(FUR_DARK));
-    let (a, b) = (hex(0x3b2a22), hex(0x5a4236));
+    let (a, b) = (hex(FUR_DARK), hex(FUR_DARK)); // flat oval tail in Fur dark
     mb.ellipsoid_g(o + v(0.0, 0.0, -0.58), v(0.4, 0.055, 0.56), a, b, 12, 6);
     // scale pattern: darker ridge lines
     for i in 0..3 {
         let z = -0.35 - i as f32 * 0.22;
-        mb.ellipsoid(o + v(0.0, 0.035, z), v(0.3 - i as f32 * 0.06, 0.03, 0.045), hex(0x2c1f19));
+        mb.ellipsoid(o + v(0.0, 0.035, z), v(0.3 - i as f32 * 0.06, 0.03, 0.045), mix(hex(FUR_DARK), hex(INK), 0.35));
     }
 }
 
@@ -61,10 +64,10 @@ pub fn beaver_leg(mb: &mut Mb, front: bool) {
     let fd = hex(FUR_DARK);
     if front {
         mb.ellipsoid_g(v(0.0, -0.15, 0.02), v(0.13, 0.21, 0.14), fd, hex(FUR), 8, 5);
-        mb.ellipsoid(v(0.0, -0.31, 0.08), v(0.115, 0.055, 0.15), hex(0x3d2a1e));
+        mb.ellipsoid(v(0.0, -0.31, 0.08), v(0.115, 0.055, 0.15), fd);
     } else {
         mb.ellipsoid_g(v(0.0, -0.15, 0.04), v(0.16, 0.22, 0.2), fd, hex(FUR), 8, 5);
-        mb.ellipsoid(v(0.0, -0.33, 0.14), v(0.14, 0.055, 0.24), hex(0x3d2a1e));
+        mb.ellipsoid(v(0.0, -0.33, 0.14), v(0.14, 0.055, 0.24), fd);
     }
 }
 

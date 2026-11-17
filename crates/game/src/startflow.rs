@@ -67,7 +67,8 @@ pub struct StartPlugin;
 impl Plugin for StartPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().resource::<Cli>();
-        let scripted_opening = cli.autoplay_settle || cli.stress;
+        // `BC_NO_MENU=1`: no start menu over a staged `--showcase` still, so its colours can be sampled.
+        let scripted_opening = cli.autoplay_settle || cli.stress || std::env::var_os("BC_NO_MENU").is_some();
         let (has_start, demo_pond) = (cli.start.is_some(), cli.demo_pond);
         if has_start {
             app.add_systems(Startup, begin_cli_start);
@@ -91,7 +92,12 @@ fn begin_cli_start(
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
 ) {
+    // `--cam lodge` / `pond`: keep the view the camera plugin framed (no menu veil over the shot).
+    let framed = orbit.clone();
     begin(&sim.0, planned.0.as_ref(), &mut flow, &mut clock, &mut orbit, &mut sel);
+    if matches!(cli.cam.as_str(), "lodge" | "pond") {
+        *orbit = framed;
+    }
     // `--cam iso-close` / `iso-wide`: fixed views of the map centre, whatever the start (shadow checks, docs/STYLE.md fix 10).
     if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
         if let Some(p) = crate::camera::preset(&cli.cam) {
