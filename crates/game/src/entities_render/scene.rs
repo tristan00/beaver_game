@@ -572,6 +572,12 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         if cfg.trees <= SceneConfig::NORMAL.trees && near_lodge > 12.0 && vnoise(p.x * 0.07, p.y * 0.07, seed) < 0.38 {
             continue; // meadows
         }
+        // Streams and ponds in the sim water field (and a cell of shore round them) stay open.
+        let (cx, cy) = (p.x / crate::terrain_render::CELL_SIZE + sim.height.width() as f32 / 2.0, p.y / crate::terrain_render::CELL_SIZE + sim.height.height() as f32 / 2.0);
+        let wet_near = (-1..=1).any(|dy| (-1..=1).any(|dx| crate::terrain_render::at(&sim.water.depth, cx.round() as i32 + dx, cy.round() as i32 + dy) > crate::terrain_render::WET_EPS));
+        if wet_near && !site.pond().contains(p, 0.8) {
+            continue;
+        }
         // Only the pond floods trees; ground below the pond level outside the dams is dry.
         let depth = if site.pond().contains(p, 0.8) { lvl - ground } else { -1.0 };
         let state = if depth > 0.3 {

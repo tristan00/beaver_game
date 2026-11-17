@@ -423,7 +423,8 @@ struct FogBase {
     colors: Vec<[f32; 4]>,
 }
 
-const FOG_COLOR: [f32; 3] = [0.14, 0.17, 0.22];
+/// Unexplored ground: soft plum mist (never slate or black).
+const FOG_COLOR: [f32; 3] = [0.55, 0.50, 0.66];
 
 fn apply_fog(
     mut flow: ResMut<Flow>,
