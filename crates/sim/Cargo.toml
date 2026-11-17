@@ -1,0 +1,8 @@
+[package]
+name = "sim"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+rand_core = "0.10"
+rand_pcg = "0.10"
