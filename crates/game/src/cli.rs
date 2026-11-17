@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--autoplay-settle] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--autoplay-settle] [--demo-dam] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -15,12 +15,14 @@ pub struct Cli {
     pub frames: u32,
     /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
     pub autoplay_settle: bool,
+    /// Scripted dam preview (implies `--autoplay-settle`): settle, stock stores, draw a dam, hold the preview for `--screenshot`.
+    pub demo_dam: bool,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, autoplay_settle: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, autoplay_settle: false, demo_dam: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -39,6 +41,10 @@ impl Cli {
                     }
                 }
                 "--autoplay-settle" => cli.autoplay_settle = true,
+                "--demo-dam" => {
+                    cli.demo_dam = true;
+                    cli.autoplay_settle = true;
+                }
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }
@@ -57,6 +63,12 @@ mod tests {
         let c = p(&["--screenshot", "o.png", "--frames", "5", "--seed", "9", "--cam", "top"]).unwrap();
         assert_eq!((c.seed, c.frames, c.cam.as_str()), (9, 5, "top"));
         assert_eq!(c.screenshot, Some("o.png".into()));
+    }
+
+    #[test]
+    fn demo_dam_implies_autoplay() {
+        let c = p(&["--demo-dam"]).unwrap();
+        assert!(c.demo_dam && c.autoplay_settle);
     }
 
     #[test]

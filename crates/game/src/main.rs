@@ -1,5 +1,7 @@
 ﻿//! Entry point: parses the command line and only adds plugins.
 mod audio;
+mod build;
+mod build_logic;
 mod camera;
 mod cli;
 mod entities_render;
@@ -34,6 +36,7 @@ fn main() {
         sim_driver::SimDriverPlugin,
         flow::FlowPlugin,
         flow_view::FlowViewPlugin,
+        build::BuildPlugin,
         camera::CameraPlugin,
         input::InputPlugin,
         terrain_render::TerrainRenderPlugin,
