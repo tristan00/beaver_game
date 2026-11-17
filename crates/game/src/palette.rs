@@ -36,6 +36,18 @@ pub const SKY_WINTER: Rgb = rgb(0xC8D4E8);
 pub const SUN: Rgb = rgb(0xFFF5E0);
 pub const SUN_AUTUMN: Rgb = rgb(0xFFDBB3);
 pub const AMBIENT: Rgb = rgb(0xCCE6FF);
+// World additions (docs/STYLE.md): clear water, shore, seasons, structures.
+pub const WATER_CLEAR: Rgb = rgb(0xBFEFF0);
+pub const SAND: Rgb = rgb(0xE6D3A3);
+pub const REED: Rgb = rgb(0xB7C97A);
+pub const BLOSSOM: Rgb = rgb(0xF5B8C4);
+pub const AUTUMN_GOLD: Rgb = rgb(0xE8B04A);
+pub const AUTUMN_RUST: Rgb = rgb(0xD9814E);
+pub const SNOW: Rgb = rgb(0xF6F4FA);
+pub const SNOW_SHADE: Rgb = rgb(0xCFC8E0);
+pub const STICK: Rgb = rgb(0x9C6A3E);
+pub const STICK_LIGHT: Rgb = rgb(0xC79A62);
+pub const DAM_MUD: Rgb = rgb(0x8F6E52);
 
 /// Back to `0xRRGGBB`, so shared colours can feed code that takes hex integers.
 pub const fn pack(c: Rgb) -> u32 {
