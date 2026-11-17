@@ -58,7 +58,11 @@ pub fn build_midgame(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut crate:
     Ok(site)
 }
 
-fn setup(mut sim: ResMut<Sim>, mut ui: ResMut<crate::ui::LedgerUi>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut orbit: ResMut<OrbitCamera>, mut sel: ResMut<Selection>) {
+/// Beavers the sim-driven stress run (`--stress --midgame` with `BC_STRESS_SIM=1`) fills the colony to,
+/// matching the stub stress scene's 300.
+const STRESS_SIM_BEAVERS: usize = 300;
+
+fn setup(cli: Res<Cli>, mut sim: ResMut<Sim>, mut ui: ResMut<crate::ui::LedgerUi>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut orbit: ResMut<OrbitCamera>, mut sel: ResMut<Selection>) {
     match build_midgame(&mut sim.0, &mut flow, &mut ui.hist) {
         Ok(site) => {
             let p = cell_world(&sim.0.height, (site.0 as f32, site.1 as f32));
@@ -66,6 +70,15 @@ fn setup(mut sim: ResMut<Sim>, mut ui: ResMut<crate::ui::LedgerUi>, mut flow: Re
             orbit.distance = 70.0;
             flow.focus = None;
             clock.paused = true;
+            if cli.stress && std::env::var_os("BC_STRESS_SIM").is_some() {
+                let n = STRESS_SIM_BEAVERS.saturating_sub(sim.0.colony.population());
+                sim.0.colony.add_immigrants(n as u32);
+                if let Err(e) = sim.0.step(STEP) {
+                    error!("stress sim step failed: {e}");
+                }
+                clock.paused = false;
+                info!("stress sim: {} beavers, {} agents on the map", sim.0.colony.population(), sim.0.agents.by_id.len());
+            }
             *sel = Selection::None;
             info!("midgame: settled at {site:?}, day {:.0}, {} beavers", sim.0.time_days, sim.0.colony.population());
         }

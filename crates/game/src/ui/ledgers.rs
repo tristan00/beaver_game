@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(t[0].rows.len(), Branch::ALL.len() - 1);
         assert_eq!(t[1].rows.len(), TECHS.len() - 1);
         let building = t[0].rows.iter().find(|r| r.cells[0].text == "Building").unwrap();
-        assert_eq!(building.cells[2].text, "1/2");
+        assert_eq!(building.cells[2].text, "1/3");
         assert!(building.cells[3].key > 0.5 && building.cells[3].key < 1.0, "{:?}", building.cells[3]);
         let joinery = t[1].rows.iter().find(|r| r.cells[0].text == "Joinery").unwrap();
         assert_eq!(joinery.cells[4].text, "unlocked");

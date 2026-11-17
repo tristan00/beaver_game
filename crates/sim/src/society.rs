@@ -99,9 +99,11 @@ pub fn mood_factors(_colony: &crate::colony::Colony, _who: BeaverId) -> Vec<Fact
     Vec::new()
 }
 
-/// Work-speed multiplier from mood (below 1 when mood is low).
+/// Work-speed multiplier from mood: `WORK_MOOD_BASE + WORK_MOOD_SCALE * mood` (0.7 at mood 0, 1.0 at mood 1).
+/// The colony's work output and the agents' work rates both use this one factor.
 pub fn work_speed(mood: f32) -> f32 {
-    0.5 + 0.5 * mood.clamp(0.0, 1.0)
+    use crate::tuning::colony::{WORK_MOOD_BASE, WORK_MOOD_SCALE};
+    WORK_MOOD_BASE + WORK_MOOD_SCALE * mood.clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

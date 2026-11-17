@@ -763,3 +763,108 @@ fn barge(mb: &mut Mb, len: f32, stage: u8) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Loads carried in the mouth (head-local frame, same spot as `beaver_log`) and map resources.
+// ---------------------------------------------------------------------------------------------
+
+/// What a beaver holds, by good, so a carried load shows what it is.
+pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
+    use sim::buildings::Good;
+    let mut mb = Mb::new();
+    match good {
+        Good::Logs => beaver_log(&mut mb),
+        Good::Sticks => {
+            // a fistful of twigs with a few green leaves, crossing the mouth
+            for (i, dy) in [-0.02f32, 0.05, 0.12].iter().enumerate() {
+                let k = i as f32 - 1.0;
+                stick(&mut mb, v(-0.55, -0.24 + dy, 0.66 + k * 0.05), v(0.55, -0.2 + dy, 0.66 - k * 0.07), 0.035, 0.3 + 0.3 * i as f32);
+            }
+            mb.ellipsoid(v(0.5, -0.12, 0.62), v(0.1, 0.03, 0.06), hex(0x76c24a));
+            mb.ellipsoid(v(-0.5, -0.12, 0.7), v(0.1, 0.03, 0.06), hex(0x5fae3c));
+        }
+        Good::Mud => {
+            mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.26, 0.2, 0.22), hex(0x4d3520), hex(0x80603f), 8, 5);
+            mb.ellipsoid(v(0.09, -0.16, 0.74), v(0.1, 0.07, 0.09), hex(0x5d4228));
+        }
+        Good::Stone => {
+            mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.24, 0.19, 0.22), hex(0x77777c), hex(0xb2b2b6), 7, 4);
+            mb.ellipsoid(v(0.1, -0.2, 0.72), v(0.1, 0.07, 0.09), hex(0xc7c7cb));
+        }
+        Good::Food => {
+            mb.ellipsoid_g(v(0.0, -0.28, 0.72), v(0.3, 0.14, 0.2), hex(0x3f8f35), hex(0x7bc653), 8, 4);
+            mb.ellipsoid(v(0.13, -0.18, 0.7), v(0.14, 0.05, 0.1), hex(0x9bd86a));
+            mb.ellipsoid(v(-0.14, -0.2, 0.74), v(0.12, 0.05, 0.09), hex(0x5fae3c));
+        }
+        _ => {
+            mb.ellipsoid_g(v(0.0, -0.28, 0.72), v(0.28, 0.17, 0.22), hex(0xa57c45), hex(0xd2a869), 8, 4);
+        }
+    }
+    mb.build()
+}
+
+/// A felled tree: the stump, the trunk lying on the ground as `logs` one-unit logs still to be
+/// taken (shortens as it is gathered), and the leafy crown while its branches remain.
+pub fn felled_mesh(logs: u8, branches: bool) -> Mesh {
+    let mut mb = Mb::new();
+    let (bark, cut) = (hex(0x7a5230), hex(0xeed3a0));
+    mb.append(stump_low(), Vec3::ZERO);
+    for i in 0..logs as usize {
+        let x = 0.9 + i as f32 * 1.7;
+        let z = 0.12 * (i as f32 * 2.1).sin();
+        mb.log(v(x, 0.34, z), v(x + 1.6, 0.34, z + 0.05), 0.32 - 0.03 * i as f32, bark, cut, 9);
+        mb.ellipsoid(v(x + 0.8, 0.0, z), v(0.8, 0.09, 0.3), hex(0x2f6a2a));
+    }
+    if branches {
+        let x0 = 0.9 + logs as f32 * 1.7 + 0.2;
+        for k in 0..5 {
+            let a = (k as f32 - 2.0) * 0.38;
+            stick(&mut mb, v(x0, 0.3, 0.0), v(x0 + 1.5 * a.cos(), 0.55 + 0.12 * (k % 3) as f32, 1.5 * a.sin()), 0.07, 0.4);
+        }
+        mb.ellipsoid_g(v(x0 + 1.0, 0.7, 0.0), v(1.1, 0.55, 0.9), hex(0x3f7f2f), hex(0x7bb04a), 8, 5);
+        mb.ellipsoid(v(x0 + 1.5, 0.85, 0.4), v(0.6, 0.35, 0.5), hex(0x5fae3c));
+    }
+    mb.build()
+}
+
+fn stump_low() -> Mb {
+    let mut mb = Mb::new();
+    let bark = hex(0x7a5230);
+    mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.55, -0.1), (0.4, 0.12), (0.34, 0.3)], 10, bark, bark, true);
+    mb.lathe(Mat4::IDENTITY, &[(0.34, 0.3), (0.0, 0.32)], 10, hex(0xeed3a0), hex(0xf6e2b8), false);
+    mb
+}
+
+/// Wet mud bank: a low dark mound with a glossy lighter top and a few clods.
+pub fn mud_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(1.5, 0.55, 1.3), hex(0x3f2c1b), hex(0x7a5a3b), 12, 6);
+    mb.ellipsoid_g(v(0.2, 0.28, 0.1), v(0.9, 0.3, 0.8), hex(0x5a4129), hex(0x93714b), 10, 5);
+    for (x, z, s) in [(1.3, 0.5, 0.35), (-1.2, -0.6, 0.3), (0.4, -1.25, 0.28), (-0.5, 1.2, 0.25)] {
+        mb.ellipsoid(v(x, 0.05, z), v(s, s * 0.45, s * 0.8), hex(0x5a4129));
+    }
+    mb.build()
+}
+
+/// Stone outcrop: angular grey boulders.
+pub fn stone_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    let rocks = [(0.0, 0.0, 0.0, 1.1, 0.9, 0.9, 0.3), (1.2, 0.5, 0.0, 0.7, 0.55, 0.65, 1.1), (-0.9, 0.6, 0.0, 0.6, 0.5, 0.5, 2.0), (0.2, -1.0, 0.0, 0.75, 0.6, 0.6, 0.7)];
+    for (x, z, y, rx, ry, rz, yaw) in rocks {
+        mb.ellipsoid_g(v(x, y + ry * 0.55, z), v(rx, ry, rz), hex(0x6c6c72), hex(0xb7b5b2), 7, 4);
+        mb.ellipsoid_r(v(x + 0.1, y + ry * 1.0, z), v(rx * 0.55, ry * 0.3, rz * 0.55), Quat::from_rotation_y(yaw), hex(0xc9c7c2));
+    }
+    mb.build()
+}
+
+/// Edible plant tuft.
+pub fn plant_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    for i in 0..6 {
+        let a = i as f32 * 1.05;
+        let tip = v(a.cos() * 0.45, 0.9 + 0.1 * (i % 3) as f32, a.sin() * 0.45);
+        mb.cyl(v(a.cos() * 0.08, 0.0, a.sin() * 0.08), tip, 0.06, 0.02, hex(0x3f8f35), hex(0x8bd05a), 4);
+    }
+    mb.ellipsoid(v(0.0, 0.8, 0.0), v(0.3, 0.1, 0.3), hex(0x9bd86a));
+    mb.build()
+}

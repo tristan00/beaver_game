@@ -87,6 +87,8 @@ pub struct Agent {
     pub inside: bool,
     /// Ticks without progress; above `STUCK_TICKS` tests report a bug.
     pub stuck_ticks: u32,
+    /// Work-speed factor from mood, refreshed each tick.
+    pub speed: f32,
 }
 
 pub const STUCK_TICKS: u32 = 600;
@@ -115,6 +117,7 @@ impl Agents {
                 path: None,
                 inside: false,
                 stuck_ticks: 0,
+                speed: 1.0,
             },
         );
     }
@@ -196,7 +199,7 @@ fn sync_agents(sim: &mut SimState) {
                     .filter(move |&(x, y)| x.abs_diff(cx).max(y.abs_diff(cy)) == r)
             })
             .find(|&c| {
-                matches!(sim.nav.surface_at(c), Some(Surface::Land | Surface::Water))
+                matches!(sim.nav.surface_at(c), Some(Surface::Land | Surface::Water | Surface::Canal))
                     && sim.nav.reserved.get(c.0, c.1) == Some(&None)
             });
         // No free cell near the beaver: it stays off the map until space opens up.
@@ -271,7 +274,7 @@ impl Job {
 
 pub(crate) fn accepts(kind: BuildingKind, good: Good) -> bool {
     match kind {
-        BuildingKind::Warehouse => true,
+        BuildingKind::Warehouse | BuildingKind::Storehouse => true,
         BuildingKind::FoodCache => good == Good::Food,
         _ => false,
     }
@@ -428,10 +431,16 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
 
 fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     // Kits never work; unassigned adults rest.
-    let can_work = sim.colony.beaver(ag.id).is_some_and(|b| b.stage != Stage::Kit);
-    let duty = duty_of(sim, ag, can_work);
+    // An exhausted beaver (colony `resting`) stops work and goes home until rested.
+    let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.stage != Stage::Kit, b.resting));
+    let duty = duty_of(sim, ag, can_work && !tired);
+    ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
+    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. }) {
+        ag.path = None;
+        ag.task = Task::Rest;
+    }
     // A single-resource assignment ends when its resource is used up.
-    if matches!(duty, Duty::None) && can_work && matches!(ag.assignment, Some(Assignment::Resource(_))) {
+    if matches!(duty, Duty::None) && can_work && !tired && matches!(ag.assignment, Some(Assignment::Resource(_))) {
         ag.assignment = None;
     }
     match ag.task.clone() {
@@ -639,7 +648,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     note(ag, true);
     if res.kind == ResourceKind::Tree {
         // The tree frees its cell when it falls; the nav grid follows at once.
-        if sim.resources.fell(target, dt * FELL_PER_DAY).expect("kind checked above") {
+        if sim.resources.fell(target, dt * ag.speed * FELL_PER_DAY).expect("kind checked above") {
             sim.nav.set(res.cell, Surface::Land);
         }
         return;
@@ -656,7 +665,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     }
     let have = ag.load.map_or(0.0, |l| l.amount);
     let left = if good == Good::Sticks { res.branches } else { res.amount };
-    let mut want = (dt * GATHER_PER_DAY).min(LOAD_SIZE - have);
+    let mut want = (dt * ag.speed * GATHER_PER_DAY).min(LOAD_SIZE - have);
     if left - want < EPS {
         want = left; // never leave float dust behind that would become a tiny extra load
     }
@@ -882,6 +891,73 @@ mod tests {
         assert!(!gaits(false).contains(&Gait::Swim), "walks when there is no water");
     }
 
+    /// Digs a water-filled canal along row `y` for `xs`.
+    fn dig(sim: &mut SimState, y: usize, xs: std::ops::RangeInclusive<usize>) {
+        for x in xs {
+            *sim.water.depth.get_mut(x, y).unwrap() = 1.0;
+            *sim.water.canal.get_mut(x, y).unwrap() = true;
+        }
+    }
+
+    #[test]
+    fn beaver_crosses_faster_by_canal_than_overland() {
+        let ticks = |canal: bool| {
+            let (mut sim, ids) = setup();
+            if canal {
+                dig(&mut sim, 20, 13..=39);
+            }
+            let store = warehouse(&mut sim, 1, (40, 19));
+            spawn_on(&mut sim, ids[0], (9, 20)).unwrap();
+            sim.agents.by_id.get_mut(&ids[0]).unwrap().load = Some(Load { good: Good::Sticks, amount: 2.0 });
+            let mut canal_steps = 0;
+            for n in 1..=5000 {
+                step(&mut sim, DT);
+                let ag = sim.agents.get(ids[0]).unwrap();
+                canal_steps += (sim.nav.surface_at(ag.cell) == Some(Surface::Canal)) as usize;
+                if ag.load.is_none() {
+                    assert!(adjacent(ag.cell, sim.buildings.building(store).unwrap()));
+                    assert_eq!(canal_steps > 0, canal, "canal used iff dug");
+                    return n;
+                }
+            }
+            panic!("never delivered");
+        };
+        let (overland, by_canal) = (ticks(false), ticks(true));
+        assert!(by_canal < overland, "canal {by_canal} ticks vs overland {overland}");
+    }
+
+    #[test]
+    fn hauler_between_canal_linked_stores_delivers_sooner_than_over_land() {
+        let ticks = |canal: bool| {
+            let (mut sim, ids) = setup();
+            adult(&mut sim, ids[0]);
+            if canal {
+                dig(&mut sim, 20, 13..=39);
+            }
+            let (a, b) = (warehouse(&mut sim, 1, (10, 19)), warehouse(&mut sim, 2, (40, 19)));
+            sim.work.places.push(Workplace {
+                building: a,
+                kind: BuildingKind::Warehouse,
+                slots: vec![Slot { role: Role::Haul, worker: None }],
+                area: None,
+                site: None,
+            });
+            sim.work.stock_add(a, Good::Logs, 9.0);
+            spawn_on(&mut sim, ids[0], (9, 20)).unwrap();
+            fill(&mut sim, a, 0, ids[0]).unwrap();
+            sim.apply(Command::SetHaul { order: HaulOrder { from: a, to: b, good: Good::Logs } }).unwrap();
+            for n in 1..=20_000 {
+                step(&mut sim, DT);
+                if sim.work.stock_of(b, Good::Logs) >= 9.0 - 1e-3 {
+                    return n;
+                }
+            }
+            panic!("never delivered");
+        };
+        let (overland, by_canal) = (ticks(false), ticks(true));
+        assert!(by_canal < overland, "canal {by_canal} ticks vs overland {overland}");
+    }
+
     // ───────────── construction, slots, hauling and work areas ─────────────
 
     use crate::work::{HaulOrder, Slot, Workplace};
@@ -1090,5 +1166,43 @@ mod tests {
         }
         assert!(gathers.iter().all(|&g| g > 0), "workers gathered in every phase: {gathers:?}");
         assert!(sim.work.set_area(camp, Area { min: (5, 5), max: (4, 9) }).is_err(), "inverted area rejected");
+    }
+
+    #[test]
+    fn exhausted_beaver_stops_work_rests_in_lodge_and_mood_recovers() {
+        let (mut sim, ids) = setup();
+        sim.buildings.buildings.push(Building {
+            id: BuildingId(5),
+            kind: BuildingKind::Lodge,
+            pos: (12, 14),
+            status: Status::Complete,
+            recipe: None,
+            output: 0.0,
+        });
+        warehouse(&mut sim, 1, (20, 9));
+        let tree = sim.resources.add(ResourceKind::Tree, (14, 10), FELL_WORK);
+        spawn_on(&mut sim, ids[0], (10, 10)).unwrap();
+        sim.apply(crate::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Resource(tree)) }).unwrap();
+        {
+            let b = sim.colony.beavers.iter_mut().find(|b| b.id == ids[0]).unwrap();
+            b.needs.rest = crate::colony::EXHAUSTED_REST - 0.05;
+            b.mood = 0.3;
+        }
+        let low_mood = 0.3;
+        let (mut went_home, mut rested_inside) = (false, false);
+        for _ in 0..1500 {
+            sim.step(DT).unwrap();
+            let ag = sim.agents.get(ids[0]).unwrap();
+            let b = sim.colony.beaver(ids[0]).unwrap();
+            if b.resting {
+                assert!(!matches!(ag.task, Task::Collect { .. }), "a tired beaver must not keep working");
+                went_home |= matches!(ag.task, Task::Rest);
+                rested_inside |= ag.inside;
+            }
+        }
+        let b = sim.colony.beaver(ids[0]).unwrap();
+        assert!(went_home && rested_inside, "tired beaver went to and entered its lodge");
+        assert!(b.needs.rest > crate::colony::EXHAUSTED_REST, "rest recovered");
+        assert!(b.mood > low_mood, "mood recovered: {}", b.mood);
     }
 }
