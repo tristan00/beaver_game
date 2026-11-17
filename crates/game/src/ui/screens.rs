@@ -44,6 +44,16 @@ pub enum Do {
     Staff(Job, i32),
     /// Sort table `.0` by column `.1`.
     Sort(usize, usize),
+    /// Open the panel of an entity.
+    Select(super::selection::Selection),
+    /// Close the entity panel.
+    ClosePanel,
+    /// Run a command from a panel button (fill or empty a slot, fell a tree).
+    Cmd(sim::Command),
+    /// Show or hide a detail group on the panel.
+    Group(&'static str),
+    /// Move the camera to a map cell without changing the selection.
+    Focus(usize, usize),
 }
 
 /// A button: always has an icon, the label is a short caption.
