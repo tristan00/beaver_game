@@ -14,18 +14,11 @@
 use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
 use std::fmt;
+pub use crate::tuning::water::*;
 
 /// Grid coordinate `(x, y)`.
 pub type Cell = (usize, usize);
 
-/// Days in one season; a year is four seasons: spring, summer, autumn, winter.
-pub const SEASON_DAYS: f64 = 30.0;
-/// Depth below which a cell counts as dry (for ice formation).
-pub const WET_EPS: f32 = 0.01;
-/// Vegetation density above which a cell counts as holding trees.
-pub const TREE_VEGETATION: f32 = 0.5;
-/// Maximum ice thickness.
-pub const MAX_ICE: f32 = 1.0;
 
 const FLOW_STEPS_PER_DAY: f32 = 100.0;
 const MAX_SUBSTEPS: usize = 4;

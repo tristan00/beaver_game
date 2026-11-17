@@ -5,22 +5,8 @@ use crate::colony::{Colony, ColonyError, Job, OrderId};
 use crate::grid::Grid;
 use crate::tech::Tech;
 use std::fmt;
+pub use crate::tuning::buildings::*;
 
-/// Depth at or above which a cell counts as water.
-pub const WET_DEPTH: f32 = 0.05;
-/// Surface drop (per cell) below which a wheel does not turn.
-pub const MIN_FLOW: f32 = 0.01;
-/// Surface drop giving a wheel full output.
-pub const FULL_FLOW: f32 = 0.2;
-/// Base storage per good.
-pub const BASE_CAPACITY: f32 = 100.0;
-const WAREHOUSE_CAPACITY: f32 = 150.0;
-const FOOD_CACHE_CAPACITY: f32 = 100.0;
-/// Barge cargo limit and speed (cells/day).
-pub const BARGE_CAPACITY: f32 = 20.0;
-pub const BARGE_SPEED: f32 = 4.0;
-/// Workshop batches per day at base speed.
-const CRAFT_BATCHES_PER_DAY: f32 = 2.0;
 
 // ───────────────────────────── goods & stores ─────────────────────────────
 

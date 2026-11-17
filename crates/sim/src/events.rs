@@ -13,13 +13,8 @@
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 use std::fmt;
+pub use crate::tuning::events::*;
 
-/// Default calendar length of a season, in days.
-pub const DEFAULT_DAYS_PER_SEASON: u32 = 10;
-/// Days an unresolved choice waits before its default (first) option is applied.
-pub const CHOICE_EXPIRY_DAYS: f64 = 5.0;
-/// Water inflow multiplier while a drought lasts.
-pub const DROUGHT_INFLOW: f32 = 0.4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventError {

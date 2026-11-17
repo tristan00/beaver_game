@@ -12,23 +12,11 @@ use std::fmt;
 
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
+pub use crate::tuning::colony::*;
 
 pub const DAYS_PER_YEAR: f64 = 365.0;
 const SUBSTEP_DAYS: f32 = 0.5;
-const KIT_DAYS: f32 = 365.0;
-const ADULT_DAYS: f32 = 730.0;
-const LODGE_CAPACITY: usize = 12;
-const LODGE_WOOD_COST: f32 = 8.0;
-const MIN_LODGE_SPACING: f32 = 5.0;
-const MAX_WATER_SCAN: f32 = 10.0;
-const WORK_FRACTION: f32 = 0.6;
 const EVENT_LOG_CAP: usize = 2000;
-const CACHE_LIFETIME_DAYS: f64 = 30.0;
-/// Days of continuously bad mood after which an adult or yearling leaves the colony.
-const DEPARTURE_BAD_MOOD_DAYS: f32 = 30.0;
-const SPRING_START: f64 = 60.0;
-const SPRING_END: f64 = 150.0;
-const BIRTH_FROM_DAY: f64 = 75.0;
 
 // ───────────────────────────── identifiers and enums ─────────────────────────────
 

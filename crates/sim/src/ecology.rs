@@ -5,25 +5,8 @@ use crate::SimError;
 use crate::grid::{Grid, VegetationGrid, WaterGrid};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
+pub use crate::tuning::ecology::*;
 
-/// Days per season; wetland formation is counted in seasons.
-pub const SEASON_DAYS: f32 = 30.0;
-/// Water deeper than this (world units) counts as flooding the cell.
-pub const FLOOD_DEPTH: f32 = 0.05;
-/// Trees drown once a cell has been flooded this long and is at least `DROWN_DEPTH` deep.
-pub const DROWN_FLOOD_DAYS: f32 = 20.0;
-pub const DROWN_DEPTH: f32 = 0.15;
-/// Forest density lost per flooded day once drowning starts.
-pub const DROWN_RATE: f32 = 0.1;
-/// Seasons of continuous flooding before a shallow cell turns to wetland.
-pub const WETLAND_SEASONS: f32 = 2.0;
-/// Deeper than this is open water, never wetland.
-pub const WETLAND_MAX_DEPTH: f32 = 1.5;
-/// Days after a felling during which the cell cannot regrow.
-pub const CUT_COOLDOWN_DAYS: f32 = 90.0;
-/// Distance (cells) beyond which water / lodges give no protection.
-pub const SAFE_RANGE: f32 = 12.0;
-const PREDATOR_RANGE: f32 = 10.0;
 const MAX_SUBSTEP_DAYS: f32 = 1.0;
 
 /// Predator species. Eagles fly over water; the rest roam land only.

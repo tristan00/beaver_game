@@ -9,13 +9,8 @@ use crate::events::EventHost;
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 use std::fmt;
+pub use crate::tuning::region::*;
 
-/// Friendliness below this refuses contact.
-pub const WARY_BELOW: f32 = 0.3;
-pub const MAX_POPULATION: f32 = 40.0;
-pub const MAX_STORE: f32 = 500.0;
-pub const OFFER_LIFETIME_DAYS: f64 = 15.0;
-pub const MAX_OPEN_OFFERS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Specialty {
