@@ -1,9 +1,9 @@
 //! Renders beavers, trees, lodges, dams, canals, burrows, workshops, water wheels, docks and barges
 //! as round, cute, procedural low-poly models.
 //!
-//! * `entities_render/meshgen.rs` – vertex-coloured mesh toolkit.
-//! * `entities_render/models.rs`  – the actual models (beaver parts, trees per species/season/LOD, structures).
-//! * `entities_render/scene.rs`   – `RenderScene`, the render-side view of the world, plus the stub
+//! * `entities_render/meshgen.rs` â€“ vertex-coloured mesh toolkit.
+//! * `entities_render/models.rs`  â€“ the actual models (beaver parts, trees per species/season/LOD, structures).
+//! * `entities_render/scene.rs`   â€“ `RenderScene`, the render-side view of the world, plus the stub
 //!   colony used while the sim crates do not expose entities yet.
 //!
 //! Performance: every model is a vertex-coloured mesh drawn with one shared white material, so Bevy
@@ -192,8 +192,13 @@ struct BeaverRig {
 // Startup
 // ---------------------------------------------------------------------------------------------
 
+/// Vertex colours are the palette colours; the sun plus the high ambient (docs/STYLE.md fix 11) would
+/// light them well past those colours (fur read `#DE9C63` for `#B9783F`), so the shared material scales
+/// them back until a sun-facing surface shows its palette colour (fix 18; measured, `artifacts/R19-29`).
+pub const ENTITY_GAIN: f32 = 0.55;
+
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    let white = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.85, reflectance: 0.12, ..default() });
+    let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let blob_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.42, 0.353, 0.541, 0.40), // plum shadow, never black
         alpha_mode: AlphaMode::Blend,

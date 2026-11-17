@@ -198,4 +198,17 @@ Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` 
 
 Stress scene (`beaver_colony --stress`) after the water rework: avg 3.1–3.5 ms, max 4.7–13.7 ms, 0 frames ≥ 16 ms in every run with the window focused (runs where the desktop took focus away show OS-throttled ~16.7 ms frames flagged `unfocused`, CPU still ~2.5 ms). Water mesh cost: 0.34 ms/chunk at full detail, 0.12 ms at LOD 2 (`water_rings_and_rebuild_cost` test).
 Upper-left warm glow: radial UI overlay in `camera.rs` (corner `#C2DCEC` fading to sky `#9ED1F5`).
-Still open: exact hex sampling of every point in §8 (screens still carry the old UI).
+Exact hex sampling of every point in §8: see §11.
+
+## 11. Final-HEAD check of fixes 1-11 and 18 (R19-29)
+
+Shots `artifacts/R19-29/after/` (and `artifacts/R19-16/after/`): `beaver_colony --start 1 --seed N --cam iso|lodge|pond --screenshot ... --frames 40`, N = 1, 2. `--start` skips the menu, so `lodge` and `pond` keep their framing (`startflow::begin_cli_start`). Colours are sampled on the `*_noglow.png` twins (`BC_NO_GLOW=1`; the upper-left glow overlay tints a large part of the product frame, as designed). Sampler: `python tools/style_samples.py artifacts/R19-29/after` (table in `artifacts/R19-29/samples.md`, every sample within 12 per channel of its target). Fur and swim ripples: `BC_NO_MENU=1 BC_NO_GLOW=1 BC_STATION=0|1 beaver_colony --showcase poses`.
+
+Fixed here, because the samples failed:
+- **18 fur**: the beaver model hard-coded `#9A6532`, `#6D4423` and near-black tails; it now takes `FUR`, `FUR_DARK`, `FUR_LIGHT`, `INK` from `palette.rs`.
+- **7, 8, 9, 18 colour accuracy**: the camera's tone mapping compresses and desaturates, so a vertex colour equal to its hex showed paler and brighter (Deep rim `#3CAFDA` for `#1F8AB8`, fur back `#DE9C63` for `#B9783F`). `palette::display_linear` inverts that transform for vertex colours of beavers, trees, buildings and water, and the lit materials apply `ENTITY_GAIN` (0.55, reflectance 0) so a sun-facing surface shows its palette hex. Deep rim is now fully opaque.
+- **5 ground detail**: 1 item per 7 cells was about 1 per 90x90 px in the close view; `DETAIL_DENSITY` 0.7 gives about 1 per 40x40 px (measured 0.9 per 40x40 on the pond view, `tools/ground_detail_density.py`), items scaled down to the §4 sizes.
+- `BC_NO_MENU=1` hides the start menu for `--showcase` stills.
+
+Fix 4: no adjacent-pixel luminance jump above 8 along the marked slope transects (`artifacts/R19-29/transect_*.png`, `tools/slope_transects.py`).
+

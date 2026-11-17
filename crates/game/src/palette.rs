@@ -19,6 +19,8 @@ pub const STONE_SHADE: Rgb = rgb(0x8C8290);
 pub const PLUM: Rgb = rgb(0x6B5A8A);
 pub const FUR: Rgb = rgb(0xB9783F);
 pub const FUR_DARK: Rgb = rgb(0x8F5A2E);
+pub const FUR_LIGHT: Rgb = rgb(0xC98B52);
+pub const INK: Rgb = rgb(0x4D3321);
 pub const CUT_WOOD: Rgb = rgb(0xF2D9A8);
 pub const BARK: Rgb = rgb(0x7A4A2B);
 pub const WATER_SHALLOW: Rgb = rgb(0x6FD3E0);
@@ -35,7 +37,53 @@ pub const SUN: Rgb = rgb(0xFFF5E0);
 pub const SUN_AUTUMN: Rgb = rgb(0xFFDBB3);
 pub const AMBIENT: Rgb = rgb(0xCCE6FF);
 
+/// Back to `0xRRGGBB`, so shared colours can feed code that takes hex integers.
+pub const fn pack(c: Rgb) -> u32 {
+    (((c[0] * 255.0 + 0.5) as u32) << 16) | (((c[1] * 255.0 + 0.5) as u32) << 8) | ((c[2] * 255.0 + 0.5) as u32)
+}
+
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+}
+
+/// The camera's tone mapping (`Tonemapping::SomewhatBoringDisplayTransform`), ported from bevy_core_pipeline
+/// `tonemapping.wesl` (the terrain shader carries the same copy): scene-linear in, display-linear out. It
+/// compresses mid-tones and desaturates saturated colours, so a vertex colour equal to the palette colour
+/// would show paler and lighter than its hex.
+pub fn display_transform(c: [f32; 3]) -> [f32; 3] {
+    let curve = |v: f32| 1.0 - (-v).exp();
+    let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let cb = -0.1146 * c[0] - 0.3854 * c[1] + 0.5 * c[2];
+    let cr = 0.5 * c[0] - 0.4542 * c[1] - 0.0458 * c[2];
+    let bt = curve((cb * cb + cr * cr).sqrt() * 2.4);
+    let desat = ((bt - 0.7) * 0.8).max(0.0).powi(2);
+    let k = (curve(y) / y.max(1e-5)).max(0.0);
+    let mut out = [0.0; 3];
+    for i in 0..3 {
+        let tm0 = c[i] * k;
+        let tm1 = curve(c[i] + (y - c[i]) * desat);
+        out[i] = (tm0 + (tm1 - tm0) * bt * bt) * 0.97;
+    }
+    out
+}
+
+/// Scene-linear colour that `display_transform` shows as the display-linear colour `d`.
+pub fn undo_display_transform(d: [f32; 3]) -> [f32; 3] {
+    let goal = d.map(|v| v.clamp(1e-4, 0.95));
+    let mut x = goal;
+    for _ in 0..8 {
+        let shown = display_transform(x);
+        for i in 0..3 {
+            x[i] = x[i] * goal[i] / shown[i].max(1e-5);
+        }
+    }
+    x
+}
+
+/// Scene-linear vertex colour that the tone-mapped camera shows as the sRGB palette colour `c`, before the
+/// lighting gain of the material that draws it (`ENTITY_GAIN`, `WATER_GAIN`; docs/STYLE.md fixes 7, 8, 18).
+pub fn display_linear(c: Rgb) -> [f32; 3] {
+    let ch = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    undo_display_transform([ch(c[0]), ch(c[1]), ch(c[2])])
 }
