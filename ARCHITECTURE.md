@@ -1,4 +1,4 @@
-﻿# Beaver Colony – Architecture
+# Beaver Colony – Architecture
 
 Cargo workspace: `crates/sim` (pure Rust, deterministic, no Bevy; RNG is seeded `rand_pcg::Pcg32`)
 and `crates/game` (Bevy 0.20.1, `bevy_ui` only for UI). The game reads and drives `SimState`; the
@@ -54,6 +54,9 @@ Public fields: `seed`, `time_days: f64`, `height: HeightGrid`, `water: Water` (`
 cargo run -p game -- [--seed S] [--cam iso|top|low]
 cargo run -p game -- --screenshot out.png [--frames N] [--seed S] [--cam preset]
 ```
-`--screenshot` renders N frames (default 120; the first frames are blank while pipelines compile),
-saves a PNG, and exits 0; exits non-zero if the file is not written. Bad arguments exit 2.
+`--screenshot` waits until the terrain is actually renderable (terrain mesh instance extracted,
+mesh and material prepared, no render pipelines queued/compiling, held for 3 consecutive frames)
+and at least N frames have run (`--frames` is a minimum, default 10), then saves a PNG and exits 0.
+It exits non-zero instead of writing a blank image if a pipeline fails to compile, the terrain is
+not renderable within 180 s, or the file is not written. Bad arguments exit 2.
 Controls: mouse drag orbit, wheel zoom, Q/E rotate.

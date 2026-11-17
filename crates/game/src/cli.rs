@@ -1,15 +1,16 @@
-﻿//! Command-line parsing: `beaver_colony [--screenshot PATH --frames N] [--seed S] [--cam PRESET]`.
+//! Command-line parsing: `beaver_colony [--screenshot PATH --frames N] [--seed S] [--cam PRESET]`.
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--screenshot out.png [--frames N]]";
-pub const DEFAULT_FRAMES: u32 = 120;
+/// Minimum frames before capturing; the capture also waits until the terrain is renderable.
+pub const DEFAULT_FRAMES: u32 = 10;
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct Cli {
     pub seed: u64,
     pub cam: String,
-    /// When set, render `frames` frames, save a PNG here and exit.
+    /// When set, wait until the terrain is drawn (and at least `frames` frames ran), save a PNG here and exit.
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
 }

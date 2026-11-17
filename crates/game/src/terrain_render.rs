@@ -1,4 +1,4 @@
-﻿//! Renders `SimState::height` as a vertex-coloured triangle mesh centred on the origin.
+//! Renders `SimState::height` as a vertex-coloured triangle mesh centred on the origin.
 use crate::state::Sim;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
@@ -10,6 +10,10 @@ use sim::grid::HeightGrid;
 pub const CELL_SIZE: f32 = 1.0;
 
 pub struct TerrainRenderPlugin;
+
+/// Marks the terrain mesh entity (used e.g. by screenshot mode to know when it is drawn).
+#[derive(Component)]
+pub struct Terrain;
 
 impl Plugin for TerrainRenderPlugin {
     fn build(&self, app: &mut App) {
@@ -25,6 +29,7 @@ fn spawn_terrain(
 ) {
     let mesh = build_mesh(&sim.0.height);
     commands.spawn((
+        Terrain,
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial { perceptual_roughness: 1.0, ..default() })),
     ));
