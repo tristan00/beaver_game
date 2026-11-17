@@ -4,6 +4,16 @@ Cargo workspace: `crates/sim` (pure Rust, deterministic, no Bevy; RNG is seeded 
 and `crates/game` (Bevy 0.20.1, `bevy_ui` only for UI). The game reads and drives `SimState`; the
 sim never depends on the game.
 
+## Colony model (new, see `docs/DESIGN.md`)
+
+`docs/DESIGN.md` is the contract for the agent-based colony: request-to-module map, state
+machine, starts, content, the feature switch, UI architecture and per-task file ownership. It
+supersedes the ownership table below for the files it lists. New sim modules: `agents`, `nav`,
+`resources`, `work`, `society`, `starts`, `dam_preview`, `catalogue`, `features`; new game UI
+modules: `ui/{shell,explain,icons,selection,mapmodes,orders}`. `SimState` gains `features`, `nav`,
+`resources`, `agents`, `work`, `society`, and `Command` gains `Assign`, `FillSlot`, `EmptySlot`,
+`SetWorkArea`, `SetHaul`, `AnswerJoin`.
+
 ## File ownership
 
 Each later task owns only the files listed for it and must not edit other tasks' files except through

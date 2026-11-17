@@ -1,0 +1,205 @@
+# Design: agent-based colony, three starts, map-first interface
+
+Contract for the follow-up tasks. Every type and function named in backticks with a path exists as a
+compiling stub (checked by `cargo check --workspace`). Task keys (`nav`, `collect`, …) are the
+planner's local keys; the ownership table in section 11 says which files each may edit.
+
+## 1. Request map
+
+Every request bullet → where it lives, its public types, and who builds it.
+
+| # | Request bullet | Module | Types / functions | Owner |
+|---|---|---|---|---|
+| 1 | Beavers on a navigation grid, land/water, no overlaps | `sim::nav` | `NavGrid`, `Surface`, `Gait`, `Path`, `Goal`, `NavGrid::find_path`, `reserve`, `release` | `nav` |
+| 2 | Lodge underwater entrances | `sim::nav` | `Surface::LodgeEntrance`, `Surface::LodgeInside`, `Goal::Inside` | `nav` |
+| 3 | Dam climbing | `sim::nav` | `Surface::Dam`, `Gait::Climb`, `CLIMB_COST` | `nav` |
+| 4 | Task state machine: collect, carry, build, haul, rest | `sim::agents` | `Task`, `Agent`, `Agents`, `Load`, `agents::step` | `collect` (+`build`) |
+| 5 | Resource entities: trees→logs/branches/bark, plants, mud, stone | `sim::resources` | `ResourceWorld`, `Resource`, `ResourceKind`, `ResourceId`, `take`, `nearest` | `resources` |
+| 6 | Workplaces with worker slots and work areas | `sim::work` | `Work`, `Workplace`, `Slot`, `Role`, `Area`, `assign`, `set_area` | `build` |
+| 7 | Construction with delivered materials, progress | `sim::work` | `SiteProgress::fraction`, `Task::Fetch`, `Task::Build` | `build` |
+| 8 | Hauling between stores | `sim::work`, `sim::agents` | `HaulOrder`, `Work::hauls`, `Command::SetHaul` | `build` |
+| 9 | Orders: right-click collect/build, drag area | `sim::agents`, `game::ui::orders` | `Assignment`, `Command::Assign`, `Gesture`, `gesture_command` | `collect` (sim), `commands` (UI) |
+| 10 | Society: families, needs, mood, skills, elders, priorities | `sim::colony` (existing), `sim::society` | `society::mood_factors`, `work_speed`, `Factor` | `society` |
+| 11 | Join requests as decisions | `sim::society` | `JoinRequest`, `Answer`, `Society::answer`, `Command::AnswerJoin` | `society` (sim), `events_ui` (UI) |
+| 12 | Water network: rivers, tributaries, springs, ponds | `sim::worldgen` | `worldgen::World` (existing; `water` adds spring and pond fields) | `water` |
+| 13 | Dam preview: rise, flooding, cost, pressure; pond fills | `sim::dam_preview` | `DamPreview`, `preview` | `dam` |
+| 14 | Start 1 River | `sim::starts` | `Start::River`, `build` | `start1` |
+| 15 | Start 2 Early lake, Start 3 Industrial lake | `sim::starts` | `Start::EarlyLake`, `Start::IndustrialLake`, `build` | `start23` |
+| 16 | Start-up menu, `--start N`, midgame removed | `game::ui::shell`, `game::cli` | `start_menu`, `StartCard`, `Start::from_number` | `start1` |
+| 17 | New industrial content: canal networks, efficient production, bigger storage | `sim::catalogue`, `sim::buildings` | `Def`, `Tier`, `def`, `available`; new `BuildingKind` variants | `content` |
+| 18 | One switch disabling out-of-scope systems | `sim::features` | `Features`, `System`, `Features::enabled`, `SimState::features` | `switch` |
+| 19 | Navigation bar, one screen at a time | `game::ui::shell` | `NavItem`, `Shell`, `Shell::toggle`, `Shell::bar` | `ui_shell` |
+| 20 | Number provenance (hover shows where it comes from) | `game::ui::explain` | `Explained`, `Part`, `Source`, `Numbers`, `audit` | `ui_shell` |
+| 21 | Icons for resources, needs, jobs, actions, map modes | `game::ui::icons` | `Icon`, `Icon::file`, `From<Good>` | `icons` (PNGs), `ui_shell` (loading) |
+| 22 | Entity panels: beaver, family, building, dam, tree | `game::ui::selection` | `Selection`, `Panel`, `PanelAction`, `SlotRow`, `panel` | `panels` |
+| 23 | Map modes: water, forest, food, work, with actions | `game::ui::mapmodes` | `MapMode`, `ModeAction`, `MapMode::actions` | `mapmodes` |
+| 24 | Build menu, placement preview, dam hover preview | `game::ui::orders` | `Placement`, `placement` (+ `dam_preview::preview`) | `buildmenu` |
+| 25 | Events/alerts that point to places | `game::ui::orders` | `Alert`, `alerts` | `events_ui` |
+| 26 | Beavers visibly walking/swimming/climbing/carrying; sites rising | `game::entities_render` | reads `Agent::{cell, step_frac, gait, load}`, `SiteProgress::fraction` | `render_agents` |
+| 27 | Style, terrain polish, icon art | `docs/STYLE.md`, `terrain_render`, `water_render`, `assets/icons` | — | `artdir`, `terrain`, `icons` |
+| 28 | Playtest report covering every bullet | `docs/PLAYTEST.md` | — | `playtest` |
+
+## 2. One model, three layers
+
+```
+colony::Colony   who the beavers ARE: age, family, needs, mood, skills, lodge   (existing, society extends)
+agents::Agents   where they ARE and what they DO: cell, task, load, path         (new, BTreeMap<BeaverId, Agent>)
+work::Work       places to work: slots, areas, sites, haul orders                (new)
+resources::ResourceWorld  things to gather: trees, plants, mud, stone            (new)
+buildings::Buildings      what is built and the Stores ledger                    (existing)
+nav::NavGrid     derived surfaces + cell reservations                            (new)
+```
+
+Rules that keep tasks from fighting over the model:
+
+* `BeaverId` is the only join key. `Agent` never copies age/mood; read `Colony::beaver(id)`.
+* A beaver exists in `Colony::beavers` first; `Agents::spawn` is called when it is born/arrives.
+* Only `agents::step` moves agents, only `NavGrid::reserve/release` change reservations,
+  only `Stores::deposit/withdraw` change totals. Totals therefore change only on delivery.
+* The old `Colony::step_on` job simulation (abstract work orders) stays for the legacy example
+  binaries but `collect` stops it from producing goods once agents exist (it keeps ageing,
+  births, needs). `collect` owns that cut-over inside `colony.rs`'s `step_on` call sites only.
+* Determinism: all iteration is over `BTreeMap`/`Vec` in id order; one `Pcg32` per system.
+
+`SimState::step` order: time → water → ecology → colony (ageing, needs, births) → tech →
+buildings → region → `resources.step` → `agents::step` → `society.step` → events.
+New fields on `SimState`: `features`, `nav`, `resources`, `agents`, `work`, `society`.
+
+## 3. Navigation (`sim::nav`)
+
+* `Surface` per cell: `Land`, `Water` (depth > 0.05, from `SimState::water`/rivers/lakes), `Dam`,
+  `Solid` (tree, stone, building body), `LodgeEntrance` (a water cell beside the lodge), `LodgeInside`.
+* Cost per step: `WALK_COST` 1.0, `SWIM_COST` 0.6 (water is usually faster), `CLIMB_COST` 3.0 over `Dam`.
+* `Gait` of a step follows the destination surface; renderers pick walk/swim/climb poses from it.
+* Lodge interior is entered only from `LodgeEntrance`; `Goal::Inside` plans through it.
+* `Goal::Beside` is for solid targets (a tree to fell, a site to build).
+* **No overlaps:** an agent holds its cell and the cell it is stepping into (`reserve` before move,
+  `release` after). A beaver that cannot reserve waits (`stuck_ticks`) and replans after a delay.
+  `inside == true` agents hold no map cell.
+* `NavGrid::rebuild` runs when trees fall, sites complete or dams change, not every tick.
+* Budget: 300 agents' path planning < 2 ms per tick in release (cached paths, A* bounded by area).
+
+## 4. Agents and the task state machine (`sim::agents`)
+
+States (`Task`): `Idle`, `Collect`, `Carry`, `Fetch`, `Build`, `Rest`. Diagram is in the module doc.
+
+* Assignment (`Assignment::{Resource, Area, Slot}`) is player intent; `Task` is what the agent is doing now.
+* Collector loop: `Collect` until `Load` is full (or resource exhausted) → `Carry` to nearest
+  complete store (`Buildings` with a `Stores`; swims if cheaper) → deposit → repeat.
+  Area-assigned collectors only target `ResourceWorld::nearest(kind, from, Some(area))`.
+* Builder loop (`build`): `Fetch` materials from a store → `Carry` to the site → deposit into
+  `SiteProgress::delivered` → `Build` adds `labour_done` scaled by `society::work_speed`.
+  Site completes when `fraction() == 1.0` and costs were exactly delivered.
+* Hauler loop (`build`): `Fetch` from `HaulOrder::from` → `Carry` to `to` → deposit.
+* Rest: needs low, night, no assignment, or kit → walk to lodge entrance → `inside`.
+  Kits never work; unassigned adults rest.
+* `Command::Assign { who, to }` sets or clears assignment; unknown ids are `InvalidCommand`.
+
+## 5. Resources (`sim::resources`)
+
+`ResourceKind`: `Tree` (solid) → felled by work into `Felled` (not solid; yields `Logs`, `Sticks`
+and bark counted as branch yield for now), `Plant` (`Food`, regrows to `max_amount`, only on wet
+ground), `MudBank`, `StoneOutcrop`. `ResourceWorld::seeded(seed, world)` is deterministic per seed.
+`take(id, want)` returns the good and amount, depletes, and converts trees. Bark as its own
+good is not added; `content` may add a bark good later; `Icon::Bark` is already reserved.
+
+## 6. Workplaces (`sim::work`)
+
+Every building has a `Workplace` (slots from `catalogue::def(kind).slots`); a site has
+`site: Some(SiteProgress)`. Slots hold a `BeaverId`; `Work::assign` / `unassign` back
+`Command::FillSlot` / `EmptySlot`. A slot worker's collection is clamped to `Workplace::area`;
+`Command::SetWorkArea` moves or resizes it (`Area` is an inclusive cell rectangle). Slot filling
+beats family priorities; assigning a beaver to a slot clears their old slot.
+
+## 7. Society (`sim::society` + `colony`)
+
+Kept in `colony.rs`: pairs, births, ageing, needs, skills, family priorities. `society` adds:
+`JoinRequest` (a decision with a map cell), `Answer`, `Society::answer`, `mood_factors` (terms
+that sum to `Beaver::mood`, feeding number provenance), `work_speed(mood)`. Low mood slows work
+via `work_speed`. Births need food and a free lodge bed (rules already in `colony.rs`; `society`
+adds tests and the lodge-founding hook for grown families).
+
+## 8. The three starts (`sim::starts`)
+
+`Start::{River, EarlyLake, IndustrialLake}`; `starts::build(start, seed) -> SimState` is
+deterministic and does not simulate forward. Numbers they must meet:
+
+| | River | Early lake | Industrial lake |
+|---|---|---|---|
+| Beavers | 2 adults + 2 kits | ~15 (some joined) | 50+ with specialists |
+| Water | river, no dam | built dam, lake | larger dam, much larger lake, canals |
+| Buildings | none | lodge, stores, gatherer workplaces | efficient production, big storage |
+| Tech | none | elementary | advanced |
+| Player's first act | pick a dam spot | assign work | optimise |
+
+`--start N` (1–3) skips the menu; the menu (`ui::shell::start_menu`) lists the three. The old
+`midgame` path is deleted by `start1`.
+
+## 9. Content (`sim::catalogue`)
+
+`def(kind) -> Def { tier, slots, area, unlock, system }` is the single table for slots/area/
+unlock; cost, footprint and site rule stay in `BuildingKind::spec`. `content` adds canal networks
+that agents path along as cheap `Water`, higher-yield production buildings (more per worker than
+elementary), bigger storage. `available(sim)` hides kinds whose `system` is disabled.
+
+## 10. The switch (`sim::features`)
+
+`Features { disable_out_of_scope }`, `Features::scoped()` (default), `everything()`,
+`enabled(System)`. `System::OUT_OF_SCOPE` = predators, floods, droughts, guard, rivals, trade,
+scouting. Owners of those systems wrap their firing/effect code in `features.enabled(..)`;
+view-models never build rows for disabled systems. `Command` variants for them must return
+`InvalidCommand`. Code stays compiled.
+
+## 11. Interface architecture (`game::ui`)
+
+First view is the map. One stable **navigation bar** (`shell::NavItem`) opens one ledger or
+management screen at a time (`Shell::toggle`); nothing else is always on besides the time controls.
+Detail follows interest: bar icon → screen with dense tables → row hover/click → explanation.
+
+* **Entity panels** (`selection::panel`): click a beaver, family, building (incl. site and dam) or
+  tree. A panel is stats (`Explained`), worker slots, actions, and one short prose line.
+* **Map modes** (`mapmodes::MapMode`): water, forest, food, work. A mode paints data on the
+  map and offers `ModeAction`s.
+* **Number provenance** (`explain::Explained`): every displayed number carries `parts` that sum
+  to it; `audit` is run in tests over every view-model (`Numbers`) and also flags duplicates.
+* **Icons** (`icons::Icon`): one variant per resource, need, job, action, map mode and nav
+  item; files at `assets/icons/<lowercase variant>.png`. Text only where an icon is ambiguous.
+* **Orders** (`orders::Gesture` → `Command`), **placement** (`orders::placement`), **alerts with
+  locations** (`orders::Alert`, every alert has `at`).
+* The existing `ledgers.rs`/`events.rs` view-models are reused by `ui_shell` where they fit; trade
+  rows and the Trade tab are removed (feature switch).
+
+## 12. File ownership
+
+Owner may edit only its files; shared files are changed only where noted. Any other change goes
+through the public API above (or a follow-up request to the owner).
+
+| Task | Files |
+|---|---|
+| `design` (this) | `docs/DESIGN.md`, `ARCHITECTURE.md`, `crates/sim/src/lib.rs` (composition: mods, fields, `Command`, step order) |
+| `switch` | `sim/src/features.rs`; the `if features.enabled` guards in `events.rs`, `region.rs`, `colony.rs` (guard/scout paths); `ui/ledgers.rs` trade rows |
+| `water` | `sim/src/worldgen.rs`, `sim/src/water.rs` |
+| `nav` | `sim/src/nav.rs` |
+| `resources` | `sim/src/resources.rs`, `sim/src/ecology.rs` |
+| `collect` | `sim/src/agents.rs`; `step_on` cut-over in `sim/src/colony.rs` |
+| `build` | `sim/src/work.rs`, `sim/src/buildings.rs`; Build/Fetch/Haul code in `agents.rs` after `collect` merges |
+| `society` | `sim/src/society.rs`, `sim/src/colony.rs` (needs/births/skills), `sim/src/tuning.rs` colony block |
+| `dam` | `sim/src/dam_preview.rs`, pond fill in `sim/src/water.rs` |
+| `content` | `sim/src/catalogue.rs`, `sim/src/tech.rs`, `sim/src/tuning.rs` buildings block |
+| `start1` | `sim/src/starts.rs` (River), `game/src/cli.rs` (`--start`), `game/src/flow.rs`, delete `game/src/midgame.rs` |
+| `start23` | `sim/src/starts.rs` (EarlyLake, IndustrialLake; separate fns) |
+| `artdir` | `docs/STYLE.md`, `docs/style_mockup.png` |
+| `icons` | `assets/icons/*`, `docs/icons_sheet.png` |
+| `terrain` | `game/src/terrain_render.rs`, `water_render.rs` |
+| `ui_shell` | `game/src/ui/{mod,shell,explain,icons,kit,panels}.rs`, `ledgers.rs` (non-trade) |
+| `render_agents` | `game/src/entities_render.rs`, `entities_render/*` |
+| `panels` | `game/src/ui/selection.rs` |
+| `commands` | `game/src/ui/orders.rs` (`Gesture`, `gesture_command`), `game/src/input.rs` |
+| `mapmodes` | `game/src/ui/mapmodes.rs` |
+| `buildmenu` | `game/src/ui/orders.rs` (`Placement`, `placement` only), `game/src/build.rs`, `build_logic.rs` |
+| `events_ui` | `game/src/ui/orders.rs` (`Alert`, `alerts` only), `game/src/ui/events.rs` |
+| `playtest` | `docs/PLAYTEST.md` |
+
+`orders.rs` is shared by three tasks: each edits only its named items and appends new code below
+a `// --- <task> ---` marker to avoid merge conflicts. `lib.rs` is edited by others only to add a
+`Command` arm for their own variants.

@@ -5,9 +5,21 @@
 //! `ledgers.rs` and `events.rs` hold the pure view-models (tested without a window); `panels.rs`
 //! draws them and runs clicks; `kit.rs` has the shared look.
 pub mod events;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod explain;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod icons;
 mod kit;
 pub mod ledgers;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod mapmodes;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod orders;
 mod panels;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod selection;
+#[allow(dead_code)] // stub until its owner task lands
+pub mod shell;
 pub use panels::LedgerUi;
 
 use bevy::prelude::*;
