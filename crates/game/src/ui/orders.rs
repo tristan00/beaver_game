@@ -25,8 +25,8 @@ pub enum Gesture {
 }
 
 /// The command a gesture produces for the selected beavers; `None` if nothing applies. (`commands` task.)
-pub fn gesture_command(_sim: &SimState, _selected: &[BeaverId], _g: &Gesture) -> Option<Command> {
-    None
+pub fn gesture_command(sim: &SimState, selected: &[BeaverId], g: &Gesture) -> Option<Command> {
+    super::gestures::gesture_commands(sim, selected, g).into_iter().next()
 }
 
 /// Result of hovering a building at a cell.

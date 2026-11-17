@@ -9,7 +9,7 @@ pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, orbit_input);
+        app.add_systems(Update, orbit_input.after(crate::map_orders::map_orders));
     }
 }
 
@@ -21,6 +21,7 @@ fn orbit_input(
     time: Res<Time>,
     mut orbit: ResMut<OrbitCamera>,
     build: Res<crate::build::BuildUi>,
+    orders: Res<crate::map_orders::MapOrders>,
     layout: Res<UiLayout>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut dragging: Local<bool>,
@@ -34,7 +35,7 @@ fn orbit_input(
         *dragging = false;
     }
     let mut next = *orbit;
-    if *dragging && !(buttons.pressed(MouseButton::Left) && !buttons.pressed(MouseButton::Right) && !buttons.pressed(MouseButton::Middle) && build.path_tool_active()) {
+    if *dragging && !(buttons.pressed(MouseButton::Left) && !buttons.pressed(MouseButton::Right) && !buttons.pressed(MouseButton::Middle) && (build.path_tool_active() || orders.capture)) {
         next.yaw -= motion.delta.x * 0.006;
         next.pitch += motion.delta.y * 0.006;
     }
