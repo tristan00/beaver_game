@@ -321,7 +321,7 @@ impl Player {
     fn tally_losses(&mut self) -> Result<(), String> {
         for rec in self.sim.colony.take_events() {
             match rec.event {
-                Event::Died { id, cause } => {
+                Event::Died { id, cause, .. } => {
                     let loss = if self.side.killed.remove(&id) {
                         let kind = self
                             .sim

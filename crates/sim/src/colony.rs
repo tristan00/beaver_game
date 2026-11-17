@@ -328,7 +328,8 @@ pub struct WorkOrder {
 pub enum Event {
     Born { id: BeaverId, family: FamilyId },
     Matured { id: BeaverId, stage: Stage },
-    Died { id: BeaverId, cause: DeathCause },
+    /// `at` is where the beaver died (it is gone from `beavers` once this is logged).
+    Died { id: BeaverId, cause: DeathCause, at: (f32, f32) },
     Departed { id: BeaverId },
     Immigrated { id: BeaverId },
     NewFamily { family: FamilyId, lodge: LodgeId, a: BeaverId, b: BeaverId },
@@ -1040,18 +1041,18 @@ impl Colony {
         let mut dead = Vec::new();
         for b in &self.beavers {
             if b.age_days >= b.lifespan_days {
-                dead.push((b.id, DeathCause::OldAge));
+                dead.push((b.id, DeathCause::OldAge, b.pos));
             } else if b.health <= 0.0 {
                 // The harm source that did the most damage is the cause.
                 let (k, _) = b.harm.iter().enumerate().max_by(|a, c| a.1.total_cmp(c.1)).expect("non-empty");
-                dead.push((b.id, HARM_CAUSES[k]));
+                dead.push((b.id, HARM_CAUSES[k], b.pos));
             }
         }
         let ids: Vec<BeaverId> = dead.iter().map(|d| d.0).collect();
         self.stats.deaths += dead.len() as u32;
         self.remove_beavers(&ids);
-        for (id, cause) in dead {
-            self.log(Event::Died { id, cause });
+        for (id, cause, at) in dead {
+            self.log(Event::Died { id, cause, at });
         }
     }
 
@@ -1362,7 +1363,7 @@ impl Colony {
             };
             let b = self.beavers.remove(i);
             self.stats.deaths += 1;
-            self.log(Event::Died { id: b.id, cause: DeathCause::Injury });
+            self.log(Event::Died { id: b.id, cause: DeathCause::Injury, at: b.pos });
             k += 1;
         }
         k
@@ -1704,7 +1705,7 @@ mod tests {
             assert!(c.time_days < 365.0 * 20.0, "never died");
         }
         assert_eq!(seen, vec![Stage::Kit, Stage::Yearling, Stage::Adult, Stage::Elder]);
-        assert!(c.events.iter().any(|e| matches!(e.event, Event::Died { id: d, cause: DeathCause::OldAge } if d == id)));
+        assert!(c.events.iter().any(|e| matches!(e.event, Event::Died { id: d, cause: DeathCause::OldAge, .. } if d == id)));
     }
 
     #[test]
