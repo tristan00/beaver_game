@@ -209,8 +209,16 @@ impl SimState {
         }
     }
 
+    /// Whether `place_site` would accept `kind` at `pos`; changes nothing.
+    pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        self.buildings.can_place_site(kind, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
+    }
+
     /// Places a construction site for `kind` at `pos` and registers it as a workplace with its
-    /// catalogue cost and (tech-adjusted) build work.
+    /// catalogue cost and (tech-adjusted) build work. A dam site is a real dam: it spans its
+    /// catalogue footprint at `dam_preview::DEFAULT_HEIGHT`, costs `dam_preview::dam_cost` for those
+    /// cells, and raises the water dam when finished.
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
@@ -218,10 +226,17 @@ impl SimState {
             .place_site(kind, pos, &self.tech, terrain)
             .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let spec = kind.spec();
-        let labour = spec.work * self.tech.build_work_factor();
-        if let Err(e) = self.work.add_site(id, kind, spec.cost, labour) {
+        let dam_cells = (kind == buildings::BuildingKind::Dam).then(|| dam_preview::spot_cells(pos));
+        let (cost, labour) = match &dam_cells {
+            Some(c) => (dam_preview::dam_cost(c.len()), spec.work * dam_preview::length_factor(c.len()) * self.tech.build_work_factor()),
+            None => (spec.cost.to_vec(), spec.work * self.tech.build_work_factor()),
+        };
+        if let Err(e) = self.work.add_site(id, kind, &cost, labour) {
             self.buildings.buildings.retain(|b| b.id != id);
             return Err(SimError::InvalidCommand(format!("{e:?}")));
+        }
+        if let Some(cells) = dam_cells {
+            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT });
         }
         Ok(id)
     }

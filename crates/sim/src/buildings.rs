@@ -472,6 +472,11 @@ impl Buildings {
         Ok(())
     }
 
+    /// Whether `place_site` would accept `kind` at `pos` (tech, bounds, overlap, terrain); changes nothing.
+    pub fn can_place_site(&self, kind: BuildingKind, pos: (usize, usize), tech: &Tech, terrain: Terrain) -> Result<(), BuildError> {
+        self.check_placement(kind, pos, tech, terrain)
+    }
+
     /// Places an empty construction site (`Status::Site`) with the same checks as `place` but no
     /// cost taken: materials are hauled in later. The caller registers it with `work::Work`.
     pub fn place_site(

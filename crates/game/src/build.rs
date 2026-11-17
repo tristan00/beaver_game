@@ -14,7 +14,7 @@ use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::PrimaryWindow;
 use sim::buildings::{Amount, BuildingKind};
 use sim::colony::{BeaverId, FamilyId, Job, OrderId};
-use sim::water::DamPreview;
+use sim::dam_preview::DamPreview;
 use sim::SimState;
 
 const PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.10, 0.86);
@@ -27,6 +27,8 @@ const DIM: Color = Color::srgb(0.52, 0.55, 0.60);
 const WARN: Color = Color::srgb(1.0, 0.72, 0.28);
 const BAD: Color = Color::srgb(1.0, 0.42, 0.40);
 const GOOD: Color = Color::srgb(0.50, 0.92, 0.58);
+/// Space kept free at the bottom for the navigation bar.
+const NAV_CLEARANCE: f32 = 96.0;
 const POND: Color = Color::srgb(0.45, 0.72, 1.0);
 
 // ───────────────────────────── state ─────────────────────────────
@@ -55,6 +57,8 @@ pub struct BuildUi {
     pub hover: Option<Cell>,
     pub message: String,
     pub preview: Option<Preview>,
+    /// Stand-in cursor for scripted screenshots (there is no real cursor).
+    pub fake_cursor: Option<Vec2>,
     dam_cache: Option<(Vec<Cell>, u32, Option<DamPreview>)>,
 }
 
@@ -72,6 +76,7 @@ impl Default for BuildUi {
             hover: None,
             message: String::new(),
             preview: None,
+            fake_cursor: None,
             dam_cache: None,
         }
     }
@@ -178,10 +183,10 @@ fn job_name(j: Job) -> String {
 }
 
 fn pond_headline(d: &DamPreview) -> (String, Color) {
-    let n = d.flooded_trees + d.flooded_buildings;
+    let n = d.flooded_trees + d.flooded_buildings.len();
     let text = format!(
         "POND  {} cells   {} trees flooded   {} buildings flooded",
-        d.pond_area, d.flooded_trees, d.flooded_buildings
+        d.flooded.len(), d.flooded_trees, d.flooded_buildings.len()
     );
     (text, if n > 0 { WARN } else { POND })
 }
@@ -277,29 +282,29 @@ fn build_items(
     // ── tool panel (bottom centre) ──
     if let Some(kind) = ui.tool {
         let spec = kind.spec();
-        let w = 520.0;
-        let x = ((win.x - w) / 2.0).max(410.0);
+        let w = 560.0;
+        let x = ((win.x - w) / 2.0).max(10.0);
         let mut lines: Vec<(String, Color, f32)> = vec![];
+        // A dam spot under the cursor is read from the tooltip; the panel details a dragged line.
+        let dragged = kind == BuildingKind::Dam && (ui.path.len() >= 2 || ui.awaiting);
         let hint = match kind {
-            BuildingKind::Dam => "drag a line across the water".to_string(),
+            BuildingKind::Dam => "hover to preview, click to place".to_string(),
             BuildingKind::Canal => "drag a path from the water".to_string(),
             _ => format!("click to place ({}x{})", spec.footprint.0, spec.footprint.1),
         };
         lines.push((format!("{}  -  {}   (Esc to stop)", spec.name, hint), TXT, 14.0));
         if let Some(p) = &ui.preview {
-            if let Some(d) = &p.dam {
+            if let Some(d) = p.dam.as_ref().filter(|_| kind != BuildingKind::Dam || dragged) {
                 let (t, c) = pond_headline(d);
                 lines.push((t, c, 14.0));
-                lines.push((format!("water level {:.1}   volume {:.0}   dam {} cells x {:.1} high", d.level, d.volume, p.cells.len(), ui.dam_height), POND, 12.0));
-                if d.reaches_map_edge {
-                    lines.push(("Does not close the valley: the water would run off the map edge.".into(), WARN, 12.0));
-                }
+                lines.push((format!("water level {:.1}   dam {} cells x {:.1} high", d.level, p.cells.len(), ui.dam_height), POND, 12.0));
             }
-            if !p.cost.is_empty() {
+            if !p.cost.is_empty() && (kind != BuildingKind::Dam || dragged) {
                 let ok = p.cost.iter().all(|&(g, a)| sim.buildings.stores.amount(g) + 1e-4 >= a);
                 lines.push((format!("Cost: {}", cost_text(&p.cost)), if ok { TXT } else { WARN }, 12.0));
             }
             match &p.result {
+                Ok(()) if kind == BuildingKind::Dam && !dragged => lines.push(("Click to place a dam site here, or drag a longer line".into(), GOOD, 12.0)),
                 Ok(()) if p.order.is_some() && is_path_tool(kind) && !ui.awaiting => lines.push(("Release to review".into(), DIM, 12.0)),
                 Ok(()) if is_path_tool(kind) => lines.push(("Ready. Confirm with Enter or the button.".into(), GOOD, 12.0)),
                 Ok(()) => lines.push(("Click to build here".into(), GOOD, 12.0)),
@@ -307,22 +312,23 @@ fn build_items(
                 Err(e) => lines.push((format!("Cannot build here: {e}"), BAD, 12.0)),
             }
         } else if is_path_tool(kind) {
-            lines.push(("Press and drag on the map.".into(), DIM, 12.0));
+            lines.push(("Hover the map, or press and drag.".into(), DIM, 12.0));
         } else {
             lines.push(("Move over the map to see the ghost.".into(), DIM, 12.0));
         }
         if !ui.message.is_empty() {
             lines.push((ui.message.clone(), WARN, 12.0));
         }
-        let h = 14.0 + lines.iter().map(|l| l.2 + 6.0).sum::<f32>() + if is_path_tool(kind) { 34.0 } else { 0.0 };
-        let y0 = win.y - 10.0 - h;
+        let show_row = is_path_tool(kind) && (kind != BuildingKind::Dam || dragged);
+        let h = 14.0 + lines.iter().map(|l| l.2 + 6.0).sum::<f32>() + if show_row { 34.0 } else { 0.0 };
+        let y0 = win.y - NAV_CLEARANCE - h;
         l.panel(rc(x, y0, w, h), PANEL_BG);
         let mut y = y0 + 8.0;
         for (t, c, s) in lines {
             l.text(rc(x + 10.0, y, w - 20.0, s + 4.0), t, c, s);
             y += s + 6.0;
         }
-        if is_path_tool(kind) {
+        if show_row {
             let by = y0 + h - 32.0;
             let valid = ui.preview.as_ref().is_some_and(|p| p.result.is_ok()) && ui.awaiting;
             l.button_state(rc(x + 10.0, by, 140.0, 26.0), BAction::Confirm, "Confirm  Enter", if valid { BtnState::On } else { BtnState::Disabled });
@@ -333,6 +339,29 @@ fn build_items(
                 l.button(rc(x + 412.0, by, 28.0, 26.0), BAction::Height(1), "+", false);
                 l.text(rc(x + 448.0, by + 6.0, 100.0, 16.0), "keys [ and ]", DIM, 11.0);
             }
+        }
+    }
+
+    // ── hover tooltip next to the cursor: a building's verdict, or the sim's dam preview ──
+    if let (Some(c), Some(kind), Some(p)) = (cursor, ui.tool.filter(|k| !is_path_tool(*k) || !ui.awaiting), ui.preview.as_ref()) {
+        let (lines, headline_ok): (Vec<String>, bool) = match (&p.dam, &p.result) {
+            (Some(d), _) => (DamReadout::from_preview(d).lines(), true),
+            (None, Ok(())) if !is_path_tool(kind) => (vec![format!("{}: click to place a site", kind.spec().name)], true),
+            (None, Err(e)) if !is_path_tool(kind) => (vec![format!("Cannot build here: {e}")], false),
+            _ => (vec![], true),
+        };
+        let dam_hurts = p.dam.as_ref().is_some_and(|d| d.flooded_trees + d.flooded_buildings.len() > 0);
+        let d = p.dam.as_ref().filter(|_| !lines.is_empty());
+        let (w, lh) = (330.0, 17.0);
+        let h = 10.0 + lines.len() as f32 * lh;
+        let x = (c.x + 22.0).min(win.x - w - 8.0);
+        let y = (c.y + 22.0).min(win.y - h - 8.0);
+        if !lines.is_empty() {
+            l.panel(rc(x, y, w, h), PANEL_BG);
+        }
+        for (i, t) in lines.into_iter().enumerate() {
+            let col = if d.is_none() { if headline_ok { GOOD } else { BAD } } else if i == 1 && dam_hurts { WARN } else if i == 0 { POND } else { TXT };
+            l.text(rc(x + 8.0, y + 5.0 + i as f32 * lh, w - 16.0, lh), t, col, 12.0);
         }
     }
 
@@ -420,28 +449,28 @@ fn compute_preview(sim: &SimState, ui: &mut BuildUi) {
     };
     let height = ui.dam_height;
     let p = match kind {
+        BuildingKind::Dam if ui.path.len() < 2 => ui.hover.map(|c| {
+            let sp = site_preview(sim, kind, c);
+            Preview { result: sp.verdict, cost: sp.cost, order: Some(BuildOrder::Building { kind, pos: sp.pos }), cells: sp.cells, dam: sp.dam }
+        }),
         BuildingKind::Dam => {
-            let cells = if ui.path.len() >= 2 { line_cells(ui.path[0], *ui.path.last().unwrap()) } else { ui.path.clone() };
-            if cells.is_empty() {
-                None
-            } else {
-                let key = (cells.clone(), height.to_bits());
-                let dam = match &ui.dam_cache {
-                    Some((c, h, d)) if *c == key.0 && *h == key.1 => d.clone(),
-                    _ => {
-                        let d = dam_preview(sim, &cells, height);
-                        ui.dam_cache = Some((key.0, key.1, d.clone()));
-                        d
-                    }
-                };
-                Some(Preview {
-                    result: check_dam(sim, &cells, height),
-                    cost: path_cost(kind, cells.len()),
-                    order: Some(BuildOrder::Dam { cells: cells.clone(), height }),
-                    cells,
-                    dam,
-                })
-            }
+            let cells = line_cells(ui.path[0], *ui.path.last().unwrap());
+            let key = (cells.clone(), height.to_bits());
+            let dam = match &ui.dam_cache {
+                Some((c, h, d)) if *c == key.0 && *h == key.1 => d.clone(),
+                _ => {
+                    let d = dam_preview(sim, &cells, height);
+                    ui.dam_cache = Some((key.0, key.1, d.clone()));
+                    d
+                }
+            };
+            Some(Preview {
+                result: check_dam(sim, &cells, height),
+                cost: path_cost(kind, cells.len()),
+                order: Some(BuildOrder::Dam { cells: cells.clone(), height }),
+                cells,
+                dam,
+            })
         }
         BuildingKind::Canal => {
             if ui.path.is_empty() {
@@ -452,14 +481,8 @@ fn compute_preview(sim: &SimState, ui: &mut BuildUi) {
             }
         }
         _ => ui.hover.map(|c| {
-            let pos = anchor(kind, c);
-            Preview {
-                result: check_building(sim, kind, pos),
-                cost: kind.spec().cost.to_vec(),
-                order: Some(BuildOrder::Building { kind, pos }),
-                cells: footprint(kind, pos),
-                dam: None,
-            }
+            let sp = site_preview(sim, kind, c);
+            Preview { result: sp.verdict, cost: sp.cost, order: Some(BuildOrder::Building { kind, pos: sp.pos }), cells: sp.cells, dam: None }
         }),
     };
     ui.preview = p;
@@ -474,6 +497,13 @@ pub struct DemoDam {
     since: f32,
 }
 
+/// `--demo-place`: scripted placement previews for screenshots.
+#[derive(Resource, Default)]
+pub struct DemoPlace {
+    since: f32,
+    done: bool,
+}
+
 pub struct BuildPlugin;
 
 impl Plugin for BuildPlugin {
@@ -483,6 +513,9 @@ impl Plugin for BuildPlugin {
             .init_resource::<BuildItems>()
             .add_systems(Startup, spawn_overlays)
             .add_systems(Update, (poll_orders, render_items, update_overlays, draw_gizmos).after(ClickSet));
+        if app.world().resource::<crate::cli::Cli>().demo_place.is_some() {
+            app.insert_resource(crate::flow::CaptureGate(false)).init_resource::<DemoPlace>().add_systems(Update, demo_place.after(ClickSet));
+        }
         if app.world().resource::<crate::cli::Cli>().demo_dam {
             app.init_resource::<DemoDam>().add_systems(Update, demo_dam.after(ClickSet));
         }
@@ -501,7 +534,7 @@ pub fn layout_build(
     let Ok(w) = windows.single() else { return };
     let win = Vec2::new(w.width(), w.height());
     compute_preview(&sim.0, &mut ui);
-    let new = build_items(win, &sim.0, &ui, &pending.0, *sel, w.cursor_position());
+    let new = build_items(win, &sim.0, &ui, &pending.0, *sel, w.cursor_position().or(ui.fake_cursor));
     for it in &new {
         if !matches!(it.kind, ItemKind::Text { .. }) && !matches!(&it.kind, ItemKind::Panel(c) if *c != PANEL_BG) {
             layout.extra.push(it.rect);
@@ -614,14 +647,29 @@ pub fn build_input(
             ui.drawing = false;
             ui.awaiting = ui.path.len() > 1 || tool == BuildingKind::Canal;
             ui.message.clear();
-        }
-    } else if clicked && !over_ui {
-        if let Some(Preview { order: Some(o), .. }) = ui.preview.clone() {
-            match emit(&mut sim.0, &mut pending.0, &o) {
-                Ok(m) => ui.message = m,
-                Err(e) => ui.message = format!("{e}"),
+            if tool == BuildingKind::Dam && !ui.awaiting {
+                // A plain click: the standard dam spot under the cursor.
+                ui.path.clear();
+                place_hovered(&mut sim.0, &mut ui);
             }
         }
+    } else if clicked && !over_ui {
+        place_hovered(&mut sim.0, &mut ui);
+    }
+}
+
+/// A click on the hovered spot: the one place-site command the preview allows, or nothing.
+fn place_hovered(sim: &mut SimState, ui: &mut BuildUi) {
+    let (Some(kind), Some(hover)) = (ui.tool, ui.hover) else { return };
+    let sp = site_preview(sim, kind, hover);
+    match click_command(&sp) {
+        Some(cmd) => {
+            ui.message = match sim.apply(cmd) {
+                Ok(()) => format!("{} site placed at ({}, {})", kind.spec().name, sp.pos.0, sp.pos.1),
+                Err(e) => e.to_string(),
+            }
+        }
+        None => ui.message = sp.verdict.err().map(|e| format!("{e}")).unwrap_or_default(),
     }
 }
 
@@ -831,7 +879,7 @@ fn update_overlays(
 ) {
     let Some(ov) = ov else { return };
     let preview = ui.preview.as_ref().filter(|_| ui.tool.is_some());
-    let key = preview.map(|p| (p.cells.clone(), p.result.is_ok(), p.dam.as_ref().map_or(0, |d| d.pond_area), p.dam.as_ref().map_or(0, |d| d.level.to_bits())));
+    let key = preview.map(|p| (p.cells.clone(), p.result.is_ok(), p.dam.as_ref().map_or(0, |d| d.flooded.len()), p.dam.as_ref().map_or(0, |d| d.level.to_bits())));
     if *last == key {
         return;
     }
@@ -858,8 +906,8 @@ fn update_overlays(
             mat.0 = if p.result.is_ok() { ov.ok.clone() } else { ov.bad.clone() };
         }
         match &p.dam {
-            Some(d) if !d.flooded_cells.is_empty() => {
-                let quads: Vec<_> = d.flooded_cells.iter().map(|&c| (c, d.level, d.level + 0.04)).collect();
+            Some(d) if !d.flooded.is_empty() => {
+                let quads: Vec<_> = d.flooded.iter().map(|&c| (c, d.level, d.level + 0.04)).collect();
                 if let Some(mut m) = meshes.get_mut(&ov.pond) {
                     *m = cells_mesh(&sim.0, &quads, false);
                 }
@@ -911,10 +959,105 @@ fn draw_gizmos(mut gizmos: Gizmos, ui: Res<BuildUi>, sim: Res<Sim>, pending: Res
 
 // ───────────────────────────── demo ─────────────────────────────
 
+/// Nearest cell (by ring distance from `near`) where `want` holds.
+fn nearest_cell(near: Cell, radius: usize, want: impl Fn(Cell) -> bool) -> Option<Cell> {
+    let mut best: Option<(usize, Cell)> = None;
+    for dy in -(radius as i64)..=radius as i64 {
+        for dx in -(radius as i64)..=radius as i64 {
+            let (x, y) = (near.0 as i64 + dx, near.1 as i64 + dy);
+            if x < 0 || y < 0 {
+                continue;
+            }
+            let c = (x as usize, y as usize);
+            let d = dx.unsigned_abs().max(dy.unsigned_abs()) as usize;
+            if best.is_none_or(|b| d < b.0) && want(c) {
+                best = Some((d, c));
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// The cell and tool the `--demo-place` scenes show, from the camp at `near`.
+pub fn demo_place_scene(sim: &SimState, scene: &str, near: Cell) -> Option<(BuildingKind, Cell)> {
+    let n = sim.world.size;
+    let inside = |c: Cell| c.0 > 6 && c.1 > 6 && c.0 + 6 < n && c.1 + 6 < n;
+    match scene {
+        "valid" => nearest_cell((near.0 + 6, near.1), 30, |c| inside(c) && site_preview(sim, BuildingKind::Lodge, c).is_valid()).map(|c| (BuildingKind::Lodge, c)),
+        "invalid" => {
+            // A lodge ghost half in the water: the nearest cell where the sim says "needs dry ground".
+            nearest_cell(near, 40, |c| inside(c) && matches!(site_preview(sim, BuildingKind::Lodge, c).verdict, Err(PlaceError::NeedsDry)))
+                .map(|c| (BuildingKind::Lodge, c))
+        }
+        _ => {
+            // The dam spot near the camp whose pond is largest but not the whole map.
+            let mut best: Option<(f32, Cell)> = None;
+            for y in near.1.saturating_sub(30)..near.1 + 30 {
+                for x in near.0.saturating_sub(30)..near.0 + 30 {
+                    if !inside((x, y)) {
+                        continue;
+                    }
+                    let p = site_preview(sim, BuildingKind::Dam, (x, y));
+                    let Some(d) = p.dam.as_ref().filter(|_| p.is_valid()) else { continue };
+                    let area = d.flooded.len();
+                    if !(20..=900).contains(&area) {
+                        continue;
+                    }
+                    let score = area as f32 + 30.0 * d.flooded_trees as f32 + 400.0 * d.flooded_buildings.len() as f32;
+                    if best.is_none_or(|b| score > b.0) {
+                        best = Some((score, (x, y)));
+                    }
+                }
+            }
+            best.map(|b| (BuildingKind::Dam, b.1))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn demo_place(
+    time: Res<Time>,
+    cli: Res<crate::cli::Cli>,
+    mut demo: ResMut<DemoPlace>,
+    sim: Res<Sim>,
+    mut flow: ResMut<Flow>,
+    mut ui: ResMut<BuildUi>,
+    mut orbit: ResMut<OrbitCamera>,
+    mut gate: ResMut<CaptureGate>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut exit: MessageWriter<bevy::app::AppExit>,
+) {
+    if flow.phase != Phase::Settled || demo.done {
+        return;
+    }
+    demo.since += time.delta_secs();
+    if demo.since < 0.5 {
+        return;
+    }
+    let scene = cli.demo_place.clone().unwrap_or_default();
+    let near = flow.lodge_cell.or_else(|| sim.0.colony.beavers.first().map(|b| (b.pos.0 as usize, b.pos.1 as usize))).unwrap_or((64, 64));
+    let Some((kind, hover)) = demo_place_scene(&sim.0, &scene, near) else {
+        error!("demo-place {scene}: no suitable cell near the camp");
+        exit.write(bevy::app::AppExit::error());
+        return;
+    };
+    info!("demo-place {scene}: {kind:?} hovering {hover:?}");
+    ui.tool = Some(kind);
+    ui.hover = Some(hover);
+    if let Ok(w) = windows.single() {
+        ui.fake_cursor = Some(Vec2::new(w.width() / 2.0, w.height() / 2.0));
+    }
+    *orbit = OrbitCamera { target: cell_world(&sim.0.height, (hover.0 as f32, hover.1 as f32)), yaw: 0.8, pitch: 0.85, distance: if kind == BuildingKind::Dam { 50.0 } else { 30.0 } };
+    let all = |_: usize, _: usize| true;
+    flow.fog.reveal((hover.0 as f32, hover.1 as f32), 30.0, &all);
+    demo.done = true;
+    gate.0 = true;
+}
+
 /// Best dam line near `near`: a short line across the river that makes a decent pond.
-pub fn find_demo_dam(sim: &SimState, near: Cell, height: f32) -> Option<(Cell, Cell, DamPreview)> {
+pub fn find_demo_dam(sim: &SimState, near: Cell, height: f32) -> Option<(Cell, Cell, sim::water::DamPreview)> {
     let n = sim.world.size as i64;
-    let mut best: Option<(f32, Cell, Cell, DamPreview)> = None;
+    let mut best: Option<(f32, Cell, Cell, sim::water::DamPreview)> = None;
     for dy in -40i64..=40 {
         for dx in -40i64..=40 {
             let (x, y) = (near.0 as i64 + dx, near.1 as i64 + dy);
@@ -930,7 +1073,7 @@ pub fn find_demo_dam(sim: &SimState, near: Cell, height: f32) -> Option<(Cell, C
                     let a = ((x - ax * r) as usize, (y - ay * r) as usize);
                     let b = ((x + ax * r) as usize, (y + ay * r) as usize);
                     let cells = line_cells(a, b);
-                    let Some(d) = dam_preview(sim, &cells, height) else { continue };
+                    let Some(d) = sim::water::preview_dam(sim, &cells, height).ok() else { continue };
                     if d.reaches_map_edge || d.pond_area < 25 || d.pond_area > 700 {
                         continue;
                     }
@@ -1065,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_ghost_gives_reason_and_building_click_emits_order() {
+    fn invalid_ghost_gives_reason_and_click_places_one_site() {
         let mut sim = founded();
         let mut ui = BuildUi::default();
         ui.tool = Some(BuildingKind::Workshop);
@@ -1074,13 +1217,34 @@ mod tests {
         assert!(matches!(ui.preview.as_ref().unwrap().result, Err(PlaceError::Locked(..))));
         ui.tool = Some(BuildingKind::Lodge);
         compute_preview(&sim, &mut ui);
+        assert!(ui.preview.as_ref().unwrap().result.is_ok());
+        let before = sim.buildings.buildings.len();
+        place_hovered(&mut sim, &mut ui);
+        assert_eq!(sim.buildings.buildings.len(), before + 1, "exactly one site");
+        // the same spot is now taken: the preview turns invalid and a click does nothing
+        compute_preview(&sim, &mut ui);
+        assert!(matches!(ui.preview.as_ref().unwrap().result, Err(PlaceError::Blocked)));
+        place_hovered(&mut sim, &mut ui);
+        assert_eq!(sim.buildings.buildings.len(), before + 1);
+    }
+
+    #[test]
+    fn dam_hover_preview_is_the_sims_dam_preview() {
+        let sim = founded();
+        let near = sim.world.valleys[sim.world.start.0 as usize].center;
+        let (a, _, _) = find_demo_dam(&sim, (near.0 as usize, near.1 as usize), 1.5).expect("a dam site exists");
+        let mut ui = BuildUi::default();
+        ui.tool = Some(BuildingKind::Dam);
+        ui.hover = Some(a);
+        compute_preview(&sim, &mut ui);
         let p = ui.preview.clone().unwrap();
-        assert!(p.result.is_ok());
-        let mut pend = Pending::default();
-        let before = sim.colony.orders.len();
-        emit(&mut sim, &mut pend, p.order.as_ref().unwrap()).unwrap();
-        assert_eq!(sim.colony.orders.len(), before + 1);
-        let items = build_items(Vec2::new(1280.0, 720.0), &sim, &ui, &pend, Selection::None, None);
-        assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Button { action: BAction::CancelOrder(_), .. })), "orders panel has cancel");
+        let want = sim::dam_preview::preview(&sim, &p.cells, sim::dam_preview::DEFAULT_HEIGHT);
+        assert!(want.is_some() && p.dam == want);
+        let items = build_items(Vec2::new(1280.0, 720.0), &sim, &ui, &Pending::default(), Selection::None, Some(Vec2::new(300.0, 300.0)));
+        let d = want.unwrap();
+        let texts: Vec<&str> = items.iter().filter_map(|i| if let ItemKind::Text { text, .. } = &i.kind { Some(text.as_str()) } else { None }).collect();
+        for line in DamReadout::from_preview(&d).lines() {
+            assert!(texts.contains(&line.as_str()), "tooltip shows {line:?}");
+        }
     }
 }
