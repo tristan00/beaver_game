@@ -214,24 +214,25 @@ impl BuildingKind {
         BuildingKind::Barge,
     ];
 
+    /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
     pub fn spec(self) -> Spec {
-        use Good::*;
-        let s = |name, cost, footprint, work, site| Spec { name, cost, footprint, work, site };
-        match self {
-            BuildingKind::Dam => s("Dam", &[(Logs, 15.0), (Sticks, 20.0), (Mud, 20.0), (Stone, 5.0)], (3, 1), 8.0, Site::TouchesWater),
-            BuildingKind::Lodge => s("Lodge", &[(Logs, 20.0), (Sticks, 25.0), (Mud, 20.0)], (3, 3), 12.0, Site::Dry),
-            BuildingKind::Burrow => s("Burrow hideout", &[(Sticks, 6.0), (Mud, 8.0)], (1, 1), 2.0, Site::Dry),
-            BuildingKind::FoodCache => s("Food cache", &[(Logs, 6.0), (Sticks, 10.0), (Mud, 6.0)], (2, 2), 4.0, Site::Dry),
-            BuildingKind::ScentMound => s("Scent mound", &[(Mud, 6.0), (Sticks, 4.0)], (1, 1), 1.5, Site::Dry),
-            BuildingKind::GuardPost => s("Guard post", &[(Logs, 8.0), (Sticks, 8.0), (Stone, 3.0)], (1, 1), 3.0, Site::Dry),
-            BuildingKind::Canal => s("Canal", &[(Mud, 2.0)], (1, 1), 1.0, Site::TouchesWater),
-            BuildingKind::Lock => s("Lock", &[(Logs, 10.0), (Stone, 6.0), (Mud, 8.0), (Tools, 1.0)], (2, 1), 6.0, Site::TouchesWater),
-            BuildingKind::WaterWheel => s("Water wheel", &[(Logs, 12.0), (Rope, 2.0), (Tools, 1.0)], (2, 2), 7.0, Site::TouchesWater),
-            BuildingKind::Workshop => s("Workshop", &[(Logs, 8.0), (Sticks, 6.0), (Mud, 4.0)], (3, 2), 6.0, Site::Dry),
-            BuildingKind::Warehouse => s("Warehouse", &[(Logs, 25.0), (Sticks, 15.0), (Mud, 10.0), (Rope, 2.0)], (3, 3), 10.0, Site::Dry),
-            BuildingKind::Dock => s("Dock", &[(Logs, 10.0), (Rope, 2.0)], (2, 1), 4.0, Site::TouchesWater),
-            BuildingKind::Barge => s("Barge", &[(Logs, 8.0), (Rope, 3.0), (Baskets, 2.0)], (1, 1), 5.0, Site::WaterByDock),
-        }
+        let (name, footprint, site) = match self {
+            BuildingKind::Dam => ("Dam", (3, 1), Site::TouchesWater),
+            BuildingKind::Lodge => ("Lodge", (3, 3), Site::Dry),
+            BuildingKind::Burrow => ("Burrow hideout", (1, 1), Site::Dry),
+            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::Dry),
+            BuildingKind::ScentMound => ("Scent mound", (1, 1), Site::Dry),
+            BuildingKind::GuardPost => ("Guard post", (1, 1), Site::Dry),
+            BuildingKind::Canal => ("Canal", (1, 1), Site::TouchesWater),
+            BuildingKind::Lock => ("Lock", (2, 1), Site::TouchesWater),
+            BuildingKind::WaterWheel => ("Water wheel", (2, 2), Site::TouchesWater),
+            BuildingKind::Workshop => ("Workshop", (3, 2), Site::Dry),
+            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Dry),
+            BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
+            BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
+        };
+        let (cost, work) = cost_and_work(self);
+        Spec { name, cost, footprint, work, site }
     }
 }
 
@@ -246,12 +247,7 @@ pub enum Recipe {
 impl Recipe {
     /// (inputs, output) for one batch.
     pub fn batch(self) -> (&'static [Amount], Amount) {
-        use Good::*;
-        match self {
-            Recipe::Baskets => (&[(Sticks, 2.0)], (Baskets, 1.0)),
-            Recipe::Rope => (&[(Sticks, 1.0), (Mud, 0.5)], (Rope, 1.0)),
-            Recipe::Tools => (&[(Logs, 1.0), (Stone, 1.0)], (Tools, 1.0)),
-        }
+        recipe_batch(self)
     }
 }
 
@@ -602,8 +598,8 @@ impl Buildings {
         if recipes.is_empty() {
             return;
         }
-        // Wheel power is shared evenly; a fully powered workshop crafts twice as fast.
-        let boost = 1.0 + (self.power / recipes.len() as f32).min(1.0);
+        // Wheel power is shared evenly; a fully powered workshop gains `WHEEL_MAX_BOOST`.
+        let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
         for r in recipes {
             let (inputs, (out, per)) = r.batch();
             let mut batches = CRAFT_BATCHES_PER_DAY * dt * boost * tech.craft_speed_factor();

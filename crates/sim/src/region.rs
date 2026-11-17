@@ -131,6 +131,8 @@ impl std::error::Error for RegionError {}
 
 const NAMES: [&str; 5] = ["Alder Bend", "Cattail Run", "Birchwater", "Mudslide Hollow", "Willow Reach"];
 const SPECIALTIES: [Specialty; 4] = [Specialty::Fishing, Specialty::Lumber, Specialty::Farming, Specialty::Crafts];
+// Every generated neighbour needs a name.
+const _: () = assert!((MIN_NEIGHBOURS + NEIGHBOUR_SPREAD - 1) as usize <= NAMES.len());
 
 fn unit(rng: &mut Pcg32) -> f32 {
     (rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32
@@ -153,19 +155,24 @@ impl Default for Region {
 }
 
 impl Region {
-    /// Generates 3–5 neighbouring colonies; about one in five is wary.
+    /// Generates `MIN_NEIGHBOURS..MIN_NEIGHBOURS + NEIGHBOUR_SPREAD` neighbouring colonies; a share
+    /// `WARY_CHANCE` of them is wary.
     pub fn new(seed: u64) -> Self {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0x2E61_0000);
-        let n = 3 + rng.next_u32() % 3;
+        let n = MIN_NEIGHBOURS + rng.next_u32() % NEIGHBOUR_SPREAD;
         let mut colonies = Vec::new();
         for i in 0..n {
-            let wary = unit(&mut rng) < 0.2;
-            let friendliness = if wary { 0.05 + 0.2 * unit(&mut rng) } else { 0.5 + 0.5 * unit(&mut rng) };
-            let population = 6.0 + 14.0 * unit(&mut rng);
+            let wary = unit(&mut rng) < WARY_CHANCE;
+            let friendliness = if wary {
+                WARY_FRIENDLINESS_MIN + WARY_FRIENDLINESS_SPREAD * unit(&mut rng)
+            } else {
+                FRIENDLINESS_MIN + FRIENDLINESS_SPREAD * unit(&mut rng)
+            };
+            let population = START_POPULATION_MIN + START_POPULATION_SPREAD * unit(&mut rng);
             let specialty = SPECIALTIES[((unit(&mut rng) * 4.0) as usize).min(3)];
-            let pos = (unit(&mut rng) * 100.0, unit(&mut rng) * 100.0);
-            let food = population * (2.0 + 4.0 * unit(&mut rng));
-            let wood = population * (1.0 + 2.0 * unit(&mut rng));
+            let pos = (unit(&mut rng) * REGION_EXTENT, unit(&mut rng) * REGION_EXTENT);
+            let food = population * (START_FOOD_PER_HEAD_MIN + START_FOOD_PER_HEAD_SPREAD * unit(&mut rng));
+            let wood = population * (START_WOOD_PER_HEAD_MIN + START_WOOD_PER_HEAD_SPREAD * unit(&mut rng));
             colonies.push(Neighbour {
                 id: i,
                 name: NAMES[i as usize].to_string(),
@@ -276,17 +283,16 @@ impl Region {
         let now = self.time_days;
         self.offers.retain(|o| o.expires_day > now);
         for c in &mut self.colonies {
-            let (food_gain, wood_gain) = match c.specialty {
-                Specialty::Fishing => (0.06, 0.0),
-                Specialty::Farming => (0.08, 0.0),
-                Specialty::Lumber => (0.0, 0.07),
-                Specialty::Crafts => (0.0, 0.04),
+            let (food_gain, wood_gain) = specialty_gain(c.specialty);
+            // Everyone eats and wears wood each day; base gathering covers most of it.
+            c.food = (c.food + c.population * (BASE_FOOD_GAIN + food_gain - FOOD_USE) * dt).clamp(0.0, MAX_STORE);
+            c.wood = (c.wood + c.population * (BASE_WOOD_GAIN + wood_gain - WOOD_USE) * dt).clamp(0.0, MAX_STORE);
+            let rate = if c.food > c.population * RESERVE_PER_HEAD {
+                GROWTH_RATE * (1.0 - c.population / MAX_POPULATION)
+            } else {
+                -DECLINE_RATE
             };
-            // Everyone eats 0.05 food/day and wears 0.02 wood/day; base gathering covers most.
-            c.food = (c.food + c.population * (0.04 + food_gain - 0.05) * dt).clamp(0.0, MAX_STORE);
-            c.wood = (c.wood + c.population * (0.015 + wood_gain - 0.02) * dt).clamp(0.0, MAX_STORE);
-            let rate = if c.food > c.population * 3.0 { 0.01 * (1.0 - c.population / MAX_POPULATION) } else { -0.01 };
-            c.population = (c.population * (1.0 + rate * dt)).clamp(2.0, MAX_POPULATION);
+            c.population = (c.population * (1.0 + rate * dt)).clamp(MIN_POPULATION, MAX_POPULATION);
         }
         for i in 0..self.colonies.len() {
             let c = &self.colonies[i];
@@ -294,16 +300,16 @@ impl Region {
                 continue;
             }
             let (id, pop, res, friendliness) = (c.id, c.population, c.surplus_resource(), c.friendliness);
-            let surplus = c.stock(res) - pop * 3.0;
+            let surplus = c.stock(res) - pop * RESERVE_PER_HEAD;
             // Crowded neighbours send migrants.
-            if pop > 0.8 * MAX_POPULATION && unit(&mut self.rng) < 0.1 * friendliness * dt {
+            if pop > CROWDED_SHARE * MAX_POPULATION && unit(&mut self.rng) < MIGRATION_CHANCE * friendliness * dt {
                 self.colonies[i].population -= 1.0;
                 self.arrivals.push(Migrants { from: id, count: 1 });
             }
             let open = self.offers.iter().filter(|o| o.colony == id).count();
-            if open < MAX_OPEN_OFFERS && surplus > 4.0 && unit(&mut self.rng) < 0.15 * dt {
-                let give = (surplus * (0.2 + 0.3 * unit(&mut self.rng))).max(2.0);
-                let want = give * (0.7 + 0.6 * unit(&mut self.rng));
+            if open < MAX_OPEN_OFFERS && surplus > MIN_OFFER_SURPLUS && unit(&mut self.rng) < OFFER_CHANCE * dt {
+                let give = (surplus * (OFFER_SHARE_MIN + OFFER_SHARE_SPREAD * unit(&mut self.rng))).max(MIN_OFFER);
+                let want = give * (PRICE_MIN + PRICE_SPREAD * unit(&mut self.rng));
                 self.offers.push(TradeOffer {
                     id: self.next_offer,
                     colony: id,

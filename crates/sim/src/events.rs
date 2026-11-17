@@ -460,16 +460,26 @@ impl Events {
         use EventKind::*;
         use Season::*;
         match kind {
-            Flood if !drought && matches!(s, Spring | Summer) && c.water_level > 0.2 => {
-                0.02 * (if s == Spring { 2.0 } else { 0.7 }) * (0.5 + c.water_level)
+            Flood if !drought && matches!(s, Spring | Summer) && c.water_level > FLOOD_MIN_WATER_LEVEL => {
+                FLOOD_CHANCE
+                    * (if s == Spring { FLOOD_SPRING_MULT } else { FLOOD_SUMMER_MULT })
+                    * (FLOOD_WATER_BASE + c.water_level)
             }
-            Drought if !drought && matches!(s, Summer | Autumn) => 0.012 * (1.5 - c.water_level),
-            HardFreeze if s == Winter && has_pop => 0.03,
-            Fire if fire_season(s) && c.forest > 0.2 => 0.012 * c.forest * (if drought { 3.0 } else { 1.0 }),
-            Disease if c.population >= 6 => 0.01 * (0.5 + c.mosquitoes * 2.0) * (c.population as f32 / 10.0).min(2.0),
-            PredatorRaid if has_pop => 0.04 * c.danger,
-            WanderingBeaver if s != Winter => 0.03,
-            WetlandArrival if c.wetland > 0.1 && matches!(s, Spring | Summer) => 0.03 * c.wetland,
+            Drought if !drought && matches!(s, Summer | Autumn) => DROUGHT_CHANCE * (DROUGHT_WATER_BASE - c.water_level),
+            HardFreeze if s == Winter && has_pop => HARD_FREEZE_CHANCE,
+            Fire if fire_season(s) && c.forest > FIRE_MIN_FOREST => {
+                FIRE_CHANCE * c.forest * (if drought { FIRE_DROUGHT_MULT } else { 1.0 })
+            }
+            Disease if c.population >= DISEASE_MIN_POPULATION => {
+                DISEASE_CHANCE
+                    * (DISEASE_MOSQUITO_BASE + c.mosquitoes * DISEASE_MOSQUITO_SCALE)
+                    * (c.population as f32 / DISEASE_CROWD_POPULATION).min(DISEASE_CROWD_MAX)
+            }
+            PredatorRaid if has_pop => PREDATOR_RAID_CHANCE * c.danger,
+            WanderingBeaver if s != Winter => WANDERING_BEAVER_CHANCE,
+            WetlandArrival if c.wetland > WETLAND_ARRIVAL_MIN_WETLAND && matches!(s, Spring | Summer) => {
+                WETLAND_ARRIVAL_CHANCE * c.wetland
+            }
             _ => 0.0,
         }
     }
@@ -477,7 +487,8 @@ impl Events {
     fn unit(&mut self) -> f32 {
         (self.rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32
     }
-    fn between(&mut self, lo: f32, hi: f32) -> f32 {
+    /// Uniform value in `lo..hi`.
+    fn between(&mut self, (lo, hi): (f32, f32)) -> f32 {
         lo + (hi - lo) * self.unit()
     }
 
@@ -489,59 +500,59 @@ impl Events {
         // (description, immediate effects) or (prompt, options)
         let (desc, effects, options): (String, Vec<Effect>, Vec<ChoiceOption>) = match kind {
             EventKind::Flood => {
-                let wood = -self.between(2.0, 6.0) * pop.sqrt();
-                let food = -self.between(1.0, 4.0) * pop.sqrt();
+                let wood = -self.between(FLOOD_WOOD_LOSS) * pop.sqrt();
+                let food = -self.between(FLOOD_FOOD_LOSS) * pop.sqrt();
                 ("Spring melt floods the valley; stores wash away.".into(), vec![Effect::Wood(wood), Effect::Food(food)], vec![])
             }
             EventKind::Drought => {
-                let days = self.between(2.0, 4.0) * self.calendar.days_per_season() as f32;
+                let days = self.between(DROUGHT_SEASONS) * self.calendar.days_per_season() as f32;
                 ("A drought dries the streams; water inflow drops.".into(), vec![Effect::Inflow { factor: DROUGHT_INFLOW, days }], vec![])
             }
             EventKind::HardFreeze => {
-                let food = -self.between(2.0, 5.0) * pop.sqrt();
-                ("A hard freeze ices the pond; foraging is difficult.".into(), vec![Effect::Food(food), Effect::Illness(0.1)], vec![])
+                let food = -self.between(HARD_FREEZE_FOOD_LOSS) * pop.sqrt();
+                ("A hard freeze ices the pond; foraging is difficult.".into(), vec![Effect::Food(food), Effect::Illness(HARD_FREEZE_ILLNESS)], vec![])
             }
             EventKind::Fire => {
-                let loss = self.between(4.0, 10.0) * pop.sqrt();
+                let loss = self.between(FIRE_WOOD_LOSS) * pop.sqrt();
                 (
                     "Lightning sets the forest alight!".into(),
                     vec![],
                     vec![
-                        opt("Fight the fire with mud and water", vec![Effect::Wood(-loss * 0.3), Effect::Illness(0.05)]),
-                        opt("Let it burn", vec![Effect::Wood(-loss), Effect::Food(-loss * 0.3)]),
+                        opt("Fight the fire with mud and water", vec![Effect::Wood(-loss * FIRE_FIGHT_LOSS_SHARE), Effect::Illness(FIRE_FIGHT_ILLNESS)]),
+                        opt("Let it burn", vec![Effect::Wood(-loss), Effect::Food(-loss * FIRE_BURN_FOOD_SHARE)]),
                     ],
                 )
             }
             EventKind::Disease => {
-                let dmg = self.between(0.1, 0.3);
-                let deaths = (c.population as f32 * self.between(0.0, 0.08)).floor() as u32;
+                let dmg = self.between(DISEASE_ILLNESS);
+                let deaths = (c.population as f32 * self.between(DISEASE_DEATH_SHARE)).floor() as u32;
                 ("A fever spreads through the lodges.".into(), vec![Effect::Illness(dmg), Effect::Deaths(deaths)], vec![])
             }
             EventKind::PredatorRaid => {
-                let deaths = ((c.population as f32 * self.between(0.03, 0.12)).ceil() as u32).max(1);
-                let food = -self.between(2.0, 6.0) * pop.sqrt();
+                let deaths = ((c.population as f32 * self.between(RAID_DEATH_SHARE)).ceil() as u32).max(RAID_MIN_DEATHS);
+                let food = -self.between(RAID_HIDE_FOOD_LOSS) * pop.sqrt();
                 (
                     "Predators prowl near the lodges.".into(),
                     vec![],
                     vec![
-                        opt("Stand and drive them off", vec![Effect::Deaths(deaths / 2), Effect::Illness(0.05)]),
+                        opt("Stand and drive them off", vec![Effect::Deaths(deaths / RAID_FIGHT_DEATH_DIVISOR), Effect::Illness(RAID_FIGHT_ILLNESS)]),
                         opt("Hide in the lodges", vec![Effect::Food(food)]),
                     ],
                 )
             }
             EventKind::WanderingBeaver => {
-                let n = 1 + (self.unit() * 2.0) as u32;
+                let n = WANDERERS_MIN + (self.unit() * WANDERERS_SPREAD) as u32;
                 (
                     "Wandering beavers ask to join the colony.".into(),
                     vec![],
                     vec![
-                        opt("Welcome them", vec![Effect::Arrivals(n), Effect::Food(-2.0 * n as f32)]),
+                        opt("Welcome them", vec![Effect::Arrivals(n), Effect::Food(-WANDERER_FOOD_COST * n as f32)]),
                         opt("Turn them away", vec![]),
                     ],
                 )
             }
             EventKind::WetlandArrival => {
-                let food = self.between(3.0, 8.0) * (1.0 + c.wetland);
+                let food = self.between(WETLAND_ARRIVAL_FOOD) * (1.0 + c.wetland);
                 ("Herons, frogs and waterfowl settle in the wetlands.".into(), vec![Effect::Food(food)], vec![])
             }
         };
