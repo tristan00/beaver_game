@@ -27,7 +27,7 @@ impl Plugin for MidgamePlugin {
 }
 
 /// Settles and fast-forwards `sim`; returns the lodge cell.
-pub fn build_midgame(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut crate::ui::ledgers::History) -> Result<(usize, usize), String> {
+pub fn build_midgame(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut crate::ui::screens::History) -> Result<(usize, usize), String> {
     flow.phase = Phase::Scouting;
 
     flow.fog.reveal_valley(&sim.world, sim.world.start);
@@ -58,7 +58,7 @@ pub fn build_midgame(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut crate:
     Ok(site)
 }
 
-fn setup(mut sim: ResMut<Sim>, mut ui: ResMut<crate::ui::LedgerUi>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut orbit: ResMut<OrbitCamera>, mut sel: ResMut<Selection>) {
+fn setup(mut sim: ResMut<Sim>, mut ui: ResMut<crate::ui::ShellUi>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut orbit: ResMut<OrbitCamera>, mut sel: ResMut<Selection>) {
     match build_midgame(&mut sim.0, &mut flow, &mut ui.hist) {
         Ok(site) => {
             let p = cell_world(&sim.0.height, (site.0 as f32, site.1 as f32));
