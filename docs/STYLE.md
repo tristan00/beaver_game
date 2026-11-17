@@ -155,20 +155,20 @@ Each fix names the screenshot that shows the problem. Screenshots: **A** `docs/m
 
 **Lighting**
 10. Sky and light are pure harsh blue with black-ish shadows (D at 100,100 `#8AC5F5`; C at 200,640 `#314D5C`). Sky `#9ED1F5`; shadows plum `#6B5A8A` at 40%; upper-left warm glow.
-11. The overall picture is dim and low-contrast under panels (A lower half `#494F57`). Raise ambient so the average map brightness is above mid-grey.
+11. The overall picture is dim and low-contrast under panels (A lower half, at 300,600 `#494F57`). Raise ambient so the average map brightness is above mid-grey.
 
 **UI cards**
 12. Cards (A left; B left) are already cream but are four tall stacked ledger cards covering the left third, one of them the fourth "offers" card that is outside the target screen. Keep a single Jobs card, `PANEL` fill, radius 22; move resources and needs to the top strip.
-13. Event cards use thin colour bars and green row buttons stretching full width (A at 614,60; `#8FBE74`-ish rows). Use the pill buttons with the Accept and Turn away icons, as in the mockup.
+13. Event cards use thin colour bars and green row buttons stretching full width (A: colour bar at 614,60 `#93B78A`, row button at 700,180 `#9ECC8C`). Use the pill buttons with the Accept and Turn away icons, as in the mockup.
 
 **Navigation bar**
-14. The top bar mixes text and slate buttons (A at 1070,22 `#36465E`; B). Remove slate. Replace with the bottom-centre pill (§6) and the small speed pill top-right in Chip and Button green.
-15. Text-only shortcuts ("Ledger L", "Detail Tab", "Build B", "Jobs J") become icon plus label buttons; show the key as a small DIM suffix only on hover.
+14. The top bar mixes text and slate buttons (A at 1070,22 `#394C60`; B at 1180,22 `#333B47`; C at 1080,22 `#394D62`). Remove slate. Replace with the bottom-centre pill (§6) and the small speed pill top-right in Chip and Button green.
+15. Text-only shortcuts ("Ledger L", "Detail Tab" in A, B and C top-right, A at 1080,22 `#394C60`; "Build B", "Jobs J" in B top-right, B at 1090,55 `#3F804E` and 1185,55 `#303946`) become icon plus label buttons; show the key as a small DIM suffix only on hover.
 
 **Panels**
-16. The build menu (B, right) is a translucent black rectangle with monospace text over the map (`#1C402A`-ish backing), lock rows and an experience list. Rebuild it as a cream `PANEL` card, radius 22, icon plus name plus cost chips, locked rows at 50% opacity.
+16. The build menu (B, right) is a translucent black rectangle with monospace text over the map (B at 1260,250 `#292E2D` backing), lock rows and an experience list. Rebuild it as a cream `PANEL` card, radius 22, icon plus name plus cost chips, locked rows at 50% opacity.
 17. The debug log box bottom-left (A at 100,640 `#4C525B`; B; C) is a dark grey square with monospace type. Hide in the player build, or restyle as a cream card with Ink text.
-18. Entity materials hard-code colours (`water_render.rs:289`, `entities_render/models.rs`). Import `Fur` `#B9783F`, `Fur dark` `#8F5A2E` and the rest from the shared palette constants.
+18. Beaver fur drifts between unrelated browns because entity materials hard-code colours (C at 830,670 `#C88B4E`, at 150,490 `#B97D43`; B at 735,445 `#A47345`; code in `water_render.rs:289`, `entities_render/models.rs`). Import `Fur` `#B9783F`, `Fur dark` `#8F5A2E` and the rest from the shared palette constants.
 
 **Tooltips**
 19. Hover info is a block of coloured monospace lines (B, bottom: POND, Cost, Ready). Use the cream tooltip card, radius 16, a small pointer toward the object, Ink title, DIM body, resource icons with counts instead of "log / stk / mud" abbreviations.
