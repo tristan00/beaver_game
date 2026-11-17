@@ -1,5 +1,6 @@
 //! Century run: four scripted players (careful, neglectful, overcutter, over-damming) each play the
-//! same world for N years; one stats line per strategy per year shows how their choices diverge.
+//! same world for N years; one stats line per strategy per year shows how their choices diverge,
+//! including losses by cause (starve, cold, predator, disease, flood, age, emigr) and food/wood stores.
 //!
 //! Usage: cargo run --release -p sim --example century -- [years=30] [seed=1]
 //!
@@ -11,14 +12,14 @@
 //! landscape and with events rolled against the live world. The colony does not feed
 //! `buildings.stores`, so felling and daily gathering stand in for hauling (`Player::fell`, `gather`).
 //! Event "arrivals" cannot be applied (the colony exposes no immigration API) and are reported as such.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use sim::buildings::{BuildError, BuildingKind, Good, Recipe, Status, Terrain};
-use sim::colony::{Colony, Job};
-use sim::events::{Effect, EventContext, EventHost, PendingChoice};
+use sim::colony::{BeaverId, Colony, DeathCause, Event, Job, Stats};
+use sim::events::{Effect, EventContext, EventHost, EventKind, PendingChoice};
 use sim::tech::TECHS;
 use sim::water::Cell;
 use sim::{Command, SimState};
@@ -139,7 +140,15 @@ impl Site {
 /// Adapter that lets events act on the live colony and stores.
 struct ColonyHost<'a> {
     colony: &'a mut Colony,
-    arrivals_ignored: &'a mut u32,
+    side: &'a mut HostSide,
+}
+
+/// What event effects did that the colony itself does not record.
+#[derive(Default)]
+struct HostSide {
+    arrivals_ignored: u32,
+    /// Beavers killed by an event effect (their `Died` log entry names the wrong cause).
+    killed: BTreeSet<BeaverId>,
 }
 
 impl EventHost for ColonyHost<'_> {
@@ -165,6 +174,7 @@ impl EventHost for ColonyHost<'_> {
         let k = (n as usize).min(order.len());
         for &i in &order[..k] {
             self.colony.beavers[i].health = 0.0;
+            self.side.killed.insert(self.colony.beavers[i].id);
         }
         k as u32
     }
@@ -174,7 +184,7 @@ impl EventHost for ColonyHost<'_> {
         }
     }
     fn add_beavers(&mut self, n: u32) -> u32 {
-        *self.arrivals_ignored += n;
+        self.side.arrivals_ignored += n;
         0
     }
 }
@@ -189,7 +199,7 @@ fn count_in(grid: &sim::Grid<f32>, mask: &[bool], above: f32) -> usize {
 }
 
 /// One day (or `dt`) of the whole world, wired the way a game frame would.
-fn advance(sim: &mut SimState, site: &Site, base_rates: &[f32], dt: f32, arrivals_ignored: &mut u32) -> Result<(), String> {
+fn advance(sim: &mut SimState, site: &Site, base_rates: &[f32], dt: f32, side: &mut HostSide) -> Result<(), String> {
     let factor = sim.events.water_inflow_factor();
     for (s, &r) in sim.water.sources.iter_mut().zip(base_rates) {
         s.rate = r * factor;
@@ -210,10 +220,83 @@ fn advance(sim: &mut SimState, site: &Site, base_rates: &[f32], dt: f32, arrival
         mosquitoes: mean_in(&sim.ecology.mosquitoes, &site.in_valley),
         water_level: count_in(&sim.water.depth, &site.in_valley, WATER_DEPTH) as f32 / site.valley_cells as f32 * 8.0,
     };
-    let mut host = ColonyHost { colony: &mut sim.colony, arrivals_ignored };
+    let mut host = ColonyHost { colony: &mut sim.colony, side };
     // Events are tuned for a 40-day year (10-day seasons); stretch it over the 365-day colony year.
     sim.events.step_with(dt * EVENT_DAYS_PER_DAY, &ctx, &mut host).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ───────────────────────────── losses by cause ─────────────────────────────
+
+/// Why a beaver left the colony. Six are deaths; emigration is a departure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Loss {
+    Starvation,
+    Cold,
+    Predator,
+    Disease,
+    Flood,
+    Age,
+    Emigration,
+}
+
+const LOSSES: [Loss; 7] =
+    [Loss::Starvation, Loss::Cold, Loss::Predator, Loss::Disease, Loss::Flood, Loss::Age, Loss::Emigration];
+
+impl Loss {
+    fn name(self) -> &'static str {
+        match self {
+            Loss::Starvation => "starve",
+            Loss::Cold => "cold",
+            Loss::Predator => "predator",
+            Loss::Disease => "disease",
+            Loss::Flood => "flood",
+            Loss::Age => "age",
+            Loss::Emigration => "emigr",
+        }
+    }
+}
+
+/// Loss counts per cause.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Losses([u32; 7]);
+
+impl Losses {
+    fn add(&mut self, l: Loss) {
+        self.0[l as usize] += 1;
+    }
+    fn get(&self, l: Loss) -> u32 {
+        self.0[l as usize]
+    }
+    /// Deaths only (everything but emigration).
+    fn deaths(&self) -> u32 {
+        self.total() - self.get(Loss::Emigration)
+    }
+    fn total(&self) -> u32 {
+        self.0.iter().sum()
+    }
+}
+
+/// Maps a colony death cause to the reported one. Work injuries come from the wild (predators and
+/// rough ground) and exhaustion is overwork illness, so they report as predator and disease.
+fn classify_death(cause: DeathCause) -> Loss {
+    match cause {
+        DeathCause::Starvation => Loss::Starvation,
+        DeathCause::Cold => Loss::Cold,
+        DeathCause::Injury => Loss::Predator,
+        DeathCause::Exhaustion => Loss::Disease,
+        DeathCause::OldAge => Loss::Age,
+    }
+}
+
+/// Cause of a beaver killed by an event effect: the kind of the latest event that carried deaths.
+fn classify_event_kill(kind: EventKind) -> Result<Loss, String> {
+    match kind {
+        EventKind::Disease => Ok(Loss::Disease),
+        EventKind::PredatorRaid => Ok(Loss::Predator),
+        EventKind::Flood => Ok(Loss::Flood),
+        k => Err(format!("event {k:?} killed beavers but has no death cause")),
+    }
 }
 
 // ───────────────────────────── player actions ─────────────────────────────
@@ -225,12 +308,43 @@ struct Player {
     base_rates: Vec<f32>,
     acts: u32,
     refusals: BTreeMap<String, u32>,
-    arrivals_ignored: u32,
+    side: HostSide,
+    /// Losses since the last yearly report, and the beavers' running totals.
+    year_losses: Losses,
     fell_cursor: usize,
     lodges_registered: usize,
 }
 
 impl Player {
+    /// Reads the colony's event log since the last call and adds each death and departure to the
+    /// year's losses. Errors if a kill cannot be attributed.
+    fn tally_losses(&mut self) -> Result<(), String> {
+        for rec in self.sim.colony.take_events() {
+            match rec.event {
+                Event::Died { id, cause } => {
+                    let loss = if self.side.killed.remove(&id) {
+                        let kind = self
+                            .sim
+                            .events
+                            .log()
+                            .iter()
+                            .rev()
+                            .find(|r| r.effects.iter().any(|e| matches!(e, Effect::Deaths(_))))
+                            .map(|r| r.kind)
+                            .ok_or("beaver killed by an event but the event log has no deadly event")?;
+                        classify_event_kill(kind)?
+                    } else {
+                        classify_death(cause)
+                    };
+                    self.year_losses.add(loss);
+                }
+                Event::Departed { .. } => self.year_losses.add(Loss::Emigration),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Counts a refusal; numbers are masked so equal reasons group together.
     fn refuse(&mut self, reason: String) {
         let mut key = String::new();
@@ -368,7 +482,7 @@ impl Player {
         let pending: Vec<PendingChoice> = self.sim.events.pending().to_vec();
         for c in pending {
             let best = (0..c.options.len()).max_by(|&a, &b| score(&c, a).total_cmp(&score(&c, b))).unwrap_or(0);
-            let mut host = ColonyHost { colony: &mut self.sim.colony, arrivals_ignored: &mut self.arrivals_ignored };
+            let mut host = ColonyHost { colony: &mut self.sim.colony, side: &mut self.side };
             let r = self.sim.events.resolve(c.id, best, &mut host);
             self.note("event choice", r);
         }
@@ -544,12 +658,13 @@ struct Row {
     mud: f32,
     food: f32,
     wood: f32,
+    losses: Losses,
     new_tech: Vec<&'static str>,
     events: BTreeMap<String, u32>,
     collapsed: bool,
 }
 
-fn snapshot(p: &Player, events: BTreeMap<String, u32>, new_tech: Vec<&'static str>) -> Row {
+fn snapshot(p: &Player, losses: Losses, events: BTreeMap<String, u32>, new_tech: Vec<&'static str>) -> Row {
     let s = &p.sim;
     let v = &p.site.in_valley;
     Row {
@@ -564,6 +679,7 @@ fn snapshot(p: &Player, events: BTreeMap<String, u32>, new_tech: Vec<&'static st
         mud: s.buildings.stores.amount(Good::Mud),
         food: s.colony.food,
         wood: s.colony.wood,
+        losses,
         new_tech,
         events,
         collapsed: s.colony.is_collapsed(),
@@ -576,12 +692,27 @@ fn print_row(name: &str, r: &Row, tech_total: usize) {
     } else {
         r.events.iter().map(|(k, n)| if *n > 1 { format!("{k}x{n}") } else { k.clone() }).collect::<Vec<_>>().join(",")
     };
+    let causes = LOSSES.iter().map(|&l| format!("{} {}", l.name(), r.losses.get(l))).collect::<Vec<_>>().join(" ");
     let tech = if r.new_tech.is_empty() { String::new() } else { format!(" (+{})", r.new_tech.join(",")) };
     println!(
-        "  {name:<10} pop {:>3} lodges {:>2}(+{} built) forest {:.2} pond {:>4} wetland {:>4} stores L{:.0} S{:.0} M{:.0} food {:.0} wood {:.0} tech {}/{}{} events {}{}",
-        r.pop, r.lodges, r.lodge_buildings, r.forest, r.pond, r.wetland, r.logs, r.sticks, r.mud, r.food, r.wood,
+        "  {name:<10} lost [{}] pop {:>3} lodges {:>2}(+{} built) forest {:.2} pond {:>4} wetland {:>4} stores L{:.0} S{:.0} M{:.0} food {:.0} wood {:.0} tech {}/{}{} events {}{}",
+        causes, r.pop, r.lodges, r.lodge_buildings, r.forest, r.pond, r.wetland, r.logs, r.sticks, r.mud, r.food, r.wood,
         tech_total, TECHS.len(), tech, ev, if r.collapsed { " COLLAPSED" } else { "" }
     );
+}
+
+/// The per-cause counts of a year must equal the colony's own death and departure counters.
+fn check_losses(name: &str, year: u32, year_losses: &Losses, now: Stats, prev: &mut Stats) -> Result<(), String> {
+    let deaths = now.deaths - prev.deaths;
+    let departures = now.departures - prev.departures;
+    *prev = now;
+    if year_losses.deaths() != deaths || year_losses.get(Loss::Emigration) != departures {
+        return Err(format!(
+            "{name} year {year}: cause counts {:?} do not match the colony's {deaths} deaths and {departures} departures",
+            year_losses.0
+        ));
+    }
+    Ok(())
 }
 
 // ───────────────────────────── main ─────────────────────────────
@@ -593,7 +724,7 @@ fn setup(seed: u64) -> Result<Player, String> {
     let head = site.river[0];
     sim.water.add_source(head.0, head.1, SOURCE_RATE).map_err(|e| e.to_string())?;
     let base_rates = vec![SOURCE_RATE];
-    let mut ignored = 0;
+    let mut ignored = HostSide::default();
     for _ in 0..SPIN_UP_DAYS {
         advance(&mut sim, &site, &base_rates, 1.0, &mut ignored)?;
     }
@@ -612,7 +743,8 @@ fn setup(seed: u64) -> Result<Player, String> {
         base_rates,
         acts: 0,
         refusals: BTreeMap::new(),
-        arrivals_ignored: 0,
+        side: HostSide::default(),
+        year_losses: Losses::default(),
         fell_cursor: 0,
         lodges_registered: 0,
     })
@@ -637,6 +769,7 @@ fn run() -> Result<(), String> {
     println!("century: seed {seed}, {years} years, {} strategies", strategies.len());
     let mut seen_events = vec![0usize; players.len()];
     let mut seen_tech = vec![0usize; players.len()];
+    let mut prev_stats = vec![Stats::default(); players.len()];
     for year in 1..=years {
         println!("year {year}");
         for (i, (p, strat)) in players.iter_mut().zip(strategies.iter_mut()).enumerate() {
@@ -650,7 +783,8 @@ fn run() -> Result<(), String> {
                     p.gather();
                     p.sync_lodges();
                 }
-                advance(&mut p.sim, &p.site, &p.base_rates, dt as f32, &mut p.arrivals_ignored)
+                advance(&mut p.sim, &p.site, &p.base_rates, dt as f32, &mut p.side)
+                    .and_then(|()| p.tally_losses())
                     .map_err(|e| format!("{} year {year} day {d}: {e}", strat.name()))?;
                 d += dt;
             }
@@ -662,7 +796,9 @@ fn run() -> Result<(), String> {
             let unlocked: Vec<&'static str> = p.sim.tech.unlocked_ids().map(|t| TECHS[t.0].name).collect();
             let new_tech = unlocked[seen_tech[i]..].to_vec();
             seen_tech[i] = unlocked.len();
-            print_row(strat.name(), &snapshot(p, ev, new_tech), unlocked.len());
+            let losses = std::mem::take(&mut p.year_losses);
+            check_losses(strat.name(), year, &losses, p.sim.colony.stats, &mut prev_stats[i])?;
+            print_row(strat.name(), &snapshot(p, losses, ev, new_tech), unlocked.len());
         }
     }
     println!("\nsummary after {years} years:");
@@ -672,7 +808,7 @@ fn run() -> Result<(), String> {
             strat.name(),
             p.acts,
             p.refusals.values().sum::<u32>(),
-            p.arrivals_ignored
+            p.side.arrivals_ignored
         );
         if let Some(c) = p.sim.colony.collapse() {
             println!("      collapsed in year {:.1}: {:?} (peak population {})", c.day / DAYS_PER_YEAR as f64, c.cause, c.peak_population);
@@ -692,5 +828,41 @@ fn main() -> ExitCode {
             eprintln!("century failed: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cause_counts_sum_to_total() {
+        let mut l = Losses::default();
+        for (i, &c) in LOSSES.iter().enumerate() {
+            for _ in 0..=i {
+                l.add(c);
+            }
+        }
+        assert_eq!(l.total(), (1..=7).sum::<u32>());
+        assert_eq!(l.deaths(), l.total() - l.get(Loss::Emigration));
+        assert_eq!(LOSSES.iter().map(|&c| l.get(c)).sum::<u32>(), l.total());
+    }
+
+    #[test]
+    fn every_colony_cause_maps_and_event_kills_need_a_deadly_kind() {
+        for c in [DeathCause::Starvation, DeathCause::Cold, DeathCause::Injury, DeathCause::Exhaustion, DeathCause::OldAge] {
+            assert_ne!(classify_death(c), Loss::Emigration);
+        }
+        assert_eq!(classify_event_kill(EventKind::PredatorRaid), Ok(Loss::Predator));
+        assert!(classify_event_kill(EventKind::Drought).is_err());
+    }
+
+    #[test]
+    fn check_losses_rejects_mismatch() {
+        let mut l = Losses::default();
+        l.add(Loss::Cold);
+        let now = Stats { deaths: 1, ..Stats::default() };
+        assert!(check_losses("t", 1, &l, now, &mut Stats::default()).is_ok());
+        assert!(check_losses("t", 1, &l, Stats { deaths: 2, ..now }, &mut Stats::default()).is_err());
     }
 }
