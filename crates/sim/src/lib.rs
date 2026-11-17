@@ -158,7 +158,7 @@ impl SimState {
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.tech.update(&self.colony);
-        self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
+        self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }

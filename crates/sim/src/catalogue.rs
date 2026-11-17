@@ -89,7 +89,9 @@ mod tests {
     use crate::buildings::{Building, BuildingId, Buildings, Good, Recipe, Status, Terrain};
     use crate::features::Features;
     use crate::grid::Grid;
+    use crate::colony::BeaverId;
     use crate::tech::{Effect, Tech, BASE_BUILDINGS, TECHS};
+    use crate::work::{Slot, Work, Workplace};
 
     #[test]
     fn every_building_is_fully_defined_and_unlocks_consistently() {
@@ -139,10 +141,14 @@ mod tests {
         b
     }
 
-    /// Steps `b` once with default tech on dry land.
-    fn step(b: &mut Buildings, dt: f32) {
+    /// Steps `b` once with default tech on dry land, staffed from `work`.
+    fn step_with(b: &mut Buildings, dt: f32, work: &Work) {
         let (h, d) = (Grid::new(8, 8, 1.0), Grid::new(8, 8, 0.0));
-        b.step(dt, &Tech::default(), Terrain { height: &h, depth: &d }, &crate::colony::Colony::new(1));
+        b.step(dt, &Tech::default(), Terrain { height: &h, depth: &d }, &crate::colony::Colony::new(1), work);
+    }
+
+    fn step(b: &mut Buildings, dt: f32) {
+        step_with(b, dt, &Work::default());
     }
 
     #[test]
@@ -160,20 +166,47 @@ mod tests {
         assert!(capacity(BuildingKind::Storehouse) > capacity(BuildingKind::Warehouse));
     }
 
+    /// Rope produced in one day by a complete `kind` (id 1) with `staff` of its craft slots
+    /// filled, from plentiful inputs.
+    fn rope_in_a_day(kind: BuildingKind, staff: usize) -> f32 {
+        let mut b = complete(kind, Some(Recipe::Rope));
+        b.stores.deposit(Good::Sticks, 100.0).unwrap();
+        b.stores.deposit(Good::Mud, 100.0).unwrap();
+        let slots = def(kind).slots.iter().map(|&role| Slot { role, worker: None }).collect();
+        let mut work = Work::default();
+        work.places.push(Workplace { building: BuildingId(1), kind, slots, area: None, site: None });
+        for i in 0..staff {
+            work.assign(BuildingId(1), i, BeaverId(i as u64 + 1)).unwrap();
+        }
+        step_with(&mut b, 0.0, &work);
+        step_with(&mut b, 1.0, &work);
+        b.stores.produced_total[Good::Rope.index()]
+    }
+
+    #[test]
+    fn production_follows_staffed_craft_slots() {
+        for kind in [BuildingKind::Workshop, BuildingKind::Mill] {
+            assert_eq!(rope_in_a_day(kind, 0), 0.0, "{kind:?}: no worker, no output");
+        }
+        let one = rope_in_a_day(BuildingKind::Mill, 1);
+        let two = rope_in_a_day(BuildingKind::Mill, 2);
+        assert!(one > 0.0 && (two - 2.0 * one).abs() < 1e-4, "mill: one worker {one}, two workers {two}");
+    }
+
     #[test]
     fn advanced_production_yields_more_per_worker_than_elementary() {
         let (elem, adv) = (def(BuildingKind::Workshop), def(BuildingKind::Mill));
         assert!(adv.tier > elem.tier && adv.batches_per_worker() > elem.batches_per_worker());
-        // Produced rope per day per worker slot, from plentiful inputs.
+        // Both fully staffed; output divided by the beavers actually working there.
         let per_worker = |kind: BuildingKind| {
-            let mut b = complete(kind, Some(Recipe::Rope));
-            b.stores.deposit(Good::Sticks, 100.0).unwrap();
-            b.stores.deposit(Good::Mud, 100.0).unwrap();
-            step(&mut b, 0.0);
-            step(&mut b, 1.0);
-            b.stores.produced_total[Good::Rope.index()] / def(kind).slots.len() as f32
+            let staff = def(kind).slots.iter().filter(|r| **r == Role::Craft).count();
+            assert!(staff > 0);
+            rope_in_a_day(kind, staff) / staff as f32
         };
         let (w, m) = (per_worker(BuildingKind::Workshop), per_worker(BuildingKind::Mill));
         assert!(w > 0.0 && m > w, "mill {m} per worker vs workshop {w}");
+        // Same head-count comparison: one beaver in each.
+        let (w1, m1) = (rope_in_a_day(BuildingKind::Workshop, 1), rope_in_a_day(BuildingKind::Mill, 1));
+        assert!(m1 > w1, "one mill worker {m1} vs one workshop worker {w1}");
     }
 }
