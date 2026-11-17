@@ -1214,7 +1214,7 @@ mod tests {
         let items = build_items(Vec2::new(1280.0, 720.0), &sim, &ui, &Pending::default(), Selection::None, None);
         let texts: Vec<&str> = items.iter().filter_map(|i| if let ItemKind::Text { text, .. } = &i.kind { Some(text.as_str()) } else { None }).collect();
         assert!(texts.iter().any(|t| t.starts_with("WATER")), "branch header");
-        assert!(texts.iter().any(|t| t.contains("locked: Flow Control  xp 0.0/3")), "locked item shows experience needed");
+        assert!(texts.iter().any(|t| t.contains("locked: Flow control  xp 0.0/120")), "locked item shows experience needed");
         assert!(texts.iter().any(|t| t.contains(&format!("POND  {} cells", d.pond_area)) && t.contains("trees flooded") && t.contains("buildings flooded")));
         assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Button { action: BAction::Confirm, state: BtnState::On, .. })));
     }
@@ -1227,6 +1227,7 @@ mod tests {
         ui.hover = Some(crate::build_logic::dry_sites(&sim)[0]);
         compute_preview(&sim, &mut ui);
         assert!(matches!(ui.preview.as_ref().unwrap().result, Err(PlaceError::Locked(..))));
+        sim.tech.unlock_all();
         ui.tool = Some(BuildingKind::Lodge);
         compute_preview(&sim, &mut ui);
         assert!(ui.preview.as_ref().unwrap().result.is_ok());
