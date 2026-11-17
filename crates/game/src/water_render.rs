@@ -100,8 +100,8 @@ fn setup_water(
     water.material = materials.add(StandardMaterial {
         base_color: Color::WHITE, // colour and alpha come from vertices
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.22,
-        reflectance: 0.12,
+        perceptual_roughness: 0.35,
+        reflectance: 0.06,
         normal_map_texture: Some(images.add(ripple_normal_map())),
         cull_mode: None,
         ..default()
@@ -110,90 +110,319 @@ fn setup_water(
     water.slots = (0..cols * rows).map(|_| WSlot::default()).collect();
 }
 
+/// Margin (cells) of sim data outside a chunk that its water mesh reads: shore distances look up to
+/// `SHORE_SEARCH` cells away, and the field's gradient one cell further.
+/// Main-thread time per frame for water chunk rebuilds.
+const WATER_REBUILD_BUDGET_S: f32 = 0.002;
+pub const WATER_PAD: i32 = SHORE_SEARCH + 1;
+const SHORE_SEARCH: i32 = 3;
+/// Rings measured inward from the shore, in cells (docs/STYLE.md §4 and `docs/style_mockup.png`):
+/// a solid Foam ring, then a Deep rim, the Shallow body and a Mid glow centre.
+pub const FOAM_W: f32 = 0.2;
+/// Extra cuts through the surface (shore distance, cells) so colour ramps follow the rings
+/// instead of zig-zagging across the grid's triangles.
+const RING_CUTS: [f32; 6] = [0.6, 0.9, 1.2, 1.6, 2.0, 2.5];
+/// The shore is where the Gaussian-blurred wet mask crosses this value.
+const SHORE_LEVEL: f32 = 0.3;
+/// 5-tap binomial (σ ≈ 1 cell).
+const BLUR5: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
+
+/// Smooth signed distance to the shore, in cells, at every cell of a `(n+1)²` window starting at
+/// `(x0, y0)`: positive in water, negative on land.
+///
+/// The shore line is a level of the wet mask blurred over about a cell, so one-cell streams that
+/// run diagonally as 4-connected staircases become smooth ribbons and pond corners round off. Near
+/// it the blurred value is turned into a distance by dividing by its gradient, so the Foam and Deep
+/// rings keep a constant width; further in, the Euclidean distance to the nearest dry cell takes
+/// over so wide ponds reach their Mid glow centre.
+pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
+    let r = SHORE_SEARCH;
+    let pad = 1; // for the gradient
+    let side = n as i32 + 1 + 2 * pad;
+    // wet mask over the window plus the search margin
+    let m = side + 2 * r;
+    let (mx0, my0) = (x0 - pad - r, y0 - pad - r);
+    let mut wet = vec![0.0f32; (m * m) as usize];
+    for j in 0..m {
+        for i in 0..m {
+            wet[(j * m + i) as usize] = (at(&s.water.depth, mx0 + i, my0 + j) > WET_EPS) as u8 as f32;
+        }
+    }
+    // separable blur: horizontal over the whole mask, then vertical into the window
+    let mut hb = vec![0.0f32; (m * m) as usize];
+    for j in 0..m {
+        for i in 2..m - 2 {
+            hb[(j * m + i) as usize] = (0..5).map(|k| BLUR5[k] * wet[(j * m + i + k as i32 - 2) as usize]).sum();
+        }
+    }
+    let mut blur = vec![0.0f32; (side * side) as usize];
+    let mut dist = vec![0.0f32; (side * side) as usize];
+    for j in 0..side {
+        for i in 0..side {
+            let (ci, cj) = (i + r, j + r);
+            blur[(j * side + i) as usize] = (0..5).map(|k| BLUR5[k] * hb[((cj + k as i32 - 2) * m + ci) as usize]).sum();
+            let w = wet[(cj * m + ci) as usize] > 0.5;
+            let mut best = (r * r + 1) as f32;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let d2 = (dx * dx + dy * dy) as f32;
+                    if d2 < best && (wet[((cj + dy) * m + ci + dx) as usize] > 0.5) != w {
+                        best = d2;
+                    }
+                }
+            }
+            let d = best.sqrt() - 0.5;
+            dist[(j * side + i) as usize] = if w { d } else { -d };
+        }
+    }
+    let mut out = Vec::with_capacity((n + 1) * (n + 1));
+    for j in 0..=n as i32 {
+        for i in 0..=n as i32 {
+            let (ci, cj) = (i + pad, j + pad);
+            let b = |dx: i32, dy: i32| blur[((cj + dy) * side + ci + dx) as usize];
+            let (gx, gy) = ((b(1, 0) - b(-1, 0)) * 0.5, (b(0, 1) - b(0, -1)) * 0.5);
+            let grad = (gx * gx + gy * gy).sqrt().max(0.1);
+            let near = ((b(0, 0) - SHORE_LEVEL) / grad).clamp(-3.0, 3.0);
+            let d = dist[(cj * side + ci) as usize];
+            // the gradient estimate overshoots where the blur flattens out
+            out.push(near.min(d + 1.0));
+        }
+    }
+    out
+}
+
+#[derive(Clone, Copy)]
+struct WV {
+    p: [f32; 3],
+    f: f32,
+    d: f32,
+}
+
+fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], f: l(a.f, b.f), d: l(a.d, b.d) }
+}
+
+/// Sutherland–Hodgman clip of a convex polygon to `f >= level` (`above`) or `f <= level`.
+fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
+    let inside = |v: &WV| if above { v.f >= level } else { v.f <= level };
+    let mut out = Vec::with_capacity(poly.len() + 2);
+    for k in 0..poly.len() {
+        let (a, b) = (&poly[k], &poly[(k + 1) % poly.len()]);
+        let (ia, ib) = (inside(a), inside(b));
+        if ia {
+            out.push(*a);
+        }
+        if ia != ib {
+            out.push(lerp_wv(a, b, (level - a.f) / (b.f - a.f)));
+        }
+    }
+    out
+}
+
+/// Colour (sRGB) and alpha of the water at shore distance `f` (cells) and depth `d`: Foam ring at
+/// the shore, Deep rim just inside it (and in really deep water), Shallow body, Mid glow centre.
+pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32) {
+    use crate::palette::{FOAM, WATER_MID_GLOW};
+    let foam = if in_foam { 1.0 } else { 0.0 };
+    let rim = 1.0 - smooth_step(0.6, 1.2, f);
+    let very_deep = smooth_step(2.2, 5.0, d);
+    let deep = rim.max(very_deep);
+    let glow = smooth_step(1.5, 2.5, f) * (1.0 - very_deep);
+    let mut c = mix_rgb(p.water_shallow, WATER_MID_GLOW, glow * 0.85);
+    c = mix_rgb(c, p.water_deep, deep * 0.95);
+    c = mix_rgb(c, FOAM, foam);
+    let mut a = 0.8 + 0.1 * deep + 0.15 * foam;
+    // ice: freezes from the shore inwards as winter deepens
+    let ice = if p.winter > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { 0.0 };
+    c = mix_rgb(c, p.ice, ice);
+    a += (0.86 - a) * ice;
+    (c, a.min(0.97))
+}
+
+/// Height of the displayed terrain at cell coordinates `(x, y)` when its chunk is meshed at `step`
+/// cells per vertex: the same triangles (diagonal from (1,0) to (0,1)) as `build_chunk_mesh`.
+fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
+    let st = step as f32;
+    let (gx, gy) = ((x / st).floor(), (y / st).floor());
+    let (u, v) = (x / st - gx, y / st - gy);
+    let (ix, iy) = (gx as i32 * step as i32, gy as i32 * step as i32);
+    let s1 = step as i32;
+    let h = |dx: i32, dy: i32| at(&s.height, ix + dx * s1, iy + dy * s1);
+    if u + v <= 1.0 {
+        let (ha, hb, hc) = (h(0, 0), h(1, 0), h(0, 1));
+        ha + u * (hb - ha) + v * (hc - ha)
+    } else {
+        let (hb, hc, he) = (h(1, 0), h(0, 1), h(1, 1));
+        he + (1.0 - u) * (hc - he) + (1.0 - v) * (hb - he)
+    }
+}
+
 /// Builds the water mesh for one chunk; `None` if it has no water at all.
+///
+/// The surface is a fine vertex grid (two vertices per cell when the terrain is at full detail)
+/// clipped along the zero line of a smooth shore-distance field (marching triangles), so outlines
+/// are smooth curves rather than cell staircases. A second cut at `FOAM_W` gives a crisp Foam ring
+/// of constant width along every bank; inside it the Deep rim, Shallow body and Mid glow centre
+/// follow the same distance. The sheet never dips below the terrain as displayed at `step`, so
+/// the ground never clips the foam away, at any level of detail.
 pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
-    let n = CHUNK / step;
-    let st = step as i32;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     let depth = |x: i32, y: i32| at(&s.water.depth, x, y);
-    // Surface level at a vertex: its own if wet, else the mean of wet neighbours (so the sheet
-    // runs flat into the bank and is clipped by the terrain), else None.
-    let level = |x: i32, y: i32| -> Option<(f32, f32)> {
-        let d = depth(x, y);
-        if d > WET_EPS {
-            return Some((at(&s.height, x, y) + d, d));
-        }
-        let (mut sum, mut cnt) = (0.0, 0);
-        for (dx, dy) in [(st, 0), (-st, 0), (0, st), (0, -st)] {
-            let dd = depth(x + dx, y + dy);
-            if dd > WET_EPS {
-                sum += at(&s.height, x + dx, y + dy) + dd;
-                cnt += 1;
-            }
-        }
-        (cnt > 0).then(|| (sum / cnt as f32, 0.0))
-    };
-    let side = n + 1;
-    let mut any = false;
-    let mut verts: Vec<Option<(f32, f32)>> = Vec::with_capacity(side * side);
-    for j in 0..=n {
-        for i in 0..=n {
-            let v = level(x0 + (i * step) as i32, y0 + (j * step) as i32);
-            any |= v.is_some_and(|(_, d)| d > 0.0);
-            verts.push(v);
-        }
-    }
-    if !any {
+    let full = shore_field(s, x0, y0, CHUNK);
+    if !full.iter().any(|&f| f > 0.0) {
         return None;
     }
-    let (mut pos, mut nor, mut col, mut uv, mut tan) = (vec![], vec![], vec![], vec![], vec![]);
-    for j in 0..=n {
-        for i in 0..=n {
-            let (x, y) = (x0 + (i * step) as i32, y0 + (j * step) as i32);
-            let (wx, wz) = world_pos(s, x, y);
-            let (lvl, d) = verts[j * side + i].unwrap_or((at(&s.height, x, y) - 1.0, 0.0));
-            pos.push([wx, lvl, wz]);
-            nor.push([0.0, 1.0, 0.0]);
-            tan.push([1.0, 0.0, 0.0, -1.0]);
-            uv.push([wx * 0.045, wz * 0.045]);
-            // depth-based tint: clear and pale in shallows, bluer when deep, never opaque
-            let deep = 1.0 - (-d * 0.45).exp();
-            let mut c = mix_rgb(p.water_shallow, p.water_deep, deep);
-            let mut a = if d > 0.0 { 0.30 + 0.14 * deep } else { 0.0 };
-            // soft foam-ish pale rim in the shallowest water
-            let rim = (1.0 - d / 0.12).clamp(0.0, 1.0) * if d > 0.0 { 1.0 } else { 0.0 };
-            c = mix_rgb(c, [1.0, 1.0, 1.0], rim * 0.25);
-            // ice: freezes from the shore inwards as winter deepens
-            let ice = if d > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { p.winter };
-            c = mix_rgb(c, p.ice, ice);
-            a = a + (0.86 - a) * ice * if d > 0.0 { 1.0 } else { 0.0 };
-            col.push(lin(c, a));
+    // per cell: (shore distance, water level, depth)
+    let cs = CHUNK + 1;
+    let mut cell = Vec::with_capacity(cs * cs);
+    for j in 0..cs as i32 {
+        for i in 0..cs as i32 {
+            let (x, y) = (x0 + i, y0 + j);
+            let h = at(&s.height, x, y);
+            let d = depth(x, y);
+            // water level: own if wet, else the mean of wet cells within two cells
+            let level = if d > WET_EPS {
+                h + d
+            } else {
+                let (mut sum, mut cnt) = (0.0, 0);
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let dd = depth(x + dx, y + dy);
+                        if dd > WET_EPS {
+                            sum += at(&s.height, x + dx, y + dy) + dd;
+                            cnt += 1;
+                        }
+                    }
+                }
+                if cnt > 0 { sum / cnt as f32 } else { h }
+            };
+            cell.push([full[j as usize * cs + i as usize], level, d.max(0.0)]);
         }
     }
-    let mut idx = Vec::new();
+    let sub = if step == 1 { 2 } else { 1 };
+    let n = CHUNK * sub;
+    let side = n + 1;
+    let mut verts: Vec<WV> = Vec::with_capacity(side * side);
+    for j in 0..=n {
+        for i in 0..=n {
+            let (fx, fy) = (i as f32 / sub as f32, j as f32 / sub as f32);
+            let (ci, cj) = ((i / sub).min(CHUNK - 1), (j / sub).min(CHUNK - 1));
+            let (u, v) = (fx - ci as f32, fy - cj as f32);
+            let g = |di: usize, dj: usize| cell[(cj + dj) * cs + ci + di];
+            let (c00, c10, c01, c11) = (g(0, 0), g(1, 0), g(0, 1), g(1, 1));
+            let bil = |k: usize| (c00[k] * (1.0 - u) + c10[k] * u) * (1.0 - v) + (c01[k] * (1.0 - u) + c11[k] * u) * v;
+            let (x, y) = (x0 as f32 + fx, y0 as f32 + fy);
+            let (wx, wz) = world_pos(s, x0, y0);
+            let ground = terrain_shown(s, x, y, step);
+            verts.push(WV { p: [wx + fx * CELL_SIZE, bil(1).max(ground + 0.05), wz + fy * CELL_SIZE], f: bil(0), d: bil(2) });
+        }
+    }
+    let (mut pos, mut col, mut uv) = (vec![], vec![], vec![]);
+    let mut emit = |poly: &[WV], in_foam: bool| {
+        for k in 1..poly.len().saturating_sub(1) {
+            for v in [&poly[0], &poly[k], &poly[k + 1]] {
+                pos.push(v.p);
+                uv.push([v.p[0] * 0.045, v.p[2] * 0.045]);
+                let (c, a) = water_color(p, v.f, v.d, in_foam);
+                col.push(lin(c, a));
+            }
+        }
+    };
     for j in 0..n {
         for i in 0..n {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
-            // per triangle, so the shoreline follows diagonals instead of stair-stepping
+            // same diagonal as the terrain mesh, so the sheet stays above the ground inside triangles too
             for tri in [[a, c, b], [b, c, e]] {
-                if tri.iter().any(|&k| verts[k].is_some_and(|(_, d)| d > 0.0)) && tri.iter().all(|&k| verts[k].is_some()) {
-                    idx.extend(tri.iter().map(|&k| k as u32));
+                let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
+                if t.iter().all(|v| v.f <= 0.0) {
+                    continue;
                 }
+                // shore cut, then the hard-edged Foam band, then one band per ring level
+                let mut rest = clip_poly(&t, 0.0, true);
+                for (k, lvl) in std::iter::once(FOAM_W).chain(RING_CUTS).enumerate() {
+                    if rest.len() < 3 {
+                        break;
+                    }
+                    if rest.iter().all(|v| v.f >= lvl) {
+                        continue;
+                    }
+                    if rest.iter().all(|v| v.f <= lvl) {
+                        emit(&rest, k == 0);
+                        rest.clear();
+                        break;
+                    }
+                    emit(&clip_poly(&rest, lvl, false), k == 0);
+                    rest = clip_poly(&rest, lvl, true);
+                }
+                emit(&rest, false);
             }
         }
     }
-    if idx.is_empty() {
+    if pos.is_empty() {
         return None;
     }
+    let count = pos.len();
     Some(
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nor)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; count])
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tan)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, -1.0]; count])
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-            .with_inserted_indices(Indices::U32(idx)),
+            .with_inserted_indices(Indices::U32((0..count as u32).collect())),
     )
+}
+
+/// Camera focus for the `pond` preset: the still pond with the most open banks (look-at point on its
+/// surface), so close screenshots show a whole pond with its rings.
+pub fn pond_view(s: &SimState) -> Option<Vec3> {
+    let g = &s.world.pond;
+    let (w, h) = (g.width(), g.height());
+    let is_pond = |x: usize, y: usize| g.get(x, y).copied().unwrap_or(false);
+    // one seed cell per pond (ponds are at least 16 cells apart)
+    let mut seeds: Vec<(usize, usize)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if is_pond(x, y) && !seeds.iter().any(|&(sx, sy)| sx.abs_diff(x) + sy.abs_diff(y) < 12) {
+                seeds.push((x, y));
+            }
+        }
+    }
+    // centroid of each pond, scored by how much vegetation (trees) crowds its banks
+    let (cxm, cym) = (w as f32 / 2.0, h as f32 / 2.0);
+    let (fx, fy) = seeds
+        .iter()
+        .map(|&(px, py)| {
+            let (mut sx, mut sy, mut c) = (0.0, 0.0, 0.0);
+            for y in py.saturating_sub(10)..(py + 11).min(h) {
+                for x in px.saturating_sub(10)..(px + 11).min(w) {
+                    if is_pond(x, y) {
+                        sx += x as f32;
+                        sy += y as f32;
+                        c += 1.0;
+                    }
+                }
+            }
+            let (fx, fy) = ((sx / c).round() as i32, (sy / c).round() as i32);
+            let mut veg = 0.0;
+            for dy in -8..=8 {
+                for dx in -8..=8 {
+                    veg += at(&s.ecology.vegetation, fx + dx, fy + dy).clamp(0.0, 1.0);
+                }
+            }
+            let centre = ((fx as f32 - cxm).powi(2) + (fy as f32 - cym).powi(2)).sqrt() / w as f32;
+            (veg + centre * 40.0, fx, fy)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, x, y)| (x, y))?;
+    let (wx, wz) = world_pos(s, fx, fy);
+    Some(Vec3::new(wx, at(&s.height, fx, fy) + at(&s.water.depth, fx, fy), wz))
+}
+
+fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn mix_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
@@ -209,6 +438,7 @@ fn update_water_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
     mut first: Local<bool>,
+    mut cursor: Local<usize>,
 ) {
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
     let (cols, rows) = chunk_dims(&sim.0);
@@ -217,19 +447,24 @@ fn update_water_chunks(
     }
     let mut budget = if *first { 10 } else { usize::MAX };
     *first = true;
+    // Rebuilds cost ~0.1-0.4 ms a chunk; spread a map-wide change (season step, flood) over frames.
+    let started = std::time::Instant::now();
+    let n_chunks = cols * rows;
     let palette = Palette::at(season.phase);
     // Ice only depends on the season while it is frozen-ish; recolour in coarse steps.
     let sea_bucket = season.bucket() as u64;
-    for cy in 0..rows {
-        for cx in 0..cols {
-            let idx = cy * cols + cx;
+    for k in 0..n_chunks {
+        {
+            let idx = (*cursor + k) % n_chunks;
+            let (cx, cy) = (idx % cols, idx / cols);
             let step = lod_step(campos, chunk_centre(&sim.0, cx, cy));
-            let hash = region_hash(&sim.0, cx, cy, 1, sea_bucket, false);
+            let hash = region_hash(&sim.0, cx, cy, WATER_PAD, sea_bucket, false);
             let slot = &mut water.slots[idx];
             if slot.hash == hash.max(1) && slot.step == step {
                 continue;
             }
-            if budget == 0 {
+            if budget == 0 || started.elapsed().as_secs_f32() > WATER_REBUILD_BUDGET_S {
+                *cursor = idx; // resume here next frame
                 return;
             }
             budget -= 1;
@@ -286,7 +521,7 @@ fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<A
     const SCALE: f32 = 1.6;
     let pos = Vec3::new(wx, bed + 0.9 * SCALE, wz);
     // beaver-ish: warm brown body with a flat tail and a yellow marker
-    let body = materials.add(StandardMaterial { base_color: Color::srgb(0.60, 0.33, 0.12), perceptual_roughness: 0.9, ..default() });
+    let body = materials.add(StandardMaterial { base_color: Color::srgb(crate::palette::FUR[0], crate::palette::FUR[1], crate::palette::FUR[2]), perceptual_roughness: 0.9, ..default() });
     commands
         .spawn((DemoObject, Transform::from_translation(pos).with_scale(Vec3::splat(SCALE)), Visibility::default()))
         .with_children(|c| {
@@ -394,6 +629,35 @@ mod tests {
         assert_eq!(bed, s.height.as_slice()[y * w + x]);
         // the basin is filled all the way to its rim: neighbours of the centre are wet too
         assert!(s.water.depth.as_slice()[y * w + x + 5] > 1.0);
+    }
+
+    /// Every wet chunk gets a mesh with a Foam ring at its shore and Deep/Shallow rings inside,
+    /// and rebuilding the whole map's water stays cheap (printed; `--nocapture`).
+    #[test]
+    fn water_rings_and_rebuild_cost() {
+        let s = SimState::new(1);
+        let p = Palette::at(0.3);
+        let (cols, rows) = chunk_dims(&s);
+        let foam = lin(crate::palette::FOAM, 1.0);
+        for step in [1, 2] {
+            let t = std::time::Instant::now();
+            let (mut wet, mut with_foam, mut tris) = (0, 0, 0);
+            for cy in 0..rows {
+                for cx in 0..cols {
+                    let Some(m) = build_water_mesh(&s, &p, cx, cy, step) else { continue };
+                    wet += 1;
+                    let Some(bevy::mesh::VertexAttributeValues::Float32x4(c)) = m.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colours") };
+                    tris += c.len() / 3;
+                    if c.iter().any(|v| (v[0] - foam[0]).abs() < 0.02 && (v[2] - foam[2]).abs() < 0.02) {
+                        with_foam += 1;
+                    }
+                }
+            }
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            println!("step {step}: {wet} wet chunks, {tris} triangles, {ms:.1} ms total, {:.3} ms/chunk", ms / wet.max(1) as f64);
+            assert!(wet > 0);
+            assert!(with_foam * 10 >= wet * 9, "foam ring in only {with_foam} of {wet} wet chunks");
+        }
     }
 
     #[test]

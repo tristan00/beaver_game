@@ -48,6 +48,7 @@ pub fn sync_sim_beavers(
         tr.translation = agent_world_pos(&sim.0, ag, pending.0);
         sprite.pose = pose_of(&sim.0, ag);
         sprite.load = load_of(ag);
+        sprite.wet = is_wet(&sim.0, ag);
         if let Some(y) = facing_of(&sim.0, ag) {
             sprite.yaw = y;
         }
@@ -63,7 +64,7 @@ pub fn sync_sim_beavers(
         let yaw = facing_of(&sim.0, ag).unwrap_or(0.0);
         commands.spawn((
             SimBeaver,
-            BeaverSprite { id: id.0, pose: pose_of(&sim.0, ag), load: load_of(ag), yaw },
+            BeaverSprite { id: id.0, pose: pose_of(&sim.0, ag), load: load_of(ag), yaw, wet: is_wet(&sim.0, ag) },
             Transform::from_translation(agent_world_pos(&sim.0, ag, 0.0)).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(WORLD_SCALE * 1.3)),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
         ));
