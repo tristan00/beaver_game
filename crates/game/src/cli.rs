@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag|resize] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -32,12 +32,14 @@ pub struct Cli {
     pub open: Option<String>,
     /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
     pub showcase: Option<String>,
+    /// Scripted order gesture (needs `--start 2`): `drag` sends a selected beaver to a dragged area; `resize` drags a work-area edge.
+    pub demo_orders: Option<String>,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -74,6 +76,13 @@ impl Cli {
                     }
                     cli.demo_place = Some(v);
                 }
+                "--demo-orders" => {
+                    let v = value("--demo-orders")?;
+                    if !["drag", "resize"].contains(&v.as_str()) {
+                        return Err(format!("--demo-orders: unknown scene '{v}' (drag|resize)"));
+                    }
+                    cli.demo_orders = Some(v);
+                }
                 "--open" => {
                     let v = value("--open")?;
                     if !crate::ui::shell::NavItem::ALL.iter().any(|n| n.label().eq_ignore_ascii_case(&v)) {
@@ -97,6 +106,9 @@ impl Cli {
         }
         if cli.demo_place.is_some() && cli.start != Some(Start::River) {
             return Err("--demo-place needs --start 1".into());
+        }
+        if cli.demo_orders.is_some() && cli.start != Some(Start::EarlyLake) {
+            return Err("--demo-orders needs --start 2".into());
         }
         Ok(cli)
     }
@@ -159,5 +171,12 @@ mod tests {
         assert!(p(&["--cam", "nope"]).is_err());
         assert!(p(&["--bogus"]).is_err());
     }
-}
 
+    #[test]
+    fn demo_orders_needs_start_two_and_a_known_scene() {
+        assert!(p(&["--demo-orders", "drag"]).is_err());
+        assert!(p(&["--start", "1", "--demo-orders", "drag"]).is_err());
+        assert!(p(&["--start", "2", "--demo-orders", "spin"]).is_err());
+        assert_eq!(p(&["--start", "2", "--demo-orders", "resize"]).unwrap().demo_orders.as_deref(), Some("resize"));
+    }
+}
