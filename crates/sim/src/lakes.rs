@@ -148,10 +148,21 @@ fn fill_lake(sim: &mut SimState, plan: &Plan) -> Result<(Vec<Cell>, f32), StartE
     // Trees and banks under the new water are gone.
     let drowned: HashSet<Cell> = p.flooded.iter().copied().collect();
     sim.resources.items.retain(|r| !drowned.contains(&r.cell));
+    clear_dam_trees(sim, &plan.cells);
     Ok((p.flooded, p.level))
 }
 
 // ───────────────────────────── placing things ─────────────────────────────
+
+/// Cells around a dam kept free of standing trees, so the dam can be reached and seen.
+pub const DAM_CLEAR: usize = 1;
+
+/// Removes every standing tree on a dam cell or within `DAM_CLEAR` cells of one.
+fn clear_dam_trees(sim: &mut SimState, dam: &[Cell]) {
+    sim.resources.items.retain(|r| {
+        !(r.kind == ResourceKind::Tree && dam.iter().any(|d| d.0.abs_diff(r.cell.0) <= DAM_CLEAR && d.1.abs_diff(r.cell.1) <= DAM_CLEAR))
+    });
+}
 
 /// Finds free dry ground for lodges, buildings and gathering spots, nearest an anchor.
 struct Placer {
@@ -604,6 +615,21 @@ mod tests {
             fold(s.height.as_slice()), fold(s.water.depth.as_slice()), fold(s.water.dam_height.as_slice()),
             s.water.sources, s.tech.unlocked_ids().collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn no_tree_stands_on_or_next_to_the_dam_and_trees_elsewhere_stay() {
+        for start in [Start::EarlyLake, Start::IndustrialLake] {
+            for seed in SEEDS {
+                let (s, info) = lake(start, seed);
+                let trees: Vec<Cell> = s.resources.items.iter().filter(|r| r.kind == ResourceKind::Tree).map(|r| r.cell).collect();
+                for &(tx, ty) in &trees {
+                    assert!(!info.dam.cells.iter().any(|d| d.0.abs_diff(tx) <= DAM_CLEAR && d.1.abs_diff(ty) <= DAM_CLEAR), "{start:?} seed {seed}: tree at {:?} by the dam", (tx, ty));
+                }
+                assert!(trees.len() >= 50, "{start:?} seed {seed}: only {} trees left", trees.len());
+                assert!(s.resources.items.iter().filter(|r| r.kind.is_solid()).all(|r| r.amount > 0.0));
+            }
+        }
     }
 
     #[test]
