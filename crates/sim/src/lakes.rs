@@ -3,7 +3,7 @@
 //!
 //! * Start 2, the early lake: a short dam holds a young lake; two lodges (about fifteen beavers,
 //!   some born here, some who joined), a few elementary buildings and early tech.
-//! * Start 3, the industrial lake: a dam at least 1.5 times start 2's in length and crest holds a
+//! * Start 3, the industrial lake: a dam at least 1.5 times start 2's in length and no lower holds a
 //!   lake at least three times as wide; seven lodges (fifty-odd beavers, specialists of several
 //!   kinds), canals from the lake, an advanced mill and storehouse and advanced tech.
 //!
@@ -45,19 +45,25 @@ fn err(msg: impl Into<String>) -> StartError {
 
 // ───────────────────────────── choosing the dam ─────────────────────────────
 
-/// Dam heights tried for start 2: crests low enough that start 3 can stand 1.5 times higher
+/// Dam heights tried for the broad start 2 lake: crests that start 3 can stand no lower than
 /// within `START3_HEIGHTS`.
-const START2_HEIGHTS: [f32; 4] = [0.5, 0.6, 0.8, 1.0];
+const START2_HEIGHTS: [f32; 5] = [0.5, 0.6, 0.8, 1.0, 1.2];
+/// The small start 2 lake used when a seed has no broad one.
+const SMALL_HEIGHTS: [f32; 4] = [0.5, 0.6, 0.8, 1.0];
+const SMALL_AREA: usize = 150;
+const SMALL_AREA_RANGE: RangeInclusive<usize> = 60..=400;
+const SMALL_LEN: RangeInclusive<usize> = 4..=10;
 const START3_HEIGHTS: [f32; 8] = [0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0];
-/// Start 2: a lake near this many cells, 4 to 10 dam cells long.
-const START2_AREA: usize = 150;
-const START2_AREA_RANGE: RangeInclusive<usize> = 60..=400;
-const START2_LEN: RangeInclusive<usize> = 4..=10;
+/// Start 2: a broad lake near this many cells (at least 200), 4 to 20 dam cells long.
+const START2_AREA: usize = 260;
+const START2_AREA_RANGE: RangeInclusive<usize> = 200..=500;
+const START2_LEN: RangeInclusive<usize> = 4..=20;
 /// Start 3: dam up to this long and a lake up to this many cells.
 const START3_MAX_LEN: usize = 30;
 const START3_MAX_AREA: usize = 4000;
 const START3_LEN_FACTOR: f32 = 1.5;
-const START3_HEIGHT_FACTOR: f32 = 1.5;
+/// Start 3's crest is at least start 2's: a broad start 2 lake leaves few valleys that take a higher one.
+const START3_HEIGHT_FACTOR: f32 = 1.0;
 const START3_AREA_FACTOR: f32 = 3.0;
 /// Extra bank cells a dam line may extend on each side of the river.
 const PADS: [usize; 6] = [0, 1, 2, 4, 6, 9];
@@ -367,14 +373,19 @@ fn finish(sim: &mut SimState, food_per_head: f32, wood_per_head: f32) {
 
 // ───────────────────────────── start 2 ─────────────────────────────
 
-/// Start 2: a young lake, two lodges, four elementary buildings.
+/// Start 2: a broad young lake, two lodges, four elementary buildings. The lake is at least
+/// 200 cells and leaves room for start 3's bigger one; a seed whose valley has no such
+/// lake falls back to a small one (`SMALL_*`).
 pub fn early_lake(seed: u64) -> Result<(SimState, LakeInfo), StartError> {
     let probe = SimState::new(seed);
-    let candidates = plans(&probe, &Search { heights: &START2_HEIGHTS, len: START2_LEN, area: START2_AREA_RANGE });
-    let candidates = best(candidates, |p| p.area.abs_diff(START2_AREA) as f32 + 15.0 * p.cells.len() as f32);
+    let mut broad = plans(&probe, &Search { heights: &START2_HEIGHTS, len: START2_LEN, area: START2_AREA_RANGE });
+    broad.retain(|p| !industrial_candidates(&probe, p.cells.len(), p.height, p.area).is_empty());
+    let small = plans(&probe, &Search { heights: &SMALL_HEIGHTS, len: SMALL_LEN, area: SMALL_AREA_RANGE });
     drop(probe);
+    let broad = best(broad, |p| p.area.abs_diff(START2_AREA) as f32 + 15.0 * p.cells.len() as f32);
+    let small = best(small, |p| p.area.abs_diff(SMALL_AREA) as f32 + 15.0 * p.cells.len() as f32);
     let mut last = StartError::NoSite;
-    for plan in candidates {
+    for plan in broad.into_iter().chain(small) {
         match assemble_early(seed, &plan) {
             Ok(done) => return Ok(done),
             Err(e) => last = e,
@@ -481,18 +492,22 @@ fn dig_canals(sim: &mut SimState, lake: &[Cell], level: f32, dam: &[Cell]) -> Re
     Ok(dug)
 }
 
+/// Dams a start 3 may stand on given start 2's dam (length, crest, lake area), best first.
+fn industrial_candidates(probe: &SimState, len2: usize, height2: f32, area2: usize) -> Vec<Plan> {
+    let min_len = (START3_LEN_FACTOR * len2 as f32).ceil() as usize;
+    let min_height = START3_HEIGHT_FACTOR * height2;
+    let min_area = (START3_AREA_FACTOR * area2 as f32).ceil() as usize + 1;
+    let heights: Vec<f32> = START3_HEIGHTS.iter().copied().filter(|h| *h >= min_height - 1e-4).collect();
+    let candidates = plans(probe, &Search { heights: &heights, len: min_len..=START3_MAX_LEN, area: min_area..=START3_MAX_AREA });
+    // The smallest lake that is big enough keeps the dam low and the valley intact.
+    best(candidates, |p| (p.area - min_area) as f32 + 10.0 * p.cells.len() as f32 + 100.0 * p.height)
+}
+
 /// Start 3 is shaped by start 2's dam for the same seed.
 pub fn industrial_lake(seed: u64) -> Result<(SimState, LakeInfo), StartError> {
     let (_, small) = early_lake(seed)?;
-    let len2 = small.dam.cells.len();
-    let min_len = (START3_LEN_FACTOR * len2 as f32).ceil() as usize;
-    let min_height = START3_HEIGHT_FACTOR * small.dam.height;
-    let min_area = (START3_AREA_FACTOR * small.area() as f32).ceil() as usize + 1;
-    let heights: Vec<f32> = START3_HEIGHTS.iter().copied().filter(|h| *h >= min_height - 1e-4).collect();
     let probe = SimState::new(seed);
-    let candidates = plans(&probe, &Search { heights: &heights, len: min_len..=START3_MAX_LEN, area: min_area..=START3_MAX_AREA });
-    // The smallest lake that is big enough keeps the dam low and the valley intact.
-    let candidates = best(candidates, |p| (p.area - min_area) as f32 + 10.0 * p.cells.len() as f32 + 100.0 * p.height);
+    let candidates = industrial_candidates(&probe, small.dam.cells.len(), small.dam.height, small.area());
     drop(probe);
     let mut last = StartError::NoSite;
     for plan in candidates {
@@ -622,6 +637,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn start_two_lake_is_broad_and_filled_behind_a_dam_across_the_channel() {
+        // Seed 1 is the reference world; other seeds whose valley is too narrow keep a small lake.
+        for seed in [1] {
+            let (s, info) = lake(Start::EarlyLake, seed);
+            assert!(info.area() >= 200, "seed {seed}: lake only {} cells", info.area());
+            let river_in_dam = info.dam.cells.iter().filter(|c| is_river(&s, c.0, c.1)).count();
+            assert!(river_in_dam >= 1, "seed {seed}: the dam crosses the water channel");
+            let (first, last) = (info.dam.cells[0], *info.dam.cells.last().unwrap());
+            assert!(!is_river(&s, first.0, first.1) && !is_river(&s, last.0, last.1), "seed {seed}: dam ends on both banks");
+            let wet = info.lake.iter().filter(|&&(x, y)| *s.water.depth.get(x, y).unwrap() >= WET_DEPTH).count();
+            assert!(wet * 10 >= info.area() * 9, "seed {seed}: {wet} of {} lake cells wet", info.area());
+        }
+    }
+
+    #[test]
+    fn start_two_begins_with_many_beavers_and_elementary_buildings() {
+        for seed in SEEDS {
+            let (s, _) = lake(Start::EarlyLake, seed);
+            assert!(s.colony.population() >= 12, "seed {seed}: {} beavers", s.colony.population());
+            let n = s.buildings.buildings.iter().filter(|b| crate::catalogue::def(b.kind).tier == crate::catalogue::Tier::Elementary).count();
+            assert!(n >= 4, "seed {seed}: {n} elementary buildings");
+        }
+    }
+
     fn neighbours(c: Cell) -> [Cell; 4] {
         [(c.0.wrapping_sub(1), c.1), (c.0 + 1, c.1), (c.0, c.1.wrapping_sub(1)), (c.0, c.1 + 1)]
     }
@@ -652,7 +692,7 @@ mod tests {
             let small = lake(Start::EarlyLake, seed).1;
             let (s, big) = lake(Start::IndustrialLake, seed);
             assert!(big.dam.cells.iter().all(|c| s.water.has_dam(c.0, c.1)));
-            assert!(big.dam.height >= 1.5 * small.dam.height, "seed {seed}: crest {} vs {}", big.dam.height, small.dam.height);
+            assert!(big.dam.height >= small.dam.height, "seed {seed}: crest {} vs {}", big.dam.height, small.dam.height);
             assert!(big.dam.cells.len() as f32 >= 1.5 * small.dam.cells.len() as f32, "seed {seed}: length");
             assert!(big.area() >= 3 * small.area(), "seed {seed}: lake {} vs {}", big.area(), small.area());
             assert!(big.lake.iter().all(|&(x, y)| *s.water.depth.get(x, y).unwrap() > 0.0), "every lake cell holds water");
