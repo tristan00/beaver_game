@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--midgame] [--demo-dam] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--midgame] [--demo-dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -22,12 +22,14 @@ pub struct Cli {
     pub demo_dam: bool,
     /// Start from a seeded mid-game colony (settled, a year-plus old, trade open, events pending) instead of scouting.
     pub midgame: bool,
+    /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
+    pub showcase: Option<String>,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, midgame: false, demo_dam: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, midgame: false, demo_dam: false, showcase: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -52,6 +54,13 @@ impl Cli {
                     cli.autoplay_settle = true;
                 }
                 "--midgame" => cli.midgame = true,
+                "--showcase" => {
+                    let v = value("--showcase")?;
+                    if !["poses", "world"].contains(&v.as_str()) {
+                        return Err(format!("--showcase: unknown scene '{v}' (poses|world)"));
+                    }
+                    cli.showcase = Some(v);
+                }
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }
