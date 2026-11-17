@@ -13,7 +13,8 @@ pub struct Cli {
     /// When set, wait until the terrain is drawn (and at least `frames` frames ran), save a PNG here and exit.
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
-    /// Render the 5000-tree / 300-beaver stress scene, log frame times, then exit.
+    /// Render the 5000-tree / 300-beaver stress scene, log frame times, then exit (non-zero if any
+    /// measured frame took 16 ms or more).
     pub stress: bool,
 }
 

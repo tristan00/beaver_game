@@ -1,1 +1,3 @@
-stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 2.44, median 2.40, p95 3.20, p99 3.64, max 4.39 | budget 16 ms: PASS (p99 < 16 ms)
+exit=0 cam=iso run 1: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 2.06, median 2.02, p95 2.63, p99 2.94, max 3.29 | main-world cpu ms: median 1.62, max 2.60 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+exit=0 cam=iso run 2: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 2.19, median 2.16, p95 2.72, p99 3.04, max 3.27 | main-world cpu ms: median 1.69, max 2.54 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+exit=0 cam=iso run 3: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 2.65, median 2.69, p95 3.38, p99 3.85, max 6.72 | main-world cpu ms: median 1.95, max 5.89 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)

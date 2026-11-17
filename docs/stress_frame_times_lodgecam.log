@@ -1,1 +1,3 @@
-stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 2.17, median 2.14, p95 2.64, p99 2.91, max 3.10 | budget 16 ms: PASS (p99 < 16 ms)
+exit=0 cam=lodge run 1: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 3.03, median 2.97, p95 3.53, p99 3.91, max 4.22 | main-world cpu ms: median 2.16, max 3.30 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+exit=0 cam=lodge run 2: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 3.04, median 2.98, p95 3.57, p99 4.41, max 6.44 | main-world cpu ms: median 2.15, max 4.50 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+exit=0 cam=lodge run 3: stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 3.05, median 2.98, p95 3.63, p99 4.28, max 5.34 | main-world cpu ms: median 2.15, max 3.77 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)

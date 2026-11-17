@@ -1,4 +1,4 @@
-﻿//! Renders beavers, trees, lodges, dams, canals, burrows, workshops, water wheels, docks and barges
+//! Renders beavers, trees, lodges, dams, canals, burrows, workshops, water wheels, docks and barges
 //! as round, cute, procedural low-poly models.
 //!
 //! * `entities_render/meshgen.rs` – vertex-coloured mesh toolkit.
@@ -19,7 +19,7 @@ use crate::cli::Cli;
 use crate::state::Sim;
 use bevy::app::AppExit;
 use bevy::prelude::*;
-use bevy::window::{PresentMode, PrimaryWindow};
+use bevy::window::{PresentMode, PrimaryWindow, WindowLevel};
 use meshgen::Mb;
 use models::Season;
 use scene::*;
@@ -43,7 +43,10 @@ impl Plugin for EntitiesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderClock>()
             .init_resource::<CurrentSeason>()
+            .init_resource::<FrameWork>()
             .add_systems(Startup, (init_models, setup_stress_window))
+            .add_systems(First, frame_work_start)
+            .add_systems(Last, frame_work_end)
             .add_systems(
                 Update,
                 (
@@ -207,11 +210,13 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     });
 }
 
-/// Stress mode measures real throughput, so turn vsync off.
+/// Stress mode measures real throughput, so turn vsync off. Keep the window on top: Windows throttles
+/// presentation of covered windows to the display refresh, which would measure the desktop, not us.
 fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
     if cli.stress {
         for mut w in &mut windows {
             w.present_mode = PresentMode::AutoNoVsync;
+            w.window_level = WindowLevel::AlwaysOnTop;
         }
     }
 }
@@ -562,9 +567,30 @@ fn spin_wheels(time: Res<Time>, mut q: Query<(&mut Transform, &WheelSpin)>) {
 // ---------------------------------------------------------------------------------------------
 
 const STRESS_WARMUP: u32 = 240;
-const STRESS_FRAMES: usize = 900;
 
-fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderScene>>, mut samples: Local<Vec<f32>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+/// Main-world CPU time of the current frame (First..Last), to tell our own work apart from
+/// render/present/OS stalls when a frame goes over budget.
+#[derive(Resource, Default)]
+struct FrameWork {
+    start: Option<std::time::Instant>,
+    last_ms: f32,
+    last_sim_ms: f32,
+}
+
+fn frame_work_start(mut w: ResMut<FrameWork>) {
+    w.start = Some(std::time::Instant::now());
+}
+
+fn frame_work_end(mut w: ResMut<FrameWork>, sim_ms: Res<crate::state::SimStepMs>) {
+    if let Some(s) = w.start {
+        w.last_ms = s.elapsed().as_secs_f32() * 1000.0;
+    }
+    w.last_sim_ms = sim_ms.0;
+}
+const STRESS_FRAMES: usize = 900;
+const STRESS_BUDGET_MS: f32 = 16.0;
+
+fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderScene>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, f32)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     if !cli.stress {
         return;
     }
@@ -573,6 +599,8 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderS
         return;
     }
     samples.push(time.delta_secs() * 1000.0);
+    // `delta` measures the previous frame, whose main-world work is `work.last_ms`.
+    works.push((work.last_ms, work.last_sim_ms));
     if samples.len() < STRESS_FRAMES {
         return;
     }
@@ -580,22 +608,35 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderS
     s.sort_by(|a, b| a.total_cmp(b));
     let avg = s.iter().sum::<f32>() / s.len() as f32;
     let pct = |p: f32| s[((s.len() as f32 * p) as usize).min(s.len() - 1)];
+    let max = s[s.len() - 1];
+    // Every frame counts: a single hitch over budget is a visible stutter, so the gate is the max.
+    let over: Vec<String> = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, ms)| **ms >= STRESS_BUDGET_MS)
+        .map(|(i, ms)| format!("#{i}={ms:.2}(cpu {:.2}, sim {:.2})", works[i].0, works[i].1))
+        .collect();
+    let mut w: Vec<f32> = works.iter().map(|w| w.0).collect();
+    w.sort_by(|a, b| a.total_cmp(b));
     let (trees, beavers) = scene.map(|sc| (sc.trees.len(), sc.beavers.len())).unwrap_or((0, 0));
     let line = format!(
-        "stress scene: {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {:.2} | budget 16 ms: {}",
+        "stress scene: {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
         s.len(),
         pct(0.5),
         pct(0.95),
         pct(0.99),
-        s[s.len() - 1],
-        if pct(0.99) < 16.0 { "PASS (p99 < 16 ms)" } else { "FAIL" },
+        w[w.len() / 2],
+        w[w.len() - 1],
+        over.len(),
+        if over.is_empty() { String::new() } else { format!(" [{}]", over.join(" ")) },
+        if over.is_empty() { "PASS (every frame < 16 ms)" } else { "FAIL" },
     );
     info!("{line}");
     let path = std::env::var("BEAVER_STRESS_LOG").unwrap_or_else(|_| "stress_frame_times.log".into());
     if let Err(e) = std::fs::write(&path, format!("{line}\n")) {
         error!("cannot write {path}: {e}");
     }
-    exit.write(AppExit::Success);
+    exit.write(if over.is_empty() { AppExit::Success } else { AppExit::error() });
 }
 
 #[cfg(test)]
