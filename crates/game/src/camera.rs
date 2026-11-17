@@ -34,6 +34,8 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "iso" => (0.8, 0.7, 150.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
+        // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
+        "lodge" => (0.0, 0.55, 32.0),
         _ => return None,
     };
     Some(OrbitCamera { target, yaw, pitch, distance })
@@ -47,7 +49,12 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         let name = app.world().resource::<crate::cli::Cli>().cam.clone();
-        let orbit = preset(&name).expect("preset validated by Cli::parse");
+        let mut orbit = preset(&name).expect("preset validated by Cli::parse");
+        if name == "lodge" {
+            let (target, yaw) = crate::entities_render::lodge_view(&app.world().resource::<crate::state::Sim>().0.height);
+            orbit.target = target;
+            orbit.yaw = yaw;
+        }
         app.insert_resource(orbit)
             .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.92)))
             .add_systems(Startup, spawn_camera)
