@@ -1,0 +1,1 @@
+stress scene (stub itinerary scene): 4950 trees, 300 beavers | 900 frames | frame time ms: avg 2.71, median 2.81, p95 3.30, p99 3.53, max 3.88 | main-world cpu ms: median 1.68, max 2.67 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)

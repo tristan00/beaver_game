@@ -685,7 +685,7 @@ fn frame_work_end(mut w: ResMut<FrameWork>, win: Query<&Window, With<PrimaryWind
 const STRESS_FRAMES: usize = 900;
 const STRESS_BUDGET_MS: f32 = 16.0;
 
-fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderScene>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, bool)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), With<BeaverSprite>>, drawn_trees: Query<(), With<TreeLod>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, bool)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     if !cli.stress {
         return;
     }
@@ -714,9 +714,11 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderS
     let unfocused = works.iter().filter(|w| !w.1).count();
     let mut w: Vec<f32> = works.iter().map(|w| w.0).collect();
     w.sort_by(|a, b| a.total_cmp(b));
-    let (trees, beavers) = scene.map(|sc| (sc.trees.len(), sc.beavers.len())).unwrap_or((0, 0));
+    // Count what is actually drawn, so the sim-driven run (`BC_STRESS_SIM=1`) reports its own world.
+    let (trees, beavers) = (drawn_trees.iter().count(), drawn_beavers.iter().count());
+    let source = if stub_mode(&cli) { "stub itinerary scene" } else { "live sim world" };
     let line = format!(
-        "stress scene: {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | unfocused frames: {unfocused} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
+        "stress scene ({source}): {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | unfocused frames: {unfocused} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
         s.len(),
         pct(0.5),
         pct(0.95),

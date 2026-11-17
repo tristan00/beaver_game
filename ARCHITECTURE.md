@@ -84,5 +84,6 @@ step, which is 0 in a stepped scene), plus entities for `sim.resources` (standin
 the logs left, mud, stone, plants) and `sim.buildings` (sites by `work.progress` stage 0-2, finished
 stage 3). `attach_rigs` adds the animated body; `animate_beavers` only eases heading and blends poses.
 `--stress` still draws the fixed 5000-tree / 300-beaver stub scene; `BC_STRESS_SIM=1 --stress --midgame`
-measures the live sim-driven world. `--showcase poses|world` (`showcase.rs`, `BC_STATION=0..5`) stages
+measures the live sim-driven world, filled to 300 beavers with the clock running (the log names which
+scene ran and counts the beaver sprites and trees actually drawn). `--showcase poses|world` (`showcase.rs`, `BC_STATION=0..5`) stages
 still scenes; `tools/contact_sheet.py` tiles the six pose shots. Test: `cargo test -p game sim_tests`.
