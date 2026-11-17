@@ -14,18 +14,11 @@
 use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
 use std::fmt;
+pub use crate::tuning::water::*;
 
 /// Grid coordinate `(x, y)`.
 pub type Cell = (usize, usize);
 
-/// Days in one season; a year is four seasons: spring, summer, autumn, winter.
-pub const SEASON_DAYS: f64 = 30.0;
-/// Depth below which a cell counts as dry (for ice formation).
-pub const WET_EPS: f32 = 0.01;
-/// Vegetation density above which a cell counts as holding trees.
-pub const TREE_VEGETATION: f32 = 0.5;
-/// Maximum ice thickness.
-pub const MAX_ICE: f32 = 1.0;
 
 const FLOW_STEPS_PER_DAY: f32 = 100.0;
 const MAX_SUBSTEPS: usize = 4;
@@ -51,13 +44,13 @@ impl Season {
     }
     /// River inflow multiplier: spring melt floods, summer drought.
     pub fn inflow_mult(self) -> f32 {
-        match self { Season::Spring => 3.0, Season::Summer => 0.3, Season::Autumn => 0.8, Season::Winter => 0.1 }
+        INFLOW_MULT[self as usize]
     }
     pub fn rain_mult(self) -> f32 {
-        match self { Season::Spring => 1.2, Season::Summer => 0.4, Season::Autumn => 1.5, Season::Winter => 0.3 }
+        RAIN_MULT[self as usize]
     }
     pub fn evap_mult(self) -> f32 {
-        match self { Season::Spring => 1.0, Season::Summer => 3.0, Season::Autumn => 0.8, Season::Winter => 0.2 }
+        EVAP_MULT[self as usize]
     }
 }
 
@@ -81,14 +74,20 @@ pub struct WaterConfig {
 impl Default for WaterConfig {
     fn default() -> Self {
         Self {
-            rain: 0.01, evaporation: 0.01, seepage: 0.002,
-            dam_decay_per_day: 0.002, overtop_erosion: 1.0, overtop_depth: 0.05,
-            ice_growth_per_day: 0.1, ice_melt_per_day: 0.15, open_edges: true,
+            rain: RAIN,
+            evaporation: EVAPORATION,
+            seepage: SEEPAGE,
+            dam_decay_per_day: DAM_DECAY_PER_DAY,
+            overtop_erosion: OVERTOP_EROSION,
+            overtop_depth: OVERTOP_DEPTH,
+            ice_growth_per_day: ICE_GROWTH_PER_DAY,
+            ice_melt_per_day: ICE_MELT_PER_DAY,
+            open_edges: true,
         }
     }
 }
 
-/// River inflow point; `rate` is depth added per day at base (spring is 3x, summer 0.3x).
+/// River inflow point; `rate` is depth added per day at base, scaled by `Season::inflow_mult`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Source { pub x: usize, pub y: usize, pub rate: f32 }
 

@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--autoplay-settle] [--demo-dam] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--midgame] [--demo-dam] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -13,16 +13,21 @@ pub struct Cli {
     /// When set, wait until the terrain is drawn (and at least `frames` frames ran), save a PNG here and exit.
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
+    /// Render the 5000-tree / 300-beaver stress scene, log frame times, then exit (non-zero if any
+    /// measured frame took 16 ms or more).
+    pub stress: bool,
     /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
     pub autoplay_settle: bool,
     /// Scripted dam preview (implies `--autoplay-settle`): settle, stock stores, draw a dam, hold the preview for `--screenshot`.
     pub demo_dam: bool,
+    /// Start from a seeded mid-game colony (settled, a year-plus old, trade open, events pending) instead of scouting.
+    pub midgame: bool,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, autoplay_settle: false, demo_dam: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, midgame: false, demo_dam: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -40,11 +45,13 @@ impl Cli {
                         return Err(format!("--cam: unknown preset '{}'", cli.cam));
                     }
                 }
+                "--stress" => cli.stress = true,
                 "--autoplay-settle" => cli.autoplay_settle = true,
                 "--demo-dam" => {
                     cli.demo_dam = true;
                     cli.autoplay_settle = true;
                 }
+                "--midgame" => cli.midgame = true,
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }

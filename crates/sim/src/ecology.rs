@@ -5,25 +5,8 @@ use crate::SimError;
 use crate::grid::{Grid, VegetationGrid, WaterGrid};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
+pub use crate::tuning::ecology::*;
 
-/// Days per season; wetland formation is counted in seasons.
-pub const SEASON_DAYS: f32 = 30.0;
-/// Water deeper than this (world units) counts as flooding the cell.
-pub const FLOOD_DEPTH: f32 = 0.05;
-/// Trees drown once a cell has been flooded this long and is at least `DROWN_DEPTH` deep.
-pub const DROWN_FLOOD_DAYS: f32 = 20.0;
-pub const DROWN_DEPTH: f32 = 0.15;
-/// Forest density lost per flooded day once drowning starts.
-pub const DROWN_RATE: f32 = 0.1;
-/// Seasons of continuous flooding before a shallow cell turns to wetland.
-pub const WETLAND_SEASONS: f32 = 2.0;
-/// Deeper than this is open water, never wetland.
-pub const WETLAND_MAX_DEPTH: f32 = 1.5;
-/// Days after a felling during which the cell cannot regrow.
-pub const CUT_COOLDOWN_DAYS: f32 = 90.0;
-/// Distance (cells) beyond which water / lodges give no protection.
-pub const SAFE_RANGE: f32 = 12.0;
-const PREDATOR_RANGE: f32 = 10.0;
 const MAX_SUBSTEP_DAYS: f32 = 1.0;
 
 /// Predator species. Eagles fly over water; the rest roam land only.
@@ -33,11 +16,11 @@ pub enum PredatorKind { Wolf, Lynx, Bear, Eagle }
 impl PredatorKind {
     /// Cells moved per day.
     fn speed(self) -> f32 {
-        match self { Self::Wolf => 2.5, Self::Lynx => 1.5, Self::Bear => 1.0, Self::Eagle => 4.0 }
+        predator_speed(self)
     }
     /// Threat weight in the danger field.
     fn threat(self) -> f32 {
-        match self { Self::Wolf => 1.0, Self::Lynx => 0.7, Self::Bear => 0.9, Self::Eagle => 0.5 }
+        predator_threat(self)
     }
 }
 
@@ -106,11 +89,10 @@ impl Ecology {
     pub fn seeded(size: usize, seed: u64) -> Self {
         let g = |v: f32| Grid::new(size, size, v);
         let mut rng = Pcg32::seed_from_u64(seed ^ 0xEC01_06E5);
-        let mut forest = g(0.8);
-        for v in forest.as_mut_slice() { *v = 0.6 + 0.4 * unit(&mut rng); }
+        let mut forest = g(0.0);
+        for v in forest.as_mut_slice() { *v = START_FOREST_MIN + START_FOREST_SPREAD * unit(&mut rng); }
         let mut predators = Vec::new();
-        for kind in [PredatorKind::Wolf, PredatorKind::Wolf, PredatorKind::Lynx, PredatorKind::Bear,
-                     PredatorKind::Eagle, PredatorKind::Eagle] {
+        for kind in START_PREDATORS {
             predators.push(Predator { kind, x: unit(&mut rng) * size as f32, y: unit(&mut rng) * size as f32 });
         }
         let mut e = Self {
@@ -192,7 +174,7 @@ impl Ecology {
             let depth = water.as_slice()[i];
             let flooded = depth > FLOOD_DEPTH;
             let fd = &mut self.flood_days.as_mut_slice()[i];
-            *fd = if flooded { *fd + dt } else { (*fd - 2.0 * dt).max(0.0) };
+            *fd = if flooded { *fd + dt } else { (*fd - FLOOD_DAYS_DRAIN_RATE * dt).max(0.0) };
             let fd = *fd;
             // Drowning: flooded trees die and leave snags.
             let forest = &mut self.forest.as_mut_slice()[i];
@@ -202,14 +184,14 @@ impl Ecology {
                 *forest -= lost;
                 *snags = clamp01(*snags + lost);
             }
-            // Snags rot over about two years.
-            *snags = (*snags - dt / 730.0).max(0.0);
+            // Snags rot over `SNAG_ROT_DAYS`.
+            *snags = (*snags - dt / SNAG_ROT_DAYS).max(0.0);
             // Wetland forms on long-flooded shallow cells; drained wetland becomes meadow.
             let wetland = &mut self.wetland.as_mut_slice()[i];
             if flooded && fd >= wet_days && depth <= WETLAND_MAX_DEPTH {
                 *wetland = clamp01(*wetland + dt / SEASON_DAYS);
             } else if !flooded || depth > WETLAND_MAX_DEPTH {
-                let shift = (dt / (2.0 * SEASON_DAYS)).min(*wetland);
+                let shift = (dt / (WETLAND_DRAIN_SEASONS * SEASON_DAYS)).min(*wetland);
                 *wetland -= shift;
                 if !flooded { self.meadow.as_mut_slice()[i] += shift; }
             }
@@ -230,7 +212,7 @@ impl Ecology {
                 let cap = 1.0 - self.wetland.as_slice()[i];
                 let f = &mut self.forest.as_mut_slice()[i];
                 if *f < cap {
-                    let rate = 0.0005 + 0.01 * *f + 0.01 * neighbours;
+                    let rate = FOREST_GROWTH_BASE + FOREST_GROWTH_SELF * *f + FOREST_GROWTH_SPREAD * neighbours;
                     *f = (*f + dt * rate * (cap - *f)).min(cap);
                 }
             }
@@ -239,7 +221,7 @@ impl Ecology {
             let room = (1.0 - self.forest.as_slice()[i] - self.wetland.as_slice()[i]).max(0.0);
             let m = &mut self.meadow.as_mut_slice()[i];
             // Meadow gives way to forest slowly and never exceeds free ground.
-            *m = (*m - dt / 730.0).max(0.0).min(room);
+            *m = (*m - dt / MEADOW_REGROW_DAYS).max(0.0).min(room);
         }
         self.move_predators(dt, water);
         self.relax_wildlife(dt);
@@ -253,7 +235,7 @@ impl Ecology {
             let nx = (p.x + ang.cos() * step).clamp(0.0, n - 0.001);
             let ny = (p.y + ang.sin() * step).clamp(0.0, n - 0.001);
             let blocked = p.kind != PredatorKind::Eagle
-                && water.get(nx as usize, ny as usize).is_some_and(|d| *d > 0.3);
+                && water.get(nx as usize, ny as usize).is_some_and(|d| *d > PREDATOR_MAX_WADE_DEPTH);
             if !blocked { p.x = nx; p.y = ny; }
         }
     }
@@ -261,19 +243,19 @@ impl Ecology {
     /// Wetland-linked wildlife relaxes toward targets set by nearby wetland.
     fn relax_wildlife(&mut self, dt: f32) {
         let n = self.size();
-        let k = clamp01(dt * 0.05);
+        let k = clamp01(dt * WILDLIFE_RATE);
         let blurred = blur(&self.wetland);
         for i in 0..n * n {
             let w = blurred.as_slice()[i];
             let forest = self.forest.as_slice()[i];
-            let stagnation = clamp01(self.flood_days.as_slice()[i] / 120.0);
+            let stagnation = clamp01(self.flood_days.as_slice()[i] / STAGNANT_FLOOD_DAYS);
             let targets = [
                 (&mut self.fish, w),
-                (&mut self.waterfowl, w * (1.0 - 0.5 * forest)),
+                (&mut self.waterfowl, w * (1.0 - WATERFOWL_FOREST_SHYNESS * forest)),
                 (&mut self.frogs, w),
-                (&mut self.herons, w * 0.5 * (w + w)),
-                (&mut self.mosquitoes, w * (0.3 + 0.7 * stagnation)),
-                (&mut self.otters, w * 0.6 * w),
+                (&mut self.herons, w * HERON_SCALE * (w + w)),
+                (&mut self.mosquitoes, w * (MOSQUITO_BASE + MOSQUITO_STAGNATION * stagnation)),
+                (&mut self.otters, w * OTTER_SCALE * w),
             ];
             for (g, t) in targets {
                 let v = &mut g.as_mut_slice()[i];
@@ -290,9 +272,9 @@ impl Ecology {
         for i in 0..n * n {
             let s = |g: &Grid<f32>| g.as_slice()[i];
             let (forest, meadow, wetland) = (s(&self.forest), s(&self.meadow), s(&self.wetland));
-            self.vegetation.as_mut_slice()[i] = clamp01(forest + 0.5 * meadow + 0.5 * wetland);
-            let wild_food = 0.8 * s(&self.fish) + 0.6 * s(&self.waterfowl) + 0.2 * s(&self.frogs);
-            self.food.as_mut_slice()[i] = clamp01(0.5 * forest + 0.6 * meadow + wild_food);
+            self.vegetation.as_mut_slice()[i] = clamp01(forest + VEGETATION_MEADOW * meadow + VEGETATION_WETLAND * wetland);
+            let wild_food = FOOD_FISH * s(&self.fish) + FOOD_WATERFOWL * s(&self.waterfowl) + FOOD_FROGS * s(&self.frogs);
+            self.food.as_mut_slice()[i] = clamp01(FOOD_FOREST * forest + FOOD_MEADOW * meadow + wild_food);
             sums.food += wild_food;
             sums.morale += s(&self.waterfowl) + s(&self.herons);
             sums.disease += s(&self.mosquitoes);
@@ -325,10 +307,10 @@ impl Ecology {
             }
         }
         for i in 0..n * n {
-            let base = 0.05 + 0.95 * (dist[i] / SAFE_RANGE).min(1.0);
-            let raw = base * (0.5 + 0.5 * pred[i].min(1.0))
+            let base = DANGER_BASE + DANGER_DISTANCE * (dist[i] / SAFE_RANGE).min(1.0);
+            let raw = base * (DANGER_PREDATOR_BASE + DANGER_PREDATOR_SCALE * pred[i].min(1.0))
                 * (1.0 - clamp01(self.defence.as_slice()[i]))
-                * (1.0 - 0.5 * clamp01(self.hideout.as_slice()[i]));
+                * (1.0 - HIDEOUT_PROTECTION * clamp01(self.hideout.as_slice()[i]));
             self.danger.as_mut_slice()[i] = clamp01(raw);
         }
     }

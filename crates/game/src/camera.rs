@@ -1,4 +1,4 @@
-﻿//! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
+//! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
 use bevy::prelude::*;
 
 #[derive(Resource, Clone, Copy, Debug)]
@@ -21,9 +21,14 @@ impl OrbitCamera {
         self.distance = self.distance.clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
     }
 
-    fn transform(&self) -> Transform {
+    /// World-space camera position.
+    pub fn eye(&self) -> Vec3 {
         let dir = Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos());
-        Transform::from_translation(self.target + dir * self.distance).looking_at(self.target, Vec3::Y)
+        self.target + dir * self.distance
+    }
+
+    fn transform(&self) -> Transform {
+        Transform::from_translation(self.eye()).looking_at(self.target, Vec3::Y)
     }
 }
 
@@ -34,6 +39,8 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "iso" => (0.8, 0.7, 150.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
+        // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
+        "lodge" => (0.0, 0.55, 32.0),
         _ => return None,
     };
     Some(OrbitCamera { target, yaw, pitch, distance })
@@ -47,7 +54,12 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         let name = app.world().resource::<crate::cli::Cli>().cam.clone();
-        let orbit = preset(&name).expect("preset validated by Cli::parse");
+        let mut orbit = preset(&name).expect("preset validated by Cli::parse");
+        if name == "lodge" {
+            let (target, yaw) = crate::entities_render::lodge_view(&app.world().resource::<crate::state::Sim>().0.height);
+            orbit.target = target;
+            orbit.yaw = yaw;
+        }
         app.insert_resource(orbit)
             .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.92)))
             .add_systems(Startup, spawn_camera)
