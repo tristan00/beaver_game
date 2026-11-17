@@ -6,6 +6,7 @@ mod entities_render;
 mod flow;
 mod flow_view;
 mod input;
+mod midgame;
 mod screenshot;
 mod sim_driver;
 mod state;
@@ -36,6 +37,7 @@ fn main() {
         flow_view::FlowViewPlugin,
         camera::CameraPlugin,
         input::InputPlugin,
+        midgame::MidgamePlugin,
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,

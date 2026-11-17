@@ -45,11 +45,13 @@ pub enum PanelKind {
 pub struct UiLayout {
     pub buttons: Vec<(Action, Rect)>,
     pub panels: Vec<(PanelKind, Rect)>,
+    /// Extra opaque areas published by the ui overlay (ledgers, cards, top bar).
+    pub extra: Vec<Rect>,
 }
 
 impl UiLayout {
     pub fn over_ui(&self, p: Vec2) -> bool {
-        self.buttons.iter().any(|(_, r)| r.contains(p)) || self.panels.iter().any(|(_, r)| r.contains(p))
+        self.buttons.iter().any(|(_, r)| r.contains(p)) || self.panels.iter().any(|(_, r)| r.contains(p)) || self.extra.iter().any(|r| r.contains(p))
     }
     pub fn hit(&self, p: Vec2) -> Option<Action> {
         self.buttons.iter().find(|(_, r)| r.contains(p)).map(|(a, _)| *a)
@@ -291,7 +293,9 @@ fn layout_ui(
     mut nodes: Query<(&mut Node, Option<&Btn>, Option<&PanelNode>)>,
 ) {
     let Ok(w) = windows.single() else { return };
+    let extra = std::mem::take(&mut layout.extra);
     *layout = compute_layout(Vec2::new(w.width(), w.height()), &ui, flow.phase == Phase::GameOver);
+    layout.extra = extra;
     for (mut node, btn, panel) in &mut nodes {
         let rect = btn.and_then(|b| layout.rect(b.0)).or_else(|| panel.and_then(|p| layout.panel(p.0 )));
         match rect {
