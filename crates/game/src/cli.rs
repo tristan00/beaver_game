@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--autoplay-settle] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low] [--autoplay-settle] [--midgame] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -15,12 +15,14 @@ pub struct Cli {
     pub frames: u32,
     /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
     pub autoplay_settle: bool,
+    /// Start from a seeded mid-game colony (settled, a year-plus old, trade open, events pending) instead of scouting.
+    pub midgame: bool,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, autoplay_settle: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, autoplay_settle: false, midgame: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -39,6 +41,7 @@ impl Cli {
                     }
                 }
                 "--autoplay-settle" => cli.autoplay_settle = true,
+                "--midgame" => cli.midgame = true,
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }

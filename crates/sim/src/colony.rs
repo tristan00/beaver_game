@@ -1159,6 +1159,46 @@ impl Colony {
     }
 }
 
+/// Event-facing mutations: the sim's event system applies its effects through these.
+impl Colony {
+    /// Kills up to `n` beavers (the frailest first); returns how many died.
+    pub fn kill_beavers(&mut self, n: u32) -> u32 {
+        let mut k = 0;
+        for _ in 0..n {
+            let Some(i) = self
+                .beavers
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.health.total_cmp(&b.1.health).then(a.1.id.0.cmp(&b.1.id.0)))
+                .map(|(i, _)| i)
+            else {
+                break;
+            };
+            let b = self.beavers.remove(i);
+            self.stats.deaths += 1;
+            self.log(Event::Died { id: b.id, cause: DeathCause::Injury });
+            k += 1;
+        }
+        k
+    }
+
+    /// Adds `n` wandering adults to the colony; returns how many joined.
+    pub fn add_immigrants(&mut self, n: u32) -> u32 {
+        for i in 0..n {
+            let sex = if (self.beavers.len() as u32 + i) % 2 == 0 { Sex::Female } else { Sex::Male };
+            self.immigrant(sex);
+        }
+        n
+    }
+
+    /// Subtracts `amount` health from every beaver (never below zero).
+    pub fn damage_health(&mut self, amount: f32) {
+        for b in &mut self.beavers {
+            b.health = (b.health - amount).clamp(0.0, 1.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
