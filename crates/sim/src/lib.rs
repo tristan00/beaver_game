@@ -67,7 +67,7 @@ impl SimState {
             time_days: 0.0,
             height,
             water: water::Water::new(size),
-            ecology: ecology::Ecology::new(size),
+            ecology: ecology::Ecology::seeded(size, seed),
             colony: Default::default(),
             buildings: Default::default(),
             tech: Default::default(),
@@ -83,7 +83,7 @@ impl SimState {
         }
         self.time_days += dt_days as f64;
         self.water.step(dt_days);
-        self.ecology.step(dt_days);
+        self.ecology.step(dt_days, &self.water.depth)?;
         self.colony.step(dt_days);
         self.buildings.step(dt_days);
         self.tech.step(dt_days);
