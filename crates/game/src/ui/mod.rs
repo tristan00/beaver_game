@@ -7,7 +7,6 @@
 pub mod events;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod explain;
-#[allow(dead_code)] // stub until its owner task lands
 pub mod icons;
 mod kit;
 pub mod ledgers;
@@ -28,7 +27,7 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((panels::PanelsPlugin, events::EventsPlugin))
+        app.add_plugins((panels::PanelsPlugin, events::EventsPlugin, icons::IconsPlugin))
             .add_systems(PostUpdate, kit::apply_round.before(bevy::ui::UiSystems::Prepare));
     }
 }

@@ -1,7 +1,7 @@
 """Draws assets/icons/*.png (96 px) and docs/icons_sheet.png (32 + 64 px) per docs/STYLE.md section 7.
 Run: python tools/make_icons.py
-Files are named by game::ui::icons::Icon::file() (lowercase variant name); the style-guide names
-that have no enum variant (plants, mood, collector, builder, hauler, specialist, fillslot) are kept too."""
+Files are named by game::ui::icons::Icon::file() (lowercase variant name); every file here has a
+variant, and the game loads all of them at startup (ui::icons::IconsPlugin)."""
 from PIL import Image, ImageDraw, ImageFont
 import math, os
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
