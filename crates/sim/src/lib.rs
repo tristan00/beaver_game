@@ -9,6 +9,7 @@ pub mod events;
 pub mod grid;
 pub mod region;
 pub mod tech;
+pub mod tuning;
 pub mod water;
 pub mod worldgen;
 
@@ -94,7 +95,8 @@ impl SimState {
         self.time_days += dt_days as f64;
         self.water.step(&self.height, dt_days);
         self.ecology.step(dt_days, &self.water.depth)?;
-        self.colony.step(dt_days);
+        let land = WorldLand { world: &self.world, depth: &self.water.depth };
+        self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.tech.update(&self.colony);
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
@@ -116,6 +118,24 @@ impl SimState {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
             }
         }
+    }
+}
+
+/// Terrain seen by the colony: rivers, lakes and ponded water are water.
+pub struct WorldLand<'a> {
+    pub world: &'a worldgen::World,
+    pub depth: &'a grid::Grid<f32>,
+}
+
+impl colony::Landscape for WorldLand<'_> {
+    fn is_water(&self, x: f32, y: f32) -> bool {
+        if !(x >= 0.0 && y >= 0.0) {
+            return false;
+        }
+        let (cx, cy) = (x as usize, y as usize);
+        self.world.river.get(cx, cy).copied().unwrap_or(false)
+            || self.world.lake.get(cx, cy).copied().unwrap_or(false)
+            || self.depth.get(cx, cy).is_some_and(|d| *d > 0.05)
     }
 }
 
