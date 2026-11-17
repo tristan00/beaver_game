@@ -1,4 +1,4 @@
-﻿//! Pure, deterministic simulation core (no rendering dependencies).
+//! Pure, deterministic simulation core (no rendering dependencies).
 //! `SimState` composes one struct per system; the game crate only reads it,
 //! advances it with `step`, and mutates it through `apply`.
 
@@ -40,6 +40,12 @@ impl std::error::Error for SimError {}
 pub enum Command {
     /// Rebuild the world from a new seed (resets time).
     Regenerate { seed: u64 },
+    /// Build dams of `height` above terrain on `cells`.
+    BuildDam { cells: Vec<water::Cell>, height: f32 },
+    /// Remove the dam at (x, y); the pond drains downstream.
+    BreachDam { x: usize, y: usize },
+    /// Dig canals `depth` deep on `cells`.
+    DigCanal { cells: Vec<water::Cell>, depth: f32 },
 }
 
 /// Complete simulation state.
@@ -67,7 +73,7 @@ impl SimState {
             time_days: 0.0,
             height,
             water: water::Water::new(size),
-            ecology: ecology::Ecology::new(size),
+            ecology: ecology::Ecology::seeded(size, seed),
             colony: Default::default(),
             buildings: Default::default(),
             tech: Default::default(),
@@ -82,8 +88,8 @@ impl SimState {
             return Err(SimError::InvalidDt(dt_days));
         }
         self.time_days += dt_days as f64;
-        self.water.step(dt_days);
-        self.ecology.step(dt_days);
+        self.water.step(&self.height, dt_days);
+        self.ecology.step(dt_days, &self.water.depth)?;
         self.colony.step(dt_days);
         self.buildings.step(dt_days);
         self.tech.step(dt_days);
@@ -99,9 +105,16 @@ impl SimState {
                 *self = SimState::new(seed);
                 Ok(())
             }
+            Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
+            Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
+            Command::DigCanal { cells, depth } => {
+                self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
+            }
         }
     }
 }
+
+fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }
 
 #[cfg(test)]
 mod tests {
