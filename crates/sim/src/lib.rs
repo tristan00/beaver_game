@@ -81,8 +81,8 @@ impl SimState {
             colony: Default::default(),
             buildings: Default::default(),
             tech: Default::default(),
-            region: Default::default(),
-            events: Default::default(),
+            region: region::Region::new(seed),
+            events: events::Events::new(seed),
         }
     }
 
