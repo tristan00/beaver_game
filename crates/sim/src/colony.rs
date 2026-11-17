@@ -49,6 +49,7 @@ pub enum Stage {
     Kit,
     Yearling,
     Adult,
+    Elder,
 }
 
 impl Stage {
@@ -57,8 +58,10 @@ impl Stage {
             Stage::Kit
         } else if age_days < ADULT_DAYS {
             Stage::Yearling
-        } else {
+        } else if age_days < ELDER_DAYS {
             Stage::Adult
+        } else {
+            Stage::Elder
         }
     }
     /// Share of a full adult's work output.
@@ -67,6 +70,7 @@ impl Stage {
             Stage::Kit => KIT_WORK_WEIGHT,
             Stage::Yearling => YEARLING_WORK_WEIGHT,
             Stage::Adult => 1.0,
+            Stage::Elder => ELDER_WORK_WEIGHT,
         }
     }
     /// Share of a full adult's food needs.
@@ -75,6 +79,7 @@ impl Stage {
             Stage::Kit => KIT_FOOD_WEIGHT,
             Stage::Yearling => YEARLING_FOOD_WEIGHT,
             Stage::Adult => 1.0,
+            Stage::Elder => ELDER_FOOD_WEIGHT,
         }
     }
 }
@@ -981,8 +986,13 @@ impl Colony {
         }
         // Kits eat from birth, so litters only fill the room the stores can carry through a winter.
         // Foraging grounds thin out with numbers, so there is a population litters never exceed.
-        let cap = ((self.food / BIRTH_MIN_FOOD_PER_CAPITA).min(BIRTH_MAX_CROWDING * FORAGE_CROWDING_POPULATION)) as i64;
-        let mut room = cap - self.beavers.len() as i64;
+        let per_beaver = BIRTH_MIN_FOOD_DAYS * HUNGER_PER_DAY;
+        let crowd_cap = (BIRTH_MAX_CROWDING * FORAGE_CROWDING_POPULATION) as i64;
+        let n = self.beavers.len() as i64;
+        let mut room = ((self.food / per_beaver) as i64).min(crowd_cap) - n;
+        if self.food >= per_beaver * n as f32 && n < crowd_cap {
+            room = room.max(1); // a colony that stores the full amount per beaver can always take one more
+        }
         if room <= 0 {
             return;
         }
@@ -1233,6 +1243,33 @@ impl Colony {
         k
     }
 
+    /// Admits one wanderer (an adult or a yearling) into the family whose lodge has room and the fewest
+    /// members. Errors if the colony is not founded or no lodge has room; nothing changes then.
+    pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
+        if !self.founded {
+            return Err(ColonyError::Invalid("colony is not founded".into()));
+        }
+        let mut occupancy: HashMap<LodgeId, usize> = HashMap::new();
+        for l in self.beavers.iter().filter_map(|b| b.lodge) {
+            *occupancy.entry(l).or_insert(0) += 1;
+        }
+        let lodge = self
+            .lodges
+            .iter()
+            .map(|l| (l, occupancy.get(&l.id).copied().unwrap_or(0)))
+            .filter(|(_, n)| *n < LODGE_CAPACITY)
+            .min_by_key(|(l, n)| (*n, l.id))
+            .map(|(l, _)| (l.id, l.family, l.pos))
+            .ok_or_else(|| ColonyError::Invalid("no lodge has room".into()))?;
+        let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
+        let years = if adult { IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit() } else { 1.0 + self.unit() };
+        let id = self.spawn(sex, years * DAYS_PER_YEAR as f32, lodge.1, Some(lodge.0), lodge.2, None, None);
+        self.stats.immigrants += 1;
+        self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
+        self.log(Event::Immigrated { id });
+        Ok(id)
+    }
+
     /// Adds `n` wandering adults to the colony; returns how many joined.
     pub fn add_immigrants(&mut self, n: u32) -> u32 {
         for i in 0..n {
@@ -1362,5 +1399,92 @@ mod tests {
         run(&mut b, &land, 800);
         assert_eq!(a.population(), b.population());
         assert_eq!(a.food, b.food);
+    }
+
+    /// A founding pair only (no yearlings), food set, optionally homeless; runs one breeding season.
+    fn pair_season(lodge: bool, food_per_beaver: f32) -> u32 {
+        let (mut c, land) = founded(11);
+        c.beavers.retain(|b| b.stage == Stage::Adult);
+        if !lodge {
+            c.lodges.clear();
+            for b in c.beavers.iter_mut() {
+                b.lodge = None;
+            }
+        }
+        while c.time_days < SPRING_END + 1.0 {
+            c.food = food_per_beaver * HUNGER_PER_DAY * c.population() as f32;
+            c.step_on(1.0, &land).unwrap();
+            if !lodge {
+                c.lodges.clear(); // nobody may adopt a lodge
+            }
+        }
+        c.stats.births
+    }
+
+    #[test]
+    fn colony_kits_need_lodge_and_thirty_days_of_food() {
+        assert!(pair_season(true, BIRTH_MIN_FOOD_DAYS + 5.0) > 0, "housed, fed pair should have kits");
+        assert_eq!(pair_season(false, BIRTH_MIN_FOOD_DAYS + 5.0), 0, "no lodge, no kits");
+        assert_eq!(pair_season(true, 0.0), 0, "no food, no kits");
+        assert_eq!(pair_season(true, BIRTH_MIN_FOOD_DAYS * 0.3), 0, "too little food, no kits");
+    }
+
+    #[test]
+    fn colony_beavers_age_into_stages_and_die_of_old_age() {
+        let (mut c, land) = founded(4);
+        c.beavers.truncate(1);
+        let id = c.beavers[0].id;
+        {
+            let b = &mut c.beavers[0];
+            b.age_days = 0.0;
+            b.stage = Stage::Kit;
+            b.lifespan_days = ELDER_DAYS + 100.0;
+        }
+        let mut seen = Vec::new();
+        while c.beaver(id).is_some() {
+            c.food = 500.0;
+            c.lodges.iter_mut().for_each(|l| l.condition = 1.0); // keep the old beaver warm
+            c.step_on(1.0, &land).unwrap();
+            if let Some(b) = c.beaver(id) {
+                assert_eq!(b.stage, Stage::of_age_days(b.age_days));
+                if seen.last() != Some(&b.stage) {
+                    seen.push(b.stage);
+                }
+                // stage changes exactly at the set ages
+                if b.age_days < KIT_DAYS { assert_eq!(b.stage, Stage::Kit) }
+                if b.age_days >= ELDER_DAYS { assert_eq!(b.stage, Stage::Elder) }
+            }
+            assert!(c.time_days < 365.0 * 20.0, "never died");
+        }
+        assert_eq!(seen, vec![Stage::Kit, Stage::Yearling, Stage::Adult, Stage::Elder]);
+        assert!(c.events.iter().any(|e| matches!(e.event, Event::Died { id: d, cause: DeathCause::OldAge } if d == id)));
+    }
+
+    #[test]
+    fn colony_grown_kit_pairs_and_builds_new_lodge() {
+        let (mut c, land) = founded(8);
+        c.wood = 100.0;
+        c.food = 500.0;
+        // Two grown, unrelated, unpaired adults from different families in spring.
+        c.time_days = SPRING_START + 1.0;
+        let fam2 = c.new_family();
+        let a = c.beavers.iter().find(|b| b.sex == Sex::Female && b.stage == Stage::Yearling).map(|b| b.id).unwrap();
+        let m = c.spawn(Sex::Male, ADULT_DAYS + 10.0, fam2, None, (0.0, 5.0), None, None);
+        for b in c.beavers.iter_mut().filter(|b| b.id == a) {
+            b.age_days = ADULT_DAYS + 10.0;
+            b.stage = Stage::Adult;
+        }
+        let lodges = c.lodges.len();
+        c.step_on(1.0, &land).unwrap();
+        let (ba, bm) = (c.beaver(a).unwrap().clone(), c.beaver(m).unwrap().clone());
+        assert_eq!(ba.mate, Some(m));
+        assert_eq!(bm.mate, Some(a));
+        assert_eq!(ba.family, bm.family);
+        assert_eq!(c.lodges.len(), lodges + 1, "new lodge");
+        assert_eq!(ba.lodge, bm.lodge);
+        let l = c.lodges.iter().find(|l| Some(l.id) == ba.lodge).unwrap();
+        assert!(c.lodges.iter().filter(|o| o.id != l.id).all(|o| (o.pos.0 - l.pos.0).hypot(o.pos.1 - l.pos.1) >= MIN_LODGE_SPACING));
+        assert!(!land.is_water(l.pos.0, l.pos.1));
+        assert!(c.events.iter().any(|e| matches!(e.event, Event::NewFamily { .. })));
     }
 }
