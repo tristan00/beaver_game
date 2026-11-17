@@ -127,6 +127,26 @@ pub fn is_wet(sim: &SimState, x: usize, y: usize) -> bool {
         || sim.world.lake.get(x, y).copied().unwrap_or(false)
 }
 
+/// Test helper: dry building sites in the start valley (nothing wet within 5 cells), at least 12
+/// cells apart, nearest the valley centre first.
+#[cfg(test)]
+pub(crate) fn dry_sites(sim: &SimState) -> Vec<Cell> {
+    let n = sim.world.size;
+    let c = sim.world.valleys[sim.world.start.0 as usize].center;
+    let mut cells: Vec<Cell> = (8..n - 8).flat_map(|y| (8..n - 8).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.world.valley_of((x, y)) == Some(sim.world.start))
+        .filter(|&(x, y)| (y - 5..=y + 5).all(|j| (x - 5..=x + 5).all(|i| !is_wet(sim, i, j)))).collect();
+    cells.sort_by(|a, b| {
+        let d = |p: &Cell| (p.0 as f32 - c.0).powi(2) + (p.1 as f32 - c.1).powi(2);
+        d(a).total_cmp(&d(b))
+    });
+    let mut out: Vec<Cell> = Vec::new();
+    for p in cells {
+        if out.iter().all(|q| q.0.abs_diff(p.0).max(q.1.abs_diff(p.1)) >= 12) { out.push(p); }
+    }
+    out
+}
+
 fn sim_wet(sim: &SimState, x: usize, y: usize) -> bool {
     sim.water.depth.get(x, y).is_some_and(|&d| d >= WET_DEPTH)
 }
@@ -557,16 +577,17 @@ mod tests {
     fn building_validation_reports_each_reason() {
         let mut sim = SimState::new(1);
         found(&mut sim);
+        let site = dry_sites(&sim)[0];
         // locked
-        assert!(matches!(check_building(&sim, BuildingKind::Workshop, (50, 50)), Err(PlaceError::Locked(..))));
+        assert!(matches!(check_building(&sim, BuildingKind::Workshop, site), Err(PlaceError::Locked(..))));
         // cannot afford
-        assert!(matches!(check_building(&sim, BuildingKind::Lodge, (50, 50)), Err(PlaceError::Afford(..))));
+        assert!(matches!(check_building(&sim, BuildingKind::Lodge, site), Err(PlaceError::Afford(..))));
         stock(&mut sim);
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, (50, 50)), Ok(()));
+        assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Ok(()));
         assert_eq!(check_building(&sim, BuildingKind::Lodge, (sim.world.size - 1, 5)), Err(PlaceError::OutOfBounds));
         // dry-only building on water
-        sim.water.depth.as_mut_slice()[50 * sim.world.size + 50] = 1.0;
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, (49, 49)), Err(PlaceError::NeedsDry));
+        sim.water.depth.as_mut_slice()[site.1 * sim.world.size + site.0] = 1.0;
+        assert_eq!(check_building(&sim, BuildingKind::Lodge, (site.0 - 1, site.1 - 1)), Err(PlaceError::NeedsDry));
     }
 
     #[test]
@@ -576,7 +597,7 @@ mod tests {
         stock(&mut sim);
         let mut p = Pending::default();
         let before = sim.colony.orders.len();
-        let o = BuildOrder::Building { kind: BuildingKind::Lodge, pos: (60, 60) };
+        let o = BuildOrder::Building { kind: BuildingKind::Lodge, pos: dry_sites(&sim)[0] };
         emit(&mut sim, &mut p, &o).unwrap();
         assert_eq!(sim.colony.orders.len(), before + 1);
         assert_eq!(sim.buildings.stores.amount(Good::Logs), 80.0);
@@ -627,8 +648,9 @@ mod tests {
         found(&mut sim);
         stock(&mut sim);
         let mut p = Pending::default();
-        emit(&mut sim, &mut p, &BuildOrder::Building { kind: BuildingKind::Lodge, pos: (60, 60) }).unwrap();
-        emit(&mut sim, &mut p, &BuildOrder::Building { kind: BuildingKind::Burrow, pos: (70, 60) }).unwrap();
+        let sites = dry_sites(&sim);
+        emit(&mut sim, &mut p, &BuildOrder::Building { kind: BuildingKind::Lodge, pos: sites[0] }).unwrap();
+        emit(&mut sim, &mut p, &BuildOrder::Building { kind: BuildingKind::Burrow, pos: sites[1] }).unwrap();
         let rows = order_rows(&sim, &p);
         assert_eq!(rows.len(), 2);
         let last = rows[1].order;
