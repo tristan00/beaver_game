@@ -1,5 +1,7 @@
 //! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
+use bevy::light::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
+use bevy::core_pipeline::tonemapping::Tonemapping;
 
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct OrbitCamera {
@@ -67,13 +69,20 @@ impl Plugin for CameraPlugin {
     }
 }
 
+/// Sun shadow maps on; the plum tint comes from the lilac ambient that fills them.
+const SUN_SHADOWS: bool = true;
+
 fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
-    commands.spawn((Camera3d::default(), orbit.transform(), MainCamera));
+    // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md §9 samples hexes).
+    commands.spawn((Camera3d::default(), Tonemapping::SomewhatBoringDisplayTransform, orbit.transform(), MainCamera));
+    // Key light: late-morning sun from the upper left, soft shadows; `update_sky_and_light` sets
+    // colour and strength per season.
     commands.spawn((
-        DirectionalLight { illuminance: 12_000.0, shadow_maps_enabled: false, ..default() },
-        Transform::from_xyz(60.0, 100.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
+        DirectionalLight { illuminance: 1_400.0, shadow_maps_enabled: SUN_SHADOWS, ..default() },
+        CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 1.0, maximum_distance: 260.0, first_cascade_far_bound: 45.0, overlap_proportion: 0.3 }.build(),
+        Transform::from_xyz(-70.0, 90.0, -45.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.insert_resource(GlobalAmbientLight { brightness: 350.0, ..default() });
+    commands.insert_resource(GlobalAmbientLight { brightness: crate::terrain_render::AMBIENT_LUX, ..default() });
 }
 
 fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCamera>>) {

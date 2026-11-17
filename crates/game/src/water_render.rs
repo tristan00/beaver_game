@@ -100,8 +100,8 @@ fn setup_water(
     water.material = materials.add(StandardMaterial {
         base_color: Color::WHITE, // colour and alpha come from vertices
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.22,
-        reflectance: 0.12,
+        perceptual_roughness: 0.35,
+        reflectance: 0.06,
         normal_map_texture: Some(images.add(ripple_normal_map())),
         cull_mode: None,
         ..default()
@@ -156,13 +156,15 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
             nor.push([0.0, 1.0, 0.0]);
             tan.push([1.0, 0.0, 0.0, -1.0]);
             uv.push([wx * 0.045, wz * 0.045]);
-            // depth-based tint: clear and pale in shallows, bluer when deep, never opaque
-            let deep = 1.0 - (-d * 0.45).exp();
-            let mut c = mix_rgb(p.water_shallow, p.water_deep, deep);
-            let mut a = if d > 0.0 { 0.30 + 0.14 * deep } else { 0.0 };
-            // soft foam-ish pale rim in the shallowest water
-            let rim = (1.0 - d / 0.12).clamp(0.0, 1.0) * if d > 0.0 { 1.0 } else { 0.0 };
-            c = mix_rgb(c, [1.0, 1.0, 1.0], rim * 0.25);
+            // soft rings (docs/STYLE.md §4): Shallow body, Mid glow towards the centre, Deep only at the
+            // deepest water, and a Foam ring at the shore. Opaque enough that the bed never greys it.
+            let deep = smooth_step(2.2, 5.0, d);
+            let glow = smooth_step(0.35, 1.4, d) * (1.0 - deep);
+            let mut c = mix_rgb(p.water_shallow, crate::palette::WATER_MID_GLOW, glow * 0.8);
+            c = mix_rgb(c, p.water_deep, deep * 0.85);
+            let foam = if d > 0.0 { 1.0 - smooth_step(0.03, 0.3, d) } else { 0.0 };
+            c = mix_rgb(c, crate::palette::FOAM, foam * 0.9);
+            let mut a = if d > 0.0 { 0.74 + 0.1 * deep + 0.14 * foam } else { 0.0 };
             // ice: freezes from the shore inwards as winter deepens
             let ice = if d > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { p.winter };
             c = mix_rgb(c, p.ice, ice);
@@ -194,6 +196,11 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
             .with_inserted_indices(Indices::U32(idx)),
     )
+}
+
+fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn mix_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
@@ -286,7 +293,7 @@ fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<A
     const SCALE: f32 = 1.6;
     let pos = Vec3::new(wx, bed + 0.9 * SCALE, wz);
     // beaver-ish: warm brown body with a flat tail and a yellow marker
-    let body = materials.add(StandardMaterial { base_color: Color::srgb(0.60, 0.33, 0.12), perceptual_roughness: 0.9, ..default() });
+    let body = materials.add(StandardMaterial { base_color: Color::srgb(crate::palette::FUR[0], crate::palette::FUR[1], crate::palette::FUR[2]), perceptual_roughness: 0.9, ..default() });
     commands
         .spawn((DemoObject, Transform::from_translation(pos).with_scale(Vec3::splat(SCALE)), Visibility::default()))
         .with_children(|c| {

@@ -9,6 +9,7 @@ mod flow;
 mod flow_view;
 mod input;
 mod midgame;
+mod palette;
 mod screenshot;
 mod sim_driver;
 mod state;

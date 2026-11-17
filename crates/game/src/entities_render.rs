@@ -152,16 +152,15 @@ struct BeaverRig {
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.85, reflectance: 0.12, ..default() });
     let blob_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.0, 0.0, 0.0, 0.28),
+        base_color: Color::srgba(0.42, 0.353, 0.541, 0.40), // plum shadow, never black
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
     });
     let water_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.18, 0.55, 0.78, 0.78),
+        base_color: Color::srgba(0.957, 0.984, 0.965, 0.92), // Foam
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.12,
-        reflectance: 0.6,
+        unlit: true,
         ..default()
     });
     let mut trees = Vec::new();

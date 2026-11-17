@@ -177,3 +177,23 @@ Each fix names the screenshot that shows the problem. Screenshots: **A** `docs/m
 ## 9. Checking against this guide
 
 Run the game, screenshot the same views, and for each fix above check the sampled hexes now match §2. Any pixel region darker than `#5FA85A` on terrain, any square corner on UI, any pure black or pure grey is a violation.
+
+## 10. Status of terrain, ground detail, water and lighting fixes (R19-16)
+
+Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` (`iso_seed{1,2}.png` wide, `lodge_seed{1,2}.png` close; `beaver_colony --seed N --cam iso|lodge --screenshot … --frames 30`). Shared colours live in `crates/game/src/palette.rs`.
+
+| Fix | Change | Where |
+|---|---|---|
+| 1 rock | Stone `#B9AFA8` lit to Stone shade `#8C8290`, no permanent white caps; the grey height-mesh under the chunks (it z-fought through) now uses palette colours and sits 0.3 below | `terrain_render.rs` `vertex_color`, `build_mesh` |
+| 2 valleys | per-channel floor of Meadow deep / Stone shade, ambient raised, fog colour is plum mist not slate | `vertex_color`, `flow_view.rs` |
+| 3 grass | Meadow light→Meadow deep gradient with 6–14 cell soft patches; no per-cell noise | `vertex_color` |
+| 4 slopes | normals from a 3×3 smoothed gradient | `smooth_gradient` |
+| 5 detail | tufts, flowers (white/pink/yellow) and pebbles, ~1 per 7 cells, dry open grass only | `scatter_detail` |
+| 6 conifers | pines are four round blobs, Meadow deep / Leaf highlight | `entities_render/models.rs` |
+| 7, 8 water | Shallow body, Mid glow centre, Deep only below ~2 units, Foam ring at the shore, opacity ≥ 0.74, bed tinted teal not grey | `water_render.rs` |
+| 9 swim rings | three Foam arcs, unlit | `models.rs` `ripple` |
+| 10 light | sky `#9ED1F5`, warm sun from the upper left with cascaded shadows, lilac ambient, plum blob shadows | `camera.rs`, `terrain_render.rs` |
+| 11 brightness | tone mapping near-linear (SomewhatBoringDisplayTransform), ambient 4400 | `camera.rs` |
+
+Stress scene (`beaver_colony --stress`): avg 4.2–4.6 ms, max 8.4 ms, 0 frames ≥ 16 ms (five runs; the first cold run after a build once hit a single 33 ms frame).
+Still open: the upper-left warm glow (needs a UI overlay) and exact hex sampling of every point in §8 (screens still carry the old UI).
