@@ -26,6 +26,8 @@ pub enum EventError {
     UnknownChoice(u64),
     /// Option index out of range for the choice.
     UnknownOption { choice: u64, option: usize },
+    /// The event kind is switched off by the feature config.
+    Disabled(EventKind),
 }
 
 impl fmt::Display for EventError {
@@ -34,6 +36,7 @@ impl fmt::Display for EventError {
             EventError::InvalidCalendar(d) => write!(f, "days_per_season must be >= 1, got {d}"),
             EventError::InvalidContext(n) => write!(f, "event context field `{n}` is not finite"),
             EventError::UnknownChoice(id) => write!(f, "no pending choice {id}"),
+            EventError::Disabled(k) => write!(f, "event {k:?} is disabled"),
             EventError::UnknownOption { choice, option } => {
                 write!(f, "choice {choice} has no option {option}")
             }
@@ -299,6 +302,8 @@ pub struct Events {
     drought: Option<ActiveDrought>,
     inflow_factor: f32,
     inflow_days: f32,
+    /// Kinds that never roll or fire (set from the feature config).
+    muted: Vec<EventKind>,
 }
 
 impl Default for Events {
@@ -322,7 +327,16 @@ impl Events {
             drought: None,
             inflow_factor: 1.0,
             inflow_days: 0.0,
+            muted: Vec::new(),
         })
+    }
+
+    /// Replaces the set of kinds that never roll or fire.
+    pub fn set_muted(&mut self, kinds: Vec<EventKind>) {
+        self.muted = kinds;
+    }
+    pub fn muted(&self) -> &[EventKind] {
+        &self.muted
     }
 
     pub fn log(&self) -> &[EventRecord] {
@@ -380,6 +394,9 @@ impl Events {
             ctx.population = host.population();
             self.expire_choices(host, &mut produced);
             for kind in EventKind::ALL {
+                if self.muted.contains(&kind) {
+                    continue;
+                }
                 let p = self.probability(kind, &ctx) * sub as f32;
                 if p > 0.0 && self.unit() < p {
                     produced.push(self.fire(kind, &ctx, host));
@@ -391,6 +408,9 @@ impl Events {
 
     /// Forces an event of `kind` now (ignores conditions); used by scripted scenarios and tests.
     pub fn trigger(&mut self, kind: EventKind, ctx: &EventContext, host: &mut dyn EventHost) -> Result<u64, EventError> {
+        if self.muted.contains(&kind) {
+            return Err(EventError::Disabled(kind));
+        }
         let mut ctx = ctx.sanitized()?;
         ctx.population = host.population();
         Ok(self.fire(kind, &ctx, host))

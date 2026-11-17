@@ -4,6 +4,7 @@
 use sim::buildings::{Good, Stores};
 use sim::colony::{Beaver, BeaverId, Colony, Job, Stage};
 use sim::events::Season;
+use sim::features::{Features, System};
 use sim::region::{Region, Resource, Specialty, WARY_BELOW};
 use sim::tech::{Branch, Tech, TECHS};
 use sim::SimState;
@@ -26,6 +27,13 @@ pub enum Tab {
 
 impl Tab {
     pub const ALL: [Tab; 7] = [Tab::Families, Tab::Beavers, Tab::Jobs, Tab::Stores, Tab::Trade, Tab::Tech, Tab::Log];
+    /// Tabs the player may open: Trade needs trade and neighbours to be on.
+    pub fn available(features: &Features) -> Vec<Tab> {
+        Tab::ALL
+            .into_iter()
+            .filter(|t| *t != Tab::Trade || (features.enabled(System::Trade) && features.enabled(System::Rivals)))
+            .collect()
+    }
     pub fn label(self) -> &'static str {
         match self {
             Tab::Families => "Families",
@@ -288,7 +296,7 @@ pub fn jobs_ledger(c: &Colony, hist: &History) -> Compact {
     let (n, idle) = job_counts(c);
     let working: usize = n.iter().sum();
     let able = working + idle;
-    let mut jobs: Vec<(Job, usize)> = Job::ALL.iter().map(|j| (*j, n[j.index()])).filter(|x| x.1 > 0).collect();
+    let mut jobs: Vec<(Job, usize)> = c.enabled_jobs().into_iter().map(|j| (j, n[j.index()])).filter(|x| x.1 > 0).collect();
     jobs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut rows: Vec<CompactRow> = jobs
         .iter()
@@ -421,13 +429,16 @@ pub fn trade_ledger(r: &Region, hist: &History) -> Compact {
     }
 }
 
-pub fn all_ledgers(sim: &SimState, hist: &History) -> [Compact; 4] {
-    [
+pub fn all_ledgers(sim: &SimState, hist: &History) -> Vec<Compact> {
+    let mut v = vec![
         families_ledger(&sim.colony, hist),
         jobs_ledger(&sim.colony, hist),
         stores_ledger(&sim.colony, &sim.buildings.stores, hist),
-        trade_ledger(&sim.region, hist),
-    ]
+    ];
+    if Tab::available(&sim.features).contains(&Tab::Trade) {
+        v.push(trade_ledger(&sim.region, hist));
+    }
+    v
 }
 
 // ───────────────────────────── tables ─────────────────────────────
@@ -598,7 +609,8 @@ pub fn beavers_table(c: &Colony) -> Table {
 pub fn jobs_table(c: &Colony) -> Table {
     let (n, idle) = job_counts(c);
     let able: usize = n.iter().sum::<usize>() + idle;
-    let mut rows: Vec<Row> = Job::ALL
+    let mut rows: Vec<Row> = c
+        .enabled_jobs()
         .iter()
         .map(|j| {
             let workers: Vec<&Beaver> = c.beavers.iter().filter(|b| b.stage != Stage::Kit && job_of(b) == Some(*j)).collect();
@@ -757,14 +769,23 @@ pub fn trade_tables(r: &Region, day: f64) -> Vec<Table> {
 }
 
 /// Experience, next tech and progress per branch; then every tech.
-pub fn tech_tables(c: &Colony, t: &Tech) -> Vec<Table> {
+/// A tech is listed unless everything it does is unlocking buildings of a disabled system.
+pub fn tech_visible(features: &Features, d: &sim::tech::TechDef) -> bool {
+    d.effects.iter().any(|e| match e {
+        sim::tech::Effect::Unlock(k) => features.allows_building(*k),
+        _ => true,
+    })
+}
+
+pub fn tech_tables(c: &Colony, t: &Tech, features: &Features) -> Vec<Table> {
     let branches = Branch::ALL
         .iter()
+        .filter(|br| TECHS.iter().any(|d| d.branch == **br && tech_visible(features, d)))
         .map(|br| {
             let xp = br.experience(c);
-            let next = TECHS.iter().enumerate().filter(|(i, d)| d.branch == *br && !t.is_unlocked(sim::tech::TechId(*i))).min_by_key(|(_, d)| d.tier);
-            let done = TECHS.iter().enumerate().filter(|(i, d)| d.branch == *br && t.is_unlocked(sim::tech::TechId(*i))).count();
-            let total = TECHS.iter().filter(|d| d.branch == *br).count();
+            let next = TECHS.iter().enumerate().filter(|(i, d)| d.branch == *br && tech_visible(features, d) && !t.is_unlocked(sim::tech::TechId(*i))).min_by_key(|(_, d)| d.tier);
+            let done = TECHS.iter().enumerate().filter(|(i, d)| d.branch == *br && tech_visible(features, d) && t.is_unlocked(sim::tech::TechId(*i))).count();
+            let total = TECHS.iter().filter(|d| d.branch == *br && tech_visible(features, d)).count();
             let (next_name, frac) = match next {
                 Some((_, d)) => (format!("{} ({:.0} xp)", d.name, d.xp), (xp / d.xp).clamp(0.0, 1.0)),
                 None => ("all unlocked".into(), 1.0),
@@ -784,6 +805,7 @@ pub fn tech_tables(c: &Colony, t: &Tech) -> Vec<Table> {
     let techs = TECHS
         .iter()
         .enumerate()
+        .filter(|(_, d)| tech_visible(features, d))
         .map(|(i, d)| {
             let on = t.is_unlocked(sim::tech::TechId(i));
             let unlocks = d
@@ -834,7 +856,7 @@ pub fn detail_tables(sim: &SimState, hist: &History, tab: Tab, filter: LogFilter
         Tab::Jobs => vec![jobs_table(&sim.colony)],
         Tab::Stores => vec![stores_table(&sim.colony, &sim.buildings.stores, hist)],
         Tab::Trade => trade_tables(&sim.region, sim.time_days),
-        Tab::Tech => tech_tables(&sim.colony, &sim.tech),
+        Tab::Tech => tech_tables(&sim.colony, &sim.tech, &sim.features),
         Tab::Log => vec![super::events::log_table(sim, filter)],
     }
 }
@@ -931,8 +953,8 @@ mod tests {
         let non_kits = c.beavers.iter().filter(|b| b.stage != Stage::Kit).count();
         assert_eq!(n.iter().sum::<usize>() + idle, non_kits);
         let t = jobs_table(c);
-        assert_eq!(t.rows.len(), Job::ALL.len() + 1);
-        let workers: f64 = t.rows[..8].iter().map(|r| r.cells[1].key).sum();
+        assert_eq!(t.rows.len(), c.enabled_jobs().len() + 1);
+        let workers: f64 = t.rows[..c.enabled_jobs().len()].iter().map(|r| r.cells[1].key).sum();
         assert_eq!(workers as usize, n.iter().sum::<usize>());
         let j = jobs_ledger(c, &History::default());
         assert!(j.headline.contains(&format!("/{non_kits}")), "{}", j.headline);
@@ -989,9 +1011,10 @@ mod tests {
         let mut s = midgame(3, 5);
         s.colony.experience[Job::Builder.index()] = 10.0;
         s.tech.update(&s.colony);
-        let t = tech_tables(&s.colony, &s.tech);
-        assert_eq!(t[0].rows.len(), Branch::ALL.len());
-        assert_eq!(t[1].rows.len(), TECHS.len());
+        let t = tech_tables(&s.colony, &s.tech, &s.features);
+        // Defence's only tech unlocks guard posts and scent mounds, so it is not listed
+        assert_eq!(t[0].rows.len(), Branch::ALL.len() - 1);
+        assert_eq!(t[1].rows.len(), TECHS.len() - 1);
         let building = t[0].rows.iter().find(|r| r.cells[0].text == "Building").unwrap();
         assert_eq!(building.cells[2].text, "1/2");
         assert!(building.cells[3].key > 0.5 && building.cells[3].key < 1.0, "{:?}", building.cells[3]);
@@ -1025,5 +1048,57 @@ mod tests {
         assert_eq!(h.samples.len(), HISTORY_LEN);
         assert!(h.samples.iter().zip(h.samples.iter().skip(1)).all(|(a, b)| b.day - a.day >= HISTORY_EVERY - 1e-6));
         assert_eq!(h.series(10, |x| x.pop).len(), 10);
+    }
+
+    /// Every screen's view-model under the shipping features names none of the disabled systems.
+    #[test]
+    fn scoped_view_models_list_no_disabled_system() {
+        use crate::build_logic::{job_rows, menu};
+        use crate::ui::shell::{start_menu, NavItem, Shell};
+        let mut s = SimState::new(2);
+        let cell = s.world.valleys[s.world.start.0 as usize].center;
+        let land = sim::WorldLand { world: &s.world, depth: &s.water.depth };
+        s.colony.found((cell.0 as f32, cell.1 as f32), &land).expect("found");
+        for _ in 0..40 {
+            s.step(1.0).unwrap();
+        }
+        let hist = History::default();
+        let mut dump = String::new();
+        let mut add = |name: &str, v: String| dump.push_str(&format!("[{name}] {}
+", v.to_lowercase()));
+
+        add("ledgers", format!("{:?}", all_ledgers(&s, &hist)));
+        add("tabs", format!("{:?}", Tab::available(&s.features)));
+        for t in Tab::available(&s.features) {
+            for f in LogFilter::available(&s.features) {
+                add("detail", format!("{:?}", detail_tables(&s, &hist, t, f)));
+            }
+        }
+        add("filters", format!("{:?}", LogFilter::available(&s.features).iter().map(|f| f.label()).collect::<Vec<_>>()));
+        add("build menu", format!("{:?}", menu(&s).iter().map(|e| (e.kind.spec().name, e.need)).collect::<Vec<_>>()));
+        add("catalogue", format!("{:?}", sim::catalogue::available(&s)));
+        add("jobs", format!("{:?}", job_rows(&s.colony).iter().map(|r| r.job).collect::<Vec<_>>()));
+        add("families", format!("{:?}", s.colony.families));
+        add("nav", format!("{:?}", Shell::default().bar(&s.features)));
+        add("start menu", format!("{:?}", start_menu()));
+        add("top bar", format!("{:?}", top_bar(&s, &hist, "x1")));
+        let _ = NavItem::ALL;
+
+        for word in ["trade", "guard", "scout", "predator", "flood", "drought", "rival", "scent"] {
+            let hits: Vec<&str> = dump.lines().filter(|l| l.contains(word)).collect();
+            assert!(hits.is_empty(), "`{word}` shown: {hits:?}");
+        }
+        assert!(Tab::available(&s.features).iter().all(|t| *t != Tab::Trade));
+        assert_eq!(all_ledgers(&s, &hist).len(), 3);
+    }
+
+    #[test]
+    fn everything_on_still_lists_trade_and_guard() {
+        use crate::build_logic::menu;
+        let mut s = SimState::new(2);
+        s.set_features(sim::features::Features::everything());
+        assert!(Tab::available(&s.features).contains(&Tab::Trade));
+        assert!(menu(&s).iter().any(|e| e.kind == sim::buildings::BuildingKind::GuardPost));
+        assert_eq!(all_ledgers(&s, &History::default()).len(), 4);
     }
 }
