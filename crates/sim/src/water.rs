@@ -13,6 +13,7 @@
 //! The first day of simulated time is the start of spring.
 use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
+use crate::worldgen::World;
 use std::fmt;
 pub use crate::tuning::water::*;
 
@@ -60,6 +61,8 @@ pub struct WaterConfig {
     pub rain: f32,
     pub evaporation: f32,
     pub seepage: f32,
+    /// Rain per day that the ground soaks up instead of adding water.
+    pub soil_absorb: f32,
     /// Integrity a dam loses per day from age alone.
     pub dam_decay_per_day: f32,
     /// Integrity lost per day per unit of water depth above `overtop_depth` on the crest.
@@ -77,6 +80,7 @@ impl Default for WaterConfig {
             rain: RAIN,
             evaporation: EVAPORATION,
             seepage: SEEPAGE,
+            soil_absorb: SOIL_ABSORB,
             dam_decay_per_day: DAM_DECAY_PER_DAY,
             overtop_erosion: OVERTOP_EROSION,
             overtop_depth: OVERTOP_DEPTH,
@@ -87,9 +91,17 @@ impl Default for WaterConfig {
     }
 }
 
-/// River inflow point; `rate` is depth added per day at base, scaled by `Season::inflow_mult`.
+/// Inflow point; `rate` is depth added per day at base, scaled by the season: `1 + seasonality *
+/// (Season::inflow_mult - 1)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Source { pub x: usize, pub y: usize, pub rate: f32 }
+pub struct Source {
+    pub x: usize,
+    pub y: usize,
+    pub rate: f32,
+    /// How much of the seasonal inflow swing applies: 1 = snowmelt-fed river (full swing),
+    /// 0 = steady groundwater spring.
+    pub seasonality: f32,
+}
 
 /// Invalid water operation; the state is left unchanged.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +153,9 @@ pub struct Water {
     pub dam_integrity: Grid<f32>,
     /// Cells dug as canals.
     pub canal: Grid<bool>,
+    /// Cells whose level the water table maintains (river channels, lakes, ponds): rain, evaporation
+    /// and seepage cancel there, so only flow and dams change them.
+    pub fed: Grid<bool>,
     /// Cells occupied by buildings (set by the buildings system; used by `preview_dam`).
     pub structures: Grid<bool>,
     pub sources: Vec<Source>,
@@ -158,6 +173,28 @@ pub struct Water {
 }
 
 impl Water {
+    /// Water for a generated world: every spring feeds its stream, lakes and ponds start brim-full
+    /// and the rivers are settled into the flow the springs sustain. Deterministic; the world is not modified.
+    pub fn from_world(world: &World) -> Self {
+        let mut w = Self::new(world.size);
+        for ((d, &h), &s) in w.depth.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
+            *d = s - h; // zero except lake beds and river channels
+        }
+        for (d, &river) in w.depth.as_mut_slice().iter_mut().zip(world.river.as_slice()) {
+            if river { *d *= RIVER_FILL; }
+        }
+        for ((f, &h), &sf) in w.fed.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
+            *f = h < sf;
+        }
+        for &(x, y) in &world.springs {
+            w.sources.push(Source { x, y, rate: SPRING_RATE, seasonality: SPRING_SEASONALITY });
+        }
+        // Let the springs' flow settle into the channels, then start the clock and the books afresh.
+        for _ in 0..(SETTLE_DAYS / SETTLE_DT).round() as usize { w.step(&world.height, SETTLE_DT); }
+        w.time_days = 0.0;
+        (w.added_volume, w.lost_volume) = (0.0, 0.0);
+        w
+    }
     /// Empty `size x size` water state. Panics if `size` is zero.
     pub fn new(size: usize) -> Self {
         let pad = (size + 2) * (size + 2);
@@ -167,6 +204,7 @@ impl Water {
             dam_height: Grid::new(size, size, 0.0),
             dam_integrity: Grid::new(size, size, 0.0),
             canal: Grid::new(size, size, false),
+            fed: Grid::new(size, size, false),
             structures: Grid::new(size, size, false),
             sources: Vec::new(),
             config: WaterConfig::default(),
@@ -208,7 +246,7 @@ impl Water {
     pub fn add_source(&mut self, x: usize, y: usize, rate: f32) -> Result<(), WaterError> {
         self.check(x, y)?;
         Self::check_positive("source rate", rate)?;
-        self.sources.push(Source { x, y, rate });
+        self.sources.push(Source { x, y, rate, seasonality: 1.0 });
         Ok(())
     }
 
@@ -338,7 +376,7 @@ impl Water {
         let cfg = &self.config;
         let mut added = 0.0f64;
         for s in &self.sources {
-            let q = s.rate * season.inflow_mult() * dt;
+            let q = s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0)) * dt;
             self.depth.as_mut_slice()[s.y * w + s.x] += q;
             added += q as f64;
         }
@@ -348,7 +386,13 @@ impl Water {
         let winter = season == Season::Winter;
         let (grow, melt) = (cfg.ice_growth_per_day * dt, cfg.ice_melt_per_day * dt);
         let mut lost = 0.0f64;
-        for (d, ice) in self.depth.as_mut_slice().iter_mut().zip(self.ice.as_mut_slice()) {
+        for ((d, ice), &fed) in self.depth.as_mut_slice().iter_mut().zip(self.ice.as_mut_slice()).zip(self.fed.as_slice()) {
+            if fed {
+                *ice = if winter && *d > WET_EPS { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
+                continue;
+            }
+            // The ground soaks rain up to its absorption rate; only the excess adds water.
+            let rain = (rain - cfg.soil_absorb * dt).max(0.0);
             *d += rain;
             added += rain as f64;
             let wet = *d > WET_EPS;
@@ -439,6 +483,7 @@ mod tests {
     use super::*;
 
     fn quiet(s: &mut SimState) {
+        s.water = Water::new(s.height.width()); // no springs or seeded channels
         s.water.config = WaterConfig {
             rain: 0.0, evaporation: 0.0, seepage: 0.0, dam_decay_per_day: 0.0,
             overtop_erosion: 0.0, open_edges: false, ..Default::default()
@@ -487,9 +532,10 @@ mod tests {
     fn water_accounting_matches_volume_with_inflow_and_climate() {
         let mut s = SimState::new(5);
         s.water.add_source(10, 10, 5.0).unwrap();
+        let start = s.water.total_volume(); // the seeded rivers and lakes
         for _ in 0..500 { s.step(0.05).unwrap(); }
         let w = &s.water;
-        let expect = w.added_volume - w.lost_volume;
+        let expect = start + w.added_volume - w.lost_volume;
         assert!(((w.total_volume() - expect) / expect.abs().max(1.0)).abs() < 0.01);
     }
 
@@ -607,5 +653,33 @@ mod tests {
         assert!(s.water.dig_canal(&mut s.height, &[(1, 1)], 0.0).is_err());
         assert!(preview_dam(&s, &[(1, 1)], 0.0).is_err());
         assert!(preview_dam(&s, &[], 1.0).is_err());
+    }
+
+    /// Cells wet enough to count as water (the buildings' threshold).
+    fn wet_count(s: &SimState) -> usize {
+        s.water.depth.as_slice().iter().filter(|&&d| d > crate::tuning::buildings::WET_DEPTH).count()
+    }
+
+    #[test]
+    fn undammed_waterways_hold_steady_for_a_year() {
+        // The game's fixed step; the flow scheme is step-size dependent.
+        const DT: f32 = 0.05;
+        for seed in 1..=6u64 {
+            let mut s = SimState::new(seed);
+            let start = wet_count(&s);
+            assert!(start > 400, "seed {seed}: only {start} wet cells to start with");
+            let (mut lo, mut hi) = (start, start);
+            for _ in 0..(120.0f32 / DT) as usize {
+                s.water.step(&s.height, DT);
+                let w = wet_count(&s);
+                lo = lo.min(w);
+                hi = hi.max(w);
+            }
+            let end = wet_count(&s);
+            let drift = (end as f32 - start as f32).abs() / start as f32;
+            assert!(drift < 0.10, "seed {seed}: wet cells {start} -> {end} ({:.1}% drift)", drift * 100.0);
+            // Seasons breathe, but the network never dries up or floods the map.
+            assert!(lo as f32 > 0.6 * start as f32 && (hi as f32) < 1.6 * start as f32, "seed {seed}: range {lo}..{hi} around {start}");
+        }
     }
 }

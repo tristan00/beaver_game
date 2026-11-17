@@ -83,16 +83,19 @@ fn render(world: &sim::worldgen::World, s: usize) -> (usize, usize, Vec<u8>) {
         if px < wpx && py < wpx { for k in 0..3 { img[(py * wpx + px) * 3 + k] = c[k].clamp(0.0, 255.0) as u8; } }
     };
     for py in 0..wpx { for px in 0..wpx { put(px, py, cell[(py / s) * n + px / s]); } }
-    let lake_c = [25.0, 70.0, 175.0];
+    // Lakes deep blue, still ponds a lighter teal so they read apart.
+    let (lake_c, pond_c) = ([25.0, 70.0, 175.0], [30.0, 150.0, 170.0]);
     for y in 0..n { for x in 0..n {
         if *world.lake.get(x, y).unwrap() {
-            for py in y * s..(y + 1) * s { for px in x * s..(x + 1) * s { put(px, py, lake_c); } }
+            let c = if *world.pond.get(x, y).unwrap() { pond_c } else { lake_c };
+            for py in y * s..(y + 1) * s { for px in x * s..(x + 1) * s { put(px, py, c); } }
         }
     } }
-    // Rivers: discs along each river cell, wider with more upstream area.
-    let river_c = [40.0, 130.0, 245.0];
+    // Rivers: discs along each river cell, wider with more upstream area. The main river is
+    // deep blue, tributary streams a lighter blue.
     for y in 0..n { for x in 0..n {
         if !*world.river.get(x, y).unwrap() { continue; }
+        let river_c = if *world.tributary.get(x, y).unwrap() { [90.0, 180.0, 255.0] } else { [40.0, 110.0, 235.0] };
         let acc = *world.flow_acc.get(x, y).unwrap() as f32;
         let r = s as f32 * (0.45 + 0.12 * (acc / sim::worldgen::RIVER_MIN_ACCUMULATION as f32).log2().max(0.0)).min(1.4);
         let (cx, cy) = ((x * s + s / 2) as f32, (y * s + s / 2) as f32);
@@ -103,7 +106,7 @@ fn render(world: &sim::worldgen::World, s: usize) -> (usize, usize, Vec<u8>) {
             }
         } }
     } }
-    // Valley borders as thin dark lines; start valley border is brighter; springs as white dots.
+    // Valley borders as thin dark lines; start valley border is brighter; springs as white dots, confluences yellow.
     for y in 0..n { for x in 0..n {
         let v = world.valley.get(x, y).unwrap();
         for (nx, ny) in [(x + 1, y), (x, y + 1)] {
@@ -117,6 +120,9 @@ fn render(world: &sim::worldgen::World, s: usize) -> (usize, usize, Vec<u8>) {
             }
         }
     } }
+    for &(x, y) in &world.confluences {
+        for oy in 0..s.min(4) { for ox in 0..s.min(4) { put(x * s + s / 2 + ox - 1, y * s + s / 2 + oy - 1, [255.0, 220.0, 40.0]); } }
+    }
     for &(x, y) in &world.springs {
         for oy in 0..s.min(3) { for ox in 0..s.min(3) { put(x * s + s / 2 + ox, y * s + s / 2 + oy, [255.0, 255.0, 255.0]); } }
     }

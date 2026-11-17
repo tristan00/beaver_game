@@ -100,12 +100,13 @@ impl SimState {
         let world = worldgen::WorldGen::new(seed).generate().expect("default world generation failed");
         let height = world.height.clone();
         let size = world.size;
+        let water = water::Water::from_world(&world);
         Self {
             seed,
             time_days: 0.0,
             height,
             world,
-            water: water::Water::new(size),
+            water,
             ecology: ecology::Ecology::seeded(size, seed),
             colony: Default::default(),
             buildings: Default::default(),
