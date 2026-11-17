@@ -52,6 +52,9 @@ pub enum Command {
     Regenerate { seed: u64 },
     /// Build dams of `height` above terrain on `cells`.
     BuildDam { cells: Vec<water::Cell>, height: f32 },
+    /// Order a dam: a construction site the family fells, hauls and builds; the water dam (and
+    /// the pond behind it) appears when the site is finished.
+    OrderDam { cells: Vec<water::Cell>, height: f32 },
     /// Remove the dam at (x, y); the pond drains downstream.
     BreachDam { x: usize, y: usize },
     /// Dig canals `depth` deep on `cells`.
@@ -223,6 +226,29 @@ impl SimState {
         Ok(id)
     }
 
+    /// Places a dam construction site on the middle cell of `cells`. Its cost is the dam cost
+    /// scaled by length and its labour scales the same way; `agents::step` applies the water dam
+    /// when the site completes. Errors (state unchanged) if `cells` are not a valid dam line, the
+    /// height is not finite and positive, or the site cannot be placed.
+    pub fn order_dam(&mut self, cells: &[water::Cell], height: f32) -> Result<buildings::BuildingId, SimError> {
+        if dam_preview::preview(self, cells, height).is_none() {
+            return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
+        }
+        let pos = cells[cells.len() / 2];
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let id = self
+            .buildings
+            .place_site(buildings::BuildingKind::Dam, pos, &self.tech, terrain)
+            .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+        let labour = buildings::BuildingKind::Dam.spec().work * dam_preview::length_factor(cells.len()) * self.tech.build_work_factor();
+        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &dam_preview::dam_cost(cells.len()), labour) {
+            self.buildings.buildings.retain(|b| b.id != id);
+            return Err(SimError::InvalidCommand(format!("{e:?}")));
+        }
+        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height });
+        Ok(id)
+    }
+
     /// Applies a command. Errors on invalid arguments, leaving state unchanged.
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         match cmd {
@@ -231,6 +257,7 @@ impl SimState {
                 Ok(())
             }
             Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
+            Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
