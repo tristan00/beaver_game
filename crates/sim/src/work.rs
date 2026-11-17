@@ -1,9 +1,18 @@
 //! Workplaces, construction sites, worker slots, work areas and hauling (owner: `build`).
 //! A `Workplace` is any building with worker slots; a site is a workplace with `site: Some(..)`.
 
+use std::collections::BTreeMap;
+
 use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
 use crate::water::Cell;
+
+/// Builder slots on every construction site.
+pub const SITE_SLOTS: usize = 2;
+/// Builder work units done per day by one builder (an adult working day is about 0.6).
+pub const LABOUR_PER_DAY: f32 = 0.6;
+/// Amounts closer than this to a target count as reaching it.
+pub const EPS: f32 = 1e-3;
 
 /// Inclusive rectangle of cells: a workplace's gather area or a drag-assigned area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +66,15 @@ pub struct SiteProgress {
 }
 
 impl SiteProgress {
+    /// Quantity of `good` still to be delivered (0 if the site does not use it).
+    pub fn missing(&self, good: Good) -> f32 {
+        let sum = |v: &[Amount]| v.iter().filter(|a| a.0 == good).map(|a| a.1).sum::<f32>();
+        (sum(&self.needed) - sum(&self.delivered)).max(0.0)
+    }
+    /// All materials delivered and all labour done.
+    pub fn is_done(&self) -> bool {
+        self.needed.iter().all(|a| self.missing(a.0) <= 0.0) && self.labour_done >= self.labour_needed
+    }
     /// Overall progress `0..=1`: materials and labour weighted equally.
     pub fn fraction(&self) -> f32 {
         let need: f32 = self.needed.iter().map(|a| a.1).sum();
@@ -75,13 +93,19 @@ pub struct HaulOrder {
     pub good: Good,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WorkError {
     NoSuchWorkplace,
     SlotTaken,
     SlotOutOfRange,
     NotAdult,
     InvalidArea,
+    NoSuchBeaver,
+    /// The workplace is not a construction site.
+    NotASite,
+    AlreadyRegistered,
+    /// A cost, labour or amount was negative, NaN or infinite.
+    InvalidAmount,
 }
 
 /// All workplaces and haul orders.
@@ -89,6 +113,9 @@ pub enum WorkError {
 pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
+    /// Goods held in each store, which haulers move between stores. The colony ledger
+    /// (`Buildings::stores`) stays the total; hauling only relocates goods between stores.
+    pub stock: BTreeMap<(BuildingId, Good), f32>,
 }
 
 impl Work {
@@ -98,20 +125,110 @@ impl Work {
     fn place_mut(&mut self, b: BuildingId) -> Result<&mut Workplace, WorkError> {
         self.places.iter_mut().find(|p| p.building == b).ok_or(WorkError::NoSuchWorkplace)
     }
-    /// Puts `who` into a free slot (`build` task adds the adult check and frees `who`'s old slot).
+    /// The slot `who` fills, if any.
+    pub fn slot_of(&self, who: BeaverId) -> Option<(BuildingId, usize, Role)> {
+        self.places.iter().find_map(|p| {
+            p.slots.iter().position(|s| s.worker == Some(who)).map(|i| (p.building, i, p.slots[i].role))
+        })
+    }
+    /// Puts `who` into a free slot, leaving any slot they held. Nothing changes on error.
+    /// (`SimState::apply` checks that `who` is an adult colony member.)
     pub fn assign(&mut self, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), WorkError> {
-        let s = self.place_mut(b)?.slots.get_mut(slot).ok_or(WorkError::SlotOutOfRange)?;
+        let s = self.place_mut(b)?.slots.get(slot).ok_or(WorkError::SlotOutOfRange)?;
         if s.worker.is_some() {
             return Err(WorkError::SlotTaken);
         }
-        s.worker = Some(who);
+        for p in &mut self.places {
+            p.slots.iter_mut().filter(|s| s.worker == Some(who)).for_each(|s| s.worker = None);
+        }
+        self.place_mut(b)?.slots[slot].worker = Some(who);
         Ok(())
     }
     pub fn unassign(&mut self, b: BuildingId, slot: usize) -> Result<(), WorkError> {
         self.place_mut(b)?.slots.get_mut(slot).ok_or(WorkError::SlotOutOfRange)?.worker = None;
         Ok(())
     }
-    /// Moves or resizes a workplace's area.
+    /// Registers construction site `b` needing `needed` goods and `labour` work units, with
+    /// `SITE_SLOTS` builder slots.
+    pub fn add_site(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
+        if self.place(b).is_some() {
+            return Err(WorkError::AlreadyRegistered);
+        }
+        let ok = |x: f32| x.is_finite() && x >= 0.0;
+        if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
+            return Err(WorkError::InvalidAmount);
+        }
+        self.places.push(Workplace {
+            building: b,
+            kind,
+            slots: vec![Slot { role: Role::Build, worker: None }; SITE_SLOTS],
+            area: None,
+            site: Some(SiteProgress {
+                needed: needed.to_vec(),
+                delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
+                labour_done: 0.0,
+                labour_needed: labour,
+            }),
+        });
+        Ok(())
+    }
+    fn site_mut(&mut self, b: BuildingId) -> Result<&mut SiteProgress, WorkError> {
+        self.place_mut(b)?.site.as_mut().ok_or(WorkError::NotASite)
+    }
+    /// Delivers up to `amount` of `good` to site `b`; returns what it accepted (never more than
+    /// is missing, so a site is built from exactly its cost).
+    pub fn deliver(&mut self, b: BuildingId, good: Good, amount: f32) -> Result<f32, WorkError> {
+        if !amount.is_finite() || amount < 0.0 {
+            return Err(WorkError::InvalidAmount);
+        }
+        let site = self.site_mut(b)?;
+        let take = amount.min(site.missing(good));
+        if let Some(d) = site.delivered.iter_mut().find(|d| d.0 == good) {
+            d.1 += take;
+            if site.needed.iter().filter(|n| n.0 == good).map(|n| n.1).sum::<f32>() - d.1 < EPS {
+                d.1 = site.needed.iter().filter(|n| n.0 == good).map(|n| n.1).sum();
+            }
+        }
+        Ok(take)
+    }
+    /// Adds builder labour to site `b` (capped at what is needed).
+    pub fn add_labour(&mut self, b: BuildingId, amount: f32) -> Result<(), WorkError> {
+        if !amount.is_finite() || amount < 0.0 {
+            return Err(WorkError::InvalidAmount);
+        }
+        let s = self.site_mut(b)?;
+        s.labour_done += amount;
+        if s.labour_done > s.labour_needed - EPS {
+            s.labour_done = s.labour_needed;
+        }
+        Ok(())
+    }
+    /// Site progress `0..=1`; `None` if `b` is not a site.
+    pub fn progress(&self, b: BuildingId) -> Option<f32> {
+        self.place(b)?.site.as_ref().map(SiteProgress::fraction)
+    }
+    /// Finished site `b` becomes an ordinary workplace with `slots` and `area`; builders leave.
+    pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
+        let p = self.place_mut(b)?;
+        p.slots = slots.iter().map(|&role| Slot { role, worker: None }).collect();
+        p.area = area;
+        Ok(())
+    }
+    /// Goods held in store `b`.
+    pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
+        self.stock.get(&(b, good)).copied().unwrap_or(0.0)
+    }
+    pub fn stock_add(&mut self, b: BuildingId, good: Good, amount: f32) {
+        *self.stock.entry((b, good)).or_insert(0.0) += amount;
+    }
+    /// Takes up to `amount` from store `b`'s stock; returns what was taken.
+    pub fn stock_take(&mut self, b: BuildingId, good: Good, amount: f32) -> f32 {
+        let have = self.stock_of(b, good);
+        let take = amount.min(have).max(0.0);
+        self.stock.insert((b, good), have - take);
+        take
+    }
+    /// Moves or resizes a workplace's area (collectors only gather inside the current one).
     pub fn set_area(&mut self, b: BuildingId, area: Area) -> Result<(), WorkError> {
         if area.min.0 > area.max.0 || area.min.1 > area.max.1 {
             return Err(WorkError::InvalidArea);

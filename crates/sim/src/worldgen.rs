@@ -8,7 +8,9 @@
 //! * same params => identical [`World`];
 //! * every river cell drains to a strictly lower `surface` cell, ending at the map edge;
 //! * every valley is walkable-reachable from the start valley (through passes);
-//! * only the start valley is open; neighbours open via [`World::unlock`].
+//! * only the start valley is open; neighbours open via [`World::unlock`];
+//! * every world has one main river, tributary streams that join it, springs at the stream heads
+//!   and still ponds (hollows no river feeds); river cells sit in a carved channel.
 use crate::grid::{Grid, HeightGrid};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
@@ -30,6 +32,23 @@ pub const MAX_STEP: f32 = 1.5;
 pub const BORDER_REACH: usize = 3;
 /// Minimum drop per cell along drainage, guarantees strict descent on flats.
 const FLOW_EPS: f32 = 1e-3;
+/// Channel depth carved below the drainage surface at a river's minimum accumulation, and per
+/// doubling of the upstream area beyond it (capped at `CHANNEL_MAX`). Monotone downstream.
+pub const CHANNEL_BASE: f32 = 0.30;
+const CHANNEL_PER_DOUBLING: f32 = 0.08;
+const CHANNEL_MAX: f32 = 0.60;
+/// A world needs at least this many tributary cells (river cells that drain into the main river).
+const TRIBUTARY_MIN_CELLS: usize = 12;
+/// Ponds carved per world (at most; sites are verified, so fewer can result).
+const POND_TARGET: usize = 3;
+const POND_TRIES: usize = 60;
+const POND_DEPTH: f32 = 1.6;
+/// Ponds stay this many cells from the start valley's centre.
+const POND_START_CLEARANCE: f32 = 20.0;
+/// Height kept above zero so carved ponds and channels never go below it.
+const CARVE_ROOM: f32 = 2.5;
+/// Stream heads whose branch is shorter than this (cells to the junction) are not rivers.
+const MIN_BRANCH: usize = 14;
 const MIN_SIZE: usize = 64;
 const ATTEMPTS: u64 = 16;
 
@@ -86,7 +105,7 @@ impl std::error::Error for WorldError {}
 pub struct World {
     pub seed: u64,
     pub size: usize,
-    /// Terrain height; equals `surface` except lake beds, which are lower.
+    /// Terrain height; equals `surface` except lake beds and river channels, which are lower.
     pub height: HeightGrid,
     /// Drainage surface (terrain with depressions filled); lakes sit at this level.
     pub surface: HeightGrid,
@@ -99,9 +118,18 @@ pub struct World {
     pub flow_to: Grid<Option<usize>>,
     /// Number of cells draining through each cell (itself included).
     pub flow_acc: Grid<u32>,
+    /// All river cells (main river and tributaries; other independent streams too).
     pub river: Grid<bool>,
+    /// The main river: the largest river, from its map-edge outlet up to its source.
+    pub main_river: Grid<bool>,
+    /// Tributary stream cells: river cells (not main) whose drainage joins the main river.
+    pub tributary: Grid<bool>,
+    /// Main-river cells where a tributary joins.
+    pub confluences: Vec<(usize, usize)>,
     pub lake: Grid<bool>,
-    /// River heads.
+    /// Still ponds: lake cells whose hollow is not fed by a river (a subset of `lake`).
+    pub pond: Grid<bool>,
+    /// Stream heads: where water enters the network.
     pub springs: Vec<(usize, usize)>,
     /// Soil moisture 0..=1.
     pub moisture: Grid<f32>,
@@ -371,7 +399,8 @@ fn terrain(seed: u64, n: usize, amplitude: f32, lay: &Layout) -> Vec<f32> {
         }
     }
     let (lo, hi) = h.iter().fold((f32::MAX, f32::MIN), |(l, g), &x| (l.min(x), g.max(x)));
-    h.iter_mut().for_each(|x| *x = (*x - lo) / (hi - lo) * amplitude * 0.95);
+    // Floor offset leaves room for the ponds and channels carved later.
+    h.iter_mut().for_each(|x| *x = CARVE_ROOM + (*x - lo) / (hi - lo) * (amplitude * 0.95 - CARVE_ROOM));
     h
 }
 
@@ -423,6 +452,175 @@ fn find_lakes(h: &[f32], surface: &[f32], n: usize) -> Vec<bool> {
     lake
 }
 
+/// Flow accumulation (upstream cell count, itself included) for a drainage forest. Upstream cells
+/// are strictly higher on `surface`, so descending order visits them first.
+fn accumulate(surface: &[f32], flow: &[Option<usize>]) -> Vec<u32> {
+    let mut order: Vec<usize> = (0..surface.len()).collect();
+    order.sort_by(|&a, &b| surface[b].total_cmp(&surface[a]).then(a.cmp(&b)));
+    let mut acc = vec![1u32; surface.len()];
+    for &i in &order {
+        if let Some(t) = flow[i] { acc[t] += acc[i]; }
+    }
+    acc
+}
+
+/// Carves up to `POND_TARGET` bowls into `raw` at flat sites away from rivers. A bowl is kept only
+/// if depression filling turns it into a small lake no river feeds; otherwise it is undone.
+fn carve_ponds(raw: &mut [f32], n: usize, seed: u64, start_center: (f32, f32)) {
+    let mut rng = Pcg32::seed_from_u64(seed ^ 0x90ED);
+    let (surface, flow) = fill_depressions(raw, n);
+    let acc = accumulate(&surface, &flow);
+    let mut near_river = vec![u32::MAX; n * n];
+    let mut q: VecDeque<usize> = (0..n * n).filter(|&i| acc[i] >= RIVER_MIN_ACCUMULATION / 2).collect();
+    q.iter().for_each(|&i| near_river[i] = 0);
+    while let Some(i) = q.pop_front() {
+        for j in neighbours4(i, n) {
+            if near_river[j] == u32::MAX { near_river[j] = near_river[i] + 1; q.push_back(j); }
+        }
+    }
+    let radius = 3.0f32;
+    let mut placed: Vec<(usize, usize)> = Vec::new();
+    for t in 0..POND_TRIES {
+        if placed.len() >= POND_TARGET { break; }
+        // The first pond is tried near the start valley's centre, the rest anywhere.
+        let (cx, cy) = if t < POND_TRIES / 3 && placed.is_empty() {
+            let (jx, jy) = ((unit(&mut rng) - 0.5) * 0.30 * n as f32, (unit(&mut rng) - 0.5) * 0.30 * n as f32);
+            ((start_center.0 + jx).clamp(10.0, n as f32 - 11.0) as usize, (start_center.1 + jy).clamp(10.0, n as f32 - 11.0) as usize)
+        } else {
+            (10 + (rng.next_u32() as usize) % (n - 20), 10 + (rng.next_u32() as usize) % (n - 20))
+        };
+        let c = cy * n + cx;
+        // Keep the colony's own ground dry.
+        let (dx, dy) = (cx as f32 - start_center.0, cy as f32 - start_center.1);
+        if dx * dx + dy * dy < POND_START_CLEARANCE * POND_START_CLEARANCE { continue; }
+        if near_river[c] < 7 || placed.iter().any(|&(px, py)| px.abs_diff(cx) + py.abs_diff(cy) < 16) { continue; }
+        let saved = raw.to_vec();
+        let r = radius.ceil() as isize;
+        for dy in -r..=r { for dx in -r..=r {
+            let d2 = (dx * dx + dy * dy) as f32;
+            if d2 <= radius * radius {
+                let i = ((cy as isize + dy) as usize) * n + (cx as isize + dx) as usize;
+                raw[i] -= POND_DEPTH * (1.0 - d2 / (radius * radius + 1.0));
+            }
+        } }
+        let (s2, f2) = fill_depressions(raw, n);
+        let a2 = accumulate(&s2, &f2);
+        let lake = find_lakes(raw, &s2, n);
+        let hollow = lake_components(&lake, n).into_iter().find(|comp| comp.contains(&c));
+        let ok = hollow.is_some_and(|comp| {
+            (8..=60).contains(&comp.len()) && comp.iter().all(|&i| a2[i] < RIVER_MIN_ACCUMULATION / 2)
+        });
+        if ok { placed.push((cx, cy)); } else { raw.copy_from_slice(&saved); }
+    }
+}
+
+/// 4-connected components of a mask.
+fn lake_components(mask: &[bool], n: usize) -> Vec<Vec<usize>> {
+    let mut seen = vec![false; n * n];
+    let mut out = Vec::new();
+    for s in 0..n * n {
+        if !mask[s] || seen[s] { continue; }
+        let (mut comp, mut q) = (vec![s], VecDeque::from([s]));
+        seen[s] = true;
+        while let Some(i) = q.pop_front() {
+            for j in neighbours4(i, n) {
+                if mask[j] && !seen[j] { seen[j] = true; comp.push(j); q.push_back(j); }
+            }
+        }
+        out.push(comp);
+    }
+    out
+}
+
+/// Main river, tributaries and confluences of the river network.
+struct Streams { main: Vec<bool>, trib: Vec<bool>, confluences: Vec<usize> }
+
+fn classify_streams(surface: &[f32], flow: &[Option<usize>], acc: &[u32], river: &[bool]) -> Streams {
+    let len = surface.len();
+    let mut main = vec![false; len];
+    // Main river: from the biggest outlet river cell, always up the larger branch.
+    if let Some(outlet) = (0..len).filter(|&i| river[i] && flow[i].is_none()).max_by_key(|&i| (acc[i], Reverse(i))) {
+        let mut up: Vec<Vec<usize>> = vec![Vec::new(); len];
+        for i in (0..len).filter(|&i| river[i]) {
+            if let Some(t) = flow[i] { up[t].push(i); }
+        }
+        let mut cur = outlet;
+        loop {
+            main[cur] = true;
+            match up[cur].iter().copied().max_by_key(|&j| (acc[j], Reverse(j))) {
+                Some(j) => cur = j,
+                None => break,
+            }
+        }
+    }
+    // Downstream cells first: a river cell is tributary if what it drains into is main or tributary.
+    let mut order: Vec<usize> = (0..len).collect();
+    order.sort_by(|&a, &b| surface[a].total_cmp(&surface[b]).then(a.cmp(&b)));
+    let mut trib = vec![false; len];
+    let mut confluences = Vec::new();
+    for &i in &order {
+        if let (true, false, Some(t)) = (river[i], main[i], flow[i]) {
+            if main[t] || trib[t] {
+                trib[i] = true;
+                if main[t] && !confluences.contains(&t) { confluences.push(t); }
+            }
+        }
+    }
+    confluences.sort_unstable();
+    Streams { main, trib, confluences }
+}
+
+/// Carves river channels into `height`: `CHANNEL_BASE` below the drainage surface, deeper with
+/// upstream area. Diagonal drainage steps also lower the lower corner cell so the channel stays
+/// 4-connected for the water sim. Heights keep strictly descending along the river.
+fn carve_channels(height: &mut [f32], surface: &[f32], flow: &[Option<usize>], acc: &[u32], river: &[bool], n: usize) {
+    let depth = |i: usize| {
+        (CHANNEL_BASE + CHANNEL_PER_DOUBLING * (acc[i] as f32 / RIVER_MIN_ACCUMULATION as f32).log2().max(0.0)).min(CHANNEL_MAX)
+    };
+    for i in (0..n * n).filter(|&i| river[i]) { height[i] = surface[i] - depth(i); }
+    for i in (0..n * n).filter(|&i| river[i]) {
+        let Some(t) = flow[i] else { continue };
+        let ((x, y), (tx, ty)) = ((i % n, i / n), (t % n, t / n));
+        if x != tx && y != ty {
+            let corner = [y * n + tx, ty * n + x].into_iter().min_by(|&a, &b| surface[a].total_cmp(&surface[b]).then(a.cmp(&b))).unwrap();
+            if !river[corner] {
+                let target = 0.5 * (height[i] + if river[t] { height[t] } else { surface[t] });
+                height[corner] = height[corner].min(target);
+            }
+        }
+    }
+}
+
+/// Removes stream branches shorter than `MIN_BRANCH` cells that end at a junction, repeatedly, so
+/// every remaining head is the source of a real stream. Only upstream cells go, so every river
+/// cell still drains through river cells.
+fn prune_short_branches(river: &mut [bool], flow: &[Option<usize>]) {
+    loop {
+        let mut up = vec![0u8; river.len()];
+        for i in (0..river.len()).filter(|&i| river[i]) {
+            if let Some(t) = flow[i] { up[t] = up[t].saturating_add(1); }
+        }
+        let mut changed = false;
+        let heads: Vec<usize> = (0..river.len()).filter(|&i| river[i] && up[i] == 0).collect();
+        for head in heads {
+            let mut branch = vec![head];
+            let mut cur = head;
+            let joins = loop {
+                match flow[cur].filter(|&t| river[t]) {
+                    None => break false,
+                    Some(t) if up[t] >= 2 => break true,
+                    Some(t) => { branch.push(t); cur = t; }
+                }
+            };
+            if joins && branch.len() < MIN_BRANCH {
+                branch.iter().for_each(|&i| river[i] = false);
+                changed = true;
+            }
+        }
+        if !changed { return; }
+    }
+}
+
 fn classify_tree(moisture: f32, slope: f32, height_frac: f32) -> Option<Tree> {
     if height_frac > 0.8 || slope > 1.2 { return None; } // bare rock above the tree line / cliffs
     match (moisture, slope) {
@@ -439,19 +637,21 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
     let n = p.size;
     let nf = n as f32;
     let lay = layout(seed, n);
-    let raw = terrain(seed, n, p.amplitude, &lay);
+    let mut raw = terrain(seed, n, p.amplitude, &lay);
+    carve_ponds(&mut raw, n, seed, lay.centers[0]);
     let (surface, flow) = fill_depressions(&raw, n);
     let lake = find_lakes(&raw, &surface, n);
-    let height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
+    let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
 
-    // Flow accumulation: upstream cells are strictly higher, so descending order visits them first.
-    let mut order: Vec<usize> = (0..n * n).collect();
-    order.sort_by(|&a, &b| surface[b].total_cmp(&surface[a]).then(a.cmp(&b)));
-    let mut acc = vec![1u32; n * n];
-    for &i in &order {
-        if let Some(t) = flow[i] { acc[t] += acc[i]; }
+    let acc = accumulate(&surface, &flow);
+    let mut river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
+    prune_short_branches(&mut river, &flow);
+    let streams = classify_streams(&surface, &flow, &acc, &river);
+    let mut pond = vec![false; n * n];
+    for comp in lake_components(&lake, n) {
+        if comp.iter().all(|&i| acc[i] < RIVER_MIN_ACCUMULATION) { comp.iter().for_each(|&i| pond[i] = true); }
     }
-    let river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
+    carve_channels(&mut height, &surface, &flow, &acc, &river, n);
     let mut has_upstream = vec![false; n * n];
     for i in 0..n * n {
         if let (true, Some(t)) = (river[i], flow[i]) { has_upstream[t] = true; }
@@ -502,7 +702,9 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
         height: grid_from(n, height), surface: grid_from(n, surface),
         valley, valleys, start: ValleyId(0), passes: lay.passes,
         flow_to: grid_from(n, flow), flow_acc: grid_from(n, acc),
-        river: grid_from(n, river), lake: grid_from(n, lake), springs,
+        river: grid_from(n, river), main_river: grid_from(n, streams.main), tributary: grid_from(n, streams.trib),
+        confluences: streams.confluences.iter().map(|&i| (i % n, i / n)).collect(),
+        lake: grid_from(n, lake), pond: grid_from(n, pond), springs,
         moisture: grid_from(n, moisture), slope: grid_from(n, slope), forest: grid_from(n, forest),
     };
     validate(&world)?;
@@ -520,6 +722,13 @@ fn validate(w: &World) -> Result<(), String> {
     let reach = w.reachable_valleys(w.start);
     if reach.len() != w.valleys.len() {
         return Err(format!("only {} of {} valleys reachable", reach.len(), w.valleys.len()));
+    }
+    let trib = w.tributary.as_slice().iter().filter(|&&t| t).count();
+    if trib < TRIBUTARY_MIN_CELLS || w.confluences.is_empty() {
+        return Err(format!("only {trib} tributary cells"));
+    }
+    if !w.pond.as_slice().iter().any(|&p| p) {
+        return Err("no still pond".into());
     }
     let river_in_start = (0..w.size * w.size)
         .filter(|&i| w.river.as_slice()[i] && w.valley.as_slice()[i] == w.start).count();
@@ -675,6 +884,36 @@ mod tests {
         let locked = w.valleys.iter().find(|v| !v.open).map(|v| v.center).unwrap();
         assert!(matches!(w.unlock((locked.0 as usize, locked.1 as usize)), Err(WorldError::ValleyLocked(_))));
         assert_eq!(w.unlock((w.size, 0)), Err(WorldError::OutOfBounds((w.size, 0))));
+    }
+
+    #[test]
+    fn every_seed_has_river_tributary_springs_and_varied_layout() {
+        let (mut with_spring, mut with_pond) = (0, 0);
+        let mut layouts = std::collections::HashSet::new();
+        for seed in 1..=20u64 {
+            let w = world(seed);
+            let count = |g: &Grid<bool>| g.as_slice().iter().filter(|&&b| b).count();
+            assert!(count(&w.main_river) >= 20, "seed {seed}: main river only {} cells", count(&w.main_river));
+            assert!(count(&w.tributary) >= TRIBUTARY_MIN_CELLS, "seed {seed}: no tributary");
+            assert!(!w.confluences.is_empty(), "seed {seed}: tributary never joins the main river");
+            // Tributaries and the main river are disjoint river cells; confluences lie on the main river.
+            for i in 0..w.size * w.size {
+                let (m, t, r) = (w.main_river.as_slice()[i], w.tributary.as_slice()[i], w.river.as_slice()[i]);
+                assert!(!(m && t) && (!m || r) && (!t || r), "seed {seed}: inconsistent stream masks at {i}");
+            }
+            assert!(w.confluences.iter().all(|&(x, y)| *w.main_river.get(x, y).unwrap()));
+            // Every spring is the head of a river cell; ponds are lakes.
+            with_spring += !w.springs.is_empty() as usize;
+            assert!(w.springs.iter().all(|&(x, y)| *w.river.get(x, y).unwrap()));
+            let ponds = count(&w.pond);
+            with_pond += (ponds > 0) as usize;
+            assert!((0..w.size * w.size).all(|i| !w.pond.as_slice()[i] || w.lake.as_slice()[i]));
+            assert!(w.main_river.as_slice().iter().zip(w.pond.as_slice()).all(|(&m, &p)| !(m && p)));
+            layouts.insert((w.main_river.as_slice().to_vec(), w.tributary.as_slice().to_vec(), w.pond.as_slice().to_vec()));
+        }
+        assert_eq!(with_spring, 20, "springs missing in some seeds");
+        assert_eq!(with_pond, 20, "ponds missing in some seeds");
+        assert_eq!(layouts.len(), 20, "two seeds share a water layout");
     }
 
     #[test]
