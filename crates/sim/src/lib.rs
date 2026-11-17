@@ -11,6 +11,7 @@ pub mod ecology;
 pub mod events;
 pub mod features;
 pub mod grid;
+pub mod lakes;
 pub mod nav;
 pub mod region;
 pub mod resources;

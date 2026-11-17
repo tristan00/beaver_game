@@ -65,8 +65,38 @@ fn build_err(e: impl std::fmt::Debug) -> StartError {
 pub fn build(start: Start, seed: u64) -> Result<SimState, StartError> {
     match start {
         Start::River => build_river(seed).map(|(sim, _)| sim),
-        Start::EarlyLake | Start::IndustrialLake => Ok(SimState::new(seed)),
+        Start::EarlyLake | Start::IndustrialLake => build_lake(start, seed).map(|(sim, _)| sim),
     }
+}
+
+/// Builds start 2 or 3 and also returns what its lake and dam are. Errors for `Start::River`.
+pub fn build_lake(start: Start, seed: u64) -> Result<(SimState, crate::lakes::LakeInfo), StartError> {
+    match start {
+        Start::EarlyLake => crate::lakes::early_lake(seed),
+        Start::IndustrialLake => crate::lakes::industrial_lake(seed),
+        Start::River => Err(StartError::Build("start 1 has no lake".into())),
+    }
+}
+
+/// Removes every disabled system's state from a start (`Features` says which): no rival
+/// neighbours or arrivals, no predators, no scouting or guard experience. The sim never fires
+/// them either way (`SimState::apply_features`); this keeps them out of the state a screen reads.
+pub(crate) fn strip_disabled(sim: &mut SimState) {
+    use crate::features::System;
+    let f = sim.features;
+    if !f.enabled(System::Rivals) || !f.enabled(System::Trade) {
+        sim.region = crate::region::Region::none(sim.seed);
+    }
+    if !f.enabled(System::Predators) {
+        sim.ecology.predators.clear();
+    }
+    for job in crate::colony::Job::ALL.into_iter().filter(|j| !f.allows_job(*j)) {
+        sim.colony.experience[job.index()] = 0.0;
+        if job == crate::colony::Job::Scout {
+            sim.colony.scouted = 0.0;
+        }
+    }
+    sim.buildings.buildings.retain(|b| f.allows_building(b.kind));
 }
 
 /// Dams tried, in cells above the river bed.
@@ -78,7 +108,7 @@ const POND_AREA_RANGE: std::ops::RangeInclusive<usize> = 100..=700;
 /// Evaporation and seepage then take about 0.02 depth per wet cell per day, so the river above
 /// the dam is given one unit of inflow per `CELLS_PER_INFLOW` pond cells (half the steady-state
 /// capacity, for the seasons) for the pond to stay full.
-const CLAY_SEEPAGE: f32 = 0.01;
+pub(crate) const CLAY_SEEPAGE: f32 = 0.01;
 /// Springs are put on at most this many river cells, found by following the river at most `RIVER_WALK` cells.
 const MAX_SPRINGS: usize = 20;
 const RIVER_WALK: usize = 60;
@@ -93,7 +123,7 @@ const TREE_RADIUS: usize = 14;
 /// Kits are this many days old (under a year).
 const KIT_AGE_DAYS: f32 = 150.0;
 
-fn dist2(a: Cell, b: Cell) -> usize {
+pub(crate) fn dist2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
 }
 
@@ -184,7 +214,7 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
     let plan = river_plan(&sim).ok_or(StartError::NoSite)?;
     let camp = plan.camp;
     sim.water.config.seepage = CLAY_SEEPAGE;
-    feed_river(&mut sim, &plan)?;
+    feed_river(&mut sim, &plan.dam, plan.height)?;
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
     sim.colony.found((camp.0 as f32 + 0.5, camp.1 as f32 + 0.5), &land).map_err(build_err)?;
     for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
@@ -202,6 +232,7 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
     }
     sim.world.unlock(camp).map_err(build_err)?;
     sim.work.auto_organise = true;
+    strip_disabled(&mut sim);
     crate::agents::place_beavers(&mut sim);
     Ok((sim, DamSite { cells: plan.dam, height: plan.height }))
 }
@@ -209,13 +240,13 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
 /// Tops up the river above the planned dam so the pond can fill and stay full: steady springs
 /// on the river cells that flow into it, nearest first. They sit in the channel, so before the dam
 /// the extra water simply runs past.
-fn feed_river(sim: &mut SimState, plan: &RiverPlan) -> Result<(), StartError> {
-    let p = crate::dam_preview::preview(sim, &plan.dam, plan.height).ok_or(StartError::NoSite)?;
+pub(crate) fn feed_river(sim: &mut SimState, dam: &[Cell], height: f32) -> Result<(), StartError> {
+    let p = crate::dam_preview::preview(sim, dam, height).ok_or(StartError::NoSite)?;
     let needed = p.flooded.len() as f32 / CELLS_PER_INFLOW - p.pressure;
     if needed <= 0.0 {
         return Ok(());
     }
-    let pond: std::collections::HashSet<Cell> = p.flooded.iter().chain(&plan.dam).copied().collect();
+    let pond: std::collections::HashSet<Cell> = p.flooded.iter().chain(dam).copied().collect();
     let size = sim.world.size;
     let mut upstream: Vec<(usize, Cell)> = (0..size * size)
         .map(|i| (i % size, i / size))

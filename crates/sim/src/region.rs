@@ -155,6 +155,11 @@ impl Default for Region {
 }
 
 impl Region {
+    /// A region with no neighbours, offers or arrivals (the rival system absent from the state).
+    pub fn none(seed: u64) -> Self {
+        Self { rng: Pcg32::seed_from_u64(seed ^ 0x2E61_0000), time_days: 0.0, colonies: Vec::new(), offers: Vec::new(), arrivals: Vec::new(), next_offer: 0 }
+    }
+
     /// Generates `MIN_NEIGHBOURS..MIN_NEIGHBOURS + NEIGHBOUR_SPREAD` neighbouring colonies; a share
     /// `WARY_CHANCE` of them is wary.
     pub fn new(seed: u64) -> Self {

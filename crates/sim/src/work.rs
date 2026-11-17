@@ -231,6 +231,16 @@ impl Work {
     pub fn progress(&self, b: BuildingId) -> Option<f32> {
         self.place(b)?.site.as_ref().map(SiteProgress::fraction)
     }
+    /// Registers the finished building `b` as a workplace with its catalogue slots and area (for
+    /// buildings a start places complete). Errors if it is already registered.
+    pub fn add_complete(&mut self, b: &crate::buildings::Building) -> Result<(), WorkError> {
+        if self.place(b.id).is_some() {
+            return Err(WorkError::AlreadyRegistered);
+        }
+        let slots = crate::catalogue::def(b.kind).slots.iter().map(|&role| Slot { role, worker: None }).collect();
+        self.places.push(Workplace { building: b.id, kind: b.kind, slots, area: crate::catalogue::work_area(b), site: None });
+        Ok(())
+    }
     /// Finished site `b` becomes an ordinary workplace with `slots` and `area`; builders leave.
     pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
         let p = self.place_mut(b)?;
