@@ -14,7 +14,10 @@ use crate::state::Sim;
 use bevy::app::AppExit;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::PresentMode;
 use sim::grid::HeightGrid;
@@ -66,6 +69,8 @@ fn season_override() -> Option<f32> {
 impl Plugin for TerrainRenderPlugin {
     fn build(&self, app: &mut App) {
         let start = season_override().unwrap_or(0.3);
+        bevy::asset::embedded_asset!(app, "terrain_shadow.wesl");
+        app.add_plugins(MaterialPlugin::<TerrainMaterial>::default());
         app.insert_resource(Season { phase: start })
             .init_resource::<TerrainChunks>()
             .add_systems(Startup, spawn_terrain)
@@ -266,6 +271,13 @@ fn noise(x: i32, y: i32) -> f32 {
     (h & 0xffff) as f32 / 65535.0 * 2.0 - 1.0
 }
 
+/// Grass gradient position (0 Meadow deep .. 0.5 Meadow .. 1 Meadow light): centre and how far the
+/// large patches and the sun-facing lift push it. Terrain shows its albedo on screen (see
+/// `terrain_shadow.wesl`), so the spread is what puts all three greens on screen (STYLE.md fix 3).
+const GRADE_MID: f32 = 0.58;
+const GRADE_PATCH: f32 = 1.3;
+const GRADE_SUN: f32 = 1.2;
+
 // ───────────────────────────── terrain meshing ─────────────────────────────
 
 #[derive(Default)]
@@ -279,7 +291,45 @@ struct Slot {
 #[derive(Resource, Default)]
 pub struct TerrainChunks {
     slots: Vec<Slot>,
-    material: Handle<StandardMaterial>,
+    material: Handle<TerrainMaterial>,
+}
+
+// ───────────── plum sun shadows (docs/STYLE.md fix 10) ─────────────
+
+/// Terrain material: StandardMaterial plus the plum sun-shadow pass in `terrain_shadow.wesl`.
+pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, PlumShadow>;
+
+/// Sun shadows on terrain show the lit colour blended `SHADOW_BLEND` toward `pal::PLUM` (in sRGB),
+/// the middle of STYLE.md's 35-45% band; lighting alone only scales colour and gives grey-green.
+pub const SHADOW_BLEND: f32 = 0.40;
+/// Shadow-map visibility window mapped to fully shadowed..fully lit: a narrow window keeps the soft
+/// PCF penumbra to a thin edge (a few px), so shadowed ground reads as one flat plum shape.
+const SHADOW_EDGE: [f32; 2] = [0.42, 0.58];
+/// Share of the sun/slope lighting relief kept on lit terrain (flat sunlit ground shows its albedo).
+const LIGHT_RELIEF: f32 = 0.5;
+
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub struct PlumShadow {
+    /// rgb: shadow colour (sRGB), a: blend toward it.
+    #[uniform(100)]
+    pub plum: Vec4,
+    #[uniform(100)]
+    pub edge: Vec4,
+}
+
+impl Default for PlumShadow {
+    fn default() -> Self {
+        let p = pal::PLUM;
+        // `BC_SHADOW_MASK=1`: paint terrain flat by sun visibility, shadow magenta / penumbra cyan / lit yellow (tools/shadow_check.py).
+        let mask = if std::env::var_os("BC_SHADOW_MASK").is_some() { 1.0 } else { 0.0 };
+        PlumShadow { plum: Vec4::new(p[0], p[1], p[2], SHADOW_BLEND), edge: Vec4::new(SHADOW_EDGE[0], SHADOW_EDGE[1], mask, LIGHT_RELIEF) }
+    }
+}
+
+impl MaterialExtension for PlumShadow {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://beaver_colony/terrain_shadow.wesl".into()
+    }
 }
 
 pub fn spawn_terrain(
@@ -287,14 +337,13 @@ pub fn spawn_terrain(
     sim: Res<Sim>,
     mut chunks: ResMut<TerrainChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
     season: Res<Season>,
     cam: Query<&Transform, With<MainCamera>>,
 ) {
-    chunks.material = materials.add(StandardMaterial {
-        perceptual_roughness: 1.0,
-        reflectance: 0.05,
-        ..default()
+    chunks.material = materials.add(TerrainMaterial {
+        base: StandardMaterial { perceptual_roughness: 1.0, reflectance: 0.05, ..default() },
+        extension: PlumShadow::default(),
     });
     // Underside of the world slab. Always drawn (no frustum culling), so it doubles as the
     // `Terrain` marker screenshot mode waits on even when the camera is zoomed into one corner.
@@ -435,7 +484,7 @@ fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     // sunny faces (light comes from -x/-z, the upper left) and a dip in hollows. No per-cell noise.
     let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
     let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5); // slope rising away from the sun faces it
-    let g = (0.58 + patch * 0.5 + sunny * 0.5 - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
+    let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
     let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
     // rock: steep or high
     let rock = (smooth(0.5, 1.0, slope) * smooth(0.3, 0.6, t)).max(smooth(0.72, 0.9, t));

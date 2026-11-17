@@ -83,6 +83,7 @@ impl Plugin for StartPlugin {
 }
 
 fn begin_cli_start(
+    cli: Res<Cli>,
     sim: Res<Sim>,
     planned: Res<PlannedDam>,
     mut flow: ResMut<Flow>,
@@ -91,6 +92,12 @@ fn begin_cli_start(
     mut sel: ResMut<Selection>,
 ) {
     begin(&sim.0, planned.0.as_ref(), &mut flow, &mut clock, &mut orbit, &mut sel);
+    // `--cam iso-close` / `iso-wide`: fixed views of the map centre, whatever the start (shadow checks, docs/STYLE.md fix 10).
+    if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
+        if let Some(p) = crate::camera::preset(&cli.cam) {
+            *orbit = p;
+        }
+    }
 }
 
 fn open_menu(mut commands: Commands, mut flow: ResMut<Flow>) {
