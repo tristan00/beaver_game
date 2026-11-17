@@ -9,6 +9,7 @@ mod flow;
 mod flow_view;
 mod input;
 mod midgame;
+mod opening;
 mod palette;
 mod screenshot;
 mod showcase;
@@ -52,7 +53,10 @@ fn main() -> AppExit {
         camera::CameraPlugin,
         showcase::ShowcasePlugin,
         input::InputPlugin,
+    ))
+    .add_plugins((
         midgame::MidgamePlugin,
+        opening::OpeningPlugin,
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,

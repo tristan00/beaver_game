@@ -537,6 +537,12 @@ fn pose_rig(pose: Pose, t: f32, id: f32) -> Rig {
     r
 }
 
+/// Foam ripple arcs (and no ground shadow) only for a swimming beaver that is actually over water:
+/// a beaver on land, even one in the swim gait about to enter the water, shows none.
+pub(crate) fn shows_ripple(pose: Pose, wet: bool) -> bool {
+    pose == Pose::Swim && wet
+}
+
 fn animate_beavers(
     time: Res<Time>,
     clock: Res<RenderClock>,
@@ -558,7 +564,7 @@ fn animate_beavers(
 
         let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
         let swimming = sprite.pose == Pose::Swim;
-        let wet = swimming && sprite.wet;
+        let wet = shows_ripple(sprite.pose, sprite.wet);
         if near != rig.near || !rig.init {
             rig.near = near;
             if let Ok(mut v) = vis.get_mut(rig.body) {

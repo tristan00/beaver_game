@@ -1,6 +1,10 @@
 //! Map-first shell and start-up menu models (owner: `ui_shell`). The map fills the screen; one
 //! stable navigation bar opens and closes a single screen at a time. Pure view-model: tested
-//! without a window; drawing lives in `panels.rs` (replaced by `ui_shell`).
+//! without a window; drawing lives in `panels.rs`.
+//!
+//! Screens, as named in `docs/DESIGN.md` §11: **Colony** (beavers, families, needs, mood),
+//! **Work** (jobs and open orders), **Stores** (goods and rates), **Buildings** (lodges, sites),
+//! plus **Tech** and **Events**.
 
 use sim::features::{Features, System};
 use sim::starts::Start;
@@ -11,33 +15,32 @@ use super::icons::Icon;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NavItem {
     Colony,
-    Beavers,
+    Work,
     Stores,
-    Build,
+    Buildings,
     Tech,
     Events,
 }
 
 impl NavItem {
-    pub const ALL: [NavItem; 6] =
-        [NavItem::Colony, NavItem::Beavers, NavItem::Stores, NavItem::Build, NavItem::Tech, NavItem::Events];
+    pub const ALL: [NavItem; 6] = [NavItem::Colony, NavItem::Work, NavItem::Stores, NavItem::Buildings, NavItem::Tech, NavItem::Events];
     pub fn icon(self) -> Icon {
         match self {
             NavItem::Colony => Icon::NavColony,
-            NavItem::Beavers => Icon::NavBeavers,
+            NavItem::Work => Icon::NavBeavers,
             NavItem::Stores => Icon::NavStores,
-            NavItem::Build => Icon::NavBuild,
+            NavItem::Buildings => Icon::NavBuild,
             NavItem::Tech => Icon::NavTech,
             NavItem::Events => Icon::NavEvents,
         }
     }
-    /// Tooltip label.
+    /// Caption and tooltip label.
     pub fn label(self) -> &'static str {
         match self {
             NavItem::Colony => "Colony",
-            NavItem::Beavers => "Beavers",
+            NavItem::Work => "Work",
             NavItem::Stores => "Stores",
-            NavItem::Build => "Build",
+            NavItem::Buildings => "Buildings",
             NavItem::Tech => "Tech",
             NavItem::Events => "Events",
         }
@@ -63,6 +66,9 @@ impl Shell {
     /// Clicking a nav item opens it, or closes it if already open.
     pub fn toggle(&mut self, item: NavItem) {
         self.open = if self.open == Some(item) { None } else { Some(item) };
+    }
+    pub fn close(&mut self) {
+        self.open = None;
     }
     /// Items to draw on the bar for these features.
     pub fn bar(&self, features: &Features) -> Vec<NavItem> {
