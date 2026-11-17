@@ -631,7 +631,7 @@ pub(crate) mod tests {
         let lock = m.iter().find(|e| e.kind == BuildingKind::Lock).unwrap();
         assert_eq!(lock.group, Group::Branch(Branch::Water));
         assert!(!lock.unlocked);
-        assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow Control", 3.0)));
+        assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow control", 120.0)));
         let dam = m.iter().find(|e| e.kind == BuildingKind::Dam).unwrap();
         assert!(dam.unlocked && dam.need.is_none());
         // groups are contiguous
@@ -652,6 +652,7 @@ pub(crate) mod tests {
         let site = dry_sites(&sim)[0];
         // locked
         assert!(matches!(check_building(&sim, BuildingKind::Workshop, site), Err(PlaceError::Locked(..))));
+        sim.tech.unlock_all();
         // a site costs nothing to place: the family hauls the materials in
         assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Ok(()));
         assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Ok(()));
@@ -664,6 +665,7 @@ pub(crate) mod tests {
     #[test]
     fn building_click_places_a_site_and_blocks_overlap() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         let mut p = Pending::default();
         let o = BuildOrder::Building { kind: BuildingKind::Lodge, pos: dry_sites(&sim)[0] };
@@ -709,6 +711,7 @@ pub(crate) mod tests {
     #[test]
     fn preview_equals_the_catalogue_site_rule_and_a_click_issues_one_place_site_command() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         sim.tech.unlock_all();
         // something already built, so overlap is exercised too
@@ -752,6 +755,7 @@ pub(crate) mod tests {
     #[test]
     fn hovering_a_dam_spot_shows_exactly_the_sims_dam_preview() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         sim.tech.unlock_all();
         let mut seen_flood = false;
@@ -776,6 +780,7 @@ pub(crate) mod tests {
     #[test]
     fn a_placed_dam_site_is_a_real_dam_with_the_previewed_cost() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         let hover = window(&sim).into_iter().find(|&h| site_preview(&sim, BuildingKind::Dam, h).is_valid()).unwrap();
         let p = site_preview(&sim, BuildingKind::Dam, hover);
@@ -787,6 +792,7 @@ pub(crate) mod tests {
     #[test]
     fn dam_order_places_a_site_and_builds_the_water_dam_only_when_it_completes() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         let c = river_cell(&sim);
         let cells = line_cells((c.0 - 2, c.1), (c.0 + 2, c.1));
@@ -805,6 +811,7 @@ pub(crate) mod tests {
     #[test]
     fn canal_emits_dig_canal_and_dam_needs_water() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         stock(&mut sim);
         let c = river_cell(&sim);
@@ -820,6 +827,7 @@ pub(crate) mod tests {
     #[test]
     fn cancel_refunds_and_priority_moves_to_front() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         stock(&mut sim);
         let mut p = Pending::default();
@@ -843,6 +851,7 @@ pub(crate) mod tests {
     #[test]
     fn job_counts_grow_shrink_and_cap() {
         let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
         found(&mut sim);
         let n = adults(&sim.colony);
         assert!(n >= 2, "need adults, got {n}");
