@@ -456,6 +456,15 @@ fn slope_at(s: &SimState, x: i32, y: i32) -> f32 {
     (gx * gx + gz * gz).sqrt()
 }
 
+/// Share of rock (0..1) on ground of this slope: exactly 0 up to `pal::ROCK_SLOPE_MIN` (docs/STYLE.md
+/// section 2), then a soft ramp. Height alone never makes rock.
+pub fn rock_weight(slope: f32) -> f32 {
+    if slope <= pal::ROCK_SLOPE_MIN {
+        return 0.0;
+    }
+    smooth(pal::ROCK_SLOPE_MIN, pal::ROCK_SLOPE_MIN + pal::ROCK_SLOPE_BLEND, slope)
+}
+
 /// Colour of one terrain vertex (sRGB). Grass runs from Meadow light to Meadow deep: sunny flat
 /// ground and large soft patches are light, hollows and slopes away from the sun are deep. Rock is
 /// Stone; nothing is darker than the style guide's floors (Meadow deep on grass, Stone shade on rock).
@@ -487,8 +496,14 @@ fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
     let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
     // rock: steep or high
-    let rock = (smooth(0.5, 1.0, slope) * smooth(0.3, 0.6, t)).max(smooth(0.72, 0.9, t));
+    let rock = rock_weight(slope);
     let rock_c = mix(STONE_SHADE_ALBEDO, p.rock, (0.55 + sunny * 0.9 + patch * 0.3).clamp(0.0, 1.0));
+    // soil shows through on the steep-but-not-rock slopes; leaf litter (Autumn rust) scatters in autumn
+    let soil = smooth(0.35, pal::ROCK_SLOPE_MIN, slope) * (1.0 - rock);
+    c = mix(c, pal::MUD, soil * 0.55);
+    let autumn = smooth(0.45, 0.58, p.grass[0] - p.grass[2] + 0.2) * (1.0 - p.winter);
+    let litter = smooth(0.15, 0.6, patch_noise(x as f32, y as f32, 5.0, 3) * 0.5 + 0.5) * autumn * veg.max(0.4);
+    c = mix(c, pal::AUTUMN_RUST, litter * 0.35 * (1.0 - rock));
     c = mix(c, rock_c, rock);
     // wetland on low ground near water
     let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
@@ -778,3 +793,19 @@ pub fn build_mesh(h: &HeightGrid) -> Mesh {
         .with_inserted_indices(Indices::U32(idx))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rock_only_above_style_guide_slope() {
+        for i in 0..=90 {
+            let slope = i as f32 * 0.01; // 0.00 ..= 0.90
+            assert_eq!(rock_weight(slope), 0.0, "slope {slope} must stay natural ground");
+        }
+        assert!(rock_weight(pal::ROCK_SLOPE_MIN + 0.05) > 0.0);
+        assert!((rock_weight(pal::ROCK_SLOPE_MIN + pal::ROCK_SLOPE_BLEND) - 1.0).abs() < 1e-6);
+        assert!(rock_weight(5.0) <= 1.0);
+    }
+}
