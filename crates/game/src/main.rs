@@ -9,6 +9,7 @@ mod flow;
 mod flow_view;
 mod input;
 mod opening;
+mod palette;
 mod screenshot;
 mod showcase;
 mod sim_driver;

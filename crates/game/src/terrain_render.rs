@@ -76,12 +76,7 @@ impl Plugin for TerrainRenderPlugin {
 
 // ───────────────────────────── palette ─────────────────────────────
 
-type Rgb = [f32; 3];
-
-fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let t = t.clamp(0.0, 1.0);
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
-}
+use crate::palette::{self as pal, mix, rgb, Rgb};
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -96,6 +91,9 @@ pub fn lin(c: Rgb, a: f32) -> [f32; 4] {
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub grass: Rgb,
+    /// Sunlit and shaded ends of the grass gradient (`docs/STYLE.md` §4).
+    pub grass_light: Rgb,
+    pub grass_deep: Rgb,
     pub mud: Rgb,
     pub rock: Rgb,
     pub wetland: Rgb,
@@ -112,15 +110,22 @@ pub struct Palette {
     pub winter: f32,
 }
 
-// Keyframes: spring, summer, autumn, winter.
-const GRASS: [Rgb; 4] = [[0.60, 0.82, 0.40], [0.45, 0.74, 0.34], [0.84, 0.66, 0.32], [0.66, 0.72, 0.60]];
-const WETLAND: [Rgb; 4] = [[0.42, 0.68, 0.50], [0.36, 0.62, 0.46], [0.60, 0.58, 0.34], [0.52, 0.60, 0.56]];
-const SKY: [Rgb; 4] = [[0.62, 0.82, 0.96], [0.52, 0.76, 0.96], [0.80, 0.80, 0.88], [0.78, 0.84, 0.92]];
-const SUN: [Rgb; 4] = [[1.0, 0.96, 0.88], [1.0, 0.95, 0.84], [1.0, 0.86, 0.70], [0.88, 0.92, 1.0]];
-const SUN_LUX: [f32; 4] = [8_500.0, 9_500.0, 7_500.0, 6_500.0];
-const AMBIENT: [Rgb; 4] = [[0.80, 0.90, 1.0], [0.82, 0.90, 1.0], [0.95, 0.88, 0.90], [0.84, 0.90, 1.0]];
-const WATER_SHALLOW: [Rgb; 4] = [[0.30, 0.80, 0.92], [0.26, 0.80, 0.94], [0.38, 0.72, 0.80], [0.52, 0.74, 0.88]];
-const WATER_DEEP: [Rgb; 4] = [[0.08, 0.50, 0.70], [0.06, 0.50, 0.72], [0.16, 0.44, 0.56], [0.24, 0.44, 0.62]];
+// Keyframes: spring, summer, autumn, winter. Summer is exactly the style guide's Meadow trio.
+const GRASS_LIGHT: [Rgb; 4] = [rgb(0xB6E284), pal::MEADOW_LIGHT, rgb(0xE8D890), rgb(0xE2E8E4)];
+const GRASS: [Rgb; 4] = [rgb(0x94CE70), pal::MEADOW, pal::STRAW, rgb(0xCBD8D0)];
+const GRASS_DEEP: [Rgb; 4] = [rgb(0x68B35C), pal::MEADOW_DEEP, rgb(0xB7AE66), rgb(0xA9BAB6)];
+const WETLAND: [Rgb; 4] = [rgb(0x74C48A), rgb(0x6CBE86), rgb(0xBFB574), rgb(0xA8C2BC)];
+const SKY: [Rgb; 4] = [pal::SKY, pal::SKY, rgb(0xB4D0EC), pal::SKY_WINTER];
+const SUN: [Rgb; 4] = [pal::SUN, pal::SUN, pal::SUN_AUTUMN, rgb(0xF0F2FF)];
+/// Sun and ambient are "linear light" factors on the albedo (tone mapping is off, so a vertex colour
+/// appears as itself under ambient 1.0): the sun only adds on top, nothing is ever darker than the
+/// ambient floor.
+const SUN_LUX: [f32; 4] = [1_300.0, 1_400.0, 1_250.0, 1_000.0];
+const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0.93], [0.96, 0.96, 0.98]];
+/// Ambient radiance on a surface (~4400 = full albedo at the default camera exposure, measured).
+pub const AMBIENT_LUX: f32 = 4_400.0;
+const WATER_SHALLOW: [Rgb; 4] = [pal::WATER_SHALLOW, pal::WATER_SHALLOW, rgb(0x7CCBD0), rgb(0x9CCFE2)];
+const WATER_DEEP: [Rgb; 4] = [pal::WATER_DEEP, pal::WATER_DEEP, rgb(0x3C84A0), rgb(0x5A9CC0)];
 
 fn cyc<T: Copy>(k: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
     let p = phase.rem_euclid(1.0) * 4.0 - 0.5;
@@ -139,15 +144,17 @@ impl Palette {
         let d = d.min(1.0 - d);
         Palette {
             grass: c(&GRASS),
-            mud: [0.62, 0.50, 0.38],
-            rock: [0.64, 0.62, 0.64],
+            grass_light: c(&GRASS_LIGHT),
+            grass_deep: c(&GRASS_DEEP),
+            mud: pal::MUD,
+            rock: pal::STONE,
             wetland: c(&WETLAND),
-            snow: [0.97, 0.98, 1.0],
+            snow: [0.97, 0.97, 1.0],
             sky: c(&SKY),
             sun: c(&SUN),
             sun_lux: cyc(&SUN_LUX, phase, |a, b, t| a + (b - a) * t),
             ambient: c(&AMBIENT),
-            ambient_lux: 300.0,
+            ambient_lux: AMBIENT_LUX,
             water_shallow: c(&WATER_SHALLOW),
             water_deep: c(&WATER_DEEP),
             ice: [0.86, 0.94, 0.99],
@@ -372,16 +379,43 @@ fn update_terrain_chunks(
     }
 }
 
-/// Colour of one terrain vertex.
+/// Stone shade albedo (`#8C8290`) used as the rock shadow end of the gradient.
+const STONE_SHADE_ALBEDO: Rgb = rgb(0x8C8290);
+
+/// Smooth value noise in -1..1; one lattice cell is `scale` grid cells wide (soft, blobby patches).
+fn patch_noise(x: f32, y: f32, scale: f32, seed: i32) -> f32 {
+    let (fx, fy) = (x / scale, y / scale);
+    let (ix, iy) = (fx.floor(), fy.floor());
+    let (tx, ty) = (smooth(0.0, 1.0, fx - ix), smooth(0.0, 1.0, fy - iy));
+    let n = |dx: i32, dy: i32| noise(ix as i32 + dx + seed * 131, iy as i32 + dy - seed * 17);
+    let top = n(0, 0) + (n(1, 0) - n(0, 0)) * tx;
+    let bot = n(0, 1) + (n(1, 1) - n(0, 1)) * tx;
+    top + (bot - top) * ty
+}
+
+/// Gradient of the terrain around a vertex, smoothed over a 3x3 neighbourhood of `st`-cell taps
+/// (rounded hills instead of per-cell facets). Returns (dh/dx, dh/dz) per world unit.
+fn smooth_gradient(s: &SimState, x: i32, y: i32, st: i32) -> (f32, f32) {
+    let h = |dx: i32, dy: i32| at(&s.height, x + dx * st, y + dy * st);
+    let gx = (h(1, -1) - h(-1, -1) + 2.0 * (h(1, 0) - h(-1, 0)) + h(1, 1) - h(-1, 1)) / 8.0;
+    let gz = (h(-1, 1) - h(-1, -1) + 2.0 * (h(0, 1) - h(0, -1)) + h(1, 1) - h(1, -1)) / 8.0;
+    (gx / (st as f32 * CELL_SIZE), gz / (st as f32 * CELL_SIZE))
+}
+
+fn slope_at(s: &SimState, x: i32, y: i32) -> f32 {
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    (gx * gx + gz * gz).sqrt()
+}
+
+/// Colour of one terrain vertex (sRGB). Grass runs from Meadow light to Meadow deep: sunny flat
+/// ground and large soft patches are light, hollows and slopes away from the sun are deep. Rock is
+/// Stone; nothing is darker than the style guide's floors (Meadow deep on grass, Stone shade on rock).
 fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let h = at(&s.height, x, y);
     let t = h / maxh;
     let depth = at(&s.water.depth, x, y);
-    let slope = {
-        let dx = at(&s.height, x + 1, y) - at(&s.height, x - 1, y);
-        let dz = at(&s.height, x, y + 1) - at(&s.height, x, y - 1);
-        (dx * dx + dz * dz).sqrt() / (2.0 * CELL_SIZE)
-    };
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    let slope = (gx * gx + gz * gz).sqrt();
     let veg = at(&s.ecology.vegetation, x, y).clamp(0.0, 1.0);
     // Share of wet cells within 2 cells: drives wetland and the muddy shore band.
     let (mut wet2, mut wet1) = (0.0, 0.0);
@@ -397,29 +431,34 @@ fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     }
     let submerged = smooth(WET_EPS, 0.4, depth);
 
-    let lush = [p.grass[0] * 0.9, p.grass[1] * 1.04, p.grass[2] * 0.9];
-    let mut c = mix(p.grass, lush, veg);
-    // soft per-vertex variation so slopes read as gentle patches rather than flat colour
-    let n = noise(x, y) * 0.035 + noise(x / 4 + 91, y / 4 - 7) * 0.05;
-    c = [c[0] * (1.0 + n), c[1] * (1.0 + n), c[2] * (1.0 + n)];
+    // Gradient position 0 (deep) .. 1 (light): large patches (60-140 px ~ 8-20 cells), a lift on
+    // sunny faces (light comes from -x/-z, the upper left) and a dip in hollows. No per-cell noise.
+    let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5); // slope rising away from the sun faces it
+    let g = (0.58 + patch * 0.5 + sunny * 0.5 - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
+    let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
     // rock: steep or high
     let rock = (smooth(0.5, 1.0, slope) * smooth(0.3, 0.6, t)).max(smooth(0.72, 0.9, t));
-    c = mix(c, p.rock, rock * 0.8);
+    let rock_c = mix(STONE_SHADE_ALBEDO, p.rock, (0.55 + sunny * 0.9 + patch * 0.3).clamp(0.0, 1.0));
+    c = mix(c, rock_c, rock);
     // wetland on low ground near water
     let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
     c = mix(c, p.wetland, wetland * (1.0 - rock));
     // muddy bank
-    c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.8);
-    // river/lake bed: warm sandy-mud in the shallows, cooling to a soft blue-grey when deep, so
-    // water reads as water from far away while beavers and lodges still stand out against it
-    // (a warm bed under cyan water would cancel to grey, so it cools quickly with depth)
-    let bed = mix([0.62, 0.60, 0.46], [0.20, 0.40, 0.54], (depth / 3.0).max(0.0).sqrt().min(1.0));
+    c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.7);
+    // river/lake bed: sandy teal in the shallows, cooling to the Deep blue (never grey) so water
+    // reads as clear cyan from far away
+    let bed = mix([0.56, 0.78, 0.66], mix(p.water_shallow, p.water_deep, 0.6), (depth / 2.5).max(0.0).sqrt().min(1.0));
     c = mix(c, bed, submerged);
-    // snow: seasonal blanket above the waterline + permanent caps
+    // snow: seasonal blanket above the waterline (no permanent white caps: high ground is Stone)
     let cap = smooth(0.8, 0.95, t);
-    let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.9);
+    let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.0);
     c = mix(c, p.snow, cover * (1.0 - submerged));
-    c
+    // floor: nothing darker than Meadow deep (grass) or Stone shade (rock), per channel, above water
+    let lo = mix(p.grass_deep, STONE_SHADE_ALBEDO, rock);
+    let f = 1.0 - submerged;
+    let lift = |v: f32, floor: f32| v + (v.max(floor * 1.05) - v) * f;
+    [lift(c[0], lo[0]), lift(c[1], lo[1]), lift(c[2], lo[2])]
 }
 
 /// Builds the mesh of one chunk at `step` cells per vertex, with skirts on its border.
@@ -434,9 +473,8 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         let (wx, wz) = world_pos(s, x, y);
         let h = at(&s.height, x, y);
         pos.push([wx, h - drop, wz]);
-        let dx = at(&s.height, x + st, y) - at(&s.height, x - st, y);
-        let dz = at(&s.height, x, y + st) - at(&s.height, x, y - st);
-        nor.push(Vec3::new(-dx, 2.0 * CELL_SIZE * st as f32, -dz).normalize().to_array());
+        let (gx, gz) = smooth_gradient(s, x, y, st);
+        nor.push(Vec3::new(-gx, 1.0, -gz).normalize().to_array());
         let c = vertex_color(s, p, maxh, x, y);
         col.push(lin([c[0] * shade, c[1] * shade, c[2] * shade], 1.0));
         uv.push([x as f32 / w as f32, y as f32 / d as f32]);
@@ -484,12 +522,108 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
             }
         }
     }
+    if step == 1 {
+        let mut d = Detail { pos: &mut pos, nor: &mut nor, col: &mut col, uv: &mut uv, idx: &mut idx, uvs: [1.0 / w as f32, 1.0 / d as f32] };
+        scatter_detail(s, p, maxh, x0, y0, &mut d);
+    }
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nor)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
         .with_inserted_indices(Indices::U32(idx))
+}
+
+// ───────────────────────────── ground detail ─────────────────────────────
+
+/// Mesh arrays the ground detail is appended to (same mesh and material as the terrain chunk).
+struct Detail<'a> {
+    pos: &'a mut Vec<[f32; 3]>,
+    nor: &'a mut Vec<[f32; 3]>,
+    col: &'a mut Vec<[f32; 4]>,
+    uv: &'a mut Vec<[f32; 2]>,
+    idx: &'a mut Vec<u32>,
+    uvs: [f32; 2],
+}
+
+/// Soft ellipsoid blob (6 segments, 3 rings) with radii `r`, turned by `yaw` and tilted by `lean`,
+/// shaded from `dark` at its base to `light` at the top.
+fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, light: Rgb) {
+    const SEG: usize = 6;
+    const RINGS: usize = 3;
+    let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(lean);
+    let base = d.pos.len() as u32;
+    for j in 0..=RINGS {
+        let v = j as f32 / RINGS as f32; // 0 = top pole
+        let (sv, cv) = (v * std::f32::consts::PI).sin_cos();
+        for i in 0..SEG {
+            let a = i as f32 / SEG as f32 * std::f32::consts::TAU;
+            let unit = Vec3::new(sv * a.cos(), cv, sv * a.sin());
+            let p = centre + rot * (unit * r);
+            let n = (rot * (unit / r).normalize_or_zero()).to_array();
+            d.pos.push(p.to_array());
+            d.nor.push(n);
+            d.col.push(lin(mix(light, dark, v), 1.0));
+            d.uv.push([p.x * d.uvs[0], p.z * d.uvs[1]]);
+        }
+    }
+    for j in 0..RINGS as u32 {
+        for i in 0..SEG as u32 {
+            let (a, b) = (base + j * SEG as u32 + i, base + j * SEG as u32 + (i + 1) % SEG as u32);
+            let (c, e) = (a + SEG as u32, b + SEG as u32);
+            d.idx.extend_from_slice(&[a, c, b, b, c, e]);
+        }
+    }
+}
+
+/// Sparse small ground detail on open grass (`docs/STYLE.md` §4): grass tufts (two crossed
+/// strokes), flowers (white, pink, yellow) and pebbles, about one item per 9 cells. Never on
+/// water, wet banks, rock or snow. Deterministic per cell.
+fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {
+    let (w, h) = (s.height.width() as i32, s.height.height() as i32);
+    for y in y0..y0 + CHUNK as i32 {
+        for x in x0..x0 + CHUNK as i32 {
+            if x >= w - 1 || y >= h - 1 {
+                continue;
+            }
+            let r = (noise(x * 7 + 3, y * 5 - 11) * 0.5 + 0.5, noise(x * 13 - 5, y * 3 + 17) * 0.5 + 0.5, noise(x - 29, y * 11 + 2) * 0.5 + 0.5);
+            if r.0 > 0.14 {
+                continue;
+            }
+            let (fx, fz) = (r.1 * 0.8 + 0.1, r.2 * 0.8 + 0.1);
+                        // reject water, wet banks (3x3 around the cell), steep, high ground
+            let mut ok = true;
+            for dy in -1..=2 {
+                for dx in -1..=2 {
+                    ok &= at(&s.water.depth, x + dx, y + dy) <= WET_EPS;
+                }
+            }
+            let t = at(&s.height, x, y) / maxh;
+            if !ok || slope_at(s, x, y) > 0.45 || t > 0.62 || p.winter > 0.7 {
+                continue;
+            }
+            let hh = |xx: i32, yy: i32| at(&s.height, xx, yy);
+            let top = hh(x, y) + (hh(x + 1, y) - hh(x, y)) * fx;
+            let bot = hh(x, y + 1) + (hh(x + 1, y + 1) - hh(x, y + 1)) * fx;
+            let ground = top + (bot - top) * fz;
+            let (wx, wz) = world_pos(s, x, y);
+            let c = Vec3::new(wx + fx * CELL_SIZE, ground, wz + fz * CELL_SIZE);
+            let kind = r.0 / 0.14; // 0..1 deterministic pick
+            let yaw = r.2 * std::f32::consts::TAU;
+            if kind < 0.5 {
+                // tuft: two crossed strokes, Lily at the tip fading to Meadow deep
+                for k in 0..2 {
+                    blob(d, c + Vec3::Y * 0.2, Vec3::new(0.08, 0.3, 0.26), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, pal::MEADOW_DEEP, pal::LILY);
+                }
+            } else if kind < 0.8 {
+                let petal = if r.1 < 0.34 { pal::FLOWER_WHITE } else if r.1 < 0.67 { pal::FLOWER_PINK } else { pal::FLOWER_YELLOW };
+                blob(d, c + Vec3::Y * 0.18, Vec3::new(0.04, 0.16, 0.04), 0.0, 0.0, pal::MEADOW_DEEP, pal::MEADOW_DEEP);
+                blob(d, c + Vec3::Y * 0.36, Vec3::new(0.23, 0.14, 0.23), yaw, 0.0, petal, petal);
+            } else {
+                blob(d, c + Vec3::Y * 0.05, Vec3::new(0.3, 0.17, 0.2), yaw, 0.0, pal::STONE_SHADE, pal::STONE);
+            }
+        }
+    }
 }
 
 // ───────────────────────────── frame-time logging ─────────────────────────────
@@ -549,17 +683,10 @@ fn frame_log(
 }
 
 fn legacy_height_color(t: f32) -> [f32; 4] {
-    // low = sand, mid = grass, high = rock
-    let stops = [(0.0, [0.76, 0.70, 0.50]), (0.35, [0.30, 0.55, 0.22]), (0.7, [0.22, 0.42, 0.18]), (1.0, [0.60, 0.58, 0.55])];
+    // low = Meadow, mid = Meadow light, high = Stone (style palette, no cold greys)
     let t = t.clamp(0.0, 1.0);
-    for w in stops.windows(2) {
-        let ((t0, c0), (t1, c1)) = (w[0], w[1]);
-        if t <= t1 {
-            let f = (t - t0) / (t1 - t0);
-            return [c0[0] + (c1[0] - c0[0]) * f, c0[1] + (c1[1] - c0[1]) * f, c0[2] + (c1[2] - c0[2]) * f, 1.0];
-        }
-    }
-    [0.6, 0.58, 0.55, 1.0]
+    let c = if t < 0.6 { mix(pal::MEADOW, pal::MEADOW_LIGHT, t / 0.6) } else { mix(pal::MEADOW_LIGHT, pal::STONE, (t - 0.6) / 0.4) };
+    [c[0], c[1], c[2], 1.0]
 }
 
 
@@ -573,7 +700,8 @@ pub fn build_mesh(h: &HeightGrid) -> Mesh {
     for y in 0..d {
         for x in 0..w {
             let ht = at(x, y);
-            pos.push([x as f32 * CELL_SIZE - ox, ht, y as f32 * CELL_SIZE - oz]);
+            // sits just under the styled chunk meshes so it never z-fights through them
+            pos.push([x as f32 * CELL_SIZE - ox, ht - 0.3, y as f32 * CELL_SIZE - oz]);
             let dx = at(x + 1, y) - at(x.saturating_sub(1), y);
             let dz = at(x, y + 1) - at(x, y.saturating_sub(1));
             nor.push(Vec3::new(-dx, 2.0 * CELL_SIZE, -dz).normalize().to_array());
