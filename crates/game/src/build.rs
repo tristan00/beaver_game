@@ -201,13 +201,14 @@ fn build_items(
     if !sim.colony.is_founded() {
         return l.items;
     }
-    l.button(rc(10.0, 36.0, 92.0, 26.0), BAction::ToggleMenu, "Build  B", ui.menu_open);
-    l.button(rc(106.0, 36.0, 84.0, 26.0), BAction::ToggleJobs, "Jobs  J", ui.jobs_open);
+    l.button(rc(win.x - 200.0, 42.0, 92.0, 26.0), BAction::ToggleMenu, "Build  B", ui.menu_open);
+    l.button(rc(win.x - 104.0, 42.0, 94.0, 26.0), BAction::ToggleJobs, "Jobs  J", ui.jobs_open);
     let colony = &sim.colony;
 
     // ── build menu ──
     if ui.menu_open {
-        let (x, y0, w) = (10.0, 66.0, 390.0);
+        let (w, y0) = (390.0, 74.0);
+        let x = win.x - 10.0 - w;
         let entries = menu(sim);
         let mut groups = 0;
         let mut last = None;
@@ -257,7 +258,8 @@ fn build_items(
 
     // ── jobs panel ──
     if ui.jobs_open {
-        let (x, y0, w) = (if ui.menu_open { 410.0 } else { 10.0 }, 66.0, 340.0);
+        let (w, y0) = (340.0, 74.0);
+        let x = win.x - 10.0 - 340.0 - if ui.menu_open { 400.0 } else { 0.0 };
         let n_adults = adults(colony);
         let h = 62.0 + Job::ALL.len() as f32 * 26.0 + 22.0;
         l.panel(rc(x, y0, w, h), PANEL_BG);
