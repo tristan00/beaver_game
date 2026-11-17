@@ -29,7 +29,7 @@ use models::Season;
 use scene::*;
 use std::collections::HashMap;
 
-pub use scene::lodge_view;
+pub use scene::{height_at, lodge_view};
 
 const BEAVER_SCALE: f32 = 1.3;
 /// Beavers further than this from the camera use the single static mesh and are not animated.
@@ -39,6 +39,11 @@ const TREE_LOD0: f32 = 55.0;
 const TREE_LOD1: f32 = 120.0;
 /// Seconds of render time shown in `--screenshot` mode (chosen so the hero shot has varied poses).
 const SCREENSHOT_CLOCK: f32 = 31.0;
+/// Whether the stress scene's itinerary beavers and stub trees are drawn instead of the live sim.
+/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--midgame`).
+fn stub_mode(cli: &Cli) -> bool {
+    cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
+}
 const DAYS_PER_SEASON: f64 = 30.0;
 
 pub struct EntitiesRenderPlugin;
@@ -287,7 +292,7 @@ fn spawn_scene(
     mut built_for: Local<Option<u64>>,
 ) {
     let Some(mut models) = models else { return };
-    if !cli.stress || *built_for == Some(sim.0.seed) {
+    if !stub_mode(&cli) || *built_for == Some(sim.0.seed) {
         return;
     }
     *built_for = Some(sim.0.seed);

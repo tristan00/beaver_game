@@ -35,7 +35,7 @@ pub fn sync_sim_beavers(
     mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility), With<SimBeaver>>,
     mut seen: Local<HashSet<u64>>,
 ) {
-    if cli.stress {
+    if super::stub_mode(&cli) {
         return;
     }
     seen.clear();
@@ -171,7 +171,7 @@ pub fn sync_sim_resources(
     mut st: Local<WorldSync>,
 ) {
     let Some(models) = models else { return };
-    if cli.stress {
+    if super::stub_mode(&cli) {
         return;
     }
     let sim = &sim.0;
@@ -256,7 +256,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building) -> Tran
 
 pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, mut st: Local<WorldSync>) {
     let Some(mut models) = models else { return };
-    if cli.stress {
+    if super::stub_mode(&cli) {
         return;
     }
     let sim = &sim.0;
