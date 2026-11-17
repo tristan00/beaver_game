@@ -1,0 +1,12 @@
+[package]
+name = "game"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "beaver_colony"
+path = "src/main.rs"
+
+[dependencies]
+sim = { path = "../sim" }
+bevy = { version = "=0.20.1" }
