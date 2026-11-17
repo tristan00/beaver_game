@@ -565,6 +565,7 @@ impl Plugin for FlowPlugin {
         let flow = Flow::new(&app.world().resource::<Sim>().0.world);
         app.insert_resource(flow)
             .init_resource::<Selection>()
+            .init_resource::<crate::ui::NoticesRes>()
             .init_resource::<Hover>()
             .insert_resource(CaptureGate(true))
             .add_systems(
@@ -726,10 +727,12 @@ fn unlock_valleys(time: Res<Time>, mut sim: ResMut<Sim>, mut flow: ResMut<Flow>)
     }
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>) {
-    for e in sim.0.colony.take_events() {
+fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::ui::NoticesRes>) {
+    let events = sim.0.colony.take_events();
+    for e in &events {
         flow.push_log(format!("day {:.0}: {:?}", e.day, e.event));
     }
+    notices.0.ingest(&sim.0, &events);
     if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
         flow.fire(FlowEvent::Collapse);
         clock.paused = true;
@@ -752,17 +755,25 @@ fn sample_history(sim: Res<Sim>, mut flow: ResMut<Flow>) {
 
 fn ease_camera(time: Res<Time>, mut flow: ResMut<Flow>, mut orbit: ResMut<OrbitCamera>) {
     let Some(f) = flow.focus else { return };
-    let k = (time.delta_secs() * 2.5).min(1.0);
-    let mut next = *orbit;
-    next.target = orbit.target.lerp(f, k);
-    if flow.settled_at.is_some() {
-        next.distance += (70.0 - next.distance) * k;
-    }
-    if next.target.distance(f) < 0.05 {
-        next.target = f;
+    let (next, arrived) = ease_step(*orbit, f, (time.delta_secs() * 2.5).min(1.0), flow.settled_at.is_some());
+    if arrived {
         flow.focus = None;
     }
     *orbit = next;
+}
+
+/// One easing step of the camera toward `focus` (`k` in 0..=1); true once it has arrived.
+pub fn ease_step(orbit: OrbitCamera, focus: Vec3, k: f32, settled: bool) -> (OrbitCamera, bool) {
+    let mut next = orbit;
+    next.target = orbit.target.lerp(focus, k);
+    if settled {
+        next.distance += (70.0 - next.distance) * k;
+    }
+    let arrived = next.target.distance(focus) < 0.05;
+    if arrived {
+        next.target = focus;
+    }
+    (next, arrived)
 }
 
 #[cfg(test)]
