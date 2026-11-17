@@ -372,6 +372,7 @@ pub struct Colony {
     site_cache: HashMap<(Cell, Cell), SiteEval>,
     cache_stamp: f64,
     guard_strength: f32,
+    disabled_jobs: Vec<Job>,
 }
 
 impl Default for Colony {
@@ -435,6 +436,7 @@ impl Colony {
             site_cache: HashMap::new(),
             cache_stamp: 0.0,
             guard_strength: 0.0,
+            disabled_jobs: Vec::new(),
         }
     }
 
@@ -496,8 +498,43 @@ impl Colony {
         Ok(fam)
     }
 
+    /// Jobs that are switched off never run, are never chosen and cannot be assigned.
+    /// Disabled jobs are also dropped from every family's priorities and from personal choices
+    /// (a family left with none works as `Forager`), so no screen lists them.
+    pub fn set_disabled_jobs(&mut self, jobs: Vec<Job>) {
+        if self.disabled_jobs == jobs {
+            return;
+        }
+        self.disabled_jobs = jobs;
+        let off = self.disabled_jobs.clone();
+        for f in &mut self.families {
+            f.priorities.retain(|j| !off.contains(j));
+            if f.priorities.is_empty() {
+                f.priorities.push(Job::Forager);
+            }
+        }
+        for b in &mut self.beavers {
+            if b.job.is_some_and(|j| off.contains(&j)) {
+                b.job = None;
+            }
+        }
+    }
+    pub fn job_enabled(&self, job: Job) -> bool {
+        !self.disabled_jobs.contains(&job)
+    }
+    /// Jobs the player may see and assign, in `Job::ALL` order.
+    pub fn enabled_jobs(&self) -> Vec<Job> {
+        Job::ALL.iter().copied().filter(|j| self.job_enabled(*j)).collect()
+    }
+    fn check_job_enabled(&self, job: Job) -> Result<(), ColonyError> {
+        if self.job_enabled(job) { Ok(()) } else { Err(ColonyError::Invalid(format!("job {job:?} is disabled"))) }
+    }
+
     /// Sets (or clears with `None`) a beaver's personal job.
     pub fn set_job(&mut self, id: BeaverId, job: Option<Job>) -> Result<(), ColonyError> {
+        if let Some(j) = job {
+            self.check_job_enabled(j)?;
+        }
         let b = self.beavers.iter_mut().find(|b| b.id == id).ok_or(ColonyError::UnknownBeaver(id))?;
         b.job = job;
         Ok(())
@@ -510,6 +547,9 @@ impl Colony {
         }
         if jobs.iter().collect::<HashSet<_>>().len() != jobs.len() {
             return Err(ColonyError::Invalid("priorities must not contain duplicates".into()));
+        }
+        for j in &jobs {
+            self.check_job_enabled(*j)?;
         }
         let f = self.families.iter_mut().find(|f| f.id == id).ok_or(ColonyError::UnknownFamily(id))?;
         f.priorities = jobs;
@@ -1083,7 +1123,7 @@ impl Colony {
         let id = FamilyId(self.next_id);
         self.next_id += 1;
         let name = FAMILY_NAMES[self.range(FAMILY_NAMES.len() as u32) as usize].to_string();
-        let priorities = DEFAULT_PRIORITIES.to_vec();
+        let priorities: Vec<Job> = DEFAULT_PRIORITIES.iter().copied().filter(|j| self.job_enabled(*j)).collect();
         self.families.push(Family { id, name, priorities });
         id
     }

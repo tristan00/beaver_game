@@ -26,6 +26,13 @@ pub enum LogFilter {
 
 impl LogFilter {
     pub const ALL: [LogFilter; 5] = [LogFilter::All, LogFilter::Water, LogFilter::Weather, LogFilter::Danger, LogFilter::Visitors];
+    /// Filters worth showing: Water only lists floods and droughts, so it goes when both are off.
+    pub fn available(features: &sim::features::Features) -> Vec<LogFilter> {
+        LogFilter::ALL
+            .into_iter()
+            .filter(|f| *f != LogFilter::Water || EventKind::ALL.iter().any(|k| features.allows_event(*k) && f.matches(*k)))
+            .collect()
+    }
     pub fn label(self) -> &'static str {
         match self {
             LogFilter::All => "All",
@@ -336,6 +343,7 @@ mod tests {
 
     fn sim_with_events() -> SimState {
         let mut s = SimState::new(2);
+        s.set_features(sim::features::Features::everything()); // the cards cover every event kind
         let cell = s.world.valleys[s.world.start.0 as usize].center;
         let land = sim::WorldLand { world: &s.world, depth: &s.water.depth };
         s.colony.found((cell.0 as f32, cell.1 as f32), &land).expect("found");

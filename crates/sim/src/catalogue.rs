@@ -30,7 +30,7 @@ pub struct Def {
 
 /// Definition for `kind`. (`content` fills the table; the stub gives one build slot.)
 pub fn def(kind: BuildingKind) -> Def {
-    Def { kind, tier: Tier::Elementary, slots: vec![Role::Build], area: None, unlock: None, system: None }
+    Def { kind, tier: Tier::Elementary, slots: vec![Role::Build], area: None, unlock: None, system: System::of_building(kind) }
 }
 
 /// Kinds the player may see and place given features (and, in `content`, tech).
