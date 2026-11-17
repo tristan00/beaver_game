@@ -87,3 +87,6 @@ Aggregate terrain check (`tools/render_shadow.sh`, tables in `artifacts/R19-29/s
 - Swim ripples (fix 9) are only sampled in the staged `--showcase poses` shot; the iso/lodge/pond shots at start 1 contain no swimming beaver.
 - The pond rim ring edge is polygonal in places at the corners of the pond in `pond_seed1` (8-gon-like corners, bottom right); not measured against a threshold.
 - Entity colours other than the beaver (lodge, bark, rocks) now go through the tone-map inverse but were not individually sampled.
+## Re-verification after merging master (lake camera, start flow)
+
+Conflict in `crates/game/src/startflow.rs` resolved by keeping both the lodge/pond camera keep and master's `frame_lake`. All shots re-rendered from the merged HEAD (`artifacts/R19-29/after`, copied to `artifacts/R19-16/after`). `tools/style_samples.py`: all 26 samples unchanged or within 1 channel level of the table above, all PASS. Slope transects identical (e.g. lodge_seed2 y=534, jump 1.1); grass density crop 15 items = 0.90 per 40x40. Stress: avg 3.38, p99 4.25, max 4.81 ms, 0 frames >= 16 ms.
