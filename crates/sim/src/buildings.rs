@@ -4,6 +4,7 @@
 use crate::colony::{Colony, ColonyError, Job, OrderId};
 use crate::grid::Grid;
 use crate::tech::Tech;
+use crate::work::{Role, Work};
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
@@ -182,6 +183,14 @@ pub enum BuildingKind {
     Warehouse,
     Dock,
     Barge,
+    // Early-lake elementary gathering camps.
+    LoggingCamp,
+    ForagerHut,
+    MudPit,
+    QuarryCamp,
+    // Industrial lake.
+    Mill,
+    Storehouse,
 }
 
 /// Terrain rule for a footprint.
@@ -207,11 +216,12 @@ pub struct Spec {
 }
 
 impl BuildingKind {
-    pub const ALL: [BuildingKind; 13] = [
+    pub const ALL: [BuildingKind; 19] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
-        BuildingKind::Barge,
+        BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
+        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse,
     ];
 
     /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
@@ -230,6 +240,12 @@ impl BuildingKind {
             BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Dry),
             BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
             BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
+            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Dry),
+            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Dry),
+            BuildingKind::MudPit => ("Mud pit", (2, 2), Site::Dry),
+            BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
+            BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
+            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
         };
         let (cost, work) = cost_and_work(self);
         Spec { name, cost, footprint, work, site }
@@ -509,7 +525,7 @@ impl Buildings {
 
     pub fn set_recipe(&mut self, id: BuildingId, recipe: Option<Recipe>) -> Result<(), BuildError> {
         let b = self.buildings.iter_mut().find(|b| b.id == id).ok_or(BuildError::UnknownBuilding(id))?;
-        if b.kind != BuildingKind::Workshop {
+        if crate::catalogue::def(b.kind).batches_per_day <= 0.0 {
             return Err(BuildError::WrongKind("only workshops craft"));
         }
         b.recipe = recipe;
@@ -563,12 +579,14 @@ impl Buildings {
     }
 
     /// Advances construction, workshops, water wheels and barges by `dt_days`.
-    /// `dt_days` must be finite and >= 0 (validated by `SimState::step`).
-    pub fn step(&mut self, dt_days: f32, tech: &Tech, terrain: Terrain, colony: &Colony) {
+    /// `dt_days` must be finite and >= 0 (validated by `SimState::step`). Workshops craft only as
+    /// fast as they are staffed (see `crafters`): `work` holds slot workers of site-built workplaces.
+    pub fn step(&mut self, dt_days: f32, tech: &Tech, terrain: Terrain, colony: &Colony, work: &Work) {
         self.complete_finished(colony, terrain);
         self.update_capacity(tech);
         self.update_wheels(terrain);
-        self.run_workshops(dt_days, tech);
+        let crafters = self.crafters(colony, work);
+        self.run_workshops(dt_days, tech, &crafters);
         self.move_barges(dt_days, terrain);
         self.stores.end_tick(dt_days);
     }
@@ -594,16 +612,17 @@ impl Buildings {
         }
     }
 
+    /// Capacity per good: the base plus every complete store's catalogue capacity for goods it takes.
     fn update_capacity(&mut self, tech: &Tech) {
         let f = tech.storage_factor();
-        let warehouses = self.count_complete(BuildingKind::Warehouse) as f32;
-        let caches = self.count_complete(BuildingKind::FoodCache) as f32;
         for g in Good::ALL {
-            let mut c = BASE_CAPACITY + warehouses * WAREHOUSE_CAPACITY;
-            if g == Good::Food {
-                c += caches * FOOD_CACHE_CAPACITY;
-            }
-            self.stores.capacity[g.index()] = c * f;
+            let stored: f32 = self
+                .buildings
+                .iter()
+                .filter(|b| b.is_complete() && crate::agents::accepts(b.kind, g))
+                .map(|b| crate::catalogue::def(b.kind).capacity)
+                .sum();
+            self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;
         }
     }
 
@@ -616,24 +635,51 @@ impl Buildings {
         }
     }
 
-    fn run_workshops(&mut self, dt: f32, tech: &Tech) {
+    /// Workers crafting at each complete building that has a recipe, in building order.
+    /// A building registered in `work` (placed as a site) counts its filled `Craft` slots. A
+    /// building placed by work order has no workplace; it is staffed from the colony's working
+    /// `Crafter`s, shared out in building order, each building taking at most its slot count.
+    fn crafters(&self, colony: &Colony, work: &Work) -> Vec<(BuildingId, usize)> {
+        let mut pool = colony.beavers.iter().filter(|b| b.current_job == Some(Job::Crafter)).count();
+        self.buildings
+            .iter()
+            .filter(|b| b.is_complete() && b.recipe.is_some())
+            .map(|b| {
+                let n = match work.place(b.id) {
+                    Some(p) => p.slots.iter().filter(|s| s.role == Role::Craft && s.worker.is_some()).count(),
+                    None => {
+                        let slots = crate::catalogue::def(b.kind).slots.iter().filter(|r| **r == Role::Craft).count();
+                        let n = slots.min(pool);
+                        pool -= n;
+                        n
+                    }
+                };
+                (b.id, n)
+            })
+            .collect()
+    }
+
+    /// Crafts at every staffed workshop: `batches_per_worker` x workers, limited by inputs and space.
+    fn run_workshops(&mut self, dt: f32, tech: &Tech, crafters: &[(BuildingId, usize)]) {
         if dt <= 0.0 {
             return;
         }
-        let recipes: Vec<Recipe> = self
-            .buildings
+        let recipes: Vec<(Recipe, f32)> = crafters
             .iter()
-            .filter(|b| b.kind == BuildingKind::Workshop && b.is_complete())
-            .filter_map(|b| b.recipe)
+            .filter(|(_, n)| *n > 0)
+            .filter_map(|&(id, n)| {
+                let b = self.building(id)?;
+                Some((b.recipe?, crate::catalogue::def(b.kind).batches_per_worker() * n as f32))
+            })
             .collect();
         if recipes.is_empty() {
             return;
         }
         // Wheel power is shared evenly; a fully powered workshop gains `WHEEL_MAX_BOOST`.
         let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
-        for r in recipes {
+        for (r, rate) in recipes {
             let (inputs, (out, per)) = r.batch();
-            let mut batches = CRAFT_BATCHES_PER_DAY * dt * boost * tech.craft_speed_factor();
+            let mut batches = rate * dt * boost * tech.craft_speed_factor();
             for &(g, a) in inputs {
                 batches = batches.min(self.stores.amount(g) / a);
             }
@@ -790,11 +836,11 @@ mod tests {
         assert_eq!(b.stores.amount(Good::Logs), before - 20.0);
         assert_eq!(b.stores.consumed_total[Good::Logs.index()], 20.0);
         assert_eq!(c.orders.len(), 1);
-        b.step(1.0, &tech, w.t(), &c);
+        b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(!b.building(id).unwrap().is_complete());
         assert_eq!(b.stores.consumption_rate[Good::Logs.index()], 20.0);
         finish_orders(&mut c);
-        b.step(1.0, &tech, w.t(), &c);
+        b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(b.building(id).unwrap().is_complete());
     }
 
@@ -805,9 +851,9 @@ mod tests {
         let mut b = Buildings::default();
         rich(&mut b);
         b.place(BuildingKind::Burrow, (1, 0), &tech, w.t(), &mut c).unwrap();
-        b.step(0.5, &tech, w.t(), &c);
+        b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 16.0);
-        b.step(0.5, &tech, w.t(), &c);
+        b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 0.0);
     }
 
@@ -841,10 +887,15 @@ mod tests {
         let id = b.place(BuildingKind::Workshop, (1, 0), &tech, w.t(), &mut c).unwrap();
         b.set_recipe(id, Some(Recipe::Baskets)).unwrap();
         finish_orders(&mut c);
-        b.step(0.0, &tech, w.t(), &c);
-        let sticks = b.stores.amount(Good::Sticks);
-        b.step(0.5, &tech, w.t(), &c);
-        assert!(b.stores.amount(Good::Baskets) > 0.0);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        // Placed by work order, so staffed by the colony's crafters: none yet, nothing made.
+        let (baskets, sticks) = (b.stores.amount(Good::Baskets), b.stores.amount(Good::Sticks));
+        b.step(0.5, &tech, w.t(), &c, &Work::default());
+        assert_eq!((b.stores.amount(Good::Baskets), b.stores.amount(Good::Sticks)), (baskets, sticks));
+        c.add_immigrants(1);
+        c.beavers[0].current_job = Some(Job::Crafter);
+        b.step(0.5, &tech, w.t(), &c, &Work::default());
+        assert!(b.stores.amount(Good::Baskets) > baskets);
         assert!(b.stores.amount(Good::Sticks) < sticks);
         assert!(b.stores.production_rate[Good::Baskets.index()] > 0.0);
         assert!(b.stores.consumption_rate[Good::Sticks.index()] > 0.0);
@@ -861,7 +912,7 @@ mod tests {
         let id = b.place(BuildingKind::WaterWheel, (5, 3), &tech, w.t(), &mut c).unwrap();
         finish_orders(&mut c);
         // still water: flat surface
-        b.step(1.0, &tech, w.t(), &c);
+        b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(b.building(id).unwrap().is_complete());
         assert_eq!(b.building(id).unwrap().output, 0.0);
         assert_eq!(b.power, 0.0);
@@ -871,13 +922,13 @@ mod tests {
                 *w.height.get_mut(x, y).unwrap() = 1.0 - 0.1 * x as f32;
             }
         }
-        b.step(1.0, &tech, w.t(), &c);
+        b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(b.building(id).unwrap().output > 0.0 && b.power > 0.0);
         // dry the river: no output
         for x in 0..16 {
             w.set_column(x, 0.0);
         }
-        b.step(1.0, &tech, w.t(), &c);
+        b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.building(id).unwrap().output, 0.0);
     }
 
@@ -885,10 +936,10 @@ mod tests {
         let _d1 = b.place(BuildingKind::Dock, (0, 3), tech, w.t(), c).unwrap();
         let d2 = b.place(BuildingKind::Dock, (12, 3), tech, w.t(), c).unwrap();
         finish_orders(c);
-        b.step(0.0, tech, w.t(), c);
+        b.step(0.0, tech, w.t(), c, &Work::default());
         b.place(BuildingKind::Barge, (0, 4), tech, w.t(), c).unwrap();
         finish_orders(c);
-        b.step(0.0, tech, w.t(), c);
+        b.step(0.0, tech, w.t(), c, &Work::default());
         (d2, b.barges[0].id)
     }
 
@@ -911,7 +962,7 @@ mod tests {
         assert_eq!(b.stores.amount(Good::Logs), logs - 5.0);
         assert_eq!(b.dispatch(barge, d2, None, w.t()), Err(BuildError::BargeBusy));
         for _ in 0..20 {
-            b.step(0.25, &tech, w.t(), &c);
+            b.step(0.25, &tech, w.t(), &c, &Work::default());
         }
         let bg = b.barge(barge).unwrap();
         assert_eq!(bg.state, BargeState::Idle);
@@ -928,10 +979,10 @@ mod tests {
         rich(&mut b);
         let (d2, barge) = setup_docks_and_barge(&w, &tech, &mut c, &mut b);
         b.dispatch(barge, d2, Some((Good::Stone, 3.0)), w.t()).unwrap();
-        b.step(0.5, &tech, w.t(), &c);
+        b.step(0.5, &tech, w.t(), &c, &Work::default());
         w.set_column(9, 0.0);
         for _ in 0..10 {
-            b.step(0.5, &tech, w.t(), &c);
+            b.step(0.5, &tech, w.t(), &c, &Work::default());
         }
         let bg = b.barge(barge).unwrap();
         assert_eq!(bg.state, BargeState::Stranded);
