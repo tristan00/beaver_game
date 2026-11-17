@@ -315,31 +315,60 @@ fn members<'a>(c: &'a Colony, fam: sim::colony::FamilyId) -> Vec<&'a Beaver> {
     c.beavers.iter().filter(|b| b.family == fam).collect()
 }
 
+/// A beaver's name as the screens show it: beavers can share a name, so later ones get a number.
+pub fn beaver_name(c: &Colony, b: &Beaver) -> String {
+    let n = c.beavers.iter().filter(|x| x.name == b.name && x.id.0 < b.id.0).count();
+    if n == 0 { b.name.clone() } else { format!("{} {}", b.name, n + 1) }
+}
+
 fn family_name(c: &Colony, id: sim::colony::FamilyId) -> String {
-    c.family(id).map(|f| f.name.clone()).unwrap_or_else(|| "Unknown".into())
+    let Some(f) = c.family(id) else { return "Unknown".into() };
+    // Families can share a surname; later ones get a number so every row and label is distinct.
+    let same: Vec<_> = c.families.iter().filter(|x| x.name == f.name).map(|x| x.id).collect();
+    match same.iter().position(|x| *x == id) {
+        Some(n) if n > 0 => format!("{} {}", f.name, n + 1),
+        _ => f.name.clone(),
+    }
 }
 
 /// Colony-wide average of `f` (0..1) as a percentage whose parts are each family's weighted share.
-fn colony_pct(c: &Colony, label: &str, f: impl Fn(&Beaver) -> f32) -> Explained {
+fn colony_pct(c: &Colony, label: &str, quantity: &str, f: impl Fn(&Beaver) -> f32) -> Explained {
     let n = c.population().max(1) as f32;
     let parts = c
         .families
         .iter()
         .filter_map(|fam| {
             let m = members(c, fam.id);
-            (!m.is_empty()).then(|| Explained::part(format!("{} family", fam.name), m.iter().map(|b| f(b)).sum::<f32>() / n * 100.0))
+            (!m.is_empty()).then(|| Explained::part(format!("{} family", family_name(c, fam.id)), m.iter().map(|b| f(b)).sum::<f32>() / n * 100.0))
         })
         .collect();
-    Explained::sum_or_zero(label, "%", parts)
+    Explained::sum_or_zero(label, "%", parts).of(quantity, ids(c.beavers.iter()))
+}
+
+/// Ids of beavers, to key a number by the beavers it is about.
+fn ids<'a>(b: impl IntoIterator<Item = &'a Beaver>) -> Vec<u64> {
+    b.into_iter().map(|b| b.id.0).collect()
+}
+
+/// A lodge's condition: a sound lodge less what wear has taken since it was built or repaired.
+pub fn condition_explained(name: &str, l: &sim::colony::Lodge) -> Explained {
+    Explained::sum(&format!("{name} condition"), "%", vec![Explained::part("Sound lodge", 100.0), Explained::part("Worn away", l.condition * 100.0 - 100.0)])
+        .of("lodge condition", [l.id.0])
+}
+
+/// A beaver's age as full years plus the part of the current year.
+fn age_explained(c: &Colony, b: &Beaver) -> Explained {
+    let y = b.age_years();
+    Explained::sum(&format!("{} age", beaver_name(c, b)), "", vec![Explained::part("Full years", y.floor()), Explained::part("Into this year", y - y.floor())]).dp(1).of("age", [b.id.0])
 }
 
 fn need_kpi(c: &Colony, label: &str, icon: Icon, f: impl Fn(&Beaver) -> f32) -> Kpi {
-    let num = colony_pct(c, label, f);
+    let num = colony_pct(c, label, label, f);
     Kpi { icon, tone: pct_tone(num.value), frac: Some(num.value / 100.0), num }
 }
 
 /// A beaver's mood as the weighted needs that feed it plus what health and settling add.
-fn mood_explained(b: &Beaver) -> Explained {
+fn mood_explained(c: &Colony, b: &Beaver) -> Explained {
     use sim::colony::*;
     let n = &b.needs;
     let terms = [
@@ -352,7 +381,7 @@ fn mood_explained(b: &Beaver) -> Explained {
     let mut parts: Vec<Part> = terms.iter().map(|(l, v)| Explained::part(*l, v * 100.0)).collect();
     let rest = b.mood * 100.0 - parts.iter().map(|p| p.value).sum::<f32>();
     parts.push(Explained::part("Health and settling", rest));
-    Explained::sum(&format!("{} mood", b.name), "%", parts)
+    Explained::sum(&format!("{} mood", beaver_name(c, b)), "%", parts).of("mood", [b.id.0])
 }
 
 /// Counts of adults, yearlings and kits as parts.
@@ -366,11 +395,28 @@ fn stage_parts(m: &[&Beaver]) -> Vec<Part> {
 
 // ───────────────────────────── screens ─────────────────────────────
 
+/// Gains and losses per day of a stock the sim keeps no rate for, averaged over recent days.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DayFlow {
+    pub gained: f32,
+    /// Negative or zero.
+    pub lost: f32,
+}
+
+impl DayFlow {
+    pub fn net(&self) -> f32 {
+        self.gained + self.lost
+    }
+    fn explained(&self, label: &str) -> Explained {
+        Explained::sum(label, "", vec![Explained::part("Gained", self.gained), Explained::part("Used or spoiled", self.lost)]).dp(1)
+    }
+}
+
 /// Slow-moving rates the screens cannot read from the sim directly.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rates {
-    pub larder_per_day: f32,
-    pub wood_per_day: f32,
+    pub larder: DayFlow,
+    pub wood: DayFlow,
 }
 
 pub fn screen(sim: &SimState, item: NavItem, rates: Rates) -> Screen {
@@ -387,9 +433,9 @@ pub fn screen(sim: &SimState, item: NavItem, rates: Rates) -> Screen {
 fn colony_screen(sim: &SimState) -> Screen {
     let c = &sim.colony;
     let all: Vec<&Beaver> = c.beavers.iter().collect();
-    let mood = colony_pct(c, "Colony mood", |b| b.mood);
+    let mood = colony_pct(c, "Colony mood", "mood", |b| b.mood);
     let kpis = vec![
-        Kpi { icon: Icon::NavBeavers, num: Explained::sum_or_zero("Beavers", "", stage_parts(&all)), tone: Tone::Normal, frac: None },
+        Kpi { icon: Icon::NavBeavers, num: Explained::sum_or_zero("Beavers", "", stage_parts(&all)).of("head count", ids(all.iter().copied())), tone: Tone::Normal, frac: None },
         Kpi { icon: Icon::Mood, tone: pct_tone(mood.value), frac: Some(mood.value / 100.0), num: mood },
         need_kpi(c, "Food need met", Icon::Food, |b| b.needs.food),
         need_kpi(c, "Rest need met", Icon::Rest, |b| b.needs.rest),
@@ -408,20 +454,22 @@ fn colony_screen(sim: &SimState) -> Screen {
             .map(|f| {
                 let m = members(c, f.id);
                 let mood = Explained::sum(
-                    &format!("{} family mood", f.name),
+                    &format!("{} family mood", family_name(c, f.id)),
                     "%",
-                    m.iter().map(|b| Explained::part(b.name.clone(), b.mood * 100.0 / m.len() as f32)).collect(),
-                );
+                    m.iter().map(|b| Explained::part(beaver_name(c, b), b.mood * 100.0 / m.len() as f32)).collect(),
+                )
+                .of("mood", ids(m.iter().copied()));
                 let lodge = c.lodges.iter().find(|l| l.family == f.id);
                 Row {
                     icon: Icon::Social,
-                    name: f.name.clone(),
+                    name: family_name(c, f.id),
                     click: m.first().map(|b| Do::Pick(b.id)),
                     cells: vec![
-                        Cell::num(Explained::sum(&format!("{} family size", f.name), "", stage_parts(&m))),
-                        Cell::Num { tone: pct_tone(mood.value), frac: Some(mood.value / 100.0), num: mood },
+                        Cell::num(Explained::sum(&format!("{} family size", family_name(c, f.id)), "", stage_parts(&m)).of("head count", ids(m.iter().copied()))),
+                        // a family of one has its member's mood, already in the Beavers table
+                        if m.len() > 1 { Cell::Num { tone: pct_tone(mood.value), frac: Some(mood.value / 100.0), num: mood } } else { Cell::Text("-".into(), Tone::Dim) },
                         match lodge {
-                            Some(l) => Cell::num(Explained::fact(&format!("{} lodge condition", f.name), "%", l.condition * 100.0)).bar(l.condition),
+                            Some(l) => Cell::num(condition_explained(&format!("{} lodge", family_name(c, f.id)), l)).bar(l.condition),
                             None => Cell::Text("none".into(), Tone::Dim),
                         },
                     ],
@@ -446,14 +494,14 @@ fn colony_screen(sim: &SimState) -> Screen {
         rows: order
             .into_iter()
             .map(|b| {
-                let mood = mood_explained(b);
+                let mood = mood_explained(c, b);
                 Row {
                     icon: if b.stage == Stage::Kit { Icon::Rest } else { Icon::Social },
-                    name: b.name.clone(),
+                    name: beaver_name(c, b),
                     click: Some(Do::Pick(b.id)),
                     cells: vec![
                         Cell::text(family_name(c, b.family)),
-                        Cell::num(Explained::fact(&format!("{} age", b.name), "", b.age_years()).dp(1)),
+                        Cell::num(age_explained(c, b)),
                         match job_of(b) {
                             Some(j) => Cell::Entry(job_icon(j), format!("{j:?}")),
                             None => Cell::Entry(Icon::Rest, if b.stage == Stage::Kit { "Kit".into() } else { "Idle".into() }),
@@ -466,23 +514,21 @@ fn colony_screen(sim: &SimState) -> Screen {
             .collect(),
         empty: "No beavers yet.",
     };
-    Screen { item: NavItem::Colony, kpis, tables: vec![families, beavers] }
+    // With one family its size and mood are the colony's own, already in the headline numbers.
+    let tables = if families.rows.len() > 1 { vec![families, beavers] } else { vec![beavers] };
+    Screen { item: NavItem::Colony, kpis, tables }
 }
 
 fn work_screen(sim: &SimState) -> Screen {
     let c = &sim.colony;
     let adults: Vec<&Beaver> = c.beavers.iter().filter(|b| b.stage != Stage::Kit).collect();
     let jobs = c.enabled_jobs();
-    let working: Vec<Part> = jobs
-        .iter()
-        .map(|j| Explained::part(format!("{j:?}"), adults.iter().filter(|b| job_of(b) == Some(*j)).count() as f32))
-        .filter(|p| p.value > 0.0)
-        .collect();
-    let idle: Vec<Part> = adults.iter().filter(|b| job_of(b).is_none()).map(|b| Explained::part(b.name.clone(), 1.0)).collect();
-    let kpis = vec![
-        Kpi { icon: Icon::Collector, num: Explained::sum_or_zero("Working", "", working), tone: Tone::Good, frac: None },
-        Kpi { icon: Icon::Rest, tone: if idle.len() > 1 { Tone::Warn } else { Tone::Dim }, frac: None, num: Explained::sum_or_zero("Idle", "", idle) },
-    ];
+    // Who works at what is the Jobs table; only the idle get a headline (a "working" total would
+    // repeat a job's worker count whenever one job holds everybody).
+    let idle_b: Vec<&&Beaver> = adults.iter().filter(|b| job_of(b).is_none()).collect();
+    let idle: Vec<Part> = idle_b.iter().map(|b| Explained::part(beaver_name(c, b), 1.0)).collect();
+    let idle_num = Explained::sum_or_zero("Idle adults", "", idle).of("head count", idle_b.iter().map(|b| b.id.0));
+    let kpis = vec![Kpi { icon: Icon::Rest, tone: if idle_b.len() > 1 { Tone::Warn } else { Tone::Dim }, frac: None, num: idle_num }];
     let rows = jobs
         .iter()
         .map(|j| {
@@ -490,7 +536,7 @@ fn work_screen(sim: &SimState) -> Screen {
             let skill = Explained::sum_or_zero(
                 &format!("{j:?} skill"),
                 "%",
-                w.iter().map(|b| Explained::part(b.name.clone(), b.skill(*j) * 100.0 / w.len() as f32)).collect(),
+                w.iter().map(|b| Explained::part(beaver_name(c, b), b.skill(*j) * 100.0 / w.len() as f32)).collect(),
             );
             let best = adults.iter().max_by(|a, b| a.skill(*j).total_cmp(&b.skill(*j)).then(b.id.0.cmp(&a.id.0)));
             Row {
@@ -498,15 +544,17 @@ fn work_screen(sim: &SimState) -> Screen {
                 name: format!("{j:?}"),
                 click: None,
                 cells: vec![
-                    Cell::num(Explained::sum_or_zero(&format!("{j:?} workers"), "", w.iter().map(|b| Explained::part(b.name.clone(), 1.0)).collect())),
+                    Cell::num(
+                        Explained::sum_or_zero(&format!("{j:?} workers"), "", w.iter().map(|b| Explained::part(beaver_name(c, b), 1.0)).collect())
+                            .of("head count", w.iter().map(|b| b.id.0)),
+                    ),
                     Cell::num(skill),
-                    Cell::num(Explained::fact(&format!("{j:?} experience"), "", c.experience[j.index()]).dp(1)),
                     Cell::Actions(vec![
                         Action { icon: Icon::Assign, label: "More".into(), act: Do::Staff(*j, 1) },
                         Action { icon: Icon::Cancel, label: "Fewer".into(), act: Do::Staff(*j, -1) },
                     ]),
                     match best {
-                        Some(b) => Cell::Text(b.name.clone(), Tone::Normal),
+                        Some(b) => Cell::Text(beaver_name(c, b), Tone::Normal),
                         None => Cell::Text("-".into(), Tone::Dim),
                     },
                 ],
@@ -517,7 +565,7 @@ fn work_screen(sim: &SimState) -> Screen {
         title: "Jobs",
         name_col: "Job",
         name_w: NAME_W,
-        cols: vec![Col { name: "Workers", width: 66.0 }, Col { name: "Skill", width: 64.0 }, Col { name: "XP", width: 56.0 }, Col { name: "Staff", width: 130.0 }, Col { name: "Best hand", width: 80.0 }],
+        cols: vec![Col { name: "Workers", width: 66.0 }, Col { name: "Skill", width: 64.0 }, Col { name: "Staff", width: 130.0 }, Col { name: "Best hand", width: 80.0 }],
         rows,
         empty: "No jobs are open.",
     };
@@ -533,7 +581,7 @@ fn work_screen(sim: &SimState) -> Screen {
                 icon: job_icon(o.job),
                 name: format!("{:?} order {}", o.job, o.id.0),
                 click: Some(Do::Jump(o.pos.0, o.pos.1)),
-                cells: vec![Cell::num(Explained::fact(&format!("Order {} work left", o.id.0), "", o.remaining).dp(1)), Cell::show("Show", Do::Jump(o.pos.0, o.pos.1))],
+                cells: vec![Cell::num(Explained::reading(&format!("Order {} work left", o.id.0), "", o.remaining, "Work order book").dp(1)), Cell::show("Show", Do::Jump(o.pos.0, o.pos.1))],
             })
             .collect(),
         empty: "Nothing queued; beavers choose their own work.",
@@ -579,18 +627,14 @@ fn net_tone(net: f32) -> Tone {
 fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
     let c = &sim.colony;
     let s = &sim.buildings.stores;
-    let dash = || Cell::Text("-".into(), Tone::Dim);
     let mut rows = vec![
         Row {
             icon: Icon::Food,
             name: "Larder".into(),
             click: None,
             cells: vec![
-                Cell::num(Explained::fact("Larder stock", "", c.food)).tone(if c.food_per_capita() < 1.0 { Tone::Bad } else { Tone::Normal }),
-                dash(),
-                dash(),
-                dash(),
-                Cell::num(Explained::fact("Larder net per day", "", rates.larder_per_day).dp(1)).tone(net_tone(rates.larder_per_day)),
+                Cell::num(Explained::reading("Larder stock", "", c.food, "Colony larder")).tone(if c.food_per_capita() < 1.0 { Tone::Bad } else { Tone::Normal }),
+                Cell::num(rates.larder.explained("Larder net per day")).tone(net_tone(rates.larder.net())),
             ],
         },
         Row {
@@ -598,11 +642,8 @@ fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
             name: "Wood".into(),
             click: None,
             cells: vec![
-                Cell::num(Explained::fact("Wood stock", "", c.wood)),
-                dash(),
-                dash(),
-                dash(),
-                Cell::num(Explained::fact("Wood net per day", "", rates.wood_per_day).dp(1)).tone(net_tone(rates.wood_per_day)),
+                Cell::num(Explained::reading("Wood stock", "", c.wood, "Colony woodpile")),
+                Cell::num(rates.wood.explained("Wood net per day")).tone(net_tone(rates.wood.net())),
             ],
         },
     ];
@@ -610,7 +651,6 @@ fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
         let i = g.index();
         let (amount, cap, net) = (s.amount(g), s.capacity(g), s.net_rate(g));
         let name = good_name(g);
-        let base = sim::buildings::BASE_CAPACITY;
         let stock = Explained::sum(
             &format!("{name} stock"),
             "",
@@ -626,9 +666,6 @@ fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
             click: None,
             cells: vec![
                 Cell::Num { tone: store_tone(amount, cap, net), frac: Some(amount / cap.max(1.0)), num: stock },
-                Cell::num(Explained::sum(&format!("{name} capacity"), "", vec![Explained::part("Base store", base.min(cap)), Explained::part("Warehouses", cap - base.min(cap))])),
-                Cell::num(Explained::fact(&format!("{name} made per day"), "", s.production_rate[i]).dp(1)),
-                Cell::num(Explained::fact(&format!("{name} used per day"), "", s.consumption_rate[i]).dp(1)),
                 Cell::num(Explained::sum(&format!("{name} net per day"), "", vec![Explained::part("Made", s.production_rate[i]), Explained::part("Used", -s.consumption_rate[i])]).dp(1)).tone(net_tone(net)),
             ],
         });
@@ -639,15 +676,31 @@ fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
         name_w: NAME_W,
         cols: vec![
             Col { name: "Stock", width: 74.0 },
-            Col { name: "Capacity", width: 66.0 },
-            Col { name: "Made/day", width: 66.0 },
-            Col { name: "Used/day", width: 66.0 },
             Col { name: "Net/day", width: 66.0 },
         ],
         rows,
         empty: "Nothing stored.",
     };
-    Screen { item: NavItem::Stores, kpis: Vec::new(), tables: vec![table] }
+    // Every good has the same room (the stock bar shows how full each is); cache food gets more
+    // from food caches, so it has its own headline only once there is a cache.
+    let b = &sim.buildings;
+    let f = sim.tech.storage_factor();
+    let warehouses = b.count_complete(sim::buildings::BuildingKind::Warehouse) as f32 * sim::buildings::WAREHOUSE_CAPACITY;
+    let base = sim::buildings::BASE_CAPACITY;
+    let room = |extra: Vec<Part>| {
+        let mut parts = vec![Explained::part("Base store", base), Explained::part("Warehouses", warehouses)];
+        let raw: f32 = base + warehouses + extra.iter().map(|p| p.value).sum::<f32>();
+        parts.extend(extra);
+        parts.push(Explained::part("Storage techs", raw * (f - 1.0)));
+        parts
+    };
+    let mut kpis = vec![Kpi { icon: Icon::NavStores, num: Explained::sum("Room for each good", "", room(Vec::new())), tone: Tone::Normal, frac: None }];
+    let caches = b.count_complete(sim::buildings::BuildingKind::FoodCache);
+    if caches > 0 {
+        let extra = vec![Explained::part("Food caches", caches as f32 * sim::buildings::FOOD_CACHE_CAPACITY)];
+        kpis.push(Kpi { icon: Icon::Food, num: Explained::sum("Room for cache food", "", room(extra)), tone: Tone::Normal, frac: None });
+    }
+    Screen { item: NavItem::Stores, kpis, tables: vec![table] }
 }
 
 fn building_icon(k: sim::buildings::BuildingKind) -> Icon {
@@ -675,9 +728,9 @@ fn buildings_screen(sim: &SimState) -> Screen {
         Kpi {
             icon: Icon::Build,
             num: Explained::sum_or_zero(
-                "Buildings done",
+                "Others built",
                 "",
-                sim::buildings::BuildingKind::ALL.iter().map(|k| Explained::part(k.spec().name, b.count_complete(*k) as f32)).filter(|p| p.value > 0.0).collect(),
+                sim::buildings::BuildingKind::ALL.iter().filter(|k| **k != sim::buildings::BuildingKind::Lodge).map(|k| Explained::part(k.spec().name, b.count_complete(*k) as f32)).filter(|p| p.value > 0.0).collect(),
             ),
             tone: Tone::Normal,
             frac: None,
@@ -704,8 +757,8 @@ fn buildings_screen(sim: &SimState) -> Screen {
                     icon: Icon::Shelter,
                     click: Some(Do::Jump(l.pos.0, l.pos.1)),
                     cells: vec![
-                        Cell::num(Explained::sum_or_zero(&format!("{name} residents"), "", res)),
-                        Cell::num(Explained::fact(&format!("{name} condition"), "%", l.condition * 100.0)).bar(l.condition).tone(pct_tone(l.condition * 100.0)),
+                        Cell::num(Explained::sum_or_zero(&format!("{name} residents"), "", res).of("head count", c.beavers.iter().filter(|x| x.lodge == Some(l.id)).map(|x| x.id.0))),
+                        Cell::num(condition_explained(&name, l)).bar(l.condition).tone(pct_tone(l.condition * 100.0)),
                         Cell::show("Show", Do::Jump(l.pos.0, l.pos.1)),
                     ],
                     name,
@@ -733,6 +786,14 @@ fn buildings_screen(sim: &SimState) -> Screen {
                         let done = (spec.work - left) / spec.work.max(0.001) * 100.0;
                         Cell::num(Explained::sum(&format!("{name} progress"), "%", vec![Explained::part("Work done", done)])).bar(done / 100.0)
                     }
+                    Status::Site => match sim.work.place(x.id).and_then(|p| p.site.as_ref()) {
+                        Some(site) => {
+                            let n = site_progress(&name, site);
+                            let f = n.value / 100.0;
+                            Cell::num(n).bar(f)
+                        }
+                        None => Cell::Text("Waiting for a site".into(), Tone::Dim),
+                    },
                 };
                 Row { icon: building_icon(x.kind), name, click: Some(Do::Jump(at.0, at.1)), cells: vec![progress, Cell::show("Show", Do::Jump(at.0, at.1))] }
             })
@@ -742,7 +803,8 @@ fn buildings_screen(sim: &SimState) -> Screen {
     let mut build_rows = Vec::new();
     for e in crate::build_logic::menu(sim) {
         let spec = e.kind.spec();
-        let cost = Explained::sum(&format!("{} cost", spec.name), "", spec.cost.iter().map(|(g, a)| Explained::part(good_name(*g), *a)).collect());
+        let cost = Explained::sum(&format!("{} cost", spec.name), "", spec.cost.iter().map(|(g, a)| Explained::part(good_name(*g), *a)).collect())
+            .of(&format!("{} cost", spec.name), []);
         let (state, action) = match e.need {
             None => (Cell::Text("ready".into(), Tone::Good), Cell::Actions(vec![Action { icon: Icon::Build, label: "Build".into(), act: Do::Place(e.kind) }])),
             Some((tech, _, _)) => (Cell::Text(format!("needs {tech}"), Tone::Dim), Cell::Text(String::new(), Tone::Dim)),
@@ -753,11 +815,24 @@ fn buildings_screen(sim: &SimState) -> Screen {
         title: "Build something",
         name_col: "Building",
         name_w: NAME_W,
-        cols: vec![Col { name: "Cost", width: 56.0 }, Col { name: "State", width: 150.0 }, Col { name: "", width: 80.0 }],
+        cols: vec![Col { name: "Cost", width: 56.0 }, Col { name: "State", width: 176.0 }, Col { name: "", width: 80.0 }],
         rows: build_rows,
         empty: "Nothing can be built yet.",
     };
     Screen { item: NavItem::Buildings, kpis, tables: vec![lodges, built, menu_table] }
+}
+
+/// A construction site's progress: materials and labour weigh half each (as `SiteProgress::fraction`).
+pub fn site_progress(name: &str, site: &sim::work::SiteProgress) -> Explained {
+    let need: f32 = site.needed.iter().map(|a| a.1).sum();
+    let got: f32 = site.delivered.iter().map(|a| a.1).sum();
+    let mat = if need > 0.0 { (got / need).min(1.0) } else { 1.0 };
+    let lab = if site.labour_needed > 0.0 { (site.labour_done / site.labour_needed).min(1.0) } else { 1.0 };
+    Explained::sum(
+        &format!("{name} progress"),
+        "%",
+        vec![Explained::part("Materials delivered (half)", 50.0 * mat), Explained::part("Labour done (half)", 50.0 * lab)],
+    )
 }
 
 fn effect_text(e: &Effect) -> String {
@@ -776,7 +851,6 @@ fn tech_screen(sim: &SimState) -> Screen {
         .iter()
         .filter(|br| TECHS.iter().any(|d| d.branch == **br && visible(d)))
         .map(|br| {
-            let xp = br.experience(c);
             let done: Vec<Part> = TECHS
                 .iter()
                 .enumerate()
@@ -787,7 +861,10 @@ fn tech_screen(sim: &SimState) -> Screen {
                 icon: Icon::NavTech,
                 name: format!("{br:?}"),
                 click: None,
-                cells: vec![Cell::num(Explained::fact(&format!("{br:?} experience"), "", xp).dp(1)), Cell::num(Explained::sum_or_zero(&format!("{br:?} techs unlocked"), "", done))],
+                cells: vec![
+                    Cell::num(Explained::sum(&format!("{br:?} experience"), "", br.jobs().iter().map(|j| Explained::part(format!("{j:?} work done"), c.experience[j.index()])).collect()).dp(1)),
+                    Cell::num(Explained::sum_or_zero(&format!("{br:?} techs unlocked"), "", done)),
+                ],
             }
         })
         .collect();
@@ -815,8 +892,8 @@ fn tech_screen(sim: &SimState) -> Screen {
                     name: d.name.to_string(),
                     click: None,
                     cells: vec![
-                        Cell::num(Explained::fact(&format!("{} tier", d.name), "", d.tier as f32)),
-                        Cell::num(Explained::fact(&format!("{} xp needed", d.name), "", d.xp)),
+                        Cell::num(Explained::reading(&format!("{} tier", d.name), "", d.tier as f32, "Tech catalogue")),
+                        Cell::num(Explained::reading(&format!("{} XP needed", d.name), "", d.xp, "Tech catalogue")),
                         Cell::Text(if on { "unlocked" } else { "locked" }.into(), if on { Tone::Good } else { Tone::Dim }),
                         Cell::text(d.effects.iter().map(effect_text).collect::<Vec<_>>().join(", ")),
                     ],
@@ -859,7 +936,7 @@ fn events_screen(sim: &SimState) -> Screen {
                 click: None,
                 cells: vec![
                     Cell::num(Explained::sum(
-                        &format!("{} days left", kind_label(p.kind)),
+                        &format!("{} {} days left", kind_label(p.kind), p.id),
                         "",
                         vec![Explained::part("Time allowed", expiry), Explained::part("Already waited", -waited)],
                     ).dp(1)),
@@ -934,14 +1011,24 @@ impl History {
             }
         }
     }
+    /// Gains and losses per day over the recorded days; each flow's net is the change in stock
+    /// from the first to the last sample divided by the days between them.
     pub fn rates(&self) -> Rates {
-        match (self.samples.front(), self.samples.back()) {
-            (Some(a), Some(b)) if b.0 - a.0 > 1e-3 => {
-                let dt = (b.0 - a.0) as f32;
-                Rates { larder_per_day: (b.1 - a.1) / dt, wood_per_day: (b.2 - a.2) / dt }
-            }
-            _ => Rates::default(),
+        let (Some(a), Some(b)) = (self.samples.front(), self.samples.back()) else { return Rates::default() };
+        let dt = (b.0 - a.0) as f32;
+        if dt <= 1e-3 {
+            return Rates::default();
         }
+        let flow = |get: fn(&(f64, f32, f32)) -> f32| {
+            let mut f = DayFlow::default();
+            let v: Vec<&(f64, f32, f32)> = self.samples.iter().collect();
+            for w in v.windows(2) {
+                let d = get(w[1]) - get(w[0]);
+                if d > 0.0 { f.gained += d / dt } else { f.lost += d / dt }
+            }
+            f
+        };
+        Rates { larder: flow(|s| s.1), wood: flow(|s| s.2) }
     }
 }
 
@@ -950,7 +1037,6 @@ impl History {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::ui::explain::audit;
 
     /// A settled colony that has lived a while, with stock, so every table has rows.
     pub fn lived_in(seed: u64) -> SimState {
@@ -974,36 +1060,209 @@ pub mod tests {
         let mut fresh = SimState::new(1);
         let mut flow = crate::flow::Flow::new(&fresh.world);
         crate::opening::found(&mut fresh, &mut flow).unwrap();
-        vec![fresh, lived_in(3)]
+        // a lived-in colony with a construction site waiting for materials, and one with everything on
+        let mut site = lived_in(3);
+        let placed = (4..60).flat_map(|y| (4..60).map(move |x| (x, y))).any(|p| site.place_site(sim::buildings::BuildingKind::FoodCache, p).is_ok());
+        assert!(placed, "a site fits somewhere");
+        let mut all = SimState::new(5);
+        all.set_features(sim::features::Features::everything());
+        let mut flow = crate::flow::Flow::new(&all.world);
+        crate::opening::found(&mut all, &mut flow).unwrap();
+        for _ in 0..400 {
+            all.step(0.25).expect("step");
+        }
+        vec![fresh, lived_in(3), site, all]
+    }
+
+    const RATES: Rates = Rates { larder: DayFlow { gained: 2.0, lost: -0.5 }, wood: DayFlow { gained: 0.0, lost: -0.5 } };
+
+    /// Everything visible with `open` showing: the bar, the time controls and the screen.
+    fn visible(sim: &SimState, open: NavItem) -> (Screen, NavBar, TimeBar) {
+        (screen(sim, open, RATES), nav_bar(sim, Some(open)), time_bar(sim))
     }
 
     #[test]
     fn every_number_adds_up_and_nothing_is_shown_twice() {
-        for sim in states() {
+        for (k, sim) in states().iter().enumerate() {
             for item in NavItem::ALL {
-                let s = screen(&sim, item, Rates { larder_per_day: 1.5, wood_per_day: -0.5 });
-                let bad = audit(&s);
-                assert!(bad.is_empty(), "{item:?}: {bad:?}");
-                assert!(!s.numbers().is_empty() || item == NavItem::Events || item == NavItem::Tech, "{item:?} shows no numbers");
+                let (s, nav, time) = visible(sim, item);
+                let mut nums = s.numbers();
+                nums.extend(nav.numbers());
+                nums.extend(time.numbers());
+                let bad = crate::ui::explain::audit_all(&nums);
+                assert!(bad.is_empty(), "state {k}, {item:?}: {bad:?}");
+                assert!(!s.numbers().is_empty() || item == NavItem::Events, "{item:?} shows no numbers");
             }
-            let nav = nav_bar(&sim, None);
-            assert!(audit(&nav).is_empty());
-            assert!(audit(&time_bar(&sim)).is_empty());
+            // the first view: only the bar and the time controls
+            let (nav, time) = (nav_bar(sim, None), time_bar(sim));
+            let mut nums = nav.numbers();
+            nums.extend(time.numbers());
+            assert!(crate::ui::explain::audit_all(&nums).is_empty());
         }
+    }
+
+    /// Each number's value worked out straight from the sim, by label, for every number the screens
+    /// can show. Readings are listed too: a reading must be a figure the sim stores as one value.
+    fn expected(sim: &SimState, rates: Rates) -> std::collections::HashMap<String, (f32, bool)> {
+        let c = &sim.colony;
+        let mut e = std::collections::HashMap::new();
+        let mut put = |label: String, v: f32, reading: bool| {
+            e.insert(label, (v, reading));
+        };
+        let n = c.beavers.len().max(1) as f32;
+        let mean = |f: &dyn Fn(&Beaver) -> f32| c.beavers.iter().map(f).sum::<f32>() / n * 100.0;
+        put("Beavers".into(), c.population() as f32, false);
+        put("Colony mood".into(), mean(&|b| b.mood), false);
+        put("Food need met".into(), mean(&|b| b.needs.food), false);
+        put("Rest need met".into(), mean(&|b| b.needs.rest), false);
+        put("Shelter need met".into(), mean(&|b| 0.5 * (b.needs.warmth + b.needs.safety)), false);
+        put("Company need met".into(), mean(&|b| b.needs.social), false);
+        for b in &c.beavers {
+            put(format!("{} mood", beaver_name(c, b)), b.mood * 100.0, false);
+            put(format!("{} age", beaver_name(c, b)), b.age_days / sim::colony::DAYS_PER_YEAR as f32, false);
+        }
+        for f in &c.families {
+            let m: Vec<&Beaver> = c.beavers.iter().filter(|b| b.family == f.id).collect();
+            put(format!("{} family size", family_name(c, f.id)), m.len() as f32, false);
+            put(format!("{} family mood", family_name(c, f.id)), m.iter().map(|b| b.mood).sum::<f32>() / m.len().max(1) as f32 * 100.0, false);
+        }
+        for l in &c.lodges {
+            let fam = family_name(c, l.family);
+            put(format!("{fam} lodge condition"), l.condition * 100.0, false);
+            put(format!("{fam} lodge residents"), c.beavers.iter().filter(|b| b.lodge == Some(l.id)).count() as f32, false);
+        }
+        let adults: Vec<&Beaver> = c.beavers.iter().filter(|b| b.stage != Stage::Kit).collect();
+        put("Idle adults".into(), adults.iter().filter(|b| b.job.or(b.current_job).is_none()).count() as f32, false);
+        for j in c.enabled_jobs() {
+            let w: Vec<&&Beaver> = adults.iter().filter(|b| b.job.or(b.current_job) == Some(j)).collect();
+            put(format!("{j:?} workers"), w.len() as f32, false);
+            put(format!("{j:?} skill"), if w.is_empty() { 0.0 } else { w.iter().map(|b| b.skills[j.index()]).sum::<f32>() / w.len() as f32 * 100.0 }, false);
+        }
+        for o in &c.orders {
+            put(format!("Order {} work left", o.id.0), o.remaining, true);
+        }
+        let s = &sim.buildings.stores;
+        put("Larder stock".into(), c.food, true);
+        put("Wood stock".into(), c.wood, true);
+        put("Room for each good".into(), s.capacity(Good::Logs), false);
+        put("Room for cache food".into(), s.capacity(Good::Food), false);
+        put("Larder net per day".into(), rates.larder.net(), false);
+        put("Wood net per day".into(), rates.wood.net(), false);
+        for g in Good::ALL {
+            put(format!("{} stock", good_name(g)), s.amount(g), false);
+            put(format!("{} net per day", good_name(g)), s.net_rate(g), false);
+        }
+        let b = &sim.buildings;
+        put("Lodges".into(), c.lodges.len() as f32, false);
+        put("Others built".into(), b.buildings.iter().filter(|x| x.is_complete() && x.kind != sim::buildings::BuildingKind::Lodge).count() as f32, false);
+        put("Being built".into(), b.buildings.iter().filter(|x| !x.is_complete()).count() as f32, false);
+        for x in &b.buildings {
+            let spec = x.kind.spec();
+            let name = format!("{} {} progress", spec.name, x.id.0);
+            match x.status {
+                Status::Site => put(name, sim.work.progress(x.id).unwrap_or(0.0) * 100.0, false),
+                Status::UnderConstruction(o) => {
+                    let left = c.orders.iter().find(|w| w.id == o).map_or(0.0, |w| w.remaining).clamp(0.0, spec.work);
+                    put(name, (1.0 - left / spec.work) * 100.0, false)
+                }
+                Status::Complete => {}
+            }
+        }
+        for k in sim::buildings::BuildingKind::ALL {
+            let spec = k.spec();
+            put(format!("{} cost", spec.name), spec.cost.iter().map(|a| a.1).sum(), false);
+        }
+        for br in Branch::ALL {
+            put(format!("{br:?} experience"), br.experience(c), false);
+            let n = TECHS.iter().enumerate().filter(|(i, d)| d.branch == br && tech_visible(&sim.features, d) && sim.tech.is_unlocked(TechId(*i))).count();
+            put(format!("{br:?} techs unlocked"), n as f32, false);
+        }
+        for d in TECHS.iter() {
+            put(format!("{} tier", d.name), d.tier as f32, true);
+            put(format!("{} XP needed", d.name), d.xp, true);
+        }
+        let now = sim.events.calendar.elapsed_days();
+        for p in sim.events.pending() {
+            put(format!("{} {} days left", kind_label(p.kind), p.id), sim::events::CHOICE_EXPIRY_DAYS as f32 - (now - p.day) as f32, false);
+        }
+        put("Decisions waiting".into(), (sim.events.pending().len() + sim.society.pending().len()) as f32, false);
+        put("Colony day".into(), now as f32 + 1.0, false);
+        e
+    }
+
+    #[test]
+    fn every_breakdown_adds_up_to_the_figure_the_sim_holds() {
+        let mut checked = 0;
+        for (k, sim) in states().iter().enumerate() {
+            let want = expected(sim, RATES);
+            for item in NavItem::ALL {
+                let (s, nav, time) = visible(sim, item);
+                let mut nums = s.numbers();
+                nums.extend(nav.numbers());
+                nums.extend(time.numbers());
+                for n in nums {
+                    let Some(&(v, reading)) = want.get(&n.label) else { panic!("state {k}, {item:?}: no independent figure for '{}'", n.label) };
+                    let tol = 0.011 * v.abs().max(1.0);
+                    assert!((n.value - v).abs() <= tol, "state {k}, {item:?}: '{}' shows {} but the sim holds {v}", n.label, n.value);
+                    let parts: f32 = n.parts.iter().map(|p| p.value).sum();
+                    assert!((parts - v).abs() <= tol, "state {k}, {item:?}: '{}' parts add to {parts}, the sim holds {v}", n.label);
+                    assert_eq!(n.is_reading(), reading, "state {k}, {item:?}: '{}' reading={} expected {reading}", n.label, n.is_reading());
+                    if !reading && n.value.abs() > 0.01 {
+                        // a derived number's parts are smaller quantities, never the number restated
+                        assert!(n.parts.iter().all(|p| !p.label.eq_ignore_ascii_case(&n.label)), "'{}' explains itself", n.label);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 200, "only {checked} numbers checked");
     }
 
     #[test]
     fn numbers_on_screens_are_not_trivially_unexplained() {
-        // The colony screen's population and mood break down into several terms.
+        // Population, mood and ages break down into several terms.
         let sim = lived_in(3);
         let s = screen(&sim, NavItem::Colony, Rates::default());
         assert!(s.kpis[0].num.parts.len() >= 2, "{:?}", s.kpis[0].num);
         assert!(s.kpis[1].num.parts.len() >= 1);
-        let beavers = &s.tables[1];
+        let beavers = s.tables.iter().find(|t| t.title == "Beavers").expect("beavers table");
         for r in &beavers.rows {
+            let Cell::Num { num, .. } = &r.cells[1] else { panic!("age cell") };
+            assert_eq!(num.parts.len(), 2, "{} age is full years plus part of this one", r.name);
             let Cell::Num { num, .. } = &r.cells[3] else { panic!("mood cell") };
             assert!(num.parts.len() >= 5, "{} mood breaks into the needs", r.name);
         }
+    }
+
+    #[test]
+    fn one_family_shows_its_size_and_mood_only_once() {
+        let sim = &states()[0];
+        assert_eq!(sim.colony.families.len(), 1, "the default start has one family");
+        let s = screen(sim, NavItem::Colony, Rates::default());
+        assert!(s.tables.iter().all(|t| t.title != "Families"), "the family table would repeat the colony's head count and mood");
+        assert!(s.numbers().iter().all(|n| !n.label.ends_with("family size")));
+    }
+
+    #[test]
+    fn construction_sites_show_materials_and_labour() {
+        let sim = &states()[2];
+        let s = screen(sim, NavItem::Buildings, Rates::default());
+        let site = s.numbers().into_iter().find(|n| n.label.starts_with("Food cache") && n.label.ends_with("progress")).expect("site progress shown");
+        assert_eq!(site.parts.len(), 2);
+    }
+
+    #[test]
+    fn history_splits_gains_from_losses() {
+        let mut sim = SimState::new(1);
+        let mut h = History::default();
+        for (t, food) in [(0.0, 10.0), (1.0, 14.0), (2.0, 12.0)] {
+            sim.time_days = t;
+            sim.colony.food = food;
+            h.record(&sim);
+        }
+        let r = h.rates();
+        assert!((r.larder.gained - 2.0).abs() < 1e-4 && (r.larder.lost + 1.0).abs() < 1e-4, "{r:?}");
+        assert!((r.larder.net() - 1.0).abs() < 1e-4, "net is (12 - 10) / 2 days");
     }
 
     #[test]
