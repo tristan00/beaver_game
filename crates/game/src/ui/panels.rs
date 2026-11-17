@@ -1,133 +1,163 @@
-//! Draws the top bar, the four compact ledgers and the detail panel from the view-models in
-//! `ledgers.rs`, and runs what the player clicks. Content is rebuilt only when its view-model
-//! actually changed, so hover and scroll state survive between sim updates.
-use super::events::{CardState, LogFilter};
+//! Draws the navigation bar, the time label, the open screen and the hover explanations from the
+//! view-models in `screens.rs`, and runs what the player clicks. Content is rebuilt only when its
+//! view-model changed, so hover and scroll state survive between sim updates.
+use super::explain::Explained;
+use super::icons::{Icon, IconAssets};
 use super::kit::*;
-use super::ledgers::*;
+use super::screens::*;
+use super::shell::{NavItem, Shell};
 use crate::flow::{cell_world, Flow, Selection};
-use crate::flow_view::{Action, UiLayout, UiState};
-use crate::sim_driver::SimClock;
+use crate::flow_view::{Action, UiLayout};
 use crate::state::Sim;
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::ui::UiGlobalTransform;
 use bevy::window::PrimaryWindow;
 use sim::events::Season;
-use sim::region::Link;
 use sim::ColonyHost;
 use std::collections::HashMap;
 
-pub const LEDGER_W: f32 = 250.0;
-pub const DETAIL_W: f32 = 570.0;
+pub const PANEL_W: f32 = 660.0;
+/// Space kept below the open screen for the navigation bar.
+pub const NAV_RESERVE: f32 = 84.0;
 pub const TOP: f32 = 48.0;
-const ROW_H: f32 = 21.0;
+const ROW_H: f32 = 24.0;
 const REFRESH_SECS: f32 = 0.25;
 
 #[derive(Resource)]
-pub struct LedgerUi {
-    pub tab: Option<Tab>,
-    pub filter: LogFilter,
-    /// Sort state per (tab, table index): (column, ascending).
-    pub sort: HashMap<(Tab, usize), (usize, bool)>,
+pub struct ShellUi {
+    pub shell: Shell,
+    /// Sort state per (screen, table index): (column, ascending).
+    pub sort: HashMap<(NavItem, usize), (usize, bool)>,
     pub status: String,
     pub hist: History,
     dirty: bool,
     timer: f32,
-    last_top: Option<TopBar>,
-    last_ledgers: Option<Vec<Compact>>,
-    last_detail: Option<DetailSnap>,
+    last_nav: Option<NavBar>,
+    last_time: Option<TimeBar>,
+    last_screen: Option<Shown>,
 }
 
-impl Default for LedgerUi {
+impl Default for ShellUi {
     fn default() -> Self {
-        LedgerUi {
-            tab: None,
-            filter: LogFilter::All,
-            sort: HashMap::new(),
-            status: String::new(),
-            hist: History::default(),
-            dirty: true,
-            timer: 0.0,
-            last_top: None,
-            last_ledgers: None,
-            last_detail: None,
-        }
+        ShellUi { shell: Shell::default(), sort: HashMap::new(), status: String::new(), hist: History::default(), dirty: true, timer: 0.0, last_nav: None, last_time: None, last_screen: None }
     }
 }
 
 #[derive(Clone, PartialEq)]
-struct DetailSnap {
-    tab: Tab,
-    filter: LogFilter,
-    tables: Vec<Table>,
+struct Shown {
+    screen: Screen,
     sorts: Vec<Option<(usize, bool)>>,
     status: String,
 }
 
+/// Text shown while hovering a node: a title and its terms.
+#[derive(Component, Clone, PartialEq, Debug)]
+pub struct Tip {
+    pub title: String,
+    pub lines: Vec<(String, String)>,
+}
+
+impl Tip {
+    pub fn note(title: impl Into<String>) -> Tip {
+        Tip { title: title.into(), lines: Vec::new() }
+    }
+    /// "Label = value" over each term that adds up to it.
+    pub fn of(n: &Explained) -> Tip {
+        let fmt = |v: f32| format!("{v:+.*}{}", n.dec.max(if n.parts.iter().any(|p| p.value.fract().abs() > 0.004) { 1 } else { 0 }) as usize, n.unit);
+        Tip {
+            title: format!("{}: {}", n.label, n.show()),
+            lines: n.parts.iter().map(|p| (p.label.clone(), fmt(p.value))).collect(),
+        }
+    }
+}
+
 #[derive(Component)]
-struct TopBarRoot;
+struct NavRoot;
 #[derive(Component)]
-struct LedgerColumn;
+struct TimeRoot;
 #[derive(Component)]
-struct DetailRoot;
+struct ScreenRoot;
 #[derive(Component)]
-struct DetailHeader;
+struct ScreenBody;
 #[derive(Component)]
-struct DetailFooter;
+struct ScreenHeader;
+#[derive(Component)]
+struct ScreenFooter;
+#[derive(Component)]
+struct TipRoot;
 
 pub struct PanelsPlugin;
 
 impl Plugin for PanelsPlugin {
     fn build(&self, app: &mut App) {
-        let mut ui = LedgerUi::default();
-        // Debug aid for screenshots: BC_UI_TAB=families|beavers|jobs|stores|trade|tech|events
-        ui.tab = std::env::var("BC_UI_TAB").ok().and_then(|v| debug_tab(&v));
-        app.insert_resource(ui)
-            .add_systems(Startup, spawn_roots)
-            .add_systems(
-                Update,
-                (
-                    (layout_roots, refresh, hover_tint, scroll_wheel).chain(),
-                    publish_blockers.before(crate::flow_view::ClickSet),
-                    handle_clicks.after(crate::flow_view::ClickSet),
-                ),
-            );
+        let mut ui = ShellUi::default();
+        // `--open NAME` opens a screen at start (screenshots); `BC_UI_OPEN` does the same.
+        let name = app.world().get_resource::<crate::cli::Cli>().and_then(|c| c.open.clone()).or_else(|| std::env::var("BC_UI_OPEN").ok());
+        ui.shell.open = name.and_then(|v| NavItem::ALL.into_iter().find(|n| n.label().eq_ignore_ascii_case(&v)));
+        app.insert_resource(ui).add_systems(Startup, spawn_roots).add_systems(
+            Update,
+            (
+                (layout_roots, refresh, hover_tint, scroll_wheel, tooltip).chain(),
+                publish_blockers.before(crate::flow_view::ClickSet),
+                handle_clicks.after(crate::flow_view::ClickSet),
+                close_on_escape,
+            ),
+        );
     }
 }
 
-/// The tab named by a `BC_UI_TAB` value (case-insensitive), if any.
-fn debug_tab(name: &str) -> Option<Tab> {
-    Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(name))
-}
-
-/// A tab of a disabled system (e.g. Trade with trade off) never stays open.
-fn gate_tab(tab: Option<Tab>, features: &sim::features::Features) -> Option<Tab> {
-    tab.filter(|t| Tab::available(features).contains(t))
+fn shadow() -> BoxShadow {
+    BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.30), px(0), px(3), px(0), px(9))
 }
 
 fn spawn_roots(mut commands: Commands) {
     let abs = Node { position_type: PositionType::Absolute, ..default() };
-    commands.spawn((TopBarRoot, Blocker, Node { height: px(34), align_items: AlignItems::Center, column_gap: px(14), padding: UiRect::axes(px(16), px(0)), ..abs.clone() }, BackgroundColor(PANEL), Round(17.0), BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.28), px(0), px(3), px(0), px(8)), GlobalZIndex(10)));
-    commands.spawn((LedgerColumn, Blocker, Node { width: px(LEDGER_W), flex_direction: FlexDirection::Column, row_gap: px(6), ..abs.clone() }, GlobalZIndex(10)));
+    commands.spawn((
+        NavRoot,
+        Blocker,
+        Node { height: px(62), align_items: AlignItems::Center, column_gap: px(6), padding: UiRect::axes(px(10), px(4)), ..abs.clone() },
+        BackgroundColor(PANEL),
+        Round(22.0),
+        shadow(),
+        GlobalZIndex(10),
+    ));
+    commands.spawn((
+        TimeRoot,
+        Blocker,
+        Node { height: px(28), align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::axes(px(12), px(0)), ..abs.clone() },
+        BackgroundColor(PANEL),
+        Round(14.0),
+        shadow(),
+        GlobalZIndex(10),
+    ));
     commands
         .spawn((
-            DetailRoot,
+            ScreenRoot,
             Blocker,
-            Node { width: px(DETAIL_W), flex_direction: FlexDirection::Column, padding: UiRect::all(px(10)), row_gap: px(6), ..abs },
+            Node { width: px(PANEL_W), flex_direction: FlexDirection::Column, padding: UiRect::all(px(10)), row_gap: px(6), display: Display::None, ..abs.clone() },
             BackgroundColor(PANEL),
             Round(18.0),
-            BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.32), px(0), px(4), px(0), px(12)),
+            BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.34), px(0), px(4), px(0), px(12)),
             GlobalZIndex(12),
         ))
         .with_children(|p| {
-            p.spawn((DetailHeader, Node { flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, ..default() }));
+            p.spawn((ScreenHeader, Node { align_items: AlignItems::Center, column_gap: px(8), flex_shrink: 0.0, ..default() }));
             p.spawn((
+                ScreenBody,
                 ScrollArea,
                 ScrollPosition::default(),
-                Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), overflow: Overflow::scroll_y(), row_gap: px(8), padding: UiRect::right(px(4)), ..default() },
+                Node { flex_direction: FlexDirection::Column, flex_shrink: 1.0, min_height: px(0), overflow: Overflow::scroll_y(), row_gap: px(10), padding: UiRect::right(px(4)), ..default() },
             ));
-            p.spawn((DetailFooter, Node { min_height: px(16), ..default() }));
+            p.spawn((ScreenFooter, Node { min_height: px(14), flex_shrink: 0.0, ..default() }));
         });
+    commands.spawn((
+        TipRoot,
+        Node { position_type: PositionType::Absolute, display: Display::None, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(10), px(7)), row_gap: px(2), max_width: px(300), ..default() },
+        BackgroundColor(Color::srgba(0.22, 0.15, 0.10, 0.96)),
+        Round(10.0),
+        GlobalZIndex(40),
+    ));
 }
 
 fn season_color(s: Season) -> Color {
@@ -139,169 +169,182 @@ fn season_color(s: Season) -> Color {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn layout_roots(
     windows: Query<&Window, With<PrimaryWindow>>,
     layout: Res<UiLayout>,
     sim: Res<Sim>,
-    ui: Res<LedgerUi>,
-    mut q: ParamSet<(
-        Query<&mut Node, With<TopBarRoot>>,
-        Query<&mut Node, With<LedgerColumn>>,
-        Query<&mut Node, With<DetailRoot>>,
-    )>,
+    ui: Res<ShellUi>,
+    mut q: ParamSet<(Query<(&mut Node, &ComputedNode), With<NavRoot>>, Query<&mut Node, With<TimeRoot>>, Query<&mut Node, With<ScreenRoot>>)>,
 ) {
     let Ok(w) = windows.single() else { return };
     let founded = sim.0.colony.is_founded();
     let show = |on: bool| if on { Display::Flex } else { Display::None };
-    for mut n in &mut q.p0() {
-        let right = layout.rect(Action::Pause).map(|r| r.min.x - 8.0).unwrap_or(w.width() - 10.0);
+    for (mut n, c) in &mut q.p0() {
+        let width = c.size.x * c.inverse_scale_factor;
         n.display = show(founded);
-        n.left = px(10);
-        n.top = px(8);
-        n.width = px((right - 10.0).max(200.0));
+        n.left = px(((w.width() - width) / 2.0).max(8.0));
+        n.bottom = px(12);
     }
     for mut n in &mut q.p1() {
+        let right = layout.rect(Action::Pause).map(|r| r.min.x - 8.0).unwrap_or(w.width() - 10.0);
         n.display = show(founded);
-        n.left = px(10);
-        n.top = px(TOP);
+        n.right = px((w.width() - right).max(8.0));
+        n.top = px(10);
     }
     for mut n in &mut q.p2() {
-        n.display = show(founded && ui.tab.is_some());
-        n.left = px(w.width() - 10.0 - DETAIL_W);
+        n.display = show(founded && ui.shell.open.is_some());
+        n.width = px(PANEL_W.min(w.width() - 20.0));
+        n.left = px((w.width() - 10.0 - PANEL_W.min(w.width() - 20.0)).max(10.0));
         n.top = px(TOP);
-        n.height = px((w.height() - TOP - 10.0).max(200.0));
+        n.max_height = px((w.height() - TOP - NAV_RESERVE).max(200.0));
     }
 }
 
+// ───────────────────────────── drawing ─────────────────────────────
 
-fn trend_color(t: Trend, good_up: bool) -> Color {
-    match (t, good_up) {
-        (Trend::Flat, _) => DIM,
-        (Trend::Up, true) | (Trend::Down, false) => GOOD,
-        _ => BAD,
+fn icon_node(p: &mut Kids, icons: &IconAssets, icon: Icon, size: f32) {
+    p.spawn((Node { width: px(size), height: px(size), flex_shrink: 0.0, ..default() }, ImageNode::new(icons.get(icon))));
+}
+
+fn label(p: &mut Kids, s: impl Into<String>, size: f32, color: Color) {
+    p.spawn((Text::new(s), TextFont::from_font_size(size), TextColor(color), TextLayout::no_wrap()));
+}
+
+fn spawn_nav(p: &mut Kids, nav: &NavBar, icons: &IconAssets) {
+    for e in &nav.entries {
+        let base = if e.open { CHIP_ON } else { Color::srgba(0.0, 0.0, 0.0, 0.0) };
+        p.spawn((
+            Node { width: px(66), height: px(52), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: px(1), flex_shrink: 0.0, ..default() },
+            BackgroundColor(base),
+            Round(14.0),
+            Clickable { act: Do::Nav(e.item), layer: 5, scrolled: false, base, hot: ROW_HOT },
+            Tip::note(if e.open { format!("{} (click to close)", e.label) } else { e.label.to_string() }),
+        ))
+        .with_children(|b| {
+            icon_node(b, icons, e.icon, 30.0);
+            label(b, e.label, 11.0, INK);
+            if let Some(n) = &e.badge {
+                b.spawn((
+                    Node { position_type: PositionType::Absolute, top: px(0), right: px(6), min_width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+                    BackgroundColor(WARN),
+                    Round(9.0),
+                    Tip::of(n),
+                ))
+                .with_children(|c| label(c, n.show(), 11.0, INK));
+            }
+        });
     }
 }
 
-fn spawn_top_bar(p: &mut Kids, t: &TopBar) {
-    text(p, "Beaver Colony", 14.0, INK);
-    text(p, &t.date, 13.0, INK);
-    p.spawn((Node { padding: UiRect::axes(px(9), px(2)), ..default() }, BackgroundColor(season_color(t.season)), Round(99.0)))
-        .with_children(|c| text(c, format!("{:?}", t.season), 12.0, INK));
-    p.spawn(Node { column_gap: px(5), align_items: AlignItems::Center, ..default() }).with_children(|c| {
-        text(c, format!("Beavers {}", t.population), 13.0, INK);
-        if t.pop_change != 0 {
-            text(c, format!("{:+}", t.pop_change), 12.0, if t.pop_change > 0 { GOOD } else { BAD });
-        }
-    });
-    p.spawn(Node { column_gap: px(5), align_items: AlignItems::Center, ..default() }).with_children(|c| {
-        c.spawn((Node { width: px(10), height: px(10), ..default() }, BackgroundColor(tone_color(t.mood_tone)), Round(5.0)));
-        text(c, format!("Mood {:.0}%", t.mood * 100.0), 13.0, INK);
-    });
-    text(p, format!("Speed {}", t.speed), 13.0, INK);
-    if t.pending > 0 {
-        pill(p, &format!("{} decision{} waiting", t.pending, if t.pending == 1 { "" } else { "s" }), Act::Open(Tab::Log), true, 4);
-    } else {
-        pill(p, "Event log", Act::Open(Tab::Log), false, 4);
-    }
+fn spawn_time(p: &mut Kids, t: &TimeBar) {
+    p.spawn((Node { padding: UiRect::axes(px(9), px(2)), ..default() }, BackgroundColor(season_color(t.season)), Round(99.0), Tip::note("Season")))
+        .with_children(|c| label(c, format!("{:?}", t.season), 12.0, INK));
+    p.spawn((Node { align_items: AlignItems::Center, ..default() }, Tip::of(&t.day))).with_children(|c| label(c, format!("Day {}", t.day.show()), 13.0, INK));
 }
 
-fn spawn_compact(p: &mut Kids, c: &Compact, open: bool) {
-    let base = if open { Color::srgba(0.90, 0.97, 0.84, 0.97) } else { PANEL };
+fn kpi_card(p: &mut Kids, k: &Kpi, icons: &IconAssets) {
     p.spawn((
-        Node { width: percent(100), flex_direction: FlexDirection::Column, padding: UiRect::axes(px(10), px(7)), row_gap: px(2), ..default() },
-        BackgroundColor(base),
-        Round(16.0),
-        BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.28), px(0), px(3), px(0), px(8)),
-        Clickable { act: Act::Open(c.tab), layer: 1, scrolled: false, base, hot: Color::srgb(1.0, 0.93, 0.76) },
+        Node { width: px(96), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(2), padding: UiRect::axes(px(6), px(6)), flex_shrink: 0.0, ..default() },
+        BackgroundColor(PANEL_SOFT),
+        Round(14.0),
+        Tip::of(&k.num),
     ))
-    .with_children(|k| {
-        k.spawn(Node { justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }).with_children(|r| {
-            text(r, c.title.to_uppercase(), 11.0, DIM);
-            r.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|s| {
-                let good_up = true;
-                sparkline(s, &c.spark, 64.0, 13.0, trend_color(c.trend, good_up).with_alpha(0.85));
-                text(s, c.delta.clone(), 12.0, trend_color(c.trend, good_up));
-            });
-        });
-        k.spawn(Node { column_gap: px(8), align_items: AlignItems::Baseline, ..default() }).with_children(|r| {
-            r.spawn((Text::new(c.headline.clone()), TextFont::from_font_size(15.0), TextColor(INK), TextLayout::no_wrap()));
-            r.spawn((Text::new(c.sub.clone()), TextFont::from_font_size(11.0), TextColor(DIM), TextLayout::no_wrap()));
-        });
-        for row in &c.rows {
-            k.spawn(Node { height: px(14), align_items: AlignItems::Center, column_gap: px(5), ..default() }).with_children(|r| {
-                let wide = row.frac.is_none() && row.value.is_empty();
-                let label_color = if row.tone == Tone::Good { INK } else { tone_color(row.tone) };
-                r.spawn(Node { width: if wide { auto() } else { px(96) }, overflow: Overflow::clip(), ..default() }).with_children(|l| {
-                    l.spawn((Text::new(row.label.clone()), TextFont::from_font_size(11.0), TextColor(label_color), TextLayout::no_wrap()));
-                });
-                match row.frac {
-                    Some(f) => bar(r, f, 52.0, 6.0, tone_color(if row.tone == Tone::Normal || row.tone == Tone::Dim { Tone::Good } else { row.tone })),
-                    None => {
-                        r.spawn(Node { width: px(52), ..default() });
-                    }
-                }
-                text(r, row.value.clone(), 11.0, tone_color(row.tone));
-            });
+    .with_children(|c| {
+        icon_node(c, icons, k.icon, 24.0);
+        label(c, k.num.show(), 18.0, tone_color(if k.tone == Tone::Dim { Tone::Normal } else { k.tone }));
+        if let Some(f) = k.frac {
+            bar(c, f, 70.0, 5.0, tone_color(if matches!(k.tone, Tone::Normal | Tone::Dim) { Tone::Good } else { k.tone }));
         }
+        label(c, short(&k.num.label), 10.0, DIM);
     });
 }
 
-fn spawn_table(body: &mut Kids, t: &Table, tab: Tab, idx: usize, sort: Option<(usize, bool)>) {
-    body.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|k| {
-        text(k, &t.title, 13.0, INK);
-        // header
-        k.spawn(Node { padding: UiRect::horizontal(px(5)), column_gap: px(0), ..default() }).with_children(|h| {
-            for (ci, (name, w)) in t.cols.iter().enumerate() {
+/// Caption under a headline number (the label without its trailing "met").
+fn short(s: &str) -> String {
+    s.trim_end_matches(" met").to_string()
+}
+
+fn spawn_table(body: &mut Kids, t: &Table, idx: usize, sort: Option<(usize, bool)>, icons: &IconAssets) {
+    body.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_shrink: 0.0, ..default() }).with_children(|k| {
+        label(k, t.title, 13.0, INK);
+        k.spawn(Node { padding: UiRect::horizontal(px(5)), ..default() }).with_children(|h| {
+            let heads = std::iter::once((t.name_col, t.name_w + 22.0)).chain(t.cols.iter().map(|c| (c.name, c.width)));
+            for (ci, (name, w)) in heads.enumerate() {
                 let arrow = match sort {
                     Some((c, asc)) if c == ci => if asc { " ^" } else { " v" },
                     _ => "",
                 };
-                let base = PANEL_SOFT;
                 let mut e = h.spawn((
-                    Node { width: px(*w), height: px(19), padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() },
-                    BackgroundColor(base),
+                    Node { width: px(w), height: px(19), padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() },
+                    BackgroundColor(PANEL_SOFT),
                     Round(8.0),
                 ));
-                if t.sortable && !name.is_empty() {
-                    e.insert(Clickable { act: Act::Sort(idx * 100 + ci), layer: 2, scrolled: false, base, hot: ROW_HOT });
+                if !name.is_empty() {
+                    e.insert((Clickable { act: Do::Sort(idx, ci), layer: 2, scrolled: false, base: PANEL_SOFT, hot: ROW_HOT }, Tip::note("Click to sort")));
                 }
-                e.with_children(|c| {
-                    c.spawn((Text::new(format!("{name}{arrow}")), TextFont::from_font_size(11.0), TextColor(DIM), TextLayout::no_wrap()));
-                });
+                e.with_children(|c| label(c, format!("{name}{arrow}"), 11.0, DIM));
             }
         });
         if t.rows.is_empty() {
-            text(k, "Nothing here yet.", FONT, DIM);
+            label(k, t.empty, FONT, DIM);
         }
         for (ri, row) in t.rows.iter().enumerate() {
             let base = if ri % 2 == 0 { ROW_A } else { ROW_B };
-            let mut e = k.spawn((
-                Node { height: px(ROW_H), padding: UiRect::horizontal(px(5)), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
-                BackgroundColor(base),
-                Round(8.0),
-            ));
-            if let Some(a) = &row.act {
+            let mut e = k.spawn((Node { height: px(ROW_H), padding: UiRect::horizontal(px(5)), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, BackgroundColor(base), Round(8.0)));
+            if let Some(a) = &row.click {
                 e.insert(Clickable { act: a.clone(), layer: 1, scrolled: true, base, hot: ROW_HOT });
             }
             e.with_children(|r| {
+                r.spawn(Node { width: px(t.name_w + 22.0), column_gap: px(5), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|n| {
+                    icon_node(n, icons, row.icon, 17.0);
+                    label(n, row.name.clone(), FONT, INK);
+                });
                 for (ci, cell) in row.cells.iter().enumerate() {
-                    let w = t.cols.get(ci).map(|c| c.1).unwrap_or(60.0);
+                    let w = t.cols.get(ci).map(|c| c.width).unwrap_or(60.0);
                     r.spawn(Node { width: px(w), height: percent(100), padding: UiRect::horizontal(px(3)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(1), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() })
-                        .with_children(|c| {
-                            if let Some((label, act)) = &cell.button {
-                                small_button(c, label, act.clone());
-                                return;
-                            }
-                            c.spawn((Text::new(cell.text.clone()), TextFont::from_font_size(FONT), TextColor(tone_color(cell.tone)), TextLayout::no_wrap()));
-                            if let Some(f) = cell.bar {
-                                bar(c, f, (w - 10.0).min(44.0), 3.0, tone_color(if cell.tone == Tone::Normal || cell.tone == Tone::Dim { Tone::Good } else { cell.tone }));
-                            }
-                        });
+                        .with_children(|c| spawn_cell(c, cell, w, icons));
                 }
             });
-            let _ = tab;
         }
     });
+}
+
+fn spawn_cell(c: &mut Kids, cell: &Cell, w: f32, icons: &IconAssets) {
+    match cell {
+        Cell::Text(s, tone) => label(c, s.clone(), FONT, tone_color(*tone)),
+        Cell::Entry(icon, s) => {
+            c.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|e| {
+                icon_node(e, icons, *icon, 15.0);
+                label(e, s.clone(), FONT, INK);
+            });
+        }
+        Cell::Num { num, tone, frac } => {
+            c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, Tip::of(num))).with_children(|n| {
+                label(n, num.show(), FONT, tone_color(*tone));
+                if let Some(f) = frac {
+                    bar(n, *f, (w - 10.0).min(48.0), 3.0, tone_color(if matches!(tone, Tone::Normal | Tone::Dim) { Tone::Good } else { *tone }));
+                }
+            });
+        }
+        Cell::Actions(list) => {
+            c.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                for a in list {
+                    r.spawn((
+                        Node { padding: UiRect::axes(px(6), px(1)), column_gap: px(3), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
+                        BackgroundColor(BTN),
+                        Round(99.0),
+                        Clickable { act: a.act.clone(), layer: 3, scrolled: true, base: BTN, hot: BTN_HOT },
+                        Tip::note(a.label.clone()),
+                    ))
+                    .with_children(|b| {
+                        icon_node(b, icons, a.icon, 15.0);
+                        label(b, a.label.clone(), 11.0, INK);
+                    });
+                }
+            });
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -309,29 +352,21 @@ fn refresh(
     mut commands: Commands,
     time: Res<Time>,
     sim: Res<Sim>,
-    clock: Res<SimClock>,
-    mut ui: ResMut<LedgerUi>,
-    top: Query<Entity, With<TopBarRoot>>,
-    column: Query<Entity, With<LedgerColumn>>,
-    header: Query<Entity, With<DetailHeader>>,
-    body: Query<Entity, With<ScrollArea>>,
-    footer: Query<Entity, With<DetailFooter>>,
+    icons: Res<IconAssets>,
+    mut ui: ResMut<ShellUi>,
+    nav: Query<Entity, With<NavRoot>>,
+    time_root: Query<Entity, With<TimeRoot>>,
+    header: Query<Entity, With<ScreenHeader>>,
+    body: Query<Entity, With<ScreenBody>>,
+    footer: Query<Entity, With<ScreenFooter>>,
 ) {
     let s = &sim.0;
-    ui.tab = gate_tab(ui.tab, &s.features);
-    if !LogFilter::available(&s.features).contains(&ui.filter) {
-        ui.filter = LogFilter::All;
-    }
     if !s.colony.is_founded() {
         ui.hist = History::default();
-        ui.last_top = None;
-        ui.last_ledgers = None;
-        ui.last_detail = None;
+        ui.last_nav = None;
+        ui.last_time = None;
+        ui.last_screen = None;
         return;
-    }
-    // a restarted world rewinds time
-    if ui.hist.samples.back().is_some_and(|x| x.day > s.time_days) {
-        ui.hist = History::default();
     }
     ui.hist.record(s);
     ui.timer -= time.delta_secs();
@@ -341,84 +376,131 @@ fn refresh(
     ui.timer = REFRESH_SECS;
     ui.dirty = false;
 
-    let speed = if clock.paused { "paused".to_string() } else { clock.speed.label().to_string() };
-    let tb = top_bar(s, &ui.hist, &speed);
-    if ui.last_top.as_ref() != Some(&tb) {
-        if let Ok(e) = top.single() {
+    let open = ui.shell.open;
+    let nb = nav_bar(s, open);
+    if ui.last_nav.as_ref() != Some(&nb) {
+        if let Ok(e) = nav.single() {
             commands.entity(e).despawn_children();
-            commands.entity(e).with_children(|p| spawn_top_bar(p, &tb));
+            commands.entity(e).with_children(|p| spawn_nav(p, &nb, &icons));
         }
-        ui.last_top = Some(tb);
+        ui.last_nav = Some(nb);
+    }
+    let tb = time_bar(s);
+    if ui.last_time.as_ref() != Some(&tb) {
+        if let Ok(e) = time_root.single() {
+            commands.entity(e).despawn_children();
+            commands.entity(e).with_children(|p| spawn_time(p, &tb));
+        }
+        ui.last_time = Some(tb);
     }
 
-    let ledgers = all_ledgers(s, &ui.hist);
-    let open_tab = ui.tab;
-    if ui.last_ledgers.as_ref() != Some(&ledgers) || ui.last_detail.as_ref().map(|d| d.tab) != open_tab {
-        if let Ok(e) = column.single() {
-            commands.entity(e).despawn_children();
-            commands.entity(e).with_children(|p| {
-                for c in &ledgers {
-                    spawn_compact(p, c, Some(c.tab) == open_tab);
-                }
-            });
-        }
-        ui.last_ledgers = Some(ledgers);
-    }
-
-    let Some(tab) = ui.tab else {
-        ui.last_detail = None;
+    let Some(item) = open else {
+        ui.last_screen = None;
         return;
     };
-    let mut tables = detail_tables(s, &ui.hist, tab, ui.filter);
+    let mut scr = screen(s, item, ui.hist.rates());
     let mut sorts = Vec::new();
-    for (i, t) in tables.iter_mut().enumerate() {
-        let st = ui.sort.get(&(tab, i)).copied();
+    for (i, t) in scr.tables.iter_mut().enumerate() {
+        let st = ui.sort.get(&(item, i)).copied();
         if let Some((c, asc)) = st {
             sort_rows(&mut t.rows, c, asc);
         }
         sorts.push(st);
     }
-    let snap = DetailSnap { tab, filter: ui.filter, tables, sorts, status: ui.status.clone() };
-    if ui.last_detail.as_ref() == Some(&snap) {
+    let shown = Shown { screen: scr, sorts, status: ui.status.clone() };
+    if ui.last_screen.as_ref() == Some(&shown) {
         return;
     }
-    let tab_changed = ui.last_detail.as_ref().map(|d| (d.tab, d.filter)) != Some((snap.tab, snap.filter));
-    if tab_changed || ui.last_detail.is_none() {
-        if let Ok(e) = header.single() {
-            commands.entity(e).despawn_children();
-            commands.entity(e).with_children(|p| {
-                for t in Tab::available(&s.features) {
-                    pill(p, t.label(), Act::Open(t), t == tab, 4);
-                }
-                p.spawn(Node { flex_grow: 1.0, ..default() });
-                pill(p, "X", Act::Close, false, 4);
-                if tab == Tab::Log {
-                    p.spawn(Node { width: percent(100), column_gap: px(4), ..default() }).with_children(|f| {
-                        text(f, "Show:", FONT, DIM);
-                        for fl in LogFilter::available(&s.features) {
-                            pill(f, fl.label(), Act::Filter(fl), fl == ui.filter, 4);
-                        }
-                    });
-                }
+    let first = ui.last_screen.as_ref().map(|d| d.screen.item) != Some(item);
+    if first && let Ok(e) = header.single() {
+        commands.entity(e).despawn_children();
+        commands.entity(e).with_children(|p| {
+            icon_node(p, &icons, item.icon(), 26.0);
+            label(p, item.label(), 17.0, INK);
+            p.spawn(Node { flex_grow: 1.0, ..default() });
+            p.spawn((
+                Node { padding: UiRect::axes(px(7), px(3)), column_gap: px(4), align_items: AlignItems::Center, ..default() },
+                BackgroundColor(CHIP),
+                Round(99.0),
+                Clickable { act: Do::Nav(item), layer: 4, scrolled: false, base: CHIP, hot: ROW_HOT },
+                Tip::note("Close"),
+            ))
+            .with_children(|b| {
+                icon_node(b, &icons, Icon::Cancel, 16.0);
+                label(b, "Close", 11.0, INK);
             });
-        }
+        });
     }
     if let Ok(e) = body.single() {
         commands.entity(e).despawn_children();
         commands.entity(e).with_children(|p| {
-            for (i, t) in snap.tables.iter().enumerate() {
-                spawn_table(p, t, tab, i, snap.sorts[i]);
+            if !shown.screen.kpis.is_empty() {
+                p.spawn(Node { column_gap: px(8), row_gap: px(8), flex_wrap: FlexWrap::Wrap, flex_shrink: 0.0, ..default() }).with_children(|k| {
+                    for kpi in &shown.screen.kpis {
+                        kpi_card(k, kpi, &icons);
+                    }
+                });
+            }
+            for (i, t) in shown.screen.tables.iter().enumerate() {
+                spawn_table(p, t, i, shown.sorts[i], &icons);
             }
         });
     }
     if let Ok(e) = footer.single() {
         commands.entity(e).despawn_children();
         commands.entity(e).with_children(|p| {
-            let hint = if snap.status.is_empty() { "Click a column to sort, scroll for more, click a beaver to find it on the map.".to_string() } else { snap.status.clone() };
-            text(p, hint, 11.0, if snap.status.is_empty() { DIM } else { INK });
+            if shown.status.is_empty() {
+                label(p, "Hover a number to see what adds up to it.", 11.0, DIM);
+            } else {
+                label(p, shown.status.clone(), 11.0, INK);
+            }
         });
     }
-    ui.last_detail = Some(snap);
+    ui.last_screen = Some(shown);
+}
+
+/// Shows the explanation of the number (or button) under the cursor.
+fn tooltip(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    tips: Query<(&Tip, &ComputedNode, &UiGlobalTransform, Option<&Clickable>)>,
+    mut root: Query<(Entity, &mut Node), With<TipRoot>>,
+    mut commands: Commands,
+    mut shown: Local<Option<Tip>>,
+) {
+    let Ok(w) = windows.single() else { return };
+    let Ok((e, mut node)) = root.single_mut() else { return };
+    let cursor = w.physical_cursor_position();
+    let hit = cursor.and_then(|c| {
+        tips.iter()
+            .filter(|(_, n, t, _)| n.size.x > 1.0 && n.contains_point(**t, c))
+            // innermost (smallest) node wins, so a number beats the row or card around it
+            .min_by(|a, b| (a.1.size.x * a.1.size.y).total_cmp(&(b.1.size.x * b.1.size.y)))
+            .map(|(tip, ..)| tip.clone())
+    });
+    match (hit, w.cursor_position()) {
+        (Some(tip), Some(pos)) => {
+            if shown.as_ref() != Some(&tip) {
+                commands.entity(e).despawn_children();
+                commands.entity(e).with_children(|p| {
+                    label(p, tip.title.clone(), 12.0, Color::srgb(1.0, 0.96, 0.85));
+                    for (l, v) in &tip.lines {
+                        p.spawn(Node { column_gap: px(14), justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|r| {
+                            label(r, l.clone(), 11.0, Color::srgb(0.85, 0.78, 0.66));
+                            label(r, v.clone(), 11.0, Color::srgb(1.0, 0.96, 0.85));
+                        });
+                    }
+                });
+                *shown = Some(tip);
+            }
+            node.display = Display::Flex;
+            node.left = px((pos.x + 14.0).min(w.width() - 230.0).max(4.0));
+            node.top = px((pos.y + 18.0).min(w.height() - 40.0 - 14.0 * shown.as_ref().map_or(0, |t| t.lines.len()) as f32).max(4.0));
+        }
+        _ => {
+            node.display = Display::None;
+            *shown = None;
+        }
+    }
 }
 
 /// Tells the world picking code which screen areas are UI.
@@ -455,6 +537,13 @@ fn scroll_wheel(
     }
 }
 
+fn close_on_escape(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<ShellUi>) {
+    if keys.just_pressed(KeyCode::Escape) && ui.shell.open.is_some() {
+        ui.shell.close();
+        ui.dirty = true;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_clicks(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -466,9 +555,8 @@ fn handle_clicks(
     mut sim: ResMut<Sim>,
     mut flow: ResMut<Flow>,
     mut sel: ResMut<Selection>,
-    mut ui: ResMut<LedgerUi>,
-    mut cards: ResMut<CardState>,
-    mut old_ui: ResMut<UiState>,
+    mut ui: ResMut<ShellUi>,
+    mut build: ResMut<crate::build::BuildUi>,
 ) {
     let Ok(w) = windows.single() else { return };
     let (Some(phys), Some(logical)) = (w.physical_cursor_position(), w.cursor_position()) else { return };
@@ -484,7 +572,7 @@ fn handle_clicks(
     }
     let Some((act, _)) = hit_test(phys, &clickables, &scroll_areas) else { return };
     let mut reset_scroll = false;
-    apply(act, &mut sim, &mut flow, &mut sel, &mut ui, &mut cards, &mut old_ui, &mut reset_scroll);
+    apply(act, &mut sim, &mut flow, &mut sel, &mut ui, &mut build, &mut reset_scroll);
     ui.dirty = true;
     if reset_scroll {
         for mut p in &mut scroll_pos {
@@ -493,34 +581,34 @@ fn handle_clicks(
     }
 }
 
-/// Runs one click. Errors from the sim are shown in the detail footer, never swallowed.
-#[allow(clippy::too_many_arguments)]
-pub fn apply(
-    act: Act,
-    sim: &mut Sim,
-    flow: &mut Flow,
-    sel: &mut Selection,
-    ui: &mut LedgerUi,
-    cards: &mut CardState,
-    old_ui: &mut UiState,
-    reset_scroll: &mut bool,
-) {
+/// Runs one click. Errors from the sim are shown in the screen footer, never swallowed.
+pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &mut ShellUi, build: &mut crate::build::BuildUi, reset_scroll: &mut bool) {
     let s = &mut sim.0;
     match act {
-        Act::Open(t) => {
-            ui.tab = if ui.tab == Some(t) && t != Tab::Log { None } else { Some(t) };
+        Do::Nav(item) => {
+            ui.shell.toggle(item);
             ui.status.clear();
-            old_ui.ledger = false;
             *reset_scroll = true;
         }
-        Act::Close => {
-            ui.tab = None;
-            ui.status.clear();
+        Do::Place(kind) => {
+            crate::build::pick_tool(s, build, kind);
+            if build.tool == Some(kind) {
+                ui.shell.close();
+                ui.status.clear();
+            } else {
+                ui.status = build.message.clone();
+            }
         }
-        Act::Sort(code) => {
-            if let Some(tab) = ui.tab {
-                let key = (tab, code / 100);
-                let col = code % 100;
+        Do::Staff(job, d) => {
+            let cur = s.colony.beavers.iter().filter(|b| b.job == Some(job)).count() as i32;
+            ui.status = match crate::build_logic::set_job_count(&mut s.colony, job, (cur + d).max(0) as usize) {
+                Ok(n) => format!("{n} on {job:?} duty."),
+                Err(e) => e,
+            };
+        }
+        Do::Sort(table, col) => {
+            if let Some(item) = ui.shell.open {
+                let key = (item, table);
                 let next = match ui.sort.get(&key) {
                     Some((c, asc)) if *c == col => (col, !asc),
                     _ => (col, true),
@@ -528,7 +616,7 @@ pub fn apply(
                 ui.sort.insert(key, next);
             }
         }
-        Act::Pick(id) => {
+        Do::Pick(id) => {
             if let Some(b) = s.colony.beaver(id) {
                 *sel = Selection::Beaver(id);
                 flow.focus = Some(cell_world(&s.height, b.pos));
@@ -537,220 +625,133 @@ pub fn apply(
                 ui.status = "That beaver is gone.".into();
             }
         }
-        Act::Accept(id) => {
-            let name = s.region.offers().iter().find(|o| o.id == id).and_then(|o| s.region.colony(o.colony).ok()).map(|n| n.name.clone()).unwrap_or_default();
-            let mut host = ColonyHost { colony: &mut s.colony };
-            ui.status = match s.region.accept_offer(id, &mut host) {
-                Ok(()) => format!("Trade with {name} done."),
-                Err(e) => format!("Trade failed: {e}."),
-            };
-        }
-        Act::Connect(id) => {
-            ui.status = match s.region.connect(id, Link::Path) {
-                Ok(()) => "Path opened; offers will follow.".into(),
-                Err(e) => format!("Cannot connect: {e}."),
-            };
-        }
-        Act::Jump(x, y) => {
+        Do::Jump(x, y) => {
             flow.focus = Some(cell_world(&s.height, (x, y)));
-            *sel = Selection::Cell((x as usize, y as usize));
+            *sel = Selection::Cell((x.max(0.0) as usize, y.max(0.0) as usize));
             ui.status = format!("Camera moved to ({x:.0}, {y:.0}).");
         }
-        Act::Choose(id, opt) => {
+        Do::Choose(id, opt) => {
             let mut host = ColonyHost { colony: &mut s.colony };
             ui.status = match s.events.resolve(id, opt, &mut host) {
                 Ok(()) => "Decision made.".into(),
                 Err(e) => format!("Cannot decide: {e}."),
             };
         }
-        Act::Dismiss(id) => {
-            cards.dismissed.insert(id);
+        Do::Answer(id, accept) => {
+            let answer = if accept { sim::society::Answer::Accept } else { sim::society::Answer::TurnAway };
+            ui.status = match s.apply(sim::Command::AnswerJoin { id, answer }) {
+                Ok(()) => if accept { "Welcome to the colony.".into() } else { "Turned away.".into() },
+                Err(e) => format!("Cannot answer: {e:?}."),
+            };
         }
-        Act::Filter(f) => ui.filter = f,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::events::CardState;
-    use sim::events::EventKind;
-    use sim::region::Resource;
-
-    /// Test fixture (not a start): a settled colony that has lived 420 days with two trade routes
-    /// open and two events pending, so the ledgers have numbers to show.
-    fn lived_in_colony(sim: &mut sim::SimState, flow: &mut Flow, hist: &mut History) -> Result<(), String> {
-        use crate::flow::{best_site, settle, Phase};
-        use sim::region::Link;
-        flow.phase = Phase::Scouting;
-        flow.fog.reveal_valley(&sim.world, sim.world.start);
-        let site = best_site(&sim.world, &sim.water.depth, &flow.fog).ok_or("no settleable site")?;
-        settle(sim, flow, site)?;
-        for id in 0..2 {
-            let _ = sim.region.connect(id, Link::Path);
-        }
-        for _ in 0..(420.0 / 0.25) as u32 {
-            sim.step(0.25).map_err(|e| e.to_string())?;
-            hist.record(sim);
-        }
-        {
-            use sim::buildings::Good;
-            let st = &mut sim.buildings.stores;
-            for (g, a) in [(Good::Logs, 64.0), (Good::Sticks, 41.0), (Good::Mud, 28.0), (Good::Stone, 12.0), (Good::Baskets, 6.0)] {
-                let _ = st.deposit(g, a);
-            }
-            let _ = st.withdraw(Good::Logs, 18.0);
-        }
-        let ctx = sim.event_context();
-        for kind in [EventKind::WanderingBeaver, EventKind::Fire] {
-            let mut host = sim::ColonyHost { colony: &mut sim.colony };
-            sim.events.trigger(kind, &ctx, &mut host).map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
 
     struct Rig {
         sim: Sim,
         flow: Flow,
         sel: Selection,
-        ui: LedgerUi,
-        cards: CardState,
-        old: UiState,
+        ui: ShellUi,
+        build: crate::build::BuildUi,
     }
 
     fn rig() -> Rig {
-        rig_with(sim::features::Features::scoped())
+        let sim = Sim(super::super::screens::tests::lived_in(3));
+        let flow = Flow::new(&sim.0.world);
+        Rig { sim, flow, sel: Selection::None, ui: ShellUi::default(), build: Default::default() }
     }
 
-    fn rig_with(features: sim::features::Features) -> Rig {
-        let mut sim = Sim(sim::SimState::new(4));
-        sim.0.set_features(features);
-        let mut flow = Flow::new(&sim.0.world);
-        lived_in_colony(&mut sim.0, &mut flow, &mut History::default()).expect("fixture colony");
-        Rig { sim, flow, sel: Selection::None, ui: LedgerUi::default(), cards: CardState::default(), old: UiState::default() }
-    }
-
-    fn click(r: &mut Rig, a: Act) {
+    fn click(r: &mut Rig, a: Do) {
         let mut reset = false;
-        apply(a, &mut r.sim, &mut r.flow, &mut r.sel, &mut r.ui, &mut r.cards, &mut r.old, &mut reset);
+        apply(a, &mut r.sim, &mut r.flow, &mut r.sel, &mut r.ui, &mut r.build, &mut reset);
     }
 
     #[test]
-    fn ledgers_click_opens_toggles_and_closes_detail() {
+    fn each_screen_opens_from_the_bar_and_closes_again() {
         let mut r = rig();
-        r.old.ledger = true;
-        click(&mut r, Act::Open(Tab::Stores));
-        assert_eq!(r.ui.tab, Some(Tab::Stores));
-        assert!(!r.old.ledger, "the old beaver ledger gives way");
-        click(&mut r, Act::Open(Tab::Trade));
-        assert_eq!(r.ui.tab, Some(Tab::Trade));
-        click(&mut r, Act::Open(Tab::Trade));
-        assert_eq!(r.ui.tab, None);
-        click(&mut r, Act::Open(Tab::Log));
-        click(&mut r, Act::Open(Tab::Log));
-        assert_eq!(r.ui.tab, Some(Tab::Log), "the log button never toggles it shut");
-        click(&mut r, Act::Close);
-        assert_eq!(r.ui.tab, None);
-    }
-
-    #[test]
-    fn debug_tab_trade_stays_closed_with_default_features() {
-        let features = sim::features::Features::default();
-        assert!(!Tab::available(&features).contains(&Tab::Trade), "default config has trade off");
-        assert_eq!(debug_tab("trade"), Some(Tab::Trade));
-        assert_eq!(gate_tab(debug_tab("TRADE"), &features), None);
-        assert_eq!(gate_tab(debug_tab("stores"), &features), Some(Tab::Stores));
-        assert_eq!(debug_tab("nonsense"), None);
-        assert_eq!(gate_tab(Some(Tab::Trade), &sim::features::Features::everything()), Some(Tab::Trade));
-    }
-
-    #[test]
-    fn ledgers_click_header_sorts_then_reverses() {
-        let mut r = rig();
-        click(&mut r, Act::Open(Tab::Families));
-        click(&mut r, Act::Sort(4));
-        assert_eq!(r.ui.sort[&(Tab::Families, 0)], (4, true));
-        click(&mut r, Act::Sort(4));
-        assert_eq!(r.ui.sort[&(Tab::Families, 0)], (4, false));
-        click(&mut r, Act::Sort(102)); // second table, column 2
-        assert_eq!(r.ui.sort[&(Tab::Families, 1)], (2, true));
-    }
-
-    #[test]
-    fn ledgers_click_accept_trades_and_reports_failure() {
-        let mut r = rig_with(sim::features::Features::everything());
-        let offer = r.sim.0.region.offers().first().cloned().expect("fixture has open offers");
-        let have = |r: &Rig, res: Resource| match res {
-            Resource::Food => r.sim.0.colony.food,
-            Resource::Wood => r.sim.0.colony.wood,
-        };
-        let (give0, want0) = (have(&r, offer.give.0), have(&r, offer.want.0));
-        click(&mut r, Act::Accept(offer.id));
-        assert!(r.ui.status.starts_with("Trade with"), "{}", r.ui.status);
-        // they give `give` of one resource and take `want` of the other (the two are always different goods)
-        assert_ne!(offer.give.0, offer.want.0);
-        assert!((have(&r, offer.give.0) - (give0 + offer.give.1)).abs() < 1e-3);
-        assert!((have(&r, offer.want.0) - (want0 - offer.want.1)).abs() < 1e-3);
-        assert!(r.sim.0.region.offers().iter().all(|o| o.id != offer.id), "offer consumed");
-        click(&mut r, Act::Accept(offer.id));
-        assert!(r.ui.status.starts_with("Trade failed"), "{}", r.ui.status);
-        // cannot afford
-        if let Some(o) = r.sim.0.region.offers().first().cloned() {
-            r.sim.0.colony.food = 0.0;
-            r.sim.0.colony.wood = 0.0;
-            click(&mut r, Act::Accept(o.id));
-            assert!(r.ui.status.contains("only have"), "{}", r.ui.status);
-            assert!(r.sim.0.region.offers().iter().any(|x| x.id == o.id), "failed trade keeps the offer");
+        assert_eq!(r.ui.shell.open, None, "the first view is only the map, bar and time controls");
+        for item in NavItem::ALL {
+            click(&mut r, Do::Nav(item));
+            assert_eq!(r.ui.shell.open, Some(item), "{item:?} opens");
+            let nav = nav_bar(&r.sim.0, r.ui.shell.open);
+            assert_eq!(nav.entries.iter().filter(|e| e.open).count(), 1, "one screen at a time");
+            assert!(!screen(&r.sim.0, item, Rates::default()).tables.is_empty());
+            click(&mut r, Do::Nav(item));
+            assert_eq!(r.ui.shell.open, None, "{item:?} closes");
         }
+        // opening another screen replaces the open one
+        click(&mut r, Do::Nav(NavItem::Colony));
+        click(&mut r, Do::Nav(NavItem::Stores));
+        assert_eq!(r.ui.shell.open, Some(NavItem::Stores));
+        click(&mut r, Do::Nav(NavItem::Stores));
+        assert_eq!(r.ui.shell.open, None);
     }
 
     #[test]
-    fn ledgers_click_connect_opens_a_route() {
+    fn header_click_sorts_then_reverses() {
         let mut r = rig();
-        let id = r.sim.0.region.colonies.iter().find(|n| !n.is_connected() && n.friendliness >= sim::region::WARY_BELOW).map(|n| n.id);
-        if let Some(id) = id {
-            click(&mut r, Act::Connect(id));
-            assert!(r.sim.0.region.colony(id).unwrap().is_connected());
-            click(&mut r, Act::Connect(id));
-            assert!(r.ui.status.starts_with("Cannot connect"));
-        }
+        click(&mut r, Do::Nav(NavItem::Colony));
+        click(&mut r, Do::Sort(1, 4));
+        assert_eq!(r.ui.sort[&(NavItem::Colony, 1)], (4, true));
+        click(&mut r, Do::Sort(1, 4));
+        assert_eq!(r.ui.sort[&(NavItem::Colony, 1)], (4, false));
     }
 
     #[test]
-    fn ledgers_click_choose_resolves_pending_event() {
+    fn pick_and_jump_move_the_camera_focus_and_report_gone() {
         let mut r = rig();
-        let p = r.sim.0.events.pending().first().cloned().expect("fixture has a pending choice");
-        click(&mut r, Act::Choose(p.id, 1));
-        assert!(r.sim.0.events.pending().iter().all(|x| x.id != p.id));
-        assert_eq!(r.ui.status, "Decision made.");
-        click(&mut r, Act::Choose(p.id, 0));
-        assert!(r.ui.status.starts_with("Cannot decide"));
-        assert!(r.sim.0.events.log().iter().any(|e| e.id == p.id && e.kind == p.kind && e.choice.is_some()));
-        let _ = EventKind::Fire;
-    }
-
-    #[test]
-    fn ledgers_click_jump_and_pick_move_the_camera_focus() {
-        let mut r = rig();
-        click(&mut r, Act::Jump(10.0, 12.0));
-        assert!(r.flow.focus.is_some());
-        assert_eq!(r.sel, Selection::Cell((10, 12)));
-        r.flow.focus = None;
         let id = r.sim.0.colony.beavers[0].id;
-        click(&mut r, Act::Pick(id));
+        click(&mut r, Do::Pick(id));
         assert_eq!(r.sel, Selection::Beaver(id));
         assert!(r.flow.focus.is_some());
-        let gone = sim::colony::BeaverId(u64::MAX);
-        click(&mut r, Act::Pick(gone));
+        r.flow.focus = None;
+        click(&mut r, Do::Jump(10.0, 12.0));
+        assert!(r.flow.focus.is_some());
+        assert_eq!(r.sel, Selection::Cell((10, 12)));
+        click(&mut r, Do::Pick(sim::colony::BeaverId(u64::MAX)));
         assert_eq!(r.ui.status, "That beaver is gone.");
     }
 
     #[test]
-    fn ledgers_midgame_is_deterministic() {
-        let a = rig();
-        let b = rig();
-        assert_eq!(a.sim.0.colony.population(), b.sim.0.colony.population());
-        assert_eq!(a.sim.0.events.log(), b.sim.0.events.log());
-        assert!(a.sim.0.events.pending().len() >= 2);
+    fn choosing_resolves_a_pending_event() {
+        let mut r = rig();
+        let Some(p) = r.sim.0.events.pending().first().cloned() else { return };
+        click(&mut r, Do::Choose(p.id, 0));
+        assert!(r.sim.0.events.pending().iter().all(|x| x.id != p.id));
+        assert_eq!(r.ui.status, "Decision made.");
+        click(&mut r, Do::Choose(p.id, 0));
+        assert!(r.ui.status.starts_with("Cannot decide"));
+    }
+
+    #[test]
+    fn placing_a_building_closes_the_screen_and_picks_the_tool() {
+        let mut r = rig();
+        click(&mut r, Do::Nav(NavItem::Buildings));
+        click(&mut r, Do::Place(sim::buildings::BuildingKind::Lodge));
+        assert_eq!(r.build.tool, Some(sim::buildings::BuildingKind::Lodge));
+        assert_eq!(r.ui.shell.open, None, "the map is free to place on");
+    }
+
+    #[test]
+    fn staffing_moves_adults_onto_a_job() {
+        let mut r = rig();
+        let before = r.sim.0.colony.beavers.iter().filter(|b| b.job == Some(sim::colony::Job::Logger)).count();
+        click(&mut r, Do::Staff(sim::colony::Job::Logger, 1));
+        let after = r.sim.0.colony.beavers.iter().filter(|b| b.job == Some(sim::colony::Job::Logger)).count();
+        assert!(after >= before);
+        assert!(r.ui.status.contains("Logger"), "{}", r.ui.status);
+    }
+
+    #[test]
+    fn tips_list_every_part_of_a_number() {
+        let sim = Sim(super::super::screens::tests::lived_in(3));
+        let s = screen(&sim.0, NavItem::Colony, Rates::default());
+        let tip = Tip::of(&s.kpis[0].num);
+        assert_eq!(tip.lines.len(), s.kpis[0].num.parts.len());
+        assert!(tip.title.starts_with("Beavers: "));
     }
 }

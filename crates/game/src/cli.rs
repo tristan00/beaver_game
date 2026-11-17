@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--demo-dam] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -26,12 +26,16 @@ pub struct Cli {
     /// Scripted start 1 (needs `--start 1`): order the designed dam, let the family build it, hold
     /// the picture until the pond has filled.
     pub demo_pond: bool,
+    /// Open this navigation screen at start (screenshots).
+    pub open: Option<String>,
+    /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
+    pub showcase: Option<String>,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, open: None, showcase: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -61,6 +65,20 @@ impl Cli {
                     cli.start = Some(Start::from_number(n).ok_or_else(|| format!("--start: no start {n} (choose 1, 2 or 3)"))?);
                 }
                 "--demo-pond" => cli.demo_pond = true,
+                "--open" => {
+                    let v = value("--open")?;
+                    if !crate::ui::shell::NavItem::ALL.iter().any(|n| n.label().eq_ignore_ascii_case(&v)) {
+                        return Err(format!("--open: unknown screen '{v}'"));
+                    }
+                    cli.open = Some(v);
+                }
+                "--showcase" => {
+                    let v = value("--showcase")?;
+                    if !["poses", "world"].contains(&v.as_str()) {
+                        return Err(format!("--showcase: unknown scene '{v}' (poses|world)"));
+                    }
+                    cli.showcase = Some(v);
+                }
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }

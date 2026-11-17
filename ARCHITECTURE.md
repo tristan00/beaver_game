@@ -38,8 +38,9 @@ the public APIs below. `R12-2` (this scaffold) owns everything until a later tas
 | `crates/game/src/terrain_render.rs` | terrain render task | Heightmap mesh |
 | `crates/game/src/water_render.rs` | water render task | Water surface (stub) |
 | `crates/game/src/entities_render.rs` | entities render task | Beavers/buildings (stub) |
-| `crates/game/src/ui/` (`mod`, `kit`, `ledgers`, `events`, `panels`) | UI task | Top bar, four compact ledgers (Families, Jobs, Stores, Trade), detail tables, event cards and log. `ledgers.rs`/`events.rs` are pure view-models (`cargo test -p game ledgers`); `panels.rs` draws and handles clicks |
+| `crates/game/src/ui/` (`mod`, `shell`, `screens`, `explain`, `kit`, `panels`) | UI task | Navigation bar and six on-demand screens (Colony, Work, Stores, Buildings, Tech, Events). `screens.rs` holds the pure view-models (`cargo test -p game screens`); `panels.rs` draws and handles clicks; see `docs/DESIGN.md` §11 |
 | `crates/game/src/midgame.rs` | UI task | `--midgame`: seeded mid-game colony for screenshots |
+| `crates/game/src/opening.rs` | UI task | Default start: founders settled at the best site (`--open NAME` opens a screen at start) |
 | `crates/game/src/audio.rs` | audio task | Sound (stub) |
 
 One system per file; one `Plugin` per game file.
@@ -73,4 +74,18 @@ not renderable within 180 s, or the file is not written. Bad arguments exit 2.
 Controls: mouse drag orbit, wheel zoom, Q/E rotate.
 
 Events now fire inside `SimState::step` (`step_events`, applied to the colony through `sim::ColonyHost`), and neighbour migrants join the colony there too.
+`cargo run -p game -- --seed 1 --open stores --screenshot out.png` shows the Stores screen on the default start.
 `cargo run -p game -- --midgame --seed 3 --screenshot docs/midgame.png` shows the ledgers, top bar and event cards on a settled, year-old colony. `BC_UI_TAB=trade|stores|families|beavers|jobs|tech|events` opens a detail tab at start (debug aid).
+
+## Drawing the sim (R19-18)
+
+`entities_render/sim_view.rs` maps sim state to visuals (pure functions, pose table in its header);
+`sim_sync.rs` keeps one `BeaverSprite` per `sim.agents` entry (translation = sim position, exactly:
+cell centre + `step_frac` towards the next path cell, plus the sub-step time since the last fixed
+step, which is 0 in a stepped scene), plus entities for `sim.resources` (standing/felled trees with
+the logs left, mud, stone, plants) and `sim.buildings` (sites by `work.progress` stage 0-2, finished
+stage 3). `attach_rigs` adds the animated body; `animate_beavers` only eases heading and blends poses.
+`--stress` still draws the fixed 5000-tree / 300-beaver stub scene; `BC_STRESS_SIM=1 --stress --midgame`
+measures the live sim-driven world, filled to 300 beavers with the clock running (the log names which
+scene ran and counts the beaver sprites and trees actually drawn). `--showcase poses|world` (`showcase.rs`, `BC_STATION=0..5`) stages
+still scenes; `tools/contact_sheet.py` tiles the six pose shots. Test: `cargo test -p game sim_tests`.

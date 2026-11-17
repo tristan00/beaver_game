@@ -8,7 +8,9 @@ mod entities_render;
 mod flow;
 mod flow_view;
 mod input;
+mod opening;
 mod screenshot;
+mod showcase;
 mod sim_driver;
 mod startflow;
 mod state;
@@ -48,8 +50,11 @@ fn main() -> AppExit {
         flow_view::FlowViewPlugin,
         build::BuildPlugin,
         camera::CameraPlugin,
+        showcase::ShowcasePlugin,
         input::InputPlugin,
         startflow::StartPlugin,
+    ))
+    .add_plugins((
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,

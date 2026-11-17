@@ -17,6 +17,20 @@ pub struct MenuCard(pub Start);
 
 const CARD_W: f32 = 290.0;
 
+fn text(p: &mut Kids, s: impl Into<String>, size: f32, color: Color) {
+    p.spawn((Text::new(s), TextFont::from_font_size(size), TextColor(color)));
+}
+
+/// A rounded card: soft shadow, rounded corners, flex column.
+fn card_node(width: f32) -> impl Bundle {
+    (
+        Node { width: px(width), flex_direction: FlexDirection::Column, padding: UiRect::all(px(9)), row_gap: px(4), ..default() },
+        BackgroundColor(PANEL),
+        Round(16.0),
+        BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.28), px(0), px(3), px(0), px(9)),
+    )
+}
+
 /// Spawns the overlay with one card per start.
 pub fn spawn(commands: &mut Commands, error: Option<&str>) {
     commands

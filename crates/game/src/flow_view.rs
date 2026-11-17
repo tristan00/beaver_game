@@ -13,9 +13,6 @@ use bevy::window::PrimaryWindow;
 use sim::colony::{Beaver, BeaverId, LodgeId};
 use std::collections::HashMap;
 
-pub const LEDGER_ROWS: usize = 16;
-const ROW_H: f32 = 22.0;
-const COLS: [(&str, f32); 6] = [("Name", 95.0), ("Family", 100.0), ("Age", 45.0), ("Job", 75.0), ("Mood", 50.0), ("Health", 55.0)];
 const PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.10, 0.82);
 const BTN_BG: Color = Color::srgba(0.16, 0.20, 0.26, 0.92);
 const BTN_HOT: Color = Color::srgba(0.30, 0.38, 0.50, 0.95);
@@ -25,18 +22,13 @@ const BTN_ON: Color = Color::srgba(0.20, 0.48, 0.30, 0.95);
 pub enum Action {
     Pause,
     Speed(Speed),
-    Ledger,
-    Detail,
     Continue,
     Restart,
-    Sort(usize),
-    Row(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PanelKind {
     Info,
-    Ledger,
     GameOver,
 }
 
@@ -45,7 +37,7 @@ pub enum PanelKind {
 pub struct UiLayout {
     pub buttons: Vec<(Action, Rect)>,
     pub panels: Vec<(PanelKind, Rect)>,
-    /// Extra opaque areas published by the ui overlay (ledgers, cards, top bar).
+    /// Extra opaque areas published by the ui overlay (nav bar, screens, time label).
     pub extra: Vec<Rect>,
 }
 
@@ -71,23 +63,6 @@ pub struct WorldClick(pub Option<Vec2>);
 #[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug)]
 pub struct ClickSet;
 
-#[derive(Resource)]
-pub struct UiState {
-    pub ledger: bool,
-    pub detail: bool,
-    pub sort_col: usize,
-    pub sort_asc: bool,
-    pub offset: usize,
-    pub rows: Vec<BeaverId>,
-    refresh: f32,
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        UiState { ledger: false, detail: false, sort_col: 0, sort_asc: true, offset: 0, rows: Vec::new(), refresh: 0.0 }
-    }
-}
-
 fn rc(x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
@@ -95,32 +70,19 @@ fn rc(x: f32, y: f32, w: f32, h: f32) -> Rect {
 pub const BUTTON_Y: f32 = 10.0;
 
 /// Pure layout of all UI rectangles for a window of `win` logical pixels.
-pub fn compute_layout(win: Vec2, ui: &UiState, gameover: bool) -> UiLayout {
+pub fn compute_layout(win: Vec2, show_info: bool, gameover: bool) -> UiLayout {
     let mut l = UiLayout::default();
     // top-right button strip
-    let widths = [(Action::Pause, 48.0), (Action::Speed(Speed::X1), 38.0), (Action::Speed(Speed::X3), 38.0), (Action::Speed(Speed::X10), 44.0), (Action::Ledger, 92.0), (Action::Detail, 104.0)];
+    let widths = [(Action::Pause, 48.0), (Action::Speed(Speed::X1), 38.0), (Action::Speed(Speed::X3), 38.0), (Action::Speed(Speed::X10), 44.0)];
     let total: f32 = widths.iter().map(|w| w.1 + 4.0).sum();
     let mut x = win.x - 10.0 - total + 4.0;
     for (a, w) in widths {
         l.buttons.push((a, rc(x, BUTTON_Y, w, 28.0)));
         x += w + 4.0;
     }
-    // info panel
-    let h = if ui.detail { 340.0 } else { 150.0 };
-    l.panels.push((PanelKind::Info, rc(10.0, win.y - 10.0 - h, 380.0, h)));
-    // ledger
-    if ui.ledger {
-        let (w, hh) = (440.0, 34.0 + ROW_H * LEDGER_ROWS as f32 + 26.0);
-        let (px, py) = (win.x - 10.0 - w, 48.0);
-        l.panels.push((PanelKind::Ledger, rc(px, py, w, hh)));
-        let mut cx = px + 12.0;
-        for (i, (_, cw)) in COLS.iter().enumerate() {
-            l.buttons.push((Action::Sort(i), rc(cx, py + 6.0, *cw - 4.0, 22.0)));
-            cx += cw;
-        }
-        for i in 0..LEDGER_ROWS {
-            l.buttons.push((Action::Row(i), rc(px + 8.0, py + 34.0 + ROW_H * i as f32, w - 16.0, ROW_H)));
-        }
+    // info panel: only while scouting or when something is selected
+    if show_info {
+        l.panels.push((PanelKind::Info, rc(10.0, win.y - 10.0 - 110.0, 380.0, 110.0)));
     }
     if gameover {
         let (w, h) = (400.0, 200.0);
@@ -147,17 +109,11 @@ struct BannerText;
 #[derive(Component)]
 struct GameOverText;
 #[derive(Component)]
-struct TrendBar(usize);
-#[derive(Component)]
-struct LedgerCell;
-#[derive(Component)]
 struct ScoutMarker;
 #[derive(Component)]
 struct BeaverMarker;
 #[derive(Component)]
 struct LodgeMarker;
-
-const TREND_BARS: usize = 40;
 
 #[derive(Resource)]
 struct Visuals {
@@ -179,13 +135,12 @@ impl Plugin for FlowViewPlugin {
         let autoplay = app.world().resource::<crate::cli::Cli>().autoplay_settle;
         app.init_resource::<UiLayout>()
             .init_resource::<WorldClick>()
-            .init_resource::<UiState>()
             .insert_resource(FogBase { generation: u32::MAX, colors: Vec::new() })
             .add_systems(Startup, (spawn_ui, spawn_visuals))
             .add_systems(Update, (keys, layout_ui, crate::build::layout_build, detect_click, crate::build::build_input).chain().in_set(ClickSet))
             .add_systems(
                 Update,
-                (apply_fog, sync_markers, update_ui, refresh_ledger, draw_gizmos).after(ClickSet),
+                (apply_fog, sync_markers, update_ui, draw_gizmos).after(ClickSet),
             );
         if autoplay {
             app.insert_resource(Autoplay { scouting_since: None })
@@ -208,14 +163,7 @@ fn spawn_ui(mut commands: Commands) {
         .spawn((PanelNode(PanelKind::Info), Node { padding: UiRect::all(px(10)), ..abs(()) }, BackgroundColor(PANEL_BG)))
         .with_children(|p| {
             p.spawn((Text::new(""), font(14.0), InfoText));
-            p.spawn(Node { position_type: PositionType::Absolute, right: px(12), bottom: px(8), width: px(TREND_BARS as f32 * 3.5), height: px(34), align_items: AlignItems::FlexEnd, column_gap: px(0.5), ..default() })
-                .with_children(|c| {
-                    for i in 0..TREND_BARS {
-                        c.spawn((Node { width: px(3), height: px(1), ..default() }, BackgroundColor(Color::srgb(0.45, 0.75, 0.5)), TrendBar(i)));
-                    }
-                });
         });
-    commands.spawn((PanelNode(PanelKind::Ledger), abs(()), BackgroundColor(PANEL_BG)));
     commands
         .spawn((PanelNode(PanelKind::GameOver), Node { padding: UiRect::all(px(16)), ..abs(()) }, BackgroundColor(Color::srgba(0.12, 0.05, 0.05, 0.93))))
         .with_children(|p| {
@@ -241,11 +189,6 @@ fn spawn_ui(mut commands: Commands) {
     for s in Speed::ALL {
         spawn_btn(Action::Speed(s), s.label());
     }
-    spawn_btn(Action::Ledger, "Ledger L");
-    spawn_btn(Action::Detail, "Detail Tab");
-    for (i, (name, _)) in COLS.iter().enumerate() {
-        spawn_btn(Action::Sort(i), name);
-    }
     spawn_btn(Action::Continue, "Keep watching");
     spawn_btn(Action::Restart, "Restart");
 }
@@ -261,40 +204,23 @@ fn spawn_visuals(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut m
 
 // ───────────────────────────── input ─────────────────────────────
 
-fn keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut ui: ResMut<UiState>,
-    mut sel: ResMut<Selection>,
-    sim: Res<Sim>,
-) {
-    if keys.just_pressed(KeyCode::KeyL) {
-        ui.ledger = !ui.ledger;
-    }
-    if keys.just_pressed(KeyCode::Tab) {
-        ui.detail = !ui.detail;
-    }
+fn keys(keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>) {
     if keys.just_pressed(KeyCode::Escape) {
         *sel = Selection::None;
-    }
-    let max_off = sim.0.colony.population().saturating_sub(LEDGER_ROWS);
-    if keys.just_pressed(KeyCode::PageDown) || keys.just_pressed(KeyCode::ArrowDown) {
-        ui.offset = (ui.offset + if keys.just_pressed(KeyCode::PageDown) { LEDGER_ROWS } else { 1 }).min(max_off);
-    }
-    if keys.just_pressed(KeyCode::PageUp) || keys.just_pressed(KeyCode::ArrowUp) {
-        ui.offset = ui.offset.saturating_sub(if keys.just_pressed(KeyCode::PageUp) { LEDGER_ROWS } else { 1 });
     }
 }
 
 fn layout_ui(
     windows: Query<&Window, With<PrimaryWindow>>,
-    ui: Res<UiState>,
+    sel: Res<Selection>,
+    sim: Res<Sim>,
     flow: Res<Flow>,
     mut layout: ResMut<UiLayout>,
     mut nodes: Query<(&mut Node, Option<&Btn>, Option<&PanelNode>)>,
 ) {
     let Ok(w) = windows.single() else { return };
     let extra = std::mem::take(&mut layout.extra);
-    *layout = compute_layout(Vec2::new(w.width(), w.height()), &ui, flow.phase == Phase::GameOver);
+    *layout = compute_layout(Vec2::new(w.width(), w.height()), !sim.0.colony.is_founded() || *sel != Selection::None, flow.phase == Phase::GameOver);
     layout.extra = extra;
     for (mut node, btn, panel) in &mut nodes {
         let rect = btn.and_then(|b| layout.rect(b.0)).or_else(|| panel.and_then(|p| layout.panel(p.0 )));
@@ -320,7 +246,6 @@ fn detect_click(
     layout: Res<UiLayout>,
     mut wc: ResMut<WorldClick>,
     mut clock: ResMut<SimClock>,
-    mut ui: ResMut<UiState>,
     mut sim: ResMut<Sim>,
     mut flow: ResMut<Flow>,
     mut sel: ResMut<Selection>,
@@ -336,46 +261,24 @@ fn detect_click(
             return; // a drag orbits the camera
         }
         match layout.hit(cursor) {
-            Some(a) => do_action(a, &mut clock, &mut ui, &mut sim, &mut flow, &mut sel),
+            Some(a) => do_action(a, &mut clock, &mut sim, &mut flow, &mut sel),
             None if layout.over_ui(cursor) => {}
             None => wc.0 = Some(cursor),
         }
     }
 }
 
-fn do_action(a: Action, clock: &mut SimClock, ui: &mut UiState, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection) {
+fn do_action(a: Action, clock: &mut SimClock, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection) {
     match a {
         Action::Pause => clock.toggle_pause(),
         Action::Speed(s) => clock.set_speed(s),
-        Action::Ledger => ui.ledger = !ui.ledger,
-        Action::Detail => ui.detail = !ui.detail,
         Action::Continue => {
             if flow.fire(FlowEvent::Continue) {
                 clock.paused = false;
             }
         }
         Action::Restart => restart(&mut sim.0, flow, clock, sel),
-        Action::Sort(c) => {
-            if ui.sort_col == c {
-                ui.sort_asc = !ui.sort_asc;
-            } else {
-                ui.sort_col = c;
-                ui.sort_asc = true;
-            }
-            ui.refresh = 0.0;
-        }
-        Action::Row(i) => {
-            if let Some(id) = ui.rows.get(ui.offset + i) {
-                *sel = Selection::Beaver(*id);
-            }
-        }
     }
-}
-
-// ───────────────────────────── text ─────────────────────────────
-
-fn season_name(sim: &Sim) -> String {
-    format!("{:?}", sim.0.water.season())
 }
 
 fn needs_line(b: &Beaver) -> String {
@@ -427,10 +330,9 @@ pub fn hint_text(h: &SiteHint) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn info_text(sim: &Sim, flow: &Flow, sel: Selection, hover: &Hover, ui: &UiState, clock: &SimClock) -> String {
+fn info_text(sim: &Sim, flow: &Flow, sel: Selection, hover: &Hover) -> String {
     let c = &sim.0.colony;
     let mut s = String::new();
-    let speed = if clock.paused { "PAUSED".to_string() } else { clock.speed.label().to_string() };
     if flow.phase == Phase::Menu {
         return String::new();
     }
@@ -448,24 +350,7 @@ fn info_text(sim: &Sim, flow: &Flow, sel: Selection, hover: &Hover, ui: &UiState
         s += &selection_text(sim, sel, hover.hint);
         return s;
     }
-    let year = (sim.0.time_days / 365.0) as u32;
-    s += &format!("Day {:.0} (year {})  {}  speed {}\n", sim.0.time_days, year + 1, season_name(sim), speed);
-    s += &format!("Beavers {}   food {:.0} ({:.1}/head)   wood {:.0}\n", c.population(), c.food, c.food_per_capita(), c.wood);
-    s += &selection_text(sim, sel, hover.hint);
-    if ui.detail {
-        use sim::colony::Stage;
-        let st = &c.stats;
-        s += &format!("\n\nBirths {}  deaths {}  departures {}  immigrants {}  peak {}", st.births, st.deaths, st.departures, st.immigrants, st.peak_population);
-        s += &format!("\nKits {}  yearlings {}  adults {}", c.count_stage(Stage::Kit), c.count_stage(Stage::Yearling), c.count_stage(Stage::Adult));
-        let n = c.population().max(1) as f32;
-        s += &format!("\nAvg mood {:.0}%  avg health {:.0}%  lodges {}  families {}", c.beavers.iter().map(|b| b.mood).sum::<f32>() / n * 100.0, c.beavers.iter().map(|b| b.health).sum::<f32>() / n * 100.0, c.lodges.len(), c.families.len());
-        s += &format!("\nPond volume {:.0}  tools {:.0}%  orders {}", sim.0.water.total_volume(), c.tools * 100.0, c.orders.len());
-        s += "\nRecent:";
-        for l in flow.log.iter().rev().take(6) {
-            s += &format!("\n  {l}");
-        }
-    }
-    s
+    selection_text(sim, sel, hover.hint)
 }
 
 fn update_ui(
@@ -473,7 +358,6 @@ fn update_ui(
     flow: Res<Flow>,
     sel: Res<Selection>,
     hover: Res<Hover>,
-    ui: Res<UiState>,
     clock: Res<SimClock>,
     layout: Res<UiLayout>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -483,10 +367,9 @@ fn update_ui(
         Query<&mut Text, With<GameOverText>>,
         Query<(&BtnLabel, &mut Text)>,
     )>,
-    mut bars: Query<(&TrendBar, &mut Node)>,
     mut btn_colors: Query<(&Btn, &mut BackgroundColor)>,
 ) {
-    let text = info_text(&sim, &flow, *sel, &hover, &ui, &clock);
+    let text = info_text(&sim, &flow, *sel, &hover);
     for mut t in &mut texts.p0() {
         if t.0 != text {
             t.0 = text.clone();
@@ -513,19 +396,11 @@ fn update_ui(
     for (l, mut t) in &mut texts.p3() {
         let label = match l.0 {
             Action::Pause => if clock.paused { "Play".to_string() } else { "Pause".to_string() },
-            Action::Sort(i) => format!("{}{}", COLS[i].0, if ui.sort_col == i { if ui.sort_asc { " ^" } else { " v" } } else { "" }),
             _ => continue,
         };
         if t.0 != label {
             t.0 = label;
         }
-    }
-    // trend bars: population over the last samples
-    let hist: Vec<usize> = flow.history.iter().rev().take(TREND_BARS).rev().map(|h| h.1).collect();
-    let max = hist.iter().copied().max().unwrap_or(1).max(1) as f32;
-    let start = TREND_BARS - hist.len();
-    for (b, mut n) in &mut bars {
-        n.height = px(if b.0 >= start { 2.0 + 32.0 * hist[b.0 - start] as f32 / max } else { 1.0 });
     }
     // button states
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
@@ -534,8 +409,6 @@ fn update_ui(
         let on = match b.0 {
             Action::Pause => clock.paused,
             Action::Speed(s) => !clock.paused && clock.speed == s,
-            Action::Ledger => ui.ledger,
-            Action::Detail => ui.detail,
             _ => false,
         };
         bg.0 = if hot { BTN_HOT } else if on { BTN_ON } else { BTN_BG };
@@ -543,73 +416,6 @@ fn update_ui(
 }
 
 // ───────────────────────────── ledger ─────────────────────────────
-
-fn sort_key(b: &Beaver, col: usize, sim: &sim::SimState) -> (String, f32) {
-    match col {
-        0 => (b.name.clone(), 0.0),
-        1 => (sim.colony.family(b.family).map(|f| f.name.clone()).unwrap_or_default(), 0.0),
-        2 => (String::new(), b.age_days),
-        3 => (job_name(b), 0.0),
-        4 => (String::new(), b.mood),
-        _ => (String::new(), b.health),
-    }
-}
-
-fn refresh_ledger(
-    mut commands: Commands,
-    time: Res<Time>,
-    sim: Res<Sim>,
-    sel: Res<Selection>,
-    layout: Res<UiLayout>,
-    mut ui: ResMut<UiState>,
-    old: Query<Entity, With<LedgerCell>>,
-) {
-    ui.refresh -= time.delta_secs();
-    if ui.refresh > 0.0 && ui.ledger {
-        return;
-    }
-    ui.refresh = 0.4;
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    if !ui.ledger {
-        return;
-    }
-    let c = &sim.0.colony;
-    let mut rows: Vec<&Beaver> = c.beavers.iter().collect();
-    let col = ui.sort_col;
-    rows.sort_by(|a, b| {
-        let (ka, kb) = (sort_key(a, col, &sim.0), sort_key(b, col, &sim.0));
-        ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1)).then(a.id.0.cmp(&b.id.0))
-    });
-    if !ui.sort_asc {
-        rows.reverse();
-    }
-    ui.rows = rows.iter().map(|b| b.id).collect();
-    ui.offset = ui.offset.min(rows.len().saturating_sub(LEDGER_ROWS));
-    let Some(panel) = layout.panel(PanelKind::Ledger) else { return };
-    let cell = |commands: &mut Commands, x: f32, y: f32, s: String, color: Color| {
-        commands.spawn((LedgerCell, Text::new(s), font(13.0), TextColor(color), Node { position_type: PositionType::Absolute, left: px(x), top: px(y), ..default() }));
-    };
-    for (i, b) in rows.iter().skip(ui.offset).take(LEDGER_ROWS).enumerate() {
-        let y = panel.min.y + 36.0 + ROW_H * i as f32;
-        if *sel == Selection::Beaver(b.id) {
-            commands.spawn((LedgerCell, Node { position_type: PositionType::Absolute, left: px(panel.min.x + 8.0), top: px(y - 2.0), width: px(panel.width() - 16.0), height: px(ROW_H), ..default() }, BackgroundColor(Color::srgba(0.3, 0.5, 0.8, 0.4))));
-        }
-        let fam = c.family(b.family).map(|f| f.name.clone()).unwrap_or_default();
-        let mood_col = if b.mood < 0.35 { Color::srgb(1.0, 0.5, 0.45) } else { Color::WHITE };
-        let vals = [b.name.clone(), fam, format!("{:.1}", b.age_years()), job_name(b), format!("{:.0}%", b.mood * 100.0), format!("{:.0}%", b.health * 100.0)];
-        let mut x = panel.min.x + 12.0;
-        for (k, v) in vals.into_iter().enumerate() {
-            cell(&mut commands, x, y, v, if k == 4 { mood_col } else { Color::WHITE });
-            x += COLS[k].1;
-        }
-    }
-    let foot = format!("{} beavers  rows {}-{}  (Up/Down scroll, click header to sort)", rows.len(), ui.offset + 1, (ui.offset + LEDGER_ROWS).min(rows.len()));
-    cell(&mut commands, panel.min.x + 12.0, panel.max.y - 20.0, foot.chars().take(80).collect(), Color::srgb(0.7, 0.75, 0.8));
-}
-
-// ───────────────────────────── fog ─────────────────────────────
 
 #[derive(Resource)]
 struct FogBase {
@@ -770,19 +576,11 @@ fn autoplay_settle(
     mut gate: ResMut<CaptureGate>,
     mut exit: MessageWriter<AppExit>,
     orbit: Res<OrbitCamera>,
-    mut ui: ResMut<UiState>,
     demo: Option<Res<crate::build::DemoDam>>,
 ) {
     let _ = &orbit;
-    // Debug aid for screenshots: BC_AUTOPLAY_UI=ledger,detail,gameover
-    if let Ok(v) = std::env::var("BC_AUTOPLAY_UI") {
-        if flow.phase == Phase::Settled && flow.real_secs - flow.settled_at.unwrap_or(0.0) > 0.5 {
-            ui.ledger = v.contains("ledger");
-            ui.detail = v.contains("detail");
-            if v.contains("gameover") {
-                flow.phase = Phase::GameOver;
-            }
-        }
+    if std::env::var("BC_AUTOPLAY_UI").is_ok_and(|v| v.contains("gameover")) && flow.phase == Phase::Settled && flow.real_secs - flow.settled_at.unwrap_or(0.0) > 0.5 {
+        flow.phase = Phase::GameOver;
     }
     match flow.phase {
         Phase::Scouting => {
@@ -816,5 +614,25 @@ fn autoplay_settle(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settled_default_view_has_only_the_time_controls() {
+        let l = compute_layout(Vec2::new(1280.0, 720.0), false, false);
+        assert!(l.panels.is_empty(), "no info card, ledger or debug text");
+        let mut acts: Vec<_> = l.buttons.iter().map(|(a, _)| *a).collect();
+        acts.sort_by_key(|a| format!("{a:?}"));
+        assert_eq!(acts.len(), 4, "pause and three speeds: {acts:?}");
+    }
+
+    #[test]
+    fn info_card_shows_only_when_asked_for() {
+        assert!(compute_layout(Vec2::new(1280.0, 720.0), true, false).panel(PanelKind::Info).is_some());
+        assert!(compute_layout(Vec2::new(1280.0, 720.0), false, true).panel(PanelKind::GameOver).is_some());
     }
 }
