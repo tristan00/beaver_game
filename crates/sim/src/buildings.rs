@@ -262,6 +262,9 @@ pub struct BargeId(pub u64);
 pub enum Status {
     /// Waiting for builders; the colony work order tracks progress.
     UnderConstruction(OrderId),
+    /// A construction site fed by hauled materials and builder labour; `work::Work` tracks it and
+    /// marks the building `Complete` when its cost is delivered and its labour done.
+    Site,
     Complete,
 }
 
@@ -409,16 +412,14 @@ impl Buildings {
         Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0 }.cells().collect()
     }
 
-    /// Places `kind` with its top-left at `pos`: checks tech, bounds, terrain and overlap, consumes
-    /// the cost from stores and queues a builder work order. Nothing changes on error.
-    pub fn place(
-        &mut self,
+    /// Checks tech, bounds, overlap and terrain for placing `kind` at `pos`; changes nothing.
+    fn check_placement(
+        &self,
         kind: BuildingKind,
         pos: (usize, usize),
         tech: &Tech,
         terrain: Terrain,
-        colony: &mut Colony,
-    ) -> Result<BuildingId, BuildError> {
+    ) -> Result<(), BuildError> {
         if !tech.allows(kind) {
             return Err(BuildError::Locked(kind));
         }
@@ -447,6 +448,36 @@ impl Buildings {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Places an empty construction site (`Status::Site`) with the same checks as `place` but no
+    /// cost taken: materials are hauled in later. The caller registers it with `work::Work`.
+    pub fn place_site(
+        &mut self,
+        kind: BuildingKind,
+        pos: (usize, usize),
+        tech: &Tech,
+        terrain: Terrain,
+    ) -> Result<BuildingId, BuildError> {
+        self.check_placement(kind, pos, tech, terrain)?;
+        let id = BuildingId(self.fresh_id());
+        self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0 });
+        Ok(id)
+    }
+
+    /// Places `kind` with its top-left at `pos`: checks tech, bounds, terrain and overlap, consumes
+    /// the cost from stores and queues a builder work order. Nothing changes on error.
+    pub fn place(
+        &mut self,
+        kind: BuildingKind,
+        pos: (usize, usize),
+        tech: &Tech,
+        terrain: Terrain,
+        colony: &mut Colony,
+    ) -> Result<BuildingId, BuildError> {
+        self.check_placement(kind, pos, tech, terrain)?;
+        let spec = kind.spec();
         let work = spec.work * tech.build_work_factor();
         let centre = (pos.0 as f32 + spec.footprint.0 as f32 / 2.0, pos.1 as f32 + spec.footprint.1 as f32 / 2.0);
         self.stores.can_afford(spec.cost)?;
