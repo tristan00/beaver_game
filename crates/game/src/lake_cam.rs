@@ -141,18 +141,105 @@ pub fn frame(base: OrbitCamera, cells: &LakeCells, h: &HeightGrid, size: Vec2) -
     orbit
 }
 
-/// The lines a `--screenshot` run prints: dam and lake boxes from the real camera.
-pub fn report(cells: &LakeCells, h: &HeightGrid, camera: &Camera, at: &GlobalTransform) -> Vec<String> {
+/// A standing tree as the ray test sees it: an upright cylinder (trunk and crown) this tall and wide.
+pub const TREE_HEIGHT: f32 = 3.5;
+pub const TREE_RADIUS: f32 = 0.6;
+/// Ray steps over terrain are this long (world units, one cell is one unit).
+const RAY_STEP: f32 = 0.25;
+/// The last stretch before the target is not tested against terrain: the dam stands on its own cell's ground.
+const TARGET_SLACK: f32 = 0.6;
+
+/// Whether the straight line from `eye` to `target` is clear of terrain and of the tree cylinders at `trees`
+/// (world x/z centres, base height from the terrain).
+pub fn line_clear(h: &HeightGrid, eye: Vec3, target: Vec3, trees: &[Vec3]) -> bool {
+    let d = target - eye;
+    let len = d.length();
+    let dir = d / len;
+    let mut t = RAY_STEP;
+    while t < len - TARGET_SLACK {
+        let p = eye + dir * t;
+        let (cx, cy) = crate::flow::world_cell(h, p);
+        if p.y < crate::flow::height_at(h, cx, cy) {
+            return false;
+        }
+        t += RAY_STEP;
+    }
+    // trees: closest approach of the ray (in x/z) to each trunk, within the crown's height band
+    let flat = Vec2::new(dir.x, dir.z);
+    let fl = flat.length();
+    for tr in trees {
+        let rel = Vec2::new(tr.x - eye.x, tr.z - eye.z);
+        let (tc, miss) = if fl < 1e-4 {
+            (0.0, rel.length())
+        } else {
+            let u = flat / fl;
+            let along = rel.dot(u).clamp(0.0, len * fl);
+            (along / fl, (rel - u * along).length())
+        };
+        if miss > TREE_RADIUS || tc > len - TARGET_SLACK {
+            continue;
+        }
+        let y = eye.y + dir.y * tc;
+        if y >= tr.y && y <= tr.y + TREE_HEIGHT {
+            return false;
+        }
+    }
+    true
+}
+
+/// How many dam cells (their crest centres) have an unobstructed line to `eye`.
+pub fn visible_dam_cells(cells: &LakeCells, sim: &sim::SimState, eye: Vec3) -> (usize, usize) {
+    let h = &sim.height;
+    let trees: Vec<Vec3> = sim
+        .resources
+        .items
+        .iter()
+        .filter(|r| r.kind == sim::resources::ResourceKind::Tree)
+        .map(|r| cell_world(h, (r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5)))
+        .collect();
+    let seen = cells
+        .dam
+        .iter()
+        .filter(|&&(x, y)| {
+            let mut top = cell_world(h, (x as f32 + 0.5, y as f32 + 0.5));
+            top.y += cells.dam_height;
+            line_clear(h, eye, top, &trees)
+        })
+        .count();
+    (seen, cells.dam.len())
+}
+
+/// Beavers whose position projects inside the window (a beaver stands on the ground).
+pub fn beavers_in_window(sim: &sim::SimState, camera: &Camera, at: &GlobalTransform, size: Vec2) -> (usize, usize) {
+    let n = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| {
+            let p = cell_world(&sim.height, b.pos) + Vec3::Y * 0.2;
+            camera.world_to_viewport(at, p).is_ok_and(|px| px.x >= 0.0 && px.y >= 0.0 && px.x <= size.x && px.y <= size.y)
+        })
+        .count();
+    (n, sim.colony.beavers.len())
+}
+
+/// The lines a `--screenshot` run prints: dam and lake boxes from the real camera, dam cells in clear view, beavers in the window.
+pub fn report(cells: &LakeCells, sim: &sim::SimState, camera: &Camera, at: &GlobalTransform) -> Vec<String> {
+    let h = &sim.height;
     let Some(size) = camera.logical_viewport_size() else { return vec!["lake-cam: camera has no viewport yet".into()] };
     let Some((dam, lake)) = cells.boxes(h, camera, at) else { return vec!["lake-cam: dam or lake not drawable".into()] };
     let line = |n: &str, b: &PxBox| {
         format!("lake-cam: {n} box x {:.0}..{:.0} y {:.0}..{:.0} ({:.0}x{:.0} px, {:.1}% of window)", b.min.x, b.max.x, b.min.y, b.max.y, b.size().x, b.size().y, b.coverage(size) * 100.0)
     };
+    let (seen, total) = visible_dam_cells(cells, sim, at.translation());
+    let (inside, all) = beavers_in_window(sim, camera, at, size);
     vec![
         format!("lake-cam: window {:.0}x{:.0}", size.x, size.y),
         line("dam", &dam),
         line("lake", &lake),
         format!("lake-cam: dam inside window: {}; lake inside window: {}; lake covers {:.1}% of window", dam.inside(size), lake.inside(size), lake.coverage(size) * 100.0),
+        format!("lake-cam: dam cells with unobstructed line from camera: {seen} of {total}"),
+        format!("lake-cam: beavers projecting inside window: {inside} of {all}"),
     ]
 }
 

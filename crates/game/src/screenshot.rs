@@ -222,7 +222,7 @@ fn drive_screenshot(
             info!("terrain ready at frame {}; capturing", p.frame);
             // `--cam lake`: where the dam and lake land in the window, from the real camera.
             if let (true, Some(cells), Some((camera, at))) = (cli.cam == "lake", lake.0.as_ref(), cams.iter().next()) {
-                for line in crate::lake_cam::report(cells, &sim.0.height, camera, at) {
+                for line in crate::lake_cam::report(cells, &sim.0, camera, at) {
                     println!("{line}");
                 }
             }
