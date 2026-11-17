@@ -7,6 +7,7 @@
 //! has the shared look.
 #[cfg_attr(not(test), allow(dead_code))] // `audit` and `Numbers` run in tests
 pub mod explain;
+pub mod gestures;
 pub mod icons;
 pub mod menu;
 mod kit;
