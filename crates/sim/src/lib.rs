@@ -81,8 +81,8 @@ impl SimState {
             colony: Default::default(),
             buildings: Default::default(),
             tech: Default::default(),
-            region: Default::default(),
-            events: Default::default(),
+            region: region::Region::new(seed),
+            events: events::Events::new(seed),
         }
     }
 
@@ -96,8 +96,9 @@ impl SimState {
         self.ecology.step(dt_days, &self.water.depth)?;
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
-        self.buildings.step(dt_days);
-        self.tech.step(dt_days);
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        self.tech.update(&self.colony);
+        self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
         self.region.step(dt_days);
         self.events.step(dt_days);
         Ok(())
