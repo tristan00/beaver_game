@@ -60,6 +60,10 @@ pub struct Shell {
     /// The selected map entity (opens its panel).
     pub selection: Option<super::selection::Selection>,
     pub mode: super::mapmodes::MapMode,
+    /// An area-assign order waiting for the player's drag: gather this kind inside the rectangle.
+    pub armed: Option<sim::resources::ResourceKind>,
+    /// The workplace whose work-area editor is open.
+    pub editor: Option<sim::buildings::BuildingId>,
 }
 
 impl Shell {

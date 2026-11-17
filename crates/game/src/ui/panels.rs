@@ -105,6 +105,7 @@ impl Plugin for PanelsPlugin {
         let mut ui = ShellUi::default();
         // `--open NAME` opens a screen at start (screenshots); `BC_UI_OPEN` does the same.
         let name = app.world().get_resource::<crate::cli::Cli>().and_then(|c| c.open.clone()).or_else(|| std::env::var("BC_UI_OPEN").ok());
+        ui.shell.mode = app.world().get_resource::<crate::cli::Cli>().and_then(|c| c.mode.as_deref().and_then(super::mapmodes::MapMode::from_name)).unwrap_or_default();
         ui.shell.open = name.and_then(|v| NavItem::ALL.into_iter().find(|n| n.label().eq_ignore_ascii_case(&v)));
         app.insert_resource(ui).add_systems(Startup, spawn_roots).add_systems(
             Update,
@@ -372,6 +373,7 @@ fn refresh(
     time: Res<Time>,
     sim: Res<Sim>,
     icons: Res<IconAssets>,
+    tool: Res<crate::build::BuildUi>,
     mut ui: ResMut<ShellUi>,
     nav: Query<Entity, With<NavRoot>>,
     time_root: Query<Entity, With<TimeRoot>>,
@@ -418,6 +420,9 @@ fn refresh(
         return;
     };
     let mut scr = screen(s, item, ui.hist.rates());
+    if let (NavItem::Buildings, Some(k)) = (item, tool.tool) {
+        mark_chosen(&mut scr, k);
+    }
     let mut sorts = Vec::new();
     for (i, t) in scr.tables.iter_mut().enumerate() {
         let st = ui.sort.get(&(item, i)).copied();
@@ -605,9 +610,15 @@ fn scroll_wheel(
 }
 
 fn close_on_escape(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<ShellUi>) {
-    if keys.just_pressed(KeyCode::Escape) && ui.shell.open.is_some() {
-        ui.shell.close();
-        ui.dirty = true;
+    if keys.just_pressed(KeyCode::Escape) {
+        if ui.shell.armed.is_some() || ui.shell.editor.is_some() {
+            ui.shell.armed = None;
+            ui.shell.editor = None;
+            ui.dirty = true;
+        } else if ui.shell.open.is_some() {
+            ui.shell.close();
+            ui.dirty = true;
+        }
     }
 }
 
@@ -695,6 +706,31 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
         Do::Group(g) => {
             if !ui.groups_open.remove(g) {
                 ui.groups_open.insert(g);
+            }
+        }
+        Do::Mode(m) => {
+            ui.shell.mode = if ui.shell.mode == m { super::mapmodes::MapMode::Normal } else { m };
+            ui.shell.armed = None;
+            ui.shell.editor = None;
+            ui.status.clear();
+        }
+        Do::ModeAct(a) => {
+            let building = match ui.panel {
+                Some(Selection2::Building(b)) => Some(b),
+                _ => None,
+            };
+            let mut panel = None;
+            let r = super::mapmodes::run_action(a, s, &mut ui.shell, &mut panel, build, building);
+            ui.status = match r {
+                Ok(m) => m,
+                Err(e) => format!("Cannot do that: {e}"),
+            };
+            if let Some(x) = panel {
+                ui.panel = Some(x);
+                *sel = entity::to_flow(s, x);
+                if let Some(at) = sel2::locate(s, x) {
+                    flow.focus = Some(cell_world(&s.height, (at.0 as f32, at.1 as f32)));
+                }
             }
         }
         Do::Focus(x, y) => flow.focus = Some(cell_world(&s.height, (x as f32, y as f32))),

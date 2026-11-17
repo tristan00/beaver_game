@@ -162,13 +162,17 @@ pub struct DragPreview {
 #[derive(Clone, Debug, Default)]
 pub struct MapPointer {
     drag: Option<Drag>,
+    /// An armed area-assign order (from a map-mode action): the next drag gathers this kind.
+    pub armed: Option<ResourceKind>,
 }
 
 impl MapPointer {
     /// Left button pressed on `cell`. Returns true when the press starts an order drag (the
     /// camera must not orbit): a work area is grabbed, or beavers are selected.
     pub fn left_down(&mut self, sim: &SimState, has_selection: bool, cell: Cell) -> bool {
-        self.drag = if let Some((building, handle)) = work_area_hit(sim, cell) {
+        self.drag = if self.armed.is_some() {
+            Some(Drag::Collect { start: cell, now: cell })
+        } else if let Some((building, handle)) = work_area_hit(sim, cell) {
             sim.work.place(building).and_then(|p| p.area).map(|orig| Drag::WorkArea { building, handle, orig, start: cell, now: cell })
         } else if has_selection {
             Some(Drag::Collect { start: cell, now: cell })
@@ -209,6 +213,11 @@ impl MapPointer {
         self.moved(cell);
         let Some(drag) = self.drag.take() else { return Vec::new() };
         match drag {
+            Drag::Collect { start, now } if self.armed.is_some() => {
+                // an armed order names its resource, so even a single click assigns
+                let area = area_between(start, now);
+                self.armed.map(|kind| gesture_commands(sim, selected, &Gesture::DragArea { kind, area })).unwrap_or_default()
+            }
             Drag::Collect { start, now } if start != now => {
                 let area = area_between(start, now);
                 match dominant_kind(sim, &area) {
