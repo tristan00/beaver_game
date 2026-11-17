@@ -1,16 +1,612 @@
-﻿//! Water system (stub): water depth field.
-use crate::grid::WaterGrid;
+﻿//! Water simulation: a cell-based virtual-pipe model over the heightmap.
+//!
+//! Each cell holds a water `depth` above its *bed* (terrain + dam crest height). Every substep,
+//! four outflow fluxes per cell (with momentum) move water toward lower neighbouring surfaces;
+//! outflow is limited to the cell's contents, so the scheme is stable for any dt and conserves
+//! mass (up to float rounding) on a closed map. Sources (river inflow), rain, evaporation,
+//! seepage and open-edge outflow are the only mass exchanges and are accounted in
+//! `added_volume` / `lost_volume`.
+//!
+//! Dams are cell barriers (height + integrity). Water overtopping a dam erodes it and integrity
+//! also decays with time; at zero integrity the dam is removed and the pond drains as a flood wave.
+//! Canals lower terrain. Seasons modulate inflow/rain/evaporation; winter grows surface ice.
+//! The first day of simulated time is the start of spring.
+use crate::SimState;
+use crate::grid::{Grid, HeightGrid, WaterGrid};
+use std::fmt;
 
-/// Water depth field (0 = dry).
+/// Grid coordinate `(x, y)`.
+pub type Cell = (usize, usize);
+
+/// Days in one season; a year is four seasons: spring, summer, autumn, winter.
+pub const SEASON_DAYS: f64 = 30.0;
+/// Depth below which a cell counts as dry (for ice formation).
+pub const WET_EPS: f32 = 0.01;
+/// Vegetation density above which a cell counts as holding trees.
+pub const TREE_VEGETATION: f32 = 0.5;
+/// Maximum ice thickness.
+pub const MAX_ICE: f32 = 1.0;
+
+const FLOW_STEPS_PER_DAY: f32 = 100.0;
+const MAX_SUBSTEPS: usize = 4;
+const FRICTION: f32 = 0.9;
+const PUSH: f32 = 0.2;
+/// Max fraction of the surface difference one pipe moves (keeps neighbours from overshooting).
+const PIPE_CAP: f32 = 0.24;
+const EDGE_DRAIN: f32 = 0.25;
+const WALL: f32 = 1.0e9;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Season { Spring, Summer, Autumn, Winter }
+
+impl Season {
+    /// Season at `time_days` (0 = start of spring).
+    pub fn at(time_days: f64) -> Season {
+        match ((time_days / SEASON_DAYS).floor() as i64).rem_euclid(4) {
+            0 => Season::Spring,
+            1 => Season::Summer,
+            2 => Season::Autumn,
+            _ => Season::Winter,
+        }
+    }
+    /// River inflow multiplier: spring melt floods, summer drought.
+    pub fn inflow_mult(self) -> f32 {
+        match self { Season::Spring => 3.0, Season::Summer => 0.3, Season::Autumn => 0.8, Season::Winter => 0.1 }
+    }
+    pub fn rain_mult(self) -> f32 {
+        match self { Season::Spring => 1.2, Season::Summer => 0.4, Season::Autumn => 1.5, Season::Winter => 0.3 }
+    }
+    pub fn evap_mult(self) -> f32 {
+        match self { Season::Spring => 1.0, Season::Summer => 3.0, Season::Autumn => 0.8, Season::Winter => 0.2 }
+    }
+}
+
+/// Tunable rates (depth units per day per cell unless noted).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaterConfig {
+    pub rain: f32,
+    pub evaporation: f32,
+    pub seepage: f32,
+    /// Integrity a dam loses per day from age alone.
+    pub dam_decay_per_day: f32,
+    /// Integrity lost per day per unit of water depth above `overtop_depth` on the crest.
+    pub overtop_erosion: f32,
+    pub overtop_depth: f32,
+    pub ice_growth_per_day: f32,
+    pub ice_melt_per_day: f32,
+    /// Water at the map edge drains off-map (so floods and rivers leave the world).
+    pub open_edges: bool,
+}
+
+impl Default for WaterConfig {
+    fn default() -> Self {
+        Self {
+            rain: 0.01, evaporation: 0.01, seepage: 0.002,
+            dam_decay_per_day: 0.002, overtop_erosion: 1.0, overtop_depth: 0.05,
+            ice_growth_per_day: 0.1, ice_melt_per_day: 0.15, open_edges: true,
+        }
+    }
+}
+
+/// River inflow point; `rate` is depth added per day at base (spring is 3x, summer 0.3x).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Source { pub x: usize, pub y: usize, pub rate: f32 }
+
+/// Invalid water operation; the state is left unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WaterError {
+    OutOfBounds { x: usize, y: usize },
+    NoCells,
+    InvalidValue { what: &'static str, value: f32 },
+    NoDam { x: usize, y: usize },
+}
+
+impl fmt::Display for WaterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutOfBounds { x, y } => write!(f, "cell ({x}, {y}) is outside the map"),
+            Self::NoCells => write!(f, "no cells given"),
+            Self::InvalidValue { what, value } => write!(f, "invalid {what}: {value} (must be finite and > 0)"),
+            Self::NoDam { x, y } => write!(f, "no dam at ({x}, {y})"),
+        }
+    }
+}
+impl std::error::Error for WaterError {}
+
+/// Result of `preview_dam`: the steady pond a dam would raise. Nothing is mutated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamPreview {
+    /// Water surface level the pond fills to (the lowest crest of the new dam cells).
+    pub level: f32,
+    /// Number of flooded cells.
+    pub pond_area: usize,
+    /// Water volume the full pond holds.
+    pub volume: f32,
+    pub flooded_cells: Vec<Cell>,
+    pub flooded_trees: usize,
+    pub flooded_buildings: usize,
+    /// True if the pond would reach the map edge (the dam does not close the valley).
+    pub reaches_map_edge: bool,
+}
+
+/// Water state. `step` needs the terrain: see `Water::step`.
 #[derive(Clone, Debug)]
 pub struct Water {
+    /// Water depth above bed (0 = dry).
     pub depth: WaterGrid,
+    /// Ice thickness on the surface, 0..=`MAX_ICE`.
+    pub ice: Grid<f32>,
+    /// Dam crest height above terrain (0 = no dam).
+    pub dam_height: Grid<f32>,
+    /// Dam integrity 0..=1.
+    pub dam_integrity: Grid<f32>,
+    /// Cells dug as canals.
+    pub canal: Grid<bool>,
+    /// Cells occupied by buildings (set by the buildings system; used by `preview_dam`).
+    pub structures: Grid<bool>,
+    pub sources: Vec<Source>,
+    pub config: WaterConfig,
+    pub time_days: f64,
+    /// Cumulative volume added by sources and rain / removed by evaporation, seepage, edges.
+    pub added_volume: f64,
+    pub lost_volume: f64,
+    dams: Vec<usize>,
+    hs: Vec<f32>,
+    fl: Vec<f32>,
+    fr: Vec<f32>,
+    fu: Vec<f32>,
+    fd: Vec<f32>,
 }
 
 impl Water {
-    pub fn new(size: usize) -> Self { Self { depth: WaterGrid::new(size, size, 0.0) } }
+    /// Empty `size x size` water state. Panics if `size` is zero.
+    pub fn new(size: usize) -> Self {
+        let pad = (size + 2) * (size + 2);
+        Self {
+            depth: Grid::new(size, size, 0.0),
+            ice: Grid::new(size, size, 0.0),
+            dam_height: Grid::new(size, size, 0.0),
+            dam_integrity: Grid::new(size, size, 0.0),
+            canal: Grid::new(size, size, false),
+            structures: Grid::new(size, size, false),
+            sources: Vec::new(),
+            config: WaterConfig::default(),
+            time_days: 0.0,
+            added_volume: 0.0,
+            lost_volume: 0.0,
+            dams: Vec::new(),
+            hs: vec![WALL; pad],
+            fl: vec![0.0; pad],
+            fr: vec![0.0; pad],
+            fu: vec![0.0; pad],
+            fd: vec![0.0; pad],
+        }
+    }
 
-    /// Advances water by dt_days (stub: no flow yet).
-    pub fn step(&mut self, _dt_days: f32) {}
+    pub fn season(&self) -> Season { Season::at(self.time_days) }
+
+    /// Total water volume on the map.
+    pub fn total_volume(&self) -> f64 { self.depth.as_slice().iter().map(|&d| d as f64).sum() }
+
+    pub fn has_dam(&self, x: usize, y: usize) -> bool {
+        self.dam_height.get(x, y).is_some_and(|&h| h > 0.0)
+    }
+
+    fn check(&self, x: usize, y: usize) -> Result<usize, WaterError> {
+        if self.depth.in_bounds(x, y) { Ok(y * self.depth.width() + x) } else { Err(WaterError::OutOfBounds { x, y }) }
+    }
+
+    fn check_cells(&self, cells: &[Cell]) -> Result<Vec<usize>, WaterError> {
+        if cells.is_empty() { return Err(WaterError::NoCells); }
+        cells.iter().map(|&(x, y)| self.check(x, y)).collect()
+    }
+
+    fn check_positive(what: &'static str, value: f32) -> Result<(), WaterError> {
+        if value.is_finite() && value > 0.0 { Ok(()) } else { Err(WaterError::InvalidValue { what, value }) }
+    }
+
+    /// Adds a river inflow at (x, y).
+    pub fn add_source(&mut self, x: usize, y: usize, rate: f32) -> Result<(), WaterError> {
+        self.check(x, y)?;
+        Self::check_positive("source rate", rate)?;
+        self.sources.push(Source { x, y, rate });
+        Ok(())
+    }
+
+    /// Builds (or replaces) dams of `height` above terrain on `cells` at full integrity.
+    /// All-or-nothing: on error nothing changes.
+    pub fn build_dam(&mut self, cells: &[Cell], height: f32) -> Result<(), WaterError> {
+        let idx = self.check_cells(cells)?;
+        Self::check_positive("dam height", height)?;
+        for i in idx {
+            if self.dam_height.as_slice()[i] <= 0.0 { self.dams.push(i); }
+            self.dam_height.as_mut_slice()[i] = height;
+            self.dam_integrity.as_mut_slice()[i] = 1.0;
+        }
+        Ok(())
+    }
+
+    /// Breaches (removes) the dam at (x, y); the pond behind it drains downstream.
+    pub fn breach(&mut self, x: usize, y: usize) -> Result<(), WaterError> {
+        let i = self.check(x, y)?;
+        if self.dam_height.as_slice()[i] <= 0.0 { return Err(WaterError::NoDam { x, y }); }
+        self.remove_dam(i);
+        Ok(())
+    }
+
+    fn remove_dam(&mut self, i: usize) {
+        self.dam_height.as_mut_slice()[i] = 0.0;
+        self.dam_integrity.as_mut_slice()[i] = 0.0;
+        self.dams.retain(|&d| d != i);
+    }
+
+    /// Digs canals: lowers terrain by `depth` on `cells`. All-or-nothing.
+    pub fn dig_canal(&mut self, height: &mut HeightGrid, cells: &[Cell], depth: f32) -> Result<(), WaterError> {
+        assert_eq!(height.width(), self.depth.width(), "terrain size must match water size");
+        let idx = self.check_cells(cells)?;
+        Self::check_positive("canal depth", depth)?;
+        for i in idx {
+            height.as_mut_slice()[i] -= depth;
+            self.canal.as_mut_slice()[i] = true;
+        }
+        Ok(())
+    }
+
+    /// Advances water by `dt_days` over `height`. Panics if `height` does not match the water size
+    /// (a programming error). `dt_days` must be finite and >= 0 (validated by `SimState::step`).
+    pub fn step(&mut self, height: &HeightGrid, dt_days: f32) {
+        assert_eq!(
+            (height.width(), height.height()),
+            (self.depth.width(), self.depth.height()),
+            "terrain size must match water size"
+        );
+        if dt_days <= 0.0 { return; }
+        let n = ((dt_days * FLOW_STEPS_PER_DAY).round() as usize).clamp(1, MAX_SUBSTEPS);
+        for _ in 0..n { self.flow_substep(height); }
+        self.apply_sources_and_climate(dt_days);
+        self.update_dams(dt_days);
+        self.time_days += dt_days as f64;
+    }
+
+    fn flow_substep(&mut self, height: &HeightGrid) {
+        let (w, h) = (self.depth.width(), self.depth.height());
+        let stride = w + 2;
+        let terrain = height.as_slice();
+        let dam = self.dam_height.as_slice();
+        // Surface heights (padded with walls).
+        {
+            let depth = self.depth.as_slice();
+            for y in 0..h {
+                let row = (y + 1) * stride + 1;
+                let src = y * w..(y + 1) * w;
+                for (((o, &t), &dh), &d) in self.hs[row..row + w].iter_mut()
+                    .zip(&terrain[src.clone()]).zip(&dam[src.clone()]).zip(&depth[src]) {
+                    *o = t + dh + d;
+                }
+            }
+        }
+        // Fluxes, limited to the water available in the source cell.
+        {
+            let depth = self.depth.as_slice();
+            let hs = &self.hs;
+            for y in 0..h {
+                let row = (y + 1) * stride + 1;
+                for x in 0..w {
+                    let p = row + x;
+                    let s = hs[p];
+                    let pipe = |old: f32, other: f32| {
+                        let dh = s - other;
+                        (old * FRICTION + PUSH * dh).min(PIPE_CAP * dh).max(0.0)
+                    };
+                    let (l, r, u, d) = (
+                        pipe(self.fl[p], hs[p - 1]), pipe(self.fr[p], hs[p + 1]),
+                        pipe(self.fu[p], hs[p - stride]), pipe(self.fd[p], hs[p + stride]),
+                    );
+                    let total = l + r + u + d;
+                    let have = depth[y * w + x];
+                    let k = if total > have { have / total } else { 1.0 };
+                    self.fl[p] = l * k; self.fr[p] = r * k; self.fu[p] = u * k; self.fd[p] = d * k;
+                }
+            }
+        }
+        // Apply fluxes.
+        {
+            let depth = self.depth.as_mut_slice();
+            for y in 0..h {
+                let row = (y + 1) * stride + 1;
+                for x in 0..w {
+                    let p = row + x;
+                    let out = self.fl[p] + self.fr[p] + self.fu[p] + self.fd[p];
+                    let inn = self.fr[p - 1] + self.fl[p + 1] + self.fd[p - stride] + self.fu[p + stride];
+                    let c = &mut depth[y * w + x];
+                    *c = (*c - out + inn).max(0.0);
+                }
+            }
+        }
+        if self.config.open_edges {
+            let depth = self.depth.as_mut_slice();
+            let mut lost = 0.0f64;
+            let mut drain = |i: usize| { let q = depth[i] * EDGE_DRAIN; depth[i] -= q; lost += q as f64; };
+            for x in 0..w { drain(x); if h > 1 { drain((h - 1) * w + x); } }
+            for y in 1..h.saturating_sub(1) { drain(y * w); if w > 1 { drain(y * w + w - 1); } }
+            self.lost_volume += lost;
+        }
+    }
+
+    fn apply_sources_and_climate(&mut self, dt: f32) {
+        let season = self.season();
+        let w = self.depth.width();
+        let cfg = &self.config;
+        let mut added = 0.0f64;
+        for s in &self.sources {
+            let q = s.rate * season.inflow_mult() * dt;
+            self.depth.as_mut_slice()[s.y * w + s.x] += q;
+            added += q as f64;
+        }
+        let rain = cfg.rain * season.rain_mult() * dt;
+        let evap = cfg.evaporation * season.evap_mult() * dt;
+        let seep = cfg.seepage * dt;
+        let winter = season == Season::Winter;
+        let (grow, melt) = (cfg.ice_growth_per_day * dt, cfg.ice_melt_per_day * dt);
+        let mut lost = 0.0f64;
+        for (d, ice) in self.depth.as_mut_slice().iter_mut().zip(self.ice.as_mut_slice()) {
+            *d += rain;
+            added += rain as f64;
+            let wet = *d > WET_EPS;
+            let q = if wet { (evap * (1.0 - *ice) + seep).min(*d) } else { 0.0 };
+            *d -= q;
+            lost += q as f64;
+            *ice = if winter && wet { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
+        }
+        self.added_volume += added;
+        self.lost_volume += lost;
+    }
+
+    fn update_dams(&mut self, dt: f32) {
+        let cfg = &self.config;
+        let mut broken = Vec::new();
+        for &i in &self.dams {
+            let over = (self.depth.as_slice()[i] - cfg.overtop_depth).max(0.0);
+            let integ = &mut self.dam_integrity.as_mut_slice()[i];
+            *integ -= (cfg.dam_decay_per_day + cfg.overtop_erosion * over) * dt;
+            if *integ <= 0.0 { broken.push(i); }
+        }
+        for i in broken { self.remove_dam(i); }
+    }
 }
 
+/// Previews the steady pond a dam of `height` on `cells` would raise, without mutating `state`.
+///
+/// The pond fills to the lowest crest of the new dam cells. It is the region of cells with a bed
+/// below that level connected (4-neighbourhood) to the cells that drain *into* the dam (upstream
+/// side). Existing dams count as bed height. Trees are cells with vegetation above
+/// `TREE_VEGETATION`; buildings are `state.water.structures`. If the dam does not close the
+/// valley the region leaks around it and `reaches_map_edge` or a large area results.
+pub fn preview_dam(state: &SimState, cells: &[Cell], height: f32) -> Result<DamPreview, WaterError> {
+    let water = &state.water;
+    let idx = water.check_cells(cells)?;
+    Water::check_positive("dam height", height)?;
+    let terrain = state.height.as_slice();
+    let (w, h) = (state.height.width(), state.height.height());
+    let mut bed: Vec<f32> = terrain.iter().zip(water.dam_height.as_slice()).map(|(t, d)| t + d).collect();
+    let mut is_new = vec![false; w * h];
+    for &i in &idx { bed[i] = terrain[i] + height; is_new[i] = true; }
+    let level = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
+
+    let neighbours = |i: usize| {
+        let (x, y) = (i % w, i / w);
+        [
+            (x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1),
+            (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w),
+        ].into_iter().flatten()
+    };
+    // Steepest-descent target over raw terrain.
+    let drains_to = |i: usize| neighbours(i).filter(|&j| terrain[j] < terrain[i])
+        .min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]));
+
+    let mut seen = vec![false; w * h];
+    let mut stack = Vec::new();
+    for &d in &idx {
+        for n in neighbours(d) {
+            if !is_new[n] && !seen[n] && bed[n] < level && drains_to(n) == Some(d) {
+                seen[n] = true;
+                stack.push(n);
+            }
+        }
+    }
+    let mut flooded = Vec::new();
+    while let Some(i) = stack.pop() {
+        flooded.push(i);
+        for n in neighbours(i) {
+            if !seen[n] && !is_new[n] && bed[n] < level { seen[n] = true; stack.push(n); }
+        }
+    }
+    flooded.sort_unstable();
+    let veg = state.ecology.vegetation.as_slice();
+    let occ = water.structures.as_slice();
+    Ok(DamPreview {
+        level,
+        pond_area: flooded.len(),
+        volume: flooded.iter().map(|&i| level - bed[i]).sum(),
+        flooded_trees: flooded.iter().filter(|&&i| veg[i] > TREE_VEGETATION).count(),
+        flooded_buildings: flooded.iter().filter(|&&i| occ[i]).count(),
+        reaches_map_edge: flooded.iter().any(|&i| i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1),
+        flooded_cells: flooded.iter().map(|&i| (i % w, i / w)).collect(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quiet(s: &mut SimState) {
+        s.water.config = WaterConfig {
+            rain: 0.0, evaporation: 0.0, seepage: 0.0, dam_decay_per_day: 0.0,
+            overtop_erosion: 0.0, open_edges: false, ..Default::default()
+        };
+    }
+
+    /// Valley sloping down toward +x with rising sides.
+    fn valley() -> SimState {
+        let mut s = SimState::new(1);
+        let n = s.height.width();
+        for y in 0..n {
+            for x in 0..n {
+                let dy = (y as f32 - 64.0).abs();
+                *s.height.get_mut(x, y).unwrap() = 0.2 * (n - x) as f32 + 0.15 * dy;
+            }
+        }
+        quiet(&mut s);
+        s
+    }
+
+    fn dam_row() -> Vec<Cell> { (0..128).map(|y| (40, y)).collect() }
+
+    fn wet_cells(s: &SimState) -> usize {
+        s.water.depth.as_slice().iter().filter(|&&d| d > 0.02).count()
+    }
+
+    fn pour(s: &mut SimState, volume: f32) {
+        for x in 25..40 { *s.water.depth.get_mut(x, 64).unwrap() = volume / 15.0; }
+    }
+
+    #[test]
+    fn water_mass_conserved_on_closed_map() {
+        let mut s = SimState::new(3);
+        quiet(&mut s);
+        for (i, d) in s.water.depth.as_mut_slice().iter_mut().enumerate() {
+            *d = if i % 7 == 0 { 1.5 } else { 0.0 };
+        }
+        let before = s.water.total_volume();
+        for _ in 0..300 { s.step(0.01).unwrap(); }
+        let after = s.water.total_volume();
+        assert!(((after - before) / before).abs() < 0.01, "{before} -> {after}");
+        assert!(s.water.depth.as_slice().iter().all(|d| d.is_finite() && *d >= 0.0));
+    }
+
+    #[test]
+    fn water_accounting_matches_volume_with_inflow_and_climate() {
+        let mut s = SimState::new(5);
+        s.water.add_source(10, 10, 5.0).unwrap();
+        for _ in 0..500 { s.step(0.05).unwrap(); }
+        let w = &s.water;
+        let expect = w.added_volume - w.lost_volume;
+        assert!(((w.total_volume() - expect) / expect.abs().max(1.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn water_dam_pond_matches_preview() {
+        let mut s = valley();
+        let cells = dam_row();
+        let prev = preview_dam(&s, &cells, 2.0).unwrap();
+        assert!(prev.pond_area > 100 && !prev.reaches_map_edge);
+        pour(&mut s, prev.volume);
+        s.water.build_dam(&cells, 2.0).unwrap();
+        for _ in 0..3000 { s.step(0.01).unwrap(); }
+        assert!(s.water.has_dam(40, 64), "dam must survive");
+        let area = wet_cells(&s) as f32;
+        let ratio = area / prev.pond_area as f32;
+        assert!((0.9..=1.1).contains(&ratio), "sim {area} vs preview {}", prev.pond_area);
+        assert!(((s.water.total_volume() as f32 - prev.volume) / prev.volume).abs() < 0.01);
+    }
+
+    #[test]
+    fn water_preview_does_not_mutate_and_counts_assets() {
+        let mut s = valley();
+        s.ecology.vegetation.as_mut_slice().fill(0.9);
+        *s.water.structures.get_mut(35, 64).unwrap() = true;
+        let before = (s.water.dam_height.clone(), s.water.depth.clone(), s.height.clone());
+        let p = preview_dam(&s, &dam_row(), 2.0).unwrap();
+        assert_eq!(before, (s.water.dam_height.clone(), s.water.depth.clone(), s.height.clone()));
+        assert_eq!(p.flooded_trees, p.pond_area);
+        assert_eq!(p.flooded_buildings, 1);
+        assert_eq!(p.flooded_cells.len(), p.pond_area);
+        assert!(p.flooded_cells.contains(&(35, 64)));
+    }
+
+    #[test]
+    fn water_breach_drains_pond() {
+        let mut s = valley();
+        s.water.config.open_edges = true;
+        let cells = dam_row();
+        let prev = preview_dam(&s, &cells, 2.0).unwrap();
+        pour(&mut s, prev.volume);
+        s.water.build_dam(&cells, 2.0).unwrap();
+        for _ in 0..1500 { s.step(0.01).unwrap(); }
+        let held = s.water.total_volume();
+        assert!(held > 0.9 * prev.volume as f64, "pond should hold: {held}");
+        s.water.breach(40, 64).unwrap();
+        assert!(s.water.breach(40, 64).is_err());
+        for _ in 0..3000 { s.step(0.01).unwrap(); }
+        assert!(s.water.total_volume() < 0.1 * held, "drained to {}", s.water.total_volume());
+    }
+
+    #[test]
+    fn water_overtopping_and_decay_breach_dams() {
+        let mut s = valley();
+        s.water.config.overtop_erosion = 5.0;
+        s.water.build_dam(&dam_row(), 2.0).unwrap();
+        pour(&mut s, 900.0); // far more than the pond holds
+        for _ in 0..4000 { s.step(0.01).unwrap(); if !s.water.has_dam(40, 64) { break; } }
+        assert!(!s.water.has_dam(40, 64), "overtopped dam should breach");
+
+        let mut s = valley();
+        s.water.config.dam_decay_per_day = 0.1;
+        s.water.build_dam(&[(40, 64)], 2.0).unwrap();
+        for _ in 0..5 { s.step(1.0).unwrap(); }
+        assert!(s.water.has_dam(40, 64));
+        for _ in 0..6 { s.step(1.0).unwrap(); }
+        assert!(!s.water.has_dam(40, 64));
+    }
+
+    #[test]
+    fn water_canal_lowers_terrain_and_carries_flow() {
+        let mut s = SimState::new(1);
+        quiet(&mut s);
+        s.height.as_mut_slice().fill(5.0);
+        let cells: Vec<Cell> = (10..30).map(|x| (x, 10)).collect();
+        s.water.dig_canal(&mut s.height, &cells, 1.0).unwrap();
+        assert_eq!(s.height.get(15, 10), Some(&4.0));
+        assert_eq!(s.water.canal.get(15, 10), Some(&true));
+        *s.water.depth.get_mut(10, 10).unwrap() = 2.0;
+        for _ in 0..400 { s.step(0.01).unwrap(); }
+        assert!(*s.water.depth.get(29, 10).unwrap() > 0.01);
+        assert!(*s.water.depth.get(29, 12).unwrap() < 1e-3);
+    }
+
+    #[test]
+    fn water_seasons_modulate_inflow_and_freeze() {
+        assert_eq!(Season::at(0.0), Season::Spring);
+        assert_eq!(Season::at(35.0), Season::Summer);
+        assert_eq!(Season::at(65.0), Season::Autumn);
+        assert_eq!(Season::at(95.0), Season::Winter);
+        assert_eq!(Season::at(125.0), Season::Spring);
+        assert!(Season::Spring.inflow_mult() > 2.0 * Season::Summer.inflow_mult());
+
+        let mut s = SimState::new(1);
+        quiet(&mut s);
+        s.height.as_mut_slice().fill(0.0);
+        s.water.depth.as_mut_slice().fill(0.5);
+        s.step(SEASON_DAYS as f32 * 3.0 + 1.0).unwrap();
+        for _ in 0..20 { s.step(1.0).unwrap(); }
+        assert_eq!(s.water.season(), Season::Winter);
+        assert!(*s.water.ice.get(5, 5).unwrap() > 0.5);
+        for _ in 0..20 { s.step(1.0).unwrap(); }
+        assert_eq!(s.water.season(), Season::Spring);
+        assert_eq!(*s.water.ice.get(5, 5).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn water_invalid_input_is_rejected() {
+        let mut s = valley();
+        assert_eq!(s.water.build_dam(&[], 1.0), Err(WaterError::NoCells));
+        assert_eq!(s.water.build_dam(&[(500, 0)], 1.0), Err(WaterError::OutOfBounds { x: 500, y: 0 }));
+        assert!(s.water.build_dam(&[(1, 1)], f32::NAN).is_err());
+        assert!(s.water.build_dam(&[(1, 1), (999, 1)], 1.0).is_err());
+        assert!(!s.water.has_dam(1, 1), "failed build must not partially apply");
+        assert!(s.water.add_source(1, 1, -1.0).is_err());
+        assert!(s.water.dig_canal(&mut s.height, &[(1, 1)], 0.0).is_err());
+        assert!(preview_dam(&s, &[(1, 1)], 0.0).is_err());
+        assert!(preview_dam(&s, &[], 1.0).is_err());
+    }
+}
