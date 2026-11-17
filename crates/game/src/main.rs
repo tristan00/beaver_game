@@ -3,6 +3,7 @@ mod audio;
 mod build;
 mod build_logic;
 mod camera;
+mod lake_cam;
 mod cli;
 mod entities_render;
 mod flow;

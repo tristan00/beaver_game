@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 

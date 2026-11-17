@@ -3,6 +3,7 @@
 //! family build it, hold the picture once the pond is full.
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
+use crate::lake_cam::{LakeCells, LakeView};
 use crate::flow::{cell_world, open_at, CaptureGate, Flow, Phase, Selection};
 use crate::sim_driver::{SimClock, FIXED_DT_DAYS};
 use crate::state::{PlannedDam, Sim};
@@ -26,10 +27,24 @@ const DEMO_STEPS_PER_FRAME: usize = 100;
 
 /// Builds `start` for `seed`; start 1 also returns the dam it is designed around.
 pub fn build_start(start: Start, seed: u64) -> Result<(SimState, Option<DamSite>), String> {
+    build_start_lake(start, seed).map(|(s, d, _)| (s, d))
+}
+
+/// As [`build_start`], and starts 2 and 3 also return their dam and lake (for `--cam lake`).
+pub fn build_start_lake(start: Start, seed: u64) -> Result<(SimState, Option<DamSite>, Option<LakeCells>), String> {
     match start {
-        Start::River => starts::build_river_with_dam(seed).map(|(s, d)| (s, Some(d))).map_err(|e| e.to_string()),
-        other => starts::build(other, seed).map(|s| (s, None)).map_err(|e| e.to_string()),
+        Start::River => starts::build_river_with_dam(seed).map(|(s, d)| (s, Some(d), None)).map_err(|e| e.to_string()),
+        other => starts::build_lake(other, seed).map(|(s, l)| (s, None, Some(LakeCells::from(&l)))).map_err(|e| e.to_string()),
     }
+}
+
+/// `--cam lake` once a lake start has begun: centre and zoom on its dam and lake. Every other preset is left alone.
+fn frame_lake(cli: &Cli, lake: &LakeView, sim: &SimState, window: Option<&Window>, orbit: &mut OrbitCamera) {
+    let (Some(cells), true) = (lake.0.as_ref(), cli.cam == "lake") else { return };
+    let size = window.map_or(Vec2::new(1280.0, 720.0), |w| Vec2::new(w.width(), w.height()));
+    let base = crate::camera::preset("lake").expect("lake preset");
+    *orbit = crate::lake_cam::frame(base, cells, &sim.height, size);
+    info!("--cam lake: {} dam cells, {} lake cells at level {:.2}; camera target {:?}, distance {:.1}", cells.dam.len(), cells.lake.len(), cells.level, orbit.target, orbit.distance);
 }
 
 /// Where the camera looks when `sim` begins: the designed dam if there is one (the family camps
@@ -90,8 +105,11 @@ fn begin_cli_start(
     mut clock: ResMut<SimClock>,
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
+    lake: Res<LakeView>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     begin(&sim.0, planned.0.as_ref(), &mut flow, &mut clock, &mut orbit, &mut sel);
+    frame_lake(&cli, &lake, &sim.0, windows.iter().next(), &mut orbit);
     // `--cam iso-close` / `iso-wide`: fixed views of the map centre, whatever the start (shadow checks, docs/STYLE.md fix 10).
     if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
         if let Some(p) = crate::camera::preset(&cli.cam) {
@@ -126,6 +144,7 @@ fn choose_start(
     mut clock: ResMut<SimClock>,
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
+    mut lake: ResMut<LakeView>,
 ) {
     if flow.phase != Phase::Menu {
         return;
@@ -134,13 +153,15 @@ fn choose_start(
     for old in &roots {
         commands.entity(old).despawn();
     }
-    match build_start(start, cli.seed) {
-        Ok((state, dam)) => {
+    match build_start_lake(start, cli.seed) {
+        Ok((state, dam, cells)) => {
             let (generation, real_secs) = (flow.generation + 1, flow.real_secs);
             *flow = Flow::new(&state.world);
             flow.generation = generation;
             flow.real_secs = real_secs;
             begin(&state, dam.as_ref(), &mut flow, &mut clock, &mut orbit, &mut sel);
+            lake.0 = cells;
+            frame_lake(&cli, &lake, &state, windows.iter().next(), &mut orbit);
             sim.0 = state;
             planned.0 = dam;
         }
@@ -211,6 +232,30 @@ fn demo_pond_script(
             error!("--demo-pond: no full pond after {DEMO_MAX_DAYS} days (dam built: {})", dam.is_built(&sim.0));
             exit.write(AppExit::error());
             return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without `--cam lake`, `begin` still looks at the focus from `START_DISTANCE`, keeping the preset angles, for all three starts.
+    #[test]
+    fn begin_camera_is_unchanged_for_starts_1_to_3() {
+        for start in Start::ALL {
+            let (sim, dam, lake) = build_start_lake(start, 1).unwrap();
+            let mut cli_cam = crate::camera::preset("iso").unwrap();
+            let before = cli_cam;
+            let (mut flow, mut clock, mut sel) = (Flow::new(&sim.world), SimClock::default(), Selection::None);
+            begin(&sim, dam.as_ref(), &mut flow, &mut clock, &mut cli_cam, &mut sel);
+            let want = cell_world(&sim.height, focus_cell(&sim, dam.as_ref()));
+            assert_eq!((cli_cam.target, cli_cam.distance, cli_cam.yaw, cli_cam.pitch), (want, START_DISTANCE, before.yaw, before.pitch), "start {}", start.number());
+            // and a non-lake preset never reframes
+            let cli = Cli::parse(["--cam".to_string(), "iso".to_string()].into_iter()).unwrap();
+            let mut o = cli_cam;
+            frame_lake(&cli, &LakeView(lake), &sim, None, &mut o);
+            assert_eq!((o.target, o.distance), (cli_cam.target, cli_cam.distance));
         }
     }
 }
