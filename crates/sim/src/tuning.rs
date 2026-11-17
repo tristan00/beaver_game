@@ -294,7 +294,9 @@ pub mod water {
     // `WaterConfig` defaults (depth units per day per cell unless noted).
     pub const RAIN: f32 = 0.01;
     pub const EVAPORATION: f32 = 0.01;
-    pub const SEEPAGE: f32 = 0.002;
+    pub const SEEPAGE: f32 = 0.04;
+    /// Rain per day dry ground absorbs (more than any season's rain, so dry land stays dry).
+    pub const SOIL_ABSORB: f32 = 0.02;
     /// Integrity a dam loses per day from age alone.
     pub const DAM_DECAY_PER_DAY: f32 = 0.002;
     /// Integrity lost per day per unit of water depth above `OVERTOP_DEPTH` on the crest.
@@ -302,6 +304,15 @@ pub mod water {
     pub const OVERTOP_DEPTH: f32 = 0.05;
     pub const ICE_GROWTH_PER_DAY: f32 = 0.1;
     pub const ICE_MELT_PER_DAY: f32 = 0.15;
+    /// Depth a spring adds per day at base (scaled by the season) to its stream head.
+    pub const SPRING_RATE: f32 = 1.0;
+    /// Fraction of its channel a river is filled to at the start.
+    /// Share of the seasonal inflow swing springs follow (groundwater runs steadier than snowmelt).
+    pub const SPRING_SEASONALITY: f32 = 0.0;
+    /// Days (and step size) a new world's springs run to settle the rivers before the game starts.
+    pub const SETTLE_DAYS: f32 = 20.0;
+    pub const SETTLE_DT: f32 = 0.05;
+    pub const RIVER_FILL: f32 = 0.5;
 }
 
 pub mod buildings {

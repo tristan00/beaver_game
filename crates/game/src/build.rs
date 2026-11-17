@@ -1068,7 +1068,7 @@ mod tests {
         let mut sim = founded();
         let mut ui = BuildUi::default();
         ui.tool = Some(BuildingKind::Workshop);
-        ui.hover = Some((60, 60));
+        ui.hover = Some(crate::build_logic::dry_sites(&sim)[0]);
         compute_preview(&sim, &mut ui);
         assert!(matches!(ui.preview.as_ref().unwrap().result, Err(PlaceError::Locked(..))));
         ui.tool = Some(BuildingKind::Lodge);
