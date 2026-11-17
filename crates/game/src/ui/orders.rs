@@ -43,16 +43,6 @@ pub fn placement(_sim: &SimState, _kind: BuildingKind, _cell: Cell) -> Placement
     Placement::Invalid("not implemented")
 }
 
-/// A brief notice that points at a place; clicking flies the camera to `at`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Alert {
-    pub text: String,
-    pub at: Cell,
-    pub expires_day: f64,
-}
+// --- events_ui ---
 
-/// Alerts for the current state (join requests, completed sites, starving families…). Every
-/// alert and event carries a location. (`events_ui` task.)
-pub fn alerts(_sim: &SimState) -> Vec<Alert> {
-    Vec::new()
-}
+pub use super::events::{alerts, Alert, AlertKind};

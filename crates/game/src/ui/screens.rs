@@ -967,6 +967,26 @@ fn events_screen(sim: &SimState) -> Screen {
         rows: waiting,
         empty: "Nothing needs a decision.",
     };
+    let attention = Table {
+        title: "Needs attention",
+        name_col: "Alert",
+        name_w: 250.0,
+        cols: vec![Col { name: "Kind", width: 110.0 }, Col { name: "Where", width: 90.0 }, Col { name: "", width: 60.0 }],
+        rows: super::events::alerts(sim)
+            .into_iter()
+            .map(|a| Row {
+                icon: a.kind.icon(),
+                name: a.text,
+                click: Some(Do::Jump(a.at.0 as f32, a.at.1 as f32)),
+                cells: vec![
+                    Cell::Text(a.kind.label().into(), a.kind.tone()),
+                    Cell::text(format!("{}, {}", a.at.0, a.at.1)),
+                    Cell::show("Show", Do::Jump(a.at.0 as f32, a.at.1 as f32)),
+                ],
+            })
+            .collect(),
+        empty: "Nothing is wrong.",
+    };
     let log = Table {
         title: "Event log",
         name_col: "Event",
@@ -987,7 +1007,7 @@ fn events_screen(sim: &SimState) -> Screen {
             .collect(),
         empty: "Nothing has happened yet.",
     };
-    Screen { item: NavItem::Events, kpis: Vec::new(), tables: vec![decisions, log] }
+    Screen { item: NavItem::Events, kpis: Vec::new(), tables: vec![decisions, attention, log] }
 }
 
 // ───────────────────────────── history ─────────────────────────────

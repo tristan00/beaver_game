@@ -86,6 +86,8 @@ struct ScreenHeader;
 struct ScreenFooter;
 #[derive(Component)]
 struct TipRoot;
+#[derive(Component)]
+struct ToastRoot;
 
 pub struct PanelsPlugin;
 
@@ -98,7 +100,7 @@ impl Plugin for PanelsPlugin {
         app.insert_resource(ui).add_systems(Startup, spawn_roots).add_systems(
             Update,
             (
-                (layout_roots, refresh, hover_tint, scroll_wheel, tooltip).chain(),
+                (layout_roots, refresh, refresh_toasts, hover_tint, scroll_wheel, tooltip).chain(),
                 publish_blockers.before(crate::flow_view::ClickSet),
                 handle_clicks.after(crate::flow_view::ClickSet),
                 close_on_escape,
@@ -151,6 +153,12 @@ fn spawn_roots(mut commands: Commands) {
             ));
             p.spawn((ScreenFooter, Node { min_height: px(14), flex_shrink: 0.0, ..default() }));
         });
+    commands.spawn((
+        ToastRoot,
+        Blocker,
+        Node { position_type: PositionType::Absolute, left: px(12), top: px(12), display: Display::None, flex_direction: FlexDirection::Column, row_gap: px(6), max_width: px(380), ..default() },
+        GlobalZIndex(9),
+    ));
     commands.spawn((
         TipRoot,
         Node { position_type: PositionType::Absolute, display: Display::None, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(10), px(7)), row_gap: px(2), max_width: px(300), ..default() },
@@ -459,6 +467,54 @@ fn refresh(
     ui.last_screen = Some(shown);
 }
 
+/// Short-lived notices on the map: click one to fly the camera to its place; join requests carry
+/// accept and turn-away buttons.
+fn refresh_toasts(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    notices: Res<super::NoticesRes>,
+    icons: Res<IconAssets>,
+    mut root: Query<(Entity, &mut Node), With<ToastRoot>>,
+    mut shown: Local<Vec<super::events::Toast>>,
+) {
+    let Ok((e, mut node)) = root.single_mut() else { return };
+    let now = if sim.0.colony.is_founded() { super::events::toasts(&sim.0, &notices.0) } else { Vec::new() };
+    if *shown == now {
+        return;
+    }
+    node.display = if now.is_empty() { Display::None } else { Display::Flex };
+    commands.entity(e).despawn_children();
+    commands.entity(e).with_children(|p| {
+        for t in &now {
+            p.spawn((
+                Node { padding: UiRect::axes(px(8), px(5)), column_gap: px(6), align_items: AlignItems::Center, ..default() },
+                BackgroundColor(PANEL),
+                Round(14.0),
+                Clickable { act: t.jump.clone(), layer: 3, scrolled: false, base: PANEL, hot: ROW_HOT },
+                Tip::note(format!("{} - click to fly there", t.alert.kind.label())),
+            ))
+            .with_children(|r| {
+                icon_node(r, &icons, t.alert.kind.icon(), 20.0);
+                label(r, t.alert.text.clone(), 12.0, INK);
+                for a in &t.actions {
+                    r.spawn((
+                        Node { padding: UiRect::axes(px(6), px(1)), column_gap: px(3), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
+                        BackgroundColor(BTN),
+                        Round(99.0),
+                        Clickable { act: a.act.clone(), layer: 5, scrolled: false, base: BTN, hot: BTN_HOT },
+                        Tip::note(a.label.clone()),
+                    ))
+                    .with_children(|b| {
+                        icon_node(b, &icons, a.icon, 15.0);
+                        label(b, a.label.clone(), 11.0, INK);
+                    });
+                }
+            });
+        }
+    });
+    *shown = now;
+}
+
 /// Shows the explanation of the number (or button) under the cursor.
 fn tooltip(
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -638,8 +694,7 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
             };
         }
         Do::Answer(id, accept) => {
-            let answer = if accept { sim::society::Answer::Accept } else { sim::society::Answer::TurnAway };
-            ui.status = match s.apply(sim::Command::AnswerJoin { id, answer }) {
+            ui.status = match s.apply(super::events::answer_command(id, accept)) {
                 Ok(()) => if accept { "Welcome to the colony.".into() } else { "Turned away.".into() },
                 Err(e) => format!("Cannot answer: {e:?}."),
             };
@@ -753,5 +808,51 @@ mod tests {
         let tip = Tip::of(&s.kpis[0].num);
         assert_eq!(tip.lines.len(), s.kpis[0].num.parts.len());
         assert!(tip.title.starts_with("Beavers: "));
+    }
+
+    /// Runs the camera easing until it stops, as the game does each frame.
+    fn fly(r: &mut Rig, orbit: &mut crate::camera::OrbitCamera) {
+        for _ in 0..600 {
+            let Some(f) = r.flow.focus else { return };
+            let (next, arrived) = crate::flow::ease_step(*orbit, f, 0.1, false);
+            *orbit = next;
+            if arrived {
+                r.flow.focus = None;
+            }
+        }
+    }
+
+    #[test]
+    fn activating_any_event_or_alert_moves_the_camera_target_to_its_place() {
+        use super::super::events::{alerts, every_kind_for_tests, AlertKind};
+        let mut r = rig();
+        let notices = every_kind_for_tests(&mut r.sim.0);
+        let mut found = std::collections::HashSet::new();
+        for a in alerts(&r.sim.0).into_iter().chain(notices.items.iter().cloned()) {
+            let t = super::super::events::toast(a.clone());
+            let mut orbit = crate::camera::OrbitCamera { target: Vec3::new(500.0, 0.0, 500.0), yaw: 0.8, pitch: 0.7, distance: 80.0 };
+            click(&mut r, t.jump.clone());
+            fly(&mut r, &mut orbit);
+            let want = cell_world(&r.sim.0.height, (a.at.0 as f32, a.at.1 as f32));
+            assert!(orbit.target.distance(want) < 0.01, "{:?}: camera at {:?}, place at {:?}", a.kind, orbit.target, want);
+            found.insert(a.kind);
+        }
+        assert_eq!(found.len(), AlertKind::ALL.len(), "all ten kinds were activated");
+    }
+
+    #[test]
+    fn accepting_a_join_request_adds_a_beaver_to_a_family_and_turning_away_changes_nothing() {
+        let mut r = rig();
+        let colony = r.sim.0.colony.clone();
+        let (a, b) = (r.sim.0.society.raise(&colony, true, 1.0).unwrap(), r.sim.0.society.raise(&colony, true, 1.0).unwrap());
+        let pop = r.sim.0.colony.population();
+        click(&mut r, Do::Answer(b, false));
+        assert_eq!(r.sim.0.colony.population(), pop, "turning away leaves the population unchanged");
+        assert!(r.sim.0.society.pending().iter().all(|x| x.id != b));
+        click(&mut r, Do::Answer(a, true));
+        assert_eq!(r.sim.0.colony.population(), pop + 1);
+        let newcomer = r.sim.0.colony.beavers.last().unwrap();
+        assert!(r.sim.0.colony.family(newcomer.family).is_some(), "the newcomer belongs to a family");
+        assert_eq!(r.ui.status, "Welcome to the colony.");
     }
 }

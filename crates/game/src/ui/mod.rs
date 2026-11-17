@@ -6,6 +6,7 @@
 //! runs clicks; `shell.rs` is the navigation state; `explain.rs` is number provenance; `kit.rs`
 //! has the shared look.
 #[cfg_attr(not(test), allow(dead_code))] // `audit` and `Numbers` run in tests
+pub mod events;
 pub mod explain;
 pub mod icons;
 pub mod menu;
@@ -22,13 +23,17 @@ pub mod selection;
 pub mod shell;
 pub use panels::ShellUi;
 
+/// Recent happenings shown as toasts; fed from the colony log by `flow::watch_collapse`.
+#[derive(Resource, Default)]
+pub struct NoticesRes(pub events::Notices);
+
 use bevy::prelude::*;
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((panels::PanelsPlugin, icons::IconsPlugin))
+        app.init_resource::<NoticesRes>().add_systems(Update, events::stage_demo).add_plugins((panels::PanelsPlugin, icons::IconsPlugin))
             .add_systems(PostUpdate, kit::apply_round.before(bevy::ui::UiSystems::Prepare));
     }
 }
