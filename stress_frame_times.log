@@ -1,1 +1,1 @@
-stress scene (stub itinerary scene): 4949 trees, 300 beavers | 900 frames | frame time ms: avg 3.32, median 3.44, p95 3.90, p99 4.17, max 4.58 | main-world cpu ms: median 2.24, max 3.10 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+stress scene (stub itinerary scene): 4949 trees, 300 beavers | 900 frames | frame time ms: avg 3.38, median 3.45, p95 3.93, p99 4.25, max 4.81 | main-world cpu ms: median 2.29, max 3.77 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
