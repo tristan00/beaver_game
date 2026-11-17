@@ -37,6 +37,8 @@ pub enum Role {
     Build,
     Haul,
     Craft,
+    /// Elders study at an elders' den (`tech::den_lore`).
+    Study,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

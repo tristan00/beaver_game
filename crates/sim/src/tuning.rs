@@ -395,6 +395,7 @@ pub mod buildings {
             BuildingKind::ForagerHut => (&[(Sticks, 8.0), (Mud, 4.0)], 2.0),
             BuildingKind::MudPit => (&[(Logs, 3.0), (Sticks, 4.0)], 2.0),
             BuildingKind::QuarryCamp => (&[(Logs, 5.0), (Sticks, 6.0), (Mud, 3.0)], 3.0),
+            BuildingKind::EldersDen => (&[(Logs, 12.0), (Mud, 8.0)], 6.0),
             BuildingKind::Mill => (&[(Logs, 30.0), (Stone, 10.0), (Rope, 4.0), (Tools, 3.0)], 14.0),
             BuildingKind::Storehouse => (&[(Logs, 40.0), (Sticks, 20.0), (Stone, 12.0), (Rope, 4.0)], 16.0),
         }
@@ -548,6 +549,8 @@ pub mod events {
     pub const WETLAND_ARRIVAL_FOOD: (f32, f32) = (3.0, 8.0);
 }
 pub mod tech {
+    /// Day on which the first winter has passed (360-day year) and `Achievement::FirstWinter` is earned.
+    pub const YEAR_DAYS: f64 = 360.0;
     /// Branch experience needed for a tier-1 tech.
     pub const TIER1_XP: f32 = 3.0;
     /// Branch experience needed for a tier-2 tech.

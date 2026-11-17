@@ -440,6 +440,7 @@ fn role_name(r: Role) -> &'static str {
         Role::Build => "Building",
         Role::Haul => "Hauling",
         Role::Craft => "Crafting",
+        Role::Study => "Studying",
     }
 }
 

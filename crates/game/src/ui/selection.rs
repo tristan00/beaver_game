@@ -226,6 +226,7 @@ fn role_name(r: Role) -> String {
         Role::Build => "Build".into(),
         Role::Haul => "Haul".into(),
         Role::Craft => "Craft".into(),
+        Role::Study => "Study".into(),
     }
 }
 
@@ -235,6 +236,7 @@ fn role_icon(r: Role) -> Icon {
         Role::Build => Icon::Builder,
         Role::Haul => Icon::Hauler,
         Role::Craft => Icon::Specialist,
+        Role::Study => Icon::Specialist,
     }
 }
 
@@ -542,6 +544,7 @@ fn slot_rows(sim: &SimState, p: &Workplace, at: (usize, usize)) -> Vec<SlotRow> 
                     Role::Build => "Build",
                     Role::Haul => "Haul",
                     Role::Craft => "Craft",
+                    Role::Study => "Study",
                 },
                 icon: role_icon(s.role),
                 worker,
@@ -715,7 +718,9 @@ mod tests {
     use sim::starts::{build_lake, Start};
 
     fn start2() -> SimState {
-        build_lake(Start::EarlyLake, 1).expect("start 2").0
+        let mut sim = build_lake(Start::EarlyLake, 1).expect("start 2").0;
+        sim.tech.unlock_all();
+        sim
     }
 
     fn assert_audited(p: &Panel) {

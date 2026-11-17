@@ -59,6 +59,7 @@ pub fn def(kind: BuildingKind) -> Def {
         ForagerHut => camp(ResourceKind::Plant),
         MudPit => camp(ResourceKind::MudBank),
         QuarryCamp => camp(ResourceKind::StoneOutcrop),
+        EldersDen => (Tier::Elementary, vec![Role::Study; 2], None),
         Mill => (Tier::Industrial, vec![Role::Craft; 2], None),
         Storehouse => (Tier::Industrial, vec![Role::Haul; 2], None),
     };
