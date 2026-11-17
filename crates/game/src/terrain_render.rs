@@ -96,7 +96,7 @@ pub fn lin(c: Rgb, a: f32) -> [f32; 4] {
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub grass: Rgb,
-    /// Sunlit and shaded ends of the grass gradient (`docs/STYLE.md` §4).
+    /// Sunlit and shaded ends of the grass gradient (`docs/STYLE.md` section 2).
     pub grass_light: Rgb,
     pub grass_deep: Rgb,
     pub mud: Rgb,
@@ -273,7 +273,7 @@ fn noise(x: i32, y: i32) -> f32 {
 
 /// Grass gradient position (0 Meadow deep .. 0.5 Meadow .. 1 Meadow light): centre and how far the
 /// large patches and the sun-facing lift push it. Terrain shows its albedo on screen (see
-/// `terrain_shadow.wesl`), so the spread is what puts all three greens on screen (STYLE.md fix 3).
+/// `terrain_shadow.wesl`), so the spread is what puts all three greens on screen (STYLE.md section 2).
 const GRADE_MID: f32 = 0.58;
 const GRADE_PATCH: f32 = 1.3;
 const GRADE_SUN: f32 = 1.2;
@@ -294,14 +294,14 @@ pub struct TerrainChunks {
     material: Handle<TerrainMaterial>,
 }
 
-// ───────────── plum sun shadows (docs/STYLE.md fix 10) ─────────────
+// ───────────── plum sun shadows (docs/STYLE.md shared lighting rule) ─────────────
 
 /// Terrain material: StandardMaterial plus the plum sun-shadow pass in `terrain_shadow.wesl`.
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, PlumShadow>;
 
 /// Sun shadows on terrain show the lit colour blended `SHADOW_BLEND` toward `pal::PLUM` (in sRGB),
-/// the middle of STYLE.md's 35-45% band; lighting alone only scales colour and gives grey-green.
-pub const SHADOW_BLEND: f32 = 0.40;
+/// the shared `pal::SHADOW_MIX`; lighting alone only scales colour and gives a dull dark green.
+pub const SHADOW_BLEND: f32 = pal::SHADOW_MIX;
 /// Shadow-map visibility window mapped to fully shadowed..fully lit: a narrow window keeps the soft
 /// PCF penumbra to a thin edge (a few px), so shadowed ground reads as one flat plum shape.
 const SHADOW_EDGE: [f32; 2] = [0.42, 0.58];
@@ -626,10 +626,10 @@ fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, l
 }
 
 /// Share of open-grass cells that get an item. A cell is about 36 px across in the close views (`--cam pond`),
-/// so this gives about one item per 40x40 px there (docs/STYLE.md fix 5; measured in `artifacts/R19-29`).
+/// so this gives about one item per 40x40 px there (docs/STYLE.md section 2; measured in `artifacts/R19-29`).
 const DETAIL_DENSITY: f32 = 0.7;
 
-/// Sparse small ground detail on open grass (`docs/STYLE.md` §4): grass tufts (two crossed
+/// Sparse small ground detail on open grass (`docs/STYLE.md` section 2): grass tufts (two crossed
 /// strokes), flowers (white, pink, yellow) and pebbles, about one item per 1.4 cells (`DETAIL_DENSITY`). Never on
 /// water, wet banks, rock or snow. Deterministic per cell.
 fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {

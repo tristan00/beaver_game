@@ -2,7 +2,7 @@
 
 Short contract for the interface, written before UI code. It is derived from what a colony builder asks of its screen, not from any one game: the player watches a living place, decides where to build, then checks whether it works. Wireframe: `docs/ui_wireframe.png` (1920x1080, regenerate with `python tools/make_ui_wireframe.py`).
 
-**Supersedes** `docs/STYLE.md` §3 (UI corner radii) and §6 (UI style): the world palette, terrain and lighting there stay; the cream card and pill look does not. `docs/DESIGN.md` §11 still defines the screens and view-models.
+**Owns all interface styling.** `docs/STYLE.md` covers the world only (palette, terrain, water, structures, beavers, seasons, camera) and holds no UI rules; the old cream card and pill look is gone. `docs/DESIGN.md` §11 still defines the screens and view-models.
 
 ## 1. Fixed zones
 Every element lives in one named zone and never moves. Players learn where to look once. Always-on zones cover **11%** of a 1920x1080 frame, **21%** with the inspector open (Z5).
@@ -54,7 +54,7 @@ Identity: a **lodge built of cut timber**. Dark bark planks with gnawed corners,
 **Font:** Atkinson Hyperlegible, `assets/fonts/AtkinsonHyperlegible-Regular.ttf` and `assets/fonts/AtkinsonHyperlegible-Bold.ttf`, by the Braille Institute of America, licence **SIL Open Font Licence 1.1** (`assets/fonts/OFL.txt`), source `https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegible`. Chosen because letterforms are built to stay distinct at small size on busy backgrounds. Static files, so Bevy needs no variable-font support.
 
 ## 6. Icons before words
-Every row, button and marker carries an icon; the word is a caption and may be dropped when narrow. Files are `assets/icons/<name>.png`, 96 px, tint per group as in `docs/STYLE.md` §7. **E** = exists, **N** = new (to be drawn).
+Every row, button and marker carries an icon; the word is a caption and may be dropped when narrow. Files are `assets/icons/<name>.png`, 96 px, on a 28 px-radius tile tinted per group: goods `#F7E8CC`, needs `#FBE3D6`, jobs `#E3F0D2`, actions `#DCEFE8`, map modes `#D7EEF2`, navigation `#EDE3F5` (as `TILES` in `tools/make_icons.py`); new groups pick from these. **E** = exists, **N** = new (to be drawn).
 
 | Group | Icons |
 |---|---|
