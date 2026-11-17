@@ -100,6 +100,7 @@ impl SimState {
         let world = worldgen::WorldGen::new(seed).generate().expect("default world generation failed");
         let height = world.height.clone();
         let size = world.size;
+        let resources = resources::ResourceWorld::seeded(seed, &world);
         Self {
             seed,
             time_days: 0.0,
@@ -114,7 +115,7 @@ impl SimState {
             events: events::Events::new(seed),
             features: features::Features::default(),
             nav: nav::NavGrid::new(size, size),
-            resources: resources::ResourceWorld::default(),
+            resources,
             agents: agents::Agents::default(),
             work: work::Work::default(),
             society: society::Society::default(),
@@ -135,7 +136,7 @@ impl SimState {
         self.tech.update(&self.colony);
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
         self.region.step(dt_days);
-        self.resources.step(dt_days);
+        self.resources.step(dt_days).expect("dt validated above");
         agents::step(self, dt_days);
         self.society.step(dt_days, self.time_days);
         self.step_events(dt_days);
