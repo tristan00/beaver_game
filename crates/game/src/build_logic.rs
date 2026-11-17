@@ -47,7 +47,7 @@ pub struct MenuEntry {
 /// Every building, grouped by tech branch (basics first). Locked ones carry the experience needed.
 pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
     let mut out = Vec::new();
-    for kind in BuildingKind::ALL {
+    for kind in BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)) {
         let tech = TECHS.iter().find(|t| t.effects.contains(&Effect::Unlock(kind)));
         let group = tech.map_or(Group::Base, |t| Group::Branch(t.branch));
         let unlocked = sim.tech.allows(kind);
@@ -465,9 +465,10 @@ pub struct JobRow {
 }
 
 pub fn job_rows(colony: &Colony) -> Vec<JobRow> {
-    Job::ALL
-        .iter()
-        .map(|&job| JobRow {
+    colony
+        .enabled_jobs()
+        .into_iter()
+        .map(|job| JobRow {
             job,
             assigned: colony.beavers.iter().filter(|b| b.job == Some(job)).count(),
             working: colony.beavers.iter().filter(|b| b.current_job == Some(job)).count(),
@@ -551,7 +552,9 @@ mod tests {
     fn menu_groups_by_branch_and_marks_locked() {
         let sim = SimState::new(1);
         let m = menu(&sim);
-        assert_eq!(m.len(), BuildingKind::ALL.len());
+        // guard post and scent mound belong to switched-off systems
+        assert_eq!(m.len(), BuildingKind::ALL.len() - 2);
+        assert!(m.iter().all(|e| e.kind != BuildingKind::GuardPost && e.kind != BuildingKind::ScentMound));
         assert_eq!(m[0].group, Group::Base);
         let lock = m.iter().find(|e| e.kind == BuildingKind::Lock).unwrap();
         assert_eq!(lock.group, Group::Branch(Branch::Water));

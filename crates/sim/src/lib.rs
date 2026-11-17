@@ -101,7 +101,8 @@ impl SimState {
         let height = world.height.clone();
         let size = world.size;
         let water = water::Water::from_world(&world);
-        Self {
+        let resources = resources::ResourceWorld::seeded(seed, &world);
+        let mut sim = Self {
             seed,
             time_days: 0.0,
             height,
@@ -115,10 +116,30 @@ impl SimState {
             events: events::Events::new(seed),
             features: features::Features::default(),
             nav: nav::NavGrid::new(size, size),
-            resources: resources::ResourceWorld::default(),
+            resources,
             agents: agents::Agents::default(),
             work: work::Work::default(),
             society: society::Society::default(),
+        };
+        sim.apply_features();
+        sim
+    }
+
+    /// Replaces the feature config and applies it at once.
+    pub fn set_features(&mut self, features: features::Features) {
+        self.features = features;
+        self.apply_features();
+    }
+
+    /// Pushes `self.features` into every system that must never fire when off. Idempotent; called
+    /// on construction and at the start of every step so direct edits of `features` also hold.
+    fn apply_features(&mut self) {
+        use features::System;
+        let f = self.features;
+        self.events.set_muted(events::EventKind::ALL.into_iter().filter(|k| !f.allows_event(*k)).collect());
+        self.colony.set_disabled_jobs(colony::Job::ALL.into_iter().filter(|j| !f.allows_job(*j)).collect());
+        if !f.enabled(System::Predators) && !self.ecology.predators.is_empty() {
+            self.ecology.predators.clear();
         }
     }
 
@@ -127,6 +148,7 @@ impl SimState {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
         }
+        self.apply_features();
         self.time_days += dt_days as f64;
         self.water.step(&self.height, dt_days);
         self.ecology.step(dt_days, &self.water.depth)?;
@@ -135,8 +157,10 @@ impl SimState {
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.tech.update(&self.colony);
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
-        self.region.step(dt_days);
-        self.resources.step(dt_days);
+        if self.features.enabled(features::System::Rivals) {
+            self.region.step(dt_days);
+        }
+        self.resources.step(dt_days).expect("dt validated above");
         agents::step(self, dt_days);
         self.society.step(dt_days, self.time_days);
         self.step_events(dt_days);
@@ -154,7 +178,8 @@ impl SimState {
         if self.events.step_with(dt_days, &ctx, &mut host).is_err() {
             self.events.step(dt_days);
         }
-        for m in self.region.take_arrivals() {
+        let arrivals = if self.features.enabled(features::System::Rivals) { self.region.take_arrivals() } else { Vec::new() };
+        for m in arrivals {
             self.colony.add_immigrants(m.count);
         }
     }
@@ -309,5 +334,52 @@ mod tests {
         assert_eq!(s.seed, 9);
         assert_eq!(s.time_days, 0.0);
         assert_eq!(s.height, SimState::new(9).height);
+    }
+
+    fn founded(seed: u64) -> SimState {
+        let mut s = SimState::new(seed);
+        let c = s.world.valleys[s.world.start.0 as usize].center;
+        let land = WorldLand { world: &s.world, depth: &s.water.depth };
+        s.colony.found((c.0 as f32, c.1 as f32), &land).expect("found");
+        s
+    }
+
+    #[test]
+    fn scoped_colony_two_years_fires_nothing_from_disabled_systems() {
+        let mut s = founded(2);
+        assert_eq!(s.features, features::Features::scoped());
+        let two_years = 2.0 * 4.0 * events::DEFAULT_DAYS_PER_SEASON as f32;
+        let mut t = 0.0;
+        while t < two_years {
+            s.step(0.25).unwrap();
+            assert!(!s.events.is_drought());
+            assert_eq!(s.events.water_inflow_factor(), 1.0);
+            t += 0.25;
+        }
+        let ev = s.events.log();
+        assert!(ev.iter().all(|r| s.features.allows_event(r.kind)), "disabled event fired: {ev:?}");
+        assert!(ev.iter().all(|r| !r.effects.iter().any(|e| matches!(e, events::Effect::Inflow { .. }))));
+        assert!(s.ecology.predators.is_empty());
+        assert_eq!(s.colony.scouted, 0.0);
+        assert_eq!(s.colony.experience[colony::Job::Guard.index()], 0.0);
+        assert_eq!(s.colony.experience[colony::Job::Scout.index()], 0.0);
+        assert_eq!(s.region.time_days, 0.0, "rival region must not advance");
+        assert!(s.region.offers().is_empty());
+        assert!(s.colony.beavers.iter().all(|b| b.current_job.is_none_or(|j| s.features.allows_job(j))));
+    }
+
+    #[test]
+    fn disabled_systems_reject_explicit_use() {
+        let mut s = founded(3);
+        let id = s.colony.beavers[0].id;
+        assert!(s.colony.set_job(id, Some(colony::Job::Guard)).is_err());
+        assert!(s.colony.set_job(id, Some(colony::Job::Scout)).is_err());
+        let mut host = events::Stockpile { population: 5, food: 10.0, wood: 10.0, health: 1.0 };
+        let r = s.events.trigger(events::EventKind::Flood, &events::EventContext::default(), &mut host);
+        assert_eq!(r, Err(events::EventError::Disabled(events::EventKind::Flood)));
+        assert!(!catalogue::available(&s).contains(&buildings::BuildingKind::GuardPost));
+        s.set_features(features::Features::everything());
+        assert!(s.colony.set_job(id, Some(colony::Job::Guard)).is_ok());
+        assert!(catalogue::available(&s).contains(&buildings::BuildingKind::GuardPost));
     }
 }
