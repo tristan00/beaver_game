@@ -433,6 +433,9 @@ fn assemble_early(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), StartE
     for (good, amount) in [(Good::Logs, 30.0), (Good::Sticks, 25.0), (Good::Mud, 15.0)] {
         stock(&mut sim, warehouse, good, amount)?;
     }
+    for a in crate::tech::Achievement::ALL {
+        sim.tech.record(a);
+    }
     finish(&mut sim, 12.0, 4.0);
     let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height }, level, lake, canals: Vec::new() };
     Ok((sim, info))
@@ -585,6 +588,7 @@ fn assemble_industrial(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), S
     ] {
         stock(&mut sim, into, good, amount)?;
     }
+    sim.tech.unlock_all();
     finish(&mut sim, 14.0, 5.0);
     let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height }, level, lake, canals };
     Ok((sim, info))

@@ -160,8 +160,8 @@ impl SimState {
         self.ecology.step(dt_days, &self.water.depth)?;
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
+        self.step_research(dt_days);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
-        self.tech.update(&self.colony);
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
@@ -171,6 +171,32 @@ impl SimState {
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         Ok(())
+    }
+
+    /// Records achievements, adds the lore elders studied in dens and unlocks what is now ready.
+    fn step_research(&mut self, dt_days: f32) {
+        use tech::Achievement::*;
+        let built = |k| self.buildings.buildings.iter().any(|b| b.kind == k && b.is_complete());
+        if built(buildings::BuildingKind::Burrow) {
+            self.tech.record(FirstBurrow);
+        }
+        if built(buildings::BuildingKind::Dam) {
+            self.tech.record(FirstDam);
+        }
+        if self.time_days >= tuning::tech::YEAR_DAYS && self.survived_year() {
+            self.tech.record(FirstWinter);
+        }
+        let lore = tech::den_lore(&self.buildings, &self.work, &self.colony, dt_days);
+        self.tech.study(lore);
+        self.tech.update(&self.colony);
+    }
+
+    /// Nobody has died of hunger or cold and the larder holds at least one food per beaver.
+    fn survived_year(&self) -> bool {
+        let lost = self.colony.events.iter().any(|e| {
+            matches!(e.event, colony::Event::Died { cause: colony::DeathCause::Starvation | colony::DeathCause::Cold, .. })
+        });
+        !lost && self.colony.food >= self.colony.population() as f32
     }
 
     /// Rolls random events against the colony, applies their effects and delivers migrants.

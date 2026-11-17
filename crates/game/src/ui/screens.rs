@@ -1087,6 +1087,7 @@ pub mod tests {
     /// A settled colony that has lived a while, with stock, so every table has rows.
     pub fn lived_in(seed: u64) -> SimState {
         let mut sim = SimState::new(seed);
+        sim.tech.unlock_all();
         let mut flow = crate::flow::Flow::new(&sim.world);
         crate::opening::found(&mut sim, &mut flow).expect("founds");
         for _ in 0..800 {
