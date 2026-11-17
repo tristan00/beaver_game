@@ -3,8 +3,11 @@ mod audio;
 mod camera;
 mod cli;
 mod entities_render;
+mod flow;
+mod flow_view;
 mod input;
 mod screenshot;
+mod sim_driver;
 mod state;
 mod terrain_render;
 mod ui;
@@ -33,6 +36,9 @@ fn main() -> AppExit {
     .insert_resource(cli)
     .add_plugins((
         state::StatePlugin,
+        sim_driver::SimDriverPlugin,
+        flow::FlowPlugin,
+        flow_view::FlowViewPlugin,
         camera::CameraPlugin,
         input::InputPlugin,
         terrain_render::TerrainRenderPlugin,

@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -16,12 +16,14 @@ pub struct Cli {
     /// Render the 5000-tree / 300-beaver stress scene, log frame times, then exit (non-zero if any
     /// measured frame took 16 ms or more).
     pub stress: bool,
+    /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
+    pub autoplay_settle: bool,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -40,6 +42,7 @@ impl Cli {
                     }
                 }
                 "--stress" => cli.stress = true,
+                "--autoplay-settle" => cli.autoplay_settle = true,
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }
