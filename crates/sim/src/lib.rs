@@ -2,15 +2,24 @@
 //! `SimState` composes one struct per system; the game crate only reads it,
 //! advances it with `step`, and mutates it through `apply`.
 
+pub mod agents;
 pub mod buildings;
+pub mod catalogue;
 pub mod colony;
+pub mod dam_preview;
 pub mod ecology;
 pub mod events;
+pub mod features;
 pub mod grid;
+pub mod nav;
 pub mod region;
+pub mod resources;
+pub mod society;
+pub mod starts;
 pub mod tech;
 pub mod tuning;
 pub mod water;
+pub mod work;
 pub mod worldgen;
 
 use std::fmt;
@@ -47,6 +56,17 @@ pub enum Command {
     BreachDam { x: usize, y: usize },
     /// Dig canals `depth` deep on `cells`.
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
+    /// Send beavers to collect (`Some`) or stand down (`None`). Right-click and area drag.
+    Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
+    /// Put a beaver into a workplace slot / empty a slot.
+    FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
+    EmptySlot { building: buildings::BuildingId, slot: usize },
+    /// Move or resize a workplace's work area.
+    SetWorkArea { building: buildings::BuildingId, area: work::Area },
+    /// Standing haul between two stores.
+    SetHaul { order: work::HaulOrder },
+    /// Accept or turn away a wandering beaver.
+    AnswerJoin { id: society::RequestId, answer: society::Answer },
 }
 
 /// Complete simulation state.
@@ -64,6 +84,14 @@ pub struct SimState {
     pub tech: tech::Tech,
     pub region: region::Region,
     pub events: events::Events,
+    /// The one switch for out-of-scope systems.
+    pub features: features::Features,
+    /// Navigation surfaces and cell reservations.
+    pub nav: nav::NavGrid,
+    pub resources: resources::ResourceWorld,
+    pub agents: agents::Agents,
+    pub work: work::Work,
+    pub society: society::Society,
 }
 
 impl SimState {
@@ -84,6 +112,12 @@ impl SimState {
             tech: Default::default(),
             region: region::Region::new(seed),
             events: events::Events::new(seed),
+            features: features::Features::default(),
+            nav: nav::NavGrid::new(size, size),
+            resources: resources::ResourceWorld::default(),
+            agents: agents::Agents::default(),
+            work: work::Work::default(),
+            society: society::Society::default(),
         }
     }
 
@@ -101,6 +135,9 @@ impl SimState {
         self.tech.update(&self.colony);
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
         self.region.step(dt_days);
+        self.resources.step(dt_days);
+        agents::step(self, dt_days);
+        self.society.step(dt_days, self.time_days);
         self.step_events(dt_days);
         Ok(())
     }
@@ -152,6 +189,30 @@ impl SimState {
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
+            }
+            Command::Assign { who, to } => {
+                for id in who {
+                    if !self.agents.assign(id, to) {
+                        return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
+                    }
+                }
+                Ok(())
+            }
+            Command::FillSlot { building, slot, who } => {
+                self.work.assign(building, slot, who).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+            }
+            Command::EmptySlot { building, slot } => {
+                self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+            }
+            Command::SetWorkArea { building, area } => {
+                self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+            }
+            Command::SetHaul { order } => {
+                self.work.hauls.push(order);
+                Ok(())
+            }
+            Command::AnswerJoin { id, answer } => {
+                self.society.answer(id, answer).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
         }
     }
