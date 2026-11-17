@@ -61,7 +61,7 @@ pub struct BuildUi {
 impl Default for BuildUi {
     fn default() -> Self {
         BuildUi {
-            menu_open: true,
+            menu_open: false,
             jobs_open: false,
             family_open: false,
             tool: None,
@@ -87,7 +87,7 @@ impl BuildUi {
         self.drawing = false;
         self.awaiting = false;
     }
-    fn select_tool(&mut self, k: Option<BuildingKind>) {
+    pub fn select_tool(&mut self, k: Option<BuildingKind>) {
         self.tool = k;
         self.clear_path();
         self.preview = None;
@@ -99,8 +99,6 @@ pub struct PendingRes(pub Pending);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BAction {
-    ToggleMenu,
-    ToggleJobs,
     Pick(BuildingKind),
     Confirm,
     CancelTool,
@@ -201,8 +199,6 @@ fn build_items(
     if !sim.colony.is_founded() {
         return l.items;
     }
-    l.button(rc(win.x - 200.0, 42.0, 92.0, 26.0), BAction::ToggleMenu, "Build  B", ui.menu_open);
-    l.button(rc(win.x - 104.0, 42.0, 94.0, 26.0), BAction::ToggleJobs, "Jobs  J", ui.jobs_open);
     let colony = &sim.colony;
 
     // ── build menu ──
@@ -536,12 +532,6 @@ pub fn build_input(
         return;
     }
     // keys
-    if keys.just_pressed(KeyCode::KeyB) {
-        ui.menu_open = !ui.menu_open;
-    }
-    if keys.just_pressed(KeyCode::KeyJ) {
-        ui.jobs_open = !ui.jobs_open;
-    }
     if keys.just_pressed(KeyCode::Escape) {
         if ui.tool.is_some() && !ui.path.is_empty() {
             ui.clear_path();
@@ -655,8 +645,6 @@ fn confirm(sim: &mut SimState, pending: &mut Pending, ui: &mut BuildUi) {
 
 fn do_action(a: BAction, sim: &mut SimState, pending: &mut Pending, ui: &mut BuildUi, sel: &mut Selection) {
     match a {
-        BAction::ToggleMenu => ui.menu_open = !ui.menu_open,
-        BAction::ToggleJobs => ui.jobs_open = !ui.jobs_open,
         BAction::Pick(k) => match check_locked(sim, k) {
             Some(e) => ui.message = format!("{e}"),
             None => {
@@ -702,6 +690,18 @@ fn do_action(a: BAction, sim: &mut SimState, pending: &mut Pending, ui: &mut Bui
         }
     }
     let _ = sel;
+}
+
+/// Picks (or un-picks) a building tool from the Buildings screen; says why when it is locked.
+pub fn pick_tool(sim: &SimState, ui: &mut BuildUi, k: BuildingKind) {
+    match check_locked(sim, k) {
+        Some(e) => ui.message = format!("{e}"),
+        None => {
+            ui.message.clear();
+            let same = ui.tool == Some(k);
+            ui.select_tool(if same { None } else { Some(k) });
+        }
+    }
 }
 
 fn check_locked(sim: &SimState, k: BuildingKind) -> Option<PlaceError> {
@@ -1047,6 +1047,7 @@ mod tests {
     fn items_show_menu_groups_locked_hint_and_pond_summary() {
         let sim = founded();
         let mut ui = BuildUi::default();
+        ui.menu_open = true; // the menu now lives on the Buildings screen; this checks the legacy panel's model
         let near = sim.world.valleys[sim.world.start.0 as usize].center;
         let (a, b, d) = find_demo_dam(&sim, (near.0 as usize, near.1 as usize), 1.5).expect("a dam site exists");
         ui.tool = Some(BuildingKind::Dam);
