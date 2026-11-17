@@ -116,7 +116,7 @@ fn begin_cli_start(
         *orbit = framed;
     }
     frame_lake(&cli, &lake, &sim.0, windows.iter().next(), &mut orbit);
-    // `--cam iso-close` / `iso-wide`: fixed views of the map centre, whatever the start (shadow checks, docs/STYLE.md fix 10).
+    // `--cam iso-close` / `iso-wide`: fixed views of the map centre, whatever the start (shadow checks, docs/STYLE.md section 7).
     if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
         if let Some(p) = crate::camera::preset(&cli.cam) {
             *orbit = p;

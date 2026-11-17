@@ -87,7 +87,7 @@ impl Plugin for CameraPlugin {
 const SUN_SHADOWS: bool = true;
 
 fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
-    // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md §9 samples hexes).
+    // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md, "Checking the running game").
     commands.spawn((Camera3d::default(), Tonemapping::SomewhatBoringDisplayTransform, orbit.transform(), MainCamera));
     // Key light: late-morning sun from the upper left, soft shadows; `update_sky_and_light` sets
     // colour and strength per season.

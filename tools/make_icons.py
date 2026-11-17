@@ -1,4 +1,4 @@
-"""Draws assets/icons/*.png (96 px) and docs/icons_sheet.png (32 + 64 px) per docs/STYLE.md section 7 and docs/UI_SPEC.md section 6.
+"""Draws assets/icons/*.png (96 px) and docs/icons_sheet.png (32 + 64 px) per docs/UI_SPEC.md section 6 (icons are interface art; docs/STYLE.md covers the world only).
 Run: python tools/make_icons.py
 Files are named by game::ui::icons::Icon::file() (lowercase variant name); every file here has a
 variant, and the game loads all of them at startup (ui::icons::IconsPlugin)."""

@@ -116,12 +116,12 @@ fn setup_water(
 const WATER_REBUILD_BUDGET_S: f32 = 0.002;
 pub const WATER_PAD: i32 = SHORE_SEARCH + 1;
 const SHORE_SEARCH: i32 = 3;
-/// Rings measured inward from the shore, in cells (docs/STYLE.md §4 and `docs/style_mockup.png`):
+/// Rings measured inward from the shore, in cells (current look; `docs/STYLE.md` section 3 sets the nearly-clear target):
 /// a solid Foam ring, then a Deep rim, the Shallow body and a Mid glow centre.
 pub const FOAM_W: f32 = 0.2;
 /// Water vertex colours are the palette colours seen through the tone mapping (`palette::display_linear`);
 /// the lit surface then multiplies them by this gain (same sun and ambient as `ENTITY_GAIN`) so a flat
-/// sun-facing patch shows its palette hex (docs/STYLE.md fixes 7 and 8).
+/// sun-facing patch shows its palette hex (docs/STYLE.md section 3).
 const WATER_GAIN: f32 = crate::entities_render::ENTITY_GAIN;
 /// Extra cuts through the surface (shore distance, cells) so colour ramps follow the rings
 /// instead of zig-zagging across the grid's triangles.
