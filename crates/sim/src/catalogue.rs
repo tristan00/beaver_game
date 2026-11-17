@@ -74,6 +74,15 @@ pub fn def(kind: BuildingKind) -> Def {
     }
 }
 
+/// The default gather area of building `b` (around its first cell); `None` if it does not gather.
+pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
+    let c = b.cells().next().unwrap_or(b.pos);
+    def(b.kind).area.map(|(w, h)| crate::work::Area {
+        min: (c.0.saturating_sub(w / 2), c.1.saturating_sub(h / 2)),
+        max: (c.0 + w / 2, c.1 + h / 2),
+    })
+}
+
 /// Kinds the player may see and place given features (and, in `content`, tech).
 pub fn available(sim: &crate::SimState) -> Vec<BuildingKind> {
     BuildingKind::ALL

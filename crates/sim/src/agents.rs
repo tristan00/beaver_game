@@ -622,12 +622,8 @@ fn finish_sites(sim: &mut SimState) {
             continue;
         };
         b.status = crate::buildings::Status::Complete;
+        let area = crate::catalogue::work_area(b);
         let def = crate::catalogue::def(b.kind);
-        let c = b.cells().next().unwrap_or(b.pos);
-        let area = def.area.map(|(w, h)| Area {
-            min: (c.0.saturating_sub(w / 2), c.1.saturating_sub(h / 2)),
-            max: (c.0 + w / 2, c.1 + h / 2),
-        });
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
         if let Some(i) = sim.work.dam_plans.iter().position(|p| p.building == id) {
             let plan = sim.work.dam_plans.remove(i);

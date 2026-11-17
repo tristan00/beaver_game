@@ -285,6 +285,19 @@ impl Beaver {
     }
 }
 
+/// A household to seat with `Colony::seat_household`: one lodge, one mated pair and their kin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Household {
+    /// Age of both parents in years (at least adult age).
+    pub pair_years: f32,
+    /// The parents themselves came as wanderers (counted as joined) rather than founding the family.
+    pub pair_joined: bool,
+    /// Ages in days of the children born in this lodge to the pair (counted as births).
+    pub born_days: Vec<f32>,
+    /// Adult wanderers who joined the household (counted as immigrants).
+    pub joined: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Family {
     pub id: FamilyId,
@@ -525,6 +538,60 @@ impl Colony {
         self.wood = START_WOOD;
         self.founded = true;
         self.stats.peak_population = self.beavers.len();
+        Ok(fam)
+    }
+
+    /// Seats a whole household at `pos` (dry land): a lodge, a mated pair, kits born there and
+    /// adults who joined. Builds an already-running colony directly (starts 2 and 3); the colony
+    /// counts as founded afterwards. The first household also sets the food and wood stocks.
+    /// Errors (nothing changes) if `pos` is not finite or is in water, the pair are not adults,
+    /// a kit age is not finite and >= 0, or the household does not fit in one lodge.
+    pub fn seat_household(&mut self, pos: (f32, f32), land: &dyn Landscape, h: &Household) -> Result<FamilyId, ColonyError> {
+        check_point("household", pos)?;
+        if land.is_water(pos.0, pos.1) {
+            return Err(ColonyError::Invalid("household position is in water".into()));
+        }
+        if h.pair_years < ADULT_DAYS / DAYS_PER_YEAR as f32 {
+            return Err(ColonyError::Invalid(format!("pair must be adults, got {} years", h.pair_years)));
+        }
+        let members = 2 + h.born_days.len() + h.joined as usize;
+        if members > LODGE_CAPACITY {
+            return Err(ColonyError::Invalid(format!("{members} beavers do not fit in one lodge (room for {LODGE_CAPACITY})")));
+        }
+        if let Some(a) = h.born_days.iter().find(|a| !a.is_finite() || **a < 0.0) {
+            return Err(ColonyError::Invalid(format!("bad kit age {a}")));
+        }
+        let year = DAYS_PER_YEAR as f32;
+        let fam = self.new_family();
+        let lodge = self.new_lodge(fam, pos, FOUNDING_LODGE_CONDITION);
+        let father = self.spawn(Sex::Male, h.pair_years * year, fam, Some(lodge), pos, None, None);
+        let mother = self.spawn(Sex::Female, h.pair_years * year, fam, Some(lodge), pos, None, None);
+        self.set_mates(father, mother);
+        let mut arrived = Vec::new();
+        if h.pair_joined {
+            arrived.extend([father, mother]);
+        }
+        for (i, &age) in h.born_days.iter().enumerate() {
+            let sex = if i % 2 == 0 { Sex::Male } else { Sex::Female };
+            let kit = self.spawn(sex, age, fam, Some(lodge), pos, Some(father), Some(mother));
+            self.stats.births += 1;
+            self.log(Event::Born { id: kit, family: fam });
+        }
+        for i in 0..h.joined {
+            let sex = if i % 2 == 0 { Sex::Female } else { Sex::Male };
+            let age = (IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit()) * year;
+            arrived.push(self.spawn(sex, age, fam, Some(lodge), pos, None, None));
+        }
+        for id in arrived {
+            self.stats.immigrants += 1;
+            self.log(Event::Immigrated { id });
+        }
+        if !self.founded {
+            self.food = START_FOOD;
+            self.wood = START_WOOD;
+            self.founded = true;
+        }
+        self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
         Ok(fam)
     }
 

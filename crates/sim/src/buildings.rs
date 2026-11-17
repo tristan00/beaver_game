@@ -627,7 +627,7 @@ impl Buildings {
     }
 
     /// Capacity per good: the base plus every complete store's catalogue capacity for goods it takes.
-    fn update_capacity(&mut self, tech: &Tech) {
+    pub(crate) fn update_capacity(&mut self, tech: &Tech) {
         let f = tech.storage_factor();
         for g in Good::ALL {
             let stored: f32 = self
