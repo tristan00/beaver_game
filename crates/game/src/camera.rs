@@ -82,6 +82,18 @@ fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
         CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 1.0, maximum_distance: 260.0, first_cascade_far_bound: 45.0, overlap_proportion: 0.3 }.build(),
         Transform::from_xyz(-70.0, 90.0, -45.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    // Faint warm glow hanging in the upper-left corner (the sun's side); a translucent UI overlay.
+    let glow = |a: f32| Color::srgba(1.0, 0.96, 0.84, a);
+    commands.spawn((
+        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        BackgroundGradient::from(RadialGradient::new(
+            UiPosition::TOP_LEFT,
+            RadialGradientShape::Circle(Val::Percent(70.0)),
+            vec![ColorStop::new(glow(0.30), Val::Percent(0.0)), ColorStop::new(glow(0.0), Val::Percent(100.0))],
+        )),
+        GlobalZIndex(-10),
+        Pickable::IGNORE,
+    ));
     commands.insert_resource(GlobalAmbientLight { brightness: crate::terrain_render::AMBIENT_LUX, ..default() });
 }
 

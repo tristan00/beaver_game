@@ -1,1 +1,1 @@
-stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 4.61, median 4.51, p95 6.06, p99 7.14, max 8.70 | main-world cpu ms: median 2.41, max 6.08 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)
+stress scene: 5000 trees, 300 beavers | 900 frames | frame time ms: avg 4.50, median 4.44, p95 5.65, p99 6.78, max 9.71 | main-world cpu ms: median 2.42, max 5.76 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)

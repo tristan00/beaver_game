@@ -196,4 +196,5 @@ Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` 
 | 11 brightness | tone mapping near-linear (SomewhatBoringDisplayTransform), ambient 4400 | `camera.rs` |
 
 Stress scene (`beaver_colony --stress`): avg 4.2–4.6 ms, max 8.4 ms, 0 frames ≥ 16 ms (five runs; the first cold run after a build once hit a single 33 ms frame).
-Still open: the upper-left warm glow (needs a UI overlay) and exact hex sampling of every point in §8 (screens still carry the old UI).
+Upper-left warm glow: radial UI overlay in `camera.rs` (corner `#C2DCEC` fading to sky `#9ED1F5`).
+Still open: exact hex sampling of every point in §8 (screens still carry the old UI).
