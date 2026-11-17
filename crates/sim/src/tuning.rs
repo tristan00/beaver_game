@@ -99,8 +99,6 @@ pub mod colony {
     pub const SPECIALIST_SKILL: f32 = 0.5;
     /// Output multiplier of a specialist working their own job.
     pub const SPECIALIST_BONUS: f32 = 1.25;
-    /// Age in years from which an adult counts as an elder who teaches the young.
-    pub const ELDER_AGE_YEARS: f32 = 5.0;
     /// Skill gained per day by a kit or yearling watching a working lodge mate, scaled by the skill missing.
     pub const YOUNG_LEARN_RATE: f32 = 0.002;
     /// Learning-rate multiplier when the teacher is an elder of the same lodge.

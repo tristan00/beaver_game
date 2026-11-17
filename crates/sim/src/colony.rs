@@ -270,8 +270,13 @@ impl Beaver {
     pub fn title(&self) -> Option<String> {
         self.specialty().map(|j| format!("{j:?} specialist"))
     }
+    /// An elder is a beaver in the `Elder` life stage (`age_days >= ELDER_DAYS`); elders teach the young.
     pub fn is_elder(&self) -> bool {
-        self.stage == Stage::Adult && self.age_years() >= ELDER_AGE_YEARS
+        self.stage == Stage::Elder
+    }
+    /// Kits and yearlings, who learn from their lodge mates instead of from their own work.
+    pub fn is_young(&self) -> bool {
+        matches!(self.stage, Stage::Kit | Stage::Yearling)
     }
     /// Output multiplier for `job`: `SKILL_BASE + skill`, times `SPECIALIST_BONUS` for a specialist.
     pub fn output_factor(&self, job: Job) -> f32 {
@@ -810,13 +815,14 @@ impl Colony {
         }
     }
 
-    /// Kits and yearlings learn by watching a working lodge mate; an elder of the lodge teaches
-    /// (their best job) `ELDER_TEACH_FACTOR` times faster than a working adult.
+    /// Kits and yearlings learn by watching a working grown-up lodge mate (adult or elder); an elder
+    /// of the lodge teaches (their specialty, else their current job) `ELDER_TEACH_FACTOR` times
+    /// faster than a working adult.
     fn teach_young(&mut self, dt: f32) {
         let mut lessons: Vec<(usize, Job, f32)> = Vec::new();
         for (i, b) in self.beavers.iter().enumerate() {
-            let (Some(lodge), true) = (b.lodge, b.stage != Stage::Adult) else { continue };
-            let mates = || self.beavers.iter().filter(move |m| m.id != b.id && m.lodge == Some(lodge) && m.stage == Stage::Adult);
+            let (Some(lodge), true) = (b.lodge, b.is_young()) else { continue };
+            let mates = || self.beavers.iter().filter(move |m| m.id != b.id && m.lodge == Some(lodge) && !m.is_young());
             let elder = mates().filter(|m| m.is_elder()).filter_map(|m| m.specialty().or(m.current_job)).next();
             let lesson = match elder {
                 Some(job) => Some((job, ELDER_TEACH_FACTOR)),
@@ -1511,6 +1517,7 @@ mod tests {
         let k_no = kit(&mut c);
         for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
             b.age_days = 3.0 * 365.0; // adults but not elders
+            b.stage = Stage::of_age_days(b.age_days);
             b.job = Some(Job::Logger);
             b.current_job = Some(Job::Logger);
             b.lodge = Some(lodge);
@@ -1521,12 +1528,18 @@ mod tests {
         let plain = c.beaver(k_no).unwrap().skill(Job::Logger);
         assert!(plain > 0.0, "kits learn from working adults");
         for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
-            b.age_days = (ELDER_AGE_YEARS + 1.0) * 365.0;
+            // Elders by the real life stage, exactly as aging produces them.
+            b.age_days = ELDER_DAYS + 1.0;
+            b.stage = Stage::of_age_days(b.age_days);
             b.skills[Job::Logger.index()] = 0.6;
         }
-        assert!(c.beavers.iter().any(|b| b.is_elder()));
+        let elders: Vec<BeaverId> = c.beavers.iter().filter(|b| b.stage == Stage::Elder).map(|b| b.id).collect();
+        assert!(!elders.is_empty() && elders.iter().all(|&e| c.beaver(e).unwrap().is_elder()));
         for _ in 0..20 {
             c.teach_young(1.0);
+        }
+        for &e in &elders {
+            assert_eq!(c.beaver(e).unwrap().skill(Job::Logger), 0.6, "elders teach, they are not taught");
         }
         let with_elder = c.beaver(k_no).unwrap().skill(Job::Logger) - plain;
         assert!(with_elder > 2.0 * plain, "elder lessons {with_elder} vs plain {plain}");
