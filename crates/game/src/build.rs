@@ -261,7 +261,7 @@ fn build_items(
         let (w, y0) = (340.0, 74.0);
         let x = win.x - 10.0 - 340.0 - if ui.menu_open { 400.0 } else { 0.0 };
         let n_adults = adults(colony);
-        let h = 62.0 + Job::ALL.len() as f32 * 26.0 + 22.0;
+        let h = 62.0 + colony.enabled_jobs().len() as f32 * 26.0 + 22.0;
         l.panel(rc(x, y0, w, h), PANEL_BG);
         l.text(rc(x + 10.0, y0 + 8.0, w - 20.0, 20.0), format!("JOBS   adults {}   unassigned {}", n_adults, unassigned(colony)), TXT, 13.0);
         l.text(rc(x + 10.0, y0 + 30.0, w - 20.0, 16.0), "job            now      assigned", DIM, 11.0);
@@ -363,7 +363,7 @@ fn build_items(
                 12.0,
             );
             let mut opts: Vec<Option<Job>> = vec![None];
-            opts.extend(Job::ALL.iter().map(|j| Some(*j)));
+            opts.extend(colony.enabled_jobs().into_iter().map(Some));
             for (i, o) in opts.iter().enumerate() {
                 let (cx, cy) = (rx + 8.0 + (i % 3) as f32 * 106.0, y0 + 64.0 + (i / 3) as f32 * 28.0);
                 l.button(rc(cx, cy, 102.0, 24.0), BAction::SetJob(id, *o), o.map_or("Auto".to_string(), job_name), b.job == *o);

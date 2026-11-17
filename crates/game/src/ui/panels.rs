@@ -34,7 +34,7 @@ pub struct LedgerUi {
     dirty: bool,
     timer: f32,
     last_top: Option<TopBar>,
-    last_ledgers: Option<[Compact; 4]>,
+    last_ledgers: Option<Vec<Compact>>,
     last_detail: Option<DetailSnap>,
 }
 
@@ -308,6 +308,12 @@ fn refresh(
     footer: Query<Entity, With<DetailFooter>>,
 ) {
     let s = &sim.0;
+    if ui.tab.is_some_and(|t| !Tab::available(&s.features).contains(&t)) {
+        ui.tab = None; // a tab of a disabled system (e.g. BC_UI_TAB=trade) never opens
+    }
+    if !LogFilter::available(&s.features).contains(&ui.filter) {
+        ui.filter = LogFilter::All;
+    }
     if !s.colony.is_founded() {
         ui.hist = History::default();
         ui.last_top = None;
@@ -373,7 +379,7 @@ fn refresh(
         if let Ok(e) = header.single() {
             commands.entity(e).despawn_children();
             commands.entity(e).with_children(|p| {
-                for t in Tab::ALL {
+                for t in Tab::available(&s.features) {
                     pill(p, t.label(), Act::Open(t), t == tab, 4);
                 }
                 p.spawn(Node { flex_grow: 1.0, ..default() });
@@ -381,7 +387,7 @@ fn refresh(
                 if tab == Tab::Log {
                     p.spawn(Node { width: percent(100), column_gap: px(4), ..default() }).with_children(|f| {
                         text(f, "Show:", FONT, DIM);
-                        for fl in LogFilter::ALL {
+                        for fl in LogFilter::available(&s.features) {
                             pill(f, fl.label(), Act::Filter(fl), fl == ui.filter, 4);
                         }
                     });
@@ -573,7 +579,12 @@ mod tests {
     }
 
     fn rig() -> Rig {
+        rig_with(sim::features::Features::scoped())
+    }
+
+    fn rig_with(features: sim::features::Features) -> Rig {
         let mut sim = Sim(sim::SimState::new(4));
+        sim.0.set_features(features);
         let mut flow = Flow::new(&sim.0.world);
         crate::midgame::build_midgame(&mut sim.0, &mut flow, &mut History::default()).expect("midgame");
         Rig { sim, flow, sel: Selection::None, ui: LedgerUi::default(), cards: CardState::default(), old: UiState::default() }
@@ -616,7 +627,7 @@ mod tests {
 
     #[test]
     fn ledgers_click_accept_trades_and_reports_failure() {
-        let mut r = rig();
+        let mut r = rig_with(sim::features::Features::everything());
         let offer = r.sim.0.region.offers().first().cloned().expect("midgame has open offers");
         let have = |r: &Rig, res: Resource| match res {
             Resource::Food => r.sim.0.colony.food,
