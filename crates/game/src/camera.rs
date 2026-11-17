@@ -39,6 +39,8 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
     let target = Vec3::new(0.0, 6.0, 0.0);
     let (yaw, pitch, distance) = match name {
         "iso" => (0.8, 0.7, 150.0),
+        // Same angle as "iso", zoomed in on the map centre: tree, building and rock shadows fill the frame.
+        "iso-close" => (0.8, 0.7, 55.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
         // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
@@ -78,6 +80,7 @@ impl Plugin for CameraPlugin {
 
 /// Sun shadow maps on; the plum tint comes from the lilac ambient that fills them.
 const SUN_SHADOWS: bool = true;
+// `BC_NO_SUN_SHADOWS=1` renders the same frame without sun shadows: the pixel diff isolates shadowed pixels (tools/shadow_check.py).
 
 fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
     // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md §9 samples hexes).
@@ -85,7 +88,7 @@ fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
     // Key light: late-morning sun from the upper left, soft shadows; `update_sky_and_light` sets
     // colour and strength per season.
     commands.spawn((
-        DirectionalLight { illuminance: 1_400.0, shadow_maps_enabled: SUN_SHADOWS, ..default() },
+        DirectionalLight { illuminance: 1_400.0, shadow_maps_enabled: SUN_SHADOWS && std::env::var_os("BC_NO_SUN_SHADOWS").is_none(), ..default() },
         CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 1.0, maximum_distance: 260.0, first_cascade_far_bound: 45.0, overlap_proportion: 0.3 }.build(),
         Transform::from_xyz(-70.0, 90.0, -45.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
