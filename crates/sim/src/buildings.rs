@@ -282,7 +282,7 @@ impl Building {
     pub fn is_complete(&self) -> bool {
         self.status == Status::Complete
     }
-    fn cells(&self) -> impl Iterator<Item = (usize, usize)> + use<> {
+    pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + use<> {
         let (w, h) = self.kind.spec().footprint;
         let (x, y) = self.pos;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy)))
