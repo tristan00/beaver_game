@@ -852,6 +852,8 @@ mod tests {
     fn carrier_swims_when_the_water_route_is_shorter() {
         let gaits = |river: bool| {
             let (mut sim, ids) = setup();
+            // Hand-built terrain: no generated waterways, whatever the worldgen produces.
+            sim.water.depth.as_mut_slice().fill(0.0);
             if river {
                 // A river with its only land crossing far to the south.
                 for y in 0..40 {
