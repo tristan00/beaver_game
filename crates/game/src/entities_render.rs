@@ -40,7 +40,7 @@ const TREE_LOD1: f32 = 120.0;
 /// Seconds of render time shown in `--screenshot` mode (chosen so the hero shot has varied poses).
 const SCREENSHOT_CLOCK: f32 = 31.0;
 /// Whether the stress scene's itinerary beavers and stub trees are drawn instead of the live sim.
-/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--midgame`).
+/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--stress`).
 fn stub_mode(cli: &Cli) -> bool {
     cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
 }

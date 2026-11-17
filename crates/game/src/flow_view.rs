@@ -333,6 +333,9 @@ pub fn hint_text(h: &SiteHint) -> String {
 fn info_text(sim: &Sim, flow: &Flow, sel: Selection, hover: &Hover) -> String {
     let c = &sim.0.colony;
     let mut s = String::new();
+    if flow.phase == Phase::Menu {
+        return String::new();
+    }
     if !c.is_founded() {
         let total = (sim.0.world.size * sim.0.world.size) as f32;
         s += &format!("Scouting   explored {:.0}%   scouts {}\n", flow.fog.explored_cells() as f32 / total * 100.0, flow.scouts.len());
