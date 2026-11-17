@@ -180,7 +180,7 @@ Run the game, screenshot the same views, and for each fix above check the sample
 
 ## 10. Status of terrain, ground detail, water and lighting fixes (R19-16)
 
-Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` (`iso_seed{1,2}.png` wide, `lodge_seed{1,2}.png` close; `beaver_colony --seed N --cam iso|lodge --screenshot … --frames 30`). Shared colours live in `crates/game/src/palette.rs`.
+Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` (`iso_seed{1,2}.png` wide, `lodge_seed{1,2}.png` and `pond_seed{1,2}.png` close; `beaver_colony --seed N --cam iso|lodge|pond --screenshot … --frames 40`; `pond` frames the still pond with the most open banks). Shared colours live in `crates/game/src/palette.rs`.
 
 | Fix | Change | Where |
 |---|---|---|
@@ -190,11 +190,11 @@ Fixed-camera evidence: `artifacts/R19-16/before/` and `artifacts/R19-16/after/` 
 | 4 slopes | normals from a 3×3 smoothed gradient | `smooth_gradient` |
 | 5 detail | tufts, flowers (white/pink/yellow) and pebbles, ~1 per 7 cells, dry open grass only | `scatter_detail` |
 | 6 conifers | pines are four round blobs, Meadow deep / Leaf highlight | `entities_render/models.rs` |
-| 7, 8 water | Shallow body, Mid glow centre, Deep only below ~2 units, Foam ring at the shore, opacity ≥ 0.74, bed tinted teal not grey | `water_render.rs` |
+| 7, 8 water | Outline is the 0.3 level of the Gaussian-blurred wet mask, cut with marching triangles on a half-cell grid and draped just above the displayed terrain (any LOD), so banks are smooth curves, not cell staircases. Rings by distance from the shore: hard Foam band 0.2 cell (~5 px close), Deep rim to ~1 cell, Shallow body, Mid glow from 1.5 cells (pond centres); the mesh is also cut at every ring level so colours follow the rings. Opacity ≥ 0.8, no grey. Rebuilds are time-budgeted (2 ms/frame). Stub trees no longer stand in sim water. | `water_render.rs` `shore_field`, `build_water_mesh`; `scene.rs` |
 | 9 swim rings | three Foam arcs, unlit | `models.rs` `ripple` |
 | 10 light | sky `#9ED1F5`, warm sun from the upper left with cascaded shadows, lilac ambient, plum blob shadows | `camera.rs`, `terrain_render.rs` |
 | 11 brightness | tone mapping near-linear (SomewhatBoringDisplayTransform), ambient 4400 | `camera.rs` |
 
-Stress scene (`beaver_colony --stress`): avg 4.2–4.6 ms, max 8.4 ms, 0 frames ≥ 16 ms (five runs; the first cold run after a build once hit a single 33 ms frame).
+Stress scene (`beaver_colony --stress`) after the water rework: avg 3.1–3.5 ms, max 4.7–13.7 ms, 0 frames ≥ 16 ms in every run with the window focused (runs where the desktop took focus away show OS-throttled ~16.7 ms frames flagged `unfocused`, CPU still ~2.5 ms). Water mesh cost: 0.34 ms/chunk at full detail, 0.12 ms at LOD 2 (`water_rings_and_rebuild_cost` test).
 Upper-left warm glow: radial UI overlay in `camera.rs` (corner `#C2DCEC` fading to sky `#9ED1F5`).
 Still open: exact hex sampling of every point in §8 (screens still carry the old UI).

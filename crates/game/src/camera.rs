@@ -43,6 +43,8 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "low" => (0.5, 0.25, 110.0),
         // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
         "lodge" => (0.0, 0.55, 32.0),
+        // Target is the still pond nearest the map centre (see `water_render::pond_view`).
+        "pond" => (0.6, 1.2, 24.0),
         _ => return None,
     };
     Some(OrbitCamera { target, yaw, pitch, distance })
@@ -61,6 +63,11 @@ impl Plugin for CameraPlugin {
             let (target, yaw) = crate::entities_render::lodge_view(&app.world().resource::<crate::state::Sim>().0.height);
             orbit.target = target;
             orbit.yaw = yaw;
+        }
+        if name == "pond" {
+            if let Some(target) = crate::water_render::pond_view(&app.world().resource::<crate::state::Sim>().0) {
+                orbit.target = target;
+            }
         }
         app.insert_resource(orbit)
             .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.92)))
