@@ -13,6 +13,15 @@ use std::collections::HashSet;
 /// Dam cells one catalogue cost buys (a standard six-cell span); cost scales linearly with length.
 pub const DAM_SPAN_CELLS: f32 = 6.0;
 
+/// Height of the dam a `PlaceSite { kind: Dam }` command builds, above terrain.
+pub const DEFAULT_HEIGHT: f32 = 1.0;
+
+/// Cells a dam placed at `pos` (top-left of the catalogue footprint) spans.
+pub fn spot_cells(pos: Cell) -> Vec<Cell> {
+    let (w, h) = BuildingKind::Dam.spec().footprint;
+    (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).collect()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamPreview {
     /// Water surface the pond fills to (the lowest crest of the dam), in world units.

@@ -106,6 +106,11 @@ pub struct Tech {
 }
 
 impl Tech {
+    /// Unlocks every tech (tests and scripted scenes).
+    pub fn unlock_all(&mut self) {
+        self.unlocked = vec![true; TECHS.len()];
+    }
+
     pub fn is_unlocked(&self, id: TechId) -> bool {
         self.unlocked.get(id.0).copied().unwrap_or(false)
     }
