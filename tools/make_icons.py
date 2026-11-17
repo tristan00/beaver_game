@@ -1,4 +1,4 @@
-"""Draws assets/icons/*.png (96 px) and docs/icons_sheet.png (32 + 64 px) per docs/STYLE.md section 7.
+"""Draws assets/icons/*.png (96 px) and docs/icons_sheet.png (32 + 64 px) per docs/STYLE.md section 7 and docs/UI_SPEC.md section 6.
 Run: python tools/make_icons.py
 Files are named by game::ui::icons::Icon::file() (lowercase variant name); every file here has a
 variant, and the game loads all of them at startup (ui::icons::IconsPlugin)."""
@@ -12,7 +12,7 @@ LEAF='#5CA361'; BTN='#9ECC8C'; BERRY='#E0556B'; PINK='#F59AA6'; SUN='#F2C94C'
 LOG='#B9783F'; LOGD='#8F5A2E'; CUT='#F2D9A8'; CUTD='#C99A5E'; BARK='#7A4A2B'; BARKL='#9A6238'
 GREEN='#7CC45E'; GREEND='#4E9A52'; GREENL='#B4E08F'; MUD='#A07F60'; MUDL='#B79778'; MUDD='#7E6249'
 STONE='#B9AFA8'; STONED='#8C8290'; STONEL='#D8CFC8'; WATER='#6FD3E0'; WATERD='#1F8AB8'; ROSE='#E58B8B'
-TILES={'res':'#F7E8CC','need':'#FBE3D6','job':'#E3F0D2','act':'#DCEFE8','map':'#D7EEF2','nav':'#EDE3F5'}
+TILES={'res':'#F7E8CC','need':'#FBE3D6','job':'#E3F0D2','act':'#DCEFE8','map':'#D7EEF2','nav':'#EDE3F5','bld':'#EADFCB','alert':'#F8D9D2','season':'#DDEBF5','speed':'#E3E8DA'}
 
 # drawing primitives, rebound for each icon by draw(); coordinates are a 100x100 box
 d = k = None
@@ -138,20 +138,179 @@ def navtech():
 def navevents():
     R(16,18,84,84,18,CREAM); R(16,18,84,38,14,LEAF); L([34,52,66,52],6,CUTD); L([34,68,56,68],6,CUTD); C(70,70,6,BERRY)
 
-ICONS=[ # (file, fn, tile kind, label, in the style guide list)
- ('logs',logs,'res','Logs',1),('branches',branches,'res','Branches',1),('bark',bark,'res','Bark',1),
- ('plants',plants,'res','Plants',1),('mud',mud,'res','Mud',1),('stone',stone,'res','Stone',1),
- ('food',food,'need','Food',1),('shelter',shelter,'need','Shelter',1),('rest',rest,'need','Rest',1),('mood',mood,'need','Mood',1),
- ('collector',collector,'job','Collector',1),('builder',builder,'job','Builder',1),('hauler',hauler,'job','Hauler',1),('specialist',specialist,'job','Specialist',1),
- ('assign',assign,'act','Assign',1),('build',build,'act','Build',1),('fillslot',fillslot,'act','Fill slot',1),('movearea',movearea,'act','Move area',1),
- ('accept',accept,'act','Accept',1),('turnaway',turnaway,'act','Turn away',1),
- ('modewater',modewater,'map','Water',1),('modeforest',modeforest,'map','Forest',1),('modefood',modefood,'map','Food',1),('modework',modework,'map','Work',1),
- ('baskets',baskets,'res','Baskets',0),('rope',rope,'res','Rope',0),('tools',tools,'res','Tools',0),
- ('social',mood,'need','Social',0),('collect',collector,'job','Collect',0),('carry',carry,'job','Carry',0),
- ('haul',hauler,'job','Haul',0),('craft',builder,'job','Craft',0),
- ('cancel',cancel,'act','Cancel',0),('demolish',demolish,'act','Demolish',0),
- ('navcolony',shelter,'nav','Colony',0),('navbeavers',navbeavers,'nav','Beavers',0),('navstores',navstores,'nav','Stores',0),
- ('navbuild',build,'nav','Build',0),('navtech',navtech,'nav','Tech',0),('navevents',navevents,'nav','Events',0)]
+
+# ---- buildings (one per BuildingKind), alerts, seasons, speed and the rest of the UI spec list ----
+ORANGE='#E08A3C'; ICE='#5BA8D0'; ORANGED='#B05A22'; WATERL='#E8FAFA'
+def waves(y,x0=10,x1=90,w=5,f=None):
+    f=f or WATERD; pts=[]
+    for i in range(int((x1-x0)/10)+1): pts+=[x0+i*10,y+(3 if i%2 else -3)]
+    L(pts,w,f)
+def roof(x0,x1,ytop,ybase,f): d.polygon(P(x0,ybase,(x0+x1)/2,ytop,x1,ybase),fill=f)
+def arrow(x0,y0,x1,y1,w,f,hs=13):
+    L([x0,y0,x1,y1],w,f); a=math.atan2(y1-y0,x1-x0); ca,sa=math.cos(a),math.sin(a)
+    d.polygon(P(x1+hs*ca,y1+hs*sa,x1-hs*0.2*ca-hs*sa,y1-hs*0.2*sa+hs*ca,x1-hs*0.2*ca+hs*sa,y1-hs*0.2*sa-hs*ca),fill=f)
+def badge(x=80,y=20):
+    C(x,y,15,BERRY); L([x,y-8,x,y+1],4.2,CREAM); C(x,y+8,2.6,CREAM)
+def dome(cx,cy,r):
+    d.pieslice(P(cx-r,cy-r,cx+r,cy+r),180,360,fill=LOG)
+    for f in (0.35,0.7): L([cx-r*0.82*(1-f*0.3),cy-r*f,cx+r*0.82*(1-f*0.3),cy-r*f],3,LOGD)
+def door(x0,y0,x1,y1): R(x0,y0,x1,y1,(x1-x0)/2,INK); d.rectangle(P(x0,(y0+y1)/2,x1,y1),fill=INK)
+def snow(cx,cy,r,w,f):
+    for i in range(3):
+        a=i*math.pi/3; L([cx-r*math.cos(a),cy-r*math.sin(a),cx+r*math.cos(a),cy+r*math.sin(a)],w,f)
+    for i in range(6):
+        a=i*math.pi/3; bx,by=cx+r*0.62*math.cos(a),cy+r*0.62*math.sin(a)
+        for sgn in (-1,1):
+            t=a+sgn*math.pi/4; L([bx,by,bx+r*0.28*math.cos(t),by+r*0.28*math.sin(t)],w*0.8,f)
+def cog(cx,cy,r,f,hole):
+    for i in range(8):
+        a=i*math.pi/4; C(cx+r*1.05*math.cos(a),cy+r*1.05*math.sin(a),r*0.32,f)
+    C(cx,cy,r,f); C(cx,cy,r*0.45,hole)
+
+def dam():
+    R(8,64,92,90,10,WATER); waves(77,w=4)
+    R(10,44,90,64,10,LOGD); logend(84,54,8); R(14,26,78,46,10,LOG); logend(72,36,8); HL(24,36)
+    L([20,26,16,12],5,LOGD); L([40,26,42,10],5,LOGD)
+def lodge():
+    dome(50,76,42); door(40,58,60,80); R(8,78,92,90,6,WATER); waves(84,w=3); L([62,36,74,14],5,LOGD); HL(32,48,3)
+def burrow():
+    d.pieslice(P(8,38,92,122),180,360,fill=MUD); d.pieslice(P(36,58,64,94),180,360,fill=INK)
+    R(6,80,94,90,5,GREEND); C(24,64,4,MUDL); C(76,64,3.5,MUDD); HL(32,50,3)
+def foodcache():
+    d.pieslice(P(10,38,90,118),180,360,fill=LOG)
+    for y in (66,76): L([20,y,80,y],4,LOGD)
+    C(36,36,11,BERRY); C(58,34,11,BERRY); C(47,22,11,BERRY); E(56,6,80,20,GREEN); C(32,32,3,PINK); R(8,78,92,90,6,GREEND)
+def scentmound():
+    E(12,52,88,90,MUD); E(28,38,72,70,MUD); C(40,72,6,MUDL); C(66,76,5,MUDD)
+    for x in (34,50,66): L([x,28,x+5,21,x-1,14,x+4,8],4,GREEND)
+def guardpost():
+    for x,top in ((10,34),(32,14),(54,14),(76,34)):
+        R(x,top,x+16,88,3,LOG); d.polygon(P(x,top+2,x+8,top-12,x+16,top+2),fill=LOG)
+    R(6,62,94,72,3,LOGD); HL(18,50,2.6)
+def canal():
+    R(6,18,94,36,8,GREEN); R(6,64,94,82,8,GREEN); d.rectangle(P(6,30,94,70),fill=WATER); waves(50,w=4); R(6,74,94,88,6,GREEND); HL(20,27,2.5)
+def lock():
+    R(6,14,34,86,8,GREEN); R(66,14,94,86,8,GREEN); d.rectangle(P(34,24,66,86),fill=WATER); d.rectangle(P(34,54,66,86),fill=WATERD)
+    R(42,20,58,82,4,LOG); L([50,24,50,78],3,LOGD); R(30,40,70,50,4,LOGD); HL(18,26,3)
+def waterwheel():
+    for i in range(8):
+        a=i*math.pi/4; L([50,46,50+30*math.cos(a),46+30*math.sin(a)],5,LOGD); C(50+30*math.cos(a),46+30*math.sin(a),6,LOG)
+    RING(50,46,26,6,LOG); C(50,46,9,CUT); C(50,46,3.5,CUTD); R(6,78,94,94,8,WATER); waves(86,w=3)
+def workshop():
+    R(16,48,84,88,6,LOG); roof(8,92,12,52,LOGD); door(22,60,40,88); cog(66,68,11,STONED,LOG); HL(28,56,2.6)
+def warehouse():
+    R(8,40,92,88,6,LOG); R(4,26,96,46,6,LOGD); R(28,54,72,88,3,CUTD)
+    L([28,54,72,88],4,LOG); L([72,54,28,88],4,LOG); HL(16,52,3)
+def dock():
+    R(6,58,94,92,8,WATER); waves(78,w=4)
+    d.polygon(P(20,18,80,18,92,56,8,56),fill=CUT)
+    for y in (30,43): L([14,y,86,y],3,CUTD)
+    R(12,56,22,84,3,LOGD); R(78,56,88,84,3,LOGD)
+def barge():
+    R(8,64,92,92,8,WATER); waves(82,w=3)
+    d.polygon(P(8,50,92,50,78,76,22,76),fill=LOGD)
+    R(20,30,40,50,5,LOG); R(40,24,60,50,5,LOG); R(60,30,80,50,5,LOG); HL(28,40,2.4)
+def loggingcamp():
+    R(20,52,76,88,10,LOG); E(20,40,76,66,CUT); E(34,48,62,58,CUTD); E(44,51,52,55,CUT)
+    L([86,90,72,22],7,LOGD); R(54,12,86,34,7,STONED); R(54,12,70,34,7,STONE); HL(30,74,2.8)
+def foragerhut():
+    R(18,52,82,88,6,LOG); roof(8,92,12,56,GREEND); roof(26,74,28,54,GREEN); door(38,62,58,88); C(72,76,8,BERRY); HL(30,42,3)
+def mudpit():
+    E(8,44,92,90,MUDD); E(16,48,84,80,MUD); E(28,56,60,68,MUDL)
+    C(36,30,9,MUD); C(60,26,7,MUD); C(72,36,5,MUDL); HL(26,60,3)
+def quarrycamp():
+    R(10,50,56,88,16,STONE); R(40,38,90,88,18,STONED); R(10,50,40,88,14,STONE); E(18,56,36,70,STONEL); HL(60,52,3)
+    L([20,30,60,12],6,LOG); d.polygon(P(54,4,80,18,68,26),fill=STONEL)
+def mill():
+    d.polygon(P(28,92,72,92,62,44,38,44),fill=CUTD); roof(28,72,22,48,LOGD); R(44,70,56,92,5,INK)
+    for a in (45,135,225,315):
+        ca,sa=math.cos(math.radians(a)),math.sin(math.radians(a))
+        L([50,42,50+30*ca,42+30*sa],5,LOG)
+        d.polygon(P(50+14*ca,42+14*sa,50+34*ca,42+34*sa,50+34*ca-9*sa,42+34*sa+9*ca,50+14*ca-9*sa,42+14*sa+9*ca),fill=CUT)
+    C(50,42,7,LOGD); HL(40,62,2.8)
+def storehouse():
+    R(14,30,86,88,12,LOG); R(14,30,86,48,10,LOGD); R(14,62,86,70,0,LOGD); R(44,30,56,88,0,CUTD); HL(26,42,3)
+def close_():
+    L([28,28,72,72],12,INK); L([72,28,28,72],12,INK)
+def locate():
+    d.polygon(P(26,44,74,44,50,92),fill=BERRY); C(50,38,27,BERRY); C(50,38,11,CREAM); HL(38,24,3.2)
+def alertfood():
+    C(50,64,26,BERRY); L([50,40,50,26],5,GREEND); E(52,16,78,32,GREEN); C(42,56,5,PINK); badge()
+def alertshelter():
+    dome(42,78,36); door(32,62,52,80); R(4,80,80,90,5,GREEND); badge()
+def alertidle():
+    beaver(38,40,0.95); L([58,58,74,58,58,74,74,74],5,SUN); badge()
+def alertstalled():
+    cog(44,60,22,STONED,TILES['alert']); badge()
+def alertfull():
+    R(10,42,70,88,10,LOG); R(10,42,70,56,8,LOGD); R(34,64,46,76,4,CUT)
+    C(26,34,9,BERRY); C(46,30,8,GREEN); E(48,30,68,44,STONE); badge()
+def alertjoin():
+    beaver(56,34,0.95); arrow(6,68,30,68,8,LEAF,11)
+def alertwinter():
+    snow(46,58,31,5.5,ICE); badge()
+def alertwater():
+    C(44,66,22,WATER); d.polygon(P(44,26,64,62,24,62),fill=WATER); C(36,64,5,WATERL)
+    arrow(76,50,76,86,8,ORANGE,11); badge()
+def spring():
+    E(8,72,92,100,MUD); L([50,78,50,44],8,GREEND); E(14,24,52,58,GREEN); E(48,16,86,50,'#9ADB78'); HL(28,36)
+def summer():
+    for i in range(10):
+        a=i*math.pi/5; C(50+36*math.cos(a),50+36*math.sin(a),6,SUN)
+    C(50,50,25,SUN); HL(40,40,4)
+def autumn():
+    E(18,18,82,82,ORANGE); d.polygon(P(50,8,66,30,34,30),fill=ORANGE)
+    L([50,88,50,30],5,ORANGED); L([50,56,36,44],4,ORANGED); L([50,66,66,50],4,ORANGED); HL(32,34,3)
+def winter():
+    snow(50,50,38,7,ICE); C(50,50,7,ICE)
+def pause():
+    R(26,22,44,78,6,LEAF); R(56,22,74,78,6,LEAF)
+def play1(): d.polygon(P(32,20,78,50,32,80),fill=LEAF)
+def play2():
+    for x in (16,46): d.polygon(P(x,24,x+34,50,x,76),fill=LEAF)
+def play3():
+    for x in (10,36,62): d.polygon(P(x,28,x+26,50,x,72),fill=LEAF)
+def social():
+    for cx,col in ((30,SUN),(70,'#F7D57A')):
+        C(cx,50,21,col); C(cx-8,46,3.5,INK); C(cx+8,46,3.5,INK); ARC((cx-9,44,cx+9,64),25,155,4,INK)
+    C(22,60,3.5,PINK); C(78,60,3.5,PINK)
+def collect():
+    R(16,52,84,88,16,LOG)
+    for x in (34,50,66): L([x,60,x-1,80],3,LOGD)
+    arrow(50,8,50,34,8,LEAF,11); C(26,44,8,BERRY); C(74,44,8,BERRY); HL(23,41,2)
+def haul():
+    R(14,36,66,62,10,LOG); logend(62,49,8); L([66,49,88,28],6,CUTD); arrow(12,82,84,82,7,LEAF,11); HL(24,44,2.8)
+def craft():
+    d.polygon(P(12,52,76,20,84,34,20,66),fill=STONEL)
+    for i in range(6): d.polygon(P(22+i*10,58-i*4.8,29+i*10,64-i*4.8,34+i*10,54-i*4.8),fill=STONED)
+    L([70,58,86,86],11,LOG); HL(30,46,2.6)
+def navcolony():
+    dome(34,74,30); door(26,58,42,76); dome(72,78,22); R(6,78,94,90,6,GREEND); HL(24,56,2.8)
+def navbuild():
+    roof(8,92,10,48,LOG); R(18,48,82,88,4,CUTD); L([18,50,18,88],5,LOG); L([82,50,82,88],5,LOG); L([18,68,82,68],4,LOG)
+    L([50,48,50,34],5,LEAF); E(50,22,72,36,GREEN); HL(30,32,2.6)
+
+ICONS=[ # (file, fn, tile kind, label); order = contact sheet order, grouped by GROUPS
+ ('logs',logs,'res','Logs'),('branches',branches,'res','Branches'),('bark',bark,'res','Bark'),('plants',plants,'res','Plants'),
+ ('mud',mud,'res','Mud'),('stone',stone,'res','Stone'),('baskets',baskets,'res','Baskets'),('rope',rope,'res','Rope'),('tools',tools,'res','Tools'),
+ ('food',food,'need','Food'),('shelter',shelter,'need','Shelter'),('rest',rest,'need','Rest'),('mood',mood,'need','Mood'),('social',social,'need','Social'),
+ ('collector',collector,'job','Collector'),('builder',builder,'job','Builder'),('hauler',hauler,'job','Hauler'),('specialist',specialist,'job','Specialist'),
+ ('dam',dam,'bld','Dam'),('lodge',lodge,'bld','Lodge'),('burrow',burrow,'bld','Burrow'),('foodcache',foodcache,'bld','Food cache'),
+ ('scentmound',scentmound,'bld','Scent mound'),('guardpost',guardpost,'bld','Guard post'),('canal',canal,'bld','Canal'),('lock',lock,'bld','Lock'),
+ ('waterwheel',waterwheel,'bld','Water wheel'),('workshop',workshop,'bld','Workshop'),('warehouse',warehouse,'bld','Warehouse'),('dock',dock,'bld','Dock'),
+ ('barge',barge,'bld','Barge'),('loggingcamp',loggingcamp,'bld','Logging camp'),('foragerhut',foragerhut,'bld','Forager hut'),('mudpit',mudpit,'bld','Mud pit'),
+ ('quarrycamp',quarrycamp,'bld','Quarry camp'),('mill',mill,'bld','Mill'),('storehouse',storehouse,'bld','Storehouse'),
+ ('assign',assign,'act','Assign'),('fillslot',fillslot,'act','Fill slot'),('movearea',movearea,'act','Move area'),('accept',accept,'act','Accept'),
+ ('turnaway',turnaway,'act','Turn away'),('cancel',cancel,'act','Cancel'),('demolish',demolish,'act','Demolish'),('collect',collect,'act','Collect'),
+ ('carry',carry,'act','Carry'),('build',build,'act','Build'),('haul',haul,'act','Haul'),('craft',craft,'act','Craft'),
+ ('navcolony',navcolony,'act','Colony'),('navbeavers',navbeavers,'act','Beavers'),('navstores',navstores,'act','Stores'),('navbuild',navbuild,'act','Build screen'),
+ ('navtech',navtech,'act','Tech'),('navevents',navevents,'act','Events'),('close',close_,'act','Close'),('locate',locate,'act','Locate'),
+ ('modewater',modewater,'map','Water'),('modeforest',modeforest,'map','Forest'),('modefood',modefood,'map','Food'),('modework',modework,'map','Work'),
+ ('alertfood',alertfood,'alert','Food'),('alertshelter',alertshelter,'alert','Shelter'),('alertidle',alertidle,'alert','Idle'),('alertstalled',alertstalled,'alert','Stalled'),
+ ('alertfull',alertfull,'alert','Store full'),('alertjoin',alertjoin,'alert','Joiner'),('alertwinter',alertwinter,'alert','Winter'),('alertwater',alertwater,'alert','Low water'),
+ ('spring',spring,'season','Spring'),('summer',summer,'season','Summer'),('autumn',autumn,'season','Autumn'),('winter',winter,'season','Winter'),
+ ('pause',pause,'speed','Pause'),('play1',play1,'speed','1x'),('play2',play2,'speed','2x'),('play3',play3,'speed','3x')]
+GROUPS=[('Goods','res'),('Needs','need'),('Jobs','job'),('Buildings','bld'),('Actions','act'),('Map modes','map'),('Alerts','alert'),('Seasons','season'),('Speed','speed')]
 
 def font(sz,b=False):
     try: return ImageFont.truetype('C:/Windows/Fonts/segoeui%s.ttf'%('b' if b else ''),sz)
@@ -159,18 +318,20 @@ def font(sz,b=False):
 
 def main():
     os.makedirs(OUT,exist_ok=True)
-    for f,fn,kind,_l,_g in ICONS: draw(fn,kind,96).save(os.path.join(OUT,f+'.png'))
-    guide=[i for i in ICONS if i[4]]
-    groups=[('Resources','res'),('Needs','need'),('Jobs','job'),('Actions','act'),('Map modes','map')]
-    W=700; im=Image.new('RGB',(W,700),PANEL); dd=ImageDraw.Draw(im); y=14
-    dd.text((20,y),'Icon set: each shown at 64 px (left) and 32 px (right)',font=font(15,True),fill=INK); y+=34
-    for title,kind in groups:
-        dd.text((20,y),title,font=font(14,True),fill=INK); y+=22
-        for n,(f,fn,_k,lab,_g) in enumerate([i for i in guide if i[2]==kind]):
-            x=20+n*108
-            i64=draw(fn,kind,64); im.paste(i64,(x,y),i64)
-            i32=draw(fn,kind,32); im.paste(i32,(x+68,y+16),i32)
-            dd.text((x,y+68),lab,font=font(12),fill=DIM)
-        y+=100
+    for f,fn,kind,_l in ICONS: draw(fn,kind,96).save(os.path.join(OUT,f+'.png'))
+    cw=112; per=10; W=per*cw+40
+    rows=sum((len([i for i in ICONS if i[2]==k])+per-1)//per for _t,k in GROUPS)
+    H=48+len(GROUPS)*30+rows*100+20
+    im=Image.new('RGB',(W,H),PANEL); dd=ImageDraw.Draw(im); y=14
+    dd.text((20,y),'Icon set (%d icons): each shown at 64 px (left) and 32 px (right)'%len(ICONS),font=font(15,True),fill=INK); y+=34
+    for title,kind in GROUPS:
+        dd.text((20,y),title,font=font(14,True),fill=INK); y+=24
+        row=[i for i in ICONS if i[2]==kind]
+        for n,(f,fn,_k,lab) in enumerate(row):
+            x=20+(n%per)*cw; yy=y+(n//per)*100
+            i64=draw(fn,kind,64); im.paste(i64,(x,yy),i64)
+            i32=draw(fn,kind,32); im.paste(i32,(x+68,yy+16),i32)
+            dd.text((x,yy+68),lab,font=font(12),fill=DIM)
+        y+=((len(row)+per-1)//per)*100+6
     im.crop((0,0,W,y+4)).save(os.path.join(DOCS,'icons_sheet.png'))
 main()
