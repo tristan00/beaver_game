@@ -1,4 +1,4 @@
-﻿//! Pure, deterministic simulation core (no rendering dependencies).
+//! Pure, deterministic simulation core (no rendering dependencies).
 //! `SimState` composes one struct per system; the game crate only reads it,
 //! advances it with `step`, and mutates it through `apply`.
 
@@ -71,8 +71,8 @@ impl SimState {
             colony: Default::default(),
             buildings: Default::default(),
             tech: Default::default(),
-            region: Default::default(),
-            events: Default::default(),
+            region: region::Region::new(seed),
+            events: events::Events::new(seed),
         }
     }
 
