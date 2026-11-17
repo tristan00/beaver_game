@@ -65,6 +65,11 @@ pub mod colony {
     // Job choice.
     /// Below this food per head unassigned workers forage, and no kits are born.
     pub const HUNGRY_FOOD_PER_CAPITA: f32 = 4.0;
+    /// Spring litters only fill the room left by this much stored food per head: enough to carry the whole colony,
+    /// kits included, through a winter when foraging yields little.
+    pub const BIRTH_MIN_FOOD_PER_CAPITA: f32 = 12.0;
+    /// Litters stop once the population reaches this multiple of `FORAGE_CROWDING_POPULATION`.
+    pub const BIRTH_MAX_CROWDING: f32 = 1.0;
     /// Lodges below this condition draw unassigned builders, if this much wood is stored.
     pub const REPAIR_BELOW_CONDITION: f32 = 0.6;
     pub const REPAIR_MIN_WOOD: f32 = 2.0;

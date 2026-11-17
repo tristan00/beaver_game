@@ -810,7 +810,7 @@ impl Colony {
 
             // health: neglect wears it down slowly, care restores it
             let frail = if b.stage == Stage::Kit { KIT_FRAILTY } else { 1.0 };
-            let mut loss = 0.0;
+            let (mut loss, mut ageing) = (0.0, 0.0);
             for (k, rate, hurting) in [
                 (0, STARVE_RATE * frail, n.food < STARVE_BELOW),
                 (1, FREEZE_RATE * frail, n.warmth < FREEZE_BELOW),
@@ -824,10 +824,14 @@ impl Colony {
                 if hurting {
                     b.harm[k] += rate * dt;
                     loss += rate * dt;
+                    if k == 4 {
+                        ageing += rate * dt;
+                    }
                 }
             }
             b.health -= loss;
-            if loss == 0.0 && n.food > HEAL_ABOVE && n.warmth > HEAL_ABOVE {
+            // Old age wears health down but must not stop the old healing from other harm.
+            if loss == ageing && n.food > HEAL_ABOVE && n.warmth > HEAL_ABOVE {
                 b.health += HEAL_RATE * dt;
             }
             b.health = b.health.min(1.0);
@@ -932,7 +936,14 @@ impl Colony {
     /// Spring litters: each healthy, housed, paired adult female bears 1–3 kits once a year.
     fn births(&mut self) {
         let doy = day_of_year(self.time_days);
-        if !(BIRTH_FROM_DAY..SPRING_END).contains(&doy) || self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA {
+        if !(BIRTH_FROM_DAY..SPRING_END).contains(&doy) {
+            return;
+        }
+        // Kits eat from birth, so litters only fill the room the stores can carry through a winter.
+        // Foraging grounds thin out with numbers, so there is a population litters never exceed.
+        let cap = ((self.food / BIRTH_MIN_FOOD_PER_CAPITA).min(BIRTH_MAX_CROWDING * FORAGE_CROWDING_POPULATION)) as i64;
+        let mut room = cap - self.beavers.len() as i64;
+        if room <= 0 {
             return;
         }
         let year = (self.time_days / DAYS_PER_YEAR) as i64;
@@ -952,10 +963,15 @@ impl Colony {
             .cloned()
             .collect();
         for m in mothers {
+            if room <= 0 {
+                break;
+            }
             if let Some(b) = self.beavers.iter_mut().find(|b| b.id == m.id) {
                 b.last_birth_year = year;
             }
-            for _ in 0..MIN_LITTER + self.range(LITTER_SPREAD) {
+            let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
+            room -= litter as i64;
+            for _ in 0..litter {
                 let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
                 let id = self.spawn(sex, 0.0, m.family, m.lodge, m.pos, m.mate, Some(m.id));
                 self.stats.births += 1;
