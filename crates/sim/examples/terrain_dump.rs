@@ -49,6 +49,7 @@ fn run() -> Result<PathBuf, (u8, String)> {
     arr("lake", &mut s, w.lake.as_slice().iter().copied(), b); s.push(',');
     arr("pond", &mut s, w.pond.as_slice().iter().copied(), b); s.push(',');
     arr("valley", &mut s, w.valley.as_slice().iter().copied(), |v| v.0.to_string()); s.push(',');
+    arr("flow_acc", &mut s, w.flow_acc.as_slice().iter().copied(), |v| v.to_string()); s.push(',');
     arr("flow_to", &mut s, w.flow_to.as_slice().iter().copied(), |v| v.map_or("-1".into(), |i| i.to_string())); s.push(',');
     arr("forest", &mut s, w.forest.as_slice().iter().copied(), |t: Option<Tree>| {
         t.map_or(0, |t| Tree::ALL.iter().position(|&x| x == t).unwrap() + 1).to_string()
