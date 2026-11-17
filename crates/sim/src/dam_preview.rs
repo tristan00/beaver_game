@@ -35,9 +35,14 @@ pub struct DamPreview {
     pub fill_days: f32,
 }
 
+/// How many standard spans a dam of `n` cells is (the cost and labour multiplier).
+pub fn length_factor(n: usize) -> f32 {
+    n as f32 / DAM_SPAN_CELLS
+}
+
 /// Cost of a dam of `n` cells.
 pub fn dam_cost(n: usize) -> Vec<Amount> {
-    BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * n as f32 / DAM_SPAN_CELLS)).collect()
+    BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * length_factor(n))).collect()
 }
 
 /// Evaluates a dam of `height` on `cells`; `None` if the cells are not a valid dam line.

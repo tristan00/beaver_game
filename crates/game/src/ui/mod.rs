@@ -8,6 +8,7 @@
 #[cfg_attr(not(test), allow(dead_code))] // `audit` and `Numbers` run in tests
 pub mod explain;
 pub mod icons;
+pub mod menu;
 mod kit;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod mapmodes;

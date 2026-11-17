@@ -173,6 +173,15 @@ pub fn spawn_on(sim: &mut SimState, id: BeaverId, cell: Cell) -> Result<(), Spaw
     Ok(())
 }
 
+/// Puts every colony beaver on the map (beside its position) without running a step; used by
+/// starts so a freshly built state already shows its beavers. Rebuilds the navigation grid first.
+pub fn place_beavers(sim: &mut SimState) {
+    let mut nav = std::mem::replace(&mut sim.nav, NavGrid::new(1, 1));
+    nav.rebuild(sim);
+    sim.nav = nav;
+    sync_agents(sim);
+}
+
 /// Spawns agents for colony beavers that have none (beside their position) and removes agents
 /// of beavers that no longer exist, freeing their cells.
 fn sync_agents(sim: &mut SimState) {
@@ -620,6 +629,115 @@ fn finish_sites(sim: &mut SimState) {
             max: (c.0 + w / 2, c.1 + h / 2),
         });
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
+        if let Some(i) = sim.work.dam_plans.iter().position(|p| p.building == id) {
+            let plan = sim.work.dam_plans.remove(i);
+            if let Err(e) = sim.water.build_dam(&plan.cells, plan.height) {
+                sim.work.dam_failures.push((id, e.to_string()));
+            }
+        }
+    }
+}
+
+// ───────────────────────────── automatic organisation ─────────────────────────────
+
+/// Radius (cells) around a site within which automatic gatherers look for materials.
+const GATHER_RADIUS: usize = 30;
+
+/// The resource a missing good is gathered from.
+fn source_of(good: Good) -> ResourceKind {
+    match good {
+        Good::Logs | Good::Sticks => ResourceKind::Tree,
+        Good::Mud => ResourceKind::MudBank,
+        Good::Stone => ResourceKind::StoneOutcrop,
+        _ => ResourceKind::Plant,
+    }
+}
+
+/// Staffs open sites and sends gatherers for the materials the colony ledger cannot cover.
+/// Only beavers with no player order (no slot, no assignment) or ones this function placed itself
+/// are touched; a beaver the player re-assigns is dropped from `Work::managed`. Half the free
+/// workers (rounded up) gather while any material is short; the rest take builder slots.
+fn organise(sim: &mut SimState) {
+    use crate::work::ManagedDuty;
+    // Drop beavers that left or were re-assigned by the player.
+    let managed: Vec<(BeaverId, ManagedDuty)> = sim.work.managed.iter().map(|(&k, &v)| (k, v)).collect();
+    for (id, duty) in managed {
+        let same = match duty {
+            ManagedDuty::Gather(a) => sim.work.slot_of(id).is_none() && sim.agents.get(id).is_some_and(|ag| ag.assignment == Some(a)),
+            ManagedDuty::Build(b, s) => sim.work.slot_of(id).is_some_and(|(pb, ps, _)| (pb, ps) == (b, s)),
+        };
+        if !same || sim.colony.beaver(id).is_none() {
+            sim.work.managed.remove(&id);
+        }
+    }
+    let sites: Vec<(BuildingId, Cell)> = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| p.site.as_ref().is_some_and(|s| !s.is_done()))
+        .filter_map(|p| sim.buildings.building(p.building).map(|b| (p.building, b.pos)))
+        .collect();
+    let free: Vec<BeaverId> = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| b.stage != Stage::Kit && sim.agents.by_id.contains_key(&b.id))
+        .filter(|b| {
+            sim.work.managed.contains_key(&b.id)
+                || (sim.work.slot_of(b.id).is_none() && sim.agents.get(b.id).is_some_and(|a| a.assignment.is_none()))
+        })
+        .map(|b| b.id)
+        .collect();
+    // First good the ledger cannot cover, across all open sites.
+    let short = sites.iter().find_map(|&(site, pos)| {
+        let progress = sim.work.place(site)?.site.as_ref()?;
+        let good = progress.needed.iter().map(|n| n.0).find(|&g| {
+            let missing: f32 = sites.iter().filter_map(|s| sim.work.place(s.0)?.site.as_ref()).map(|p| p.missing(g)).sum();
+            missing - sim.buildings.stores.amount(g) > WORK_EPS
+        })?;
+        Some((good, pos))
+    });
+    let gatherers = if short.is_some() { free.len().div_ceil(2) } else { 0 };
+    let mut builder_slots = sites.iter().flat_map(|&(s, _)| (0..crate::work::SITE_SLOTS).map(move |i| (s, i)));
+    let desired: Vec<(BeaverId, Option<ManagedDuty>)> = free
+        .iter()
+        .enumerate()
+        .map(|(n, &id)| {
+            let duty = match short {
+                Some((good, pos)) if n < gatherers => {
+                    let r = GATHER_RADIUS;
+                    let area = Area { min: (pos.0.saturating_sub(r), pos.1.saturating_sub(r)), max: (pos.0 + r, pos.1 + r) };
+                    Some(ManagedDuty::Gather(Assignment::Area(source_of(good), area)))
+                }
+                _ => builder_slots.next().map(|(s, i)| ManagedDuty::Build(s, i)),
+            };
+            (id, duty)
+        })
+        .collect();
+    // Release first so slots a worker leaves can be taken by another in the same pass.
+    for &(id, duty) in &desired {
+        if sim.work.managed.get(&id).copied() == duty {
+            continue;
+        }
+        if let Some((b, i, _)) = sim.work.slot_of(id).filter(|_| sim.work.managed.contains_key(&id)) {
+            let _ = sim.work.unassign(b, i);
+        }
+        if sim.work.managed.remove(&id).is_some() {
+            sim.agents.assign(id, None);
+        }
+    }
+    for (id, duty) in desired {
+        let Some(duty) = duty else { continue };
+        if sim.work.managed.get(&id) == Some(&duty) {
+            continue;
+        }
+        let ok = match duty {
+            ManagedDuty::Gather(a) => sim.agents.assign(id, Some(a)),
+            ManagedDuty::Build(b, i) => sim.work.assign(b, i, id).is_ok(),
+        };
+        if ok {
+            sim.work.managed.insert(id, duty);
+        }
     }
 }
 
@@ -739,6 +857,9 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     nav.rebuild(sim);
     sim.nav = nav;
     sync_agents(sim);
+    if sim.work.auto_organise {
+        organise(sim);
+    }
     let ids: Vec<BeaverId> = sim.agents.by_id.keys().copied().collect();
     for id in ids {
         let Some(mut ag) = sim.agents.by_id.remove(&id) else { continue };

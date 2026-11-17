@@ -8,11 +8,11 @@ mod entities_render;
 mod flow;
 mod flow_view;
 mod input;
-mod midgame;
 mod opening;
 mod screenshot;
 mod showcase;
 mod sim_driver;
+mod startflow;
 mod state;
 mod terrain_render;
 mod ui;
@@ -52,10 +52,9 @@ fn main() -> AppExit {
         camera::CameraPlugin,
         showcase::ShowcasePlugin,
         input::InputPlugin,
+        startflow::StartPlugin,
     ))
     .add_plugins((
-        midgame::MidgamePlugin,
-        opening::OpeningPlugin,
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,
