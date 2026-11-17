@@ -178,6 +178,21 @@ impl Mb {
         self.lathe(m, &[(1.0, 0.0), (0.0, 0.0)], seg, col, col, false);
     }
 
+    /// Flat upward-facing polygon fanned from `c` to the closed `rim` (rim angles increasing from +Z
+    /// toward +X).
+    pub fn fan(&mut self, c: Vec3, rim: &[Vec3], col: [f32; 3]) {
+        let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
+        let ci = self.push(&m, &nm, c, Vec3::Y, col);
+        let first = self.pos.len() as u32;
+        for p in rim {
+            self.push(&m, &nm, *p, Vec3::Y, col);
+        }
+        let n = rim.len() as u32;
+        for i in 0..n {
+            self.idx.extend([ci, first + i, first + (i + 1) % n]);
+        }
+    }
+
     /// Appends another builder's geometry translated by `off`.
     pub fn append(&mut self, other: Mb, off: Vec3) {
         let base = self.pos.len() as u32;

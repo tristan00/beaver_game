@@ -2,7 +2,7 @@
 //! structures. Everything is vertex-coloured, round-edged and a little exaggerated so it reads
 //! as cute from the strategy camera and still holds up close.
 use super::meshgen::{hex, mix, Mb, Rng};
-use super::scene::{Species, StructKind};
+use super::scene::{Pond, Species, StructKind};
 use bevy::prelude::*;
 use std::f32::consts::{PI, TAU};
 
@@ -87,6 +87,21 @@ pub fn beaver_static(mb: &mut Mb) {
 }
 
 /// Foam ring shown around swimming beavers.
+/// Stub pond surface following the shore (pushed a little under the banks and dams), in pond-local
+/// coordinates (origin at the pond centre, y = 0 at the water level).
+pub fn pond_surface(p: &Pond) -> Mesh {
+    let rim: Vec<Vec3> = (0..96)
+        .map(|i| {
+            let a = i as f32 / 96.0 * TAU;
+            let r = p.radius(a) + 0.9;
+            Vec3::new(a.sin() * r, 0.0, a.cos() * r)
+        })
+        .collect();
+    let mut mb = Mb::new();
+    mb.fan(Vec3::ZERO, &rim, [1.0; 3]);
+    mb.build()
+}
+
 pub fn ripple(mb: &mut Mb) {
     mb.lathe(Mat4::IDENTITY, &[(1.25, 0.0), (1.0, 0.0)], 20, hex(0xe8f6ff), hex(0xe8f6ff), false);
 }

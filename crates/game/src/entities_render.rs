@@ -95,7 +95,6 @@ struct Models {
     ripple: Handle<Mesh>,
     blob: Handle<Mesh>,
     wheel: Handle<Mesh>,
-    water: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
 }
 
@@ -187,7 +186,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let far = build(&models::beaver_static);
     let ripple = build(&models::ripple);
     let blob = build(&models::blob_shadow);
-    let water = build(&|m| m.disc(Vec3::ZERO, 34.0, 34.0, [1.0; 3], 48));
     commands.insert_resource(Models {
         white,
         blob_mat,
@@ -205,7 +203,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         ripple,
         blob,
         wheel: meshes.add(models::wheel_mesh()),
-        water,
         structs: HashMap::new(),
     });
 }
@@ -297,7 +294,8 @@ fn spawn_scene(
 
     if let (Some(pond), true) = (scene.pond, water_dry) {
         // Stub water until the water renderer draws the sim's water field.
-        commands.spawn((SceneEntity, Mesh3d(models.water.clone()), MeshMaterial3d(models.water_mat.clone()), Transform::from_xyz(pond.center.x, pond.level, pond.center.y)));
+        let surface = meshes.add(models::pond_surface(&pond));
+        commands.spawn((SceneEntity, Mesh3d(surface), MeshMaterial3d(models.water_mat.clone()), Transform::from_xyz(pond.center.x, pond.level, pond.center.y)));
     }
 
     // Beavers: root + body (with head, tail, legs, carried log) + far mesh + ripple + blob shadow.
@@ -343,7 +341,7 @@ fn spawn_scene(
 fn ground_y(sim: &Sim, st: BeaverState, pond: Option<Pond>) -> f32 {
     let g = height_at(&sim.0.height, st.pos.x, st.pos.y);
     match (st.pose, pond) {
-        (Pose::Swim, Some(p)) => p.level.max(g),
+        (Pose::Swim, Some(p)) if p.contains(st.pos, 0.5) => p.level.max(g),
         _ => g,
     }
 }
@@ -352,7 +350,7 @@ fn eval_beaver(scene: &RenderScene, i: usize, t: f32, sim: &Sim) -> BeaverState 
     let b = &scene.beavers[i];
     let pond = scene.pond;
     match &b.route {
-        Some(r) => r.eval(t, |p| pond.is_some_and(|po| height_at(&sim.0.height, p.x, p.y) < po.level - 0.15)),
+        Some(r) => r.eval(t, |p| pond.is_some_and(|po| po.swimmable(&sim.0.height, p))),
         None => b.state,
     }
 }
@@ -671,6 +669,30 @@ mod tests {
         for kind in [StructKind::Lodge, StructKind::Dam, StructKind::Canal, StructKind::Burrow, StructKind::Workshop, StructKind::WaterWheel, StructKind::Dock, StructKind::Barge] {
             for stage in 0..4 {
                 check("struct", &models::struct_mesh(kind, 4.0, stage));
+            }
+        }
+    }
+
+    /// The stub pond must sit in the terrain, not flood it: most trees stay alive, the pond is
+    /// pond-sized, and the buildings do not overlap.
+    #[test]
+    fn stub_pond_fits_the_terrain() {
+        for seed in 1..=4 {
+            let sim = sim::SimState::new(seed);
+            let sc = scene_from_sim(&sim, SceneConfig::NORMAL);
+            let snags = sc.trees.iter().filter(|t| t.state == TreeState::Snag).count();
+            let alive = sc.trees.iter().filter(|t| t.state == TreeState::Alive).count();
+            assert!(alive > sc.trees.len() * 3 / 4, "seed {seed}: only {alive}/{} trees alive", sc.trees.len());
+            assert!(snags * 20 < sc.trees.len(), "seed {seed}: {snags} drowned snags");
+            let pond = sc.pond.expect("stub pond");
+            let mean = pond.shore_r.iter().sum::<f32>() / pond.shore_r.len() as f32;
+            assert!((6.0..=20.0).contains(&mean), "seed {seed}: pond radius {mean}");
+            let big: Vec<_> = sc.structs.iter().filter(|s| matches!(s.kind, StructKind::Lodge | StructKind::Workshop)).collect();
+            for (i, a) in big.iter().enumerate() {
+                for b in &big[i + 1..] {
+                    let d = Vec2::new(a.pos.x - b.pos.x, a.pos.z - b.pos.z).length();
+                    assert!(d > 5.0, "seed {seed}: {:?} and {:?} overlap ({d:.1})", a.kind, b.kind);
+                }
             }
         }
     }
