@@ -9,6 +9,7 @@ pub mod events;
 pub mod grid;
 pub mod region;
 pub mod tech;
+pub mod tuning;
 pub mod water;
 pub mod worldgen;
 
