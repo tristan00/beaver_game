@@ -108,8 +108,9 @@ fn install_fonts(mut fonts: ResMut<Assets<Font>>) {
     let _ = fonts.insert(&FONT_BOLD, Font::from_bytes(BOLD_BYTES.to_vec()));
 }
 
-/// Moves text that would use the engine default font onto the shipped one.
-pub fn shipped_font_only(mut q: Query<&mut TextFont, Added<TextFont>>) {
+/// Moves text that would use the engine default font onto the shipped one, whether the text was
+/// just spawned or its font was later set back to the default.
+pub fn shipped_font_only(mut q: Query<&mut TextFont, Changed<TextFont>>) {
     for mut f in &mut q {
         if f.font == FontSource::Handle(Handle::default()) {
             f.font = FontSource::Handle(FONT_REGULAR);

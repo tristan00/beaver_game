@@ -20,6 +20,8 @@ pub mod menu;
 pub mod kit;
 #[cfg(test)]
 mod kit_tests;
+#[cfg(test)]
+mod style_guard;
 pub mod mapmodes;
 pub mod modebar;
 #[allow(dead_code)] // stub until its owner task lands

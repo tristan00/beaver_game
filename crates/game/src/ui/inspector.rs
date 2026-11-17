@@ -176,7 +176,7 @@ fn spawn_stat(p: &mut Kids, st: &sel2::Stat, w: f32) {
 }
 
 /// A compact kit button; without an action it is shown as a plain unclickable chip.
-fn pill(p: &mut Kids, icons: &IconAssets, icon: Icon, text: &str, act: Option<Do>, tip: &str) {
+fn chip(p: &mut Kids, icons: &IconAssets, icon: Icon, text: &str, act: Option<Do>, tip: &str) {
     match act {
         Some(a) => {
             spawn_button_in(p, icons, KitButton::new(icon, text, a).layer(6).tip(tip).compact(), true);
@@ -198,8 +198,8 @@ fn spawn_header(p: &mut Kids, pn: &Panel, icons: &IconAssets) {
         label(c, pn.kind, T_MIN, DIM);
     });
     p.spawn(Node { flex_grow: 1.0, ..default() });
-    pill(p, icons, Icon::MoveArea, "Show", Some(Do::Focus(pn.at.0, pn.at.1)), "Move the camera here");
-    pill(p, icons, Icon::Cancel, "Close", Some(Do::ClosePanel), "Close this panel");
+    chip(p, icons, Icon::MoveArea, "Show", Some(Do::Focus(pn.at.0, pn.at.1)), "Move the camera here");
+    chip(p, icons, Icon::Cancel, "Close", Some(Do::ClosePanel), "Close this panel");
 }
 
 fn spawn_body(p: &mut Kids, pn: &Panel, open: &[&'static str], status: &str, icons: &IconAssets) {
@@ -219,7 +219,7 @@ fn spawn_body(p: &mut Kids, pn: &Panel, open: &[&'static str], status: &str, ico
     });
     for g in &pn.groups {
         let on = open.contains(&g.title);
-        pill(p, icons, Icon::Mood, &format!("{} {}", if on { "v" } else { ">" }, g.title), Some(Do::Group(g.title)), "Show or hide the detail");
+        chip(p, icons, Icon::Mood, &format!("{} {}", if on { "v" } else { ">" }, g.title), Some(Do::Group(g.title)), "Show or hide the detail");
         if on {
             p.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(4), flex_shrink: 0.0, ..default() }).with_children(|c| {
                 for st in &g.stats {
@@ -266,8 +266,8 @@ fn spawn_body(p: &mut Kids, pn: &Panel, open: &[&'static str], status: &str, ico
                         r.spawn(Node { flex_grow: 1.0, ..default() });
                         match (&sl.worker, &sl.empty) {
                             (Some((id, name)), Some(cmd)) => {
-                                pill(r, icons, Icon::Builder, name, Some(Do::Select(Selection2::Beaver(*id))), "Open this beaver");
-                                pill(r, icons, Icon::Cancel, "Empty", Some(Do::Cmd(cmd.clone())), "Free this slot");
+                                chip(r, icons, Icon::Builder, name, Some(Do::Select(Selection2::Beaver(*id))), "Open this beaver");
+                                chip(r, icons, Icon::Cancel, "Empty", Some(Do::Cmd(cmd.clone())), "Free this slot");
                             }
                             _ => label(r, "free", T_MIN, DIM),
                         }
@@ -275,7 +275,7 @@ fn spawn_body(p: &mut Kids, pn: &Panel, open: &[&'static str], status: &str, ico
                     if !sl.candidates.is_empty() {
                         c.spawn(Node { column_gap: px(4), row_gap: px(3), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|r| {
                             for cand in sl.candidates.iter().take(3) {
-                                pill(r, icons, Icon::FillSlot, &format!("+ {}", cand.name), Some(Do::Cmd(cand.fill.clone())), "Put this beaver in the slot");
+                                chip(r, icons, Icon::FillSlot, &format!("+ {}", cand.name), Some(Do::Cmd(cand.fill.clone())), "Put this beaver in the slot");
                             }
                         });
                     }
@@ -286,7 +286,7 @@ fn spawn_body(p: &mut Kids, pn: &Panel, open: &[&'static str], status: &str, ico
         p.spawn(Node { column_gap: px(5), row_gap: px(4), flex_wrap: FlexWrap::Wrap, flex_shrink: 0.0, ..default() }).with_children(|r| {
             for a in &pn.actions {
                 let tip = if a.command.is_some() { "Do this" } else { "Not possible now" };
-                pill(r, icons, a.icon, &a.label, a.command.clone().map(Do::Cmd), tip);
+                chip(r, icons, a.icon, &a.label, a.command.clone().map(Do::Cmd), tip);
             }
         });
     }

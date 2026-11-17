@@ -5,6 +5,7 @@ use super::kit::*;
 use super::screens::Do;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::math::{Affine2, DVec2};
+use bevy::color::ColorToComponents;
 use bevy::prelude::*;
 use bevy::text::FontSource;
 use bevy::ui::UiGlobalTransform;
@@ -186,18 +187,49 @@ fn meters_are_square_segments_with_4_px_gaps() {
     assert!(world.query::<&Node>().iter(&world).any(|n| n.column_gap == px(4)), "4 px gaps");
 }
 
-/// Source text contains neither the old cream panel colour nor pill or round control shapes.
+/// No game source writes an old cream fill in any notation, and only the kit sets corners.
 #[test]
 fn ui_code_has_no_cream_panel_colour_or_pill_radius() {
-    let banned = ["0.99, 0.95, 0.87", "0.96, 0.89, 0.76", "FCF2DE", "fcf2de", "Round(", "BorderRadius::all", "CornerRadius::MAX", "BorderRadius::MAX", "Round(99"];
-    for (name, src) in ui_sources() {
-        for b in banned {
-            assert!(!src.contains(b), "{name} uses `{b}`: panels are Bark with gnawed corners, buttons are 6 px, never pills");
+    use super::style_guard::{cream_in, radius_in};
+    let mut files = Vec::new();
+    src_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    for p in files {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if matches!(name.as_str(), "kit_tests.rs" | "style_guard.rs") {
+            continue; // these hold the fixtures
+        }
+        let src = std::fs::read_to_string(&p).unwrap();
+        // UI code: the ui module, and any other file that builds bevy UI nodes or colours them
+        let ui = p.components().any(|c| c.as_os_str() == "ui")
+            || ["Node", "BackgroundColor", "BorderColor", "TextColor", "ImageNode", "BoxShadow", "Outline"].iter().any(|t| src.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == *t));
+        let cream = if ui { cream_in(&src) } else { Vec::new() };
+        assert!(cream.is_empty(), "{} writes the old cream panel colour: {cream:?}; panels are Bark", p.display());
+        if name != "kit.rs" {
+            let r = radius_in(&src);
+            assert!(r.is_empty(), "{} sets a corner radius ({r:?}); use kit::Corner, never pills", p.display());
         }
     }
-    let kit = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/kit.rs")).unwrap();
-    assert!(!kit.contains("FCF2DE") && !kit.contains("0.99, 0.95, 0.87") && !kit.contains("BorderRadius::all"));
-    assert!(Corner::Panel.size() < 10.0 && Corner::Button.size() < 10.0);
+    // the kit's own corners: gnawed (two square corners) and far below a pill's half-height
+    for c in [Corner::Panel, Corner::Button] {
+        let r = corners(&c.radius());
+        assert_eq!([r[1], r[3]], [px(0), px(0)], "{c:?} keeps two square corners");
+        assert!(r[0] == px(c.size()) && c.size() <= 8.0 && c.size() < BUTTON_H_ROW / 2.0 - 4.0, "{c:?} radius {} is no pill", c.size());
+    }
+    // no palette colour is cream
+    for c in [BARK, RAISED, RAIL, LINE, PITH, DIM, POND, MOSS, AMBER, BERRY, MOSS_HOT] {
+        assert!(!super::style_guard::is_cream(c.to_srgba().to_f32_array_no_alpha()), "{c:?}");
+    }
+}
+
+#[test]
+fn text_whose_font_is_later_reset_to_the_default_is_moved_back() {
+    let mut world = World::new();
+    let fix = world.register_system(shipped_font_only); // one system, so change detection is real
+    let t = world.spawn(font(14.0)).id();
+    world.run_system(fix).unwrap();
+    world.get_mut::<TextFont>(t).unwrap().font = FontSource::Handle(Handle::default());
+    world.run_system(fix).unwrap();
+    assert_eq!(world.get::<TextFont>(t).unwrap().font, FontSource::Handle(FONT_REGULAR));
 }
 
 // ───────────────────────── provenance tooltips ─────────────────────────
