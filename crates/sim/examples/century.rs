@@ -210,7 +210,7 @@ fn advance(sim: &mut SimState, site: &Site, base_rates: &[f32], dt: f32, side: &
     sim.colony.step_on(dt, &sim.water.depth).map_err(|e| e.to_string())?;
     sim.tech.update(&sim.colony);
     let terrain = Terrain { height: &sim.height, depth: &sim.water.depth };
-    sim.buildings.step(dt, &sim.tech, terrain, &sim.colony);
+    sim.buildings.step(dt, &sim.tech, terrain, &sim.colony, &sim.work);
     sim.region.step(dt);
     let ctx = EventContext {
         population: sim.colony.population() as u32,

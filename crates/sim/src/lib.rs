@@ -158,13 +158,13 @@ impl SimState {
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.tech.update(&self.colony);
-        self.buildings.step(dt_days, &self.tech, terrain, &self.colony);
+        self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
         self.resources.step(dt_days).expect("dt validated above");
         agents::step(self, dt_days);
-        self.society.step(dt_days, self.time_days);
+        self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         Ok(())
     }
@@ -268,7 +268,7 @@ impl SimState {
                 Ok(())
             }
             Command::AnswerJoin { id, answer } => {
-                self.society.answer(id, answer).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                self.society.answer(id, answer, &mut self.colony).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
         }
     }
