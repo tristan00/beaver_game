@@ -107,6 +107,17 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     }
 }
 
+/// Whether the agent is over water right now: its cell is water, or it is past halfway into a water cell.
+pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
+    if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water)) {
+        return true;
+    }
+    match ag.path.as_ref().and_then(|p| p.steps.first()) {
+        Some(&(n, _)) => ag.step_frac >= 0.5 && matches!(sim.nav.surface_at(n), Some(Surface::Water)),
+        None => false,
+    }
+}
+
 /// The load held in the mouth, if any.
 pub fn load_of(ag: &Agent) -> Option<(Good, f32)> {
     ag.load.map(|l| (l.good, l.amount))

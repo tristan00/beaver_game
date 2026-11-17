@@ -28,6 +28,8 @@ pub const EXPLORED: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
+    /// The start-up menu is open; no start has been chosen yet.
+    Menu,
     /// Scouts walk in from the valley mouth.
     Arrival,
     /// The player explores and picks a site.
@@ -65,6 +67,7 @@ impl Phase {
     }
     pub fn banner(self) -> &'static str {
         match self {
+            Phase::Menu => "",
             Phase::Arrival => "Scouts arrive at the valley mouth...",
             Phase::Scouting => "Scout the valley, then click dry, explored ground to settle",
             Phase::Settled => "",
@@ -235,7 +238,7 @@ impl Fog {
     }
 }
 
-fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
+pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
     move |x, y| world.valley_of((x, y)).is_some_and(|v| world.is_open(v))
 }
 

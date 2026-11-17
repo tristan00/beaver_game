@@ -377,7 +377,8 @@ pub mod buildings {
     /// Material cost and builder work units (one adult working day is about 0.6) of a building.
     pub fn cost_and_work(kind: BuildingKind) -> (&'static [Amount], f32) {
         match kind {
-            BuildingKind::Dam => (&[(Logs, 15.0), (Sticks, 20.0), (Mud, 20.0), (Stone, 5.0)], 8.0),
+            // Felled trees only: the first dam is built from what the family can fell and carry.
+            BuildingKind::Dam => (&[(Logs, 15.0), (Sticks, 20.0)], 8.0),
             BuildingKind::Lodge => (&[(Logs, 20.0), (Sticks, 25.0), (Mud, 20.0)], 12.0),
             BuildingKind::Burrow => (&[(Sticks, 6.0), (Mud, 8.0)], 2.0),
             BuildingKind::FoodCache => (&[(Logs, 6.0), (Sticks, 10.0), (Mud, 6.0)], 4.0),

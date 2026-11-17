@@ -40,7 +40,7 @@ const TREE_LOD1: f32 = 120.0;
 /// Seconds of render time shown in `--screenshot` mode (chosen so the hero shot has varied poses).
 const SCREENSHOT_CLOCK: f32 = 31.0;
 /// Whether the stress scene's itinerary beavers and stub trees are drawn instead of the live sim.
-/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--midgame`).
+/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--stress`).
 fn stub_mode(cli: &Cli) -> bool {
     cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
 }
@@ -168,6 +168,8 @@ pub struct BeaverSprite {
     pub load: Option<(sim::buildings::Good, f32)>,
     /// Heading about +Y the beaver is turning towards.
     pub yaw: f32,
+    /// True only when the beaver is actually over water; foam ripples show for this, not for the swim pose alone.
+    pub wet: bool,
 }
 
 #[derive(Component)]
@@ -352,7 +354,7 @@ fn spawn_scene(
         commands.spawn((
             SceneEntity,
             StubBeaver(i),
-            BeaverSprite { id: i as u64, pose: st.pose, load: st.load, yaw: st.yaw },
+            BeaverSprite { id: i as u64, pose: st.pose, load: st.load, yaw: st.yaw, wet: st.pose == Pose::Swim },
             Transform::from_xyz(st.pos.x, ground, st.pos.y).with_rotation(Quat::from_rotation_y(st.yaw)).with_scale(Vec3::splat(BEAVER_SCALE)),
             Visibility::default(),
         ));
@@ -398,6 +400,7 @@ fn sync_stub_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMu
         sprite.pose = st.pose;
         sprite.load = st.load;
         sprite.yaw = st.yaw;
+        sprite.wet = st.pose == Pose::Swim;
     }
 }
 
@@ -534,6 +537,12 @@ fn pose_rig(pose: Pose, t: f32, id: f32) -> Rig {
     r
 }
 
+/// Foam ripple arcs (and no ground shadow) only for a swimming beaver that is actually over water:
+/// a beaver on land, even one in the swim gait about to enter the water, shows none.
+pub(crate) fn shows_ripple(pose: Pose, wet: bool) -> bool {
+    pose == Pose::Swim && wet
+}
+
 fn animate_beavers(
     time: Res<Time>,
     clock: Res<RenderClock>,
@@ -555,6 +564,7 @@ fn animate_beavers(
 
         let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
         let swimming = sprite.pose == Pose::Swim;
+        let wet = shows_ripple(sprite.pose, sprite.wet);
         if near != rig.near || !rig.init {
             rig.near = near;
             if let Ok(mut v) = vis.get_mut(rig.body) {
@@ -576,10 +586,10 @@ fn animate_beavers(
         }
         rig.blend = (rig.blend + dt * 5.0).min(1.0);
         if let Ok(mut v) = vis.get_mut(rig.ripple) {
-            *v = if swimming { Visibility::Inherited } else { Visibility::Hidden };
+            *v = if wet { Visibility::Inherited } else { Visibility::Hidden };
         }
         if let Ok(mut v) = vis.get_mut(rig.blob) {
-            *v = if swimming { Visibility::Hidden } else { Visibility::Inherited };
+            *v = if wet { Visibility::Hidden } else { Visibility::Inherited };
         }
         // The load follows the head; its model and size show what it is and how much.
         let good = sprite.load.map(|l| l.0);
@@ -596,7 +606,7 @@ fn animate_beavers(
             let s = 0.6 + 0.4 * (amount / sim::agents::LOAD_SIZE).clamp(0.0, 1.0);
             t.scale = Vec3::splat(s);
         }
-        if swimming {
+        if wet {
             if let Ok(mut t) = parts.get_mut(rig.ripple) {
                 let s = 1.0 + 0.12 * (clock.0 * 3.0 + sprite.id as f32).sin();
                 t.scale = Vec3::new(s, 1.0, s);

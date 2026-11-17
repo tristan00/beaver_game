@@ -5,7 +5,8 @@
 //!
 //! * `poses`: six stations along a line, picked with `BC_STATION=0..5` (camera frames that station):
 //!   0 walking, 1 swimming, 2 climbing over a dam, 3 working at a site, 4 resting by a lodge,
-//!   5 carrying a log through water past a felled tree.
+//!   5 carrying a log through water past a felled tree, 6 at a shore: one beaver on the grass, one
+//!   about to step into the water (swim gait, under half way), one swimming (only it shows foam arcs).
 //! * `world`: felled trees and logs, mud banks and stone outcrops, plants and three construction sites
 //!   at 15 %, 50 % and 85 % progress.
 use crate::camera::OrbitCamera;
@@ -19,7 +20,7 @@ use sim::nav::{Gait, Path, Surface};
 use sim::resources::{ResourceKind, FELL_WORK};
 use sim::SimState;
 
-pub const STATIONS: usize = 6;
+pub const STATIONS: usize = 7;
 const SPACING: usize = 12;
 
 pub struct ShowcasePlugin;
@@ -63,7 +64,7 @@ fn station_cell(o: (usize, usize), i: usize) -> (usize, usize) {
 /// A block of dry, gently sloping land near the start valley that fits the staged scenes.
 fn find_flat(sim: &SimState) -> (usize, usize) {
     let c = sim.world.valleys.get(sim.world.start.0 as usize).map_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0), |v| v.center);
-    let (w, h) = (80usize, 24usize);
+    let (w, h) = (STATIONS * SPACING + 8, 24usize);
     let n = sim.world.size;
     let mut best = (f32::MAX, (c.0 as usize, c.1 as usize));
     for dy in (0..90).step_by(6) {
@@ -174,7 +175,7 @@ fn felled(sim: &mut SimState, cell: (usize, usize), logs_left: f32, branches: bo
 
 fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     prepare(sim, o, STATIONS * SPACING + 8, 16);
-    let (land, swim, climb, work, rest, carry) = (0, 1, 2, 3, 4, 5);
+    let (land, swim, climb, work, rest, carry, shore) = (0, 1, 2, 3, 4, 5, 6);
     let c = |i| station_cell(o, i);
 
     // 0 walking: two land cells ahead, half way into the first
@@ -215,6 +216,22 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     let id = agent(sim, 6, b, &[((b.0 + 1, b.1), Gait::Swim), ((b.0 + 2, b.1), Gait::Swim)], 0.5);
     sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Logs, amount: 3.0 });
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Carry { dest: BuildingId(1) };
+
+    // 6 shore: water from x+2 on; a beaver standing on grass, one stepping into the water (under half
+    // way, so still on land), and one swimming past
+    let b = c(shore);
+    // sunk into the ground so the water surface is level with the grass bank, as in a real pond
+    for y in b.1 - 4..b.1 + 3 {
+        for x in b.0 + 2..b.0 + 8 {
+            if let Some(g) = sim.height.get_mut(x, y) {
+                *g -= 1.1;
+            }
+        }
+    }
+    pool(sim, b.0 + 2, b.1 - 4, 6, 7, 1.1);
+    agent(sim, 7, (b.0 - 1, b.1 - 2), &[], 0.0);
+    agent(sim, 8, (b.0 + 1, b.1), &[((b.0 + 2, b.1), Gait::Swim), ((b.0 + 3, b.1), Gait::Swim)], 0.1);
+    agent(sim, 9, (b.0 + 3, b.1 - 2), &[((b.0 + 4, b.1 - 2), Gait::Swim), ((b.0 + 5, b.1 - 2), Gait::Swim)], 0.5);
 }
 
 fn stage_world(sim: &mut SimState, o: (usize, usize)) {

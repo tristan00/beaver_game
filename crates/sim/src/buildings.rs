@@ -439,6 +439,11 @@ impl Buildings {
         if !tech.allows(kind) {
             return Err(BuildError::Locked(kind));
         }
+        self.check_ground(kind, pos, terrain)
+    }
+
+    /// Bounds, overlap and terrain rules only (no tech check); changes nothing.
+    fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
         let spec = kind.spec();
         let cells = Self::footprint(kind, pos);
         if cells.iter().any(|&(x, y)| !terrain.depth.in_bounds(x, y)) {
@@ -479,6 +484,15 @@ impl Buildings {
         self.check_placement(kind, pos, tech, terrain)?;
         let id = BuildingId(self.fresh_id());
         self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0 });
+        Ok(id)
+    }
+
+    /// Adds an already finished building (a start's founding stockpile): same ground checks as
+    /// `place_site` but no tech requirement, no cost, no work. Returns its id.
+    pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
+        self.check_ground(kind, pos, terrain)?;
+        let id = BuildingId(self.fresh_id());
+        self.buildings.push(Building { id, kind, pos, status: Status::Complete, recipe: None, output: 0.0 });
         Ok(id)
     }
 

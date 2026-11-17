@@ -116,6 +116,30 @@ pub struct Work {
     /// Goods held in each store, which haulers move between stores. The colony ledger
     /// (`Buildings::stores`) stays the total; hauling only relocates goods between stores.
     pub stock: BTreeMap<(BuildingId, Good), f32>,
+    /// Dam sites: the water dam to build when the site completes.
+    pub dam_plans: Vec<DamPlan>,
+    /// Dams that completed but could not be applied to the water, with the reason (never silent).
+    pub dam_failures: Vec<(BuildingId, String)>,
+    /// When true, idle working-age beavers without a player order staff sites and gather the
+    /// materials they lack (`agents::organise`). Off by default; the starts switch it on.
+    pub auto_organise: bool,
+    /// What `organise` last set for each beaver it manages (a player's change drops the beaver).
+    pub managed: BTreeMap<BeaverId, ManagedDuty>,
+}
+
+/// The water dam a dam site turns into when it is finished.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamPlan {
+    pub building: BuildingId,
+    pub cells: Vec<Cell>,
+    pub height: f32,
+}
+
+/// An automatic assignment made by `agents::organise`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ManagedDuty {
+    Gather(crate::agents::Assignment),
+    Build(BuildingId, usize),
 }
 
 impl Work {

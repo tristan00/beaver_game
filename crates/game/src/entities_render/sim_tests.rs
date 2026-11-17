@@ -154,3 +154,62 @@ fn rest_pose_and_despawn_follow_the_sim() {
     app.update();
     assert!(poses(&mut app).is_empty());
 }
+
+/// `is_wet` is false on a land cell, also while the next step goes into water but is under half
+/// done, and true once past halfway or standing in water; the ripple follows it, not the swim pose.
+#[test]
+fn ripples_only_on_beavers_over_water() {
+    use super::sim_view::{is_wet, pose_of};
+    use super::shows_ripple;
+    use sim::nav::{Gait, Path};
+    let (mut sim, ids) = scene_sim();
+    let mut nav = sim.nav.clone();
+    nav.rebuild(&sim);
+    sim.nav = nav;
+    let (land, water) = ((19, 100), (20, 100));
+    assert_eq!(sim.nav.surface_at(land), Some(Surface::Land));
+    assert_eq!(sim.nav.surface_at(water), Some(Surface::Water));
+    let mut ag = sim.agents.get(ids[0]).cloned().unwrap_or_else(|| {
+        sim::agents::step(&mut sim, DT);
+        sim.agents.get(ids[0]).expect("agent spawned").clone()
+    });
+    let check = |ag: &sim::agents::Agent, wet: bool| {
+        assert_eq!(is_wet(&sim, ag), wet, "cell {:?} frac {} path {:?}", ag.cell, ag.step_frac, ag.path);
+        assert_eq!(shows_ripple(pose_of(&sim, ag), is_wet(&sim, ag)), wet);
+    };
+
+    // Standing on grass, idle or walking along the bank.
+    ag.cell = land;
+    ag.path = None;
+    ag.gait = Gait::Walk;
+    ag.step_frac = 0.0;
+    check(&ag, false);
+    ag.path = Some(Path { steps: vec![((19, 101), Gait::Walk)], cost: 1.0 });
+    ag.step_frac = 0.7;
+    check(&ag, false);
+
+    // About to step into the water in the swim gait: swim pose, but still on land, so no arcs.
+    ag.path = Some(Path { steps: vec![(water, Gait::Swim)], cost: 1.0 });
+    ag.gait = Gait::Swim;
+    for frac in [0.0, 0.2, 0.49] {
+        ag.step_frac = frac;
+        assert_eq!(pose_of(&sim, &ag), Pose::Swim);
+        check(&ag, false);
+    }
+    // Past halfway into the water cell.
+    ag.step_frac = 0.5;
+    check(&ag, true);
+
+    // Swimming in the river, still or moving on.
+    ag.cell = water;
+    ag.step_frac = 0.0;
+    ag.path = Some(Path { steps: vec![((21, 100), Gait::Swim)], cost: 1.0 });
+    check(&ag, true);
+    ag.path = None;
+    check(&ag, true);
+
+    // Unit rule: the swim pose alone, or wetness without the swim pose, never shows arcs.
+    assert!(!shows_ripple(Pose::Swim, false));
+    assert!(!shows_ripple(Pose::Walk, true));
+    assert!(shows_ripple(Pose::Swim, true));
+}

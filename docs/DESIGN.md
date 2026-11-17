@@ -152,22 +152,35 @@ view-models never build rows for disabled systems. `Command` variants for them m
 
 ## 11. Interface architecture (`game::ui`)
 
-First view is the map. One stable **navigation bar** (`shell::NavItem`) opens one ledger or
-management screen at a time (`Shell::toggle`); nothing else is always on besides the time controls.
-Detail follows interest: bar icon → screen with dense tables → row hover/click → explanation.
+First view is the map: only the map, one **navigation bar** (bottom centre) and the **time
+controls** (top right, with the season and colony day) are on screen. Everything else opens on
+demand. Detail follows interest: bar icon → screen with dense, sortable tables → hover on a
+number → what adds up to it.
 
-* **Entity panels** (`selection::panel`): click a beaver, family, building (incl. site and dam) or
-  tree. A panel is stats (`Explained`), worker slots, actions, and one short prose line.
-* **Map modes** (`mapmodes::MapMode`): water, forest, food, work. A mode paints data on the
-  map and offers `ModeAction`s.
-* **Number provenance** (`explain::Explained`): every displayed number carries `parts` that sum
-  to it; `audit` is run in tests over every view-model (`Numbers`) and also flags duplicates.
-* **Icons** (`icons::Icon`): one variant per resource, need, job, action, map mode and nav
-  item; files at `assets/icons/<lowercase variant>.png`. Text only where an icon is ambiguous.
-* **Orders** (`orders::Gesture` → `Command`), **placement** (`orders::placement`), **alerts with
-  locations** (`orders::Alert`, every alert has `at`).
-* The existing `ledgers.rs`/`events.rs` view-models are reused by `ui_shell` where they fit; trade
-  rows and the Trade tab are removed (feature switch).
+**Screens** (`shell::NavItem`, one open at a time via `Shell::toggle`; clicking the open item,
+its Close button or Esc closes it):
+
+| Screen | Shows | Actions |
+|---|---|---|
+| **Colony** | beavers, mood and the four needs (food, rest, shelter, company) as headline numbers; Families and Beavers tables | Show a beaver on the map |
+| **Work** | working/idle, Jobs table (workers, skill, XP, best hand), open work orders | More / Fewer on a job, Show an order |
+| **Stores** | larder, wood and every good: stock with fill bar, capacity, made/used/net per day | none (read and compare) |
+| **Buildings** | lodges, finished buildings and sites, and the Build menu with costs | Build (picks the tool and closes the screen), Show |
+| **Tech** | branch experience, every tech with tier, cost, state, what it gives | none |
+| **Events** | decisions waiting (badge on the bar icon), join requests, event log | Choose an option, Welcome / Turn away |
+
+View-models live in `ui/screens.rs` (`screen`, `nav_bar`, `time_bar`); `ui/panels.rs` only draws
+them and runs clicks. Rules, enforced by tests in `screens.rs`:
+
+* **Explained numbers:** every number is an `Explained` whose parts add up to it (`audit`);
+  hovering shows the parts (`Tip`). No label+value appears twice on one screen.
+* **Icons:** every resource, need, job and action entry carries an `Icon` whose PNG exists in
+  `assets/icons`; table rows always have one. Text is a caption, never the only marker.
+* **Sortable:** every table header sorts (click again to reverse).
+* `--open colony|work|stores|buildings|tech|events` opens a screen at start (screenshots).
+
+Still to come from other tasks: entity panels (`selection::panel`), map modes
+(`mapmodes::MapMode`), placement and orders (`orders`), alerts with locations.
 
 ## 12. File ownership
 
@@ -191,7 +204,7 @@ through the public API above (or a follow-up request to the owner).
 | `artdir` | `docs/STYLE.md`, `docs/style_mockup.png` |
 | `icons` | `assets/icons/*`, `docs/icons_sheet.png` |
 | `terrain` | `game/src/terrain_render.rs`, `water_render.rs` |
-| `ui_shell` | `game/src/ui/{mod,shell,explain,icons,kit,panels}.rs`, `ledgers.rs` (non-trade) |
+| `ui_shell` | `game/src/ui/{mod,shell,screens,explain,icons,kit,panels}.rs`, `game/src/opening.rs`, the time controls in `flow_view.rs` |
 | `render_agents` | `game/src/entities_render.rs`, `entities_render/*` |
 | `panels` | `game/src/ui/selection.rs` |
 | `commands` | `game/src/ui/orders.rs` (`Gesture`, `gesture_command`), `game/src/input.rs` |
