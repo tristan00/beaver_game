@@ -43,7 +43,7 @@ Identity: a **lodge built of cut timber**. Dark bark planks with gnawed corners,
 
 | Part | Spec |
 |---|---|
-| Colours | Bark `#3F2E24` panel; Raised `#4D3A2D` rows and buttons; Rail `#2A1F19` outlines and shadow; Line `#5B4636` dividers; Pith `#F1E3C6` text; Dim `#BFA88A` secondary text; **Pond `#5FC7D6` active and selected**; Moss `#8DBF5A` good; Amber `#F0A93B` warning; Berry `#E0556B` danger. Pith on Bark is 11:1; Dim on Bark above 6:1. |
+| Colours | Bark `#3F2E24` panel; Raised `#4D3A2D` rows and buttons; Rail `#2A1F19` outlines and shadow; Line `#5B4636` dividers; Pith `#F1E3C6` text; Dim `#BFA88A` secondary text; **Pond `#5FC7D6` active and selected**; Moss `#8DBF5A` good; Amber `#F0A93B` warning; Berry `#E0556B` danger. Pith on Bark is 10:1; Dim on Bark 5.6:1 and on Raised 4.7:1. |
 | Shapes | Rectangles. No circles or capsules in controls. Meters are rows of square segments (4 px gaps). |
 | Corners | **Gnawed**: 8 px diagonal chamfer on top-left and bottom-right of panels, 6 px on buttons; the other two corners stay square. Icon tiles keep the existing soft 28 px (96 px source) rounding as content, never as a control shape. |
 | Elevation | Hard 3 px offset shadow in Rail, no blur. |
