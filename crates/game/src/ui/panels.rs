@@ -81,7 +81,7 @@ impl Plugin for PanelsPlugin {
     fn build(&self, app: &mut App) {
         let mut ui = LedgerUi::default();
         // Debug aid for screenshots: BC_UI_TAB=families|beavers|jobs|stores|trade|tech|events
-        ui.tab = std::env::var("BC_UI_TAB").ok().and_then(|v| Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(&v)));
+        ui.tab = std::env::var("BC_UI_TAB").ok().and_then(|v| debug_tab(&v));
         app.insert_resource(ui)
             .add_systems(Startup, spawn_roots)
             .add_systems(
@@ -93,6 +93,16 @@ impl Plugin for PanelsPlugin {
                 ),
             );
     }
+}
+
+/// The tab named by a `BC_UI_TAB` value (case-insensitive), if any.
+fn debug_tab(name: &str) -> Option<Tab> {
+    Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(name))
+}
+
+/// A tab of a disabled system (e.g. Trade with trade off) never stays open.
+fn gate_tab(tab: Option<Tab>, features: &sim::features::Features) -> Option<Tab> {
+    tab.filter(|t| Tab::available(features).contains(t))
 }
 
 fn spawn_roots(mut commands: Commands) {
@@ -308,9 +318,7 @@ fn refresh(
     footer: Query<Entity, With<DetailFooter>>,
 ) {
     let s = &sim.0;
-    if ui.tab.is_some_and(|t| !Tab::available(&s.features).contains(&t)) {
-        ui.tab = None; // a tab of a disabled system (e.g. BC_UI_TAB=trade) never opens
-    }
+    ui.tab = gate_tab(ui.tab, &s.features);
     if !LogFilter::available(&s.features).contains(&ui.filter) {
         ui.filter = LogFilter::All;
     }
@@ -611,6 +619,17 @@ mod tests {
         assert_eq!(r.ui.tab, Some(Tab::Log), "the log button never toggles it shut");
         click(&mut r, Act::Close);
         assert_eq!(r.ui.tab, None);
+    }
+
+    #[test]
+    fn debug_tab_trade_stays_closed_with_default_features() {
+        let features = sim::features::Features::default();
+        assert!(!Tab::available(&features).contains(&Tab::Trade), "default config has trade off");
+        assert_eq!(debug_tab("trade"), Some(Tab::Trade));
+        assert_eq!(gate_tab(debug_tab("TRADE"), &features), None);
+        assert_eq!(gate_tab(debug_tab("stores"), &features), Some(Tab::Stores));
+        assert_eq!(debug_tab("nonsense"), None);
+        assert_eq!(gate_tab(Some(Tab::Trade), &sim::features::Features::everything()), Some(Tab::Trade));
     }
 
     #[test]
