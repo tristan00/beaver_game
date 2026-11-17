@@ -70,20 +70,21 @@ pub struct TechDef {
     pub effects: &'static [Effect],
 }
 
+use crate::tuning::tech::*;
 use Effect::{Bonus as B, Unlock as U};
 
 /// Every tech, indexed by `TechId`.
 pub const TECHS: &[TechDef] = &[
-    TechDef { name: "Flow Control", branch: Branch::Water, tier: 1, xp: 3.0, effects: &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)] },
-    TechDef { name: "Wetland Husbandry", branch: Branch::Forest, tier: 1, xp: 3.0, effects: &[U(BuildingKind::FoodCache)] },
-    TechDef { name: "Forest Lore", branch: Branch::Forest, tier: 2, xp: 15.0, effects: &[B(Bonus::Storage(1.25))] },
-    TechDef { name: "Joinery", branch: Branch::Building, tier: 1, xp: 3.0, effects: &[U(BuildingKind::Warehouse)] },
-    TechDef { name: "Master Builders", branch: Branch::Building, tier: 2, xp: 15.0, effects: &[B(Bonus::BuildWork(0.75))] },
-    TechDef { name: "Weaving", branch: Branch::Craft, tier: 1, xp: 3.0, effects: &[U(BuildingKind::Workshop)] },
-    TechDef { name: "Fine Tools", branch: Branch::Craft, tier: 2, xp: 15.0, effects: &[B(Bonus::CraftSpeed(1.5))] },
-    TechDef { name: "Docks", branch: Branch::Transport, tier: 1, xp: 3.0, effects: &[U(BuildingKind::Dock)] },
-    TechDef { name: "Barges", branch: Branch::Transport, tier: 2, xp: 15.0, effects: &[U(BuildingKind::Barge)] },
-    TechDef { name: "Territory Marking", branch: Branch::Defence, tier: 1, xp: 3.0, effects: &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)] },
+    TechDef { name: "Flow Control", branch: Branch::Water, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)] },
+    TechDef { name: "Wetland Husbandry", branch: Branch::Forest, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::FoodCache)] },
+    TechDef { name: "Forest Lore", branch: Branch::Forest, tier: 2, xp: TIER2_XP, effects: &[B(Bonus::Storage(STORAGE_BONUS))] },
+    TechDef { name: "Joinery", branch: Branch::Building, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::Warehouse)] },
+    TechDef { name: "Master Builders", branch: Branch::Building, tier: 2, xp: TIER2_XP, effects: &[B(Bonus::BuildWork(BUILD_WORK_BONUS))] },
+    TechDef { name: "Weaving", branch: Branch::Craft, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::Workshop)] },
+    TechDef { name: "Fine Tools", branch: Branch::Craft, tier: 2, xp: TIER2_XP, effects: &[B(Bonus::CraftSpeed(CRAFT_SPEED_BONUS))] },
+    TechDef { name: "Docks", branch: Branch::Transport, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::Dock)] },
+    TechDef { name: "Barges", branch: Branch::Transport, tier: 2, xp: TIER2_XP, effects: &[U(BuildingKind::Barge)] },
+    TechDef { name: "Territory Marking", branch: Branch::Defence, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)] },
 ];
 
 /// Buildings available without any tech.

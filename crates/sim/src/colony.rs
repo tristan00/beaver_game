@@ -12,23 +12,11 @@ use std::fmt;
 
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
+pub use crate::tuning::colony::*;
 
 pub const DAYS_PER_YEAR: f64 = 365.0;
 const SUBSTEP_DAYS: f32 = 0.5;
-const KIT_DAYS: f32 = 365.0;
-const ADULT_DAYS: f32 = 730.0;
-const LODGE_CAPACITY: usize = 12;
-const LODGE_WOOD_COST: f32 = 8.0;
-const MIN_LODGE_SPACING: f32 = 5.0;
-const MAX_WATER_SCAN: f32 = 10.0;
-const WORK_FRACTION: f32 = 0.6;
 const EVENT_LOG_CAP: usize = 2000;
-const CACHE_LIFETIME_DAYS: f64 = 30.0;
-/// Days of continuously bad mood after which an adult or yearling leaves the colony.
-const DEPARTURE_BAD_MOOD_DAYS: f32 = 30.0;
-const SPRING_START: f64 = 60.0;
-const SPRING_END: f64 = 150.0;
-const BIRTH_FROM_DAY: f64 = 75.0;
 
 // ───────────────────────────── identifiers and enums ─────────────────────────────
 
@@ -76,16 +64,16 @@ impl Stage {
     /// Share of a full adult's work output.
     fn work_weight(self) -> f32 {
         match self {
-            Stage::Kit => 0.0,
-            Stage::Yearling => 0.5,
+            Stage::Kit => KIT_WORK_WEIGHT,
+            Stage::Yearling => YEARLING_WORK_WEIGHT,
             Stage::Adult => 1.0,
         }
     }
     /// Share of a full adult's food needs.
     fn food_weight(self) -> f32 {
         match self {
-            Stage::Kit => 0.4,
-            Stage::Yearling => 0.7,
+            Stage::Kit => KIT_FOOD_WEIGHT,
+            Stage::Yearling => YEARLING_FOOD_WEIGHT,
             Stage::Adult => 1.0,
         }
     }
@@ -176,13 +164,13 @@ pub trait Landscape {
     }
 }
 
-/// Water-depth grid: a cell is water if deeper than 0.05; out of bounds is dry.
+/// Water-depth grid: a cell is water if deeper than `WATER_DEPTH`; out of bounds is dry.
 impl Landscape for crate::grid::Grid<f32> {
     fn is_water(&self, x: f32, y: f32) -> bool {
         if !(x >= 0.0 && y >= 0.0) {
             return false;
         }
-        self.get(x as usize, y as usize).is_some_and(|d| *d > 0.05)
+        self.get(x as usize, y as usize).is_some_and(|d| *d > WATER_DEPTH)
     }
 }
 
@@ -194,7 +182,7 @@ pub struct RiverLand {
 }
 impl Default for RiverLand {
     fn default() -> Self {
-        Self { y: 0.0, half_width: 2.0 }
+        Self { y: 0.0, half_width: DEFAULT_RIVER_HALF_WIDTH }
     }
 }
 impl Landscape for RiverLand {
@@ -217,10 +205,14 @@ pub struct Needs {
 
 impl Needs {
     fn satisfied() -> Self {
-        Self { food: 1.0, rest: 1.0, warmth: 1.0, safety: 1.0, social: 0.7 }
+        Self { food: 1.0, rest: 1.0, warmth: 1.0, safety: 1.0, social: START_SOCIAL }
     }
     fn mood(&self) -> f32 {
-        0.4 * self.food + 0.2 * self.warmth + 0.15 * self.rest + 0.15 * self.safety + 0.1 * self.social
+        MOOD_FOOD_WEIGHT * self.food
+            + MOOD_WARMTH_WEIGHT * self.warmth
+            + MOOD_REST_WEIGHT * self.rest
+            + MOOD_SAFETY_WEIGHT * self.safety
+            + MOOD_SOCIAL_WEIGHT * self.social
     }
 }
 
@@ -407,7 +399,7 @@ fn day_of_year(time_days: f64) -> f64 {
 
 /// Seasonal temperature in -1 (midwinter) ..= 1 (midsummer).
 fn temperature(time_days: f64) -> f32 {
-    (std::f64::consts::TAU * (day_of_year(time_days) - 200.0) / DAYS_PER_YEAR).cos() as f32
+    (std::f64::consts::TAU * (day_of_year(time_days) - MIDSUMMER_DAY) / DAYS_PER_YEAR).cos() as f32
 }
 
 fn check_point(name: &str, p: (f32, f32)) -> Result<(), ColonyError> {
@@ -491,14 +483,14 @@ impl Colony {
         }
         let year = DAYS_PER_YEAR as f32;
         let fam = self.new_family();
-        let lodge = self.new_lodge(fam, pos, 1.0);
-        let father = self.spawn(Sex::Male, 3.0 * year, fam, Some(lodge), pos, None, None);
-        let mother = self.spawn(Sex::Female, 3.0 * year, fam, Some(lodge), pos, None, None);
+        let lodge = self.new_lodge(fam, pos, FOUNDING_LODGE_CONDITION);
+        let father = self.spawn(Sex::Male, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
+        let mother = self.spawn(Sex::Female, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
         self.set_mates(father, mother);
-        self.spawn(Sex::Male, 1.5 * year, fam, Some(lodge), pos, Some(father), Some(mother));
-        self.spawn(Sex::Female, 1.5 * year, fam, Some(lodge), pos, Some(father), Some(mother));
-        self.food = 40.0;
-        self.wood = 20.0;
+        self.spawn(Sex::Male, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
+        self.spawn(Sex::Female, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
+        self.food = START_FOOD;
+        self.wood = START_WOOD;
         self.founded = true;
         self.stats.peak_population = self.beavers.len();
         Ok(fam)
@@ -579,8 +571,8 @@ impl Colony {
             self.cache_stamp = self.time_days;
         }
         let temp = temperature(self.time_days);
-        let cold = ((0.2 - temp) / 1.2).clamp(0.0, 1.0);
-        let forage_season = (0.75 + 0.25 * temp).clamp(0.5, 1.0);
+        let cold = ((COLD_BELOW_TEMP - temp) / COLD_RANGE).clamp(0.0, 1.0);
+        let forage_season = (FORAGE_SEASON_BASE + FORAGE_SEASON_TEMP * temp).clamp(FORAGE_SEASON_MIN, 1.0);
 
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
@@ -609,11 +601,11 @@ impl Colony {
         if let Some(j) = b.job {
             return Some(j);
         }
-        if self.food_per_capita() < 4.0 {
+        if self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA {
             return Some(Job::Forager); // unassigned workers feed a hungry colony first
         }
-        let failing = self.lodges.iter().any(|l| l.condition < 0.6);
-        if failing && self.wood >= 2.0 && rank_in_family % 2 == 1 {
+        let failing = self.lodges.iter().any(|l| l.condition < REPAIR_BELOW_CONDITION);
+        if failing && self.wood >= REPAIR_MIN_WOOD && rank_in_family % 2 == 1 {
             return Some(Job::Builder); // keep roofs over heads before anything optional
         }
         let fam = self.family(b.family)?;
@@ -636,7 +628,7 @@ impl Colony {
             let t = (i as f32 + 0.5) / steps as f32;
             let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
             if land.is_water(x, y) {
-                cost += seg * 0.5; // swimming is twice as fast
+                cost += seg * SWIM_COST; // swimming is twice as fast
             } else {
                 cost += seg;
                 land_len += seg;
@@ -663,19 +655,19 @@ impl Colony {
                 || {
                     let k = job.index() as f32;
                     let a = k * std::f32::consts::FRAC_PI_4 + b.family.0 as f32;
-                    (home.0 + (3.0 + k) * a.cos(), home.1 + (3.0 + k) * a.sin())
+                    (home.0 + (WORK_SITE_DISTANCE + k) * a.cos(), home.1 + (WORK_SITE_DISTANCE + k) * a.sin())
                 },
                 |(_, p)| p,
             );
             let eval = self.eval_site(home, site, land);
-            let efficiency = 1.0 / (1.0 + 0.02 * eval.cost);
+            let efficiency = 1.0 / (1.0 + TRAVEL_COST_PENALTY * eval.cost);
             let units = dt
                 * WORK_FRACTION
                 * b.stage.work_weight()
                 * efficiency
-                * (0.3 + 0.7 * b.needs.rest)
-                * (0.5 + 0.5 * b.health)
-                * (0.7 + 0.3 * b.mood);
+                * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
+                * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health)
+                * (WORK_MOOD_BASE + WORK_MOOD_SCALE * b.mood);
             plan.push(Some(Work { job, units, order: order.map(|o| o.0), eval, site }));
         }
         plan
@@ -686,7 +678,7 @@ impl Colony {
         let (mut carry, mut guard) = (0.0, 0.0);
         for (b, w) in self.beavers.iter().zip(plan) {
             if let Some(w) = w {
-                let effort = w.units / dt * (0.5 + b.skill(w.job));
+                let effort = w.units / dt * (SKILL_BASE + b.skill(w.job));
                 match w.job {
                     Job::Hauler => carry += effort,
                     Job::Guard => guard += effort,
@@ -696,11 +688,11 @@ impl Colony {
         }
         self.guard_strength = guard;
         // Foraging grounds thin out as the colony grows, which bounds the population.
-        let forage_season = forage_season / (1.0 + self.beavers.len() as f32 / 100.0);
-        let boost = 1.0 + (0.15 * carry).min(0.6) + 0.3 * self.tools.clamp(0.0, 1.0);
-        let scout_bonus = 1.0 + 0.1 * (self.scouted / 20.0).min(2.0);
-        let food_cap = 10.0 + 25.0 * self.beavers.len() as f32;
-        let wood_cap = 60.0 + 10.0 * self.beavers.len() as f32;
+        let forage_season = forage_season / (1.0 + self.beavers.len() as f32 / FORAGE_CROWDING_POPULATION);
+        let boost = 1.0 + (HAUL_BOOST_PER_EFFORT * carry).min(HAUL_BOOST_MAX) + TOOLS_BOOST * self.tools.clamp(0.0, 1.0);
+        let scout_bonus = 1.0 + SCOUT_BONUS * (self.scouted / SCOUT_WORK_PER_BONUS).min(SCOUT_BONUS_MAX_STEPS);
+        let food_cap = FOOD_CAP_BASE + FOOD_CAP_PER_BEAVER * self.beavers.len() as f32;
+        let wood_cap = WOOD_CAP_BASE + WOOD_CAP_PER_BEAVER * self.beavers.len() as f32;
 
         let mut order_work: HashMap<OrderId, f32> = HashMap::new();
         for i in 0..self.beavers.len() {
@@ -708,13 +700,13 @@ impl Colony {
                 self.beavers[i].current_job = None;
                 continue;
             };
-            let power = w.units * (0.5 + self.beavers[i].skill(w.job));
+            let power = w.units * (SKILL_BASE + self.beavers[i].skill(w.job));
             match w.job {
-                Job::Forager => self.food = (self.food + power * 4.0 * forage_season * boost * scout_bonus).min(food_cap),
-                Job::Logger => self.wood = (self.wood + power * 1.2 * boost).min(wood_cap),
-                Job::Builder => self.repair(power * 0.04 * boost),
+                Job::Forager => self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap),
+                Job::Logger => self.wood = (self.wood + power * LOG_YIELD * boost).min(wood_cap),
+                Job::Builder => self.repair(power * REPAIR_YIELD * boost),
                 Job::Digger => self.dug += power,
-                Job::Crafter => self.tools = (self.tools + power * 0.05).min(1.0),
+                Job::Crafter => self.tools = (self.tools + power * TOOLS_YIELD).min(1.0),
                 Job::Scout => self.scouted += power,
                 Job::Hauler | Job::Guard => {}
             }
@@ -722,7 +714,7 @@ impl Colony {
             b.current_job = Some(w.job);
             b.pos = w.site;
             let s = &mut b.skills[w.job.index()];
-            *s = (*s + w.units * 0.01 * (1.0 - *s)).min(1.0);
+            *s = (*s + w.units * SKILL_GAIN * (1.0 - *s)).min(1.0);
             self.experience[w.job.index()] += w.units;
             if let Some(o) = w.order {
                 *order_work.entry(o).or_insert(0.0) += w.units;
@@ -743,32 +735,32 @@ impl Colony {
         }
     }
 
-    /// Spends wood (4 per condition point) to raise the worst lodge's condition by up to `amount`.
+    /// Spends wood (`REPAIR_WOOD_PER_CONDITION` per condition point) to raise the worst lodge's condition by up to `amount`.
     fn repair(&mut self, amount: f32) {
         let Some(l) =
             self.lodges.iter_mut().filter(|l| l.condition < 1.0).min_by(|a, b| a.condition.total_cmp(&b.condition))
         else {
             return;
         };
-        let gain = amount.min(1.0 - l.condition).min(self.wood / 4.0);
+        let gain = amount.min(1.0 - l.condition).min(self.wood / REPAIR_WOOD_PER_CONDITION);
         l.condition += gain;
-        self.wood -= gain * 4.0;
+        self.wood -= gain * REPAIR_WOOD_PER_CONDITION;
     }
 
     /// Working far from water, and long land trips, risk injury; guards and canals lower it.
     fn roll_hazards(&mut self, dt: f32, plan: &[Option<Work>]) {
-        let mitigation = (1.0 + 0.4 * self.guard_strength) * (1.0 + 0.03 * self.dug.min(10.0));
+        let mitigation = (1.0 + GUARD_MITIGATION * self.guard_strength) * (1.0 + CANAL_MITIGATION * self.dug.min(CANAL_MITIGATION_MAX_DUG));
         for i in 0..self.beavers.len() {
             let Some(w) = plan[i] else { continue };
-            let per_day = 0.004 + 0.003 * w.eval.land_len + 0.01 * w.eval.water_dist.min(MAX_WATER_SCAN);
+            let per_day = HAZARD_BASE + HAZARD_PER_LAND_CELL * w.eval.land_len + HAZARD_PER_WATER_DIST * w.eval.water_dist.min(MAX_WATER_SCAN);
             let hit = self.chance(per_day * WORK_FRACTION * dt / mitigation);
             let b = &mut self.beavers[i];
-            let target = (1.0 - 6.0 * per_day / mitigation).clamp(0.2, 1.0);
-            b.needs.safety += (target - b.needs.safety) * (0.4 * dt).min(1.0);
+            let target = (1.0 - SAFETY_HAZARD_SCALE * per_day / mitigation).clamp(SAFETY_MIN, 1.0);
+            b.needs.safety += (target - b.needs.safety) * (SAFETY_RATE * dt).min(1.0);
             if hit {
-                b.health -= 0.15;
-                b.harm[2] += 0.15;
-                b.needs.safety = (b.needs.safety - 0.3).max(0.0);
+                b.health -= INJURY_HEALTH;
+                b.harm[2] += INJURY_HEALTH;
+                b.needs.safety = (b.needs.safety - INJURY_SAFETY).max(0.0);
             }
         }
     }
@@ -782,48 +774,52 @@ impl Colony {
                 *occupancy.entry(l).or_insert(0) += 1;
             }
         }
-        let guarded = (self.guard_strength * 0.2).min(0.2);
+        let guarded = (self.guard_strength * GUARD_SAFETY_PER_STRENGTH).min(GUARD_SAFETY_MAX);
         let mut food = self.food;
         for b in self.beavers.iter_mut() {
             let condition = b.lodge.and_then(|l| self.lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
-            let insulation = condition.map_or(0.05, |c| 0.05 + 0.85 * c);
+            let insulation = condition.map_or(OPEN_INSULATION, |c| OPEN_INSULATION + LODGE_INSULATION * c);
             let n = &mut b.needs;
 
-            // food: hunger, then eat from the stockpile when below 70%
-            n.food = (n.food - 0.25 * dt).max(0.0);
-            if n.food < 0.7 {
+            // food: hunger, then eat from the stockpile when below `EAT_BELOW`
+            n.food = (n.food - HUNGER_PER_DAY * dt).max(0.0);
+            if n.food < EAT_BELOW {
                 let w = b.stage.food_weight();
                 let take = ((1.0 - n.food) * w).min(food);
                 food -= take;
                 n.food += take / w;
             }
             // rest: work tires, shelter restores; exhausted beavers stop working until recovered
-            let worked = if b.current_job.is_some() { WORK_FRACTION } else { 0.1 };
-            n.rest = (n.rest - 0.20 * worked * dt + 0.40 * (1.0 - worked) * insulation * dt).clamp(0.0, 1.0);
+            let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
+            n.rest = (n.rest - TIRE_RATE * worked * dt + SHELTER_REST_RATE * (1.0 - worked) * insulation * dt).clamp(0.0, 1.0);
             if b.resting {
-                n.rest = (n.rest + 0.3 * insulation * dt).min(1.0);
-                b.resting = n.rest < 0.6;
-            } else if n.rest < 0.25 {
+                n.rest = (n.rest + RESTING_RECOVERY * insulation * dt).min(1.0);
+                b.resting = n.rest < RESUME_WORK_REST;
+            } else if n.rest < EXHAUSTED_REST {
                 b.resting = true;
             }
             // warmth: relax toward what the lodge can hold against the season
-            n.warmth += (1.0 - cold * (1.0 - insulation) - n.warmth) * (0.5 * dt).min(1.0);
+            n.warmth += (1.0 - cold * (1.0 - insulation) - n.warmth) * (WARMTH_RATE * dt).min(1.0);
             // safety recovers when not working in danger
             if b.current_job.is_none() {
-                n.safety += ((0.9 + guarded).min(1.0) - n.safety) * (0.4 * dt).min(1.0);
+                n.safety += ((IDLE_SAFETY + guarded).min(1.0) - n.safety) * (SAFETY_RATE * dt).min(1.0);
             }
             // social: company in the lodge
-            let mates = b.lodge.map_or(0, |l| occupancy.get(&l).copied().unwrap_or(1) - 1).min(4);
-            n.social += ((0.2 + 0.2 * mates as f32).min(1.0) - n.social) * (0.4 * dt).min(1.0);
+            let mates = b.lodge.map_or(0, |l| occupancy.get(&l).copied().unwrap_or(1) - 1).min(SOCIAL_MAX_MATES);
+            n.social += ((SOCIAL_BASE + SOCIAL_PER_MATE * mates as f32).min(1.0) - n.social) * (SOCIAL_RATE * dt).min(1.0);
 
             // health: neglect wears it down slowly, care restores it
-            let frail = if b.stage == Stage::Kit { 1.5 } else { 1.0 };
+            let frail = if b.stage == Stage::Kit { KIT_FRAILTY } else { 1.0 };
             let mut loss = 0.0;
             for (k, rate, hurting) in [
-                (0, 0.02 * frail, n.food < 0.15),
-                (1, 0.015 * frail, n.warmth < 0.2),
-                (3, 0.01, n.rest < 0.05),
-                (4, 0.0004 * (b.age_days / DAYS_PER_YEAR as f32 - 8.0), b.age_days > 8.0 * DAYS_PER_YEAR as f32),
+                (0, STARVE_RATE * frail, n.food < STARVE_BELOW),
+                (1, FREEZE_RATE * frail, n.warmth < FREEZE_BELOW),
+                (3, EXHAUST_RATE, n.rest < EXHAUST_BELOW),
+                (
+                    4,
+                    OLD_AGE_RATE * (b.age_days / DAYS_PER_YEAR as f32 - OLD_AGE_YEARS),
+                    b.age_days > OLD_AGE_YEARS * DAYS_PER_YEAR as f32,
+                ),
             ] {
                 if hurting {
                     b.harm[k] += rate * dt;
@@ -831,21 +827,21 @@ impl Colony {
                 }
             }
             b.health -= loss;
-            if loss == 0.0 && n.food > 0.5 && n.warmth > 0.5 {
-                b.health += 0.01 * dt;
+            if loss == 0.0 && n.food > HEAL_ABOVE && n.warmth > HEAL_ABOVE {
+                b.health += HEAL_RATE * dt;
             }
             b.health = b.health.min(1.0);
 
-            b.mood += (n.mood() * (0.5 + 0.5 * b.health) - b.mood) * (0.5 * dt).min(1.0);
-            b.low_mood_days = if b.mood < 0.2 { b.low_mood_days + dt } else { 0.0 };
+            b.mood += (n.mood() * (MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health) - b.mood) * (MOOD_RATE * dt).min(1.0);
+            b.low_mood_days = if b.mood < LOW_MOOD_BELOW { b.low_mood_days + dt } else { 0.0 };
         }
-        self.food = food * (1.0 - 0.003 * dt); // spoilage
-        self.tools = (self.tools - 0.003 * dt).max(0.0);
+        self.food = food * (1.0 - FOOD_SPOILAGE * dt); // spoilage
+        self.tools = (self.tools - TOOLS_WEAR * dt).max(0.0);
     }
 
     fn wear(&mut self, dt: f32, cold: f32) {
         for l in self.lodges.iter_mut() {
-            l.condition = (l.condition - 0.002 * (1.0 + 2.0 * cold) * dt).max(0.0);
+            l.condition = (l.condition - LODGE_WEAR * (1.0 + LODGE_COLD_WEAR * cold) * dt).max(0.0);
         }
     }
 
@@ -936,7 +932,7 @@ impl Colony {
     /// Spring litters: each healthy, housed, paired adult female bears 1–3 kits once a year.
     fn births(&mut self) {
         let doy = day_of_year(self.time_days);
-        if !(BIRTH_FROM_DAY..SPRING_END).contains(&doy) || self.food_per_capita() < 4.0 {
+        if !(BIRTH_FROM_DAY..SPRING_END).contains(&doy) || self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA {
             return;
         }
         let year = (self.time_days / DAYS_PER_YEAR) as i64;
@@ -946,10 +942,10 @@ impl Colony {
             .filter(|b| {
                 b.sex == Sex::Female
                     && b.stage == Stage::Adult
-                    && b.age_years() < 10.0
+                    && b.age_years() < MAX_BIRTH_AGE_YEARS
                     && b.last_birth_year != year
-                    && b.health >= 0.5
-                    && b.needs.food >= 0.4
+                    && b.health >= BREED_MIN_HEALTH
+                    && b.needs.food >= BREED_MIN_FOOD
                     && b.lodge.is_some()
                     && b.mate.is_some_and(|m| self.beavers.iter().any(|x| x.id == m && x.family == b.family))
             })
@@ -959,7 +955,7 @@ impl Colony {
             if let Some(b) = self.beavers.iter_mut().find(|b| b.id == m.id) {
                 b.last_birth_year = year;
             }
-            for _ in 0..1 + self.range(3) {
+            for _ in 0..MIN_LITTER + self.range(LITTER_SPREAD) {
                 let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
                 let id = self.spawn(sex, 0.0, m.family, m.lodge, m.pos, m.mate, Some(m.id));
                 self.stats.births += 1;
@@ -981,7 +977,7 @@ impl Colony {
         let eligible: Vec<(BeaverId, Sex, FamilyId)> = self
             .beavers
             .iter()
-            .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.health >= 0.5 && !parents.contains(&b.id))
+            .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.health >= PAIR_MIN_HEALTH && !parents.contains(&b.id))
             .map(|b| (b.id, b.sex, b.family))
             .collect();
         let mut used: HashSet<BeaverId> = HashSet::new();
@@ -990,7 +986,7 @@ impl Colony {
                 continue;
             }
             let partner = eligible.iter().find(|(b, s, f)| !used.contains(b) && *s != sex && *f != family).map(|p| p.0);
-            if partner.is_none() && !(self.food_per_capita() >= 4.0 && self.chance(0.04 * dt)) {
+            if partner.is_none() && !(self.food_per_capita() >= HUNGRY_FOOD_PER_CAPITA && self.chance(WANDERER_CHANCE_PER_DAY * dt)) {
                 continue;
             }
             let near = self.beaver(a).map_or((0.0, 0.0), |b| self.lodge_pos(b));
@@ -1006,7 +1002,7 @@ impl Colony {
             used.insert(b);
             self.wood -= LODGE_WOOD_COST;
             let fam = self.new_family();
-            let lodge = self.new_lodge(fam, site, 0.7);
+            let lodge = self.new_lodge(fam, site, NEW_LODGE_CONDITION);
             for x in self.beavers.iter_mut().filter(|x| x.id == a || x.id == b) {
                 x.family = fam;
                 x.lodge = Some(lodge);
@@ -1018,7 +1014,7 @@ impl Colony {
     }
 
     fn immigrant(&mut self, sex: Sex) -> BeaverId {
-        let age = (2.0 + 2.0 * self.unit()) * DAYS_PER_YEAR as f32;
+        let age = (IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit()) * DAYS_PER_YEAR as f32;
         let fam = self.new_family(); // replaced as soon as they pair
         let id = self.spawn(sex, age, fam, None, (0.0, 0.0), None, None);
         self.stats.immigrants += 1;
@@ -1029,12 +1025,12 @@ impl Colony {
 
     fn find_lodge_site(&mut self, near: (f32, f32), land: &dyn Landscape) -> Option<(f32, f32)> {
         let start = self.unit() * std::f32::consts::TAU;
-        for r in [6.0_f32, 8.0, 10.0, 12.0, 14.0, 18.0] {
+        for r in LODGE_SITE_RADII {
             for k in 0..12 {
                 let a = start + k as f32 * std::f32::consts::TAU / 12.0;
                 let p = (near.0 + r * a.cos(), near.1 + r * a.sin());
                 let clear = self.lodges.iter().all(|l| (l.pos.0 - p.0).hypot(l.pos.1 - p.1) >= MIN_LODGE_SPACING);
-                if clear && !land.is_water(p.0, p.1) && land.water_distance(p.0, p.1) <= 3.0 {
+                if clear && !land.is_water(p.0, p.1) && land.water_distance(p.0, p.1) <= LODGE_SITE_MAX_WATER_DIST {
                     return Some(p);
                 }
             }
@@ -1071,8 +1067,7 @@ impl Colony {
         let id = FamilyId(self.next_id);
         self.next_id += 1;
         let name = FAMILY_NAMES[self.range(FAMILY_NAMES.len() as u32) as usize].to_string();
-        let priorities =
-            vec![Job::Forager, Job::Forager, Job::Logger, Job::Builder, Job::Hauler, Job::Guard, Job::Crafter, Job::Scout];
+        let priorities = DEFAULT_PRIORITIES.to_vec();
         self.families.push(Family { id, name, priorities });
         id
     }
@@ -1098,11 +1093,11 @@ impl Colony {
         let id = BeaverId(self.next_id);
         self.next_id += 1;
         let name = FIRST_NAMES[self.range(FIRST_NAMES.len() as u32) as usize].to_string();
-        let lifespan_days = (10.0 + 4.0 * self.unit()) * DAYS_PER_YEAR as f32;
+        let lifespan_days = (LIFESPAN_MIN_YEARS + LIFESPAN_SPREAD_YEARS * self.unit()) * DAYS_PER_YEAR as f32;
         let mut skills = [0.0; 8];
         if age_days >= ADULT_DAYS {
             for s in skills.iter_mut() {
-                *s = 0.1 * self.unit();
+                *s = START_SKILL_MAX * self.unit();
             }
         }
         self.beavers.push(Beaver {
@@ -1116,7 +1111,7 @@ impl Colony {
             mate: None,
             skills,
             needs: Needs::satisfied(),
-            mood: 0.9,
+            mood: START_MOOD,
             health: 1.0,
             job: None,
             current_job: None,
