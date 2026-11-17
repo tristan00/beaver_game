@@ -1,4 +1,4 @@
-﻿//! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
+//! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
 use bevy::prelude::*;
 
 #[derive(Resource, Clone, Copy, Debug)]
@@ -21,9 +21,14 @@ impl OrbitCamera {
         self.distance = self.distance.clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
     }
 
-    fn transform(&self) -> Transform {
+    /// World-space camera position.
+    pub fn eye(&self) -> Vec3 {
         let dir = Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos());
-        Transform::from_translation(self.target + dir * self.distance).looking_at(self.target, Vec3::Y)
+        self.target + dir * self.distance
+    }
+
+    fn transform(&self) -> Transform {
+        Transform::from_translation(self.eye()).looking_at(self.target, Vec3::Y)
     }
 }
 
