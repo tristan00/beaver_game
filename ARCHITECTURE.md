@@ -28,7 +28,8 @@ the public APIs below. `R12-2` (this scaffold) owns everything until a later tas
 | `crates/game/src/terrain_render.rs` | terrain render task | Heightmap mesh |
 | `crates/game/src/water_render.rs` | water render task | Water surface (stub) |
 | `crates/game/src/entities_render.rs` | entities render task | Beavers/buildings (stub) |
-| `crates/game/src/ui.rs` | UI task | bevy_ui overlay |
+| `crates/game/src/ui/` (`mod`, `kit`, `ledgers`, `events`, `panels`) | UI task | Top bar, four compact ledgers (Families, Jobs, Stores, Trade), detail tables, event cards and log. `ledgers.rs`/`events.rs` are pure view-models (`cargo test -p game ledgers`); `panels.rs` draws and handles clicks |
+| `crates/game/src/midgame.rs` | UI task | `--midgame`: seeded mid-game colony for screenshots |
 | `crates/game/src/audio.rs` | audio task | Sound (stub) |
 
 One system per file; one `Plugin` per game file.
@@ -60,3 +61,6 @@ and at least N frames have run (`--frames` is a minimum, default 10), then saves
 It exits non-zero instead of writing a blank image if a pipeline fails to compile, the terrain is
 not renderable within 180 s, or the file is not written. Bad arguments exit 2.
 Controls: mouse drag orbit, wheel zoom, Q/E rotate.
+
+Events now fire inside `SimState::step` (`step_events`, applied to the colony through `sim::ColonyHost`), and neighbour migrants join the colony there too.
+`cargo run -p game -- --midgame --seed 3 --screenshot docs/midgame.png` shows the ledgers, top bar and event cards on a settled, year-old colony. `BC_UI_TAB=trade|stores|families|beavers|jobs|tech|events` opens a detail tab at start (debug aid).
