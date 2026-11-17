@@ -60,7 +60,7 @@ impl SharedReadiness {
 
 /// Render-world copy of the terrain's ids, refreshed every extract.
 #[derive(Resource, Default)]
-struct ExtractedTerrain(Option<(MainEntity, AssetId<Mesh>, AssetId<StandardMaterial>)>);
+struct ExtractedTerrain(Option<(MainEntity, AssetId<Mesh>, AssetId<crate::terrain_render::TerrainMaterial>)>);
 
 pub struct ScreenshotPlugin;
 
@@ -86,7 +86,7 @@ impl Plugin for ScreenshotPlugin {
 
 fn extract_terrain(
     mut out: ResMut<ExtractedTerrain>,
-    q: Extract<Query<(Entity, &Mesh3d, &MeshMaterial3d<StandardMaterial>), With<Terrain>>>,
+    q: Extract<Query<(Entity, &Mesh3d, &MeshMaterial3d<crate::terrain_render::TerrainMaterial>), With<Terrain>>>,
 ) {
     out.0 = q.iter().next().map(|(e, m, mat)| (MainEntity::from(e), m.0.id(), mat.0.id()));
 }
