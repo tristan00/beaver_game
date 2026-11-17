@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -26,6 +26,8 @@ pub struct Cli {
     /// Scripted start 1 (needs `--start 1`): order the designed dam, let the family build it, hold
     /// the picture until the pond has filled.
     pub demo_pond: bool,
+    /// Scripted placement preview (needs `--start 1`): hold a valid or invalid building ghost, or the dam hover preview.
+    pub demo_place: Option<String>,
     /// Open this navigation screen at start (screenshots).
     pub open: Option<String>,
     /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
@@ -35,7 +37,7 @@ pub struct Cli {
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, open: None, showcase: None };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -65,6 +67,13 @@ impl Cli {
                     cli.start = Some(Start::from_number(n).ok_or_else(|| format!("--start: no start {n} (choose 1, 2 or 3)"))?);
                 }
                 "--demo-pond" => cli.demo_pond = true,
+                "--demo-place" => {
+                    let v = value("--demo-place")?;
+                    if !["valid", "invalid", "dam"].contains(&v.as_str()) {
+                        return Err(format!("--demo-place: unknown scene '{v}' (valid|invalid|dam)"));
+                    }
+                    cli.demo_place = Some(v);
+                }
                 "--open" => {
                     let v = value("--open")?;
                     if !crate::ui::shell::NavItem::ALL.iter().any(|n| n.label().eq_ignore_ascii_case(&v)) {
@@ -85,6 +94,9 @@ impl Cli {
         }
         if cli.demo_pond && cli.start != Some(Start::River) {
             return Err("--demo-pond needs --start 1".into());
+        }
+        if cli.demo_place.is_some() && cli.start != Some(Start::River) {
+            return Err("--demo-place needs --start 1".into());
         }
         Ok(cli)
     }
@@ -125,6 +137,13 @@ mod tests {
         assert!(p(&["--demo-pond"]).is_err());
         assert!(p(&["--start", "2", "--demo-pond"]).is_err());
         assert!(p(&["--start", "1", "--demo-pond"]).unwrap().demo_pond);
+    }
+
+    #[test]
+    fn demo_place_needs_start_one_and_a_known_scene() {
+        assert!(p(&["--demo-place", "dam"]).is_err());
+        assert!(p(&["--start", "1", "--demo-place", "nope"]).is_err());
+        assert_eq!(p(&["--start", "1", "--demo-place", "dam"]).unwrap().demo_place.as_deref(), Some("dam"));
     }
 
     #[test]
