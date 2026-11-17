@@ -207,13 +207,15 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     });
 }
 
-/// Stress mode measures real throughput, so turn vsync off. Keep the window on top: Windows throttles
-/// presentation of covered windows to the display refresh, which would measure the desktop, not us.
+/// Stress mode measures real throughput, so turn vsync off. Keep the window on top and focused: covered
+/// windows are throttled to the display refresh by Windows, and unfocused ones can be capped by the
+/// GPU driver's "background application max frame rate", which would measure the desktop, not us.
 fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
     if cli.stress {
         for mut w in &mut windows {
             w.present_mode = PresentMode::AutoNoVsync;
             w.window_level = WindowLevel::AlwaysOnTop;
+            w.focused = true;
         }
     }
 }
@@ -572,23 +574,23 @@ const STRESS_WARMUP: u32 = 240;
 struct FrameWork {
     start: Option<std::time::Instant>,
     last_ms: f32,
-    last_sim_ms: f32,
+    last_focused: bool,
 }
 
 fn frame_work_start(mut w: ResMut<FrameWork>) {
     w.start = Some(std::time::Instant::now());
 }
 
-fn frame_work_end(mut w: ResMut<FrameWork>, sim_ms: Res<crate::state::SimStepMs>) {
+fn frame_work_end(mut w: ResMut<FrameWork>, win: Query<&Window, With<PrimaryWindow>>) {
     if let Some(s) = w.start {
         w.last_ms = s.elapsed().as_secs_f32() * 1000.0;
     }
-    w.last_sim_ms = sim_ms.0;
+    w.last_focused = win.iter().next().is_some_and(|w| w.focused);
 }
 const STRESS_FRAMES: usize = 900;
 const STRESS_BUDGET_MS: f32 = 16.0;
 
-fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderScene>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, f32)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderScene>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, bool)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     if !cli.stress {
         return;
     }
@@ -598,7 +600,7 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderS
     }
     samples.push(time.delta_secs() * 1000.0);
     // `delta` measures the previous frame, whose main-world work is `work.last_ms`.
-    works.push((work.last_ms, work.last_sim_ms));
+    works.push((work.last_ms, work.last_focused));
     if samples.len() < STRESS_FRAMES {
         return;
     }
@@ -612,13 +614,14 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, scene: Option<Res<RenderS
         .iter()
         .enumerate()
         .filter(|(_, ms)| **ms >= STRESS_BUDGET_MS)
-        .map(|(i, ms)| format!("#{i}={ms:.2}(cpu {:.2}, sim {:.2})", works[i].0, works[i].1))
+        .map(|(i, ms)| format!("#{i}={ms:.2}(cpu {:.2}{})", works[i].0, if works[i].1 { "" } else { ", unfocused" }))
         .collect();
+    let unfocused = works.iter().filter(|w| !w.1).count();
     let mut w: Vec<f32> = works.iter().map(|w| w.0).collect();
     w.sort_by(|a, b| a.total_cmp(b));
     let (trees, beavers) = scene.map(|sc| (sc.trees.len(), sc.beavers.len())).unwrap_or((0, 0));
     let line = format!(
-        "stress scene: {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
+        "stress scene: {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | unfocused frames: {unfocused} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
         s.len(),
         pct(0.5),
         pct(0.95),

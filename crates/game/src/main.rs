@@ -22,7 +22,11 @@ fn main() -> AppExit {
     };
     os_timer::high_resolution();
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+    let mut tp = TaskPoolOptions::default();
+    if let Some(n) = std::env::var("BEAVER_THREADS").ok().and_then(|v| v.parse::<usize>().ok()) {
+        tp.compute = bevy::app::TaskPoolThreadAssignmentPolicy { min_threads: n, max_threads: n, percent: 1.0, on_thread_spawn: None, on_thread_destroy: None };
+    }
+    app.add_plugins(DefaultPlugins.set(TaskPoolPlugin { task_pool_options: tp }).set(WindowPlugin {
         primary_window: Some(Window { title: "Beaver Colony".into(), resolution: (1280, 720).into(), ..default() }),
         ..default()
     }))
