@@ -712,10 +712,9 @@ fn tree_panel(sim: &SimState, id: ResourceId) -> Option<Panel> {
 mod tests {
     use super::*;
     use super::super::explain::audit;
-    use sim::starts::{build_lake, Start};
 
     fn start2() -> SimState {
-        build_lake(Start::EarlyLake, 1).expect("start 2").0
+        sim::lakes::early_lake(1).expect("early lake fixture").0
     }
 
     fn assert_audited(p: &Panel) {

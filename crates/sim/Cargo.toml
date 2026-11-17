@@ -3,6 +3,10 @@ name = "sim"
 edition.workspace = true
 version.workspace = true
 
+[features]
+# The old lake starts, as test fixtures for other crates.
+fixtures = []
+
 [dependencies]
 rand_core = "0.10"
 rand_pcg = "0.10"

@@ -106,7 +106,7 @@ mod tests {
     fn every_building_is_fully_defined_and_unlocks_consistently() {
         for kind in BuildingKind::ALL {
             let (spec, d) = (kind.spec(), def(kind));
-            assert!(!spec.cost.is_empty() && spec.cost.iter().all(|a| a.1 > 0.0), "{kind:?} cost");
+            assert!((kind == BuildingKind::Burrow || !spec.cost.is_empty()) && spec.cost.iter().all(|a| a.1 > 0.0), "{kind:?} cost");
             assert!(spec.footprint.0 > 0 && spec.footprint.1 > 0 && spec.work > 0.0, "{kind:?} footprint/work");
             assert!(!spec.name.is_empty());
             match d.unlock {

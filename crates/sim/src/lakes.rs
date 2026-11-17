@@ -593,17 +593,15 @@ fn assemble_industrial(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::starts::{build_lake, Start};
-
-    fn lake(start: Start, seed: u64) -> (SimState, LakeInfo) {
-        build_lake(start, seed).unwrap_or_else(|e| panic!("{start:?} seed {seed}: {e}"))
+    fn lake(seed: u64) -> (SimState, LakeInfo) {
+        early_lake(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}"))
     }
 
     #[test]
     fn start_two_lake_is_broad_and_filled_behind_a_dam_across_the_channel() {
         // Seed 1 is the reference world; other seeds whose valley is too narrow keep a small lake.
         for seed in [1] {
-            let (s, info) = lake(Start::EarlyLake, seed);
+            let (s, info) = lake(seed);
             assert!(info.area() >= 200, "seed {seed}: lake only {} cells", info.area());
             let river_in_dam = info.dam.cells.iter().filter(|c| is_river(&s, c.0, c.1)).count();
             assert!(river_in_dam >= 1, "seed {seed}: the dam crosses the water channel");

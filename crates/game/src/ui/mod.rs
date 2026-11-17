@@ -10,7 +10,6 @@ pub mod events;
 pub mod explain;
 pub mod gestures;
 pub mod icons;
-pub mod menu;
 mod kit;
 pub mod mapmodes;
 pub mod modebar;
@@ -20,7 +19,6 @@ mod panels;
 pub mod screens;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod selection;
-#[allow(dead_code)] // start menu is wired by the start tasks
 pub mod shell;
 pub use panels::ShellUi;
 

@@ -3,10 +3,9 @@ use super::*;
 use crate::ui::orders::gesture_command;
 use sim::buildings::BuildingKind;
 use sim::colony::Stage;
-use sim::starts::{build, Start};
 
 fn start2() -> SimState {
-    let mut sim = build(Start::EarlyLake, 1).expect("start 2");
+    let mut sim = sim::lakes::early_lake(1).expect("early lake fixture").0;
     sim.work.auto_organise = false; // only the player orders move beavers
     for p in &mut sim.work.places {
         p.slots.iter_mut().for_each(|s| s.worker = None); // the start staffs its camps; the player gives the orders here

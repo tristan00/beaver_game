@@ -23,9 +23,7 @@ Every request bullet → where it lives, its public types, and who builds it.
 | 11 | Join requests as decisions | `sim::society` | `JoinRequest`, `Answer`, `Society::answer`, `Command::AnswerJoin` | `society` (sim), `events_ui` (UI) |
 | 12 | Water network: rivers, tributaries, springs, ponds | `sim::worldgen` | `worldgen::World` (existing; `water` adds spring and pond fields) | `water` |
 | 13 | Dam preview: rise, flooding, cost, pressure; pond fills | `sim::dam_preview` | `DamPreview`, `preview` | `dam` |
-| 14 | Start 1 River | `sim::starts` | `Start::River`, `build` | `start1` |
-| 15 | Start 2 Early lake, Start 3 Industrial lake | `sim::starts` | `Start::EarlyLake`, `Start::IndustrialLake`, `build` | `start23` |
-| 16 | Start-up menu, `--start N`, midgame removed | `game::ui::shell`, `game::cli` | `start_menu`, `StartCard`, `Start::from_number` | `start1` |
+| 14 | The one start (swim in, scout, burrow, dam, pond) | `sim::starts` | `new_game`, `new_game_with_dam` | `start1` |
 | 17 | New industrial content: canal networks, efficient production, bigger storage | `sim::catalogue`, `sim::buildings` | `Def`, `Tier`, `def`, `available`; new `BuildingKind` variants | `content` |
 | 18 | One switch disabling out-of-scope systems | `sim::features` | `Features`, `System`, `Features::enabled`, `SimState::features` | `switch` |
 | 19 | Navigation bar, one screen at a time | `game::ui::shell` | `NavItem`, `Shell`, `Shell::toggle`, `Shell::bar` | `ui_shell` |
@@ -119,21 +117,16 @@ that sum to `Beaver::mood`, feeding number provenance), `work_speed(mood)`. Low 
 via `work_speed`. Births need food and a free lodge bed (rules already in `colony.rs`; `society`
 adds tests and the lodge-founding hook for grown families).
 
-## 8. The three starts (`sim::starts`)
+## 8. The one start (`sim::starts`)
 
-`Start::{River, EarlyLake, IndustrialLake}`; `starts::build(start, seed) -> SimState` is
-deterministic and does not simulate forward. Numbers they must meet:
-
-| | River | Early lake | Industrial lake |
-|---|---|---|---|
-| Beavers | 2 adults + 2 kits | ~15 (some joined) | 50+ with specialists |
-| Water | river, no dam | built dam, lake | larger dam, much larger lake, canals |
-| Buildings | none | lodge, stores, gatherer workplaces | efficient production, big storage |
-| Tech | none | elementary | advanced |
-| Player's first act | pick a dam spot | assign work | optimise |
-
-`--start N` (1–3) skips the menu; the menu (`ui::shell::start_menu`) lists the three. The old
-`midgame` path is deleted by `start1`.
+There is a single start. `starts::new_game(seed) -> SimState` (and `new_game_with_dam`, which also
+returns the dam the world is designed around) is deterministic and does not simulate forward:
+two adults and two kits in the river beside a dry landing bank, no building of any kind, no
+dam. The game opens on them swimming, camera on them; there is no start menu and no `--start`.
+The player places a burrow (`PlaceSite` Burrow: no materials, 6 labour) and a dam; the adults dig
+and fell and haul wood straight to the site, kits never work, and the dam completes only from
+delivered wood. The old lake starts survive only as test fixtures (`sim::lakes`, feature
+`fixtures`).
 
 ## 9. Content (`sim::catalogue`)
 
