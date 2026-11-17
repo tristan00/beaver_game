@@ -1,1 +1,1 @@
-frame_time cam=iso seed=1 frames=300 avg_ms=3.30 p99_ms=6.16 max_ms=8.40
+frame_time cam=iso seed=1 frames=300 avg_ms=2.39 p99_ms=3.47 max_ms=4.32 chunk_rebuilds=5959

@@ -118,8 +118,8 @@ const SKY: [Rgb; 4] = [[0.62, 0.82, 0.96], [0.52, 0.76, 0.96], [0.80, 0.80, 0.88
 const SUN: [Rgb; 4] = [[1.0, 0.96, 0.88], [1.0, 0.95, 0.84], [1.0, 0.86, 0.70], [0.88, 0.92, 1.0]];
 const SUN_LUX: [f32; 4] = [8_500.0, 9_500.0, 7_500.0, 6_500.0];
 const AMBIENT: [Rgb; 4] = [[0.80, 0.90, 1.0], [0.82, 0.90, 1.0], [0.95, 0.88, 0.90], [0.84, 0.90, 1.0]];
-const WATER_SHALLOW: [Rgb; 4] = [[0.46, 0.88, 0.90], [0.42, 0.90, 0.92], [0.52, 0.80, 0.78], [0.60, 0.80, 0.90]];
-const WATER_DEEP: [Rgb; 4] = [[0.12, 0.52, 0.84], [0.10, 0.50, 0.86], [0.18, 0.42, 0.66], [0.26, 0.44, 0.68]];
+const WATER_SHALLOW: [Rgb; 4] = [[0.30, 0.80, 0.92], [0.26, 0.80, 0.94], [0.38, 0.72, 0.80], [0.52, 0.74, 0.88]];
+const WATER_DEEP: [Rgb; 4] = [[0.08, 0.50, 0.70], [0.06, 0.50, 0.72], [0.16, 0.44, 0.56], [0.24, 0.44, 0.62]];
 
 fn cyc<T: Copy>(k: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
     let p = phase.rem_euclid(1.0) * 4.0 - 0.5;
@@ -206,9 +206,13 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     let n = CHUNK as i32 + 2 * pad;
     for y in y0..=y0 + n {
         for x in x0..=x0 + n {
-            let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((at(&s.water.depth, x, y).to_bits() as u64) << 32);
+            // depth quantised to 1/64 unit: rain/evaporation drift far below what is visible must
+            // not rebuild every wet chunk every frame
+            let dq = (at(&s.water.depth, x, y) * 64.0).round() as i32;
+            let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             if with_veg {
-                v ^= (at(&s.ecology.vegetation, x, y).to_bits() as u64).rotate_left(17);
+                let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
+                v ^= (vq as u32 as u64).rotate_left(17);
             }
             h = (h ^ v).wrapping_mul(0x100_0000_01b3);
             h ^= h >> 29;
@@ -324,6 +328,7 @@ fn rebuild_chunk(
     if !force && slot.hash == hash && slot.step == step {
         return false;
     }
+    MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, step);
     match slot.entity {
         Some(_) => {
@@ -404,8 +409,10 @@ fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     c = mix(c, p.wetland, wetland * (1.0 - rock));
     // muddy bank
     c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.8);
-    // river/lake bed: sandy-mud, darker when deep
-    let bed = mix([0.74, 0.66, 0.48], [0.46, 0.40, 0.34], smooth(0.0, 5.0, depth));
+    // river/lake bed: warm sandy-mud in the shallows, cooling to a soft blue-grey when deep, so
+    // water reads as water from far away while beavers and lodges still stand out against it
+    // (a warm bed under cyan water would cancel to grey, so it cools quickly with depth)
+    let bed = mix([0.62, 0.60, 0.46], [0.20, 0.40, 0.54], (depth / 3.0).max(0.0).sqrt().min(1.0));
     c = mix(c, bed, submerged);
     // snow: seasonal blanket above the waterline + permanent caps
     let cap = smooth(0.8, 0.95, t);
@@ -487,6 +494,9 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
 // ───────────────────────────── frame-time logging ─────────────────────────────
 
 const WARMUP_FRAMES: usize = 60;
+
+/// Terrain + water chunk meshes rebuilt so far (reported by the frame log).
+pub static MESH_REBUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const SAMPLE_FRAMES: usize = 300;
 
 /// With `BEAVER_FRAMELOG=<file>`: turns vsync off, samples frame time after warm-up, logs and
@@ -497,6 +507,7 @@ fn frame_log(
     mut windows: Query<&mut Window>,
     mut samples: Local<Vec<f32>>,
     mut frame: Local<usize>,
+    mut rebuilds_at_start: Local<usize>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Ok(path) = std::env::var("BEAVER_FRAMELOG") else { return };
@@ -509,6 +520,9 @@ fn frame_log(
     if *frame <= WARMUP_FRAMES || samples.len() >= SAMPLE_FRAMES {
         return;
     }
+    if samples.is_empty() {
+        *rebuilds_at_start = MESH_REBUILDS.load(std::sync::atomic::Ordering::Relaxed);
+    }
     samples.push(time.delta_secs() * 1000.0);
     if samples.len() == SAMPLE_FRAMES {
         let mut sorted = samples.clone();
@@ -517,8 +531,11 @@ fn frame_log(
         let p99 = sorted[(sorted.len() as f32 * 0.99) as usize - 1];
         let max = *sorted.last().unwrap();
         let line = format!(
-            "frame_time cam={} seed={} frames={} avg_ms={avg:.2} p99_ms={p99:.2} max_ms={max:.2}",
-            cli.cam, cli.seed, sorted.len()
+            "frame_time cam={} seed={} frames={} avg_ms={avg:.2} p99_ms={p99:.2} max_ms={max:.2} chunk_rebuilds={}",
+            cli.cam,
+            cli.seed,
+            sorted.len(),
+            MESH_REBUILDS.load(std::sync::atomic::Ordering::Relaxed) - *rebuilds_at_start
         );
         info!("{line}");
         if let Err(e) = std::fs::write(&path, format!("{line}\n")) {

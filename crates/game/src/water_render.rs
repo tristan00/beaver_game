@@ -1,10 +1,10 @@
-﻿//! Nearly clear water: a chunked surface mesh over `SimState::water.depth` whose vertex colour
+//! Nearly clear water: a chunked surface mesh over `SimState::water.depth` whose vertex colour
 //! carries a light tint and a depth-based alpha, so riverbeds, beavers and lodges show through.
 //! A scrolling procedural normal map gives a gentle animated surface; in winter the shallows freeze
 //! into pale, mostly opaque ice that spreads with the season.
 //!
 //! Debug env: `BEAVER_DEMO=1` fills a lake into the sim's water field and drops a test object on
-//! its bed (`BEAVER_DEMO_CAM=close` also frames it with the camera). Used for screenshots until
+//! its bed (`BEAVER_DEMO_CAM=close` or `mid` also frames it with the camera). Used for screenshots until
 //! the water/colony tasks provide real water and beavers.
 use crate::camera::{MainCamera, OrbitCamera};
 use crate::state::Sim;
@@ -100,8 +100,8 @@ fn setup_water(
     water.material = materials.add(StandardMaterial {
         base_color: Color::WHITE, // colour and alpha come from vertices
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.12,
-        reflectance: 0.3,
+        perceptual_roughness: 0.22,
+        reflectance: 0.12,
         normal_map_texture: Some(images.add(ripple_normal_map())),
         cull_mode: None,
         ..default()
@@ -157,12 +157,12 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
             tan.push([1.0, 0.0, 0.0, -1.0]);
             uv.push([wx * 0.045, wz * 0.045]);
             // depth-based tint: clear and pale in shallows, bluer when deep, never opaque
-            let deep = 1.0 - (-d * 0.35).exp();
+            let deep = 1.0 - (-d * 0.45).exp();
             let mut c = mix_rgb(p.water_shallow, p.water_deep, deep);
-            let mut a = if d > 0.0 { 0.22 + 0.36 * deep } else { 0.0 };
+            let mut a = if d > 0.0 { 0.30 + 0.14 * deep } else { 0.0 };
             // soft foam-ish pale rim in the shallowest water
-            let rim = (1.0 - d / 0.35).clamp(0.0, 1.0) * if d > 0.0 { 1.0 } else { 0.0 };
-            c = mix_rgb(c, [1.0, 1.0, 1.0], rim * 0.35);
+            let rim = (1.0 - d / 0.12).clamp(0.0, 1.0) * if d > 0.0 { 1.0 } else { 0.0 };
+            c = mix_rgb(c, [1.0, 1.0, 1.0], rim * 0.25);
             // ice: freezes from the shore inwards as winter deepens
             let ice = if d > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { p.winter };
             c = mix_rgb(c, p.ice, ice);
@@ -174,9 +174,11 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     for j in 0..n {
         for i in 0..n {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
-            if [a, b, c, e].iter().any(|&k| verts[k].is_some_and(|(_, d)| d > 0.0)) && [a, b, c, e].iter().all(|&k| verts[k].is_some()) {
-                let (a, b, c, e) = (a as u32, b as u32, c as u32, e as u32);
-                idx.extend_from_slice(&[a, c, b, b, c, e]);
+            // per triangle, so the shoreline follows diagonals instead of stair-stepping
+            for tri in [[a, c, b], [b, c, e]] {
+                if tri.iter().any(|&k| verts[k].is_some_and(|(_, d)| d > 0.0)) && tri.iter().all(|&k| verts[k].is_some()) {
+                    idx.extend(tri.iter().map(|&k| k as u32));
+                }
             }
         }
     }
@@ -231,6 +233,7 @@ fn update_water_chunks(
                 return;
             }
             budget -= 1;
+            MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mesh = build_water_mesh(&sim.0, &palette, cx, cy, step);
             let material = water.material.clone();
             let slot = &mut water.slots[idx];
@@ -268,50 +271,143 @@ fn animate_water(time: Res<Time>, water: Res<WaterChunks>, mut materials: ResMut
 }
 
 /// Demo scene (`BEAVER_DEMO=1`): a lake in the sim's water field and a test object on its bed.
+///
+/// Floods everything below the 22nd-percentile height, then always carves a round basin
+/// (radius `R`, `DEMO_DEPTH` deep at its centre) at the lowest spot near the middle of the map
+/// and fills it to its spill height, so every heightmap (flat floodplains included) gets
+/// clearly deep water with the test object resting on its bed.
 fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut orbit: ResMut<OrbitCamera>) {
     if std::env::var("BEAVER_DEMO").is_err() {
         return;
     }
     let s = &mut sim.0;
-    let mut sorted: Vec<f32> = s.height.as_slice().to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let level = sorted[sorted.len() * 22 / 100];
-    let (w, d) = (s.height.width(), s.height.height());
-    for y in 0..d {
-        for x in 0..w {
-            let h = s.height.as_slice()[y * w + x];
-            if h < level {
-                s.water.depth.as_mut_slice()[y * w + x] = level - h;
-            }
-        }
-    }
-    // test object: on the bed, 2..5 units deep, closest to the middle of the world
-    let mut best: Option<(f32, usize, usize)> = None;
-    for y in 4..d - 4 {
-        for x in 4..w - 4 {
-            let dep = s.water.depth.as_slice()[y * w + x];
-            if (2.0..5.0).contains(&dep) {
-                let dist = ((x as f32 - w as f32 / 2.0).powi(2) + (y as f32 - d as f32 / 2.0).powi(2)).sqrt();
-                if best.is_none_or(|b| dist < b.0) {
-                    best = Some((dist, x, y));
-                }
-            }
-        }
-    }
-    let Some((_, x, y)) = best else { warn!("demo: no suitable lake"); return };
+    let Some((x, y, bed)) = carve_demo_lake(s) else { warn!("demo: world too small for a lake"); return };
     let (wx, wz) = world_pos(s, x as i32, y as i32);
-    let bed = s.height.as_slice()[y * w + x];
-    let pos = Vec3::new(wx, bed + 0.9, wz);
-    // beaver-ish: brown body with a flat tail
-    let body = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.33, 0.16), perceptual_roughness: 0.9, ..default() });
+    const SCALE: f32 = 1.6;
+    let pos = Vec3::new(wx, bed + 0.9 * SCALE, wz);
+    // beaver-ish: warm brown body with a flat tail and a yellow marker
+    let body = materials.add(StandardMaterial { base_color: Color::srgb(0.60, 0.33, 0.12), perceptual_roughness: 0.9, ..default() });
     commands
-        .spawn((DemoObject, Transform::from_translation(pos), Visibility::default()))
+        .spawn((DemoObject, Transform::from_translation(pos).with_scale(Vec3::splat(SCALE)), Visibility::default()))
         .with_children(|c| {
             c.spawn((Mesh3d(meshes.add(Capsule3d::new(0.9, 1.4))), MeshMaterial3d(body.clone()), Transform::from_rotation(Quat::from_rotation_z(1.5))));
             c.spawn((Mesh3d(meshes.add(Cuboid::new(1.6, 0.15, 0.9))), MeshMaterial3d(body.clone()), Transform::from_xyz(-1.9, -0.4, 0.0)));
             c.spawn((Mesh3d(meshes.add(Sphere::new(0.35))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.8, 0.2), ..default() })), Transform::from_xyz(1.5, 0.7, 0.0)));
         });
-    if std::env::var("BEAVER_DEMO_CAM").as_deref() == Ok("close") {
-        *orbit = OrbitCamera { target: pos, yaw: 0.6, pitch: 0.9, distance: 16.0 };
+    match std::env::var("BEAVER_DEMO_CAM").as_deref() {
+        Ok("close") => *orbit = OrbitCamera { target: pos, yaw: 0.6, pitch: 0.9, distance: 18.0 },
+        Ok("mid") => *orbit = OrbitCamera { target: pos, yaw: orbit.yaw, pitch: orbit.pitch, distance: 45.0 },
+        _ => {}
+    }
+}
+
+/// Depth of the carved demo basin at its centre.
+pub const DEMO_DEPTH: f32 = 4.5;
+
+/// Floods the low ground and carves the guaranteed demo basin; returns its centre cell and bed height.
+pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
+    const R: f32 = 11.0;
+    let (w, d) = (s.height.width(), s.height.height());
+    let margin = R as usize + 3;
+    if w <= 2 * margin || d <= 2 * margin {
+        return None;
+    }
+    let mut sorted: Vec<f32> = s.height.as_slice().to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let level = sorted[sorted.len() * 22 / 100];
+    // site: lowest (3x3-averaged) ground in the central half, mildly preferring the middle
+    let h = |x: usize, y: usize| s.height.as_slice()[y * w + x];
+    // The whole-world camera must see the basin: march from the site towards the "iso" preset
+    // camera and reject sites whose sightline dips under the terrain.
+    let eye = crate::camera::preset("iso").map(|o| o.eye()).unwrap_or(Vec3::new(100.0, 100.0, 100.0));
+    let visible = |x: usize, y: usize| -> bool {
+        let (wx, wz) = world_pos(s, x as i32, y as i32);
+        let from = Vec3::new(wx, h(x, y) + 0.5, wz);
+        let dir = eye - from;
+        let steps = (dir.length() / 0.5) as usize;
+        (1..steps).all(|k| {
+            let p = from + dir * (k as f32 / steps as f32);
+            let (gx, gy) = (p.x / CELL_SIZE + w as f32 / 2.0, p.z / CELL_SIZE + d as f32 / 2.0);
+            if gx < 0.0 || gy < 0.0 || gx >= (w - 1) as f32 || gy >= (d - 1) as f32 {
+                return true;
+            }
+            p.y > h(gx.round() as usize, gy.round() as usize)
+        })
+    };
+    let mut best = (f32::MAX, w / 2, d / 2);
+    for y in (d / 4).max(margin)..(3 * d / 4).min(d - margin) {
+        for x in (w / 4).max(margin)..(3 * w / 4).min(w - margin) {
+            let mut avg = 0.0;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (usize::MAX, 0), (0, usize::MAX)] {
+                avg += h(x.wrapping_add(dx), y.wrapping_add(dy)) / 5.0;
+            }
+            let dist = ((x as f32 - w as f32 / 2.0).powi(2) + (y as f32 - d as f32 / 2.0).powi(2)).sqrt();
+            let score = avg + dist * 0.08;
+            if score < best.0 && visible(x, y) {
+                best = (score, x, y);
+            }
+        }
+    }
+    let (_, sx, sy) = best;
+    // spill height: lowest terrain on the ring just outside the basin, or the flood level if higher
+    let ring = |x: usize, y: usize| ((x as f32 - sx as f32).powi(2) + (y as f32 - sy as f32).powi(2)).sqrt();
+    let mut spill = f32::MAX;
+    let r = R as usize + 2;
+    for y in sy - r..=sy + r {
+        for x in sx - r..=sx + r {
+            if (R..R + 1.5).contains(&ring(x, y)) {
+                spill = spill.min(h(x, y));
+            }
+        }
+    }
+    let lake = spill.max(level);
+    let hs = s.height.as_mut_slice();
+    for y in sy - r..=sy + r {
+        for x in sx - r..=sx + r {
+            let t = ring(x, y) / R;
+            if t < 1.0 {
+                let bowl = lake - DEMO_DEPTH * (1.0 - t * t);
+                hs[y * w + x] = hs[y * w + x].min(bowl);
+            }
+        }
+    }
+    let wd = s.water.depth.as_mut_slice();
+    for (i, &hh) in s.height.as_slice().iter().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let target = if ring(x, y) < R { lake } else { level };
+        if hh < target {
+            wd[i] = target - hh;
+        }
+    }
+    Some((sx, sy, s.height.as_slice()[sy * w + sx]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(s: &mut SimState) {
+        let (x, y, bed) = carve_demo_lake(s).expect("lake");
+        let w = s.height.width();
+        let dep = s.water.depth.as_slice()[y * w + x];
+        assert!((DEMO_DEPTH - 0.01..=DEMO_DEPTH + 3.0).contains(&dep), "centre depth {dep}");
+        assert_eq!(bed, s.height.as_slice()[y * w + x]);
+        // the basin is filled all the way to its rim: neighbours of the centre are wet too
+        assert!(s.water.depth.as_slice()[y * w + x + 5] > 1.0);
+    }
+
+    #[test]
+    fn demo_lake_on_flat_world() {
+        let mut s = SimState::new(1);
+        s.height.as_mut_slice().fill(5.0);
+        s.water.depth.as_mut_slice().fill(0.0);
+        check(&mut s);
+    }
+
+    #[test]
+    fn demo_lake_on_generated_worlds() {
+        for seed in 1..=6 {
+            check(&mut SimState::new(seed));
+        }
     }
 }
