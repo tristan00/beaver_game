@@ -13,9 +13,9 @@ Numbers marked *(tune)* are starting values; the walk-through in section 7 uses 
 | | Value | Where it lives |
 |---|---|---|
 | Year | 360 days, four seasons of 90 days: spring 0-89, summer 90-179, autumn 180-269, winter 270-359 | `calendar::YEAR_DAYS`, `SEASON_DAYS`, `calendar::season_of(day)` |
-| Real time at 1x | **2.5 minutes per season** (150 s), 10 minutes per year; so **0.6 days per real second** | `game::sim_driver::BASE_DAYS_PER_SECOND` = `SEASON_DAYS / SEASON_SECONDS` |
+| Real time at 1x | **2.5 minutes per season** (150 s), 10 minutes per year; so **0.6 days per real second** | `game::sim_driver::SimClock::advance` adds `real_dt x BASE_DAYS_PER_SECOND x Speed::multiplier` days; `BASE_DAYS_PER_SECOND` = `SEASON_DAYS / SEASON_SECONDS` (today 0.4, `sim_driver.rs:11`) |
 | Speed steps | Pause, 1x, 3x, 10x (a season takes 150 s, 50 s, 15 s) | `sim_driver::Speed::{Paused, X1, X3, X10}`, `multiplier` |
-| Clock stands still | in founding phases Swim, Scout and PlaceBurrow (day 0 does not start until the burrow is placed), and while a decision card is open | `founding::clock_running`, read by `sim_driver::tick` |
+| Clock stands still | in founding phases Swim, Scout and PlaceBurrow (day 0 does not start until the burrow is placed), and while a decision card is open | `founding::clock_running`, read by `sim_driver::SimClock::advance` |
 | Auto-slow | an unlock, a birth or a new arrival drops 10x/3x back to 1x once | `sim_driver::on_milestone` |
 
 One calendar everywhere. Today four disagree: 365 days (`colony.rs:17`), 30-day seasons
@@ -206,13 +206,14 @@ Self-growth:
 ## 9. Rules and who enforces them
 
 Each rule names the module and function that enforces it, and the task that owns the change.
+Where a rule also depends on a constant, the constant is listed after the function that reads it.
 
 | Rule | Module::function | Task |
 |---|---|---|
 | R1 One calendar: 360-day year, 90-day seasons | `calendar::season_of`, `calendar::YEAR_DAYS`; `water::Season::at`, `events::Calendar` use it | calendar |
-| R2 150 s per season at 1x (0.6 days/s) | `sim_driver::BASE_DAYS_PER_SECOND` | calendar |
+| R2 150 s per season at 1x (0.6 days/s) | `sim_driver::SimClock::advance` (adds `real_dt x BASE_DAYS_PER_SECOND x Speed::multiplier()` sim days, `sim_driver.rs:72`); constant `BASE_DAYS_PER_SECOND` = `SEASON_DAYS / SEASON_SECONDS` | calendar |
 | R3 Speed steps pause/1x/3x/10x | `sim_driver::Speed::multiplier`, `flow_view` time bar | calendar |
-| R4 Clock stands still in Swim, Scout, PlaceBurrow | `founding::clock_running` used by `sim_driver::tick` | founding |
+| R4 Clock stands still in Swim, Scout, PlaceBurrow | `founding::clock_running` checked in `sim_driver::SimClock::advance` before it adds days | founding |
 | R5 Founding phases only change in `founding::step` | `founding::step`, `founding::on_site_done` | founding |
 | R6 Founders arrive without a lodge; stockpile free | `founding::land` replaces `colony::found` use in `starts::build_river` | founding |
 | R7 A burrow is dug by adults, no materials | `tuning::buildings::cost_and_work(Burrow)`, `agents::build`, `founding::place_burrow` | founding |
@@ -222,7 +223,7 @@ Each rule names the module and function that enforces it, and the task that owns
 | R11 Kits never work | `work::can_work(stage)` called by `Work::assign`, `Agents::assign`, `SimState::apply(Assign/FillSlot)` | work-rules |
 | R12 Idle adults do not work | `colony::effective_job` returns the beaver's order only; `colony::do_work` produces nothing (cut-over); `agents::duty_of` is the sole source of work | work-rules |
 | R13 Experience comes from work done by agents | `agents::finish_work` credits `colony.experience` | work-rules |
-| R14 Everything beyond the start set needs research | `tech::BASE_BUILDINGS` = Burrow, Dam, Warehouse | research |
+| R14 Everything beyond the start set needs research | `tech::Tech::allows` (true only for `BASE_BUILDINGS` or a kind unlocked by a researched tech, `tech.rs:123`), called by `buildings::Buildings::can_place_site`; constant `tech::BASE_BUILDINGS` cut to Burrow, Dam, Warehouse | research |
 | R15 Achievements grant research at once | `tech::Tech::record(Achievement)`: called by `founding::on_site_done` (FirstBurrow, FirstDam), `SimState::step` at winter end (FirstWinter) | research |
 | R16 Experience research needs XP, size, prerequisites | `tech::Tech::update(&SimState)` checks `TechDef::{xp, size, requires}` | research |
 | R17 Late research needs study at the den | `tech::Tech::study(dt, lore)`, `TechDef::lore` | research |
