@@ -238,7 +238,8 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
 }
 
 /// Tops up the river above the planned dam so the pond can fill and stay full: steady springs
-/// on the river cells that flow into it, nearest first. They sit in the channel, so before the dam
+/// on the river cells that flow into it, nearest first (under the water if the river rises inside
+/// the pond). They sit in the channel, so before the dam
 /// the extra water simply runs past.
 pub(crate) fn feed_river(sim: &mut SimState, dam: &[Cell], height: f32) -> Result<(), StartError> {
     let p = crate::dam_preview::preview(sim, dam, height).ok_or(StartError::NoSite)?;
@@ -261,11 +262,19 @@ pub(crate) fn feed_river(sim: &mut SimState, dam: &[Cell], height: f32) -> Resul
         .collect();
     upstream.sort();
     upstream.truncate(MAX_SPRINGS);
-    if upstream.is_empty() {
+    let mut cells: Vec<Cell> = upstream.into_iter().map(|(_, c)| c).collect();
+    if cells.is_empty() {
+        // The river rises inside the pond: springs under the water, spread over the flooded cells.
+        let mut flooded = p.flooded.clone();
+        flooded.sort_by_key(|&(x, y)| (y, x));
+        let n = MAX_SPRINGS.min(flooded.len());
+        cells = (0..n).map(|k| flooded[k * flooded.len() / n]).collect();
+    }
+    if cells.is_empty() {
         return Err(StartError::NoSite);
     }
-    let rate = needed / upstream.len() as f32;
-    for (_, (x, y)) in upstream {
+    let rate = needed / cells.len() as f32;
+    for (x, y) in cells {
         sim.water.sources.push(crate::water::Source { x, y, rate, seasonality: 0.0 });
     }
     Ok(())
