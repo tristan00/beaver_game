@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag|resize] [--demo-place valid|invalid|dam] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag|resize] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -34,12 +34,14 @@ pub struct Cli {
     pub showcase: Option<String>,
     /// Scripted order gesture (needs `--start 2`): `drag` sends a selected beaver to a dragged area; `resize` drags a work-area edge.
     pub demo_orders: Option<String>,
+    /// Open this entity panel at start (screenshots): beaver|family|building|site|dam|tree.
+    pub select: Option<String>,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None, select: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -96,6 +98,13 @@ impl Cli {
                         return Err(format!("--showcase: unknown scene '{v}' (poses|world)"));
                     }
                     cli.showcase = Some(v);
+                }
+                "--select" => {
+                    let v = value("--select")?;
+                    if !["beaver", "family", "building", "site", "dam", "tree"].contains(&v.as_str()) {
+                        return Err(format!("--select: unknown panel '{v}' (beaver|family|building|site|dam|tree)"));
+                    }
+                    cli.select = Some(v);
                 }
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
