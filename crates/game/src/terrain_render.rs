@@ -14,7 +14,10 @@ use crate::state::Sim;
 use bevy::app::AppExit;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::PresentMode;
 use sim::grid::HeightGrid;
@@ -66,6 +69,8 @@ fn season_override() -> Option<f32> {
 impl Plugin for TerrainRenderPlugin {
     fn build(&self, app: &mut App) {
         let start = season_override().unwrap_or(0.3);
+        bevy::asset::embedded_asset!(app, "terrain_shadow.wesl");
+        app.add_plugins(MaterialPlugin::<TerrainMaterial>::default());
         app.insert_resource(Season { phase: start })
             .init_resource::<TerrainChunks>()
             .add_systems(Startup, spawn_terrain)
@@ -85,34 +90,6 @@ fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
 pub fn lin(c: Rgb, a: f32) -> [f32; 4] {
     let l = Color::srgb(c[0], c[1], c[2]).to_linear();
     [l.red, l.green, l.blue, a]
-}
-
-// ───────────── plum sun shadows (docs/STYLE.md fix 10) ─────────────
-// Light only scales a colour, so grey-green shadows cannot become plum by lighting alone: a shadow at
-// 35-45% toward Plum is `0.6*albedo + 0.4*plum`, an offset. The terrain material therefore adds a
-// constant emissive floor `GROUND_FLOOR` (linear) and its vertex colours are `albedo - floor`, so
-//   lit    = floor + v*(ambient + sun) = albedo
-//   shadow = floor + v*ambient         = plum-tinted albedo
-// `AMBIENT_SHARE` is ambient/(ambient+sun) per channel and `LIT_LIFT` the small sRGB lift of lit
-// colours that keeps the darkest channels above the floor; both fitted so Meadow light, Meadow,
-// Meadow deep, Straw and Stone shadows land within tolerance of the 40% plum blend.
-pub const GROUND_FLOOR: Rgb = [0.1375, 0.115, 0.13];
-pub const LIT_LIFT: Rgb = [0.015, 0.005, 0.04];
-pub const AMBIENT_SHARE: Rgb = [0.485, 0.455, 0.78];
-/// Share of the true slope used in the lighting normal: the vertex colours already carry the hill shading,
-/// and a nearly flat normal keeps lit and shadowed ground the same colour on every slope (fitted values hold).
-const LIGHT_RELIEF: f32 = 0.0;
-/// Emissive is scaled by camera exposure (~1/1000 at the default EV100 9.7).
-const EMISSIVE_NITS: f32 = 1.1;
-
-/// sRGB palette colour to the linear vertex colour of a ground vertex (see above).
-pub fn ground_lin(c: Rgb, a: f32) -> [f32; 4] {
-    // The lift only goes to dark channels (the shadow target there is brighter than the lit colour).
-    let ch = |i: usize| {
-        let lift = LIT_LIFT[i] * (1.0 - smooth(0.45, 0.62, c[i]));
-        (lin([(c[i] + lift).min(1.0); 3], 1.0)[0] - GROUND_FLOOR[i]).max(0.0)
-    };
-    [ch(0), ch(1), ch(2), a]
 }
 
 /// All season-dependent colours, in sRGB.
@@ -144,12 +121,12 @@ const GRASS: [Rgb; 4] = [rgb(0x94CE70), pal::MEADOW, pal::STRAW, rgb(0xCBD8D0)];
 const GRASS_DEEP: [Rgb; 4] = [rgb(0x68B35C), pal::MEADOW_DEEP, rgb(0xB7AE66), rgb(0xA9BAB6)];
 const WETLAND: [Rgb; 4] = [rgb(0x74C48A), rgb(0x6CBE86), rgb(0xBFB574), rgb(0xA8C2BC)];
 const SKY: [Rgb; 4] = [pal::SKY, pal::SKY, rgb(0xB4D0EC), pal::SKY_WINTER];
-const SUN: [Rgb; 4] = [[0.80, 0.82, 0.65]; 4];
+const SUN: [Rgb; 4] = [pal::SUN, pal::SUN, pal::SUN_AUTUMN, rgb(0xF0F2FF)];
 /// Sun and ambient are "linear light" factors on the albedo (tone mapping is off, so a vertex colour
 /// appears as itself under ambient 1.0): the sun only adds on top, nothing is ever darker than the
 /// ambient floor.
-const SUN_LUX: [f32; 4] = [10_000.0; 4];
-const AMBIENT: [Rgb; 4] = [[0.72, 0.61, 0.89]; 4];
+const SUN_LUX: [f32; 4] = [1_300.0, 1_400.0, 1_250.0, 1_000.0];
+const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0.93], [0.96, 0.96, 0.98]];
 /// Ambient radiance on a surface (~4400 = full albedo at the default camera exposure, measured).
 pub const AMBIENT_LUX: f32 = 4_400.0;
 const WATER_SHALLOW: [Rgb; 4] = [pal::WATER_SHALLOW, pal::WATER_SHALLOW, rgb(0x7CCBD0), rgb(0x9CCFE2)];
@@ -294,6 +271,13 @@ fn noise(x: i32, y: i32) -> f32 {
     (h & 0xffff) as f32 / 65535.0 * 2.0 - 1.0
 }
 
+/// Grass gradient position (0 Meadow deep .. 0.5 Meadow .. 1 Meadow light): centre and how far the
+/// large patches and the sun-facing lift push it. Terrain shows its albedo on screen (see
+/// `terrain_shadow.wesl`), so the spread is what puts all three greens on screen (STYLE.md fix 3).
+const GRADE_MID: f32 = 0.58;
+const GRADE_PATCH: f32 = 1.3;
+const GRADE_SUN: f32 = 1.2;
+
 // ───────────────────────────── terrain meshing ─────────────────────────────
 
 #[derive(Default)]
@@ -307,7 +291,45 @@ struct Slot {
 #[derive(Resource, Default)]
 pub struct TerrainChunks {
     slots: Vec<Slot>,
-    material: Handle<StandardMaterial>,
+    material: Handle<TerrainMaterial>,
+}
+
+// ───────────── plum sun shadows (docs/STYLE.md fix 10) ─────────────
+
+/// Terrain material: StandardMaterial plus the plum sun-shadow pass in `terrain_shadow.wesl`.
+pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, PlumShadow>;
+
+/// Sun shadows on terrain show the lit colour blended `SHADOW_BLEND` toward `pal::PLUM` (in sRGB),
+/// the middle of STYLE.md's 35-45% band; lighting alone only scales colour and gives grey-green.
+pub const SHADOW_BLEND: f32 = 0.40;
+/// Shadow-map visibility window mapped to fully shadowed..fully lit: a narrow window keeps the soft
+/// PCF penumbra to a thin edge (a few px), so shadowed ground reads as one flat plum shape.
+const SHADOW_EDGE: [f32; 2] = [0.42, 0.58];
+/// Share of the sun/slope lighting relief kept on lit terrain (flat sunlit ground shows its albedo).
+const LIGHT_RELIEF: f32 = 0.5;
+
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub struct PlumShadow {
+    /// rgb: shadow colour (sRGB), a: blend toward it.
+    #[uniform(100)]
+    pub plum: Vec4,
+    #[uniform(100)]
+    pub edge: Vec4,
+}
+
+impl Default for PlumShadow {
+    fn default() -> Self {
+        let p = pal::PLUM;
+        // `BC_SHADOW_MASK=1`: paint terrain flat by sun visibility, shadow magenta / penumbra cyan / lit yellow (tools/shadow_check.py).
+        let mask = if std::env::var_os("BC_SHADOW_MASK").is_some() { 1.0 } else { 0.0 };
+        PlumShadow { plum: Vec4::new(p[0], p[1], p[2], SHADOW_BLEND), edge: Vec4::new(SHADOW_EDGE[0], SHADOW_EDGE[1], mask, LIGHT_RELIEF) }
+    }
+}
+
+impl MaterialExtension for PlumShadow {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://beaver_colony/terrain_shadow.wesl".into()
+    }
 }
 
 pub fn spawn_terrain(
@@ -315,15 +337,13 @@ pub fn spawn_terrain(
     sim: Res<Sim>,
     mut chunks: ResMut<TerrainChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
     season: Res<Season>,
     cam: Query<&Transform, With<MainCamera>>,
 ) {
-    chunks.material = materials.add(StandardMaterial {
-        perceptual_roughness: 1.0,
-        reflectance: 0.05,
-        emissive: LinearRgba::rgb(GROUND_FLOOR[0] * EMISSIVE_NITS, GROUND_FLOOR[1] * EMISSIVE_NITS, GROUND_FLOOR[2] * EMISSIVE_NITS),
-        ..default()
+    chunks.material = materials.add(TerrainMaterial {
+        base: StandardMaterial { perceptual_roughness: 1.0, reflectance: 0.05, ..default() },
+        extension: PlumShadow::default(),
     });
     // Underside of the world slab. Always drawn (no frustum culling), so it doubles as the
     // `Terrain` marker screenshot mode waits on even when the camera is zoomed into one corner.
@@ -332,7 +352,7 @@ pub fn spawn_terrain(
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-w, -2.5, -d], [w, -2.5, -d], [w, -2.5, d], [-w, -2.5, d]])
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, -1.0, 0.0]; 4])
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![ground_lin([0.45, 0.38, 0.30], 1.0); 4])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![lin([0.45, 0.38, 0.30], 1.0); 4])
         .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
     commands.spawn((Terrain, bevy::camera::visibility::NoFrustumCulling, Mesh3d(meshes.add(slab)), MeshMaterial3d(chunks.material.clone())));
     let (cols, rows) = chunk_dims(&sim.0);
@@ -464,7 +484,7 @@ fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     // sunny faces (light comes from -x/-z, the upper left) and a dip in hollows. No per-cell noise.
     let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
     let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5); // slope rising away from the sun faces it
-    let g = (0.58 + patch * 0.5 + sunny * 0.5 - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
+    let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
     let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
     // rock: steep or high
     let rock = (smooth(0.5, 1.0, slope) * smooth(0.3, 0.6, t)).max(smooth(0.72, 0.9, t));
@@ -503,9 +523,9 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         let h = at(&s.height, x, y);
         pos.push([wx, h - drop, wz]);
         let (gx, gz) = smooth_gradient(s, x, y, st);
-        nor.push(Vec3::new(-gx * LIGHT_RELIEF, 1.0, -gz * LIGHT_RELIEF).normalize().to_array());
+        nor.push(Vec3::new(-gx, 1.0, -gz).normalize().to_array());
         let c = vertex_color(s, p, maxh, x, y);
-        col.push(ground_lin([c[0] * shade, c[1] * shade, c[2] * shade], 1.0));
+        col.push(lin([c[0] * shade, c[1] * shade, c[2] * shade], 1.0));
         uv.push([x as f32 / w as f32, y as f32 / d as f32]);
     };
     let side = n + 1;
@@ -592,7 +612,7 @@ fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, l
             let n = (rot * (unit / r).normalize_or_zero()).to_array();
             d.pos.push(p.to_array());
             d.nor.push(n);
-            d.col.push(ground_lin(mix(light, dark, v), 1.0));
+            d.col.push(lin(mix(light, dark, v), 1.0));
             d.uv.push([p.x * d.uvs[0], p.z * d.uvs[1]]);
         }
     }

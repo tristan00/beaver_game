@@ -41,6 +41,8 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "iso" => (0.8, 0.7, 150.0),
         // Same angle as "iso", zoomed in on the map centre: tree, building and rock shadows fill the frame.
         "iso-close" => (0.8, 0.7, 55.0),
+        // Same angle as "iso", far out. `--start` keeps these two views (see `startflow::begin_cli_start`).
+        "iso-wide" => (0.8, 0.7, 150.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
         // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
@@ -78,9 +80,9 @@ impl Plugin for CameraPlugin {
     }
 }
 
-/// Sun shadow maps on; the plum tint comes from the lilac ambient that fills them.
+/// Sun shadow maps on; terrain turns them into the plum shadow colour (`terrain_shadow.wesl`).
+/// `BC_NO_SUN_SHADOWS=1` renders the same frame without them (tools/shadow_check.py classifies terrain on it).
 const SUN_SHADOWS: bool = true;
-// `BC_NO_SUN_SHADOWS=1` renders the same frame without sun shadows: the pixel diff isolates shadowed pixels (tools/shadow_check.py).
 
 fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
     // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md §9 samples hexes).
@@ -93,6 +95,14 @@ fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
         Transform::from_xyz(-70.0, 90.0, -45.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     // Faint warm glow hanging in the upper-left corner (the sun's side); a translucent UI overlay.
+    // `BC_NO_GLOW=1` leaves it out: surface colours can then be sampled over the whole frame (tools/shadow_check.py).
+    if std::env::var_os("BC_NO_GLOW").is_none() {
+        spawn_glow(&mut commands);
+    }
+    commands.insert_resource(GlobalAmbientLight { brightness: crate::terrain_render::AMBIENT_LUX, ..default() });
+}
+
+fn spawn_glow(commands: &mut Commands) {
     let glow = |a: f32| Color::srgba(1.0, 0.96, 0.84, a);
     commands.spawn((
         Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
@@ -104,7 +114,6 @@ fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
         GlobalZIndex(-10),
         Pickable::IGNORE,
     ));
-    commands.insert_resource(GlobalAmbientLight { brightness: crate::terrain_render::AMBIENT_LUX, ..default() });
 }
 
 fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCamera>>) {
