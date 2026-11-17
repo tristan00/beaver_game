@@ -38,6 +38,12 @@ pub enum Pose {
     Swim,
     Gnaw,
     Carry,
+    /// Going over a dam.
+    Climb,
+    /// Building or gathering: paws busy in front.
+    Work,
+    /// Curled up asleep.
+    Rest,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +53,8 @@ pub struct BeaverState {
     pub yaw: f32,
     pub pose: Pose,
     pub moving: bool,
+    /// What the beaver holds in its mouth.
+    pub load: Option<(sim::buildings::Good, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -629,12 +637,12 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         let t_gnaw = extra.range(6.0, 10.0);
         let route = Route::new(
             vec![dest, stand, stand, dest, dest, w1, w2],
-            vec![Leg::Move, Leg::Hold(Pose::Gnaw), Leg::Carry, Leg::Hold(Pose::Idle), Leg::Move, Leg::Move, Leg::Move],
+            vec![Leg::Move, Leg::Hold(Pose::Gnaw), Leg::Carry, Leg::Hold(if id % 3 == 0 { Pose::Work } else { Pose::Idle }), Leg::Move, Leg::Move, Leg::Move],
             vec![0.0, t_gnaw, 0.0, extra.range(2.0, 4.0), 0.0, 0.0, 0.0],
             vec![0.0, hold_dir(stand, tp), 0.0, hold_dir(dest, pc), 0.0, 0.0, 0.0],
             extra.range(0.0, 200.0),
         );
-        beavers.push(BeaverVis { id, state: BeaverState { pos: dest, yaw: 0.0, pose: Pose::Idle, moving: false }, route: Some(route) });
+        beavers.push(BeaverVis { id, state: BeaverState { pos: dest, yaw: 0.0, pose: Pose::Idle, moving: false, load: None }, route: Some(route) });
     }
 
     RenderScene { trees, structs, beavers, pond: Some(site.pond()), stub: true }
@@ -665,7 +673,7 @@ impl Route {
                 let f = if d > 1e-4 { (u / d).clamp(0.0, 1.0) } else { 1.0 };
                 let (a, b) = (self.pts[i], self.pts[(i + 1) % n]);
                 return match self.legs[i] {
-                    Leg::Hold(pose) => BeaverState { pos: a, yaw: self.hold_yaw[i], pose, moving: false },
+                    Leg::Hold(pose) => BeaverState { pos: a, yaw: self.hold_yaw[i], pose, moving: false, load: None },
                     leg => {
                         let pos = a.lerp(b, f);
                         let dir = b - a;
@@ -677,13 +685,13 @@ impl Route {
                         } else {
                             Pose::Walk
                         };
-                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, moving: true }
+                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, moving: true, load: matches!(leg, Leg::Carry).then_some((sim::buildings::Good::Logs, 3.0)) }
                     }
                 };
             }
             u -= d;
         }
-        BeaverState { pos: self.pts[0], yaw: 0.0, pose: Pose::Idle, moving: false }
+        BeaverState { pos: self.pts[0], yaw: 0.0, pose: Pose::Idle, moving: false, load: None }
     }
 }
 

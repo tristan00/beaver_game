@@ -13,6 +13,10 @@
 mod meshgen;
 mod models;
 mod scene;
+pub mod sim_sync;
+pub mod sim_view;
+#[cfg(test)]
+mod sim_tests;
 
 use crate::camera::MainCamera;
 use crate::cli::Cli;
@@ -44,6 +48,7 @@ impl Plugin for EntitiesRenderPlugin {
         app.init_resource::<RenderClock>()
             .init_resource::<CurrentSeason>()
             .init_resource::<FrameWork>()
+            .init_resource::<sim_sync::PendingDays>()
             .add_systems(Startup, (init_models, setup_stress_window))
             .add_systems(First, frame_work_start)
             .add_systems(Last, frame_work_end)
@@ -52,7 +57,12 @@ impl Plugin for EntitiesRenderPlugin {
                 (
                     update_clock_and_season,
                     spawn_scene,
-                    sync_beavers,
+                    sim_sync::update_pending,
+                    sim_sync::sync_sim_beavers,
+                    sim_sync::sync_sim_resources,
+                    sim_sync::sync_sim_buildings,
+                    sync_stub_beavers,
+                    attach_rigs,
                     animate_beavers,
                     update_tree_lod,
                     spin_wheels,
@@ -90,7 +100,13 @@ struct Models {
     tail: Handle<Mesh>,
     leg_front: Handle<Mesh>,
     leg_hind: Handle<Mesh>,
-    log: Handle<Mesh>,
+    /// Loads held in the mouth, indexed by `Good::index`.
+    loads: Vec<Handle<Mesh>>,
+    /// Felled trees by (whole logs left * 2 + branches left).
+    felled: Vec<Handle<Mesh>>,
+    mud: Handle<Mesh>,
+    stone: Handle<Mesh>,
+    plant: Handle<Mesh>,
     far: Handle<Mesh>,
     ripple: Handle<Mesh>,
     blob: Handle<Mesh>,
@@ -129,9 +145,28 @@ struct TreeLod {
 #[derive(Component)]
 struct WheelSpin(f32);
 
+/// Marks entities drawn from the live sim (resources, buildings).
+#[derive(Component)]
+struct SimEntity;
+
+/// Marks beaver sprites that follow a sim agent (as opposed to the stress scene's itineraries).
+#[derive(Component)]
+struct SimBeaver;
+
+/// What one beaver sprite shows, copied from the sim each frame. The sprite's `Transform` translation
+/// is the beaver's world position; the rig (see `BeaverRig`) animates the body for `pose`.
+#[derive(Component, Clone, Debug)]
+pub struct BeaverSprite {
+    /// `BeaverId` of the sim agent (or the stress scene's beaver index).
+    pub id: u64,
+    pub pose: Pose,
+    pub load: Option<(sim::buildings::Good, f32)>,
+    /// Heading about +Y the beaver is turning towards.
+    pub yaw: f32,
+}
+
 #[derive(Component)]
 struct BeaverRig {
-    idx: usize,
     body: Entity,
     far: Entity,
     parts: [Entity; 6], // head, tail, 4 legs
@@ -143,6 +178,7 @@ struct BeaverRig {
     blend: f32,
     near: bool,
     init: bool,
+    load: Option<sim::buildings::Good>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -182,7 +218,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let tail = build(&|m| models::beaver_tail(m, Vec3::ZERO));
     let leg_front = build(&|m| models::beaver_leg(m, true));
     let leg_hind = build(&|m| models::beaver_leg(m, false));
-    let log = build(&models::beaver_log);
     let far = build(&models::beaver_static);
     let ripple = build(&models::ripple);
     let blob = build(&models::blob_shadow);
@@ -198,7 +233,11 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         tail,
         leg_front,
         leg_hind,
-        log,
+        loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
+        felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
+        mud: meshes.add(models::mud_mesh()),
+        stone: meshes.add(models::stone_mesh()),
+        plant: meshes.add(models::plant_mesh()),
         far,
         ripple,
         blob,
@@ -248,7 +287,7 @@ fn spawn_scene(
     mut built_for: Local<Option<u64>>,
 ) {
     let Some(mut models) = models else { return };
-    if *built_for == Some(sim.0.seed) {
+    if !cli.stress || *built_for == Some(sim.0.seed) {
         return;
     }
     *built_for = Some(sim.0.seed);
@@ -300,42 +339,19 @@ fn spawn_scene(
         commands.spawn((SceneEntity, Mesh3d(surface), MeshMaterial3d(models.water_mat.clone()), Transform::from_xyz(pond.center.x, pond.level, pond.center.y)));
     }
 
-    // Beavers: root + body (with head, tail, legs, carried log) + far mesh + ripple + blob shadow.
+    // Stress-scene beavers: sprites driven by itineraries; `attach_rigs` gives them their bodies.
     let pond = scene.pond;
     for i in 0..scene.beavers.len() {
         let st = eval_beaver(&scene, i, clock.0, &sim);
         scene.beavers[i].state = st;
         let ground = ground_y(&sim, st, pond);
-        let root_t = Transform::from_xyz(st.pos.x, ground, st.pos.y).with_rotation(Quat::from_rotation_y(st.yaw)).with_scale(Vec3::splat(BEAVER_SCALE));
-        let (m, w) = (&models, &white);
-        let mut ids = Vec::new();
-        let mut body = Entity::PLACEHOLDER;
-        let root = commands
-            .spawn((SceneEntity, root_t, Visibility::default()))
-            .with_children(|p| {
-                body = p.spawn((Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
-            })
-            .id();
-        let mut parts = [Entity::PLACEHOLDER; 6];
-        let (mut log, mut far, mut ripple, mut blob) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
-        commands.entity(body).with_children(|p| {
-            parts[0] = p.spawn((Mesh3d(m.head.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::HEAD_PIVOT))).id();
-            parts[1] = p.spawn((Mesh3d(m.tail.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::TAIL_PIVOT))).id();
-            for k in 0..4 {
-                let mesh = if k < 2 { m.leg_front.clone() } else { m.leg_hind.clone() };
-                parts[2 + k] = p.spawn((Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
-            }
-        });
-        commands.entity(parts[0]).with_children(|p| {
-            log = p.spawn((Mesh3d(m.log.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
-        });
-        commands.entity(root).with_children(|p| {
-            far = p.spawn((Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
-            ripple = p.spawn((Mesh3d(m.ripple.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.06, 0.2), Visibility::Hidden)).id();
-            blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
-        });
-        ids.push(root);
-        commands.entity(root).insert(BeaverRig { idx: i, body, far, parts, log, ripple, blob, prev: st.pose, cur: st.pose, blend: 1.0, near: true, init: false });
+        commands.spawn((
+            SceneEntity,
+            StubBeaver(i),
+            BeaverSprite { id: i as u64, pose: st.pose, load: st.load, yaw: st.yaw },
+            Transform::from_xyz(st.pos.x, ground, st.pos.y).with_rotation(Quat::from_rotation_y(st.yaw)).with_scale(Vec3::splat(BEAVER_SCALE)),
+            Visibility::default(),
+        ));
     }
     commands.insert_resource(scene);
 }
@@ -361,13 +377,54 @@ fn eval_beaver(scene: &RenderScene, i: usize, t: f32, sim: &Sim) -> BeaverState 
 // Per-frame systems
 // ---------------------------------------------------------------------------------------------
 
-/// Refreshes beaver targets from the scene. With real sim data this is where sim positions/jobs map to
-/// poses; the stub colony walks itineraries instead.
-fn sync_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMut<RenderScene>>) {
+#[derive(Component)]
+struct StubBeaver(usize);
+
+/// Stress scene only: beavers walk looping itineraries instead of following sim agents.
+fn sync_stub_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMut<RenderScene>>, mut q: Query<(&StubBeaver, &mut Transform, &mut BeaverSprite)>) {
     let Some(mut scene) = scene else { return };
     for i in 0..scene.beavers.len() {
         let st = eval_beaver(&scene, i, clock.0, &sim);
         scene.beavers[i].state = st;
+    }
+    for (b, mut tr, mut sprite) in &mut q {
+        let Some(v) = scene.beavers.get(b.0) else { continue };
+        let st = v.state;
+        tr.translation = Vec3::new(st.pos.x, ground_y(&sim, st, scene.pond), st.pos.y);
+        sprite.pose = st.pose;
+        sprite.load = st.load;
+        sprite.yaw = st.yaw;
+    }
+}
+
+/// Gives every new sprite its animated body: head, tail, legs, a held load, far LOD mesh, ripple, shadow.
+fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
+    let Some(m) = models else { return };
+    let w = &m.white;
+    for (root, sprite) in &q {
+        let mut body = Entity::PLACEHOLDER;
+        commands.entity(root).with_children(|p| {
+            body = p.spawn((Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
+        });
+        let mut parts = [Entity::PLACEHOLDER; 6];
+        let (mut log, mut far, mut ripple, mut blob) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
+        commands.entity(body).with_children(|p| {
+            parts[0] = p.spawn((Mesh3d(m.head.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::HEAD_PIVOT))).id();
+            parts[1] = p.spawn((Mesh3d(m.tail.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::TAIL_PIVOT))).id();
+            for k in 0..4 {
+                let mesh = if k < 2 { m.leg_front.clone() } else { m.leg_hind.clone() };
+                parts[2 + k] = p.spawn((Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
+            }
+        });
+        commands.entity(parts[0]).with_children(|p| {
+            log = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+        });
+        commands.entity(root).with_children(|p| {
+            far = p.spawn((Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            ripple = p.spawn((Mesh3d(m.ripple.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.06, 0.2), Visibility::Hidden)).id();
+            blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
+        });
+        commands.entity(root).insert(BeaverRig { body, far, parts, log, ripple, blob, prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, load: None });
     }
 }
 
@@ -421,6 +478,43 @@ fn pose_rig(pose: Pose, t: f32, id: f32) -> Rig {
             r[5].1 = rx(-0.55);
             r[6].1 = rx(-0.55);
         }
+        Pose::Climb => {
+            // hauling up the dam: body pitched up, forepaws reaching, hind legs pushing, alternating
+            let s = (t * 7.0 + id).sin();
+            r[0].0.y = 0.1 + 0.04 * (2.0 * (t * 7.0 + id)).sin().abs();
+            r[0].1 = rx(-0.38) * rz(0.06 * s);
+            r[1].1 = rx(-0.1 + 0.08 * s);
+            r[2].1 = rx(0.45) * ry(0.2 * s);
+            r[3].1 = rx(-1.45 + 0.5 * s);
+            r[4].1 = rx(-1.45 - 0.5 * s);
+            r[5].1 = rx(0.5 - 0.6 * s);
+            r[6].1 = rx(0.5 + 0.6 * s);
+        }
+        Pose::Work => {
+            // crouched over the job, forepaws patting/packing in alternation, tail braced
+            let s = (t * 8.0 + id).sin();
+            r[0].0.y = 0.0;
+            r[0].1 = rx(0.1);
+            r[1].1 = rx(0.35 + 0.08 * (t * 4.0 + id).sin()) * ry(0.1 * (t * 2.0).sin());
+            r[2].1 = rx(0.35);
+            r[3].1 = rx(-0.9 + 0.5 * s);
+            r[4].1 = rx(-0.9 - 0.5 * s);
+            r[5].1 = rx(-0.2);
+            r[6].1 = rx(-0.2);
+        }
+        Pose::Rest => {
+            // lying curled up: belly low, head tucked on the paws, slow breathing
+            let b = (t * 1.5 + id).sin();
+            r[0].0.y = -0.2 + 0.012 * b;
+            r[0].1 = rz(0.04);
+            r[1].0.y -= 0.08;
+            r[1].1 = rx(0.6) * ry(0.5 + 0.05 * b);
+            r[2].1 = rx(0.2) * ry(0.9);
+            r[3].1 = rx(-0.5);
+            r[4].1 = rx(-0.5);
+            r[5].1 = rx(-0.5);
+            r[6].1 = rx(-0.5);
+        }
         Pose::Swim => {
             let p2 = t * 7.0 + id;
             r[0].0.y = -0.34 + 0.02 * (t * 2.5 + id).sin();
@@ -439,39 +533,24 @@ fn pose_rig(pose: Pose, t: f32, id: f32) -> Rig {
 fn animate_beavers(
     time: Res<Time>,
     clock: Res<RenderClock>,
-    sim: Res<Sim>,
-    scene: Option<Res<RenderScene>>,
+    models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
-    mut roots: Query<(&mut Transform, &mut BeaverRig)>,
+    mut roots: Query<(&mut Transform, &mut BeaverRig, &BeaverSprite)>,
     mut parts: Query<&mut Transform, Without<BeaverRig>>,
     mut vis: Query<&mut Visibility, Without<BeaverRig>>,
+    mut meshes: Query<&mut Mesh3d, Without<BeaverRig>>,
 ) {
-    let Some(scene) = scene else { return };
+    let Some(models) = models else { return };
     let cam_pos = cam.iter().next().map(|c| c.translation());
     let dt = time.delta_secs();
-    let follow = 1.0 - (-dt * 9.0).exp();
     let turn = 1.0 - (-dt * 10.0).exp();
-    for (mut tr, mut rig) in &mut roots {
-        let Some(b) = scene.beavers.get(rig.idx) else { continue };
-        let st = b.state;
-        let target = Vec3::new(st.pos.x, ground_y(&sim, st, scene.pond), st.pos.y);
-        let target_rot = Quat::from_rotation_y(st.yaw);
-        if rig.init {
-            // Smooth movement toward the sim/itinerary position; teleports (> 6 units) snap.
-            if tr.translation.distance(target) > 6.0 {
-                tr.translation = target;
-                tr.rotation = target_rot;
-            } else {
-                tr.translation = tr.translation.lerp(target, follow);
-                tr.rotation = tr.rotation.slerp(target_rot, turn);
-            }
-        } else {
-            tr.translation = target;
-            tr.rotation = target_rot;
-        }
+    for (mut tr, mut rig, sprite) in &mut roots {
+        // The sprite's translation is the sim position and is never smoothed; only the heading eases.
+        let target_rot = Quat::from_rotation_y(sprite.yaw);
+        tr.rotation = if rig.init { tr.rotation.slerp(target_rot, turn) } else { target_rot };
 
         let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
-        let swimming = st.pose == Pose::Swim;
+        let swimming = sprite.pose == Pose::Swim;
         if near != rig.near || !rig.init {
             rig.near = near;
             if let Ok(mut v) = vis.get_mut(rig.body) {
@@ -486,25 +565,36 @@ fn animate_beavers(
                 t.translation.y = if swimming { -0.34 } else { 0.0 };
             }
         }
-        if st.pose != rig.cur {
+        if sprite.pose != rig.cur {
             rig.prev = rig.cur;
-            rig.cur = st.pose;
+            rig.cur = sprite.pose;
             rig.blend = if rig.init { 0.0 } else { 1.0 };
         }
         rig.blend = (rig.blend + dt * 5.0).min(1.0);
-        let swim_changed = swimming;
         if let Ok(mut v) = vis.get_mut(rig.ripple) {
             *v = if swimming { Visibility::Inherited } else { Visibility::Hidden };
         }
         if let Ok(mut v) = vis.get_mut(rig.blob) {
             *v = if swimming { Visibility::Hidden } else { Visibility::Inherited };
         }
-        if let Ok(mut v) = vis.get_mut(rig.log) {
-            *v = if rig.cur == Pose::Carry { Visibility::Inherited } else { Visibility::Hidden };
+        // The load follows the head; its model and size show what it is and how much.
+        let good = sprite.load.map(|l| l.0);
+        if good != rig.load || !rig.init {
+            rig.load = good;
+            if let Ok(mut v) = vis.get_mut(rig.log) {
+                *v = if good.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+            }
+            if let (Some(g), Ok(mut m)) = (good, meshes.get_mut(rig.log)) {
+                m.0 = models.loads[g.index()].clone();
+            }
         }
-        if swim_changed {
+        if let (Some((_, amount)), Ok(mut t)) = (sprite.load, parts.get_mut(rig.log)) {
+            let s = 0.6 + 0.4 * (amount / sim::agents::LOAD_SIZE).clamp(0.0, 1.0);
+            t.scale = Vec3::splat(s);
+        }
+        if swimming {
             if let Ok(mut t) = parts.get_mut(rig.ripple) {
-                let s = 1.0 + 0.12 * (clock.0 * 3.0 + rig.idx as f32).sin();
+                let s = 1.0 + 0.12 * (clock.0 * 3.0 + sprite.id as f32).sin();
                 t.scale = Vec3::new(s, 1.0, s);
             }
         }
@@ -512,7 +602,7 @@ fn animate_beavers(
         if !near {
             continue;
         }
-        let id = rig.idx as f32 * 1.7;
+        let id = sprite.id as f32 * 1.7;
         let a = pose_rig(rig.cur, clock.0, id);
         let blend = rig.blend * rig.blend * (3.0 - 2.0 * rig.blend);
         let r = if blend < 1.0 {

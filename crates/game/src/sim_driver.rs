@@ -60,6 +60,10 @@ impl SimClock {
         self.speed = s;
         self.paused = false;
     }
+    /// Sim days that have accumulated since the last fixed step (for drawing between steps).
+    pub fn pending_days(&self) -> f32 {
+        self.acc_days
+    }
     /// Adds `real_dt` seconds and returns how many fixed steps to run now (0 while paused).
     pub fn advance(&mut self, real_dt: f32) -> u32 {
         if self.paused || !real_dt.is_finite() || real_dt <= 0.0 {
