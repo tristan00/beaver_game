@@ -48,6 +48,8 @@ pub struct SimState {
     /// Elapsed simulated days.
     pub time_days: f64,
     pub height: grid::HeightGrid,
+    /// Full generated region (valleys, rivers, lakes, moisture, forest).
+    pub world: worldgen::World,
     pub water: water::Water,
     pub ecology: ecology::Ecology,
     pub colony: colony::Colony,
@@ -60,12 +62,14 @@ pub struct SimState {
 impl SimState {
     /// Builds a world deterministically from `seed`.
     pub fn new(seed: u64) -> Self {
-        let height = worldgen::WorldGen::new(seed).heightmap();
-        let size = height.width();
+        let world = worldgen::WorldGen::new(seed).generate().expect("default world generation failed");
+        let height = world.height.clone();
+        let size = world.size;
         Self {
             seed,
             time_days: 0.0,
             height,
+            world,
             water: water::Water::new(size),
             ecology: ecology::Ecology::new(size),
             colony: Default::default(),
