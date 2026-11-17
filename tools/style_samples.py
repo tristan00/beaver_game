@@ -1,4 +1,4 @@
-"""Pixel samples for docs/STYLE.md fixes 1-3, 6-11 and 18 (R19-29).
+"""Pixel samples of terrain, fur and shadow colours, compared with the docs/STYLE.md palette.
 
 usage: python tools/style_samples.py SHOT_DIR > table.md
 SHOT_DIR holds the *_noglow.png twins (BC_NO_GLOW=1: the warm UI glow tints the whole upper-left of

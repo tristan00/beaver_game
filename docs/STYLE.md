@@ -48,9 +48,10 @@ Audience: people who want a calm, low-pressure colony toy (curious, pet-sized, c
 
 ## 3. Water - `docs/style/water.png`
 
-- **Nearly clear.** Water is a thin Water clear `#BFEFF0` tint (about 40 to 60% over the bed) so the mud, stones and weed beneath show through. No opaque blue slab, no grey.
-- Depth reads by gently stronger tint, from Water shallow `#6FD3E0` to Water mid glow `#8FE0E6`; Water deep `#1F8AB8` only as a thin tint at the deepest centre, never a solid fill.
-- Smooth curved edge with a 5 px Foam `#F4FBF6` ring, short Foam ripple arcs, a few Lily `#4E9A52` pads and Reed `#B7C97A` at the banks. Swimming beavers leave Foam arcs, not white discs.
+- **Nearly clear.** Water is a thin tint over a visible bed (Sand `#E6D3A3` with Mud `#A07F60` patches, stones, weed). Every depth keeps at least 40% of the bed showing. No opaque blue slab, no grey.
+- **Depth reads by a slightly stronger tint, one tint per band, never stacked:** shallow = Water clear `#BFEFF0` at 40%; mid = Water mid glow `#8FE0E6` at 50%; deep centre = Water clear nudged 25% toward Water deep `#1F8AB8`, at 60%. Water deep is a mixing colour only, never painted as a fill. These values live in code as `WATER_TINT_SHALLOW`, `WATER_TINT_MID`, `WATER_TINT_DEEP`, `WATER_DEEP_NUDGE` and `water_band()` in `palette.rs`.
+- Smooth curved edge with a 5 px Foam `#F4FBF6` ring, short Foam ripple arcs, a few Lily `#4E9A52` pads and Reed `#B7C97A` at the banks. Swimming beavers leave Foam arcs at the waterline, not white discs.
+- The same pool rule holds on every sheet: lodges and dams sit in it, the swim pose floats in it, and the far camera shows it as a pale aqua shape.
 
 ## 4. Structures - `docs/style/structures.png`
 
@@ -61,7 +62,7 @@ Audience: people who want a calm, low-pressure colony toy (curious, pet-sized, c
 ## 5. Beaver poses - `docs/style/beaver_poses.png`
 
 - Chibi: head about 60% of body width, flat oval tail in Fur dark, small round ear, dot eyes (Ink), two Cut wood teeth. Plush and rounded, never sharp.
-- Six base poses, one clear silhouette per job: **stand**, **carry** (log held over the back), **gnaw** (log in teeth), **build** (stick and mud in paws), **swim** (body low in a Foam ring, head up), **sleep** (curled, eyes as a closed arc).
+- Six base poses, one clear silhouette per job: **stand**, **carry** (log held over the back), **gnaw** (log in teeth), **build** (stick and mud in paws), **swim** (body low in the water, head up, Foam arcs at the waterline), **sleep** (curled, eyes as a closed arc).
 - Fur uses only Fur / Fur light (belly and face) / Fur dark (tail, ear). No other browns.
 
 ## 6. Seasons - `docs/style/seasons.png`
@@ -79,4 +80,4 @@ Audience: people who want a calm, low-pressure colony toy (curious, pet-sized, c
 
 ## Checking the running game
 
-Take the same camera views the sheets show, in each season, and compare to the render files. Name each place that breaks a rule: terrain darker than Meadow deep or Stone shade, any grey or blue-grey rock, trees in a grid or without clearings, opaque or grey water, a structure that stays one stage, fur outside the three fur colours, a black shadow, a detail that appears at only one zoom. Fix the code that owns the colour (`palette.rs`), not the screenshot.
+Take the same camera views the sheets show, in each season, and compare to the render files. Name each place that breaks a rule: terrain darker than Meadow deep or Stone shade, any grey or blue-grey rock, trees in a grid or without clearings, opaque, solid-blue or grey water (any band over 60% or a fill of Water deep), a structure that stays one stage, fur outside the three fur colours, a black shadow, a detail that appears at only one zoom. Fix the code that owns the colour (`palette.rs`), not the screenshot.

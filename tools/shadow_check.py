@@ -1,4 +1,4 @@
-"""Sample sun-shadow and lit terrain pixels per STYLE terrain colour (docs/STYLE.md fix 10).
+"""Sample sun-shadow and lit terrain pixels per STYLE terrain colour (docs/STYLE.md shared lighting rule).
 
 usage: shadow_check.py LIT MEASURED MASK [--glow] [--out table.md] [--title T]
   LIT       the frame rendered with BC_NO_SUN_SHADOWS=1 BC_NO_GLOW=1: classifies the terrain colour under each pixel

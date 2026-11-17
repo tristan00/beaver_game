@@ -201,7 +201,7 @@ through the public API above (or a follow-up request to the owner).
 | `content` | `sim/src/catalogue.rs`, `sim/src/tech.rs`, `sim/src/tuning.rs` buildings block |
 | `start1` | `sim/src/starts.rs` (River), `game/src/cli.rs` (`--start`), `game/src/flow.rs`, delete `game/src/midgame.rs` |
 | `start23` | `sim/src/starts.rs` (EarlyLake, IndustrialLake; separate fns) |
-| `artdir` | `docs/STYLE.md`, `docs/style_mockup.png` |
+| `artdir` | `docs/STYLE.md`, `docs/style/*.png`, `tools/style_sheets.py` |
 | `icons` | `assets/icons/*`, `docs/icons_sheet.png` |
 | `terrain` | `game/src/terrain_render.rs`, `water_render.rs` |
 | `ui_shell` | `game/src/ui/{mod,shell,screens,explain,icons,kit,panels}.rs`, `game/src/opening.rs`, the time controls in `flow_view.rs` |

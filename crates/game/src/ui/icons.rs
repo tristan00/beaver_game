@@ -71,7 +71,7 @@ impl Icon {
         Icon::NavColony, Icon::NavBeavers, Icon::NavStores, Icon::NavBuild, Icon::NavTech, Icon::NavEvents,
     ];
 
-    /// The 24 icons of `docs/STYLE.md` §7, in its order.
+    /// The icons listed in `docs/UI_SPEC.md` section 6.
     pub const STYLE_GUIDE: [Icon; 24] = [
         Icon::Logs, Icon::Branches, Icon::Bark, Icon::Plants, Icon::Mud, Icon::Stone,
         Icon::Food, Icon::Shelter, Icon::Rest, Icon::Mood,

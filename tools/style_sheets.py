@@ -19,7 +19,27 @@ def load_palette():
     return {n: "#%06X" % int(h, 16) for n, h in re.findall(r"pub const (\w+): Rgb = rgb\(0x([0-9A-Fa-f]{6})\)", src)}
 
 
+def load_floats():
+    src = open(os.path.join(ROOT, "crates/game/src/palette.rs"), encoding="utf-8").read()
+    return {n: float(v) for n, v in re.findall(r"pub const (\w+): f32 = ([0-9.]+);", src)}
+
+
 P = load_palette()
+F = load_floats()
+
+
+def mix_hex(a, b, t):
+    ca, cb = c(a), c(b)
+    return tuple(round(ca[i] + (cb[i] - ca[i]) * t) for i in range(3))
+
+
+def water_band(depth):
+    """(rgb, alpha 0-255) of a water band, mirroring palette::water_band."""
+    if depth == 0:
+        return c("WATER_CLEAR"), round(F["WATER_TINT_SHALLOW"] * 255)
+    if depth == 1:
+        return c("WATER_MID_GLOW"), round(F["WATER_TINT_MID"] * 255)
+    return mix_hex("WATER_CLEAR", "WATER_DEEP", F["WATER_DEEP_NUDGE"]), round(F["WATER_TINT_DEEP"] * 255)
 
 
 def c(name, alpha=None):
@@ -51,7 +71,7 @@ class Sheet:
 
     def _blend(self, draw_fn, col, a):
         """Draw a shape with real alpha blending (PIL's RGBA draw replaces pixels)."""
-        fill = c(col, a) if isinstance(col, str) else col
+        fill = c(col, a) if isinstance(col, str) else (tuple(col[:3]) + (a,) if len(col) == 3 else tuple(col))
         if len(fill) == 4 and fill[3] < 255:
             layer = Image.new("RGBA", self.img.size, (0, 0, 0, 0))
             draw_fn(ImageDraw.Draw(layer), fill)
@@ -123,6 +143,32 @@ def flower(s, x, y, col="FLOWER_WHITE"):
     s.ell(x, y, 2.2, 2.2, "FLOWER_YELLOW")
 
 
+def water(s, cx, cy, rx, ry, bed="SAND", bands=3, foam=True, bed_detail=True):
+    """A pool: visible bed, then one tint per depth band (never stacked), then a foam ring."""
+    s.ell(cx, cy, rx, ry, bed)
+    if bed_detail:
+        s.ell(cx - rx * .25, cy + ry * .15, rx * .3, ry * .28, "MUD")
+        s.ell(cx - rx * .35, cy + ry * .25, rx * .1, ry * .1, "STONE")
+        s.ell(cx + rx * .3, cy - ry * .2, rx * .18, ry * .16, "LILY")
+        rock(s, cx + rx * .05, cy + ry * .35, max(4, rx * .05))
+    # each band replaces the shallower tint inside its ellipse, so opacity never adds up
+    for d in range(bands):
+        k = 1 - d * .3
+        col, a = water_band(d)
+        layer = Image.new("RGBA", s.img.size, (0, 0, 0, 0))
+        mask = Image.new("L", s.img.size, 0)
+        ImageDraw.Draw(mask).ellipse([(cx - rx * k) * SS, (cy - ry * k) * SS, (cx + rx * k) * SS, (cy + ry * k) * SS], fill=255)
+        if d == 0:
+            base = s.img.copy()
+            s._bed = base
+        bed_img = s._bed
+        tinted = Image.alpha_composite(bed_img, Image.new("RGBA", s.img.size, col + (a,)))
+        s.img.paste(tinted, (0, 0), mask)
+    s.d = ImageDraw.Draw(s.img, "RGBA")
+    if foam:
+        s.d.ellipse([(cx - rx) * SS, (cy - ry) * SS, (cx + rx) * SS, (cy + ry) * SS], outline=c("FOAM"), width=5 * SS)
+
+
 def lodge(s, x, y, stage, scale=1.0):
     """Dome of sticks that grows: 1 mound, 2 low dome with door, 3 full dome with chimney gap and store."""
     k = scale
@@ -152,10 +198,12 @@ def dam(s, x, y, stage):
 
 def beaver(s, x, y, pose, sc=1.0):
     k = sc
-    s.shadow(x + 6 * k, y + 14 * k, 30 * k, 8 * k)
-    if pose == "swim":
-        s.ell(x, y + 8 * k, 44 * k, 10 * k, "FOAM", 150)
-        s.ell(x, y + 6 * k, 26 * k, 7 * k, "WATER_CLEAR", 140)
+    if pose != "swim":
+        s.shadow(x + 6 * k, y + 14 * k, 30 * k, 8 * k)
+    if pose == "swim":   # foam arcs at the waterline, never a white disc
+        for dx, w in ((-34, 30), (30, 26), (-4, 50)):
+            cx, cy = x + dx * k, y + (4 if dx else 12) * k
+            s.d.arc([(cx - w / 2 * k) * SS, (cy - 4 * k) * SS, (cx + w / 2 * k) * SS, (cy + 6 * k) * SS], 10, 170, fill=c("FOAM"), width=max(2, int(1.2 * k)) * SS)
         by = y - 4 * k
     else:
         by = y
@@ -237,29 +285,30 @@ def sec_ground(o):
 
 
 def sec_water(o):
-    s = Sheet("3 Water", "Nearly clear: the bed shows through a thin tint. Foam edge, soft ripples, a few lilies and reeds. No opaque blue slab.")
-    s.swatches(90, ["WATER_CLEAR", "WATER_SHALLOW", "WATER_MID_GLOW", "WATER_DEEP", "FOAM", "LILY", "REED", "SAND"], w=96)
+    s = Sheet("3 Water", "Nearly clear: the bed shows through a thin tint, 40 to 60% at most. Foam edge, soft ripples, a few lilies and reeds. No opaque blue slab.")
+    s.swatches(90, ["WATER_CLEAR", "WATER_MID_GLOW", "WATER_DEEP", "FOAM", "LILY", "REED", "SAND", "MUD"], w=96)
     s.panel(24, 210, 760, 730, "MEADOW")
-    s.ell(390, 470, 300, 190, "SAND")                       # shore
-    s.ell(390, 470, 280, 172, "MUD", 255)                   # bed visible
-    s.ell(330, 500, 90, 40, "STONE", 200); s.ell(480, 440, 60, 30, "MEADOW_DEEP", 200)  # bed features
-    s.ell(390, 470, 280, 172, "WATER_CLEAR", 120)           # clear tint: 47% of bed stays
-    s.ell(390, 470, 150, 90, "WATER_SHALLOW", 70)
-    s.d.ellipse([(390 - 280) * SS, (470 - 172) * SS, (390 + 280) * SS, (470 + 172) * SS], outline=c("FOAM"), width=6 * SS)
+    s.ell(390, 470, 300, 190, "MUD")                       # shore
+    water(s, 390, 470, 280, 172)                             # bed + three bands + foam ring
     for (x, y, w) in ((300, 410, 60), (470, 520, 70), (420, 440, 40)):
         s.d.arc([(x - w / 2) * SS, (y - 5) * SS, (x + w / 2) * SS, (y + 7) * SS], 190, 350, fill=c("FOAM"), width=2 * SS)
     for x, y in ((250, 480), (520, 470), (440, 380)):
         s.ell(x, y, 18, 10, "LILY"); s.ell(x + 3, y - 2, 6, 3, "FLOWER_PINK")
     for x in (120, 140, 660, 680):
         s.d.line([x * SS, 560 * SS, (x + 6) * SS, 500 * SS], fill=c("REED"), width=3 * SS)
-    s.text(40, 700, "Bed, stones and weed read through the water", 13)
+    s.text(40, 700, "Bed, stones and weed read through the water, even at the centre", 13)
     s.panel(790, 210, 1176, 730, "MEADOW_LIGHT", "Depth reads by tint, not by blue")
-    for i, (a, nm) in enumerate(((40, "shallow 15%"), (90, "mid 35%"), (160, "deep 55%"))):
+    for i, nm in enumerate(("shallow", "mid", "deep")):
         y = 250 + i * 110
-        s.rr(810, y, 1156, y + 90, 22, "MUD")
-        s.rr(810, y, 1156, y + 90, 22, "WATER_DEEP" if i == 2 else "WATER_CLEAR", a + 60)
+        col, a = water_band(i)
+        s.rr(810, y, 1156, y + 90, 22, "SAND")
+        s.rr(980, y, 1156, y + 90, 22, "MUD")
+        for k, bx in enumerate(range(840, 1150, 70)):            # bed stones under every band
+            rock(s, bx, y + 60, 14 if k % 2 else 10)
+        s.rr(810, y, 1156, y + 90, 22, col, a)
         s.d.line([815 * SS, (y + 4) * SS, 1150 * SS, (y + 4) * SS], fill=c("FOAM", 200), width=3 * SS)
-        s.text(824, y + 62, nm, 13)
+        tint = {0: "Water clear", 1: "Water mid glow", 2: "Water clear + 25% Water deep"}[i]
+        s.text(824, y + 10, f"{nm}: {tint} at {round(a / 2.55)}%", 13)
     s.save(o("water"))
 
 
@@ -273,7 +322,7 @@ def sec_structures(o):
     for i in range(3):
         x0 = 24 + i * 392
         s.panel(x0, 490, x0 + 376, 730, "MEADOW", f"Dam stage {i + 1}")
-        s.ell(x0 + 188, 640, 170, 40, "WATER_CLEAR", 200)
+        water(s, x0 + 188, 640, 170, 40, bands=2, bed_detail=False)
         dam(s, x0 + 188, 610, i + 1)
     s.save(o("structures"))
 
@@ -285,7 +334,9 @@ def sec_poses(o):
     for i, n in enumerate(names):
         x0 = 24 + (i % 3) * 392
         y0 = 210 + (i // 3) * 265
-        s.panel(x0, y0, x0 + 376, y0 + 250, "WATER_CLEAR" if n == "swim" else "MEADOW", n)
+        s.panel(x0, y0, x0 + 376, y0 + 250, "MEADOW", n)
+        if n == "swim":
+            water(s, x0 + 188, y0 + 120, 170, 100, bands=2)
         beaver(s, x0 + 170, y0 + 165, n, 2.2)
     s.save(o("beaver_poses"))
 
@@ -331,12 +382,12 @@ def sec_camera(o):
         if i == 0:   # blobs only
             for (dx, dy, r) in ((90, 200, 50), (150, 240, 40), (260, 360, 55), (300, 440, 35), (80, 470, 45)):
                 s.ell(x0 + dx, 100 + dy, r, r * .8, "MEADOW_DEEP")
-            s.ell(x0 + 200, 100 + 140, 120, 55, "WATER_CLEAR"); s.ell(x0 + 190, 100 + 300, 16, 12, "STICK")
+            water(s, x0 + 200, 100 + 140, 120, 55, bands=2, foam=False, bed_detail=False); s.ell(x0 + 190, 100 + 300, 16, 12, "STICK")
             s.text(x0 + 12, 112, "trees = dark blobs, water = pale, lodge = one dot", 12)
         elif i == 1:
             tree(s, x0 + 90, 300, 34); tree(s, x0 + 160, 280, 28); stump(s, x0 + 120, 340, 10)
             lodge(s, x0 + 270, 450, 2, .75)
-            s.ell(x0 + 140, 520, 120, 40, "WATER_CLEAR", 200)
+            water(s, x0 + 140, 520, 120, 40, bands=2, bed_detail=False)
             beaver(s, x0 + 200, 400, "carry", .6)
             s.text(x0 + 12, 112, "trees, structures and beaver poses read", 12)
         else:
