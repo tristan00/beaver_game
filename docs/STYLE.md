@@ -17,7 +17,7 @@ Audience: people who want a calm, low-pressure colony toy (curious, pet-sized, c
 - **Shape language:** everything is a blob. Hills are overlapping ellipses, canopy is 3 to 4 overlapping circles, the lodge is a dome. Corners are bevelled or rounded; no sharp spikes.
 - **Proportions and scale:** beaver is 1 grid cell wide, canopy about 2x a beaver, lodge about 4x. Never realistic scale.
 - **Materials:** matte and soft. Wood has rounded ends with visible cut rings. No gloss, no brush noise, no per-cell grain.
-- **Lighting and mood:** late-morning sun from the upper left (`#FFF5E0`), ambient high (`#CCE6FF`) so nothing is black. Every cast and contact shadow is plum `#6B5A8A` at 35 to 45%. Darkest terrain value is Meadow deep `#5FA85A` (grass) or Stone shade `#8C8290` (rock).
+- **Lighting and mood:** late-morning sun from the upper left (`#FFF5E0`), ambient high (`#CCE6FF`) so nothing is black. Every cast and contact shadow is the surface colour blended toward plum `#6B5A8A` by 35 to 45% (`SHADOW_MIX` in `palette.rs`). Over grass that reads as a cool, muted green, never black or brown; over sand, snow and stone it reads lilac. Darkest terrain value is Meadow deep `#5FA85A` (grass) or Stone shade `#8C8290` (rock).
 - **Outlines:** none on terrain. A 2 px darker-fur outline only on small wooden pieces that must read at distance.
 - **Accent rule:** one saturated accent per screen area (a flower, a lily); the rest stays soft.
 

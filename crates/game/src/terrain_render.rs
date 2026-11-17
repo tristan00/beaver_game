@@ -300,8 +300,8 @@ pub struct TerrainChunks {
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, PlumShadow>;
 
 /// Sun shadows on terrain show the lit colour blended `SHADOW_BLEND` toward `pal::PLUM` (in sRGB),
-/// the middle of STYLE.md's 35-45% band; lighting alone only scales colour and gives grey-green.
-pub const SHADOW_BLEND: f32 = 0.40;
+/// the shared `pal::SHADOW_MIX`; lighting alone only scales colour and gives a dull dark green.
+pub const SHADOW_BLEND: f32 = pal::SHADOW_MIX;
 /// Shadow-map visibility window mapped to fully shadowed..fully lit: a narrow window keeps the soft
 /// PCF penumbra to a thin edge (a few px), so shadowed ground reads as one flat plum shape.
 const SHADOW_EDGE: [f32; 2] = [0.42, 0.58];

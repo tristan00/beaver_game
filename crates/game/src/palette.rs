@@ -36,6 +36,10 @@ pub const SKY_WINTER: Rgb = rgb(0xC8D4E8);
 pub const SUN: Rgb = rgb(0xFFF5E0);
 pub const SUN_AUTUMN: Rgb = rgb(0xFFDBB3);
 pub const AMBIENT: Rgb = rgb(0xCCE6FF);
+/// Every sun, cast and contact shadow is the surface colour blended this far toward `PLUM`
+/// (docs/STYLE.md shared lighting rule, the middle of its 35-45% band).
+pub const SHADOW_MIX: f32 = 0.40;
+
 // World additions (docs/STYLE.md): clear water, shore, seasons, structures.
 pub const WATER_CLEAR: Rgb = rgb(0xBFEFF0);
 pub const SAND: Rgb = rgb(0xE6D3A3);

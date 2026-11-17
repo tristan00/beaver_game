@@ -101,7 +101,7 @@ class Sheet:
             self.text(x0 + 12, y1 - 24, label, 13, "INK")
 
     def shadow(self, cx, cy, rx, ry):
-        self.ell(cx, cy, rx, ry, c("PLUM", 100))
+        self.ell(cx, cy, rx, ry, c("PLUM", round(F["SHADOW_MIX"] * 255)))
 
     def save(self, path):
         self.img.resize((self.w, self.h), Image.LANCZOS).convert("RGB").save(path)
@@ -200,21 +200,29 @@ def beaver(s, x, y, pose, sc=1.0):
     k = sc
     if pose != "swim":
         s.shadow(x + 6 * k, y + 14 * k, 30 * k, 8 * k)
-    if pose == "swim":   # foam arcs at the waterline, never a white disc
-        for dx, w in ((-34, 30), (30, 26), (-4, 50)):
-            cx, cy = x + dx * k, y + (4 if dx else 12) * k
-            s.d.arc([(cx - w / 2 * k) * SS, (cy - 4 * k) * SS, (cx + w / 2 * k) * SS, (cy + 6 * k) * SS], 10, 170, fill=c("FOAM"), width=max(2, int(1.2 * k)) * SS)
-        by = y - 4 * k
-    else:
-        by = y
+    # swim: the body sits low, so only the back crest shows above the waterline
+    by = y + 8 * k if pose == "swim" else y
+    under = s.img.copy() if pose == "swim" else None   # the water as it looks without the beaver
     tail_dx = -30 * k if pose != "sleep" else -24 * k
     s.ell(x + tail_dx, by + 4 * k, 17 * k, 7 * k, "FUR_DARK")
     bw, bh = (24, 18) if pose != "sleep" else (30, 14)
     if pose == "gnaw":
         bh = 16
     s.ell(x, by - 6 * k, bw * k, bh * k, "FUR")
-    s.ell(x + 2 * k, by - 2 * k, bw * .55 * k, bh * .55 * k, "FUR_LIGHT")
-    hx, hy = x + (14 * k if pose != "sleep" else 22 * k), by - (24 * k if pose in ("stand", "carry") else 14 * k)
+    if pose == "swim":
+        # water closes over everything below the waterline: the shallow band laid over the fur
+        wl = by - 12 * k
+        # mostly water with the fur faintly showing through, as the nearly clear water shows the bed
+        mask = Image.new("L", s.img.size, 0)
+        ImageDraw.Draw(mask).rectangle([(x - 60 * k) * SS, wl * SS, (x + 40 * k) * SS, (by + 30 * k) * SS], fill=255)
+        s.img.paste(Image.blend(s.img, under, 0.7), (0, 0), mask)
+        s.d = ImageDraw.Draw(s.img, "RGBA")
+        for dx, w in ((-34, 30), (24, 26), (-6, 44)):   # foam arcs on the waterline, never a white disc
+            cx = x + dx * k
+            s.d.arc([(cx - w / 2 * k) * SS, (wl - 4 * k) * SS, (cx + w / 2 * k) * SS, (wl + 6 * k) * SS], 10, 170, fill=c("FOAM"), width=max(2, int(1.2 * k)) * SS)
+    else:
+        s.ell(x + 2 * k, by - 2 * k, bw * .55 * k, bh * .55 * k, "FUR_LIGHT")
+    hx, hy = x + (14 * k if pose != "sleep" else 22 * k), by - (24 * k if pose in ("stand", "carry", "swim") else 14 * k)
     if pose == "sleep":
         hy = by - 6 * k
     s.ell(hx, hy, 15 * k, 13 * k, "FUR")
@@ -383,7 +391,7 @@ def sec_camera(o):
             for (dx, dy, r) in ((90, 200, 50), (150, 240, 40), (260, 360, 55), (300, 440, 35), (80, 470, 45)):
                 s.ell(x0 + dx, 100 + dy, r, r * .8, "MEADOW_DEEP")
             water(s, x0 + 200, 100 + 140, 120, 55, bands=2, foam=False, bed_detail=False); s.ell(x0 + 190, 100 + 300, 16, 12, "STICK")
-            s.text(x0 + 12, 112, "trees = dark blobs, water = pale, lodge = one dot", 12)
+            s.text(x0 + 12, 112, "trees = soft green blobs, water = pale, lodge = one dot", 12)
         elif i == 1:
             tree(s, x0 + 90, 300, 34); tree(s, x0 + 160, 280, 28); stump(s, x0 + 120, 340, 10)
             lodge(s, x0 + 270, 450, 2, .75)

@@ -26,7 +26,7 @@ pub enum Icon {
     Rest,
     Mood,
     Social,
-    // jobs (style guide: Collector, Builder, Hauler, Specialist)
+    // jobs (docs/UI_SPEC.md: Collector, Builder, Hauler, Specialist)
     Collector,
     Builder,
     Hauler,
