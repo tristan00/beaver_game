@@ -17,6 +17,8 @@ use crate::water::Cell;
 pub enum Surface {
     Land,
     Water,
+    /// A dug canal with water in it: swum faster than open water.
+    Canal,
     /// Walkable only by climbing; cost multiplier `CLIMB_COST`.
     Dam,
     /// Impassable (tree, building body, stone).
@@ -38,10 +40,12 @@ pub enum Gait {
 pub const CLIMB_COST: f32 = 3.0;
 pub const WALK_COST: f32 = 1.0;
 pub const SWIM_COST: f32 = 0.6;
+/// Cost of a step along a canal (cheaper than open water or land).
+pub const CANAL_COST: f32 = 0.3;
 /// Path costs are searched as integers of this many units per cost point.
 const COST_UNIT: f32 = 1000.0;
 /// Cheapest possible step, for the admissible heuristic.
-const MIN_STEP: u32 = (SWIM_COST * COST_UNIT) as u32;
+const MIN_STEP: u32 = (CANAL_COST * COST_UNIT) as u32;
 
 /// The underwater door of a lodge whose top-left footprint cell is `pos`: the cell just below the
 /// bottom-middle footprint cell (lodge footprint is 3x3). The whole footprint is lodge interior.
@@ -161,9 +165,12 @@ impl NavGrid {
         let depth = &sim.water.depth;
         for (i, slot) in self.surface.as_mut_slice().iter_mut().enumerate() {
             let (x, y) = (i % w, i / w);
+            let wet = depth.get(x, y).is_some_and(|&d| d > crate::buildings::WET_DEPTH);
             *slot = if sim.water.has_dam(x, y) {
                 Surface::Dam
-            } else if depth.get(x, y).is_some_and(|&d| d > crate::buildings::WET_DEPTH) {
+            } else if wet && sim.water.canal.get(x, y) == Some(&true) {
+                Surface::Canal
+            } else if wet {
                 Surface::Water
             } else {
                 Surface::Land
@@ -171,6 +178,13 @@ impl NavGrid {
         }
         for b in &sim.buildings.buildings {
             match b.kind {
+                BuildingKind::Canal if b.is_complete() => {
+                    for c in b.cells() {
+                        if self.surface.get(c.0, c.1) == Some(&Surface::Water) {
+                            self.set(c, Surface::Canal);
+                        }
+                    }
+                }
                 BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge => {}
                 BuildingKind::Lodge if b.is_complete() => {
                     self.add_lodge(b.pos);
@@ -216,6 +230,7 @@ impl NavGrid {
         match to {
             Surface::Land | Surface::LodgeInside => Some((WALK_COST, Gait::Walk)),
             Surface::Water | Surface::LodgeEntrance => Some((SWIM_COST, Gait::Swim)),
+            Surface::Canal => Some((CANAL_COST, Gait::Swim)),
             Surface::Dam => Some((CLIMB_COST, Gait::Climb)),
             Surface::Solid => None,
         }

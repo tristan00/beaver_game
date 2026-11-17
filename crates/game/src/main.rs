@@ -11,6 +11,7 @@ mod input;
 mod midgame;
 mod opening;
 mod screenshot;
+mod showcase;
 mod sim_driver;
 mod state;
 mod terrain_render;
@@ -49,7 +50,10 @@ fn main() -> AppExit {
         flow_view::FlowViewPlugin,
         build::BuildPlugin,
         camera::CameraPlugin,
+        showcase::ShowcasePlugin,
         input::InputPlugin,
+    ))
+    .add_plugins((
         midgame::MidgamePlugin,
         opening::OpeningPlugin,
         terrain_render::TerrainRenderPlugin,

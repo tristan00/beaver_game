@@ -85,11 +85,20 @@ pub const TECHS: &[TechDef] = &[
     TechDef { name: "Docks", branch: Branch::Transport, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::Dock)] },
     TechDef { name: "Barges", branch: Branch::Transport, tier: 2, xp: TIER2_XP, effects: &[U(BuildingKind::Barge)] },
     TechDef { name: "Territory Marking", branch: Branch::Defence, tier: 1, xp: TIER1_XP, effects: &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)] },
+    TechDef { name: "Grand Storage", branch: Branch::Building, tier: 3, xp: TIER3_XP, effects: &[U(BuildingKind::Storehouse)] },
+    TechDef { name: "Industrial Milling", branch: Branch::Craft, tier: 3, xp: TIER3_XP, effects: &[U(BuildingKind::Mill)] },
 ];
 
+/// Index into `TECHS` of the tech that unlocks `kind`, if any.
+pub fn unlock_index(kind: BuildingKind) -> Option<usize> {
+    TECHS.iter().position(|t| t.effects.contains(&Effect::Unlock(kind)))
+}
+
 /// Buildings available without any tech.
-pub const BASE_BUILDINGS: [BuildingKind; 4] =
-    [BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::Canal];
+pub const BASE_BUILDINGS: [BuildingKind; 8] = [
+    BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::Canal,
+    BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit, BuildingKind::QuarryCamp,
+];
 
 #[derive(Clone, Debug, Default)]
 pub struct Tech {
