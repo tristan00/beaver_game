@@ -58,6 +58,8 @@ pub enum Command {
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
     /// Send beavers to collect (`Some`) or stand down (`None`). Right-click and area drag.
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
+    /// Place a construction site (no cost taken; builders haul the materials in).
+    PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
     /// Put a beaver into a workplace slot / empty a slot.
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
     EmptySlot { building: buildings::BuildingId, slot: usize },
@@ -203,6 +205,23 @@ impl SimState {
         }
     }
 
+    /// Places a construction site for `kind` at `pos` and registers it as a workplace with its
+    /// catalogue cost and (tech-adjusted) build work.
+    pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let id = self
+            .buildings
+            .place_site(kind, pos, &self.tech, terrain)
+            .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+        let spec = kind.spec();
+        let labour = spec.work * self.tech.build_work_factor();
+        if let Err(e) = self.work.add_site(id, kind, spec.cost, labour) {
+            self.buildings.buildings.retain(|b| b.id != id);
+            return Err(SimError::InvalidCommand(format!("{e:?}")));
+        }
+        Ok(id)
+    }
+
     /// Applies a command. Errors on invalid arguments, leaving state unchanged.
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         match cmd {
@@ -223,8 +242,13 @@ impl SimState {
                 }
                 Ok(())
             }
+            Command::PlaceSite { kind, pos } => self.place_site(kind, pos).map(|_| ()),
             Command::FillSlot { building, slot, who } => {
-                self.work.assign(building, slot, who).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                let stage = self.colony.beaver(who).map(|b| b.stage).ok_or(work::WorkError::NoSuchBeaver);
+                stage
+                    .and_then(|st| if st == colony::Stage::Kit { Err(work::WorkError::NotAdult) } else { Ok(()) })
+                    .and_then(|()| self.work.assign(building, slot, who))
+                    .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::EmptySlot { building, slot } => {
                 self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
@@ -233,6 +257,12 @@ impl SimState {
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::SetHaul { order } => {
+                let store = |id| {
+                    self.buildings.building(id).is_some_and(|b| b.is_complete() && agents::accepts(b.kind, order.good))
+                };
+                if order.from == order.to || !store(order.from) || !store(order.to) {
+                    return Err(SimError::InvalidCommand(format!("haul needs two distinct complete stores accepting the good: {order:?}")));
+                }
                 self.work.hauls.push(order);
                 Ok(())
             }
