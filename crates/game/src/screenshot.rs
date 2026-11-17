@@ -179,6 +179,7 @@ fn drive_screenshot(
     cli: Res<Cli>,
     shared: Res<SharedReadiness>,
     mut p: Local<Progress>,
+    gate: Option<Res<crate::flow::CaptureGate>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let path: &PathBuf = cli.screenshot.as_ref().expect("system only added in screenshot mode");
@@ -197,7 +198,8 @@ fn drive_screenshot(
         return;
     }
     let readiness = shared.get();
-    p.streak = if readiness == Readiness::Ready { p.streak + 1 } else { 0 };
+    let open = gate.is_none_or(|g| g.0);
+    p.streak = if readiness == Readiness::Ready && open { p.streak + 1 } else { 0 };
     match decide(p.frame, cli.frames, p.streak, &readiness, p.start.elapsed()) {
         Step::Wait => {}
         Step::Fail(msg) => {
