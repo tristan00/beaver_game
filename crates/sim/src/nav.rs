@@ -86,6 +86,8 @@ pub struct NavGrid {
     pub surface: Grid<Surface>,
     /// Which agent holds each cell (`None` = free).
     pub reserved: Grid<Option<BeaverId>>,
+    /// Owning lodge id of each `LodgeInside`/`LodgeEntrance` cell (0 = none).
+    pub lodge: Grid<u32>,
 }
 
 /// Reusable search buffers, generation-stamped so a search only pays for the cells it touches.
@@ -146,7 +148,7 @@ thread_local! {
 
 impl NavGrid {
     pub fn new(width: usize, height: usize) -> Self {
-        Self { surface: Grid::new(width, height, Surface::Land), reserved: Grid::new(width, height, None) }
+        Self { surface: Grid::new(width, height, Surface::Land), reserved: Grid::new(width, height, None), lodge: Grid::new(width, height, 0) }
     }
 
     /// Rebuilds `surface` from water, dams, buildings and resources. Reservations are kept.
@@ -155,6 +157,7 @@ impl NavGrid {
     /// entrance; every other building (and any site) is solid.
     pub fn rebuild(&mut self, sim: &crate::SimState) {
         let w = self.surface.width();
+        self.lodge.as_mut_slice().fill(0);
         let depth = &sim.water.depth;
         for (i, slot) in self.surface.as_mut_slice().iter_mut().enumerate() {
             let (x, y) = (i % w, i / w);
@@ -170,8 +173,7 @@ impl NavGrid {
             match b.kind {
                 BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge => {}
                 BuildingKind::Lodge if b.is_complete() => {
-                    b.cells().for_each(|c| self.set(c, Surface::LodgeInside));
-                    self.set(lodge_entrance(b.pos), Surface::LodgeEntrance);
+                    self.add_lodge(b.pos);
                 }
                 _ => b.cells().for_each(|c| self.set(c, Surface::Solid)),
             }
@@ -188,6 +190,27 @@ impl NavGrid {
         }
     }
 
+    /// Marks the 3x3 lodge footprint at `pos` as interior plus its entrance, all owned by one lodge
+    /// id (derived from `pos`, so distinct lodges never share an id). Out-of-bounds cells ignored.
+    pub fn add_lodge(&mut self, pos: Cell) {
+        let id = (pos.1 * self.surface.width() + pos.0 + 1) as u32;
+        for dy in 0..3 {
+            for dx in 0..3 {
+                self.set_lodge_cell((pos.0 + dx, pos.1 + dy), Surface::LodgeInside, id);
+            }
+        }
+        self.set_lodge_cell(lodge_entrance(pos), Surface::LodgeEntrance, id);
+    }
+
+    /// Sets a lodge cell (`LodgeInside` or `LodgeEntrance`) owned by lodge `id` (non-zero).
+    pub fn set_lodge_cell(&mut self, cell: Cell, s: Surface, id: u32) {
+        debug_assert!(id != 0 && matches!(s, Surface::LodgeInside | Surface::LodgeEntrance));
+        self.set(cell, s);
+        if let Some(slot) = self.lodge.get_mut(cell.0, cell.1) {
+            *slot = id;
+        }
+    }
+
     /// Cost and gait of stepping onto a cell of surface `to`; `None` if it is never enterable.
     pub fn step_cost(to: Surface) -> Option<(f32, Gait)> {
         match to {
@@ -198,17 +221,28 @@ impl NavGrid {
         }
     }
 
-    /// Whether an agent may move between two adjacent surfaces: never into `Solid`, and the lodge
-    /// interior is joined to the outside only through its entrance cell.
-    pub fn can_step(from: Surface, to: Surface) -> bool {
-        if to == Surface::Solid {
+    /// Whether an agent may step between adjacent cells `from` and `to`: never into `Solid`; a
+    /// lodge interior is joined to the outside only through its own entrance, which opens onto
+    /// the interior cell directly above it (bottom-middle of the footprint); interior cells connect
+    /// only within the same lodge. Out-of-bounds cells are not steppable.
+    pub fn can_step(&self, from: Cell, to: Cell) -> bool {
+        let (Some(a), Some(b)) = (self.surface_at(from), self.surface_at(to)) else { return false };
+        self.can_step_surf(a, b, from, to)
+    }
+
+    fn can_step_surf(&self, a: Surface, b: Surface, from: Cell, to: Cell) -> bool {
+        use Surface::*;
+        if b == Solid {
             return false;
         }
-        if from == Surface::LodgeInside || to == Surface::LodgeInside {
-            let ok = |s| matches!(s, Surface::LodgeInside | Surface::LodgeEntrance);
-            return ok(from) && ok(to);
+        let same_lodge = || self.lodge.get(from.0, from.1) == self.lodge.get(to.0, to.1);
+        match (a, b) {
+            (LodgeInside, LodgeInside) => same_lodge(),
+            (LodgeEntrance, LodgeInside) => same_lodge() && to == (from.0, from.1 - 1),
+            (LodgeInside, LodgeEntrance) => same_lodge() && from == (to.0, to.1 - 1),
+            (LodgeInside, _) | (_, LodgeInside) => false,
+            _ => true,
         }
-        true
     }
 
     /// Cheapest path honouring the rules above, treating other agents' reservations as blocked.
@@ -265,7 +299,7 @@ impl NavGrid {
                 ];
                 for j in nbrs.into_iter().flatten() {
                     let Some((c, _)) = Self::step_cost(surf[j]) else { continue };
-                    if !Self::can_step(surf[i], surf[j]) || blocked(j) {
+                    if !self.can_step_surf(surf[i], surf[j], cur, (j % w, j / w)) || blocked(j) {
                         continue;
                     }
                     let ng = g + (c * COST_UNIT).round() as u32;
@@ -291,7 +325,7 @@ impl NavGrid {
         let (Some(a), Some(b)) = (self.surface_at(from), self.surface_at(to)) else {
             return Err(NavError::OutOfBounds);
         };
-        if !Self::can_step(a, b) {
+        if !self.can_step_surf(a, b, from, to) {
             return Err(NavError::Forbidden(b));
         }
         if !self.reserve(who, to) {
@@ -335,6 +369,10 @@ mod tests {
         let mut n = NavGrid::new(rows[0].len(), rows.len());
         for (y, r) in rows.iter().enumerate() {
             for (x, ch) in r.chars().enumerate() {
+                if ch == 'L' || ch == 'E' {
+                    n.set_lodge_cell((x, y), if ch == 'L' { Surface::LodgeInside } else { Surface::LodgeEntrance }, 1);
+                    continue;
+                }
                 n.set((x, y), match ch {
                     '.' => Surface::Land,
                     '~' => Surface::Water,
@@ -392,17 +430,40 @@ mod tests {
         let e = c.iter().position(|&x| x == (1, 2)).expect("passes entrance");
         assert_eq!(c[e + 1], (1, 1));
         // Walking along the wall never enters except via entrance.
-        assert!(NavGrid::can_step(Surface::Land, Surface::LodgeEntrance));
-        assert!(!NavGrid::can_step(Surface::Land, Surface::LodgeInside));
-        assert!(!NavGrid::can_step(Surface::Water, Surface::LodgeInside));
-        assert!(!NavGrid::can_step(Surface::LodgeInside, Surface::Land));
-        assert!(NavGrid::can_step(Surface::LodgeEntrance, Surface::LodgeInside));
+        assert!(n.can_step((0, 2), (1, 2)));
+        assert!(!n.can_step((3, 0), (2, 0)), "land to interior");
+        assert!(!n.can_step((0, 2), (0, 1)), "water to interior");
+        assert!(!n.can_step((2, 0), (3, 0)), "interior to land");
+        assert!(n.can_step((1, 2), (1, 1)));
         // Blocking the entrance makes the interior unreachable.
         let mut closed = n.clone();
         closed.set((1, 2), Surface::Solid);
         assert!(closed.find_path(A, (3, 3), Goal::Inside((1, 0))).is_none());
         // Goal::Inside needs an interior cell.
         assert!(n.find_path(A, (3, 3), Goal::Inside((3, 3))).is_none());
+    }
+
+    #[test]
+    fn lodges_are_entered_only_through_their_own_entrance() {
+        // Lodge A at (0,0), lodge B at (3,0): footprints touch, so interiors are adjacent.
+        let mut n = NavGrid::new(8, 6);
+        n.add_lodge((0, 0));
+        n.add_lodge((3, 0));
+        assert_eq!(n.surface_at((1, 3)), Some(Surface::LodgeEntrance));
+        assert_eq!(n.surface_at((4, 3)), Some(Surface::LodgeEntrance));
+        // No stepping between touching lodges.
+        assert!(!n.can_step((2, 1), (3, 1)));
+        assert!(!n.can_step((3, 1), (2, 1)));
+        // Entrance leads only to its own lodge's bottom-middle cell.
+        assert!(n.can_step((1, 3), (1, 2)) && n.can_step((1, 2), (1, 3)));
+        assert!(!n.can_step((4, 3), (1, 2)) && !n.can_step((1, 3), (4, 2)));
+        // A's entrance neighbours B's interior: it must not open into it.
+        let mut m = NavGrid::new(8, 8);
+        m.add_lodge((0, 0)); // id 1, entrance (1,3)
+        m.add_lodge((2, 3)); // footprint x 2..=4, y 3..=5: (2,3) is B interior beside A's entrance
+        assert!(!m.can_step((1, 3), (2, 3)), "A's entrance must not open into B");
+        let p = m.find_path(A, (7, 7), Goal::Inside((0, 0))).unwrap();
+        assert!(p.steps.iter().all(|s| m.lodge.get(s.0 .0, s.0 .1) != Some(&9)), "path crossed lodge B");
     }
 
     #[test]
@@ -497,10 +558,10 @@ mod tests {
             let (x, y) = (rng.below(size - 4), rng.below(size - 4));
             for dy in 0..3 {
                 for dx in 0..3 {
-                    n.set((x + dx, y + dy), Surface::LodgeInside);
+                    n.set((x + dx, y + dy), Surface::Land);
                 }
             }
-            n.set(lodge_entrance((x, y)), Surface::LodgeEntrance);
+            n.add_lodge((x, y));
         }
         n
     }
