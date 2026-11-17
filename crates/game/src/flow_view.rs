@@ -182,7 +182,7 @@ impl Plugin for FlowViewPlugin {
             .init_resource::<UiState>()
             .insert_resource(FogBase { generation: u32::MAX, colors: Vec::new() })
             .add_systems(Startup, (spawn_ui, spawn_visuals))
-            .add_systems(Update, (keys, layout_ui, detect_click).chain().in_set(ClickSet))
+            .add_systems(Update, (keys, layout_ui, crate::build::layout_build, detect_click, crate::build::build_input).chain().in_set(ClickSet))
             .add_systems(
                 Update,
                 (apply_fog, sync_markers, update_ui, refresh_ledger, draw_gizmos).after(ClickSet),
@@ -768,6 +768,7 @@ fn autoplay_settle(
     mut exit: MessageWriter<AppExit>,
     orbit: Res<OrbitCamera>,
     mut ui: ResMut<UiState>,
+    demo: Option<Res<crate::build::DemoDam>>,
 ) {
     let _ = &orbit;
     // Debug aid for screenshots: BC_AUTOPLAY_UI=ledger,detail,gameover
@@ -807,7 +808,9 @@ fn autoplay_settle(
         }
         Phase::Settled | Phase::GameOver => {
             let t = flow.real_secs - flow.settled_at.unwrap_or(flow.real_secs);
-            gate.0 = t >= 3.0 && flow.focus.is_none();
+            if demo.is_none() {
+                gate.0 = t >= 3.0 && flow.focus.is_none();
+            }
         }
         _ => {}
     }

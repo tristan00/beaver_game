@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--midgame] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--midgame] [--demo-dam] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -18,6 +18,8 @@ pub struct Cli {
     pub stress: bool,
     /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
     pub autoplay_settle: bool,
+    /// Scripted dam preview (implies `--autoplay-settle`): settle, stock stores, draw a dam, hold the preview for `--screenshot`.
+    pub demo_dam: bool,
     /// Start from a seeded mid-game colony (settled, a year-plus old, trade open, events pending) instead of scouting.
     pub midgame: bool,
 }
@@ -25,7 +27,7 @@ pub struct Cli {
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, midgame: false };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, midgame: false, demo_dam: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -45,6 +47,10 @@ impl Cli {
                 }
                 "--stress" => cli.stress = true,
                 "--autoplay-settle" => cli.autoplay_settle = true,
+                "--demo-dam" => {
+                    cli.demo_dam = true;
+                    cli.autoplay_settle = true;
+                }
                 "--midgame" => cli.midgame = true,
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
@@ -64,6 +70,12 @@ mod tests {
         let c = p(&["--screenshot", "o.png", "--frames", "5", "--seed", "9", "--cam", "top"]).unwrap();
         assert_eq!((c.seed, c.frames, c.cam.as_str()), (9, 5, "top"));
         assert_eq!(c.screenshot, Some("o.png".into()));
+    }
+
+    #[test]
+    fn demo_dam_implies_autoplay() {
+        let c = p(&["--demo-dam"]).unwrap();
+        assert!(c.demo_dam && c.autoplay_settle);
     }
 
     #[test]

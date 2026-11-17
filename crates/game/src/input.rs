@@ -20,6 +20,7 @@ fn orbit_input(
     scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     mut orbit: ResMut<OrbitCamera>,
+    build: Res<crate::build::BuildUi>,
     layout: Res<UiLayout>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut dragging: Local<bool>,
@@ -33,7 +34,7 @@ fn orbit_input(
         *dragging = false;
     }
     let mut next = *orbit;
-    if *dragging {
+    if *dragging && !(buttons.pressed(MouseButton::Left) && !buttons.pressed(MouseButton::Right) && !buttons.pressed(MouseButton::Middle) && build.path_tool_active()) {
         next.yaw -= motion.delta.x * 0.006;
         next.pitch += motion.delta.y * 0.006;
     }
