@@ -323,7 +323,27 @@ impl SimState {
         Ok(id)
     }
 
-    /// Places a dam construction site on the middle cell of `cells`. Its cost is the dam cost
+    /// Where a dam on `cells` puts its construction site: the line cell nearest its middle (the
+    /// middle first, ties toward the start) where the site can be placed (it must touch water).
+    /// The error is the middle cell's if none can. Changes nothing.
+    pub fn dam_site(&self, cells: &[water::Cell]) -> Result<water::Cell, buildings::BuildError> {
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let mid = cells.len() / 2;
+        let mut order: Vec<usize> = (0..cells.len()).collect();
+        order.sort_by_key(|&i| (i.abs_diff(mid), i));
+        let mut first = None;
+        for i in order {
+            match self.buildings.can_place_site(buildings::BuildingKind::Dam, cells[i], &self.tech, terrain) {
+                Ok(()) => return Ok(cells[i]),
+                Err(e) => {
+                    first.get_or_insert(e);
+                }
+            }
+        }
+        Err(first.unwrap_or(buildings::BuildError::OutOfBounds))
+    }
+
+    /// Places a dam construction site on `cells` (at `dam_site`). Its cost is the dam cost
     /// scaled by length and its labour scales the same way; `agents::step` applies the water dam
     /// when the site completes. Errors (state unchanged) if `cells` are not a valid dam line, the
     /// height is not finite and positive, or the site cannot be placed.
@@ -331,7 +351,7 @@ impl SimState {
         if dam_preview::preview(self, cells, height).is_none() {
             return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
         }
-        let pos = cells[cells.len() / 2];
+        let pos = self.dam_site(cells).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
@@ -498,6 +518,20 @@ fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dam_site_stands_on_the_line_cell_nearest_the_middle_that_touches_water() {
+        let mut s = SimState::new(1);
+        let (x0, y0) = (60, 20);
+        s.water.depth.as_mut_slice().iter_mut().for_each(|d| *d = 0.0);
+        let line: Vec<water::Cell> = (x0 - 8..=x0).map(|x| (x, y0)).collect();
+        assert!(s.dam_site(&line).is_err(), "a line on dry ground has no site");
+        *s.water.depth.get_mut(x0, y0).unwrap() = 0.5;
+        // The middle cell's 3x1 site is dry; the nearest that reaches the water starts two short of it.
+        assert_eq!(s.dam_site(&line), Ok((x0 - 2, y0)));
+        let id = s.order_dam(&line, 1.0).unwrap();
+        assert_eq!(s.buildings.building(id).unwrap().pos, (x0 - 2, y0));
+    }
 
     #[test]
     fn new_is_deterministic() {

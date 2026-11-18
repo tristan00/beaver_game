@@ -131,6 +131,9 @@ pub struct World {
     pub pond: Grid<bool>,
     /// Stream heads: where water enters the network.
     pub springs: Vec<(usize, usize)>,
+    /// The natural dam site near the start: the middle of the notch a rock bar leaves the stream
+    /// (see `carve_narrows`), if one was raised.
+    pub narrows: Option<(usize, usize)>,
     /// Soil moisture 0..=1.
     pub moisture: Grid<f32>,
     /// Surface gradient magnitude, world units per cell.
@@ -514,6 +517,164 @@ fn carve_ponds(raw: &mut [f32], n: usize, seed: u64, start_center: (f32, f32)) {
     }
 }
 
+/// The natural dam site of the start valley: a rock bar raised across a stream that runs
+/// downhill, leaving the stream a notch `2 * NARROWS_NOTCH + 1` cells wide, so a short dam across
+/// the notch holds a pond in the basin above. The bar's crest stands `NARROWS_HEIGHT` above the
+/// stream's surface and steps down over `NARROWS_THICK` cells either side along the stream.
+const NARROWS_HEIGHT: f32 = 2.5;
+const NARROWS_THICK: isize = 2;
+const NARROWS_NOTCH: isize = 1;
+/// The bar runs at most this far either side of the stream, until it meets ground at least
+/// `NARROWS_CLOSE` above the stream's surface (above any pond a short dam in the notch raises).
+const NARROWS_REACH: isize = 24;
+const NARROWS_CLOSE: f32 = 1.8;
+/// The basin above the notch, below the notch surface plus `NARROWS_POND_RISE`, is this many cells.
+const NARROWS_POND_RISE: f32 = 1.2;
+const NARROWS_POND: std::ops::RangeInclusive<usize> = 50..=250;
+/// The stream falls at least `NARROWS_DROP` over `NARROWS_GRADE` cells either side of the notch:
+/// it runs there rather than standing on a flat.
+const NARROWS_DROP: f32 = 0.3;
+const NARROWS_GRADE: usize = 6;
+/// Sites tried, nearest the start valley's centre first and at most `NARROWS_SPAN` from it; the
+/// notch stays `NARROWS_MARGIN` from the map edge.
+const NARROWS_TRIES: usize = 80;
+const NARROWS_MARGIN: usize = 12;
+const NARROWS_SPAN: f32 = 40.0;
+
+/// Raises a rock bar across a stream in the start valley (see `NARROWS_HEIGHT`). A site is kept
+/// only if, with the bar, the stream still runs through the notch, no new lake forms, and the
+/// basin above the notch is closed by the notch and holds `NARROWS_POND` cells; otherwise the
+/// terrain is left as it was. Returns the notch's middle cell if a bar was raised.
+fn carve_narrows(raw: &mut [f32], n: usize, lay: &Layout, ceiling: f32) -> Option<usize> {
+    let (surface, flow) = fill_depressions(raw, n);
+    let acc = accumulate(&surface, &flow);
+    let waters = |raw: &[f32], surface: &[f32], acc: &[u32]| {
+        let lake = find_lakes(raw, surface, n);
+        let still = lake_components(&lake, n).into_iter().filter(|comp| comp.iter().all(|&i| acc[i] < RIVER_MIN_ACCUMULATION)).count();
+        (lake.iter().filter(|&&l| l).count(), still)
+    };
+    let lakes = waters(raw, &surface, &acc);
+    let stream = |a: &[u32], i: usize| a[i] >= 2 * RIVER_MIN_ACCUMULATION;
+    let mut up: Vec<Option<usize>> = vec![None; n * n];
+    for i in (0..n * n).filter(|&i| acc[i] >= RIVER_MIN_ACCUMULATION) {
+        if let Some(t) = flow[i] {
+            if up[t].is_none_or(|u| (acc[i], i) > (acc[u], u)) {
+                up[t] = Some(i);
+            }
+        }
+    }
+    let graded = |c: usize| {
+        let (mut top, mut bottom) = (c, c);
+        for _ in 0..NARROWS_GRADE {
+            top = up[top].unwrap_or(top);
+            bottom = flow[bottom].unwrap_or(bottom);
+        }
+        surface[top] - surface[bottom] >= NARROWS_DROP
+    };
+    let m = NARROWS_MARGIN;
+    let (cx, cy) = lay.centers[0];
+    let mut sites: Vec<usize> = (0..n * n)
+        .filter(|&i| stream(&acc, i) && (m..n - m).contains(&(i % n)) && (m..n - m).contains(&(i / n)))
+        .filter(|&i| ((i % n) as f32 - cx).powi(2) + ((i / n) as f32 - cy).powi(2) <= NARROWS_SPAN * NARROWS_SPAN)
+        .filter(|&i| flow[i].is_some() && graded(i))
+        .collect();
+    sites.sort_by_key(|&i| (((i % n) as f32 - cx).powi(2) + ((i / n) as f32 - cy).powi(2)) as u32);
+    let at = |x: isize, y: isize| (x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n).then(|| y as usize * n + x as usize);
+    // Each site is tried with the bar across the stream's general run first, then the other way.
+    let tries = sites.iter().take(NARROWS_TRIES).flat_map(|&c| {
+        let (mut top, mut bottom) = (c, c);
+        for _ in 0..NARROWS_GRADE {
+            top = up[top].unwrap_or(top);
+            bottom = flow[bottom].unwrap_or(bottom);
+        }
+        let (dx, dy) = ((bottom % n).abs_diff(top % n), (bottom / n).abs_diff(top / n));
+        let across: [((isize, isize), (isize, isize)); 2] = [((1, 0), (0, 1)), ((0, 1), (1, 0))];
+        let first = usize::from(dx > dy);
+        [(c, across[first]), (c, across[1 - first])]
+    });
+    for (c, ((ax, ay), (bx, by))) in tries {
+        let (x0, y0) = ((c % n) as isize, (c / n) as isize);
+        let base = surface[c];
+        let target = base + NARROWS_HEIGHT;
+        if target > ceiling {
+            continue;
+        }
+        let saved = raw.to_vec();
+        let mut closed = true;
+        'rows: for row in -NARROWS_THICK..=NARROWS_THICK {
+            // The stream's cell on this row of the bar (nearest the line through `c`).
+            let (rx, ry) = (x0 + row * bx, y0 + row * by);
+            let Some(mid) = (0..=3isize).flat_map(|k| [k, -k]).find_map(|k| at(rx + k * ax, ry + k * ay).filter(|&i| stream(&acc, i)).map(|_| k)) else {
+                closed = false;
+                break;
+            };
+            let height = target - row.unsigned_abs() as f32 * NARROWS_HEIGHT / (NARROWS_THICK + 1) as f32;
+            for side in [-1isize, 1] {
+                let mut met = false;
+                for k in NARROWS_NOTCH + 1..=NARROWS_REACH {
+                    let Some(i) = at(rx + (mid + side * k) * ax, ry + (mid + side * k) * ay) else { break };
+                    if raw[i] >= height.min(base + NARROWS_CLOSE) {
+                        met = true;
+                        break;
+                    }
+                    raw[i] = height;
+                }
+                if row == 0 && !met {
+                    closed = false;
+                    break 'rows;
+                }
+            }
+        }
+        let kept = closed && {
+            let (s2, f2) = fill_depressions(raw, n);
+            let a2 = accumulate(&s2, &f2);
+            let same_lakes = waters(raw, &s2, &a2) == lakes;
+            let held = basin_held(&s2, n, c, up[c], f2[c], (ax, ay), base + NARROWS_POND_RISE);
+            same_lakes && stream(&a2, c) && (s2[c] - base).abs() < 0.01 && held
+        };
+        if kept {
+            return Some(c);
+        }
+        raw.copy_from_slice(&saved);
+    }
+    None
+}
+
+/// Whether the basin above a notch at `c` (crossed along `(ax, ay)`), below `level`, is held by a
+/// dam across the notch: entered from `above`, it never reaches `below` or the map edge and its
+/// size is in `NARROWS_POND`.
+fn basin_held(surface: &[f32], n: usize, c: usize, above: Option<usize>, below: Option<usize>, (ax, ay): (isize, isize), level: f32) -> bool {
+    let (Some(above), Some(below)) = (above, below) else { return false };
+    let (x0, y0) = ((c % n) as isize, (c / n) as isize);
+    let dam: Vec<usize> = (-NARROWS_NOTCH - 1..=NARROWS_NOTCH + 1)
+        .filter_map(|k| {
+            let (x, y) = (x0 + k * ax, y0 + k * ay);
+            (x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n).then(|| y as usize * n + x as usize)
+        })
+        .collect();
+    let mut seen = vec![false; n * n];
+    dam.iter().for_each(|&i| seen[i] = true);
+    if seen[above] || surface[above] >= level {
+        return false;
+    }
+    let (mut q, mut count) = (VecDeque::from([above]), 0usize);
+    seen[above] = true;
+    while let Some(i) = q.pop_front() {
+        count += 1;
+        let (x, y) = (i % n, i / n);
+        if i == below || x == 0 || y == 0 || x == n - 1 || y == n - 1 || count > *NARROWS_POND.end() {
+            return false;
+        }
+        for j in neighbours4(i, n) {
+            if !seen[j] && surface[j] < level {
+                seen[j] = true;
+                q.push_back(j);
+            }
+        }
+    }
+    NARROWS_POND.contains(&count)
+}
+
 /// 4-connected components of a mask.
 fn lake_components(mask: &[bool], n: usize) -> Vec<Vec<usize>> {
     let mut seen = vec![false; n * n];
@@ -639,6 +800,7 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
     let lay = layout(seed, n);
     let mut raw = terrain(seed, n, p.amplitude, &lay);
     carve_ponds(&mut raw, n, seed, lay.centers[0]);
+    let narrows = carve_narrows(&mut raw, n, &lay, p.amplitude).map(|i| (i % n, i / n));
     let (surface, flow) = fill_depressions(&raw, n);
     let lake = find_lakes(&raw, &surface, n);
     let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
@@ -704,7 +866,7 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
         flow_to: grid_from(n, flow), flow_acc: grid_from(n, acc),
         river: grid_from(n, river), main_river: grid_from(n, streams.main), tributary: grid_from(n, streams.trib),
         confluences: streams.confluences.iter().map(|&i| (i % n, i / n)).collect(),
-        lake: grid_from(n, lake), pond: grid_from(n, pond), springs,
+        lake: grid_from(n, lake), pond: grid_from(n, pond), springs, narrows,
         moisture: grid_from(n, moisture), slope: grid_from(n, slope), forest: grid_from(n, forest),
     };
     validate(&world)?;
@@ -914,6 +1076,30 @@ mod tests {
         assert_eq!(with_spring, 20, "springs missing in some seeds");
         assert_eq!(with_pond, 20, "ponds missing in some seeds");
         assert_eq!(layouts.len(), 20, "two seeds share a water layout");
+    }
+
+    #[test]
+    fn most_seeds_have_a_narrows_by_the_start_whose_notch_a_short_dam_closes() {
+        let mut found = 0;
+        for seed in 1..=12u64 {
+            let w = world(seed);
+            let Some((x, y)) = w.narrows else { continue };
+            found += 1;
+            let n = w.size;
+            let notch = -NARROWS_NOTCH..=NARROWS_NOTCH;
+            let river = |dx: isize, dy: isize| *w.river.get((x as isize + dx) as usize, (y as isize + dy) as usize).unwrap();
+            assert!(notch.clone().any(|k| river(k, 0) || river(0, k)), "seed {seed}: the stream runs through the notch");
+            let (cx, cy) = w.valleys[w.start.0 as usize].center;
+            assert!((x as f32 - cx).hypot(y as f32 - cy) <= NARROWS_SPAN, "seed {seed}: narrows far from the start");
+            // Across the notch (one way or the other) the bar stands above any short dam's pond.
+            let base = *w.surface.get(x, y).unwrap();
+            let k = (NARROWS_NOTCH + 1) as usize;
+            let high = |c: (usize, usize)| c.0 < n && c.1 < n && *w.height.get(c.0, c.1).unwrap() >= base + NARROWS_CLOSE.min(NARROWS_HEIGHT) - 0.01;
+            let across_x = high((x - k, y)) && high((x + k, y));
+            let across_y = high((x, y - k)) && high((x, y + k));
+            assert!(across_x || across_y, "seed {seed}: no bar beside the notch at {:?}", (x, y));
+        }
+        assert!(found >= 9, "only {found} of 12 seeds have a narrows");
     }
 
     #[test]
