@@ -114,6 +114,8 @@ pub enum Command {
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     /// Standing haul between two stores.
     SetHaul { order: work::HaulOrder },
+    /// Set a store to balance its goods with the other balanced stores (its haulers do it).
+    SetBalance { building: buildings::BuildingId, on: bool },
     /// Set barge `barge` to run between docks `from` and `to` carrying `goods` (`shipping`).
     SetBargeRoute { barge: buildings::BargeId, from: buildings::BuildingId, to: buildings::BuildingId, goods: Vec<buildings::Good> },
     /// Take a barge off its route.
@@ -762,6 +764,18 @@ impl SimState {
             Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetBargeRoute { barge, from, to, goods } => shipping::set_route(self, barge, from, to, goods).map_err(SimError::InvalidCommand),
             Command::ClearBargeRoute { barge } => shipping::clear_route(self, barge).map_err(SimError::InvalidCommand),
+            Command::SetBalance { building, on } => {
+                let store = self.buildings.building(building).is_some_and(|b| b.is_complete() && agents::is_store(b.kind));
+                if !store {
+                    return Err(SimError::InvalidCommand(format!("building {} is not a finished store", building.0)));
+                }
+                if on {
+                    self.work.balanced.insert(building);
+                } else {
+                    self.work.balanced.remove(&building);
+                }
+                Ok(())
+            }
             Command::SetHaul { order } => {
                 let store = |id| {
                     self.buildings.building(id).is_some_and(|b| b.is_complete() && agents::accepts(b.kind, order.good))

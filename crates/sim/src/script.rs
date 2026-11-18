@@ -107,6 +107,7 @@ pub fn to_line(c: &Command) -> String {
         Command::Unlock { who } => format!("unlock {}", who.0),
         Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
         Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
+        Command::SetBalance { building, on } => format!("balance {} {}", building.0, if *on { "on" } else { "off" }),
         Command::SetBargeRoute { barge, from, to, goods } => {
             format!("barge-route {} {} {} {}", barge.0, from.0, to.0, goods.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>().join(","))
         }
@@ -195,6 +196,14 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             from: b(2)?,
             to: b(3)?,
             goods: t.get(4).ok_or("missing goods")?.split(',').map(parse_good).collect::<Result<_, _>>()?,
+        },
+        "balance" => Command::SetBalance {
+            building: b(1)?,
+            on: match t.get(2).copied() {
+                Some("on") => true,
+                Some("off") => false,
+                other => return Err(format!("balance takes on or off, not {other:?}")),
+            },
         },
         "haul" => Command::SetHaul { order: HaulOrder { from: b(1)?, to: b(2)?, good: parse_good(t.get(3).ok_or("missing good")?)? } },
         "answer" => Command::AnswerJoin {
@@ -692,6 +701,8 @@ mod tests {
             Command::SetRecipe { building: BuildingId(9), recipe: Some(Recipe::Rope) },
             Command::AnswerJoin { id: RequestId(2), answer: Answer::TurnAway },
             Command::SetHaul { order: HaulOrder { from: BuildingId(1), to: BuildingId(2), good: Good::Logs } },
+            Command::SetBalance { building: BuildingId(3), on: true },
+            Command::SetBalance { building: BuildingId(3), on: false },
             Command::SetBargeRoute { barge: crate::buildings::BargeId(4), from: BuildingId(1), to: BuildingId(2), goods: vec![Good::Stone, Good::Mud] },
             Command::ClearBargeRoute { barge: crate::buildings::BargeId(4) },
             Command::CancelSite { building: BuildingId(7) },

@@ -171,6 +171,9 @@ pub enum WorkError {
 pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
+    /// Stores set to balance: their haulers move goods between them so each holds its share
+    /// of every good (`stock::balance_move`).
+    pub balanced: BTreeSet<BuildingId>,
     /// Goods held in each store, which haulers move between stores. The colony ledger
     /// (`Buildings::stores`) stays the total; hauling only relocates goods between stores.
     pub stock: BTreeMap<(BuildingId, Good), f32>,
@@ -203,6 +206,7 @@ impl Default for Work {
         Work {
             places: Vec::new(),
             hauls: Vec::new(),
+            balanced: BTreeSet::new(),
             stock: BTreeMap::new(),
             dam_plans: Vec::new(),
             dam_failures: Vec::new(),

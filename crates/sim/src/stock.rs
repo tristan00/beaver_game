@@ -89,6 +89,60 @@ pub fn put_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) ->
     }
 }
 
+/// Goods short of their share by less than this are left where they are (a load is 3).
+pub const BALANCE_SLACK: f32 = 3.0;
+
+/// The next move that brings the balanced stores closer to holding each good in proportion to
+/// their size: `(from, to, good)`, from the store furthest over its share to the one furthest under,
+/// counting loads already on their way. A hauler at store `at` prefers a move to or from its own
+/// store. `None` when every balanced store is within `BALANCE_SLACK` of its share.
+pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
+    if sim.work.balanced.len() < 2 {
+        return None;
+    }
+    // Loads under way between stores: off their source already, not yet at their goal.
+    let mut moving: Vec<(BuildingId, BuildingId, Good, f32)> = Vec::new();
+    for a in sim.agents.by_id.values() {
+        match (&a.task, a.load) {
+            (crate::agents::Task::Fetch { from, good, then }, None) if sim.work.balanced.contains(then) => moving.push((*from, *then, *good, crate::agents::LOAD_SIZE)),
+            (crate::agents::Task::Haul { to }, Some(l)) => moving.push((BuildingId(0), *to, l.good, l.amount)),
+            _ => {}
+        }
+    }
+    let mut best: Option<(bool, f32, BuildingId, BuildingId, Good)> = None;
+    for g in Good::ALL {
+        let stores: Vec<&Building> = sim
+            .buildings
+            .buildings
+            .iter()
+            .filter(|b| sim.work.balanced.contains(&b.id) && b.is_complete() && accepts(b.kind, g))
+            .collect();
+        if stores.len() < 2 {
+            continue;
+        }
+        let cap = |b: &Building| crate::catalogue::def(b.kind).capacity.max(1.0);
+        let total: f32 = stores.iter().map(|b| sim.work.stock_of(b.id, g)).sum::<f32>()
+            + moving.iter().filter(|m| m.2 == g).map(|m| m.3).sum::<f32>();
+        let room: f32 = stores.iter().map(|b| cap(b)).sum();
+        let off = |b: &Building| {
+            let incoming: f32 = moving.iter().filter(|m| m.1 == b.id && m.2 == g).map(|m| m.3).sum();
+            let leaving: f32 = moving.iter().filter(|m| m.0 == b.id && m.2 == g).map(|m| m.3).sum();
+            sim.work.stock_of(b.id, g) - leaving + incoming - total * cap(b) / room
+        };
+        let over = stores.iter().map(|b| (off(b), b.id)).max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)))?;
+        let under = stores.iter().map(|b| (off(b), b.id)).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))?;
+        let gap = over.0.min(-under.0);
+        if gap < BALANCE_SLACK || sim.work.stock_of(over.1, g) < 1.0 {
+            continue;
+        }
+        let mine = at.is_some_and(|s| s == over.1 || s == under.1);
+        if best.as_ref().is_none_or(|b| (mine, gap) > (b.0, b.1)) {
+            best = Some((mine, gap, over.1, under.1, g));
+        }
+    }
+    best.map(|b| (b.2, b.3, b.4))
+}
+
 /// Books each workshop batch of this step: inputs leave the stores nearest the workshop, the
 /// product goes into the nearest store that takes it.
 pub fn book_crafting(sim: &mut SimState) {
@@ -141,6 +195,22 @@ mod tests {
         let b = BuildingId(id);
         sim.buildings.buildings.push(Building { id: b, kind: BuildingKind::Warehouse, pos, status: Status::Complete, recipe: None, output: 0.0 });
         b
+    }
+
+    #[test]
+    fn balanced_stores_even_out_by_size_and_others_are_left_alone() {
+        let mut sim = SimState::new(3);
+        let (a, b, c) = (store(&mut sim, 1, (10, 10)), store(&mut sim, 2, (40, 10)), store(&mut sim, 3, (70, 10)));
+        sim.buildings.stores.deposit(Good::Stone, 60.0).unwrap();
+        sim.work.stock_add(a, Good::Stone, 60.0);
+        assert_eq!(balance_move(&sim, None), None, "nothing is balanced yet");
+        sim.work.balanced.extend([a, b]);
+        assert_eq!(balance_move(&sim, Some(b)), Some((a, b, Good::Stone)), "from the full store to the empty one");
+        sim.work.stock_take(a, Good::Stone, 30.0);
+        sim.work.stock_add(b, Good::Stone, 30.0);
+        assert_eq!(balance_move(&sim, Some(b)), None, "two equal stores hold equal shares");
+        sim.work.stock_add(c, Good::Stone, 0.0);
+        assert_eq!(balance_move(&sim, Some(a)), None, "a store not set to balance takes no part");
     }
 
     #[test]

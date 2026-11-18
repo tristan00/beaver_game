@@ -429,6 +429,11 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                         .tip(Tip::name(good_name(g)));
                     }
                 }
+                // Balance: this store's haulers even out its goods with the other balanced stores.
+                r.spacer();
+                let on = s.work.balanced.contains(&id);
+                r.icon_button(Icon::Balance, 14.0, HudAction::Balance(id, !on), FAINT, on)
+                    .tip(Tip::name("Balance").line(if on { "On" } else { "Off" }, "").line("Haulers share goods with balanced stores", ""));
             });
         }
         // Gatherers: edit the work area.

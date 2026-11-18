@@ -716,3 +716,4 @@ Notation: `[food]` = the food icon, `[logs]` = the logs icon, and so on. **cut**
 | finished dam (dam building or dam cell inspector) (new) | ↕ `n` and a `+ n` accent button (raise one step); at the top `Max 3`; tips: `Height`, `Crest`, `Cells`, `Raise` + cost rows |
 | key-hint bar, dam tool | adds `[flood] G` (extend to hold) |
 | settle tag | adds a food bar: `[food]` bar between trees and safety |
+| store inspector, balance setting (new) | `[balance]` toggle at the end of the stock row (lit when on); tip: `Balance`, `On`/`Off`, `Haulers share goods with balanced stores` |

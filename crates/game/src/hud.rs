@@ -368,6 +368,8 @@ pub enum HudAction {
     EditArea(BuildingId),
     Pin(Selection),
     Recipe(BuildingId, Option<sim::buildings::Recipe>),
+    /// A store's balance setting (its haulers even out the balanced stores).
+    Balance(BuildingId, bool),
     CutRule(BuildingId, sim::forestry::CutRule),
     PlantRule(BuildingId, sim::forestry::PlantRule),
 }
@@ -1058,6 +1060,7 @@ fn button_actions(
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::SortPop(k) => hud.pop_sort = k,
             HudAction::Recipe(building, recipe) => cmd(s, &mut hud, sim::Command::SetRecipe { building, recipe }, now),
+            HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
             HudAction::CutRule(building, rule) => cmd(s, &mut hud, sim::Command::SetCutRule { building, rule }, now),
             HudAction::PlantRule(building, rule) => cmd(s, &mut hud, sim::Command::SetPlantRule { building, rule }, now),
             HudAction::Pin(p) => {

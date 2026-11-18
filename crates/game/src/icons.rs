@@ -52,7 +52,7 @@ icons! {
     Dot, DotEmpty, Check, Cross,
     // Controls
     Pause, Play, Fast2, Fast3, Undo, Search, Pin, PriorityUp, PriorityDown, Plus, Minus, Focus,
-    Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Menu, Back, Settings,
+    Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Balance, Menu, Back, Settings,
     // Beaver
     Beaver, Adult, Yearling, Kit, MoodGood, MoodOk, MoodBad, Health,
     // Seasons
@@ -1137,6 +1137,15 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(poly(&[(6.0, 56.0), (10.0, 38.0), (20.0, 30.0), (30.0, 40.0), (32.0, 56.0)]).grow(1.5));
         }
         Hammer => c.part(32.0, 32.0, 1.0, -40.0, 0.0, hammer),
+        // A pair of scales: post, beam and two pans.
+        Balance => {
+            c.add(seg(32.0, 12.0, 32.0, 52.0, 5.0));
+            c.add(seg(18.0, 54.0, 46.0, 54.0, 5.0));
+            c.add(seg(10.0, 18.0, 54.0, 18.0, 5.0));
+            c.add(seg(14.0, 18.0, 8.0, 36.0, 3.0).or(seg(14.0, 18.0, 20.0, 36.0, 3.0)));
+            c.add(seg(50.0, 18.0, 44.0, 36.0, 3.0).or(seg(50.0, 18.0, 56.0, 36.0, 3.0)));
+            c.add(ellipse(14.0, 38.0, 8.0, 4.0).or(ellipse(50.0, 38.0, 8.0, 4.0)));
+        }
         Crest => {
             c.add(seg(10.0, 8.0, 54.0, 8.0, W));
             c.add(seg(32.0, 22.0, 32.0, 48.0, W));

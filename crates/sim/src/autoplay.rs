@@ -140,6 +140,20 @@ impl Player {
         self.explore(s);
         self.ship(s);
         self.tend_logging(s);
+        // Home stores share their goods: every warehouse, storehouse and food cache, and the home
+        // dock (the far dock is served by the barge).
+        let stores: Vec<BuildingId> = s
+            .buildings
+            .buildings
+            .iter()
+            .filter(|b| b.is_complete() && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) || Some(b.id) == self.home_dock && b.is_complete())
+            .map(|b| b.id)
+            .filter(|id| !s.work.balanced.contains(id))
+            .collect();
+        for b in stores {
+            let r = s.apply(Command::SetBalance { building: b, on: true });
+            self.note(s, format!("store {} balances: {r:?}", b.0));
+        }
         // Homes and wood keep pace with the colony: a lodge per eight beavers, a logging camp per ten.
         let pop = s.colony.population();
         let count = |s: &SimState, k: BuildingKind| s.buildings.buildings.iter().filter(|b| b.kind == k).count();

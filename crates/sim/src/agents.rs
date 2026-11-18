@@ -331,6 +331,11 @@ impl Job {
 
 // ───────────────────────────── storage and lodges ─────────────────────────────
 
+/// Whether `kind` keeps goods (any of them).
+pub fn is_store(kind: BuildingKind) -> bool {
+    Good::ALL.iter().any(|&g| accepts(kind, g))
+}
+
 pub(crate) fn accepts(kind: BuildingKind, good: Good) -> bool {
     match kind {
         // A dock is a store too: goods wait there for a barge, or arrive by one.
@@ -512,7 +517,12 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
         Duty::None => None,
         Duty::Collect(j) => j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 }),
         Duty::Build(site) => build_task(sim, *site, ag),
-        Duty::Haul => haul_task(sim),
+        Duty::Haul => haul_task(sim).or_else(|| {
+            // No standing order to work: even out the balanced stores (if this hauler's store is one).
+            let own = sim.work.slot_of(ag.id).map(|s| s.0).filter(|b| sim.work.balanced.contains(b))?;
+            let (from, then, good) = crate::stock::balance_move(sim, Some(own))?;
+            Some(Task::Fetch { from, good, then })
+        }),
         Duty::Forest(b, i) => crate::forestry::next_task(sim, *b, *i, ag.id, ag.cell).map(Task::Forest),
     }
 }
@@ -637,7 +647,11 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
     let site = sim.work.place(then).is_some_and(|p| p.site.is_some());
     let still_wanted = match duty {
         Duty::Build(s) => site && *s == then,
-        Duty::Haul => !site && sim.work.hauls.iter().any(|o| (o.from, o.to, o.good) == (from, then, good)),
+        Duty::Haul => {
+            !site
+                && (sim.work.hauls.iter().any(|o| (o.from, o.to, o.good) == (from, then, good))
+                    || (sim.work.balanced.contains(&from) && sim.work.balanced.contains(&then)))
+        }
         _ => false,
     };
     let from_ok = if from == SUPPLIES { sim.work.supplies.is_some() } else { sim.buildings.building(from).is_some_and(|b| b.is_complete()) };
@@ -858,6 +872,8 @@ fn tidy(sim: &mut SimState) {
         }
     }
     sim.work.player_orders.retain(|id| alive.contains(id));
+    let standing: std::collections::BTreeSet<BuildingId> = sim.buildings.buildings.iter().map(|b| b.id).collect();
+    sim.work.balanced.retain(|b| standing.contains(b));
 }
 
 /// Auto-staffing (spec W1). Free working-age beavers fill the empty slots of every unpaused
@@ -899,7 +915,7 @@ fn organise(sim: &mut SimState) {
         for (i, s) in p.slots.iter().enumerate() {
             // No beaver is sent to stand idle: haulers need a haul order, crafters a recipe.
             let idle = match s.role {
-                Role::Haul => sim.work.hauls.is_empty(),
+                Role::Haul => sim.work.hauls.is_empty() && !(sim.work.balanced.contains(&b.id) && crate::stock::balance_move(sim, Some(b.id)).is_some()),
                 Role::Craft => b.recipe.is_none(),
                 _ => false,
             };
@@ -1657,6 +1673,39 @@ mod tests {
             }
         }
         assert!(saw_load_rise && saw_labour_rise && last == 1.0);
+    }
+
+    #[test]
+    fn a_hauler_at_a_balanced_store_evens_out_the_balanced_stores_without_orders() {
+        let (mut sim, ids) = setup();
+        adult(&mut sim, ids[0]);
+        let (a, b) = (warehouse(&mut sim, 1, (20, 9)), warehouse(&mut sim, 2, (10, 30)));
+        sim.work.places.push(Workplace {
+            building: a,
+            kind: BuildingKind::Warehouse,
+            slots: vec![Slot::empty(Role::Haul)],
+            area: None,
+            site: None, priority: Default::default(), paused: false, max_workers: 1,
+        });
+        sim.work.stock_add(a, Good::Logs, 24.0);
+        spawn_on(&mut sim, ids[0], (10, 10)).unwrap();
+        fill(&mut sim, a, 0, ids[0]).unwrap();
+        for _ in 0..4_000 {
+            step(&mut sim, DT);
+        }
+        assert_eq!(sim.work.stock_of(b, Good::Logs), 0.0, "without the setting nothing moves");
+        sim.apply(Command::SetBalance { building: a, on: true }).unwrap();
+        sim.apply(Command::SetBalance { building: b, on: true }).unwrap();
+        assert!(sim.apply(Command::SetBalance { building: BuildingId(77), on: true }).is_err(), "only a finished store");
+        for _ in 0..20_000 {
+            step(&mut sim, DT);
+            let carried = sim.agents.get(ids[0]).unwrap().load.map_or(0.0, |l| l.amount);
+            let (na, nb) = (sim.work.stock_of(a, Good::Logs), sim.work.stock_of(b, Good::Logs));
+            assert!((na + nb + carried - 24.0).abs() < 1e-3, "units vanish or appear");
+        }
+        let (na, nb) = (sim.work.stock_of(a, Good::Logs), sim.work.stock_of(b, Good::Logs));
+        assert!((na - nb).abs() <= 2.0 * crate::stock::BALANCE_SLACK, "two equal stores end even: {na} and {nb}");
+        assert!(sim.agents.get(ids[0]).unwrap().load.is_none(), "and the hauler stops");
     }
 
     #[test]
