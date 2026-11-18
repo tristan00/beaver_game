@@ -16,6 +16,10 @@ pub const STRAW: Rgb = rgb(0xD9C27A);
 pub const MUD: Rgb = rgb(0xA07F60);
 pub const STONE: Rgb = rgb(0xB9AFA8);
 pub const STONE_SHADE: Rgb = rgb(0x8C8290);
+/// Terrain slope (height change per cell) below which ground is never rock (docs/STYLE.md section 2).
+pub const ROCK_SLOPE_MIN: f32 = 0.9;
+/// Slope range over which rock fades in above `ROCK_SLOPE_MIN`.
+pub const ROCK_SLOPE_BLEND: f32 = 0.5;
 pub const PLUM: Rgb = rgb(0x6B5A8A);
 pub const FUR: Rgb = rgb(0xB9783F);
 pub const FUR_DARK: Rgb = rgb(0x8F5A2E);

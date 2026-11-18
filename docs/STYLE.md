@@ -44,7 +44,7 @@ Audience: people who want a calm, low-pressure colony toy (curious, pet-sized, c
 
 - Natural ground carries the map: Meadow light to Meadow deep gradient with large soft patches (60 to 140 px), Straw `#D9C27A` where dry, Mud `#A07F60` banks at water, Sand `#E6D3A3` shore. No brush noise, no hard facets: slopes are rounded.
 - Detail is sparse and small: tufts, flowers (`#FFFAEE`, `#F59AA6`, `#F2C94C`), pebbles; about 1 item per 40x40 px of open grass, never on water.
-- **Rock only where terrain calls for it**: ridges, cliffs and the odd pebble. Stone `#B9AFA8` lit, Stone shade `#8C8290` shaded (warm lilac, never blue-grey), bevelled and rounded. No rock as filler in open meadow.
+- **Rock only where terrain calls for it**: ground steeper than **0.9 height units per cell** (`ROCK_SLOPE_MIN` in `palette.rs`; fully rock 0.5 steeper) and the odd pebble. Below that slope it is never rock, however high; height alone does not make rock. Ridges and cliffs are the steep cells. Stone `#B9AFA8` lit, Stone shade `#8C8290` shaded (warm lilac, never blue-grey), bevelled and rounded. No rock as filler in open meadow.
 
 ## 3. Water - `docs/style/water.png`
 
