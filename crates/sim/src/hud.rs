@@ -105,7 +105,6 @@ fn use_label(u: Use) -> &'static str {
         Use::EatenAdults => "Adults",
         Use::EatenYearlings => "Yearlings",
         Use::EatenKits => "Kits",
-        Use::EatenElders => "Elders",
         Use::Spoiled => "Spoiled",
         Use::Sites => "Building sites",
         Use::Crafting => "Crafting",
@@ -133,7 +132,7 @@ pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
     let need = food_need_per_day(sim);
     let gain = sim.ledger.in_per_day(Good::Food);
     let mut rows = vec![row("Stock", stock, Source::None), row("Gathered", gain, Source::None)];
-    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits"), (Stage::Elder, "Elders")] {
+    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits")] {
         let eat: f32 = sim.colony.beavers.iter().filter(|b| b.stage == st).map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum();
         if eat > 0.0 {
             rows.push(row(label, -eat, Source::None));
@@ -143,12 +142,12 @@ pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
     Breakdown::new(total, rows)
 }
 
-/// The population: adults, yearlings, kits, elders, housed and unhoused, and this season's births,
+/// The population: adults, yearlings, kits, housed and unhoused, and this season's births,
 /// arrivals and deaths. Total = population (the rows overlap; they do not sum to it).
 pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
     let c = &sim.colony;
     let mut rows = Vec::new();
-    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits"), (Stage::Elder, "Elders")] {
+    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits")] {
         rows.push(row(label, c.count_stage(st) as f32, Source::None));
     }
     let housed = c.beavers.iter().filter(|b| b.lodge.is_some()).count();

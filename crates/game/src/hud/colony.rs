@@ -181,7 +181,6 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
             (Icon::Jobs, h.working, "Working", INK),
             (Icon::Idle, h.free, "Free", if h.free > 0 { WARN } else { INK }),
             (Icon::Kit, h.kits, "Kits", MUTED),
-            (Icon::ElderBeaver, h.elders, "Elders", MUTED),
         ] {
             r.row(4.0, |x| {
                 x.icon(icon, 16.0, col);

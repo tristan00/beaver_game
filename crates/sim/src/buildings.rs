@@ -75,7 +75,6 @@ pub enum Use {
     EatenAdults,
     EatenYearlings,
     EatenKits,
-    EatenElders,
     Spoiled,
     /// Materials fetched for construction sites.
     Sites,
@@ -87,11 +86,10 @@ pub enum Use {
 }
 
 impl Use {
-    pub const ALL: [Use; 9] = [
+    pub const ALL: [Use; 8] = [
         Use::EatenAdults,
         Use::EatenYearlings,
         Use::EatenKits,
-        Use::EatenElders,
         Use::Spoiled,
         Use::Sites,
         Use::Crafting,
@@ -108,7 +106,6 @@ impl Use {
             crate::colony::Stage::Kit => Use::EatenKits,
             crate::colony::Stage::Yearling => Use::EatenYearlings,
             crate::colony::Stage::Adult => Use::EatenAdults,
-            crate::colony::Stage::Elder => Use::EatenElders,
         }
     }
 }
@@ -272,8 +269,6 @@ pub enum BuildingKind {
     // Industrial lake.
     Mill,
     Storehouse,
-    /// Elders study here to earn research (`tech::den_lore`).
-    EldersDen,
     /// Foresters plant and tend trees in its work area (`forestry`).
     ForesterLodge,
     /// A forester grows sapling stock here for the forester's lodges (`forestry`).
@@ -303,12 +298,12 @@ pub struct Spec {
 }
 
 impl BuildingKind {
-    pub const ALL: [BuildingKind; 22] = [
+    pub const ALL: [BuildingKind; 21] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
         BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
-        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse, BuildingKind::EldersDen,
+        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse,
         BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
     ];
 
@@ -334,7 +329,6 @@ impl BuildingKind {
             BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
             BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
             BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
-            BuildingKind::EldersDen => ("Elders' den", (3, 3), Site::Dry),
             BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Dry),
             BuildingKind::TreeNursery => ("Tree nursery", (2, 2), Site::Dry),
         };

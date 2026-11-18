@@ -788,7 +788,6 @@ pub(crate) fn site_material_run(sim: &SimState, site: BuildingId, pos: Cell) -> 
 /// do everything else, kits nothing.
 pub(crate) fn can_fill(stage: Stage, role: Role) -> bool {
     match role {
-        Role::Study => stage == Stage::Elder,
         _ => matches!(stage, Stage::Adult | Stage::Yearling),
     }
 }
@@ -1484,6 +1483,8 @@ mod tests {
         }
         warehouse(&mut sim, 100, (20, 9)); // clear of the ids `place_site` hands out
         crate::stock::reconcile(&mut sim); // the cost lies in the warehouse
+        // A lodge needs a finished burrow first.
+        sim.buildings.buildings.push(Building { id: BuildingId(101), kind: BuildingKind::Burrow, pos: (26, 9), status: Status::Complete, recipe: None, output: 0.0 });
         let site = sim.place_site(BuildingKind::Lodge, (14, 14)).unwrap();
         for (n, &i) in ids[..3].iter().enumerate() {
             spawn_on(&mut sim, i, (10, 10 + 2 * n)).unwrap();

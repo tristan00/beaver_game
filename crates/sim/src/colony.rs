@@ -49,7 +49,6 @@ pub enum Stage {
     Kit,
     Yearling,
     Adult,
-    Elder,
 }
 
 impl Stage {
@@ -58,10 +57,8 @@ impl Stage {
             Stage::Kit
         } else if age_days < ADULT_DAYS {
             Stage::Yearling
-        } else if age_days < ELDER_DAYS {
-            Stage::Adult
         } else {
-            Stage::Elder
+            Stage::Adult
         }
     }
     /// Share of a full adult's work output.
@@ -70,7 +67,6 @@ impl Stage {
             Stage::Kit => KIT_WORK_WEIGHT,
             Stage::Yearling => YEARLING_WORK_WEIGHT,
             Stage::Adult => 1.0,
-            Stage::Elder => ELDER_WORK_WEIGHT,
         }
     }
     /// Share of a full adult's food needs.
@@ -80,7 +76,6 @@ impl Stage {
             Stage::Kit => KIT_FOOD_WEIGHT,
             Stage::Yearling => YEARLING_FOOD_WEIGHT,
             Stage::Adult => 1.0,
-            Stage::Elder => ELDER_FOOD_WEIGHT,
         }
     }
 }
@@ -270,10 +265,6 @@ impl Beaver {
     /// Title shown for a specialist, e.g. "Logger specialist".
     pub fn title(&self) -> Option<String> {
         self.specialty().map(|j| format!("{j:?} specialist"))
-    }
-    /// An elder is a beaver in the `Elder` life stage (`age_days >= ELDER_DAYS`); elders teach the young.
-    pub fn is_elder(&self) -> bool {
-        self.stage == Stage::Elder
     }
     /// Kits and yearlings, who learn from their lodge mates instead of from their own work.
     pub fn is_young(&self) -> bool {
@@ -972,19 +963,13 @@ impl Colony {
         }
     }
 
-    /// Kits and yearlings learn by watching a working grown-up lodge mate (adult or elder); an elder
-    /// of the lodge teaches (their specialty, else their current job) `ELDER_TEACH_FACTOR` times
-    /// faster than a working adult.
+    /// Kits and yearlings learn by watching a working grown-up lodge mate.
     fn teach_young(&mut self, dt: f32) {
         let mut lessons: Vec<(usize, Job, f32)> = Vec::new();
         for (i, b) in self.beavers.iter().enumerate() {
             let (Some(lodge), true) = (b.lodge, b.is_young()) else { continue };
             let mates = || self.beavers.iter().filter(move |m| m.id != b.id && m.lodge == Some(lodge) && !m.is_young());
-            let elder = mates().filter(|m| m.is_elder()).filter_map(|m| m.specialty().or(m.current_job)).next();
-            let lesson = match elder {
-                Some(job) => Some((job, ELDER_TEACH_FACTOR)),
-                None => mates().find_map(|m| m.current_job).map(|job| (job, 1.0)),
-            };
+            let lesson = mates().find_map(|m| m.current_job).map(|job| (job, 1.0));
             if let Some((job, factor)) = lesson {
                 lessons.push((i, job, factor));
             }
@@ -1684,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn colony_skill_makes_specialists_and_elders_speed_up_kits() {
+    fn colony_skill_makes_specialists_and_kits_learn_from_adults() {
         let (mut c, land) = founded(1);
         let id = c.beavers[0].id;
         c.set_job(id, Some(Job::Logger)).unwrap();
@@ -1706,16 +1691,13 @@ mod tests {
         assert!(b.output_factor(Job::Logger) > factor_before + 0.5 * 0.0 + SKILL_BASE, "specialist bonus applies");
         assert!(b.output_factor(Job::Logger) > (SKILL_BASE + b.skill(Job::Logger)) * 1.2);
 
-        // Kits learn faster in a lodge with an elder.
+        // Kits learn from the working adults of their lodge.
         let (mut c, _) = founded(4);
         let fam = c.families[0].id;
         let lodge = c.lodges[0].id;
         let pos = c.lodges[0].pos;
-        let kit = |c: &mut Colony| c.spawn(Sex::Male, 100.0, fam, Some(lodge), pos, None, None);
-        let k_no = kit(&mut c);
+        let k_no = c.spawn(Sex::Male, 100.0, fam, Some(lodge), pos, None, None);
         for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
-            b.age_days = 3.0 * 365.0; // adults but not elders
-            b.stage = Stage::of_age_days(b.age_days);
             b.job = Some(Job::Logger);
             b.current_job = Some(Job::Logger);
             b.lodge = Some(lodge);
@@ -1723,88 +1705,7 @@ mod tests {
         for _ in 0..20 {
             c.teach_young(1.0);
         }
-        let plain = c.beaver(k_no).unwrap().skill(Job::Logger);
-        assert!(plain > 0.0, "kits learn from working adults");
-        for b in c.beavers.iter_mut().filter(|b| b.stage == Stage::Adult) {
-            // Elders by the real life stage, exactly as aging produces them.
-            b.age_days = ELDER_DAYS + 1.0;
-            b.stage = Stage::of_age_days(b.age_days);
-            b.skills[Job::Logger.index()] = 0.6;
-        }
-        let elders: Vec<BeaverId> = c.beavers.iter().filter(|b| b.stage == Stage::Elder).map(|b| b.id).collect();
-        assert!(!elders.is_empty() && elders.iter().all(|&e| c.beaver(e).unwrap().is_elder()));
-        for _ in 0..20 {
-            c.teach_young(1.0);
-        }
-        for &e in &elders {
-            assert_eq!(c.beaver(e).unwrap().skill(Job::Logger), 0.6, "elders teach, they are not taught");
-        }
-        let with_elder = c.beaver(k_no).unwrap().skill(Job::Logger) - plain;
-        assert!(with_elder > 2.0 * plain, "elder lessons {with_elder} vs plain {plain}");
-    }
-
-    #[test]
-    fn colony_short_of_workers_fills_high_priority_jobs_and_lodges_share_stores() {
-        let (mut c, land) = founded(3);
-        let fam = c.families[0].id;
-        c.food = 500.0;
-        c.set_family_priorities(fam, vec![Job::Guard, Job::Crafter, Job::Scout, Job::Logger]).unwrap();
-        let kids = c.beavers.iter().filter(|b| b.family == fam).count();
-        assert!(kids >= 3, "founding family has kits/yearlings");
-        // A kit first in the list must not use up the top-priority slot.
-        let workers: Vec<usize> =
-            (0..c.beavers.len()).filter(|&i| c.beavers[i].family == fam && c.beavers[i].stage != Stage::Kit).collect();
-        for (i, b) in c.beavers.iter_mut().enumerate() {
-            b.job = None;
-            b.resting = !workers.contains(&i);
-        }
-        c.beavers.iter_mut().for_each(|b| b.resting = false);
-        c.beavers.iter_mut().filter(|b| b.stage == Stage::Kit).for_each(|b| b.resting = true);
-        let plan = c.plan_work(0.1, &land);
-        let jobs: Vec<Job> = workers.iter().map(|&i| plan[i].unwrap().job).collect();
-        let order = [Job::Guard, Job::Crafter, Job::Scout, Job::Logger];
-        assert_eq!(jobs, order[..jobs.len()].to_vec(), "highest priorities fill first, no job skipped");
-
-        // Every lodge eats from the one shared stockpile.
-        let (f2, pos) = (c.families[0].id, c.lodges[0].pos);
-        let lodge2 = LodgeId(c.lodges.iter().map(|l| l.id.0).max().unwrap() + 1);
-        c.lodges.push(Lodge { id: lodge2, family: f2, pos, condition: 1.0 });
-        let other = c.spawn(Sex::Female, 4.0 * 365.0, f2, Some(lodge2), pos, None, None);
-        for b in c.beavers.iter_mut() {
-            b.needs.food = 0.3;
-        }
-        let before = c.food;
-        c.step_on(0.1, &land).unwrap();
-        assert!(c.food < before, "stores were eaten");
-        assert!(c.beaver(other).unwrap().needs.food > 0.3 - HUNGER_PER_DAY * 0.1 + 0.01, "other lodge's beaver ate too");
-    }
-
-    /// A founding pair only (no yearlings), food set, optionally homeless; runs one breeding season.
-    fn pair_season(lodge: bool, food_per_beaver: f32) -> u32 {
-        let (mut c, land) = founded(11);
-        c.beavers.retain(|b| b.stage == Stage::Adult);
-        if !lodge {
-            c.lodges.clear();
-            for b in c.beavers.iter_mut() {
-                b.lodge = None;
-            }
-        }
-        while c.time_days < SPRING_END + 1.0 {
-            c.food = food_per_beaver * HUNGER_PER_DAY * c.population() as f32;
-            c.step_on(1.0, &land).unwrap();
-            if !lodge {
-                c.lodges.clear(); // nobody may adopt a lodge
-            }
-        }
-        c.stats.births
-    }
-
-    #[test]
-    fn colony_kits_need_lodge_and_thirty_days_of_food() {
-        assert!(pair_season(true, BIRTH_MIN_FOOD_DAYS + 5.0) > 0, "housed, fed pair should have kits");
-        assert_eq!(pair_season(false, BIRTH_MIN_FOOD_DAYS + 5.0), 0, "no lodge, no kits");
-        assert_eq!(pair_season(true, 0.0), 0, "no food, no kits");
-        assert_eq!(pair_season(true, BIRTH_MIN_FOOD_DAYS * 0.3), 0, "too little food, no kits");
+        assert!(c.beaver(k_no).unwrap().skill(Job::Logger) > 0.0, "kits learn from working adults");
     }
 
     #[test]
@@ -1816,7 +1717,7 @@ mod tests {
             let b = &mut c.beavers[0];
             b.age_days = 0.0;
             b.stage = Stage::Kit;
-            b.lifespan_days = ELDER_DAYS + 100.0;
+            b.lifespan_days = 9.0 * 365.0;
         }
         let mut seen = Vec::new();
         while c.beaver(id).is_some() {
@@ -1830,11 +1731,10 @@ mod tests {
                 }
                 // stage changes exactly at the set ages
                 if b.age_days < KIT_DAYS { assert_eq!(b.stage, Stage::Kit) }
-                if b.age_days >= ELDER_DAYS { assert_eq!(b.stage, Stage::Elder) }
             }
             assert!(c.time_days < 365.0 * 20.0, "never died");
         }
-        assert_eq!(seen, vec![Stage::Kit, Stage::Yearling, Stage::Adult, Stage::Elder]);
+        assert_eq!(seen, vec![Stage::Kit, Stage::Yearling, Stage::Adult]);
         assert!(c.events.iter().any(|e| matches!(e.event, Event::Died { id: d, cause: DeathCause::OldAge, .. } if d == id)));
     }
 

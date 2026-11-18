@@ -233,7 +233,7 @@ impl SimState {
         use buildings::{Good, Use};
         let Some(m) = before else { return };
         let c = &self.colony;
-        let stages = [colony::Stage::Kit, colony::Stage::Yearling, colony::Stage::Adult, colony::Stage::Elder];
+        let stages = [colony::Stage::Kit, colony::Stage::Yearling, colony::Stage::Adult];
         let mut food_uses: Vec<(Use, f32)> = stages.iter().map(|&st| (Use::eaten_by(st), c.eaten[st as usize] - m.eaten[st as usize])).collect();
         food_uses.push((Use::Spoiled, c.spoiled - m.spoiled));
         let wood_uses = vec![(Use::Repairs, c.repair_wood - m.repair_wood)];
@@ -297,7 +297,7 @@ impl SimState {
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         self.settle_colony_stores(mirrored);
-        self.step_research(dt_days);
+        self.step_research();
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         stock::book_crafting(self);
@@ -375,8 +375,8 @@ impl SimState {
         self.colony.slot_jobs = Some(jobs);
     }
 
-    /// Records achievements, adds the lore elders studied in dens and unlocks what is now ready.
-    fn step_research(&mut self, dt_days: f32) {
+    /// Records achievements and unlocks what is now ready.
+    fn step_research(&mut self) {
         use tech::Achievement::*;
         let built = |k| self.buildings.buildings.iter().any(|b| b.kind == k && b.is_complete());
         if built(buildings::BuildingKind::Burrow) {
@@ -388,8 +388,6 @@ impl SimState {
         if self.time_days >= tuning::tech::YEAR_DAYS && self.survived_year() {
             self.tech.record(FirstWinter);
         }
-        let lore = tech::den_lore(&self.buildings, &self.work, &self.colony, dt_days);
-        self.tech.study(lore);
         self.tech.update(&self.colony);
     }
 
@@ -477,6 +475,9 @@ impl SimState {
     /// catalogue footprint at `dam_preview::DEFAULT_HEIGHT`, costs `dam_preview::dam_cost` for those
     /// cells, and raises the water dam when finished.
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
+        if let Some(need) = self.missing_prerequisites(kind).first() {
+            return Err(SimError::InvalidCommand(format!("needs a finished {} first", need.spec().name.to_lowercase())));
+        }
         self.check_off_pile(kind, pos)?;
         self.check_explored(kind, pos)?;
         if kind == buildings::BuildingKind::Lock && !buildings::Buildings::footprint(kind, pos).iter().any(|c| self.water.has_dam(c.0, c.1)) {
@@ -502,6 +503,22 @@ impl SimState {
             self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT, heights });
         }
         Ok(id)
+    }
+
+    /// Prerequisite buildings (`catalogue::prerequisites`) not yet standing finished.
+    pub fn missing_prerequisites(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
+        catalogue::prerequisites(kind)
+            .iter()
+            .copied()
+            .filter(|&p| !self.buildings.buildings.iter().any(|b| b.kind == p && b.is_complete()))
+            .collect()
+    }
+
+    /// Everything `kind` still lacks before it can be placed: research, then buildings.
+    pub fn build_gaps(&self, kind: buildings::BuildingKind) -> Vec<tech::Gap> {
+        let mut gaps = self.tech.missing(kind, &self.colony);
+        gaps.extend(self.missing_prerequisites(kind).into_iter().map(tech::Gap::Building));
+        gaps
     }
 
     /// Where a dam on `cells` puts its construction site: the line cell nearest its middle (the

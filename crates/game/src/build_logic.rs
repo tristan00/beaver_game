@@ -53,7 +53,8 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
         let tech = TECHS.iter().find(|t| t.effects.contains(&Effect::Unlock(kind)));
         // The dam is a water verb: it sits with the water buildings although it needs no research.
         let group = if kind == BuildingKind::Dam { Group::Branch(Branch::Water) } else { tech.map_or(Group::Base, |t| Group::Branch(t.branch)) };
-        let unlocked = sim.tech.allows(kind);
+        // Locked until researched and until its prerequisite buildings stand.
+        let unlocked = sim.tech.allows(kind) && sim.missing_prerequisites(kind).is_empty();
         let need = match (unlocked, tech) {
             (false, Some(t)) => Some((t.name, t.xp, t.branch.experience(&sim.colony))),
             _ => None,
@@ -734,7 +735,7 @@ pub(crate) mod tests {
         let lock = m.iter().find(|e| e.kind == BuildingKind::Lock).unwrap();
         assert_eq!(lock.group, Group::Branch(Branch::Water));
         assert!(!lock.unlocked);
-        assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow control", 120.0)));
+        assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow control", 60.0)));
         let dam = m.iter().find(|e| e.kind == BuildingKind::Dam).unwrap();
         assert!(dam.unlocked && dam.need.is_none());
         assert_eq!(dam.group, Group::Branch(Branch::Water));
@@ -772,7 +773,7 @@ pub(crate) mod tests {
         sim.tech.unlock_all();
         found(&mut sim);
         let mut p = Pending::default();
-        let o = BuildOrder::Building { kind: BuildingKind::Lodge, pos: dry_sites(&sim)[0] };
+        let o = BuildOrder::Building { kind: BuildingKind::Warehouse, pos: dry_sites(&sim)[0] };
         let n = sim.buildings.buildings.len();
         emit(&mut sim, &mut p, &o).unwrap();
         assert_eq!(sim.buildings.buildings.len(), n + 1);
@@ -853,8 +854,9 @@ pub(crate) mod tests {
             if kind != BuildingKind::Barge {
                 assert!(valid > 0 && invalid > 0, "{kind:?}: window shows {valid} valid and {invalid} invalid cells");
             }
-            // the issued command is accepted by the sim, and exactly one site appears
-            if let Some(cmd) = first_valid {
+            // the issued command is accepted by the sim, and exactly one site appears (where the
+            // building's prerequisite buildings stand; the menu keeps the others locked)
+            if let Some(cmd) = first_valid.filter(|_| sim.missing_prerequisites(kind).is_empty()) {
                 let before = sim.buildings.buildings.len();
                 sim.apply(cmd).unwrap();
                 assert_eq!(sim.buildings.buildings.len(), before + 1);

@@ -55,8 +55,6 @@ pub enum Role {
     Build,
     Haul,
     Craft,
-    /// Elders study at an elders' den (`tech::den_lore`).
-    Study,
     /// Plants and tends trees (forester's lodge) or grows saplings (tree nursery): `forestry`.
     Forester,
 }

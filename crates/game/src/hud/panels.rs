@@ -159,7 +159,6 @@ fn headcount_tip(s: &sim::SimState) -> Tip {
     t.push(TipLine::new("Working", format!("{}", h.working)).icon(Icon::Jobs, INK));
     t.push(TipLine::new("Free", format!("{}", h.free)).icon(Icon::Idle, if h.free > 0 { WARN } else { INK }));
     t.push(TipLine::new("Kits", format!("{}", h.kits)).icon(Icon::Kit, MUTED));
-    t.push(TipLine::new("Elders", format!("{}", h.elders)).icon(Icon::ElderBeaver, MUTED));
     let b = sim::hud::headcount_breakdown(s);
     let mut more = Tip::name("Beavers");
     for l in breakdown_lines(s, &b, false) {
@@ -174,7 +173,6 @@ pub fn stage_icon(st: Stage) -> Icon {
         Stage::Kit => Icon::Kit,
         Stage::Yearling => Icon::Yearling,
         Stage::Adult => Icon::Adult,
-        Stage::Elder => Icon::ElderBeaver,
     }
 }
 
@@ -326,7 +324,6 @@ pub fn role_kind_icon(r: RoleKind) -> Icon {
         RoleKind::Builder => Icon::RoleBuilder,
         RoleKind::Hauler => Icon::RoleHauler,
         RoleKind::Crafter => Icon::RoleCrafter,
-        RoleKind::Elder => Icon::RoleElder,
         RoleKind::Forester => Icon::RoleForester,
     }
 }
@@ -340,7 +337,6 @@ pub fn role_kind_name(r: RoleKind) -> &'static str {
         RoleKind::Builder => "Builder",
         RoleKind::Hauler => "Hauler",
         RoleKind::Crafter => "Crafter",
-        RoleKind::Elder => "Elder",
         RoleKind::Forester => "Forester",
     }
 }
@@ -569,7 +565,7 @@ fn item_tip(s: &sim::SimState, e: &build_logic::MenuEntry) -> Tip {
             t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
         }
     } else {
-        let gaps = s.tech.missing(kind, &s.colony);
+        let gaps = s.build_gaps(kind);
         let tech = e.need.map(|n| n.0).unwrap_or("");
         t.push(TipLine::new(tech, "").icon(Icon::Padlock, MUTED));
         for g in gaps {
@@ -593,8 +589,7 @@ pub fn gap_line(g: &sim::tech::Gap) -> TipLine {
         Gap::Research(n) => TipLine::new(*n, "").icon(Icon::Padlock, MUTED),
         Gap::Size { have, need } => TipLine::new("Beavers", format!("{have}/{need}")).icon(Icon::Beaver, INK),
         Gap::Experience { have, need, .. } => TipLine::new("Experience", format!("{}/{}", num(*have), num(*need))).icon(Icon::Hammer, INK),
-        Gap::Elder => TipLine::new("An elder", "").icon(Icon::ElderBeaver, INK),
-        Gap::Lore { have, need } => TipLine::new("Lore", format!("{}/{}", num(*have), num(*need))).icon(Icon::Journal, INK),
+        Gap::Building(k) => TipLine::new(k.spec().name, "").icon(building_icon(*k), INK),
         _ => TipLine::new("-", "").icon(Icon::Padlock, MUTED),
     }
 }

@@ -21,12 +21,11 @@ pub enum RoleKind {
     Builder,
     Hauler,
     Crafter,
-    Elder,
     Forester,
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 9] = [
+    pub const ALL: [RoleKind; 8] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
@@ -34,11 +33,10 @@ impl RoleKind {
         RoleKind::Builder,
         RoleKind::Hauler,
         RoleKind::Crafter,
-        RoleKind::Elder,
         RoleKind::Forester,
     ];
     /// Default role priority, first = highest.
-    pub const DEFAULT_ORDER: [RoleKind; 9] = [
+    pub const DEFAULT_ORDER: [RoleKind; 8] = [
         RoleKind::Builder,
         RoleKind::Forager,
         RoleKind::Logger,
@@ -47,7 +45,6 @@ impl RoleKind {
         RoleKind::MudDigger,
         RoleKind::Quarrier,
         RoleKind::Crafter,
-        RoleKind::Elder,
     ];
 }
 
@@ -74,7 +71,6 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Build => RoleKind::Builder,
         Role::Haul => RoleKind::Hauler,
         Role::Craft => RoleKind::Crafter,
-        Role::Study => RoleKind::Elder,
         Role::Forester => RoleKind::Forester,
     }
 }
@@ -99,7 +95,6 @@ pub fn colony_job(r: RoleKind) -> Option<Job> {
         RoleKind::Builder => Some(Job::Builder),
         RoleKind::Hauler => Some(Job::Hauler),
         RoleKind::Crafter => Some(Job::Crafter),
-        RoleKind::Elder => None,
     }
 }
 
@@ -186,23 +181,21 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
         .collect()
 }
 
-/// The Jobs board header. `working + free + kits + elders == total`: working and free count
+/// The Jobs board header. `working + free + kits == total`: working and free count
 /// adults and yearlings only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Headcount {
     pub working: usize,
     pub free: usize,
     pub kits: usize,
-    pub elders: usize,
     pub total: usize,
 }
 
 pub fn headcount(sim: &SimState) -> Headcount {
-    let mut h = Headcount { working: 0, free: 0, kits: 0, elders: 0, total: sim.colony.population() };
+    let mut h = Headcount { working: 0, free: 0, kits: 0, total: sim.colony.population() };
     for b in &sim.colony.beavers {
         match b.stage {
             Stage::Kit => h.kits += 1,
-            Stage::Elder => h.elders += 1,
             _ if is_busy(sim, b.id) => h.working += 1,
             _ => h.free += 1,
         }
@@ -605,7 +598,6 @@ mod tests {
     fn roles_map_from_slots_and_the_default_order_lists_every_role_once() {
         assert_eq!(role_kind(Role::Collect(ResourceKind::Felled)), RoleKind::Logger);
         assert_eq!(role_kind(Role::Collect(ResourceKind::StoneOutcrop)), RoleKind::Quarrier);
-        assert_eq!(role_kind(Role::Study), RoleKind::Elder);
         assert_eq!(role_kind(Role::Forester), RoleKind::Forester);
         assert_eq!(RoleKind::DEFAULT_ORDER[3], RoleKind::Forester, "foresters follow loggers");
         let mut order = RoleKind::DEFAULT_ORDER.to_vec();
@@ -677,7 +669,7 @@ mod tests {
         assert_eq!(free.len(), 1);
         assert_eq!(idle_reasons(&s), vec![(free[0], IdleReason::Paused)]);
         let h = headcount(&s);
-        assert_eq!((h.working, h.free, h.working + h.free + h.kits + h.elders), (3, 1, h.total));
+        assert_eq!((h.working, h.free, h.working + h.free + h.kits), (3, 1, h.total));
         // With auto-staffing off nothing moves.
         s.apply(Command::SetPaused { building: hut, paused: false }).unwrap();
         s.apply(Command::SetAutoStaff { on: false }).unwrap();
@@ -699,9 +691,9 @@ mod tests {
         s.apply(Command::AdjustRole { role: RoleKind::Forager, delta: -1 }).unwrap();
         assert_eq!((filled(&s, hut), s.work.place(hut).unwrap().max_workers), (1, 1));
         assert!(s.apply(Command::AdjustRole { role: RoleKind::Quarrier, delta: 1 }).is_err(), "no quarry");
-        assert!(s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder, RoleKind::Elder] }).is_err());
-        s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder] }).unwrap();
-        assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Elder, RoleKind::Builder, 9));
+        assert!(s.apply(Command::SetRoleOrder { order: vec![RoleKind::Crafter, RoleKind::Crafter] }).is_err());
+        s.apply(Command::SetRoleOrder { order: vec![RoleKind::Crafter] }).unwrap();
+        assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Crafter, RoleKind::Builder, 8));
         // A direct order takes the forager out of its slot and locks it; Unlock returns it.
         let w = s.work.place(hut).unwrap().slots.iter().find_map(|s| s.worker).unwrap();
         let area = crate::work::Area { min: (0, 0), max: (3, 3) };
