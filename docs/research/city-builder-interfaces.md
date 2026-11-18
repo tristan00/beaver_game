@@ -25,7 +25,7 @@ Pattern: a persistent strip with stockpile totals plus time/speed. Timberborn an
 - **RimWorld**: Architect menu, bottom-left, with tabs Orders, Zone/Area, Structure, Production, Furniture, Power, Security, Misc, Floors and more. Strong (two wiki pages agree). [Architect](https://rimworldwiki.com/wiki/Architect), [User interface](https://rimworldwiki.com/wiki/User_interface)
 - **Banished**: category icons lower right (Tools & Reports, Housing, Roads & Bridges, Storage/Market/Trade, Town Services, Food Production, Resource Production, Removal, Options); windows can be dragged. Weak (single guide, 2016). [Gamepressure](https://www.gamepressure.com/banished/interface/z06082)
 - **Anno 1800**: hammer icon at the far left of the bottom bar opens the build menu, with category tabs; hotkey B. Weak/Single. [Ludo](https://www.ludo.guide/guide/anno-1800/getting-started/game-interface-hud)
-- **Cities: Skylines**: toolbar with zoning tools and number-key hotkeys (residential, commercial, industrial, office; 0 de-zones; B bulldozes) in the original game, per a user manual and a keyboard guide that disagree by one key on residential. Weak (search snippets only, pages not opened).
+- **Cities: Skylines**: the Zoning page lists zoning tools in the toolbar ([Zoning](https://skylines.paradoxwikis.com/Zoning)); hotkeys are **not covered** (the two sources seen only as search snippets were dropped, and the wiki's shortcut pages returned no usable content).
 - **Dwarf Fortress**: modal menus by letter key (d designations, p stockpiles, i zones). Single. [Designations menu](https://dwarffortresswiki.org/Designations_menu)
 - **Oxygen Not Included**: build menu page returned 404. **Gap**.
 
@@ -33,7 +33,7 @@ Pattern: categorised palette at a screen edge, opened by hotkey, with keyboard t
 
 ## 3. Placement ghosts and previews
 
-- **Timberborn**: blueprint is translucent; preview green when valid, red when blocked. Needs flat dry ground and path access. Single source (timberborn.org guide, updated 04/08/2026). The wiki says "Duplicate" (B) places multiple copies. A search-snippet claim that Shift keeps the tool active was **not confirmed** on pages I read. [Placement guide](https://timberborn.org/articles/construction-building-placement-guide), [Actions](https://timberborn.wiki.gg/wiki/User_Interface/Actions)
+- **Timberborn**: blueprint is translucent; preview green when valid, red when blocked. Needs flat dry ground and path access. Single source (timberborn.org guide, updated 04/08/2026). The wiki says "Duplicate" (B) places multiple copies. Whether Shift keeps the tool active is **not established**. [Placement guide](https://timberborn.org/articles/construction-building-placement-guide), [Actions](https://timberborn.wiki.gg/wiki/User_Interface/Actions)
 - **Factorio**: Shift+LMB builds ghosts; ghosts have no range limit; player-placed ghosts last forever; R rotates, H/V flip blueprints; blueprints can be placed from the map. Strong (several wiki pages). [Controls](https://wiki.factorio.com/Controls), [Ghost](https://wiki.factorio.com/Ghost), [Blueprint](https://wiki.factorio.com/Blueprint)
 - **Cities: Skylines**: roads snap to roads, angles, the zoning grid and guidelines; click start, click end; right-click cancels; PageUp/PageDown change height. The zoning grid appears beside a road once built. Single wiki; part of the fetch was model-summarised. [Roads](https://skylines.paradoxwikis.com/Roads)
 - **Dwarf Fortress**: blueprint mode (M) shows designations cyan instead of beige; dwarves ignore them until converted (k). Single. [Designations menu](https://dwarffortresswiki.org/Designations_menu)
@@ -50,7 +50,7 @@ Pattern: preview is distinct from committed work; valid/invalid is a binary colo
 ## 5. Area drag orders
 
 - **Dwarf Fortress**: click first tile, drag, click second to make a rectangle; paint mode (B) marks tiles singly; designations span z-levels as a cuboid; x removes designations; priority 1 (highest) to 7, default 4. Single page; its version banner conflicts (v53.17 vs "v50 information"), so details may vary by version. [Designations menu](https://dwarffortresswiki.org/Designations_menu)
-- **Timberborn**: tools mark/unmark areas for lumberjacks, farmers and foresters; Demolish clears rubble, crops, trees. Further drag mechanics **not documented** on pages read. Path drawing by drag appeared only in a search snippet (unconfirmed). [Category:Toolbar](https://timberborn.wiki.gg/wiki/Category:Toolbar)
+- **Timberborn**: tools mark/unmark areas for lumberjacks, farmers and foresters; Demolish clears rubble, crops, trees. Further drag mechanics **not documented** on pages read. Path drawing by drag is **not established**. [Category:Toolbar](https://timberborn.wiki.gg/wiki/Category:Toolbar)
 - **RimWorld**: Orders (Mine, Chop Wood, Harvest, Haul, Hunt and others) and zone tools (stockpile, growing, allowed area, home, roof). Zones are contiguous and cannot overlap; areas are overlapping layers and each has a clear tool; shrink zone works square by square. Strong on taxonomy; drag/Shift/Ctrl behaviour is a **Gap**. [Zone/Area](https://rimworldwiki.com/wiki/Zone/Area), [Architect](https://rimworldwiki.com/wiki/Architect)
 - **Cities: Skylines**: zoning offers fill, marquee and brush; 8×8 m cells, zonable up to four cells from a road. The page says "four basic tools" but lists three; unresolved. [Zoning](https://skylines.paradoxwikis.com/Zoning)
 
@@ -61,7 +61,7 @@ Pattern: preview is distinct from committed work; valid/invalid is a binary colo
 | RimWorld | Work tab (F1) grid of colonist by work type. Simple mode: assigned or not. Manual mode: priority 1 to 4, blank = never; ties go to the left column. Colonists work only within their allowed area. Shift chains directed tasks. Page is a stub; its mode-icon description is ambiguous. | Single | [Work](https://rimworldwiki.com/wiki/Work) |
 | Dwarf Fortress | Labors enabled per dwarf; designations carry a required labor; per-designation priority 1 to 7. | Single | [Designations menu](https://dwarffortresswiki.org/Designations_menu) |
 | Oxygen Not Included | Priority panel (L), priority overlay (P); default priority 5 cannot be changed; levels very high to disabled; sub-priority 1 to 9; "Enable Proximity" option; Red/Yellow alert. | Single | [Priority](https://oxygennotincluded.wiki.gg/wiki/Priority) |
-| Timberborn | Per-workplace priority (5 levels) when workers are scarce; construction-site priority (5 levels). Competing sites: reachability, then site priority, then placement order (per search summary of the Building page, not opened). | Single / Weak | [Object Detail](https://timberborn.wiki.gg/wiki/User_Interface/Object_Detail) |
+| Timberborn | Per-workplace priority (5 levels) when workers are scarce; construction-site priority (5 levels). Tie-break order between competing sites is **not established** (the Building page returned HTTP 403). | Single | [Object Detail](https://timberborn.wiki.gg/wiki/User_Interface/Object_Detail) |
 | Banished | Under Tools & Reports, assign villagers to professions and set priorities; detail page not read. | Weak | [Gamepressure](https://www.gamepressure.com/banished/interface/z06082) |
 
 Pattern: three models. (a) per-worker matrix (RimWorld, DF), (b) per-job or per-building priority (Timberborn, ONI), (c) profession assignment (Banished). Ties are broken by a documented rule (left-to-right, proximity, placement order).
@@ -83,7 +83,7 @@ Weakly covered. Anno 1800: minimap bottom-right, zoom with +/- or wheel, padlock
 Each is a recommendation derived from the findings above and traced to the games that use it.
 
 1. **Persistent top strip with stockpile totals, time and speed controls; colour-flag unmet needs.** Anno 1800 (top bar), Timberborn (inventory, green satisfied needs), RimWorld (resource list, time controls), Cities: Skylines (coloured demand bars). Confidence: medium.
-2. **Categorised build palette at a screen edge, opened by one hotkey, with keyboard cycling.** Timberborn (Ctrl/Shift+scroll), RimWorld (Architect), Anno 1800 (hammer, B), Banished (category icons), Cities: Skylines (number keys). Confidence: medium-high.
+2. **Categorised build palette at a screen edge, opened by one hotkey, with keyboard cycling.** Timberborn (Ctrl/Shift+scroll), RimWorld (Architect), Anno 1800 (hammer, B), Banished (category icons), Cities: Skylines (zoning tools in toolbar; hotkeys not sourced). Confidence: medium.
 3. **Placement ghost is translucent, green when valid and red when blocked; planning is separate from committing.** Timberborn (green/red), Factorio (ghosts), Dwarf Fortress (blueprint mode), RimWorld (Plan). Confidence: medium (colours single-sourced; plan-vs-commit seen in three games).
 4. **Right-click cancels an in-progress placement; a way to repeat placement exists.** Cities: Skylines (right-click cancel), Factorio (Shift ghosts), Timberborn (Duplicate). Confidence: low-medium; Shift-repeat in Timberborn unverified.
 5. **Snap to the grid and to existing structures while placing.** Cities: Skylines. Confidence: low (one game).
@@ -98,4 +98,4 @@ Each is a recommendation derived from the findings above and traced to the games
 
 - All evidence is from wikis and guides; I did not play the games. Several pages are stubs or dated (Banished 2016, ONI overlay hotkeys 2024).
 - Not obtained: Frostpunk entirely; Banished resource bar, notifications and camera; RimWorld drag, ghost, rotation, letters and camera; DF stockpile, zone and announcement pages (wiki returned 429); Cities: Skylines notifications and camera; ONI build menu, camera and diagnostics; Timberborn camera and drag mechanics; PC Gamer's Anno 1800 article (truncated).
-- Claims marked "search snippet" or "search summary" come from search-engine summaries of pages not opened, and should be re-verified before reliance.
+- Every claim above links to a page that was opened. Claims known only from search snippets or unopened pages were removed or marked not established; Cities: Skylines hotkeys and Timberborn construction tie-break order are in that group.
