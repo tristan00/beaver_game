@@ -219,13 +219,13 @@ impl Stores {
     }
 
     /// Moves goods without touching the ledger (refunds, barge cargo).
-    fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
+    pub(crate) fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(g));
         self.amounts[g.index()] += taken;
         Ok(taken)
     }
-    fn take_raw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
+    pub(crate) fn take_raw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
         check_amount(amount)?;
         let have = self.amount(g);
         if have < amount {
@@ -414,11 +414,40 @@ pub struct Barge {
     pub cargo: Option<Amount>,
     pub state: BargeState,
     /// Remaining route, reversed so the last element is the next cell.
-    route: Vec<(usize, usize)>,
+    pub(crate) route: Vec<(usize, usize)>,
     dest: Option<BuildingId>,
-    progress: f32,
+    pub(crate) progress: f32,
     /// Dock where an idle barge sits.
     pub at_dock: Option<BuildingId>,
+    /// Standing route between two docks (`shipping`); `None` for a barge sent on single trips.
+    pub service: Option<crate::shipping::Service>,
+    pub leg: crate::shipping::Leg,
+    /// Days spent at the dock (loading, unloading) or waiting for a way through.
+    pub wait: f32,
+    /// Goods aboard on a route, several kinds at once.
+    pub hold: Vec<Amount>,
+    /// Goods delivered so far on routes.
+    pub carried: f32,
+}
+
+impl Barge {
+    pub fn new(id: BargeId, cell: (usize, usize), at_dock: Option<BuildingId>) -> Self {
+        Barge {
+            id,
+            cell,
+            cargo: None,
+            state: BargeState::Idle,
+            route: vec![],
+            dest: None,
+            progress: 0.0,
+            at_dock,
+            service: None,
+            leg: Default::default(),
+            wait: 0.0,
+            hold: Vec::new(),
+            carried: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -517,7 +546,7 @@ impl Buildings {
     }
 
     /// Placeholder-free probe used to compute footprints before a building exists.
-    fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
+    pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
         Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0 }.cells().collect()
     }
 
@@ -543,7 +572,8 @@ impl Buildings {
             return Err(BuildError::OutOfBounds);
         }
         // A dam is raised or extended by building on it: a dam site may stand on a finished dam.
-        let on_dam = |b: &Building| kind == BuildingKind::Dam && b.kind == BuildingKind::Dam && b.is_complete();
+        // A lock is built into a dam the same way.
+        let on_dam = |b: &Building| matches!(kind, BuildingKind::Dam | BuildingKind::Lock) && b.kind == BuildingKind::Dam && b.is_complete();
         if self.buildings.iter().any(|b| !on_dam(b) && b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
         }
@@ -722,7 +752,7 @@ impl Buildings {
         for cell in spawned {
             let at_dock = self.docks().find(|d| dock_access(d, terrain).contains(&cell)).map(|d| d.id);
             let id = BargeId(self.fresh_id());
-            self.barges.push(Barge { id, cell, cargo: None, state: BargeState::Idle, route: vec![], dest: None, progress: 0.0, at_dock });
+            self.barges.push(Barge::new(id, cell, at_dock));
         }
     }
 
@@ -820,7 +850,7 @@ impl Buildings {
     }
 
     fn move_barges(&mut self, dt: f32, terrain: Terrain) {
-        for b in self.barges.iter_mut() {
+        for b in self.barges.iter_mut().filter(|b| b.service.is_none()) {
             if b.state == BargeState::Sailing {
                 b.progress += BARGE_SPEED * dt;
                 while b.progress >= 1.0 {

@@ -29,6 +29,7 @@ pub mod resources;
 pub mod script;
 pub mod site;
 pub mod society;
+pub mod shipping;
 pub mod starts;
 pub mod stock;
 pub mod tech;
@@ -112,6 +113,10 @@ pub enum Command {
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     /// Standing haul between two stores.
     SetHaul { order: work::HaulOrder },
+    /// Set barge `barge` to run between docks `from` and `to` carrying `goods` (`shipping`).
+    SetBargeRoute { barge: buildings::BargeId, from: buildings::BuildingId, to: buildings::BuildingId, goods: Vec<buildings::Good> },
+    /// Take a barge off its route.
+    ClearBargeRoute { barge: buildings::BargeId },
     /// Accept or turn away a wandering beaver.
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     /// What a workshop or mill makes (`None` stops it).
@@ -304,6 +309,7 @@ impl SimState {
         forestry::step(self, dt_days);
         stock::reconcile(self);
         agents::step(self, dt_days);
+        shipping::step(self, dt_days);
         self.explore();
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
@@ -473,6 +479,9 @@ impl SimState {
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
         self.check_off_pile(kind, pos)?;
         self.check_explored(kind, pos)?;
+        if kind == buildings::BuildingKind::Lock && !buildings::Buildings::footprint(kind, pos).iter().any(|c| self.water.has_dam(c.0, c.1)) {
+            return Err(SimError::InvalidCommand("a lock is built on a dam, to let barges through it".into()));
+        }
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
@@ -729,6 +738,8 @@ impl SimState {
             Command::SetCutRule { building, rule } => forestry::set_cut_rule(self, building, rule),
             Command::SetPlantRule { building, rule } => forestry::set_plant_rule(self, building, rule),
             Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
+            Command::SetBargeRoute { barge, from, to, goods } => shipping::set_route(self, barge, from, to, goods).map_err(SimError::InvalidCommand),
+            Command::ClearBargeRoute { barge } => shipping::clear_route(self, barge).map_err(SimError::InvalidCommand),
             Command::SetHaul { order } => {
                 let store = |id| {
                     self.buildings.building(id).is_some_and(|b| b.is_complete() && agents::accepts(b.kind, order.good))

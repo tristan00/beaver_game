@@ -132,7 +132,6 @@ const FELLING: TechId = TechId(1);
 const LODGE_BUILDING: TechId = TechId(3);
 const STONEWORK: TechId = TechId(4);
 const WEAVING: TechId = TechId(5);
-const CANAL_DIGGING: TechId = TechId(7);
 const DOCKS: TechId = TechId(8);
 const FLOW_CONTROL: TechId = TechId(9);
 const FORESTRY: TechId = TechId(17);
@@ -163,10 +162,12 @@ pub const TECHS: &[TechDef] = &[
         needs_elder: true,
         effects: &[U(BuildingKind::EldersDen)],
     },
-    exp("Canal digging", Branch::Water, 1, 60.0, 12, &[STONEWORK, LODGE_BUILDING], 30.0, &[U(BuildingKind::Canal)]),
-    exp("Docks", Branch::Transport, 1, 40.0, 14, &[CANAL_DIGGING], 40.0, &[U(BuildingKind::Dock)]),
-    exp("Flow control", Branch::Water, 2, 120.0, 18, &[CANAL_DIGGING], 60.0, &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)]),
-    exp("Barges", Branch::Transport, 2, 80.0, 20, &[DOCKS], 60.0, &[U(BuildingKind::Barge)]),
+    // Water transport grows with the colony, not with elders' lore: a colony past its first
+    // year needs it to reach far deposits.
+    exp("Canal digging", Branch::Water, 1, 30.0, 8, &[LODGE_BUILDING], 0.0, &[U(BuildingKind::Canal)]),
+    exp("Docks", Branch::Building, 1, 30.0, 8, &[LODGE_BUILDING], 0.0, &[U(BuildingKind::Dock)]),
+    exp("Flow control", Branch::Water, 2, 60.0, 12, &[DOCKS, STONEWORK], 0.0, &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)]),
+    exp("Barges", Branch::Building, 2, 60.0, 10, &[DOCKS, WEAVING], 0.0, &[U(BuildingKind::Barge)]),
     exp("Grand storage", Branch::Building, 3, 100.0, 20, &[LODGE_BUILDING], 60.0, &[U(BuildingKind::Storehouse)]),
     exp("Industrial milling", Branch::Craft, 3, 100.0, 24, &[WEAVING, FLOW_CONTROL], 80.0, &[U(BuildingKind::Mill)]),
     exp("Master builders", Branch::Building, 2, 60.0, 10, &[LODGE_BUILDING], 40.0, &[B(Bonus::BuildWork(BUILD_WORK_BONUS))]),
@@ -460,9 +461,10 @@ mod tests {
         let lore = den_lore(&b, &w, &c, 10.0);
         assert_eq!(lore, 10.0 * LORE_PER_ELDER_DAY);
         let mut t = Tech::default();
-        t.set_study(CANAL_DIGGING).unwrap();
+        let storage = TechId(unlock_index(Storehouse).unwrap());
+        t.set_study(storage).unwrap();
         assert!(t.study(lore));
-        assert_eq!(t.lore(CANAL_DIGGING), 10.0);
+        assert_eq!(t.lore(storage), 10.0);
         // An empty den and a den staffed by a non-elder yield nothing.
         let (b, mut w, c) = den_world(true);
         w.places[0].slots[0].worker = None;
@@ -472,11 +474,15 @@ mod tests {
     }
 
     #[test]
-    fn canals_and_every_industry_building_need_den_research() {
-        for k in [Canal, Dock, Lock, WaterWheel, Barge, Storehouse, Mill] {
+    fn water_transport_comes_with_size_and_experience_and_big_industry_needs_den_research() {
+        for k in [Canal, Dock, Lock, WaterWheel, Barge] {
+            assert_eq!(TECHS[unlock_index(k).unwrap()].lore, 0.0, "{k:?} needs no elders");
+        }
+        for k in [Storehouse, Mill] {
             assert!(TECHS[unlock_index(k).unwrap()].lore > 0.0, "{k:?} needs lore");
         }
-        // Even with every other need met, a canal stays locked until the lore is studied.
+        // With every other need met, the storehouse stays locked until the lore is studied,
+        // while docks, barges and locks open.
         let mut t = Tech::default();
         t.record(Achievement::FirstBurrow);
         let mut c = colony_of(30);
@@ -484,12 +490,13 @@ mod tests {
             c.experience[j.index()] = 500.0;
         }
         t.update(&c);
-        assert!(t.allows(Lodge) && t.allows(QuarryCamp) && !t.allows(Canal));
-        assert_eq!(t.missing(Canal, &c), vec![Gap::Lore { have: 0.0, need: 30.0 }]);
-        t.set_study(CANAL_DIGGING).unwrap();
-        t.study(30.0);
+        assert!(t.allows(Canal) && t.allows(Dock) && t.allows(Barge) && t.allows(Lock) && !t.allows(Storehouse));
+        let storage = TechId(unlock_index(Storehouse).unwrap());
+        assert_eq!(t.missing(Storehouse, &c), vec![Gap::Lore { have: 0.0, need: TECHS[storage.0].lore }]);
+        t.set_study(storage).unwrap();
+        t.study(TECHS[storage.0].lore);
         t.update(&c);
-        assert!(t.allows(Canal));
+        assert!(t.allows(Storehouse));
     }
 
     #[test]

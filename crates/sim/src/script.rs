@@ -107,6 +107,10 @@ pub fn to_line(c: &Command) -> String {
         Command::Unlock { who } => format!("unlock {}", who.0),
         Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
         Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
+        Command::SetBargeRoute { barge, from, to, goods } => {
+            format!("barge-route {} {} {} {}", barge.0, from.0, to.0, goods.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>().join(","))
+        }
+        Command::ClearBargeRoute { barge } => format!("barge-route {} none", barge.0),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
         Command::SetRecipe { building, recipe } => format!("recipe {} {}", building.0, recipe.map_or("none".to_string(), |r| format!("{r:?}"))),
         Command::OrderCanal { cells: v } => format!("canal {}", cells(v)),
@@ -185,6 +189,13 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "auto" => Command::SetAutoStaff { on: on(1)? },
         "unlock" => Command::Unlock { who: BeaverId(num(t.get(1), "beaver")?) },
         "work-area" => Command::SetWorkArea { building: b(1)?, area: Area { min: (num(t.get(2), "x0")?, num(t.get(3), "y0")?), max: (num(t.get(4), "x1")?, num(t.get(5), "y1")?) } },
+        "barge-route" if t.get(2) == Some(&"none") => Command::ClearBargeRoute { barge: crate::buildings::BargeId(num(t.get(1), "barge")?) },
+        "barge-route" => Command::SetBargeRoute {
+            barge: crate::buildings::BargeId(num(t.get(1), "barge")?),
+            from: b(2)?,
+            to: b(3)?,
+            goods: t.get(4).ok_or("missing goods")?.split(',').map(parse_good).collect::<Result<_, _>>()?,
+        },
         "haul" => Command::SetHaul { order: HaulOrder { from: b(1)?, to: b(2)?, good: parse_good(t.get(3).ok_or("missing good")?)? } },
         "answer" => Command::AnswerJoin {
             id: RequestId(num(t.get(1), "request id")?),
@@ -679,6 +690,8 @@ mod tests {
             Command::SetRecipe { building: BuildingId(9), recipe: Some(Recipe::Rope) },
             Command::AnswerJoin { id: RequestId(2), answer: Answer::TurnAway },
             Command::SetHaul { order: HaulOrder { from: BuildingId(1), to: BuildingId(2), good: Good::Logs } },
+            Command::SetBargeRoute { barge: crate::buildings::BargeId(4), from: BuildingId(1), to: BuildingId(2), goods: vec![Good::Stone, Good::Mud] },
+            Command::ClearBargeRoute { barge: crate::buildings::BargeId(4) },
             Command::CancelSite { building: BuildingId(7) },
             Command::SetCutRule { building: BuildingId(3), rule: crate::forestry::CutRule::Thin },
             Command::SetPlantRule { building: BuildingId(3), rule: crate::forestry::PlantRule::PlantAll },

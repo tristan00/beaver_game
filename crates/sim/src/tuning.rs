@@ -348,6 +348,8 @@ pub mod buildings {
     /// Base storage per good.
     pub const BASE_CAPACITY: f32 = 100.0;
     pub const WAREHOUSE_CAPACITY: f32 = 150.0;
+    /// A dock holds a barge-load or two while goods wait to be shipped or fetched.
+    pub const DOCK_CAPACITY: f32 = 60.0;
     pub const FOOD_CACHE_CAPACITY: f32 = 100.0;
     /// Barge cargo limit and speed (cells/day).
     pub const BARGE_CAPACITY: f32 = 20.0;
@@ -372,6 +374,7 @@ pub mod buildings {
     pub fn store_capacity(kind: BuildingKind) -> f32 {
         match kind {
             BuildingKind::Warehouse => WAREHOUSE_CAPACITY,
+            BuildingKind::Dock => DOCK_CAPACITY,
             BuildingKind::FoodCache => FOOD_CACHE_CAPACITY,
             BuildingKind::Storehouse => STOREHOUSE_CAPACITY,
             _ => 0.0,

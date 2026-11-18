@@ -147,6 +147,9 @@ impl Agents {
 
 /// Cost points an agent travels per day (a land step costs 1, a swim step 0.6).
 pub const MOVE_COST_PER_DAY: f32 = 30.0;
+/// A beaver carrying a load moves at this share of its free pace (on land or in water alike;
+/// swimming stays faster than walking).
+pub const LADEN_PACE: f32 = 0.5;
 /// Felling work done per day by one collector (a tree needs `FELL_WORK`).
 pub const FELL_PER_DAY: f32 = 1.0;
 /// Units gathered per day while working a resource.
@@ -330,7 +333,8 @@ impl Job {
 
 pub(crate) fn accepts(kind: BuildingKind, good: Good) -> bool {
     match kind {
-        BuildingKind::Warehouse | BuildingKind::Storehouse => true,
+        // A dock is a store too: goods wait there for a barge, or arrive by one.
+        BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::Dock => true,
         BuildingKind::FoodCache => good == Good::Food,
         _ => false,
     }
@@ -396,7 +400,8 @@ pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
     };
     let cost = nav.surface_at(next).and_then(NavGrid::step_cost).map_or(1.0, |c| c.0);
     ag.gait = gait;
-    ag.step_frac += dt_days * MOVE_COST_PER_DAY / cost;
+    let pace = if ag.load.is_some() { LADEN_PACE } else { 1.0 };
+    ag.step_frac += dt_days * MOVE_COST_PER_DAY * pace / cost;
     if ag.step_frac < 1.0 {
         return false;
     }
