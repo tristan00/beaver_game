@@ -476,9 +476,12 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
 
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
-        for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4")] {
+        for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4"), (MapLens::Elevation, Icon::ViewElevation, "Elevation", "F5")] {
             let on = c.lens == l;
             u.icon_button(icon, 18.0, HudAction::SetLens(l), if on { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, on).tip(Tip::name(name).key(key).row(TipLine { label: "Peek water".into(), key: Some("Alt".into()), ..default() }));
+        }
+        if c.lens == MapLens::Elevation {
+            elevation_legend(c, u);
         }
         u.rule().style(|n| n.width = Val::Px(24.0));
         let open = c.hud.colony.is_some();
@@ -486,6 +489,42 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         let jobs = c.hud.colony == Some(ColonyTab::Jobs);
         u.icon_button(Icon::Jobs, 18.0, HudAction::Colony(if jobs { None } else { Some(ColonyTab::Jobs) }), FAINT, jobs).tip(Tip::name("Jobs").key("J"));
     })]
+}
+
+/// A contour step as written in the legend: `0.25`, `0.5`, `2`.
+fn step_label(v: f32) -> String {
+    let t = format!("{v:.2}");
+    t.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// The elevation lens legend under its button: the height ramp between the map's lowest and
+/// highest ground, then the contour interval (thin line) and every fourth line (thick).
+fn elevation_legend(c: &Ctx, u: &mut Ui) {
+    use super::elevation::{interval_for, surface_range, MAJOR_EVERY};
+    let (lo, hi) = surface_range(c.s);
+    let step = interval_for(hi - lo);
+    let (tlo, thi) = (crate::terrain_render::min_height(c.s), crate::terrain_render::max_height(c.s));
+    u.rule().style(|n| n.width = Val::Px(24.0));
+    u.col(1.0, |l| {
+        l.text(num(thi), 10.0, MUTED);
+        for i in (0..5).rev() {
+            let k = crate::terrain_render::elevation_ramp(i as f32 / 4.0);
+            l.swatch(Color::srgb(k[0], k[1], k[2]), 16.0, 7.0);
+        }
+        l.text(num(tlo), 10.0, MUTED);
+    })
+    .style(|n| n.align_items = AlignItems::Center)
+    .tip(Tip::titled(Some((Icon::ViewElevation, INK)), "Height").line("Low", num(tlo)).line("High", num(thi)));
+    let w = crate::terrain_render::ELEVATION_WATER;
+    u.swatch(Color::srgb(w[0], w[1], w[2]), 16.0, 7.0).tip(Tip::titled(Some((Icon::Drop, WATER)), "Water"));
+    for (thick, every) in [(1.5, step), (3.0, step * MAJOR_EVERY as f32)] {
+        u.col(2.0, |r| {
+            r.swatch(INK, 16.0, thick);
+            r.bold(step_label(every), 10.0, INK);
+        })
+        .style(|n| n.align_items = AlignItems::Center)
+        .tip(Tip::name("Contour").line("Every", step_label(every)));
+    }
 }
 
 // ───────────────────────────── build bar, items, search (A4) ─────────────────────────────
@@ -746,6 +785,9 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
 // ───────────────────────────── cursor tag (5.2) ─────────────────────────────
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
+    if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {
+        return elevation_tag(c.s, cell, cur);
+    }
     let (Tool::Building(kind), Some(cell), Some(cur)) = (c.hud.tool, c.hover, c.cursor) else { return Vec::new() };
     let pv = build_logic::site_preview(c.s, kind, cell);
     let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
@@ -766,6 +808,28 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
                 ui.bold(w, 12.0, INK);
             }
         }
+    }
+    v.children = ui.nodes;
+    vec![v]
+}
+
+/// At the cursor in the elevation lens: the ground height, a dam's crest where there is one, and
+/// the water surface where the cell is wet. Numbers and icons only.
+pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
+    let get = |g: &sim::Grid<f32>| g.get(cell.0, cell.1).copied().unwrap_or(0.0);
+    let (ground, dam, depth) = (get(&s.height), get(&s.water.dam_height), get(&s.water.depth));
+    let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(5.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
+    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
+    let mut ui = Ui::default();
+    ui.icon(Icon::ViewElevation, 13.0, MUTED);
+    ui.bold(format!("{ground:.1}"), 12.0, INK);
+    if dam > 0.0 {
+        ui.icon(Icon::Dam, 13.0, MUTED);
+        ui.bold(format!("{:.1}", ground + dam), 12.0, INK);
+    }
+    if depth > crate::terrain_render::WET_EPS {
+        ui.icon(Icon::Drop, 13.0, WATER);
+        ui.bold(format!("{:.1}", ground + dam + depth), 12.0, WATER);
     }
     v.children = ui.nodes;
     vec![v]

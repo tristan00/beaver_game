@@ -216,8 +216,11 @@ pub fn world_hover(
             return;
         }
     }
-    // Tips for world things only while no tool is active (a tool has its own cursor tag).
+    // Tips for world things only while no tool is active (a tool has its own cursor tag). In the
+    // elevation lens a bare cell shows its heights in the cursor tag instead.
+    let elevation = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     tips.world = match (t, hud.tool) {
+        (Some(Thing::Cell(_)), Tool::None) if elevation => None,
         (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))),
         _ => None,
     };

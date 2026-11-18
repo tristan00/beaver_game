@@ -244,6 +244,7 @@ Each view greys the world and colours one measure, with a legend that says what 
 | **Mud & stone** (P2) | mud banks, outcrops | mud pit, quarry camp |
 | **Work areas** (P2) | every gatherer's rectangle, coloured by role, overlaps hatched | any gathering building; "Edit area" |
 | **Housing** (P2) | lodge reach, unhoused beavers | burrow, lodge |
+| **Elevation** (F5) | ground by height (dark cool low, pale warm high), water one flat blue; contour lines over terrain and dam crests, every 4th heavier; cursor tag with ground, crest and water surface heights | — |
 
 ### 4.6 Event log and How/Why journal
 
@@ -651,6 +652,8 @@ Notation: `[food]` = the food icon, `[logs]` = the logs icon, and so on. **cut**
 |---|---|
 | "VIEW", "TOOLS" | cut |
 | "World  F1", "Water  F2", "Goods  F3" | view icons; tip: name + key |
+| elevation legend (new) | ramp swatches between the low and high numbers, water swatch, contour lines thin and thick with the interval numbers; tips: `Height` (`Low`, `High`), `Water`, `Contour` (`Every 0.5`); lens tip `Elevation` + `F5` |
+| elevation cursor tag (new) | `[elevation] 7.3`, `[dam] 8.8` on a dam, `[drop] 8.1` when wet; no words |
 | "Ledger  L", "Search  /", "Undo  ^Z" | icons; tip: name + key |
 | "Flow ledger" | tab name `Goods` (Colony screen) |
 | "per day, 7-day average - L or Esc closes" | cut; column-header tips |
