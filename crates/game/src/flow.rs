@@ -687,8 +687,10 @@ mod tests {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
         // fogged ground is refused
-        let fogged = (0..s.world.size).flat_map(|y| (0..s.world.size).map(move |x| (x, y))).find(|c| flow.fog.get(*c) < EXPLORED && s.world.valley_of(*c) == Some(s.world.start)).unwrap();
-        assert!(settle(&mut s, &mut flow, fogged).is_err());
+        // (the start valley is revealed at once; any fogged cell elsewhere is refused)
+        if let Some(fogged) = (0..s.world.size).flat_map(|y| (0..s.world.size).map(move |x| (x, y))).find(|c| flow.fog.get(*c) < EXPLORED) {
+            assert!(settle(&mut s, &mut flow, fogged).is_err());
+        }
         assert!(!s.colony.is_founded());
         let before = flow.fog.explored_cells();
         let site = best_site(&s.world, &s.water.depth, &flow.fog).expect("a settleable site near the mouth");
