@@ -77,7 +77,7 @@ fn begin_new_game(
     if matches!(cli.cam.as_str(), "lodge" | "pond") {
         *orbit = framed;
     }
-    // `--cam iso-close` / `iso-wide`: fixed views of the map centre (shadow checks, docs/STYLE.md fix 10).
+    // `--cam iso-close` / `iso-wide`: fixed views of the map centre (shadow checks, docs/STYLE.md section 7).
     if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
         if let Some(p) = crate::camera::preset(&cli.cam) {
             *orbit = p;

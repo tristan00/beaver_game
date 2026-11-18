@@ -1,5 +1,5 @@
 #!/bin/sh
-# usage: tools/render_shadow.sh OUTDIR [VIEW...] -> per view (docs/STYLE.md fix 10):
+# usage: tools/render_shadow.sh OUTDIR [VIEW...] -> per view (docs/STYLE.md shared lighting rule):
 #   NAME.png         product frame
 #   NAME_noglow.png  same without the warm UI glow overlay (colours measurable over the whole frame)
 #   NAME_lit.png     same without sun shadows (classifies terrain colours)

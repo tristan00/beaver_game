@@ -7,7 +7,7 @@ use bevy::render::render_resource::PrimitiveTopology;
 
 /// Vertex colour for an sRGB hex value (so palette colours can be picked by eye): the scene-linear colour
 /// that the tone-mapped camera shows as exactly that hex, before the shared material's lighting gain
-/// (docs/STYLE.md fix 18: fur on screen is `#B9783F`, not a paler brown).
+/// (docs/STYLE.md section 5: fur on screen is `#B9783F`, not a paler brown).
 pub fn hex(rgb: u32) -> [f32; 3] {
     crate::palette::display_linear(crate::palette::rgb(rgb))
 }

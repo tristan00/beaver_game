@@ -1,4 +1,4 @@
-//! Shared colour constants from `docs/STYLE.md` §2 (terrain, growth, wood, water, light).
+//! Shared world colour constants from `docs/STYLE.md` (terrain, growth, wood, water, light).
 //! Everything is sRGB `[r, g, b]` built from the guide's hex values, so code names a colour
 //! instead of copying digits. UI colours stay in `ui/kit.rs`.
 pub type Rgb = [f32; 3];
@@ -36,6 +36,39 @@ pub const SKY_WINTER: Rgb = rgb(0xC8D4E8);
 pub const SUN: Rgb = rgb(0xFFF5E0);
 pub const SUN_AUTUMN: Rgb = rgb(0xFFDBB3);
 pub const AMBIENT: Rgb = rgb(0xCCE6FF);
+/// Every sun, cast and contact shadow is the surface colour blended this far toward `PLUM`
+/// (docs/STYLE.md shared lighting rule, the middle of its 35-45% band).
+pub const SHADOW_MIX: f32 = 0.40;
+
+// World additions (docs/STYLE.md): clear water, shore, seasons, structures.
+pub const WATER_CLEAR: Rgb = rgb(0xBFEFF0);
+pub const SAND: Rgb = rgb(0xE6D3A3);
+pub const REED: Rgb = rgb(0xB7C97A);
+pub const BLOSSOM: Rgb = rgb(0xF5B8C4);
+pub const AUTUMN_GOLD: Rgb = rgb(0xE8B04A);
+pub const AUTUMN_RUST: Rgb = rgb(0xD9814E);
+pub const SNOW: Rgb = rgb(0xF6F4FA);
+pub const SNOW_SHADE: Rgb = rgb(0xCFC8E0);
+pub const STICK: Rgb = rgb(0x9C6A3E);
+pub const STICK_LIGHT: Rgb = rgb(0xC79A62);
+pub const DAM_MUD: Rgb = rgb(0x8F6E52);
+
+// Nearly clear water (docs/STYLE.md section 3): each depth band is one tint laid over the bed at
+// this opacity, so at least 40% of the bed always shows. Deep water is Water clear nudged a
+// quarter of the way to Water deep, never Water deep itself.
+pub const WATER_TINT_SHALLOW: f32 = 0.40;
+pub const WATER_TINT_MID: f32 = 0.50;
+pub const WATER_TINT_DEEP: f32 = 0.60;
+pub const WATER_DEEP_NUDGE: f32 = 0.25;
+
+/// Tint colour and opacity of a water band (0 shallow, 1 mid, 2 deep), laid over the bed.
+pub fn water_band(depth: usize) -> (Rgb, f32) {
+    match depth {
+        0 => (WATER_CLEAR, WATER_TINT_SHALLOW),
+        1 => (WATER_MID_GLOW, WATER_TINT_MID),
+        _ => (mix(WATER_CLEAR, WATER_DEEP, WATER_DEEP_NUDGE), WATER_TINT_DEEP),
+    }
+}
 
 /// Back to `0xRRGGBB`, so shared colours can feed code that takes hex integers.
 pub const fn pack(c: Rgb) -> u32 {
@@ -82,8 +115,23 @@ pub fn undo_display_transform(d: [f32; 3]) -> [f32; 3] {
 }
 
 /// Scene-linear vertex colour that the tone-mapped camera shows as the sRGB palette colour `c`, before the
-/// lighting gain of the material that draws it (`ENTITY_GAIN`, `WATER_GAIN`; docs/STYLE.md fixes 7, 8, 18).
+/// lighting gain of the material that draws it (`ENTITY_GAIN`, `WATER_GAIN`).
 pub fn display_linear(c: Rgb) -> [f32; 3] {
     let ch = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
     undo_display_transform([ch(c[0]), ch(c[1]), ch(c[2])])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn water_bands_keep_the_bed_visible() {
+        for d in 0..3 {
+            let (_, a) = water_band(d);
+            assert!(a >= 0.40 && a <= 0.60, "band {d} opacity {a}");
+        }
+        let (deep, _) = water_band(2);
+        assert!(deep[2] > 0.75, "deep tint stays pale, got {deep:?}");
+    }
 }

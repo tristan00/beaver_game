@@ -191,6 +191,8 @@ pub enum BuildingKind {
     // Industrial lake.
     Mill,
     Storehouse,
+    /// Elders study here to earn research (`tech::den_lore`).
+    EldersDen,
 }
 
 /// Terrain rule for a footprint.
@@ -216,12 +218,12 @@ pub struct Spec {
 }
 
 impl BuildingKind {
-    pub const ALL: [BuildingKind; 19] = [
+    pub const ALL: [BuildingKind; 20] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
         BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
-        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse,
+        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse, BuildingKind::EldersDen,
     ];
 
     /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
@@ -246,6 +248,7 @@ impl BuildingKind {
             BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
             BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
             BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
+            BuildingKind::EldersDen => ("Elders' den", (3, 3), Site::Dry),
         };
         let (cost, work) = cost_and_work(self);
         Spec { name, cost, footprint, work, site }
@@ -823,9 +826,7 @@ mod tests {
 
     fn all_tech() -> Tech {
         let mut t = Tech::default();
-        let mut c = Colony::new(1);
-        c.experience = [100.0; 8];
-        t.update(&c);
+        t.unlock_all();
         assert_eq!(t.unlocked_ids().count(), TECHS.len());
         t
     }

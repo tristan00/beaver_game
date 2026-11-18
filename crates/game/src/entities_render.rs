@@ -192,9 +192,9 @@ struct BeaverRig {
 // Startup
 // ---------------------------------------------------------------------------------------------
 
-/// Vertex colours are the palette colours; the sun plus the high ambient (docs/STYLE.md fix 11) would
+/// Vertex colours are the palette colours; the sun plus the high ambient (docs/STYLE.md, shared lighting rule) would
 /// light them well past those colours (fur read `#DE9C63` for `#B9783F`), so the shared material scales
-/// them back until a sun-facing surface shows its palette colour (fix 18; measured, `artifacts/R19-29`).
+/// them back until a sun-facing surface shows its palette colour (STYLE.md section 5; measured, `artifacts/R19-29`).
 pub const ENTITY_GAIN: f32 = 0.55;
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {

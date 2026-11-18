@@ -1,4 +1,4 @@
-"""Pixel samples for docs/STYLE.md fixes 1-3, 6-11 and 18 (R19-29).
+"""Pixel samples of terrain, fur and shadow colours, compared with the docs/STYLE.md palette.
 
 usage: python tools/style_samples.py SHOT_DIR > table.md
 SHOT_DIR holds the *_noglow.png twins (BC_NO_GLOW=1: the warm UI glow tints the whole upper-left of
@@ -22,36 +22,31 @@ def shadow(h, t=0.40):
     return rgb(h) * (1 - t) + PLUM * t
 
 
-# (fix, shot, x, y, name, target colour)
+# (STYLE.md section, shot, x, y, name, target colour)
+# Water is not sampled here: nearly clear water shows the bed, so it has no single target colour;
+# check it against docs/style/water.png and the band opacities in palette.rs.
 S = [
-    (1, "lodge_seed1_noglow", 800, 250, "Stone, sunlit rock", rgb(0xB9AFA8)),
-    (1, "lodge_seed2_noglow", 1270, 125, "Stone, sunlit rock", rgb(0xB9AFA8)),
-    (1, "lodge_seed2_noglow", 1000, 250, "Stone shade, shadowed rock", rgb(0x8C8290)),
-    (1, "pond_seed1_noglow", 158, 159, "Stone shade, shadowed rock", rgb(0x8C8290)),
-    (2, "pond_seed1_noglow", 1000, 300, "Meadow deep, valley grass", rgb(0x5FA85A)),
-    (2, "lodge_seed2_noglow", 451, 710, "Meadow deep, valley floor", rgb(0x5FA85A)),
-    (2, "lodge_seed2_noglow", 400, 330, "Meadow in sun shadow (floor of a valley)", shadow(0x85C468)),
-    (3, "lodge_seed2_noglow", 200, 400, "Meadow, base grass", rgb(0x85C468)),
-    (3, "pond_seed1_noglow", 1100, 600, "Meadow, base grass", rgb(0x85C468)),
-    (3, "lodge_seed1_noglow", 620, 425, "Meadow light, sun-facing grass", rgb(0xA8D878)),
-    (3, "lodge_seed1_noglow", 505, 544, "Meadow light, sun-facing grass", rgb(0xA8D878)),
-    (6, "lodge_seed2_noglow", 480, 410, "pine canopy, Leaf highlight", rgb(0x8CD070)),
-    (6, "lodge_seed2_noglow", 490, 450, "pine canopy, Leaf highlight", rgb(0x8CD070)),
-    (7, "pond_seed1_noglow", 662, 354, "pond centre, Mid glow", rgb(0x8FE0E6)),
-    (7, "pond_seed2_noglow", 600, 379, "pond centre, Mid glow", rgb(0x8FE0E6)),
-    (7, "pond_seed1_noglow", 1131, 140, "pond body, Shallow", rgb(0x6FD3E0)),
-    (7, "pond_seed1_noglow", 718, 396, "pond rim, Deep", rgb(0x1F8AB8)),
-    (7, "pond_seed2_noglow", 120, 325, "pond rim, Deep", rgb(0x1F8AB8)),
-    (8, "lodge_seed1_noglow", 777, 240, "lowland water, Shallow", rgb(0x6FD3E0)),
-    (8, "lodge_seed1_noglow", 789, 628, "lowland water edge, Deep", rgb(0x1F8AB8)),
-    (9, "fur_poses_1_noglow", 560, 305, "swimmer's ripple arc, Foam", rgb(0xF4FBF6)),
-    (10, "lodge_seed2_noglow", 1100, 40, "sky", rgb(0x9ED1F5)),
-    (10, "pond_seed2_noglow", 1200, 60, "sky behind the pond view's UI strip is covered; see iso", rgb(0x9ED1F5)),
-    (10, "lodge_seed2_noglow", 400, 330, "grass in sun shadow, plum 40%", shadow(0x85C468)),
-    (10, "lodge_seed2_noglow", 1000, 250, "rock in sun shadow, plum 40%", shadow(0xB9AFA8)),
-    (18, "fur_poses_1_noglow", 570, 230, "beaver back, Fur", rgb(0xB9783F)),
-    (18, "fur_poses_0_noglow", 560, 330, "beaver back, Fur", rgb(0xB9783F)),
-    (18, "fur_poses_0_noglow", 470, 352, "beaver tail, Fur dark", rgb(0x8F5A2E)),
+    ("2 Ground", "lodge_seed1_noglow", 800, 250, "Stone, sunlit rock", rgb(0xB9AFA8)),
+    ("2 Ground", "lodge_seed2_noglow", 1270, 125, "Stone, sunlit rock", rgb(0xB9AFA8)),
+    ("2 Ground", "lodge_seed2_noglow", 1000, 250, "Stone shade, shadowed rock", rgb(0x8C8290)),
+    ("2 Ground", "pond_seed1_noglow", 158, 159, "Stone shade, shadowed rock", rgb(0x8C8290)),
+    ("2 Ground", "pond_seed1_noglow", 1000, 300, "Meadow deep, valley grass", rgb(0x5FA85A)),
+    ("2 Ground", "lodge_seed2_noglow", 451, 710, "Meadow deep, valley floor", rgb(0x5FA85A)),
+    ("2 Ground", "lodge_seed2_noglow", 400, 330, "Meadow in sun shadow (floor of a valley)", shadow(0x85C468)),
+    ("2 Ground", "lodge_seed2_noglow", 200, 400, "Meadow, base grass", rgb(0x85C468)),
+    ("2 Ground", "pond_seed1_noglow", 1100, 600, "Meadow, base grass", rgb(0x85C468)),
+    ("2 Ground", "lodge_seed1_noglow", 620, 425, "Meadow light, sun-facing grass", rgb(0xA8D878)),
+    ("2 Ground", "lodge_seed1_noglow", 505, 544, "Meadow light, sun-facing grass", rgb(0xA8D878)),
+    ("1 Trees", "lodge_seed2_noglow", 480, 410, "pine canopy, Leaf highlight", rgb(0x8CD070)),
+    ("1 Trees", "lodge_seed2_noglow", 490, 450, "pine canopy, Leaf highlight", rgb(0x8CD070)),
+    ("5 Poses", "fur_poses_1_noglow", 560, 305, "swimmer's ripple arc, Foam", rgb(0xF4FBF6)),
+    ("Shared light", "lodge_seed2_noglow", 1100, 40, "sky", rgb(0x9ED1F5)),
+    ("Shared light", "pond_seed2_noglow", 1200, 60, "sky behind the pond view's UI strip is covered; see iso", rgb(0x9ED1F5)),
+    ("Shared light", "lodge_seed2_noglow", 400, 330, "grass in sun shadow, plum 40%", shadow(0x85C468)),
+    ("Shared light", "lodge_seed2_noglow", 1000, 250, "rock in sun shadow, plum 40%", shadow(0xB9AFA8)),
+    ("5 Poses", "fur_poses_1_noglow", 570, 230, "beaver back, Fur", rgb(0xB9783F)),
+    ("5 Poses", "fur_poses_0_noglow", 560, 330, "beaver back, Fur", rgb(0xB9783F)),
+    ("5 Poses", "fur_poses_0_noglow", 470, 352, "beaver tail, Fur dark", rgb(0x8F5A2E)),
 ]
 S = [s for s in S if "see iso" not in s[4]]
 
@@ -62,21 +57,21 @@ def hexs(v):
 
 def main(d):
     cache = {}
-    print("| Fix | Shot | Point (x,y) | What | Measured | Target | Max channel diff | Result |")
+    print("| Section | Shot | Point (x,y) | What | Measured | Target | Max channel diff | Result |")
     print("|---|---|---|---|---|---|---|---|")
     bad = 0
-    for fix, shot, x, y, name, tgt in S:
+    for sec, shot, x, y, name, tgt in S:
         if shot not in cache:
             cache[shot] = np.asarray(Image.open(f"{d}/{shot}.png").convert("RGB")).astype(float)
         m = cache[shot][y - 1:y + 2, x - 1:x + 2].reshape(-1, 3).mean(0)
         diff = np.abs(m - tgt).max()
         ok = diff <= 12
         bad += not ok
-        print(f"| {fix} | {shot}.png | {x},{y} | {name} | {hexs(m)} | {hexs(tgt)} | {diff:.0f} | {'PASS' if ok else 'FAIL'} |")
-    # fix 2: the darkest sun-lit terrain patch in each shot must not fall below the floor
+        print(f"| {sec} | {shot}.png | {x},{y} | {name} | {hexs(m)} | {hexs(tgt)} | {diff:.0f} | {'PASS' if ok else 'FAIL'} |")
+    # terrain floor (shared rules): the darkest sun-lit terrain patch in each shot must not fall below the floor
     from scipy import ndimage as ndi
     print()
-    print("| Fix 2 shot | Darkest 5x5 patch of sun-lit terrain (x,y) | Colour | Floor (lower of Meadow deep / Stone shade, -12/channel) | Result |")
+    print("| Terrain floor shot | Darkest 5x5 patch of sun-lit terrain (x,y) | Colour | Floor (lower of Meadow deep / Stone shade, -12/channel) | Result |")
     print("|---|---|---|---|---|")
     # terrain is grass or rock or a blend of the two, so the floor is the lower of Meadow deep / Stone shade per channel
     floor = np.minimum(rgb(0x5FA85A), rgb(0x8C8290)) - 12
@@ -97,9 +92,9 @@ def main(d):
         ok = bool((c >= floor).all())
         bad += not ok
         print(f"| {shot}_noglow.png | {x},{y} | {hexs(c)} | {hexs(floor)} | {'PASS' if ok else 'FAIL'} |")
-    # fix 11: mean luminance
+    # brightness (shared rules: nothing dark): mean luminance
     print()
-    print("| Fix 11 shot | Mean luminance (0-255) | Result |")
+    print("| Brightness shot | Mean luminance (0-255) | Result |")
     print("|---|---|---|")
     for shot in ["iso_seed1", "iso_seed2", "lodge_seed1", "lodge_seed2", "pond_seed1", "pond_seed2"]:
         a = np.asarray(Image.open(f"{d}/{shot}_noglow.png").convert("RGB")).astype(float)

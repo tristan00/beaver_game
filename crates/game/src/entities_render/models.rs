@@ -18,7 +18,7 @@ pub const TAIL_PIVOT: Vec3 = Vec3::new(0.0, 0.36, -0.6);
 pub const LEG_PIVOTS: [Vec3; 4] = [Vec3::new(-0.3, 0.34, 0.4), Vec3::new(0.3, 0.34, 0.4), Vec3::new(-0.33, 0.36, -0.28), Vec3::new(0.33, 0.36, -0.28)];
 
 use crate::palette::{self, pack};
-// Beaver colours come from the shared palette (docs/STYLE.md fix 18), never hard-coded browns.
+// Beaver colours come from the shared palette (docs/STYLE.md section 5), never hard-coded browns.
 const FUR: u32 = pack(palette::FUR);
 const FUR_DARK: u32 = pack(palette::FUR_DARK);
 const FUR_LIGHT: u32 = pack(palette::FUR_LIGHT);
@@ -234,7 +234,7 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 }
             }
             Species::Pine => {
-                // round canopy of four stacked blobs (docs/STYLE.md fix 6), no spikes
+                // round canopy of four stacked blobs (docs/STYLE.md section 1), no spikes
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 1.5, 0.0), 0.24, 0.16, trunk, trunk, 7);
                 let top = if season == Season::Winter { hex(0xf4f9ff) } else { light };
                 for (c, r) in [(v(0.0, 1.9, 0.0), v(1.4, 1.0, 1.4)), (v(0.2, 2.85, -0.1), v(1.08, 0.85, 1.08)), (v(-0.15, 3.7, 0.1), v(0.84, 0.72, 0.84)), (v(0.0, 4.5, 0.0), v(0.55, 0.55, 0.55))] {

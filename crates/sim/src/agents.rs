@@ -903,6 +903,7 @@ mod tests {
     fn setup() -> (SimState, Vec<BeaverId>) {
         let mut sim = SimState::new(3);
         sim.resources = Default::default();
+        sim.tech.unlock_all();
         let spot = (0..sim.world.size)
             .map(|i| (i as f32, 100.0))
             .find(|&(x, y)| !crate::colony::Landscape::is_water(&crate::WorldLand { world: &sim.world, depth: &sim.water.depth }, x, y))

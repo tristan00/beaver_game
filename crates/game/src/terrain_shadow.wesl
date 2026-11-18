@@ -1,5 +1,5 @@
 // Terrain fragment shader: StandardMaterial lighting, but sun shadows are a colour, not a darkening
-// (docs/STYLE.md fix 10). Where the key light's shadow map says "occluded", the pixel is the lit
+// (docs/STYLE.md shared lighting rule). Where the key light's shadow map says "occluded", the pixel is the lit
 // colour blended `blend` toward Plum in sRGB, so every terrain hex gets the same plum shadow and
 // lit ground stays on its hex. Cost: one extra cascade lookup per terrain fragment (the stock
 // lookup is skipped because shadow receiving is switched off for the lighting call).
@@ -78,7 +78,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let raw = apply_pbr_lighting(pbr_input);
     // Flat, white, unshadowed ground under the same lights: dividing by it puts sunlit flat ground on
     // its palette albedo (vertex colour) whatever the season's sun and ambient; slopes keep `edge.w` of
-    // their relief (the vertex gradient already lifts sun-facing grass, STYLE.md fix 3).
+    // their relief (the vertex gradient already lifts sun-facing grass, STYLE.md section 2).
     // `lit` and `shade` are display-linear colours; `undo_display_transform` cancels the tone mapping.
     var flat = pbr_input;
     flat.material.base_color = vec4(1.0);

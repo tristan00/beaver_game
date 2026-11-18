@@ -34,7 +34,7 @@ Every request bullet → where it lives, its public types, and who builds it.
 | 24 | Build menu, placement preview, dam hover preview | `game::ui::orders` | `Placement`, `placement` (+ `dam_preview::preview`) | `buildmenu` |
 | 25 | Events/alerts that point to places | `game::ui::orders` | `Alert`, `alerts` | `events_ui` |
 | 26 | Beavers visibly walking/swimming/climbing/carrying; sites rising | `game::entities_render` | reads `Agent::{cell, step_frac, gait, load}`, `SiteProgress::fraction` | `render_agents` |
-| 27 | Style, terrain polish, icon art | `docs/STYLE.md`, `terrain_render`, `water_render`, `assets/icons` | — | `artdir`, `terrain`, `icons` |
+| 27 | World style and terrain polish (icon art is row 21, styled by `docs/UI_SPEC.md`) | `docs/STYLE.md`, `docs/style/*.png`, `terrain_render`, `water_render` | — | `artdir`, `terrain` |
 | 28 | Playtest report covering every bullet | `docs/PLAYTEST.md` | — | `playtest` |
 
 ## 2. One model, three layers
@@ -194,8 +194,8 @@ through the public API above (or a follow-up request to the owner).
 | `content` | `sim/src/catalogue.rs`, `sim/src/tech.rs`, `sim/src/tuning.rs` buildings block |
 | `start1` | `sim/src/starts.rs` (River), `game/src/cli.rs` (`--start`), `game/src/flow.rs`, delete `game/src/midgame.rs` |
 | `start23` | `sim/src/starts.rs` (EarlyLake, IndustrialLake; separate fns) |
-| `artdir` | `docs/STYLE.md`, `docs/style_mockup.png` |
-| `icons` | `assets/icons/*`, `docs/icons_sheet.png` |
+| `artdir` | `docs/STYLE.md`, `docs/style/*.png`, `tools/style_sheets.py` |
+| `icons` | `assets/icons/*`, `docs/icons_sheet.png`, `tools/make_icons.py` (styled by `docs/UI_SPEC.md`) |
 | `terrain` | `game/src/terrain_render.rs`, `water_render.rs` |
 | `ui_shell` | `game/src/ui/{mod,shell,screens,explain,icons,kit,panels}.rs`, `game/src/opening.rs`, the time controls in `flow_view.rs` |
 | `render_agents` | `game/src/entities_render.rs`, `entities_render/*` |
