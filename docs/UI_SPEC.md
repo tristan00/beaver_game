@@ -43,7 +43,7 @@ Every step uses the Pond mark for the active thing and Rail-outlined map text.
 |---|---|---|---|
 | 1 | **Settle choice** (`ui_wireframe_settle.png`) | Time starts paused. Three candidate banks are outlined on the map with a square marker and a name. Clicking one turns its outline Pond and fills the settle card (Z6 slot): one line of facts, three rows (wood, forage, flood risk), **Settle here** (primary) and **Cancel** (pick another). Settling unpauses and shows the Build menu with Burrow first. | **C10** (one-click placement), **C3** (panel on selection); paused start and card: **none** |
 | 2 | **Placement ghost** | A chosen building follows the cursor as a white outline; invalid shows a Berry hatch and a one-line reason. Left click places it as a site; Shift keeps the tool; right click or Esc cancels. The grid shows only while placing. Nothing is ever placed automatically. | **C10** (AoE2 grid, Anno 1800 single-click blueprint) |
-| 3 | **Dam water preview** (`ui_wireframe_dam.png`) | Dam: drag a line on the map, ends have square handles. While dragging and after, the map shows the new shoreline as a dotted Pond line, flooded land as a hatched Pond tint at 30% (hatch, not a flat fill, so it reads against the river), and an Amber triangle on every tree and building that would flood. The Z5 tool panel lists Water rises, Floods, Trees flooded (Amber when above 0), Buildings flooded, Cost, Pond fills in, and a Height - / + stepper. **Confirm** (Enter, primary) lays the site; **Cancel** (Esc, right click) discards. Nothing is built until Confirm. | **C10** (ghost before commit); confirm / cancel pair: **none**, own rule: no sim change without a visible preview |
+| 3 | **Dam water preview** (`ui_wireframe_dam.png`) | Dam: drag a line on the map, ends have square handles. While dragging and after, the map shows the new shoreline as a dotted Pond line, flooded land as a hatched Pond tint at 30% (hatch, not a flat fill, so it reads against the river), and an Amber triangle on every tree and building that would flood. The Z5 tool panel lists Water rises (world height units shown as metres, one decimal: "0.4 m"), Floods, Trees flooded (Amber when above 0), Buildings flooded, Cost, Pond fills in, and a Height - / + stepper. **Confirm** (Enter, primary) lays the site; **Cancel** (Esc, right click) discards. Nothing is built until Confirm. | **C10** (ghost before commit); confirm / cancel pair: **none**, own rule: no sim change without a visible preview |
 | 4 | **Drag to gather** (`ui_wireframe_jobs.png`) | G arms Gather (or the toolbar button). Drag on the map draws a dashed Pond rectangle with square handles and a count tag ("12 trees, 2 beavers will gather"). Releasing assigns the selected beavers, or idle adults if none are selected, and drops a flag; Esc or right click before release cancels. The area stays selectable and can be moved or resized by its handles. | **C8** (one key per area tool); **C9** (areas stay selectable) |
 | 5 | **Job assignment** | Three ways, all live: the job panel (section 4); the slots in a building's inspector (click an open slot, then a beaver); and a beaver's own job buttons. A change shows at once in the job panel counts. | **C6**, **C7** |
 
@@ -81,26 +81,42 @@ Identity: a lodge built of cut timber. This section is unchanged from the previo
 | Contrast | text 4.5:1 or better, markers 3:1; panels at least 95% opaque |
 
 ## 9. Current UI files: replaced and removed
-Paths under `crates/game/src/`. **Keep** = stays as is. **Replace** = the file is rewritten for this spec (same name unless a new name is given). **Remove** = deleted, its useful parts moved as stated.
+Paths under `crates/game/src/`. **Keep** = stays as is. **Edit** = stays, with the listed lines changed. **Replace** = rewritten for this spec (same name unless a new name is given). **Remove** = the file is deleted, and only after every caller in its row is moved.
 
-| File | Fate | Why |
+Rule: a file is only marked Remove if the callers column is empty or lists where each caller goes. Callers were found with `grep -rnE "(super|crate|ui)::<module>\b|\b<module>::"` over `crates/game/src` (commit `0503136`); `main.rs` / `ui/mod.rs` module and plugin lines are not listed.
+
+### 9a. Files
+
+| File | Fate | Why | Callers outside the file, and what happens to them |
+|---|---|---|---|
+| `ui/kit.rs`, `ui/kit_tests.rs`, `ui/icons.rs`, `ui/explain.rs` | Keep | widget kit, icon loader, number provenance already match section 8 | - |
+| `ui/screens.rs` | **Edit** | pure view-models stay; the Work screen becomes the job panel's view-model | `NavItem::Work` arm (line 439) is deleted; `work_screen` (line 603, builds `jobs_table`) is called by `ui/jobs.rs` instead. Its tests call `crate::opening::found` (lines 1099, 1116, 1124); `opening.rs` stays, see below |
+| `ui/gestures.rs` | **Edit** | gains `Gesture` and `gesture_command` from `ui/orders.rs` | line 13 `use super::orders::Gesture` is deleted (the type now lives in this file) |
+| `ui/gestures_tests.rs` | **Edit** | import path only | line 3 `crate::ui::orders::gesture_command` becomes `crate::ui::gestures::gesture_command` |
+| `ui/mapmodes.rs`, `ui/mapmodes_tests.rs`, `ui/events.rs` | **Edit** | import paths only | `crate::build::BuildUi` / `crate::build::pick_tool` become `crate::ui::placement::...` (`mapmodes.rs:541,548`, `mapmodes_tests.rs:2`, `events.rs:393`) |
+| `ui/status.rs` | **Replace** by `ui/topbar.rs` | Z1, Z2, Z3 in one top strip (speed is 1x, 2x, 3x, not 1x, 3x, 10x) | none; only the `StatusPlugin` line in `ui/mod.rs` |
+| `ui/buildbar.rs` | **Replace** by `ui/toolbar.rs` | today it is the six-screen navigation bar; Z6 becomes tools, and screens move under **Screens** | none; only `BuildBarPlugin` in `ui/mod.rs` |
+| `ui/modebar.rs` | **Replace** | keeps the four mode buttons only; legends and action buttons move to Build and Gather | none |
+| `ui/alerts.rs` | **Replace** | Z4 list with the shapes of section 6 | none |
+| `ui/inspector.rs` | **Replace** | Z5 layout in section 3 and the tool-panel mode | `ui/panels.rs:7,39,412,453` use `PanelShown` and `to_flow`; both keep their names |
+| `ui/selection.rs` (856 lines, has the view-model) | **Replace** | view-model gains worker slots and the workplace-first beaver panel | `inspector.rs:12`, `mapmodes.rs:21`, `panels.rs:12`, `screens.rs:48`, `shell.rs:60` use `Selection`, `Panel`; both keep their names and module path |
+| `ui/panels.rs` | **Replace** | draws only the centred screens and the job panel; per-zone click handling moves to each zone | `ui/events.rs:415` calls `panels::apply` (kept); `ShellUi`, `REFRESH_SECS`, `TOP` kept; `NAV_RESERVE` (bottom bar height) is dropped; its users `buildbar.rs`, `inspector.rs`, `modebar.rs` are replaced in this table |
+| `ui/shell.rs` | **Replace** | navigation state loses the bottom bar; gains tool state (Build, Gather, Haul, Jobs, Demolish) | `NavItem` stays as the **Screens** list. `NavItem::Work` is removed (Work becomes the Jobs panel), so `cli.rs:84` `--open work` is rejected; `--open` still accepts the other five. its only other match is `screens.rs:439,603` (edited above); `mapmodes.rs:22`, `panels.rs:10`, `screens.rs:18` import `NavItem` only and keep compiling |
+| `ui/mod.rs` | **Edit** | module and plugin list; drops `pub mod orders` | - |
+| `build.rs` (1264 lines) | **Replace** by `ui/buildmenu.rs` (menu), `ui/placement.rs` (ghost, dam preview, confirm / cancel, `BuildUi`, `pick_tool`), `ui/jobs.rs` (job panel and per-beaver buttons); `build_logic.rs` stays | one monolith held menu, ghost, dam readout and job buttons | `BuildUi`: `input.rs:23`, `map_orders.rs:7`, `ui/events.rs:393`, `ui/mapmodes.rs:541`, `ui/mapmodes_tests.rs:2`, `ui/panels.rs:223,360,386,509`; `pick_tool`: `ui/mapmodes.rs:548`, `ui/panels.rs:395`; `layout_build`, `build_input`: `flow_view.rs:142`; `DemoDam`: `flow_view.rs:578`. All move to `ui/placement.rs` with the same names; each caller changes only its path |
+| `flow.rs` opening parts (`Phase::Arrival`, `Phase::Scouting`, scouting systems) | **Replace** by `ui/settle.rs` | settle choice of section 5 row 1; it also fixes the restart path, which today falls back to the old scouting flow | `settle` and `best_site` **stay** in `flow.rs`; the guard at `flow.rs:512` (`phase != Scouting`) becomes "not yet settled". Callers: `opening.rs:3`, `ui/settle.rs` (new), and the autoplay arm `flow_view.rs:585-600`, which now matches the settle-choice phase. Other checks of the two phases: `flow_view.rs:486,545` and `map_orders.rs:117` switch to the settle-choice phase; `opening.rs:7` is deleted |
+| `flow_view.rs` (637 lines) | **Edit** | second, older HUD: Pause / 1x / 3x / 10x buttons, the bottom-left info panel and their layout (`compute_layout` lines 75-90, `spawn_ui` lines 157-191) are deleted; Z3 and Z5 replace them | Kept, because others use them: `ClickSet`, `UiLayout`, `WorldClick` (`build.rs:7`, `flow.rs:5,572`, `input.rs:4`, `map_orders.rs:11`, `ui/panels.rs:13,81-82`), the game-over panel with Keep watching / Restart, the banner (it shows the settle prompt), markers, fog, gizmos and `--autoplay-settle`. `Action::Speed` is only used by `ui/status.rs`, which is replaced |
+| `sim_driver.rs` | **Edit** | speeds become 1x, 2x, 3x | `Speed::{X1, X3, X10}` become `{X1, X2, X3}` and `ALL` / keys 1 2 3 follow (lines 17-35, 95). Callers to update: `flow_view.rs:78` (deleted with the old buttons), `flow_view.rs:593` (autoplay uses the fastest, now `X3`), tests `sim_driver.rs:125,137` |
+| `startflow.rs` | **Replace** by `ui/settle.rs` | same | `main.rs:60` registers `StartPlugin` (becomes `SettlePlugin`); `camera.rs:44` comment names `startflow::begin_new_game` (update the comment) |
+| `opening.rs` | **Edit** (kept) | it is the auto-settle test fixture, not a way to start | `ui/screens.rs:1099,1116,1124` tests call `found`. It keeps `found`; line 7 (`Phase::Scouting`) is dropped and it calls `settle` at `best_site` directly |
+| `map_orders.rs`, `map_overlay.rs` | **Edit** | Gather area and flooded-tile hatch drawing | `input.rs:12,24` (`map_orders`, `MapOrders`) and `modebar.rs:9,20` (`ActiveOverlay`, `ComputeSet`) keep these names |
+| `camera.rs` | Keep (comment edit only) | its only UI node is the full-screen warm glow (`spawn_glow`), which sits under every zone | `camera.rs:44` comment, see `startflow.rs` |
+| `ui/orders.rs` (48 lines) | **Remove** | it holds four unrelated things; each gets a proper home | `Gesture` and `gesture_command` move to `ui/gestures.rs` (callers `gestures.rs:13`, `gestures_tests.rs:3`, edited above). `Placement` / `placement` (an unimplemented stub returning "not implemented") are replaced by `ui/placement.rs`; no caller. The re-export of `events::{alerts, Alert, AlertKind}` has no caller. Delete the file and `pub mod orders` only after these moves |
+
+### 9b. Parts of files removed
+
+| Part | Fate | Why |
 |---|---|---|
-| `ui/kit.rs`, `ui/kit_tests.rs`, `ui/icons.rs`, `ui/explain.rs` | Keep | widget kit, icon loader, number provenance already match section 8 |
-| `ui/screens.rs`, `ui/gestures.rs`, `ui/gestures_tests.rs`, `ui/mapmodes.rs`, `ui/mapmodes_tests.rs`, `ui/events.rs` | Keep | pure view-models and gesture logic; only screen list and key names change |
-| `ui/status.rs` | **Replace** by `ui/topbar.rs` | Z1, Z2, Z3 in one top strip (speed is 1x, 2x, 3x, not 1x, 3x, 10x) |
-| `ui/buildbar.rs` | **Replace** by `ui/toolbar.rs` | today it is the six-screen navigation bar; Z6 becomes tools, and screens move under **Screens** |
-| `ui/inspector.rs` | **Replace** | Z5 layout in section 3 and the tool-panel mode |
-| `ui/selection.rs` | **Replace** | view-model gains worker slots and workplace-first beaver panel (currently a stub) |
-| `ui/modebar.rs` | **Replace** | keeps the four mode buttons only; legends and action buttons move to Build and Gather |
-| `ui/alerts.rs` | **Replace** | Z4 list with the shapes of section 6 |
-| `ui/panels.rs` | **Replace** | draws only the centred screens and the job panel; per-zone click handling moves to each zone |
-| `ui/shell.rs` | **Replace** | navigation state loses the bottom bar; gains tool state (Build, Gather, Haul, Jobs, Demolish) |
-| `ui/mod.rs` | Replace | plugin list updated |
-| `build.rs` (1264 lines) | **Replace** by `ui/buildmenu.rs` (menu), `ui/placement.rs` (ghost, dam preview, confirm / cancel), `ui/jobs.rs` (job panel and per-beaver buttons); `build_logic.rs` stays | one monolith held menu, ghost, dam readout and job buttons |
-| `flow.rs` opening parts (Arrival, Scouting, `settle`), `startflow.rs` | **Replace** by `ui/settle.rs` | settle choice of section 5 row 1; it also fixes the restart path, which today falls back to the old scouting flow |
-| `map_orders.rs`, `map_overlay.rs` | Replace (edit) | Gather area and flooded-tile hatch drawing |
-| `ui/orders.rs` | **Remove** | empty stub; nothing calls it |
-| `opening.rs` | **Remove** | auto-settle helper for old scenes; no longer a way to start |
 | Bottom navigation bar (Colony / Work / Stores / Buildings / Tech / Events buttons) | **Remove** | replaced by **Screens**; Work becomes the Jobs panel |
 | Per-beaver job button row inside the build panel (`build.rs` `BAction::SetJob`) | **Remove** | moved into the job panel and the beaver card |
 | Speed button 10x | **Remove** | three speeds only |

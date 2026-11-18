@@ -111,14 +111,15 @@ class Canvas:
         for i, (ic, t) in enumerate(tools):
             self.btn((494 + i * 156, 1008, 640 + i * 156, 1052), t, ic, hot=(active == i), size=14)
         if menu:
-            self.plank((500, 836, 1420, 980))
-            self.text((516, 852), "Build menu opens above the toolbar: tabs, then buildings", 14, True, DIM)
+            # ends 24 px above the toolbar so the "Z6 Toolbar" tag stays readable
+            self.plank((500, 812, 1420, 956))
+            self.text((516, 828), "Build menu opens above the toolbar: tabs, then buildings", 14, True, DIM)
             tabs = ["Basics", "Food", "Wood", "Water", "Craft"]
             for i, t in enumerate(tabs):
-                self.btn((516 + i * 112, 868, 616 + i * 112, 900), t, None, hot=(i == 3), size=14)
+                self.btn((516 + i * 112, 844, 616 + i * 112, 876), t, None, hot=(i == 3), size=14)
             for i, (ic, t) in enumerate([("dam", "Dam"), ("canal", "Canal"), ("lock", "Lock"), ("waterwheel", "Wheel")]):
                 bx = 516 + i * 90
-                self.btn((bx, 906, bx + 80, 972), "", None, hot=(menu_hot == i)); self.ico(ic, bx + 22, 910, 36); self.text((bx + 40, 960), t, 13, False, PITH, "mm")
+                self.btn((bx, 882, bx + 80, 948), "", None, hot=(menu_hot == i)); self.ico(ic, bx + 22, 886, 36); self.text((bx + 40, 936), t, 13, False, PITH, "mm")
 
     def inspector(self):
         self.zone("Z5", "Inspector (selection)", (1536, 108, 1904, 620))
@@ -173,7 +174,7 @@ def dam():
     c.zone("Z5", "Tool panel (replaces inspector)", (1536, 108, 1904, 600))
     x = 1556
     c.ico("dam", x, 124, 40); c.text((x + 52, 138), "Dam", 22, True); c.text((x + 52, 162), "Preview. Nothing is built yet", 14, False, DIM)
-    c.row(x, 190, 328, "modewater", "Water rises", "0.38")
+    c.row(x, 190, 328, "modewater", "Water rises", "0.4 m")
     c.row(x, 236, 328, "modewater", "Floods", "874 cells")
     c.row(x, 282, 328, "modeforest", "Trees flooded", "535", AMBER)
     c.row(x, 328, 328, "shelter", "Buildings flooded", "0", MOSS)
