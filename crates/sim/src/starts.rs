@@ -208,6 +208,9 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
+    // The family arrives empty-handed: no stored food or wood, and nothing in any mouth or paw.
+    sim.colony.food = 0.0;
+    sim.colony.wood = 0.0;
     // Founding opens the landing's valley and its neighbours.
     sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
     strip_disabled(sim);
@@ -584,5 +587,36 @@ mod tests {
         assert!(worked && s.agents.get(worker).unwrap().assignment.is_none(), "the slot holder kept working its job, never ordered");
         assert_eq!(s.agents.get(kit).unwrap().task, agents::Task::Idle);
         assert_eq!(start(&s, kit), before.2, "the kit was not moved");
+    }
+
+    #[test]
+    fn the_family_arrives_empty_handed() {
+        let (s, _) = settled(1);
+        assert_eq!((s.colony.food, s.colony.wood), (0.0, 0.0));
+        assert!(s.agents.by_id.values().all(|a| a.load.is_none()));
+        assert!(s.buildings.stores.amount(crate::buildings::Good::Logs) == 0.0);
+    }
+
+    /// Three years with no order at all: nothing is built, nothing hostile or foreign ever appears.
+    #[test]
+    fn a_three_year_unordered_run_builds_nothing_and_has_no_predators_rivals_or_disasters() {
+        use crate::events::EventKind;
+        for seed in [1] {
+            let (mut s, _) = settled(seed);
+            let days = 3.0 * crate::tuning::tech::YEAR_DAYS;
+            while s.time_days < days {
+                s.step(1.0).unwrap();
+                assert!(s.buildings.buildings.is_empty() && s.work.places.is_empty() && s.work.dam_plans.is_empty(), "built unordered on day {}", s.time_days);
+                assert!(s.ecology.predators.is_empty(), "predator on day {}", s.time_days);
+                assert!(s.region.offers().is_empty());
+                if (s.time_days as u32) % 30 == 0 {
+                    assert!(s.water.dam_height.as_slice().iter().all(|h| *h <= 0.0));
+                }
+            }
+            for r in s.events.log() {
+                assert!(matches!(r.kind, EventKind::WanderingBeaver | EventKind::WetlandArrival), "{:?} fired", r.kind);
+            }
+            assert_eq!(s.region.time_days, 0.0, "no other colony advances");
+        }
     }
 }
