@@ -180,6 +180,9 @@ const SWIM_REACH: usize = 12;
 /// near, else standing on the cell) with a lodge, and opens the cell's valley and its
 /// neighbours. Errors (state unchanged) if the colony is already founded, `cell` is off the map,
 /// in a locked valley or in water.
+/// Days of food the founding family carries in.
+pub const START_LARDER_DAYS: f32 = 30.0;
+
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);
     if sim.colony.is_founded() {
@@ -208,8 +211,10 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
-    // The family arrives empty-handed: no stored food or wood, and nothing in any mouth or paw.
-    sim.colony.food = 0.0;
+    // The family brings a small larder of food (enough for START_LARDER_DAYS) and nothing else:
+    // no wood, and nothing in any paw. It buys time to set up foraging before hunger bites.
+    let larder = crate::hud::food_need_per_day(sim) * START_LARDER_DAYS;
+    sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Food, larder).map_err(|e| invalid(e.to_string()))?;
     sim.colony.wood = 0.0;
     // Founding opens the landing's valley and its neighbours.
     sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
@@ -592,11 +597,21 @@ mod tests {
     }
 
     #[test]
-    fn the_family_arrives_empty_handed() {
-        let (s, _) = settled(1);
-        assert_eq!((s.colony.food, s.colony.wood), (0.0, 0.0));
+    fn the_family_arrives_with_a_small_larder_and_nothing_else() {
+        use crate::buildings::Good;
+        let (mut s, _) = settled(1);
+        let need = crate::hud::food_need_per_day(&s);
+        let food = s.buildings.stores.amount(Good::Food);
+        assert!((food - need * START_LARDER_DAYS).abs() < 1e-3 && food > 0.0, "larder {food} for need {need}/day");
+        assert_eq!(s.colony.food, food, "the colony eats from that same store");
+        assert_eq!((s.colony.wood, s.buildings.stores.amount(Good::Logs)), (0.0, 0.0));
         assert!(s.agents.by_id.values().all(|a| a.load.is_none()));
-        assert!(s.buildings.stores.amount(crate::buildings::Good::Logs) == 0.0);
+        // With no foraging ordered, the larder runs low but nobody starves in the first two weeks.
+        while s.time_days < 14.0 {
+            s.step(0.5).unwrap();
+        }
+        assert_eq!(s.colony.population(), 4, "nobody died in the first two weeks");
+        assert!(s.buildings.stores.amount(Good::Food) < food, "they ate from the larder");
     }
 
     /// Three years with no order at all: nothing is built, nothing hostile or foreign ever appears.
