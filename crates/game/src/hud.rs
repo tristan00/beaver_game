@@ -606,6 +606,9 @@ fn world_input(
                 let _ = point;
             }
         }
+        Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && flow.fog.get(cell) < crate::flow::EXPLORED => {
+            hud.refuse("Unexplored", now);
+        }
         Tool::Building(kind) => {
             if mouse.just_pressed(MouseButton::Left) {
                 let p = build_logic::site_preview(&sim.0, kind, cell);
@@ -1200,7 +1203,7 @@ fn setup_minimap(mut commands: Commands, sim: Res<Sim>, mut images: ResMut<Asset
 
 /// Repaints the minimap every couple of seconds: land shaded by height, water by depth,
 /// buildings white, beavers orange.
-fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
+fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, flow: Res<Flow>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
     let Some(img) = img else { return };
     let now = time.elapsed_secs();
     if now < *next {
@@ -1222,11 +1225,14 @@ fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Opt
             } else {
                 [0.30 + 0.45 * h, 0.40 + 0.38 * h, 0.26 + 0.40 * h]
             };
+            // Unexplored ground is cloud, like the fog over the map.
+            let seen = (flow.fog.get((x, y)) / crate::flow::EXPLORED).min(1.0);
+            let c = [c[0] * seen + 0.78 * (1.0 - seen), c[1] * seen + 0.8 * (1.0 - seen), c[2] * seen + 0.84 * (1.0 - seen)];
             buf[i * 4..i * 4 + 4].copy_from_slice(&[(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 255]);
         }
     }
     for b in &s.buildings.buildings {
-        for (x, y) in b.cells() {
+        for (x, y) in b.cells().filter(|c| flow.fog.get(*c) >= crate::flow::EXPLORED) {
             if x < n && y < n {
                 buf[(y * n + x) * 4..(y * n + x) * 4 + 3].copy_from_slice(&[245, 245, 245]);
             }

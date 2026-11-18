@@ -3,6 +3,7 @@
 //! advances it with `step`, and mutates it through `apply`.
 
 pub mod agents;
+pub mod autoplay;
 pub mod buildings;
 pub mod calendar;
 pub mod catalogue;

@@ -5,6 +5,7 @@ mod camera;
 mod cli;
 mod entities_render;
 mod flow;
+mod fog_render;
 mod hud;
 mod icons;
 mod input;
@@ -66,6 +67,7 @@ fn main() -> AppExit {
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,
+        fog_render::FogRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,
         audio::AudioPlugin,

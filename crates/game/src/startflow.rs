@@ -36,10 +36,7 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     flow.phase = Phase::Settled;
     flow.settled_at = Some(flow.real_secs);
     let focus = family_centre(sim);
-    if let Some(v) = sim.world.valley_of((focus.0 as usize, focus.1 as usize)) {
-        flow.fog.reveal_valley(&sim.world, v);
-    }
-    flow.fog.reveal(focus, 25.0, &open_at(&sim.world));
+    flow.fog.reveal(focus, ARRIVAL_SIGHT, &open_at(&sim.world));
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
     orbit.distance = ARRIVAL_DISTANCE;
@@ -56,10 +53,9 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
     flow.phase = Phase::Scouting;
     flow.settled_at = None;
     let focus = around.map(|c| (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).unwrap_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0));
-    flow.fog.reveal_valley(&sim.world, sim.world.start);
-    if let Some(v) = sim.world.valley_of((focus.0 as usize, focus.1 as usize)) {
-        flow.fog.reveal_valley(&sim.world, v);
-    }
+    // The family has looked over only the ground around where it came in: the rest is explored
+    // by its beavers once it has settled.
+    flow.fog.reveal(focus, ARRIVAL_SIGHT, &open_at(&sim.world));
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
     orbit.distance = SCOUT_DISTANCE;
@@ -69,6 +65,8 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
     *sel = Selection::None;
 }
 
+/// Radius (cells) the family has seen when it arrives and chooses where to settle.
+const ARRIVAL_SIGHT: f32 = 22.0;
 /// Camera while choosing where to settle: wide enough to compare banks.
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;

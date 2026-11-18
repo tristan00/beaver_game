@@ -382,8 +382,7 @@ pub struct Flow {
 impl Flow {
     pub fn new(world: &World) -> Flow {
         let mouth = valley_mouth(world);
-        let mut fog = Fog::new(world.size);
-        fog.reveal_valley(world, world.start);
+        let fog = Fog::new(world.size);
         Flow {
             phase: Phase::Scouting,
             fog,
@@ -518,9 +517,7 @@ fn advance_flow(
     flow.real_secs += dt;
     let world = &sim.0.world;
     let allowed = open_at(world);
-    // camera focus lifts fog too
-    let (fx, fy) = world_cell(&sim.0.height, orbit.target);
-    flow.fog.reveal((fx, fy), FOCUS_SIGHT, &allowed);
+    let _ = &orbit; // the camera reveals nothing: exploring is the beavers' work
     // The colony's own beavers explore: the ground around each one is seen.
     if flow.phase == Phase::Settled {
         for b in &sim.0.colony.beavers {
@@ -553,8 +550,8 @@ fn unlock_valleys(time: Res<Time>, mut sim: ResMut<Sim>, mut flow: ResMut<Flow>)
         }
     }
     for id in opened_all {
-        flow.fog.reveal_valley(&sim.0.world, id);
-        flow.push_log(format!("The colony reached valley {} - its fog lifts", id.0));
+        // Reaching a valley opens it to the colony; its ground is still seen only as beavers go.
+        flow.push_log(format!("The colony reached valley {}", id.0));
     }
 }
 
@@ -692,8 +689,9 @@ mod tests {
             assert!(settle(&mut s, &mut flow, fogged).is_err());
         }
         assert!(!s.colony.is_founded());
+        flow.fog.reveal_valley(&s.world, s.world.start);
         let before = flow.fog.explored_cells();
-        let site = best_site(&s.world, &s.water.depth, &flow.fog).expect("a settleable site near the mouth");
+        let site = best_site(&s.world, &s.water.depth, &flow.fog).expect("a settleable site in the start valley");
         settle(&mut s, &mut flow, site).unwrap();
         assert_eq!(flow.phase, Phase::Settled);
         assert!(s.colony.is_founded());
@@ -725,6 +723,7 @@ mod tests {
     fn flow_a_collapsed_colony_is_reported() {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
+        flow.fog.reveal_valley(&s.world, s.world.start);
         let site = best_site(&s.world, &s.water.depth, &flow.fog).unwrap();
         settle(&mut s, &mut flow, site).unwrap();
         assert!(!s.colony.is_collapsed());
