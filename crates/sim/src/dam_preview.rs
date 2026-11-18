@@ -112,6 +112,20 @@ pub struct DamPreview {
     /// Days for the pond to reach `level` at the current inflow; 0 if it already holds that much
     /// water, `f32::INFINITY` if nothing flows in. Ignores rain, evaporation and seepage.
     pub fill_days: f32,
+    /// Water that reaches the pond per day as the rivers run now: `pressure` less what the wet
+    /// ground draining to the dam (outside the pond) loses to evaporation and seepage.
+    pub inflow: f32,
+    /// What the full pond would lose per day to evaporation and seepage (its cells the water
+    /// table does not keep).
+    pub pond_loss: f32,
+}
+
+impl DamPreview {
+    /// Whether the river brings the full pond at least `margin` times what it loses, so it fills
+    /// and stays full (as the season stands).
+    pub fn fills(&self, margin: f32) -> bool {
+        self.inflow >= margin * self.pond_loss
+    }
 }
 
 /// How many standard spans a dam of `n` cells is (the cost and labour multiplier).
@@ -177,10 +191,28 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     let pressure: f32 = sim.water.sources.iter().filter(|s| seen[s.y * w + s.x])
         .map(|s| s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0))).sum();
 
+    // At steady state what reaches the pond is what the sources give less what the wet ground
+    // on the way loses; the full pond then loses the same on each of its cells.
+    let cfg = &sim.water.config;
+    let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
+    let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * season.evap_mult() * (1.0 - ice[i]) + cfg.seepage };
+    let in_pond: Vec<bool> = {
+        let mut v = vec![false; w * h];
+        pond.flooded_cells.iter().chain(cells).for_each(|c| v[idx(c)] = true);
+        v
+    };
+    let lost_on_way: f32 = (0..w * h).filter(|&i| seen[i] && !in_pond[i] && water[i] > crate::water::WET_EPS).map(loss_at).sum();
+    let inflow = (pressure - lost_on_way).max(0.0);
+    let pond_loss: f32 = pond.flooded_cells.iter().map(idx).map(loss_at).sum();
+
     // Water still missing from the pond.
     let missing: f32 = pond.flooded_cells.iter().map(idx)
         .map(|i| (pond.level - terrain[i] - dams[i] - water[i]).max(0.0)).sum();
-    let fill_days = if missing <= 0.0 { 0.0 } else if pressure > 0.0 { missing / pressure } else { f32::INFINITY };
+    // While it fills the pond loses water on the ground already under water: about half its full
+    // loss on average (it spreads as it rises). If the full pond loses as much as reaches it, it
+    // never fills.
+    let net = inflow - 0.5 * pond_loss;
+    let fill_days = if missing <= 0.0 { 0.0 } else if inflow > pond_loss && net > 0.0 { missing / net } else { f32::INFINITY };
 
     Some(DamPreview {
         level: pond.level,
@@ -193,6 +225,8 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
         spill_at: pond.spill_at,
         pressure,
         fill_days,
+        inflow,
+        pond_loss,
     })
 }
 

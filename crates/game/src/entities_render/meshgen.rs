@@ -194,6 +194,58 @@ impl Mb {
         }
     }
 
+    /// Prism along X from `x0` to `x1` with the cross-section `prof` as (z, y) points running from
+    /// one foot (-z) over the top to the other (+z), convex. Normals are smoothed around the
+    /// profile (a rounded bank), both ends are capped, and colour runs `ca` (lowest) to `cb` (highest).
+    pub fn extrude_x(&mut self, prof: &[(f32, f32)], x0: f32, x1: f32, ca: [f32; 3], cb: [f32; 3]) {
+        let n = prof.len();
+        if n < 3 {
+            return;
+        }
+        let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
+        let (ylo, yhi) = prof.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        let col = |y: f32| mix(ca, cb, ((y - ylo) / (yhi - ylo).max(1e-5)).clamp(0.0, 1.0));
+        let base = self.pos.len() as u32;
+        for i in 0..n {
+            let (a, b) = (prof[i.saturating_sub(1)], prof[(i + 1).min(n - 1)]);
+            let (dz, dy) = (b.0 - a.0, b.1 - a.1);
+            let nrm = Vec3::new(0.0, dz, -dy);
+            for x in [x0, x1] {
+                self.push(&m, &nm, Vec3::new(x, prof[i].1, prof[i].0), nrm, col(prof[i].1));
+            }
+        }
+        for i in 0..n as u32 - 1 {
+            let (a0, b0, a1, b1) = (base + 2 * i, base + 2 * i + 1, base + 2 * i + 2, base + 2 * i + 3);
+            self.idx.extend_from_slice(&[a0, a1, b0, b0, a1, b1]);
+        }
+        let cy = prof.iter().map(|p| p.1).sum::<f32>() / n as f32;
+        let cz = prof.iter().map(|p| p.0).sum::<f32>() / n as f32;
+        for (x, s) in [(x0, -1.0f32), (x1, 1.0)] {
+            let c = self.push(&m, &nm, Vec3::new(x, cy, cz), Vec3::X * s, col(cy));
+            let first = self.pos.len() as u32;
+            for p in prof {
+                self.push(&m, &nm, Vec3::new(x, p.1, p.0), Vec3::X * s, col(p.1));
+            }
+            for i in 0..n as u32 - 1 {
+                if s > 0.0 {
+                    self.idx.extend([c, first + i, first + i + 1]);
+                } else {
+                    self.idx.extend([c, first + i + 1, first + i]);
+                }
+            }
+        }
+    }
+
+    /// Fades every vertex colour `t` of the way toward `to` (e.g. a dusty grey for a building left
+    /// high and dry).
+    pub fn weather(&mut self, to: [f32; 3], t: f32) {
+        for c in &mut self.col {
+            for k in 0..3 {
+                c[k] += (to[k] - c[k]) * t;
+            }
+        }
+    }
+
     /// Appends another builder's geometry translated by `off`.
     pub fn append(&mut self, other: Mb, off: Vec3) {
         let base = self.pos.len() as u32;

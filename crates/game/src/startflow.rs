@@ -137,10 +137,12 @@ fn begin_new_game(
     mut sel: ResMut<Selection>,
 ) {
     // The sim opens with no colony and a played game never settles for the player. Only scripted
-    // screenshot runs (developer tooling: `--screenshot` with `--demo-pond` or `BC_HUD_DEMO`,
-    // except the `settle` view) found the colony at the designed camp by script.
+    // screenshot runs (developer tooling: `--screenshot` with `--demo-pond`, `BC_HUD_DEMO` except
+    // the `settle` view, or `BC_SETTLE=1` for the plain settled start) found the colony at the
+    // designed camp by script.
     start_recording(&mut sim.0);
-    let scripted = cli.screenshot.is_some() && (cli.demo_pond || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
+    let settle = std::env::var_os("BC_SETTLE").is_some();
+    let scripted = cli.screenshot.is_some() && (cli.demo_pond || settle || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
     if !scripted {
         let camp = planned.0.as_ref().map(|d| d.camp);
         begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);
@@ -162,6 +164,18 @@ fn begin_new_game(
     if matches!(cli.cam.as_str(), "iso-close" | "iso-wide") {
         if let Some(p) = crate::camera::preset(&cli.cam) {
             *orbit = p;
+        }
+    }
+    // `BC_CLOSE=1`: a close look at the family where it landed, as a player first sees it.
+    if std::env::var_os("BC_CLOSE").is_some() {
+        let bs = &sim.0.colony.beavers;
+        if !bs.is_empty() {
+            let n = bs.len() as f32;
+            let c = (bs.iter().map(|b| b.pos.0).sum::<f32>() / n, bs.iter().map(|b| b.pos.1).sum::<f32>() / n);
+            let p = crate::entities_render::sim_view::cell_xz(&sim.0, c);
+            orbit.target = Vec3::new(p.x, crate::entities_render::height_at(&sim.0.height, p.x, p.y), p.y);
+            orbit.distance = 16.0;
+            orbit.pitch = 0.75;
         }
     }
 }

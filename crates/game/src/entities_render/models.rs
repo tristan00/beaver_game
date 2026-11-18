@@ -2,6 +2,7 @@
 //! structures. Everything is vertex-coloured, round-edged and a little exaggerated so it reads
 //! as cute from the strategy camera and still holds up close.
 use super::meshgen::{hex, mix, Mb, Rng};
+use super::structures;
 use super::scene::{Pond, Species, StructKind};
 use bevy::prelude::*;
 use std::f32::consts::{PI, TAU};
@@ -24,50 +25,132 @@ const FUR_DARK: u32 = pack(palette::FUR_DARK);
 const FUR_LIGHT: u32 = pack(palette::FUR_LIGHT);
 const INK: u32 = pack(palette::INK);
 
-pub fn beaver_body(mb: &mut Mb, o: Vec3) {
-    let (fd, f) = (hex(FUR_DARK), hex(FUR));
-    mb.ellipsoid_g(o + v(0.0, 0.56, 0.0), v(0.5, 0.47, 0.74), fd, f, 12, 8);
-    mb.ellipsoid_g(o + v(0.0, 0.46, 0.1), v(0.43, 0.34, 0.62), mix(f, hex(FUR_LIGHT), 0.5), hex(FUR_LIGHT), 10, 6);
+/// Leathery skin of the paws and tail: Fur dark pulled toward Ink, so the scaly tail and webbed
+/// feet read as bare skin against the fur.
+fn skin() -> [f32; 3] { mix(hex(FUR_DARK), hex(INK), 0.55) }
+fn skin_light() -> [f32; 3] { mix(hex(FUR_DARK), hex(INK), 0.25) }
+
+pub fn beaver_body(mb: &mut Mb, o: Vec3) { beaver_body_d(mb, o, true) }
+
+/// Pear-shaped body: a broad rump and haunches behind, a narrower chest, a pale belly and a few
+/// fur tufts along the back. `detail` adds the tufts (left out of the far mesh).
+fn beaver_body_d(mb: &mut Mb, o: Vec3, detail: bool) {
+    let (fd, f, fl) = (hex(FUR_DARK), hex(FUR), hex(FUR_LIGHT));
+    mb.ellipsoid_g(o + v(0.0, 0.57, -0.14), v(0.54, 0.5, 0.62), fd, f, 14, 9); // rump and back
+    mb.ellipsoid_g(o + v(0.0, 0.6, 0.3), v(0.43, 0.43, 0.46), fd, f, 12, 8); // chest and shoulders
+    mb.ellipsoid_g(o + v(0.0, 0.43, 0.16), v(0.37, 0.29, 0.55), mix(f, fl, 0.55), fl, 10, 6); // pale belly
     for s in [-1.0, 1.0] {
-        mb.ellipsoid_g(o + v(0.38 * s, 0.46, -0.3), v(0.24, 0.3, 0.34), fd, f, 8, 5);
+        mb.ellipsoid_g(o + v(0.37 * s, 0.47, -0.32), v(0.26, 0.33, 0.37), fd, f, 10, 6); // haunches
+    }
+    if detail {
+        // a ruff of slightly lighter fur at the neck and three tufts along the spine
+        mb.ellipsoid_g(o + v(0.0, 0.72, 0.56), v(0.36, 0.3, 0.16), f, fl, 10, 5);
+        for (i, z) in [0.12f32, -0.16, -0.42].into_iter().enumerate() {
+            let y = 1.03 - 0.06 * i as f32 - z.abs() * 0.12;
+            mb.ellipsoid_r(o + v(0.0, y, z), v(0.11, 0.06, 0.16), Quat::from_rotation_x(0.35), mix(f, fd, 0.35));
+        }
     }
 }
 
-pub fn beaver_head(mb: &mut Mb, o: Vec3) {
-    let (f, fd) = (hex(FUR), hex(FUR_DARK));
-    mb.ellipsoid_g(o + v(0.0, 0.05, 0.26), v(0.41, 0.37, 0.39), f, hex(FUR_LIGHT), 12, 8);
-    mb.ellipsoid(o + v(0.0, -0.1, 0.56), v(0.23, 0.17, 0.21), hex(FUR_LIGHT));
-    mb.ellipsoid(o + v(0.0, -0.01, 0.75), v(0.08, 0.06, 0.06), hex(INK));
+pub fn beaver_head(mb: &mut Mb, o: Vec3) { beaver_head_d(mb, o, true) }
+
+/// Round head with a puffy muzzle, big shiny eyes, a glossy nose, buck teeth and whiskers.
+fn beaver_head_d(mb: &mut Mb, o: Vec3, detail: bool) {
+    let (f, fd, fl) = (hex(FUR), hex(FUR_DARK), hex(FUR_LIGHT));
+    mb.ellipsoid_g(o + v(0.0, 0.05, 0.26), v(0.41, 0.37, 0.39), f, fl, 12, 8);
+    mb.ellipsoid_g(o + v(0.0, 0.26, 0.2), v(0.3, 0.14, 0.26), f, mix(f, fd, 0.3), 10, 5); // brow
+    // muzzle: two whisker pads side by side under the nose, and a chin
+    for s in [-1.0, 1.0] {
+        mb.ellipsoid(o + v(0.1 * s, -0.11, 0.58), v(0.15, 0.13, 0.15), fl);
+    }
+    mb.ellipsoid(o + v(0.0, -0.24, 0.5), v(0.13, 0.08, 0.12), mix(fl, hex(0xffffff), 0.25));
+    mb.ellipsoid_g(o + v(0.0, 0.0, 0.73), v(0.1, 0.07, 0.07), hex(INK), mix(hex(INK), hex(0x8a6a58), 0.5), 10, 6); // nose
     for s in [-1.0, 1.0] {
         mb.ellipsoid(o + v(0.21 * s, 0.14, 0.5), v(0.095, 0.105, 0.075), hex(INK)); // big shiny eyes
         mb.ellipsoid(o + v(0.185 * s, 0.185, 0.565), v(0.032, 0.036, 0.03), hex(0xffffff));
+        mb.ellipsoid(o + v(0.23 * s, 0.1, 0.565), v(0.014, 0.016, 0.014), hex(0xffffff));
         mb.ellipsoid(o + v(0.27 * s, 0.37, 0.1), v(0.12, 0.11, 0.07), fd); // ears
         mb.ellipsoid(o + v(0.27 * s, 0.37, 0.12), v(0.07, 0.06, 0.05), hex(0xd89a8a));
-        mb.ellipsoid(o + v(0.3 * s, -0.05, 0.42), v(0.1, 0.09, 0.09), hex(FUR_LIGHT)); // cheeks
-        mb.cuboid(o + v(0.047 * s, -0.31, 0.71), v(0.044, 0.095, 0.03), Quat::IDENTITY, hex(0xfff0c8), hex(0xffffff)); // buck teeth
+        mb.ellipsoid(o + v(0.3 * s, -0.05, 0.42), v(0.1, 0.09, 0.09), fl); // cheeks
+        mb.ellipsoid(o + v(0.3 * s, 0.02, 0.47), v(0.06, 0.035, 0.03), mix(fl, hex(0xe89a8a), 0.55)); // blush
+        mb.cuboid(o + v(0.047 * s, -0.31, 0.69), v(0.044, 0.095, 0.03), Quat::IDENTITY, hex(0xfff0c8), hex(0xffffff)); // buck teeth
+        if detail {
+            mb.ellipsoid(o + v(0.03 * s, 0.025, 0.79), v(0.022, 0.014, 0.012), hex(0xd8c4b8)); // nose shine
+            for k in 0..3 {
+                let a = (k as f32 - 1.0) * 0.22;
+                let root = o + v(0.15 * s, -0.09 + 0.04 * (1.0 - k as f32), 0.66);
+                let tip = root + v(0.36 * s, 0.03 + a * 0.4, -0.08 + a * 0.3);
+                mb.cyl(root, tip, 0.011, 0.006, hex(0xfff6e4), hex(0xfff6e4), 3);
+            }
+        }
     }
 }
 
-pub fn beaver_tail(mb: &mut Mb, o: Vec3) {
-    mb.ellipsoid(o + v(0.0, 0.0, -0.08), v(0.15, 0.11, 0.2), hex(FUR_DARK));
-    let (a, b) = (hex(FUR_DARK), hex(FUR_DARK)); // flat oval tail in Fur dark
-    mb.ellipsoid_g(o + v(0.0, 0.0, -0.58), v(0.4, 0.055, 0.56), a, b, 12, 6);
-    // scale pattern: darker ridge lines
-    for i in 0..3 {
-        let z = -0.35 - i as f32 * 0.22;
-        mb.ellipsoid(o + v(0.0, 0.035, z), v(0.3 - i as f32 * 0.06, 0.03, 0.045), mix(hex(FUR_DARK), hex(INK), 0.35));
+/// Closed eyelids, shown for a blink and while resting (a child of the head, same frame).
+pub fn beaver_lids(mb: &mut Mb) {
+    let f = hex(FUR);
+    for s in [-1.0, 1.0] {
+        mb.ellipsoid_g(v(0.21 * s, 0.145, 0.512), v(0.106, 0.115, 0.08), f, hex(FUR_LIGHT), 10, 6);
+        mb.ellipsoid_r(v(0.21 * s, 0.12, 0.588), v(0.075, 0.014, 0.018), Quat::from_rotation_z(0.12 * s), hex(INK)); // lash line
     }
 }
 
-/// Front (`front = true`) or hind leg; mesh hangs below the pivot.
+/// Wood chips flying from the teeth while gnawing (head frame, at the mouth).
+pub fn gnaw_chips(mb: &mut Mb) {
+    let cut = hex(0xf2d9a8);
+    for (p, r) in [(v(0.0, 0.0, 0.0), 0.0f32), (v(0.12, 0.1, -0.05), 0.9), (v(-0.06, 0.16, 0.06), 1.8), (v(0.18, -0.04, 0.08), 2.6)] {
+        mb.cuboid(p, v(0.05, 0.016, 0.035), Quat::from_rotation_y(r) * Quat::from_rotation_x(r * 0.7), cut, mix(cut, hex(0xc9a066), 0.5));
+    }
+}
+
+pub fn beaver_tail(mb: &mut Mb, o: Vec3) { beaver_tail_d(mb, o, true) }
+
+/// Flat paddle tail of leathery skin with a raised scale pattern on top.
+fn beaver_tail_d(mb: &mut Mb, o: Vec3, detail: bool) {
+    mb.ellipsoid(o + v(0.0, 0.0, -0.08), v(0.17, 0.12, 0.22), hex(FUR_DARK)); // furry root
+    let (a, b) = (skin(), skin_light());
+    mb.ellipsoid_g(o + v(0.0, 0.0, -0.6), v(0.4, 0.06, 0.56), a, b, 14, 6);
+    if !detail {
+        return;
+    }
+    // scales: a grid of small raised lozenges, offset every other row
+    let scale = mix(skin_light(), hex(FUR_DARK), 0.35);
+    for row in 0..7 {
+        let z = -0.2 - row as f32 * 0.13;
+        let off = if row % 2 == 0 { 0.0 } else { 0.065 };
+        for col in -3..=3 {
+            let x = col as f32 * 0.13 + off;
+            let (u, w) = (x / 0.4, (z + 0.6) / 0.56);
+            let inside = 1.0 - u * u - w * w;
+            if inside < 0.18 {
+                continue;
+            }
+            let y = 0.06 * inside.sqrt();
+            mb.ellipsoid_g(o + v(x, y, z), v(0.05, 0.012, 0.045), scale, scale, 4, 2);
+        }
+    }
+}
+
+/// Front (`front = true`) or hind leg; mesh hangs below the pivot. Front legs end in little hands
+/// with three fingers; hind legs in big webbed feet with five toes.
 pub fn beaver_leg(mb: &mut Mb, front: bool) {
-    let fd = hex(FUR_DARK);
+    let (fd, f) = (hex(FUR_DARK), hex(FUR));
     if front {
-        mb.ellipsoid_g(v(0.0, -0.15, 0.02), v(0.13, 0.21, 0.14), fd, hex(FUR), 8, 5);
-        mb.ellipsoid(v(0.0, -0.31, 0.08), v(0.115, 0.055, 0.15), fd);
+        mb.ellipsoid_g(v(0.0, -0.15, 0.02), v(0.13, 0.21, 0.14), fd, f, 8, 5);
+        mb.ellipsoid(v(0.0, -0.3, 0.07), v(0.11, 0.06, 0.13), skin_light());
+        for k in 0..3 {
+            let x = (k as f32 - 1.0) * 0.06;
+            mb.ellipsoid(v(x, -0.31, 0.19), v(0.032, 0.03, 0.045), skin());
+        }
     } else {
-        mb.ellipsoid_g(v(0.0, -0.15, 0.04), v(0.16, 0.22, 0.2), fd, hex(FUR), 8, 5);
-        mb.ellipsoid(v(0.0, -0.33, 0.14), v(0.14, 0.055, 0.24), fd);
+        mb.ellipsoid_g(v(0.0, -0.15, 0.04), v(0.16, 0.22, 0.2), fd, f, 8, 5);
+        // webbed foot: a fan that widens toward the toes
+        mb.ellipsoid_g(v(0.0, -0.335, 0.16), v(0.15, 0.045, 0.26), skin(), skin_light(), 10, 4);
+        mb.ellipsoid(v(0.0, -0.33, 0.32), v(0.2, 0.03, 0.12), skin_light());
+        for k in 0..5 {
+            let a = (k as f32 - 2.0) * 0.22;
+            mb.ellipsoid(v(a.sin() * 0.24, -0.325, 0.18 + a.cos() * 0.24), v(0.035, 0.032, 0.05), skin());
+        }
     }
 }
 
@@ -79,9 +162,9 @@ pub fn beaver_log(mb: &mut Mb) {
 
 /// Whole standing beaver as one mesh (far LOD).
 pub fn beaver_static(mb: &mut Mb) {
-    beaver_body(mb, Vec3::ZERO);
-    beaver_head(mb, HEAD_PIVOT);
-    beaver_tail(mb, TAIL_PIVOT);
+    beaver_body_d(mb, Vec3::ZERO, false);
+    beaver_head_d(mb, HEAD_PIVOT, false);
+    beaver_tail_d(mb, TAIL_PIVOT, false);
     for (i, p) in LEG_PIVOTS.iter().enumerate() {
         let mut leg = Mb::new();
         beaver_leg(&mut leg, i < 2);
@@ -198,50 +281,50 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
     match lod {
         0 => match sp {
             Species::Aspen => {
+                root_flare(&mut mb, 0.19, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 2.9, 0.0), 0.19, 0.1, trunk, trunk, 7);
-                for y in [0.5, 1.1, 1.7] {
-                    mb.ellipsoid(v(0.0, y, 0.0), v(0.2, 0.03, 0.2), hex(0x4a4036));
-                }
+                bark_eyes(&mut mb, 2.9, 0.19, 0.1, 9, 11);
                 if bare {
                     twigs(&mut mb, v(0.0, 2.2, 0.0), 6, 1.3, 1.7, hex(0xa89c88), 1);
                 } else {
-                    mb.ellipsoid_g(v(0.0, 3.5, 0.0), v(1.0, 1.4, 1.0), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(0.6, 2.95, 0.25), v(0.72, 0.9, 0.72), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(-0.55, 3.0, -0.3), v(0.75, 0.95, 0.75), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(0.1, 4.4, 0.0), v(0.52, 0.62, 0.52), dark, light, seg, rings);
+                    crown(&mut mb, v(0.0, 3.45, 0.0), v(0.95, 1.35, 0.95), 11, 0.52, dark, light, 3);
+                    crown(&mut mb, v(0.1, 4.45, 0.0), v(0.45, 0.5, 0.45), 4, 0.36, dark, light, 4);
                 }
             }
             Species::Maple => {
-                mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.46, -0.1), (0.3, 0.45), (0.22, 1.6), (0.0, 1.6)], 8, trunk, trunk, false);
+                mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.55, -0.1), (0.42, 0.08), (0.3, 0.45), (0.22, 1.6), (0.0, 1.6)], 9, mix(trunk, hex(INK), 0.2), trunk, false);
                 mb.cyl(v(0.0, 1.4, 0.0), v(0.7, 2.4, 0.2), 0.14, 0.08, trunk, trunk, 6);
                 mb.cyl(v(0.0, 1.4, 0.0), v(-0.6, 2.3, -0.3), 0.14, 0.08, trunk, trunk, 6);
+                mb.cyl(v(0.0, 1.5, 0.0), v(0.15, 2.5, -0.75), 0.12, 0.07, trunk, trunk, 6);
                 if bare {
                     twigs(&mut mb, v(0.0, 1.8, 0.0), 8, 1.5, 1.9, hex(0x6b4a30), 2);
                 } else {
-                    mb.ellipsoid_g(v(0.0, 3.1, 0.0), v(1.55, 1.25, 1.55), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(1.15, 2.65, 0.3), v(1.0, 0.9, 1.0), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(-1.05, 2.75, -0.4), v(1.05, 0.95, 1.05), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(0.2, 2.6, -1.15), v(0.95, 0.85, 0.95), dark, light, seg, rings);
-                    mb.ellipsoid_g(v(0.0, 3.95, 0.1), v(1.05, 0.85, 1.05), dark, light, seg, rings);
+                    crown(&mut mb, v(0.0, 3.05, 0.0), v(1.5, 1.2, 1.5), 13, 0.72, dark, light, 7);
+                    crown(&mut mb, v(0.0, 3.95, 0.1), v(0.85, 0.7, 0.85), 5, 0.55, dark, light, 8);
                     if season == Season::Spring {
                         let mut r = Rng(77);
-                        for _ in 0..9 {
+                        for _ in 0..11 {
                             let (a, e) = (r.range(0.0, TAU), r.range(0.1, 1.1));
-                            let p = v(a.cos() * e.cos() * 1.45, 3.1 + e.sin() * 1.2, a.sin() * e.cos() * 1.45);
-                            mb.ellipsoid(p, v(0.26, 0.22, 0.26), hex(0xffb3d1));
+                            let p = v(a.cos() * e.cos() * 1.7, 3.1 + e.sin() * 1.25, a.sin() * e.cos() * 1.7);
+                            mb.ellipsoid(p, v(0.24, 0.2, 0.24), hex(0xffb3d1));
                         }
                     }
                 }
             }
             Species::Pine => {
-                // round canopy of four stacked blobs (docs/STYLE.md section 1), no spikes
+                // tiers of soft, drooping skirts (round-rimmed, no spikes), snow-topped in winter
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 1.5, 0.0), 0.24, 0.16, trunk, trunk, 7);
+                root_flare(&mut mb, 0.24, trunk);
                 let top = if season == Season::Winter { hex(0xf4f9ff) } else { light };
-                for (c, r) in [(v(0.0, 1.9, 0.0), v(1.4, 1.0, 1.4)), (v(0.2, 2.85, -0.1), v(1.08, 0.85, 1.08)), (v(-0.15, 3.7, 0.1), v(0.84, 0.72, 0.84)), (v(0.0, 4.5, 0.0), v(0.55, 0.55, 0.55))] {
-                    mb.ellipsoid_g(c, r, dark, top, seg, rings);
+                let tiers = [(0.95f32, 1.55f32, 1.35f32), (1.85, 1.28, 1.2), (2.7, 1.0, 1.1), (3.45, 0.74, 1.0), (4.1, 0.46, 0.85)];
+                for (k, (y0, rr, h)) in tiers.into_iter().enumerate() {
+                    let prof = [(0.12, y0 + 0.3), (rr * 0.88, y0 - 0.04), (rr, y0 + 0.1), (rr * 0.74, y0 + h * 0.42), (rr * 0.32, y0 + h * 0.82), (0.0, y0 + h)];
+                    let under = mix(dark, hex(INK), 0.12);
+                    mb.lathe(Mat4::from_rotation_y(k as f32 * 0.7), &prof, seg + 1, under, mix(top, light, 0.15 * k as f32), true);
                 }
             }
             Species::Willow => {
+                root_flare(&mut mb, 0.28, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.12, 1.3, 0.0), 0.28, 0.2, trunk, trunk, 7);
                 mb.cyl(v(0.12, 1.2, 0.0), v(0.0, 2.3, 0.06), 0.2, 0.14, trunk, trunk, 7);
                 if bare {
@@ -252,8 +335,15 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                         mb.cyl(p, p + v(0.0, -1.9, 0.0), 0.04, 0.015, light, light, 4);
                     }
                 } else {
-                    mb.ellipsoid_g(v(0.0, 3.05, 0.0), v(1.6, 1.05, 1.6), dark, light, seg, rings);
-                    mb.lathe(Mat4::IDENTITY, &[(1.7, 0.6), (2.05, 1.2), (1.95, 2.2), (1.45, 3.0)], 12, mix(dark, light, 0.2), light, true);
+                    crown(&mut mb, v(0.0, 3.1, 0.0), v(1.55, 0.95, 1.55), 10, 0.6, dark, light, 9);
+                    mb.lathe(Mat4::IDENTITY, &[(1.7, 0.6), (2.05, 1.2), (1.95, 2.2), (1.45, 3.0)], 14, mix(dark, light, 0.2), light, true);
+                    // trailing frond tips break up the curtain's hem
+                    let mut r = Rng(19);
+                    for i in 0..14 {
+                        let a = i as f32 / 14.0 * TAU + r.range(-0.1, 0.1);
+                        let (rr, y) = (r.range(1.75, 2.0), r.range(0.45, 0.8));
+                        mb.ellipsoid_g(v(a.cos() * rr, y, a.sin() * rr), v(0.13, 0.32, 0.13), mix(dark, light, 0.15), mix(dark, light, 0.5), 5, 3);
+                    }
                 }
             }
         },
@@ -264,8 +354,9 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 mb.ellipsoid(v(0.0, top_h * 0.62, 0.0), v(0.7, 0.9, 0.7), mix(trunk, hex(0x8a7a60), 0.5));
             } else if sp == Species::Pine {
                 let top = if season == Season::Winter { hex(0xeef6ff) } else { light };
-                mb.ellipsoid_g(v(0.0, 2.3, 0.0), v(1.4, 1.4, 1.4), dark, top, seg, rings);
-                mb.ellipsoid_g(v(0.1, 3.8, 0.0), v(0.9, 1.0, 0.9), dark, top, seg, rings);
+                for (y0, rr, h) in [(1.0f32, 1.5f32, 1.9f32), (2.4, 1.05, 1.6), (3.6, 0.6, 1.2)] {
+                    mb.lathe(Mat4::IDENTITY, &[(0.0, y0 + 0.2), (rr, y0), (rr * 0.6, y0 + h * 0.5), (0.0, y0 + h)], seg, dark, top, true);
+                }
             } else {
                 let (rx, ry, cy) = match sp {
                     Species::Aspen => (1.05, 1.6, 3.4),
@@ -287,6 +378,43 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
         }
     }
     mb.build()
+}
+
+/// A leafy crown: a core plus `n` overlapping clumps spread over an ellipsoid shell (golden-angle
+/// spiral, top to a little below the equator). Each clump is shaded dark below and light on top,
+/// lighter toward the sun-facing top of the crown, with a little jitter so it reads as foliage.
+fn crown(mb: &mut Mb, c: Vec3, r: Vec3, n: usize, clump: f32, dark: [f32; 3], light: [f32; 3], seed: u32) {
+    let mut rng = Rng(seed * 7919 + 13);
+    mb.ellipsoid_g(c, r * 0.8, mix(dark, hex(INK), 0.08), mix(dark, light, 0.55), 9, 6);
+    for i in 0..n {
+        let y = 0.95 - (i as f32 + 0.5) / n as f32 * 1.45;
+        let ring = (1.0 - y * y).max(0.0).sqrt();
+        let a = i as f32 * 2.399_963 + rng.range(-0.35, 0.35);
+        let p = c + v(a.cos() * ring * r.x, y * r.y, a.sin() * ring * r.z) * 0.8;
+        let s = clump * rng.range(0.82, 1.15) * (1.0 - 0.15 * y.max(0.0));
+        let up = (y * 0.5 + 0.5).clamp(0.0, 1.0);
+        let j = rng.range(-0.12, 0.12);
+        let lo = mix(dark, light, (0.05 + 0.3 * up + j).clamp(0.0, 1.0));
+        let hi = mix(dark, light, (0.75 + 0.25 * up + j).clamp(0.0, 1.0));
+        mb.ellipsoid_g(p, v(s, s * 0.82, s), lo, hi, 8, 5);
+    }
+}
+
+/// Flared roots where a trunk of radius `r` meets the ground.
+fn root_flare(mb: &mut Mb, r: f32, bark: [f32; 3]) {
+    mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (r * 1.9, -0.1), (r * 1.25, 0.1), (r, 0.42)], 8, mix(bark, hex(INK), 0.25), bark, true);
+}
+
+/// Dark lens-shaped "eyes" on pale aspen bark, where old branches fell away.
+fn bark_eyes(mb: &mut Mb, h: f32, r0: f32, r1: f32, n: usize, seed: u32) {
+    let mut rng = Rng(seed);
+    for _ in 0..n {
+        let y = rng.range(0.35, h * 0.85);
+        let a = rng.range(0.0, TAU);
+        let rr = r0 + (r1 - r0) * (y / h) + 0.004;
+        let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - a);
+        mb.ellipsoid_r(v(a.cos() * rr, y, a.sin() * rr), v(0.075, 0.028, 0.018), rot, hex(0x4a4036));
+    }
 }
 
 fn twigs(mb: &mut Mb, base: Vec3, n: usize, reach: f32, rise: f32, col: [f32; 3], twig_levels: u32) {
@@ -342,7 +470,7 @@ pub fn stage_of(progress: f32) -> u8 {
     if progress >= 1.0 { 3 } else { ((progress.max(0.0) * 3.0) as u8).min(2) }
 }
 
-fn stake(mb: &mut Mb, p: Vec3, h: f32, flag: bool) {
+pub(super) fn stake(mb: &mut Mb, p: Vec3, h: f32, flag: bool) {
     mb.cyl(p + v(0.0, -0.4, 0.0), p + v(0.0, h, 0.0), 0.06, 0.05, hex(0xf3e7c9), hex(0xf3e7c9), 5);
     mb.ellipsoid(p + v(0.0, h + 0.02, 0.0), v(0.08, 0.06, 0.08), hex(0xf3e7c9));
     if flag {
@@ -351,7 +479,7 @@ fn stake(mb: &mut Mb, p: Vec3, h: f32, flag: bool) {
 }
 
 /// Construction-site dressing: flagged corner stakes joined by a striped rope, plus loose material.
-fn site_markers(mb: &mut Mb, hx: f32, hz: f32, y: f32) {
+pub(super) fn site_markers(mb: &mut Mb, hx: f32, hz: f32, y: f32) {
     let corners = [v(-hx, y, -hz), v(hx, y, -hz), v(hx, y, hz), v(-hx, y, hz)];
     for (i, c) in corners.iter().enumerate() {
         stake(mb, *c, 1.25, true);
@@ -366,12 +494,17 @@ fn site_markers(mb: &mut Mb, hx: f32, hz: f32, y: f32) {
     }
 }
 
-fn stick(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, k: f32) {
+pub(super) fn stick(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, k: f32) {
     let bark = mix(hex(0x8b5f33), hex(0xb98a52), k);
     mb.log(a, b, r, bark, hex(0xe9cf9b), 5);
 }
 
-fn stick_pile(mb: &mut Mb, c: Vec3, yaw: f32, n: usize, seed: u32) {
+/// A stick of a given colour (e.g. peeled pale wood).
+pub(super) fn stick_c(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, col: [f32; 3]) {
+    mb.log(a, b, r, col, hex(0xe9cf9b), 5);
+}
+
+pub(super) fn stick_pile(mb: &mut Mb, c: Vec3, yaw: f32, n: usize, seed: u32) {
     let mut r = Rng(seed);
     for i in 0..n {
         let layer = (i / 3) as f32;
@@ -382,12 +515,40 @@ fn stick_pile(mb: &mut Mb, c: Vec3, yaw: f32, n: usize, seed: u32) {
     }
 }
 
-fn mud_lump(mb: &mut Mb, c: Vec3, s: f32) {
+pub(super) fn mud_lump(mb: &mut Mb, c: Vec3, s: f32) {
     mb.ellipsoid_g(c, v(0.55 * s, 0.26 * s, 0.45 * s), hex(0x4d3520), hex(0x77573a), 8, 5);
 }
 
+/// Stage of a finished water building whose water has dried up: it stands abandoned.
+pub const DRY_STAGE: u8 = 4;
+
+/// What each water building stands on below its floor (see `structures::footing`); `None` for
+/// buildings of dry ground and for water works that draw their own (dam, canal, lock, dock, wheel).
+pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
+    use structures::Footing::*;
+    Some(match kind {
+        StructKind::Lodge => Mound(3.3),
+        StructKind::Burrow => Mound(2.1),
+        StructKind::FoodCache => Mound(1.65),
+        StructKind::ScentMound => Mound(1.0),
+        StructKind::MudPit => Mound(1.75),
+        StructKind::ForagerHut => Piles(1.7, 1.7),
+        StructKind::LoggingCamp => Piles(1.9, 1.9),
+        StructKind::Workshop => Piles(2.1, 1.7),
+        StructKind::Warehouse => Piles(2.9, 2.5),
+        StructKind::Storehouse => Piles(3.8, 2.7),
+        StructKind::Mill => Stone(1.9),
+        _ => return None,
+    })
+}
+
+/// A structure's mesh at construction `stage` 0..=3, or `DRY_STAGE` for a finished water building
+/// left high and dry: drawn finished, faded, with a tide line and dried weed on its footing and dead
+/// grass around it.
 pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
     let mut mb = Mb::new();
+    let dry = stage == DRY_STAGE;
+    let stage = stage.min(3);
     match kind {
         StructKind::Lodge => lodge(&mut mb, stage),
         StructKind::Dam => dam(&mut mb, len, stage),
@@ -398,6 +559,33 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Dock => dock(&mut mb, len, stage),
         StructKind::Barge => barge(&mut mb, len, stage, true),
         StructKind::BargeEmpty => barge(&mut mb, len, 3, false),
+        StructKind::FoodCache => structures::food_cache(&mut mb, stage),
+        StructKind::ScentMound => structures::scent_mound(&mut mb, stage),
+        StructKind::GuardPost => structures::guard_post(&mut mb, stage),
+        StructKind::ForagerHut => structures::forager_hut(&mut mb, stage),
+        StructKind::MudPit => structures::mud_pit(&mut mb, stage),
+        StructKind::TreeNursery => structures::tree_nursery(&mut mb, stage),
+        StructKind::Warehouse => structures::warehouse(&mut mb, stage),
+        StructKind::Storehouse => structures::storehouse(&mut mb, stage),
+        StructKind::LoggingCamp => structures::logging_camp(&mut mb, stage),
+        StructKind::QuarryCamp => structures::quarry_camp(&mut mb, stage),
+        StructKind::ForesterLodge => structures::forester_lodge(&mut mb, stage),
+        StructKind::Mill => structures::mill(&mut mb, stage),
+        StructKind::Lock => structures::lock(&mut mb, stage),
+    }
+    if let Some(f) = footing_of(kind) {
+        if dry {
+            let (hx, hz) = match f {
+                structures::Footing::Mound(r) | structures::Footing::Stone(r) => (r, r),
+                structures::Footing::Piles(x, z) => (x, z),
+            };
+            structures::abandoned_dressing(&mut mb, hx, hz);
+            mb.weather(structures::abandoned_tint(), 0.45);
+        }
+        structures::footing(&mut mb, f, dry);
+        if dry {
+            mb.weather(structures::abandoned_tint(), 0.12);
+        }
     }
     mb.build()
 }
@@ -408,7 +596,6 @@ fn lodge(mb: &mut Mb, stage: u8) {
     let phi_top = if stage == 3 { PI / 2.0 } else { (f).asin() };
     let nb = if stage == 3 { 7 } else { (6.0 * f).ceil() as usize + 1 };
     let (c0, c1) = (hex(0x7c5530), hex(0x9a7040));
-    mb.lathe(Mat4::IDENTITY, &[(rad * 1.04, -1.2), (rad * 1.04, 0.0)], 18, hex(0x4a3320), hex(0x5c4128), false);
     for i in 0..nb {
         let (p0, p1) = (phi_top * i as f32 / nb as f32, phi_top * (i + 1) as f32 / nb as f32);
         let bulge = if i % 2 == 0 { 1.0 } else { 1.035 };
@@ -427,14 +614,20 @@ fn lodge(mb: &mut Mb, stage: u8) {
         let th = r.range(0.0, TAU);
         let surf = v(rad * phi.cos() * th.cos(), hgt * phi.sin(), rad * phi.cos() * th.sin());
         // keep the doorway free
-        if th.sin() > 0.55 && phi < 0.55 {
+        if th.sin() > 0.3 && phi < 0.8 {
             continue;
         }
         let out = v(th.cos() * phi.cos(), phi.sin() * 1.1, th.sin() * phi.cos()).normalize();
         let tang = v(-th.sin(), r.range(-0.3, 0.5), th.cos());
         let dir = (out * r.range(0.25, 0.55) + tang * r.range(-1.0, 1.0)).normalize();
         let l = r.range(1.2, 2.2);
-        stick(mb, surf - dir * l * 0.55, surf + dir * l * 0.45, r.range(0.065, 0.1), r.next());
+        let (rad, k) = (r.range(0.065, 0.1), r.next());
+        if k < 0.15 {
+            // bark stripped for food: pale peeled sticks among the brown
+            stick_c(mb, surf - dir * l * 0.55, surf + dir * l * 0.45, rad, mix(hex(0xf2d9a8), hex(0xd8c29a), 0.4));
+        } else {
+            stick(mb, surf - dir * l * 0.55, surf + dir * l * 0.45, rad, k);
+        }
     }
     if stage == 3 {
         // mud cap, patches and a smoke vent
@@ -444,10 +637,21 @@ fn lodge(mb: &mut Mb, stage: u8) {
         }
         stick(mb, v(-0.3, 2.6, 0.0), v(0.5, 3.6, 0.2), 0.08, 0.3);
         stick(mb, v(0.4, 2.6, -0.1), v(-0.3, 3.55, 0.1), 0.08, 0.6);
+        // moss and grass taking hold on the old dome
+        let mut m = Rng(4321);
+        for _ in 0..7 {
+            let (phi, th) = (m.range(0.25, 1.05), m.range(0.0, TAU));
+            if th.sin() > 0.3 && phi < 0.8 {
+                continue;
+            }
+            let p = v(rad * phi.cos() * th.cos(), hgt * phi.sin(), rad * phi.cos() * th.sin()) * 1.02;
+            let s = m.range(0.35, 0.6);
+            mb.ellipsoid_g(p, v(s, s * 0.35, s), hex(0x4e9a52), hex(0x85c468), 8, 4);
+        }
     }
     if stage >= 2 {
         mb.ellipsoid_g(v(0.0, 0.85, 3.0), v(1.15, 1.0, 0.6), hex(0x4d3520), hex(0x6f5033), 12, 7);
-        mb.ellipsoid(v(0.0, 0.72, 3.3), v(0.8, 0.82, 0.32), hex(0x140c09));
+        mb.ellipsoid(v(0.0, 0.7, 3.56), v(0.7, 0.72, 0.12), hex(0x140c09)); // doorway, in front of the arch so its edge is clean
         mb.ellipsoid_g(v(0.0, 0.05, 3.85), v(1.25, 0.32, 1.05), hex(0x5d4228), hex(0x866640), 10, 5);
         stick_pile(mb, v(1.9, 0.0, 3.6), 0.3, 6, 5);
     }
@@ -483,43 +687,13 @@ fn lodge(mb: &mut Mb, stage: u8) {
     }
 }
 
+/// A dam along X `len` long, for the stub scene (the live game draws dams cell by cell from the
+/// sim's dam heights, `structures::dam_cell`): a low staked course while building, then the bank.
 fn dam(mb: &mut Mb, len: f32, stage: u8) {
-    let hl = len * 0.5;
-    let layers = [1, 2, 3, 3][stage as usize];
-    let n = ((len / 1.1).ceil() as i32).max(2);
-    for i in 0..=n {
-        let x = -hl + len * i as f32 / n as f32;
-        let hgt = if stage == 3 { 0.7 } else { 0.45 };
-        mb.ellipsoid_g(v(x, 0.1, 0.0), v(0.95, hgt, 1.2), hex(0x4d3520), hex(0x6e5034), 8, 5);
-    }
-    let mut r = Rng(99 + stage as u32 * 13 + len as u32);
-    for layer in 0..layers {
-        let y = 0.55 + layer as f32 * 0.36;
-        let count = (len * 2.4) as usize;
-        for _ in 0..count {
-            let x = r.range(-hl, hl);
-            let z = r.range(-0.5, 0.5) * (1.0 - layer as f32 * 0.25);
-            let yaw = r.range(-0.45, 0.45) + if r.next() < 0.15 { PI / 2.0 } else { 0.0 };
-            let l = r.range(1.2, 1.9);
-            let d = v(yaw.cos(), r.range(-0.04, 0.08), -yaw.sin());
-            let c = v(x, y + r.range(-0.05, 0.08), z);
-            stick(mb, c - d * l * 0.5, c + d * l * 0.5, r.range(0.08, 0.12), r.next());
-        }
-    }
     if stage == 3 {
-        for i in 0..n {
-            let x = -hl + (i as f32 + 0.5) * len / n as f32;
-            mud_lump(mb, v(x, 1.45 + r.range(-0.05, 0.05), r.range(-0.2, 0.2)), 1.25);
-        }
-        // a leafy branch woven in, for colour
-        let c = v(r.range(-hl * 0.5, hl * 0.5), 1.35, 0.5);
-        stick(mb, c, c + v(0.3, 0.7, 0.4), 0.05, 0.5);
-        mb.ellipsoid_g(c + v(0.35, 0.8, 0.45), v(0.3, 0.2, 0.3), hex(0x4aa042), hex(0x8ad25a), 7, 4);
+        structures::dam_cell(mb, 1.4, len, 0, false);
     } else {
-        for i in 0..=(len as i32) {
-            stake(mb, v(-hl + i as f32 * len / len.max(1.0), 0.0, 1.35), 1.15 + (i % 2) as f32 * 0.15, i % 2 == 0);
-        }
-        stick_pile(mb, v(0.0, 0.0, -1.7), 0.0, 6, 3);
+        structures::dam_cell(mb, [0.25, 0.6, 1.0][stage as usize], len, 1, true);
     }
 }
 
@@ -634,9 +808,11 @@ fn workshop(mb: &mut Mb, stage: u8) {
     }
 }
 
-fn hex_roof(mb: &mut Mb, hx: f32, hz: f32, eaves: f32) {
+fn hex_roof(mb: &mut Mb, hx: f32, hz: f32, eaves: f32) { hex_roof_c(mb, hx, hz, eaves, hex(0xa63f28), hex(0xd75c38), hex(0x8f3320)) }
+
+/// A gabled roof ridged along X, in colours `c0` (eaves) to `c1` (ridge) with a `cap` ridge pole.
+pub(super) fn hex_roof_c(mb: &mut Mb, hx: f32, hz: f32, eaves: f32, c0: [f32; 3], c1: [f32; 3], cap: [f32; 3]) {
     let ridge = eaves + 0.95;
-    let (c0, c1) = (hex(0xa63f28), hex(0xd75c38));
     mb.hex(
         [
             v(-hx, eaves, -hz), v(hx, eaves, -hz), v(hx, eaves, hz), v(-hx, eaves, hz),
@@ -645,7 +821,15 @@ fn hex_roof(mb: &mut Mb, hx: f32, hz: f32, eaves: f32) {
         c0,
         c1,
     );
-    mb.cyl(v(-hx, ridge + 0.02, 0.0), v(hx, ridge + 0.02, 0.0), 0.12, 0.12, hex(0x8f3320), hex(0x8f3320), 6);
+    mb.cyl(v(-hx, ridge + 0.02, 0.0), v(hx, ridge + 0.02, 0.0), 0.12, 0.12, cap, cap, 6);
+    // shingle courses: darker lines across each slope
+    for k in 1..4 {
+        let t = k as f32 / 4.0;
+        for s in [-1.0f32, 1.0] {
+            let (y, z) = (eaves + (ridge - eaves) * t + 0.015, s * hz * (1.0 - t));
+            mb.cyl(v(-hx, y, z), v(hx, y, z), 0.035, 0.035, mix(c0, cap, 0.6), mix(c0, cap, 0.6), 4);
+        }
+    }
     // underside trim
     mb.cuboid(v(0.0, eaves - 0.04, 0.0), v(hx - 0.1, 0.05, hz - 0.1), Quat::IDENTITY, hex(0x5a3a20), hex(0x6a4528));
 }

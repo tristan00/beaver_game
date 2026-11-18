@@ -363,6 +363,7 @@ Fix buttons are icons (role or building icon with + ); the tooltip says what wil
 | Beavers idle | role icon `+N` for the highest-priority open role, or opens the Jobs board when none is open |
 | Store full | warehouse icon + (place), or haul icon (opens the store's haul orders) |
 | Dam weak or failed | ⌖ to the dam; builder icon `+` for repair if repair exists |
+| Buildings high and dry (their water has gone) | ⌖ to the building, a home first; the fix is the player's: raise or repair the dam that held the water |
 | Stranger asks to join | ✓ / ✕ |
 
 ### W8. The first ten minutes must be playable
@@ -377,7 +378,7 @@ On the working copy the start looks likely to stall: about 8 days of food, the f
 |---|---|---|
 | Goods strip | "Food 6 -0.8/d lasts 8d …" with tiny colour bars | food icon 6 ▼0.8; "8 d" chip only when a good would run out within 20 days. Crafted goods join once owned. Beaver icon + count; idle chip (W5). |
 | Calendar | "Spring 21 Year 1", unlabelled colour bars, "Dry summer in 70 d" | season icon + day; ribbon with season icons and today's tick; next-event chip (sun icon + "70 d", amber when it's a dry summer). Year in the tooltip. |
-| Speed | "\|\| paused", "1x 2x 3x" | ⏸ ▶ ▶▶ ▶▶▶ icons. |
+| Speed | "\|\| paused", "1x 3x 6x" | ⏸ ▶ ▶▶ ▶▶▶ icons (1x paces a walking beaver at about five cells a second). |
 | Pond cover | a sentence in a box | a small gauge (fill = days of summer cover vs 90); empty with a dashed outline before the first dam. Text only in the tooltip. |
 | Alerts | title + cause sentence + fix + Show | icon + number (A3), fix icon button, ⌖. Cause in the tooltip. Up to 4; more collapse into "+N". Settings: per-kind show/hide and auto-pause. |
 | View rail | "VIEW / World F1 …", "TOOLS / Ledger L / Search / / Undo ^Z" | icon column: world, water, goods (P2: more). Ledger becomes the Colony screen (Tab). Search and undo move to the build bar's right end as icons. |
@@ -513,6 +514,7 @@ Notation: `[food]` = the food icon, `[logs]` = the logs icon, and so on. **cut**
 | "Show >" | ⌖ |
 | "A dam could not be raised" | `[dam] ✕`; tip: the cleaned sim reason (A7) |
 | "Dam at N% strength" | `[dam] N%` |
+| "N buildings left high and dry" | `[building]↓ N` (■ when a lodge or burrow is among them); tip: `High and dry` per building |
 | "Water runs over its crest or it is ageing; it breaks at 0%" | tip: `Overtopping −x`, `Age −y` |
 | "N sites without builders" | `[site] N` |
 | "Every working beaver is busy" / "N beavers are idle" | tip: `Free N` |
@@ -619,6 +621,7 @@ Notation: `[food]` = the food icon, `[logs]` = the logs icon, and so on. **cut**
 | "x" | ✕ |
 | "Gone" | cut (inspector closes) |
 | "Turning at N%" | `[wheel] N%` |
+| "Stranded: its water has dried up" | `High and dry` |
 | "Still: no current here" | `No current` |
 | "Idle: nobody works here" | `No workers` |
 | "Working, 1 of 2 places empty" | `Working` (dots show the gap) |

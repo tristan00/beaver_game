@@ -11,6 +11,8 @@ What changed after this plan was written, and what now holds:
 - **Stone and clay lie in deposits.** Each map has three stone deposits and four clay beds, kept far apart. Other banks hold a little stray mud, enough for a family's first buildings. A growing colony quarries far from home and has to haul the stone and clay back.
 - **Goods stay in the store they were put in.** Every store keeps its own stock. Builders fetch from a store that holds the good, and workshops craft from stores within 12 cells. Distance, hauling and barges therefore matter.
 - **Dams grow.** Ordering a dam over existing dam cells raises, extends or repairs it. Only the height it adds costs, and every unit above the first needs mud. A dam can be built to a chosen crest level, up to 3 above the ground. The preview finds where rising water would walk round the dam's ends (the spill point) and offers to extend the dam over it. The Elevation view (F5) shows height contours for planning water levels.
+- **Water comes from the catchment.** Rain soaks into the ground and comes back to the water network in proportion to the land that drains to it: a stream head gets the water of all the ground above it, every river cell and river-fed lake gets the water of the dry ground draining straight into it, and a river entering across the map border is fed at the cell just inside the border with the water of all the land it drains beyond the map (on algonquin the western river carries 5,545 cells of catchment, more than any stream on the map). Each catchment cell gives 0.0025 a day, so a river carries water in proportion to its catchment and the start rivers run about as deep as before. Rivers leave the map where they flow off its edge; evaporation and seepage take the rest. Nothing else adds water: the start pond fills from its own river, and the designed dam is put where the river brings more than the full pond loses.
+- **Dams hold water as they rise.** Builders build as soon as some materials are on site and go for more when the work catches up with them, so a dam grows in step with the work done and its pond starts backing up while it is built. A cancelled dam keeps what was built.
 - **Ponds feed the colony.** Food plants sprout on shores and in shallow water, regrow only while the water is near, and drown in deep water. Damming a stream is how a colony grows its food.
 - **No elders.** Every tech now comes from colony size, branch experience and earlier research. Canals, docks, barges and locks open within the first year or so.
 - **Buildings have prerequisites:**
@@ -23,6 +25,14 @@ What changed after this plan was written, and what now holds:
   - a tree nursery needs a forester's lodge
   - a guard post needs a scent mound
 - **Trees grow over years:** young at 1 year, mature at 3, old at 15 (360-day years).
+- **A beaver colony lives on the water.** Water is how the colony grows, hauls and (once predators come) stays safe, so nearly every building stands at the water's edge: at least one footprint cell in water.
+  - At the water: lodge, burrow, food cache, scent mound, forager hut, mud pit, logging camp, workshop, warehouse, storehouse, mill, plus the water works (dam, canal, lock, dock, water wheel, barge).
+  - On dry ground: quarry camp (stone lies inland), forester's lodge and tree nursery (they tend the forest), guard post (it watches the land approaches).
+  - A finished water building whose water dries up stands **high and dry** until the water comes back. Water still lying in its footprint or the ring of cells around it keeps it working; the waterline may waver that much without effect.
+    - Its workplace slots let their workers go and take none.
+    - A store takes no new goods and adds no room, but what it holds can still be fetched or hauled out.
+    - A lodge or burrow loses 0.03 condition a day on top of its usual wear, so the family grows cold there.
+  - Draining a pond (a breached or lowered dam, a dry summer) can strand a whole quarter of the colony. Keeping the water up is the colony's first job.
 
 ## Part 1: the economy as it stands
 

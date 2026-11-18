@@ -354,7 +354,7 @@ fn nearest_store(sim: &SimState, who: BeaverId, from: Cell, good: Good) -> Optio
     sim.buildings
         .buildings
         .iter()
-        .filter(|b| b.is_complete() && accepts(b.kind, good))
+        .filter(|b| b.is_complete() && accepts(b.kind, good) && !sim.buildings.stranded(b, &sim.water.depth))
         .filter_map(|b| {
             if adjacent(from, b) {
                 return Some((b.id, Path { steps: Vec::new(), cost: 0.0 }));
@@ -469,15 +469,20 @@ fn promised(sim: &SimState, site: BuildingId, good: Good) -> f32 {
 /// on arrival).
 fn closest_store(sim: &SimState, from: Cell, good: Good) -> Option<BuildingId> {
     let d = |b: &Building| b.cells().map(|c| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2)).min().unwrap_or(0);
-    sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).min_by_key(|b| (d(b), b.id)).map(|b| b.id)
+    sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good) && !sim.buildings.stranded(b, &sim.water.depth)).min_by_key(|b| (d(b), b.id)).map(|b| b.id)
 }
 
-/// Next builder step for `site`: fetch a missing material nobody is already bringing, else build.
+/// Next builder step for `site`: build while the materials on site allow it
+/// (`SiteProgress::labour_open`), else fetch a missing material nobody is already bringing. So
+/// builders alternate fetching and building and the site grows as its materials arrive.
 fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     if sim.buildings.building(site).is_none_or(|b| b.is_complete()) {
         return None;
     }
     let progress = sim.work.place(site)?.site.as_ref()?;
+    if progress.labour_open() {
+        return Some(Task::Build { site });
+    }
     for &(good, _) in &progress.needed {
         let outstanding = progress.missing(good) - promised(sim, site, good);
         // Materials go to the oldest site first, so one building finishes before the next starts.
@@ -498,16 +503,18 @@ fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
             }
         }
     }
-    (progress.labour_done < progress.labour_needed).then_some(Task::Build { site })
+    None
 }
 
 /// Next hauler step: the first standing order whose source store holds goods.
 fn haul_task(sim: &SimState) -> Option<Task> {
+    // goods may still be hauled out of a stranded store, but not into one
     let ok = |id| sim.buildings.building(id).is_some_and(|b| b.is_complete());
+    let open = |id| sim.buildings.building(id).is_some_and(|b| b.is_complete() && !sim.buildings.stranded(b, &sim.water.depth));
     sim.work
         .hauls
         .iter()
-        .find(|o| ok(o.from) && ok(o.to) && sim.work.stock_of(o.from, o.good) > WORK_EPS)
+        .find(|o| ok(o.from) && open(o.to) && sim.work.stock_of(o.from, o.good) > WORK_EPS)
         .map(|o| Task::Fetch { from: o.from, good: o.good, then: o.to })
 }
 
@@ -706,13 +713,35 @@ fn deliver(sim: &mut SimState, ag: &mut Agent, dt: f32, site: BuildingId) {
 /// Build: work beside the site, adding labour each tick.
 fn build(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: BuildingId) {
     let open = sim.buildings.building(site).is_some_and(|b| !b.is_complete())
-        && sim.work.place(site).and_then(|p| p.site.as_ref()).is_some_and(|s| s.labour_done < s.labour_needed);
+        && sim.work.place(site).and_then(|p| p.site.as_ref()).is_some_and(|s| s.labour_open());
     if !open || !matches!(duty, Duty::Build(s) if *s == site) {
         return abandon(ag);
     }
     if approach(sim, ag, dt, site) {
         sim.work.add_labour(site, dt * LABOUR_PER_DAY).expect("duty checked the site");
+        grow_dam(sim, site);
         note(ag, true);
+    }
+}
+
+/// Raises the dam of dam site `site` (if it is one) in step with the labour done: each cell
+/// stands its starting height plus that share of the rise its plan asks for, so the pond starts
+/// backing up while the dam is built. `raise_dam` never lowers a cell.
+pub(crate) fn grow_dam(sim: &mut SimState, site: BuildingId) {
+    let Some(f) = sim.work.place(site).and_then(|p| p.site.as_ref()).map(|s| s.labour_fraction()) else { return };
+    let Some(plan) = sim.work.dam_plans.iter().find(|p| p.building == site) else { return };
+    let cells: Vec<(Cell, f32)> = plan
+        .cells
+        .iter()
+        .zip(&plan.heights)
+        .zip(&plan.from)
+        .map(|((&c, &h), &from)| (c, from + f * (h - from)))
+        .filter(|&(_, h)| h > 0.0)
+        .collect();
+    if !cells.is_empty() {
+        if let Err(e) = sim.water.raise_dam(&cells) {
+            sim.work.dam_failures.push((site, e.to_string()));
+        }
     }
 }
 
@@ -723,7 +752,7 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
         ag.task = Task::Idle;
         return;
     };
-    let to = if sim.buildings.building(to).is_some_and(|b| b.is_complete()) {
+    let to = if sim.buildings.building(to).is_some_and(|b| b.is_complete() && !sim.buildings.stranded(b, &sim.water.depth)) {
         to
     } else {
         let Some(other) = closest_store(sim, ag.cell, load.good) else {
@@ -809,13 +838,15 @@ pub(crate) fn is_site(sim: &SimState, p: &crate::work::Workplace) -> bool {
     p.is_open_site() && sim.buildings.building(p.building).is_some_and(|b| !b.is_complete())
 }
 
-/// A site its builders can do nothing at: its labour is done and none of what it still lacks is
-/// in any store. Auto-staffing keeps builders off it (its material run still goes out).
+/// A site its builders can do nothing at: its labour has caught up with the materials on site
+/// and none of what it still lacks is in any store or on its way. Auto-staffing keeps builders
+/// off it (its material run still goes out).
 pub(crate) fn site_stalled(sim: &SimState, p: &crate::work::Workplace) -> bool {
     let Some(s) = p.site.as_ref() else { return false };
-    s.labour_done >= s.labour_needed - WORK_EPS
+    !s.labour_open()
         && s.needed.iter().all(|n| {
-            s.missing(n.0) <= WORK_EPS || crate::stock::holders(sim, n.0).iter().all(|&h| sim.work.stock_of(h, n.0) <= WORK_EPS)
+            s.missing(n.0) <= WORK_EPS
+                || (promised(sim, p.building, n.0) <= WORK_EPS && crate::stock::holders(sim, n.0).iter().all(|&h| sim.work.stock_of(h, n.0) <= WORK_EPS))
         })
 }
 
@@ -859,10 +890,13 @@ fn tidy(sim: &mut SimState) {
     // A site waiting for materials with its labour done has nothing for builders: they go free
     // (hand-placed ones too) and come back when the materials do.
     let stalled: Vec<BuildingId> = sim.work.places.iter().filter(|p| is_site(sim, p) && site_stalled(sim, p)).map(|p| p.building).collect();
+    // A workplace left high and dry lets its workers go, like a paused one, until the water returns.
+    let dry: Vec<BuildingId> = sim.buildings.buildings.iter().filter(|b| sim.buildings.stranded(b, &sim.water.depth)).map(|b| b.id).collect();
     for p in &mut sim.work.places {
         let idle_site = stalled.contains(&p.building);
+        let closed = p.paused || dry.contains(&p.building);
         for s in &mut p.slots {
-            if s.worker.is_some_and(|w| p.paused || !alive.contains(&w) || (idle_site && s.role == Role::Build)) {
+            if s.worker.is_some_and(|w| closed || !alive.contains(&w) || (idle_site && s.role == Role::Build)) {
                 s.worker = None;
                 s.locked = false;
             }
@@ -903,7 +937,7 @@ fn organise(sim: &mut SimState) {
     for p in &sim.work.places {
         let Some(b) = sim.buildings.building(p.building) else { continue };
         let site = is_site(sim, p);
-        if p.paused || !(b.is_complete() || site) {
+        if p.paused || !(b.is_complete() || site) || sim.buildings.stranded(b, &sim.water.depth) {
             continue;
         }
         let ours = |i: usize, w: Option<BeaverId>| w.is_none() || w.is_some_and(|w| sim.work.managed.get(&w) == Some(&ManagedDuty::Slot(p.building, i)));
@@ -1275,6 +1309,44 @@ mod tests {
     use super::*;
     use crate::buildings::Status;
 
+    /// A dam rises with the labour done on its site: half built it stands half its planned
+    /// height and already backs the river up, to a pond between the unbuilt river and the
+    /// finished dam's pond.
+    #[test]
+    fn a_half_built_dam_holds_back_part_of_its_pond() {
+        let (site, height) = (BuildingId(900), 2.0);
+        let pond_level = |labour: Option<f32>| {
+            let mut sim = SimState::new(1);
+            let n = sim.height.width();
+            // A valley falling toward +x with rising sides, a river fed at its head.
+            for y in 0..n {
+                for x in 0..n {
+                    *sim.height.get_mut(x, y).unwrap() = 0.2 * (n - x) as f32 + 0.15 * (y as f32 - 64.0).abs();
+                }
+            }
+            sim.water = crate::water::Water::new(n);
+            sim.water.config.overtop_erosion = 0.0;
+            sim.water.config.dam_decay_per_day = 0.0;
+            sim.water.add_source(10, 64, 4.0).unwrap();
+            let cells: Vec<Cell> = (0..n).map(|y| (40, y)).collect();
+            sim.work.add_site(site, BuildingKind::Dam, &[], 10.0).unwrap();
+            sim.work.dam_plans.push(crate::work::DamPlan { building: site, heights: vec![height; n], from: vec![0.0; n], cells, height });
+            if let Some(l) = labour {
+                sim.work.add_labour(site, l).unwrap();
+                grow_dam(&mut sim, site);
+                let want = height * l / 10.0;
+                assert!((sim.water.dam_height.get(40, 64).unwrap() - want).abs() < 1e-4, "the dam stands {want} after {l} of 10 labour");
+            }
+            for _ in 0..600 {
+                sim.water.step(&sim.height, 0.05);
+            }
+            // the water right behind the dam (further up, the steep floor rises past a low pond)
+            sim.height.get(39, 64).unwrap() + sim.water.depth.get(39, 64).unwrap()
+        };
+        let (unbuilt, half, finished) = (pond_level(None), pond_level(Some(5.0)), pond_level(Some(10.0)));
+        assert!(unbuilt + 0.3 < half && half + 0.3 < finished, "pond levels: unbuilt {unbuilt}, half built {half}, finished {finished}");
+    }
+
     #[test]
     fn a_finished_barge_site_becomes_a_barge_at_its_dock() {
         let mut sim = SimState::new(1);
@@ -1581,6 +1653,7 @@ mod tests {
         crate::stock::reconcile(&mut sim); // the cost lies in the warehouse
         // A lodge needs a finished burrow first.
         sim.buildings.buildings.push(Building { id: BuildingId(101), kind: BuildingKind::Burrow, pos: (26, 9), status: Status::Complete, recipe: None, output: 0.0 });
+        *sim.water.depth.get_mut(14, 14).unwrap() = 0.3; // a lodge stands at the water
         let site = sim.place_site(BuildingKind::Lodge, (14, 14)).unwrap();
         for (n, &i) in ids[..3].iter().enumerate() {
             spawn_on(&mut sim, i, (10, 10 + 2 * n)).unwrap();

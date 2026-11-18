@@ -735,7 +735,7 @@ pub fn cell_rows(s: &sim::SimState, cell: crate::flow::Cell) -> Vec<(Icon, Color
     let mut rows = vec![(Icon::Profile, MUTED, "Height", num(h))];
     if d > 0.01 {
         rows.push((Icon::Drop, WATER, "Depth", format!("{:.2}", d)));
-        rows.push((Icon::Push, WATER, "Flow", format!("{:.2}", (fx * fx + fy * fy).sqrt())));
+        rows.push((Icon::Push, WATER, "Flow", format!("{:.1}/d", (fx * fx + fy * fy).sqrt())));
     }
     rows.push((Icon::Plant, GOOD, "Cover", format!("{:.0}%", veg * 100.0)));
     if flood > 0.5 {

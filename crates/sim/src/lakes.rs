@@ -221,7 +221,10 @@ impl Placer {
     /// from the water and that passes `ok` (given the footprint's top-left). The footprint and a
     /// one-cell margin are dry, off the dam and unclaimed. Claims them and clears trees and rock
     /// from them. `None` if nothing fits.
-    fn spot(&mut self, sim: &mut SimState, anchor: Cell, (w, h): (usize, usize), water: RangeInclusive<u8>, ok: &dyn Fn(&SimState, Cell) -> bool) -> Option<Cell> {
+    /// With `shore`, the footprint instead straddles the waterline (at most half of it in water),
+    /// as the water buildings' site rule wants.
+    #[allow(clippy::too_many_arguments)]
+    fn spot(&mut self, sim: &mut SimState, anchor: Cell, (w, h): (usize, usize), water: RangeInclusive<u8>, shore: bool, ok: &dyn Fn(&SimState, Cell) -> bool) -> Option<Cell> {
         let size = self.size;
         let (x0, x1) = (anchor.0.saturating_sub(SEARCH_RADIUS).max(2), (anchor.0 + SEARCH_RADIUS).min(size - w - 3));
         let (y0, y1) = (anchor.1.saturating_sub(SEARCH_RADIUS).max(2), (anchor.1 + SEARCH_RADIUS).min(size - h - 3));
@@ -229,7 +232,18 @@ impl Placer {
         candidates.sort_by_key(|&c| (dist2((c.0 + w / 2, c.1 + h / 2), anchor), c.1, c.0));
         let found = candidates.into_iter().find(|&c| {
             water.contains(&self.dist((c.0 + w / 2, c.1 + h / 2)))
-                && self.cells(c, (w, h), 1).all(|k| !self.taken.contains(&k) && self.is_dry_ground(sim, k))
+                && if shore {
+                    // at the water's edge: some of the footprint in open water, the rest and the
+                    // margin on free ground, nothing on a dam or canal
+                    let wet = |k: Cell| sim.water.depth.get(k.0, k.1).is_some_and(|d| *d >= WET_DEPTH) && !sim.water.has_dam(k.0, k.1) && !sim.water.canal.get(k.0, k.1).copied().unwrap_or(true);
+                    let fp: Vec<Cell> = self.cells(c, (w, h), 0).collect();
+                    let n_wet = fp.iter().filter(|&&k| wet(k)).count();
+                    n_wet > 0
+                        && n_wet * 2 <= fp.len()
+                        && self.cells(c, (w, h), 1).all(|k| !self.taken.contains(&k) && (self.is_dry_ground(sim, k) || wet(k)))
+                } else {
+                    self.cells(c, (w, h), 1).all(|k| !self.taken.contains(&k) && self.is_dry_ground(sim, k))
+                }
                 && ok(sim, c)
         })?;
         let margin: HashSet<Cell> = self.cells(found, (w, h), 1).collect();
@@ -301,8 +315,9 @@ fn place_building(sim: &mut SimState, placer: &mut Placer, site: &Site) -> Resul
     let kind = site.kind;
     let fp = kind.spec().footprint;
     let logging = kind == BuildingKind::LoggingCamp;
+    let shore = kind.spec().site == crate::buildings::Site::TouchesWater;
     let at = placer
-        .spot(sim, site.anchor, fp, 3..=14, &|s, c| !logging || trees_near(s, c) >= CAMP_TREES)
+        .spot(sim, site.anchor, fp, if shore { 0..=2 } else { 3..=14 }, shore, &|s, c| !logging || trees_near(s, c) >= CAMP_TREES)
         .ok_or_else(|| err(format!("no ground for a {kind:?} near {:?}", site.anchor)))?;
     let terrain = Terrain { height: &sim.height, depth: &sim.water.depth };
     let id = sim.buildings.add_complete(kind, at, terrain).map_err(|e| err(format!("{kind:?}: {e:?}")))?;
@@ -324,7 +339,7 @@ fn place_building(sim: &mut SimState, placer: &mut Placer, site: &Site) -> Resul
 fn seat(sim: &mut SimState, placer: &mut Placer, anchors: &[Cell], households: &[Household]) -> Result<(), StartError> {
     for (h, &anchor) in households.iter().zip(anchors) {
         let at = placer
-            .spot(sim, anchor, (3, 3), 3..=3, &|_, _| true)
+            .spot(sim, anchor, (3, 3), 3..=3, false, &|_, _| true)
             .ok_or_else(|| err(format!("no ground for a lodge near {anchor:?}")))?;
         let pos = (at.0 as f32 + 1.5, at.1 as f32 + 1.5);
         let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
@@ -395,7 +410,7 @@ fn finish(sim: &mut SimState, food_per_head: f32, wood_per_head: f32) {
     sim.colony.wood = wood_per_head * n;
     sim.work.auto_organise = true;
     strip_disabled(sim);
-    sim.buildings.update_capacity(&sim.tech);
+    sim.buildings.update_capacity(&sim.tech, crate::buildings::Terrain { height: &sim.height, depth: &sim.water.depth });
     crate::agents::place_beavers(sim);
 }
 
@@ -446,7 +461,7 @@ fn assemble_early(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), StartE
         staff(&mut sim, id, job, n)?;
     }
     earn(&mut sim, &[(Job::Builder, 8.0), (Job::Crafter, 4.0), (Job::Logger, 6.0), (Job::Forager, 4.0)]);
-    sim.buildings.update_capacity(&sim.tech);
+    sim.buildings.update_capacity(&sim.tech, crate::buildings::Terrain { height: &sim.height, depth: &sim.water.depth });
     for (good, amount) in [(Good::Logs, 30.0), (Good::Sticks, 25.0), (Good::Mud, 15.0)] {
         stock(&mut sim, warehouse, good, amount)?;
     }
@@ -592,7 +607,7 @@ fn assemble_industrial(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), S
     let all = [Job::Digger, Job::Logger, Job::Builder, Job::Crafter, Job::Hauler, Job::Forager];
     earn(&mut sim, &all.map(|j| (j, 45.0)));
     sim.colony.tools = 0.6;
-    sim.buildings.update_capacity(&sim.tech);
+    sim.buildings.update_capacity(&sim.tech, crate::buildings::Terrain { height: &sim.height, depth: &sim.water.depth });
     let (storehouse, warehouse) = (ids[0], ids[3]);
     for (good, amount, into) in [
         (Good::Logs, 180.0, storehouse),
@@ -631,8 +646,9 @@ mod tests {
             let (first, last) = (info.dam.cells[0], *info.dam.cells.last().unwrap());
             assert!(!is_river(&s, first.0, first.1) && !is_river(&s, last.0, last.1), "seed {seed}: dam ends on both banks");
             let wet = info.lake.iter().filter(|&&(x, y)| *s.water.depth.get(x, y).unwrap() >= WET_DEPTH).count();
-            // The shallow rim of a pond held to its spill height dries a little.
-            assert!(wet * 100 >= info.area() * 85, "seed {seed}: {wet} of {} lake cells wet", info.area());
+            // The shallow rim of a pond held to its spill height dries a little (about a sixth of it
+            // on seed 1, whose lake grew from 135 to 139 cells when the rivers changed).
+            assert!(wet * 100 >= info.area() * 84, "seed {seed}: {wet} of {} lake cells wet", info.area());
         }
     }
 

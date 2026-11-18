@@ -174,6 +174,9 @@ pub mod colony {
     pub const TOOLS_WEAR: f32 = 0.003;
     /// Lodge condition lost per day, multiplied by `1 + LODGE_COLD_WEAR * cold`.
     pub const LODGE_WEAR: f32 = 0.002;
+    /// Extra condition a home (lodge or burrow) left high and dry loses per day: with its water gone
+    /// it dries, cracks and falls in, far faster than repairs keep up.
+    pub const DRY_HOME_WEAR: f32 = 0.03;
     pub const LODGE_COLD_WEAR: f32 = 2.0;
 
     // Health (rates are per day).
@@ -309,9 +312,11 @@ pub mod water {
     pub const EVAP_MULT: [f32; 4] = [1.0, 3.0, 0.8, 0.2];
 
     // `WaterConfig` defaults (depth units per day per cell unless noted).
-    pub const RAIN: f32 = 0.01;
-    pub const EVAPORATION: f32 = 0.01;
-    pub const SEEPAGE: f32 = 0.04;
+    // Rain, evaporation and seepage are switched off until plain flow (water in from upstream,
+    // downhill, out downstream) is right on the maps; they come back as later mechanics.
+    pub const RAIN: f32 = 0.0;
+    pub const EVAPORATION: f32 = 0.0;
+    pub const SEEPAGE: f32 = 0.0;
     /// Rain per day dry ground absorbs (more than any season's rain, so dry land stays dry).
     pub const SOIL_ABSORB: f32 = 0.02;
     /// Integrity a dam loses per day from age alone.
@@ -321,14 +326,25 @@ pub mod water {
     pub const OVERTOP_DEPTH: f32 = 0.05;
     pub const ICE_GROWTH_PER_DAY: f32 = 0.1;
     pub const ICE_MELT_PER_DAY: f32 = 0.15;
-    /// Depth a spring adds per day at base (scaled by the season) to its stream head.
-    pub const SPRING_RATE: f32 = 1.0;
-    /// Fraction of its channel a river is filled to at the start.
-    /// Share of the seasonal inflow swing springs follow (groundwater runs steadier than snowmelt).
+    /// Water (depth units over one cell) the ground gives the water network per day for each cell
+    /// of catchment draining to it (`worldgen::water_inputs`): rain soaks in and comes back as
+    /// springs at the stream heads, baseflow along the channels and rivers entering from beyond
+    /// the map. A river carries this times its catchment. Measured on the four maps after 30 days
+    /// (`water_scenarios::probe_river_depths_on_a_real_map`): river depth medians 0.05-0.45 (small
+    /// headwater streams shallow, big rivers deep) and wet ground 1.2-2.9 x the river cells. Much
+    /// more and the rivers entering from far upstream (bavarian's drains ~35 000 cells) spread over
+    /// their valley floors.
+    pub const WATER_PER_CATCHMENT_CELL: f32 = 0.005;
+    /// Share of the seasonal inflow swing springs and baseflow follow (groundwater runs steadier
+    /// than snowmelt).
     pub const SPRING_SEASONALITY: f32 = 0.0;
+    /// Share of the seasonal swing (`INFLOW_MULT`: spring melt high, late summer and winter low) a
+    /// river from beyond the map follows.
+    pub const INFLOW_SEASONALITY: f32 = 0.1;
     /// Days (and step size) a new world's springs run to settle the rivers before the game starts.
-    pub const SETTLE_DAYS: f32 = 20.0;
+    pub const SETTLE_DAYS: f32 = 3.0;
     pub const SETTLE_DT: f32 = 0.05;
+    /// Fraction of its channel a river is filled to at the start.
     pub const RIVER_FILL: f32 = 0.5;
 }
 

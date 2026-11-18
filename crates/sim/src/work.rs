@@ -133,6 +133,21 @@ impl SiteProgress {
     pub fn is_done(&self) -> bool {
         self.needed.iter().all(|a| self.missing(a.0) <= 0.0) && self.labour_done >= self.labour_needed
     }
+    /// Share of the materials delivered, `0..=1` (1 if the site needs none).
+    pub fn material_fraction(&self) -> f32 {
+        let need: f32 = self.needed.iter().map(|a| a.1).sum();
+        let got: f32 = self.delivered.iter().map(|a| a.1).sum();
+        if need > 0.0 { (got / need).min(1.0) } else { 1.0 }
+    }
+    /// Share of the labour done, `0..=1` (1 if the site needs none).
+    pub fn labour_fraction(&self) -> f32 {
+        if self.labour_needed > 0.0 { (self.labour_done / self.labour_needed).min(1.0) } else { 1.0 }
+    }
+    /// Whether builders can work now: labour goes only as far as the materials on site allow, so
+    /// a site is built up as its materials arrive.
+    pub fn labour_open(&self) -> bool {
+        self.labour_done < self.labour_needed * self.material_fraction() - EPS
+    }
     /// Overall progress `0..=1`: materials and labour weighted equally.
     pub fn fraction(&self) -> f32 {
         let need: f32 = self.needed.iter().map(|a| a.1).sum();
@@ -229,7 +244,8 @@ pub struct CanalPlan {
     pub depth: f32,
 }
 
-/// The water dam a dam site turns into when it is finished.
+/// The water dam a dam site turns into: it rises with the builders' labour (from `from` toward
+/// `heights`) and stands at full height when the site is finished.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamPlan {
     pub building: BuildingId,
@@ -238,6 +254,9 @@ pub struct DamPlan {
     pub height: f32,
     /// Height above terrain per cell, parallel to `cells`.
     pub heights: Vec<f32>,
+    /// Dam height each cell had when the dam was ordered (0 where there was none), parallel to
+    /// `cells`.
+    pub from: Vec<f32>,
 }
 
 /// An automatic assignment made by `agents::organise`.
@@ -403,5 +422,35 @@ impl Work {
         }
         self.place_mut(b)?.area = Some(area);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Labour goes only as far as the materials on site: a site is built up as they arrive.
+    #[test]
+    fn builders_can_work_only_as_far_as_the_materials_delivered() {
+        let mut w = Work::default();
+        let b = BuildingId(1);
+        w.add_site(b, BuildingKind::Dam, &[(Good::Logs, 10.0), (Good::Sticks, 10.0)], 4.0).unwrap();
+        let open = |w: &Work| w.place(b).unwrap().site.as_ref().unwrap().labour_open();
+        assert!(!open(&w), "nothing to build with yet");
+        w.deliver(b, Good::Logs, 10.0).unwrap();
+        assert!(open(&w), "half the materials are on site");
+        w.add_labour(b, 2.0).unwrap();
+        assert!(!open(&w), "half built with half the materials");
+        w.deliver(b, Good::Sticks, 5.0).unwrap();
+        assert!(open(&w));
+        w.add_labour(b, 1.0).unwrap();
+        assert!(!open(&w));
+        w.deliver(b, Good::Sticks, 5.0).unwrap();
+        w.add_labour(b, 1.0).unwrap();
+        let s = w.place(b).unwrap().site.as_ref().unwrap();
+        assert!(s.is_done() && !s.labour_open() && s.labour_fraction() == 1.0);
+        let mut free = Work::default();
+        free.add_site(b, BuildingKind::Burrow, &[], 4.0).unwrap();
+        assert!(free.place(b).unwrap().site.as_ref().unwrap().labour_open(), "a site needing no materials can be dug at once");
     }
 }

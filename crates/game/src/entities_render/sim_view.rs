@@ -27,7 +27,8 @@ use sim::SimState;
 /// Size of everything drawn from the sim relative to the models' native size (a beaver is one cell
 /// long, a lodge fills its 3x3 footprint).
 pub const WORLD_SCALE: f32 = 0.5;
-/// Height of a finished dam crest above the ground; climbing beavers walk along it.
+/// Crest height above the ground of a dam cell the sim has no dam height for yet; beavers on a
+/// built dam walk along its real crest.
 pub const DAM_TOP: f32 = 0.8;
 
 /// World x/z of continuous cell coordinates (cell `(x, y)` spans `x..x+1`, `y..y+1`).
@@ -40,7 +41,7 @@ pub fn cell_xz(sim: &SimState, c: (f32, f32)) -> Vec2 {
 /// height on a dam.
 fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
-        Some(Surface::Dam) => DAM_TOP,
+        Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
         Some(Surface::Water | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
         _ => 0.0,
     }

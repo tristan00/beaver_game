@@ -1,4 +1,4 @@
-//! Drives `SimState` on a fixed timestep with pause and 1x/2x/3x speeds.
+//! Drives `SimState` on a fixed timestep with pause and 1x/3x/6x speeds.
 //!
 //! Real frame time is accumulated and converted to simulated days; the sim only ever advances in
 //! whole [`FIXED_DT_DAYS`] steps, so results do not depend on the frame rate.
@@ -7,8 +7,10 @@ use bevy::prelude::*;
 
 /// Length of one sim step in days.
 pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
-/// Simulated days per real second at 1x.
-pub const BASE_DAYS_PER_SECOND: f32 = 0.4;
+/// Simulated days per real second at 1x. Paced so a walking beaver (40 cells a day) covers about
+/// five cells a second on screen: slow enough to read as an animal walking, not zooming. The
+/// faster speeds are for waiting (a pond filling, a winter).
+pub const BASE_DAYS_PER_SECOND: f32 = 0.12;
 /// Steps per frame cap; excess time is dropped instead of spiralling.
 pub const MAX_STEPS_PER_FRAME: u32 = 8;
 
@@ -24,15 +26,15 @@ impl Speed {
     pub fn multiplier(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
-            Speed::X2 => 2.0,
-            Speed::X3 => 3.0,
+            Speed::X2 => 3.0,
+            Speed::X3 => 6.0,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Speed::X1 => "1x",
-            Speed::X2 => "2x",
-            Speed::X3 => "3x",
+            Speed::X2 => "3x",
+            Speed::X3 => "6x",
         }
     }
 }
@@ -108,7 +110,7 @@ fn time_keys(
 }
 
 /// The world only runs once the colony is founded; before that there is nothing to simulate.
-fn step_sim(time: Res<Time>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>) {
+pub(crate) fn step_sim(time: Res<Time>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>) {
     if !sim.0.colony.is_founded() {
         return;
     }
@@ -132,16 +134,16 @@ mod tests {
         let mut c3 = SimClock::default();
         c3.set_speed(Speed::X3);
         let three: u32 = (0..600).map(|_| c3.advance(1.0 / 60.0)).sum();
-        // 10 s at 0.4 d/s = 4 days = 80 steps.
-        assert!((one as i32 - 80).abs() <= 1, "{one}");
-        assert!((three as i32 - 240).abs() <= 1, "{three}");
+        // 10 s at 0.12 d/s = 1.2 days = 24 steps; the fastest speed is six times that.
+        assert!((one as i32 - 24).abs() <= 1, "{one}");
+        assert!((three as i32 - 144).abs() <= 1, "{three}");
     }
 
     #[test]
     fn there_are_three_speeds_and_no_10x() {
         let m: Vec<f32> = Speed::ALL.iter().map(|s| s.multiplier()).collect();
-        assert_eq!(m, vec![1.0, 2.0, 3.0]);
-        assert_eq!(Speed::ALL.map(|s| s.label()), ["1x", "2x", "3x"]);
+        assert_eq!(m, vec![1.0, 3.0, 6.0]);
+        assert_eq!(Speed::ALL.map(|s| s.label()), ["1x", "3x", "6x"]);
     }
 
     #[test]

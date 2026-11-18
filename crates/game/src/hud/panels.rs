@@ -359,6 +359,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
         ProblemKind::LoggingAreaRunningOut => (vec![(Icon::LoggingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Logging area running out"),
         ProblemKind::ForestFalling => (vec![(Icon::Tree, INK), (Icon::Down, WARN)], format!("-{:.0}%", v), "Forest falling"),
+        ProblemKind::HighAndDry => {
+            let k = match p.subject {
+                Some(Subject::Building(k)) => k,
+                _ => sim::buildings::BuildingKind::Lodge,
+            };
+            (vec![(super::words::building_icon(k), INK), (Icon::Down, WARN)], format!("{}", v as i64), "High and dry")
+        }
         ProblemKind::Stranger => {
             let st = match p.subject {
                 Some(Subject::Stage(st)) => stage_icon(st),
@@ -1140,6 +1147,8 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     let empty = place.map_or(0, |pl| pl.slots.iter().filter(|sl| sl.worker.is_none()).count());
     let slots = place.map_or(0, |pl| pl.slots.len());
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
+        // its water has gone: no work, no deposits, a home wearing out (`Buildings::stranded`)
+        (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (None, "High and dry".into(), vec![], WARN),
         (Status::Complete, _) if b.kind == BuildingKind::WaterWheel => {
             if b.output > 0.0 {
                 (Some(Icon::Wheel), format!("{:.0}%", b.output * 100.0), vec![], GOOD)

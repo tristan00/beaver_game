@@ -176,7 +176,7 @@ fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplac
     sim.work
         .places
         .iter()
-        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.is_complete()) || is_site(sim, p)))
+        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.is_complete() && !sim.buildings.stranded(b, &sim.water.depth)) || is_site(sim, p)))
 }
 
 /// One row per role in `Work::role_order`, only roles with slots or workers.
@@ -380,7 +380,7 @@ fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same
 fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(usize, Role, Cell)> {
     let p = sim.work.place(b)?;
     let bd = sim.buildings.building(b)?;
-    if p.paused || !(bd.is_complete() || is_site(sim, p)) {
+    if p.paused || !(bd.is_complete() || is_site(sim, p)) || sim.buildings.stranded(bd, &sim.water.depth) {
         return None;
     }
     let i = p.slots.iter().position(|s| s.worker.is_none() && role.is_none_or(|r| role_kind(s.role) == r))?;
@@ -421,6 +421,9 @@ fn invalid(m: impl Into<String>) -> SimError {
 /// Puts `who` into slot `slot` of `b` by hand: they leave any slot or order, the slot is locked,
 /// and the workplace's "Max" rises to hold them.
 pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
+    if sim.buildings.building(b).is_some_and(|bd| sim.buildings.stranded(bd, &sim.water.depth)) {
+        return Err(workplace_error(sim, b));
+    }
     sim.work.assign(b, slot, who).map_err(|e| invalid(format!("{e:?}")))?;
     sim.work.managed.remove(&who);
     sim.work.player_orders.remove(&who);
@@ -435,6 +438,7 @@ fn workplace_error(sim: &SimState, b: BuildingId) -> SimError {
     match sim.work.place(b) {
         None => invalid(format!("building {} has no worker slots", b.0)),
         Some(p) if p.paused => invalid(format!("building {} is paused", b.0)),
+        Some(_) if sim.buildings.building(b).is_some_and(|bd| sim.buildings.stranded(bd, &sim.water.depth)) => invalid(format!("building {} is high and dry: no water", b.0)),
         Some(p) if p.filled() == p.slots.len() => invalid(format!("building {} has no free slot", b.0)),
         Some(_) => invalid(format!("building {} takes no workers now", b.0)),
     }
@@ -639,6 +643,34 @@ mod tests {
         order.sort();
         assert_eq!(order, RoleKind::ALL.to_vec());
         assert_eq!(colony_job(RoleKind::MudDigger), Some(Job::Digger));
+    }
+
+    #[test]
+    fn a_workplace_left_high_and_dry_lets_its_workers_go_and_takes_none_until_the_water_returns() {
+        let (mut s, ids) = colony();
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::High);
+        s.buildings.water_bound.insert(hut); // as if placed at the water by the site rule
+        let pos = s.buildings.building(hut).unwrap().pos;
+        let wet = (pos.0 + 2, pos.1); // just beside the footprint
+        let set = |s: &mut SimState, d: f32| *s.water.depth.get_mut(wet.0, wet.1).unwrap() = d;
+        set(&mut s, 0.5);
+        s.apply(Command::FillSlot { building: hut, slot: 0, who: ids[0] }).unwrap();
+        assert_eq!(filled(&s, hut), 1);
+        // the water goes (from everywhere near the hut)
+        let (x0, y0) = (pos.0.saturating_sub(1), pos.1.saturating_sub(1));
+        for y in y0..=pos.1 + 2 {
+            for x in x0..=pos.0 + 2 {
+                *s.water.depth.get_mut(x, y).unwrap() = 0.0;
+            }
+        }
+        crate::agents::step(&mut s, 0.01);
+        assert_eq!(filled(&s, hut), 0, "its forager is let go");
+        let err = s.apply(Command::FillSlot { building: hut, slot: 0, who: ids[0] }).unwrap_err();
+        assert!(err.to_string().contains("high and dry"), "{err}");
+        assert!(!working_places(&s).any(|p| p.building == hut));
+        set(&mut s, 0.5);
+        s.apply(Command::FillSlot { building: hut, slot: 0, who: ids[0] }).unwrap();
+        assert_eq!(filled(&s, hut), 1, "staffed again once the water is back");
     }
 
     #[test]

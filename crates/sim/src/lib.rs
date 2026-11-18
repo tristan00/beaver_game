@@ -35,6 +35,8 @@ pub mod stock;
 pub mod tech;
 pub mod tuning;
 pub mod water;
+#[cfg(test)]
+mod water_scenarios;
 pub mod wetland;
 pub mod work;
 pub mod worldgen;
@@ -305,6 +307,7 @@ impl SimState {
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         stock::book_crafting(self);
         self.sync_homes();
+        self.wear_dry_homes(dt_days);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
@@ -340,6 +343,21 @@ impl SimState {
 
     /// Each finished burrow or lodge provides one colony home; unhoused beavers move in. Once a
     /// store stands, the founding supply pile is gone (its goods count as moved in).
+    /// Homes (lodges, burrows) left high and dry (`Building::stranded`) crack and fall in: they lose
+    /// `DRY_HOME_WEAR` condition a day on top of the usual wear, so the family grows cold there.
+    fn wear_dry_homes(&mut self, dt_days: f32) {
+        let dry: Vec<colony::LodgeId> = self
+            .buildings
+            .buildings
+            .iter()
+            .filter(|b| self.buildings.stranded(b, &self.water.depth))
+            .filter_map(|b| self.work.homes.get(&b.id).copied())
+            .collect();
+        for l in self.colony.lodges.iter_mut().filter(|l| dry.contains(&l.id)) {
+            l.condition = (l.condition - tuning::colony::DRY_HOME_WEAR * dt_days).max(0.0);
+        }
+    }
+
     fn sync_homes(&mut self) {
         use buildings::BuildingKind::{Burrow, Lodge};
         if self.colony.homes_from_buildings {
@@ -507,7 +525,8 @@ impl SimState {
         }
         if let Some(cells) = dam_cells {
             let heights = vec![dam_preview::DEFAULT_HEIGHT; cells.len()];
-            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT, heights });
+            let from = cells.iter().map(|c| self.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0)).collect();
+            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT, heights, from });
         }
         Ok(id)
     }
@@ -635,13 +654,15 @@ impl SimState {
             return Err(SimError::InvalidCommand(format!("{e:?}")));
         }
         let height = heights.iter().copied().fold(0.0, f32::max);
-        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height, heights: heights.to_vec() });
+        let from = cells.iter().map(|c| self.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0)).collect();
+        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height, heights: heights.to_vec(), from });
         Ok(id)
     }
 
     /// Cancels an unfinished construction site (`Site` or `UnderConstruction`): the building, its
     /// workplace and any dam plan go, materials already delivered return to the stores and any
-    /// beaver assigned to its slots stands down. Returns what was refunded. Errors (state
+    /// beaver assigned to its slots stands down. A partly built dam stays standing as far as it
+    /// was built, and the materials built into it stay in it. Returns what was refunded. Errors (state
     /// unchanged) for an unknown or finished building.
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
@@ -655,9 +676,16 @@ impl SimState {
             return Ok(before);
         }
         let mut refunded = Vec::new();
+        // A dam rises as it is built (`agents::grow_dam`): what stands of it stays, and the
+        // materials built into it are not given back.
+        let is_dam = self.work.dam_plans.iter().any(|d| d.building == id);
         if let Some(i) = self.work.places.iter().position(|p| p.building == id) {
             let place = self.work.places.remove(i);
-            for &(g, a) in place.site.as_ref().map(|s| s.delivered.as_slice()).unwrap_or(&[]) {
+            let site = place.site.as_ref();
+            let built = if is_dam { site.map_or(0.0, |s| s.labour_fraction()) } else { 0.0 };
+            for &(g, a) in site.map(|s| s.delivered.as_slice()).unwrap_or(&[]) {
+                let used: f32 = site.map_or(0.0, |s| s.needed.iter().filter(|n| n.0 == g).map(|n| n.1).sum::<f32>()) * built;
+                let a = (a - used).max(0.0);
                 if a > 0.0 {
                     let put = self.buildings.stores.refund(g, a).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
                     refunded.push((g, put));
@@ -954,6 +982,31 @@ mod tests {
         assert!(s.buildings.building(id).is_none() && s.work.place(id).is_none());
         assert!(s.cancel_site(id).is_err(), "already gone");
         s.step(0.2).unwrap(); // nobody trips over the vanished site
+    }
+
+    /// Cancelling a dam half built leaves the half that stands, and gives back only the
+    /// materials not yet built into it.
+    #[test]
+    fn a_cancelled_half_built_dam_stays_as_built() {
+        let (mut s, dam) = starts::new_game_with_dam(2).unwrap();
+        s.apply(Command::Settle { cell: dam.camp }).unwrap();
+        let id = s.order_dam(&dam.cells, dam.height).unwrap();
+        let site = s.work.place(id).unwrap().site.clone().unwrap();
+        for &(g, a) in &site.needed {
+            s.work.deliver(id, g, a).unwrap();
+        }
+        s.work.add_labour(id, site.labour_needed / 2.0).unwrap();
+        agents::grow_dam(&mut s, id);
+        let half: Vec<f32> = dam.cells.iter().map(|c| *s.water.dam_height.get(c.0, c.1).unwrap()).collect();
+        assert!(half.iter().all(|&h| (h - dam.height / 2.0).abs() < 1e-3), "half built: {half:?} of {}", dam.height);
+        assert!(!dam.is_built(&s), "a half-built dam is not finished");
+        let refunded = s.cancel_site(id).unwrap();
+        for &(g, a) in &site.needed {
+            let back: f32 = refunded.iter().filter(|r| r.0 == g).map(|r| r.1).sum();
+            assert!((back - a / 2.0).abs() < 1e-3, "{g:?}: {back} of {a} given back");
+        }
+        let after: Vec<f32> = dam.cells.iter().map(|c| *s.water.dam_height.get(c.0, c.1).unwrap()).collect();
+        assert_eq!(after, half, "what was built stands");
     }
 
     #[test]

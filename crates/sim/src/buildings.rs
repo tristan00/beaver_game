@@ -298,6 +298,13 @@ pub struct Spec {
 }
 
 impl BuildingKind {
+    /// Whether this kind works only while it has water (see `Building::stranded`): everything
+    /// placed at the water, except the water works themselves (a dry dam, canal or lock is still
+    /// there) and barges.
+    pub fn needs_water(self) -> bool {
+        self.spec().site == Site::TouchesWater && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
+    }
+
     pub const ALL: [BuildingKind; 21] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
@@ -311,24 +318,24 @@ impl BuildingKind {
     pub fn spec(self) -> Spec {
         let (name, footprint, site) = match self {
             BuildingKind::Dam => ("Dam", (3, 1), Site::TouchesWater),
-            BuildingKind::Lodge => ("Lodge", (3, 3), Site::Dry),
-            BuildingKind::Burrow => ("Burrow hideout", (1, 1), Site::Dry),
-            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::Dry),
-            BuildingKind::ScentMound => ("Scent mound", (1, 1), Site::Dry),
+            BuildingKind::Lodge => ("Lodge", (3, 3), Site::TouchesWater),
+            BuildingKind::Burrow => ("Burrow hideout", (1, 1), Site::TouchesWater),
+            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::TouchesWater),
+            BuildingKind::ScentMound => ("Scent mound", (1, 1), Site::TouchesWater),
             BuildingKind::GuardPost => ("Guard post", (1, 1), Site::Dry),
             BuildingKind::Canal => ("Canal", (1, 1), Site::TouchesWater),
             BuildingKind::Lock => ("Lock", (2, 1), Site::TouchesWater),
             BuildingKind::WaterWheel => ("Water wheel", (2, 2), Site::TouchesWater),
-            BuildingKind::Workshop => ("Workshop", (3, 2), Site::Dry),
-            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Dry),
+            BuildingKind::Workshop => ("Workshop", (3, 2), Site::TouchesWater),
+            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::TouchesWater),
             BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
             BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
-            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Dry),
-            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Dry),
-            BuildingKind::MudPit => ("Mud pit", (2, 2), Site::Dry),
+            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::TouchesWater),
+            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::TouchesWater),
+            BuildingKind::MudPit => ("Mud pit", (2, 2), Site::TouchesWater),
             BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
-            BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
-            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
+            BuildingKind::Mill => ("Mill", (3, 3), Site::TouchesWater),
+            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::TouchesWater),
             BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Dry),
             BuildingKind::TreeNursery => ("Tree nursery", (2, 2), Site::Dry),
         };
@@ -392,6 +399,11 @@ impl Building {
         (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy)))
     }
 }
+
+/// Water depth that still counts as water for a finished building to keep working. Lower than
+/// `WET_DEPTH`, which a site needs, and the ring around the footprint counts too, so a building
+/// does not flicker in and out of use as the waterline wavers.
+pub const KEEP_WET_DEPTH: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BargeState {
@@ -518,12 +530,36 @@ pub struct Buildings {
     pub barges: Vec<Barge>,
     /// Total running water-wheel output (sum of wheel outputs).
     pub power: f32,
+    /// Buildings placed under a water site rule that need their water to work
+    /// (`BuildingKind::needs_water`); see `Buildings::stranded`.
+    pub water_bound: std::collections::BTreeSet<BuildingId>,
     /// What each workshop crafted this step; `SimState` moves it into `output::Output`.
     pub crafted: Vec<(BuildingId, Good, f32)>,
     next_id: u64,
 }
 
 impl Buildings {
+    /// A finished water building with no water left in its footprint or the ring of cells around
+    /// it: it stands high and dry and does no work until the water comes back. Workplaces among them
+    /// lose their workers, stores take nothing new and add no room (what they hold can still be
+    /// fetched), and homes wear out fast. Only buildings placed at the water by the site rule
+    /// (`water_bound`) can be stranded.
+    pub fn stranded(&self, b: &Building, depth: &Grid<f32>) -> bool {
+        if !b.is_complete() || !self.water_bound.contains(&b.id) {
+            return false;
+        }
+        let (w, h) = b.kind.spec().footprint;
+        let (x0, y0) = (b.pos.0.saturating_sub(1), b.pos.1.saturating_sub(1));
+        !(y0..=b.pos.1 + h).any(|y| (x0..=b.pos.0 + w).any(|x| depth.get(x, y).is_some_and(|&d| d >= KEEP_WET_DEPTH)))
+    }
+
+    /// Records that `id`, just placed by the site rules, needs water to work if its kind does.
+    fn bind_water(&mut self, id: BuildingId, kind: BuildingKind) {
+        if kind.needs_water() {
+            self.water_bound.insert(id);
+        }
+    }
+
     pub fn building(&self, id: BuildingId) -> Option<&Building> {
         self.buildings.iter().find(|b| b.id == id)
     }
@@ -608,6 +644,7 @@ impl Buildings {
         self.check_placement(kind, pos, tech, terrain)?;
         let id = BuildingId(self.fresh_id());
         self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0 });
+        self.bind_water(id, kind);
         Ok(id)
     }
 
@@ -617,6 +654,7 @@ impl Buildings {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
         self.buildings.push(Building { id, kind, pos, status: Status::Complete, recipe: None, output: 0.0 });
+        self.bind_water(id, kind);
         Ok(id)
     }
 
@@ -639,6 +677,7 @@ impl Buildings {
         self.stores.withdraw_all(spec.cost).expect("affordability checked above");
         let id = BuildingId(self.fresh_id());
         self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), recipe: None, output: 0.0 });
+        self.bind_water(id, kind);
         Ok(id)
     }
 
@@ -721,7 +760,7 @@ impl Buildings {
     /// fast as they are staffed (see `crafters`): `work` holds slot workers of site-built workplaces.
     pub fn step(&mut self, dt_days: f32, tech: &Tech, terrain: Terrain, colony: &Colony, work: &Work) {
         self.complete_finished(colony, terrain);
-        self.update_capacity(tech);
+        self.update_capacity(tech, terrain);
         self.update_wheels(terrain);
         let crafters = self.crafters(colony, work);
         self.run_workshops(dt_days, tech, &crafters, work);
@@ -750,14 +789,15 @@ impl Buildings {
         }
     }
 
-    /// Capacity per good: the base plus every complete store's catalogue capacity for goods it takes.
-    pub(crate) fn update_capacity(&mut self, tech: &Tech) {
+    /// Capacity per good: the base plus every complete store's catalogue capacity for goods it
+    /// takes. A stranded store adds none.
+    pub(crate) fn update_capacity(&mut self, tech: &Tech, terrain: Terrain) {
         let f = tech.storage_factor();
         for g in Good::ALL {
             let stored: f32 = self
                 .buildings
                 .iter()
-                .filter(|b| b.is_complete() && crate::agents::accepts(b.kind, g))
+                .filter(|b| b.is_complete() && !self.stranded(b, terrain.depth) && crate::agents::accepts(b.kind, g))
                 .map(|b| crate::catalogue::def(b.kind).capacity)
                 .sum();
             self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;
@@ -974,12 +1014,12 @@ mod tests {
         let w = World::new();
         let (tech, mut c) = (all_tech(), Colony::new(1));
         let mut b = Buildings::default();
-        let err = b.place(BuildingKind::Lodge, (1, 0), &tech, w.t(), &mut c).unwrap_err();
+        let err = b.place(BuildingKind::Lodge, (1, 1), &tech, w.t(), &mut c).unwrap_err();
         assert!(matches!(err, BuildError::Stores(StoresError::Insufficient { .. })));
         assert!(c.orders.is_empty() && b.buildings.is_empty());
         rich(&mut b);
         let before = b.stores.amount(Good::Logs);
-        let id = b.place(BuildingKind::Lodge, (1, 0), &tech, w.t(), &mut c).unwrap();
+        let id = b.place(BuildingKind::Lodge, (1, 1), &tech, w.t(), &mut c).unwrap();
         assert_eq!(b.stores.amount(Good::Logs), before - 20.0);
         assert_eq!(b.stores.consumed_total[Good::Logs.index()], 20.0);
         assert_eq!(c.orders.len(), 1);
@@ -997,11 +1037,59 @@ mod tests {
         let (tech, mut c) = (all_tech(), Colony::new(1));
         let mut b = Buildings::default();
         rich(&mut b);
-        b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c).unwrap();
+        b.place(BuildingKind::ScentMound, (1, 3), &tech, w.t(), &mut c).unwrap();
         b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 12.0);
         b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 0.0);
+    }
+
+    #[test]
+    fn a_water_building_is_stranded_only_once_its_water_is_gone_from_it_and_around_it() {
+        let mut w = World::new();
+        let (tech, mut c) = (all_tech(), Colony::new(1));
+        let mut b = Buildings::default();
+        rich(&mut b);
+        // a lodge on rows 2..=4, its bottom rows in the river
+        let id = b.place(BuildingKind::Lodge, (1, 2), &tech, w.t(), &mut c).unwrap();
+        finish_orders(&mut c);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        let lodge = b.building(id).unwrap().clone();
+        assert!(lodge.is_complete() && !b.stranded(&lodge, &w.depth));
+        // the river drops out of the footprint but still runs beside it: still usable
+        for x in 0..16 {
+            *w.depth.get_mut(x, 3).unwrap() = 0.0;
+            *w.depth.get_mut(x, 4).unwrap() = 0.0;
+        }
+        *w.depth.get_mut(4, 3).unwrap() = KEEP_WET_DEPTH; // one cell of the ring
+        assert!(!b.stranded(&lodge, &w.depth), "water right beside the footprint keeps it working");
+        *w.depth.get_mut(4, 3).unwrap() = 0.0;
+        assert!(b.stranded(&lodge, &w.depth), "no water in or around: high and dry");
+        // dry-ground kinds, and buildings not placed by the site rules, are never stranded
+        let post = b.place(BuildingKind::GuardPost, (8, 0), &tech, w.t(), &mut c).unwrap();
+        finish_orders(&mut c);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        assert!(!b.stranded(b.building(post).unwrap(), &w.depth));
+        let pushed = Building { id: BuildingId(999), kind: BuildingKind::Lodge, pos: (10, 0), status: Status::Complete, recipe: None, output: 0.0 };
+        assert!(!b.stranded(&pushed, &w.depth));
+    }
+
+    #[test]
+    fn a_stranded_store_adds_no_room() {
+        let mut w = World::new();
+        let (tech, mut c) = (all_tech(), Colony::new(1));
+        let mut b = Buildings::default();
+        rich(&mut b);
+        b.place(BuildingKind::Warehouse, (1, 2), &tech, w.t(), &mut c).unwrap();
+        finish_orders(&mut c);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        let wet = b.stores.capacity[Good::Logs.index()];
+        w.depth = Grid::new(16, 8, 0.0);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        assert!(b.stores.capacity[Good::Logs.index()] < wet, "the dry warehouse's room is gone");
+        w.set_column(1, 0.5);
+        b.step(0.0, &tech, w.t(), &c, &Work::default());
+        assert_eq!(b.stores.capacity[Good::Logs.index()], wet, "and comes back with the water");
     }
 
     #[test]
@@ -1011,16 +1099,18 @@ mod tests {
         let mut b = Buildings::default();
         rich(&mut b);
         assert_eq!(b.place(BuildingKind::Lodge, (15, 0), &tech, w.t(), &mut c), Err(BuildError::OutOfBounds));
-        assert!(matches!(b.place(BuildingKind::Lodge, (1, 2), &tech, w.t(), &mut c), Err(BuildError::BadTerrain(_))));
+        // a lodge stands at the water: wholly on dry land it is refused, at the river's edge accepted
+        assert_eq!(b.place(BuildingKind::Lodge, (1, 0), &tech, w.t(), &mut c), Err(BuildError::BadTerrain("needs water")));
+        assert_eq!(b.place(BuildingKind::GuardPost, (1, 3), &tech, w.t(), &mut c), Err(BuildError::BadTerrain("needs dry ground")));
         assert!(matches!(b.place(BuildingKind::Dock, (1, 0), &tech, w.t(), &mut c), Err(BuildError::BadTerrain(_))));
-        let id = b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c).unwrap();
-        assert_eq!(b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c), Err(BuildError::Blocked));
+        let id = b.place(BuildingKind::ScentMound, (1, 3), &tech, w.t(), &mut c).unwrap();
+        assert_eq!(b.place(BuildingKind::ScentMound, (1, 3), &tech, w.t(), &mut c), Err(BuildError::Blocked));
         let mud = b.stores.amount(Good::Mud);
         b.cancel(id, &mut c).unwrap();
         assert_eq!(b.stores.amount(Good::Mud), mud + 6.0);
         assert!(c.orders.is_empty() && b.buildings.is_empty());
         assert_eq!(
-            b.place(BuildingKind::Workshop, (1, 0), &Tech::default(), w.t(), &mut c),
+            b.place(BuildingKind::Workshop, (1, 2), &Tech::default(), w.t(), &mut c),
             Err(BuildError::Locked(BuildingKind::Workshop))
         );
     }
@@ -1031,7 +1121,7 @@ mod tests {
         let (tech, mut c) = (all_tech(), Colony::new(1));
         let mut b = Buildings::default();
         rich(&mut b);
-        let id = b.place(BuildingKind::Workshop, (1, 0), &tech, w.t(), &mut c).unwrap();
+        let id = b.place(BuildingKind::Workshop, (1, 2), &tech, w.t(), &mut c).unwrap();
         b.set_recipe(id, Some(Recipe::Baskets)).unwrap();
         finish_orders(&mut c);
         b.step(0.0, &tech, w.t(), &c, &Work::default());

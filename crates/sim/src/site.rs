@@ -1,6 +1,5 @@
 //! Choosing where to settle: how good a spot is (water, trees, safety, room to build) and whether
 //! the family can settle there at all. The settle tag in the game and scripted players both use it.
-use crate::buildings::BuildingKind;
 use crate::water::Cell;
 use crate::SimState;
 
@@ -53,8 +52,8 @@ fn wet(s: &SimState, c: Cell) -> bool {
     s.world.river.get(c.0, c.1) == Some(&true) || s.world.lake.get(c.0, c.1) == Some(&true) || s.water.depth.get(c.0, c.1).is_some_and(|d| *d > 0.05)
 }
 
-/// Clear dry cells near `cell` where a warehouse (3×3) fits, as a share of what a comfortable camp
-/// wants (four such spots), and whether at least one exists.
+/// Spots at the water's edge near `cell` where a warehouse (3×3) fits, as a share of what a
+/// comfortable camp wants (four such spots), and whether at least one exists.
 fn room(s: &SimState, cell: Cell) -> (f32, bool) {
     let n = s.world.size;
     let mut spots = 0;
@@ -64,9 +63,13 @@ fn room(s: &SimState, cell: Cell) -> (f32, bool) {
             if (x, y) == cell || x.abs_diff(cell.0) + y.abs_diff(cell.1) > r + 2 {
                 continue;
             }
-            let terrain = crate::buildings::Terrain { height: &s.height, depth: &s.water.depth };
-            let clear = (0..3).all(|dy| (0..3).all(|dx| !s.resources.blocks((x + dx, y + dy)) && !wet(s, (x + dx, y + dy))));
-            if clear && s.buildings.can_place_site(BuildingKind::Warehouse, (x, y), &s.tech, terrain).is_ok() {
+            // A store stands at the water's edge: a free 3×3, mostly dry, with a cell on a river,
+            // lake or pond. Trees on the bank are felled for it; a shallow stream counts, as the
+            // family's first dam deepens it enough to build on.
+            let fp: Vec<Cell> = (0..3).flat_map(|dy| (0..3).map(move |dx| (x + dx, y + dy))).collect();
+            let n_wet = fp.iter().filter(|&&c| wet(s, c)).count();
+            let clear = fp.iter().all(|&c| !s.buildings.buildings.iter().any(|b| b.cells().any(|k| k == c)));
+            if clear && n_wet > 0 && n_wet <= 4 {
                 spots += 1;
                 if spots >= 4 {
                     return (1.0, true);

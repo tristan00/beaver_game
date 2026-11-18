@@ -122,7 +122,7 @@ fn sprites_match_sim_positions_and_task_poses_while_stepping() {
             let want = Vec2::new(cx + (nx - cx) * f - w / 2.0, cy + (ny - cy) * f - h / 2.0);
             assert!((pos.x - want.x).abs() < 1e-4 && (pos.z - want.y).abs() < 1e-4, "step {i}: sprite {:?} vs sim {:?}", (pos.x, pos.z), want);
             let ground = height_at(&sim.height, pos.x, pos.z);
-            assert!(pos.y >= ground - 1e-3 && pos.y <= ground + 1.0 + DAM_TOP + 1e-3, "step {i}: y {} vs ground {ground}", pos.y);
+            assert!(pos.y >= ground - 1e-3 && pos.y <= ground + 1.0 + DAM_TOP.max(sim::dam_preview::MAX_DAM_HEIGHT) + 1e-3, "step {i}: y {} vs ground {ground}", pos.y);
             assert_eq!(s.pose, expected_pose(sim, ag), "step {i}: task {:?} gait {:?}", ag.task, ag.gait);
             assert_eq!(s.load.map(|l| l.0), ag.load.map(|l| l.good));
             assert_eq!(vis == Visibility::Hidden, ag.inside);
@@ -232,4 +232,62 @@ fn a_barge_glides_between_cells_and_faces_its_way() {
     let mut w = v.clone();
     retarget(&mut w, (1, 1), Vec3::new(1.0, 1.0, 1.0), 0.15);
     assert!((w.from.x - 0.5).abs() < 1e-3);
+}
+
+/// Moves the test beaver like the sim does: whole fixed steps from the game clock, each one
+/// `MOVE_COST_PER_DAY * STEP_DAYS` cells along a straight path (several cells a step at 1x).
+fn walk_steps(time: Res<Time>, mut clock: ResMut<crate::sim_driver::SimClock>, mut sim: ResMut<Sim>, mut walked: Local<f32>) {
+    for _ in 0..clock.advance(time.delta_secs()) {
+        let s = &mut sim.0;
+        s.time_days += sim::STEP_DAYS as f64;
+        *walked = (*walked + sim::agents::MOVE_COST_PER_DAY * sim::STEP_DAYS).min(30.0);
+        let (from, done) = ((10usize, 90usize), *walked);
+        let ag = s.agents.by_id.values_mut().next().expect("a beaver");
+        ag.cell = (from.0, from.1 + done.floor() as usize);
+        ag.step_frac = done.fract();
+        ag.gait = sim::nav::Gait::Walk;
+        let left = 30 - done.floor() as usize;
+        let steps: Vec<_> = (1..=left).map(|k| ((ag.cell.0, ag.cell.1 + k), sim::nav::Gait::Walk)).collect();
+        ag.path = (!steps.is_empty()).then(|| sim::nav::Path { cost: steps.len() as f32, steps });
+    }
+}
+
+/// Frame-by-frame smoothness of a walking beaver as the game draws it: the fixed-step clock at 60
+/// frames a second moving the beaver in whole sim steps (two cells each), the sprite drawn by
+/// `sync_sim_beavers`. A smooth walk covers about the same distance every frame: no frame stands
+/// still mid-walk and none jumps.
+#[test]
+fn a_walking_beaver_moves_smoothly_frame_to_frame() {
+    let (mut sim, _) = scene_sim();
+    sim.agents = Default::default();
+    sim.agents.spawn(BeaverId(1), (10, 90));
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, TransformPlugin))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
+        .insert_resource(crate::cli::Cli::parse(Vec::<String>::new()).unwrap())
+        .insert_resource(Sim(sim))
+        .init_resource::<crate::sim_driver::SimClock>()
+        .init_resource::<PendingDays>()
+        .add_systems(Update, (walk_steps, update_pending, sync_sim_beavers).chain());
+    let mut track = Vec::new();
+    for _ in 0..480 {
+        app.update();
+        let mut q = app.world_mut().query::<(&BeaverSprite, &Transform)>();
+        if let Some((_, t)) = q.iter(app.world()).next() {
+            track.push(t.translation.xz());
+        }
+    }
+    let steps: Vec<f32> = track.windows(2).map(|w| w[0].distance(w[1])).collect();
+    let first = steps.iter().position(|d| *d > 1e-4).expect("the beaver walked");
+    let last = steps.iter().rposition(|d| *d > 1e-4).unwrap();
+    // the walk itself, without its first and last step (starting and stopping)
+    let walk = &steps[first + 8..last.saturating_sub(8)];
+    let mut sorted = walk.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let median = sorted[sorted.len() / 2];
+    let stalls = walk.iter().filter(|d| **d < median * 0.5).count();
+    let jumps = walk.iter().filter(|d| **d > median * 1.5).count();
+    println!("walk frames {} median step {median:.3} stalls {stalls} jumps {jumps} steps {:?}", walk.len(), &walk[..walk.len().min(40)]);
+    assert!(walk.len() > 20, "the beaver walked");
+    assert_eq!((stalls, jumps), (0, 0), "every frame of the walk moves about the same distance");
 }

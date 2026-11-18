@@ -502,7 +502,8 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 if m < 1e-5 {
                     continue;
                 }
-                let len = (m.sqrt() * 12.0).clamp(0.35, 1.4);
+                // m is flow per day: a brook of ~1/day gets a short arrow, a river of ~30/day a long one
+                let len = (0.25 * m.sqrt()).clamp(0.35, 1.4);
                 let dir = Vec2::new(fx, fy) / m;
                 let mut a = cell_world(h, (cx as f32, cy as f32));
                 a.y = h.get(cx, cy).copied().unwrap_or(0.0) + d + 0.12;

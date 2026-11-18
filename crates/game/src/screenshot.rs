@@ -1,5 +1,14 @@
-﻿//! `--screenshot` mode: wait until the terrain is actually renderable, save the primary window
-//! to a PNG, then exit.
+﻿//! `--screenshot` mode: wait until the scene is actually loaded, save the primary window to a
+//! PNG, then exit.
+//!
+//! Loaded means all of it, not just the ground: the colony is founded (a new game settles at
+//! start), every sim beaver has its sprite and animated body, the scene has stopped spawning
+//! entities for `STABLE_FRAMES` frames, every mesh on screen is uploaded to the GPU, and
+//! `BC_WAIT_DAYS=<days>` of sim time have run (to catch the world as a player sees it a while in).
+//!
+//! `BC_BURST=<n>`: instead of one picture, unpause the game at 1x once loaded and save `n` frames
+//! in a row as `<stem>_000.png`.. (every `BC_BURST_EVERY` frames, default 2), with the animation
+//! clock running, to judge motion frame by frame.
 //!
 //! Capture is gated on render-world state, not on a frame count: the render world reports
 //! (through [`SharedReadiness`]) whether the terrain entity is extracted, its mesh and material
@@ -32,6 +41,8 @@ const READY_STREAK: u32 = 3;
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Frames to wait for the PNG to appear after requesting it before failing.
 const WRITE_TIMEOUT_FRAMES: u32 = 600;
+/// Frames the number of drawn entities must hold still before the scene counts as spawned.
+const STABLE_FRAMES: u32 = 20;
 
 /// Whether the terrain can be drawn, as last observed by the render world.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +73,10 @@ impl SharedReadiness {
 #[derive(Resource, Default)]
 struct ExtractedTerrain(Option<(MainEntity, AssetId<Mesh>, AssetId<crate::terrain_render::TerrainMaterial>)>);
 
+/// Render-world copy of every distinct mesh the main world draws, refreshed every extract.
+#[derive(Resource, Default)]
+struct ExtractedMeshes(std::collections::HashSet<AssetId<Mesh>>);
+
 pub struct ScreenshotPlugin;
 
 impl Plugin for ScreenshotPlugin {
@@ -76,7 +91,8 @@ impl Plugin for ScreenshotPlugin {
                 render_app
                     .insert_resource(shared)
                     .init_resource::<ExtractedTerrain>()
-                    .add_systems(ExtractSchedule, extract_terrain)
+                    .init_resource::<ExtractedMeshes>()
+                    .add_systems(ExtractSchedule, (extract_terrain, extract_meshes))
                     .add_systems(Render, report_readiness.in_set(RenderSystems::Cleanup));
             }
             None => shared.set(Readiness::Failed("no render app: screenshot mode needs a renderer".into())),
@@ -91,15 +107,28 @@ fn extract_terrain(
     out.0 = q.iter().next().map(|(e, m, mat)| (MainEntity::from(e), m.0.id(), mat.0.id()));
 }
 
+fn extract_meshes(mut out: ResMut<ExtractedMeshes>, q: Extract<Query<&Mesh3d>>) {
+    out.0.clear();
+    out.0.extend(q.iter().map(|m| m.0.id()));
+}
+
 fn report_readiness(
     shared: Res<SharedReadiness>,
     terrain: Res<ExtractedTerrain>,
+    used: Res<ExtractedMeshes>,
     meshes: Option<Res<RenderAssets<RenderMesh>>>,
     materials: Option<Res<ErasedRenderAssets<PreparedMaterial>>>,
     instances: Option<Res<RenderMeshInstances>>,
     pipelines: Res<PipelineCache>,
 ) {
-    shared.set(terrain_readiness(&terrain, meshes.as_deref(), materials.as_deref(), instances.as_deref(), &pipelines));
+    let mut r = terrain_readiness(&terrain, meshes.as_deref(), materials.as_deref(), instances.as_deref(), &pipelines);
+    if r == Readiness::Ready {
+        let missing = used.0.iter().filter(|id| meshes.as_deref().and_then(|m| m.get(**id)).is_none()).count();
+        if missing > 0 {
+            r = Readiness::Pending(format!("{missing} meshes not uploaded"));
+        }
+    }
+    shared.set(r);
 }
 
 fn terrain_readiness(
@@ -154,7 +183,7 @@ fn decide(frame: u32, min_frames: u32, streak: u32, readiness: &Readiness, elaps
         Readiness::Failed(msg) => Step::Fail(msg.clone()),
         _ if frame >= min_frames && streak >= READY_STREAK => Step::Capture,
         Readiness::Pending(what) if elapsed > READY_TIMEOUT => {
-            Step::Fail(format!("terrain not renderable after {}s ({what})", READY_TIMEOUT.as_secs()))
+            Step::Fail(format!("scene not loaded after {}s ({what})", READY_TIMEOUT.as_secs()))
         }
         _ => Step::Wait,
     }
@@ -166,24 +195,71 @@ struct Progress {
     streak: u32,
     requested_at: Option<u32>,
     last_size: Option<u64>,
+    /// Burst mode: frame the burst began and pictures requested so far.
+    burst: Option<(u32, u32)>,
 }
 
 impl Default for Progress {
     fn default() -> Self {
-        Progress { start: Instant::now(), frame: 0, streak: 0, requested_at: None, last_size: None }
+        Progress { start: Instant::now(), frame: 0, streak: 0, requested_at: None, last_size: None, burst: None }
     }
 }
 
+/// What the main world still lacks before the picture shows the scene a player would see, or
+/// `None` once it is all there.
+fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64) -> Option<String> {
+    if !cli.plain_world() && !sim.colony.is_founded() {
+        return Some("the colony is not founded yet".into());
+    }
+    let agents = sim.agents.by_id.len();
+    if sprites < agents || rigged < sprites {
+        return Some(format!("beavers: {rigged} of {agents} drawn"));
+    }
+    if sim.time_days < wait_days {
+        return Some(format!("sim at day {:.2} of {wait_days}", sim.time_days));
+    }
+    if stable.0 != drawn {
+        *stable = (drawn, 0);
+    } else {
+        stable.1 += 1;
+    }
+    (stable.1 < STABLE_FRAMES).then(|| format!("scene still spawning ({drawn} drawn)"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn drive_screenshot(
     mut commands: Commands,
     cli: Res<Cli>,
     shared: Res<SharedReadiness>,
     mut p: Local<Progress>,
     gate: Option<Res<crate::flow::CaptureGate>>,
+    mut sim: ResMut<crate::state::Sim>,
+    sprites: Query<(), With<crate::entities_render::BeaverSprite>>,
+    rigged: Query<(), With<crate::entities_render::BeaverRig>>,
+    drawn: Query<(), With<Mesh3d>>,
+    mut stable: Local<(usize, u32)>,
+    mut clock: ResMut<crate::sim_driver::SimClock>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let path: &PathBuf = cli.screenshot.as_ref().expect("system only added in screenshot mode");
     p.frame += 1;
+    // burst: running at 1x, a picture every few frames, then wait for the files and exit
+    if let Some((from, taken)) = p.burst {
+        let n: u32 = std::env::var("BC_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+        let every: u32 = std::env::var("BC_BURST_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(2).max(1);
+        if taken < n {
+            if (p.frame - from) % every == 0 {
+                let stem = path.with_extension("");
+                let file = PathBuf::from(format!("{}_{:03}.png", stem.display(), taken));
+                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(file));
+                p.burst = Some((from, taken + 1));
+            }
+        } else if p.frame - from > n * every + 60 {
+            info!("burst of {n} frames saved next to {}", path.display());
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
     if let Some(at) = p.requested_at {
         // Done once the file exists and its size is stable between two frames.
         let size = std::fs::metadata(path).ok().map(|m| m.len()).filter(|&n| n > 0);
@@ -197,7 +273,30 @@ fn drive_screenshot(
         p.last_size = size;
         return;
     }
-    let readiness = shared.get();
+    let wait_days = std::env::var("BC_WAIT_DAYS").ok().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
+    // The game opens paused for the player: run the sim here up to the requested day (a fifth of a
+    // day per frame, so the drawn world keeps up with it).
+    if sim.0.colony.is_founded() && sim.0.time_days < wait_days {
+        for _ in 0..4 {
+            if sim.0.time_days >= wait_days {
+                break;
+            }
+            if let Err(e) = sim.0.step(crate::sim_driver::FIXED_DT_DAYS) {
+                error!("screenshot aborted: sim step failed: {e}");
+                exit.write(AppExit::error());
+                return;
+            }
+        }
+    }
+    let readiness = match (shared.get(), scene_pending(&cli, &sim.0, sprites.iter().count(), rigged.iter().count(), drawn.iter().count(), &mut stable, wait_days)) {
+        (Readiness::Ready, Some(what)) => Readiness::Pending(what),
+        (r, _) => r,
+    };
+    if let Readiness::Pending(what) = &readiness {
+        if p.frame % 120 == 0 {
+            info!("screenshot waiting ({:.0}s): {what}", p.start.elapsed().as_secs_f32());
+        }
+    }
     let open = gate.is_none_or(|g| g.0);
     p.streak = if readiness == Readiness::Ready && open { p.streak + 1 } else { 0 };
     match decide(p.frame, cli.frames, p.streak, &readiness, p.start.elapsed()) {
@@ -216,7 +315,13 @@ fn drive_screenshot(
                     return;
                 }
             }
-            info!("terrain ready at frame {}; capturing", p.frame);
+            info!("scene loaded at frame {} (sim day {:.2}); capturing", p.frame, sim.0.time_days);
+            if std::env::var_os("BC_BURST").is_some() {
+                clock.paused = false;
+                clock.speed = crate::sim_driver::Speed::X1;
+                p.burst = Some((p.frame, 0));
+                return;
+            }
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
             p.requested_at = Some(p.frame);
         }

@@ -235,6 +235,9 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             if with_veg {
                 let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
                 v ^= (vq as u32 as u64).rotate_left(17);
+                // a drained bed greens over in a few visible steps, not every frame
+                let bq = (dried_bed(s, x, y) * 6.0).round() as u64;
+                v ^= bq.rotate_left(41);
             }
             h = (h ^ v).wrapping_mul(0x100_0000_01b3);
             h ^= h >> 29;
@@ -580,6 +583,14 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     // reads as clear cyan from far away
     let bed = mix([0.56, 0.78, 0.66], mix(p.water_shallow, p.water_deep, 0.6), (depth / 2.5).max(0.0).sqrt().min(1.0));
     c = mix(c, bed, submerged);
+    // a drained bed: where water stood until lately (`flood_days` still draining), pale cracked
+    // silt that greens over as the memory of the water fades
+    let dried = dried_bed(s, x, y) * (1.0 - submerged);
+    if dried > 0.0 {
+        let mottle = smooth(-0.35, 0.45, patch_noise(x as f32, y as f32, 2.5, 4));
+        let silt = mix(rgb(0xA88A66), rgb(0xD8C6A2), mottle);
+        c = mix(c, silt, dried * 0.9);
+    }
     // snow: seasonal blanket above the waterline (no permanent white caps: high ground is Stone)
     let cap = smooth(0.8, 0.95, t);
     let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.0);
@@ -589,6 +600,15 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let f = 1.0 - submerged;
     let lift = |v: f32, floor: f32| v + (v.max(floor * 1.05) - v) * f;
     [lift(c[0], lo[0]), lift(c[1], lo[1]), lift(c[2], lo[2])]
+}
+
+/// How strongly a dry cell shows as a drained bed (0..1), from the days it lay flooded that the
+/// ecology has not yet let drain away.
+fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
+    if at(&s.water.depth, x, y) > WET_EPS {
+        return 0.0;
+    }
+    smooth(0.5, 20.0, at(&s.ecology.flood_days, x, y))
 }
 
 /// Builds the mesh of one chunk at `step` cells per vertex, with skirts on its border.
@@ -713,7 +733,7 @@ const DETAIL_DENSITY: f32 = 0.7;
 
 /// Sparse small ground detail on open grass (`docs/STYLE.md` section 2): grass tufts (two crossed
 /// strokes), flowers (white, pink, yellow) and pebbles, about one item per 1.4 cells (`DETAIL_DENSITY`). Never on
-/// water, wet banks, rock or snow. Deterministic per cell.
+/// water, wet banks, a lately drained bed, rock or snow. Deterministic per cell.
 fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {
     let (w, h) = (s.height.width() as i32, s.height.height() as i32);
     for y in y0..y0 + CHUNK as i32 {
@@ -734,6 +754,8 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
                 }
             }
             let t = at(&s.height, x, y) / maxh;
+            // nothing grows yet on a lately drained bed
+            ok &= dried_bed(s, x, y) < 0.35;
             if !ok || slope_at(s, x, y) > 0.45 || t > 0.62 || p.winter > 0.7 {
                 continue;
             }

@@ -357,6 +357,9 @@ pub enum ProblemKind {
     /// Mature trees around the colony fell by more than `forestry::FALLING_SHARE` over the last
     /// `forestry::FALLING_DAYS` (value: percent lost).
     ForestFalling,
+    /// Water buildings left high and dry (`Buildings::stranded`; value: how many). Urgent when a
+    /// home is among them: it wears out and the family grows cold.
+    HighAndDry,
 }
 
 /// What a problem is about, for its icon.
@@ -504,6 +507,23 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             fix: Fix::Focus,
             alt_fix: None,
             focus: Some(worst),
+        });
+    }
+
+    // Water buildings whose water has gone: no work, no deposits, homes falling in.
+    let dry: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| sim.buildings.stranded(b, &sim.water.depth)).collect();
+    if let Some(first) = dry.iter().find(|b| matches!(b.kind, BuildingKind::Lodge | BuildingKind::Burrow)).or(dry.first()) {
+        let home = matches!(first.kind, BuildingKind::Lodge | BuildingKind::Burrow);
+        let rows = dry.iter().map(|b| row("High and dry", 1.0, building_source(sim, b.id))).collect();
+        out.push(Problem {
+            kind: ProblemKind::HighAndDry,
+            severity: if home { Severity::Urgent } else { Severity::Warning },
+            value: dry.len() as f32,
+            cause: Breakdown::new(dry.len() as f32, rows),
+            subject: Some(Subject::Building(first.kind)),
+            fix: Fix::Focus,
+            alt_fix: None,
+            focus: building_cell(sim, first.id),
         });
     }
 
@@ -680,14 +700,17 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
             sim.apply(Command::Assign { who, to: Some(Assignment::Area(kind, area)) }).map_err(err)
         }
         Fix::StaffSites => {
-            // Every stalled site (no builder at all), filled up.
-            let sites: Vec<BuildingId> = sim
+            // Every site builders can work at that is short of builders, filled up: the ones with
+            // none first, then the partly staffed ones.
+            let mut sites: Vec<(usize, BuildingId)> = sim
                 .work
                 .places
                 .iter()
-                .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.filled() == 0 && !crate::agents::site_stalled(sim, p))
-                .map(|p| p.building)
+                .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.filled() < p.slots.len() && !crate::agents::site_stalled(sim, p))
+                .map(|p| (p.filled().min(1), p.building))
                 .collect();
+            sites.sort();
+            let sites: Vec<BuildingId> = sites.into_iter().map(|(_, b)| b).collect();
             let mut placed = 0;
             for b in sites {
                 while sim.work.place(b).is_some_and(|p| p.filled() < p.slots.len()) && sim.apply(Command::AddWorker { building: b }).is_ok() {
@@ -1004,6 +1027,11 @@ mod tests {
         assert!(!problems(&s).iter().any(|p| p.kind == ProblemKind::Idle), "the site card already puts them to work");
         apply_fix(&mut s, Fix::StaffSites).unwrap();
         assert_eq!(s.work.place(site).unwrap().filled(), 2);
+        // A site one builder short is filled up too.
+        s.apply(Command::RemoveWorker { building: site }).unwrap();
+        assert_eq!(s.work.place(site).unwrap().filled(), 1);
+        apply_fix(&mut s, Fix::StaffSites).unwrap();
+        assert_eq!(s.work.place(site).unwrap().filled(), 2, "the half-staffed site is filled");
         // A stranger: accept or turn away.
         let id = s.society.raise(&s.colony, true, 0.0).unwrap();
         let p = problems(&s).into_iter().find(|p| p.kind == ProblemKind::Stranger).unwrap();
@@ -1114,6 +1142,8 @@ mod tests {
             spill_at: None,
             pressure: 0.0,
             fill_days: 0.0,
+            inflow: 0.0,
+            pond_loss: 0.0,
         };
         assert_eq!(profile_with_preview(&pts, &p), vec![2.0, 1.0, 3.0]);
     }

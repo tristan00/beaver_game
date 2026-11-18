@@ -7,13 +7,17 @@
 //! seepage and open-edge outflow are the only mass exchanges and are accounted in
 //! `added_volume` / `lost_volume`.
 //!
+//! Open edges: where the land keeps falling outward (a river running off the map) it is taken to go
+//! on beyond the map with the slope it has at the edge, and water leaves through the same pipes as
+//! any other flow. An edge the land rises from is a wall: water never leaves the world upstream.
+//!
 //! Dams are cell barriers (height + integrity). Water overtopping a dam erodes it and integrity
 //! also decays with time; at zero integrity the dam is removed and the pond drains as a flood wave.
 //! Canals lower terrain. Seasons modulate inflow/rain/evaporation; winter grows surface ice.
 //! The first day of simulated time is the start of spring.
 use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
-use crate::worldgen::World;
+use crate::worldgen::{InputKind, World};
 use std::fmt;
 pub use crate::tuning::water::*;
 
@@ -21,13 +25,19 @@ pub use crate::tuning::water::*;
 pub type Cell = (usize, usize);
 
 
-const FLOW_STEPS_PER_DAY: f32 = 100.0;
-const MAX_SUBSTEPS: usize = 4;
+/// Flow substeps per simulated day. The number of substeps a step runs scales with its length, so
+/// how far water travels in a day does not depend on the step size.
+const FLOW_STEPS_PER_DAY: f32 = 1000.0;
+/// Upper bound on substeps in one step (a guard against absurd steps, far above any real use).
+const MAX_SUBSTEPS: usize = 4000;
 const FRICTION: f32 = 0.9;
 const PUSH: f32 = 0.2;
 /// Max fraction of the surface difference one pipe moves (keeps neighbours from overshooting).
 const PIPE_CAP: f32 = 0.24;
-const EDGE_DRAIN: f32 = 0.25;
+/// Water depth over a cell face at which it passes water freely. Shallower water conducts in
+/// proportion to its depth (flow needs depth: a film creeps, a river runs, a deep canal pours), so
+/// a river stands as deep as the flow it carries needs.
+const FULL_FLOW_DEPTH: f32 = 2.35;
 const WALL: f32 = 1.0e9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +113,40 @@ pub struct Source {
     pub seasonality: f32,
 }
 
+/// Cumulative water volumes by where they entered and left the map (since `Water::reset_books`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Budget {
+    /// Brought in by sources: rivers from beyond the map, springs and baseflow.
+    pub sources: f64,
+    /// Rain the ground did not soak up.
+    pub rain: f64,
+    /// Drained off the map at its border.
+    pub edges: f64,
+    pub evaporation: f64,
+    pub seepage: f64,
+}
+
+impl Budget {
+    pub fn added(&self) -> f64 { self.sources + self.rain }
+    pub fn lost(&self) -> f64 { self.edges + self.evaporation + self.seepage }
+}
+
+/// The sources a world's water inputs give (`worldgen::water_inputs`): `WATER_PER_CATCHMENT_CELL`
+/// per catchment cell per day, rivers from beyond the map following the seasons by
+/// `INFLOW_SEASONALITY`, springs and baseflow by `SPRING_SEASONALITY`.
+pub fn sources_for(world: &World) -> Vec<Source> {
+    world
+        .water_inputs
+        .iter()
+        .map(|inp| Source {
+            x: inp.cell.0,
+            y: inp.cell.1,
+            rate: WATER_PER_CATCHMENT_CELL * inp.catchment as f32,
+            seasonality: if inp.kind == InputKind::Inflow { INFLOW_SEASONALITY } else { SPRING_SEASONALITY },
+        })
+        .collect()
+}
+
 /// Invalid water operation; the state is left unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WaterError {
@@ -170,8 +214,19 @@ pub struct Water {
     /// Cumulative volume added by sources and rain / removed by evaporation, seepage, edges.
     pub added_volume: f64,
     pub lost_volume: f64,
+    /// Sources, rain, evaporation and seepage of those volumes (see `Water::budget`).
+    books: Budget,
     dams: Vec<usize>,
     hs: Vec<f32>,
+    /// Bed (terrain + dam) per padded cell, for the water depth over each face.
+    bs: Vec<f32>,
+    /// Padded indices of the cells flow is computed for this step (wet cells and their neighbours),
+    /// with a mask; cells that got wet in the last substep (scratch).
+    active: Vec<(u32, u32)>,
+    /// The previous step's active set (scratch, reused).
+    spare: Vec<(u32, u32)>,
+    in_active: Vec<bool>,
+    woke: Vec<usize>,
     fl: Vec<f32>,
     fr: Vec<f32>,
     fu: Vec<f32>,
@@ -179,8 +234,9 @@ pub struct Water {
 }
 
 impl Water {
-    /// Water for a generated world: every spring feeds its stream, lakes and ponds start brim-full
-    /// and the rivers are settled into the flow the springs sustain. Deterministic; the world is not modified.
+    /// Water for a generated world: every water input of the world (`sources_for`) feeds the
+    /// network, lakes and ponds start brim-full and the rivers are settled into the flow the
+    /// inputs sustain. Deterministic; the world is not modified.
     pub fn from_world(world: &World) -> Self {
         let mut w = Self::new(world.size);
         for ((d, &h), &s) in w.depth.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
@@ -192,14 +248,25 @@ impl Water {
         for ((f, &h), &sf) in w.fed.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
             *f = h < sf;
         }
-        for &(x, y) in &world.springs {
-            w.sources.push(Source { x, y, rate: SPRING_RATE, seasonality: SPRING_SEASONALITY });
-        }
+        w.sources = sources_for(world);
         // Let the springs' flow settle into the channels, then start the clock and the books afresh.
         for _ in 0..(SETTLE_DAYS / SETTLE_DT).round() as usize { w.step(&world.height, SETTLE_DT); }
         w.time_days = 0.0;
-        (w.added_volume, w.lost_volume) = (0.0, 0.0);
+        w.reset_books();
         w
+    }
+
+    /// Starts the volume books afresh (`added_volume`, `lost_volume`, `budget`).
+    pub fn reset_books(&mut self) {
+        (self.added_volume, self.lost_volume) = (0.0, 0.0);
+        self.books = Budget::default();
+    }
+
+    /// Volumes in and out since the books were last reset, by where they entered and left. What
+    /// drained off the map edge is the loss that is not evaporation or seepage.
+    pub fn budget(&self) -> Budget {
+        let edges = (self.lost_volume - self.books.evaporation - self.books.seepage).max(0.0);
+        Budget { edges, ..self.books }
     }
     /// Empty `size x size` water state. Panics if `size` is zero.
     pub fn new(size: usize) -> Self {
@@ -217,8 +284,14 @@ impl Water {
             time_days: 0.0,
             added_volume: 0.0,
             lost_volume: 0.0,
+            books: Budget::default(),
             dams: Vec::new(),
             hs: vec![WALL; pad],
+            bs: vec![WALL; pad],
+            active: Vec::new(),
+            spare: Vec::new(),
+            in_active: vec![false; pad],
+            woke: Vec::new(),
             fl: vec![0.0; pad],
             fr: vec![0.0; pad],
             fu: vec![0.0; pad],
@@ -231,9 +304,9 @@ impl Water {
     /// Total water volume on the map.
     pub fn total_volume(&self) -> f64 { self.depth.as_slice().iter().map(|&d| d as f64).sum() }
 
-    /// Net water movement through a cell as (east, south) per sim step, from the stored pipe
-    /// fluxes: what leaves it eastward minus westward, southward minus northward, averaged with
-    /// what enters. Zero outside the map or where the water is still.
+    /// Net water movement through a cell as (east, south), in depth units (over one cell) per day,
+    /// from the last substep's pipe fluxes: what leaves it eastward minus westward, southward minus
+    /// northward, averaged with what enters. Zero outside the map or where the water is still.
     pub fn flow_at(&self, x: usize, y: usize) -> (f32, f32) {
         if !self.depth.in_bounds(x, y) {
             return (0.0, 0.0);
@@ -242,7 +315,7 @@ impl Water {
         let s = self.depth.width() + 2;
         let ex = 0.5 * ((self.fr[p] - self.fl[p]) + (self.fr[p - 1] - self.fl[p + 1]));
         let ey = 0.5 * ((self.fd[p] - self.fu[p]) + (self.fd[p - s] - self.fu[p + s]));
-        (ex, ey)
+        (ex * FLOW_STEPS_PER_DAY, ey * FLOW_STEPS_PER_DAY)
     }
 
     pub fn has_dam(&self, x: usize, y: usize) -> bool {
@@ -335,74 +408,160 @@ impl Water {
             "terrain size must match water size"
         );
         if dt_days <= 0.0 { return; }
-        let n = ((dt_days * FLOW_STEPS_PER_DAY).round() as usize).clamp(1, MAX_SUBSTEPS);
-        for _ in 0..n { self.flow_substep(height); }
+        let n = ((dt_days * FLOW_STEPS_PER_DAY).ceil() as usize).clamp(1, MAX_SUBSTEPS);
+        self.prepare_flow(height);
+        for _ in 0..n { self.flow_substep(); }
         self.apply_sources_and_climate(dt_days);
-        self.update_dams(dt_days);
+        self.update_dams(height, dt_days);
         self.time_days += dt_days as f64;
     }
 
-    fn flow_substep(&mut self, height: &HeightGrid) {
+    /// Before a step's substeps: beds and the ring outside the map (terrain and dams do not change
+    /// within a step), surfaces, and the active set: every wet cell and its neighbours. Only active
+    /// cells can send or receive water this substep; a cell that gets wet adds its neighbours.
+    fn prepare_flow(&mut self, height: &HeightGrid) {
         let (w, h) = (self.depth.width(), self.depth.height());
         let stride = w + 2;
         let terrain = height.as_slice();
         let dam = self.dam_height.as_slice();
-        // Surface heights (padded with walls).
+        let depth = self.depth.as_slice();
+        for y in 0..h {
+            let row = (y + 1) * stride + 1;
+            for x in 0..w {
+                let i = y * w + x;
+                let b = terrain[i] + dam[i];
+                self.bs[row + x] = b;
+                self.hs[row + x] = b + depth[i];
+            }
+        }
+        // The ring outside the map: a wall, or (open edges) dry ground continuing the edge's slope,
+        // only where the land keeps falling (or lies flat) outward. An edge the ground rises from is
+        // the foot of an upstream valley the map cuts off, and water does not leave the world up it.
         {
-            let depth = self.depth.as_slice();
+            let bed = |x: usize, y: usize| terrain[y * w + x] + dam[y * w + x];
+            let open = self.config.open_edges;
+            let out = |e: f32, inner: f32| {
+                let beyond = 2.0 * e - inner;
+                if open && beyond <= e { beyond } else { WALL }
+            };
             for y in 0..h {
-                let row = (y + 1) * stride + 1;
-                let src = y * w..(y + 1) * w;
-                for (((o, &t), &dh), &d) in self.hs[row..row + w].iter_mut()
-                    .zip(&terrain[src.clone()]).zip(&dam[src.clone()]).zip(&depth[src]) {
-                    *o = t + dh + d;
+                let row = (y + 1) * stride;
+                let inner_l = if w > 1 { bed(1, y) } else { bed(0, y) };
+                let inner_r = if w > 1 { bed(w - 2, y) } else { bed(w - 1, y) };
+                self.hs[row] = out(bed(0, y), inner_l);
+                self.hs[row + w + 1] = out(bed(w - 1, y), inner_r);
+                (self.bs[row], self.bs[row + w + 1]) = (self.hs[row], self.hs[row + w + 1]);
+            }
+            for x in 0..w {
+                let inner_t = if h > 1 { bed(x, 1) } else { bed(x, 0) };
+                let inner_b = if h > 1 { bed(x, h - 2) } else { bed(x, h - 1) };
+                self.hs[x + 1] = out(bed(x, 0), inner_t);
+                self.hs[(h + 1) * stride + x + 1] = out(bed(x, h - 1), inner_b);
+                self.bs[x + 1] = self.hs[x + 1];
+                self.bs[(h + 1) * stride + x + 1] = self.hs[(h + 1) * stride + x + 1];
+            }
+        }
+        // Active set: wet cells and their in-map neighbours. The last set is kept aside so a cell
+        // leaving it can have its stored flows cleared: a neighbour must never read a dry,
+        // inactive cell's old outflow as water arriving.
+        for &(p, _) in &self.active {
+            self.in_active[p as usize] = false;
+        }
+        let mut was = std::mem::take(&mut self.active);
+        for y in 0..h {
+            for x in 0..w {
+                if depth[y * w + x] > 0.0 {
+                    let p = (y + 1) * stride + x + 1;
+                    for q in [p, p - 1, p + 1, p - stride, p + stride] {
+                        let (qx, qy) = (q % stride, q / stride);
+                        if qx >= 1 && qx <= w && qy >= 1 && qy <= h && !self.in_active[q] {
+                            self.in_active[q] = true;
+                            self.active.push((q as u32, ((qy - 1) * w + qx - 1) as u32));
+                        }
+                    }
                 }
             }
         }
+        for &(p, _) in &was {
+            let p = p as usize;
+            if !self.in_active[p] {
+                (self.fl[p], self.fr[p], self.fu[p], self.fd[p]) = (0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        was.clear();
+        self.spare = was;
+    }
+
+    fn flow_substep(&mut self) {
+        let (w, h) = (self.depth.width(), self.depth.height());
+        let stride = w + 2;
         // Fluxes, limited to the water available in the source cell.
         {
             let depth = self.depth.as_slice();
-            let hs = &self.hs;
-            for y in 0..h {
-                let row = (y + 1) * stride + 1;
-                for x in 0..w {
-                    let p = row + x;
-                    let s = hs[p];
-                    let pipe = |old: f32, other: f32| {
-                        let dh = s - other;
-                        (old * FRICTION + PUSH * dh).min(PIPE_CAP * dh).max(0.0)
-                    };
-                    let (l, r, u, d) = (
-                        pipe(self.fl[p], hs[p - 1]), pipe(self.fr[p], hs[p + 1]),
-                        pipe(self.fu[p], hs[p - stride]), pipe(self.fd[p], hs[p + stride]),
-                    );
-                    let total = l + r + u + d;
-                    let have = depth[y * w + x];
-                    let k = if total > have { have / total } else { 1.0 };
-                    self.fl[p] = l * k; self.fr[p] = r * k; self.fu[p] = u * k; self.fd[p] = d * k;
+            let (hs, bs) = (&self.hs, &self.bs);
+            for &(p, i) in &self.active {
+                let (p, have) = (p as usize, depth[i as usize]);
+                // a dry cell sends nothing
+                if have <= 0.0 {
+                    (self.fl[p], self.fr[p], self.fu[p], self.fd[p]) = (0.0, 0.0, 0.0, 0.0);
+                    continue;
                 }
+                let (s, b) = (hs[p], bs[p]);
+                // driven by the surface difference, scaled by the depth of water over the face
+                // (above the higher of the two beds): flow needs depth
+                let pipe = |old: f32, q: usize| {
+                    let dh = s - hs[q];
+                    let face = (s.max(hs[q]) - b.max(bs[q])).max(0.0);
+                    let g = (face / FULL_FLOW_DEPTH).min(1.0);
+                    (old * FRICTION + PUSH * dh * g).min(PIPE_CAP * dh).max(0.0)
+                };
+                let (l, r, u, d) = (pipe(self.fl[p], p - 1), pipe(self.fr[p], p + 1), pipe(self.fu[p], p - stride), pipe(self.fd[p], p + stride));
+                let total = l + r + u + d;
+                let k = if total > have { have / total } else { 1.0 };
+                self.fl[p] = l * k;
+                self.fr[p] = r * k;
+                self.fu[p] = u * k;
+                self.fd[p] = d * k;
             }
         }
-        // Apply fluxes.
+        // Apply fluxes; a cell that gets wet brings its neighbours into the active set.
+        let mut woke = std::mem::take(&mut self.woke);
         {
             let depth = self.depth.as_mut_slice();
-            for y in 0..h {
-                let row = (y + 1) * stride + 1;
-                for x in 0..w {
-                    let p = row + x;
-                    let out = self.fl[p] + self.fr[p] + self.fu[p] + self.fd[p];
-                    let inn = self.fr[p - 1] + self.fl[p + 1] + self.fd[p - stride] + self.fu[p + stride];
-                    let c = &mut depth[y * w + x];
-                    *c = (*c - out + inn).max(0.0);
+            for &(p, i) in &self.active {
+                let p = p as usize;
+                let out = self.fl[p] + self.fr[p] + self.fu[p] + self.fd[p];
+                let inn = self.fr[p - 1] + self.fl[p + 1] + self.fd[p - stride] + self.fu[p + stride];
+                let c = &mut depth[i as usize];
+                let was = *c;
+                *c = (*c - out + inn).max(0.0);
+                self.hs[p] = self.bs[p] + *c;
+                if was <= 0.0 && *c > 0.0 {
+                    woke.push(p);
                 }
             }
         }
+        for &p in &woke {
+            for q in [p - 1, p + 1, p - stride, p + stride] {
+                let (qx, qy) = (q % stride, q / stride);
+                if qx >= 1 && qx <= w && qy >= 1 && qy <= h && !self.in_active[q] {
+                    self.in_active[q] = true;
+                    self.active.push((q as u32, ((qy - 1) * w + qx - 1) as u32));
+                }
+            }
+        }
+        woke.clear();
+        self.woke = woke;
+        // What flowed through the border into the ring has left the map.
         if self.config.open_edges {
-            let depth = self.depth.as_mut_slice();
             let mut lost = 0.0f64;
-            let mut drain = |i: usize| { let q = depth[i] * EDGE_DRAIN; depth[i] -= q; lost += q as f64; };
-            for x in 0..w { drain(x); if h > 1 { drain((h - 1) * w + x); } }
-            for y in 1..h.saturating_sub(1) { drain(y * w); if w > 1 { drain(y * w + w - 1); } }
+            for y in 0..h {
+                let row = (y + 1) * stride + 1;
+                lost += self.fl[row] as f64 + self.fr[row + w - 1] as f64;
+            }
+            for x in 0..w {
+                lost += self.fu[stride + 1 + x] as f64 + self.fd[h * stride + 1 + x] as f64;
+            }
             self.lost_volume += lost;
         }
     }
@@ -417,6 +576,8 @@ impl Water {
             self.depth.as_mut_slice()[s.y * w + s.x] += q;
             added += q as f64;
         }
+        self.books.sources += added;
+        let (mut rained, mut evaporated, mut seeped) = (0.0f64, 0.0f64, 0.0f64);
         let rain = cfg.rain * season.rain_mult() * dt;
         let evap = cfg.evaporation * season.evap_mult() * dt;
         let seep = cfg.seepage * dt;
@@ -432,21 +593,48 @@ impl Water {
             let rain = (rain - cfg.soil_absorb * dt).max(0.0);
             *d += rain;
             added += rain as f64;
+            rained += rain as f64;
             let wet = *d > WET_EPS;
-            let q = if wet { (evap * (1.0 - *ice) + seep).min(*d) } else { 0.0 };
+            // even a last film dries out (it is only too thin to freeze)
+            let (e, q) = if *d > 0.0 {
+                let e = evap * (1.0 - *ice);
+                (e, (e + seep).min(*d))
+            } else {
+                (0.0, 0.0)
+            };
             *d -= q;
             lost += q as f64;
+            // Evaporation goes first; seepage takes what is left of the loss.
+            let e = (e as f64).min(q as f64);
+            evaporated += e;
+            seeped += q as f64 - e;
             *ice = if winter && wet { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
         }
         self.added_volume += added;
         self.lost_volume += lost;
+        self.books.rain += rained;
+        self.books.evaporation += evaporated;
+        self.books.seepage += seeped;
     }
 
-    fn update_dams(&mut self, dt: f32) {
+    /// Dam wear: age, plus water pouring over the crest. The head over a crest is how far the
+    /// highest water beside it (or on it) stands above the crest top: water spilling off into a free
+    /// fall leaves almost none on the crest itself, so the crest's own depth would miss it.
+    fn update_dams(&mut self, height: &HeightGrid, dt: f32) {
         let cfg = &self.config;
+        let (w, h) = (self.depth.width(), self.depth.height());
+        let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), self.depth.as_slice());
+        let surface = |i: usize| terrain[i] + dam[i] + depth[i];
         let mut broken = Vec::new();
         for &i in &self.dams {
-            let over = (self.depth.as_slice()[i] - cfg.overtop_depth).max(0.0);
+            let (x, y) = (i % w, i / w);
+            let crest = terrain[i] + dam[i];
+            let mut top = surface(i);
+            if x > 0 { top = top.max(surface(i - 1)); }
+            if x + 1 < w { top = top.max(surface(i + 1)); }
+            if y > 0 { top = top.max(surface(i - w)); }
+            if y + 1 < h { top = top.max(surface(i + w)); }
+            let over = (top - crest - cfg.overtop_depth).max(0.0);
             let integ = &mut self.dam_integrity.as_mut_slice()[i];
             *integ -= (cfg.dam_decay_per_day + cfg.overtop_erosion * over) * dt;
             if *integ <= 0.0 { broken.push(i); }
@@ -712,6 +900,52 @@ mod tests {
         assert!(s.water.dig_canal(&mut s.height, &[(1, 1)], 0.0).is_err());
         assert!(preview_dam(&s, &[(1, 1)], 0.0).is_err());
         assert!(preview_dam(&s, &[], 1.0).is_err());
+    }
+
+    /// A 64-cell valley falling eastward, its floor along y = 32, with a river entering at its
+    /// west edge from `extra` cells of catchment beyond the map.
+    fn inflow_valley(extra: u32) -> World {
+        let n = 64;
+        let raw: Vec<f32> = (0..n * n)
+            .map(|i| {
+                let (x, y) = ((i % n) as f32, (i / n) as f32);
+                4.0 + 0.12 * (n as f32 - 1.0 - x) + 0.25 * (y - 32.0).abs()
+            })
+            .collect();
+        crate::worldgen::from_heights(9, n, raw, &[(0, 32, extra)]).unwrap()
+    }
+
+    /// The water budget of a map at steady state: what the sources bring in (the river from
+    /// beyond the map, springs, baseflow) leaves again through the downstream edge, evaporation
+    /// and seepage, within 5%; and the river leaves the map carrying about what entered it plus
+    /// what its own catchment gave (at least 80% of all the water brought in drains off the edge).
+    #[test]
+    fn water_budget_balances_at_steady_state_and_the_river_leaves_as_it_came() {
+        let world = inflow_valley(3000);
+        let inflow = world.water_inputs.iter().find(|i| i.kind == InputKind::Inflow).expect("the river from beyond the map");
+        assert_eq!((inflow.cell, inflow.catchment), ((1, 32), 3000), "fed at the border cell's inner neighbour");
+        let local: u32 = world.water_inputs.iter().filter(|i| i.kind != InputKind::Inflow).map(|i| i.catchment).sum();
+        let mut w = Water::from_world(&world);
+        w.config.seepage = 0.01; // a clay valley floor, as the starts have
+        let given: f32 = w.sources.iter().map(|s| s.rate).sum();
+        assert!((given - WATER_PER_CATCHMENT_CELL * (3000 + local) as f32).abs() < 1e-3, "sources follow the catchment: {given}");
+        // Settle further into steady flow, then keep the books over a stretch of days.
+        for _ in 0..800 {
+            w.step(&world.height, 0.05);
+        }
+        w.reset_books();
+        let (v0, days) = (w.total_volume(), 20.0);
+        for _ in 0..(days / 0.05) as usize {
+            w.step(&world.height, 0.05);
+        }
+        let b = w.budget();
+        let stored = w.total_volume() - v0;
+        assert!(((b.added() - b.lost() - stored) / b.added()).abs() < 1e-3, "books balance: {b:?}, stored {stored}");
+        assert!(b.rain == 0.0, "the ground soaks up the rain: {b:?}");
+        let (inn, out) = (b.sources, b.edges + b.evaporation + b.seepage);
+        assert!((inn - out).abs() < 0.05 * inn, "steady: in {:.2}/day, out {:.2}/day ({b:?})", inn / days as f64, out / days as f64);
+        assert!(b.edges >= 0.8 * inn, "the river leaves with what came in: edges {:.2} of {:.2}/day", b.edges / days as f64, inn / days as f64);
+        assert!(b.edges >= WATER_PER_CATCHMENT_CELL as f64 * 3000.0 * days as f64, "more leaves than entered from beyond the map");
     }
 
 }

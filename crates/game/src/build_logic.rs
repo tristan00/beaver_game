@@ -770,12 +770,14 @@ pub(crate) mod tests {
         assert!(matches!(check_building(&sim, BuildingKind::Workshop, site), Err(PlaceError::Locked(..))));
         sim.tech.unlock_all();
         // a site costs nothing to place: the family hauls the materials in
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Ok(()));
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Ok(()));
+        assert_eq!(check_building(&sim, BuildingKind::QuarryCamp, site), Ok(()));
+        // a lodge stands at the water, never wholly on dry land
+        assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Err(PlaceError::NeedsWater));
         assert_eq!(check_building(&sim, BuildingKind::Lodge, (sim.world.size - 1, 5)), Err(PlaceError::OutOfBounds));
-        // dry-only building on water
         sim.water.depth.as_mut_slice()[site.1 * sim.world.size + site.0] = 1.0;
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, (site.0 - 1, site.1 - 1)), Err(PlaceError::NeedsDry));
+        assert_eq!(check_building(&sim, BuildingKind::Lodge, (site.0 - 1, site.1 - 1)), Ok(()), "one cell in the water is enough");
+        // dry-only building on water
+        assert_eq!(check_building(&sim, BuildingKind::QuarryCamp, site), Err(PlaceError::NeedsDry));
     }
 
     #[test]
@@ -784,7 +786,7 @@ pub(crate) mod tests {
         sim.tech.unlock_all();
         found(&mut sim);
         let mut p = Pending::default();
-        let o = BuildOrder::Building { kind: BuildingKind::Warehouse, pos: dry_sites(&sim)[0] };
+        let o = BuildOrder::Building { kind: BuildingKind::ForesterLodge, pos: dry_sites(&sim)[0] };
         let n = sim.buildings.buildings.len();
         emit(&mut sim, &mut p, &o).unwrap();
         assert_eq!(sim.buildings.buildings.len(), n + 1);
@@ -835,7 +837,7 @@ pub(crate) mod tests {
         sim.tech.unlock_all();
         // something already built, so overlap is exercised too
         let d = dry_sites(&sim)[0];
-        sim.apply(Command::PlaceSite { kind: BuildingKind::Warehouse, pos: d }).unwrap();
+        sim.apply(Command::PlaceSite { kind: BuildingKind::ForesterLodge, pos: d }).unwrap();
         // and a dam across the river, so a lock has somewhere to go
         let c = river_cell(&sim);
         sim.apply(Command::BuildDam { cells: line_cells((c.0, c.1 - 2), (c.0, c.1 + 2)), height: 1.0 }).unwrap();

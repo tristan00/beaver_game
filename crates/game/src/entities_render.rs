@@ -13,6 +13,7 @@
 mod meshgen;
 mod models;
 mod scene;
+mod structures;
 pub mod sim_sync;
 pub mod sim_view;
 #[cfg(test)]
@@ -31,7 +32,7 @@ use std::collections::HashMap;
 
 pub use scene::{height_at, lodge_view};
 
-const BEAVER_SCALE: f32 = 1.3;
+const BEAVER_SCALE: f32 = 0.9;
 /// Beavers further than this from the camera use the single static mesh and are not animated.
 const BEAVER_NEAR: f32 = 85.0;
 /// Tree LOD switch distances.
@@ -66,15 +67,19 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_beavers,
                     sim_sync::sync_sim_resources,
                     sim_sync::sync_sim_buildings,
+                    sim_sync::sync_sim_dams,
                     sim_sync::sync_sim_barges,
                     sync_stub_beavers,
                     attach_rigs,
                     animate_beavers,
                     update_tree_lod,
+                    sway_trees,
                     spin_wheels,
                     stress_report,
                 )
-                    .chain(),
+                    .chain()
+                    // draw from the sim after this frame's steps, never half a frame behind them
+                    .after(crate::sim_driver::step_sim),
             );
     }
 }
@@ -108,6 +113,8 @@ struct Models {
     tail: Handle<Mesh>,
     leg_front: Handle<Mesh>,
     leg_hind: Handle<Mesh>,
+    lids: Handle<Mesh>,
+    chips: Handle<Mesh>,
     /// Loads held in the mouth, indexed by `Good::index`.
     loads: Vec<Handle<Mesh>>,
     /// Felled trees by (whole logs left * 2 + branches left).
@@ -120,6 +127,8 @@ struct Models {
     blob: Handle<Mesh>,
     wheel: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
+    /// Dam cell banks by (height steps, diagonal, variant, under construction).
+    dams: HashMap<(u8, bool, u32, bool), Handle<Mesh>>,
 }
 
 fn species_index(s: Species) -> usize {
@@ -150,6 +159,10 @@ struct TreeLod {
     season: Season,
 }
 
+/// A standing tree's resting rotation; `sway_trees` tilts it in the wind while it is near the camera.
+#[derive(Component)]
+struct Sway(Quat);
+
 #[derive(Component)]
 struct WheelSpin(f32);
 
@@ -176,11 +189,14 @@ pub struct BeaverSprite {
 }
 
 #[derive(Component)]
-struct BeaverRig {
+pub(crate) struct BeaverRig {
     body: Entity,
     far: Entity,
     parts: [Entity; 6], // head, tail, 4 legs
     log: Entity,
+    /// Closed eyelids (blinks, sleep) and flying wood chips (gnawing), both on the head.
+    lids: Entity,
+    chips: Entity,
     ripple: Entity,
     blob: Entity,
     prev: Pose,
@@ -189,7 +205,18 @@ struct BeaverRig {
     near: bool,
     init: bool,
     load: Option<sim::buildings::Good>,
+    /// Gait phase (radians): advances with the distance actually covered, so feet keep pace with
+    /// the ground instead of a clock.
+    stride: f32,
+    last_pos: Option<Vec3>,
 }
+
+/// A sprite moving further than this in one frame was moved, not walked (no gait for it).
+const SNAP_JUMP: f32 = 3.0;
+/// World distance one full gait cycle covers (two steps of each foot).
+const STRIDE: f32 = 0.66;
+/// Fastest gait cycles per second: a beaver hurrying scurries rather than blurring its legs.
+const MAX_STRIDE_HZ: f32 = 4.5;
 
 // ---------------------------------------------------------------------------------------------
 // Startup
@@ -233,6 +260,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let tail = build(&|m| models::beaver_tail(m, Vec3::ZERO));
     let leg_front = build(&|m| models::beaver_leg(m, true));
     let leg_hind = build(&|m| models::beaver_leg(m, false));
+    let lids = build(&models::beaver_lids);
+    let chips = build(&models::gnaw_chips);
     let far = build(&models::beaver_static);
     let ripple = build(&models::ripple);
     let blob = build(&models::blob_shadow);
@@ -249,6 +278,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         tail,
         leg_front,
         leg_hind,
+        lids,
+        chips,
         loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
         mud: meshes.add(models::mud_mesh()),
@@ -259,6 +290,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         blob,
         wheel: meshes.add(models::wheel_mesh()),
         structs: HashMap::new(),
+        dams: HashMap::new(),
     });
 }
 
@@ -276,7 +308,11 @@ fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<Prima
 }
 
 fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
-    clock.0 = if cli.screenshot.is_some() { SCREENSHOT_CLOCK } else { time.elapsed_secs() };
+    // `BC_CLOCK=<secs>` picks the instant a screenshot shows (to catch a pose mid-animation)
+    let shot = || std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK);
+    // a burst capture (`BC_BURST`) records motion, so its clock runs
+    let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none();
+    clock.0 = if frozen { shot() } else { time.elapsed_secs() };
     let idx = match std::env::var("BEAVER_SEASON").ok().and_then(|s| s.parse::<usize>().ok()) {
         Some(i) => i % 4,
         // Year starts in early summer.
@@ -328,7 +364,7 @@ fn spawn_scene(
             Transform::from_translation(t.pos).with_rotation(Quat::from_rotation_y(t.yaw)).with_scale(Vec3::splat(t.scale)),
         ));
         if let Some(l) = lod {
-            e.insert(l);
+            e.insert((l, Sway(Quat::from_rotation_y(t.yaw))));
         }
     }
 
@@ -433,118 +469,228 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
                 parts[2 + k] = p.spawn((Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
             }
         });
+        let (mut lids, mut chips) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(parts[0]).with_children(|p| {
             log = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            lids = p.spawn((Mesh3d(m.lids.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
         commands.entity(root).with_children(|p| {
             far = p.spawn((Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             ripple = p.spawn((Mesh3d(m.ripple.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.06, 0.2), Visibility::Hidden)).id();
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });
-        commands.entity(root).insert(BeaverRig { body, far, parts, log, ripple, blob, prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, load: None });
+        commands.entity(root).insert(BeaverRig { body, far, parts, log, lids, chips, ripple, blob, prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, load: None, stride: sprite.id as f32 * 1.7, last_pos: None });
     }
 }
 
-type Rig = [(Vec3, Quat); 7]; // body, head, tail, 4 legs
+/// One frame of the beaver rig: (translation, rotation) of the body, head, tail and four legs, plus
+/// a squash-and-stretch scale on the body (which carries every other part with it).
+#[derive(Clone, Copy)]
+struct Rig {
+    parts: [(Vec3, Quat); 7],
+    squash: Vec3,
+}
 
-fn pose_rig(pose: Pose, t: f32, id: f32) -> Rig {
+impl Rig {
+    fn rest() -> Rig {
+        Rig {
+            parts: [
+                (Vec3::ZERO, Quat::IDENTITY),
+                (models::HEAD_PIVOT, Quat::IDENTITY),
+                (models::TAIL_PIVOT, Quat::IDENTITY),
+                (models::LEG_PIVOTS[0], Quat::IDENTITY),
+                (models::LEG_PIVOTS[1], Quat::IDENTITY),
+                (models::LEG_PIVOTS[2], Quat::IDENTITY),
+                (models::LEG_PIVOTS[3], Quat::IDENTITY),
+            ],
+            squash: Vec3::ONE,
+        }
+    }
+
+    fn lerp(&self, o: &Rig, w: f32) -> Rig {
+        let mut r = *self;
+        for k in 0..7 {
+            r.parts[k] = (self.parts[k].0.lerp(o.parts[k].0, w), self.parts[k].1.slerp(o.parts[k].1, w));
+        }
+        r.squash = self.squash.lerp(o.squash, w);
+        r
+    }
+
+    /// Pitches the body by `rot` about the point `pivot` of its own frame (e.g. the hind feet when
+    /// sitting up), so that point stays put.
+    fn pivot_body(&mut self, pivot: Vec3, rot: Quat) {
+        self.parts[0] = (self.parts[0].0 + pivot - rot * pivot, rot * self.parts[0].1);
+    }
+}
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 1 inside `a..b`, easing in and out over `ramp` seconds at either end.
+fn window(x: f32, a: f32, b: f32, ramp: f32) -> f32 { smooth(a, a + ramp, x) * (1.0 - smooth(b - ramp, b, x)) }
+
+/// Length of the idle behaviour loop: look around, sniff the air, sit up and groom.
+const IDLE_LOOP: f32 = 14.0;
+
+/// Whether a beaver's eyes are shut this instant: a quick blink every few seconds, staggered by id.
+pub(crate) fn blinking(t: f32, id: f32) -> bool { (t * 0.29 + id * 0.37).rem_euclid(1.0) < 0.04 }
+
+fn idle_rig(t: f32, id: f32) -> Rig {
+    let (rx, ry) = (Quat::from_rotation_x, Quat::from_rotation_y);
+    let mut r = Rig::rest();
+    let br = (t * 1.8 + id).sin();
+    r.parts[0].0.y = 0.015 * br;
+    r.squash = Vec3::new(1.0 + 0.012 * br, 1.0 + 0.018 * br, 1.0);
+    // look about: hold a direction, then turn to the next (a smoothed staircase)
+    let k = t * 0.32 + id;
+    let (i, f) = (k.floor(), k.fract());
+    let dir = |n: f32| ((n * 12.9898 + id).sin() * 43758.547).fract() * 2.0 - 1.0;
+    let look = dir(i) + (dir(i + 1.0) - dir(i)) * smooth(0.7, 1.0, f);
+    r.parts[1].1 = ry(0.55 * look) * rx(0.05 * (t * 1.8).sin() - 0.05);
+    r.parts[2].1 = rx(0.1) * ry(0.15 * (t * 0.9 + id).sin());
+    let c = (t + id * 3.1).rem_euclid(IDLE_LOOP);
+    // sniffing: nose up, quick small nods
+    let sniff = window(c, 3.0, 5.2, 0.35);
+    if sniff > 0.0 {
+        let mut s = r;
+        s.parts[1].1 = ry(0.2 * look) * rx(-0.32 + 0.06 * (t * 24.0).sin());
+        s.parts[0].1 = rx(-0.05);
+        r = r.lerp(&s, sniff);
+    }
+    // sitting up on the haunches, tail flat behind, grooming the face with both forepaws
+    let sit = window(c, 7.0, 11.8, 0.5);
+    if sit > 0.0 {
+        let mut s = Rig::rest();
+        let lean = -0.8;
+        s.pivot_body(Vec3::new(0.0, 0.12, -0.42), rx(lean));
+        s.parts[0].0.y += 0.04 + 0.01 * br;
+        let g = (t * 11.0 + id).sin();
+        s.parts[1].1 = rx(0.55 + 0.08 * g) * ry(0.12 * (t * 3.0).sin());
+        s.parts[2].1 = rx(-lean - 0.12);
+        s.parts[3].1 = rx(-1.95 + 0.25 * g);
+        s.parts[4].1 = rx(-1.95 - 0.25 * g);
+        s.parts[5].1 = rx(-lean - 0.35);
+        s.parts[6].1 = rx(-lean - 0.35);
+        s.squash = Vec3::new(0.98, 1.03, 0.98);
+        r = r.lerp(&s, sit);
+    }
+    r
+}
+
+/// The rig for `pose` at render time `t`; `gait` is the beaver's gait phase (radians, advanced by
+/// distance travelled) that the moving poses step to.
+fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
     let rx = Quat::from_rotation_x;
     let ry = Quat::from_rotation_y;
     let rz = Quat::from_rotation_z;
-    let mut r: Rig = [
-        (Vec3::ZERO, Quat::IDENTITY),
-        (models::HEAD_PIVOT, Quat::IDENTITY),
-        (models::TAIL_PIVOT, Quat::IDENTITY),
-        (models::LEG_PIVOTS[0], Quat::IDENTITY),
-        (models::LEG_PIVOTS[1], Quat::IDENTITY),
-        (models::LEG_PIVOTS[2], Quat::IDENTITY),
-        (models::LEG_PIVOTS[3], Quat::IDENTITY),
-    ];
-    let ph = t * 9.0 + id;
+    let mut r = Rig::rest();
+    let ph = gait;
     match pose {
-        Pose::Idle => {
-            r[0].0.y = 0.015 * (t * 1.8 + id).sin();
-            r[1].1 = ry(0.45 * (t * 0.7 + id).sin()) * rx(0.05 * (t * 1.8).sin() - 0.05);
-            r[2].1 = rx(0.1) * ry(0.12 * (t * 0.9 + id).sin());
-        }
+        Pose::Idle => r = idle_rig(t, id),
         Pose::Walk | Pose::Carry => {
-            let s = ph.sin();
-            r[0].0.y = 0.05 * (2.0 * ph).sin().abs();
-            r[0].1 = rz(0.05 * s) * rx(0.03 * (2.0 * ph).sin());
-            r[1].1 = rx(0.07 * (2.0 * ph + 1.0).sin());
-            r[2].1 = rx(0.12) * ry(0.35 * (ph * 0.5).sin());
-            r[3].1 = rx(0.75 * s);
-            r[4].1 = rx(-0.75 * s);
-            r[5].1 = rx(-0.75 * s);
-            r[6].1 = rx(0.75 * s);
+            let (s, c2) = (ph.sin(), (2.0 * ph).cos());
+            // a bouncy waddle: bob twice a stride, roll side to side, squash on each footfall
+            r.parts[0].0.y = 0.06 * (2.0 * ph).sin().abs();
+            r.parts[0].1 = rz(0.08 * s) * rx(0.03 * (2.0 * ph).sin());
+            r.squash = Vec3::new(1.0 + 0.025 * c2, 1.0 - 0.04 * c2, 1.0 + 0.015 * c2);
+            r.parts[1].1 = rx(0.07 * (2.0 * ph + 1.0).sin()) * rz(-0.06 * s);
+            r.parts[2].1 = rx(0.12 + 0.06 * (2.0 * ph + 0.8).sin()) * ry(0.35 * (ph * 0.5).sin() + 0.15 * s);
+            r.parts[3].1 = rx(0.75 * s);
+            r.parts[4].1 = rx(-0.75 * s);
+            r.parts[5].1 = rx(-0.8 * (ph - 0.3).sin());
+            r.parts[6].1 = rx(0.8 * (ph - 0.3).sin());
             if pose == Pose::Carry {
-                // paws up holding a log in the teeth, head high
-                r[1].1 = rx(-0.3 + 0.05 * (2.0 * ph).sin());
-                r[3].1 = rx(-1.0 + 0.1 * s);
-                r[4].1 = rx(-1.0 - 0.1 * s);
-                r[0].1 = rx(-0.06);
+                // paws up holding the load in the teeth, head high, a heavier bob
+                r.parts[1].1 = rx(-0.3 + 0.05 * (2.0 * ph).sin());
+                r.parts[3].1 = rx(-1.0 + 0.1 * s);
+                r.parts[4].1 = rx(-1.0 - 0.1 * s);
+                r.parts[0].1 = rz(0.05 * s) * rx(-0.06);
+                r.squash = Vec3::new(1.0 + 0.035 * c2, 1.0 - 0.05 * c2, 1.0);
             }
         }
         Pose::Gnaw => {
-            r[0].1 = rx(-0.5);
-            r[0].0.y = 0.1;
-            r[1].1 = rx(0.45 + 0.17 * (t * 15.0 + id).sin()) * ry(0.06 * (t * 7.0).sin());
-            r[2].1 = rx(0.55);
-            r[3].1 = rx(-1.25 + 0.08 * (t * 15.0).sin());
-            r[4].1 = rx(-1.25 - 0.08 * (t * 15.0).sin());
-            r[5].1 = rx(-0.55);
-            r[6].1 = rx(-0.55);
+            let chew = (t * 15.0 + id).sin();
+            r.parts[0].1 = rx(-0.5) * rz(0.05 * (t * 7.5).sin());
+            r.parts[0].0.y = 0.1 + 0.015 * chew;
+            r.squash = Vec3::new(1.0, 1.0 + 0.02 * chew, 1.0);
+            r.parts[1].1 = rx(0.45 + 0.17 * chew) * rz(0.12 * (t * 7.5 + id).sin()) * ry(0.06 * (t * 7.0).sin());
+            r.parts[2].1 = rx(0.55) * ry(0.08 * (t * 2.0 + id).sin());
+            r.parts[3].1 = rx(-1.25 + 0.08 * (t * 15.0).sin());
+            r.parts[4].1 = rx(-1.25 - 0.08 * (t * 15.0).sin());
+            r.parts[5].1 = rx(-0.55);
+            r.parts[6].1 = rx(-0.55);
         }
         Pose::Climb => {
             // hauling up the dam: body pitched up, forepaws reaching, hind legs pushing, alternating
-            let s = (t * 7.0 + id).sin();
-            r[0].0.y = 0.1 + 0.04 * (2.0 * (t * 7.0 + id)).sin().abs();
-            r[0].1 = rx(-0.38) * rz(0.06 * s);
-            r[1].1 = rx(-0.1 + 0.08 * s);
-            r[2].1 = rx(0.45) * ry(0.2 * s);
-            r[3].1 = rx(-1.45 + 0.5 * s);
-            r[4].1 = rx(-1.45 - 0.5 * s);
-            r[5].1 = rx(0.5 - 0.6 * s);
-            r[6].1 = rx(0.5 + 0.6 * s);
+            let s = gait.sin();
+            let c2 = (2.0 * gait).cos();
+            r.parts[0].0.y = 0.1 + 0.04 * (2.0 * gait).sin().abs();
+            r.parts[0].1 = rx(-0.38) * rz(0.06 * s);
+            r.squash = Vec3::new(1.0, 1.0 - 0.03 * c2, 1.0 + 0.03 * c2);
+            r.parts[1].1 = rx(-0.1 + 0.08 * s);
+            r.parts[2].1 = rx(0.45) * ry(0.2 * s);
+            r.parts[3].1 = rx(-1.45 + 0.5 * s);
+            r.parts[4].1 = rx(-1.45 - 0.5 * s);
+            r.parts[5].1 = rx(0.5 - 0.6 * s);
+            r.parts[6].1 = rx(0.5 + 0.6 * s);
         }
         Pose::Work => {
             // crouched over the job, forepaws patting/packing in alternation, tail braced
             let s = (t * 8.0 + id).sin();
-            r[0].0.y = 0.0;
-            r[0].1 = rx(0.1);
-            r[1].1 = rx(0.35 + 0.08 * (t * 4.0 + id).sin()) * ry(0.1 * (t * 2.0).sin());
-            r[2].1 = rx(0.35);
-            r[3].1 = rx(-0.9 + 0.5 * s);
-            r[4].1 = rx(-0.9 - 0.5 * s);
-            r[5].1 = rx(-0.2);
-            r[6].1 = rx(-0.2);
+            r.parts[0].0.y = 0.025 * s.abs();
+            r.parts[0].1 = rx(0.1) * rz(0.04 * s);
+            r.squash = Vec3::new(1.0 + 0.02 * s.abs(), 1.0 - 0.03 * s.abs(), 1.0);
+            r.parts[1].1 = rx(0.35 + 0.08 * (t * 4.0 + id).sin()) * ry(0.1 * (t * 2.0).sin());
+            r.parts[2].1 = rx(0.35) * ry(0.1 * (t * 1.3 + id).sin());
+            r.parts[3].1 = rx(-0.9 + 0.5 * s);
+            r.parts[4].1 = rx(-0.9 - 0.5 * s);
+            r.parts[5].1 = rx(-0.2);
+            r.parts[6].1 = rx(-0.2);
         }
         Pose::Rest => {
-            // lying curled up: belly low, head tucked on the paws, slow breathing
+            // curled up asleep: belly low, head tucked on the paws, tail wrapped round, slow breathing
             let b = (t * 1.5 + id).sin();
-            r[0].0.y = -0.2 + 0.012 * b;
-            r[0].1 = rz(0.04);
-            r[1].0.y -= 0.08;
-            r[1].1 = rx(0.6) * ry(0.5 + 0.05 * b);
-            r[2].1 = rx(0.2) * ry(0.9);
-            r[3].1 = rx(-0.5);
-            r[4].1 = rx(-0.5);
-            r[5].1 = rx(-0.5);
-            r[6].1 = rx(-0.5);
+            r.parts[0].0.y = -0.2 + 0.012 * b;
+            r.parts[0].1 = rz(0.04);
+            r.squash = Vec3::new(1.0 + 0.025 * b, 1.0 + 0.035 * b, 1.0);
+            r.parts[1].0.y -= 0.08;
+            r.parts[1].1 = rx(0.6) * ry(0.5 + 0.05 * b);
+            r.parts[2].1 = rx(0.2) * ry(1.1);
+            r.parts[3].1 = rx(-0.5);
+            r.parts[4].1 = rx(-0.5);
+            r.parts[5].1 = rx(-0.5);
+            r.parts[6].1 = rx(-0.5);
         }
         Pose::Swim => {
-            let p2 = t * 7.0 + id;
-            r[0].0.y = -0.34 + 0.02 * (t * 2.5 + id).sin();
-            r[0].1 = rx(-0.06);
-            r[1].1 = rx(-0.14);
-            r[2].1 = rx(0.05) * ry(0.4 * (t * 3.0 + id).sin());
-            r[3].1 = rx(0.9);
-            r[4].1 = rx(0.9);
-            r[5].1 = rx(0.9 * p2.sin());
-            r[6].1 = rx(-0.9 * p2.sin());
+            // low in the water, nose up, tail sculling up and down, webbed hind feet kicking (kicking
+            // keeps going while treading water: paddle on the clock, faster when under way)
+            let p2 = gait + t * 3.0;
+            r.parts[0].0.y = -0.34 + 0.02 * (t * 2.5 + id).sin();
+            r.parts[0].1 = rx(-0.06 + 0.025 * (2.0 * p2).sin());
+            r.squash = Vec3::new(1.0, 1.0, 1.0 + 0.025 * (2.0 * p2).sin());
+            r.parts[1].1 = rx(-0.16 + 0.04 * (2.0 * p2 + 0.6).sin());
+            r.parts[2].1 = rx(0.05 + 0.2 * (p2 - 1.2).sin()) * ry(0.3 * (t * 1.4 + id).sin());
+            r.parts[3].1 = rx(0.9);
+            r.parts[4].1 = rx(0.9);
+            r.parts[5].1 = rx(1.0 * p2.sin());
+            r.parts[6].1 = rx(-1.0 * p2.sin());
         }
     }
     r
+}
+
+/// The chip cluster `u` (0..1) of the way through one flight from the teeth, alternating sides; it
+/// shrinks away as it lands.
+fn chip_flight(t: f32, id: f32) -> Transform {
+    let k = t * 2.3 + id;
+    let (u, side) = (k.rem_euclid(1.0), if k.floor().rem_euclid(2.0) < 1.0 { 1.0 } else { -1.0 });
+    let p = Vec3::new(side * 0.55 * u, -0.28 + 0.75 * u - 1.1 * u * u, 0.72 + 0.25 * u);
+    Transform::from_translation(p)
+        .with_rotation(Quat::from_rotation_z(side * u * 5.0) * Quat::from_rotation_x(u * 3.0))
+        .with_scale(Vec3::splat((1.0 - u * u).max(0.05)))
 }
 
 /// Foam ripple arcs (and no ground shadow) only for a swimming beaver that is actually over water:
@@ -566,7 +712,7 @@ fn animate_beavers(
     let Some(models) = models else { return };
     let cam_pos = cam.iter().next().map(|c| c.translation());
     let dt = time.delta_secs();
-    let turn = 1.0 - (-dt * 10.0).exp();
+    let turn = 1.0 - (-dt * 8.0).exp();
     for (mut tr, mut rig, sprite) in &mut roots {
         // The sprite's translation is the sim position and is never smoothed; only the heading eases.
         let target_rot = Quat::from_rotation_y(sprite.yaw);
@@ -627,23 +773,37 @@ fn animate_beavers(
             continue;
         }
         let id = sprite.id as f32 * 1.7;
-        let a = pose_rig(rig.cur, clock.0, id);
+        // gait from the ground actually covered this frame, capped so a dash is a scurry
+        let moved = rig.last_pos.map_or(0.0, |p| (tr.translation - p).xz().length());
+        rig.last_pos = Some(tr.translation);
+        if moved < SNAP_JUMP {
+            rig.stride += (moved / STRIDE * std::f32::consts::TAU).min(MAX_STRIDE_HZ * std::f32::consts::TAU * dt.max(1e-4));
+        }
+        let a = pose_rig(rig.cur, clock.0, id, rig.stride);
         let blend = rig.blend * rig.blend * (3.0 - 2.0 * rig.blend);
-        let r = if blend < 1.0 {
-            let p = pose_rig(rig.prev, clock.0, id);
-            let mut o = a;
-            for k in 0..7 {
-                o[k] = (p[k].0.lerp(a[k].0, blend), p[k].1.slerp(a[k].1, blend));
-            }
-            o
-        } else {
-            a
-        };
+        let r = if blend < 1.0 { pose_rig(rig.prev, clock.0, id, rig.stride).lerp(&a, blend) } else { a };
         let ents = [rig.body, rig.parts[0], rig.parts[1], rig.parts[2], rig.parts[3], rig.parts[4], rig.parts[5]];
-        for (e, (pos, rot)) in ents.iter().zip(r.iter()) {
+        for (k, (e, (pos, rot))) in ents.iter().zip(r.parts.iter()).enumerate() {
             if let Ok(mut t) = parts.get_mut(*e) {
                 t.translation = *pos;
                 t.rotation = *rot;
+                if k == 0 {
+                    t.scale = r.squash;
+                }
+            }
+        }
+        // eyes shut while asleep and for a blink; chips fly while gnawing
+        let shut = rig.cur == Pose::Rest || blinking(clock.0, id);
+        if let Ok(mut v) = vis.get_mut(rig.lids) {
+            v.set_if_neq(if shut { Visibility::Inherited } else { Visibility::Hidden });
+        }
+        let gnawing = rig.cur == Pose::Gnaw;
+        if let Ok(mut v) = vis.get_mut(rig.chips) {
+            v.set_if_neq(if gnawing { Visibility::Inherited } else { Visibility::Hidden });
+        }
+        if gnawing {
+            if let Ok(mut t) = parts.get_mut(rig.chips) {
+                *t = chip_flight(clock.0, id);
             }
         }
     }
@@ -666,6 +826,26 @@ fn update_tree_lod(
             lod.lod = want;
             lod.season = season.0;
             mesh.0 = models.tree(lod.species, season.0, want);
+        }
+    }
+}
+
+/// Near trees lean gently in a travelling breeze that gusts now and then; far ones stand still.
+fn sway_trees(clock: Res<RenderClock>, mut trees: Query<(&mut Transform, &TreeLod, &Sway)>) {
+    let t = clock.0;
+    let gust = 1.0 + 0.45 * (t * 0.23).sin();
+    for (mut tr, lod, base) in &mut trees {
+        let want = if lod.lod == 0 {
+            let p = tr.translation;
+            let ph = p.x * 0.21 + p.z * 0.13;
+            let a = 0.016 * gust * ((t * 1.1 + ph).sin() + 0.35 * (t * 2.6 + ph * 1.7).sin());
+            let b = 0.008 * gust * (t * 0.9 + ph * 1.3).cos();
+            Quat::from_rotation_z(a) * Quat::from_rotation_x(b) * base.0
+        } else {
+            base.0
+        };
+        if tr.rotation != want {
+            tr.rotation = want;
         }
     }
 }
@@ -785,6 +965,17 @@ mod tests {
         check("stump", &models::stump_mesh());
         check("snag", &models::snag_mesh());
         check("wheel", &models::wheel_mesh());
+        for b in sim::buildings::BuildingKind::ALL {
+            for stage in 0..4 {
+                check("building", &models::struct_mesh(sim_sync::model_kind(b), 4.0, stage));
+            }
+        }
+        for steps in [1, 4, 12] {
+            for diag in [false, true] {
+                check("dam cell", &structures::dam_cell_mesh(steps, diag, 0, false));
+                check("dam site", &structures::dam_cell_mesh(steps, diag, 1, true));
+            }
+        }
         for kind in [StructKind::Lodge, StructKind::Dam, StructKind::Canal, StructKind::Burrow, StructKind::Workshop, StructKind::WaterWheel, StructKind::Dock, StructKind::Barge, StructKind::BargeEmpty] {
             for stage in 0..4 {
                 check("struct", &models::struct_mesh(kind, 4.0, stage));

@@ -129,8 +129,11 @@ pub struct World {
     pub lake: Grid<bool>,
     /// Still ponds: lake cells whose hollow is not fed by a river (a subset of `lake`).
     pub pond: Grid<bool>,
-    /// Stream heads: where water enters the network.
+    /// Stream heads: river cells no river cell drains into.
     pub springs: Vec<(usize, usize)>,
+    /// Where water enters the map and how much catchment feeds it (see `water_inputs`): rivers
+    /// from beyond the border, springs at the stream heads and baseflow along the channels.
+    pub water_inputs: Vec<WaterInput>,
     /// The natural dam site near the start: the middle of the notch a rock bar leaves the stream
     /// (see `carve_narrows`), if one was raised.
     pub narrows: Option<(usize, usize)>,
@@ -753,23 +756,33 @@ fn carve_channels(height: &mut [f32], surface: &[f32], flow: &[Option<usize>], a
 }
 
 /// Removes stream branches shorter than `MIN_BRANCH` cells that end at a junction, repeatedly, so
-/// every remaining head is the source of a real stream. Only upstream cells go, so every river
-/// cell still drains through river cells.
-fn prune_short_branches(river: &mut [bool], flow: &[Option<usize>]) {
+/// every remaining head is the source of a real stream. At each junction the arm with the larger
+/// catchment (the stem, usually also the longer) is never removed, so a fork of two short arms
+/// loses only the smaller one and a junction never becomes a head in mid-land. Only upstream
+/// cells go, so every river cell still drains through river cells.
+fn prune_short_branches(river: &mut [bool], flow: &[Option<usize>], acc: &[u32]) {
+    let len = river.len();
     loop {
-        let mut up = vec![0u8; river.len()];
-        for i in (0..river.len()).filter(|&i| river[i]) {
-            if let Some(t) = flow[i] { up[t] = up[t].saturating_add(1); }
+        let mut up = vec![0u8; len];
+        // The stem of each junction: its upstream river neighbour with the largest catchment.
+        let mut stem: Vec<Option<usize>> = vec![None; len];
+        for i in (0..len).filter(|&i| river[i]) {
+            if let Some(t) = flow[i].filter(|&t| river[t]) {
+                up[t] = up[t].saturating_add(1);
+                if stem[t].is_none_or(|s| (acc[i], Reverse(i)) > (acc[s], Reverse(s))) {
+                    stem[t] = Some(i);
+                }
+            }
         }
         let mut changed = false;
-        let heads: Vec<usize> = (0..river.len()).filter(|&i| river[i] && up[i] == 0).collect();
+        let heads: Vec<usize> = (0..len).filter(|&i| river[i] && up[i] == 0).collect();
         for head in heads {
             let mut branch = vec![head];
             let mut cur = head;
             let joins = loop {
                 match flow[cur].filter(|&t| river[t]) {
                     None => break false,
-                    Some(t) if up[t] >= 2 => break true,
+                    Some(t) if up[t] >= 2 => break stem[t] != Some(cur),
                     Some(t) => { branch.push(t); cur = t; }
                 }
             };
@@ -780,6 +793,64 @@ fn prune_short_branches(river: &mut [bool], flow: &[Option<usize>]) {
         }
         if !changed { return; }
     }
+}
+
+/// What feeds a `WaterInput`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputKind {
+    /// A river entering across the map border; its catchment lies beyond the map.
+    Inflow,
+    /// A stream head: groundwater from the ground that drains to it.
+    Spring,
+    /// Groundwater seeping into a channel (or a river-fed lake) from the ground beside it.
+    Baseflow,
+}
+
+/// A cell where water enters the map, fed by `catchment` cells of ground: the water sim gives it
+/// `WATER_PER_CATCHMENT_CELL` per catchment cell per day (`Water::from_world`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WaterInput {
+    pub cell: (usize, usize),
+    pub catchment: u32,
+    pub kind: InputKind,
+}
+
+/// The map's water inputs. Rain is soaked up by the ground and comes back as groundwater where
+/// the ground drains into the water network (river cells and river-fed lakes): each such cell is
+/// fed by the cells draining straight into it that are not themselves water, so the water
+/// reaching any point of a river is in proportion to its catchment. A head takes its whole
+/// catchment (a spring); a river from beyond the map takes the catchment it carries in, at its
+/// entry cell. Still ponds keep their level from the water table and take nothing.
+fn water_inputs(
+    flow: &[Option<usize>],
+    acc: &[u32],
+    river: &[bool],
+    lake: &[bool],
+    pond: &[bool],
+    inflow_at: &[(usize, u32)],
+    n: usize,
+) -> Vec<WaterInput> {
+    let wet: Vec<bool> = (0..n * n).map(|i| river[i] || (lake[i] && !pond[i])).collect();
+    let (mut from_water, mut fed_by_water) = (vec![0u32; n * n], vec![false; n * n]);
+    for i in (0..n * n).filter(|&i| wet[i]) {
+        if let Some(t) = flow[i] {
+            from_water[t] += acc[i];
+            fed_by_water[t] = true;
+        }
+    }
+    let cell = |i: usize| (i % n, i / n);
+    let mut out: Vec<WaterInput> = inflow_at
+        .iter()
+        .map(|&(i, extra)| WaterInput { cell: cell(i), catchment: extra, kind: InputKind::Inflow })
+        .collect();
+    for i in (0..n * n).filter(|&i| wet[i]) {
+        let catchment = acc[i] - from_water[i];
+        if catchment > 0 {
+            let kind = if river[i] && !fed_by_water[i] { InputKind::Spring } else { InputKind::Baseflow };
+            out.push(WaterInput { cell: cell(i), catchment, kind });
+        }
+    }
+    out
 }
 
 fn classify_tree(moisture: f32, slope: f32, height_frac: f32) -> Option<Tree> {
@@ -844,13 +915,27 @@ fn finish(
     let lake = find_lakes(&raw, &surface, n);
     let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
 
-    let mut acc = accumulate(&surface, &flow);
-    // Water from outside the map joins at the border and runs down its drainage path.
+    let local_acc = accumulate(&surface, &flow);
+    let mut acc = local_acc.clone();
+    // A river from beyond the map enters at a border cell, which is an outlet here: its water joins
+    // at the inner neighbour it runs on to (the lowest one) and follows the drainage from there.
+    let mut inflow_at = Vec::new();
     for &(x, y, extra) in inflows {
-        if x >= n || y >= n {
+        if x >= n || y >= n || extra == 0 {
             continue;
         }
-        let mut cur = Some(y * n + x);
+        let border = y * n + x;
+        let inner = |j: usize| (1..n - 1).contains(&(j % n)) && (1..n - 1).contains(&(j / n));
+        let entry = if inner(border) {
+            border
+        } else {
+            match neighbours8(border, n).filter(|&j| inner(j)).min_by(|&a, &b| raw[a].total_cmp(&raw[b]).then(a.cmp(&b))) {
+                Some(j) => j,
+                None => continue,
+            }
+        };
+        inflow_at.push((entry, extra));
+        let mut cur = Some(entry);
         let mut steps = 0;
         while let Some(i) = cur {
             acc[i] = acc[i].saturating_add(extra);
@@ -862,7 +947,7 @@ fn finish(
         }
     }
     let mut river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
-    prune_short_branches(&mut river, &flow);
+    prune_short_branches(&mut river, &flow, &acc);
     let streams = classify_streams(&surface, &flow, &acc, &river);
     let mut pond = vec![false; n * n];
     for comp in lake_components(&lake, n) {
@@ -875,6 +960,7 @@ fn finish(
     }
     let springs: Vec<(usize, usize)> =
         (0..n * n).filter(|&i| river[i] && !has_upstream[i]).map(|i| (i % n, i / n)).collect();
+    let water_inputs = water_inputs(&flow, &local_acc, &river, &lake, &pond, &inflow_at, n);
 
     // Slope of the drainage surface.
     let at = |x: isize, y: isize| surface[(y.clamp(0, n as isize - 1) as usize) * n + x.clamp(0, n as isize - 1) as usize];
@@ -921,7 +1007,7 @@ fn finish(
         flow_to: grid_from(n, flow), flow_acc: grid_from(n, acc),
         river: grid_from(n, river), main_river: grid_from(n, streams.main), tributary: grid_from(n, streams.trib),
         confluences: streams.confluences.iter().map(|&i| (i % n, i / n)).collect(),
-        lake: grid_from(n, lake), pond: grid_from(n, pond), springs, narrows,
+        lake: grid_from(n, lake), pond: grid_from(n, pond), springs, water_inputs, narrows,
         moisture: grid_from(n, moisture), slope: grid_from(n, slope), forest: grid_from(n, forest),
     };
     Ok(world)
@@ -1161,5 +1247,86 @@ mod tests {
         let mut g = WorldGen::new(1);
         g.size = 8;
         assert_eq!(g.generate().unwrap_err(), WorldError::InvalidSize(8));
+    }
+
+    /// Two arms shorter than `MIN_BRANCH` meet at a junction (as algonquin's start river once
+    /// did): only the smaller goes, so the junction keeps a stream above it and is no head.
+    #[test]
+    fn a_fork_of_two_short_arms_loses_only_the_smaller() {
+        let arm = MIN_BRANCH - 1;
+        // Cells 0..arm: arm A; arm..2*arm: arm B; then the junction and a long stem to the edge.
+        let junction = 2 * arm;
+        let stem = 30;
+        let len = junction + 1 + stem;
+        let mut flow: Vec<Option<usize>> = (0..len).map(|i| Some(i + 1)).collect();
+        flow[arm - 1] = Some(junction);
+        flow[len - 1] = None;
+        let mut acc = vec![0u32; len];
+        for k in 0..arm {
+            acc[k] = 40 + 7 * k as u32; // arm A: 40..=124
+            acc[arm + k] = 40 + 6 * k as u32; // arm B: 40..=112
+        }
+        for i in junction..len {
+            acc[i] = acc[arm - 1] + acc[junction - 1] + (i - junction + 1) as u32;
+        }
+        let mut river = vec![true; len];
+        prune_short_branches(&mut river, &flow, &acc);
+        assert!(river[..arm].iter().all(|&r| r), "the larger arm stays");
+        assert!(river[arm..junction].iter().all(|&r| !r), "the smaller arm goes");
+        assert!(river[junction..].iter().all(|&r| r), "the junction and stem stay");
+        let fed = (0..len).any(|i| river[i] && flow[i] == Some(junction));
+        assert!(fed, "the junction keeps a river above it");
+    }
+
+    /// No stream head inside the map sits where a stream with a real catchment of its own runs
+    /// into it: every head is the top of its stream (or the outlet of a lake).
+    #[test]
+    fn no_head_inside_the_map_sits_at_a_confluence() {
+        let mut worlds: Vec<(String, World)> = (1..=6).map(|s| (format!("seed {s}"), world(s))).collect();
+        worlds.push(("algonquin".into(), crate::maps::world("algonquin").unwrap().1));
+        for (name, w) in worlds {
+            let n = w.size;
+            let (flow, acc, lake) = (w.flow_to.as_slice(), w.flow_acc.as_slice(), w.lake.as_slice());
+            for &(x, y) in &w.springs {
+                if x == 0 || y == 0 || x + 1 == n || y + 1 == n {
+                    continue;
+                }
+                let head = y * n + x;
+                let arms: Vec<usize> = (0..n * n).filter(|&j| flow[j] == Some(head) && !lake[j] && acc[j] >= RIVER_MIN_ACCUMULATION).collect();
+                assert!(arms.is_empty(), "{name}: head ({x}, {y}) has streams of {:?} cells running into it", arms.iter().map(|&j| acc[j]).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    /// Water enters where it should: a river from beyond the map at the inner neighbour of its
+    /// border cell with the catchment it carries, every head with its whole catchment, and the
+    /// inputs add up to the catchment the water network drains.
+    #[test]
+    fn water_inputs_follow_the_catchment() {
+        let (info, w) = crate::maps::world("algonquin").unwrap();
+        let n = w.size;
+        let border = |(x, y): (usize, usize)| x == 0 || y == 0 || x + 1 == n || y + 1 == n;
+        let inflows: Vec<&WaterInput> = w.water_inputs.iter().filter(|i| i.kind == InputKind::Inflow).collect();
+        assert_eq!(inflows.len(), info.inflows.len());
+        for (&(x, y, extra), inp) in info.inflows.iter().zip(&inflows) {
+            assert!(!border(inp.cell) && inp.cell.0.abs_diff(x) <= 1 && inp.cell.1.abs_diff(y) <= 1, "inflow at ({x}, {y}) fed at {:?}", inp.cell);
+            assert_eq!(inp.catchment, extra);
+        }
+        let big = inflows.iter().find(|i| i.catchment == 5545).expect("the big western river");
+        assert!(w.river.get(big.cell.0, big.cell.1) == Some(&true), "the big inflow runs on as a river");
+        // Heads take their own catchment, which is that of the land above them.
+        let acc = w.flow_acc.as_slice();
+        for inp in w.water_inputs.iter().filter(|i| i.kind == InputKind::Spring) {
+            let i = inp.cell.1 * n + inp.cell.0;
+            let from_inflows: u32 = inflows.iter().filter(|f| f.cell == inp.cell).map(|f| f.catchment).sum();
+            assert_eq!(inp.catchment + from_inflows, acc[i], "head {:?}", inp.cell);
+        }
+        // Everything entering the network leaves it where the network ends (the map edge, or dry
+        // ground below a pond).
+        let wet = |i: usize| w.river.as_slice()[i] || (w.lake.as_slice()[i] && !w.pond.as_slice()[i]);
+        let flow = w.flow_to.as_slice();
+        let leaving: u64 = (0..n * n).filter(|&i| wet(i) && flow[i].is_none_or(|t| !wet(t))).map(|i| acc[i] as u64).sum();
+        let given: u64 = w.water_inputs.iter().map(|i| i.catchment as u64).sum();
+        assert_eq!(given, leaving);
     }
 }

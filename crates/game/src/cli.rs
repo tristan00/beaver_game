@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world|buildings] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -24,7 +24,7 @@ pub struct Cli {
     /// Scripted new game: order the designed dam, let the family build it, hold
     /// the picture until the pond has filled.
     pub demo_pond: bool,
-    /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
+    /// Staged still scene for screenshots: `poses`, `world` or `buildings` (see `showcase.rs`).
     pub showcase: Option<String>,
 }
 
@@ -62,8 +62,8 @@ impl Cli {
                 "--demo-pond" => cli.demo_pond = true,
                 "--showcase" => {
                     let v = value("--showcase")?;
-                    if !["poses", "world"].contains(&v.as_str()) {
-                        return Err(format!("--showcase: unknown scene '{v}' (poses|world)"));
+                    if !["poses", "world", "buildings"].contains(&v.as_str()) {
+                        return Err(format!("--showcase: unknown scene '{v}' (poses|world|buildings)"));
                     }
                     cli.showcase = Some(v);
                 }

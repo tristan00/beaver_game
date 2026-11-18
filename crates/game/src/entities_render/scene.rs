@@ -70,6 +70,20 @@ pub enum StructKind {
     Barge,
     /// A finished barge with nothing aboard.
     BargeEmpty,
+    FoodCache,
+    ScentMound,
+    GuardPost,
+    ForagerHut,
+    MudPit,
+    TreeNursery,
+    Warehouse,
+    Storehouse,
+    LoggingCamp,
+    QuarryCamp,
+    ForesterLodge,
+    Mill,
+    /// The gates where barges pass through a dam.
+    Lock,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -51,8 +51,22 @@ fn main() -> AppExit {
     }).set(WindowPlugin {
         primary_window: Some(Window { title: "Beaver Colony".into(), resolution: window_size().into(), ..default() }),
         ..default()
+    }).set(bevy::render::RenderPlugin {
+        // Start the graphics API we use instead of probing every one (DX12 and GL cost about a
+        // quarter second at start-up). `WGPU_BACKEND` still picks another.
+        render_creation: bevy::render::settings::WgpuSettings {
+            backends: Some(bevy::render::settings::Backends::from_env().unwrap_or(if cfg!(windows) {
+                bevy::render::settings::Backends::VULKAN
+            } else {
+                bevy::render::settings::Backends::PRIMARY
+            })),
+            ..default()
+        }
+        .into(),
+        ..default()
     }))
     .insert_resource(cli)
+    .add_systems(Last, log_slow_frames)
     .add_plugins((
         state::StatePlugin,
         sim_driver::SimDriverPlugin,
@@ -131,4 +145,17 @@ mod os_timer {
 
     #[cfg(not(windows))]
     pub fn high_resolution() {}
+}
+
+/// `BC_FRAME_LOG=1`: log every frame slower than 50 ms (with the time since start), to find
+/// stalls such as a long wait before the first playable frame.
+fn log_slow_frames(time: Res<Time<Real>>, mut n: Local<u64>) {
+    *n += 1;
+    if std::env::var_os("BC_FRAME_LOG").is_none() {
+        return;
+    }
+    let dt = time.delta_secs();
+    if dt > 0.05 || *n % 300 == 0 {
+        info!("frame {} at {:.2}s took {:.0} ms", *n, time.elapsed_secs(), dt * 1000.0);
+    }
 }
