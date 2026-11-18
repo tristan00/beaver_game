@@ -1111,6 +1111,8 @@ mod tests {
             flooded_trees: 0,
             flooded_buildings: vec![],
             cost: vec![],
+            crest: 2.0,
+            spill_at: None,
             pressure: 0.0,
             fill_days: 0.0,
         };

@@ -5,9 +5,9 @@
 //! The pond is the steady one from `water::preview_dam`; this adds what the player must weigh:
 //! trees and buildings lost, material cost, the push of the river on the dam and the fill time.
 
-use crate::buildings::{Amount, BuildingId, BuildingKind};
+use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::resources::ResourceKind;
-use crate::water::{preview_dam, Cell};
+use crate::water::{preview_dam_heights, Cell};
 use std::collections::HashSet;
 
 /// Dam cells one catalogue cost buys (a standard six-cell span); cost scales linearly with length.
@@ -15,6 +15,72 @@ pub const DAM_SPAN_CELLS: f32 = 6.0;
 
 /// Height of the dam a `PlaceSite { kind: Dam }` command builds, above terrain.
 pub const DEFAULT_HEIGHT: f32 = 1.0;
+/// Tallest dam beavers can build, above the ground under it.
+pub const MAX_DAM_HEIGHT: f32 = 3.0;
+/// Materials per dam cell for each unit of height above the first: a tall dam is packed with mud
+/// (the first unit is sticks and logs only, the catalogue cost per cell).
+pub const UPPER_PER_UNIT: [Amount; 3] = [(Good::Logs, 1.5), (Good::Sticks, 2.5), (Good::Mud, 3.0)];
+
+/// Units of new dam on `cell` to bring it to `h` above terrain: (first unit, units above it).
+/// What the cell already has counts at its integrity, so repairing a worn dam costs too.
+pub fn build_units(sim: &crate::SimState, cell: Cell, h: f32) -> (f32, f32) {
+    let have = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0)
+        * sim.water.dam_integrity.get(cell.0, cell.1).copied().unwrap_or(0.0);
+    let base = (h.min(1.0) - have.min(1.0)).max(0.0);
+    let upper = ((h.max(1.0) - 1.0) - (have.max(1.0) - 1.0)).max(0.0);
+    (base, upper)
+}
+
+/// Materials and builder work to bring each cell to its height (see `build_units`).
+pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<Amount>, f32) {
+    let (mut base, mut upper) = (0.0, 0.0);
+    for (&c, &h) in cells.iter().zip(heights) {
+        let (b, u) = build_units(sim, c, h);
+        base += b;
+        upper += u;
+    }
+    let mut cost: Vec<Amount> = BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * base / DAM_SPAN_CELLS)).collect();
+    for (g, a) in UPPER_PER_UNIT {
+        match cost.iter_mut().find(|c| c.0 == g) {
+            Some(c) => c.1 += a * upper,
+            None => cost.push((g, a * upper)),
+        }
+    }
+    cost.retain(|c| c.1 > 1e-3);
+    (cost, BuildingKind::Dam.spec().work * (base + upper) / DAM_SPAN_CELLS)
+}
+
+/// Extends a dam over the places where water would get round it (`DamPreview::spill_at`), each
+/// added cell built to the dam's crest, until it holds or `max_cells` is reached. Returns the
+/// longer line, its heights and its preview; `None` if the line is not valid or cannot be made to hold.
+pub fn extend_to_hold(sim: &crate::SimState, cells: &[Cell], heights: &[f32], max_cells: usize) -> Option<(Vec<Cell>, Vec<f32>, DamPreview)> {
+    let (mut cells, mut heights) = (cells.to_vec(), heights.to_vec());
+    let mut crest = None;
+    loop {
+        let p = preview_heights(sim, &cells, &heights)?;
+        let crest = *crest.get_or_insert(p.crest);
+        let Some(at) = p.spill_at else { return Some((cells, heights, p)) };
+        let h = crest - sim.height.get(at.0, at.1).copied()?;
+        if cells.len() >= max_cells || cells.contains(&at) || h <= 0.0 || h > MAX_DAM_HEIGHT {
+            return None;
+        }
+        cells.push(at);
+        heights.push(h);
+    }
+}
+
+/// Heights above terrain that bring `cells` up to a crest at world height `crest`; cells already
+/// at or above it are left out.
+pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cell>, Vec<f32>) {
+    cells
+        .iter()
+        .filter_map(|&c| {
+            let ground = *sim.height.get(c.0, c.1)?;
+            let h = crest - ground;
+            (h > 0.05).then_some((c, h))
+        })
+        .unzip()
+}
 
 /// Cells a dam placed at `pos` (top-left of the catalogue footprint) spans.
 pub fn spot_cells(pos: Cell) -> Vec<Cell> {
@@ -34,8 +100,12 @@ pub struct DamPreview {
     pub flooded_trees: usize,
     /// Buildings (finished or under construction) with a footprint cell flooded.
     pub flooded_buildings: Vec<BuildingId>,
-    /// Materials for this many dam cells (the dam spec cost scaled by length).
+    /// Materials to build (or raise, or repair) the dam to this height (`cost_for`).
     pub cost: Vec<Amount>,
+    /// Lowest crest of the dam, world height: what it could hold back if the valley were closed.
+    pub crest: f32,
+    /// Where water gets round the dam below its crest (extend the dam over it); `None` if it holds.
+    pub spill_at: Option<Cell>,
     /// Inflow pushing on the dam, water units per day (main river above tributary): the sum of
     /// the current seasonal rates of every spring/source whose water drains to the dam.
     pub pressure: f32,
@@ -56,11 +126,16 @@ pub fn dam_cost(n: usize) -> Vec<Amount> {
 
 /// Evaluates a dam of `height` on `cells`; `None` if the cells are not a valid dam line.
 pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<DamPreview> {
+    preview_heights(sim, cells, &vec![height; cells.len()])
+}
+
+/// `preview` with a height per cell.
+pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<DamPreview> {
     let unique: HashSet<&Cell> = cells.iter().collect();
-    if unique.len() != cells.len() {
+    if unique.len() != cells.len() || heights.len() != cells.len() {
         return None;
     }
-    let pond = preview_dam(sim, cells, height).ok()?;
+    let pond = preview_dam_heights(sim, cells, heights).ok()?;
     let (w, h) = (sim.height.width(), sim.height.height());
     let idx = |&(x, y): &Cell| y * w + x;
     let flooded_set: HashSet<Cell> = pond.flooded_cells.iter().copied().collect();
@@ -73,7 +148,8 @@ pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<Dam
     // Current surface at the dam cell that sets the level (lowest crest).
     let terrain = sim.height.as_slice();
     let (water, dams) = (sim.water.depth.as_slice(), sim.water.dam_height.as_slice());
-    let crest = |c: &Cell| terrain[idx(c)] + height;
+    let by_cell: std::collections::HashMap<Cell, f32> = cells.iter().copied().zip(heights.iter().copied()).collect();
+    let crest = |c: &Cell| terrain[idx(c)] + by_cell[c];
     let low = cells.iter().min_by(|a, b| crest(a).total_cmp(&crest(b)))?;
     let rise = (pond.level - (terrain[idx(low)] + dams[idx(low)] + water[idx(low)])).max(0.0);
 
@@ -112,7 +188,9 @@ pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<Dam
         flooded: pond.flooded_cells,
         flooded_trees,
         flooded_buildings,
-        cost: dam_cost(cells.len()),
+        cost: cost_for(sim, cells, heights).0,
+        crest: pond.crest,
+        spill_at: pond.spill_at,
         pressure,
         fill_days,
     })
@@ -176,8 +254,9 @@ mod tests {
         assert_eq!(p.flooded_trees, 3);
         assert_eq!(p.flooded_buildings, vec![BuildingId(7)]);
         assert!((p.rise - 2.0).abs() < 0.05, "rise {}", p.rise);
-        assert_eq!(p.cost, dam_cost(128));
-        for (c, sp) in p.cost.iter().zip(BuildingKind::Dam.spec().cost) {
+        assert_eq!(p.cost, cost_for(&s, &row(), &[2.0; 128]).0);
+        assert!(p.cost.iter().any(|c| c.0 == Good::Mud && c.1 > 0.0), "a dam above one unit is packed with mud");
+        for (c, sp) in dam_cost(128).iter().zip(BuildingKind::Dam.spec().cost) {
             assert_eq!(c.0, sp.0);
             assert!((c.1 - sp.1 * 128.0 / DAM_SPAN_CELLS).abs() < 1e-3);
         }

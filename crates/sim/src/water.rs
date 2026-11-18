@@ -138,6 +138,12 @@ pub struct DamPreview {
     pub flooded_buildings: usize,
     /// True if the pond would reach the map edge (the dam does not close the valley).
     pub reaches_map_edge: bool,
+    /// Lowest crest of the new dam cells: the most the dam itself could hold back.
+    pub crest: f32,
+    /// Where the water would get round the dam before it reaches the crest: the lowest saddle on
+    /// any way from the pond to the river below the dam. `level` is then this saddle's height,
+    /// and the dam must be extended over it to hold more. `None` when the dam closes the valley.
+    pub spill_at: Option<Cell>,
 }
 
 /// Water state. `step` needs the terrain: see `Water::step`.
@@ -261,6 +267,23 @@ impl Water {
         self.check(x, y)?;
         Self::check_positive("source rate", rate)?;
         self.sources.push(Source { x, y, rate, seasonality: 1.0 });
+        Ok(())
+    }
+
+    /// Raises dams per cell to at least the given height above terrain, at full integrity (a
+    /// worn dam is repaired, a lower one raised, a higher one kept). All-or-nothing.
+    pub fn raise_dam(&mut self, cells: &[(Cell, f32)]) -> Result<(), WaterError> {
+        let only: Vec<Cell> = cells.iter().map(|c| c.0).collect();
+        let idx = self.check_cells(&only)?;
+        for &(_, h) in cells {
+            Self::check_positive("dam height", h)?;
+        }
+        for (i, &(_, h)) in idx.into_iter().zip(cells) {
+            if self.dam_height.as_slice()[i] <= 0.0 { self.dams.push(i); }
+            let cur = &mut self.dam_height.as_mut_slice()[i];
+            *cur = cur.max(h);
+            self.dam_integrity.as_mut_slice()[i] = 1.0;
+        }
         Ok(())
     }
 
@@ -440,15 +463,22 @@ impl Water {
 /// `TREE_VEGETATION`; buildings are `state.water.structures`. If the dam does not close the
 /// valley the region leaks around it and `reaches_map_edge` or a large area results.
 pub fn preview_dam(state: &SimState, cells: &[Cell], height: f32) -> Result<DamPreview, WaterError> {
+    preview_dam_heights(state, cells, &vec![height; cells.len()])
+}
+
+/// `preview_dam` with a height per cell (a dam built to one crest over uneven ground). A cell
+/// that already holds a higher dam keeps it.
+pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) -> Result<DamPreview, WaterError> {
     let water = &state.water;
     let idx = water.check_cells(cells)?;
-    Water::check_positive("dam height", height)?;
+    if heights.len() != cells.len() { return Err(WaterError::NoCells); }
+    for &hh in heights { Water::check_positive("dam height", hh)?; }
     let terrain = state.height.as_slice();
     let (w, h) = (state.height.width(), state.height.height());
     let mut bed: Vec<f32> = terrain.iter().zip(water.dam_height.as_slice()).map(|(t, d)| t + d).collect();
     let mut is_new = vec![false; w * h];
-    for &i in &idx { bed[i] = terrain[i] + height; is_new[i] = true; }
-    let level = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
+    for (&i, &hh) in idx.iter().zip(heights) { bed[i] = terrain[i] + hh.max(water.dam_height.as_slice()[i]); is_new[i] = true; }
+    let crest = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
 
     let neighbours = |i: usize| {
         let (x, y) = (i % w, i / w);
@@ -460,6 +490,35 @@ pub fn preview_dam(state: &SimState, cells: &[Cell], height: f32) -> Result<DamP
     // Steepest-descent target over raw terrain.
     let drains_to = |i: usize| neighbours(i).filter(|&j| terrain[j] < terrain[i])
         .min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]));
+
+    // Spill: the lowest way round the dam, from the cells draining into it to the cells it drains
+    // to (minimax path over bed heights, not crossing the new dam).
+    let seeds: Vec<usize> = idx.iter().flat_map(|&d| neighbours(d).filter(move |&n| drains_to(n) == Some(d))).filter(|&n| !is_new[n]).collect();
+    let below: std::collections::HashSet<usize> = idx.iter().filter_map(|&d| drains_to(d)).filter(|&n| !is_new[n]).collect();
+    let (mut spill_level, mut spill_at) = (f32::INFINITY, None);
+    if !seeds.is_empty() && !below.is_empty() {
+        let mut best = vec![f32::INFINITY; w * h];
+        let mut saddle = vec![usize::MAX; w * h];
+        let mut heap = std::collections::BinaryHeap::new();
+        let key = |l: f32, i: usize| std::cmp::Reverse(((l.max(-1.0e6) * 1000.0) as i64, i));
+        for &s in &seeds { best[s] = bed[s]; saddle[s] = s; heap.push(key(bed[s], s)); }
+        while let Some(std::cmp::Reverse((_, i))) = heap.pop() {
+            let l = best[i];
+            if l >= crest { break; }
+            if below.contains(&i) { spill_level = l; spill_at = Some(saddle[i]); break; }
+            for n in neighbours(i) {
+                if is_new[n] { continue; }
+                let nl = l.max(bed[n]);
+                if nl < best[n] {
+                    best[n] = nl;
+                    saddle[n] = if bed[n] > l { n } else { saddle[i] };
+                    heap.push(key(nl, n));
+                }
+            }
+        }
+    }
+    let level = crest.min(spill_level);
+    let spill_at = spill_at.filter(|_| spill_level < crest).map(|i| (i % w, i / w));
 
     let mut seen = vec![false; w * h];
     let mut stack = Vec::new();
@@ -489,6 +548,8 @@ pub fn preview_dam(state: &SimState, cells: &[Cell], height: f32) -> Result<DamP
         flooded_buildings: flooded.iter().filter(|&&i| occ[i]).count(),
         reaches_map_edge: flooded.iter().any(|&i| i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1),
         flooded_cells: flooded.iter().map(|&i| (i % w, i / w)).collect(),
+        crest,
+        spill_at,
     })
 }
 

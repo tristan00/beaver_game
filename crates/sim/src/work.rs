@@ -232,7 +232,10 @@ pub struct CanalPlan {
 pub struct DamPlan {
     pub building: BuildingId,
     pub cells: Vec<Cell>,
+    /// Tallest height in the plan (all cells for a level dam).
     pub height: f32,
+    /// Height above terrain per cell, parallel to `cells`.
+    pub heights: Vec<f32>,
 }
 
 /// An automatic assignment made by `agents::organise`.

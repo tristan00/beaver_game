@@ -542,7 +542,9 @@ impl Buildings {
         if cells.iter().any(|&(x, y)| !terrain.depth.in_bounds(x, y)) {
             return Err(BuildError::OutOfBounds);
         }
-        if self.buildings.iter().any(|b| b.cells().any(|c| cells.contains(&c))) {
+        // A dam is raised or extended by building on it: a dam site may stand on a finished dam.
+        let on_dam = |b: &Building| kind == BuildingKind::Dam && b.kind == BuildingKind::Dam && b.is_complete();
+        if self.buildings.iter().any(|b| !on_dam(b) && b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
         }
         match spec.site {
@@ -698,7 +700,7 @@ impl Buildings {
         self.update_capacity(tech);
         self.update_wheels(terrain);
         let crafters = self.crafters(colony, work);
-        self.run_workshops(dt_days, tech, &crafters);
+        self.run_workshops(dt_days, tech, &crafters, work);
         self.move_barges(dt_days, terrain);
         self.stores.end_tick(dt_days);
     }
@@ -772,7 +774,7 @@ impl Buildings {
     }
 
     /// Crafts at every staffed workshop: `batches_per_worker` x workers, limited by inputs and space.
-    fn run_workshops(&mut self, dt: f32, tech: &Tech, crafters: &[(BuildingId, usize)]) {
+    fn run_workshops(&mut self, dt: f32, tech: &Tech, crafters: &[(BuildingId, usize)], work: &Work) {
         if dt <= 0.0 {
             return;
         }
@@ -792,8 +794,18 @@ impl Buildings {
         for (id, r, rate) in recipes {
             let (inputs, (out, per)) = r.batch();
             let mut batches = rate * dt * boost * tech.craft_speed_factor();
+            // Only goods in stores within reach count (see `stock`); a workshop with no store
+            // registered at all (old fixtures) uses the ledger.
+            let me = self.building(id).expect("crafting building exists").clone();
             for &(g, a) in inputs {
-                batches = batches.min(self.stores.amount(g) / a);
+                let near: f32 = self
+                    .buildings
+                    .iter()
+                    .filter(|b| b.is_complete() && crate::agents::accepts(b.kind, g) && crate::stock::gap(&me, b) <= crate::stock::WORKSHOP_REACH)
+                    .map(|b| work.stock_of(b.id, g))
+                    .sum();
+                let local = if work.stock.is_empty() { self.stores.amount(g) } else { near.min(self.stores.amount(g)) };
+                batches = batches.min(local / a);
             }
             batches = batches.min(self.stores.space(out) / per);
             if batches <= 0.0 {

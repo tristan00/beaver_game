@@ -66,10 +66,24 @@ pub const WET_MOISTURE: f32 = 0.5;
 pub const OUTCROP_SLOPE: f32 = 0.6;
 pub const MUD_AMOUNT: f32 = 20.0;
 pub const STONE_AMOUNT: f32 = 30.0;
-/// Chance per eligible cell of holding a plant / mud bank / stone deposit.
+/// Chance per eligible cell of holding a plant.
 const PLANT_CHANCE: f32 = 0.25;
-const MUD_CHANCE: f32 = 0.25;
-const STONE_CHANCE: f32 = 0.2;
+/// Stone lies in a few deposits, not everywhere: each is a patch of rock `STONE_DEPOSIT_RADIUS`
+/// across around a steep, treeless spot, the deposits at least `DEPOSIT_SPACING` apart. A colony
+/// quarries one far from home and must haul the stone back.
+pub const STONE_DEPOSITS: usize = 3;
+pub const STONE_DEPOSIT_RADIUS: f32 = 4.0;
+pub const STONE_DEPOSIT_AMOUNT: f32 = 40.0;
+const STONE_DEPOSIT_FILL: f32 = 0.45;
+/// Clay beds: rich mud along a few stretches of bank. Elsewhere a bank holds a little stray mud,
+/// enough for a family's first buildings but not for a growing colony.
+pub const CLAY_BEDS: usize = 4;
+pub const CLAY_BED_RADIUS: f32 = 5.0;
+pub const CLAY_AMOUNT: f32 = 30.0;
+const CLAY_FILL: f32 = 0.8;
+const STRAY_MUD_CHANCE: f32 = 0.08;
+pub const STRAY_MUD_AMOUNT: f32 = 8.0;
+pub const DEPOSIT_SPACING: f32 = 28.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
@@ -157,24 +171,95 @@ pub fn is_wet(world: &World, (x, y): Cell) -> bool {
 }
 
 impl ResourceWorld {
-    /// Deterministic placement for a seed: a tree on every forest cell, stone on outcrops, mud on
-    /// banks, plants on wet ground. Same `(seed, world)` gives the same placement.
+    /// Deterministic placement for a seed: a tree on every forest cell, stone in a few deposits
+    /// (`STONE_DEPOSITS`), rich mud in a few clay beds along the banks (`CLAY_BEDS`) and a little
+    /// stray mud on other banks, plants on wet ground. Same `(seed, world)` gives the same placement.
     pub fn seeded(seed: u64, world: &World) -> Self {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0x5E50_0C35);
         let mut out = Self::default();
-        let mut chance = |p: f32| (rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32 <= p;
-        for y in 0..world.size {
-            for x in 0..world.size {
+        let mut unit = move || (rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32;
+        let n = world.size;
+        let treeless = |x: usize, y: usize| world.forest.get(x, y).is_some_and(|t| t.is_none());
+        let rock_ok = |c: Cell| !is_water(world, c) && treeless(c.0, c.1);
+        // Deposit centres: best-scoring spots, kept apart.
+        let pick = |cands: Vec<(f32, Cell)>, count: usize, apart: &[Cell]| {
+            let mut cands = cands;
+            cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let mut chosen: Vec<Cell> = Vec::new();
+            for (_, c) in cands {
+                let far = |o: &Cell| ((c.0 as f32 - o.0 as f32).powi(2) + (c.1 as f32 - o.1 as f32).powi(2)).sqrt() >= DEPOSIT_SPACING;
+                if chosen.iter().chain(apart).all(far) {
+                    chosen.push(c);
+                    if chosen.len() == count {
+                        break;
+                    }
+                }
+            }
+            chosen
+        };
+        let disc = |c: Cell, r: f32| {
+            let ri = r.ceil() as isize;
+            let mut v = Vec::new();
+            for dy in -ri..=ri {
+                for dx in -ri..=ri {
+                    let (x, y) = (c.0 as isize + dx, c.1 as isize + dy);
+                    if x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n && ((dx * dx + dy * dy) as f32) <= r * r {
+                        v.push((x as usize, y as usize));
+                    }
+                }
+            }
+            v
+        };
+        // Stone: steep, high, treeless ground with room for a patch of rock.
+        let mut cands = Vec::new();
+        for y in (2..n.saturating_sub(2)).step_by(2) {
+            for x in (2..n.saturating_sub(2)).step_by(2) {
+                if !rock_ok((x, y)) {
+                    continue;
+                }
+                let room = disc((x, y), STONE_DEPOSIT_RADIUS).into_iter().filter(|&c| rock_ok(c)).count();
+                if room < 12 {
+                    continue;
+                }
+                let slope = world.slope.get(x, y).copied().unwrap_or(0.0);
+                let h = world.height.get(x, y).copied().unwrap_or(0.0);
+                cands.push((slope * 2.0 + h * 0.05 + unit() * 0.5, (x, y)));
+            }
+        }
+        let stone_at = pick(cands, STONE_DEPOSITS, &[]);
+        let mut stone = std::collections::BTreeSet::new();
+        for &c in &stone_at {
+            for cell in disc(c, STONE_DEPOSIT_RADIUS) {
+                if rock_ok(cell) && (cell == c || unit() < STONE_DEPOSIT_FILL) {
+                    stone.insert(cell);
+                }
+            }
+        }
+        // Clay: stretches of bank, kept apart from each other and from the stone.
+        let mut cands = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                if is_bank(world, (x, y)) && treeless(x, y) && !stone.contains(&(x, y)) {
+                    cands.push((unit(), (x, y)));
+                }
+            }
+        }
+        let beds = pick(cands, CLAY_BEDS, &stone_at);
+        let in_bed = |c: Cell| beds.iter().any(|b| ((c.0 as f32 - b.0 as f32).powi(2) + (c.1 as f32 - b.1 as f32).powi(2)).sqrt() <= CLAY_BED_RADIUS);
+        for y in 0..n {
+            for x in 0..n {
                 let cell = (x, y);
                 if world.forest.get(x, y).is_some_and(|t| t.is_some()) {
                     out.add_tree(cell, crate::forestry::start_age(seed, cell));
-                } else if is_outcrop(world, cell) {
-                    if chance(STONE_CHANCE) {
-                        out.add(ResourceKind::StoneOutcrop, cell, STONE_AMOUNT);
+                } else if stone.contains(&cell) {
+                    out.add(ResourceKind::StoneOutcrop, cell, STONE_DEPOSIT_AMOUNT);
+                } else if is_bank(world, cell) && in_bed(cell) {
+                    if unit() < CLAY_FILL {
+                        out.add(ResourceKind::MudBank, cell, CLAY_AMOUNT);
                     }
-                } else if is_bank(world, cell) && chance(MUD_CHANCE) {
-                    out.add(ResourceKind::MudBank, cell, MUD_AMOUNT);
-                } else if is_wet(world, cell) && chance(PLANT_CHANCE) {
+                } else if is_bank(world, cell) && unit() < STRAY_MUD_CHANCE {
+                    out.add(ResourceKind::MudBank, cell, STRAY_MUD_AMOUNT);
+                } else if is_wet(world, cell) && unit() < PLANT_CHANCE {
                     let id = out.add(ResourceKind::Plant, cell, PLANT_MAX);
                     out.items.iter_mut().find(|r| r.id == id).expect("just added").wet = true;
                 }
@@ -419,6 +504,23 @@ mod tests {
     }
 
     #[test]
+    fn stone_lies_in_a_few_deposits_far_apart() {
+        let wa = world(11);
+        let a = ResourceWorld::seeded(11, &wa);
+        let stone: Vec<Cell> = a.items.iter().filter(|r| r.kind == ResourceKind::StoneOutcrop).map(|r| r.cell).collect();
+        assert!(!stone.is_empty());
+        // Group stones lying within a deposit's width of each other: at most STONE_DEPOSITS groups.
+        let mut groups: Vec<Cell> = Vec::new();
+        for &c in &stone {
+            let near = |g: &Cell| c.0.abs_diff(g.0) + c.1.abs_diff(g.1) <= (4.0 * STONE_DEPOSIT_RADIUS) as usize;
+            if !groups.iter().any(near) {
+                groups.push(c);
+            }
+        }
+        assert!(groups.len() <= STONE_DEPOSITS, "{} stone groups", groups.len());
+    }
+
+    #[test]
     fn seeded_placement_rules_and_determinism() {
         let (wa, wb) = (world(11), world(12));
         let a = ResourceWorld::seeded(11, &wa);
@@ -441,7 +543,7 @@ mod tests {
                     "mud {:?} must touch water",
                     r.cell
                 ),
-                ResourceKind::StoneOutcrop => assert!(is_outcrop(&wa, r.cell), "stone {:?} off outcrop", r.cell),
+                ResourceKind::StoneOutcrop => assert!(!water(x, y) && wa.forest.get(x, y).unwrap().is_none(), "stone {:?} on water or forest", r.cell),
                 ResourceKind::Plant => assert!(is_wet(&wa, r.cell) && r.wet),
                 ResourceKind::Tree => assert!(wa.forest.get(x, y).unwrap().is_some()),
                 ResourceKind::Felled => panic!("no felled wood at start"),

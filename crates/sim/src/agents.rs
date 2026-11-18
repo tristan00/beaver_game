@@ -470,9 +470,12 @@ fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     let progress = sim.work.place(site)?.site.as_ref()?;
     for &(good, _) in &progress.needed {
         let outstanding = progress.missing(good) - promised(sim, site, good);
-        if outstanding > WORK_EPS && sim.buildings.stores.amount(good) > WORK_EPS {
-            // A store if one stands, else the pile the family brought in.
-            if let Some(from) = closest_store(sim, ag.cell, good).or(sim.work.supplies.map(|_| SUPPLIES)) {
+        if outstanding > WORK_EPS {
+            // The nearest store (or the founding pile) that holds a load's worth, else any that
+            // holds some: goods are fetched from where they are.
+            let want = outstanding.min(LOAD_SIZE);
+            let near = sim.buildings.building(site).map_or(ag.cell, |b| b.pos);
+            if let Some(from) = crate::stock::nearest_holding(sim, near, good, want).or_else(|| crate::stock::nearest_holding(sim, near, good, WORK_EPS)) {
                 return Some(Task::Fetch { from, good, then: site });
             }
         }
@@ -635,10 +638,11 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
     if site {
         let outstanding = sim.work.place(then).and_then(|p| p.site.as_ref()).map_or(0.0, |s| s.missing(good))
             - promised(sim, then, good);
-        let want = LOAD_SIZE.min(outstanding).min(sim.buildings.stores.amount(good));
+        let want = LOAD_SIZE.min(outstanding).min(sim.work.stock_of(from, good)).min(sim.buildings.stores.amount(good));
         if want <= WORK_EPS || sim.buildings.stores.withdraw(good, want).is_err() {
             return abandon(ag);
         }
+        sim.work.stock_take(from, good, want);
         ag.load = Some(Load { good, amount: want });
         ag.task = Task::Carry { dest: then };
     } else {
@@ -727,7 +731,8 @@ fn finish_sites(sim: &mut SimState) {
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
         if let Some(i) = sim.work.dam_plans.iter().position(|p| p.building == id) {
             let plan = sim.work.dam_plans.remove(i);
-            if let Err(e) = sim.water.build_dam(&plan.cells, plan.height) {
+            let cells: Vec<(Cell, f32)> = plan.cells.iter().copied().zip(plan.heights.iter().copied()).collect();
+            if let Err(e) = sim.water.raise_dam(&cells) {
                 sim.work.dam_failures.push((id, e.to_string()));
             }
         }
@@ -1077,7 +1082,11 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
     };
     if adjacent(ag.cell, store) {
         let who = producer(sim, ag);
-        match sim.buildings.stores.deposit_by(load.good, load.amount, who) {
+        let booked = sim.buildings.stores.deposit_by(load.good, load.amount, who);
+        if let Ok(taken) = booked {
+            sim.work.stock_add(dest, load.good, taken);
+        }
+        match booked {
             Ok(taken) if taken >= load.amount => {
                 ag.load = None;
                 ag.task = Task::Idle;
@@ -1469,6 +1478,7 @@ mod tests {
             assert_eq!(sim.buildings.stores.deposit(g, a).unwrap(), a, "ledger has room for the cost");
         }
         warehouse(&mut sim, 100, (20, 9)); // clear of the ids `place_site` hands out
+        crate::stock::reconcile(&mut sim); // the cost lies in the warehouse
         let site = sim.place_site(BuildingKind::Lodge, (14, 14)).unwrap();
         for (n, &i) in ids[..3].iter().enumerate() {
             spawn_on(&mut sim, i, (10, 10 + 2 * n)).unwrap();

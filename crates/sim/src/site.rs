@@ -12,11 +12,13 @@ pub struct SiteScore {
     pub safety: f32,
     /// Clear, dry ground close by: room for a store and a burrow.
     pub room: f32,
+    /// Food plants and mud close by: what the family lives and builds on before it can haul.
+    pub food: f32,
 }
 
 impl SiteScore {
     pub fn overall(&self) -> f32 {
-        0.3 * self.water + 0.2 * self.trees + 0.2 * self.safety + 0.3 * self.room
+        0.2 * self.water + 0.15 * self.trees + 0.15 * self.safety + 0.25 * self.room + 0.25 * self.food
     }
     pub fn verdict(&self) -> &'static str {
         match self.overall() {
@@ -38,6 +40,11 @@ pub enum SettleError {
     /// No room within reach for a store and a burrow.
     NoRoom,
 }
+
+/// Plants within `FOOD_REACH` cells (Manhattan) that make a spot's food full marks, and the mud.
+const FOOD_REACH: usize = 14;
+const GOOD_PLANTS: f32 = 20.0;
+const GOOD_MUD: f32 = 40.0;
 
 /// How far (cells) from the settling spot the camp's first buildings must fit.
 pub const CAMP_RADIUS: usize = 8;
@@ -116,7 +123,13 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
     let above = if river_low == f32::MAX { 1.0 } else { ((world.surface.get(cell.0, cell.1).copied().unwrap_or(0.0) - river_low) / 1.5).clamp(0.0, 1.0) };
     let edge = cell.0.min(cell.1).min(world.size - 1 - cell.0).min(world.size - 1 - cell.1);
     let room = if edge < 4 { 0.0 } else { room(s, cell).0 };
-    SiteScore { water, trees, safety: 0.5 * gentle + 0.5 * above, room }
+    // Plants within a forager's easy reach, and some mud for the first buildings.
+    use crate::resources::ResourceKind;
+    let near = |c: Cell, r: usize| c.0.abs_diff(cell.0) + c.1.abs_diff(cell.1) <= r;
+    let plants = s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && near(r.cell, FOOD_REACH)).count();
+    let mud: f32 = s.resources.items.iter().filter(|r| r.kind == ResourceKind::MudBank && near(r.cell, FOOD_REACH)).map(|r| r.amount).sum();
+    let food = 0.8 * (plants as f32 / GOOD_PLANTS).min(1.0) + 0.2 * (mud / GOOD_MUD).min(1.0);
+    SiteScore { water, trees, safety: 0.5 * gentle + 0.5 * above, room, food }
 }
 
 /// Whether the family can settle at `cell`: on the map, in an open valley, explored, dry, away

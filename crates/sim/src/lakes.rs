@@ -75,6 +75,9 @@ const PLANS_TRIED: usize = 12;
 struct Plan {
     cells: Vec<Cell>,
     height: f32,
+    /// Height per cell: `height` on the line, the dam's crest over any spill points it was
+    /// extended across (`dam_preview::extend_to_hold`).
+    heights: Vec<f32>,
     area: usize,
 }
 
@@ -110,10 +113,21 @@ fn plans(sim: &SimState, s: &Search) -> Vec<Plan> {
                         continue;
                     }
                     for &height in s.heights {
-                        let Some(p) = crate::dam_preview::preview(sim, &cells, height) else { continue };
+                        // A line the water walks round is tied in over its spill points (narrow lines
+                        // only: the wider pads already reach up the banks).
+                        let flat = vec![height; cells.len()];
+                        let Some(plain) = crate::dam_preview::preview_heights(sim, &cells, &flat) else { continue };
+                        let (cells, heights, p) = if plain.spill_at.is_none() {
+                            (cells.clone(), flat, plain)
+                        } else if pad <= 1 {
+                            let Some(t) = crate::dam_preview::extend_to_hold(sim, &cells, &flat, cells.len() + 4) else { continue };
+                            t
+                        } else {
+                            continue;
+                        };
                         let on_edge = p.flooded.iter().any(|c| c.0 < 2 || c.1 < 2 || c.0 + 2 >= size || c.1 + 2 >= size);
                         if p.rise >= MIN_RISE && s.area.contains(&p.flooded.len()) && !on_edge {
-                            out.push(Plan { cells: cells.clone(), height, area: p.flooded.len() });
+                            out.push(Plan { cells: cells.clone(), height, heights: heights.clone(), area: p.flooded.len() });
                         }
                     }
                 }
@@ -134,10 +148,11 @@ fn best(mut plans: Vec<Plan>, score: impl Fn(&Plan) -> f32) -> Vec<Plan> {
 /// Springs on the river above the dam, the dam itself and the previewed pond at its level.
 /// Returns the pond's cells and level.
 fn fill_lake(sim: &mut SimState, plan: &Plan) -> Result<(Vec<Cell>, f32), StartError> {
-    let p = crate::dam_preview::preview(sim, &plan.cells, plan.height).ok_or_else(|| err("dam line is not valid"))?;
+    let p = crate::dam_preview::preview_heights(sim, &plan.cells, &plan.heights).ok_or_else(|| err("dam line is not valid"))?;
     sim.water.config.seepage = CLAY_SEEPAGE;
     feed_river(sim, &plan.cells, plan.height)?;
-    sim.water.build_dam(&plan.cells, plan.height).map_err(|e| err(e.to_string()))?;
+    let cells: Vec<(Cell, f32)> = plan.cells.iter().copied().zip(plan.heights.iter().copied()).collect();
+    sim.water.raise_dam(&cells).map_err(|e| err(e.to_string()))?;
     for &(x, y) in &plan.cells {
         *sim.water.depth.get_mut(x, y).ok_or_else(|| err("dam cell off the map"))? = 0.0;
     }
@@ -608,13 +623,16 @@ mod tests {
         // Seed 1 is the reference world; other seeds whose valley is too narrow keep a small lake.
         for seed in [1] {
             let (s, info) = lake(seed);
-            assert!(info.area() >= 200, "seed {seed}: lake only {} cells", info.area());
+            // A dam tied into both banks holds about 135 cells here (a line the water walks round
+            // once seemed to hold more).
+            assert!(info.area() >= 120, "seed {seed}: lake only {} cells", info.area());
             let river_in_dam = info.dam.cells.iter().filter(|c| is_river(&s, c.0, c.1)).count();
             assert!(river_in_dam >= 1, "seed {seed}: the dam crosses the water channel");
             let (first, last) = (info.dam.cells[0], *info.dam.cells.last().unwrap());
             assert!(!is_river(&s, first.0, first.1) && !is_river(&s, last.0, last.1), "seed {seed}: dam ends on both banks");
             let wet = info.lake.iter().filter(|&&(x, y)| *s.water.depth.get(x, y).unwrap() >= WET_DEPTH).count();
-            assert!(wet * 10 >= info.area() * 9, "seed {seed}: {wet} of {} lake cells wet", info.area());
+            // The shallow rim of a pond held to its spill height dries a little.
+            assert!(wet * 100 >= info.area() * 85, "seed {seed}: {wet} of {} lake cells wet", info.area());
         }
     }
 

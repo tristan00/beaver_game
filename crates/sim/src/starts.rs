@@ -131,6 +131,9 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
                         continue;
                     }
                     let Some(p) = crate::dam_preview::preview(sim, &cells, height) else { continue };
+                    if p.spill_at.is_some() {
+                        continue; // the water would walk round it
+                    }
                     let area = p.flooded.len();
                     if p.rise >= START_RISE && POND_AREA_RANGE.contains(&area) && holds(sim, &cells, &p.flooded) {
                         let score = area.abs_diff(POND_AREA) as f32 + cells.len() as f32 * 20.0;
@@ -1027,10 +1030,15 @@ mod tests {
         let line = |half: usize| -> Vec<Cell> { (64 - half..=64 + half).map(|y| (40, y)).collect() };
         // At crest 1 the banks rise above the pond seven cells out: a shorter line leaks round its ends.
         let short = crate::dam_preview::preview(&s, &line(1), 1.0).unwrap();
-        assert!(!holds(&s, &line(1), &short.flooded), "a three-cell dam cannot hold a pond in this valley");
+        let at = short.spill_at.expect("a three-cell dam is walked round in this valley");
+        assert!(short.level < short.crest - 0.4, "the pond only rises to the saddle: {} of {}", short.level, short.crest);
+        assert!(at.0.abs_diff(40) <= 1 && at.1.abs_diff(64) <= 3, "it spills just past the dam end, not at {at:?}");
         let full = crate::dam_preview::preview(&s, &line(7), 1.0).unwrap();
-        assert!(holds(&s, &line(7), &full.flooded), "a dam tied into both banks holds");
+        assert!(full.spill_at.is_none() && holds(&s, &line(7), &full.flooded), "a dam tied into both banks holds");
         assert!(full.flooded.iter().all(|c| c.0 < 40), "the held pond lies upstream");
+        // Extending the short dam over each spill point ties it in.
+        let (cells, _, _) = crate::dam_preview::extend_to_hold(&s, &line(1), &[1.0; 3], 20).expect("can be tied in");
+        assert!(cells.len() > 3 && crate::dam_preview::preview_heights(&s, &cells, &vec![1.0; cells.len()]).is_some());
     }
 
     #[test]

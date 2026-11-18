@@ -30,6 +30,7 @@ pub mod script;
 pub mod site;
 pub mod society;
 pub mod starts;
+pub mod stock;
 pub mod tech;
 pub mod tuning;
 pub mod water;
@@ -73,6 +74,8 @@ pub enum Command {
     /// Order a dam: a construction site the family fells, hauls and builds; the water dam (and
     /// the pond behind it) appears when the site is finished.
     OrderDam { cells: Vec<water::Cell>, height: f32 },
+    /// Order a dam built (or raised, or extended) to a crest at world height `crest` along `cells`.
+    OrderDamTo { cells: Vec<water::Cell>, crest: f32 },
     /// Found the colony at `cell` (the player's settling choice); rejected for an unusable cell.
     Settle { cell: water::Cell },
     /// Remove the dam at (x, y); the pond drains downstream.
@@ -292,12 +295,14 @@ impl SimState {
         self.step_research(dt_days);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
+        stock::book_crafting(self);
         self.sync_homes();
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
         self.resources.step(dt_days).expect("dt validated above");
         forestry::step(self, dt_days);
+        stock::reconcile(self);
         agents::step(self, dt_days);
         self.explore();
         self.society.step(dt_days, self.time_days, &self.colony);
@@ -306,6 +311,7 @@ impl SimState {
             self.output.record(b, g, a);
         }
         self.output.step(dt_days);
+        stock::reconcile(self);
         self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
     }
@@ -483,7 +489,8 @@ impl SimState {
             return Err(SimError::InvalidCommand(format!("{e:?}")));
         }
         if let Some(cells) = dam_cells {
-            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT });
+            let heights = vec![dam_preview::DEFAULT_HEIGHT; cells.len()];
+            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT, heights });
         }
         Ok(id)
     }
@@ -557,8 +564,31 @@ impl SimState {
     }
 
     pub fn order_dam(&mut self, cells: &[water::Cell], height: f32) -> Result<buildings::BuildingId, SimError> {
-        if dam_preview::preview(self, cells, height).is_none() {
+        self.order_dam_heights(cells, &vec![height; cells.len()])
+    }
+
+    /// Orders a dam whose crest stands at world height `crest` along `cells` (each cell as high as
+    /// the ground under it needs; cells already that high are left out).
+    pub fn order_dam_to(&mut self, cells: &[water::Cell], crest: f32) -> Result<buildings::BuildingId, SimError> {
+        let (cells, heights) = dam_preview::heights_to(self, cells, crest);
+        if cells.is_empty() {
+            return Err(SimError::InvalidCommand("the ground is already that high".into()));
+        }
+        self.order_dam_heights(&cells, &heights)
+    }
+
+    /// Orders a dam, or raises, extends or repairs one: each cell is built up to its height above
+    /// the ground, and only what is missing costs materials and work (`dam_preview::cost_for`).
+    pub fn order_dam_heights(&mut self, cells: &[water::Cell], heights: &[f32]) -> Result<buildings::BuildingId, SimError> {
+        if dam_preview::preview_heights(self, cells, heights).is_none() {
             return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
+        }
+        if let Some(h) = heights.iter().copied().find(|&h| h > dam_preview::MAX_DAM_HEIGHT + 1e-3) {
+            return Err(SimError::InvalidCommand(format!("{h:.1} is too high: a dam stands at most {} above the ground", dam_preview::MAX_DAM_HEIGHT)));
+        }
+        let (cost, labour) = dam_preview::cost_for(self, cells, heights);
+        if labour <= 1e-3 {
+            return Err(SimError::InvalidCommand("the dam is already that high".into()));
         }
         let pos = self.dam_site(cells).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
@@ -566,12 +596,13 @@ impl SimState {
             .buildings
             .place_site(buildings::BuildingKind::Dam, pos, &self.tech, terrain)
             .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
-        let labour = buildings::BuildingKind::Dam.spec().work * dam_preview::length_factor(cells.len()) * self.tech.build_work_factor();
-        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &dam_preview::dam_cost(cells.len()), labour) {
+        let labour = labour * self.tech.build_work_factor();
+        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &cost, labour) {
             self.buildings.buildings.retain(|b| b.id != id);
             return Err(SimError::InvalidCommand(format!("{e:?}")));
         }
-        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height });
+        let height = heights.iter().copied().fold(0.0, f32::max);
+        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height, heights: heights.to_vec() });
         Ok(id)
     }
 
@@ -634,6 +665,7 @@ impl SimState {
             }
             Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
             Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
+            Command::OrderDamTo { cells, crest } => self.order_dam_to(&cells, crest).map(|_| ()),
             Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
