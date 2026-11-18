@@ -1,1 +1,0 @@
-stress scene (live sim world): 6724 trees, 247 beavers | 900 frames | frame time ms: avg 2.66, median 2.54, p95 3.97, p99 5.30, max 9.72 | main-world cpu ms: median 1.96, max 6.68 | unfocused frames: 0 | frames >= 16 ms: 0 | budget 16 ms: PASS (every frame < 16 ms)

@@ -1,7 +1,0 @@
-2026-11-17T18:13:29.252486Z  INFO beaver_colony::startflow: --cam lake: 5 dam cells, 79 lake cells at level 6.13; camera target Vec3(-42.88403, 6.1278915, -3.5693145), distance 20.6
-lake-cam: window 1280x720
-lake-cam: dam box x 139..252 y 100..176 (112x76 px, 0.9% of window)
-lake-cam: lake box x 241..1141 y 29..691 (900x662 px, 64.6% of window)
-lake-cam: dam inside window: true; lake inside window: true; lake covers 64.6% of window
-2026-11-17T18:13:30.089930Z  INFO bevy_render::view::window::screenshot: Screenshot saved to artifacts/R19-35/lake_start2.png
-2026-11-17T18:13:30.096207Z  INFO beaver_colony::screenshot: screenshot saved to artifacts/R19-35/lake_start2.png
