@@ -143,6 +143,10 @@ pub mod colony {
     pub const GUARD_SAFETY_MAX: f32 = 0.2;
     /// Insulation without a lodge, and the extra a lodge in full condition gives.
     pub const OPEN_INSULATION: f32 = 0.05;
+    /// How well a beaver with no home rests (sleeping rough in the open): worse than a lodge but
+    /// enough to recover, so a family that arrives homeless can still build its first shelter.
+    /// Cold still follows `OPEN_INSULATION`.
+    pub const OPEN_REST: f32 = 0.4;
     pub const LODGE_INSULATION: f32 = 0.85;
     pub const HUNGER_PER_DAY: f32 = 0.25;
     /// Beavers eat from the stockpile when their food need drops below this.

@@ -550,6 +550,12 @@ fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> 
             .iter()
             .filter_map(|c| nav.find_path(ag.id, ag.cell, Goal::Beside(*c)))
             .min_by(|a, b| a.cost.total_cmp(&b.cost));
+        if ag.path.is_none() {
+            // No way there: give the errand up rather than stand still for ever.
+            note(ag, false);
+            abandon(ag);
+            return false;
+        }
     }
     let moved = follow(&mut sim.nav, ag, dt);
     note(ag, moved);

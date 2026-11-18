@@ -1062,9 +1062,10 @@ impl Colony {
             }
             // rest: work tires, shelter restores; exhausted beavers stop working until recovered
             let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
-            n.rest = (n.rest - TIRE_RATE * worked * dt + SHELTER_REST_RATE * (1.0 - worked) * insulation * dt).clamp(0.0, 1.0);
+            let sleep = insulation.max(OPEN_REST);
+            n.rest = (n.rest - TIRE_RATE * worked * dt + SHELTER_REST_RATE * (1.0 - worked) * sleep * dt).clamp(0.0, 1.0);
             if b.resting {
-                n.rest = (n.rest + RESTING_RECOVERY * insulation * dt).min(1.0);
+                n.rest = (n.rest + RESTING_RECOVERY * sleep * dt).min(1.0);
                 b.resting = n.rest < RESUME_WORK_REST;
             } else if n.rest < EXHAUSTED_REST {
                 b.resting = true;

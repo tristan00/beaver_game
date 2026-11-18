@@ -1310,6 +1310,50 @@ fn demo(
             }
         }
     }
+    let look = |o: &mut crate::camera::OrbitCamera, h: &sim::grid::HeightGrid, c: (f32, f32), dist: f32| {
+        o.target = cell_world(h, c);
+        o.distance = dist;
+        o.pitch = 0.95;
+    };
+    // `play`: the scripted attentive player plays BC_HUD_DAYS days, then BC_HUD_VIEW is shown.
+    if which == "play" {
+        let dam = planned.0.as_ref().map(|d| (d.cells.clone(), d.height));
+        let mut p = sim::autoplay::Player::new(sim::autoplay::Style::Attentive, camp.unwrap_or((0, 0)), dam);
+        let steps = (1.0 / crate::sim_driver::FIXED_DT_DAYS) as usize;
+        for _ in 0..days as usize {
+            p.act(s);
+            for _ in 0..steps {
+                let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
+            }
+        }
+        for l in &p.log {
+            println!("autoplay {l}");
+        }
+        let view = std::env::var("BC_HUD_VIEW").unwrap_or_default();
+        match view.as_str() {
+            "jobs" => hud.colony = Some(ColonyTab::Jobs),
+            "pop" => hud.colony = Some(ColonyTab::Population),
+            "goods" => hud.colony = Some(ColonyTab::Goods),
+            "research" => hud.colony = Some(ColonyTab::Research),
+            "log" => hud.colony = Some(ColonyTab::Log),
+            "building" => {
+                if let Some(b) = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::ForagerHut).or(s.buildings.buildings.first()) {
+                    *sel = Selection::Site(b.id);
+                }
+            }
+            "beaver" => {
+                if let Some(b) = s.colony.beavers.iter().find(|b| b.stage == sim::colony::Stage::Adult) {
+                    *sel = Selection::Beaver(b.id);
+                    hud.selected = vec![b.id];
+                }
+            }
+            _ => {}
+        }
+        if let Some(c) = camp {
+            look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), 42.0);
+        }
+        return;
+    }
     let mut staffed = Vec::new();
     if matches!(which.as_str(), "camp" | "ledger" | "goods" | "jobs" | "pop" | "beaver" | "research" | "tip") {
         if let Some(c) = camp {
@@ -1319,11 +1363,6 @@ fn demo(
     for _ in 0..(days / crate::sim_driver::FIXED_DT_DAYS) as usize {
         let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
     }
-    let look = |o: &mut crate::camera::OrbitCamera, h: &sim::grid::HeightGrid, c: (f32, f32), dist: f32| {
-        o.target = cell_world(h, c);
-        o.distance = dist;
-        o.pitch = 0.95;
-    };
     let water_cat = panels::categories(s).iter().position(|g| *g == Group::Branch(sim::tech::Branch::Water));
     match which.as_str() {
         "dam" | "canal" => {

@@ -388,8 +388,20 @@ impl SimState {
 
     /// Whether `place_site` would accept `kind` at `pos`; changes nothing.
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
+        self.check_off_pile(kind, pos)?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.can_place_site(kind, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
+    }
+
+    /// Nothing may be built on the founding supply pile.
+    fn check_off_pile(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
+        let (w, d) = kind.spec().footprint;
+        if let Some(p) = self.work.supplies {
+            if (pos.0..pos.0 + w).contains(&p.0) && (pos.1..pos.1 + d).contains(&p.1) {
+                return Err(SimError::InvalidCommand("Blocked: the supply pile is there".into()));
+            }
+        }
+        Ok(())
     }
 
     /// Places a construction site for `kind` at `pos` and registers it as a workplace with its
@@ -397,6 +409,7 @@ impl SimState {
     /// catalogue footprint at `dam_preview::DEFAULT_HEIGHT`, costs `dam_preview::dam_cost` for those
     /// cells, and raises the water dam when finished.
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
+        self.check_off_pile(kind, pos)?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
