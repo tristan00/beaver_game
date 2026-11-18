@@ -59,10 +59,44 @@ pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     let gain = sim.ledger.in_per_day(crate::buildings::Good::Food);
     let food = sim.buildings.stores.amount(crate::buildings::Good::Food);
     let short = need > gain && food < (need - gain) * FOOD_EMERGENCY_DAYS;
-    if !short {
-        return sim.work.role_rank(role);
+    if short && role == RoleKind::Forager {
+        return 0;
     }
-    if role == RoleKind::Forager { 0 } else { sim.work.role_rank(role) + 1 }
+    // Sites waiting on a raw material the stores cannot cover: its gatherers come before builders,
+    // who would only stand at the site.
+    if material_short(sim, role) {
+        return 1;
+    }
+    sim.work.role_rank(role) + 2
+}
+
+/// Logs kept for repairing homes before winter; fewer and loggers come before builders.
+pub const WOOD_RESERVE: f32 = 20.0;
+
+/// Whether open construction sites lack more of what `role` gathers than the stores hold.
+pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
+    use crate::buildings::Good;
+    let goods: &[Good] = match role {
+        RoleKind::Logger => &[Good::Logs, Good::Sticks],
+        RoleKind::MudDigger => &[Good::Mud],
+        RoleKind::Quarrier => &[Good::Stone],
+        _ => return false,
+    };
+    // Homes are repaired with logs: below this reserve the colony is short of wood whatever is built.
+    if role == RoleKind::Logger && sim.buildings.stores.amount(Good::Logs) < WOOD_RESERVE {
+        return true;
+    }
+    goods.iter().any(|&g| {
+        let lacking: f32 = sim
+            .work
+            .places
+            .iter()
+            .filter(|p| sim.buildings.building(p.building).is_some_and(|b| !b.is_complete()))
+            .filter_map(|p| p.site.as_ref())
+            .map(|s| s.missing(g))
+            .sum();
+        lacking > sim.buildings.stores.amount(g) + 1e-3
+    })
 }
 
 pub fn role_kind(r: Role) -> RoleKind {

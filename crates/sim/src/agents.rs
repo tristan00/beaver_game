@@ -146,7 +146,7 @@ impl Agents {
 }
 
 /// Cost points an agent travels per day (a land step costs 1, a swim step 0.6).
-pub const MOVE_COST_PER_DAY: f32 = 30.0;
+pub const MOVE_COST_PER_DAY: f32 = 40.0;
 /// A beaver carrying a load moves at this share of its free pace (on land or in water alike;
 /// swimming stays faster than walking).
 pub const LADEN_PACE: f32 = 0.5;
@@ -475,6 +475,14 @@ fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     let progress = sim.work.place(site)?.site.as_ref()?;
     for &(good, _) in &progress.needed {
         let outstanding = progress.missing(good) - promised(sim, site, good);
+        // Materials go to the oldest site first, so one building finishes before the next starts.
+        let older_wants = sim.work.places.iter().filter(|p| p.building < site).filter_map(|p| p.site.as_ref().map(|s| (p.building, s))).any(|(b, s)| {
+            sim.buildings.building(b).is_some_and(|bd| !bd.is_complete()) && s.missing(good) - promised(sim, b, good) > WORK_EPS
+        });
+        let in_stock: f32 = crate::stock::holders(sim, good).iter().map(|&h| sim.work.stock_of(h, good)).sum();
+        if older_wants && in_stock < 2.0 * LOAD_SIZE {
+            continue;
+        }
         if outstanding > WORK_EPS {
             // The nearest store (or the founding pile) that holds a load's worth, else any that
             // holds some: goods are fetched from where they are.
@@ -770,14 +778,26 @@ pub(crate) fn is_site(sim: &SimState, p: &crate::work::Workplace) -> bool {
     p.is_open_site() && sim.buildings.building(p.building).is_some_and(|b| !b.is_complete())
 }
 
+/// A site its builders can do nothing at: its labour is done and none of what it still lacks is
+/// in any store. Auto-staffing keeps builders off it (its material run still goes out).
+pub(crate) fn site_stalled(sim: &SimState, p: &crate::work::Workplace) -> bool {
+    let Some(s) = p.site.as_ref() else { return false };
+    s.labour_done >= s.labour_needed - WORK_EPS
+        && s.needed.iter().all(|n| {
+            s.missing(n.0) <= WORK_EPS || crate::stock::holders(sim, n.0).iter().all(|&h| sim.work.stock_of(h, n.0) <= WORK_EPS)
+        })
+}
+
 /// The material run auto-staffing sends for site `site` at `pos`, if the stores cannot cover a
 /// good it lacks (summed over every open site).
 pub(crate) fn site_material_run(sim: &SimState, site: BuildingId, pos: Cell) -> Option<Assignment> {
     let open: Vec<&crate::work::SiteProgress> =
         sim.work.places.iter().filter(|p| is_site(sim, p)).filter_map(|p| p.site.as_ref()).collect();
     let progress = sim.work.place(site)?.site.as_ref()?;
+    // Only raw materials are gathered; rope, baskets and tools come from a workshop.
+    let raw = |g: Good| matches!(g, Good::Logs | Good::Sticks | Good::Mud | Good::Stone);
     let good = progress.needed.iter().map(|n| n.0).find(|&g| {
-        progress.missing(g) > WORK_EPS && open.iter().map(|p| p.missing(g)).sum::<f32>() - sim.buildings.stores.amount(g) > WORK_EPS
+        raw(g) && progress.missing(g) > WORK_EPS && open.iter().map(|p| p.missing(g)).sum::<f32>() - sim.buildings.stores.amount(g) > WORK_EPS
     })?;
     let r = GATHER_RADIUS;
     let area = Area { min: (pos.0.saturating_sub(r), pos.1.saturating_sub(r)), max: (pos.0 + r, pos.1 + r) };
@@ -870,6 +890,9 @@ fn organise(sim: &mut SimState) {
                 runs -= 1;
                 let role = Role::Collect(match a { Assignment::Area(k, _) => k, _ => ResourceKind::Tree });
                 openings.push(Opening { duty: ManagedDuty::Gather(a), key: (prio, rank, 2 * i, p.building), at: b.pos, role });
+            }
+            if site && s.role == Role::Build && site_stalled(sim, p) {
+                continue;
             }
             if ours(i, s.worker) && budget > 0 {
                 budget -= 1;

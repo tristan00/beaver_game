@@ -2,7 +2,7 @@
 # unlock, acts on the top alert daily). Balance target: the colony is alive and growing.
 map voyageurs
 policy attentive
-settle designed
+settle best
 report every 60
 run 720
 check alive

@@ -100,6 +100,21 @@ struct RiverPlan {
     height: f32,
 }
 
+/// The best dam a family camped at `camp` can see: a candidate line (as `dam_candidates`) whose
+/// middle lies within `radius` cells and whose cells are all explored. For scripted players and
+/// the HUD's suggestion; `None` if there is none in reach.
+pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>, f32)> {
+    dam_candidates(sim)
+        .into_iter()
+        .filter(|(_, cells, _)| {
+            let mid = cells[cells.len() / 2];
+            dist2(mid, camp) <= radius * radius && cells.iter().all(|&c| sim.fog.explored(c))
+        })
+        .map(|(_, cells, h)| (cells, h))
+        // A first dam of sticks and logs: anything taller needs mud the family has not got.
+        .min_by_key(|(_, h)| (*h > crate::dam_preview::DEFAULT_HEIGHT + 1e-3) as u8)
+}
+
 /// Straight cross-river dam lines with a pond of a sensible size, best first (score, cells,
 /// height). The score prefers a pond near `POND_AREA`, a short dam and a quick fill.
 fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
@@ -394,7 +409,7 @@ pub const START_LARDER_DAYS: f32 = 45.0;
 /// What the family carries in besides food: enough for the first dam (about nine cells), a
 /// warehouse and a little over. A burrow costs only labour.
 pub const START_BUNDLE: [(crate::buildings::Good, f32); 4] =
-    [(crate::buildings::Good::Logs, 60.0), (crate::buildings::Good::Sticks, 60.0), (crate::buildings::Good::Mud, 20.0), (crate::buildings::Good::Rope, 2.0)];
+    [(crate::buildings::Good::Logs, 60.0), (crate::buildings::Good::Sticks, 60.0), (crate::buildings::Good::Mud, 30.0), (crate::buildings::Good::Rope, 2.0)];
 
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);

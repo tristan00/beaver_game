@@ -35,6 +35,7 @@ pub mod stock;
 pub mod tech;
 pub mod tuning;
 pub mod water;
+pub mod wetland;
 pub mod work;
 pub mod worldgen;
 
@@ -306,6 +307,10 @@ impl SimState {
             self.region.step(dt_days);
         }
         self.resources.step(dt_days).expect("dt validated above");
+        let day = self.time_days.floor();
+        if day > (self.time_days - dt_days as f64).floor() && self.colony.is_founded() {
+            wetland::step(self, day as u64);
+        }
         forestry::step(self, dt_days);
         stock::reconcile(self);
         agents::step(self, dt_days);

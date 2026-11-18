@@ -81,8 +81,8 @@ pub const CLAY_BEDS: usize = 4;
 pub const CLAY_BED_RADIUS: f32 = 5.0;
 pub const CLAY_AMOUNT: f32 = 30.0;
 const CLAY_FILL: f32 = 0.8;
-const STRAY_MUD_CHANCE: f32 = 0.08;
-pub const STRAY_MUD_AMOUNT: f32 = 8.0;
+const STRAY_MUD_CHANCE: f32 = 0.15;
+pub const STRAY_MUD_AMOUNT: f32 = 10.0;
 pub const DEPOSIT_SPACING: f32 = 28.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,7 +279,7 @@ impl ResourceWorld {
     pub fn get(&self, id: ResourceId) -> Option<&Resource> {
         self.index_of(id).map(|i| &self.items[i])
     }
-    fn get_mut(&mut self, id: ResourceId) -> Result<&mut Resource, ResourceError> {
+    pub(crate) fn get_mut(&mut self, id: ResourceId) -> Result<&mut Resource, ResourceError> {
         let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
         Ok(&mut self.items[i])
     }

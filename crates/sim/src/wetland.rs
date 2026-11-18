@@ -1,0 +1,132 @@
+//! Wetland (owner: `wetland`). Food plants follow the water: they sprout on bare shore and in
+//! shallow water, regrow only while the water is near, and drown when it gets deep. A beaver pond
+//! has a long shore, so damming a stream is how a colony grows its food; a pond that drains
+//! leaves its plants dry. Runs once a day.
+
+use std::collections::HashSet;
+
+use crate::buildings::WET_DEPTH;
+use crate::resources::{ResourceKind, PLANT_MAX, WET_MOISTURE};
+use crate::water::Cell;
+use crate::SimState;
+
+/// Water deeper than this holds no plants (pond weed grows in the shallows).
+pub const SHALLOW: f32 = 0.5;
+/// A plant in water deeper than this drowns.
+pub const DROWN: f32 = 0.8;
+/// Chance per day that a bare shore cell sprouts a plant.
+pub const SPROUT_PER_DAY: f32 = 0.03;
+/// No sprouting where this many plants already grow within two cells.
+pub const CROWDED: usize = 5;
+/// A sprouting plant starts with this much food and grows to `PLANT_MAX`.
+pub const SPROUT_AMOUNT: f32 = 1.0;
+
+/// Shore: not deep, and wet itself or beside water.
+pub fn is_shore(sim: &SimState, c: Cell) -> bool {
+    let d = &sim.water.depth;
+    let Some(&here) = d.get(c.0, c.1) else { return false };
+    if here > SHALLOW || sim.water.has_dam(c.0, c.1) {
+        return false;
+    }
+    here >= WET_DEPTH
+        || [(c.0.wrapping_sub(1), c.1), (c.0 + 1, c.1), (c.0, c.1.wrapping_sub(1)), (c.0, c.1 + 1)]
+            .iter()
+            .any(|n| d.get(n.0, n.1).is_some_and(|&x| x >= WET_DEPTH))
+}
+
+/// Deterministic unit draw for a cell on a day (independent of step size and iteration order).
+fn draw(seed: u64, day: u64, i: usize) -> f32 {
+    let mut z = seed ^ day.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// One day of wetland change (`day` is the whole day just begun).
+pub fn step(sim: &mut SimState, day: u64) {
+    let n = sim.water.depth.width();
+    let moist = |sim: &SimState, c: Cell| sim.world.moisture.get(c.0, c.1).is_some_and(|&m| m >= WET_MOISTURE);
+    // Plants: drown in deep water; regrow only while wet.
+    let drowned: Vec<usize> = sim
+        .resources
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == ResourceKind::Plant && sim.water.depth.get(r.cell.0, r.cell.1).is_some_and(|&d| d > DROWN))
+        .map(|(i, _)| i)
+        .collect();
+    for i in drowned.into_iter().rev() {
+        sim.resources.items.remove(i);
+    }
+    let wet: Vec<bool> = sim.resources.items.iter().map(|r| r.kind == ResourceKind::Plant && (is_shore(sim, r.cell) || moist(sim, r.cell))).collect();
+    for (r, w) in sim.resources.items.iter_mut().zip(wet) {
+        if r.kind == ResourceKind::Plant {
+            r.wet = w;
+        }
+    }
+    // Sprouting on bare shore.
+    let taken: HashSet<Cell> = sim.resources.items.iter().map(|r| r.cell).chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
+    let mut plants = vec![0u8; n * n];
+    for r in sim.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant) {
+        plants[r.cell.1 * n + r.cell.0] = 1;
+    }
+    let crowd = |plants: &[u8], c: Cell| {
+        let mut k = 0;
+        for y in c.1.saturating_sub(2)..(c.1 + 3).min(n) {
+            for x in c.0.saturating_sub(2)..(c.0 + 3).min(n) {
+                k += plants[y * n + x] as usize;
+            }
+        }
+        k
+    };
+    let mut new = Vec::new();
+    for y in 0..n {
+        for x in 0..n {
+            let c = (x, y);
+            if taken.contains(&c) || draw(sim.seed, day, y * n + x) >= SPROUT_PER_DAY || !is_shore(sim, c) || crowd(&plants, c) >= CROWDED {
+                continue;
+            }
+            plants[y * n + x] = 1;
+            new.push(c);
+        }
+    }
+    for c in new {
+        let id = sim.resources.add(ResourceKind::Plant, c, PLANT_MAX);
+        if let Ok(r) = sim.resources.get_mut(id) {
+            r.amount = SPROUT_AMOUNT;
+            r.wet = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plants_sprout_on_a_new_shore_and_drown_when_it_deepens() {
+        let mut s = SimState::new(2);
+        let n = s.water.depth.width();
+        s.water = crate::water::Water::new(n);
+        s.resources.items.retain(|r| !(r.cell.0 >= 40 && r.cell.0 < 60 && r.cell.1 >= 40 && r.cell.1 < 60));
+        let pond: Vec<Cell> = (45..55).flat_map(|y| (45..55).map(move |x| (x, y))).collect();
+        for &(x, y) in &pond {
+            *s.water.depth.get_mut(x, y).unwrap() = 0.3;
+        }
+        let count = |s: &SimState| s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && r.cell.0 >= 40 && r.cell.0 < 60 && r.cell.1 >= 40 && r.cell.1 < 60).count();
+        for day in 0..120 {
+            step(&mut s, day);
+        }
+        let grown = count(&s);
+        assert!(grown >= 20, "a shallow pond grows a wetland: {grown} plants");
+        assert!(s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant).all(|r| r.wet || !pond.contains(&r.cell)));
+        // The dam rises: the pond deepens and its plants drown.
+        for &(x, y) in &pond {
+            *s.water.depth.get_mut(x, y).unwrap() = 1.2;
+        }
+        step(&mut s, 120);
+        let left = s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && pond.contains(&r.cell)).count();
+        assert_eq!(left, 0, "deep water holds no plants");
+        assert!(count(&s) > 0, "the new shore keeps its plants");
+    }
+}

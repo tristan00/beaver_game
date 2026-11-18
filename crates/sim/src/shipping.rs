@@ -14,9 +14,9 @@ use crate::buildings::{Amount, BargeId, BargeState, Building, BuildingId, Buildi
 use crate::water::Cell;
 use crate::SimState;
 
-/// Cells a barge sails per day on open water: slower than a beaver (who walks 30 a day, swims
-/// 50, and goes at half that with a load of 3), but it carries a great deal more.
-pub const BARGE_SPEED: f32 = 20.0;
+/// Cells a barge sails per day on open water: slower than a beaver (who walks 40 a day, swims
+/// faster, and goes at half pace with a load of 3), but it carries a great deal more.
+pub const BARGE_SPEED: f32 = 18.0;
 /// Goods a barge carries.
 pub const BARGE_CAPACITY: f32 = 40.0;
 /// Water depth a laden barge needs.
@@ -378,7 +378,7 @@ mod tests {
             assert!((total - 50.0).abs() < 1e-2, "stone vanished or appeared: {total}");
             assert!((s.buildings.stores.amount(Good::Stone) + held - 50.0).abs() < 1e-2, "aboard is off the ledger");
         }
-        assert!(days < 12.0, "two round trips of 52 cells took {days} days");
+        assert!(days < 14.0, "two round trips of 52 cells took {days} days");
         assert!(s.water.has_dam(30, 10), "the lock keeps the dam");
     }
 
