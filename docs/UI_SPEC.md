@@ -1,115 +1,124 @@
 # Beaver Colony: UI spec
 
-Short contract for the interface, written before UI code. It is derived from what a colony builder asks of its screen, not from any one game: the player watches a living place, decides where to build, then checks whether it works. Wireframe: `docs/ui_wireframe.png` (1920x1080, regenerate with `python tools/make_ui_wireframe.py`).
+A conventional city-builder screen, dressed in this game's own look. Layout follows `docs/research/UI_CONVENTIONS.md`; every choice below names the convention it follows (**C1-C12**, numbered as in that report's "Conventions to adopt"). Where the research has no source, the row says **none** and why. Image generator: `python tools/make_ui_wireframe.py` (needs Pillow; run from the repo root).
 
-**Owns all interface styling.** `docs/STYLE.md` covers the world only (palette, terrain, water, structures, beavers, seasons, camera) and holds no UI rules; the old cream card and pill look is gone. `docs/DESIGN.md` §11 still defines the screens and view-models.
+| Wireframe (1920x1080) | Shows |
+|---|---|
+| `docs/ui_wireframe.png` | Full HUD, a burrow selected |
+| `docs/ui_wireframe_dam.png` | Dam preview: build menu open, water rise, confirm / cancel |
+| `docs/ui_wireframe_settle.png` | Settle choice |
+| `docs/ui_wireframe_jobs.png` | Drag to gather, and the job panel |
 
-## 1. Fixed zones
-Every element lives in one named zone and never moves. Players learn where to look once. Always-on zones cover **11%** of a 1920x1080 frame, **21%** with the inspector open (Z5).
+Research evidence is mostly graded partial; C-numbers are the report's adopted conventions, not claims about any one game's exact layout.
 
-| Zone | Where | Holds |
-|---|---|---|
-| Z1 Clock and needs | top-left | season icon, day, five need meters (food, shelter, rest, mood, company) |
-| Z2 Stores ribbon | top-centre | the 8 goods the colony uses most, icon and count; hover for the rest |
-| Z3 Speed | top-right | pause, 1x, 2x, 3x |
-| Z4 Alerts | left, under Z1 | up to 4 alerts, newest first; extras collapse into "+n" |
-| Z5 Inspector | right, under Z3 | the selected thing; absent when nothing is selected; height fits content |
-| Z6 Build and orders | bottom-centre | Build, Assign, Move area, Haul, Demolish, Screens |
-| Z7 Map modes | bottom-left | Water, Forest, Food, Work |
+## 1. HUD layout (`ui_wireframe.png`)
+| Zone | Where | Holds | Follows |
+|---|---|---|---|
+| Z1 Clock and needs | top-left | season icon, day, five need meters | **C1** (resource info top-left, RimWorld); clock grouped with it: **none** |
+| Z2 Stores ribbon | top-centre | 8 main goods, icon and count; hover for the rest; click opens the full list | **C1**, **C12** |
+| Z3 Speed | top-right | pause, 1x, 2x, 3x | **C4** (buttons plus Space, 1, 2, 3) |
+| Z4 Alerts | left, under Z1 | up to 4, newest first, "+n" for more; click flies the camera | **C5** |
+| Z5 Inspector / tool panel | right, under Z3, 368 px wide | the selected thing; during a tool, that tool's panel; empty when neither | **C3** (panel only on selection; right side so it never meets build) |
+| Z6 Toolbar | bottom-centre | Build, Gather, Haul, Jobs, Demolish, Screens | **C2** (toolbar, submenu opens above it), **C8** (one key per tool) |
+| Z7 Map modes | bottom-left | Water, Forest, Food, Work; toggles overlays and zones | **C9** |
+| Minimap | none | omitted | **none**: research found no source (its gap list); revisit if the map outgrows one screen |
 
-Screens (Colony, Work, Stores, Buildings, Tech, Events) open centred, one at a time, over the map (layer L3, §4).
+Always-on zones cover about 20% of the frame with Z5 open; the middle 1100x700 stays clear. Camera input works over any empty map. Screens (Colony, Stores, Buildings, Tech, Events) open centred, one at a time, from **Screens** (**C6**: population overview as a centred screen); Esc closes.
 
-## 2. Map as hero
-The map is never resized or scrolled by the interface. No zone is wider than 880 px; the middle 1100x700 px is always clear except for on-demand screens. Camera input always works over empty map. Opening a screen dims the map by 25% rather than hiding it, and pointer-over-map keeps hover feedback alive.
+HUD scale 100-125% and tooltip position (fixed or by cursor) live in settings: **C11**.
 
-## 3. Building first
-The colony is run through its **buildings** and work places, not beaver by beaver. Selecting a building opens the Inspector with, in order: name and one-line state, what it needs and makes, worker slots (a beaver per slot, click to reassign), work area, then actions. A beaver is reached from its slot; a beaver's own panel leads with the building it works at. The build tool is one click in Z6, and every placed thing starts as a site with the same inspector.
+## 2. Build menu (`ui_wireframe_dam.png`, lower centre)
+Build opens a panel above Z6 (**C2**): a row of category tabs, then one tile per building under the open tab (icon, name below). Tabs are the tech branches already in the game (Basics, Food, Wood, Water, Craft); locked buildings are dimmed with the reason on hover. Choosing a tile arms the placement ghost (section 5). B opens it, Esc closes it (**C8**).
 
-## 4. Layered detail
-Each layer adds only what the player asked for.
+## 3. Selection panel (Z5, `ui_wireframe.png`)
+Building first: name and one-line state; Needs, Makes, Work area rows; worker slots (a tile per beaver, open slots amber); actions Assign, Move area, Demolish, Locate. Click a slot beaver to select that beaver; a beaver's panel leads with its workplace. **Follows C3** (panel appears on selection) and **C6** (per-building worker slots, as in Timberborn's detail panel and Cities: Skylines' workplace line). Hover a number for its parts (own rule, **none**).
 
-| Layer | Trigger | Shows |
-|---|---|---|
-| L0 glance | always | icons and numbers in Z1, Z2, Z3; markers on the map |
-| L1 hover | pointer rests 0.3 s | tooltip: name, one state line, key numbers |
-| L2 inspect | click | Z5 inspector |
-| L3 compare | Screens button or key | dense, sortable tables for many things at once (stores, jobs, families) |
-| L4 why | hover a number in L2/L3 | the parts that add up to it, with sources (`ui/explain.rs`) |
+## 4. Job panel (`ui_wireframe_jobs.png`)
+Opens centred with J or from the toolbar (**C6**, **C7**). One row per job (Logger, Forager, Builder, Digger, Hauler, Crafter): worker count with - and +, and a priority of **off**, 1, 2, 3, 4 (**C7**: numeric priority with a disabled state, from ONI). Below, a strip of beavers with their jobs; idle ones in amber. Idle adults take the highest-priority open job. The map stays visible behind it.
 
-Every figure the sim knows that bears on a decision is reachable by L4.
+## 5. Opening interactions
+Every step uses the Pond mark for the active thing and Rail-outlined map text.
 
-## 5. One widget kit
-Identity: a **lodge built of cut timber**. Dark bark planks with gnawed corners, a pond-coloured waterline marking what is active, a world of soft blobs beneath them. None of it is the cream panel (`#FCF2DE`) or a pill button.
+| # | Interaction | Behaviour | Follows |
+|---|---|---|---|
+| 1 | **Settle choice** (`ui_wireframe_settle.png`) | Time starts paused. Three candidate banks are outlined on the map with a square marker and a name. Clicking one turns its outline Pond and fills the settle card (Z6 slot): one line of facts, three rows (wood, forage, flood risk), **Settle here** (primary) and **Cancel** (pick another). Settling unpauses and shows the Build menu with Burrow first. | **C10** (one-click placement), **C3** (panel on selection); paused start and card: **none** |
+| 2 | **Placement ghost** | A chosen building follows the cursor as a white outline; invalid shows a Berry hatch and a one-line reason. Left click places it as a site; Shift keeps the tool; right click or Esc cancels. The grid shows only while placing. Nothing is ever placed automatically. | **C10** (AoE2 grid, Anno 1800 single-click blueprint) |
+| 3 | **Dam water preview** (`ui_wireframe_dam.png`) | Dam: drag a line on the map, ends have square handles. While dragging and after, the map shows the new shoreline as a dotted Pond line, flooded land as a hatched Pond tint at 30% (hatch, not a flat fill, so it reads against the river), and an Amber triangle on every tree and building that would flood. The Z5 tool panel lists Water rises (world height units shown as metres, one decimal: "0.4 m"), Floods, Trees flooded (Amber when above 0), Buildings flooded, Cost, Pond fills in, and a Height - / + stepper. **Confirm** (Enter, primary) lays the site; **Cancel** (Esc, right click) discards. Nothing is built until Confirm. | **C10** (ghost before commit); confirm / cancel pair: **none**, own rule: no sim change without a visible preview |
+| 4 | **Drag to gather** (`ui_wireframe_jobs.png`) | G arms Gather (or the toolbar button). Drag on the map draws a dashed Pond rectangle with square handles and a count tag ("12 trees, 2 beavers will gather"). Releasing assigns the selected beavers, or idle adults if none are selected, and drops a flag; Esc or right click before release cancels. The area stays selectable and can be moved or resized by its handles. | **C8** (one key per area tool); **C9** (areas stay selectable) |
+| 5 | **Job assignment** | Three ways, all live: the job panel (section 4); the slots in a building's inspector (click an open slot, then a beaver); and a beaver's own job buttons. A change shows at once in the job panel counts. | **C6**, **C7** |
+
+## 6. Map feedback
+- Hover: cell outline and tooltip after 0.3 s. Selection: Pond ring; work area as a dashed rectangle with handles.
+- Orders: a flag at the target and a line from the beaver for 1 s. Progress: a segment meter over a site. Gains: floating "+3 logs".
+- Alerts: a marker at the place; an edge arrow when it is off screen (shown in `ui_wireframe.png`); clicking in Z4 flies there (**C5**).
+- Markers are 24 px or larger, Rail-outlined, and differ by shape as well as colour: square info, triangle warning, octagon urgent.
+
+## 7. Input
+| Input | Does |
+|---|---|
+| Left click | select; place; confirm |
+| Right click | order selected beavers; cancel tool, ghost or drag |
+| Left drag, empty map | orbit camera; with Gather or Move area, draw an area |
+| Wheel / Q E / middle drag | zoom / rotate / pan |
+| Space, 1 2 3 | pause, speed (**C4**) |
+| B, G, H, J, X | Build, Gather, Haul, Jobs, Demolish (**C8**); shown on the buttons |
+| Shift while dragging | constrain to a straight line (**C8**) |
+| Esc | one step back: ghost, tool, screen, selection |
+| Enter | confirm the focused decision (dam, settle, join request) |
+
+## 8. The game's own look
+Identity: a lodge built of cut timber. This section is unchanged from the previous spec and is the only owner of interface styling (`docs/STYLE.md` covers the world only). **No other game's art, icons, fonts or assets are used**: every icon is a file in `assets/icons/` drawn for this game, the font is Atkinson Hyperlegible (SIL OFL 1.1, `assets/fonts/OFL.txt`), and the wireframes are generated from them by `tools/make_ui_wireframe.py`. The research report copied nothing from other games and this spec adds nothing.
 
 | Part | Spec |
 |---|---|
-| Colours | Bark `#3F2E24` panel; Raised `#4D3A2D` rows and buttons; Rail `#2A1F19` outlines and shadow; Line `#5B4636` dividers; Pith `#F1E3C6` text; Dim `#BFA88A` secondary text; **Pond `#5FC7D6` active and selected**; Moss `#8DBF5A` good; Amber `#F0A93B` warning; Berry `#E0556B` danger. Pith on Bark is 10:1; Dim on Bark 5.6:1 and on Raised 4.7:1. |
-| Shapes | Rectangles. No circles or capsules in controls. Meters are rows of square segments (4 px gaps). |
-| Corners | **Gnawed**: 8 px diagonal chamfer on top-left and bottom-right of panels, 6 px on buttons; the other two corners stay square. Icon tiles keep the existing soft 28 px (96 px source) rounding as content, never as a control shape. |
-| Elevation | Hard 3 px offset shadow in Rail, no blur. |
-| Buttons | 44 px tall, Raised fill, icon left then label; active = 4 px Pond bar along the bottom; primary = Moss fill with Rail text. |
-| Type | 14 px body, 16 px titles, 13 px minimum; Regular and Bold only; sentence case. |
-| Spacing | 8 px grid; panel padding 16 px, row height 40 px. |
+| Colours | Bark `#3F2E24` panel; Raised `#4D3A2D` rows and buttons; Rail `#2A1F19` outlines and shadow; Line `#5B4636` dividers; Pith `#F1E3C6` text; Dim `#BFA88A` secondary; **Pond `#5FC7D6` active**; Moss `#8DBF5A` good; Amber `#F0A93B` warning; Berry `#E0556B` danger |
+| Shapes | Rectangles; meters are rows of square segments with 4 px gaps; no circles or pills |
+| Corners | gnawed: 8 px chamfer on top-left and bottom-right of panels, 6 px on buttons |
+| Elevation | hard 3 px offset shadow in Rail |
+| Buttons | 44 px tall; icon then label; active has a 4 px Pond bar along the bottom; primary is Moss with Rail text |
+| Type | 14 px body, 16 px titles, 13 px minimum; Regular and Bold; sentence case |
+| Spacing | 8 px grid; panel padding 16; row 40 |
+| Contrast | text 4.5:1 or better, markers 3:1; panels at least 95% opaque |
 
-**Font:** Atkinson Hyperlegible, `assets/fonts/AtkinsonHyperlegible-Regular.ttf` and `assets/fonts/AtkinsonHyperlegible-Bold.ttf`, by the Braille Institute of America, licence **SIL Open Font Licence 1.1** (`assets/fonts/OFL.txt`), source `https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegible`. Chosen because letterforms are built to stay distinct at small size on busy backgrounds. Static files, so Bevy needs no variable-font support.
+## 9. Current UI files: replaced and removed
+Paths under `crates/game/src/`. **Keep** = stays as is. **Edit** = stays, with the listed lines changed. **Replace** = rewritten for this spec (same name unless a new name is given). **Remove** = the file is deleted, and only after every caller in its row is moved.
 
-## 6. Icons before words
-Every row, button and marker carries an icon; the word is a caption and may be dropped when narrow. Files are `assets/icons/<name>.png`, 96 px, on a 28 px-radius tile tinted per group: goods `#F7E8CC`, needs `#FBE3D6`, jobs `#E3F0D2`, actions `#DCEFE8`, map modes `#D7EEF2`, navigation `#EDE3F5` (as `TILES` in `tools/make_icons.py`); new groups pick from these. **E** = exists, **N** = new (to be drawn).
+Rule: a file is only marked Remove if the callers column is empty or lists where each caller goes. Callers were found with `grep -rnE "(super|crate|ui)::<module>\b|\b<module>::"` over `crates/game/src` (commit `0503136`); `main.rs` / `ui/mod.rs` module and plugin lines are not listed.
 
-| Group | Icons |
-|---|---|
-| Goods (9) | E logs, branches, bark, plants, mud, stone, baskets, rope, tools. Food uses the needs icon `food`. |
-| Needs (5) | E food, shelter, rest, mood, social |
-| Jobs (4) | E collector, builder, hauler, specialist |
-| Buildings (19, one per `BuildingKind`) | N dam, lodge, burrow, foodcache, scentmound, guardpost, canal, lock, waterwheel, workshop, warehouse, dock, barge, loggingcamp, foragerhut, mudpit, quarrycamp, mill, storehouse |
-| Actions (20) | E assign, fillslot, movearea, accept, turnaway, cancel, demolish, collect, carry, build, haul, craft, navcolony, navbeavers, navstores, navbuild, navtech, navevents; N close, locate (show on map) |
-| Map modes (4) | E modewater, modeforest, modefood, modework |
-| Alerts (8) | N alertfood, alertshelter, alertidle, alertstalled, alertfull, alertjoin, alertwinter, alertwater |
-| Seasons (4) | N spring (sprout), summer (sun), autumn (leaf), winter (snowflake) |
-| Speed (4) | N pause, play1, play2, play3 |
+### 9a. Files
 
-Totals: 40 exist, 37 new. The `Icon` enum in `ui/icons.rs` gains one variant per new file; the loader test already checks every variant has a PNG.
+| File | Fate | Why | Callers outside the file, and what happens to them |
+|---|---|---|---|
+| `ui/kit.rs`, `ui/kit_tests.rs`, `ui/icons.rs`, `ui/explain.rs` | Keep | widget kit, icon loader, number provenance already match section 8 | - |
+| `ui/screens.rs` | **Edit** | pure view-models stay; the Work screen becomes the job panel's view-model | `NavItem::Work` arm (line 439) is deleted; `work_screen` (line 603, builds `jobs_table`) is called by `ui/jobs.rs` instead. Its tests call `crate::opening::found` (lines 1099, 1116, 1124); `opening.rs` stays, see below |
+| `ui/gestures.rs` | **Edit** | gains `Gesture` and `gesture_command` from `ui/orders.rs` | line 13 `use super::orders::Gesture` is deleted (the type now lives in this file) |
+| `ui/gestures_tests.rs` | **Edit** | import path only | line 3 `crate::ui::orders::gesture_command` becomes `crate::ui::gestures::gesture_command` |
+| `ui/mapmodes.rs`, `ui/mapmodes_tests.rs`, `ui/events.rs` | **Edit** | import paths only | `crate::build::BuildUi` / `crate::build::pick_tool` become `crate::ui::placement::...` (`mapmodes.rs:541,548`, `mapmodes_tests.rs:2`, `events.rs:393`) |
+| `ui/status.rs` | **Replace** by `ui/topbar.rs` | Z1, Z2, Z3 in one top strip (speed is 1x, 2x, 3x, not 1x, 3x, 10x) | none; only the `StatusPlugin` line in `ui/mod.rs` |
+| `ui/buildbar.rs` | **Replace** by `ui/toolbar.rs` | today it is the six-screen navigation bar; Z6 becomes tools, and screens move under **Screens** | none; only `BuildBarPlugin` in `ui/mod.rs` |
+| `ui/modebar.rs` | **Replace** | keeps the four mode buttons only; legends and action buttons move to Build and Gather | none |
+| `ui/alerts.rs` | **Replace** | Z4 list with the shapes of section 6 | none |
+| `ui/inspector.rs` | **Replace** | Z5 layout in section 3 and the tool-panel mode | `ui/panels.rs:7,39,412,453` use `PanelShown` and `to_flow`; both keep their names |
+| `ui/selection.rs` (856 lines, has the view-model) | **Replace** | view-model gains worker slots and the workplace-first beaver panel | `inspector.rs:12`, `mapmodes.rs:21`, `panels.rs:12`, `screens.rs:48`, `shell.rs:60` use `Selection`, `Panel`; both keep their names and module path |
+| `ui/panels.rs` | **Replace** | draws only the centred screens and the job panel; per-zone click handling moves to each zone | `ui/events.rs:415` calls `panels::apply` (kept); `ShellUi`, `REFRESH_SECS`, `TOP` kept; `NAV_RESERVE` (bottom bar height) is dropped; its users `buildbar.rs`, `inspector.rs`, `modebar.rs` are replaced in this table |
+| `ui/shell.rs` | **Replace** | navigation state loses the bottom bar; gains tool state (Build, Gather, Haul, Jobs, Demolish) | `NavItem` stays as the **Screens** list. `NavItem::Work` is removed (Work becomes the Jobs panel), so `cli.rs:84` `--open work` is rejected; `--open` still accepts the other five. its only other match is `screens.rs:439,603` (edited above); `mapmodes.rs:22`, `panels.rs:10`, `screens.rs:18` import `NavItem` only and keep compiling |
+| `ui/mod.rs` | **Edit** | module and plugin list; drops `pub mod orders` | - |
+| `build.rs` (1264 lines) | **Replace** by `ui/buildmenu.rs` (menu), `ui/placement.rs` (ghost, dam preview, confirm / cancel, `BuildUi`, `pick_tool`), `ui/jobs.rs` (job panel and per-beaver buttons); `build_logic.rs` stays | one monolith held menu, ghost, dam readout and job buttons | `BuildUi`: `input.rs:23`, `map_orders.rs:7`, `ui/events.rs:393`, `ui/mapmodes.rs:541`, `ui/mapmodes_tests.rs:2`, `ui/panels.rs:223,360,386,509`; `pick_tool`: `ui/mapmodes.rs:548`, `ui/panels.rs:395`; `layout_build`, `build_input`: `flow_view.rs:142`; `DemoDam`: `flow_view.rs:578`. All move to `ui/placement.rs` with the same names; each caller changes only its path |
+| `flow.rs` opening parts (`Phase::Arrival`, `Phase::Scouting`, scouting systems) | **Replace** by `ui/settle.rs` | settle choice of section 5 row 1; it also fixes the restart path, which today falls back to the old scouting flow | `settle` and `best_site` **stay** in `flow.rs`; the guard at `flow.rs:512` (`phase != Scouting`) becomes "not yet settled". Callers: `opening.rs:3`, `ui/settle.rs` (new), and the autoplay arm `flow_view.rs:585-600`, which now matches the settle-choice phase. Other checks of the two phases: `flow_view.rs:486,545` and `map_orders.rs:117` switch to the settle-choice phase; `opening.rs:7` is deleted |
+| `flow_view.rs` (637 lines) | **Edit** | second, older HUD: Pause / 1x / 3x / 10x buttons, the bottom-left info panel and their layout (`compute_layout` lines 75-90, `spawn_ui` lines 157-191) are deleted; Z3 and Z5 replace them | Kept, because others use them: `ClickSet`, `UiLayout`, `WorldClick` (`build.rs:7`, `flow.rs:5,572`, `input.rs:4`, `map_orders.rs:11`, `ui/panels.rs:13,81-82`), the game-over panel with Keep watching / Restart, the banner (it shows the settle prompt), markers, fog, gizmos and `--autoplay-settle`. `Action::Speed` is only used by `ui/status.rs`, which is replaced |
+| `sim_driver.rs` | **Edit** | speeds become 1x, 2x, 3x | `Speed::{X1, X3, X10}` become `{X1, X2, X3}` and `ALL` / keys 1 2 3 follow (lines 17-35, 95). Callers to update: `flow_view.rs:78` (deleted with the old buttons), `flow_view.rs:593` (autoplay uses the fastest, now `X3`), tests `sim_driver.rs:125,137` |
+| `startflow.rs` | **Replace** by `ui/settle.rs` | same | `main.rs:60` registers `StartPlugin` (becomes `SettlePlugin`); `camera.rs:44` comment names `startflow::begin_new_game` (update the comment) |
+| `opening.rs` | **Edit** (kept) | it is the auto-settle test fixture, not a way to start | `ui/screens.rs:1099,1116,1124` tests call `found`. It keeps `found`; line 7 (`Phase::Scouting`) is dropped and it calls `settle` at `best_site` directly |
+| `map_orders.rs`, `map_overlay.rs` | **Edit** | Gather area and flooded-tile hatch drawing | `input.rs:12,24` (`map_orders`, `MapOrders`) and `modebar.rs:9,20` (`ActiveOverlay`, `ComputeSet`) keep these names |
+| `camera.rs` | Keep (comment edit only) | its only UI node is the full-screen warm glow (`spawn_glow`), which sits under every zone | `camera.rs:44` comment, see `startflow.rs` |
+| `ui/orders.rs` (48 lines) | **Remove** | it holds four unrelated things; each gets a proper home | `Gesture` and `gesture_command` move to `ui/gestures.rs` (callers `gestures.rs:13`, `gestures_tests.rs:3`, edited above). `Placement` / `placement` (an unimplemented stub returning "not implemented") are replaced by `ui/placement.rs`; no caller. The re-export of `events::{alerts, Alert, AlertKind}` has no caller. Delete the file and `pub mod orders` only after these moves |
 
-## 7. Readability over terrain
-The map behind is bright green and cyan, so UI is dark and opaque (95%+), never translucent. On-map text (labels, "+3 logs") sits on a Rail stroke 3 px wide. Map markers are drawn at least 24 px with a Rail outline and have a **shape per meaning** so colour is never alone: square = info, triangle = warning, octagon = urgent. Overlays of map modes use Pond, Moss, Amber tints at 40% and keep tree and beaver silhouettes visible. Text contrast at least 4.5:1, markers 3:1.
+### 9b. Parts of files removed
 
-## 8. Map feedback
-Everything the player does or the colony does shows on the map first.
-- **Hover:** cell outline plus L1 tooltip. **Selection:** Pond ring under the thing; its work area drawn as a dashed rectangle with drag handles.
-- **Placement ghost:** white outline when valid; Berry hatch with a one-line reason when not; a dam also draws its waterline rise and flooded cells.
-- **Orders:** a flag at the target and a line from the beaver for 1 s. **Progress:** sites rise, a segment meter floats above.
-- **Gains:** floating "+3 logs" at the store. **Alerts:** a marker at the place and an arrow on the screen edge when it is off screen; clicking an alert in Z4 flies the camera there.
+| Part | Fate | Why |
+|---|---|---|
+| Bottom navigation bar (Colony / Work / Stores / Buildings / Tech / Events buttons) | **Remove** | replaced by **Screens**; Work becomes the Jobs panel |
+| Per-beaver job button row inside the build panel (`build.rs` `BAction::SetJob`) | **Remove** | moved into the job panel and the beaver card |
+| Speed button 10x | **Remove** | three speeds only |
 
-## 9. Input conventions
-| Input | Does |
-|---|---|
-| Left click | select; confirm placement; click through to the map when not over UI |
-| Right click | order for selected beavers; cancels a tool, placement or drag |
-| Left drag on empty map | orbit camera; drag with Assign or Move area tool draws a work area |
-| Wheel / Q E | zoom / rotate; middle drag pans |
-| Space; 1 2 3 | pause; speed |
-| B, A, M | Build, Assign, Move area; keys shown on hover only |
-| Esc | one step back: tool, then screen, then selection |
-| Enter | accept the focused decision (join request) |
-
-No input needs two hands; every action has a click path.
-
-## 10. Ownership of the UI tasks
-Each later UI task edits only its own files; shared state is read through the public view-model APIs. Files marked *new* are created by that task.
-
-| Task | Files |
-|---|---|
-| `ui_kit` (widget kit, font loading) | `crates/game/src/ui/kit.rs`, `crates/game/src/ui/kit_tests.rs` *new*, `assets/fonts/*` |
-| `ui_zones` (Z1 to Z3, Z7, layout) | `crates/game/src/ui/shell.rs`, `crates/game/src/ui/zones.rs` *new*, `crates/game/src/flow_view.rs` |
-| `ui_toolbar` (Z6) | `crates/game/src/ui/modebar.rs`, `crates/game/src/ui/orders.rs` |
-| `ui_icons` (art and loader) | `assets/icons/*`, `crates/game/src/ui/icons.rs`, `tools/make_icons.py`, `docs/icons_sheet.png` |
-| `ui_inspector` (Z5, building first) | `crates/game/src/ui/selection.rs`, `crates/game/src/ui/panels/entity.rs` |
-| `ui_screens` (L3 tables, L4 why) | `crates/game/src/ui/panels.rs`, `crates/game/src/ui/screens.rs`, `crates/game/src/ui/explain.rs` |
-| `ui_alerts` (Z4, events) | `crates/game/src/ui/events.rs`, `crates/game/src/ui/alerts.rs` *new* |
-| `ui_mapmodes` (overlays) | `crates/game/src/ui/mapmodes.rs`, `crates/game/src/map_overlay.rs` |
-| `ui_feedback` (ghost, flags, floaters) | `crates/game/src/ui/feedback.rs` *new*, `crates/game/src/map_orders.rs` |
-| `ui_input` (gestures, keys) | `crates/game/src/ui/gestures.rs`, `crates/game/src/ui/gestures_tests.rs`, `crates/game/src/input.rs` |
-| `ui_menu` (start menu) | `crates/game/src/ui/menu.rs` |
-| `ui_spec` (this) | `docs/UI_SPEC.md`, `docs/ui_wireframe.png`, `tools/make_ui_wireframe.py` |
-
-`ui/mod.rs` is touched only to add a `mod` line for a *new* file.
+Sim change needed, not UI: candidate landing banks for the settle choice (today the camp is fixed in `crates/sim/src/starts.rs`).
