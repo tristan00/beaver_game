@@ -58,6 +58,16 @@ pub enum Do {
     Mode(super::mapmodes::MapMode),
     /// Trigger a map-mode action.
     ModeAct(super::mapmodes::ModeAction),
+    /// A time-control button: pause, or one of the three speeds.
+    Clock(super::hud::ClockCmd),
+    /// A toolbar button.
+    Tool(super::shell::HudTool),
+    /// Open a build menu tab (`None` is Basics).
+    Tab(Option<crate::build_logic::Group>),
+    /// Set one beaver's own job (`None` follows the family's priorities).
+    SetJob(BeaverId, Option<Job>),
+    /// Move a job up in a family's priority order.
+    Promote(sim::colony::FamilyId, usize),
 }
 
 /// A button: always has an icon, the label is a short caption.
@@ -298,7 +308,7 @@ pub fn kind_label(k: sim::events::EventKind) -> String {
     format!("{k:?}")
 }
 
-fn job_icon(j: Job) -> Icon {
+pub fn job_icon(j: Job) -> Icon {
     match j {
         Job::Forager => Icon::Food,
         Job::Logger => Icon::Logs,
@@ -346,7 +356,7 @@ fn family_name(c: &Colony, id: sim::colony::FamilyId) -> String {
 }
 
 /// Colony-wide average of `f` (0..1) as a percentage whose parts are each family's weighted share.
-fn colony_pct(c: &Colony, label: &str, quantity: &str, f: impl Fn(&Beaver) -> f32) -> Explained {
+pub fn colony_pct(c: &Colony, label: &str, quantity: &str, f: impl Fn(&Beaver) -> f32) -> Explained {
     let n = c.population().max(1) as f32;
     let parts = c
         .families
@@ -436,7 +446,6 @@ pub struct Rates {
 pub fn screen(sim: &SimState, item: NavItem, rates: Rates) -> Screen {
     match item {
         NavItem::Colony => colony_screen(sim),
-        NavItem::Work => work_screen(sim),
         NavItem::Stores => stores_screen(sim, rates),
         NavItem::Buildings => buildings_screen(sim),
         NavItem::Tech => tech_screen(sim),
@@ -444,18 +453,24 @@ pub fn screen(sim: &SimState, item: NavItem, rates: Rates) -> Screen {
     }
 }
 
-fn colony_screen(sim: &SimState) -> Screen {
+/// The colony's headline numbers: head count, mood and the four needs met, each with its parts.
+pub fn colony_kpis(sim: &SimState) -> Vec<Kpi> {
     let c = &sim.colony;
     let all: Vec<&Beaver> = c.beavers.iter().collect();
     let mood = colony_pct(c, "Colony mood", "mood", |b| b.mood);
-    let kpis = vec![
+    vec![
         Kpi { icon: Icon::NavBeavers, num: Explained::sum_or_zero("Beavers", "", stage_parts(&all)).of("head count", ids(all.iter().copied())), tone: Tone::Normal, frac: None },
         Kpi { icon: Icon::Mood, tone: pct_tone(mood.value), frac: Some(mood.value / 100.0), num: mood },
         need_kpi(c, "Food need met", Icon::Food, |b| b.needs.food),
         need_kpi(c, "Rest need met", Icon::Rest, |b| b.needs.rest),
         need_kpi(c, "Shelter need met", Icon::Shelter, |b| 0.5 * (b.needs.warmth + b.needs.safety)),
         need_kpi(c, "Company need met", Icon::Social, |b| b.needs.social),
-    ];
+    ]
+}
+
+fn colony_screen(sim: &SimState) -> Screen {
+    let c = &sim.colony;
+    let kpis = colony_kpis(sim);
     let families = Table {
         title: "Families",
         name_col: "Family",
@@ -531,76 +546,6 @@ fn colony_screen(sim: &SimState) -> Screen {
     // With one family its size and mood are the colony's own, already in the headline numbers.
     let tables = if families.rows.len() > 1 { vec![families, beavers] } else { vec![beavers] };
     Screen { item: NavItem::Colony, kpis, tables }
-}
-
-fn work_screen(sim: &SimState) -> Screen {
-    let c = &sim.colony;
-    let adults: Vec<&Beaver> = c.beavers.iter().filter(|b| b.stage != Stage::Kit).collect();
-    let jobs = c.enabled_jobs();
-    // Who works at what is the Jobs table; only the idle get a headline (a "working" total would
-    // repeat a job's worker count whenever one job holds everybody).
-    let idle_b: Vec<&&Beaver> = adults.iter().filter(|b| job_of(b).is_none()).collect();
-    let idle: Vec<Part> = idle_b.iter().map(|b| Explained::part(beaver_name(c, b), 1.0)).collect();
-    let idle_num = Explained::sum_or_zero("Idle adults", "", idle).of("head count", idle_b.iter().map(|b| b.id.0));
-    let kpis = vec![Kpi { icon: Icon::Rest, tone: if idle_b.len() > 1 { Tone::Warn } else { Tone::Dim }, frac: None, num: idle_num }];
-    let rows = jobs
-        .iter()
-        .map(|j| {
-            let w: Vec<&&Beaver> = adults.iter().filter(|b| job_of(b) == Some(*j)).collect();
-            let skill = Explained::sum_or_zero(
-                &format!("{j:?} skill"),
-                "%",
-                w.iter().map(|b| Explained::part(beaver_name(c, b), b.skill(*j) * 100.0 / w.len() as f32)).collect(),
-            );
-            let best = adults.iter().max_by(|a, b| a.skill(*j).total_cmp(&b.skill(*j)).then(b.id.0.cmp(&a.id.0)));
-            Row {
-                icon: job_icon(*j),
-                name: format!("{j:?}"),
-                click: None,
-                cells: vec![
-                    Cell::num(
-                        Explained::sum_or_zero(&format!("{j:?} workers"), "", w.iter().map(|b| Explained::part(beaver_name(c, b), 1.0)).collect())
-                            .of("head count", w.iter().map(|b| b.id.0)),
-                    ),
-                    Cell::num(skill),
-                    Cell::Actions(vec![
-                        Action { icon: Icon::Assign, label: "More".into(), act: Do::Staff(*j, 1) },
-                        Action { icon: Icon::Cancel, label: "Fewer".into(), act: Do::Staff(*j, -1) },
-                    ]),
-                    match best {
-                        Some(b) => Cell::Text(beaver_name(c, b), Tone::Normal),
-                        None => Cell::Text("-".into(), Tone::Dim),
-                    },
-                ],
-            }
-        })
-        .collect();
-    let jobs_table = Table {
-        title: "Jobs",
-        name_col: "Job",
-        name_w: NAME_W,
-        cols: vec![Col { name: "Workers", width: 66.0 }, Col { name: "Skill", width: 64.0 }, Col { name: "Staff", width: 130.0 }, Col { name: "Best hand", width: 80.0 }],
-        rows,
-        empty: "No jobs are open.",
-    };
-    let orders = Table {
-        title: "Open work",
-        name_col: "Order",
-        name_w: NAME_W,
-        cols: vec![Col { name: "Work left", width: 76.0 }, Col { name: "", width: 70.0 }],
-        rows: c
-            .orders
-            .iter()
-            .map(|o| Row {
-                icon: job_icon(o.job),
-                name: format!("{:?} order {}", o.job, o.id.0),
-                click: Some(Do::Jump(o.pos.0, o.pos.1)),
-                cells: vec![Cell::num(Explained::reading(&format!("Order {} work left", o.id.0), "", o.remaining, "Work order book").dp(1)), Cell::show("Show", Do::Jump(o.pos.0, o.pos.1))],
-            })
-            .collect(),
-        empty: "Nothing queued; beavers choose their own work.",
-    };
-    Screen { item: NavItem::Work, kpis, tables: vec![jobs_table, orders] }
 }
 
 fn store_tone(amount: f32, capacity: f32, net: f32) -> Tone {
@@ -729,7 +674,7 @@ fn stores_screen(sim: &SimState, rates: Rates) -> Screen {
     Screen { item: NavItem::Stores, kpis, tables: vec![table] }
 }
 
-fn building_icon(k: sim::buildings::BuildingKind) -> Icon {
+pub fn building_icon(k: sim::buildings::BuildingKind) -> Icon {
     use sim::buildings::BuildingKind::*;
     match k {
         Lodge | Burrow | GuardPost => Icon::Shelter,

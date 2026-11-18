@@ -1,7 +1,7 @@
 //! The one widget kit (`docs/UI_SPEC.md` §5). Every colour, corner, font and control shape in the
 //! interface comes from here: dark bark panels, raised rows and buttons, a pond-coloured mark for
 //! what is active, gnawed corners, square-segment meters and hard offset shadows. Zone modules
-//! (`status`, `buildbar`, `alerts`, `inspector`, `panels`) only compose these parts.
+//! (`topbar`, `toolbar`, `jobs`, `alerts`, `inspector`, `panels`) only compose these parts.
 //!
 //! Text always uses the shipped Atkinson Hyperlegible font (`font`, `font_bold`); `KitPlugin`
 //! also repairs any stray `TextFont` that still points at the engine default font.
@@ -61,8 +61,8 @@ pub const SEGMENT_GAP: f32 = 4.0;
 pub const ACTIVE_BAR: f32 = 4.0;
 /// Seconds the pointer rests before a tooltip shows.
 pub const TIP_DELAY: f32 = 0.3;
-/// Top of the screen zone below the status row.
-pub const ZONE_TOP: f32 = 48.0;
+/// Top of the zones under the top strip (clock, stores ribbon, time controls).
+pub const ZONE_TOP: f32 = 70.0;
 
 /// Body, title and smallest permitted text sizes.
 pub const T_BODY: f32 = 14.0;

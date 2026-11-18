@@ -23,6 +23,14 @@ mod water_render;
 
 use bevy::prelude::*;
 
+/// Window size: 1280x720, or `BEAVER_WINDOW=WxH` (screenshots at 1920x1080).
+fn window_size() -> (u32, u32) {
+    std::env::var("BEAVER_WINDOW")
+        .ok()
+        .and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))))
+        .unwrap_or((1280, 720))
+}
+
 fn main() -> AppExit {
     let cli = match cli::Cli::parse(std::env::args().skip(1)) {
         Ok(cli) => cli,
@@ -42,7 +50,7 @@ fn main() -> AppExit {
         file_path: ui::icons::asset_root().to_string_lossy().into_owned(),
         ..default()
     }).set(WindowPlugin {
-        primary_window: Some(Window { title: "Beaver Colony".into(), resolution: (1280, 720).into(), ..default() }),
+        primary_window: Some(Window { title: "Beaver Colony".into(), resolution: window_size().into(), ..default() }),
         ..default()
     }))
     .insert_resource(cli)

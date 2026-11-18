@@ -3,7 +3,7 @@
 //! folded until asked for.
 use super::icons::{Icon, IconAssets};
 use super::kit::*;
-use super::panels::{ShellUi, REFRESH_SECS, TOP, NAV_RESERVE};
+use super::panels::{ShellUi, REFRESH_SECS, TOP, BOTTOM_RESERVE};
 use super::screens::{Do, Tone};
 use crate::flow::{Flow, Selection};
 use crate::state::Sim;
@@ -41,7 +41,7 @@ fn spawn_root(mut commands: Commands) {
         .spawn((
             EntityRoot,
             Blocker,
-            panel(Node { position_type: PositionType::Absolute, width: px(ENTITY_W), right: px(GRID), top: px(TOP + 16.0), display: Display::None, ..default() }),
+            panel(Node { position_type: PositionType::Absolute, width: px(ENTITY_W), right: px(GRID), top: px(TOP + 4.0), display: Display::None, ..default() }),
             GlobalZIndex(11),
         ))
         .with_children(|p| {
@@ -158,7 +158,7 @@ pub fn layout_entity(windows: Query<&Window, With<PrimaryWindow>>, ui: Res<Shell
     let Ok(w) = windows.single() else { return };
     for mut n in &mut q {
         n.display = if sim.0.colony.is_founded() && (ui.panel.is_some() || show_empty_zones()) { Display::Flex } else { Display::None };
-        n.max_height = px((w.height() - TOP - NAV_RESERVE - 16.0).max(200.0));
+        n.max_height = px((w.height() - TOP - BOTTOM_RESERVE - 16.0).max(200.0));
     }
 }
 

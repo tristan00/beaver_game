@@ -1,7 +1,7 @@
-//! The screen zone: the one open ledger screen (Colony, Work, Stores, Buildings, Tech, Events)
+//! The screen zone: the one open ledger screen (Colony, Stores, Buildings, Tech, Events)
 //! drawn centred over the map from the view-models in `screens.rs`, plus click handling for every
 //! zone. Content is rebuilt only when its view-model changed, so hover and scroll state survive
-//! between sim updates. The other zones live in `status`, `buildbar`, `alerts` and `inspector`;
+//! between sim updates. The other zones live in `topbar`, `toolbar`, `jobs`, `alerts` and `inspector`;
 //! all of them are built from `kit`.
 use super::icons::{Icon, IconAssets};
 use super::inspector;
@@ -20,8 +20,8 @@ use sim::ColonyHost;
 use std::collections::HashMap;
 
 pub const PANEL_W: f32 = 760.0;
-/// Space kept below the open screen for the build bar.
-pub const NAV_RESERVE: f32 = 92.0;
+/// Space kept below the open screen for the toolbar.
+pub const BOTTOM_RESERVE: f32 = 92.0;
 pub const TOP: f32 = ZONE_TOP;
 pub const REFRESH_SECS: f32 = 0.25;
 
@@ -73,7 +73,8 @@ impl Plugin for PanelsPlugin {
         // `--open NAME` opens a screen at start (screenshots); `BC_UI_OPEN` does the same.
         let name = app.world().get_resource::<crate::cli::Cli>().and_then(|c| c.open.clone()).or_else(|| std::env::var("BC_UI_OPEN").ok());
         ui.shell.mode = app.world().get_resource::<crate::cli::Cli>().and_then(|c| c.mode.as_deref().and_then(super::mapmodes::MapMode::from_name)).unwrap_or_default();
-        ui.shell.open = name.and_then(|v| NavItem::ALL.into_iter().find(|n| n.label().eq_ignore_ascii_case(&v)));
+        ui.shell.open = name.as_ref().and_then(|v| NavItem::ALL.into_iter().find(|n| n.label().eq_ignore_ascii_case(v)));
+        ui.shell.tool = name.as_ref().and_then(|v| super::shell::HudTool::ALL.into_iter().find(|t| t.off_reason().is_none() && t.label().eq_ignore_ascii_case(v)));
         app.insert_resource(ui).add_systems(Startup, spawn_roots).add_systems(
             Update,
             (
@@ -115,8 +116,8 @@ fn layout_roots(windows: Query<&Window, With<PrimaryWindow>>, sim: Res<Sim>, ui:
         n.display = if founded && ui.shell.open.is_some() { Display::Flex } else { Display::None };
         n.width = px(width);
         n.left = px(((w.width() - width) / 2.0).max(10.0));
-        n.top = px(TOP + 8.0);
-        n.max_height = px((w.height() - TOP - NAV_RESERVE).max(200.0));
+        n.top = px(TOP + 4.0);
+        n.max_height = px((w.height() - TOP - BOTTOM_RESERVE).max(200.0));
     }
 }
 
@@ -338,6 +339,9 @@ fn close_on_escape(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<ShellUi>) {
             ui.shell.armed = None;
             ui.shell.editor = None;
             ui.dirty = true;
+        } else if ui.shell.tool.is_some() {
+            ui.shell.tool = None;
+            ui.dirty = true;
         } else if ui.shell.open.is_some() {
             ui.shell.close();
             ui.dirty = true;
@@ -358,6 +362,7 @@ fn handle_clicks(
     mut sel: ResMut<Selection>,
     mut ui: ResMut<ShellUi>,
     mut build: ResMut<crate::build::BuildUi>,
+    mut clock: ResMut<crate::sim_driver::SimClock>,
 ) {
     let Ok(w) = windows.single() else { return };
     let (Some(phys), Some(logical)) = (w.physical_cursor_position(), w.cursor_position()) else { return };
@@ -373,7 +378,11 @@ fn handle_clicks(
     }
     let Some((act, _)) = hit_test(phys, &clickables, &scroll_areas) else { return };
     let mut reset_scroll = false;
-    apply(act, &mut sim, &mut flow, &mut sel, &mut ui, &mut build, &mut reset_scroll);
+    if let Do::Clock(cmd) = act {
+        super::hud::run_clock(cmd, &mut clock);
+    } else {
+        apply(act, &mut sim, &mut flow, &mut sel, &mut ui, &mut build, &mut reset_scroll);
+    }
     ui.dirty = true;
     if reset_scroll {
         for mut p in &mut scroll_pos {
@@ -395,10 +404,31 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
             crate::build::pick_tool(s, build, kind);
             if build.tool == Some(kind) {
                 ui.shell.close();
+                ui.shell.tool = None;
                 ui.status.clear();
             } else {
                 ui.status = build.message.clone();
             }
+        }
+        // The clock is a resource of its own; `handle_clicks` runs it before `apply`.
+        Do::Clock(_) => {}
+        Do::Tool(t) => {
+            ui.shell.toggle_tool(t);
+            ui.status = t.off_reason().map(str::to_string).unwrap_or_default();
+            *reset_scroll = true;
+        }
+        Do::Tab(g) => {
+            ui.shell.build_tab = g;
+            ui.status.clear();
+        }
+        Do::SetJob(id, job) => {
+            ui.status = match s.colony.set_job(id, job) {
+                Ok(()) => String::new(),
+                Err(e) => e.to_string(),
+            };
+        }
+        Do::Promote(f, i) => {
+            ui.status = crate::build_logic::promote_priority(&mut s.colony, f, i).err().unwrap_or_default();
         }
         Do::Staff(job, d) => {
             let cur = s.colony.beavers.iter().filter(|b| b.job == Some(job)).count() as i32;
@@ -649,5 +679,57 @@ mod tests {
         let newcomer = r.sim.0.colony.beavers.last().unwrap();
         assert!(r.sim.0.colony.family(newcomer.family).is_some(), "the newcomer belongs to a family");
         assert_eq!(r.ui.status, "Welcome to the colony.");
+    }
+
+    #[test]
+    fn toolbar_clicks_open_one_menu_and_off_tools_say_why() {
+        use super::super::shell::HudTool;
+        let mut r = rig();
+        click(&mut r, Do::Tool(HudTool::Build));
+        assert_eq!(r.ui.shell.tool, Some(HudTool::Build));
+        click(&mut r, Do::Tool(HudTool::Jobs));
+        assert_eq!(r.ui.shell.tool, Some(HudTool::Jobs));
+        click(&mut r, Do::Tool(HudTool::Demolish));
+        assert_eq!(r.ui.shell.tool, Some(HudTool::Jobs), "an off tool changes nothing");
+        assert!(r.ui.status.contains("taken down"), "{}", r.ui.status);
+    }
+
+    #[test]
+    fn choosing_a_build_tile_arms_the_tool_and_closes_the_menu() {
+        use super::super::shell::HudTool;
+        let mut r = rig();
+        click(&mut r, Do::Tool(HudTool::Build));
+        click(&mut r, Do::Tab(None));
+        click(&mut r, Do::Place(sim::buildings::BuildingKind::Lodge));
+        assert_eq!(r.build.tool, Some(sim::buildings::BuildingKind::Lodge));
+        assert_eq!(r.ui.shell.tool, None);
+    }
+
+    #[test]
+    fn gather_arms_an_area_order_and_closes_the_menu() {
+        use super::super::mapmodes::ModeAction;
+        use super::super::shell::HudTool;
+        let mut r = rig();
+        click(&mut r, Do::Tool(HudTool::Gather));
+        click(&mut r, Do::ModeAct(ModeAction::AssignFellers));
+        assert!(r.ui.shell.armed.is_some());
+        assert_eq!(r.ui.shell.tool, None);
+    }
+
+    #[test]
+    fn job_panel_buttons_set_a_beavers_job_and_a_familys_priorities() {
+        let mut r = rig();
+        let id = r.sim.0.colony.beavers.iter().find(|b| b.stage == sim::colony::Stage::Adult).unwrap().id;
+        click(&mut r, Do::SetJob(id, Some(sim::colony::Job::Builder)));
+        assert_eq!(r.sim.0.colony.beaver(id).unwrap().job, Some(sim::colony::Job::Builder));
+        click(&mut r, Do::SetJob(id, None));
+        assert_eq!(r.sim.0.colony.beaver(id).unwrap().job, None);
+        let fam = r.sim.0.colony.beaver(id).unwrap().family;
+        let before = r.sim.0.colony.family(fam).unwrap().priorities.clone();
+        if before.len() > 1 {
+            click(&mut r, Do::Promote(fam, 1));
+            let after = r.sim.0.colony.family(fam).unwrap().priorities.clone();
+            assert_eq!(after[0], before[1]);
+        }
     }
 }

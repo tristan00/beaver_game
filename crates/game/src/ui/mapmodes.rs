@@ -19,7 +19,7 @@ use sim::SimState;
 use super::explain::{Explained, Numbers, Part};
 use super::icons::Icon;
 use super::selection::Selection;
-use super::shell::{NavItem, Shell};
+use super::shell::Shell;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MapMode {
@@ -550,7 +550,8 @@ pub fn run_action(
             if build.tool != Some(kind) {
                 return Err(build.message.clone());
             }
-            shell.open = Some(NavItem::Buildings);
+            shell.open = None;
+            shell.tool = Some(super::shell::HudTool::Build);
             shell.armed = None;
             shell.editor = None;
             Ok(format!("{} chosen: draw it on the map.", kind.spec().name))
@@ -559,6 +560,7 @@ pub fn run_action(
             let kind = if act == ModeAction::AssignFellers { ResourceKind::Tree } else { ResourceKind::Plant };
             build.select_tool(None);
             shell.close();
+            shell.tool = None;
             shell.editor = None;
             shell.armed = Some(kind);
             let who = if act == ModeAction::AssignFellers { "fellers" } else { "foragers" };
@@ -568,6 +570,7 @@ pub fn run_action(
             let target = target_place(sim, selected_building, |p| p.area.is_some()).ok_or("No work area to edit yet.")?;
             build.select_tool(None);
             shell.close();
+            shell.tool = None;
             shell.armed = None;
             shell.editor = Some(target);
             Ok("Work-area editor: drag the inside to move the area, its border to resize.".into())
