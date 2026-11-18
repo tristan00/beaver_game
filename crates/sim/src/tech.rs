@@ -436,8 +436,8 @@ mod tests {
         let mut b = Buildings::default();
         b.buildings.push(Building { id: BuildingId(1), kind: EldersDen, pos: (0, 0), status: Status::Complete, recipe: None, output: 0.0 });
         let mut w = Work::default();
-        let slots = vec![Slot { role: Role::Study, worker: Some(id) }, Slot { role: Role::Study, worker: None }];
-        w.places.push(Workplace { building: BuildingId(1), kind: EldersDen, slots, area: None, site: None });
+        let slots = vec![Slot { worker: Some(id), ..Slot::empty(Role::Study) }, Slot::empty(Role::Study)];
+        w.places.push(Workplace::new(BuildingId(1), EldersDen, slots, None, None));
         (b, w, c)
     }
 

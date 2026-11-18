@@ -279,6 +279,10 @@ impl Beaver {
     pub fn is_young(&self) -> bool {
         matches!(self.stage, Stage::Kit | Stage::Yearling)
     }
+    /// Health lost so far to each cause (hunger, cold, injury, exhaustion, old age).
+    pub fn harm(&self) -> [(DeathCause, f32); 5] {
+        std::array::from_fn(|i| (HARM_CAUSES[i], self.harm[i]))
+    }
     /// Output multiplier for `job`: `SKILL_BASE + skill`, times `SPECIALIST_BONUS` for a specialist.
     pub fn output_factor(&self, job: Job) -> f32 {
         let s = self.skill(job);
@@ -421,6 +425,17 @@ pub struct Colony {
     /// Whether the abstract Forager and Logger jobs conjure food and wood. `SimState` turns this
     /// off: there the colony eats and builds from the real stores that gatherers fill.
     pub abstract_gathering: bool,
+    /// One job model (`work` module docs): when `Some`, the job each beaver works this step and
+    /// whether it is at work, derived by `SimState` from the work slots. It replaces the family
+    /// plan: free beavers do no abstract work, and jobs have no colony-wide
+    /// effect (no `dug`, `scouted`, `tools` or guard strength); lodges are mended passively.
+    pub slot_jobs: Option<HashMap<BeaverId, (Job, bool)>>,
+    /// Lifetime food eaten by life stage (indexed by `Stage as usize`), for the ledger.
+    pub eaten: [f32; 4],
+    /// Lifetime food lost to spoilage.
+    pub spoiled: f32,
+    /// Lifetime wood spent on lodge repairs.
+    pub repair_wood: f32,
 }
 
 impl Default for Colony {
@@ -486,6 +501,10 @@ impl Colony {
             guard_strength: 0.0,
             disabled_jobs: Vec::new(),
             abstract_gathering: true,
+            slot_jobs: None,
+            eaten: [0.0; 4],
+            spoiled: 0.0,
+            repair_wood: 0.0,
         }
     }
 
@@ -720,6 +739,9 @@ impl Colony {
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
         self.do_work(dt, &plan, forage_season);
+        if self.slot_jobs.is_some() {
+            self.passive_repair(dt);
+        }
         self.teach_young(dt);
         self.roll_hazards(dt, &plan);
         self.update_needs(dt, cold);
@@ -798,7 +820,12 @@ impl Colony {
             } else {
                 0
             };
-            let Some(job) = self.effective_job(&b, rank) else {
+            let job = match &self.slot_jobs {
+                // Slot-derived: only a beaver at work in a slot (or on an order) works its job.
+                Some(jobs) => jobs.get(&b.id).filter(|(_, working)| *working && b.stage != Stage::Kit && !b.resting).map(|(j, _)| *j),
+                None => self.effective_job(&b, rank),
+            };
+            let Some(job) = job else {
                 plan.push(None);
                 continue;
             };
@@ -839,7 +866,9 @@ impl Colony {
                 }
             }
         }
-        self.guard_strength = guard;
+        // Slot-derived jobs have no colony-wide effects (`slot_jobs`).
+        let derived = self.slot_jobs.is_some();
+        self.guard_strength = if derived { 0.0 } else { guard };
         // Foraging grounds thin out as the colony grows, which bounds the population.
         let forage_season = forage_season / (1.0 + self.beavers.len() as f32 / FORAGE_CROWDING_POPULATION);
         let boost = 1.0 + (HAUL_BOOST_PER_EFFORT * carry).min(HAUL_BOOST_MAX) + TOOLS_BOOST * self.tools.clamp(0.0, 1.0);
@@ -855,6 +884,7 @@ impl Colony {
             };
             let power = w.units * self.beavers[i].output_factor(w.job);
             match w.job {
+                _ if derived => {}
                 Job::Forager if self.abstract_gathering => {
                     self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap)
                 }
@@ -868,7 +898,9 @@ impl Colony {
             }
             let b = &mut self.beavers[i];
             b.current_job = Some(w.job);
-            b.pos = w.site;
+            if !derived {
+                b.pos = w.site; // slot workers stand where their agent is
+            }
             let s = &mut b.skills[w.job.index()];
             *s = (*s + w.units * SKILL_GAIN * (1.0 - *s)).min(1.0);
             self.experience[w.job.index()] += w.units;
@@ -924,6 +956,15 @@ impl Colony {
         let gain = amount.min(1.0 - l.condition).min(self.wood / REPAIR_WOOD_PER_CONDITION);
         l.condition += gain;
         self.wood -= gain * REPAIR_WOOD_PER_CONDITION;
+        self.repair_wood += gain * REPAIR_WOOD_PER_CONDITION;
+    }
+
+    /// Passive upkeep under slot-derived jobs: a failing lodge is mended from the stored wood at
+    /// one adult builder's pace, so no beaver is secretly kept off the map for it.
+    fn passive_repair(&mut self, dt: f32) {
+        if self.wood >= REPAIR_MIN_WOOD && self.lodges.iter().any(|l| l.condition < REPAIR_BELOW_CONDITION) {
+            self.repair(dt * WORK_FRACTION * REPAIR_YIELD);
+        }
     }
 
     /// Working far from water, and long land trips, risk injury; guards and canals lower it.
@@ -955,6 +996,7 @@ impl Colony {
         }
         let guarded = (self.guard_strength * GUARD_SAFETY_PER_STRENGTH).min(GUARD_SAFETY_MAX);
         let mut food = self.food;
+        let eaten = &mut self.eaten;
         for b in self.beavers.iter_mut() {
             let condition = b.lodge.and_then(|l| self.lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
             let insulation = condition.map_or(OPEN_INSULATION, |c| OPEN_INSULATION + LODGE_INSULATION * c);
@@ -966,6 +1008,7 @@ impl Colony {
                 let w = b.stage.food_weight();
                 let take = ((1.0 - n.food) * w).min(food);
                 food -= take;
+                eaten[b.stage as usize] += take;
                 n.food += take / w;
             }
             // rest: work tires, shelter restores; exhausted beavers stop working until recovered
@@ -1018,6 +1061,7 @@ impl Colony {
             b.mood += (n.mood() * (MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health) - b.mood) * (MOOD_RATE * dt).min(1.0);
             b.low_mood_days = if b.mood < LOW_MOOD_BELOW { b.low_mood_days + dt } else { 0.0 };
         }
+        self.spoiled += food * FOOD_SPOILAGE * dt;
         self.food = food * (1.0 - FOOD_SPOILAGE * dt); // spoilage
         self.tools = (self.tools - TOOLS_WEAR * dt).max(0.0);
     }
