@@ -738,6 +738,35 @@ mod tests {
         assert!(s.colony.beavers.iter().all(|b| b.current_job.is_none_or(|j| s.features.allows_job(j))));
     }
 
+    /// One job model: the colony job follows the work slot, skills grow from slot work, and free
+    /// beavers do no abstract work with colony-wide effects.
+    #[test]
+    fn slot_work_drives_the_colony_job_and_free_beavers_do_no_abstract_work() {
+        use crate::jobs::fixtures::{colony, near, workplace};
+        use crate::resources::{ResourceKind, PLANT_MAX};
+        let (mut s, ids) = colony();
+        let hut = workplace(&mut s, 50, buildings::BuildingKind::ForagerHut, (2, 2), work::Priority::Normal);
+        for dx in 1..5 {
+            let c = near(&s, dx, 1);
+            s.resources.add(ResourceKind::Plant, c, PLANT_MAX);
+        }
+        s.buildings.stores.deposit(buildings::Good::Food, 50.0).unwrap();
+        s.apply(Command::FillSlot { building: hut, slot: 0, who: ids[0] }).unwrap();
+        let skill = s.colony.beaver(ids[0]).unwrap().skill(colony::Job::Forager);
+        for _ in 0..40 {
+            s.step(0.05).unwrap();
+        }
+        let b = s.colony.beaver(ids[0]).unwrap();
+        assert_eq!(b.job, Some(colony::Job::Forager));
+        assert!(b.skill(colony::Job::Forager) > skill, "foraging in the slot trains the forager skill");
+        for &id in &ids[1..] {
+            let b = s.colony.beaver(id).unwrap();
+            assert_eq!((b.job, b.current_job), (None, None), "a free beaver has no job");
+        }
+        let c = &s.colony;
+        assert_eq!((c.dug, c.tools, c.scouted, c.experience[colony::Job::Builder.index()]), (0.0, 0.0, 0.0, 0.0));
+    }
+
     #[test]
     fn disabled_systems_reject_explicit_use() {
         let mut s = founded(3);

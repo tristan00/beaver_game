@@ -1308,6 +1308,29 @@ mod tests {
         assert!(by_canal < overland, "canal {by_canal} ticks vs overland {overland}");
     }
 
+    #[test]
+    fn a_forager_with_only_trees_fells_one_for_its_bark_and_brings_it_home_without_a_store() {
+        use crate::buildings::Producer;
+        let (mut sim, ids) = setup();
+        adult(&mut sim, ids[0]);
+        place_beavers(&mut sim);
+        let at = sim.agents.get(ids[0]).unwrap().cell;
+        let tree = sim.resources.add(ResourceKind::Tree, (at.0 + 2, at.1), FELL_WORK);
+        let area = Area { min: (at.0.saturating_sub(5), at.1.saturating_sub(5)), max: (at.0 + 5, at.1 + 5) };
+        sim.apply(crate::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Area(ResourceKind::Plant, area)) }).unwrap();
+        for _ in 0..1000 {
+            step(&mut sim, DT);
+            if total(&sim, Good::Food) > 0.0 && sim.agents.get(ids[0]).unwrap().load.is_none() {
+                break;
+            }
+        }
+        let r = sim.resources.get(tree).expect("logs and branches are left");
+        assert_eq!((r.kind, r.bark, r.amount), (ResourceKind::Felled, 0.0, TREE_LOGS), "felled and stripped, wood left");
+        assert!((total(&sim, Good::Food) - crate::resources::TREE_BARK).abs() < 1e-3, "the bark reached the lodge larder");
+        assert!(sim.buildings.stores.produced_by.contains_key(&(Producer::Order, Good::Food)), "booked to the gather order");
+        assert_eq!(total(&sim, Good::Logs), 0.0);
+    }
+
     // ───────────── construction, slots, hauling and work areas ─────────────
 
     use crate::work::{HaulOrder, Slot, Workplace};

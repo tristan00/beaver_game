@@ -908,6 +908,143 @@ pub fn ponds(sim: &SimState) -> Ponds {
 mod tests {
     use super::*;
     use crate::dam_preview::DamPreview;
+    use crate::jobs::fixtures::{colony, workplace};
+    use crate::work::Priority;
+
+    #[test]
+    fn the_food_fix_staffs_a_hut_else_places_one_else_gathers() {
+        let (mut s, _) = colony();
+        let food = |s: &SimState| problems(s).into_iter().find(|p| p.kind == ProblemKind::Food).expect("no food in store");
+        let p = food(&s);
+        assert_eq!((p.value, p.subject, p.fix), (0.0, Some(Subject::Good(Good::Food)), Fix::Gather { kind: ResourceKind::Plant, n: 2 }));
+        assert!(p.cause.rows.iter().any(|r| r.label == "Adults" && r.value < 0.0));
+        s.tech.record(crate::tech::Achievement::FirstBurrow);
+        s.tech.update(&s.colony);
+        assert_eq!(food(&s).fix, Fix::Place(BuildingKind::ForagerHut), "the hut is unlocked");
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::Normal);
+        assert_eq!(food(&s).fix, Fix::AddWorkers { building: hut, n: 2 });
+        let fix = food(&s).fix;
+        apply_fix(&mut s, fix).unwrap();
+        assert_eq!(s.work.place(hut).unwrap().filled(), 2);
+        // A gather fix sends the beavers left on a locked order around the lodge.
+        apply_fix(&mut s, Fix::Gather { kind: ResourceKind::Plant, n: 2 }).unwrap();
+        let ordered: Vec<_> = s.colony.beavers.iter().filter(|b| s.work.player_orders.contains(&b.id)).collect();
+        assert_eq!(ordered.len(), 2);
+        assert!(ordered.iter().all(|b| matches!(s.agents.get(b.id).unwrap().assignment, Some(Assignment::Area(ResourceKind::Plant, _)))));
+        assert_eq!(apply_fix(&mut s, Fix::Gather { kind: ResourceKind::Plant, n: 2 }), Err("no beaver is free to gather".into()));
+        assert_eq!(apply_fix(&mut s, Fix::OpenJobs), Ok(()), "interface fixes change nothing");
+    }
+
+    #[test]
+    fn stalled_sites_and_idle_beavers_get_work_fixes_and_strangers_can_be_turned_away() {
+        let (mut s, _) = colony();
+        s.buildings.stores.deposit(Good::Food, 90.0).unwrap();
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::Normal);
+        let first = problems(&s);
+        assert_eq!((first[0].kind, first[0].value, first[0].fix), (ProblemKind::Idle, 4.0, Fix::PutToWork { role: RoleKind::Forager, n: 2 }));
+        apply_fix(&mut s, first[0].fix).unwrap();
+        assert_eq!(s.work.place(hut).unwrap().filled(), 2);
+        // A site nobody builds.
+        let site = BuildingId(60);
+        let pos = crate::jobs::fixtures::near(&s, 0, 6);
+        s.buildings.buildings.push(crate::buildings::Building { id: site, kind: BuildingKind::Burrow, pos, status: crate::buildings::Status::Site, recipe: None, output: 0.0 });
+        s.work.add_site(site, BuildingKind::Burrow, &[], 6.0).unwrap();
+        let p = problems(&s).into_iter().find(|p| p.kind == ProblemKind::NoBuilders).unwrap();
+        assert_eq!((p.value, p.fix), (1.0, Fix::StaffSites));
+        assert!(!problems(&s).iter().any(|p| p.kind == ProblemKind::Idle), "the site card already puts them to work");
+        apply_fix(&mut s, Fix::StaffSites).unwrap();
+        assert_eq!(s.work.place(site).unwrap().filled(), 2);
+        // A stranger: accept or turn away.
+        let id = s.society.raise(&s.colony, true, 0.0).unwrap();
+        let p = problems(&s).into_iter().find(|p| p.kind == ProblemKind::Stranger).unwrap();
+        assert_eq!((p.fix, p.alt_fix, p.subject), (Fix::Accept(id), Some(Fix::Decline(id)), Some(Subject::Stage(Stage::Adult))));
+        let n = s.colony.population();
+        apply_fix(&mut s, Fix::Decline(id)).unwrap();
+        assert!(s.society.pending().is_empty() && s.colony.population() == n);
+    }
+
+    #[test]
+    fn breakdown_rows_add_up_to_their_number() {
+        let (mut s, ids) = colony();
+        let sum = |b: &Breakdown| b.rows.iter().map(|r| r.value).sum::<f32>();
+        s.colony.damage_health(0.25);
+        for b in [mood_breakdown(&s, ids[0]), health_breakdown(&s, ids[0])] {
+            assert!((sum(&b) - b.total).abs() < 1e-4, "{b:?}");
+            assert!(b.rows.iter().all(|r| r.label.split(' ').count() <= 3));
+            assert!(b.rows.windows(2).all(|w| w[0].value.abs() >= w[1].value.abs()), "sorted by size");
+        }
+        assert_eq!(health_breakdown(&s, ids[0]).total, 0.75);
+        assert_eq!(mood_breakdown(&s, BeaverId(999)), Breakdown::default());
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::Normal);
+        s.ledger.record(0.0, &s.buildings.stores);
+        s.buildings.stores.deposit_by(Good::Food, 6.0, Producer::Building(hut)).unwrap();
+        s.buildings.stores.withdraw_for(Good::Food, 1.0, Use::EatenAdults).unwrap();
+        s.ledger.record(1.0, &s.buildings.stores);
+        let inflow = good_in_breakdown(&s, Good::Food);
+        assert_eq!((inflow.total, inflow.rows[0].label.as_str(), inflow.rows[0].source), (6.0, "Forager hut", Source::Building(hut)));
+        let out = good_out_breakdown(&s, Good::Food);
+        assert_eq!((out.total, out.rows[0].label.as_str()), (-1.0, "Adults"));
+        let h = headcount_breakdown(&s);
+        assert_eq!((h.total, h.rows[0].label.as_str(), h.rows[0].value), (4.0, "Adults", 4.0));
+        assert!(dam_strength_breakdown(&s, hut).is_none(), "not a dam");
+        assert_eq!(pond_cover_breakdown(&s).total, 0.0, "no dam, no reservoir");
+    }
+
+    /// Places `kind` on the nearest valid, reachable cell around the lodge (the sim's own check).
+    fn place_near_lodge(s: &mut SimState, kind: BuildingKind) -> bool {
+        let c = colony_cell(s).unwrap();
+        let walker = s.colony.beavers.iter().find(|b| b.stage == Stage::Adult).map(|b| b.id).unwrap();
+        let from = s.agents.get(walker).unwrap().cell;
+        for r in 1..25usize {
+            for y in c.1.saturating_sub(r)..=c.1 + r {
+                for x in c.0.saturating_sub(r)..=c.0 + r {
+                    let ring = x.abs_diff(c.0).max(y.abs_diff(c.1)) == r;
+                    if ring
+                        && s.check_site(kind, (x, y)).is_ok()
+                        && s.nav.find_path(walker, from, crate::nav::Goal::Beside((x, y))).is_some()
+                        && s.place_site(kind, (x, y)).is_ok()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Spec W8 on a real map's standard start: auto-staffing on, and each day only the first
+    /// problem's fix (a `Place` placed near the lodge). The family reaches day 30 without
+    /// starving and food comes in beyond the larder. One map here (Telemark, the densest forest
+    /// start; about 2 s); the other three maps pass the same run.
+    #[test]
+    fn w8_first_fixes_feed_the_family_through_the_first_month() {
+        let (mut s, dam) = crate::starts::new_game_on_map("telemark").unwrap();
+        s.apply(Command::Settle { cell: dam.camp }).unwrap();
+        assert!(s.work.auto_organise, "auto-staffing is on in a new game");
+        let larder = s.buildings.stores.amount(Good::Food);
+        let mut next = 0.0;
+        while s.time_days < 30.0 {
+            if s.time_days >= next {
+                next += 1.0;
+                if let Some(p) = problems(&s).first() {
+                    match p.fix {
+                        Fix::Place(kind) => {
+                            place_near_lodge(&mut s, kind);
+                        }
+                        fix => {
+                            let _ = apply_fix(&mut s, fix);
+                        }
+                    }
+                }
+            }
+            s.step(0.05).unwrap();
+        }
+        let starved = s.colony.events.iter().any(|e| matches!(e.event, crate::colony::Event::Died { cause: DeathCause::Starvation, .. }));
+        assert!(!starved, "a beaver starved in the first month");
+        let gathered = s.buildings.stores.produced_total[Good::Food.index()] - larder;
+        assert!(gathered > 5.0, "the food fix brought in only {gathered}");
+        assert!(s.buildings.stores.amount(Good::Food) > 5.0, "the larder is nearly empty on day 30");
+    }
 
     fn pt(x: usize, surface: f32) -> ProfilePoint {
         ProfilePoint { cell: (x, 0), bed: 0.0, crest: 0.0, surface }

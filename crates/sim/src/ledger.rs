@@ -179,6 +179,26 @@ mod tests {
     }
 
     #[test]
+    fn inflow_is_split_by_producer_and_outflow_by_use() {
+        use crate::buildings::BuildingId;
+        let mut l = Ledger::default();
+        let mut s = stores_with(0.0);
+        l.record(0.0, &s);
+        s.deposit_by(Good::Food, 4.0, Producer::Building(BuildingId(7))).unwrap();
+        s.deposit_by(Good::Food, 1.0, Producer::Order).unwrap();
+        s.withdraw_for(Good::Food, 2.0, Use::EatenKits).unwrap();
+        s.withdraw(Good::Food, 0.5).unwrap();
+        l.record(1.0, &s);
+        assert_eq!(l.in_by(Good::Food), vec![(Producer::Building(BuildingId(7)), 4.0), (Producer::Order, 1.0)]);
+        assert!(l.in_by(Good::Logs).is_empty());
+        let total: f32 = l.in_by(Good::Food).iter().map(|e| e.1).sum();
+        assert!((total - l.in_per_day(Good::Food)).abs() < 1e-5, "the split sums to the inflow");
+        assert_eq!((l.out_for(Good::Food, Use::EatenKits), l.out_for(Good::Food, Use::Other)), (2.0, 0.5));
+        let out: f32 = Use::ALL.iter().map(|&u| l.out_for(Good::Food, u)).sum();
+        assert!((out - l.out_per_day(Good::Food)).abs() < 1e-5, "the split sums to the outflow");
+    }
+
+    #[test]
     fn a_long_step_spreads_over_its_days_and_history_is_capped() {
         let mut l = Ledger::default();
         let mut s = stores_with(0.0);
