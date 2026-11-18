@@ -843,6 +843,11 @@ fn nearest_cell(near: Cell, radius: usize, want: impl Fn(Cell) -> bool) -> Optio
     best.map(|b| b.1)
 }
 
+/// The largest dry-ground building the new colony may build (the lodge is locked at the start).
+fn dry_kind(sim: &SimState) -> Option<BuildingKind> {
+    BuildingKind::ALL.into_iter().filter(|k| *k != BuildingKind::Dam && k.spec().site == sim::buildings::Site::Dry && sim.tech.allows(*k) && sim.features.allows_building(*k)).max_by_key(|k| footprint(*k, (0, 0)).len())
+}
+
 /// The cell and tool the `--demo-place` scenes show, from the camp at `near`.
 pub fn demo_place_scene(sim: &SimState, scene: &str, near: Cell) -> Option<(BuildingKind, Cell)> {
     let n = sim.world.size;
@@ -850,13 +855,13 @@ pub fn demo_place_scene(sim: &SimState, scene: &str, near: Cell) -> Option<(Buil
     match scene {
         "valid" => {
             // The first dry-ground building the new colony may build (the lodge is locked at the start).
-            let kind = BuildingKind::ALL.into_iter().filter(|k| *k != BuildingKind::Dam && k.spec().site == sim::buildings::Site::Dry && sim.tech.allows(*k) && sim.features.allows_building(*k)).max_by_key(|k| footprint(*k, (0, 0)).len())?;
+            let kind = dry_kind(sim)?;
             nearest_cell((near.0 + 6, near.1), 30, |c| inside(c) && site_preview(sim, kind, c).is_valid()).map(|c| (kind, c))
         }
         "invalid" => {
-            // A lodge ghost half in the water: the nearest cell where the sim says "needs dry ground".
-            nearest_cell(near, 40, |c| inside(c) && matches!(site_preview(sim, BuildingKind::Lodge, c).verdict, Err(PlaceError::NeedsDry)))
-                .map(|c| (BuildingKind::Lodge, c))
+            // A ghost half in the water: the nearest cell where the sim says "needs dry ground".
+            let kind = dry_kind(sim)?;
+            nearest_cell(near, 40, |c| inside(c) && matches!(site_preview(sim, kind, c).verdict, Err(PlaceError::NeedsDry))).map(|c| (kind, c))
         }
         _ => {
             // The dam spot near the camp whose pond is largest but not the whole map.
