@@ -10,6 +10,7 @@ use super::screens::{job_icon, Do};
 use super::shell::HudTool;
 use crate::flow::Selection;
 use crate::state::Sim;
+use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -23,6 +24,55 @@ pub struct JobsPlugin;
 impl Plugin for JobsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_root).add_systems(Update, (layout, refresh).chain());
+        if app.world().resource::<crate::cli::Cli>().demo_jobs {
+            app.insert_resource(crate::flow::CaptureGate(false)).init_resource::<DemoJobs>().add_systems(Update, demo_jobs.before(layout));
+        }
+    }
+}
+
+/// `--demo-jobs`: puts the first two adults on jobs, selects one and opens the panel, then lets
+/// the capture gate open a moment later so the rows have refreshed.
+#[derive(Resource, Default)]
+struct DemoJobs {
+    done_at: Option<f32>,
+    since: f32,
+}
+
+fn demo_jobs(
+    time: Res<Time>,
+    flow: Res<crate::flow::Flow>,
+    mut demo: ResMut<DemoJobs>,
+    mut sim: ResMut<Sim>,
+    mut sel: ResMut<Selection>,
+    mut ui: ResMut<ShellUi>,
+    mut gate: ResMut<crate::flow::CaptureGate>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if flow.phase != crate::flow::Phase::Settled {
+        return;
+    }
+    demo.since += time.delta_secs();
+    if demo.done_at.is_none() {
+        let adults: Vec<_> = sim.0.colony.beavers.iter().filter(|b| b.stage == sim::colony::Stage::Adult).map(|b| b.id).collect();
+        if adults.len() < 2 {
+            error!("demo-jobs: fewer than two adults");
+            exit.write(AppExit::error());
+            return;
+        }
+        for (id, job) in adults.iter().zip([sim::colony::Job::Logger, sim::colony::Job::Forager]) {
+            if let Err(e) = sim.0.colony.set_job(*id, Some(job)) {
+                error!("demo-jobs: {e}");
+                exit.write(AppExit::error());
+                return;
+            }
+        }
+        *sel = Selection::Beaver(adults[0]);
+        ui.shell.tool = Some(HudTool::Jobs);
+        demo.done_at = Some(demo.since);
+        info!("demo-jobs: {} -> Logger, {} -> Forager", adults[0].0, adults[1].0);
+    }
+    if let Some(at) = demo.done_at {
+        gate.0 = demo.since - at >= 1.0;
     }
 }
 
