@@ -13,6 +13,7 @@ pub mod ecology;
 pub mod fog;
 pub mod events;
 pub mod features;
+pub mod forestry;
 pub mod grid;
 pub mod hud;
 pub mod jobs;
@@ -117,6 +118,10 @@ pub enum Command {
     OrderCanal { cells: Vec<water::Cell> },
     /// Take back an unfinished site; delivered materials return to the stores (undo).
     CancelSite { building: buildings::BuildingId },
+    /// What a logging camp fells (`forestry::CutRule`).
+    SetCutRule { building: buildings::BuildingId, rule: forestry::CutRule },
+    /// What a forester's lodge plants (`forestry::PlantRule`).
+    SetPlantRule { building: buildings::BuildingId, rule: forestry::PlantRule },
 }
 
 /// Complete simulation state.
@@ -152,6 +157,8 @@ pub struct SimState {
     pub steps: u64,
     /// When set, every command that succeeds is appended with the step it was given at.
     pub recorder: Option<Vec<(u64, Command)>>,
+    /// Tree growth, cutting and planting rules, nursery stock (`forestry`).
+    pub forestry: forestry::Forestry,
 }
 
 impl SimState {
@@ -190,7 +197,9 @@ impl SimState {
             fog: fog::Fog::clear(size),
             steps: 0,
             recorder: None,
+            forestry: forestry::Forestry::new(seed),
         };
+        forestry::init(&mut sim);
         sim.colony.abstract_gathering = false;
         sim.apply_features();
         sim
@@ -288,6 +297,7 @@ impl SimState {
             self.region.step(dt_days);
         }
         self.resources.step(dt_days).expect("dt validated above");
+        forestry::step(self, dt_days);
         agents::step(self, dt_days);
         self.explore();
         self.society.step(dt_days, self.time_days, &self.colony);
@@ -679,10 +689,13 @@ impl SimState {
             }
             Command::Unlock { who } => jobs::unlock(self, who),
             Command::SetWorkArea { building, area } => {
+                forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::OrderCanal { cells } => self.order_canal(&cells).map(|_| ()),
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
+            Command::SetCutRule { building, rule } => forestry::set_cut_rule(self, building, rule),
+            Command::SetPlantRule { building, rule } => forestry::set_plant_rule(self, building, rule),
             Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetHaul { order } => {
                 let store = |id| {

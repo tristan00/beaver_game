@@ -200,6 +200,16 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             });
         }
+        // Logging camps: the cutting rule (once Forestry opens the others) and when the area runs out.
+        if b.kind == BuildingKind::LoggingCamp && b.is_complete() {
+            u.rule();
+            forestry_camp(s, id, u);
+        }
+        // Forester's lodges: the planting rule, the trees in the area by stage, the next logs.
+        if b.kind == BuildingKind::ForesterLodge && b.is_complete() {
+            u.rule();
+            forestry_lodge(s, id, u);
+        }
         // Stores: stock and room per good.
         if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) && b.is_complete() {
             u.rule();
@@ -224,6 +234,96 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             });
         }
     })
+}
+
+/// The cutting rules a camp may choose now: Forestry opens all but coppicing, Coppicing that one.
+fn open_cut_rules(s: &sim::SimState) -> Vec<sim::forestry::CutRule> {
+    use sim::forestry::{knows, CutRule};
+    CutRule::ALL
+        .into_iter()
+        .filter(|r| match r {
+            CutRule::MatureOnly => true,
+            CutRule::Coppice => knows(s, sim::tech::COPPICING_TECH),
+            _ => knows(s, sim::tech::FORESTRY_TECH),
+        })
+        .collect()
+}
+
+/// A logging camp: rule picker (icons, one-word tips) and days until its area runs out.
+fn forestry_camp(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
+    let rules = open_cut_rules(s);
+    let now = s.forestry.cut_rule(id);
+    let left = sim::forestry::cuttable_in_area(s, id);
+    u.row(6.0, |r| {
+        if rules.len() > 1 {
+            for rule in rules {
+                let (icon, name) = cut_rule_face(rule);
+                r.icon_button(icon, 16.0, HudAction::CutRule(id, rule), FAINT, rule == now).tip(Tip::name(name));
+            }
+        }
+        r.spacer();
+        let (value, col) = match sim::forestry::days_until_out(s, id) {
+            Some(d) => (days(d), if d < 30.0 { WARN } else { INK }),
+            None => ("-".to_string(), MUTED),
+        };
+        r.row(3.0, |x| {
+            x.icon(Icon::Tree, 14.0, GOOD);
+            x.bold(format!("{left}"), 12.5, INK);
+            x.icon(Icon::Hourglass, 13.0, MUTED);
+            x.bold(value.clone(), 12.5, col);
+        })
+        .tip(Tip::name("Area runs out").line("Trees left", format!("{left}")).line("Felled per day", num(sim::forestry::felled_per_day(s, id))).with_value(value));
+    });
+}
+
+/// A forester's lodge: rule picker, stage counts, planted and tended per day, logs ready in N d.
+fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
+    use sim::forestry::{PlantRule, TreeStage};
+    let now = s.forestry.plant_rule(id);
+    let Some(area) = s.work.place(id).and_then(|p| p.area) else { return };
+    let rep = sim::hud::forest_report(s, &area);
+    u.row(6.0, |r| {
+        for rule in PlantRule::ALL {
+            let (icon, name) = plant_rule_face(rule);
+            r.icon_button(icon, 16.0, HudAction::PlantRule(id, rule), FAINT, rule == now).tip(Tip::name(name));
+        }
+        r.spacer();
+        let value = rep.logs_ready_in_days.map_or("-".to_string(), days);
+        r.row(3.0, |x| {
+            x.icon(Icon::Logs, 14.0, good_color(Good::Logs));
+            x.icon(Icon::Hourglass, 13.0, MUTED);
+            x.bold(value.clone(), 12.5, INK);
+        })
+        .tip(Tip::name("Logs ready").with_value(value));
+    });
+    u.row(10.0, |r| {
+        for (st, n) in [(TreeStage::Sapling, rep.saplings), (TreeStage::Young, rep.young), (TreeStage::Mature, rep.mature), (TreeStage::Old, rep.old)] {
+            r.row(3.0, |x| {
+                x.icon(tree_stage_icon(st), 15.0, super::world::stage_color(st));
+                x.bold(format!("{n}"), 12.0, INK);
+            })
+            .tip(Tip::name(tree_stage_name(st)));
+        }
+    });
+    u.row(10.0, |r| {
+        r.row(3.0, |x| {
+            x.icon(Icon::Sapling, 14.0, MUTED);
+            x.bold(format!("+{}", num(rep.planted_per_day)), 12.0, INK);
+        })
+        .tip(Tip::name("Planted per day"));
+        r.row(3.0, |x| {
+            x.icon(Icon::Health, 14.0, MUTED);
+            x.bold(num(rep.tended_per_day), 12.0, INK);
+        })
+        .tip(Tip::name("Tended per day"));
+        if s.forestry.saplings >= 1.0 {
+            r.row(3.0, |x| {
+                x.icon(Icon::TreeNursery, 14.0, MUTED);
+                x.bold(format!("{}", s.forestry.saplings.floor() as i64), 12.0, INK);
+            })
+            .tip(Tip::name("Nursery saplings"));
+        }
+    });
 }
 
 /// One of a building's limits as icon + number (A9).

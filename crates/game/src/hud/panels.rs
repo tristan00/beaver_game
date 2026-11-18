@@ -327,6 +327,7 @@ pub fn role_kind_icon(r: RoleKind) -> Icon {
         RoleKind::Hauler => Icon::RoleHauler,
         RoleKind::Crafter => Icon::RoleCrafter,
         RoleKind::Elder => Icon::RoleElder,
+        RoleKind::Forester => Icon::RoleForester,
     }
 }
 
@@ -340,6 +341,7 @@ pub fn role_kind_name(r: RoleKind) -> &'static str {
         RoleKind::Hauler => "Hauler",
         RoleKind::Crafter => "Crafter",
         RoleKind::Elder => "Elder",
+        RoleKind::Forester => "Forester",
     }
 }
 
@@ -359,6 +361,8 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         }
         ProblemKind::WeakDam => (vec![(Icon::Dam, INK)], format!("{:.0}%", v), "Dam weakening"),
         ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
+        ProblemKind::LoggingAreaRunningOut => (vec![(Icon::LoggingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Logging area running out"),
+        ProblemKind::ForestFalling => (vec![(Icon::Tree, INK), (Icon::Down, WARN)], format!("-{:.0}%", v), "Forest falling"),
         ProblemKind::Stranger => {
             let st = match p.subject {
                 Some(Subject::Stage(st)) => stage_icon(st),
@@ -472,7 +476,7 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
 
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
-        for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3")] {
+        for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4")] {
             let on = c.lens == l;
             u.icon_button(icon, 18.0, HudAction::SetLens(l), if on { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, on).tip(Tip::name(name).key(key).row(TipLine { label: "Peek water".into(), key: Some("Alt".into()), ..default() }));
         }

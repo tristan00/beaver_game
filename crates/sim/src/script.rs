@@ -110,6 +110,8 @@ pub fn to_line(c: &Command) -> String {
         Command::SetRecipe { building, recipe } => format!("recipe {} {}", building.0, recipe.map_or("none".to_string(), |r| format!("{r:?}"))),
         Command::OrderCanal { cells: v } => format!("canal {}", cells(v)),
         Command::CancelSite { building } => format!("cancel {}", building.0),
+        Command::SetCutRule { building, rule } => format!("cut-rule {} {rule:?}", building.0),
+        Command::SetPlantRule { building, rule } => format!("plant-rule {} {rule:?}", building.0),
     }
 }
 
@@ -201,6 +203,20 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             },
         },
         "cancel" => Command::CancelSite { building: b(1)? },
+        "cut-rule" => Command::SetCutRule {
+            building: b(1)?,
+            rule: [crate::forestry::CutRule::MatureOnly, crate::forestry::CutRule::ClearCut, crate::forestry::CutRule::Thin, crate::forestry::CutRule::Coppice]
+                .into_iter()
+                .find(|r| t.get(2).is_some_and(|x| format!("{r:?}").eq_ignore_ascii_case(x)))
+                .ok_or("unknown cut rule")?,
+        },
+        "plant-rule" => Command::SetPlantRule {
+            building: b(1)?,
+            rule: [crate::forestry::PlantRule::FillGaps, crate::forestry::PlantRule::PlantAll, crate::forestry::PlantRule::TendOnly]
+                .into_iter()
+                .find(|r| t.get(2).is_some_and(|x| format!("{r:?}").eq_ignore_ascii_case(x)))
+                .ok_or("unknown plant rule")?,
+        },
         other => return Err(format!("unknown command '{other}'")),
     })
 }
@@ -506,7 +522,7 @@ pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
         "homeless" => s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count() as f64,
         "day" => s.time_days,
         "food_zero_days" => st.food_zero_days as f64,
-        "mature" => s.resources.items.iter().filter(|r| r.kind == ResourceKind::Tree).count() as f64,
+        "mature" => crate::forestry::colony_mature_trees(s).unwrap_or(0) as f64,
         _ => return None,
     })
 }
@@ -656,6 +672,8 @@ mod tests {
             Command::AnswerJoin { id: RequestId(2), answer: Answer::TurnAway },
             Command::SetHaul { order: HaulOrder { from: BuildingId(1), to: BuildingId(2), good: Good::Logs } },
             Command::CancelSite { building: BuildingId(7) },
+            Command::SetCutRule { building: BuildingId(3), rule: crate::forestry::CutRule::Thin },
+            Command::SetPlantRule { building: BuildingId(3), rule: crate::forestry::PlantRule::PlantAll },
         ];
         for c in samples {
             assert_eq!(parse_command(&to_line(&c)).unwrap(), c, "{}", to_line(&c));

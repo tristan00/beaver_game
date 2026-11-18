@@ -274,6 +274,10 @@ pub enum BuildingKind {
     Storehouse,
     /// Elders study here to earn research (`tech::den_lore`).
     EldersDen,
+    /// Foresters plant and tend trees in its work area (`forestry`).
+    ForesterLodge,
+    /// A forester grows sapling stock here for the forester's lodges (`forestry`).
+    TreeNursery,
 }
 
 /// Terrain rule for a footprint.
@@ -299,12 +303,13 @@ pub struct Spec {
 }
 
 impl BuildingKind {
-    pub const ALL: [BuildingKind; 20] = [
+    pub const ALL: [BuildingKind; 22] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
         BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
         BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse, BuildingKind::EldersDen,
+        BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
     ];
 
     /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
@@ -330,6 +335,8 @@ impl BuildingKind {
             BuildingKind::Mill => ("Mill", (3, 3), Site::Dry),
             BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Dry),
             BuildingKind::EldersDen => ("Elders' den", (3, 3), Site::Dry),
+            BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Dry),
+            BuildingKind::TreeNursery => ("Tree nursery", (2, 2), Site::Dry),
         };
         let (cost, work) = cost_and_work(self);
         Spec { name, cost, footprint, work, site }

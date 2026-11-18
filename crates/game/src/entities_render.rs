@@ -94,6 +94,8 @@ impl Default for CurrentSeason {
 #[derive(Resource)]
 struct Models {
     white: Handle<StandardMaterial>,
+    /// Old trees: the shared material, darker and browner.
+    old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
     water_mat: Handle<StandardMaterial>,
     /// Indexed by (species, season, lod).
@@ -199,6 +201,7 @@ pub const ENTITY_GAIN: f32 = 0.55;
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
+    let old_tree = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * 0.62, ENTITY_GAIN * 0.55, ENTITY_GAIN * 0.45), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let blob_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.42, 0.353, 0.541, 0.40), // plum shadow, never black
         alpha_mode: AlphaMode::Blend,
@@ -234,6 +237,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let blob = build(&models::blob_shadow);
     commands.insert_resource(Models {
         white,
+        old_tree,
         blob_mat,
         water_mat,
         trees,

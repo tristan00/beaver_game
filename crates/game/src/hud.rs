@@ -135,13 +135,16 @@ enum UndoItem {
 }
 
 /// The map view the player chose. Holding Alt peeks at the water lens, and the dam and canal
-/// tools switch it on while they are in use.
+/// tools switch it on while they are in use; placing a logging camp or forester's lodge, or
+/// drawing its area, switches the forest lens on.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MapLens {
     #[default]
     World,
     Water,
     Goods,
+    /// Trees by stage and the logging and forestry areas (`world::draw_world_overlay`).
+    Forest,
 }
 
 impl MapLens {
@@ -150,6 +153,7 @@ impl MapLens {
             MapLens::World => 0,
             MapLens::Water => 1,
             MapLens::Goods => 2,
+            MapLens::Forest => 3,
         }
     }
 }
@@ -311,6 +315,8 @@ pub enum HudAction {
     EditArea(BuildingId),
     Pin(Selection),
     Recipe(BuildingId, Option<sim::buildings::Recipe>),
+    CutRule(BuildingId, sim::forestry::CutRule),
+    PlantRule(BuildingId, sim::forestry::PlantRule),
 }
 
 pub struct HudPlugin;
@@ -401,7 +407,7 @@ fn hotkeys(
         return; // the search box or a menu has the keyboard
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods)] {
+    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest)] {
         if keys.just_pressed(k) {
             *lens = l;
         }
@@ -558,7 +564,7 @@ fn world_input(
             hud.area_from = Some(cell);
         } else if mouse.just_released(MouseButton::Left) {
             if let Some(a) = hud.area_from.take() {
-                let area = sim::work::Area { min: (a.0.min(cell.0), a.1.min(cell.1)), max: (a.0.max(cell.0), a.1.max(cell.1)) };
+                let area = drawn_area(&sim.0, b, a, cell);
                 if let Err(e) = sim.0.apply(sim::Command::SetWorkArea { building: b, area }) {
                     hud.refuse(sim_error(&e.to_string()), now);
                 }
@@ -908,6 +914,8 @@ fn button_actions(
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::SortPop(k) => hud.pop_sort = k,
             HudAction::Recipe(building, recipe) => cmd(s, &mut hud, sim::Command::SetRecipe { building, recipe }, now),
+            HudAction::CutRule(building, rule) => cmd(s, &mut hud, sim::Command::SetCutRule { building, rule }, now),
+            HudAction::PlantRule(building, rule) => cmd(s, &mut hud, sim::Command::SetPlantRule { building, rule }, now),
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);
@@ -1259,16 +1267,39 @@ fn minimap_click(q: Query<(&Interaction, &RelativeCursorPosition, &TagComp)>, si
     }
 }
 
-/// Publishes the lens to the renderers: Alt peeks at water, line tools turn the water lens on.
-fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>) {
+/// The work area a drag from `a` to `b` draws for building `id`: the rectangle between them, cut
+/// to the building's largest area (`sim::forestry::max_area`) from where the drag began.
+pub fn drawn_area(s: &sim::SimState, id: BuildingId, a: Cell, b: Cell) -> sim::work::Area {
+    let max = s.buildings.building(id).and_then(|bd| sim::forestry::max_area(bd.kind)).unwrap_or(usize::MAX);
+    let clamp = |from: usize, to: usize| if to >= from { from + (to - from).min(max - 1) } else { from - (from - to).min(max - 1) };
+    let b = (clamp(a.0, b.0), clamp(a.1, b.1));
+    sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
+}
+
+/// Whether placing `kind` or editing its area shows the forest lens.
+fn forest_kind(kind: BuildingKind) -> bool {
+    matches!(kind, BuildingKind::LoggingCamp | BuildingKind::ForesterLodge)
+}
+
+/// Publishes the lens to the renderers: Alt peeks at water, line tools turn the water lens on, and
+/// the logging camp and forester's lodge (placing one, or drawing its area) turn the forest lens on.
+fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
+    let forest_tool = matches!(hud.tool, Tool::Building(k) if forest_kind(k))
+        || hud.area_edit.and_then(|b| sim.0.buildings.building(b)).is_some_and(|b| forest_kind(b.kind));
+    let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) {
+        MapLens::Water
+    } else if forest_tool {
+        MapLens::Forest
+    } else {
+        *lens
+    };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
 
 // ───────────────────────────── scripted views for screenshots ─────────────────────────────
 
-/// `BC_HUD_DEMO=rest|dam|canal|place|inspect|camp|beaver|ledger|jobs|pop|research|goods|water|search|tip`
+/// `BC_HUD_DEMO=rest|dam|canal|place|inspect|camp|beaver|ledger|jobs|pop|research|goods|water|forest|search|tip`
 /// (with `BC_HUD=1` and `--screenshot`): once the colony stands, runs `BC_HUD_DAYS` days (default
 /// 12) and sets up that view, so each state can be captured without a mouse. `camp`, `ledger`,
 /// `jobs` and `goods` first stand up a staffed logging camp, forager hut and warehouse beside the
@@ -1408,6 +1439,7 @@ fn demo(
                 "pop" => hud.colony = Some(ColonyTab::Population),
                 "research" => hud.colony = Some(ColonyTab::Research),
                 "water" => *lens = MapLens::Water,
+                "forest" => *lens = MapLens::Forest,
                 "search" => hud.search = Some("food".into()),
                 "tip" => {
                     tips.layers.push(ui::Layer {
@@ -1503,6 +1535,24 @@ mod tests {
         for _ in 0..(6.0 / crate::sim_driver::FIXED_DT_DAYS) as usize {
             let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
         }
+        // Forestry inspectors: a finished logging camp and forester's lodge with every rule open.
+        s.tech.unlock_all();
+        let mut forestry_sites = Vec::new();
+        for kind in [BuildingKind::LoggingCamp, BuildingKind::ForesterLodge] {
+            let c = dam.camp;
+            let spot = (3..30usize)
+                .flat_map(|r| (c.1.saturating_sub(r)..=c.1 + r).flat_map(move |y| (c.0.saturating_sub(r)..=c.0 + r).map(move |x| (x, y))))
+                .find(|&p| s.check_site(kind, p).is_ok());
+            let Some(id) = spot.and_then(|p| s.place_site(kind, p).ok()) else { continue };
+            let b = s.buildings.buildings.iter_mut().find(|b| b.id == id).unwrap();
+            b.status = Status::Complete;
+            let area = sim::catalogue::work_area(s.buildings.building(id).unwrap());
+            s.work.finish_site(id, &sim::catalogue::def(kind).slots, area).unwrap();
+            s.work.places.iter_mut().find(|p| p.building == id).unwrap().site = None;
+            forestry_sites.push(id);
+        }
+        assert_eq!(forestry_sites.len(), 2, "room for a camp and a lodge");
+        s.apply(sim::Command::SetCutRule { building: forestry_sites[0], rule: sim::forestry::CutRule::Thin }).unwrap();
         let mut names: Vec<String> = BuildingKind::ALL.iter().map(|k| k.spec().name.to_string()).collect();
         names.extend(s.colony.beavers.iter().map(|b| b.name.clone()));
         names.extend(sim::tech::TECHS.iter().map(|t| t.name.to_string()));
@@ -1535,6 +1585,10 @@ mod tests {
         if let Some(b) = first_building {
             states.push(("building".into(), HudState { details_open: true, ..default() }, Selection::Site(b)));
         }
+        for (name, id) in [("camp", forestry_sites[0]), ("lodge", forestry_sites[1])] {
+            states.push((name.into(), HudState { details_open: true, ..default() }, Selection::Site(id)));
+        }
+        states.push(("place lodge".into(), HudState { tool: Tool::Building(BuildingKind::ForesterLodge), ..default() }, Selection::None));
         states.push(("items".into(), HudState { open_cat: Some(0), ..default() }, Selection::None));
         states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
         let mut failures = Vec::new();

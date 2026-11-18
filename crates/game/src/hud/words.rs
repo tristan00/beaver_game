@@ -71,6 +71,8 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         Mill => Icon::Mill,
         Storehouse => Icon::Storehouse,
         EldersDen => Icon::EldersDen,
+        ForesterLodge => Icon::ForesterLodge,
+        TreeNursery => Icon::TreeNursery,
     }
 }
 
@@ -99,6 +101,7 @@ pub fn role_icon(r: Role) -> Icon {
         Role::Haul => Icon::RoleHauler,
         Role::Craft => Icon::RoleCrafter,
         Role::Study => Icon::RoleElder,
+        Role::Forester => Icon::RoleForester,
     }
 }
 
@@ -114,6 +117,7 @@ pub fn role_name(r: Role) -> &'static str {
         Role::Haul => "Hauler",
         Role::Craft => "Crafter",
         Role::Study => "Elder",
+        Role::Forester => "Forester",
     }
 }
 
@@ -133,6 +137,50 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
         ResourceKind::Plant => "Food plant",
         ResourceKind::MudBank => "Mud bank",
         ResourceKind::StoneOutcrop => "Outcrop",
+    }
+}
+
+/// A tree stage's icon (mature is the plain tree) and its one-word name.
+pub fn tree_stage_icon(st: sim::forestry::TreeStage) -> Icon {
+    use sim::forestry::TreeStage::*;
+    match st {
+        Sapling => Icon::Sapling,
+        Young => Icon::TreeYoung,
+        Mature => Icon::Tree,
+        Old => Icon::TreeOld,
+        Snag => Icon::Coppice,
+    }
+}
+
+pub fn tree_stage_name(st: sim::forestry::TreeStage) -> &'static str {
+    use sim::forestry::TreeStage::*;
+    match st {
+        Sapling => "Saplings",
+        Young => "Young",
+        Mature => "Mature",
+        Old => "Old",
+        Snag => "Snags",
+    }
+}
+
+/// A logging camp's cutting rule: icon and tooltip (Appendix A).
+pub fn cut_rule_face(r: sim::forestry::CutRule) -> (Icon, &'static str) {
+    use sim::forestry::CutRule::*;
+    match r {
+        MatureOnly => (Icon::Tree, "Mature only"),
+        ClearCut => (Icon::Clear, "Clear-cut"),
+        Thin => (Icon::TreeOld, "Thin"),
+        Coppice => (Icon::Coppice, "Coppice"),
+    }
+}
+
+/// A forester's lodge's planting rule: icon and tooltip (Appendix A).
+pub fn plant_rule_face(r: sim::forestry::PlantRule) -> (Icon, &'static str) {
+    use sim::forestry::PlantRule::*;
+    match r {
+        FillGaps => (Icon::Sapling, "Fill gaps"),
+        PlantAll => (Icon::ViewForest, "Plant all"),
+        TendOnly => (Icon::Health, "Tend only"),
     }
 }
 
@@ -190,7 +238,7 @@ pub fn place_error(e: &PlaceError) -> String {
 /// The ≤ 2-word form of a sim command error (Appendix A7). Unknown messages fall back to "Refused".
 pub fn sim_error(m: &str) -> String {
     let l = m.to_lowercase();
-    let table: [(&str, &str); 14] = [
+    let table: [(&str, &str); 15] = [
         ("dam height", "Crest 0.5-3"),
         ("not a valid dam line", "No pond"),
         ("kit", "Too young"),
@@ -205,6 +253,7 @@ pub fn sim_error(m: &str) -> String {
         ("blocked", "Occupied"),
         ("out of bounds", "Off map"),
         ("disabled", "Locked"),
+        ("(locked)", "Locked"),
     ];
     table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }

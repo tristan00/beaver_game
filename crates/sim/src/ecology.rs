@@ -1,6 +1,10 @@
-﻿//! Ecology: forest growth/felling/drowning, wetlands, wetland wildlife, roaming predators and the
+﻿//! Ecology: forest density, drowning, wetlands, wetland wildlife, roaming predators and the
 //! danger field. All state is deterministic (seeded `Pcg32`); inputs from other systems are
 //! passed to `step` (water depth) or set through the public fields (`lodges`, `defence`, `hideout`).
+//!
+//! **One forest model.** The forest density has no growth law of its own: in a game it is derived
+//! from the standing trees every day (`set_forest`, called by `forestry`), so felling and planting
+//! show up here. On its own (tests, tools) it only falls, by felling (`fell`) and drowning.
 use crate::SimError;
 use crate::grid::{Grid, VegetationGrid, WaterGrid};
 use rand_core::{Rng, SeedableRng};
@@ -49,7 +53,7 @@ pub enum MapMode { Food, Forest, Wetland, Danger }
 pub struct Ecology {
     /// Overall ground cover 0..=1 (forest + half meadow + half wetland).
     pub vegetation: VegetationGrid,
-    /// Living tree density 0..=1.
+    /// Living tree density 0..=1 (derived from the trees in a game: `set_forest`).
     pub forest: Grid<f32>,
     /// Dead standing trees left by drowning 0..=1.
     pub snags: Grid<f32>,
@@ -75,7 +79,6 @@ pub struct Ecology {
     pub lodges: Vec<(usize, usize)>,
     pub predators: Vec<Predator>,
     pub effects: WetlandEffects,
-    cut_cooldown: Grid<f32>,
     rng: Pcg32,
 }
 
@@ -99,7 +102,7 @@ impl Ecology {
             vegetation: g(0.0), forest, snags: g(0.0), meadow: g(0.0), wetland: g(0.0), flood_days: g(0.0),
             fish: g(0.0), waterfowl: g(0.0), frogs: g(0.0), herons: g(0.0), mosquitoes: g(0.0),
             otters: g(0.0), food: g(0.0), danger: g(0.0), defence: g(0.0), hideout: g(0.0),
-            lodges: Vec::new(), predators, effects: WetlandEffects::default(), cut_cooldown: g(0.0), rng,
+            lodges: Vec::new(), predators, effects: WetlandEffects::default(), rng,
         };
         e.refresh_derived(&g(0.0));
         e
@@ -125,7 +128,7 @@ impl Ecology {
     }
 
     /// Fells up to `amount` (>= 0) of forest density at (x, y); returns the density actually
-    /// removed (wood). Blocks regrowth there for `CUT_COOLDOWN_DAYS`.
+    /// removed (wood); the ground becomes meadow. (In a game the next `set_forest` overrides it.)
     pub fn fell(&mut self, x: usize, y: usize, amount: f32) -> Result<f32, SimError> {
         self.check_cell(x, y)?;
         if !amount.is_finite() || amount < 0.0 {
@@ -135,8 +138,29 @@ impl Ecology {
         let removed = amount.min(*f);
         *f -= removed;
         *self.meadow.get_mut(x, y).unwrap() += removed;
-        *self.cut_cooldown.get_mut(x, y).unwrap() = CUT_COOLDOWN_DAYS;
         Ok(removed)
+    }
+
+    /// Sets the forest density from the trees (`forestry`: the share of cells with a young-or-older
+    /// tree, smoothed), capped by the ground wetland leaves free. Felled ground turns to meadow.
+    /// Ignored if `density` is not `size x size`.
+    pub fn set_forest(&mut self, density: &Grid<f32>) {
+        let n = self.size();
+        if density.width() != n || density.height() != n {
+            return;
+        }
+        for i in 0..n * n {
+            let new = clamp01(density.as_slice()[i]).min(1.0 - self.wetland.as_slice()[i]);
+            let f = &mut self.forest.as_mut_slice()[i];
+            if new < *f {
+                self.meadow.as_mut_slice()[i] += *f - new;
+            }
+            *f = new;
+        }
+        let vegetation: Vec<f32> = (0..n * n)
+            .map(|i| clamp01(self.forest.as_slice()[i] + VEGETATION_MEADOW * self.meadow.as_slice()[i] + VEGETATION_WETLAND * self.wetland.as_slice()[i]))
+            .collect();
+        self.vegetation.as_mut_slice().copy_from_slice(&vegetation);
     }
 
     fn check_cell(&self, x: usize, y: usize) -> Result<(), SimError> {
@@ -169,7 +193,6 @@ impl Ecology {
     fn substep(&mut self, dt: f32, water: &WaterGrid) {
         let n = self.size();
         let wet_days = WETLAND_SEASONS * SEASON_DAYS;
-        let old_forest = self.forest.as_slice().to_vec();
         for i in 0..n * n {
             let depth = water.as_slice()[i];
             let flooded = depth > FLOOD_DEPTH;
@@ -195,28 +218,8 @@ impl Ecology {
                 *wetland -= shift;
                 if !flooded { self.meadow.as_mut_slice()[i] += shift; }
             }
-            let c = &mut self.cut_cooldown.as_mut_slice()[i];
-            *c = (*c - dt).max(0.0);
         }
-        // Growth and spread from pre-step neighbours so cell order does not matter.
-        for y in 0..n {
-            for x in 0..n {
-                let i = y * n + x;
-                if water.as_slice()[i] > FLOOD_DEPTH || self.cut_cooldown.as_slice()[i] > 0.0 { continue; }
-                let nb = |dx: isize, dy: isize| {
-                    let (nx, ny) = (x as isize + dx, y as isize + dy);
-                    if nx < 0 || ny < 0 || nx >= n as isize || ny >= n as isize { old_forest[i] }
-                    else { old_forest[ny as usize * n + nx as usize] }
-                };
-                let neighbours = (nb(1, 0) + nb(-1, 0) + nb(0, 1) + nb(0, -1)) / 4.0;
-                let cap = 1.0 - self.wetland.as_slice()[i];
-                let f = &mut self.forest.as_mut_slice()[i];
-                if *f < cap {
-                    let rate = FOREST_GROWTH_BASE + FOREST_GROWTH_SELF * *f + FOREST_GROWTH_SPREAD * neighbours;
-                    *f = (*f + dt * rate * (cap - *f)).min(cap);
-                }
-            }
-        }
+        // No forest growth here: the trees grow (`forestry`) and `set_forest` follows them.
         for i in 0..n * n {
             let room = (1.0 - self.forest.as_slice()[i] - self.wetland.as_slice()[i]).max(0.0);
             let m = &mut self.meadow.as_mut_slice()[i];
@@ -419,20 +422,27 @@ mod ecology {
         assert_eq!(mean(&e.wetland), 0.0);
     }
 
+    /// One forest model: the density does not regrow by itself after felling (trees regrow, in
+    /// `forestry`); it follows the tree cover it is given.
     #[test]
-    fn overcutting_destroys_forest_and_it_regrows_when_cutting_stops() {
+    fn felled_forest_stays_down_until_the_trees_come_back() {
         let mut e = Ecology::seeded(N, 3);
         let dry = flood(0.0);
         let start = mean(&e.forest);
-        for _ in 0..24 { // two years of monthly clear-cutting
-            for y in 0..N { for x in 0..N { e.fell(x, y, 1.0).unwrap(); } }
-            run(&mut e, &dry, 30.0);
-        }
+        for y in 0..N { for x in 0..N { e.fell(x, y, 1.0).unwrap(); } }
+        run(&mut e, &dry, 30.0);
         let low = mean(&e.forest);
-        assert!(low < 0.1, "forest after overcutting {low}");
+        assert!(low < 0.01, "forest after clear-cutting {low}");
+        assert!(mean(&e.meadow) > 0.5, "felled ground is meadow");
         run(&mut e, &dry, 365.0 * 8.0);
-        let regrown = mean(&e.forest);
-        assert!(regrown > start * 0.8 && regrown > low + 0.4, "regrown {regrown} (start {start}, low {low})");
+        assert!(mean(&e.forest) < 0.01, "no regrowth without trees: {}", mean(&e.forest));
+        e.set_forest(&Grid::new(N, N, 0.9));
+        assert!((mean(&e.forest) - 0.9).abs() < 1e-4, "density follows the trees");
+        assert!(start > 0.5);
+        e.set_forest(&Grid::new(N, N, 0.3));
+        assert!((mean(&e.forest) - 0.3).abs() < 1e-4 && mean(&e.vegetation) >= 0.3);
+        e.set_forest(&Grid::new(4, 4, 1.0)); // wrong size: ignored
+        assert!((mean(&e.forest) - 0.3).abs() < 1e-4);
     }
 
     #[test]

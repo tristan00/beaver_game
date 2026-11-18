@@ -135,6 +135,12 @@ const WEAVING: TechId = TechId(5);
 const CANAL_DIGGING: TechId = TechId(7);
 const DOCKS: TechId = TechId(8);
 const FLOW_CONTROL: TechId = TechId(9);
+const FORESTRY: TechId = TechId(17);
+
+/// Names of the forestry techs whose effects are not building unlocks (`forestry::knows`):
+/// Forestry also opens the logging camps' cutting rules, Coppicing the `Coppice` rule.
+pub const FORESTRY_TECH: &str = "Forestry";
+pub const COPPICING_TECH: &str = "Coppicing";
 
 /// Every tech, indexed by `TechId`.
 pub const TECHS: &[TechDef] = &[
@@ -167,6 +173,10 @@ pub const TECHS: &[TechDef] = &[
     exp("Forest lore", Branch::Forest, 4, 100.0, 10, &[STONEWORK], 30.0, &[B(Bonus::Storage(STORAGE_BONUS))]),
     exp("Fine tools", Branch::Craft, 2, 50.0, 10, &[WEAVING], 40.0, &[B(Bonus::CraftSpeed(CRAFT_SPEED_BONUS))]),
     exp("Territory marking", Branch::Defence, 1, 3.0, 6, &[FELLING], 0.0, &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)]),
+    // Forestry (`forestry`): planting and upkeep, right after Felling.
+    exp(FORESTRY_TECH, Branch::Forest, 1, 20.0, 5, &[FELLING], 0.0, &[U(BuildingKind::ForesterLodge)]),
+    exp(COPPICING_TECH, Branch::Forest, 2, 50.0, 8, &[FORESTRY], 0.0, &[]),
+    exp("Tree nursery", Branch::Forest, 3, 80.0, 10, &[FORESTRY, WEAVING], 30.0, &[U(BuildingKind::TreeNursery)]),
 ];
 
 /// Index into `TECHS` of the tech that unlocks `kind`, if any.
@@ -397,7 +407,9 @@ mod tests {
 
     #[test]
     fn each_achievement_grants_research_once() {
-        for a in Achievement::ALL {
+        // The first burrow brings foraging and felling (food and wood from the first weeks); the
+        // first winter brings winter stores; the first dam grants nothing of its own.
+        for a in [Achievement::FirstBurrow, Achievement::FirstWinter] {
             let mut t = Tech::default();
             let first = t.record(a);
             assert!(!first.is_empty(), "{a:?} grants research");
@@ -406,7 +418,7 @@ mod tests {
         }
         let mut t = Tech::default();
         t.record(Achievement::FirstBurrow);
-        assert!(t.allows(ForagerHut) && !t.allows(LoggingCamp));
+        assert!(t.allows(ForagerHut) && t.allows(LoggingCamp) && t.allows(MudPit));
     }
 
     #[test]
@@ -420,7 +432,7 @@ mod tests {
         assert!(t.missing(Dam, &c).is_empty());
         // Meeting every need unlocks it at the next update.
         let mut t = Tech::default();
-        t.record(Achievement::FirstDam);
+        t.record(Achievement::FirstBurrow);
         c = colony_of(5);
         c.experience[Job::Builder.index()] = 16.0;
         assert!(t.needs(LODGE_BUILDING, &c).is_empty());
@@ -466,7 +478,7 @@ mod tests {
         }
         // Even with every other need met, a canal stays locked until the lore is studied.
         let mut t = Tech::default();
-        t.record(Achievement::FirstDam);
+        t.record(Achievement::FirstBurrow);
         let mut c = colony_of(30);
         for j in Job::ALL {
             c.experience[j.index()] = 500.0;
@@ -506,7 +518,7 @@ mod tests {
     #[test]
     fn forest_experience_sums_jobs_and_bonuses_apply() {
         let mut t = Tech::default();
-        t.record(Achievement::FirstDam);
+        t.record(Achievement::FirstBurrow);
         let mut c = colony_of(10);
         c.experience[Job::Logger.index()] = 90.0;
         c.experience[Job::Forager.index()] = 40.0;

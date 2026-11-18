@@ -22,10 +22,11 @@ pub enum RoleKind {
     Hauler,
     Crafter,
     Elder,
+    Forester,
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 8] = [
+    pub const ALL: [RoleKind; 9] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
@@ -34,12 +35,14 @@ impl RoleKind {
         RoleKind::Hauler,
         RoleKind::Crafter,
         RoleKind::Elder,
+        RoleKind::Forester,
     ];
     /// Default role priority, first = highest.
-    pub const DEFAULT_ORDER: [RoleKind; 8] = [
+    pub const DEFAULT_ORDER: [RoleKind; 9] = [
         RoleKind::Builder,
         RoleKind::Forager,
         RoleKind::Logger,
+        RoleKind::Forester,
         RoleKind::Hauler,
         RoleKind::MudDigger,
         RoleKind::Quarrier,
@@ -72,6 +75,7 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Haul => RoleKind::Hauler,
         Role::Craft => RoleKind::Crafter,
         Role::Study => RoleKind::Elder,
+        Role::Forester => RoleKind::Forester,
     }
 }
 
@@ -89,7 +93,8 @@ pub fn gather_role(k: ResourceKind) -> RoleKind {
 pub fn colony_job(r: RoleKind) -> Option<Job> {
     match r {
         RoleKind::Forager => Some(Job::Forager),
-        RoleKind::Logger => Some(Job::Logger),
+        // Forestry trains the logger's skill and counts as Forest experience.
+        RoleKind::Logger | RoleKind::Forester => Some(Job::Logger),
         RoleKind::MudDigger | RoleKind::Quarrier => Some(Job::Digger),
         RoleKind::Builder => Some(Job::Builder),
         RoleKind::Hauler => Some(Job::Hauler),
@@ -601,6 +606,8 @@ mod tests {
         assert_eq!(role_kind(Role::Collect(ResourceKind::Felled)), RoleKind::Logger);
         assert_eq!(role_kind(Role::Collect(ResourceKind::StoneOutcrop)), RoleKind::Quarrier);
         assert_eq!(role_kind(Role::Study), RoleKind::Elder);
+        assert_eq!(role_kind(Role::Forester), RoleKind::Forester);
+        assert_eq!(RoleKind::DEFAULT_ORDER[3], RoleKind::Forester, "foresters follow loggers");
         let mut order = RoleKind::DEFAULT_ORDER.to_vec();
         order.sort();
         assert_eq!(order, RoleKind::ALL.to_vec());
@@ -694,7 +701,7 @@ mod tests {
         assert!(s.apply(Command::AdjustRole { role: RoleKind::Quarrier, delta: 1 }).is_err(), "no quarry");
         assert!(s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder, RoleKind::Elder] }).is_err());
         s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder] }).unwrap();
-        assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Elder, RoleKind::Builder, 8));
+        assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Elder, RoleKind::Builder, 9));
         // A direct order takes the forager out of its slot and locks it; Unlock returns it.
         let w = s.work.place(hut).unwrap().slots.iter().find_map(|s| s.worker).unwrap();
         let area = crate::work::Area { min: (0, 0), max: (3, 3) };

@@ -60,6 +60,8 @@ pub fn def(kind: BuildingKind) -> Def {
         MudPit => camp(ResourceKind::MudBank),
         QuarryCamp => camp(ResourceKind::StoneOutcrop),
         EldersDen => (Tier::Elementary, vec![Role::Study; 2], None),
+        ForesterLodge => (Tier::Elementary, vec![Role::Forester; 2], Some(GATHER_AREA)),
+        TreeNursery => (Tier::Elementary, vec![Role::Forester], None),
         Mill => (Tier::Industrial, vec![Role::Craft; 2], None),
         Storehouse => (Tier::Industrial, vec![Role::Haul; 2], None),
     };
@@ -117,7 +119,8 @@ mod tests {
                 ),
                 None => assert!(BASE_BUILDINGS.contains(&kind), "{kind:?} has no unlock and is not a base building"),
             }
-            assert_eq!(d.area.is_some(), d.slots.iter().any(|r| matches!(r, Role::Collect(_))), "{kind:?}: area iff collectors");
+            let in_area = kind == BuildingKind::ForesterLodge || d.slots.iter().any(|r| matches!(r, Role::Collect(_)));
+            assert_eq!(d.area.is_some(), in_area, "{kind:?}: area iff collectors or foresters");
             assert_eq!(d.batches_per_day > 0.0, d.slots.contains(&Role::Craft), "{kind:?}: crafting needs craft slots");
             if d.capacity > 0.0 {
                 assert!(d.slots.contains(&Role::Haul), "{kind:?}: stores take haulers");

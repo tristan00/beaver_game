@@ -405,6 +405,8 @@ pub mod buildings {
             BuildingKind::EldersDen => (&[(Logs, 12.0), (Mud, 8.0)], 6.0),
             BuildingKind::Mill => (&[(Logs, 30.0), (Stone, 10.0), (Rope, 4.0), (Tools, 3.0)], 14.0),
             BuildingKind::Storehouse => (&[(Logs, 40.0), (Sticks, 20.0), (Stone, 12.0), (Rope, 4.0)], 16.0),
+            BuildingKind::ForesterLodge => (&[(Logs, 4.0), (Sticks, 8.0), (Mud, 2.0)], 3.0),
+            BuildingKind::TreeNursery => (&[(Logs, 6.0), (Sticks, 6.0), (Mud, 4.0), (Baskets, 1.0)], 4.0),
         }
     }
 

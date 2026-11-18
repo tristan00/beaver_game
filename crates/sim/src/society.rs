@@ -145,12 +145,29 @@ mod tests {
 
     #[test]
     fn requests_arrive_during_steps_and_are_capped() {
-        let c = founded();
+        let mut c = founded();
+        c.food = 1000.0; // wanderers only come to a colony with food to spare
         let mut s = Society::default();
+        let (mut most, mut arrived) = (0, 0);
         for d in 0..2000 {
+            let before = s.pending().len();
             s.step(1.0, d as f64, &c);
+            arrived += s.pending().len().saturating_sub(before);
+            most = most.max(s.pending().len());
         }
-        assert_eq!(s.pending().len(), JOIN_MAX_PENDING);
+        assert!(arrived > 0, "wanderers came");
+        assert!(most <= JOIN_MAX_PENDING, "never more than {JOIN_MAX_PENDING} wait");
+        // Unanswered requests are withdrawn after JOIN_EXPIRES_DAYS.
+        let at = s.pending().iter().map(|r| r.arrived_day).fold(f64::MAX, f64::min);
+        s.step(1.0, at + JOIN_EXPIRES_DAYS + 1.0, &c);
+        assert!(s.pending().iter().all(|r| r.arrived_day > at), "old requests expire");
+        // A hungry colony gets no wanderers.
+        c.food = 0.0;
+        let mut hungry = Society::default();
+        for d in 0..2000 {
+            hungry.step(1.0, d as f64, &c);
+        }
+        assert!(hungry.pending().is_empty());
         let mut unfounded = Society::default();
         for d in 0..2000 {
             unfounded.step(1.0, d as f64, &Colony::new(1));

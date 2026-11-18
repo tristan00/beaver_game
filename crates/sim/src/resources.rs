@@ -7,6 +7,8 @@
 //! - `take(id, want)` gathers logs, then branches, from `Felled`, or food/mud/stone from the rest.
 //! - `strip(id, want)` takes bark (`Good::Food`) from `Felled` wood.
 //! - `step(dt)` regrows plants on wet ground and removes used-up deposits and wood.
+//! - Trees have an age and a stage (`crate::forestry`): `fell` yields by stage, saplings cannot be
+//!   felled and do not block, and `forestry` ages, spreads, drowns and kills them day by day.
 
 use crate::buildings::Good;
 use crate::water::Cell;
@@ -51,7 +53,7 @@ impl ResourceKind {
 
 /// Felling work (work days) a standing tree needs.
 pub const FELL_WORK: f32 = 2.0;
-/// What a felled tree leaves behind.
+/// What a felled mature tree leaves behind (other stages: `forestry::TreeStage::fell_yield`).
 pub const TREE_LOGS: f32 = 3.0;
 pub const TREE_BRANCHES: f32 = 4.0;
 pub const TREE_BARK: f32 = 2.0;
@@ -78,6 +80,8 @@ pub enum ResourceError {
     InvalidAmount,
     /// Plants only grow on wet cells.
     NotWet,
+    /// A sapling cannot be felled yet.
+    TooYoung,
 }
 
 /// A map resource. `branches`/`bark` are only non-zero on `Felled`.
@@ -96,9 +100,19 @@ pub struct Resource {
     pub bark: f32,
     /// `Plant` only: whether the ground is wet, so it regrows.
     pub wet: bool,
+    /// `Tree` only: growth age in days (`forestry::TreeStage`); for a snag, days since it died.
+    pub age_days: f32,
+    /// `Tree` only: a dead standing tree (sticks only), which rots away and frees the cell.
+    pub snag: bool,
+    /// `Tree` only: days of a forester's tending left (it grows faster meanwhile).
+    pub tended_days: f32,
 }
 
 impl Resource {
+    /// Whether it blocks navigation: solid kinds, except saplings (beavers step over them).
+    pub fn is_solid(&self) -> bool {
+        self.kind.is_solid() && !(self.kind == ResourceKind::Tree && self.stage() == Some(crate::forestry::TreeStage::Sapling))
+    }
     /// Whether anything is left to gather (a standing tree always has felling work left).
     pub fn has_yield(&self) -> bool {
         match self.kind {
@@ -153,7 +167,7 @@ impl ResourceWorld {
             for x in 0..world.size {
                 let cell = (x, y);
                 if world.forest.get(x, y).is_some_and(|t| t.is_some()) {
-                    out.add(ResourceKind::Tree, cell, FELL_WORK);
+                    out.add_tree(cell, crate::forestry::start_age(seed, cell));
                 } else if is_outcrop(world, cell) {
                     if chance(STONE_CHANCE) {
                         out.add(ResourceKind::StoneOutcrop, cell, STONE_AMOUNT);
@@ -179,9 +193,9 @@ impl ResourceWorld {
     pub fn at(&self, cell: Cell) -> impl Iterator<Item = &Resource> {
         self.items.iter().filter(move |r| r.cell == cell)
     }
-    /// True if a standing tree or stone outcrop occupies `cell`.
+    /// True if a standing tree (not a sapling) or stone outcrop occupies `cell`.
     pub fn blocks(&self, cell: Cell) -> bool {
-        self.at(cell).any(|r| r.kind.is_solid() && r.has_yield())
+        self.at(cell).any(|r| r.is_solid() && r.has_yield())
     }
 
     /// Nearest resource of `kind` to `from` (squared distance, ties by id; optionally inside
@@ -205,15 +219,18 @@ impl ResourceWorld {
         if r.kind != ResourceKind::Tree {
             return Err(ResourceError::WrongKind);
         }
+        let Some((logs, branches, bark)) = r.stage().and_then(crate::forestry::TreeStage::fell_yield) else {
+            return Err(ResourceError::TooYoung);
+        };
         r.amount -= work;
         if r.amount > 0.0 {
             return Ok(false);
         }
         r.kind = ResourceKind::Felled;
-        r.amount = TREE_LOGS;
-        r.max_amount = TREE_LOGS;
-        r.branches = TREE_BRANCHES;
-        r.bark = TREE_BARK;
+        r.amount = logs;
+        r.max_amount = logs;
+        r.branches = branches;
+        r.bark = bark;
         Ok(true)
     }
 
@@ -269,11 +286,20 @@ impl ResourceWorld {
     }
 
     /// Adds a resource with `amount` (also its maximum). Plants added this way do not regrow;
-    /// use `add_plant` for that.
+    /// use `add_plant` for that. A tree added this way is mature (`forestry::DEFAULT_TREE_AGE`);
+    /// use `add_tree` for another age.
     pub fn add(&mut self, kind: ResourceKind, cell: Cell, amount: f32) -> ResourceId {
         self.next_id += 1;
         let id = ResourceId(self.next_id);
-        self.items.push(Resource { id, kind, cell, amount, max_amount: amount, branches: 0.0, bark: 0.0, wet: false });
+        let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
+        self.items.push(Resource { id, kind, cell, amount, max_amount: amount, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0 });
+        id
+    }
+
+    /// Adds a standing tree of growth age `age_days` (a sapling below `forestry::YOUNG_AGE`).
+    pub fn add_tree(&mut self, cell: Cell, age_days: f32) -> ResourceId {
+        let id = self.add(ResourceKind::Tree, cell, FELL_WORK);
+        self.items.last_mut().expect("just added").age_days = age_days.max(0.0);
         id
     }
 

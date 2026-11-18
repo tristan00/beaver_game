@@ -199,7 +199,7 @@ impl NavGrid {
                 _ => b.cells().for_each(|c| self.set(c, Surface::Solid)),
             }
         }
-        for r in sim.resources.items.iter().filter(|r| r.kind.is_solid()) {
+        for r in sim.resources.items.iter().filter(|r| r.is_solid()) {
             let s = if r.kind == crate::resources::ResourceKind::Tree { Surface::Thicket } else { Surface::Solid };
             if self.surface.get(r.cell.0, r.cell.1) == Some(&Surface::Land) {
                 self.set(r.cell, s);

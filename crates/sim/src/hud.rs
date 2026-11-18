@@ -11,6 +11,8 @@ use crate::society::RequestId;
 use crate::water::{Cell, Season};
 use crate::work::Role;
 use crate::{Command, SimState};
+/// Stage counts, planting and tending rates and the next mature tree of an area (`forestry`).
+pub use crate::forestry::{forest_report, ForestReport};
 
 /// Most problems the interface shows at once.
 pub const MAX_PROBLEMS: usize = 4;
@@ -351,6 +353,11 @@ pub enum ProblemKind {
     WeakDam,
     DamFailed,
     Stranger,
+    /// A logging camp's area has fewer than `forestry::RUNNING_OUT` mature trees (value: how many).
+    LoggingAreaRunningOut,
+    /// Mature trees around the colony fell by more than `forestry::FALLING_SHARE` over the last
+    /// `forestry::FALLING_DAYS` (value: percent lost).
+    ForestFalling,
 }
 
 /// What a problem is about, for its icon.
@@ -582,6 +589,50 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 focus: colony_cell(sim),
             });
             break;
+        }
+    }
+
+    // Wood running out: a logging camp's area nearly cut out, or the colony's forest shrinking.
+    let low_camp = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| p.kind == BuildingKind::LoggingCamp && !p.paused && sim.buildings.building(p.building).is_some_and(|b| b.is_complete()))
+        .filter_map(|p| p.area.map(|a| (p.building, a, forest_report(sim, &a))))
+        .find(|(_, _, r)| r.mature + r.old < crate::forestry::RUNNING_OUT);
+    if let Some((camp, area, r)) = low_camp {
+        let left = (r.mature + r.old) as f32;
+        let rows = vec![
+            row("Mature", r.mature as f32, Source::Building(camp)),
+            row("Old", r.old as f32, Source::Building(camp)),
+            row("Young", r.young as f32, Source::Building(camp)),
+            row("Saplings", r.saplings as f32, Source::Building(camp)),
+        ];
+        out.push(Problem {
+            kind: ProblemKind::LoggingAreaRunningOut,
+            severity: Severity::Warning,
+            value: left,
+            cause: Breakdown::new(left, rows),
+            subject: Some(Subject::Building(BuildingKind::LoggingCamp)),
+            fix: if sim.tech.allows(BuildingKind::ForesterLodge) { Fix::Place(BuildingKind::ForesterLodge) } else { Fix::Focus },
+            alt_fix: None,
+            focus: Some(area.centre()),
+        });
+    }
+    if let Some((then, now)) = crate::forestry::forest_trend(sim) {
+        if then > 0 && (now as f32) < then as f32 * (1.0 - crate::forestry::FALLING_SHARE) {
+            let lost = ((then - now) as f32 / then as f32 * 100.0).round();
+            let rows = vec![row("Then", then as f32, Source::None), row("Now", now as f32, Source::None)];
+            out.push(Problem {
+                kind: ProblemKind::ForestFalling,
+                severity: Severity::Warning,
+                value: lost,
+                cause: Breakdown::new(lost, rows),
+                subject: Some(Subject::Building(BuildingKind::ForesterLodge)),
+                fix: Fix::Focus,
+                alt_fix: None,
+                focus: colony_cell(sim),
+            });
         }
     }
 
@@ -1096,7 +1147,7 @@ mod tests {
         let land = crate::WorldLand { world: &s.world, depth: &s.water.depth };
         s.colony.found((c.0, c.1), &land).unwrap();
         crate::agents::place_beavers(&mut s);
-        s.tech.record(crate::tech::Achievement::FirstDam);
+        s.tech.record(crate::tech::Achievement::FirstBurrow);
         s.tech.update(&s.colony);
         let (cx, cy) = (c.0 as usize, c.1 as usize);
         let id = (2..30usize)
