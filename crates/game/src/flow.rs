@@ -1,17 +1,14 @@
 //! Game flow: opening (arrival, scouting, settling), picking, selection, fog of war, valley
 //! unlocking and colony collapse. The pure parts (state machine, picking math, fog, suitability)
 //! are plain functions so they can be tested without a window.
-use crate::camera::{MainCamera, OrbitCamera};
-use crate::flow_view::{UiLayout, WorldClick};
+use crate::camera::OrbitCamera;
 use crate::sim_driver::SimClock;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 use sim::colony::{BeaverId, LodgeId};
 use sim::grid::{Grid, HeightGrid};
 use sim::worldgen::{ValleyId, World};
-use sim::WorldLand;
 use std::collections::VecDeque;
 
 pub type Cell = (usize, usize);
@@ -567,14 +564,12 @@ impl Plugin for FlowPlugin {
         let flow = Flow::new(&app.world().resource::<Sim>().0.world);
         app.insert_resource(flow)
             .init_resource::<Selection>()
-            .init_resource::<crate::ui::NoticesRes>()
             .init_resource::<Hover>()
             .insert_resource(CaptureGate(true))
             .add_systems(
                 Update,
-                (advance_flow, pick_world, unlock_valleys, watch_collapse, sample_history, ease_camera)
-                    .chain()
-                    .after(crate::flow_view::ClickSet),
+                (advance_flow, unlock_valleys, watch_collapse, sample_history, ease_camera)
+                    .chain(),
             );
     }
 }
@@ -623,74 +618,6 @@ fn advance_flow(
     }
 }
 
-fn pick_world(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    layout: Res<UiLayout>,
-    mut click: ResMut<WorldClick>,
-    mut sim: ResMut<Sim>,
-    mut flow: ResMut<Flow>,
-    mut sel: ResMut<Selection>,
-    mut hover: ResMut<Hover>,
-    mut settle_ui: ResMut<crate::ui::settle::SettleUi>,
-) {
-    let clicked = click.0.take();
-    let Ok(window) = windows.single() else { return };
-    let Ok((camera, gt)) = cams.single() else { return };
-    let cursor = clicked.or(window.cursor_position());
-    let ray = cursor
-        .filter(|c| !layout.over_ui(*c))
-        .and_then(|c| camera.viewport_to_world(gt, c).ok());
-    let Some(ray) = ray else {
-        hover.cell = None;
-        hover.hint = None;
-        return;
-    };
-    let (origin, dir) = (ray.origin, *ray.direction);
-    let terrain = ray_heightfield(origin, dir, &sim.0.height);
-    let new_cell = terrain.map(|t| t.0);
-    if hover.cell != new_cell {
-        hover.cell = new_cell;
-        hover.hint = new_cell.map(|c| site_hint(&sim.0.world, c));
-    }
-    if clicked.is_none() {
-        return;
-    }
-    // entity candidates
-    let h = &sim.0.height;
-    let up = Vec3::Y * 0.5;
-    let mut cands: Vec<(Selection, Vec3, f32)> = Vec::new();
-    for l in &sim.0.colony.lodges {
-        cands.push((Selection::Lodge(l.id), cell_world(h, l.pos) + up * 2.0, 2.2));
-    }
-    for b in &sim.0.colony.beavers {
-        cands.push((Selection::Beaver(b.id), cell_world(h, b.pos) + up, 0.9));
-    }
-    for r in sim.0.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree) {
-        cands.push((Selection::Tree(r.id), cell_world(h, (r.cell.0 as f32, r.cell.1 as f32)) + up * 3.0, 1.1));
-    }
-    for b in sim.0.buildings.buildings.iter().filter(|b| b.kind != sim::buildings::BuildingKind::Dam) {
-        cands.push((Selection::Site(b.id), cell_world(h, (b.pos.0 as f32 + 1.0, b.pos.1 as f32 + 1.0)) + up * 2.0, 2.0));
-    }
-    let entity = pick_entities(origin, dir, &cands);
-    if let Some((s, t)) = entity {
-        if terrain.is_none_or(|(_, _, tt)| t <= tt + 1.0) {
-            *sel = s;
-            return;
-        }
-    }
-    let Some((cell, _, _)) = terrain else {
-        *sel = Selection::None;
-        return;
-    };
-    if flow.phase == Phase::Scouting {
-        // the settling choice: a click picks a place, the card's Settle here founds the colony
-        settle_ui.click(&sim.0, &flow.fog, cell);
-        return;
-    }
-    *sel = if sim.0.water.has_dam(cell.0, cell.1) { Selection::Building(cell) } else { Selection::Cell(cell) };
-}
-
 /// Valleys unlock when a beaver reaches their border; unlocking opens their fog.
 fn unlock_valleys(time: Res<Time>, mut sim: ResMut<Sim>, mut flow: ResMut<Flow>) {
     if !sim.0.colony.is_founded() || flow.real_secs < flow.next_unlock {
@@ -717,12 +644,11 @@ fn unlock_valleys(time: Res<Time>, mut sim: ResMut<Sim>, mut flow: ResMut<Flow>)
     }
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::ui::NoticesRes>) {
+fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>) {
     let events = sim.0.colony.take_events();
     for e in &events {
         flow.push_log(format!("day {:.0}: {:?}", e.day, e.event));
     }
-    notices.0.ingest(&sim.0, &events);
     if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
         flow.fire(FlowEvent::Collapse);
         clock.paused = true;
