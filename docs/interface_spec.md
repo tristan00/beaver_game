@@ -335,7 +335,7 @@ In the inspector and in the building's hover tooltip:
 ### W4. Direct orders
 
 - Click a beaver to select; drag a box to multi-select; Shift adds.
-- With beavers selected: right-click a resource → gather it (`Command::Assign` with `Assignment::Resource`); right-drag an area → gather that kind there (`Assignment::Area`); right-click a site or building → fill its free slots.
+- With beavers selected: right-click a resource → gather that kind within 6 cells of it (`Assignment::Area`); Shift+right-click → that one resource only (`Assignment::Resource`); right-click a site or building → fill its free slots. (Right-drag stays the camera orbit, so area orders are a click, not a drag.)
 - Selected beavers show a ring; nothing else uses that ring (today white rings appear on beavers with no explanation).
 - A direct order locks the beaver (W1) until the lock icon on their inspector is clicked.
 
@@ -410,7 +410,7 @@ On the working copy the start looks likely to stall: about 8 days of food, the f
 | Colony screen | Tab |
 | Jobs board | J (opens Colony → Jobs) |
 | How/Why journal | H |
-| Next idle beaver | . (period) |
+| Next idle beaver | I (period is the audio ambience key) |
 | Collapse river profile | P |
 | Freeze tooltip | middle-click, or hold still |
 | Peek tooltip instantly | Alt |
