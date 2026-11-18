@@ -1,14 +1,10 @@
 //! Entry point: parses the command line and only adds plugins.
 mod audio;
-mod build;
 mod build_logic;
 mod camera;
-mod map_orders;
-mod map_overlay;
 mod cli;
 mod entities_render;
 mod flow;
-mod flow_view;
 mod input;
 mod opening;
 mod palette;
@@ -18,7 +14,6 @@ mod sim_driver;
 mod startflow;
 mod state;
 mod terrain_render;
-mod ui;
 mod water_render;
 
 use bevy::prelude::*;
@@ -47,7 +42,7 @@ fn main() -> AppExit {
     }
     app.add_plugins(DefaultPlugins.set(TaskPoolPlugin { task_pool_options: tp }).set(AssetPlugin {
         // Bevy's default root is the crate folder or the executable folder; our assets live at the workspace root.
-        file_path: ui::icons::asset_root().to_string_lossy().into_owned(),
+        file_path: "assets".to_string(),
         ..default()
     }).set(WindowPlugin {
         primary_window: Some(Window { title: "Beaver Colony".into(), resolution: window_size().into(), ..default() }),
@@ -58,20 +53,15 @@ fn main() -> AppExit {
         state::StatePlugin,
         sim_driver::SimDriverPlugin,
         flow::FlowPlugin,
-        flow_view::FlowViewPlugin,
-        build::BuildPlugin,
         camera::CameraPlugin,
         showcase::ShowcasePlugin,
         input::InputPlugin,
-        map_orders::MapOrdersPlugin,
-        map_overlay::MapOverlayPlugin,
         startflow::StartPlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,
         water_render::WaterRenderPlugin,
         entities_render::EntitiesRenderPlugin,
-        ui::UiPlugin,
         audio::AudioPlugin,
         screenshot::ScreenshotPlugin,
     ));
