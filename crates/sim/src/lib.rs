@@ -18,6 +18,7 @@ pub mod ledger;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod lakes;
 pub mod nav;
+pub mod output;
 pub mod region;
 pub mod resources;
 pub mod society;
@@ -107,6 +108,8 @@ pub struct SimState {
     pub society: society::Society,
     /// Whole-day goods history for the interface.
     pub ledger: ledger::Ledger,
+    /// What each building produced (smoothed per day).
+    pub output: output::Output,
 }
 
 impl SimState {
@@ -136,6 +139,7 @@ impl SimState {
             work: work::Work::default(),
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
+            output: output::Output::default(),
         };
         sim.colony.abstract_gathering = false;
         sim.apply_features();
@@ -214,6 +218,10 @@ impl SimState {
         agents::step(self, dt_days);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
+        for (b, g, a) in std::mem::take(&mut self.buildings.crafted) {
+            self.output.record(b, g, a);
+        }
+        self.output.step(dt_days);
         self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
     }
@@ -336,6 +344,43 @@ impl SimState {
         }
         self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height });
         Ok(id)
+    }
+
+    /// Cancels an unfinished construction site (`Site` or `UnderConstruction`): the building, its
+    /// workplace and any dam plan go, materials already delivered return to the stores and any
+    /// beaver assigned to its slots stands down. Returns what was refunded. Errors (state
+    /// unchanged) for an unknown or finished building.
+    pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
+        let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
+        if b.is_complete() {
+            return Err(SimError::InvalidCommand(format!("{} is finished; only unfinished sites can be cancelled", b.kind.spec().name)));
+        }
+        if matches!(b.status, buildings::Status::UnderConstruction(_)) {
+            let before: Vec<_> = b.kind.spec().cost.to_vec();
+            self.buildings.cancel(id, &mut self.colony).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+            self.output.forget(id);
+            return Ok(before);
+        }
+        let mut refunded = Vec::new();
+        if let Some(i) = self.work.places.iter().position(|p| p.building == id) {
+            let place = self.work.places.remove(i);
+            for &(g, a) in place.site.as_ref().map(|s| s.delivered.as_slice()).unwrap_or(&[]) {
+                if a > 0.0 {
+                    let put = self.buildings.stores.refund(g, a).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+                    refunded.push((g, put));
+                }
+            }
+        }
+        self.work.dam_plans.retain(|d| d.building != id);
+        self.work.managed.retain(|_, duty| !matches!(duty, work::ManagedDuty::Build(b, _) if *b == id));
+        for ag in self.agents.by_id.values_mut() {
+            if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
+                ag.assignment = None;
+            }
+        }
+        self.buildings.buildings.retain(|b| b.id != id);
+        self.output.forget(id);
+        Ok(refunded)
     }
 
     /// Applies a command. Errors on invalid arguments, leaving state unchanged.
@@ -511,6 +556,27 @@ mod tests {
         assert!(left < 40.0, "hungry beavers ate from the stores ({left} left)");
         assert!(s.buildings.stores.consumed_total[food.index()] > eaten_before, "eating is booked as consumption");
         assert_eq!(s.colony.food, left, "the colony's larder mirrors the stores");
+    }
+
+    #[test]
+    fn cancelling_a_site_refunds_what_was_delivered_and_removes_it() {
+        use buildings::{BuildingKind, Good};
+        let mut s = founded(6);
+        s.tech.update(&s.colony);
+        let c = s.colony.beavers[0].pos;
+        let (cx, cy) = (c.0 as usize, c.1 as usize);
+        let id = (2..30usize)
+            .flat_map(|r| (cx.saturating_sub(r)..=cx + r).flat_map(move |x| (cy.saturating_sub(r)..=cy + r).map(move |y| (x, y))))
+            .find_map(|p| s.place_site(BuildingKind::Warehouse, p).ok())
+            .expect("room for a warehouse");
+        s.work.deliver(id, Good::Logs, 5.0).unwrap();
+        let logs = s.buildings.stores.amount(Good::Logs);
+        let refunded = s.cancel_site(id).unwrap();
+        assert_eq!(refunded, vec![(Good::Logs, 5.0)]);
+        assert_eq!(s.buildings.stores.amount(Good::Logs), logs + 5.0);
+        assert!(s.buildings.building(id).is_none() && s.work.place(id).is_none());
+        assert!(s.cancel_site(id).is_err(), "already gone");
+        s.step(0.2).unwrap(); // nobody trips over the vanished site
     }
 
     #[test]

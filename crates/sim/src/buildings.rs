@@ -137,6 +137,12 @@ impl Stores {
         Ok(())
     }
 
+    /// Puts goods back without counting them as production (a cancelled site's materials).
+    /// Returns the amount that fit.
+    pub fn refund(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
+        self.put_raw(g, amount)
+    }
+
     /// Moves goods without touching the ledger (refunds, barge cargo).
     fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
@@ -407,6 +413,8 @@ pub struct Buildings {
     pub barges: Vec<Barge>,
     /// Total running water-wheel output (sum of wheel outputs).
     pub power: f32,
+    /// What each workshop crafted this step; `SimState` moves it into `output::Output`.
+    pub crafted: Vec<(BuildingId, Good, f32)>,
     next_id: u64,
 }
 
@@ -686,12 +694,12 @@ impl Buildings {
         if dt <= 0.0 {
             return;
         }
-        let recipes: Vec<(Recipe, f32)> = crafters
+        let recipes: Vec<(BuildingId, Recipe, f32)> = crafters
             .iter()
             .filter(|(_, n)| *n > 0)
             .filter_map(|&(id, n)| {
                 let b = self.building(id)?;
-                Some((b.recipe?, crate::catalogue::def(b.kind).batches_per_worker() * n as f32))
+                Some((id, b.recipe?, crate::catalogue::def(b.kind).batches_per_worker() * n as f32))
             })
             .collect();
         if recipes.is_empty() {
@@ -699,7 +707,7 @@ impl Buildings {
         }
         // Wheel power is shared evenly; a fully powered workshop gains `WHEEL_MAX_BOOST`.
         let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
-        for (r, rate) in recipes {
+        for (id, r, rate) in recipes {
             let (inputs, (out, per)) = r.batch();
             let mut batches = rate * dt * boost * tech.craft_speed_factor();
             for &(g, a) in inputs {
@@ -712,7 +720,8 @@ impl Buildings {
             for &(g, a) in inputs {
                 self.stores.withdraw(g, a * batches).expect("limited by availability");
             }
-            self.stores.deposit(out, per * batches).expect("amount is finite and >= 0");
+            let made = self.stores.deposit(out, per * batches).expect("amount is finite and >= 0");
+            self.crafted.push((id, out, made));
         }
     }
 

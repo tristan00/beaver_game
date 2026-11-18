@@ -784,6 +784,9 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
         want = left; // never leave float dust behind that would become a tiny extra load
     }
     if let Some((g, got)) = sim.resources.take(target, want) {
+        if let Some((b, _, _)) = sim.work.slot_of(ag.id) {
+            sim.output.record(b, g, got);
+        }
         let amount = have + got;
         ag.load = Some(Load { good: g, amount });
         ag.task = if amount >= LOAD_SIZE - EPS {

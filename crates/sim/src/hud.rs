@@ -261,6 +261,103 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     out
 }
 
+// ───────────────────────────── building report ─────────────────────────────
+
+/// One line of a building's "why this rate": a measured fact and whether it helps (`Some(true)`),
+/// holds the building back (`Some(false)`), or is neutral (`None`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Factor {
+    pub label: String,
+    pub value: String,
+    pub ok: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    /// Measured output: good, amount per day (smoothed over `output::SMOOTH_DAYS`), and whether
+    /// the building has produced long enough for the rate to be steady.
+    pub measured: Option<(Good, f32, bool)>,
+    /// The most the building could make per day with every slot filled and no walking.
+    pub ceiling: Option<(Good, f32)>,
+    pub factors: Vec<Factor>,
+}
+
+fn factor(label: impl Into<String>, value: impl Into<String>, ok: Option<bool>) -> Factor {
+    Factor { label: label.into(), value: value.into(), ok }
+}
+
+/// What a finished workplace produces and every measurable thing that limits it. `None` for
+/// unknown or unfinished buildings and for ones that produce nothing (stores, lodges, dams).
+pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
+    let b = sim.buildings.building(id)?;
+    if !b.is_complete() {
+        return None;
+    }
+    let def = crate::catalogue::def(b.kind);
+    let place = sim.work.place(id);
+    let measured = sim.output.of(id).and_then(|f| f.good.map(|g| (g, f.per_day, f.age_days >= crate::output::SMOOTH_DAYS)));
+    let mut factors = Vec::new();
+    let filled = place.map_or(0, |p| p.slots.iter().filter(|s| s.worker.is_some()).count());
+    let total = place.map_or(def.slots.len(), |p| p.slots.len());
+    let centre = {
+        let (w, h) = b.kind.spec().footprint;
+        (b.pos.0 + w / 2, b.pos.1 + h / 2)
+    };
+    let store_dist = |g: Good| {
+        sim.buildings
+            .buildings
+            .iter()
+            .filter(|s| s.is_complete() && crate::agents::accepts(s.kind, g))
+            .map(|s| s.cells().map(|c| c.0.abs_diff(centre.0) + c.1.abs_diff(centre.1)).min().unwrap_or(usize::MAX))
+            .min()
+    };
+    let collect = def.slots.iter().find_map(|r| if let Role::Collect(k) = r { Some(*k) } else { None });
+    if let Some(kind) = collect {
+        // A gathering camp: workers, what is left in its area, and the walk to a store.
+        let kinds: Vec<ResourceKind> = if kind == ResourceKind::Tree { vec![ResourceKind::Tree, ResourceKind::Felled] } else { vec![kind] };
+        let good = if kind == ResourceKind::Tree { Good::Logs } else { kind.yields().first().copied()? };
+        factors.push(factor("Workers", format!("{filled} of {total}"), Some(filled == total)));
+        if let Some(area) = place.and_then(|p| p.area) {
+            let left = sim.resources.items.iter().filter(|r| kinds.contains(&r.kind) && area.contains(r.cell) && r.has_yield()).count();
+            let what = match kind {
+                ResourceKind::Tree | ResourceKind::Felled => "Trees in its area",
+                ResourceKind::Plant => "Food plants in its area",
+                ResourceKind::MudBank => "Mud banks in its area",
+                ResourceKind::StoneOutcrop => "Stone outcrops in its area",
+            };
+            let value = if left == 0 { "none left".to_string() } else { left.to_string() };
+            factors.push(factor(what, value, Some(left > 0)));
+        }
+        match store_dist(good) {
+            Some(d) => factors.push(factor("Walk to the nearest store", format!("{d} cells"), Some(d <= 15))),
+            None => factors.push(factor("Store for its goods", "none: loads go only to sites", Some(false))),
+        }
+        let ceiling = Some((good, total as f32 * crate::agents::GATHER_PER_DAY));
+        return Some(Report { measured, ceiling, factors });
+    }
+    if def.batches_per_day > 0.0 {
+        // A workshop: crafters, recipe inputs on hand, room for the output, wheel power.
+        factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled == total)));
+        let Some(recipe) = b.recipe else {
+            factors.push(factor("Recipe", "none chosen", Some(false)));
+            return Some(Report { measured, ceiling: None, factors });
+        };
+        let (inputs, (out, per)) = recipe.batch();
+        for &(g, a) in inputs {
+            let have = sim.buildings.stores.amount(g);
+            factors.push(factor(format!("{g:?} in store (a batch needs {a})"), format!("{have:.0}"), Some(have >= a)));
+        }
+        let space = sim.buildings.stores.space(out);
+        factors.push(factor(format!("Room for {out:?}"), format!("{space:.0}"), Some(space >= per)));
+        let power = sim.buildings.power.min(1.0);
+        let value = if power > 0.0 { format!("+{:.0}%, shared by workshops", power * 100.0) } else { "none".to_string() };
+        factors.push(factor("Water wheel power", value, (power > 0.0).then_some(true)));
+        let ceiling = Some((out, def.batches_per_day * per * (1.0 + power) * sim.tech.craft_speed_factor()));
+        return Some(Report { measured, ceiling, factors });
+    }
+    None
+}
+
 // ───────────────────────────── river profile ─────────────────────────────
 
 /// One river cell seen from the side.
@@ -456,6 +553,39 @@ mod tests {
         for pair in pts.windows(2) {
             assert_eq!(s.world.downstream(pair[0].cell.0, pair[0].cell.1), Some(pair[1].cell), "points follow the flow");
         }
+    }
+
+    #[test]
+    fn a_staffed_camp_reports_measured_output_and_its_limits() {
+        use crate::buildings::BuildingKind;
+        let mut s = SimState::new(6);
+        let c = s.world.valleys[s.world.start.0 as usize].center;
+        let land = crate::WorldLand { world: &s.world, depth: &s.water.depth };
+        s.colony.found((c.0, c.1), &land).unwrap();
+        crate::agents::place_beavers(&mut s);
+        s.tech.record(crate::tech::Achievement::FirstDam);
+        s.tech.update(&s.colony);
+        let (cx, cy) = (c.0 as usize, c.1 as usize);
+        let id = (2..30usize)
+            .flat_map(|r| (cx.saturating_sub(r)..=cx + r).flat_map(move |x| (cy.saturating_sub(r)..=cy + r).map(move |y| (x, y))))
+            .find_map(|p| s.place_site(BuildingKind::LoggingCamp, p).ok())
+            .expect("room for a logging camp");
+        assert!(building_report(&s, id).is_none(), "a site produces nothing yet");
+        // Finish it by hand and staff one slot.
+        s.buildings.buildings.iter_mut().find(|b| b.id == id).unwrap().status = crate::buildings::Status::Complete;
+        let area = crate::catalogue::work_area(s.buildings.building(id).unwrap());
+        let slots: Vec<Role> = crate::catalogue::def(BuildingKind::LoggingCamp).slots;
+        s.work.finish_site(id, &slots, area).unwrap();
+        let adult = s.colony.beavers.iter().find(|b| b.stage == Stage::Adult).unwrap().id;
+        s.work.assign(id, 0, adult).unwrap();
+        s.output.record(id, Good::Logs, 3.0);
+        s.output.step(1.0);
+        let r = building_report(&s, id).expect("a camp has a report");
+        assert_eq!(r.measured.map(|m| m.0), Some(Good::Logs));
+        assert_eq!(r.factors[0], factor("Workers", "1 of 2", Some(false)));
+        assert!(r.factors.iter().any(|f| f.label == "Trees in its area"));
+        assert!(r.factors.iter().any(|f| f.label.starts_with("Store") && f.ok == Some(false)), "no store yet: {:?}", r.factors);
+        assert_eq!(r.ceiling, Some((Good::Logs, 2.0 * crate::agents::GATHER_PER_DAY)));
     }
 
     #[test]
