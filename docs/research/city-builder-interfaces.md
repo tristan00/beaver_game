@@ -3,7 +3,7 @@
 Researched 2026-11-17 from web sources fetched during this task (no prior research or spec was consulted).
 All sources are community wikis or guides unless marked; none is an in-game check.
 
-**Support levels:** *Strong* = stated on pages I read, with two sources agreeing. *Single* = one page only. *Weak* = secondary guide, old, stub page, or search snippet only. *Gap* = not found.
+**Support levels:** *Strong* = stated on pages I read, with two sources agreeing. *Single* = one page only. *Weak* = secondary guide, old, or stub page. *Gap* = not found.
 
 Games covered (8): Timberborn, RimWorld, Dwarf Fortress, Banished, Anno 1800, Cities: Skylines, Oxygen Not Included, Factorio. Frostpunk was attempted, but both wiki pages refused access (HTTP 401/402), so it is **not** covered.
 
@@ -17,7 +17,7 @@ Games covered (8): Timberborn, RimWorld, Dwarf Fortress, Banished, Anno 1800, Ci
 | Cities: Skylines | Demand bars (green residential, blue commercial, orange industrial) at the bottom, slightly left of centre. | Single (wiki "verified for 1.16") | [Zoning](https://skylines.paradoxwikis.com/Zoning) |
 | Banished | Not documented in the guide read. | Gap | [Gamepressure](https://www.gamepressure.com/banished/interface/z06082) |
 
-Pattern: a persistent strip with stockpile totals plus time/speed. Timberborn and Cities: Skylines also use colour to signal need or demand state.
+Pattern: Timberborn and Anno 1800 (Ludo) show resource or finance figures together with time; RimWorld has a resource list top-left but its time controls are bottom-right. Timberborn (green for satisfied needs) and Cities: Skylines (coloured demand bars) use colour to show need or demand state.
 
 ## 2. Build menu
 
@@ -25,11 +25,11 @@ Pattern: a persistent strip with stockpile totals plus time/speed. Timberborn an
 - **RimWorld**: Architect menu, bottom-left, with tabs Orders, Zone/Area, Structure, Production, Furniture, Power, Security, Misc, Floors and more. Strong (two wiki pages agree). [Architect](https://rimworldwiki.com/wiki/Architect), [User interface](https://rimworldwiki.com/wiki/User_interface)
 - **Banished**: category icons lower right (Tools & Reports, Housing, Roads & Bridges, Storage/Market/Trade, Town Services, Food Production, Resource Production, Removal, Options); windows can be dragged. Weak (single guide, 2016). [Gamepressure](https://www.gamepressure.com/banished/interface/z06082)
 - **Anno 1800**: hammer icon at the far left of the bottom bar opens the build menu, with category tabs; hotkey B. Weak/Single. [Ludo](https://www.ludo.guide/guide/anno-1800/getting-started/game-interface-hud)
-- **Cities: Skylines**: the Zoning page lists zoning tools in the toolbar ([Zoning](https://skylines.paradoxwikis.com/Zoning)); hotkeys are **not covered** (the two sources seen only as search snippets were dropped, and the wiki's shortcut pages returned no usable content).
+- **Cities: Skylines**: the Zoning page lists zoning tools in the toolbar ([Zoning](https://skylines.paradoxwikis.com/Zoning)); hotkeys are **not covered** (the wiki's shortcut pages returned no usable content).
 - **Dwarf Fortress**: modal menus by letter key (d designations, p stockpiles, i zones). Single. [Designations menu](https://dwarffortresswiki.org/Designations_menu)
 - **Oxygen Not Included**: build menu page returned 404. **Gap**.
 
-Pattern: categorised palette at a screen edge, opened by hotkey, with keyboard tool cycling.
+Pattern: Timberborn, RimWorld, Banished and Anno 1800 have categorised build menus (RimWorld bottom-left, Banished lower right, Anno at the left of the bottom bar). Anno opens it with B and Dwarf Fortress menus open by letter key; only Timberborn is documented with keyboard cycling of groups and tools.
 
 ## 3. Placement ghosts and previews
 
@@ -39,7 +39,7 @@ Pattern: categorised palette at a screen edge, opened by hotkey, with keyboard t
 - **Dwarf Fortress**: blueprint mode (M) shows designations cyan instead of beige; dwarves ignore them until converted (k). Single. [Designations menu](https://dwarffortresswiki.org/Designations_menu)
 - **RimWorld**: the Plan tool draws plans colonists do not act on. Ghost and rotation behaviour **not documented** on pages read. [Architect](https://rimworldwiki.com/wiki/Architect)
 
-Pattern: preview is distinct from committed work; valid/invalid is a binary colour (green/red in Timberborn); a way to queue without committing exists (Factorio ghosts, DF blueprint, RimWorld Plan).
+Pattern: Timberborn's preview is green when valid and red when blocked (single source). Factorio ghosts, the DF blueprint mode and the RimWorld Plan tool each let the player mark work without it being acted on at once.
 
 ## 4. Selection panels
 
@@ -64,7 +64,7 @@ Pattern: preview is distinct from committed work; valid/invalid is a binary colo
 | Timberborn | Per-workplace priority (5 levels) when workers are scarce; construction-site priority (5 levels). Tie-break order between competing sites is **not established** (the Building page returned HTTP 403). | Single | [Object Detail](https://timberborn.wiki.gg/wiki/User_Interface/Object_Detail) |
 | Banished | Under Tools & Reports, assign villagers to professions and set priorities; detail page not read. | Weak | [Gamepressure](https://www.gamepressure.com/banished/interface/z06082) |
 
-Pattern: three models. (a) per-worker matrix (RimWorld, DF), (b) per-job or per-building priority (Timberborn, ONI), (c) profession assignment (Banished). Ties are broken by a documented rule (left-to-right, proximity, placement order).
+Pattern: three models. (a) per-worker settings (RimWorld work grid, DF labors), (b) priorities on jobs or buildings (Timberborn workplaces and construction sites, DF designations, ONI priority levels), (c) profession assignment (Banished, weak). Documented tie-breaks: RimWorld (left column) and ONI ("Enable Proximity" option); Timberborn's is not established and DF's is not stated.
 
 ## 7. Camera
 
@@ -80,22 +80,22 @@ Weakly covered. Anno 1800: minimap bottom-right, zoom with +/- or wheel, padlock
 
 ## Conventions to follow
 
-Each is a recommendation derived from the findings above and traced to the games that use it.
+Each is a recommendation derived from the findings above and traced to the games whose findings state it. See `city-builder-interfaces-trace.md` for the sentence-by-finding table.
 
-1. **Persistent top strip with stockpile totals, time and speed controls; colour-flag unmet needs.** Anno 1800 (top bar), Timberborn (inventory, green satisfied needs), RimWorld (resource list, time controls), Cities: Skylines (coloured demand bars). Confidence: medium.
-2. **Categorised build palette at a screen edge, opened by one hotkey, with keyboard cycling.** Timberborn (Ctrl/Shift+scroll), RimWorld (Architect), Anno 1800 (hammer, B), Banished (category icons), Cities: Skylines (zoning tools in toolbar; hotkeys not sourced). Confidence: medium.
-3. **Placement ghost is translucent, green when valid and red when blocked; planning is separate from committing.** Timberborn (green/red), Factorio (ghosts), Dwarf Fortress (blueprint mode), RimWorld (Plan). Confidence: medium (colours single-sourced; plan-vs-commit seen in three games).
-4. **Right-click cancels an in-progress placement; a way to repeat placement exists.** Cities: Skylines (right-click cancel), Factorio (Shift ghosts), Timberborn (Duplicate). Confidence: low-medium; Shift-repeat in Timberborn unverified.
+1. **Show stockpile or finance figures together with time, and use colour for need or demand state.** Anno 1800 (balance and time in the top bar), Timberborn (inventory, time, green satisfied needs), RimWorld (resource list top-left, time controls bottom-right), Cities: Skylines (coloured demand bars). Confidence: medium.
+2. **Offer a categorised build menu.** Timberborn, RimWorld (Architect), Anno 1800 (hammer, B), Banished (category icons), Cities: Skylines (zoning tools in toolbar). Keyboard tool cycling is documented only for Timberborn; hotkeys for Cities: Skylines are not sourced. Confidence: medium for categories, low for hotkeys.
+3. **Show a placement preview that is green when valid and red when blocked; let the player mark work without committing it.** Timberborn (green/red, single source), Factorio (ghosts), Dwarf Fortress (blueprint mode), RimWorld (Plan). Confidence: medium for plan-vs-commit (three games), low for the colours (one source).
+4. **Right-click cancels an in-progress placement; a duplicate action places multiple copies.** Cities: Skylines (right-click cancel), Timberborn (Duplicate). Confidence: low.
 5. **Snap to the grid and to existing structures while placing.** Cities: Skylines. Confidence: low (one game).
-6. **Selecting an object opens a panel with its settings, including per-building worker priority; multi-select shows counts.** Timberborn (Object Detail), RimWorld (inspect pane counts), Anno 1800 (info panel). Confidence: medium. Panel position is not a convention: Anno sources disagree.
-7. **Area orders are a rectangle drag with a matching clear/remove tool.** Dwarf Fortress (rectangle, x removes), RimWorld (clear-area tools, shrink zone), Timberborn (mark/unmark), Cities: Skylines (marquee, fill, brush, de-zone). Confidence: medium-high.
+6. **Selecting an object opens a panel with its settings, including per-building worker priority; multi-select shows counts.** Timberborn (Object Detail), RimWorld (inspect pane counts). Confidence: medium. Panel position is not a convention: Anno 1800 sources disagree.
+7. **Area orders are drag-selected, with a matching clear tool.** Dwarf Fortress (rectangle drag, x removes), Cities: Skylines (marquee, fill, brush for zoning), RimWorld (a clear tool for each area, shrink zone), Timberborn (mark/unmark areas; drag mechanics not documented). Confidence: low-medium; the drag itself is documented only for DF and Cities: Skylines.
 8. **Distinguish exclusive zones from overlapping area layers, and label which a tool makes.** RimWorld. Confidence: low (one game, but clearly specified).
-9. **Priority is a small numeric range with an explicit "never" and a documented tie-break.** RimWorld (1 to 4, blank), Dwarf Fortress (1 to 7), ONI (very high to disabled, sub-priority, proximity), Timberborn (5 levels). Confidence: high.
-10. **Alerts are a counted list; selecting one centres the camera on its target; keep a log.** Timberborn (cycle targets, Journal), RimWorld (colonist bar jump), Factorio (alerts, per-type toggles), Anno 1800 (bell and notification list). Confidence: medium.
-11. **Provide a "focus selected" camera action and an overview map when the world is large.** Timberborn (Focus), Anno 1800 (minimap, lock), Factorio (map toggle). Confidence: low-medium; pan/zoom defaults unsourced.
+9. **Priority is a small numeric range; an explicit "never" and a documented tie-break are worth providing.** Ranges: RimWorld (1 to 4), Dwarf Fortress (1 to 7), ONI (very high to disabled, sub-priority 1 to 9), Timberborn (5 levels). "Never": RimWorld (blank), ONI (disabled). Tie-break: RimWorld (left column), ONI (proximity option). Confidence: medium.
+10. **Alerts are a counted list with a log.** Timberborn (counts, cycling through targets, Journal), Factorio (timed alerts, per-type toggles), RimWorld (alerts top-right), Anno 1800 (notification list). Confidence: medium; camera centring on an alert target is not established.
+11. **Provide a "focus selected" camera action and an overview map.** Timberborn (Focus), Anno 1800 (minimap, lock), Factorio (map toggle). Confidence: low-medium; pan/zoom defaults unsourced.
 
 ## Limits of this study
 
 - All evidence is from wikis and guides; I did not play the games. Several pages are stubs or dated (Banished 2016, ONI overlay hotkeys 2024).
 - Not obtained: Frostpunk entirely; Banished resource bar, notifications and camera; RimWorld drag, ghost, rotation, letters and camera; DF stockpile, zone and announcement pages (wiki returned 429); Cities: Skylines notifications and camera; ONI build menu, camera and diagnostics; Timberborn camera and drag mechanics; PC Gamer's Anno 1800 article (truncated).
-- Every claim above links to a page that was opened. Claims known only from search snippets or unopened pages were removed or marked not established; Cities: Skylines hotkeys and Timberborn construction tie-break order are in that group.
+- Every claim above links to a page that was opened. Cities: Skylines hotkeys and the Timberborn construction tie-break order are not established.
