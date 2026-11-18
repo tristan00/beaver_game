@@ -357,6 +357,50 @@ fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f3
     }
 }
 
+/// Forest lens colours: saplings pale, young mid, mature deep, old brown, snags grey.
+pub fn stage_color(st: sim::forestry::TreeStage) -> Color {
+    use sim::forestry::TreeStage::*;
+    match st {
+        Sapling => Color::srgb(0.78, 0.93, 0.62),
+        Young => Color::srgb(0.45, 0.78, 0.36),
+        Mature => Color::srgb(0.12, 0.5, 0.22),
+        Old => Color::srgb(0.58, 0.4, 0.2),
+        Snag => Color::srgb(0.6, 0.6, 0.58),
+    }
+}
+
+/// Role colours of the work areas in the forest lens.
+pub const LOGGER_AREA: Color = Color::srgb(0.91, 0.52, 0.23);
+pub const FORESTER_AREA: Color = Color::srgb(0.55, 0.88, 0.45);
+
+/// Height above the ground of the forest lens' dots: over the canopy, like a map layer.
+const FOREST_DOT_LIFT: f32 = 2.6;
+
+/// A tree in the forest lens: a diamond sized by stage, with a cross through it.
+fn tree_dot(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, st: sim::forestry::TreeStage) {
+    use sim::forestry::TreeStage::*;
+    let r = match st {
+        Sapling => 0.14,
+        Young => 0.24,
+        Mature | Old => 0.36,
+        Snag => 0.2,
+    };
+    let col = stage_color(st);
+    let (x, z) = (c.0 as f32, c.1 as f32);
+    let p = |dx: f32, dz: f32| {
+        let mut v = cell_world(h, (x + dx, z + dz));
+        v.y = height_at(h, x, z) + FOREST_DOT_LIFT;
+        v
+    };
+    let (n, e, s, w) = (p(0.0, -r), p(r, 0.0), p(0.0, r), p(-r, 0.0));
+    g.line(n, e, col);
+    g.line(e, s, col);
+    g.line(s, w, col);
+    g.line(w, n, col);
+    g.line(n, s, col);
+    g.line(e, w, col);
+}
+
 fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, colour: Color) {
     let (x0, y0, x1, y1) = (a.min.0 as f32 - 0.5, a.min.1 as f32 - 0.5, a.max.0 as f32 + 0.5, a.max.1 as f32 + 0.5);
     let n = 24;
@@ -439,6 +483,25 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
+    if lens == MapLens::Forest.code() {
+        // Trees near the view by stage, and every logging and forestry area in its role colour.
+        let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
+        for t in s.resources.items.iter().filter(|t| t.cell.0.abs_diff(tx) <= r && t.cell.1.abs_diff(ty) <= r) {
+            if let Some(st) = t.stage() {
+                tree_dot(&mut g, h, t.cell, st);
+            }
+        }
+        for p in &s.work.places {
+            let col = match p.kind {
+                BuildingKind::LoggingCamp => LOGGER_AREA,
+                BuildingKind::ForesterLodge => FORESTER_AREA,
+                _ => continue,
+            };
+            if let Some(a) = p.area {
+                area_outline(&mut g, h, a, col);
+            }
+        }
+    }
     // The selected building and its work area.
     if let Selection::Site(id) = *sel {
         if let Some(b) = s.buildings.building(id) {
@@ -451,9 +514,8 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         }
     }
     // A work area being drawn.
-    if let (Some(_), Some(a), Some(b)) = (hud.area_edit, hud.area_from, hover.0) {
-        let area = sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) };
-        area_outline(&mut g, h, area, ACCENT);
+    if let (Some(id), Some(a), Some(b)) = (hud.area_edit, hud.area_from, hover.0) {
+        area_outline(&mut g, h, super::drawn_area(s, id, a, b), ACCENT);
     }
     // Hovered thing (no tool): a light outline.
     if hud.tool == Tool::None {
@@ -471,6 +533,16 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
                 let col = if pv.is_valid() { Color::WHITE } else { BAD };
+                // A gathering building shows the work area it will start with.
+                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, recipe: None, output: 0.0 };
+                if let Some(a) = sim::catalogue::work_area(&probe) {
+                    let area_col = match kind {
+                        BuildingKind::LoggingCamp => LOGGER_AREA,
+                        BuildingKind::ForesterLodge => FORESTER_AREA,
+                        _ => Color::WHITE.with_alpha(0.6),
+                    };
+                    area_outline(&mut g, h, a, area_col);
+                }
                 for c in &pv.cells {
                     cell_outline(&mut g, h, *c, None, col);
                     if !pv.is_valid() {

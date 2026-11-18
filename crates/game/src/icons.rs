@@ -40,9 +40,10 @@ icons! {
     // Buildings
     Dam, Lodge, Burrow, FoodCache, ScentMound, GuardPost, Canal, Lock, WaterWheel, Workshop,
     Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, QuarryCamp, Mill, Storehouse, EldersDen,
+    ForesterLodge, TreeNursery,
     // Roles
     RoleForager, RoleLogger, RoleMudDigger, RoleQuarrier, RoleBuilder, RoleHauler, RoleCrafter,
-    RoleElder, RoleGuard,
+    RoleElder, RoleGuard, RoleForester,
     // Map views
     ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
     // Status and shapes
@@ -58,6 +59,8 @@ icons! {
     // Rows and misc
     Hourglass, Walk, Tree, Plant, MudBank, Outcrop, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Profile, Upstream, North, Gauge, Wheel,
+    // Tree stages (mature is `Tree`) and coppicing
+    Sapling, TreeYoung, TreeOld, Coppice,
 }
 
 /// The icon atlas: one image plus a grid layout with one cell per [`Icon`].
@@ -568,6 +571,14 @@ fn round_tree(c: &mut Canvas) {
     c.knock(circle(32.0, 22.0, 15.0).or(circle(19.0, 31.0, 11.5)).or(circle(45.0, 31.0, 11.5)).or(rect_c(19.0, 28.0, 45.0, 42.5, 8.0)));
 }
 
+/// A seedling: a stem with two leaves on a line of ground.
+fn seedling(c: &mut Canvas) {
+    c.add(qbez((32.0, 56.0), (31.0, 42.0), (33.0, 26.0), 5.0));
+    c.add(leaf((32.0, 36.0), (8.0, 20.0), 9.0));
+    c.add(leaf((33.0, 28.0), (56.0, 9.0), 10.0));
+    c.add(seg(14.0, 57.0, 50.0, 57.0, 4.5));
+}
+
 fn rock(c: &mut Canvas) {
     c.add(poly(&[(10.0, 50.0), (14.0, 30.0), (27.0, 15.0), (43.0, 16.0), (54.0, 31.0), (55.0, 51.0), (32.0, 55.0)]).grow(2.5));
     c.cut(polyline(&[(27.0, 15.0), (31.0, 31.0), (55.0, 33.0)], 3.5));
@@ -848,6 +859,17 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(rect_c(24.0, 42.0, 40.0, 64.0, 8.0));
             c.knock(star(32.0, 21.0, 15.0, 6.5, 5).grow(1.5));
         }
+        ForesterLodge => {
+            c.part(26.0, 37.0, 0.8, 0.0, 0.0, house_door);
+            c.part(46.0, 21.0, 0.6, 0.0, 3.0, seedling);
+        }
+        TreeNursery => {
+            c.add(poly(&[(8.0, 40.0), (56.0, 40.0), (50.0, 56.0), (14.0, 56.0)]).grow(1.5));
+            c.cut(seg(10.0, 47.0, 54.0, 47.0, 3.0));
+            for x in [18.0, 32.0, 46.0] {
+                c.part(x, 22.0, 0.42, 0.0, 2.5, seedling);
+            }
+        }
         // ---- roles
         RoleForager => role(c, 0.0, berries),
         RoleLogger => role(c, 35.0, axe),
@@ -858,6 +880,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleCrafter => role(c, -30.0, saw),
         RoleElder => role(c, 0.0, |c| c.add(star(32.0, 34.0, 27.0, 12.0, 5).grow(2.0))),
         RoleGuard => role(c, 0.0, shield),
+        RoleForester => role(c, 0.0, seedling),
         // ---- views
         ViewWorld => {
             c.add(poly(&[(6.0, 14.0), (21.0, 8.0), (21.0, 50.0), (6.0, 56.0)]).grow(1.0));
@@ -1169,6 +1192,26 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(48.0, 16.0, 56.0, 16.0, 4.5).or(seg(48.0, 32.0, 54.0, 32.0, 4.5)).or(seg(48.0, 48.0, 56.0, 48.0, 4.5)));
         }
         Wheel => wheel(c),
+        Sapling => seedling(c),
+        TreeYoung => {
+            c.add(seg(32.0, 38.0, 32.0, 58.0, 5.0));
+            c.knock(circle(32.0, 27.0, 13.0).or(circle(23.0, 34.0, 8.0)).or(circle(41.0, 34.0, 8.0)));
+            c.add(seg(20.0, 58.0, 44.0, 58.0, 4.0));
+        }
+        TreeOld => {
+            c.add(poly(&[(25.0, 58.0), (28.0, 36.0), (36.0, 36.0), (40.0, 58.0)]).grow(1.0));
+            c.add(seg(34.0, 40.0, 54.0, 22.0, 4.0));
+            c.knock(circle(24.0, 22.0, 13.0).or(circle(12.0, 32.0, 8.0)).or(circle(37.0, 16.0, 9.0)));
+            c.cut(circle(22.0, 21.0, 3.5).or(circle(31.0, 26.0, 2.8)).or(circle(13.0, 32.0, 2.5)));
+        }
+        Coppice => {
+            c.add(rect_c(19.0, 40.0, 45.0, 57.0, 3.0));
+            c.cut(ellipse(32.0, 40.0, 9.0, 3.0));
+            c.add(qbez((25.0, 40.0), (22.0, 28.0), (12.0, 18.0), 4.0));
+            c.add(qbez((32.0, 39.0), (32.0, 24.0), (32.0, 9.0), 4.0));
+            c.add(qbez((39.0, 40.0), (42.0, 28.0), (52.0, 18.0), 4.0));
+            c.add(leaf((12.0, 18.0), (9.0, 6.0), 6.0).or(leaf((32.0, 12.0), (24.0, 4.0), 6.0)).or(leaf((52.0, 18.0), (56.0, 6.0), 6.0)));
+        }
     }
 }
 
@@ -1283,13 +1326,13 @@ mod tests {
         let groups: Vec<&[Icon]> = vec![
             &[Food, Logs, Sticks, Mud, Stone, Baskets, Rope, Tools],
             &[CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence],
-            &Icon::ALL[Dam.index()..=EldersDen.index()],
-            &Icon::ALL[RoleForager.index()..=RoleGuard.index()],
+            &Icon::ALL[Dam.index()..=TreeNursery.index()],
+            &Icon::ALL[RoleForager.index()..=RoleForester.index()],
             &Icon::ALL[ViewWorld.index()..=ViewHousing.index()],
             &Icon::ALL[Idle.index()..=Cross.index()],
             &Icon::ALL[Pause.index()..=Settings.index()],
             &Icon::ALL[Beaver.index()..=DrySummer.index()],
-            &Icon::ALL[Hourglass.index()..=Wheel.index()],
+            &Icon::ALL[Hourglass.index()..=Coppice.index()],
         ];
         groups.into_iter().flat_map(|g| g.chunks(12).map(|c| c.to_vec()).collect::<Vec<_>>()).collect()
     }

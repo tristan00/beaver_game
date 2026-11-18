@@ -78,7 +78,8 @@ pub fn sync_sim_beavers(
 /// What a resource entity currently shows; the entity is only touched when this changes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResSig {
-    Tree,
+    /// A standing tree and its stage (`sim::forestry::TreeStage as u8`).
+    Tree(u8),
     /// Logs still lying there (whole logs, rounded up) and whether the branches remain.
     Felled(u8, bool),
     /// Remaining stock quantised to eighths (mud, stone) or quarters (plants).
@@ -95,7 +96,7 @@ pub enum ResourceKindTag {
 pub fn res_sig(r: &sim::resources::Resource) -> ResSig {
     let q = |n: f32| ((r.amount / r.max_amount.max(1e-3)).clamp(0.0, 1.0) * n).ceil() as u8;
     match r.kind {
-        ResourceKind::Tree => ResSig::Tree,
+        ResourceKind::Tree => ResSig::Tree(r.stage().map_or(2, |s| s as u8)),
         ResourceKind::Felled => ResSig::Felled(r.amount.ceil().clamp(0.0, 3.0) as u8, r.branches > 0.0),
         ResourceKind::MudBank => ResSig::Stock(ResourceKindTag::Mud, q(8.0)),
         ResourceKind::StoneOutcrop => ResSig::Stock(ResourceKindTag::Stone, q(8.0)),
@@ -130,15 +131,28 @@ pub struct WorldSync {
     lodges: HashMap<u64, Entity>,
 }
 
+/// A tree's size by stage: saplings small, young trees half grown, old ones a little broader.
+pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
+    use sim::forestry::TreeStage::*;
+    match st {
+        Sapling => Vec3::splat(0.3),
+        Young => Vec3::splat(0.62),
+        Mature | Snag => Vec3::ONE,
+        Old => Vec3::new(1.12, 1.0, 1.12),
+    }
+}
+
 fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource, season: models::Season) -> (Handle<Mesh>, Vec3, Option<TreeLod>) {
     let sig = res_sig(r);
     let c = r.cell;
     let hash_scale = 0.8 + 0.4 * hash01(c.0, c.1, 5);
     let k = WORLD_SCALE;
     match sig {
-        ResSig::Tree => {
+        ResSig::Tree(_) if r.snag => (models.snag.clone(), Vec3::splat(k * hash_scale), None),
+        ResSig::Tree(_) => {
             let sp = species_at(sim, c);
-            (models.tree(sp, season, 0), Vec3::splat(k * hash_scale), Some(TreeLod { species: sp, lod: 0, season }))
+            let st = r.stage().unwrap_or(sim::forestry::TreeStage::Mature);
+            (models.tree(sp, season, 0), stage_scale(st) * k * hash_scale, Some(TreeLod { species: sp, lod: 0, season }))
         }
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), None),
         ResSig::Stock(tag, q) => {
@@ -162,7 +176,13 @@ fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3)
     Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(scale)
 }
 
-/// Standing trees, felled trees with their logs, mud banks, stone deposits and plants.
+/// Old trees are drawn darker; everything else with the shared material.
+fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<StandardMaterial> {
+    if r.stage() == Some(sim::forestry::TreeStage::Old) { models.old_tree.clone() } else { models.white.clone() }
+}
+
+/// Standing trees (scaled by stage, old ones darker, snags as bare trunks), felled trees with
+/// their logs, mud banks, stone deposits and plants.
 pub fn sync_sim_resources(
     mut commands: Commands,
     cli: Res<Cli>,
@@ -196,7 +216,7 @@ pub fn sync_sim_resources(
             Some((e, _)) => {
                 let (mesh, scale, lod) = res_visual(&models, sim, r, season.0);
                 let mut ec = commands.entity(e);
-                ec.insert((Mesh3d(mesh), res_transform(sim, r, scale)));
+                ec.insert((Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), res_transform(sim, r, scale)));
                 match lod {
                     Some(l) => ec.insert(l),
                     None => ec.remove::<TreeLod>(),
@@ -205,7 +225,7 @@ pub fn sync_sim_resources(
             }
             None => {
                 let (mesh, scale, lod) = res_visual(&models, sim, r, season.0);
-                let mut ec = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(models.white.clone()), res_transform(sim, r, scale)));
+                let mut ec = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), res_transform(sim, r, scale)));
                 if let Some(l) = lod {
                     ec.insert(l);
                 }
@@ -231,10 +251,10 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
     match k {
         BuildingKind::Dam | BuildingKind::Lock => StructKind::Dam,
         BuildingKind::Lodge => StructKind::Lodge,
-        BuildingKind::Burrow | BuildingKind::EldersDen | BuildingKind::FoodCache | BuildingKind::ScentMound | BuildingKind::GuardPost | BuildingKind::ForagerHut | BuildingKind::MudPit => StructKind::Burrow,
+        BuildingKind::Burrow | BuildingKind::EldersDen | BuildingKind::FoodCache | BuildingKind::ScentMound | BuildingKind::GuardPost | BuildingKind::ForagerHut | BuildingKind::MudPit | BuildingKind::TreeNursery => StructKind::Burrow,
         BuildingKind::Canal => StructKind::Canal,
         BuildingKind::WaterWheel | BuildingKind::Mill => StructKind::WaterWheel,
-        BuildingKind::Workshop | BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::LoggingCamp | BuildingKind::QuarryCamp => StructKind::Workshop,
+        BuildingKind::Workshop | BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::LoggingCamp | BuildingKind::QuarryCamp | BuildingKind::ForesterLodge => StructKind::Workshop,
         BuildingKind::Dock => StructKind::Dock,
         BuildingKind::Barge => StructKind::Barge,
     }
