@@ -765,6 +765,15 @@ fn organise(sim: &mut SimState) {
         let prio = std::cmp::Reverse(p.priority);
         let mut runs = run.map_or(0, |_| crate::work::SITE_SLOTS.min(p.max_workers));
         for (i, s) in p.slots.iter().enumerate() {
+            // No beaver is sent to stand idle: haulers need a haul order, crafters a recipe.
+            let idle = match s.role {
+                Role::Haul => sim.work.hauls.is_empty(),
+                Role::Craft => b.recipe.is_none(),
+                _ => false,
+            };
+            if idle {
+                continue;
+            }
             let rank = sim.work.role_rank(crate::jobs::role_kind(s.role));
             if let Some(a) = run.filter(|_| runs > 0) {
                 runs -= 1;
