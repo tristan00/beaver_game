@@ -49,7 +49,8 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
     let mut out = Vec::new();
     for kind in BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)) {
         let tech = TECHS.iter().find(|t| t.effects.contains(&Effect::Unlock(kind)));
-        let group = tech.map_or(Group::Base, |t| Group::Branch(t.branch));
+        // The dam is a water verb: it sits with the water buildings although it needs no research.
+        let group = if kind == BuildingKind::Dam { Group::Branch(Branch::Water) } else { tech.map_or(Group::Base, |t| Group::Branch(t.branch)) };
         let unlocked = sim.tech.allows(kind);
         let need = match (unlocked, tech) {
             (false, Some(t)) => Some((t.name, t.xp, t.branch.experience(&sim.colony))),
@@ -634,6 +635,7 @@ pub(crate) mod tests {
         assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow control", 120.0)));
         let dam = m.iter().find(|e| e.kind == BuildingKind::Dam).unwrap();
         assert!(dam.unlocked && dam.need.is_none());
+        assert_eq!(dam.group, Group::Branch(Branch::Water));
         // groups are contiguous
         let groups: Vec<_> = m.iter().map(|e| e.group).collect();
         let mut seen = vec![];

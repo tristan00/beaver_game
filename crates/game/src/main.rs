@@ -6,6 +6,7 @@ mod cli;
 mod entities_render;
 mod flow;
 mod hud;
+mod icons;
 mod input;
 mod menu;
 mod opening;
@@ -59,6 +60,7 @@ fn main() -> AppExit {
         showcase::ShowcasePlugin,
         input::InputPlugin,
         startflow::StartPlugin,
+        icons::IconsPlugin,
         hud::HudPlugin,
         menu::MenuPlugin,
     ))

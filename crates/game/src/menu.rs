@@ -131,7 +131,7 @@ fn menu_keys(
         Some(Screen::Settings) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.open_cat.is_some() || h.ledger_open || h.search.is_some());
+            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.open_cat.is_some() || h.colony.is_some() || h.search.is_some());
             if !busy && *sel == Selection::None {
                 menu.was_paused = clock.paused;
                 clock.paused = true;
@@ -250,7 +250,8 @@ fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: Re
         if let Some(t) = new.first() {
             clock.paused = true;
             if let Some(mut h) = hud_state {
-                h.msg = Some((format!("Paused: {t} (auto-pause, change it in Settings)"), now));
+                let _ = &t;
+                h.notify_paused(now);
             }
         }
     }
