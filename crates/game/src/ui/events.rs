@@ -357,6 +357,28 @@ pub mod tests {
         assert_eq!(answer_command(id, true), Command::AnswerJoin { id, answer: sim::society::Answer::Accept });
         assert_eq!(answer_command(id, false), Command::AnswerJoin { id, answer: sim::society::Answer::TurnAway });
     }
+
+    #[test]
+    fn default_game_view_models_list_no_hazard_rival_or_predator() {
+        use super::super::mapmodes::{overlay, MapMode};
+        use super::super::screens::{screen, History};
+        use super::super::shell::NavItem;
+        let mut sim = super::super::screens::tests::lived_in(3);
+        for _ in 0..400 {
+            sim.step(0.25).expect("step");
+        }
+        let n = every_kind(&mut sim);
+        let mut text = format!("{:?} {:?}", alerts(&sim), n.items).to_lowercase();
+        for item in NavItem::ALL {
+            text += &format!("{:?}", screen(&sim, item, History::default().rates())).to_lowercase();
+        }
+        for m in MapMode::ALL {
+            text += &format!("{:?}", overlay(&sim, m)).to_lowercase();
+        }
+        for w in ["predator", "rival", "flood", "drought", "freeze", "fire", "disease"] {
+            assert!(!text.contains(w), "a view-model mentions '{w}'");
+        }
+    }
 }
 
 /// Map pins: every toast on screen marks its place on the terrain with a stem and ring in its tone,
