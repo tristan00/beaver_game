@@ -976,6 +976,8 @@ pub(crate) mod tests {
         assert_eq!(check_building(&sim, BuildingKind::Lock, c), Err(PlaceError::NeedsDam));
         sim.apply(Command::BuildDam { cells: line_cells((c.0, c.1 - 2), (c.0, c.1 + 2)), height: 1.0 }).unwrap();
         assert_eq!(check_building(&sim, BuildingKind::Lock, c), Ok(()));
+        // (a lock also needs a finished dock somewhere)
+        sim.buildings.buildings.push(sim::buildings::Building { id: BuildingId(9_999), kind: BuildingKind::Dock, pos: (1, 1), status: Status::Complete, recipe: None, output: 0.0 });
         sim.apply(Command::PlaceSite { kind: BuildingKind::Lock, pos: c }).expect("the sim agrees");
     }
 
