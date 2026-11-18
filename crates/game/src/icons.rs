@@ -39,11 +39,11 @@ icons! {
     CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence,
     // Buildings
     Dam, Lodge, Burrow, FoodCache, ScentMound, GuardPost, Canal, Lock, WaterWheel, Workshop,
-    Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, QuarryCamp, Mill, Storehouse, EldersDen,
+    Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, QuarryCamp, Mill, Storehouse,
     ForesterLodge, TreeNursery,
     // Roles
     RoleForager, RoleLogger, RoleMudDigger, RoleQuarrier, RoleBuilder, RoleHauler, RoleCrafter,
-    RoleElder, RoleGuard, RoleForester,
+    RoleGuard, RoleForester,
     // Map views
     ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
     ViewElevation,
@@ -54,7 +54,7 @@ icons! {
     Pause, Play, Fast2, Fast3, Undo, Search, Pin, PriorityUp, PriorityDown, Plus, Minus, Focus,
     Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Menu, Back, Settings,
     // Beaver
-    Beaver, Adult, Yearling, Kit, ElderBeaver, MoodGood, MoodOk, MoodBad, Health,
+    Beaver, Adult, Yearling, Kit, MoodGood, MoodOk, MoodBad, Health,
     // Seasons
     Spring, Summer, Autumn, Winter, DrySummer,
     // Rows and misc
@@ -855,11 +855,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
                 c.cut(seg(x0, y0 + 11.0, x0 + 22.0, y0 + 11.0, 3.0));
             }
         }
-        EldersDen => {
-            c.add(ellipse(32.0, 58.0, 27.0, 28.0).above(58.0));
-            c.cut(rect_c(24.0, 42.0, 40.0, 64.0, 8.0));
-            c.knock(star(32.0, 21.0, 15.0, 6.5, 5).grow(1.5));
-        }
         ForesterLodge => {
             c.part(26.0, 37.0, 0.8, 0.0, 0.0, house_door);
             c.part(46.0, 21.0, 0.6, 0.0, 3.0, seedling);
@@ -879,7 +874,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleBuilder => role(c, -35.0, hammer),
         RoleHauler => role(c, 0.0, crate_box),
         RoleCrafter => role(c, -30.0, saw),
-        RoleElder => role(c, 0.0, |c| c.add(star(32.0, 34.0, 27.0, 12.0, 5).grow(2.0))),
         RoleGuard => role(c, 0.0, shield),
         RoleForester => role(c, 0.0, seedling),
         // ---- views
@@ -1075,10 +1069,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         Adult => c.part(32.0, 33.0, 0.98, 0.0, 0.0, head),
         Yearling => c.part(32.0, 37.0, 0.8, 0.0, 0.0, head),
         Kit => c.part(32.0, 41.0, 0.62, 0.0, 0.0, head),
-        ElderBeaver => {
-            c.part(26.0, 35.0, 0.76, 0.0, 0.0, head);
-            c.knock(arc(49.0, 20.0, 6.5, 180.0, 360.0, 5.0).or(seg(55.5, 20.0, 55.5, 58.0, 5.0)));
-        }
         MoodGood => {
             face(c);
             c.cut(arc(32.0, 32.0, 13.0, 30.0, 150.0, 5.0));

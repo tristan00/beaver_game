@@ -70,7 +70,6 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         QuarryCamp => Icon::QuarryCamp,
         Mill => Icon::Mill,
         Storehouse => Icon::Storehouse,
-        EldersDen => Icon::EldersDen,
         ForesterLodge => Icon::ForesterLodge,
         TreeNursery => Icon::TreeNursery,
     }
@@ -100,7 +99,6 @@ pub fn role_icon(r: Role) -> Icon {
         Role::Build => Icon::RoleBuilder,
         Role::Haul => Icon::RoleHauler,
         Role::Craft => Icon::RoleCrafter,
-        Role::Study => Icon::RoleElder,
         Role::Forester => Icon::RoleForester,
     }
 }
@@ -116,7 +114,6 @@ pub fn role_name(r: Role) -> &'static str {
         Role::Build => "Builder",
         Role::Haul => "Hauler",
         Role::Craft => "Crafter",
-        Role::Study => "Elder",
         Role::Forester => "Forester",
     }
 }

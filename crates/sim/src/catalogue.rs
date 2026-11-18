@@ -59,7 +59,6 @@ pub fn def(kind: BuildingKind) -> Def {
         ForagerHut => camp(ResourceKind::Plant),
         MudPit => camp(ResourceKind::MudBank),
         QuarryCamp => camp(ResourceKind::StoneOutcrop),
-        EldersDen => (Tier::Elementary, vec![Role::Study; 2], None),
         ForesterLodge => (Tier::Elementary, vec![Role::Forester; 2], Some(GATHER_AREA)),
         TreeNursery => (Tier::Elementary, vec![Role::Forester], None),
         Mill => (Tier::Industrial, vec![Role::Craft; 2], None),
@@ -86,6 +85,24 @@ pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
     })
 }
 
+/// Buildings that must stand finished before `kind` can be placed: a colony grows in steps, each
+/// building resting on the ones before it (a store before the trades that fill it, a workshop
+/// before the wheel that drives it, a forester's lodge before its nursery).
+pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
+    use BuildingKind::*;
+    match kind {
+        Lodge => &[Burrow],
+        FoodCache => &[ForagerHut],
+        Workshop | Dock | QuarryCamp | Storehouse => &[Warehouse],
+        WaterWheel => &[Workshop],
+        Lock => &[Dock],
+        Mill => &[Workshop, WaterWheel],
+        TreeNursery => &[ForesterLodge],
+        GuardPost => &[ScentMound],
+        _ => &[],
+    }
+}
+
 /// Kinds the player may see and place given features (and, in `content`, tech).
 pub fn available(sim: &crate::SimState) -> Vec<BuildingKind> {
     BuildingKind::ALL
@@ -104,6 +121,25 @@ mod tests {
     use crate::colony::BeaverId;
     use crate::tech::{Effect, Tech, BASE_BUILDINGS, TECHS};
     use crate::work::{Slot, Work, Workplace};
+
+    #[test]
+    fn prerequisites_never_loop_and_the_first_buildings_need_none() {
+        for k in crate::tech::BASE_BUILDINGS {
+            assert!(prerequisites(k).is_empty(), "{k:?}");
+        }
+        // Following prerequisites always ends: no building needs itself, however far back.
+        for k in BuildingKind::ALL {
+            let mut seen = vec![k];
+            let mut todo = prerequisites(k).to_vec();
+            while let Some(p) = todo.pop() {
+                assert_ne!(p, k, "{k:?} needs itself");
+                if !seen.contains(&p) {
+                    seen.push(p);
+                    todo.extend_from_slice(prerequisites(p));
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_building_is_fully_defined_and_unlocks_consistently() {

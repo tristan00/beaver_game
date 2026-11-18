@@ -5,8 +5,6 @@
 pub mod colony {
     pub const KIT_DAYS: f32 = crate::calendar::YEAR_DAYS as f32;
     pub const ADULT_DAYS: f32 = 2.0 * crate::calendar::YEAR_DAYS as f32;
-    /// Age at which an adult becomes an elder (the age old-age wear starts).
-    pub const ELDER_DAYS: f32 = 8.0 * crate::calendar::YEAR_DAYS as f32;
     pub const LODGE_CAPACITY: usize = 12;
     pub const LODGE_WOOD_COST: f32 = 8.0;
     pub const MIN_LODGE_SPACING: f32 = 5.0;
@@ -33,8 +31,6 @@ pub mod colony {
     pub const YEARLING_WORK_WEIGHT: f32 = 0.5;
     pub const KIT_FOOD_WEIGHT: f32 = 0.4;
     pub const YEARLING_FOOD_WEIGHT: f32 = 0.7;
-    pub const ELDER_WORK_WEIGHT: f32 = 0.6;
-    pub const ELDER_FOOD_WEIGHT: f32 = 0.9;
 
     // Founding and newcomers.
     pub const FOUNDER_ADULT_AGE_YEARS: f32 = 3.0;
@@ -102,8 +98,6 @@ pub mod colony {
     pub const SPECIALIST_BONUS: f32 = 1.25;
     /// Skill gained per day by a kit or yearling watching a working lodge mate, scaled by the skill missing.
     pub const YOUNG_LEARN_RATE: f32 = 0.002;
-    /// Learning-rate multiplier when the teacher is an elder of the same lodge.
-    pub const ELDER_TEACH_FACTOR: f32 = 4.0;
     /// Population at which foraging yield halves.
     pub const FORAGE_CROWDING_POPULATION: f32 = 100.0;
     pub const HAUL_BOOST_PER_EFFORT: f32 = 0.15;
@@ -405,7 +399,6 @@ pub mod buildings {
             BuildingKind::ForagerHut => (&[(Sticks, 8.0), (Mud, 4.0)], 2.0),
             BuildingKind::MudPit => (&[(Logs, 3.0), (Sticks, 4.0)], 2.0),
             BuildingKind::QuarryCamp => (&[(Logs, 5.0), (Sticks, 6.0), (Mud, 3.0)], 3.0),
-            BuildingKind::EldersDen => (&[(Logs, 12.0), (Mud, 8.0)], 6.0),
             BuildingKind::Mill => (&[(Logs, 30.0), (Stone, 10.0), (Rope, 4.0), (Tools, 3.0)], 14.0),
             BuildingKind::Storehouse => (&[(Logs, 40.0), (Sticks, 20.0), (Stone, 12.0), (Rope, 4.0)], 16.0),
             BuildingKind::ForesterLodge => (&[(Logs, 4.0), (Sticks, 8.0), (Mud, 2.0)], 3.0),

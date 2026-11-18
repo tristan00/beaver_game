@@ -251,7 +251,7 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
     match k {
         BuildingKind::Dam | BuildingKind::Lock => StructKind::Dam,
         BuildingKind::Lodge => StructKind::Lodge,
-        BuildingKind::Burrow | BuildingKind::EldersDen | BuildingKind::FoodCache | BuildingKind::ScentMound | BuildingKind::GuardPost | BuildingKind::ForagerHut | BuildingKind::MudPit | BuildingKind::TreeNursery => StructKind::Burrow,
+        BuildingKind::Burrow | BuildingKind::FoodCache | BuildingKind::ScentMound | BuildingKind::GuardPost | BuildingKind::ForagerHut | BuildingKind::MudPit | BuildingKind::TreeNursery => StructKind::Burrow,
         BuildingKind::Canal => StructKind::Canal,
         BuildingKind::WaterWheel | BuildingKind::Mill => StructKind::WaterWheel,
         BuildingKind::Workshop | BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::LoggingCamp | BuildingKind::QuarryCamp | BuildingKind::ForesterLodge => StructKind::Workshop,
