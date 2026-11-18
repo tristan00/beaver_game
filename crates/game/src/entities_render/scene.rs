@@ -66,7 +66,10 @@ pub enum StructKind {
     Workshop,
     WaterWheel,
     Dock,
+    /// A barge; finished (stage 3) it carries a load of logs on deck.
     Barge,
+    /// A finished barge with nothing aboard.
+    BargeEmpty,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -692,3 +692,27 @@ Notation: `[food]` = the food icon, `[logs]` = the logs icon, and so on. **cut**
 | "CONTROLS" | `Keys` |
 | control rows ("Select, place, draw a dam", "Orbit / pan / rotate / zoom", …) | one word each: `Select`, `Cancel`, `Orbit`, `Pan`, `Rotate`, `Zoom`, `Build`, `Crest`, `Views`, `Colony`, `Search`, `Undo`, `Pause`, `Speed`, `Menu` |
 | "Back" | ← |
+
+### A12. Water transport and growing dams (new)
+
+| Now | After |
+|---|---|
+| barge in the world (new) | barge model on the water, a load of logs on deck while anything is aboard; tip: `Barge` + number, the state line below, goods aboard as `[good] n` |
+| barge inspector header (new) | `[barge] Barge 1`, ⌖, pin, ✕ |
+| barge state (new) | icon only: ▶ sailing, ▲ loading, ▼ unloading, hourglass waiting, blocked icon stranded, idle icon no route; tips: `Sailing`, `Sailing to load`, `Sailing to unload`, `Loading`, `Unloading`, `Waiting`, `Stranded`, `No route` |
+| goods aboard, capacity, delivered (new) | `[good] n` per good, `[haul] 40/40` (tip `Aboard`), `✓ n` (tip `Delivered`) |
+| route (new) | ▲ `[dock] 1` ▶ ▼ `[dock] 2` then the goods' icons, `[idle] -` with none; tips: `Route`, `Loads here`, `Unloads here` |
+| route picker (new) | ▲ row and ▼ row of `[dock] n` toggles, a row of good toggles, clear icon, ✓ (accent when ready); tips: `Load at`, `Unload at`, the good's name, `Clear route`, `Set route` |
+| dock numbers over docks while a barge is selected (new) | `[dock] n` world markers |
+| "a dam at x,y is in the way: build a lock on it" | ✕ `[lock] x,y` ⌖ in the barge inspector, `[lock] ✕` world marker on that dam; lane `✕ Needs lock`; tip: `Dam in the way`, `Build a lock` |
+| "a route needs two different docks" / "name at least one good to carry" / "no water joins the two docks" / "the barge cannot reach the first dock by water" / "a dock has no water deep enough for a barge beside it" / "building N is not a finished dock" | `Same dock` / `No goods` / `No water` / `Unreachable` / `Too shallow` / `Needs dock` |
+| "a lock is built on a dam, to let barges through it" | `Needs dam` (cursor tag; the lock ghost is red off a dam) |
+| "N is too high: a dam stands at most 3 above the ground" / "the dam is already that high" | `Too high` / `Built` |
+| dock inspector (new) | `[dock] n`, then `[barge] n` buttons for the barges serving it (tip `Barges`); stock as `[good] n` like any store |
+| dam tool height (was 0.25 steps) | ↕ `− 1.5 +` in steps of 0.5; tip: `Height 0.5-3`, `Step 0.5`; after "extend to hold" the crest height in accent (tip `Crest`) |
+| dam tool, line over existing dam (new) | `[dam] n` beside the height; tip: `Raises existing dam`, `Cells n` |
+| dam tool materials (new rule) | only added height costs; mud above one unit; ✓ icon when nothing is missing; tip: `Materials`, `Added height only` |
+| water walks round the dam (new) | `[flood] Spill x,y` ⌖ and `[dam]+` (accent) row; world: red post and rings at the spill cell, `[flood] ◆` marker; tips: `Water escapes here`, `Pond stops at`, `Extend to hold` + `G` |
+| finished dam (dam building or dam cell inspector) (new) | ↕ `n` and a `+ n` accent button (raise one step); at the top `Max 3`; tips: `Height`, `Crest`, `Cells`, `Raise` + cost rows |
+| key-hint bar, dam tool | adds `[flood] G` (extend to hold) |
+| settle tag | adds a food bar: `[food]` bar between trees and safety |

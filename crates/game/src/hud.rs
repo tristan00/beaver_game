@@ -17,7 +17,7 @@ mod ui;
 mod words;
 mod world;
 
-use crate::build_logic::{self, BuildOrder, Group, Pending, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
+use crate::build_logic::{self, BuildOrder, Group, Pending, DAM_STEP, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
 use crate::camera::MainCamera;
 use crate::flow::{cell_world, Cell, Flow, Selection};
 use crate::icons::{Icon, Icons};
@@ -30,7 +30,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::{FocusPolicy, RelativeCursorPosition};
 use bevy::window::PrimaryWindow;
-use sim::buildings::{BuildingId, BuildingKind, Status};
+use sim::buildings::{BargeId, BuildingId, BuildingKind, Good, Status};
 use sim::colony::BeaverId;
 use sim::dam_preview::DamPreview;
 use sim::hud::Fix;
@@ -99,7 +99,13 @@ pub struct HudState {
     pub drag_from: Option<Cell>,
     pub line: Vec<Cell>,
     pub dam_height: f32,
-    preview: Option<(Vec<Cell>, f32, Option<DamPreview>)>,
+    /// After "extend to hold": every cell of the line is built up to this world crest instead.
+    pub dam_crest: Option<f32>,
+    preview: Option<(Vec<Cell>, f32, Option<f32>, Option<DamPreview>)>,
+    /// A barge route being chosen in the barge inspector.
+    pub route_draft: Option<RouteDraft>,
+    /// The last refusal of a barge route command, for that barge (raw sim text).
+    pub route_err: Option<(BargeId, String)>,
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
     /// The Colony screen and its tab.
@@ -127,6 +133,29 @@ pub struct HudState {
     box_done: Option<(Vec2, Vec2)>,
     /// A world point the camera should bring into the work rect (F3.3).
     frame_req: Option<Vec3>,
+}
+
+/// A barge route being picked: the barge, the two docks and the goods it should carry.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RouteDraft {
+    pub barge: Option<BargeId>,
+    pub from: Option<BuildingId>,
+    pub to: Option<BuildingId>,
+    pub goods: Vec<Good>,
+}
+
+impl RouteDraft {
+    /// The draft for `barge`: the one being edited, else its current route.
+    pub fn of(s: &sim::SimState, hud: &HudState, barge: BargeId) -> RouteDraft {
+        if let Some(d) = hud.route_draft.as_ref().filter(|d| d.barge == Some(barge)) {
+            return d.clone();
+        }
+        let svc = s.buildings.barge(barge).and_then(|b| b.service.clone());
+        RouteDraft { barge: Some(barge), from: svc.as_ref().map(|v| v.from), to: svc.as_ref().map(|v| v.to), goods: svc.map(|v| v.goods).unwrap_or_default() }
+    }
+    pub fn ready(&self) -> bool {
+        self.from.is_some() && self.to.is_some() && self.from != self.to && !self.goods.is_empty()
+    }
 }
 
 /// Something the player placed that undo can take back while it is unfinished.
@@ -192,7 +221,10 @@ impl Default for HudState {
             drag_from: None,
             line: Vec::new(),
             dam_height: build_logic::DEFAULT_DAM_HEIGHT,
+            dam_crest: None,
             preview: None,
+            route_draft: None,
+            route_err: None,
             msg: None,
             idle_cursor: 0,
             colony: None,
@@ -219,8 +251,15 @@ impl HudState {
         self.tool = t;
         self.drag_from = None;
         self.line.clear();
+        self.dam_crest = None;
         self.preview = None;
         self.area_edit = None;
+    }
+    /// One step of the crest control (`DAM_STEP`), snapped to the step; leaves "build to crest".
+    fn step_height(&mut self, dir: f32) {
+        let h = (self.dam_height / DAM_STEP).round() * DAM_STEP + DAM_STEP * dir.signum();
+        self.dam_height = h.clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+        self.dam_crest = None;
     }
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
         self.msg = Some((Msg { icon, icon2, text: text.into() }, now));
@@ -230,7 +269,7 @@ impl HudState {
         self.say(Some((Icon::Cross, BAD)), None, why, now);
     }
     pub fn dam_preview(&self) -> Option<&DamPreview> {
-        self.preview.as_ref().and_then(|(_, _, p)| p.as_ref())
+        self.preview.as_ref().and_then(|(_, _, _, p)| p.as_ref())
     }
     /// The auto-pause notice: a pause icon in the lane (the alert itself says why).
     pub(crate) fn notify_paused(&mut self, now: f32) {
@@ -293,6 +332,10 @@ pub enum HudAction {
     Pick(BuildingKind),
     CancelTool,
     DamHeight(f32),
+    /// Lengthen the drawn dam over where water would get round it (`dam_preview::extend_to_hold`).
+    ExtendDam,
+    /// Raise the dam through this cell by one step.
+    RaiseDam(Cell),
     ConfirmLine,
     ClearLine,
     CloseInspector,
@@ -305,6 +348,12 @@ pub enum HudAction {
     ToggleProfile,
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
+    SelectBarge(BargeId),
+    RouteFrom(BargeId, BuildingId),
+    RouteTo(BargeId, BuildingId),
+    RouteGood(BargeId, Good),
+    SetRoute(BargeId),
+    ClearRoute(BargeId),
     Follow(BeaverId),
     FreeBeaver(BeaverId),
     AddWorker(BuildingId),
@@ -461,10 +510,13 @@ fn hotkeys(
         }
     }
     if matches!(hud.tool, Tool::Dam) {
-        for (k, d) in [(KeyCode::BracketRight, 0.25), (KeyCode::BracketLeft, -0.25)] {
+        for (k, d) in [(KeyCode::BracketRight, 1.0), (KeyCode::BracketLeft, -1.0)] {
             if keys.just_pressed(k) {
-                hud.dam_height = (hud.dam_height + d).clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+                hud.step_height(d);
             }
+        }
+        if keys.just_pressed(KeyCode::KeyG) {
+            extend_dam(&sim.0, &mut hud);
         }
     }
 }
@@ -527,7 +579,7 @@ fn world_input(
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
         };
-        hud.dam_height = (hud.dam_height + 0.25 * lines.signum()).clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+        hud.step_height(lines);
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -641,6 +693,7 @@ fn world_input(
             if mouse.just_pressed(MouseButton::Left) {
                 hud.drag_from = Some(cell);
                 hud.line = vec![cell];
+                hud.dam_crest = None;
             } else if mouse.pressed(MouseButton::Left) {
                 if let Some(a) = hud.drag_from {
                     let line = build_logic::line_cells(a, cell);
@@ -745,7 +798,10 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
         return;
     }
     let order = match hud.tool {
-        Tool::Dam => BuildOrder::Dam { cells: hud.line.clone(), height: hud.dam_height },
+        Tool::Dam => match hud.dam_crest {
+            Some(crest) => BuildOrder::DamTo { cells: hud.line.clone(), height: hud.dam_height, crest },
+            None => BuildOrder::Dam { cells: hud.line.clone(), height: hud.dam_height },
+        },
         Tool::Canal => BuildOrder::Canal { cells: hud.line.clone() },
         _ => return,
     };
@@ -756,9 +812,39 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
             let item = sim.buildings.buildings.last().map(|b| UndoItem::Site(b.id));
             hud.undo.extend(item);
             hud.line.clear();
+            hud.dam_crest = None;
             hud.preview = None;
         }
         Err(e) => hud.refuse(place_error(&e), now),
+    }
+}
+
+/// "Extend to hold": replaces the drawn line with the longer one that stops water walking round it.
+fn extend_dam(s: &sim::SimState, hud: &mut HudState) {
+    if hud.tool != Tool::Dam || hud.line.is_empty() {
+        return;
+    }
+    if let Some((cells, crest)) = build_logic::extend_line(s, &hud.line, hud.dam_height, hud.dam_crest) {
+        hud.line = cells;
+        hud.dam_crest = Some(crest);
+    }
+}
+
+/// Sends the drafted route for `barge`; a refusal is kept for its inspector (it names the dam
+/// that needs a lock) and shows in the lane.
+fn set_route(s: &mut sim::SimState, hud: &mut HudState, barge: BargeId, now: f32) {
+    let d = RouteDraft::of(s, hud, barge);
+    let (Some(from), Some(to)) = (d.from, d.to) else { return };
+    match s.apply(sim::Command::SetBargeRoute { barge, from, to, goods: d.goods.clone() }) {
+        Ok(()) => {
+            hud.route_draft = None;
+            hud.route_err = None;
+        }
+        Err(e) => {
+            let m = e.to_string();
+            hud.refuse(sim_error(&m), now);
+            hud.route_err = Some((barge, m));
+        }
     }
 }
 
@@ -867,10 +953,62 @@ fn button_actions(
                 }
             }
             HudAction::CancelTool => hud.set_tool(Tool::None),
-            HudAction::DamHeight(d) => hud.dam_height = (hud.dam_height + d).clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT),
+            HudAction::DamHeight(d) => hud.step_height(d),
+            HudAction::ExtendDam => extend_dam(s, &mut hud),
+            HudAction::RaiseDam(c) => match build_logic::raise_order(s, c) {
+                Some(order) => match build_logic::emit(s, &mut pending.0, &order) {
+                    Ok(_) => {
+                        if let Some(b) = s.buildings.buildings.last() {
+                            hud.undo.push(UndoItem::Site(b.id));
+                        }
+                    }
+                    Err(e) => hud.refuse(place_error(&e), now),
+                },
+                None => hud.refuse(format!("Max {}", num(MAX_DAM_HEIGHT)), now),
+            },
+            HudAction::SelectBarge(id) => {
+                *sel = Selection::Barge(id);
+                hud.selected.clear();
+                if let Some(b) = s.buildings.barge(id) {
+                    flow.focus = Some(cell_world(&s.height, (b.cell.0 as f32 + 0.5, b.cell.1 as f32 + 0.5)));
+                }
+            }
+            HudAction::RouteFrom(barge, dock) => {
+                let mut d = RouteDraft::of(s, &hud, barge);
+                d.from = if d.from == Some(dock) { None } else { Some(dock) };
+                if d.to == d.from {
+                    d.to = None;
+                }
+                hud.route_draft = Some(d);
+            }
+            HudAction::RouteTo(barge, dock) => {
+                let mut d = RouteDraft::of(s, &hud, barge);
+                d.to = if d.to == Some(dock) { None } else { Some(dock) };
+                if d.to == d.from {
+                    d.from = None;
+                }
+                hud.route_draft = Some(d);
+            }
+            HudAction::RouteGood(barge, g) => {
+                let mut d = RouteDraft::of(s, &hud, barge);
+                match d.goods.iter().position(|x| *x == g) {
+                    Some(i) => {
+                        d.goods.remove(i);
+                    }
+                    None => d.goods.push(g),
+                }
+                hud.route_draft = Some(d);
+            }
+            HudAction::SetRoute(barge) => set_route(s, &mut hud, barge, now),
+            HudAction::ClearRoute(barge) => {
+                cmd(s, &mut hud, sim::Command::ClearBargeRoute { barge }, now);
+                hud.route_draft = None;
+                hud.route_err = None;
+            }
             HudAction::ConfirmLine => commit_line(s, &mut hud, &mut pending.0, now),
             HudAction::ClearLine => {
                 hud.line.clear();
+                hud.dam_crest = None;
                 hud.preview = None;
             }
             HudAction::CloseInspector => {
@@ -1015,10 +1153,10 @@ fn refresh_panels(
     let s = &sim.0;
     // Refresh the dam preview only when the line or crest changes.
     if hud.tool == Tool::Dam && !hud.line.is_empty() {
-        let stale = hud.preview.as_ref().is_none_or(|(c, h, _)| *c != hud.line || *h != hud.dam_height);
+        let stale = hud.preview.as_ref().is_none_or(|(c, h, k, _)| *c != hud.line || *h != hud.dam_height || *k != hud.dam_crest);
         if stale {
-            let p = build_logic::dam_preview(s, &hud.line, hud.dam_height);
-            hud.preview = Some((hud.line.clone(), hud.dam_height, p));
+            let p = build_logic::line_preview(s, &hud.line, hud.dam_height, hud.dam_crest);
+            hud.preview = Some((hud.line.clone(), hud.dam_height, hud.dam_crest, p));
         }
     }
     let problems = sim::hud::problems(s);
@@ -1081,6 +1219,7 @@ fn refresh_fast(
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
     lens: Res<MapLens>,
+    sel: Res<Selection>,
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let s = &sim.0;
@@ -1103,7 +1242,7 @@ fn refresh_fast(
                 panels::cursor_tag(&ctx)
             }
             _ => match cams.single() {
-                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud),
+                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel),
                 Err(_) => Vec::new(),
             },
         };
@@ -1390,6 +1529,58 @@ fn demo(
         }
         return;
     }
+    // `barge`: two docks on the river by the camp and a barge carrying logs between them.
+    // BC_HUD_VIEW=dock selects the first dock; `lock` drops a dam across the way and asks again,
+    // so the barge inspector shows the refusal naming the dam; `raise` selects that dam's cell.
+    if which == "barge" {
+        let Some(c) = camp else { return };
+        let Some((a, b, barge, path)) = barge_demo(s, c) else {
+            println!("barge demo: no two docks joined by water near the camp");
+            return;
+        };
+        let steps = (days.min(3.0) / crate::sim_driver::FIXED_DT_DAYS) as usize;
+        for _ in 0..steps {
+            let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
+        }
+        let view = std::env::var("BC_HUD_VIEW").unwrap_or_default();
+        let mid = path[path.len() / 2];
+        match view.as_str() {
+            "dock" => *sel = Selection::Site(a),
+            "lock" | "raise" => {
+                let i = path.len() / 2;
+                let (p, q) = (path[i.saturating_sub(1)], path[i]);
+                let dir = (q.0 as i64 - p.0 as i64, q.1 as i64 - p.1 as i64);
+                let cells: Vec<Cell> = (-6i64..=6)
+                    .map(|k| (mid.0 as i64 - dir.1 * k, mid.1 as i64 + dir.0 * k))
+                    .filter(|&(x, y)| x >= 0 && y >= 0 && s.water.depth.in_bounds(x as usize, y as usize))
+                    .map(|(x, y)| (x as usize, y as usize))
+                    .collect();
+                let _ = s.apply(sim::Command::BuildDam { cells, height: 1.0 });
+                if view == "raise" {
+                    *sel = Selection::Cell(mid);
+                    let dist: f32 = std::env::var("BC_HUD_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0);
+                    look(&mut orbit, &s.height, (mid.0 as f32, mid.1 as f32), dist);
+                    return;
+                }
+                *sel = Selection::Barge(barge);
+                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Logs, Good::Stone] });
+                set_route(s, &mut hud, barge, 0.0);
+                println!("barge demo: route refused: {:?}", hud.route_err);
+            }
+            _ => *sel = Selection::Barge(barge),
+        }
+        let mut at = mid;
+        if let Some(bg) = s.buildings.barge(barge) {
+            println!("barge demo: barge at {:?}, {:?} {:?}, hold {:?}", bg.cell, bg.state, bg.leg, bg.hold);
+            at = bg.cell;
+        }
+        let dist: f32 = std::env::var("BC_HUD_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(38.0);
+        look(&mut orbit, &s.height, (at.0 as f32, at.1 as f32), dist);
+        if let Some(p) = std::env::var("BC_HUD_PITCH").ok().and_then(|v| v.parse().ok()) {
+            orbit.pitch = p;
+        }
+        return;
+    }
     let mut staffed = Vec::new();
     if matches!(which.as_str(), "camp" | "ledger" | "goods" | "jobs" | "pop" | "beaver" | "research" | "tip") {
         if let Some(c) = camp {
@@ -1405,9 +1596,14 @@ fn demo(
             if let Some(d) = planned.0.as_ref() {
                 hud.open_cat = water_cat;
                 hud.set_tool(if which == "dam" { Tool::Dam } else { Tool::Canal });
-                hud.line = d.cells.clone();
+                // `BC_HUD_DAM_TRIM=n` drops n cells from each end, so water walks round the dam.
+                let trim: usize = std::env::var("BC_HUD_DAM_TRIM").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(d.cells.len().saturating_sub(1) / 2);
+                hud.line = d.cells[trim..d.cells.len() - trim].to_vec();
                 let crest = std::env::var("BC_HUD_CREST").ok().and_then(|v| v.parse().ok()).unwrap_or(d.height);
-                hud.dam_height = crest.clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+                hud.dam_height = ((crest / DAM_STEP).round() * DAM_STEP).clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+                if std::env::var_os("BC_HUD_DAM_EXTEND").is_some() {
+                    extend_dam(s, &mut hud);
+                }
                 let m = d.cells[d.cells.len() / 2];
                 look(&mut orbit, &s.height, (m.0 as f32, m.1 as f32), 40.0);
             }
@@ -1467,6 +1663,62 @@ fn demo(
             }
         }
     }
+}
+
+/// Screenshot scaffolding for barges: two finished docks by the river near `camp`, 15 to 40 cells
+/// apart by water, a barge at the first, logs and stone in its stock and a route between them.
+/// Returns the docks, the barge and the water path between them.
+fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, BuildingId, BargeId, Vec<Cell>)> {
+    s.tech.unlock_all();
+    let n = s.world.size;
+    let terrain_ok = |s: &sim::SimState, p: Cell| s.check_site(BuildingKind::Dock, p).is_ok();
+    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, recipe: None, output: 0.0 };
+    let locks = sim::shipping::lock_cells(s);
+    let near = |r: usize| (camp.1.saturating_sub(r)..(camp.1 + r).min(n - 2)).flat_map(move |y| (camp.0.saturating_sub(r)..(camp.0 + r).min(n - 2)).map(move |x| (x, y)));
+    let first = near(30)
+        .filter(|&p| terrain_ok(s, p) && !sim::shipping::berths(s, &locks, &probe(p)).is_empty())
+        .min_by_key(|p| p.0.abs_diff(camp.0) + p.1.abs_diff(camp.1))?;
+    let start = sim::shipping::berths(s, &locks, &probe(first))[0];
+    // Water distance from the first berth over cells a barge can sail.
+    let idx = |c: Cell| c.1 * n + c.0;
+    let mut dist = vec![u32::MAX; n * n];
+    let mut queue = std::collections::VecDeque::from([start]);
+    dist[idx(start)] = 0;
+    while let Some(c) = queue.pop_front() {
+        for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+            let (x, y) = (c.0 as i64 + dx, c.1 as i64 + dy);
+            if x < 0 || y < 0 || x as usize >= n || y as usize >= n {
+                continue;
+            }
+            let m = (x as usize, y as usize);
+            if dist[idx(m)] == u32::MAX && sim::shipping::step_cost(s, &locks, m, false).is_some() {
+                dist[idx(m)] = dist[idx(c)] + 1;
+                queue.push_back(m);
+            }
+        }
+    }
+    let second = near(45)
+        .filter(|&p| p.0.abs_diff(first.0) + p.1.abs_diff(first.1) > 4 && terrain_ok(s, p))
+        .filter_map(|p| {
+            let d = sim::shipping::berths(s, &locks, &probe(p)).iter().map(|b| dist[idx(*b)]).min()?;
+            (15..=40).contains(&d).then_some((p, d))
+        })
+        .min_by_key(|(_, d)| d.abs_diff(26))?
+        .0;
+    let a = s.buildings.add_complete(BuildingKind::Dock, first, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
+    let b = s.buildings.add_complete(BuildingKind::Dock, second, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
+    let bg = BargeId(9_000_001);
+    s.buildings.barges.push(sim::buildings::Barge::new(bg, start, Some(a)));
+    for (g, amount) in [(Good::Logs, 30.0), (Good::Stone, 20.0)] {
+        let put = s.buildings.stores.deposit(g, amount).unwrap_or(0.0);
+        s.work.stock_add(a, g, put);
+    }
+    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Logs, Good::Stone] }) {
+        println!("barge demo: {e}");
+    }
+    let ends = sim::shipping::berths(s, &locks, s.buildings.building(b)?);
+    let path = sim::shipping::route(s, &locks, start, &ends, false).filter(|p| !p.is_empty()).unwrap_or(vec![start]);
+    Some((a, b, bg, path))
 }
 
 /// Screenshot scaffolding: places a logging camp, a forager hut and a warehouse near `camp`,
@@ -1577,6 +1829,10 @@ mod tests {
             }
             t.split_whitespace().filter(|w| w.chars().any(|c| c.is_alphabetic()) && w.chars().filter(|c| c.is_alphabetic()).count() > 1).count()
         };
+        // Water transport: two docks, a barge on a route between them, and a dam on a river cell.
+        let (dock, _, barge, path) = barge_demo(&mut s, dam.camp).expect("docks by the river");
+        let dam_cell = path[path.len() / 2];
+        s.apply(sim::Command::BuildDam { cells: vec![dam_cell], height: 1.0 }).unwrap();
         let clock = SimClock::default();
         let log = std::collections::VecDeque::new();
         let problems = sim::hud::problems(&s);
@@ -1585,7 +1841,7 @@ mod tests {
         let mut states: Vec<(String, HudState, Selection)> = vec![("rest".into(), HudState::default(), Selection::None)];
         let mut dam_state = HudState { line: dam.cells.clone(), ..default() };
         dam_state.tool = Tool::Dam;
-        dam_state.preview = Some((dam.cells.clone(), dam_state.dam_height, build_logic::dam_preview(&s, &dam.cells, dam_state.dam_height)));
+        dam_state.preview = Some((dam.cells.clone(), dam_state.dam_height, None, build_logic::dam_preview(&s, &dam.cells, dam_state.dam_height)));
         states.push(("dam".into(), dam_state, Selection::None));
         states.push(("canal".into(), HudState { tool: Tool::Canal, line: dam.cells.clone(), ..default() }, Selection::None));
         states.push(("place".into(), HudState { tool: Tool::Building(BuildingKind::Warehouse), ..default() }, Selection::None));
@@ -1602,6 +1858,21 @@ mod tests {
         states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
         // The elevation lens: its legend in the rail and the heights tag at the cursor.
         states.push(("elevation".into(), HudState::default(), Selection::None));
+        // A barge whose route was refused for a dam in the way, a dock, a dam cell (raise), and the
+        // dam tool with a line too short to hold (spill marker, extend).
+        let refused = HudState { route_err: Some((barge, format!("invalid command: a dam at {},{} is in the way: build a lock on it", dam_cell.0, dam_cell.1))), ..default() };
+        states.push(("barge".into(), refused, Selection::Barge(barge)));
+        states.push(("barge other".into(), HudState { route_err: Some((barge, "invalid command: no water joins the two docks".into())), ..default() }, Selection::Barge(barge)));
+        states.push(("dock".into(), HudState::default(), Selection::Site(dock)));
+        states.push(("dam cell".into(), HudState::default(), Selection::Cell(dam_cell)));
+        let short: Vec<Cell> = (0..dam.cells.len())
+            .map(|i| vec![dam.cells[i]])
+            .find(|c| build_logic::dam_preview(&s, c, 1.5).is_some_and(|p| p.spill_at.is_some()))
+            .expect("one cell of the designed dam leaks round its ends");
+        let spill = build_logic::dam_preview(&s, &short, 1.5);
+        let mut spill_state = HudState { tool: Tool::Dam, line: short.clone(), dam_height: 1.5, ..default() };
+        spill_state.preview = Some((short, 1.5, None, spill));
+        states.push(("dam spill".into(), spill_state, Selection::None));
         let mut failures = Vec::new();
         for (name, hud, sel) in &states {
             let lens = if name == "elevation" { MapLens::Elevation } else { MapLens::World };
