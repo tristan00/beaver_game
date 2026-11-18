@@ -72,6 +72,16 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     let place = s.work.place(id);
     shell(|u| {
         header(c, Selection::Site(id), u, building_icon(b.kind), b.kind.spec().name.to_string(), None, |r| {
+            if let Some(pl) = place.filter(|pl| !pl.slots.is_empty()) {
+                use sim::work::Priority;
+                let (icon, next, name) = match pl.priority {
+                    Priority::Low => (Icon::PriorityDown, Priority::Normal, "Low priority"),
+                    Priority::Normal => (Icon::Dot, Priority::High, "Normal priority"),
+                    Priority::High => (Icon::PriorityUp, Priority::Low, "High priority"),
+                };
+                r.icon_button(icon, 11.0, HudAction::Priority(id, next), FAINT, pl.priority != Priority::Normal).tip(Tip::name(name).line("Click", "change"));
+                r.icon_button(Icon::Pause, 11.0, HudAction::Paused(id, !pl.paused), FAINT, pl.paused).tip(Tip::name(if pl.paused { "Paused" } else { "Pause" }));
+            }
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
         });
         // Status: icon + at most two words (A9).
@@ -115,7 +125,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 for sl in &pl.slots {
                     match sl.worker.and_then(|w| s.colony.beaver(w)) {
                         Some(bv) => {
-                            r.icon(Icon::Dot, 16.0, GOOD).tip(Tip::name(bv.name.clone())).action(HudAction::SelectBeaver(bv.id));
+                            let tip = if sl.locked { Tip::name(bv.name.clone()).row(TipLine::new("Placed by hand", "").icon(Icon::HandLock, MUTED)) } else { Tip::name(bv.name.clone()) };
+                            r.icon(if sl.locked { Icon::HandLock } else { Icon::Dot }, 16.0, GOOD).tip(tip).action(HudAction::SelectBeaver(bv.id));
                         }
                         None => {
                             r.icon(Icon::DotEmpty, 16.0, WARN).tip(Tip::name("Empty"));
@@ -125,7 +136,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 r.spacer();
                 r.icon_button(Icon::Minus, 11.0, HudAction::RemoveWorker(id), FAINT, false).tip(Tip::name("Free a worker"));
                 let add_tip = super::add_worker_tip(s, id);
-                r.icon_button(Icon::Plus, 11.0, HudAction::AddWorker(id), if filled < pl.slots.len() { FAINT } else { Color::NONE }, false).tip(add_tip);
+                let _ = filled;
+                r.icon_button(Icon::Plus, 11.0, HudAction::AddWorker(id), if add_tip.lines.is_empty() { Color::NONE } else { FAINT }, false).tip(add_tip);
             });
         }
         // Production: measured output, the limiting factor, details behind an expander.
@@ -267,20 +279,19 @@ pub fn mood_icon(m: f32) -> (Icon, Color) {
     }
 }
 
-pub fn mood_tip(b: &sim::colony::Beaver) -> Tip {
-    use sim::tuning::colony::*;
-    let n = &b.needs;
-    let rows = [
-        ("Food", MOOD_FOOD_WEIGHT, n.food),
-        ("Warmth", MOOD_WARMTH_WEIGHT, n.warmth),
-        ("Rest", MOOD_REST_WEIGHT, n.rest),
-        ("Safety", MOOD_SAFETY_WEIGHT, n.safety),
-        ("Social", MOOD_SOCIAL_WEIGHT, n.social),
-    ];
+pub fn mood_tip(s: &sim::SimState, b: &sim::colony::Beaver) -> Tip {
     let (i, c) = mood_icon(b.mood);
-    let mut t = Tip::titled(Some((i, c)), "Mood").with_value(format!("{:.0}%", b.mood * 100.0));
-    for (name, w, v) in rows {
-        t.push(TipLine::new(name, format!("{:.0}", w * v * 100.0)).color(if v < 0.5 { WARN } else { INK }));
+    let mut t = Tip::titled(Some((i, c)), "Mood").with_value(format!("{:.0}", b.mood * 100.0));
+    for r in sim::hud::mood_breakdown(s, b.id).rows {
+        t.push(TipLine::new(r.label, format!("{:.0}", r.value * 100.0)));
+    }
+    t
+}
+
+fn health_tip(s: &sim::SimState, b: &sim::colony::Beaver) -> Tip {
+    let mut t = Tip::titled(Some((Icon::Health, GOOD)), "Health").with_value(format!("{:.0}", b.health * 100.0));
+    for r in sim::hud::health_breakdown(s, b.id).rows {
+        t.push(TipLine::new(r.label, format!("{:+.0}", r.value * 100.0)).color(if r.value < 0.0 { BAD } else { INK }));
     }
     t
 }
@@ -317,12 +328,12 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
                 x.icon(mi, 16.0, mc);
                 x.bold(format!("{:.0}", b.mood * 100.0), 12.0, INK);
             })
-            .tip(mood_tip(b));
+            .tip(mood_tip(s, b));
             r.row(3.0, |x| {
                 x.icon(Icon::Health, 16.0, if b.health < 0.5 { BAD } else { GOOD });
                 x.bold(format!("{:.0}", b.health * 100.0), 12.0, INK);
             })
-            .tip(Tip::titled(Some((Icon::Health, GOOD)), "Health").with_value(format!("{:.0}%", b.health * 100.0)));
+            .tip(health_tip(s, b));
         });
         u.rule();
         // Needs: one-word labels, bars.
@@ -347,9 +358,13 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
                 .tip(Tip::name(format!("{j:?}")).with_value(format!("{:.0}", v * 100.0)));
             }
         });
+        let locked = s.work.is_locked(id) || s.work.player_orders.contains(&id);
         if s.work.slot_of(id).is_some() || s.agents.get(id).and_then(|a| a.assignment).is_some() {
             u.row(6.0, |r| {
                 r.spacer();
+                if locked {
+                    r.icon_button(Icon::HandLock, 11.0, HudAction::Unlock(id), FAINT, true).tip(Tip::name("Placed by hand").line("Click", "back to auto"));
+                }
                 r.icon_button(Icon::Minus, 11.0, HudAction::FreeBeaver(id), FAINT, false).tip(Tip::name("Free"));
             });
         }

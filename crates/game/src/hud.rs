@@ -33,7 +33,7 @@ use sim::buildings::{BuildingId, BuildingKind, Status};
 use sim::colony::BeaverId;
 use sim::dam_preview::DamPreview;
 use sim::hud::Fix;
-use sim::work::Role;
+use sim::jobs::RoleKind;
 use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
 use words::*;
 
@@ -276,7 +276,8 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
-    Fix(Fix),
+    /// A problem's fix, with the problem's place (for Focus fixes).
+    Fix(Fix, Option<Cell>),
     Focus(Cell),
     CycleIdle,
     Pause,
@@ -301,7 +302,12 @@ pub enum HudAction {
     FreeBeaver(BeaverId),
     AddWorker(BuildingId),
     RemoveWorker(BuildingId),
-    RoleAdjust(Role, i32),
+    RoleAdjust(RoleKind, i32),
+    RoleUp(RoleKind),
+    Priority(BuildingId, sim::work::Priority),
+    Paused(BuildingId, bool),
+    Unlock(BeaverId),
+    AutoStaff(bool),
     SortPop(u8),
     EditArea(BuildingId),
     Pin(Selection),
@@ -764,7 +770,20 @@ fn button_actions(
     for a in actions {
         let s = &mut sim.0;
         match a {
-            HudAction::Fix(fix) => apply_fix(s, &mut hud, fix, now),
+            HudAction::Fix(fix, at) => match fix {
+                Fix::Place(kind) => hud.set_tool(if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) }),
+                Fix::OpenJobs => hud.colony = Some(ColonyTab::Jobs),
+                Fix::Focus => {
+                    if let Some(c) = at {
+                        flow.focus = Some(cell_world(&s.height, (c.0 as f32, c.1 as f32)));
+                    }
+                }
+                f => {
+                    if let Err(e) = sim::hud::apply_fix(s, f) {
+                        hud.refuse(sim_error(&e), now);
+                    }
+                }
+            },
             HudAction::Focus(c) => flow.focus = Some(cell_world(&s.height, (c.0 as f32, c.1 as f32))),
             HudAction::CycleIdle => {
                 if shift {
@@ -836,9 +855,20 @@ fn button_actions(
             }
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
             HudAction::FreeBeaver(id) => free_beaver(s, &mut hud, id, now),
-            HudAction::AddWorker(b) => add_worker(s, &mut hud, b, now),
-            HudAction::RemoveWorker(b) => remove_worker(s, &mut hud, b, now),
-            HudAction::RoleAdjust(role, d) => role_adjust(s, &mut hud, role, d, now),
+            HudAction::AddWorker(building) => cmd(s, &mut hud, sim::Command::AddWorker { building }, now),
+            HudAction::RemoveWorker(building) => cmd(s, &mut hud, sim::Command::RemoveWorker { building }, now),
+            HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
+            HudAction::RoleUp(role) => {
+                let mut order = s.work.role_order.clone();
+                if let Some(i) = order.iter().position(|r| *r == role).filter(|i| *i > 0) {
+                    order.swap(i, i - 1);
+                    cmd(s, &mut hud, sim::Command::SetRoleOrder { order }, now);
+                }
+            }
+            HudAction::Priority(building, priority) => cmd(s, &mut hud, sim::Command::SetPriority { building, priority }, now),
+            HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
+            HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
+            HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::SortPop(k) => hud.pop_sort = k,
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
@@ -858,61 +888,9 @@ fn button_actions(
     }
 }
 
-/// Turns a problem's fix into commands.
-fn apply_fix(s: &mut sim::SimState, hud: &mut HudState, fix: Fix, now: f32) {
-    let idle = sim::hud::idle_beavers(s);
-    let res = match fix {
-        Fix::FillSlot { building, slot } => match nearest(s, &idle, building) {
-            Some(who) => s.apply(sim::Command::FillSlot { building, slot, who }).map(|_| ()),
-            None => Ok(()),
-        },
-        Fix::Gather(kind) => {
-            let centre = s.colony.beavers.first().map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize)).unwrap_or((0, 0));
-            let r = 10;
-            let max = s.world.size - 1;
-            let area = sim::work::Area { min: (centre.0.saturating_sub(r), centre.1.saturating_sub(r)), max: ((centre.0 + r).min(max), (centre.1 + r).min(max)) };
-            s.apply(sim::Command::Assign { who: idle, to: Some(sim::agents::Assignment::Area(kind, area)) }).map(|_| ())
-        }
-        Fix::Place(kind) => {
-            hud.set_tool(if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) });
-            Ok(())
-        }
-        Fix::Accept(id) => s.apply(sim::Command::AnswerJoin { id, answer: sim::society::Answer::Accept }).map(|_| ()),
-        Fix::None => Ok(()),
-    };
-    if let Err(e) = res {
-        hud.refuse(sim_error(&e.to_string()), now);
-    }
-}
-
-/// The free beaver nearest to building `b`.
-fn nearest(s: &sim::SimState, idle: &[BeaverId], b: BuildingId) -> Option<BeaverId> {
-    let at = s.buildings.building(b).map(|x| (x.pos.0 as f32, x.pos.1 as f32)).unwrap_or((0.0, 0.0));
-    idle.iter()
-        .filter_map(|id| s.colony.beaver(*id).map(|bv| (*id, (bv.pos.0 - at.0).powi(2) + (bv.pos.1 - at.1).powi(2))))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|x| x.0)
-}
-
-fn add_worker(s: &mut sim::SimState, hud: &mut HudState, b: BuildingId, now: f32) {
-    let Some(slot) = s.work.place(b).and_then(|p| p.slots.iter().position(|x| x.worker.is_none())) else {
-        hud.refuse("Full", now);
-        return;
-    };
-    let idle = sim::hud::idle_beavers(s);
-    match nearest(s, &idle, b) {
-        Some(who) => {
-            if let Err(e) = s.apply(sim::Command::FillSlot { building: b, slot, who }) {
-                hud.refuse(sim_error(&e.to_string()), now);
-            }
-        }
-        None => hud.say(Some((Icon::Idle, WARN)), None, "None", now),
-    }
-}
-
-fn remove_worker(s: &mut sim::SimState, hud: &mut HudState, b: BuildingId, now: f32) {
-    let Some(slot) = s.work.place(b).and_then(|p| p.slots.iter().rposition(|x| x.worker.is_some())) else { return };
-    if let Err(e) = s.apply(sim::Command::EmptySlot { building: b, slot }) {
+/// Applies a command; a refusal shows its ≤ 2-word reason in the lane.
+fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command, now: f32) {
+    if let Err(e) = s.apply(c) {
         hud.refuse(sim_error(&e.to_string()), now);
     }
 }
@@ -927,47 +905,15 @@ fn free_beaver(s: &mut sim::SimState, hud: &mut HudState, id: BeaverId, now: f32
     }
 }
 
-/// Jobs board − / +: moves a beaver between `role` and the free pool.
-fn role_adjust(s: &mut sim::SimState, hud: &mut HudState, role: Role, d: i32, now: f32) {
-    if d > 0 {
-        let open = s.work.places.iter().find_map(|p| p.slots.iter().position(|x| x.role == role && x.worker.is_none()).map(|i| (p.building, i)));
-        match open {
-            Some((b, slot)) => {
-                let idle = sim::hud::idle_beavers(s);
-                match nearest(s, &idle, b) {
-                    Some(who) => {
-                        if let Err(e) = s.apply(sim::Command::FillSlot { building: b, slot, who }) {
-                            hud.refuse(sim_error(&e.to_string()), now);
-                        }
-                    }
-                    None => hud.say(Some((Icon::Idle, WARN)), None, "None", now),
-                }
-            }
-            None => hud.refuse("Full", now),
-        }
-    } else {
-        let filled = s.work.places.iter().rev().find_map(|p| p.slots.iter().rposition(|x| x.role == role && x.worker.is_some()).map(|i| (p.building, i)));
-        if let Some((b, slot)) = filled {
-            if let Err(e) = s.apply(sim::Command::EmptySlot { building: b, slot }) {
-                hud.refuse(sim_error(&e.to_string()), now);
-            }
-        }
-    }
-}
-
-/// What + on a building would do (W2): who it would take.
+/// What + on a building would do (W2): who it would take, and from where. No lines: nobody.
 pub(crate) fn add_worker_tip(s: &sim::SimState, b: BuildingId) -> Tip {
-    let idle = sim::hud::idle_beavers(s);
     let mut t = Tip::name("Add a worker");
-    match nearest(s, &idle, b) {
-        Some(id) => {
-            if let Some(bv) = s.colony.beaver(id) {
-                t.push(TipLine::new(bv.name.clone(), "Free").icon(Icon::Idle, INK));
-            }
-        }
-        None => {
-            t.push(TipLine::new("No one free", "").icon(Icon::Idle, WARN));
-        }
+    if let Some(p) = sim::jobs::add_worker_preview(s, b) {
+        let who = s.colony.beaver(p.who).map(|x| x.name.clone()).unwrap_or_default();
+        match p.from {
+            Some((_, role)) => t.push(TipLine::new(who, format!("from {}", panels::role_kind_name(role).to_lowercase())).icon(panels::role_kind_icon(role), MUTED)),
+            None => t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK)),
+        };
     }
     t
 }

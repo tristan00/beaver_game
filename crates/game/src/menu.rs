@@ -271,7 +271,7 @@ fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: Re
         return;
     }
     *next = now + 1.0;
-    let urgent: Vec<String> = sim::hud::problems(&sim.0).into_iter().filter(|p| p.severity == Severity::Urgent).map(|p| p.title).collect();
+    let urgent: Vec<String> = sim::hud::problems(&sim.0).into_iter().filter(|p| p.severity == Severity::Urgent).map(|p| format!("{:?}{:?}", p.kind, p.subject)).collect();
     let new: Vec<String> = urgent.iter().filter(|t| !menu.seen_urgent.contains(t)).cloned().collect();
     menu.seen_urgent = urgent;
     if menu.auto_pause && !clock.paused {

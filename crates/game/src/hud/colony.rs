@@ -7,7 +7,6 @@ use super::{ColonyTab, HudAction};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingKind, Good};
-use sim::work::Role;
 
 const TABS: [(ColonyTab, Icon, &str); 7] = [
     (ColonyTab::Population, Icon::Beaver, "Population"),
@@ -118,7 +117,7 @@ fn population(c: &Ctx, u: &mut Ui) {
         let v = |x: &sim::colony::Beaver| -> f32 {
             match key {
                 1 => x.age_days,
-                2 => s.work.slot_of(x.id).map(|(_, _, r)| role_rank(r) as f32).unwrap_or(99.0),
+                2 => sim::jobs::role_of(s, x.id).map(|r| s.work.role_order.iter().position(|o| *o == r).unwrap_or(50) as f32).unwrap_or(99.0),
                 3 => x.mood,
                 4 => x.health,
                 _ => 0.0,
@@ -171,34 +170,18 @@ fn population(c: &Ctx, u: &mut Ui) {
     }
 }
 
-fn role_rank(r: Role) -> usize {
-    ROLES.iter().position(|x| *x == r).unwrap_or(99)
-}
-
-/// Roles in board order (until the sim's role priority list lands).
-const ROLES: [Role; 8] = [
-    Role::Build,
-    Role::Collect(sim::resources::ResourceKind::Plant),
-    Role::Collect(sim::resources::ResourceKind::Tree),
-    Role::Haul,
-    Role::Collect(sim::resources::ResourceKind::MudBank),
-    Role::Collect(sim::resources::ResourceKind::StoneOutcrop),
-    Role::Craft,
-    Role::Study,
-];
-
 // ───────────────────────────── jobs ─────────────────────────────
 
 pub fn jobs(c: &Ctx, u: &mut Ui) {
+    use super::panels::{role_kind_icon, role_kind_name};
     let s = c.s;
-    let idle = sim::hud::idle_beavers(s).len();
-    let working = s.colony.beavers.iter().filter(|b| s.work.slot_of(b.id).is_some()).count();
+    let h = sim::jobs::headcount(s);
     u.row(14.0, |r| {
         for (icon, n, name, col) in [
-            (Icon::Jobs, working, "Working", INK),
-            (Icon::Idle, idle, "Free", if idle > 0 { WARN } else { INK }),
-            (Icon::Kit, s.colony.count_stage(sim::colony::Stage::Kit), "Kits", MUTED),
-            (Icon::ElderBeaver, s.colony.count_stage(sim::colony::Stage::Elder), "Elders", MUTED),
+            (Icon::Jobs, h.working, "Working", INK),
+            (Icon::Idle, h.free, "Free", if h.free > 0 { WARN } else { INK }),
+            (Icon::Kit, h.kits, "Kits", MUTED),
+            (Icon::ElderBeaver, h.elders, "Elders", MUTED),
         ] {
             r.row(4.0, |x| {
                 x.icon(icon, 16.0, col);
@@ -206,47 +189,39 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
             })
             .tip(Tip::name(name));
         }
+        r.spacer();
+        let auto = s.work.auto_organise;
+        r.icon_label_button(Icon::Jobs, if auto { "Auto" } else { "Manual" }, 14.0, HudAction::AutoStaff(!auto), if auto { GOOD.with_alpha(0.25) } else { FAINT }, auto).tip(Tip::name("Auto-staffing").line("Free beavers fill jobs", ""));
     });
     u.rule();
     u.row(8.0, |r| {
-        r.add(VNode::new(Node { width: Val::Px(28.0), ..default() }));
+        r.add(VNode::new(Node { width: Val::Px(52.0), ..default() }));
         head(r, None, "Filled", 60.0, None, false);
         r.add(VNode::new(Node { width: Val::Px(64.0), ..default() }));
         head(r, Some(Icon::Up), "Output per day", 120.0, None, false);
     });
-    for role in ROLES {
-        let (mut filled, mut slots) = (0, 0);
-        let mut output: Vec<(Good, f32)> = Vec::new();
-        for p in &s.work.places {
-            for sl in p.slots.iter().filter(|sl| sl.role == role) {
-                slots += 1;
-                if sl.worker.is_some() {
-                    filled += 1;
-                }
-            }
-            if p.slots.iter().any(|sl| sl.role == role) && p.site.is_none() {
-                if let Some(f) = s.output.of(p.building) {
-                    for (g, r) in f.rates() {
-                        match output.iter_mut().find(|o| o.0 == g) {
-                            Some(o) => o.1 += r,
-                            None => output.push((g, r)),
-                        }
-                    }
-                }
-            }
-        }
-        if slots == 0 && filled == 0 {
-            continue;
-        }
+    for row in sim::jobs::jobs_board(s) {
+        let role = row.role;
         u.row(8.0, |r| {
-            r.icon(role_icon(role), 20.0, INK).tip(Tip::name(role_name(role)));
+            r.icon_button(Icon::PriorityUp, 9.0, HudAction::RoleUp(role), Color::NONE, false).tip(Tip::name("Higher priority"));
+            r.icon(role_kind_icon(role), 20.0, INK).tip(Tip::name(role_kind_name(role)).line("Priority", format!("{}", row.rank + 1)));
             r.node(Node { width: Val::Px(60.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
-                x.bold(format!("{filled}/{slots}"), 13.0, if filled < slots { WARN } else { INK });
+                x.bold(format!("{}/{}", row.filled, row.slots), 13.0, if row.filled < row.slots { WARN } else { INK });
             });
             r.icon_button(Icon::Minus, 11.0, HudAction::RoleAdjust(role, -1), FAINT, false).tip(Tip::name("Free one"));
-            r.icon_button(Icon::Plus, 11.0, HudAction::RoleAdjust(role, 1), if filled < slots { FAINT } else { Color::NONE }, false).tip(Tip::name(if idle > 0 { "Add a free beaver" } else { "No one free" }));
+            let tip = match sim::jobs::role_add_preview(s, role) {
+                Some(p) => {
+                    let who = s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default();
+                    match p.from {
+                        Some((_, from)) => Tip::name("Add one").row(TipLine::new(who, format!("from {}", role_kind_name(from).to_lowercase())).icon(role_kind_icon(from), MUTED)),
+                        None => Tip::name("Add one").row(TipLine::new(who, "Free").icon(Icon::Idle, MUTED)),
+                    }
+                }
+                None => Tip::name("No one to add"),
+            };
+            r.icon_button(Icon::Plus, 11.0, HudAction::RoleAdjust(role, 1), FAINT, false).tip(tip);
             r.row(6.0, |x| {
-                for (g, v) in &output {
+                for (g, v) in &row.output_per_day {
                     x.row(2.0, |y| {
                         y.icon(good_icon(*g), 14.0, good_color(*g));
                         y.bold(num(*v), 12.0, GOOD);

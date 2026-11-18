@@ -11,7 +11,8 @@ use bevy::prelude::*;
 use sim::buildings::{BuildingId, BuildingKind, Good, Status};
 use sim::calendar::{self, Date, Season};
 use sim::colony::Stage;
-use sim::hud::{Fix, Problem, ProblemKind, Severity};
+use sim::hud::{Breakdown, Fix, Problem, ProblemKind, Severity, Source, Subject};
+use sim::jobs::RoleKind;
 use sim::work::Role;
 
 /// Everything a panel may read.
@@ -90,81 +91,109 @@ fn rate_color(r: f32) -> Color {
 
 // ───────────────────────────── goods strip (A1) ─────────────────────────────
 
-/// Where each good comes from, per producing building.
-fn sources(s: &sim::SimState, g: Good) -> Vec<(BuildingId, f32)> {
-    let mut v: Vec<(BuildingId, f32)> = s.output.by.iter().filter_map(|(b, f)| f.rates().iter().find(|(gg, _)| *gg == g).map(|(_, r)| (*b, *r))).filter(|(_, r)| *r > 0.01).collect();
-    v.sort_by(|a, b| b.1.total_cmp(&a.1));
-    v
+/// A sim breakdown as tooltip rows: label, signed value, the source's icon.
+pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) -> Vec<TipLine> {
+    b.rows
+        .iter()
+        .map(|r| {
+            let v = if signed_values { signed(r.value) } else { num(r.value) };
+            let col = if !signed_values { INK } else if r.value > 0.05 { GOOD } else if r.value < -0.05 { BAD } else { MUTED };
+            let mut l = TipLine::new(r.label.clone(), v).color(col);
+            match r.source {
+                Source::Building(id) => {
+                    if let Some(bb) = s.buildings.building(id) {
+                        l = l.icon(building_icon(bb.kind), INK);
+                    }
+                }
+                Source::Beaver(id) => {
+                    if let Some(bv) = s.colony.beaver(id) {
+                        l = l.icon(stage_icon(bv.stage), INK);
+                    }
+                }
+                _ => {}
+            }
+            l
+        })
+        .collect()
 }
 
 pub fn good_tip(s: &sim::SimState, g: Good) -> Tip {
     let st = &s.buildings.stores;
-    let (inn, out) = (s.ledger.in_per_day(g), s.ledger.out_per_day(g));
     let mut t = Tip::titled(Some((good_icon(g), good_color(g))), good_name(g)).with_value(format!("{}/{}", st.amount(g).round() as i64, st.capacity(g).round() as i64));
     if !s.ledger.has_data() {
         t.push(TipLine::new("Per day", "-"));
         return t;
     }
-    let mut gathered = Tip::titled(Some((good_icon(g), good_color(g))), "Gathered").with_value(format!("{}/d", signed(inn)));
-    for (b, r) in sources(s, g).into_iter().take(8) {
-        if let Some(bb) = s.buildings.building(b) {
-            gathered.push(TipLine::new(bb.kind.spec().name, signed(r)).icon(building_icon(bb.kind), INK));
-        }
+    let inn = sim::hud::good_in_breakdown(s, g);
+    let out = sim::hud::good_out_breakdown(s, g);
+    let mut tin = Tip::titled(Some((good_icon(g), good_color(g))), "Gathered").with_value(format!("{}/d", signed(inn.total)));
+    for l in breakdown_lines(s, &inn, true) {
+        tin.push(l);
     }
-    let made: f32 = sources(s, g).iter().map(|x| x.1).sum();
-    if inn - made > 0.05 {
-        gathered.push(TipLine::new("By order", signed(inn - made)).icon(Icon::Beaver, INK));
+    let mut tout = Tip::titled(Some((good_icon(g), good_color(g))), "Used").with_value(format!("{}/d", signed(-out.total.abs())));
+    for mut l in breakdown_lines(s, &out, true) {
+        if !l.value.starts_with('-') && l.value != "0" {
+            l.value = format!("-{}", l.value.trim_start_matches('+'));
+            l.color = Some(BAD);
+        }
+        tout.push(l);
     }
-    t.push(TipLine::new("Gathered", format!("{}/d", signed(inn))).color(GOOD).nested(gathered));
-    if g == Good::Food {
-        let need = sim::hud::food_need_per_day(s);
-        let mut eaten = Tip::titled(Some((Icon::Food, good_color(g))), "Eaten").with_value(format!("{}/d", signed(-need)));
-        for (stage, icon, name) in [(Stage::Adult, Icon::Adult, "Adults"), (Stage::Yearling, Icon::Yearling, "Yearlings"), (Stage::Kit, Icon::Kit, "Kits"), (Stage::Elder, Icon::ElderBeaver, "Elders")] {
-            let n = s.colony.count_stage(stage);
-            if n > 0 {
-                let per = sim::tuning::colony::HUNGER_PER_DAY * stage.food_weight();
-                eaten.push(TipLine::new(format!("{name} {n}"), signed(-per * n as f32)).icon(icon, INK));
-            }
-        }
-        t.push(TipLine::new("Eaten", format!("{}/d", signed(-need))).color(BAD).nested(eaten));
-        let other = (out - need).max(0.0);
-        if other > 0.05 {
-            t.push(TipLine::new("Used", format!("{}/d", signed(-other))).color(BAD));
-        }
-        if let Some(d) = food_days(s) {
-            t.push(TipLine::new("Empty in", days(d)).icon(Icon::Hourglass, WARN).color(WARN));
-            let gap = need - inn;
+    t.push(TipLine::new("Gathered", format!("{}/d", signed(inn.total))).color(GOOD).nested(tin));
+    t.push(TipLine::new(if g == Good::Food { "Eaten, used" } else { "Used" }, format!("{}/d", signed(-out.total.abs()))).color(BAD).nested(tout));
+    let left = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, st.amount(g)) };
+    if let Some(d) = left {
+        t.push(TipLine::new("Empty in", days(d)).icon(Icon::Hourglass, WARN).color(WARN));
+        if g == Good::Food {
+            let gap = sim::hud::food_need_per_day(s) - inn.total;
             if gap > 0.05 {
                 t.push(TipLine::new("Short", num(gap)).color(WARN));
             }
-        }
-    } else {
-        t.push(TipLine::new("Used", format!("{}/d", signed(-out))).color(BAD));
-        if let Some(d) = s.ledger.days_left(g, st.amount(g)) {
-            t.push(TipLine::new("Empty in", days(d)).icon(Icon::Hourglass, WARN).color(WARN));
         }
     }
     t
 }
 
 fn headcount_tip(s: &sim::SimState) -> Tip {
-    let mut t = Tip::titled(Some((Icon::Beaver, INK)), "Beavers").with_value(format!("{}", s.colony.population()));
-    for (stage, icon, name) in [(Stage::Adult, Icon::Adult, "Adults"), (Stage::Yearling, Icon::Yearling, "Yearlings"), (Stage::Kit, Icon::Kit, "Kits"), (Stage::Elder, Icon::ElderBeaver, "Elders")] {
-        let n = s.colony.count_stage(stage);
-        if n > 0 {
-            t.push(TipLine::new(name, format!("{n}")).icon(icon, INK));
-        }
+    let h = sim::jobs::headcount(s);
+    let mut t = Tip::titled(Some((Icon::Beaver, INK)), "Beavers").with_value(format!("{}", h.total));
+    t.push(TipLine::new("Working", format!("{}", h.working)).icon(Icon::Jobs, INK));
+    t.push(TipLine::new("Free", format!("{}", h.free)).icon(Icon::Idle, if h.free > 0 { WARN } else { INK }));
+    t.push(TipLine::new("Kits", format!("{}", h.kits)).icon(Icon::Kit, MUTED));
+    t.push(TipLine::new("Elders", format!("{}", h.elders)).icon(Icon::ElderBeaver, MUTED));
+    let b = sim::hud::headcount_breakdown(s);
+    let mut more = Tip::name("Beavers");
+    for l in breakdown_lines(s, &b, false) {
+        more.push(l);
     }
-    let working = s.colony.beavers.iter().filter(|b| s.work.slot_of(b.id).is_some()).count();
-    t.push(TipLine::new("Working", format!("{working}")).icon(Icon::Jobs, INK));
+    t.push(TipLine::new("Housing", "").nested(more));
     t.key("Tab")
+}
+
+pub fn stage_icon(st: Stage) -> Icon {
+    match st {
+        Stage::Kit => Icon::Kit,
+        Stage::Yearling => Icon::Yearling,
+        Stage::Adult => Icon::Adult,
+        Stage::Elder => Icon::ElderBeaver,
+    }
+}
+
+pub fn idle_reason_word(r: sim::jobs::IdleReason) -> &'static str {
+    use sim::jobs::IdleReason::*;
+    match r {
+        NoOpenSlot => "No open job",
+        Unreachable => "Unreachable",
+        Resting => "Resting",
+        Paused => "Job paused",
+        AutoOff => "Auto off",
+    }
 }
 
 pub fn strip(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let stores = &s.buildings.stores;
     let extra = [Good::Baskets, Good::Rope, Good::Tools].into_iter().filter(|g| stores.amount(*g) > 0.0);
-    let idle = sim::hud::idle_beavers(s);
+    let idle = sim::jobs::idle_reasons(s);
     vec![panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 14.0, |u| {
         for g in STRIP_GOODS.into_iter().chain(extra) {
             let have = stores.amount(g);
@@ -192,26 +221,19 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
         })
         .tip(headcount_tip(s))
         .action(HudAction::Colony(Some(ColonyTab::Population)));
-        if !idle.is_empty() {
-            let mut t = Tip::titled(Some((Icon::Idle, WARN)), "Idle").with_value(format!("{}", idle.len()));
-            for id in idle.iter().take(8) {
+        // Free beavers who are not resting.
+        let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
+        if !free.is_empty() {
+            let mut t = Tip::titled(Some((Icon::Idle, WARN)), "Free").with_value(format!("{}", free.len()));
+            for (id, why) in free.iter().take(8) {
                 if let Some(b) = s.colony.beaver(*id) {
-                    t.push(TipLine::new(b.name.clone(), "No job").icon(stage_icon(b.stage), INK).color(MUTED));
+                    t.push(TipLine::new(b.name.clone(), idle_reason_word(*why)).icon(stage_icon(b.stage), INK).color(MUTED));
                 }
             }
-            let t = t.key(".").row(TipLine { label: "Jobs".into(), key: Some("J".into()), ..default() });
-            u.icon_label_button(Icon::Idle, format!("{}", idle.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
+            let t = t.key("I").row(TipLine { label: "Jobs".into(), key: Some("J".into()), ..default() });
+            u.icon_label_button(Icon::Idle, format!("{}", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
         }
     })]
-}
-
-pub fn stage_icon(st: Stage) -> Icon {
-    match st {
-        Stage::Kit => Icon::Kit,
-        Stage::Yearling => Icon::Yearling,
-        Stage::Adult => Icon::Adult,
-        Stage::Elder => Icon::ElderBeaver,
-    }
 }
 
 // ───────────────────────────── calendar (A2) ─────────────────────────────
@@ -295,50 +317,84 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
 
 // ───────────────────────────── alerts (A3) ─────────────────────────────
 
-/// The icons and number an alert shows instead of a title.
-fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String) {
-    let num_in = |t: &str| t.split(|ch: char| !ch.is_ascii_digit()).find(|x| !x.is_empty()).unwrap_or("").to_string();
+pub fn role_kind_icon(r: RoleKind) -> Icon {
+    match r {
+        RoleKind::Forager => Icon::RoleForager,
+        RoleKind::Logger => Icon::RoleLogger,
+        RoleKind::MudDigger => Icon::RoleMudDigger,
+        RoleKind::Quarrier => Icon::RoleQuarrier,
+        RoleKind::Builder => Icon::RoleBuilder,
+        RoleKind::Hauler => Icon::RoleHauler,
+        RoleKind::Crafter => Icon::RoleCrafter,
+        RoleKind::Elder => Icon::RoleElder,
+    }
+}
+
+pub fn role_kind_name(r: RoleKind) -> &'static str {
+    match r {
+        RoleKind::Forager => "Forager",
+        RoleKind::Logger => "Logger",
+        RoleKind::MudDigger => "Mud digger",
+        RoleKind::Quarrier => "Quarrier",
+        RoleKind::Builder => "Builder",
+        RoleKind::Hauler => "Hauler",
+        RoleKind::Crafter => "Crafter",
+        RoleKind::Elder => "Elder",
+    }
+}
+
+/// The icons and number an alert shows instead of a title (A3).
+fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
+    let v = p.value;
     match p.kind {
-        ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Food))], if p.title.starts_with("No food") { "0".into() } else { format!("{}d", num_in(&p.title)) }),
-        ProblemKind::Idle => (vec![(Icon::Idle, WARN)], num_in(&p.title)),
-        ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (Icon::RoleBuilder, MUTED)], num_in(&p.title)),
+        ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Food))], if v < 0.5 { "0".into() } else { days(v) }, "Food runs out"),
+        ProblemKind::Idle => (vec![(Icon::Idle, WARN)], format!("{}", v as i64), "Free beavers"),
+        ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (Icon::RoleBuilder, MUTED)], format!("{}", v as i64), "Sites without builders"),
         ProblemKind::StoreFull => {
-            let g = Good::ALL.into_iter().find(|g| p.title.to_lowercase().starts_with(&good_name(*g).to_lowercase())).unwrap_or(Good::Logs);
-            (vec![(good_icon(g), good_color(g)), (Icon::Full, WARN)], String::new())
+            let g = match p.subject {
+                Some(Subject::Good(g)) => g,
+                _ => Good::Logs,
+            };
+            (vec![(good_icon(g), good_color(g)), (Icon::Full, WARN)], format!("{:.0}%", v), "Store full")
         }
-        ProblemKind::WeakDam => (vec![(Icon::Dam, INK)], format!("{}%", num_in(&p.title))),
-        ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new()),
+        ProblemKind::WeakDam => (vec![(Icon::Dam, INK)], format!("{:.0}%", v), "Dam weakening"),
+        ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
         ProblemKind::Stranger => {
-            let name = p.title.split(" asks").next().unwrap_or("").to_string();
-            let _ = s;
-            (vec![(Icon::Beaver, INK)], name)
+            let st = match p.subject {
+                Some(Subject::Stage(st)) => stage_icon(st),
+                _ => Icon::Beaver,
+            };
+            let name = match p.fix {
+                Fix::Accept(id) => s.society.pending().iter().find(|r| r.id == id).map(|r| r.name.clone()).unwrap_or_default(),
+                _ => String::new(),
+            };
+            (vec![(st, INK)], name, "Asks to join")
         }
     }
 }
 
-fn fix_face(s: &sim::SimState, f: &Fix) -> Option<(Icon, String)> {
+/// The face of a fix button and its tooltip (≤ 6 words).
+fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
-        Fix::FillSlot { building, slot } => {
-            let role = s.work.place(*building).and_then(|p| p.slots.get(*slot)).map(|x| x.role).unwrap_or(Role::Build);
-            Some((role_icon(role), "+1".into()))
-        }
-        Fix::Gather(k) => Some((resource_icon(*k), format!("+{}", sim::hud::idle_beavers(s).len()))),
-        Fix::Place(k) => Some((building_icon(*k), "+".into())),
-        Fix::Accept(_) => Some((Icon::Check, String::new())),
-        Fix::None => None,
+        Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
+        Fix::Gather { kind, n } => Some((resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase()))),
+        Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
+        Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
+        Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
+        Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
+        Fix::Accept(_) => Some((Icon::Check, String::new(), "Welcome".into())),
+        Fix::Decline(_) => Some((Icon::Cross, String::new(), "Turn away".into())),
+        Fix::Focus => None,
     }
 }
 
 pub fn alerts(c: &Ctx, u: &mut Ui) {
     for p in c.problems {
         let col = if p.severity == Severity::Urgent { BAD } else { WARN };
-        let (icons, value) = alert_face(c.s, p);
-        let mut cause = Tip::titled(icons.first().copied(), p.title.clone());
-        for part in p.cause.split([';', ',']) {
-            let part = part.trim();
-            if !part.is_empty() {
-                cause.push(TipLine::new(part, "").color(MUTED));
-            }
+        let (icons, value, name) = alert_face(c.s, p);
+        let mut cause = Tip::titled(icons.first().copied(), name).with_value(value.clone());
+        for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
+            cause.push(l);
         }
         let card = u.row(6.0, |r| {
             r.icon(if p.severity == Severity::Urgent { Icon::Urgent } else { Icon::Warn }, 10.0, col);
@@ -349,9 +405,12 @@ pub fn alerts(c: &Ctx, u: &mut Ui) {
                 r.bold(value.clone(), 14.0, INK);
             }
             r.spacer();
-            if let Some((icon, label)) = fix_face(c.s, &p.fix) {
-                let b = if label.is_empty() { r.icon_button(icon, 14.0, HudAction::Fix(p.fix), ACCENT, false) } else { r.icon_label_button(icon, label, 14.0, HudAction::Fix(p.fix), ACCENT, false) };
-                b.tip(Tip::name(p.fix_label.clone()));
+            for (k, f) in std::iter::once(&p.fix).chain(p.alt_fix.iter()).enumerate() {
+                if let Some((icon, label, tip)) = fix_face(f) {
+                    let fill = if k == 0 { ACCENT } else { FAINT };
+                    let b = if label.is_empty() { r.icon_button(icon, 14.0, HudAction::Fix(*f, p.focus), fill, false) } else { r.icon_label_button(icon, label, 14.0, HudAction::Fix(*f, p.focus), fill, false) };
+                    b.tip(Tip::name(tip));
+                }
             }
             if let Some(f) = p.focus {
                 r.icon_button(Icon::Focus, 14.0, HudAction::Focus(f), FAINT, false).tip(Tip::name("Show"));
