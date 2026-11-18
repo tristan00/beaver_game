@@ -41,7 +41,7 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "iso" => (0.8, 0.7, 150.0),
         // Same angle as "iso", zoomed in on the map centre: tree, building and rock shadows fill the frame.
         "iso-close" => (0.8, 0.7, 55.0),
-        // Same angle as "iso", far out. `--start` keeps these two views (see `startflow::begin_cli_start`).
+        // Same angle as "iso", far out. The new game keeps these two views (see `startflow::begin_new_game`).
         "iso-wide" => (0.8, 0.7, 150.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
@@ -49,8 +49,6 @@ pub fn preset(name: &str) -> Option<OrbitCamera> {
         "lodge" => (0.0, 0.55, 32.0),
         // Target is the still pond nearest the map centre (see `water_render::pond_view`).
         "pond" => (0.6, 1.2, 24.0),
-        // Opt-in: centred and zoomed on the dam and lake once a lake start is built (see `lake_cam::frame`).
-        "lake" => (0.8, 1.0, 60.0),
         _ => return None,
     };
     Some(OrbitCamera { target, yaw, pitch, distance })
@@ -131,7 +129,6 @@ fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCa
 mod tests {
     use super::*;
 
-    /// `--cam lake` is opt-in: every other preset keeps its angles and distance.
     #[test]
     fn existing_presets_are_unchanged() {
         let want = [

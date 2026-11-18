@@ -829,13 +829,20 @@ fn buildings_screen(sim: &SimState) -> Screen {
     let mut build_rows = Vec::new();
     for e in crate::build_logic::menu(sim) {
         let spec = e.kind.spec();
-        let cost = Explained::sum(&format!("{} cost", spec.name), "", spec.cost.iter().map(|(g, a)| Explained::part(good_name(*g), *a)).collect())
-            .of(&format!("{} cost", spec.name), []);
+        // A building with no materials (the burrow) is dug with labour alone.
+        let cost = if spec.cost.is_empty() {
+            Cell::Text("labour".into(), Tone::Dim)
+        } else {
+            Cell::num(
+                Explained::sum(&format!("{} cost", spec.name), "", spec.cost.iter().map(|(g, a)| Explained::part(good_name(*g), *a)).collect())
+                    .of(&format!("{} cost", spec.name), []),
+            )
+        };
         let (state, action) = match e.need {
             None => (Cell::Text("ready".into(), Tone::Good), Cell::Actions(vec![Action { icon: Icon::Build, label: "Build".into(), act: Do::Place(e.kind) }])),
             Some((tech, _, _)) => (Cell::Text(format!("needs {tech}"), Tone::Dim), Cell::Text(String::new(), Tone::Dim)),
         };
-        build_rows.push(Row { icon: building_icon(e.kind), name: spec.name.into(), click: None, cells: vec![Cell::num(cost), state, action] });
+        build_rows.push(Row { icon: building_icon(e.kind), name: spec.name.into(), click: None, cells: vec![cost, state, action] });
     }
     let menu_table = Table {
         title: "Build something",

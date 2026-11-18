@@ -11,6 +11,8 @@ pub mod ecology;
 pub mod events;
 pub mod features;
 pub mod grid;
+/// The old lake starts, kept only as test fixtures (feature `fixtures`); no player can start in them.
+#[cfg(any(test, feature = "fixtures"))]
 pub mod lakes;
 pub mod nav;
 pub mod region;
@@ -305,6 +307,9 @@ impl SimState {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
             }
             Command::Assign { who, to } => {
+                if let Some(kit) = who.iter().find(|id| self.colony.beaver(**id).is_some_and(|b| b.stage == colony::Stage::Kit)) {
+                    return Err(SimError::InvalidCommand(format!("beaver {} is a kit and cannot work", kit.0)));
+                }
                 for id in who {
                     if !self.agents.assign(id, to) {
                         return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));

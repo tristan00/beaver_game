@@ -870,9 +870,9 @@ mod tests {
         let (tech, mut c) = (all_tech(), Colony::new(1));
         let mut b = Buildings::default();
         rich(&mut b);
-        b.place(BuildingKind::Burrow, (1, 0), &tech, w.t(), &mut c).unwrap();
+        b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c).unwrap();
         b.step(0.5, &tech, w.t(), &c, &Work::default());
-        assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 16.0);
+        assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 12.0);
         b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!(b.stores.consumption_rate[Good::Mud.index()], 0.0);
     }
@@ -886,11 +886,11 @@ mod tests {
         assert_eq!(b.place(BuildingKind::Lodge, (15, 0), &tech, w.t(), &mut c), Err(BuildError::OutOfBounds));
         assert!(matches!(b.place(BuildingKind::Lodge, (1, 2), &tech, w.t(), &mut c), Err(BuildError::BadTerrain(_))));
         assert!(matches!(b.place(BuildingKind::Dock, (1, 0), &tech, w.t(), &mut c), Err(BuildError::BadTerrain(_))));
-        let id = b.place(BuildingKind::Burrow, (1, 0), &tech, w.t(), &mut c).unwrap();
-        assert_eq!(b.place(BuildingKind::Burrow, (1, 0), &tech, w.t(), &mut c), Err(BuildError::Blocked));
+        let id = b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c).unwrap();
+        assert_eq!(b.place(BuildingKind::ScentMound, (1, 0), &tech, w.t(), &mut c), Err(BuildError::Blocked));
         let mud = b.stores.amount(Good::Mud);
         b.cancel(id, &mut c).unwrap();
-        assert_eq!(b.stores.amount(Good::Mud), mud + 8.0);
+        assert_eq!(b.stores.amount(Good::Mud), mud + 6.0);
         assert!(c.orders.is_empty() && b.buildings.is_empty());
         assert_eq!(
             b.place(BuildingKind::Workshop, (1, 0), &Tech::default(), w.t(), &mut c),

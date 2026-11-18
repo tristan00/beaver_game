@@ -7,6 +7,9 @@ version.workspace = true
 name = "beaver_colony"
 path = "src/main.rs"
 
+[dev-dependencies]
+sim = { path = "../sim", features = ["fixtures"] }
+
 [dependencies]
 sim = { path = "../sim" }
 bevy = { version = "=0.20.1" }

@@ -3,7 +3,6 @@ mod audio;
 mod build;
 mod build_logic;
 mod camera;
-mod lake_cam;
 mod map_orders;
 mod map_overlay;
 mod cli;

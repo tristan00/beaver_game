@@ -7,7 +7,6 @@
 //! plus **Tech** and **Events**.
 
 use sim::features::{Features, System};
-use sim::starts::Start;
 
 use super::icons::Icon;
 
@@ -77,37 +76,5 @@ impl Shell {
     /// Items to draw on the bar for these features.
     pub fn bar(&self, features: &Features) -> Vec<NavItem> {
         NavItem::ALL.iter().copied().filter(|i| i.visible(features)).collect()
-    }
-}
-
-/// One card on the start-up menu.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StartCard {
-    pub start: Start,
-    pub title: &'static str,
-    pub pitch: &'static str,
-}
-
-/// The cards the menu lists, in order (`--start N` skips the menu).
-pub fn start_menu() -> Vec<StartCard> {
-    Start::ALL
-        .iter()
-        .map(|s| {
-            let (title, pitch) = s.title();
-            StartCard { start: *s, title, pitch }
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod start_menu_tests {
-    use super::*;
-
-    #[test]
-    fn menu_lists_starts_one_two_three_in_order() {
-        let cards = start_menu();
-        let nums: Vec<u8> = cards.iter().map(|c| c.start.number()).collect();
-        assert_eq!(nums, [1, 2, 3]);
-        assert!(cards.iter().all(|c| !c.title.is_empty() && !c.pitch.is_empty()));
     }
 }

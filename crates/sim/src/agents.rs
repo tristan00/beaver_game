@@ -796,16 +796,42 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     }
 }
 
+/// An open site still short of `good` beyond what is already on its way, nearest first. Felled
+/// wood goes straight to it: no stockpile is needed (the new game has none).
+fn site_short_of(sim: &SimState, from: Cell, good: Good) -> Option<BuildingId> {
+    let d = |b: &Building| b.cells().map(|c| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2)).min().unwrap_or(0);
+    sim.work
+        .places
+        .iter()
+        .filter_map(|p| Some((sim.buildings.building(p.building).filter(|b| !b.is_complete())?, p.site.as_ref()?)))
+        .filter(|(b, s)| s.missing(good) - promised(sim, b.id, good) > WORK_EPS)
+        .min_by_key(|(b, _)| (d(b), b.id))
+        .map(|(b, _)| b.id)
+}
+
 fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
     let Some(load) = ag.load else {
         ag.task = Task::Idle;
         return;
     };
+    if let Some(site) = site_short_of(sim, ag.cell, load.good) {
+        ag.path = None;
+        ag.task = Task::Carry { dest: site };
+        return;
+    }
     let dest = if ag.path.is_some() || adjacent_to_store(sim, ag.cell, dest, load.good) {
         dest
     } else {
         // Choose the store with the cheapest route (swimming counts when it is shorter).
         let Some((id, path)) = nearest_store(sim, ag.id, ag.cell, load.good) else {
+            if closest_store(sim, ag.cell, load.good).is_none() {
+                // Nowhere to keep it and no site wants it (the new game has no stockpile): the
+                // surplus of a felled tree is left behind rather than carried for ever.
+                ag.load = None;
+                ag.path = None;
+                ag.task = Task::Idle;
+                return;
+            }
             note(ag, false); // no reachable store: keep the load and wait, visibly stuck
             return;
         };
@@ -956,8 +982,8 @@ mod tests {
         }
         let start: Vec<Cell> = ids[1..3].iter().map(|&i| sim.agents.get(i).unwrap().cell).collect();
         sim.apply(crate::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Area(ResourceKind::Tree, area)) }).unwrap();
-        // The kit is assigned too, but kits do no work; adult ids[1] is unassigned.
-        sim.apply(crate::Command::Assign { who: vec![ids[2]], to: Some(Assignment::Resource(inside[0])) }).unwrap();
+        // A kit cannot be assigned at all; adult ids[1] is unassigned.
+        assert!(sim.apply(crate::Command::Assign { who: vec![ids[2]], to: Some(Assignment::Resource(inside[0])) }).is_err());
         for _ in 0..4000 {
             step(&mut sim, DT);
             for &o in &outside {

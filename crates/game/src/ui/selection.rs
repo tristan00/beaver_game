@@ -715,10 +715,9 @@ fn tree_panel(sim: &SimState, id: ResourceId) -> Option<Panel> {
 mod tests {
     use super::*;
     use super::super::explain::audit;
-    use sim::starts::{build_lake, Start};
 
     fn start2() -> SimState {
-        let mut sim = build_lake(Start::EarlyLake, 1).expect("start 2").0;
+        let mut sim = sim::lakes::early_lake(1).expect("early lake fixture").0;
         sim.tech.unlock_all();
         sim
     }

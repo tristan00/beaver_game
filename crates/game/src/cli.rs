@@ -1,9 +1,8 @@
-//! Command-line parsing: `beaver_colony [--start N] [--screenshot PATH --frames N] [--seed S] [--cam PRESET]`.
+//! Command-line parsing: `beaver_colony [--screenshot PATH --frames N] [--seed S] [--cam PRESET]`.
 use bevy::prelude::Resource;
-use sim::starts::Start;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge|lake] [--start 1|2|3 [--demo-pond]] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag|resize] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--demo-pond] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -21,18 +20,16 @@ pub struct Cli {
     pub autoplay_settle: bool,
     /// Scripted dam preview (implies `--autoplay-settle`): settle, stock stores, draw a dam, hold the preview for `--screenshot`.
     pub demo_dam: bool,
-    /// Build this start directly and skip the start-up menu.
-    pub start: Option<Start>,
-    /// Scripted start 1 (needs `--start 1`): order the designed dam, let the family build it, hold
+    /// Scripted new game: order the designed dam, let the family build it, hold
     /// the picture until the pond has filled.
     pub demo_pond: bool,
-    /// Scripted placement preview (needs `--start 1`): hold a valid or invalid building ghost, or the dam hover preview.
+    /// Scripted placement preview: hold a valid or invalid building ghost, or the dam hover preview.
     pub demo_place: Option<String>,
     /// Open this navigation screen at start (screenshots).
     pub open: Option<String>,
     /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
     pub showcase: Option<String>,
-    /// Scripted order gesture (needs `--start 2`): `drag` sends a selected beaver to a dragged area; `resize` drags a work-area edge.
+    /// Scripted order gesture: `drag` sends a selected beaver to a dragged area.
     pub demo_orders: Option<String>,
     /// Open this entity panel at start (screenshots): beaver|family|building|site|dam|tree.
     pub select: Option<String>,
@@ -43,7 +40,7 @@ pub struct Cli {
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, start: None, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None, select: None, mode: None };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None, select: None, mode: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -67,11 +64,6 @@ impl Cli {
                     cli.demo_dam = true;
                     cli.autoplay_settle = true;
                 }
-                "--start" => {
-                    let v = value("--start")?;
-                    let n: u8 = v.parse().map_err(|_| format!("--start: '{v}' is not a start number (1, 2 or 3)"))?;
-                    cli.start = Some(Start::from_number(n).ok_or_else(|| format!("--start: no start {n} (choose 1, 2 or 3)"))?);
-                }
                 "--demo-pond" => cli.demo_pond = true,
                 "--demo-place" => {
                     let v = value("--demo-place")?;
@@ -82,8 +74,8 @@ impl Cli {
                 }
                 "--demo-orders" => {
                     let v = value("--demo-orders")?;
-                    if !["drag", "resize"].contains(&v.as_str()) {
-                        return Err(format!("--demo-orders: unknown scene '{v}' (drag|resize)"));
+                    if v != "drag" {
+                        return Err(format!("--demo-orders: unknown scene '{v}' (drag)"));
                     }
                     cli.demo_orders = Some(v);
                 }
@@ -119,16 +111,13 @@ impl Cli {
                 other => return Err(format!("unknown argument '{other}'")),
             }
         }
-        if cli.demo_pond && cli.start != Some(Start::River) {
-            return Err("--demo-pond needs --start 1".into());
-        }
-        if cli.demo_place.is_some() && cli.start != Some(Start::River) {
-            return Err("--demo-place needs --start 1".into());
-        }
-        if cli.demo_orders.is_some() && cli.start != Some(Start::EarlyLake) {
-            return Err("--demo-orders needs --start 2".into());
-        }
         Ok(cli)
+    }
+
+    /// Whether a scripted scene (stress, autoplay, showcase) founds its own colony on a plain
+    /// world instead of the new game.
+    pub fn plain_world(&self) -> bool {
+        self.stress || self.autoplay_settle || self.showcase.is_some()
     }
 }
 
@@ -151,29 +140,19 @@ mod tests {
     }
 
     #[test]
-    fn start_flag_picks_a_start_and_rejects_bad_values() {
-        assert_eq!(p(&[]).unwrap().start, None, "no flag: the menu opens");
-        for (n, s) in [("1", Start::River), ("2", Start::EarlyLake), ("3", Start::IndustrialLake)] {
-            assert_eq!(p(&["--start", n]).unwrap().start, Some(s));
-        }
-        for bad in ["0", "4", "256", "-1", "x", "1.5", ""] {
-            assert!(p(&["--start", bad]).is_err(), "--start {bad:?} must be rejected");
-        }
-        assert!(p(&["--start"]).is_err(), "missing value");
+    fn the_start_flag_and_menu_are_gone() {
+        assert!(p(&["--start", "1"]).unwrap_err().contains("--start"));
+        assert!(p(&["--start", "2"]).is_err());
     }
 
     #[test]
-    fn demo_pond_needs_start_one() {
-        assert!(p(&["--demo-pond"]).is_err());
-        assert!(p(&["--start", "2", "--demo-pond"]).is_err());
-        assert!(p(&["--start", "1", "--demo-pond"]).unwrap().demo_pond);
-    }
-
-    #[test]
-    fn demo_place_needs_start_one_and_a_known_scene() {
-        assert!(p(&["--demo-place", "dam"]).is_err());
-        assert!(p(&["--start", "1", "--demo-place", "nope"]).is_err());
-        assert_eq!(p(&["--start", "1", "--demo-place", "dam"]).unwrap().demo_place.as_deref(), Some("dam"));
+    fn scripted_scenes_use_a_plain_world_and_everything_else_the_new_game() {
+        assert!(!p(&[]).unwrap().plain_world());
+        assert!(!p(&["--demo-pond"]).unwrap().plain_world());
+        for a in [["--stress", ""], ["--autoplay-settle", ""], ["--showcase", "poses"]] {
+            let args: Vec<&str> = a.into_iter().filter(|s| !s.is_empty()).collect();
+            assert!(p(&args).unwrap().plain_world(), "{args:?}");
+        }
     }
 
     #[test]
@@ -191,10 +170,9 @@ mod tests {
     }
 
     #[test]
-    fn demo_orders_needs_start_two_and_a_known_scene() {
-        assert!(p(&["--demo-orders", "drag"]).is_err());
-        assert!(p(&["--start", "1", "--demo-orders", "drag"]).is_err());
-        assert!(p(&["--start", "2", "--demo-orders", "spin"]).is_err());
-        assert_eq!(p(&["--start", "2", "--demo-orders", "resize"]).unwrap().demo_orders.as_deref(), Some("resize"));
+    fn demo_orders_needs_a_known_scene() {
+        assert!(p(&["--demo-orders", "spin"]).is_err());
+        assert!(p(&["--demo-orders", "resize"]).is_err());
+        assert_eq!(p(&["--demo-orders", "drag"]).unwrap().demo_orders.as_deref(), Some("drag"));
     }
 }

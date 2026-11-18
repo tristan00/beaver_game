@@ -1,11 +1,10 @@
 use super::*;
 use crate::build::BuildUi;
 use crate::ui::explain::audit;
-use sim::starts::{build, Start};
 use sim::Command;
 
 fn start2() -> SimState {
-    build(Start::EarlyLake, 1).expect("start 2")
+    sim::lakes::early_lake(1).expect("early lake fixture").0
 }
 
 fn legend(o: &Overlay, label: &str) -> Explained {

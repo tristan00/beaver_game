@@ -380,7 +380,8 @@ pub mod buildings {
             // Felled trees only: the first dam is built from what the family can fell and carry.
             BuildingKind::Dam => (&[(Logs, 15.0), (Sticks, 20.0)], 8.0),
             BuildingKind::Lodge => (&[(Logs, 20.0), (Sticks, 25.0), (Mud, 20.0)], 12.0),
-            BuildingKind::Burrow => (&[(Sticks, 6.0), (Mud, 8.0)], 2.0),
+            // Dug by the adults from the bank: labour only, no materials.
+            BuildingKind::Burrow => (&[], 6.0),
             BuildingKind::FoodCache => (&[(Logs, 6.0), (Sticks, 10.0), (Mud, 6.0)], 4.0),
             BuildingKind::ScentMound => (&[(Mud, 6.0), (Sticks, 4.0)], 1.5),
             BuildingKind::GuardPost => (&[(Logs, 8.0), (Sticks, 8.0), (Stone, 3.0)], 3.0),

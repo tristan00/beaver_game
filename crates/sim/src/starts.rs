@@ -1,40 +1,9 @@
-//! The three deterministic starts (owners: `start1`, `start23`). Built directly, never simulated
-//! forward. Same (start, seed) gives an identical `SimState`.
-//!
-//! * `Start::River` (1): two adults + two kits arrive by a river; no lodge or dam; the player picks
-//!   a dam spot; the family fells, gathers, builds; the pond fills.
-//! * `Start::EarlyLake` (2): built dam and lake, a few elementary buildings, ~15 beavers (some
-//!   joined, some born there).
-//! * `Start::IndustrialLake` (3): larger dam, much larger lake, advanced tech, 50+ beavers with
-//!   specialists, canals, efficient production, big storage.
+//! The one founding start: two adults and two kits swim in along a river. Nothing is built and
+//! nothing is chosen for them; the player scouts, places a burrow (the adults dig it) and a dam
+//! (the adults fell trees and haul the wood), and the pond fills. Built directly, never simulated
+//! forward: the same seed gives an identical `SimState`.
 
 use crate::SimState;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Start {
-    River,
-    EarlyLake,
-    IndustrialLake,
-}
-
-impl Start {
-    pub const ALL: [Start; 3] = [Start::River, Start::EarlyLake, Start::IndustrialLake];
-    /// 1-based number used by `--start N`.
-    pub fn number(self) -> u8 {
-        self as u8 + 1
-    }
-    pub fn from_number(n: u8) -> Option<Start> {
-        Start::ALL.get((n as usize).wrapping_sub(1)).copied()
-    }
-    /// Menu title and one-line pitch.
-    pub fn title(self) -> (&'static str, &'static str) {
-        match self {
-            Start::River => ("A river and a family", "Four beavers, no home. Build the first dam."),
-            Start::EarlyLake => ("The early lake", "A dam holds a young lake; fifteen beavers need work."),
-            Start::IndustrialLake => ("The industrial lake", "Fifty beavers, canals and workshops. Keep it humming."),
-        }
-    }
-}
 
 /// Why a start could not be built.
 #[derive(Clone, Debug, PartialEq)]
@@ -57,25 +26,6 @@ impl std::error::Error for StartError {}
 
 fn build_err(e: impl std::fmt::Debug) -> StartError {
     StartError::Build(format!("{e:?}"))
-}
-
-/// Builds a start for `seed` directly (no simulation step runs: `time_days` stays 0). The same
-/// (start, seed) always gives an identical state. Starts 2 and 3 are filled in by `start23`;
-/// until then they return a fresh world.
-pub fn build(start: Start, seed: u64) -> Result<SimState, StartError> {
-    match start {
-        Start::River => build_river(seed).map(|(sim, _)| sim),
-        Start::EarlyLake | Start::IndustrialLake => build_lake(start, seed).map(|(sim, _)| sim),
-    }
-}
-
-/// Builds start 2 or 3 and also returns what its lake and dam are. Errors for `Start::River`.
-pub fn build_lake(start: Start, seed: u64) -> Result<(SimState, crate::lakes::LakeInfo), StartError> {
-    match start {
-        Start::EarlyLake => crate::lakes::early_lake(seed),
-        Start::IndustrialLake => crate::lakes::industrial_lake(seed),
-        Start::River => Err(StartError::Build("start 1 has no lake".into())),
-    }
 }
 
 /// Removes every disabled system's state from a start (`Features` says which): no rival
@@ -202,12 +152,37 @@ fn river_plan(sim: &SimState) -> Option<RiverPlan> {
     })
 }
 
-/// Start 1: a family of two adults and two kits camps by the river with a stockpile, no lodge
-/// and no dam. The player orders a dam (`Command::OrderDam`); automatic organisation then has
-/// the family fell trees, carry wood to the stockpile and the dam site, and build it.
+/// The river cells the family swims in on: one per beaver, packed around the river cell nearest
+/// the landing bank (nearest to that anchor first, ties by cell order). Cells with a walkable
+/// route to the landing come first, so a pocket of river walled in by cliffs does not strand
+/// them; a landing buried in forest (no route until trees fall) falls back to plain river cells.
+fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
+    use crate::nav::Goal;
+    let size = sim.world.size;
+    let mut nav = sim.nav.clone();
+    nav.rebuild(sim);
+    let who = sim.colony.beavers[0].id;
+    let mut river: Vec<Cell> = (0..size * size)
+        .map(|i| (i % size, i / size))
+        .filter(|&(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false))
+        .collect();
+    river.sort_by_key(|&c| (dist2(c, landing), c.1, c.0));
+    let linked: Vec<Cell> = river.iter().copied().filter(|&c| nav.find_path(who, c, Goal::Beside(landing)).is_some()).collect();
+    let pool = if linked.len() >= n { linked } else { river };
+    let Some(&anchor) = pool.first() else { return Vec::new() };
+    let mut pack = pool;
+    pack.sort_by_key(|&c| (dist2(c, anchor), c.1, c.0));
+    pack.truncate(n);
+    pack
+}
+
+/// The new game: two adults and two kits in the river beside a dry landing bank, no lodge, no
+/// stockpile, no building of any kind and no dam. The player places a burrow and a dam
+/// (`SimState::place_site`, `SimState::order_dam`); the adults dig and fell and haul for them,
+/// the kits never work.
 ///
-/// Returns the state and the dam the start is designed around (cells across the river and its
-/// height), which leaves the camp dry. Springs across the future pond are added so the river can
+/// Returns the state and the dam the game is designed around (cells across the river and its
+/// height), which leaves the landing dry. Springs across the future pond are added so the river can
 /// keep that pond full against evaporation and seepage; they flow from day 0.
 fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
     let mut sim = SimState::new(seed);
@@ -221,12 +196,15 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
         b.age_days = KIT_AGE_DAYS;
         b.stage = crate::colony::Stage::Kit;
     }
-    // The stockpile covers the 3x3 around the camp cell (checked dry); tech does not gate it.
-    let terrain = crate::buildings::Terrain { height: &sim.height, depth: &sim.water.depth };
-    sim.buildings
-        .add_complete(crate::buildings::BuildingKind::Warehouse, (camp.0 - 1, camp.1 - 1), terrain)
-        .map_err(build_err)?;
-    // Founding opens the camp's valley and its neighbours, as settling does.
+    // They arrive swimming: each starts in its own river cell near the landing.
+    let swim = swim_cells(&sim, camp, sim.colony.beavers.len());
+    if swim.len() < sim.colony.beavers.len() {
+        return Err(StartError::NoSite);
+    }
+    for (b, c) in sim.colony.beavers.iter_mut().zip(swim) {
+        b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+    }
+    // Founding opens the landing's valley and its neighbours, as settling does.
     if let Some(v) = sim.world.valley_of(camp) {
         sim.world.valleys[v.0 as usize].open = true;
     }
@@ -327,10 +305,15 @@ impl PondWatch {
     }
 }
 
-/// Builds start 1 and also returns the dam it is designed around. Tests and the scripted demo
-/// order that dam; the player picks their own spot.
-pub fn build_river_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {
+/// Builds the new game for `seed` and also returns the dam it is designed around. Tests and the
+/// scripted demo order that dam; the player picks their own spot.
+pub fn new_game_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {
     build_river(seed)
+}
+
+/// Builds the new game for `seed` (see `new_game_with_dam`).
+pub fn new_game(seed: u64) -> Result<SimState, StartError> {
+    build_river(seed).map(|(sim, _)| sim)
 }
 
 use crate::water::Cell;
@@ -339,15 +322,6 @@ use crate::water::Cell;
 mod tests {
     use super::*;
     use crate::{agents, Command};
-
-    #[test]
-    fn numbers_round_trip_and_bad_numbers_are_none() {
-        for s in Start::ALL {
-            assert_eq!(Start::from_number(s.number()), Some(s));
-        }
-        assert_eq!([1, 2, 3], Start::ALL.map(|s| s.number()));
-        assert_eq!((Start::from_number(0), Start::from_number(4)), (None, None));
-    }
 
     /// Everything a test can see of a state, for equality.
     fn fingerprint(s: &SimState) -> String {
@@ -358,8 +332,8 @@ mod tests {
     }
 
     #[test]
-    fn start_one_is_identical_per_seed_differs_between_seeds_and_runs_no_step() {
-        let (a, b, c) = (build(Start::River, 7).unwrap(), build(Start::River, 7).unwrap(), build(Start::River, 8).unwrap());
+    fn new_game_is_identical_per_seed_differs_between_seeds_and_runs_no_step() {
+        let (a, b, c) = (new_game(7).unwrap(), new_game(7).unwrap(), new_game(8).unwrap());
         assert_eq!(fingerprint(&a), fingerprint(&b));
         assert_ne!(fingerprint(&a), fingerprint(&c));
         for s in [&a, &b, &c] {
@@ -368,20 +342,82 @@ mod tests {
     }
 
     #[test]
-    fn start_one_is_two_adults_and_two_kits_with_no_lodge_or_dam() {
+    fn new_game_is_two_adults_and_two_kits_in_the_river_and_no_buildings() {
         use crate::colony::Stage;
-        let s = build(Start::River, 3).unwrap();
+        let s = new_game(3).unwrap();
         assert_eq!((s.colony.count_stage(Stage::Adult), s.colony.count_stage(Stage::Kit), s.colony.population()), (2, 2, 4));
-        assert!(s.buildings.buildings.iter().all(|b| b.kind != crate::buildings::BuildingKind::Lodge));
+        assert!(s.buildings.buildings.is_empty(), "no stockpile, lodge or burrow: {:?}", s.buildings.buildings);
+        assert!(s.work.places.is_empty());
         assert!(s.water.dam_height.as_slice().iter().all(|h| *h <= 0.0));
         assert_eq!(s.agents.by_id.len(), 4, "all four stand on the map");
+        assert!(s.agents.by_id.values().all(|a| s.world.river.get(a.cell.0, a.cell.1) == Some(&true)), "all four swim in the river");
+    }
+
+    /// Places `kind` on the first free cell scanning outwards from the first beaver.
+    fn place_near(s: &mut SimState, kind: crate::buildings::BuildingKind) -> crate::buildings::BuildingId {
+        let c = s.colony.beavers[0].pos;
+        let (cx, cy) = (c.0 as usize, c.1 as usize);
+        for r in 2..30usize {
+            for (x, y) in (cx.saturating_sub(r)..=cx + r).flat_map(|x| (cy.saturating_sub(r)..=cy + r).map(move |y| (x, y))) {
+                let reachable = s.nav.find_path(s.colony.beavers[0].id, s.agents.get(s.colony.beavers[0].id).unwrap().cell, crate::nav::Goal::Beside((x, y))).is_some();
+                if !reachable {
+                    continue;
+                }
+                if let Ok(id) = s.place_site(kind, (x, y)) {
+                    return id;
+                }
+            }
+        }
+        panic!("no room for a {kind:?}");
+    }
+
+    fn stage_of(s: &SimState, id: crate::colony::BeaverId) -> crate::colony::Stage {
+        s.colony.beaver(id).unwrap().stage
+    }
+
+    #[test]
+    fn only_adults_dig_a_placed_burrow_and_nothing_is_built_before_the_command() {
+        use crate::{buildings::{BuildingKind, Status}, colony::Stage};
+        let mut s = new_game(1).unwrap();
+        for _ in 0..200 {
+            s.step(0.05).unwrap();
+        }
+        assert!(s.buildings.buildings.is_empty() && s.work.places.is_empty(), "nothing is built before its command");
+        let id = place_near(&mut s, BuildingKind::Burrow);
+        let (mut diggers, mut done_day) = (std::collections::BTreeSet::new(), None);
+        for _ in 0..600 {
+            s.step(0.05).unwrap();
+            for a in s.agents.by_id.values() {
+                if matches!(a.task, agents::Task::Build { .. }) {
+                    diggers.insert(a.id);
+                }
+            }
+            if done_day.is_none() && s.buildings.building(id).unwrap().status == Status::Complete {
+                done_day = Some(s.time_days);
+            }
+        }
+        assert!(done_day.is_some(), "the adults dig the burrow");
+        assert!(!diggers.is_empty() && diggers.iter().all(|&d| stage_of(&s, d) == Stage::Adult), "diggers: {diggers:?}");
+        assert!(s.agents.by_id.values().filter(|a| stage_of(&s, a.id) == Stage::Kit).all(|a| matches!(a.task, agents::Task::Idle) && a.load.is_none()));
+    }
+
+    #[test]
+    fn kits_cannot_be_ordered_to_work() {
+        use crate::colony::Stage;
+        let mut s = new_game(1).unwrap();
+        let kit = s.colony.beavers.iter().find(|b| b.stage == Stage::Kit).unwrap().id;
+        let cell = s.agents.get(kit).unwrap().cell;
+        let area = crate::work::Area { min: cell, max: cell };
+        let to = Some(agents::Assignment::Area(crate::resources::ResourceKind::Tree, area));
+        assert!(s.apply(Command::Assign { who: vec![kit], to }).is_err());
+        assert_eq!(s.agents.get(kit).unwrap().assignment, None);
     }
 
     /// Runs start 1 for `days`; with `order` the planned dam is ordered at once and nothing else is
     /// ever commanded. Returns the day the dam stood, the day the pond first held its level
     /// (after the dam stood), and the end state.
     fn run(seed: u64, order: bool, days: f32) -> (SimState, Option<f64>, Option<f64>) {
-        let (mut s, dam) = build_river_with_dam(seed).unwrap();
+        let (mut s, dam) = new_game_with_dam(seed).unwrap();
         let watch = dam.watch(&s).unwrap();
         if order {
             s.apply(Command::OrderDam { cells: dam.cells.clone(), height: dam.height }).unwrap();
@@ -400,6 +436,37 @@ mod tests {
     }
 
     #[test]
+    fn adults_fell_and_haul_wood_to_a_placed_dam_which_completes_only_from_delivered_wood_and_the_pond_rises() {
+        use crate::buildings::Good;
+        use crate::colony::Stage;
+        let (mut s, dam) = new_game_with_dam(1).unwrap();
+        let watch = dam.watch(&s).unwrap();
+        let trees_before = s.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).count();
+        let id = s.order_dam(&dam.cells, dam.height).unwrap();
+        let (mut built, mut held) = (None, None);
+        while s.time_days < 200.0 && held.is_none() {
+            s.step(0.05).unwrap();
+            let site = s.work.place(id).and_then(|p| p.site.as_ref()).unwrap();
+            if dam.is_built(&s) {
+                built.get_or_insert(s.time_days);
+                assert!(site.is_done() && site.missing(Good::Logs) <= 1e-3 && site.missing(Good::Sticks) <= 1e-3, "built before its wood arrived");
+            }
+            assert!(!dam.is_built(&s) || built.is_some());
+            for a in s.agents.by_id.values().filter(|a| stage_of(&s, a.id) == Stage::Kit) {
+                assert!(matches!(a.task, agents::Task::Idle) && a.load.is_none(), "a kit worked: {:?}", a.task);
+            }
+            if built.is_some() && watch.is_full(&s) {
+                held = Some(s.time_days);
+            }
+        }
+        assert!(built.is_some(), "the dam was never finished");
+        assert!(held.is_some(), "the pond never rose to the dam crest");
+        let trees_after = s.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).count();
+        assert!(trees_after < trees_before, "the adults felled trees");
+        assert_eq!(s.buildings.stores.amount(Good::Logs), 0.0, "wood went to the dam, not a stockpile");
+    }
+
+    #[test]
     fn without_the_dam_command_nothing_is_built() {
         let (s, built, _) = run(1, false, 60.0);
         assert_eq!(built, None);
@@ -409,7 +476,7 @@ mod tests {
 
     #[test]
     fn dam_order_is_rejected_for_a_bad_line_and_the_family_idles_without_orders() {
-        let (mut s, _) = build_river_with_dam(1).unwrap();
+        let (mut s, _) = new_game_with_dam(1).unwrap();
         assert!(s.apply(Command::OrderDam { cells: vec![], height: 1.0 }).is_err());
         assert!(s.apply(Command::OrderDam { cells: vec![(5, 5), (5, 5)], height: 1.0 }).is_err());
         assert!(s.apply(Command::OrderDam { cells: vec![(5, 5), (5, 6)], height: -1.0 }).is_err());
