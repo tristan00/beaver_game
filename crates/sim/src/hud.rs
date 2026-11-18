@@ -1,14 +1,16 @@
 //! Read-only views the interface needs: idle beavers, current problems with their cause and a fix,
-//! the river's side profile, and how long the ponds would last through a dry summer. Nothing here
-//! changes the state; the game crate turns a [`Fix`] into commands.
-use crate::agents::Task;
-use crate::buildings::{BuildingId, BuildingKind, Good, WET_DEPTH};
-use crate::colony::{BeaverId, Stage};
+//! number breakdowns (spec §4.3), the river's side profile, and how long the ponds would last
+//! through a dry summer. Nothing here changes the state except [`apply_fix`], which performs a
+//! problem's fix through `Command`s.
+use crate::agents::{Assignment, Task};
+use crate::buildings::{BuildingId, BuildingKind, Good, Producer, Use, WET_DEPTH};
+use crate::colony::{BeaverId, DeathCause, Stage};
+use crate::jobs::RoleKind;
 use crate::resources::ResourceKind;
 use crate::society::RequestId;
 use crate::water::{Cell, Season};
 use crate::work::Role;
-use crate::SimState;
+use crate::{Command, SimState};
 
 /// Most problems the interface shows at once.
 pub const MAX_PROBLEMS: usize = 4;
@@ -18,6 +20,10 @@ pub const FOOD_WARN_DAYS: f32 = 20.0;
 pub const FULL_SHARE: f32 = 0.98;
 /// A dam weaker than this is reported.
 pub const WEAK_DAM: f32 = 0.35;
+/// Beavers a food or idle fix puts to work at once (the "+2" on its button).
+pub const FIX_WORKERS: usize = 2;
+/// Half-size (cells) of the area around the lodge where a food fix sends gatherers.
+pub const FOOD_GATHER_RADIUS: usize = 30;
 
 /// Working-age beavers (yearlings and adults) with no collect assignment and no workplace slot.
 pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
@@ -31,25 +37,309 @@ pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
         .collect()
 }
 
+// ───────────────────────────── breakdowns ─────────────────────────────
+
+/// What a breakdown row links to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    Building(BuildingId),
+    Beaver(BeaverId),
+    Cell(Cell),
+    None,
+}
+
+/// One itemised term behind a number. `label` is at most three words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BreakdownRow {
+    pub label: String,
+    pub value: f32,
+    pub source: Source,
+}
+
+/// A number and what makes it up; rows are sorted by `|value|`, largest first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breakdown {
+    pub total: f32,
+    pub rows: Vec<BreakdownRow>,
+}
+
+impl Breakdown {
+    fn new(total: f32, mut rows: Vec<BreakdownRow>) -> Self {
+        rows.sort_by(|a, b| b.value.abs().total_cmp(&a.value.abs()));
+        Breakdown { total, rows }
+    }
+}
+
+fn row(label: impl Into<String>, value: f32, source: Source) -> BreakdownRow {
+    BreakdownRow { label: label.into(), value, source }
+}
+
+fn building_source(sim: &SimState, b: BuildingId) -> Source {
+    if sim.buildings.building(b).is_some() { Source::Building(b) } else { Source::None }
+}
+
+fn building_name(sim: &SimState, b: BuildingId) -> String {
+    sim.buildings.building(b).map_or("Gone", |b| b.kind.spec().name).to_string()
+}
+
+/// Each good's daily inflow (7-day mean of what reached the stores), per producing building,
+/// "By order" for gatherers on a gather order, "Other" for the rest.
+pub fn good_in_breakdown(sim: &SimState, g: Good) -> Breakdown {
+    let rows = sim
+        .ledger
+        .in_by(g)
+        .into_iter()
+        .map(|(p, v)| match p {
+            Producer::Building(b) => row(building_name(sim, b), v, building_source(sim, b)),
+            Producer::Order => row("By order", v, Source::None),
+            Producer::Other => row("Other", v, Source::None),
+        })
+        .collect();
+    Breakdown::new(sim.ledger.in_per_day(g), rows)
+}
+
+fn use_label(u: Use) -> &'static str {
+    match u {
+        Use::EatenAdults => "Adults",
+        Use::EatenYearlings => "Yearlings",
+        Use::EatenKits => "Kits",
+        Use::EatenElders => "Elders",
+        Use::Spoiled => "Spoiled",
+        Use::Sites => "Building sites",
+        Use::Crafting => "Crafting",
+        Use::Repairs => "Repairs",
+        Use::Other => "Other",
+    }
+}
+
+/// Each good's daily outflow (7-day mean) by use, as negative values: eating by life stage,
+/// spoilage, building sites, crafting inputs, repairs.
+pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
+    let rows = Use::ALL
+        .iter()
+        .map(|&u| (u, sim.ledger.out_for(g, u)))
+        .filter(|(_, v)| *v > 1e-4)
+        .map(|(u, v)| row(use_label(u), -v, Source::None))
+        .collect();
+    Breakdown::new(-sim.ledger.out_per_day(g), rows)
+}
+
+/// Days the food lasts: total = days (`f32::INFINITY` when food is not falling); rows: the
+/// stock, each stage's eating per day (negative), gathering per day.
+pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
+    let stock = sim.buildings.stores.amount(Good::Food);
+    let need = food_need_per_day(sim);
+    let gain = sim.ledger.in_per_day(Good::Food);
+    let mut rows = vec![row("Stock", stock, Source::None), row("Gathered", gain, Source::None)];
+    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits"), (Stage::Elder, "Elders")] {
+        let eat: f32 = sim.colony.beavers.iter().filter(|b| b.stage == st).map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum();
+        if eat > 0.0 {
+            rows.push(row(label, -eat, Source::None));
+        }
+    }
+    let total = if need > gain { stock / (need - gain) } else { f32::INFINITY };
+    Breakdown::new(total, rows)
+}
+
+/// The population: adults, yearlings, kits, elders, housed and unhoused, and this season's births,
+/// arrivals and deaths. Total = population (the rows overlap; they do not sum to it).
+pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
+    let c = &sim.colony;
+    let mut rows = Vec::new();
+    for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits"), (Stage::Elder, "Elders")] {
+        rows.push(row(label, c.count_stage(st) as f32, Source::None));
+    }
+    let housed = c.beavers.iter().filter(|b| b.lodge.is_some()).count();
+    rows.push(row("Housed", housed as f32, Source::None));
+    rows.push(row("Unhoused", (c.population() - housed) as f32, Source::None));
+    let season_start = (sim.time_days / crate::calendar::SEASON_DAYS).floor() * crate::calendar::SEASON_DAYS;
+    let (mut born, mut joined, mut died) = (0, 0, 0);
+    for e in c.events.iter().filter(|e| e.day >= season_start) {
+        match e.event {
+            crate::colony::Event::Born { .. } => born += 1,
+            crate::colony::Event::Immigrated { .. } => joined += 1,
+            crate::colony::Event::Died { .. } | crate::colony::Event::Departed { .. } => died += 1,
+            _ => {}
+        }
+    }
+    rows.push(row("Born", born as f32, Source::None));
+    rows.push(row("Joined", joined as f32, Source::None));
+    rows.push(row("Lost", -(died as f32), Source::None));
+    rows.retain(|r| r.value != 0.0);
+    Breakdown::new(c.population() as f32, rows)
+}
+
+/// A beaver's mood: each need's share of the mood target (weight x need x the health factor),
+/// plus how far the mood still lags behind that target. Rows sum to the mood. `None`-like empty
+/// breakdown for an unknown beaver.
+pub fn mood_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
+    use crate::tuning::colony::*;
+    let Some(bv) = sim.colony.beaver(b) else { return Breakdown::default() };
+    let n = &bv.needs;
+    let health = MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * bv.health;
+    let terms = [
+        ("Food", MOOD_FOOD_WEIGHT * n.food),
+        ("Warmth", MOOD_WARMTH_WEIGHT * n.warmth),
+        ("Rest", MOOD_REST_WEIGHT * n.rest),
+        ("Safety", MOOD_SAFETY_WEIGHT * n.safety),
+        ("Company", MOOD_SOCIAL_WEIGHT * n.social),
+    ];
+    let mut rows: Vec<BreakdownRow> = terms.iter().map(|(l, v)| row(*l, v * health, Source::Beaver(b))).collect();
+    let target: f32 = rows.iter().map(|r| r.value).sum();
+    let lag = bv.mood - target;
+    if lag.abs() > 0.005 {
+        rows.push(row(if lag > 0.0 { "Fading" } else { "Catching up" }, lag, Source::Beaver(b)));
+    }
+    Breakdown::new(bv.mood, rows)
+}
+
+/// A beaver's health: full health less the harm from each cause, plus what healed back. Rows sum
+/// to the health.
+pub fn health_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
+    let Some(bv) = sim.colony.beaver(b) else { return Breakdown::default() };
+    let mut rows = vec![row("Full health", 1.0, Source::Beaver(b))];
+    let mut harmed = 0.0;
+    for (cause, h) in bv.harm() {
+        if h > 1e-4 {
+            let label = match cause {
+                DeathCause::Starvation => "Hunger",
+                DeathCause::Cold => "Cold",
+                DeathCause::Injury => "Injury",
+                DeathCause::Exhaustion => "Exhaustion",
+                DeathCause::OldAge => "Old age",
+            };
+            rows.push(row(label, -h, Source::Beaver(b)));
+            harmed += h;
+        }
+    }
+    let rest = bv.health - (1.0 - harmed);
+    if rest.abs() > 1e-4 {
+        rows.push(row(if rest > 0.0 { "Healed" } else { "Other harm" }, rest, Source::Beaver(b)));
+    }
+    Breakdown::new(bv.health, rows)
+}
+
+/// Days of summer cover per pond (its volume over its own summer evaporation and seepage).
+/// Total = the colony's cover (`Ponds::summer_cover_days`, 0 without ponds). Rows link to a
+/// cell of each pond.
+pub fn pond_cover_breakdown(sim: &SimState) -> Breakdown {
+    let w = &sim.water;
+    let n = w.depth.width();
+    let per_cell = w.config.evaporation * Season::Summer.evap_mult() + w.config.seepage;
+    let pond = |i: usize| w.depth.as_slice()[i] >= WET_DEPTH && !w.fed.as_slice()[i];
+    let mut seen = vec![false; w.depth.as_slice().len()];
+    let mut rows = Vec::new();
+    for start in 0..seen.len() {
+        if seen[start] || !pond(start) {
+            continue;
+        }
+        let (mut cells, mut volume, mut stack) = (0usize, 0.0f32, vec![start]);
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            cells += 1;
+            volume += w.depth.as_slice()[i];
+            let (x, y) = (i % n, i / n);
+            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+                if nx < n && ny < n {
+                    let j = ny * n + nx;
+                    if !seen[j] && pond(j) {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        // Puddles of a cell or two are not ponds.
+        if cells >= 4 && per_cell > 0.0 {
+            rows.push((volume, row("", volume / (cells as f32 * per_cell), Source::Cell((start % n, start / n)))));
+        }
+    }
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let rows = rows.into_iter().enumerate().map(|(k, (_, mut r))| {
+        r.label = format!("Pond {}", k + 1);
+        r
+    });
+    Breakdown::new(ponds(sim).summer_cover_days().unwrap_or(0.0), rows.collect())
+}
+
+/// The dam cells of dam building `b`: its footprint's dam cells and every dam cell joined to them.
+fn dam_cells(sim: &SimState, b: BuildingId) -> Vec<Cell> {
+    let Some(bd) = sim.buildings.building(b).filter(|bd| bd.kind == BuildingKind::Dam) else { return Vec::new() };
+    let w = &sim.water;
+    let dam = |c: Cell| w.dam_height.get(c.0, c.1).is_some_and(|h| *h > 0.0);
+    let mut out: Vec<Cell> = bd.cells().filter(|&c| dam(c)).collect();
+    let mut k = 0;
+    while k < out.len() {
+        let (x, y) = out[k];
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let c = (nx as usize, ny as usize);
+                if dam(c) && !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+        k += 1;
+    }
+    out
+}
+
+/// Strength of dam `b`: total = its weakest cell's integrity (0..=1); rows: what wears it per day
+/// at that cell (age, water over the crest), negative. `None` if `b` is not a standing dam.
+pub fn dam_strength_breakdown(sim: &SimState, b: BuildingId) -> Option<Breakdown> {
+    let cells = dam_cells(sim, b);
+    let w = &sim.water;
+    let &weakest = cells.iter().min_by(|a, c| {
+        let i = |c: &Cell| w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
+        i(a).total_cmp(&i(c))
+    })?;
+    Some(dam_wear(sim, weakest, Source::Building(b)))
+}
+
+fn dam_wear(sim: &SimState, c: Cell, source: Source) -> Breakdown {
+    let w = &sim.water;
+    let integrity = w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
+    let over = (w.depth.get(c.0, c.1).copied().unwrap_or(0.0) - w.config.overtop_depth).max(0.0);
+    let mut rows = vec![row("Age", -w.config.dam_decay_per_day, source)];
+    if over > 0.0 {
+        rows.push(row("Overtopping", -w.config.overtop_erosion * over, source));
+    }
+    Breakdown::new(integrity, rows)
+}
+
+// ───────────────────────────── problems ─────────────────────────────
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Urgent,
     Warning,
 }
 
-/// The one action a problem card's button performs.
+/// The one action a problem's fix button performs (spec W7). [`apply_fix`] performs the ones the
+/// sim can; `Place`, `OpenJobs` and `Focus` are the interface's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fix {
-    /// Put an idle beaver into this empty slot.
-    FillSlot { building: BuildingId, slot: usize },
-    /// Send the idle beavers to gather this resource around the colony.
-    Gather(ResourceKind),
+    /// `n` beavers into this workplace (`Command::AddWorker` each).
+    AddWorkers { building: BuildingId, n: usize },
+    /// `n` beavers gather `kind` around the lodge (a direct `Assignment::Area` order).
+    Gather { kind: ResourceKind, n: usize },
     /// Start placing this building.
     Place(BuildingKind),
-    /// Accept a wandering beaver.
+    /// Fill every stalled site's slots (W2 rules).
+    StaffSites,
+    /// `n` beavers into `role` (`Command::AdjustRole`).
+    PutToWork { role: RoleKind, n: usize },
+    /// Open the Jobs board.
+    OpenJobs,
     Accept(RequestId),
-    /// Nothing to click: the card only explains (the jump button still works).
-    None,
+    /// Turn a stranger away.
+    Decline(RequestId),
+    /// Nothing to do but look: the jump button.
+    Focus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,48 +353,40 @@ pub enum ProblemKind {
     Stranger,
 }
 
+/// What a problem is about, for its icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Good(Good),
+    Building(BuildingKind),
+    /// A stranger's life stage.
+    Stage(Stage),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Problem {
     pub kind: ProblemKind,
     pub severity: Severity,
-    /// Short title with the count, e.g. "3 beavers idle".
-    pub title: String,
-    /// Why, in plain words.
-    pub cause: String,
+    /// The alert's number: Food days left (floored), Idle beavers, NoBuilders sites, StoreFull
+    /// percent full, WeakDam percent strength, DamFailed dams, Stranger 1.
+    pub value: f32,
+    /// What makes up the number (the tooltip).
+    pub cause: Breakdown,
+    pub subject: Option<Subject>,
     pub fix: Fix,
-    /// Button text for `fix`.
-    pub fix_label: String,
+    /// A second button: `Decline` beside a stranger's `Accept`.
+    pub alt_fix: Option<Fix>,
     /// Where the jump button takes the camera.
     pub focus: Option<Cell>,
-}
-
-fn good_name(g: Good) -> &'static str {
-    match g {
-        Good::Logs => "logs",
-        Good::Sticks => "sticks",
-        Good::Mud => "mud",
-        Good::Stone => "stone",
-        Good::Food => "food",
-        Good::Baskets => "baskets",
-        Good::Rope => "rope",
-        Good::Tools => "tools",
-    }
-}
-
-/// First empty slot with `role` in a workplace, sites included when `sites`.
-fn empty_slot(sim: &SimState, want: impl Fn(Role, bool) -> bool) -> Option<(BuildingId, usize)> {
-    sim.work.places.iter().find_map(|p| {
-        let site = p.site.is_some();
-        p.slots.iter().position(|s| s.worker.is_none() && want(s.role, site)).map(|i| (p.building, i))
-    })
 }
 
 fn building_cell(sim: &SimState, id: BuildingId) -> Option<Cell> {
     sim.buildings.building(id).map(|b| b.pos)
 }
 
+/// The colony's home: the first lodge, else the first beaver.
 fn colony_cell(sim: &SimState) -> Option<Cell> {
-    sim.colony.beavers.first().map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize))
+    let p = sim.colony.lodges.first().map(|l| l.pos).or(sim.colony.beavers.first().map(|b| b.pos))?;
+    Some((p.0.max(0.0) as usize, p.1.max(0.0) as usize))
 }
 
 /// Food the colony eats per day when everyone is fed (hunger rate times each stage's share).
@@ -112,7 +394,47 @@ pub fn food_need_per_day(sim: &SimState) -> f32 {
     sim.colony.beavers.iter().map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum()
 }
 
-/// Current problems, urgent first, at most [`MAX_PROBLEMS`]. Each names its cause and a fix.
+/// Beavers a gather order may take: adults and yearlings not locked to a slot or order, free
+/// ones first, then nearest the lodge.
+fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
+    let home = colony_cell(sim).unwrap_or((0, 0));
+    let mut v: Vec<(bool, usize, BeaverId)> = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| matches!(b.stage, Stage::Adult | Stage::Yearling) && !sim.work.is_locked(b.id))
+        .filter_map(|b| sim.agents.get(b.id).map(|a| (crate::jobs::is_busy(sim, b.id), a.cell.0.abs_diff(home.0) + a.cell.1.abs_diff(home.1), b.id)))
+        .collect();
+    v.sort();
+    v.into_iter().take(n).map(|t| t.2).collect()
+}
+
+/// The food fix (W7): staff a forager hut with free slots; else place one if unlocked (and none
+/// is being built); else gather plants around the lodge; else just look.
+fn food_fix(sim: &SimState) -> Fix {
+    let hut = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| p.kind == BuildingKind::ForagerHut && !p.paused && sim.buildings.building(p.building).is_some_and(|b| b.is_complete()))
+        .filter(|p| crate::jobs::add_worker_preview(sim, p.building).is_some())
+        .max_by_key(|p| (p.priority, std::cmp::Reverse(p.building)));
+    if let Some(p) = hut {
+        let free = p.slots.iter().filter(|s| s.worker.is_none()).count();
+        return Fix::AddWorkers { building: p.building, n: free.min(FIX_WORKERS) };
+    }
+    let building_one = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::ForagerHut && !b.is_complete());
+    if sim.tech.allows(BuildingKind::ForagerHut) && !building_one {
+        return Fix::Place(BuildingKind::ForagerHut);
+    }
+    match gatherers(sim, FIX_WORKERS).len() {
+        0 => Fix::Focus,
+        n => Fix::Gather { kind: ResourceKind::Plant, n },
+    }
+}
+
+/// Current problems, urgent first, at most [`MAX_PROBLEMS`]. Each carries its number, what makes
+/// it up and a fix.
 pub fn problems(sim: &SimState) -> Vec<Problem> {
     let mut out = Vec::new();
     if !sim.colony.is_founded() {
@@ -128,34 +450,30 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     if pop > 0 && need > gain {
         let days = food / (need - gain);
         if days < FOOD_WARN_DAYS {
-            let (fix, label) = match empty_slot(sim, |r, _| r == Role::Collect(ResourceKind::Plant)) {
-                Some((building, slot)) if !idle.is_empty() => (Fix::FillSlot { building, slot }, "Staff the forager hut".to_string()),
-                _ if !idle.is_empty() => (Fix::Gather(ResourceKind::Plant), format!("Send {} to gather food", idle.len())),
-                _ if sim.tech.allows(BuildingKind::ForagerHut) => (Fix::Place(BuildingKind::ForagerHut), "Place a forager hut".to_string()),
-                _ => (Fix::None, "Show".to_string()),
-            };
-            let title = if food < 0.5 { "No food in store".to_string() } else { format!("Food lasts {} days", days.floor() as i64) };
             out.push(Problem {
                 kind: ProblemKind::Food,
                 severity: if days < FOOD_WARN_DAYS / 3.0 { Severity::Urgent } else { Severity::Warning },
-                title,
-                cause: format!("{pop} beavers eat {need:.1}/day, gatherers bring {gain:.1}/day"),
-                fix,
-                fix_label: label,
+                value: days.floor(),
+                cause: food_days_breakdown(sim),
+                subject: Some(Subject::Good(Good::Food)),
+                fix: food_fix(sim),
+                alt_fix: None,
                 focus: colony_cell(sim),
             });
         }
     }
 
     // Dams that finished but could not be raised.
-    if let Some((b, why)) = sim.work.dam_failures.last() {
+    if let Some((b, _)) = sim.work.dam_failures.last() {
+        let rows = sim.work.dam_failures.iter().map(|(d, _)| row("Not raised", 1.0, building_source(sim, *d))).collect();
         out.push(Problem {
             kind: ProblemKind::DamFailed,
             severity: Severity::Urgent,
-            title: "A dam could not be raised".into(),
-            cause: why.clone(),
-            fix: Fix::None,
-            fix_label: "Show".into(),
+            value: sim.work.dam_failures.len() as f32,
+            cause: Breakdown::new(sim.work.dam_failures.len() as f32, rows),
+            subject: Some(Subject::Building(BuildingKind::Dam)),
+            fix: Fix::Focus,
+            alt_fix: None,
             focus: building_cell(sim, *b),
         });
     }
@@ -168,16 +486,18 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             sim.water.dam_height.get(x, y).is_some_and(|h| *h > 0.0) && sim.water.dam_integrity.get(x, y).is_some_and(|v| *v < WEAK_DAM)
         })
         .collect();
-    if let Some(&first) = weak.first() {
-        let worst = weak.iter().filter_map(|&(x, y)| sim.water.dam_integrity.get(x, y)).fold(1.0f32, |a, b| a.min(*b));
+    if !weak.is_empty() {
+        let integ = |c: &Cell| sim.water.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
+        let worst = *weak.iter().min_by(|a, b| integ(a).total_cmp(&integ(b))).expect("non-empty");
         out.push(Problem {
             kind: ProblemKind::WeakDam,
-            severity: if worst < WEAK_DAM / 2.0 { Severity::Urgent } else { Severity::Warning },
-            title: format!("Dam at {}% strength", (worst * 100.0).round() as i32),
-            cause: "Water runs over its crest or it is ageing; it breaks at 0%".into(),
-            fix: Fix::None,
-            fix_label: "Show".into(),
-            focus: Some(first),
+            severity: if integ(&worst) < WEAK_DAM / 2.0 { Severity::Urgent } else { Severity::Warning },
+            value: (integ(&worst) * 100.0).round(),
+            cause: dam_wear(sim, worst, Source::Cell(worst)),
+            subject: Some(Subject::Building(BuildingKind::Dam)),
+            fix: Fix::Focus,
+            alt_fix: None,
+            focus: Some(worst),
         });
     }
 
@@ -186,41 +506,61 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         .work
         .places
         .iter()
-        .filter(|p| p.site.is_some() && p.slots.iter().all(|s| s.worker.is_none()))
+        .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.slots.iter().all(|s| s.worker.is_none()))
         .map(|p| p.building)
         .collect();
     if let Some(&first) = stalled.first() {
-        let (fix, label) = if idle.is_empty() {
-            (Fix::None, "Show".to_string())
-        } else {
-            (Fix::FillSlot { building: first, slot: 0 }, "Assign a builder".to_string())
-        };
-        let s = if stalled.len() == 1 { "" } else { "s" };
+        let can_staff = stalled.iter().any(|&b| crate::jobs::add_worker_preview(sim, b).is_some());
+        let rows = stalled.iter().map(|&b| row(building_name(sim, b), sim.work.progress(b).unwrap_or(0.0), Source::Building(b))).collect();
         out.push(Problem {
             kind: ProblemKind::NoBuilders,
             severity: Severity::Warning,
-            title: format!("{} site{s} without builders", stalled.len()),
-            cause: if idle.is_empty() { "Every working beaver is busy".into() } else { format!("{} beavers are idle", idle.len()) },
-            fix,
-            fix_label: label,
+            value: stalled.len() as f32,
+            cause: Breakdown::new(stalled.len() as f32, rows),
+            subject: Some(Subject::Building(sim.buildings.building(first).map_or(BuildingKind::Dam, |b| b.kind))),
+            fix: if can_staff { Fix::StaffSites } else { Fix::Focus },
+            alt_fix: None,
             focus: building_cell(sim, first),
         });
     }
 
     // Idle beavers (only when no card above already puts them to work).
-    if !idle.is_empty() && !out.iter().any(|p| matches!(p.fix, Fix::FillSlot { .. } | Fix::Gather(_))) {
-        let (fix, label) = match empty_slot(sim, |r, _| matches!(r, Role::Collect(_) | Role::Build | Role::Craft | Role::Haul)) {
-            Some((building, slot)) => (Fix::FillSlot { building, slot }, "Fill an empty job".to_string()),
-            None => (Fix::Gather(ResourceKind::Plant), "Send them to gather food".to_string()),
-        };
-        let s = if idle.len() == 1 { " is" } else { "s are" };
+    let busy_fix = |f: &Fix| matches!(f, Fix::AddWorkers { .. } | Fix::Gather { .. } | Fix::StaffSites);
+    if !idle.is_empty() && !out.iter().any(|p| busy_fix(&p.fix)) {
+        let reasons = crate::jobs::idle_reasons(sim);
+        let rows = reasons
+            .iter()
+            .map(|&(id, r)| {
+                let label = match r {
+                    crate::jobs::IdleReason::NoOpenSlot => "No open slot",
+                    crate::jobs::IdleReason::Unreachable => "Unreachable",
+                    crate::jobs::IdleReason::Resting => "Resting",
+                    crate::jobs::IdleReason::Paused => "Paused",
+                    crate::jobs::IdleReason::AutoOff => "Auto off",
+                };
+                row(label, 1.0, Source::Beaver(id))
+            })
+            .collect();
+        // The highest-priority role with an open slot someone can take.
+        let open = sim.work.role_order.iter().find_map(|&role| {
+            let slots: usize = sim
+                .work
+                .places
+                .iter()
+                .filter(|p| !p.paused && (crate::agents::is_site(sim, p) || sim.buildings.building(p.building).is_some_and(|b| b.is_complete())))
+                .flat_map(|p| p.slots.iter())
+                .filter(|s| s.worker.is_none() && crate::jobs::role_kind(s.role) == role)
+                .count();
+            (slots > 0 && crate::jobs::role_add_preview(sim, role).is_some()).then_some((role, slots))
+        });
         out.push(Problem {
             kind: ProblemKind::Idle,
             severity: Severity::Warning,
-            title: format!("{} beaver{s} idle", idle.len()),
-            cause: "No job or workplace slot".into(),
-            fix,
-            fix_label: label,
+            value: idle.len() as f32,
+            cause: Breakdown::new(idle.len() as f32, rows),
+            subject: None,
+            fix: open.map_or(Fix::OpenJobs, |(role, slots)| Fix::PutToWork { role, n: slots.min(idle.len()) }),
+            alt_fix: None,
             focus: sim.colony.beaver(idle[0]).map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize)),
         });
     }
@@ -228,15 +568,17 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     // Full stores: gatherers' loads are lost.
     for g in Good::ALL {
         let (have, cap) = (sim.buildings.stores.amount(g), sim.buildings.stores.capacity(g));
-        if cap > 0.0 && have >= cap * FULL_SHARE && sim.ledger.in_per_day(g) > 0.0 {
-            let unlocked = sim.tech.allows(BuildingKind::Warehouse);
+        let arriving = sim.ledger.in_per_day(g);
+        if cap > 0.0 && have >= cap * FULL_SHARE && arriving > 0.0 {
+            let rows = vec![row("Stored", have, Source::None), row("Room", cap, Source::None), row("Arriving", arriving, Source::None)];
             out.push(Problem {
                 kind: ProblemKind::StoreFull,
                 severity: Severity::Warning,
-                title: format!("{} storage full", good_name(g)),
-                cause: format!("{} of {} stored; new loads are lost", have.round() as i64, cap.round() as i64),
-                fix: if unlocked { Fix::Place(BuildingKind::Warehouse) } else { Fix::None },
-                fix_label: if unlocked { "Place a warehouse".into() } else { "Show".into() },
+                value: (have / cap * 100.0).round(),
+                cause: Breakdown::new((have / cap * 100.0).round(), rows),
+                subject: Some(Subject::Good(g)),
+                fix: if sim.tech.allows(BuildingKind::Warehouse) { Fix::Place(BuildingKind::Warehouse) } else { Fix::Focus },
+                alt_fix: None,
                 focus: colony_cell(sim),
             });
             break;
@@ -245,13 +587,15 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
 
     // A stranger waiting for an answer.
     if let Some(r) = sim.society.pending().first() {
+        let stage = if r.adult { Stage::Adult } else { Stage::Yearling };
         out.push(Problem {
             kind: ProblemKind::Stranger,
             severity: Severity::Warning,
-            title: format!("{} asks to join", r.name),
-            cause: if r.adult { "An adult who can work at once".into() } else { "A young beaver".into() },
+            value: 1.0,
+            cause: Breakdown::new(1.0, vec![row(if r.adult { "Adult" } else { "Young" }, 1.0, Source::Cell(r.at))]),
+            subject: Some(Subject::Stage(stage)),
             fix: Fix::Accept(r.id),
-            fix_label: "Accept".into(),
+            alt_fix: Some(Fix::Decline(r.id)),
             focus: Some(r.at),
         });
     }
@@ -259,6 +603,54 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     out.sort_by_key(|p| p.severity);
     out.truncate(MAX_PROBLEMS);
     out
+}
+
+/// Performs `fix` through `Command`s. `Place`, `OpenJobs` and `Focus` belong to the interface:
+/// they return `Ok` and change nothing. Errors (with nothing or only part done) when the fix
+/// cannot be carried out now, e.g. nobody is free.
+pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
+    let err = |e: crate::SimError| e.to_string();
+    match fix {
+        Fix::AddWorkers { building, n } => {
+            for k in 0..n.max(1) {
+                if let Err(e) = sim.apply(Command::AddWorker { building }) {
+                    return if k == 0 { Err(err(e)) } else { Ok(()) };
+                }
+            }
+            Ok(())
+        }
+        Fix::Gather { kind, n } => {
+            let who = gatherers(sim, n.max(1));
+            let home = colony_cell(sim).ok_or("the colony has no home")?;
+            if who.is_empty() {
+                return Err("no beaver is free to gather".into());
+            }
+            let r = FOOD_GATHER_RADIUS;
+            let area = crate::work::Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) };
+            sim.apply(Command::Assign { who, to: Some(Assignment::Area(kind, area)) }).map_err(err)
+        }
+        Fix::StaffSites => {
+            // Every stalled site (no builder at all), filled up.
+            let sites: Vec<BuildingId> = sim
+                .work
+                .places
+                .iter()
+                .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.filled() == 0)
+                .map(|p| p.building)
+                .collect();
+            let mut placed = 0;
+            for b in sites {
+                while sim.work.place(b).is_some_and(|p| p.filled() < p.slots.len()) && sim.apply(Command::AddWorker { building: b }).is_ok() {
+                    placed += 1;
+                }
+            }
+            if placed == 0 { Err("no beaver is free to build".into()) } else { Ok(()) }
+        }
+        Fix::PutToWork { role, n } => sim.apply(Command::AdjustRole { role, delta: n.max(1) as i32 }).map_err(err),
+        Fix::Accept(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::Accept }).map_err(err),
+        Fix::Decline(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::TurnAway }).map_err(err),
+        Fix::Place(_) | Fix::OpenJobs | Fix::Focus => Ok(()),
+    }
 }
 
 // ───────────────────────────── building report ─────────────────────────────

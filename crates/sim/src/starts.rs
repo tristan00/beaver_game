@@ -432,8 +432,9 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
 /// The new game: the world with its river, no colony yet, no building of any kind and no dam.
 /// The player picks the settling cell (`Command::Settle`, which founds two adults and two kits
 /// swimming in beside it), then places a burrow and a dam (`SimState::place_site`,
-/// `SimState::order_dam`). Beavers act only on orders: `auto_organise` is off, so the adults dig,
-/// fell and haul only once the player assigns them (`Command::Assign`, `Command::FillSlot`); the
+/// `SimState::order_dam`). Auto-staffing (`auto_organise`) is on: free adults staff the sites and
+/// workplaces the player places and fetch what sites lack; the player can also assign them by hand
+/// (`Command::Assign`, `Command::FillSlot`) or switch it off (`Command::SetAutoStaff`); the
 /// kits never work.
 ///
 /// Returns the state and the dam and camp the game is designed around (the camp leaves its
@@ -452,7 +453,7 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
     if let Some(v) = sim.world.valley_of(plan.camp) {
         sim.world.valleys[v.0 as usize].open = true;
     }
-    sim.work.auto_organise = false;
+    sim.work.auto_organise = true; // auto-staffing is on in every new game (spec W1)
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 
@@ -822,7 +823,8 @@ mod tests {
         for _ in 0..1200 {
             s.step(0.05).unwrap();
         }
-        assert!(!s.work.auto_organise && s.work.managed.is_empty());
+        // Auto-staffing is on, but with nothing placed there is nothing to staff.
+        assert!(s.work.auto_organise && s.work.managed.is_empty());
         assert!(s.buildings.buildings.is_empty() && s.work.places.is_empty(), "nothing built");
         assert!(s.agents.by_id.values().all(|a| a.assignment.is_none() && a.load.is_none()), "no gather duty");
         assert!(s.work.places.iter().all(|p| p.site.is_none()), "no build duty");

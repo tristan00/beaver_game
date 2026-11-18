@@ -1,7 +1,25 @@
 //! Workplaces, construction sites, worker slots, work areas and hauling (owner: `build`).
 //! A `Workplace` is any building with worker slots; a site is a workplace with `site: Some(..)`.
+//!
+//! **One job model (spec W0).** Work slots are the truth: a beaver's role is the role of the slot
+//! it fills (or of its direct gather order, `Command::Assign`), otherwise it is free. In the game
+//! (`SimState`, `colony.abstract_gathering == false`) the colony's daily job plan no longer hands
+//! out jobs: `SimState::step` gives the colony each beaver's job derived from its slot
+//! (`jobs::colony_job`), so `Beaver.job`/`current_job` follow the slots and skills grow from slot
+//! work. Free beavers do no abstract work. The abstract jobs with no building slot have no
+//! colony-wide effect there: Digger's `dug`, Scout's `scouted`, Guard's strength (Guard and Scout
+//! are switched off by `features` anyway) and Crafter's `tools`. Lodge repair, which builders did,
+//! is passive (like dam wear): the family mends a failing lodge from the stored logs, booked as
+//! `Use::Repairs`. The old lake fixtures keep the abstract plan (`abstract_gathering == true`).
+//!
+//! **Auto-staffing (spec W1)** lives in `agents::organise`: free working-age beavers fill empty
+//! slots of every workplace by building priority, then the role order, then distance; sites also
+//! get material gatherers. Hand-placed beavers (`Slot::locked`) and beavers on a direct order
+//! (`Work::player_orders`) are never moved; paused workplaces get no workers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::jobs::RoleKind;
 
 use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
@@ -45,6 +63,23 @@ pub enum Role {
 pub struct Slot {
     pub role: Role,
     pub worker: Option<BeaverId>,
+    /// True when the player placed this worker by hand; auto-staffing never moves them.
+    pub locked: bool,
+}
+
+impl Slot {
+    pub fn empty(role: Role) -> Self {
+        Slot { role, worker: None, locked: false }
+    }
+}
+
+/// A workplace's staffing priority (building priority comes before role priority).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Priority {
+    Low,
+    #[default]
+    Normal,
+    High,
 }
 
 /// A building (complete or site) viewed as a place of work.
@@ -57,6 +92,27 @@ pub struct Workplace {
     pub area: Option<Area>,
     /// Sites only.
     pub site: Option<SiteProgress>,
+    pub priority: Priority,
+    /// A paused workplace has no workers and auto-staffing leaves it empty.
+    pub paused: bool,
+    /// Most workers auto-staffing puts here (the inspector's "Max"); `RemoveWorker` lowers it and
+    /// `AddWorker` raises it, so a beaver the player took out is not sent straight back.
+    pub max_workers: usize,
+}
+
+impl Workplace {
+    /// A workplace with empty `slots` at normal priority, unpaused, allowing every slot.
+    pub fn new(building: BuildingId, kind: BuildingKind, slots: Vec<Slot>, area: Option<Area>, site: Option<SiteProgress>) -> Self {
+        let max_workers = slots.len();
+        Workplace { building, kind, slots, area, site, priority: Priority::Normal, paused: false, max_workers }
+    }
+    pub fn filled(&self) -> usize {
+        self.slots.iter().filter(|s| s.worker.is_some()).count()
+    }
+    /// A site still being built (materials or labour outstanding).
+    pub fn is_open_site(&self) -> bool {
+        self.site.as_ref().is_some_and(|s| !s.is_done())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,7 +167,7 @@ pub enum WorkError {
 }
 
 /// All workplaces and haul orders.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
@@ -122,11 +178,33 @@ pub struct Work {
     pub dam_plans: Vec<DamPlan>,
     /// Dams that completed but could not be applied to the water, with the reason (never silent).
     pub dam_failures: Vec<(BuildingId, String)>,
-    /// When true, idle working-age beavers without a player order staff sites and gather the
-    /// materials they lack (`agents::organise`). Off by default; the starts switch it on.
+    /// Auto-staffing: when true, free working-age beavers without a player order fill the empty
+    /// slots of every workplace and gather the materials sites lack (`agents::organise`). Off for
+    /// a bare `Work`; every new game start switches it on.
     pub auto_organise: bool,
     /// What `organise` last set for each beaver it manages (a player's change drops the beaver).
     pub managed: BTreeMap<BeaverId, ManagedDuty>,
+    /// Role priority for auto-staffing and the Jobs board, first = highest.
+    pub role_order: Vec<RoleKind>,
+    /// Beavers on a direct player order (`Command::Assign`): auto-staffing leaves them alone
+    /// until `Command::Unlock`.
+    pub player_orders: BTreeSet<BeaverId>,
+}
+
+impl Default for Work {
+    fn default() -> Self {
+        Work {
+            places: Vec::new(),
+            hauls: Vec::new(),
+            stock: BTreeMap::new(),
+            dam_plans: Vec::new(),
+            dam_failures: Vec::new(),
+            auto_organise: false,
+            managed: BTreeMap::new(),
+            role_order: RoleKind::DEFAULT_ORDER.to_vec(),
+            player_orders: BTreeSet::new(),
+        }
+    }
 }
 
 /// The water dam a dam site turns into when it is finished.
@@ -140,15 +218,17 @@ pub struct DamPlan {
 /// An automatic assignment made by `agents::organise`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ManagedDuty {
+    /// Gathering a material a site lacks (no slot: the site's material run).
     Gather(crate::agents::Assignment),
-    Build(BuildingId, usize),
+    /// Slot `.1` of workplace `.0` (any workplace, sites included).
+    Slot(BuildingId, usize),
 }
 
 impl Work {
     pub fn place(&self, b: BuildingId) -> Option<&Workplace> {
         self.places.iter().find(|p| p.building == b)
     }
-    fn place_mut(&mut self, b: BuildingId) -> Result<&mut Workplace, WorkError> {
+    pub(crate) fn place_mut(&mut self, b: BuildingId) -> Result<&mut Workplace, WorkError> {
         self.places.iter_mut().find(|p| p.building == b).ok_or(WorkError::NoSuchWorkplace)
     }
     /// The slot `who` fills, if any.
@@ -164,15 +244,43 @@ impl Work {
         if s.worker.is_some() {
             return Err(WorkError::SlotTaken);
         }
-        for p in &mut self.places {
-            p.slots.iter_mut().filter(|s| s.worker == Some(who)).for_each(|s| s.worker = None);
-        }
+        self.vacate(who);
         self.place_mut(b)?.slots[slot].worker = Some(who);
         Ok(())
     }
+    /// Empties the slot (and clears its lock).
     pub fn unassign(&mut self, b: BuildingId, slot: usize) -> Result<(), WorkError> {
-        self.place_mut(b)?.slots.get_mut(slot).ok_or(WorkError::SlotOutOfRange)?.worker = None;
+        let s = self.place_mut(b)?.slots.get_mut(slot).ok_or(WorkError::SlotOutOfRange)?;
+        s.worker = None;
+        s.locked = false;
         Ok(())
+    }
+    /// Takes `who` out of any slot they fill (clearing its lock).
+    pub fn vacate(&mut self, who: BeaverId) {
+        for p in &mut self.places {
+            for s in p.slots.iter_mut().filter(|s| s.worker == Some(who)) {
+                s.worker = None;
+                s.locked = false;
+            }
+        }
+    }
+    /// Locks or unlocks the slot `who` fills; false if they fill none.
+    pub fn set_locked(&mut self, who: BeaverId, locked: bool) -> bool {
+        for p in &mut self.places {
+            if let Some(s) = p.slots.iter_mut().find(|s| s.worker == Some(who)) {
+                s.locked = locked;
+                return true;
+            }
+        }
+        false
+    }
+    /// Whether `who` is locked against auto-staffing (hand-placed or on a direct order).
+    pub fn is_locked(&self, who: BeaverId) -> bool {
+        self.player_orders.contains(&who) || self.places.iter().any(|p| p.slots.iter().any(|s| s.worker == Some(who) && s.locked))
+    }
+    /// Rank of `role` in `role_order` (0 = highest; unknown roles last).
+    pub fn role_rank(&self, role: RoleKind) -> usize {
+        self.role_order.iter().position(|r| *r == role).unwrap_or(self.role_order.len())
     }
     /// Registers construction site `b` needing `needed` goods and `labour` work units, with
     /// `SITE_SLOTS` builder slots.
@@ -184,18 +292,13 @@ impl Work {
         if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
             return Err(WorkError::InvalidAmount);
         }
-        self.places.push(Workplace {
-            building: b,
-            kind,
-            slots: vec![Slot { role: Role::Build, worker: None }; SITE_SLOTS],
-            area: None,
-            site: Some(SiteProgress {
-                needed: needed.to_vec(),
-                delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
-                labour_done: 0.0,
-                labour_needed: labour,
-            }),
-        });
+        let site = SiteProgress {
+            needed: needed.to_vec(),
+            delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
+            labour_done: 0.0,
+            labour_needed: labour,
+        };
+        self.places.push(Workplace::new(b, kind, vec![Slot::empty(Role::Build); SITE_SLOTS], None, Some(site)));
         Ok(())
     }
     fn site_mut(&mut self, b: BuildingId) -> Result<&mut SiteProgress, WorkError> {
@@ -239,15 +342,19 @@ impl Work {
         if self.place(b.id).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
-        let slots = crate::catalogue::def(b.kind).slots.iter().map(|&role| Slot { role, worker: None }).collect();
-        self.places.push(Workplace { building: b.id, kind: b.kind, slots, area: crate::catalogue::work_area(b), site: None });
+        let slots = crate::catalogue::def(b.kind).slots.iter().map(|&role| Slot::empty(role)).collect();
+        self.places.push(Workplace::new(b.id, b.kind, slots, crate::catalogue::work_area(b), None));
         Ok(())
     }
-    /// Finished site `b` becomes an ordinary workplace with `slots` and `area`; builders leave.
+    /// Finished site `b` becomes an ordinary workplace with `slots` and `area`; builders leave
+    /// (hand-placed ones too: their lock ends with the site). Priority and pause carry over.
     pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
         let p = self.place_mut(b)?;
-        p.slots = slots.iter().map(|&role| Slot { role, worker: None }).collect();
+        let builders: Vec<BeaverId> = p.slots.iter().filter_map(|s| s.worker).collect();
+        p.slots = slots.iter().map(|&role| Slot::empty(role)).collect();
         p.area = area;
+        p.max_workers = p.slots.len();
+        self.managed.retain(|id, _| !builders.contains(id));
         Ok(())
     }
     /// Goods held in store `b`.

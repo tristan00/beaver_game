@@ -182,9 +182,9 @@ mod tests {
         let mut b = complete(kind, Some(Recipe::Rope));
         b.stores.deposit(Good::Sticks, 100.0).unwrap();
         b.stores.deposit(Good::Mud, 100.0).unwrap();
-        let slots = def(kind).slots.iter().map(|&role| Slot { role, worker: None }).collect();
+        let slots = def(kind).slots.iter().map(|&role| Slot::empty(role)).collect();
         let mut work = Work::default();
-        work.places.push(Workplace { building: BuildingId(1), kind, slots, area: None, site: None });
+        work.places.push(Workplace::new(BuildingId(1), kind, slots, None, None));
         for i in 0..staff {
             work.assign(BuildingId(1), i, BeaverId(i as u64 + 1)).unwrap();
         }

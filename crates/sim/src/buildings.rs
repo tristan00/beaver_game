@@ -58,6 +58,61 @@ fn check_amount(a: f32) -> Result<(), StoresError> {
     if a.is_finite() && a >= 0.0 { Ok(()) } else { Err(StoresError::InvalidAmount(a)) }
 }
 
+/// Who put goods into the stores (the goods strip's "in" breakdown).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Producer {
+    /// A workplace's slot workers (gatherers) or its benches (crafting).
+    Building(BuildingId),
+    /// Gatherers on a direct or automatic gather order, with no slot.
+    Order,
+    /// Anything else: the founding larder, event windfalls, tests.
+    Other,
+}
+
+/// What goods were taken out of the stores for (the goods strip's "out" breakdown).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Use {
+    EatenAdults,
+    EatenYearlings,
+    EatenKits,
+    EatenElders,
+    Spoiled,
+    /// Materials fetched for construction sites.
+    Sites,
+    /// Workshop recipe inputs.
+    Crafting,
+    /// Lodge repairs.
+    Repairs,
+    Other,
+}
+
+impl Use {
+    pub const ALL: [Use; 9] = [
+        Use::EatenAdults,
+        Use::EatenYearlings,
+        Use::EatenKits,
+        Use::EatenElders,
+        Use::Spoiled,
+        Use::Sites,
+        Use::Crafting,
+        Use::Repairs,
+        Use::Other,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+    pub fn index(self) -> usize {
+        self as usize
+    }
+    /// Eating by a life stage.
+    pub fn eaten_by(stage: crate::colony::Stage) -> Use {
+        match stage {
+            crate::colony::Stage::Kit => Use::EatenKits,
+            crate::colony::Stage::Yearling => Use::EatenYearlings,
+            crate::colony::Stage::Adult => Use::EatenAdults,
+            crate::colony::Stage::Elder => Use::EatenElders,
+        }
+    }
+}
+
 /// Stores ledger: current amounts, capacity, and production/consumption totals and rates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stores {
@@ -66,6 +121,10 @@ pub struct Stores {
     /// Lifetime totals.
     pub produced_total: [f32; N],
     pub consumed_total: [f32; N],
+    /// Lifetime production by producer (sums to `produced_total` per good).
+    pub produced_by: std::collections::BTreeMap<(Producer, Good), f32>,
+    /// Lifetime consumption by use, indexed `[Use::index][Good::index]` (sums to `consumed_total`).
+    pub consumed_by: [[f32; N]; Use::COUNT],
     /// Rates per day over the last step with dt > 0.
     pub production_rate: [f32; N],
     pub consumption_rate: [f32; N],
@@ -80,6 +139,8 @@ impl Default for Stores {
             capacity: [BASE_CAPACITY; N],
             produced_total: [0.0; N],
             consumed_total: [0.0; N],
+            produced_by: Default::default(),
+            consumed_by: [[0.0; N]; Use::COUNT],
             production_rate: [0.0; N],
             consumption_rate: [0.0; N],
             tick_produced: [0.0; N],
@@ -104,17 +165,31 @@ impl Stores {
 
     /// Adds produced goods (counted as production); returns the amount accepted given capacity.
     pub fn deposit(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
+        self.deposit_by(g, amount, Producer::Other)
+    }
+
+    /// `deposit`, booked to `who` for the breakdowns.
+    pub fn deposit_by(&mut self, g: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_raw(g, amount)?;
         self.tick_produced[g.index()] += taken;
         self.produced_total[g.index()] += taken;
+        if taken > 0.0 {
+            *self.produced_by.entry((who, g)).or_insert(0.0) += taken;
+        }
         Ok(taken)
     }
 
     /// Removes goods as consumption. Errors (changing nothing) if there is not enough.
     pub fn withdraw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
+        self.withdraw_for(g, amount, Use::Other)
+    }
+
+    /// `withdraw`, booked to `use_` for the breakdowns.
+    pub fn withdraw_for(&mut self, g: Good, amount: f32, use_: Use) -> Result<(), StoresError> {
         self.take_raw(g, amount)?;
         self.tick_consumed[g.index()] += amount;
         self.consumed_total[g.index()] += amount;
+        self.consumed_by[use_.index()][g.index()] += amount;
         Ok(())
     }
 
@@ -132,7 +207,7 @@ impl Stores {
     pub fn withdraw_all(&mut self, costs: &[Amount]) -> Result<(), StoresError> {
         self.can_afford(costs)?;
         for &(g, a) in costs {
-            self.withdraw(g, a)?;
+            self.withdraw_for(g, a, Use::Sites)?;
         }
         Ok(())
     }
@@ -718,9 +793,9 @@ impl Buildings {
                 continue;
             }
             for &(g, a) in inputs {
-                self.stores.withdraw(g, a * batches).expect("limited by availability");
+                self.stores.withdraw_for(g, a * batches, Use::Crafting).expect("limited by availability");
             }
-            let made = self.stores.deposit(out, per * batches).expect("amount is finite and >= 0");
+            let made = self.stores.deposit_by(out, per * batches, Producer::Building(id)).expect("amount is finite and >= 0");
             self.crafted.push((id, out, made));
         }
     }

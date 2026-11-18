@@ -13,6 +13,7 @@ pub mod events;
 pub mod features;
 pub mod grid;
 pub mod hud;
+pub mod jobs;
 pub mod ledger;
 pub mod maps;
 /// The old lake starts, kept only as test fixtures (feature `fixtures`); no player can start in them.
@@ -70,12 +71,31 @@ pub enum Command {
     /// Dig canals `depth` deep on `cells`.
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
     /// Send beavers to collect (`Some`) or stand down (`None`). Right-click and area drag.
+    /// `Some` takes them out of any slot and locks them to the order (auto-staffing leaves them
+    /// alone until `Unlock`); `None` returns them to auto-staffing.
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
     /// Place a construction site (no cost taken; builders haul the materials in).
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
-    /// Put a beaver into a workplace slot / empty a slot.
+    /// Put a beaver into a workplace slot by hand (the slot is locked) / empty a slot (lowering
+    /// the workplace's "Max" so auto-staffing does not refill it at once).
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
     EmptySlot { building: buildings::BuildingId, slot: usize },
+    /// Fill the next empty slot with the nearest free beaver, else one taken from the
+    /// lowest-priority unlocked job (`jobs::add_worker_preview` says who). The beaver is locked.
+    AddWorker { building: buildings::BuildingId },
+    /// Free the last-filled slot; the beaver becomes free (unlocked).
+    RemoveWorker { building: buildings::BuildingId },
+    SetPriority { building: buildings::BuildingId, priority: work::Priority },
+    /// Pausing frees every worker; a paused workplace gets none.
+    SetPaused { building: buildings::BuildingId, paused: bool },
+    /// Jobs board − / +: move beavers between `role` and the free pool (building by priority,
+    /// then distance).
+    AdjustRole { role: jobs::RoleKind, delta: i32 },
+    /// Role priority, first = highest (roles left out follow in their old order).
+    SetRoleOrder { order: Vec<jobs::RoleKind> },
+    SetAutoStaff { on: bool },
+    /// Return a beaver to auto-staffing: clears its slot lock and any direct order.
+    Unlock { who: colony::BeaverId },
     /// Move or resize a workplace's work area.
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     /// Standing haul between two stores.
@@ -155,32 +175,52 @@ impl SimState {
     /// One economy: unless the colony runs its abstract larder (old fixtures), its `food` and
     /// `wood` mirror the stores' Food and Logs. Returns the mirrored values so
     /// [`Self::settle_colony_stores`] can book what the colony ate or used against the stores.
-    fn mirror_colony_stores(&mut self) -> Option<(f32, f32)> {
+    fn mirror_colony_stores(&mut self) -> Option<Mirror> {
         if self.colony.abstract_gathering {
             return None;
         }
         let s = &self.buildings.stores;
-        let before = (s.amount(buildings::Good::Food), s.amount(buildings::Good::Logs));
-        (self.colony.food, self.colony.wood) = before;
-        Some(before)
+        let (food, wood) = (s.amount(buildings::Good::Food), s.amount(buildings::Good::Logs));
+        (self.colony.food, self.colony.wood) = (food, wood);
+        let c = &self.colony;
+        Some(Mirror { food, wood, eaten: c.eaten, spoiled: c.spoiled, repair_wood: c.repair_wood })
     }
 
-    /// Books the change in the colony's mirrored food and wood against the stores: eating,
-    /// spoilage and lodge building are consumption, event windfalls are production.
-    fn settle_colony_stores(&mut self, before: Option<(f32, f32)>) {
-        let Some((food0, wood0)) = before else { return };
+    /// Books the change in the colony's mirrored food and wood against the stores: eating (by
+    /// life stage), spoilage and lodge repairs are consumption, event windfalls are production.
+    fn settle_colony_stores(&mut self, before: Option<Mirror>) {
+        use buildings::{Good, Use};
+        let Some(m) = before else { return };
+        let c = &self.colony;
+        let stages = [colony::Stage::Kit, colony::Stage::Yearling, colony::Stage::Adult, colony::Stage::Elder];
+        let mut food_uses: Vec<(Use, f32)> = stages.iter().map(|&st| (Use::eaten_by(st), c.eaten[st as usize] - m.eaten[st as usize])).collect();
+        food_uses.push((Use::Spoiled, c.spoiled - m.spoiled));
+        let wood_uses = vec![(Use::Repairs, c.repair_wood - m.repair_wood)];
         let stores = &mut self.buildings.stores;
-        for (good, was, now) in [(buildings::Good::Food, food0, self.colony.food), (buildings::Good::Logs, wood0, self.colony.wood)] {
+        for (good, was, now, uses) in [(Good::Food, m.food, c.food, food_uses), (Good::Logs, m.wood, c.wood, wood_uses)] {
             let d = now - was;
             if d < 0.0 {
                 let take = (-d).min(stores.amount(good));
-                stores.withdraw(good, take).expect("clamped to stock");
+                // Split what was taken over its known uses; anything else (events) is `Other`.
+                let known: f32 = uses.iter().map(|u| u.1.max(0.0)).sum();
+                let scale = if known > take { take / known } else { 1.0 };
+                let mut left = take;
+                for (u, a) in uses {
+                    let a = (a.max(0.0) * scale).min(left);
+                    if a > 0.0 {
+                        stores.withdraw_for(good, a, u).expect("clamped to stock");
+                        left -= a;
+                    }
+                }
+                if left > 0.0 {
+                    stores.withdraw_for(good, left.min(stores.amount(good)), Use::Other).expect("clamped to stock");
+                }
             } else if d > 0.0 {
                 stores.deposit(good, d).expect("finite positive amount");
             }
         }
-        self.colony.food = stores.amount(buildings::Good::Food);
-        self.colony.wood = stores.amount(buildings::Good::Logs);
+        self.colony.food = stores.amount(Good::Food);
+        self.colony.wood = stores.amount(Good::Logs);
     }
 
     /// Replaces the feature config and applies it at once.
@@ -211,6 +251,7 @@ impl SimState {
         self.water.step(&self.height, dt_days);
         self.ecology.step(dt_days, &self.water.depth)?;
         let mirrored = self.mirror_colony_stores();
+        self.derive_colony_jobs();
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         self.settle_colony_stores(mirrored);
@@ -230,6 +271,24 @@ impl SimState {
         self.output.step(dt_days);
         self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
+    }
+
+    /// One job model (`work` module docs): unless the colony runs its abstract plan (old
+    /// fixtures), each beaver's colony job is the role of its slot or gather order, and its
+    /// position is its agent's cell.
+    fn derive_colony_jobs(&mut self) {
+        if self.colony.abstract_gathering {
+            self.colony.slot_jobs = None;
+            return;
+        }
+        let jobs = jobs::slot_jobs(self);
+        for b in self.colony.beavers.iter_mut() {
+            b.job = jobs.get(&b.id).map(|j| j.0);
+            if let Some(a) = self.agents.get(b.id) {
+                b.pos = (a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5);
+            }
+        }
+        self.colony.slot_jobs = Some(jobs);
     }
 
     /// Records achievements, adds the lore elders studied in dens and unlocks what is now ready.
@@ -398,7 +457,7 @@ impl SimState {
             }
         }
         self.work.dam_plans.retain(|d| d.building != id);
-        self.work.managed.retain(|_, duty| !matches!(duty, work::ManagedDuty::Build(b, _) if *b == id));
+        self.work.managed.retain(|_, duty| !matches!(duty, work::ManagedDuty::Slot(b, _) if *b == id));
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
                 ag.assignment = None;
@@ -427,10 +486,12 @@ impl SimState {
                 if let Some(kit) = who.iter().find(|id| self.colony.beaver(**id).is_some_and(|b| b.stage == colony::Stage::Kit)) {
                     return Err(SimError::InvalidCommand(format!("beaver {} is a kit and cannot work", kit.0)));
                 }
+                if let Some(id) = who.iter().find(|id| !self.agents.by_id.contains_key(id)) {
+                    return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
+                }
                 for id in who {
-                    if !self.agents.assign(id, to) {
-                        return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
-                    }
+                    jobs::order(self, id, to);
+                    self.agents.assign(id, to);
                 }
                 Ok(())
             }
@@ -439,12 +500,37 @@ impl SimState {
                 let stage = self.colony.beaver(who).map(|b| b.stage).ok_or(work::WorkError::NoSuchBeaver);
                 stage
                     .and_then(|st| if st == colony::Stage::Kit { Err(work::WorkError::NotAdult) } else { Ok(()) })
-                    .and_then(|()| self.work.assign(building, slot, who))
-                    .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                    .and_then(|()| self.work.place(building).ok_or(work::WorkError::NoSuchWorkplace))
+                    .and_then(|p| match p.slots.get(slot) {
+                        None => Err(work::WorkError::SlotOutOfRange),
+                        Some(s) if s.worker.is_some() => Err(work::WorkError::SlotTaken),
+                        Some(_) => Ok(()),
+                    })
+                    .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
+                jobs::place_by_hand(self, building, slot, who)
             }
             Command::EmptySlot { building, slot } => {
-                self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                let who = self.work.place(building).and_then(|p| p.slots.get(slot)).and_then(|s| s.worker);
+                self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
+                if let Some(w) = who {
+                    self.work.managed.remove(&w);
+                }
+                if let Ok(p) = self.work.place_mut(building) {
+                    p.max_workers = p.max_workers.min(p.filled());
+                }
+                Ok(())
             }
+            Command::AddWorker { building } => jobs::add_worker(self, building),
+            Command::RemoveWorker { building } => jobs::remove_worker(self, building),
+            Command::SetPriority { building, priority } => jobs::set_priority(self, building, priority),
+            Command::SetPaused { building, paused } => jobs::set_paused(self, building, paused),
+            Command::AdjustRole { role, delta } => jobs::adjust_role(self, role, delta),
+            Command::SetRoleOrder { order } => jobs::set_role_order(self, order),
+            Command::SetAutoStaff { on } => {
+                self.work.auto_organise = on;
+                Ok(())
+            }
+            Command::Unlock { who } => jobs::unlock(self, who),
             Command::SetWorkArea { building, area } => {
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
@@ -463,6 +549,15 @@ impl SimState {
             }
         }
     }
+}
+
+/// The colony's food and wood (and its use counters) before a colony or event step.
+struct Mirror {
+    food: f32,
+    wood: f32,
+    eaten: [f32; 4],
+    spoiled: f32,
+    repair_wood: f32,
 }
 
 /// Terrain seen by the colony: rivers, lakes and ponded water are water.

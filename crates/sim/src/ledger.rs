@@ -1,8 +1,8 @@
 //! Daily goods ledger: what came into and went out of the stores each whole day, per good, over a
 //! rolling window. The HUD's "net per day" and "lasts N days" come from here, so they average over
 //! days instead of flickering with each sim step.
-use crate::buildings::{Good, Stores};
-use std::collections::VecDeque;
+use crate::buildings::{Good, Producer, Stores, Use};
+use std::collections::{BTreeMap, VecDeque};
 
 const N: usize = Good::ALL.len();
 /// Days of history kept (graphs and averages).
@@ -19,12 +19,32 @@ pub struct DaySample {
     pub consumed: [f32; N],
     /// Stock at the end of the day.
     pub stock: [f32; N],
+    /// What each producer added this day (only non-zero entries).
+    pub produced_by: Vec<(Producer, Good, f32)>,
+    /// What each use took this day, `[Use::index][Good::index]`.
+    pub consumed_by: [[f32; N]; Use::COUNT],
+}
+
+/// The stores' lifetime totals at the start of the open day.
+#[derive(Clone, Debug, Default)]
+struct Open {
+    day: u64,
+    produced: [f32; N],
+    consumed: [f32; N],
+    produced_by: BTreeMap<(Producer, Good), f32>,
+    consumed_by: [[f32; N]; Use::COUNT],
+}
+
+impl Open {
+    fn at(day: u64, s: &Stores) -> Self {
+        Open { day, produced: s.produced_total, consumed: s.consumed_total, produced_by: s.produced_by.clone(), consumed_by: s.consumed_by }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Ledger {
     /// The day currently being accumulated, with the stores' lifetime totals at its start.
-    open: Option<(u64, [f32; N], [f32; N])>,
+    open: Option<Open>,
     /// Finished days, oldest first, at most [`HISTORY_DAYS`].
     pub days: VecDeque<DaySample>,
 }
@@ -34,24 +54,55 @@ impl Ledger {
     /// spans several days spreads its flow evenly over them.
     pub fn record(&mut self, time_days: f64, stores: &Stores) {
         let today = time_days.max(0.0).floor() as u64;
-        let Some((day, p0, c0)) = self.open else {
-            self.open = Some((today, stores.produced_total, stores.consumed_total));
+        let Some(open) = &self.open else {
+            self.open = Some(Open::at(today, stores));
             return;
         };
-        if today <= day {
+        if today <= open.day {
             return;
         }
+        let day = open.day;
         let span = (today - day) as f32;
         let stock: [f32; N] = std::array::from_fn(|i| stores.amount(Good::ALL[i]));
-        let produced: [f32; N] = std::array::from_fn(|i| (stores.produced_total[i] - p0[i]).max(0.0) / span);
-        let consumed: [f32; N] = std::array::from_fn(|i| (stores.consumed_total[i] - c0[i]).max(0.0) / span);
+        let produced: [f32; N] = std::array::from_fn(|i| (stores.produced_total[i] - open.produced[i]).max(0.0) / span);
+        let consumed: [f32; N] = std::array::from_fn(|i| (stores.consumed_total[i] - open.consumed[i]).max(0.0) / span);
+        let produced_by: Vec<(Producer, Good, f32)> = stores
+            .produced_by
+            .iter()
+            .map(|(&(p, g), &total)| (p, g, (total - open.produced_by.get(&(p, g)).copied().unwrap_or(0.0)).max(0.0) / span))
+            .filter(|e| e.2 > 0.0)
+            .collect();
+        let consumed_by: [[f32; N]; Use::COUNT] =
+            std::array::from_fn(|u| std::array::from_fn(|i| (stores.consumed_by[u][i] - open.consumed_by[u][i]).max(0.0) / span));
         for d in day..today {
-            self.days.push_back(DaySample { day: d, produced, consumed, stock });
+            self.days.push_back(DaySample { day: d, produced, consumed, stock, produced_by: produced_by.clone(), consumed_by });
             if self.days.len() > HISTORY_DAYS {
                 self.days.pop_front();
             }
         }
-        self.open = Some((today, stores.produced_total, stores.consumed_total));
+        self.open = Some(Open::at(today, stores));
+    }
+
+    /// Mean daily amount of `g` each producer added over the last [`RATE_DAYS`] finished days,
+    /// largest first. Sums to [`Self::in_per_day`].
+    pub fn in_by(&self, g: Good) -> Vec<(Producer, f32)> {
+        let n = self.days.len().min(RATE_DAYS);
+        let mut by: BTreeMap<Producer, f32> = BTreeMap::new();
+        for d in self.days.iter().rev().take(n) {
+            for &(p, pg, a) in &d.produced_by {
+                if pg == g {
+                    *by.entry(p).or_insert(0.0) += a / n as f32;
+                }
+            }
+        }
+        let mut v: Vec<(Producer, f32)> = by.into_iter().collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
+    /// Mean daily amount of `g` taken for `use_` over the last [`RATE_DAYS`] finished days.
+    pub fn out_for(&self, g: Good, use_: Use) -> f32 {
+        self.mean(|d| d.consumed_by[use_.index()][g.index()])
     }
 
     fn mean(&self, f: impl Fn(&DaySample) -> f32) -> f32 {
