@@ -739,6 +739,23 @@ fn finish_sites(sim: &mut SimState) {
             continue;
         };
         b.status = crate::buildings::Status::Complete;
+        if b.kind == BuildingKind::Barge {
+            // A finished barge leaves the slipway: it is a vessel, not a building.
+            let cell = b.pos;
+            sim.buildings.buildings.retain(|x| x.id != id);
+            sim.work.places.retain(|p| p.building != id);
+            let locks = crate::shipping::lock_cells(sim);
+            let at_dock = sim
+                .buildings
+                .buildings
+                .iter()
+                .filter(|d| d.kind == BuildingKind::Dock && d.is_complete())
+                .find(|d| crate::shipping::berths(sim, &locks, d).contains(&cell))
+                .map(|d| d.id);
+            let bid = crate::buildings::BargeId(id.0);
+            sim.buildings.barges.push(crate::buildings::Barge::new(bid, cell, at_dock));
+            continue;
+        }
         let area = crate::catalogue::work_area(b);
         let def = crate::catalogue::def(b.kind);
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
@@ -1220,6 +1237,25 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
 mod tests {
     use super::*;
     use crate::buildings::Status;
+
+    #[test]
+    fn a_finished_barge_site_becomes_a_barge_at_its_dock() {
+        let mut sim = SimState::new(1);
+        let n = sim.water.depth.width();
+        sim.water = crate::water::Water::new(n);
+        for x in 10..30 {
+            *sim.water.depth.get_mut(x, 20).unwrap() = 0.5;
+        }
+        let dock = BuildingId(500);
+        sim.buildings.buildings.push(Building { id: dock, kind: BuildingKind::Dock, pos: (15, 19), status: Status::Complete, recipe: None, output: 0.0 });
+        let site = BuildingId(501);
+        sim.buildings.buildings.push(Building { id: site, kind: BuildingKind::Barge, pos: (16, 20), status: Status::Site, recipe: None, output: 0.0 });
+        sim.work.add_site(site, BuildingKind::Barge, &[], 0.0).unwrap();
+        finish_sites(&mut sim);
+        assert!(sim.buildings.building(site).is_none() && sim.work.place(site).is_none(), "no barge building is left");
+        let b = sim.buildings.barges.last().expect("a barge");
+        assert_eq!((b.cell, b.at_dock), ((16, 20), Some(dock)));
+    }
 
     #[test]
     fn collectors_skip_a_resource_nobody_can_reach_until_the_retry_day() {
