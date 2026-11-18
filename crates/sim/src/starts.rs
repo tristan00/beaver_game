@@ -387,11 +387,11 @@ const SWIM_REACH: usize = 12;
 /// neighbours. Errors (state unchanged) if the colony is already founded, `cell` is off the map,
 /// in a locked valley or in water.
 /// Days of food the founding family carries in.
-pub const START_LARDER_DAYS: f32 = 30.0;
+pub const START_LARDER_DAYS: f32 = 45.0;
 /// What the family carries in besides food: enough for the first dam (about nine cells), a
 /// warehouse and a little over. A burrow costs only labour.
 pub const START_BUNDLE: [(crate::buildings::Good, f32); 4] =
-    [(crate::buildings::Good::Logs, 50.0), (crate::buildings::Good::Sticks, 50.0), (crate::buildings::Good::Mud, 12.0), (crate::buildings::Good::Rope, 2.0)];
+    [(crate::buildings::Good::Logs, 60.0), (crate::buildings::Good::Sticks, 60.0), (crate::buildings::Good::Mud, 20.0), (crate::buildings::Good::Rope, 2.0)];
 
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);

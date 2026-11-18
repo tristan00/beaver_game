@@ -329,7 +329,7 @@ impl Runner {
             }
             Stmt::Place(k, near) => {
                 let around = near.or(self.camp).unwrap_or((0, 0));
-                crate::autoplay::place_near(&mut self.s, *k, around).map(|id| format!("placed {k:?} #{}", id.0))
+                crate::autoplay::place_best(&mut self.s, *k, around).map(|id| format!("placed {k:?} #{}", id.0))
             }
             Stmt::DesignedDam => match self.dam.clone() {
                 Some(d) => self.s.apply(Command::OrderDam { cells: d.cells, height: d.height }).map(|_| "ordered the designed dam".into()).map_err(|e| e.to_string()),
@@ -337,7 +337,7 @@ impl Runner {
             },
             Stmt::FixTop => match crate::hud::problems(&self.s).into_iter().next() {
                 Some(p) => match p.fix {
-                    crate::hud::Fix::Place(k) => crate::autoplay::place_near(&mut self.s, k, self.camp.unwrap_or((0, 0))).map(|_| format!("fix: placed {k:?}")),
+                    crate::hud::Fix::Place(k) => crate::autoplay::place_best(&mut self.s, k, self.camp.unwrap_or((0, 0))).map(|_| format!("fix: placed {k:?}")),
                     crate::hud::Fix::OpenJobs | crate::hud::Fix::Focus => Ok(String::new()),
                     f => crate::hud::apply_fix(&mut self.s, f).map(|_| format!("fix: {f:?}")),
                 },
@@ -399,13 +399,17 @@ impl Runner {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} logs {:>5.1} sticks {:>5.1} mud {:>4.1} stone {:>4.1} rope {:>3.1} | built {} sites {} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | logs {:>5.1} sticks {:>5.1} mud {:>4.1} stone {:>4.1} rope {:>3.1} | built {} sites {} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),
             s.colony.count_stage(Stage::Kit),
             s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count(),
             st.amount(Good::Food),
+            s.ledger.in_per_day(Good::Food),
+            s.ledger.out_per_day(Good::Food),
+            crate::hud::food_need_per_day(s),
+            crate::jobs::jobs_board(s).iter().filter(|r| r.filled > 0).map(|r| format!("{:?}{}", r.role, r.filled)).collect::<Vec<_>>().join(","),
             st.amount(Good::Logs),
             st.amount(Good::Sticks),
             st.amount(Good::Mud),

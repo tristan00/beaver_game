@@ -277,9 +277,9 @@ impl NavGrid {
     /// interior for `Inside`), or no route exists with the cells currently held by others.
     pub fn find_path(&self, who: BeaverId, from: Cell, goal: Goal) -> Option<Path> {
         let (w, h) = (self.surface.width(), self.surface.height());
-        if !matches!(self.surface_at(from), Some(s) if s != Surface::Solid) {
-            return None;
-        }
+        // A beaver can always step out of the cell it stands in (a building may have gone up
+        // around it); only off-map starts are refused.
+        self.surface_at(from)?;
         let (target, beside) = match goal {
             Goal::Cell(c) | Goal::Inside(c) => (c, false),
             Goal::Beside(c) => (c, true),

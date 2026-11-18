@@ -831,7 +831,7 @@ fn organise(sim: &mut SimState) {
             if idle {
                 continue;
             }
-            let rank = sim.work.role_rank(crate::jobs::role_kind(s.role));
+            let rank = crate::jobs::rank(sim, crate::jobs::role_kind(s.role));
             if let Some(a) = run.filter(|_| runs > 0) {
                 runs -= 1;
                 let role = Role::Collect(match a { Assignment::Area(k, _) => k, _ => ResourceKind::Tree });

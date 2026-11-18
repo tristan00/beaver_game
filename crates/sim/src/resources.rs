@@ -55,9 +55,9 @@ pub const FELL_WORK: f32 = 2.0;
 pub const TREE_LOGS: f32 = 3.0;
 pub const TREE_BRANCHES: f32 = 4.0;
 pub const TREE_BARK: f32 = 2.0;
-/// Plant stock per cell and regrowth per day (a harvested plant is full again after 10 days).
-pub const PLANT_MAX: f32 = 3.0;
-pub const PLANT_REGROW_PER_DAY: f32 = 0.3;
+/// Plant stock per cell and regrowth per day (a harvested plant is full again after 8 days).
+pub const PLANT_MAX: f32 = 4.0;
+pub const PLANT_REGROW_PER_DAY: f32 = 0.5;
 /// Minimum soil moisture for a plant to grow.
 pub const WET_MOISTURE: f32 = 0.5;
 /// Minimum surface slope (world units per cell) for a treeless dry cell to be a stone outcrop.
@@ -65,7 +65,7 @@ pub const OUTCROP_SLOPE: f32 = 0.6;
 pub const MUD_AMOUNT: f32 = 20.0;
 pub const STONE_AMOUNT: f32 = 30.0;
 /// Chance per eligible cell of holding a plant / mud bank / stone deposit.
-const PLANT_CHANCE: f32 = 0.08;
+const PLANT_CHANCE: f32 = 0.25;
 const MUD_CHANCE: f32 = 0.25;
 const STONE_CHANCE: f32 = 0.2;
 

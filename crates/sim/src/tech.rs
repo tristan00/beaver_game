@@ -139,7 +139,8 @@ const FLOW_CONTROL: TechId = TechId(9);
 /// Every tech, indexed by `TechId`.
 pub const TECHS: &[TechDef] = &[
     ach("Foraging", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::ForagerHut)]),
-    ach("Felling", Branch::Forest, Achievement::FirstDam, &[U(BuildingKind::LoggingCamp), U(BuildingKind::MudPit)]),
+    // Wood and mud are needed from the first weeks: felling comes with the first shelter.
+    ach("Felling", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::LoggingCamp), U(BuildingKind::MudPit)]),
     ach("Winter stores", Branch::Forest, Achievement::FirstWinter, &[U(BuildingKind::FoodCache)]),
     exp("Lodge building", Branch::Building, 1, 16.0, 5, &[FELLING], 0.0, &[U(BuildingKind::Lodge)]),
     exp("Stonework", Branch::Forest, 2, 40.0, 6, &[FELLING], 0.0, &[U(BuildingKind::QuarryCamp)]),

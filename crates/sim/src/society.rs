@@ -3,6 +3,10 @@
 
 use crate::colony::{BeaverId, Colony};
 use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUEST_CHANCE_PER_DAY};
+/// Days a join request waits for an answer before the wanderer moves on.
+pub const JOIN_EXPIRES_DAYS: f64 = 12.0;
+/// Stored food per head (days of an adult's hunger: 15 days) below which nobody asks to join.
+pub const JOIN_MIN_FOOD_PER_HEAD: f32 = 15.0 * crate::tuning::colony::HUNGER_PER_DAY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
@@ -75,7 +79,13 @@ impl Society {
 
     /// Wanderers arrive now and then while a colony is founded and fewer than `JOIN_MAX_PENDING` wait.
     pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &Colony) {
+        // A request nobody answers is withdrawn after a while.
+        self.requests.retain(|r| sim_time - r.arrived_day < JOIN_EXPIRES_DAYS);
         if !colony.is_founded() || colony.is_collapsed() || self.requests.len() >= JOIN_MAX_PENDING {
+            return;
+        }
+        // Wanderers keep away from a colony that cannot feed them.
+        if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
             return;
         }
         if self.unit() < JOIN_REQUEST_CHANCE_PER_DAY * dt_days {

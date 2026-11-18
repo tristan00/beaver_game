@@ -49,6 +49,22 @@ impl RoleKind {
 }
 
 /// The role of a slot.
+/// Days of food below which foraging outranks every other role for auto-staffing.
+pub const FOOD_EMERGENCY_DAYS: f32 = 12.0;
+
+/// A role's rank for auto-staffing right now: the player's role order, except that foraging comes
+/// first while food would run out within `FOOD_EMERGENCY_DAYS`.
+pub fn rank(sim: &SimState, role: RoleKind) -> usize {
+    let need = crate::hud::food_need_per_day(sim);
+    let gain = sim.ledger.in_per_day(crate::buildings::Good::Food);
+    let food = sim.buildings.stores.amount(crate::buildings::Good::Food);
+    let short = need > gain && food < (need - gain) * FOOD_EMERGENCY_DAYS;
+    if !short {
+        return sim.work.role_rank(role);
+    }
+    if role == RoleKind::Forager { 0 } else { sim.work.role_rank(role) + 1 }
+}
+
 pub fn role_kind(r: Role) -> RoleKind {
     match r {
         Role::Collect(k) => gather_role(k),
@@ -296,7 +312,7 @@ fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same
                 continue;
             }
             let Some(c) = agent_cell(sim, w) else { continue };
-            jobs.push((p.priority, sim.work.role_rank(rk), d2(c, at), w, p.building, rk));
+            jobs.push((p.priority, rank(sim, rk), d2(c, at), w, p.building, rk));
         }
     }
     for (&w, duty) in &sim.work.managed {
@@ -318,7 +334,7 @@ fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same
         };
         let Some(site) = site.filter(|s| Some(*s) != not_from) else { continue };
         let prio = sim.work.place(site).map_or(Priority::Normal, |p| p.priority);
-        jobs.push((prio, sim.work.role_rank(rk), d2(c, at), w, site, rk));
+        jobs.push((prio, rank(sim, rk), d2(c, at), w, site, rk));
     }
     // Lowest building priority, then lowest role priority (largest rank), then nearest.
     jobs.into_iter()

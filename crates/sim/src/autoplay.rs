@@ -47,7 +47,7 @@ impl Player {
 
     /// Places `kind` on the nearest cell to the camp the sim accepts and a beaver can reach.
     pub fn place(&mut self, s: &mut SimState, kind: BuildingKind) -> Option<BuildingId> {
-        let res = place_near(s, kind, self.camp);
+        let res = place_best(s, kind, self.camp);
         self.placed.push((s.time_days, kind, res.clone()));
         match res {
             Ok(id) => {
@@ -127,12 +127,55 @@ impl Player {
     }
 }
 
+/// What a gathering camp at `pos` would find in its work area (`None` for other buildings).
+pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate::resources::ResourceKind, usize)> {
+    let role = crate::catalogue::def(kind).slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
+    let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0 };
+    let area = crate::catalogue::work_area(&b)?;
+    let n = s.resources.items.iter().filter(|r| r.kind == role && area.contains(r.cell)).count();
+    Some((role, n))
+}
+
+/// Places a gathering camp where its work area holds the most of what it gathers (within 20 cells
+/// of `around`, nearer wins ties); other buildings go to the nearest suitable cell.
+pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
+    if area_yield(s, kind, around).is_none() {
+        return place_near(s, kind, around);
+    }
+    let mut cands: Vec<(usize, usize, Cell)> = Vec::new();
+    for y in around.1.saturating_sub(20)..around.1 + 20 {
+        for x in around.0.saturating_sub(20)..around.0 + 20 {
+            if (x + y) % 2 == 1 || s.check_site(kind, (x, y)).is_err() {
+                continue;
+            }
+            if let Some((_, n)) = area_yield(s, kind, (x, y)) {
+                cands.push((n, x.abs_diff(around.0) + y.abs_diff(around.1), (x, y)));
+            }
+        }
+    }
+    cands.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (_, _, c) in cands.into_iter().take(12) {
+        if let Ok(id) = place_near_within(s, kind, c, 1) {
+            return Ok(id);
+        }
+    }
+    place_near(s, kind, around)
+}
+
+fn place_near_within(s: &mut SimState, kind: BuildingKind, around: Cell, max_r: usize) -> Result<BuildingId, String> {
+    place_ring(s, kind, around, 0..=max_r)
+}
+
 /// The nearest cell to `around` where `kind` can be placed and the first adult can walk beside.
 pub fn place_near(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
+    place_ring(s, kind, around, 2..=29)
+}
+
+fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::ops::RangeInclusive<usize>) -> Result<BuildingId, String> {
     let walker = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id);
     let from = walker.and_then(|w| s.agents.get(w)).map(|a| a.cell);
     let mut last = String::from("no cell tried");
-    for r in 2..30usize {
+    for r in radii {
         for y in around.1.saturating_sub(r)..=around.1 + r {
             for x in around.0.saturating_sub(r)..=around.0 + r {
                 if x.abs_diff(around.0).max(y.abs_diff(around.1)) != r {
