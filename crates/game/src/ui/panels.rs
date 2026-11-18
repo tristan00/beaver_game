@@ -363,6 +363,7 @@ fn handle_clicks(
     mut ui: ResMut<ShellUi>,
     mut build: ResMut<crate::build::BuildUi>,
     mut clock: ResMut<crate::sim_driver::SimClock>,
+    mut settle: ResMut<super::settle::SettleUi>,
 ) {
     let Ok(w) = windows.single() else { return };
     let (Some(phys), Some(logical)) = (w.physical_cursor_position(), w.cursor_position()) else { return };
@@ -380,6 +381,8 @@ fn handle_clicks(
     let mut reset_scroll = false;
     if let Do::Clock(cmd) = act {
         super::hud::run_clock(cmd, &mut clock);
+    } else if let Do::Settle(go) = act {
+        super::settle::run(go, &mut settle, &mut sim, &mut flow, &mut clock, &mut ui);
     } else {
         apply(act, &mut sim, &mut flow, &mut sel, &mut ui, &mut build, &mut reset_scroll);
     }
@@ -411,7 +414,7 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
             }
         }
         // The clock is a resource of its own; `handle_clicks` runs it before `apply`.
-        Do::Clock(_) => {}
+        Do::Clock(_) | Do::Settle(_) => {}
         Do::Tool(t) => {
             ui.shell.toggle_tool(t);
             ui.status = t.off_reason().map(str::to_string).unwrap_or_default();

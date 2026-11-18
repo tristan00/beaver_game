@@ -47,6 +47,18 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     *sel = Selection::None;
 }
 
+/// Opens on the settle choice: the start valley is in view, nobody is founded and time is paused.
+pub fn begin_choice(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
+    flow.phase = Phase::Scouting;
+    flow.scouts.clear();
+    flow.fog.reveal_valley(&sim.world, sim.world.start);
+    flow.focus = None;
+    crate::ui::settle::frame_valley(sim, orbit);
+    *clock = SimClock::default();
+    clock.paused = true;
+    *sel = Selection::None;
+}
+
 pub struct StartPlugin;
 
 impl Plugin for StartPlugin {
@@ -72,7 +84,12 @@ fn begin_new_game(
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
 ) {
-    // The sim opens with no colony; until the settling choice has a screen, settle at the designed camp.
+    // The sim opens with no colony. The player picks the settling cell (ui/settle.rs); scripted
+    // scenes that need a family settle the designed camp themselves.
+    if cli.chooses_settle() {
+        begin_choice(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
+        return;
+    }
     if let Some(dam) = planned.0.as_ref().filter(|_| !sim.0.colony.is_founded()) {
         if let Err(e) = sim.0.apply(Command::Settle { cell: dam.camp }) {
             eprintln!("error: cannot settle the designed camp {:?}: {e}", dam.camp);

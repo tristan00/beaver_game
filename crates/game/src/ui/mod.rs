@@ -29,10 +29,12 @@ mod panels;
 pub mod screens;
 #[allow(dead_code)] // stub until its owner task lands
 pub mod selection;
+pub mod settle;
 pub mod shell;
 pub mod toolbar;
 pub mod topbar;
 pub use panels::ShellUi;
+
 
 /// Recent happenings shown as toasts; fed from the colony log by `flow::watch_collapse`.
 #[derive(Resource, Default)]
@@ -44,7 +46,7 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NoticesRes>().add_systems(Update, (events::stage_demo, events::draw_pins)).add_plugins((kit::KitPlugin, panels::PanelsPlugin, topbar::TopBarPlugin, toolbar::ToolbarPlugin, jobs::JobsPlugin, alerts::AlertsPlugin, inspector::InspectorPlugin, icons::IconsPlugin, modebar::ModeBarPlugin))
+        app.init_resource::<NoticesRes>().add_systems(Update, (events::stage_demo, events::draw_pins)).add_plugins((kit::KitPlugin, panels::PanelsPlugin, topbar::TopBarPlugin, toolbar::ToolbarPlugin, jobs::JobsPlugin, alerts::AlertsPlugin, inspector::InspectorPlugin, icons::IconsPlugin, modebar::ModeBarPlugin, settle::SettlePlugin))
             ;
     }
 }
