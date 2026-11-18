@@ -519,3 +519,163 @@ pub(crate) fn slot_jobs(sim: &SimState) -> std::collections::HashMap<BeaverId, (
         })
         .collect()
 }
+
+/// A founded colony of four adults on the map, no resources, and hand-made workplaces.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    use crate::buildings::{Building, BuildingKind, Status};
+    use crate::work::{Slot, Workplace};
+
+    pub fn colony() -> (SimState, Vec<BeaverId>) {
+        let mut sim = SimState::new(3);
+        sim.resources = Default::default();
+        let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
+        let spot = (0..sim.world.size)
+            .map(|i| (i as f32, 100.0))
+            .find(|&(x, y)| !crate::colony::Landscape::is_water(&land, x, y))
+            .expect("a dry cell on row 100");
+        sim.colony.found(spot, &land).unwrap();
+        for b in sim.colony.beavers.iter_mut() {
+            b.stage = Stage::Adult;
+        }
+        crate::agents::place_beavers(&mut sim);
+        let ids = sim.colony.beavers.iter().map(|b| b.id).collect();
+        (sim, ids)
+    }
+
+    /// The first beaver's cell offset by `(dx, dy)`.
+    pub fn near(sim: &SimState, dx: usize, dy: usize) -> Cell {
+        let c = sim.agents.by_id.values().next().unwrap().cell;
+        (c.0 + dx, c.1 + dy)
+    }
+
+    /// A finished workplace of `kind` with its catalogue slots, `at` cells from the first beaver.
+    pub fn workplace(sim: &mut SimState, id: u64, kind: BuildingKind, at: (usize, usize), priority: Priority) -> BuildingId {
+        let pos = near(sim, at.0, at.1);
+        let b = Building { id: BuildingId(id), kind, pos, status: Status::Complete, recipe: None, output: 0.0 };
+        let slots = crate::catalogue::def(kind).slots.iter().map(|&r| Slot::empty(r)).collect();
+        let mut p = Workplace::new(b.id, kind, slots, crate::catalogue::work_area(&b), None);
+        p.priority = priority;
+        sim.buildings.buildings.push(b);
+        sim.work.places.push(p);
+        BuildingId(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
+    use crate::buildings::BuildingKind;
+    use crate::Command;
+
+    fn filled(sim: &SimState, b: BuildingId) -> usize {
+        sim.work.place(b).unwrap().filled()
+    }
+
+    #[test]
+    fn roles_map_from_slots_and_the_default_order_lists_every_role_once() {
+        assert_eq!(role_kind(Role::Collect(ResourceKind::Felled)), RoleKind::Logger);
+        assert_eq!(role_kind(Role::Collect(ResourceKind::StoneOutcrop)), RoleKind::Quarrier);
+        assert_eq!(role_kind(Role::Study), RoleKind::Elder);
+        let mut order = RoleKind::DEFAULT_ORDER.to_vec();
+        order.sort();
+        assert_eq!(order, RoleKind::ALL.to_vec());
+        assert_eq!(colony_job(RoleKind::MudDigger), Some(Job::Digger));
+    }
+
+    #[test]
+    fn add_worker_takes_the_nearest_free_beaver_then_the_lowest_priority_unlocked_job() {
+        let (mut s, ids) = colony();
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::High);
+        let low = workplace(&mut s, 51, BuildingKind::LoggingCamp, (20, 0), Priority::Low);
+        let mid = workplace(&mut s, 52, BuildingKind::MudPit, (0, 20), Priority::Normal);
+        s.work.assign(low, 0, ids[0]).unwrap();
+        s.work.assign(low, 1, ids[1]).unwrap();
+        s.work.assign(mid, 0, ids[2]).unwrap();
+        assert_eq!(add_worker_preview(&s, hut), Some(AddPreview { who: ids[3], from: None }), "the free beaver first");
+        s.apply(Command::AddWorker { building: hut }).unwrap();
+        assert_eq!(s.work.slot_of(ids[3]).map(|t| (t.0, t.1)), Some((hut, 0)));
+        assert!(s.work.is_locked(ids[3]), "a beaver placed by hand is locked");
+        let pv = add_worker_preview(&s, hut).unwrap();
+        assert_eq!(pv.from, Some((low, RoleKind::Logger)), "nobody free: taken from the lowest-priority job");
+        s.apply(Command::AddWorker { building: hut }).unwrap();
+        assert_eq!(s.work.slot_of(pv.who).map(|t| t.0), Some(hut));
+        assert_eq!((filled(&s, hut), filled(&s, low), filled(&s, mid)), (2, 1, 1));
+        assert_eq!(add_worker_preview(&s, hut), None, "the hut is full");
+        assert!(s.apply(Command::AddWorker { building: hut }).is_err());
+        // The mud pit takes the last logger, never a locked forager.
+        assert_eq!(add_worker_preview(&s, mid).unwrap().from, Some((low, RoleKind::Logger)));
+        s.apply(Command::RemoveWorker { building: hut }).unwrap();
+        assert_eq!(s.work.slot_of(pv.who), None, "the last-filled slot is freed");
+        assert!(!s.work.is_locked(pv.who));
+        assert_eq!(s.work.place(hut).unwrap().max_workers, 1, "and the hut's max drops so it is not refilled");
+        assert!(s.apply(Command::AddWorker { building: BuildingId(999) }).is_err());
+        assert!(s.apply(Command::RemoveWorker { building: low }).is_ok());
+        assert!(s.apply(Command::RemoveWorker { building: low }).is_err(), "nobody left to remove");
+    }
+
+    #[test]
+    fn auto_staffing_fills_by_priority_keeps_locked_beavers_and_skips_paused_workplaces() {
+        let (mut s, ids) = colony();
+        s.work.auto_organise = true;
+        let camp = workplace(&mut s, 50, BuildingKind::LoggingCamp, (2, 2), Priority::Normal);
+        let hut = workplace(&mut s, 51, BuildingKind::ForagerHut, (6, 6), Priority::High);
+        s.apply(Command::FillSlot { building: camp, slot: 1, who: ids[0] }).unwrap();
+        // A beaver on a direct order is not auto-staffed either.
+        let area = crate::work::Area { min: (0, 0), max: (1, 1) };
+        s.apply(Command::Assign { who: vec![ids[1]], to: Some(Assignment::Area(ResourceKind::Plant, area)) }).unwrap();
+        crate::agents::step(&mut s, 0.0);
+        assert_eq!(filled(&s, hut), 2, "the far high-priority hut is staffed before the near camp");
+        assert_eq!(filled(&s, camp), 1);
+        assert_eq!(s.work.slot_of(ids[0]).map(|t| (t.0, t.1)), Some((camp, 1)), "the hand-placed beaver stays");
+        assert_eq!(s.work.slot_of(ids[1]), None, "the ordered beaver stays on its order");
+        // Raising the camp above the hut moves an auto-staffed forager over.
+        s.apply(Command::SetPriority { building: camp, priority: Priority::High }).unwrap();
+        s.apply(Command::SetPriority { building: hut, priority: Priority::Low }).unwrap();
+        crate::agents::step(&mut s, 0.0);
+        assert_eq!((filled(&s, camp), filled(&s, hut)), (2, 1));
+        // Pausing the hut frees its worker and leaves it empty.
+        s.apply(Command::SetPaused { building: hut, paused: true }).unwrap();
+        crate::agents::step(&mut s, 0.0);
+        assert_eq!(filled(&s, hut), 0);
+        let free = crate::hud::idle_beavers(&s);
+        assert_eq!(free.len(), 1);
+        assert_eq!(idle_reasons(&s), vec![(free[0], IdleReason::Paused)]);
+        let h = headcount(&s);
+        assert_eq!((h.working, h.free, h.working + h.free + h.kits + h.elders), (3, 1, h.total));
+        // With auto-staffing off nothing moves.
+        s.apply(Command::SetPaused { building: hut, paused: false }).unwrap();
+        s.apply(Command::SetAutoStaff { on: false }).unwrap();
+        crate::agents::step(&mut s, 0.0);
+        assert_eq!(filled(&s, hut), 0);
+        assert_eq!(idle_reasons(&s), vec![(free[0], IdleReason::AutoOff)]);
+    }
+
+    #[test]
+    fn the_jobs_board_moves_beavers_between_a_role_and_the_free_pool() {
+        let (mut s, _) = colony();
+        let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::Normal);
+        s.apply(Command::AdjustRole { role: RoleKind::Forager, delta: 2 }).unwrap();
+        assert_eq!(filled(&s, hut), 2);
+        let board = jobs_board(&s);
+        assert_eq!(board.len(), 1);
+        assert_eq!((board[0].role, board[0].filled, board[0].slots), (RoleKind::Forager, 2, 2));
+        assert_eq!(role_add_preview(&s, RoleKind::Forager), None, "no open forager slot");
+        s.apply(Command::AdjustRole { role: RoleKind::Forager, delta: -1 }).unwrap();
+        assert_eq!((filled(&s, hut), s.work.place(hut).unwrap().max_workers), (1, 1));
+        assert!(s.apply(Command::AdjustRole { role: RoleKind::Quarrier, delta: 1 }).is_err(), "no quarry");
+        assert!(s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder, RoleKind::Elder] }).is_err());
+        s.apply(Command::SetRoleOrder { order: vec![RoleKind::Elder] }).unwrap();
+        assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Elder, RoleKind::Builder, 8));
+        // A direct order takes the forager out of its slot and locks it; Unlock returns it.
+        let w = s.work.place(hut).unwrap().slots.iter().find_map(|s| s.worker).unwrap();
+        let area = crate::work::Area { min: (0, 0), max: (3, 3) };
+        s.apply(Command::Assign { who: vec![w], to: Some(Assignment::Area(ResourceKind::Tree, area)) }).unwrap();
+        assert_eq!((s.work.slot_of(w), s.work.is_locked(w), role_of(&s, w)), (None, true, Some(RoleKind::Logger)));
+        s.apply(Command::Unlock { who: w }).unwrap();
+        assert!(!s.work.is_locked(w) && !is_busy(&s, w));
+        assert!(s.apply(Command::Unlock { who: BeaverId(999) }).is_err());
+    }
+}
