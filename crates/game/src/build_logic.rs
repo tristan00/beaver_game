@@ -380,14 +380,18 @@ pub fn dam_preview(sim: &SimState, cells: &[Cell], height: f32) -> Option<sim::d
     sim::dam_preview::preview(sim, cells, height)
 }
 
-/// The cells and heights a drawn line is built to: `height` above the ground on every cell, or,
-/// once the line was extended to hold (`crest`), each cell up to that world crest (cells already
-/// that high are left out, as `Command::OrderDamTo` does).
+/// The cells and heights a drawn line is built to: `height` above the ground on every cell, and,
+/// once the line was extended to hold (`crest`), cells whose ground lies lower raised to that
+/// world crest (exactly the heights `dam_preview::extend_to_hold` checked).
 pub fn line_heights(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> (Vec<Cell>, Vec<f32>) {
-    match crest {
-        Some(c) => sim::dam_preview::heights_to(sim, cells, c),
-        None => (cells.to_vec(), vec![height; cells.len()]),
-    }
+    let up = |c: &Cell| crest.map_or(0.0, |k| k - sim.height.get(c.0, c.1).copied().unwrap_or(k));
+    (cells.to_vec(), cells.iter().map(|c| height.max(up(c))).collect())
+}
+
+/// A line built to a crest splits into the cells at the uniform `height` and the cells raised to
+/// the crest; each part is one order (`Command::OrderDam`, `Command::OrderDamTo`).
+pub fn split_to_crest(sim: &SimState, cells: &[Cell], height: f32, crest: f32) -> (Vec<Cell>, Vec<Cell>) {
+    cells.iter().partition(|c| crest - sim.height.get(c.0, c.1).copied().unwrap_or(crest) <= height + 1e-3)
 }
 
 /// The preview of a drawn line (see `line_heights`).
@@ -470,7 +474,7 @@ pub enum BuildOrder {
     Building { kind: BuildingKind, pos: Cell },
     Dam { cells: Vec<Cell>, height: f32 },
     /// A dam line built to a world-height crest (after "extend to hold").
-    DamTo { cells: Vec<Cell>, crest: f32 },
+    DamTo { cells: Vec<Cell>, height: f32, crest: f32 },
     Canal { cells: Vec<Cell> },
 }
 
@@ -510,9 +514,16 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
             sim.apply(Command::OrderDam { cells: cells.clone(), height: *height }).map_err(|e| PlaceError::Sim(e.to_string()))?;
             Ok(format!("Dam of {} cells ordered", cells.len()))
         }
-        BuildOrder::DamTo { cells, crest } => {
-            check_dam(sim, cells, MIN_DAM_HEIGHT)?;
-            sim.apply(Command::OrderDamTo { cells: cells.clone(), crest: *crest }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+        BuildOrder::DamTo { cells, height, crest } => {
+            check_dam(sim, cells, *height)?;
+            // The drawn cells at their height, the cells added to hold at the crest: two sites.
+            let (base, added) = split_to_crest(sim, cells, *height, *crest);
+            if !base.is_empty() {
+                sim.apply(Command::OrderDam { cells: base, height: *height }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+            }
+            if !added.is_empty() {
+                sim.apply(Command::OrderDamTo { cells: added, crest: *crest }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+            }
             Ok(format!("Dam of {} cells ordered", cells.len()))
         }
         BuildOrder::Canal { cells } => {
@@ -1018,8 +1029,11 @@ pub(crate) mod tests {
         let (cells, heights) = line_heights(&sim, &line, 1.0, Some(crest));
         assert_eq!(cells, line);
         for (h, g) in heights.iter().zip(&ground) {
-            assert!((h + g - crest).abs() < 1e-4);
+            assert!((h + g - crest).abs() < 1e-4 || (*h - 1.0).abs() < 1e-4 && g + 1.0 >= crest, "{h} on {g}");
         }
+        let (base, added) = split_to_crest(&sim, &line, 1.0, crest);
+        assert_eq!(base.len() + added.len(), line.len());
+        assert!(!added.is_empty(), "the lowest cells need more than one unit to reach the crest");
         assert_eq!(line_heights(&sim, &line, 1.5, None).1, vec![1.5; line.len()]);
         sim.tech.unlock_all();
     }

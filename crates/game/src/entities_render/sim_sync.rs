@@ -348,6 +348,8 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
 
 /// Length (model units, doubled) of a barge on the water.
 const BARGE_LEN2: u32 = 6;
+/// A barge is drawn a little larger than buildings so it reads among the trees on a river.
+const BARGE_SCALE: f32 = WORLD_SCALE * 1.4;
 
 /// One drawn barge: it glides from where it was drawn to its sim cell over about as long as the
 /// sim took to move it there, so it moves smoothly between cells at any game speed.
@@ -444,6 +446,6 @@ pub fn sync_sim_barges(
         let p = barge_point(s, b.cell);
         let loaded = is_loaded(b);
         let v = BargeVis { id: b.id.0, cell: b.cell, from: p, to: p, t0: now, dur: 0.0, yaw: 0.0, loaded };
-        commands.spawn((SimEntity, Mesh3d(mesh_for(loaded)), MeshMaterial3d(white.clone()), Transform::from_translation(p).with_scale(Vec3::splat(WORLD_SCALE)), v));
+        commands.spawn((SimEntity, Mesh3d(mesh_for(loaded)), MeshMaterial3d(white.clone()), Transform::from_translation(p).with_scale(Vec3::splat(BARGE_SCALE)), v));
     }
 }

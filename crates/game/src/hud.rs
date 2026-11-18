@@ -799,7 +799,7 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
     }
     let order = match hud.tool {
         Tool::Dam => match hud.dam_crest {
-            Some(crest) => BuildOrder::DamTo { cells: hud.line.clone(), crest },
+            Some(crest) => BuildOrder::DamTo { cells: hud.line.clone(), height: hud.dam_height, crest },
             None => BuildOrder::Dam { cells: hud.line.clone(), height: hud.dam_height },
         },
         Tool::Canal => BuildOrder::Canal { cells: hud.line.clone() },
@@ -1529,6 +1529,58 @@ fn demo(
         }
         return;
     }
+    // `barge`: two docks on the river by the camp and a barge carrying logs between them.
+    // BC_HUD_VIEW=dock selects the first dock; `lock` drops a dam across the way and asks again,
+    // so the barge inspector shows the refusal naming the dam; `raise` selects that dam's cell.
+    if which == "barge" {
+        let Some(c) = camp else { return };
+        let Some((a, b, barge, path)) = barge_demo(s, c) else {
+            println!("barge demo: no two docks joined by water near the camp");
+            return;
+        };
+        let steps = (days.min(3.0) / crate::sim_driver::FIXED_DT_DAYS) as usize;
+        for _ in 0..steps {
+            let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
+        }
+        let view = std::env::var("BC_HUD_VIEW").unwrap_or_default();
+        let mid = path[path.len() / 2];
+        match view.as_str() {
+            "dock" => *sel = Selection::Site(a),
+            "lock" | "raise" => {
+                let i = path.len() / 2;
+                let (p, q) = (path[i.saturating_sub(1)], path[i]);
+                let dir = (q.0 as i64 - p.0 as i64, q.1 as i64 - p.1 as i64);
+                let cells: Vec<Cell> = (-6i64..=6)
+                    .map(|k| (mid.0 as i64 - dir.1 * k, mid.1 as i64 + dir.0 * k))
+                    .filter(|&(x, y)| x >= 0 && y >= 0 && s.water.depth.in_bounds(x as usize, y as usize))
+                    .map(|(x, y)| (x as usize, y as usize))
+                    .collect();
+                let _ = s.apply(sim::Command::BuildDam { cells, height: 1.0 });
+                if view == "raise" {
+                    *sel = Selection::Cell(mid);
+                    let dist: f32 = std::env::var("BC_HUD_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0);
+                    look(&mut orbit, &s.height, (mid.0 as f32, mid.1 as f32), dist);
+                    return;
+                }
+                *sel = Selection::Barge(barge);
+                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Logs, Good::Stone] });
+                set_route(s, &mut hud, barge, 0.0);
+                println!("barge demo: route refused: {:?}", hud.route_err);
+            }
+            _ => *sel = Selection::Barge(barge),
+        }
+        let mut at = mid;
+        if let Some(bg) = s.buildings.barge(barge) {
+            println!("barge demo: barge at {:?}, {:?} {:?}, hold {:?}", bg.cell, bg.state, bg.leg, bg.hold);
+            at = bg.cell;
+        }
+        let dist: f32 = std::env::var("BC_HUD_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(38.0);
+        look(&mut orbit, &s.height, (at.0 as f32, at.1 as f32), dist);
+        if let Some(p) = std::env::var("BC_HUD_PITCH").ok().and_then(|v| v.parse().ok()) {
+            orbit.pitch = p;
+        }
+        return;
+    }
     let mut staffed = Vec::new();
     if matches!(which.as_str(), "camp" | "ledger" | "goods" | "jobs" | "pop" | "beaver" | "research" | "tip") {
         if let Some(c) = camp {
@@ -1544,9 +1596,14 @@ fn demo(
             if let Some(d) = planned.0.as_ref() {
                 hud.open_cat = water_cat;
                 hud.set_tool(if which == "dam" { Tool::Dam } else { Tool::Canal });
-                hud.line = d.cells.clone();
+                // `BC_HUD_DAM_TRIM=n` drops n cells from each end, so water walks round the dam.
+                let trim: usize = std::env::var("BC_HUD_DAM_TRIM").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(d.cells.len().saturating_sub(1) / 2);
+                hud.line = d.cells[trim..d.cells.len() - trim].to_vec();
                 let crest = std::env::var("BC_HUD_CREST").ok().and_then(|v| v.parse().ok()).unwrap_or(d.height);
-                hud.dam_height = crest.clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+                hud.dam_height = ((crest / DAM_STEP).round() * DAM_STEP).clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
+                if std::env::var_os("BC_HUD_DAM_EXTEND").is_some() {
+                    extend_dam(s, &mut hud);
+                }
                 let m = d.cells[d.cells.len() / 2];
                 look(&mut orbit, &s.height, (m.0 as f32, m.1 as f32), 40.0);
             }
@@ -1606,6 +1663,62 @@ fn demo(
             }
         }
     }
+}
+
+/// Screenshot scaffolding for barges: two finished docks by the river near `camp`, 15 to 40 cells
+/// apart by water, a barge at the first, logs and stone in its stock and a route between them.
+/// Returns the docks, the barge and the water path between them.
+fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, BuildingId, BargeId, Vec<Cell>)> {
+    s.tech.unlock_all();
+    let n = s.world.size;
+    let terrain_ok = |s: &sim::SimState, p: Cell| s.check_site(BuildingKind::Dock, p).is_ok();
+    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, recipe: None, output: 0.0 };
+    let locks = sim::shipping::lock_cells(s);
+    let near = |r: usize| (camp.1.saturating_sub(r)..(camp.1 + r).min(n - 2)).flat_map(move |y| (camp.0.saturating_sub(r)..(camp.0 + r).min(n - 2)).map(move |x| (x, y)));
+    let first = near(30)
+        .filter(|&p| terrain_ok(s, p) && !sim::shipping::berths(s, &locks, &probe(p)).is_empty())
+        .min_by_key(|p| p.0.abs_diff(camp.0) + p.1.abs_diff(camp.1))?;
+    let start = sim::shipping::berths(s, &locks, &probe(first))[0];
+    // Water distance from the first berth over cells a barge can sail.
+    let idx = |c: Cell| c.1 * n + c.0;
+    let mut dist = vec![u32::MAX; n * n];
+    let mut queue = std::collections::VecDeque::from([start]);
+    dist[idx(start)] = 0;
+    while let Some(c) = queue.pop_front() {
+        for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+            let (x, y) = (c.0 as i64 + dx, c.1 as i64 + dy);
+            if x < 0 || y < 0 || x as usize >= n || y as usize >= n {
+                continue;
+            }
+            let m = (x as usize, y as usize);
+            if dist[idx(m)] == u32::MAX && sim::shipping::step_cost(s, &locks, m, false).is_some() {
+                dist[idx(m)] = dist[idx(c)] + 1;
+                queue.push_back(m);
+            }
+        }
+    }
+    let second = near(45)
+        .filter(|&p| p.0.abs_diff(first.0) + p.1.abs_diff(first.1) > 4 && terrain_ok(s, p))
+        .filter_map(|p| {
+            let d = sim::shipping::berths(s, &locks, &probe(p)).iter().map(|b| dist[idx(*b)]).min()?;
+            (15..=40).contains(&d).then_some((p, d))
+        })
+        .min_by_key(|(_, d)| d.abs_diff(26))?
+        .0;
+    let a = s.buildings.add_complete(BuildingKind::Dock, first, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
+    let b = s.buildings.add_complete(BuildingKind::Dock, second, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
+    let bg = BargeId(9_000_001);
+    s.buildings.barges.push(sim::buildings::Barge::new(bg, start, Some(a)));
+    for (g, amount) in [(Good::Logs, 30.0), (Good::Stone, 20.0)] {
+        let put = s.buildings.stores.deposit(g, amount).unwrap_or(0.0);
+        s.work.stock_add(a, g, put);
+    }
+    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Logs, Good::Stone] }) {
+        println!("barge demo: {e}");
+    }
+    let ends = sim::shipping::berths(s, &locks, s.buildings.building(b)?);
+    let path = sim::shipping::route(s, &locks, start, &ends, false).filter(|p| !p.is_empty()).unwrap_or(vec![start]);
+    Some((a, b, bg, path))
 }
 
 /// Screenshot scaffolding: places a logging camp, a forager hut and a warehouse near `camp`,
@@ -1716,6 +1829,10 @@ mod tests {
             }
             t.split_whitespace().filter(|w| w.chars().any(|c| c.is_alphabetic()) && w.chars().filter(|c| c.is_alphabetic()).count() > 1).count()
         };
+        // Water transport: two docks, a barge on a route between them, and a dam on a river cell.
+        let (dock, _, barge, path) = barge_demo(&mut s, dam.camp).expect("docks by the river");
+        let dam_cell = path[path.len() / 2];
+        s.apply(sim::Command::BuildDam { cells: vec![dam_cell], height: 1.0 }).unwrap();
         let clock = SimClock::default();
         let log = std::collections::VecDeque::new();
         let problems = sim::hud::problems(&s);
@@ -1741,6 +1858,21 @@ mod tests {
         states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
         // The elevation lens: its legend in the rail and the heights tag at the cursor.
         states.push(("elevation".into(), HudState::default(), Selection::None));
+        // A barge whose route was refused for a dam in the way, a dock, a dam cell (raise), and the
+        // dam tool with a line too short to hold (spill marker, extend).
+        let refused = HudState { route_err: Some((barge, format!("invalid command: a dam at {},{} is in the way: build a lock on it", dam_cell.0, dam_cell.1))), ..default() };
+        states.push(("barge".into(), refused, Selection::Barge(barge)));
+        states.push(("barge other".into(), HudState { route_err: Some((barge, "invalid command: no water joins the two docks".into())), ..default() }, Selection::Barge(barge)));
+        states.push(("dock".into(), HudState::default(), Selection::Site(dock)));
+        states.push(("dam cell".into(), HudState::default(), Selection::Cell(dam_cell)));
+        let short: Vec<Cell> = (0..dam.cells.len())
+            .map(|i| vec![dam.cells[i]])
+            .find(|c| build_logic::dam_preview(&s, c, 1.5).is_some_and(|p| p.spill_at.is_some()))
+            .expect("one cell of the designed dam leaks round its ends");
+        let spill = build_logic::dam_preview(&s, &short, 1.5);
+        let mut spill_state = HudState { tool: Tool::Dam, line: short.clone(), dam_height: 1.5, ..default() };
+        spill_state.preview = Some((short, 1.5, None, spill));
+        states.push(("dam spill".into(), spill_state, Selection::None));
         let mut failures = Vec::new();
         for (name, hud, sel) in &states {
             let lens = if name == "elevation" { MapLens::Elevation } else { MapLens::World };
