@@ -379,8 +379,18 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
         Tool::Building(_) => {}
         Tool::None => {
             if c.hud.colony.is_none() {
+                // Pinned inspectors stay open above the current one (spec 4.2).
+                for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
+                    if let Some(v) = super::inspect::inspector(c, *p) {
+                        ui.add(v);
+                    }
+                }
                 match c.sel {
-                    Selection::None => alerts(c, &mut ui),
+                    Selection::None => {
+                        if c.hud.pinned.is_empty() {
+                            alerts(c, &mut ui)
+                        }
+                    }
                     sel => {
                         if let Some(v) = super::inspect::inspector(c, sel) {
                             ui.add(v);

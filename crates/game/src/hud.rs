@@ -119,6 +119,8 @@ pub struct HudState {
     /// Drawing a new work area for this building, and where the drag began.
     pub area_edit: Option<BuildingId>,
     pub area_from: Option<Cell>,
+    /// Inspectors kept open while something else is selected (at most three).
+    pub pinned: Vec<Selection>,
     /// A box selection being dragged (screen position where it began).
     box_from: Option<Vec2>,
     box_done: Option<(Vec2, Vec2)>,
@@ -197,6 +199,7 @@ impl Default for HudState {
             pop_sort: 0,
             area_edit: None,
             area_from: None,
+            pinned: Vec::new(),
             box_from: None,
             box_done: None,
             frame_req: None,
@@ -301,6 +304,7 @@ pub enum HudAction {
     RoleAdjust(Role, i32),
     SortPop(u8),
     EditArea(BuildingId),
+    Pin(Selection),
 }
 
 pub struct HudPlugin;
@@ -836,6 +840,16 @@ fn button_actions(
             HudAction::RemoveWorker(b) => remove_worker(s, &mut hud, b, now),
             HudAction::RoleAdjust(role, d) => role_adjust(s, &mut hud, role, d, now),
             HudAction::SortPop(k) => hud.pop_sort = k,
+            HudAction::Pin(p) => {
+                if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
+                    hud.pinned.remove(i);
+                } else {
+                    hud.pinned.push(p);
+                    if hud.pinned.len() > 3 {
+                        hud.pinned.remove(0);
+                    }
+                }
+            }
             HudAction::EditArea(b) => {
                 hud.area_edit = if hud.area_edit == Some(b) { None } else { Some(b) };
                 hud.area_from = None;

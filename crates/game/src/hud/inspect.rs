@@ -17,7 +17,8 @@ fn shell(f: impl FnOnce(&mut Ui)) -> VNode {
     v
 }
 
-fn header(u: &mut Ui, icon: Icon, name: String, tip: Option<Tip>, extra: impl FnOnce(&mut Ui)) {
+fn header(c: &Ctx, sel: Selection, u: &mut Ui, icon: Icon, name: String, tip: Option<Tip>, extra: impl FnOnce(&mut Ui)) {
+    let pinned = c.hud.pinned.contains(&sel);
     u.row(6.0, |r| {
         let t = r.row(6.0, |x| {
             x.icon(icon, 20.0, INK);
@@ -28,7 +29,12 @@ fn header(u: &mut Ui, icon: Icon, name: String, tip: Option<Tip>, extra: impl Fn
         }
         r.spacer();
         extra(r);
-        r.icon_button(Icon::Cross, 11.0, HudAction::CloseInspector, FAINT, false).tip(Tip::name("Close").key("Esc"));
+        r.icon_button(Icon::Pin, 11.0, HudAction::Pin(sel), FAINT, pinned).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
+        if pinned {
+            r.icon_button(Icon::Cross, 11.0, HudAction::Pin(sel), FAINT, false).tip(Tip::name("Close"));
+        } else {
+            r.icon_button(Icon::Cross, 11.0, HudAction::CloseInspector, FAINT, false).tip(Tip::name("Close").key("Esc"));
+        }
     });
 }
 
@@ -65,7 +71,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     };
     let place = s.work.place(id);
     shell(|u| {
-        header(u, building_icon(b.kind), b.kind.spec().name.to_string(), None, |r| {
+        header(c, Selection::Site(id), u, building_icon(b.kind), b.kind.spec().name.to_string(), None, |r| {
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
         });
         // Status: icon + at most two words (A9).
@@ -288,7 +294,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
     };
     shell(|u| {
         let tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line("Age", format!("{:.1}", b.age_years())).line("Life", format!("{:.0}", b.lifespan_days / 360.0));
-        header(u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
+        header(c, Selection::Beaver(id), u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
             r.icon_button(Icon::Follow, 12.0, HudAction::Follow(id), FAINT, c.hud.follow == Some(id)).tip(Tip::name("Follow"));
         });
         // Job: role and workplace, or free.
@@ -360,7 +366,7 @@ fn resource(c: &Ctx, rid: sim::resources::ResourceId) -> VNode {
         });
     };
     shell(|u| {
-        header(u, resource_icon(r.kind), resource_name(r.kind).to_string(), None, |_| {});
+        header(c, Selection::Tree(rid), u, resource_icon(r.kind), resource_name(r.kind).to_string(), None, |_| {});
         let frac = if r.max_amount > 0.0 { r.amount / r.max_amount } else { 0.0 };
         bar_row(u, resource_icon(r.kind), GOOD, frac, num(r.amount), Tip::name("Left").with_value(format!("{}/{}", num(r.amount), num(r.max_amount))));
         let areas: Vec<BuildingId> = s.work.places.iter().filter(|p| p.area.is_some_and(|a| a.contains(r.cell))).map(|p| p.building).collect();
@@ -398,7 +404,7 @@ pub fn cell_rows(s: &sim::SimState, cell: crate::flow::Cell) -> Vec<(Icon, Color
 
 fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
     shell(|u| {
-        header(u, Icon::Profile, String::new(), None, |_| {});
+        header(c, Selection::Cell(cell), u, Icon::Profile, String::new(), None, |_| {});
         for (i, col, name, v) in cell_rows(c.s, cell) {
             u.row(6.0, |r| {
                 r.icon(i, 15.0, col);
@@ -413,7 +419,7 @@ fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
 fn lodge(c: &Ctx, id: sim::colony::LodgeId) -> VNode {
     let s = c.s;
     shell(|u| {
-        header(u, Icon::Lodge, String::new(), Some(Tip::name("Lodge")), |_| {});
+        header(c, Selection::Lodge(id), u, Icon::Lodge, String::new(), Some(Tip::name("Lodge")), |_| {});
         let residents: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).collect();
         u.row(6.0, |r| {
             r.icon(Icon::Beaver, 16.0, INK);
