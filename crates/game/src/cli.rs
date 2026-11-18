@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--demo-pond] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|stores|buildings|tech|events|build|gather|jobs|screens] [--demo-dam] [--demo-orders drag] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--demo-pond] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|stores|buildings|tech|events|build|gather|jobs|screens] [--demo-dam] [--demo-settle] [--demo-jobs] [--demo-orders drag] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -35,12 +35,16 @@ pub struct Cli {
     pub select: Option<String>,
     /// Start in this map mode (screenshots): water|forest|food|work.
     pub mode: Option<String>,
+    /// Settle choice with the first candidate picked (screenshots).
+    pub demo_settle: bool,
+    /// Settled family with two adults put on jobs, job panel open (screenshots).
+    pub demo_jobs: bool,
 }
 
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None, select: None, mode: None };
+        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, demo_dam: false, demo_place: None, open: None, showcase: None, demo_orders: None, select: None, mode: None, demo_settle: false, demo_jobs: false };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -65,6 +69,8 @@ impl Cli {
                     cli.autoplay_settle = true;
                 }
                 "--demo-pond" => cli.demo_pond = true,
+                "--demo-settle" => cli.demo_settle = true,
+                "--demo-jobs" => cli.demo_jobs = true,
                 "--demo-place" => {
                     let v = value("--demo-place")?;
                     if !["valid", "invalid", "dam"].contains(&v.as_str()) {
@@ -117,6 +123,13 @@ impl Cli {
 
     /// Whether a scripted scene (stress, autoplay, showcase) founds its own colony on a plain
     /// world instead of the new game.
+    /// Whether the new game opens on the settle choice (every scripted scene that needs a colony
+    /// settles the designed camp itself; `--demo-settle` picks a candidate for the screenshot).
+    pub fn chooses_settle(&self) -> bool {
+        let scripted = self.demo_pond || self.demo_place.is_some() || self.demo_orders.is_some() || self.demo_jobs || self.select.is_some() || self.open.is_some() || self.mode.is_some();
+        self.demo_settle || !scripted
+    }
+
     pub fn plain_world(&self) -> bool {
         self.stress || self.autoplay_settle || self.showcase.is_some()
     }

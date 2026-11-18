@@ -66,7 +66,7 @@ impl Phase {
     pub fn banner(self) -> &'static str {
         match self {
             Phase::Arrival => "Scouts arrive at the valley mouth...",
-            Phase::Scouting => "Scout the valley, then click dry, explored ground to settle",
+            Phase::Scouting => "",
             Phase::Settled => "",
             Phase::GameOver => "The colony has collapsed",
             Phase::Watching => "Colony collapsed - watching",
@@ -507,25 +507,30 @@ pub fn valley_mouth(world: &World) -> (f32, f32) {
     }
 }
 
-/// Founds the colony at `cell`. Validates, founds, advances the state machine and lifts fog.
+/// Founds the colony at `cell`. Validates, sends `Command::Settle` to the sim and does the flow
+/// bookkeeping (state machine, fog, camera) in [`after_settle`].
 pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<(), String> {
     if flow.phase != Phase::Scouting {
-        return Err("The colony can only be founded while scouting".into());
+        return Err("The colony can only be founded while choosing the settling place".into());
     }
     can_settle(&sim.world, &sim.water.depth, &flow.fog, cell).map_err(|e| e.message().to_string())?;
+    sim.apply(sim::Command::Settle { cell }).map_err(|e| e.to_string())?;
+    after_settle(sim, flow, cell);
+    Ok(())
+}
+
+/// The flow's side of a founded colony: advance the state machine, lift fog, aim the camera, log it.
+pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     let pos = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
-    let land = WorldLand { world: &sim.world, depth: &sim.water.depth };
-    let fam = sim.colony.found(pos, &land).map_err(|e| e.to_string())?;
     flow.fire(FlowEvent::Settle);
     let allowed = open_at(&sim.world);
     flow.fog.reveal(pos, 10.0, &allowed);
     flow.settled_at = Some(flow.real_secs);
     flow.lodge_cell = Some(cell);
     flow.focus = Some(cell_world(&sim.height, pos));
-    let name = sim.colony.family(fam).map(|f| f.name.clone()).unwrap_or_default();
-    flow.push_log(format!("The {name} family founded the first lodge at ({}, {})", cell.0, cell.1));
+    let name = sim.colony.families.first().map(|f| f.name.clone()).unwrap_or_default();
+    flow.push_log(format!("The {name} family settled at ({}, {})", cell.0, cell.1));
     flow.message.clear();
-    Ok(())
 }
 
 /// Resets everything to a fresh opening with the same seed.
@@ -627,6 +632,7 @@ fn pick_world(
     mut flow: ResMut<Flow>,
     mut sel: ResMut<Selection>,
     mut hover: ResMut<Hover>,
+    mut settle_ui: ResMut<crate::ui::settle::SettleUi>,
 ) {
     let clicked = click.0.take();
     let Ok(window) = windows.single() else { return };
@@ -678,22 +684,9 @@ fn pick_world(
         return;
     };
     if flow.phase == Phase::Scouting {
-        match settle(&mut sim.0, &mut flow, cell) {
-            Ok(()) => {
-                *sel = Selection::Lodge(sim.0.colony.lodges[0].id);
-                return;
-            }
-            Err(msg) => {
-                flow.message = msg;
-                if can_settle(&sim.0.world, &sim.0.water.depth, &flow.fog, cell) == Err(SettleError::Unexplored) {
-                    let n = flow.scouts.len() as f32;
-                    for (i, s) in flow.scouts.iter_mut().enumerate() {
-                        let a = i as f32 * std::f32::consts::TAU / n;
-                        s.target = (cell.0 as f32 + 2.0 * a.cos(), cell.1 as f32 + 2.0 * a.sin());
-                    }
-                }
-            }
-        }
+        // the settling choice: a click picks a place, the card's Settle here founds the colony
+        settle_ui.click(&sim.0, &flow.fog, cell);
+        return;
     }
     *sel = if sim.0.water.has_dam(cell.0, cell.1) { Selection::Building(cell) } else { Selection::Cell(cell) };
 }

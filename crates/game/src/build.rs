@@ -1108,4 +1108,95 @@ mod tests {
         }
     }
 
+    /// The opening: settle, wander the mouse about, drag, right-click, let days pass. The only
+    /// command sent is Settle; no building and no gather order exist until the player confirms one.
+    #[test]
+    fn opening_input_flow_sends_no_build_or_gather_command_until_the_player_confirms_one() {
+        use crate::ui::settle::{candidates, SettleUi};
+        let (mut sim, dam) = sim::starts::new_game_with_dam(1).unwrap();
+        let mut flow = crate::flow::Flow::new(&sim.world);
+        flow.fog.reveal_valley(&sim.world, sim.world.start);
+        let mut settle = SettleUi::default();
+        settle.click(&sim, &flow.fog, candidates(&sim, &flow.fog)[0].cell);
+        let cmd = settle.confirm(&sim, &flow.fog).unwrap();
+        assert!(matches!(cmd, sim::Command::Settle { .. }));
+        sim.apply(cmd).unwrap();
+
+        // no tool picked: hovering and clicking the ground places nothing
+        let mut ui = BuildUi::default();
+        ui.hover = Some(dam.camp);
+        compute_preview(&sim, &mut ui);
+        assert!(ui.preview.is_none(), "no ghost without a chosen building");
+        place_hovered(&mut sim, &mut ui);
+        // no gather armed and nobody selected: a left press, drag and right click order nothing
+        let mut mp = crate::ui::gestures::MapPointer::default();
+        let a = dam.camp;
+        let b = (a.0 + 6, a.1 + 6);
+        assert!(!mp.left_down(&sim, false, a), "the press starts no order drag");
+        assert!(mp.left_up(&sim, &[], b).is_empty());
+        assert!(mp.right_click(&sim, &[], a).is_empty());
+        // days go by with no orders: the family does not organise itself
+        for _ in 0..200 {
+            sim.step(0.05).unwrap();
+        }
+        assert!(sim.buildings.buildings.is_empty(), "nothing built: {:?}", sim.buildings.buildings);
+        assert!(sim.work.places.is_empty());
+        assert!(sim.agents.by_id.values().all(|a| a.assignment.is_none()), "nobody sent to gather");
+
+        // the player confirms one building: exactly one site appears
+        sim.tech.unlock_all();
+        for g in sim::buildings::Good::ALL {
+            sim.buildings.stores.deposit(g, 100.0).unwrap();
+        }
+        ui.select_tool(Some(BuildingKind::Lodge));
+        ui.hover = Some(crate::build_logic::dry_sites(&sim)[0]);
+        compute_preview(&sim, &mut ui);
+        place_hovered(&mut sim, &mut ui);
+        assert_eq!(sim.buildings.buildings.len(), 1);
+        // and one gather order: armed, then dragged
+        let who = crate::ui::mapmodes::crew(&sim, 3);
+        assert!(!who.is_empty(), "idle adults can take it");
+        mp.armed = Some(sim::resources::ResourceKind::Tree);
+        let cell = sim.resources.items.iter().find(|r| r.kind == sim::resources::ResourceKind::Tree).unwrap().cell;
+        mp.left_down(&sim, true, cell);
+        let cmds = mp.left_up(&sim, &who, cell);
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], sim::Command::Assign { .. }));
+    }
+
+    /// Dam: a drag only previews; Cancel leaves the sim as it was, Confirm lays one site.
+    #[test]
+    fn dam_cancel_changes_nothing_and_confirm_lays_the_site() {
+        let mut sim = founded();
+        sim.tech.unlock_all();
+        let near = sim.world.valleys[sim.world.start.0 as usize].center;
+        let (a, b, _) = find_demo_dam(&sim, (near.0 as usize, near.1 as usize), 1.5).expect("a dam site exists");
+        let mut ui = BuildUi::default();
+        let mut pending = Pending::default();
+        let mut sel = Selection::None;
+        ui.tool = Some(BuildingKind::Dam);
+        ui.path = vec![a, b];
+        ui.awaiting = true;
+        ui.dam_height = 1.5;
+        compute_preview(&sim, &mut ui);
+        assert!(ui.preview.as_ref().unwrap().dam.is_some(), "the water preview exists before confirm");
+        let sites = sim.buildings.buildings.len();
+        let water_dams = |s: &SimState| (0..s.world.size).flat_map(|y| (0..s.world.size).map(move |x| (x, y))).filter(|&(x, y)| s.water.has_dam(x, y)).count();
+        let dams_before = water_dams(&sim);
+        // Cancel: the path goes, nothing is ordered
+        do_action(BAction::CancelTool, &mut sim, &mut pending, &mut ui, &mut sel);
+        assert!(ui.path.is_empty() && !ui.awaiting);
+        assert_eq!(sim.buildings.buildings.len(), sites);
+        // Confirm with nothing awaiting does nothing
+        do_action(BAction::Confirm, &mut sim, &mut pending, &mut ui, &mut sel);
+        assert_eq!(sim.buildings.buildings.len(), sites);
+        // draw again and Confirm: the dam site is laid, the path is spent, no water dam yet
+        ui.path = vec![a, b];
+        ui.awaiting = true;
+        compute_preview(&sim, &mut ui);
+        do_action(BAction::Confirm, &mut sim, &mut pending, &mut ui, &mut sel);
+        assert!(ui.path.is_empty() && !ui.awaiting);
+        assert!(sim.buildings.buildings.len() > sites, "the dam site is laid: {}", ui.message);
+        assert_eq!(dams_before, water_dams(&sim), "the water dam appears only when built");
+    }
 }

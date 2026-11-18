@@ -68,6 +68,8 @@ pub enum Do {
     SetJob(BeaverId, Option<Job>),
     /// Move a job up in a family's priority order.
     Promote(sim::colony::FamilyId, usize),
+    /// The settle card: Settle here (true) or Cancel (false).
+    Settle(bool),
 }
 
 /// A button: always has an icon, the label is a short caption.
