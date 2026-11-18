@@ -1313,12 +1313,12 @@ fn inspector(p: &mut ChildSpawnerCommands, s: &sim::SimState, id: BuildingId) {
     }
     if let Some(rep) = sim::hud::building_report(s, id) {
         bold(p, "OUTPUT", 10.0, MUTED);
-        match rep.measured {
-            Some((g, rate, steady)) => {
-                let note = if steady { "" } else { " (still settling)" };
-                kv(p, "Measured", format!("{rate:.1} {}/day{note}", good_name(g).to_lowercase()), if rate > 0.05 { GOOD } else { WARN });
-            }
-            None => kv(p, "Measured", "nothing made yet", WARN),
+        if rep.measured.is_empty() {
+            kv(p, "Measured", "nothing made yet", WARN);
+        } else {
+            let made: Vec<String> = rep.measured.iter().map(|(g, r)| format!("{r:.1} {}", good_name(*g).to_lowercase())).collect();
+            let note = if rep.steady { "" } else { " (still settling)" };
+            kv(p, "Measured", format!("{} /day{note}", made.join(" + ")), GOOD);
         }
         for f in &rep.factors {
             let c = match f.ok {
@@ -1500,8 +1500,8 @@ fn flow_ledger(p: &mut ChildSpawnerCommands, s: &sim::SimState) {
         text(p, "Rates appear after the first whole day.", 10.5, MUTED);
     }
     bold(p, "MADE BY", 9.5, MUTED);
-    let mut makers: Vec<(BuildingId, sim::output::Flow)> = s.output.by.iter().map(|(b, f)| (*b, *f)).filter(|(_, f)| f.per_day > 0.01).collect();
-    makers.sort_by(|a, b| b.1.per_day.total_cmp(&a.1.per_day));
+    let mut makers: Vec<(BuildingId, sim::output::Flow)> = s.output.by.iter().map(|(b, f)| (*b, *f)).filter(|(_, f)| f.sum_per_day() > 0.01).collect();
+    makers.sort_by(|a, b| b.1.sum_per_day().total_cmp(&a.1.sum_per_day()));
     if makers.is_empty() {
         text(p, "No workplace has produced yet. Beavers gathering by order (not from a building) count only in the totals above.", 10.5, MUTED);
     }
@@ -1509,8 +1509,8 @@ fn flow_ledger(p: &mut ChildSpawnerCommands, s: &sim::SimState) {
         let Some(b) = s.buildings.building(id) else { continue };
         p.spawn(row(8.0)).with_children(|r| {
             cell_text(r, 150.0, format!("{} #{}", b.kind.spec().name, id.0), INK, false);
-            let g = f.good.map_or("", good_name);
-            cell_text(r, 120.0, format!("{:.1} {}/day", f.per_day, g.to_lowercase()), GOOD, true);
+            let made: Vec<String> = f.rates().iter().map(|(g, r)| format!("{r:.1} {}", good_name(*g).to_lowercase())).collect();
+            cell_text(r, 200.0, format!("{} /day", made.join(" + ")), GOOD, true);
             button(r, "Show >", HudAction::Focus(b.pos), FAINT, false);
         });
     }

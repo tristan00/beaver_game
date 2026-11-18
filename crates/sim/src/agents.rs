@@ -96,7 +96,13 @@ pub const STUCK_TICKS: u32 = 600;
 #[derive(Clone, Debug, Default)]
 pub struct Agents {
     pub by_id: BTreeMap<BeaverId, Agent>,
+    /// Resources no collector could find a path to, with the day they may be tried again (a tree
+    /// on a cliff top must not hold its collector in place for ever).
+    pub unreachable: BTreeMap<ResourceId, f64>,
 }
+
+/// Days a resource nobody could reach is skipped before collectors try it again.
+pub const UNREACHABLE_RETRY_DAYS: f64 = 10.0;
 
 impl Agents {
     pub fn get(&self, id: BeaverId) -> Option<&Agent> {
@@ -275,7 +281,13 @@ impl Job {
     fn pick(&self, sim: &SimState, from: Cell) -> Option<ResourceId> {
         let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
         let rank = |r: &Resource| self.kinds.iter().position(|&k| k == r.kind).unwrap_or(0);
-        sim.resources.items.iter().filter(|r| self.permits(r)).min_by_key(|r| (rank(r), d(r.cell), r.id)).map(|r| r.id)
+        let reachable = |r: &Resource| sim.agents.unreachable.get(&r.id).is_none_or(|until| sim.time_days >= *until);
+        sim.resources
+            .items
+            .iter()
+            .filter(|r| self.permits(r) && reachable(r))
+            .min_by_key(|r| (rank(r), d(r.cell), r.id))
+            .map(|r| r.id)
     }
 }
 
@@ -753,6 +765,13 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     if !near {
         if ag.path.is_none() {
             ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Beside(res.cell));
+            if ag.path.is_none() {
+                // No way there: skip this resource for a while and pick another next tick.
+                sim.agents.unreachable.insert(target, sim.time_days + UNREACHABLE_RETRY_DAYS);
+                ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
+                note(ag, false);
+                return;
+            }
         }
         let moved = follow(&mut sim.nav, ag, dt);
         note(ag, moved);
@@ -898,6 +917,18 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
 mod tests {
     use super::*;
     use crate::buildings::Status;
+
+    #[test]
+    fn collectors_skip_a_resource_nobody_can_reach_until_the_retry_day() {
+        let mut sim = SimState::new(1);
+        let job = Job { kinds: &[ResourceKind::Tree], area: None, only: None };
+        let first = job.pick(&sim, (64, 64)).expect("trees on the map");
+        sim.agents.unreachable.insert(first, sim.time_days + UNREACHABLE_RETRY_DAYS);
+        let second = job.pick(&sim, (64, 64)).expect("another tree");
+        assert_ne!(first, second, "the unreachable tree is skipped");
+        sim.time_days += UNREACHABLE_RETRY_DAYS;
+        assert_eq!(job.pick(&sim, (64, 64)), Some(first), "and tried again after the retry days");
+    }
     use crate::resources::{FELL_WORK, TREE_BRANCHES, TREE_LOGS};
 
     const DT: f32 = 0.02;

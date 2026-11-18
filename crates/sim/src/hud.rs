@@ -274,9 +274,11 @@ pub struct Factor {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
-    /// Measured output: good, amount per day (smoothed over `output::SMOOTH_DAYS`), and whether
-    /// the building has produced long enough for the rate to be steady.
-    pub measured: Option<(Good, f32, bool)>,
+    /// Measured output per good, largest first (smoothed over `output::SMOOTH_DAYS`); empty when
+    /// nothing has been made yet.
+    pub measured: Vec<(Good, f32)>,
+    /// Whether the building has produced long enough for the rates to be steady.
+    pub steady: bool,
     /// The most the building could make per day with every slot filled and no walking.
     pub ceiling: Option<(Good, f32)>,
     pub factors: Vec<Factor>,
@@ -295,7 +297,9 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     }
     let def = crate::catalogue::def(b.kind);
     let place = sim.work.place(id);
-    let measured = sim.output.of(id).and_then(|f| f.good.map(|g| (g, f.per_day, f.age_days >= crate::output::SMOOTH_DAYS)));
+    let flow = sim.output.of(id);
+    let measured = flow.map(|f| f.rates()).unwrap_or_default();
+    let steady = flow.is_some_and(|f| f.age_days >= crate::output::SMOOTH_DAYS);
     let mut factors = Vec::new();
     let filled = place.map_or(0, |p| p.slots.iter().filter(|s| s.worker.is_some()).count());
     let total = place.map_or(def.slots.len(), |p| p.slots.len());
@@ -333,14 +337,14 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
             None => factors.push(factor("Store for its goods", "none: loads go only to sites", Some(false))),
         }
         let ceiling = Some((good, total as f32 * crate::agents::GATHER_PER_DAY));
-        return Some(Report { measured, ceiling, factors });
+        return Some(Report { measured, steady, ceiling, factors });
     }
     if def.batches_per_day > 0.0 {
         // A workshop: crafters, recipe inputs on hand, room for the output, wheel power.
         factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled == total)));
         let Some(recipe) = b.recipe else {
             factors.push(factor("Recipe", "none chosen", Some(false)));
-            return Some(Report { measured, ceiling: None, factors });
+            return Some(Report { measured, steady, ceiling: None, factors });
         };
         let (inputs, (out, per)) = recipe.batch();
         for &(g, a) in inputs {
@@ -353,7 +357,7 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
         let value = if power > 0.0 { format!("+{:.0}%, shared by workshops", power * 100.0) } else { "none".to_string() };
         factors.push(factor("Water wheel power", value, (power > 0.0).then_some(true)));
         let ceiling = Some((out, def.batches_per_day * per * (1.0 + power) * sim.tech.craft_speed_factor()));
-        return Some(Report { measured, ceiling, factors });
+        return Some(Report { measured, steady, ceiling, factors });
     }
     None
 }
@@ -581,7 +585,7 @@ mod tests {
         s.output.record(id, Good::Logs, 3.0);
         s.output.step(1.0);
         let r = building_report(&s, id).expect("a camp has a report");
-        assert_eq!(r.measured.map(|m| m.0), Some(Good::Logs));
+        assert_eq!(r.measured.first().map(|m| m.0), Some(Good::Logs));
         assert_eq!(r.factors[0], factor("Workers", "1 of 2", Some(false)));
         assert!(r.factors.iter().any(|f| f.label == "Trees in its area"));
         assert!(r.factors.iter().any(|f| f.label.starts_with("Store") && f.ok == Some(false)), "no store yet: {:?}", r.factors);
