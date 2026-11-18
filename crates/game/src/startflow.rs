@@ -8,7 +8,7 @@ use crate::sim_driver::{SimClock, FIXED_DT_DAYS};
 use crate::state::{PlannedDam, Sim};
 use bevy::app::AppExit;
 use bevy::prelude::*;
-use sim::starts::{DamSite, PondWatch};
+use sim::starts::PondWatch;
 use sim::{Command, SimState};
 
 /// Camera distance when the family arrives: close enough to see the four swimmers.
@@ -47,18 +47,6 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     *sel = Selection::None;
 }
 
-/// Opens on the settle choice: the start valley is in view, nobody is founded and time is paused.
-pub fn begin_choice(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
-    flow.phase = Phase::Scouting;
-    flow.scouts.clear();
-    flow.fog.reveal_valley(&sim.world, sim.world.start);
-    flow.focus = None;
-    crate::ui::settle::frame_valley(sim, orbit);
-    *clock = SimClock::default();
-    clock.paused = true;
-    *sel = Selection::None;
-}
-
 pub struct StartPlugin;
 
 impl Plugin for StartPlugin {
@@ -84,12 +72,7 @@ fn begin_new_game(
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
 ) {
-    // The sim opens with no colony. The player picks the settling cell (ui/settle.rs); scripted
-    // scenes that need a family settle the designed camp themselves.
-    if cli.chooses_settle() {
-        begin_choice(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
-        return;
-    }
+    // The sim opens with no colony; the designed camp is settled for the player.
     if let Some(dam) = planned.0.as_ref().filter(|_| !sim.0.colony.is_founded()) {
         if let Err(e) = sim.0.apply(Command::Settle { cell: dam.camp }) {
             eprintln!("error: cannot settle the designed camp {:?}: {e}", dam.camp);
