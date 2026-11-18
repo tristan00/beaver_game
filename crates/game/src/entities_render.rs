@@ -66,6 +66,7 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_beavers,
                     sim_sync::sync_sim_resources,
                     sim_sync::sync_sim_buildings,
+                    sim_sync::sync_sim_barges,
                     sync_stub_beavers,
                     attach_rigs,
                     animate_beavers,
@@ -784,7 +785,7 @@ mod tests {
         check("stump", &models::stump_mesh());
         check("snag", &models::snag_mesh());
         check("wheel", &models::wheel_mesh());
-        for kind in [StructKind::Lodge, StructKind::Dam, StructKind::Canal, StructKind::Burrow, StructKind::Workshop, StructKind::WaterWheel, StructKind::Dock, StructKind::Barge] {
+        for kind in [StructKind::Lodge, StructKind::Dam, StructKind::Canal, StructKind::Burrow, StructKind::Workshop, StructKind::WaterWheel, StructKind::Dock, StructKind::Barge, StructKind::BargeEmpty] {
             for stage in 0..4 {
                 check("struct", &models::struct_mesh(kind, 4.0, stage));
             }

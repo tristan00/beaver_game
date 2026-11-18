@@ -13,7 +13,7 @@ use crate::icons::Icon;
 use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use sim::buildings::{BuildingId, BuildingKind, Good};
+use sim::buildings::{BargeId, BuildingId, BuildingKind, Good};
 use sim::colony::{BeaverId, LodgeId};
 use sim::resources::ResourceId;
 
@@ -24,6 +24,7 @@ pub enum Thing {
     Building(BuildingId),
     Resource(ResourceId),
     Lodge(LodgeId),
+    Barge(BargeId),
     Cell(Cell),
 }
 
@@ -35,6 +36,7 @@ impl Thing {
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
             Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
+            Thing::Barge(b) => 6 << 60 | b.0,
         }
     }
     pub fn selection(self) -> Selection {
@@ -43,6 +45,7 @@ impl Thing {
             Thing::Building(b) => Selection::Site(b),
             Thing::Resource(r) => Selection::Tree(r),
             Thing::Lodge(l) => Selection::Lodge(l),
+            Thing::Barge(b) => Selection::Barge(b),
             Thing::Cell(c) => Selection::Cell(c),
         }
     }
@@ -87,6 +90,10 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     let near = s.colony.beavers.iter().filter_map(|b| beaver_at(s, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.9 * 0.9).min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
+    }
+    let barge = s.buildings.barges.iter().map(|b| (b.id, d2((b.cell.0 as f32 + 0.5, b.cell.1 as f32 + 0.5)))).filter(|x| x.1 < 1.1 * 1.1).min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((id, _)) = barge {
+        return Thing::Barge(id);
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
@@ -160,6 +167,16 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             tip
         }
+        Thing::Barge(id) => {
+            let Some(b) = s.buildings.barge(id) else { return Tip::default() };
+            let (icon, col, name) = super::inspect::barge_face(b);
+            let mut tip = Tip::titled(Some((Icon::Barge, INK)), "Barge").with_value(super::inspect::barge_number(s, id).to_string());
+            tip.push(TipLine::new(name, "").icon(icon, col));
+            for (g, a) in super::inspect::aboard(b) {
+                tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+            }
+            tip
+        }
         Thing::Lodge(id) => {
             let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
             Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
@@ -229,7 +246,7 @@ pub fn world_hover(
 // ───────────────────────────── markers (W6) ─────────────────────────────
 
 /// World-anchored icons over things that need attention, positioned on screen each frame.
-pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState) -> Vec<VNode> {
+pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection) -> Vec<VNode> {
     let mut out = Vec::new();
     let project = |mut w: Vec3, lift: f32| -> Option<Vec2> {
         w.y += lift;
@@ -294,6 +311,37 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
+    // With a barge selected: each dock's number over it (the route picker names docks by number),
+    // and the dam a refused route needs a lock on.
+    let mut labels = Vec::new();
+    if let Selection::Barge(bid) = sel {
+        for (i, d) in super::inspect::docks(s).iter().enumerate() {
+            if let Some(b) = s.buildings.building(*d) {
+                if let Some(p) = place(building_centre(b), 1.6) {
+                    let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 22.0), top: Val::Px(p.y - 26.0), padding: UiRect::axes(Val::Px(4.0), Val::Px(2.0)), column_gap: Val::Px(3.0), border_radius: BorderRadius::all(Val::Px(5.0)), ..row_node(3.0) });
+                    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.85);
+                    let mut ui = Ui::default();
+                    ui.icon(Icon::Dock, 16.0, INK);
+                    ui.bold(format!("{}", i + 1), 13.0, INK);
+                    v.children = ui.nodes;
+                    labels.push(v);
+                }
+            }
+        }
+        if let Some(c) = hud.route_err.as_ref().filter(|e| e.0 == bid).and_then(|e| blocking_dam(&e.1)) {
+            if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.2) {
+                push(p, &[(Icon::Lock, BAD), (Icon::Cross, BAD)]);
+            }
+        }
+    }
+    // The dam tool: where water would walk round the drawn dam.
+    if hud.tool == Tool::Dam {
+        if let Some(c) = hud.dam_preview().and_then(|p| p.spill_at) {
+            if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.4) {
+                push(p, &[(Icon::Flood, BAD), (Icon::Warn, BAD)]);
+            }
+        }
+    }
     // The founding supply pile, until a store stands.
     if let Some(c) = s.work.supplies {
         if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
@@ -316,6 +364,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
+    out.extend(labels);
     out
 }
 
@@ -342,6 +391,11 @@ fn store_takes(kind: BuildingKind, g: Good) -> bool {
         BuildingKind::FoodCache => g == Good::Food,
         _ => false,
     }
+}
+
+/// The water surface over a cell (terrain plus depth), world height.
+fn water_y(s: &sim::SimState, c: Cell) -> f32 {
+    s.height.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0)
 }
 
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
@@ -516,6 +570,20 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
+    // The selected barge: its cell, and the docks of its route (or the draft being picked).
+    if let Selection::Barge(id) = *sel {
+        if let Some(b) = s.buildings.barge(id) {
+            cell_outline(&mut g, h, b.cell, Some(water_y(s, b.cell)), SELECT);
+            let d = super::RouteDraft::of(s, &hud, id);
+            for (dock, col) in [(d.from, GOOD), (d.to, ACCENT)] {
+                if let Some(db) = dock.and_then(|x| s.buildings.building(x)) {
+                    for c in db.cells() {
+                        cell_outline(&mut g, h, c, None, col);
+                    }
+                }
+            }
+        }
+    }
     // A work area being drawn.
     if let (Some(id), Some(a), Some(b)) = (hud.area_edit, hud.area_from, hover.0) {
         area_outline(&mut g, h, super::drawn_area(s, id, a, b), ACCENT);
@@ -564,6 +632,23 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(pv) = hud.dam_preview().filter(|_| hud.tool == Tool::Dam) {
                 for c in &pv.flooded {
                     cell_outline(&mut g, h, *c, Some(pv.level), WATER);
+                }
+                // Where water gets round the dam below its crest: a red post with a ring at the
+                // pond level (shape and colour), so the line can be extended over it.
+                if let Some(c) = pv.spill_at {
+                    let base = cell_world(h, (c.0 as f32, c.1 as f32));
+                    let top = Vec3::new(base.x, pv.crest.max(base.y) + 2.0, base.z);
+                    g.line(base, top, BAD);
+                    for r in [0.45, 0.75] {
+                        let n = 16;
+                        for i in 0..n {
+                            let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
+                            let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
+                            let y = pv.level.max(base.y) + 0.1;
+                            g.line(Vec3::new(base.x + r * a0.cos(), y, base.z + r * a0.sin()), Vec3::new(base.x + r * a1.cos(), y, base.z + r * a1.sin()), BAD);
+                        }
+                    }
+                    cell_outline(&mut g, h, c, None, BAD);
                 }
             }
             let ok = match hud.tool {

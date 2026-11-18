@@ -233,10 +233,30 @@ pub fn place_error(e: &PlaceError) -> String {
     }
 }
 
+/// The dam a barge route is blocked by, from the sim's "a dam at x,y is in the way" refusal.
+pub fn blocking_dam(m: &str) -> Option<(usize, usize)> {
+    let rest = m.split("a dam at ").nth(1)?;
+    let xy = rest.split_whitespace().next()?;
+    let (x, y) = xy.split_once(',')?;
+    Some((x.parse().ok()?, y.trim_end_matches([',', ':']).parse().ok()?))
+}
+
 /// The ≤ 2-word form of a sim command error (Appendix A7). Unknown messages fall back to "Refused".
 pub fn sim_error(m: &str) -> String {
     let l = m.to_lowercase();
-    let table: [(&str, &str); 15] = [
+    let table: &[(&str, &str)] = &[
+        // barge routes (`shipping::set_route`) and locks
+        ("in the way", "Needs lock"),
+        ("two different docks", "Same dock"),
+        ("at least one good", "No goods"),
+        ("no water joins", "No water"),
+        ("cannot reach the first dock", "Unreachable"),
+        ("deep enough", "Too shallow"),
+        ("not a finished dock", "Needs dock"),
+        ("lock is built on a dam", "Needs dam"),
+        // growing dams (`SimState::order_dam_heights`)
+        ("is too high", "Too high"),
+        ("already that high", "Built"),
         ("dam height", "Crest 0.5-3"),
         ("not a valid dam line", "No pond"),
         ("kit", "Too young"),
@@ -272,6 +292,15 @@ mod tests {
     }
 
     #[test]
+    fn a_route_refusal_names_the_dam_that_needs_a_lock() {
+        let m = "invalid command: a dam at 30,10 is in the way: build a lock on it";
+        assert_eq!(sim_error(m), "Needs lock");
+        assert_eq!(blocking_dam(m), Some((30, 10)));
+        assert_eq!(blocking_dam("invalid command: no water joins the two docks"), None);
+        assert_eq!(sim_error("invalid command: no water joins the two docks"), "No water");
+    }
+
+    #[test]
     fn errors_are_at_most_two_words() {
         let all = [
             PlaceError::OutOfBounds,
@@ -283,6 +312,9 @@ mod tests {
             PlaceError::Sim("invalid command: not a valid dam line (cells empty)".into()),
             PlaceError::Sim("invalid command: beaver 3 is a kit and cannot work".into()),
             PlaceError::Sim("something nobody mapped".into()),
+            PlaceError::NeedsDam,
+            PlaceError::Sim("invalid command: a dam at 30,10 is in the way: build a lock on it".into()),
+            PlaceError::Sim("invalid command: a route needs two different docks".into()),
         ];
         for e in all {
             let s = place_error(&e);

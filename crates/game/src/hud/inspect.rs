@@ -6,7 +6,8 @@ use super::HudAction;
 use crate::flow::Selection;
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::{BuildingId, BuildingKind, Good};
+use sim::buildings::{BargeId, BargeState, BuildingId, BuildingKind, Good};
+use sim::shipping::Leg;
 use sim::colony::{BeaverId, Job};
 
 fn shell(f: impl FnOnce(&mut Ui)) -> VNode {
@@ -46,8 +47,193 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
         Selection::Cell(cell) => Some(cell_panel(c, cell)),
         Selection::Lodge(id) => Some(lodge(c, id)),
         Selection::Building(cell) => super::building_at(c.s, cell).map(|id| building(c, id)),
+        Selection::Barge(id) => Some(barge(c, id)),
         Selection::None => None,
     }
+}
+
+// ───────────────────────────── barges and docks ─────────────────────────────
+
+/// Finished docks in a fixed order (by id): a dock's number is its place here, plus one.
+pub fn docks(s: &sim::SimState) -> Vec<BuildingId> {
+    let mut v: Vec<BuildingId> = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete()).map(|b| b.id).collect();
+    v.sort_by_key(|b| b.0);
+    v
+}
+
+pub fn dock_number(s: &sim::SimState, id: BuildingId) -> usize {
+    docks(s).iter().position(|d| *d == id).map_or(0, |i| i + 1)
+}
+
+/// A barge's number: its place in the sim's list, plus one.
+pub fn barge_number(s: &sim::SimState, id: BargeId) -> usize {
+    s.buildings.barges.iter().position(|b| b.id == id).map_or(0, |i| i + 1)
+}
+
+/// Goods aboard: the route hold, or a single trip's cargo.
+pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
+    let mut v: Vec<(Good, f32)> = b.hold.iter().copied().filter(|h| h.1 > 0.05).collect();
+    if let Some(c) = b.cargo.filter(|c| c.1 > 0.05) {
+        v.push(c);
+    }
+    v
+}
+
+/// What a barge is doing, as an icon, its colour and a tooltip name.
+pub fn barge_face(b: &sim::buildings::Barge) -> (Icon, Color, &'static str) {
+    if b.state == BargeState::Stranded {
+        return (Icon::Blocked, BAD, "Stranded");
+    }
+    if b.service.is_none() {
+        return if b.state == BargeState::Sailing { (Icon::Play, INK, "Sailing") } else { (Icon::Idle, MUTED, "No route") };
+    }
+    match (b.leg, b.state) {
+        (Leg::Loading, _) => (Icon::Up, GOOD, "Loading"),
+        (Leg::Unloading, _) => (Icon::Down, GOOD, "Unloading"),
+        (Leg::ToLoad, BargeState::Sailing) => (Icon::Play, INK, "Sailing to load"),
+        (Leg::ToUnload, BargeState::Sailing) => (Icon::Play, GOOD, "Sailing to unload"),
+        _ => (Icon::Hourglass, WARN, "Waiting"),
+    }
+}
+
+/// A dock as a small button: its icon and number; selecting it is the route picker's job.
+fn dock_chip(u: &mut Ui, s: &sim::SimState, dock: BuildingId, action: HudAction, on: bool, tip: Tip) {
+    u.icon_label_button(Icon::Dock, format!("{}", dock_number(s, dock)), 13.0, action, FAINT, on).tip(tip);
+}
+
+fn barge(c: &Ctx, id: BargeId) -> VNode {
+    let s = c.s;
+    let Some(b) = s.buildings.barge(id) else {
+        return shell(|u| {
+            u.text("-", 12.0, MUTED);
+        });
+    };
+    shell(|u| {
+        header(c, Selection::Barge(id), u, Icon::Barge, format!("Barge {}", barge_number(s, id)), None, |r| {
+            r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.cell), FAINT, false).tip(Tip::name("Show"));
+        });
+        // What it is doing, what is aboard, and what it has delivered.
+        let held = aboard(b);
+        let total: f32 = held.iter().map(|h| h.1).sum();
+        u.row(8.0, |r| {
+            let (icon, col, name) = barge_face(b);
+            r.icon(icon, 16.0, col).tip(Tip::name(name));
+            for (g, a) in &held {
+                r.row(2.0, |x| {
+                    x.icon(good_icon(*g), 15.0, good_color(*g));
+                    x.bold(num(*a), 12.5, INK);
+                })
+                .tip(Tip::name(good_name(*g)));
+            }
+            r.spacer();
+            r.row(3.0, |x| {
+                x.icon(Icon::Haul, 14.0, MUTED);
+                x.bold(format!("{}/{}", total.round() as i64, sim::shipping::BARGE_CAPACITY.round() as i64), 12.0, INK);
+            })
+            .tip(Tip::name("Aboard"));
+            r.row(3.0, |x| {
+                x.icon(Icon::Check, 12.0, GOOD);
+                x.bold(num(b.carried), 12.0, INK);
+            })
+            .tip(Tip::name("Delivered"));
+        });
+        // The route as it stands: loading dock ▶ unloading dock, and the goods it carries.
+        u.row(5.0, |r| match &b.service {
+            Some(svc) => {
+                r.icon(Icon::Up, 11.0, GOOD);
+                dock_chip(r, s, svc.from, HudAction::SelectBuilding(svc.from), b.leg == Leg::Loading || b.leg == Leg::ToLoad, Tip::name("Loads here"));
+                r.icon(Icon::Play, 12.0, MUTED);
+                r.icon(Icon::Down, 11.0, GOOD);
+                dock_chip(r, s, svc.to, HudAction::SelectBuilding(svc.to), b.leg == Leg::Unloading || b.leg == Leg::ToUnload, Tip::name("Unloads here"));
+                r.spacer();
+                for g in &svc.goods {
+                    r.icon(good_icon(*g), 15.0, good_color(*g)).tip(Tip::name(good_name(*g)));
+                }
+            }
+            None => {
+                r.icon(Icon::Idle, 14.0, MUTED);
+                r.bold("-", 12.0, MUTED);
+            }
+        })
+        .tip(Tip::name("Route"));
+        // Picking a route: the loading dock, the unloading dock, the goods, then ✓.
+        u.rule();
+        let d = super::RouteDraft::of(s, c.hud, id);
+        let all = docks(s);
+        for (icon, pick, act, name) in [
+            (Icon::Up, d.from, HudAction::RouteFrom as fn(BargeId, BuildingId) -> HudAction, "Load at"),
+            (Icon::Down, d.to, HudAction::RouteTo as fn(BargeId, BuildingId) -> HudAction, "Unload at"),
+        ] {
+            u.row(4.0, |r| {
+                r.icon(icon, 11.0, GOOD).tip(Tip::name(name));
+                if all.is_empty() {
+                    r.icon(Icon::Dock, 14.0, MUTED);
+                    r.icon(Icon::Cross, 11.0, BAD);
+                }
+                for dock in &all {
+                    dock_chip(r, s, *dock, act(id, *dock), pick == Some(*dock), Tip::name(name).with_value(format!("{}", dock_number(s, *dock))));
+                }
+            });
+        }
+        u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(3.0), row_gap: Val::Px(3.0), ..default() }, |r| {
+            for g in Good::ALL {
+                let on = d.goods.contains(&g);
+                r.icon_button(good_icon(g), 15.0, HudAction::RouteGood(id, g), FAINT, on).tip(Tip::name(good_name(g)));
+            }
+        });
+        u.row(6.0, |r| {
+            // The last refusal: why, and for a dam in the way, where (a lock goes there).
+            if let Some((_, m)) = c.hud.route_err.as_ref().filter(|e| e.0 == id) {
+                r.icon(Icon::Cross, 12.0, BAD);
+                match blocking_dam(m) {
+                    Some(cell) => {
+                        r.icon(Icon::Lock, 15.0, INK);
+                        r.bold(format!("{},{}", cell.0, cell.1), 12.0, INK);
+                        r.icon_button(Icon::Focus, 11.0, HudAction::Focus(cell), FAINT, false).tip(Tip::name("Dam in the way").line("Build a lock", ""));
+                    }
+                    None => {
+                        r.bold(sim_error(m), 12.0, INK);
+                    }
+                }
+            }
+            r.spacer();
+            if b.service.is_some() {
+                r.icon_button(Icon::Clear, 13.0, HudAction::ClearRoute(id), FAINT, false).tip(Tip::name("Clear route"));
+            }
+            let changed = d.from != b.service.as_ref().map(|v| v.from) || d.to != b.service.as_ref().map(|v| v.to) || Some(&d.goods) != b.service.as_ref().map(|v| &v.goods);
+            let fill = if d.ready() && changed { ACCENT } else if d.ready() { FAINT } else { Color::NONE };
+            r.icon_button(Icon::Check, 15.0, HudAction::SetRoute(id), fill, false).tip(Tip::name("Set route"));
+        });
+    })
+}
+
+/// A dam's crest (height above the ground) and the button that raises it one step.
+fn dam_row(s: &sim::SimState, u: &mut Ui, cell: crate::flow::Cell) {
+    let line = crate::build_logic::dam_line_at(s, cell);
+    if line.is_empty() {
+        return;
+    }
+    let now = crate::build_logic::dam_line_height(s, &line);
+    let ground = line.iter().filter_map(|&(x, y)| s.height.get(x, y).copied()).fold(f32::MAX, f32::min);
+    let crest = line.iter().filter_map(|&(x, y)| Some(s.height.get(x, y)? + s.water.dam_height.get(x, y)?)).fold(f32::MAX, f32::min);
+    let _ = ground;
+    u.row(6.0, |r| {
+        r.icon(Icon::Crest, 15.0, MUTED);
+        r.bold(num(now), 13.0, INK).tip(Tip::name("Height").line("Crest", num(crest)).line("Cells", format!("{}", line.len())));
+        r.spacer();
+        match crate::build_logic::raise_order(s, cell) {
+            Some(crate::build_logic::BuildOrder::Dam { cells, height }) => {
+                let mut tip = Tip::name("Raise").with_value(format!("+{}", num(height - now)));
+                for (g, a) in sim::dam_preview::cost_for(s, &cells, &vec![height; cells.len()]).0 {
+                    tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+                }
+                r.icon_label_button(Icon::Plus, num(height), 12.0, HudAction::RaiseDam(cell), ACCENT, false).tip(tip);
+            }
+            _ => {
+                r.bold(format!("Max {}", num(sim::dam_preview::MAX_DAM_HEIGHT)), 11.5, MUTED);
+            }
+        }
+    });
 }
 
 // ───────────────────────────── buildings and sites ─────────────────────────────
@@ -210,8 +396,27 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             u.rule();
             forestry_lodge(s, id, u);
         }
+        // A finished dam: its height and "raise".
+        if let Some(cell) = crate::build_logic::dam_cell_of(s, id) {
+            u.rule();
+            dam_row(s, u, cell);
+        }
+        // A dock: its number (the route picker names docks by it) and the barges that serve it.
+        if b.kind == BuildingKind::Dock && b.is_complete() {
+            u.rule();
+            u.row(6.0, |r| {
+                r.icon(Icon::Dock, 14.0, MUTED);
+                r.bold(format!("{}", dock_number(s, id)), 13.0, INK);
+                r.spacer();
+                for bg in s.buildings.barges.iter().filter(|bg| bg.at_dock == Some(id) || bg.service.as_ref().is_some_and(|v| v.from == id || v.to == id)) {
+                    let (icon, col, name) = barge_face(bg);
+                    r.icon_label_button(Icon::Barge, format!("{}", barge_number(s, bg.id)), 13.0, HudAction::SelectBarge(bg.id), FAINT, false).tip(Tip::name("Barge").with_value(format!("{}", barge_number(s, bg.id))).row(TipLine::new(name, "").icon(icon, col)));
+                }
+            })
+            .tip(Tip::name("Barges"));
+        }
         // Stores: stock and room per good.
-        if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) && b.is_complete() {
+        if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache | BuildingKind::Dock) && b.is_complete() {
             u.rule();
             u.row(10.0, |r| {
                 for g in Good::ALL {
@@ -544,6 +749,10 @@ fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
                 r.bold(v, 12.5, INK);
             })
             .tip(Tip::name(name));
+        }
+        if c.s.water.has_dam(cell.0, cell.1) {
+            u.rule();
+            dam_row(c.s, u, cell);
         }
     })
 }

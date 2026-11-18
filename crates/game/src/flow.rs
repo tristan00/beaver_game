@@ -74,6 +74,8 @@ pub enum Selection {
     Tree(sim::resources::ResourceId),
     /// A building or construction site (opens its panel).
     Site(sim::buildings::BuildingId),
+    /// A barge on the water (opens its panel and route).
+    Barge(sim::buildings::BargeId),
 }
 
 // ───────────────────────────── picking math ─────────────────────────────

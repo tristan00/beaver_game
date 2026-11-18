@@ -213,3 +213,23 @@ fn ripples_only_on_beavers_over_water() {
     assert!(!shows_ripple(Pose::Walk, true));
     assert!(shows_ripple(Pose::Swim, true));
 }
+
+/// A barge glides from where it is drawn to its new cell over about as long as the last cell took,
+/// facing the way it goes, and never overshoots.
+#[test]
+fn a_barge_glides_between_cells_and_faces_its_way() {
+    let a = Vec3::new(0.0, 1.0, 0.0);
+    let mut v = BargeVis { id: 1, cell: (0, 0), from: a, to: a, t0: 0.0, dur: 0.0, yaw: 0.0, loaded: false };
+    assert_eq!(glide(&v, 5.0), a, "a still barge stays put");
+    // One cell east, 0.05 days after the last move.
+    retarget(&mut v, (1, 0), Vec3::new(1.0, 1.0, 0.0), 0.05);
+    assert!((v.dur - 0.05).abs() < 1e-4, "{}", v.dur);
+    assert_eq!(glide(&v, 0.05), a);
+    assert!((glide(&v, 0.075).x - 0.5).abs() < 1e-3, "halfway");
+    assert_eq!(glide(&v, 1.0), Vec3::new(1.0, 1.0, 0.0), "arrives and stops");
+    assert!((v.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "bow (+Z) turned to +X: {}", v.yaw);
+    // A new cell mid-glide starts from where the barge is drawn, not from the old cell.
+    let mut w = v.clone();
+    retarget(&mut w, (1, 1), Vec3::new(1.0, 1.0, 1.0), 0.075);
+    assert!((w.from.x - 0.5).abs() < 1e-3);
+}

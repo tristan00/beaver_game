@@ -694,7 +694,7 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
 /// Keycaps for the active tool: place, cancel, undo (and crest, confirm for line tools).
 fn key_hints(u: &mut Ui, tool: Tool) {
     let pairs: Vec<(Icon, &str)> = match tool {
-        Tool::Dam => vec![(Icon::Check, "Enter"), (Icon::Crest, "[ ]"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
+        Tool::Dam => vec![(Icon::Check, "Enter"), (Icon::Crest, "[ ]"), (Icon::Flood, "G"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
         Tool::Canal => vec![(Icon::Check, "Enter"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
         _ => vec![(Icon::Check, "LMB"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
     };
@@ -856,13 +856,32 @@ pub fn line_card(c: &Ctx) -> VNode {
             r.icon_button(Icon::Cross, 12.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
         });
         if is_dam {
+            let on_dam = hud.line.iter().filter(|&&(x, y)| s.water.has_dam(x, y)).count();
             u.row(6.0, |r| {
                 r.icon(Icon::Crest, 16.0, MUTED);
-                r.icon_button(Icon::Minus, 11.0, HudAction::DamHeight(-0.25), FAINT, false).tip(Tip::name("Lower").key("["));
-                r.bold(num(hud.dam_height), 14.0, INK).style(|nn| nn.min_width = Val::Px(30.0));
-                r.icon_button(Icon::Plus, 11.0, HudAction::DamHeight(0.25), FAINT, false).tip(Tip::name("Raise").key("]"));
+                let low = hud.dam_height <= MIN_DAM_HEIGHT + 1e-3 && hud.dam_crest.is_none();
+                let high = hud.dam_height >= MAX_DAM_HEIGHT - 1e-3 && hud.dam_crest.is_none();
+                r.icon_button(Icon::Minus, 11.0, HudAction::DamHeight(-build_logic::DAM_STEP), if low { Color::NONE } else { FAINT }, false).tip(Tip::name("Lower").key("["));
+                match hud.dam_crest {
+                    // Extended to hold: every cell is built up to one crest (a world height).
+                    Some(crest) => {
+                        r.bold(num(crest), 14.0, ACCENT).style(|nn| nn.min_width = Val::Px(30.0)).tip(Tip::name("Crest").with_value(num(crest)));
+                    }
+                    None => {
+                        r.bold(num(hud.dam_height), 14.0, INK).style(|nn| nn.min_width = Val::Px(30.0));
+                    }
+                }
+                r.icon_button(Icon::Plus, 11.0, HudAction::DamHeight(build_logic::DAM_STEP), if high { Color::NONE } else { FAINT }, false).tip(Tip::name("Raise").key("]"));
+                if on_dam > 0 {
+                    r.spacer();
+                    r.row(2.0, |x| {
+                        x.icon(Icon::Dam, 14.0, MUTED);
+                        x.bold(format!("{on_dam}"), 12.0, MUTED);
+                    })
+                    .tip(Tip::name("Raises existing dam").line("Cells", format!("{on_dam}")));
+                }
             })
-            .tip(Tip::name(format!("Crest {}-{}", num(MIN_DAM_HEIGHT), num(MAX_DAM_HEIGHT))).key("Ctrl+wheel"));
+            .tip(Tip::name(format!("Height {}-{}", num(MIN_DAM_HEIGHT), num(MAX_DAM_HEIGHT))).line("Step", num(build_logic::DAM_STEP)).key("Ctrl+wheel"));
         }
         if n == 0 {
             return;
@@ -885,16 +904,33 @@ pub fn line_card(c: &Ctx) -> VNode {
                     card_row(u, "Rise", format!("+{}", num(r.rise)), WATER, Tip::name("Water rises").line("Level", num(r.level)));
                     card_row(u, "Flood", format!("{new}"), INK, Tip::name("Newly flooded").line("Under water", format!("{}", r.flooded_cells)));
                     card_row(u, "Trees", format!("{}", r.flooded_trees), if r.flooded_trees > 0 { WARN } else { INK }, Tip::name("Trees drowned"));
+                    // Only the added height costs (`dam_preview::cost_for`); above one unit, mud.
+                    let cost = build_logic::line_cost(s, &hud.line, hud.dam_height, hud.dam_crest);
                     u.row(8.0, |x| {
                         x.spacer();
-                        for (g, a) in &r.cost {
+                        if cost.is_empty() {
+                            x.icon(Icon::Check, 13.0, MUTED);
+                        }
+                        for (g, a) in &cost {
                             x.row(2.0, |y| {
                                 y.icon(good_icon(*g), 14.0, good_color(*g));
                                 y.bold(format!("{}", a.round() as i64), 13.0, INK);
                             });
                         }
                     })
-                    .tip(Tip::name("Materials"));
+                    .tip(Tip::name("Materials").line("Added height only", ""));
+                    // Water walks round the dam below its crest: the pond stops at that saddle.
+                    if let Some(at) = pv.spill_at {
+                        u.row(6.0, |x| {
+                            x.icon(Icon::Flood, 15.0, BAD);
+                            x.text("Spill", 12.0, MUTED);
+                            x.bold(format!("{},{}", at.0, at.1), 12.0, BAD);
+                            x.spacer();
+                            x.icon_button(Icon::Focus, 11.0, HudAction::Focus(at), FAINT, false).tip(Tip::name("Show"));
+                            x.icon_label_button(Icon::Dam, "+", 13.0, HudAction::ExtendDam, ACCENT, false).tip(Tip::name("Extend to hold").key("G"));
+                        })
+                        .tip(Tip::name("Water escapes here").line("Pond stops at", num(pv.level)));
+                    }
                     card_row(u, "Push", num(r.pressure), INK, Tip::name("River push on the dam").line("Per day", num(r.pressure)));
                     let fill = if r.fill_days.is_finite() { days(r.fill_days.ceil()) } else { "-".into() };
                     card_row(u, "Fill", fill, INK, Tip::name("Days to fill").line("No inflow", if r.fill_days.is_finite() { "" } else { "-" }));

@@ -396,7 +396,8 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Workshop => workshop(&mut mb, stage),
         StructKind::WaterWheel => wheel_frame(&mut mb, stage),
         StructKind::Dock => dock(&mut mb, len, stage),
-        StructKind::Barge => barge(&mut mb, len, stage),
+        StructKind::Barge => barge(&mut mb, len, stage, true),
+        StructKind::BargeEmpty => barge(&mut mb, len, 3, false),
     }
     mb.build()
 }
@@ -730,7 +731,7 @@ fn dock(mb: &mut Mb, len: f32, stage: u8) {
     }
 }
 
-fn barge(mb: &mut Mb, len: f32, stage: u8) {
+fn barge(mb: &mut Mb, len: f32, stage: u8, cargo: bool) {
     let hl = len * 0.5;
     let top = if stage == 3 { 0.7 } else { 0.35 };
     mb.hex(
@@ -748,7 +749,7 @@ fn barge(mb: &mut Mb, len: f32, stage: u8) {
     mb.ellipsoid(v(0.0, 0.1, hl + 0.78), v(0.25, 0.22, 0.2), hex(0x2c2a28)); // bumper
     if stage == 3 {
         // log cargo
-        for (row, cnt, y) in [(0, 3, 0.95), (1, 2, 1.32), (2, 1, 1.68)] {
+        for (row, cnt, y) in [(0, 3, 0.95), (1, 2, 1.32), (2, 1, 1.68)].into_iter().filter(|_| cargo) {
             for i in 0..cnt {
                 let x = (i as f32 - (cnt as f32 - 1.0) * 0.5) * 0.62;
                 let _ = row;

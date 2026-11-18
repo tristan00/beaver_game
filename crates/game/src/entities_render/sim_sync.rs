@@ -341,3 +341,109 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
         st.lodges.insert(l.id.0, e);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Barges
+// ---------------------------------------------------------------------------------------------
+
+/// Length (model units, doubled) of a barge on the water.
+const BARGE_LEN2: u32 = 6;
+
+/// One drawn barge: it glides from where it was drawn to its sim cell over about as long as the
+/// sim took to move it there, so it moves smoothly between cells at any game speed.
+#[derive(Component, Clone, Debug)]
+pub struct BargeVis {
+    pub id: u64,
+    pub cell: (usize, usize),
+    pub from: Vec3,
+    pub to: Vec3,
+    /// Sim day the glide to `to` began, and how many days it takes.
+    pub t0: f64,
+    pub dur: f32,
+    pub yaw: f32,
+    pub loaded: bool,
+}
+
+/// The water surface at the middle of a cell, where a barge floats.
+pub fn barge_point(sim: &sim::SimState, c: (usize, usize)) -> Vec3 {
+    let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
+    let ground = height_at(&sim.height, p.x, p.y);
+    let water = sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    Vec3::new(p.x, ground.max(water), p.y)
+}
+
+/// Where a glide is at sim day `now`.
+pub fn glide(v: &BargeVis, now: f64) -> Vec3 {
+    let t = if v.dur <= 0.0 { 1.0 } else { (((now - v.t0) as f32) / v.dur).clamp(0.0, 1.0) };
+    v.from.lerp(v.to, t)
+}
+
+/// Starts the glide to a barge's new cell from where it is drawn at `now`; the glide lasts as long
+/// as the last cell took (clamped to a sane range), and the barge turns to face the way it goes.
+pub fn retarget(v: &mut BargeVis, cell: (usize, usize), to: Vec3, now: f64) {
+    let here = glide(v, now);
+    v.dur = ((now - v.t0) as f32).clamp(1.0 / sim::shipping::BARGE_SPEED, 0.6);
+    v.from = here;
+    v.to = to;
+    v.t0 = now;
+    v.cell = cell;
+    let d = to - here;
+    if d.x.abs() + d.z.abs() > 1e-3 {
+        v.yaw = d.x.atan2(d.z); // the model's bow is +Z
+    }
+}
+
+fn is_loaded(b: &sim::buildings::Barge) -> bool {
+    b.hold.iter().any(|h| h.1 > 0.05) || b.cargo.is_some_and(|c| c.1 > 0.05)
+}
+
+/// Spawns, moves and removes one model per sim barge (`sim.buildings.barges`), with a load on
+/// deck while anything is aboard.
+pub fn sync_sim_barges(
+    mut commands: Commands,
+    cli: Res<Cli>,
+    sim: Res<Sim>,
+    pending: Res<PendingDays>,
+    models: Option<ResMut<Models>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(Entity, &mut Transform, &mut BargeVis, &mut Mesh3d)>,
+) {
+    let Some(mut models) = models else { return };
+    if super::stub_mode(&cli) {
+        return;
+    }
+    let s = &sim.0;
+    let now = s.time_days + pending.0 as f64;
+    let white = models.white.clone();
+    let mut mesh_for = |loaded: bool| {
+        let kind = if loaded { StructKind::Barge } else { StructKind::BargeEmpty };
+        models.structs.entry((kind, BARGE_LEN2, 3)).or_insert_with(|| meshes.add(models::struct_mesh(kind, BARGE_LEN2 as f32 * 0.5, 3))).clone()
+    };
+    let mut seen = HashSet::new();
+    for (e, mut tr, mut v, mut mesh) in &mut q {
+        let Some(b) = s.buildings.barge(sim::buildings::BargeId(v.id)) else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        seen.insert(v.id);
+        if b.cell != v.cell {
+            retarget(&mut v, b.cell, barge_point(s, b.cell), now);
+        }
+        let loaded = is_loaded(b);
+        if loaded != v.loaded {
+            v.loaded = loaded;
+            mesh.0 = mesh_for(loaded);
+        }
+        tr.translation = glide(&v, now);
+        tr.rotation = tr.rotation.slerp(Quat::from_rotation_y(v.yaw), 0.15);
+    }
+    for b in &s.buildings.barges {
+        if seen.contains(&b.id.0) {
+            continue;
+        }
+        let p = barge_point(s, b.cell);
+        let loaded = is_loaded(b);
+        let v = BargeVis { id: b.id.0, cell: b.cell, from: p, to: p, t0: now, dur: 0.0, yaw: 0.0, loaded };
+        commands.spawn((SimEntity, Mesh3d(mesh_for(loaded)), MeshMaterial3d(white.clone()), Transform::from_translation(p).with_scale(Vec3::splat(WORLD_SCALE)), v));
+    }
+}
