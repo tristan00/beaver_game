@@ -5,7 +5,8 @@
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
 use crate::flow::{Flow, Selection};
-use crate::hud::{self, MenuOpen, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER};
+use crate::hud::{self, MenuOpen, ACCENT, FAINT, GOOD, INK, MUTED, PANEL, TIMBER};
+use crate::icons::{icon_node, Icon, Icons};
 use crate::sim_driver::SimClock;
 use crate::state::{CurrentMap, MapChoice, PlannedDam, Sim};
 use bevy::app::AppExit;
@@ -34,6 +35,8 @@ pub struct Menu {
     pub auto_pause: bool,
     /// Urgent problem titles already seen (auto-pause fires once per new one).
     seen_urgent: Vec<String>,
+    /// A colony-losing action waiting for a tick or a cross (there is no saving yet).
+    confirm: Option<MenuAction>,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -51,6 +54,16 @@ enum MenuAction {
     Quit,
     Scale(f32),
     ToggleAutoPause,
+    /// Ask before Restart, ToTitle or Quit from the pause menu.
+    Ask(Ask),
+    Confirm(bool),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ask {
+    Restart,
+    ToTitle,
+    Quit,
 }
 
 #[derive(Component)]
@@ -85,6 +98,7 @@ impl Plugin for MenuPlugin {
             ui_scale: 1.0,
             auto_pause: true,
             seen_urgent: Vec::new(),
+            confirm: None,
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
@@ -156,7 +170,19 @@ fn menu_actions(
     mut scale: ResMut<UiScale>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let pressed: Vec<MenuAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| *a).collect();
+    let mut pressed: Vec<MenuAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| *a).collect();
+    // The tick carries out the action that asked; the cross forgets it.
+    for a in pressed.iter_mut() {
+        if let MenuAction::Confirm(yes) = *a {
+            let asked = menu.confirm.take();
+            *a = match (yes, asked) {
+                (true, Some(MenuAction::Ask(Ask::Restart))) => MenuAction::Restart,
+                (true, Some(MenuAction::Ask(Ask::ToTitle))) => MenuAction::ToTitle,
+                (true, Some(MenuAction::Ask(Ask::Quit))) => MenuAction::Quit,
+                _ => MenuAction::Confirm(false),
+            };
+        }
+    }
     for a in pressed {
         match a {
             MenuAction::NewGame | MenuAction::Restart => {
@@ -221,6 +247,8 @@ fn menu_actions(
                 scale.0 = s;
             }
             MenuAction::ToggleAutoPause => menu.auto_pause = !menu.auto_pause,
+            MenuAction::Ask(_) => menu.confirm = Some(a),
+            MenuAction::Confirm(_) => {}
         }
     }
 }
@@ -289,6 +317,21 @@ fn button(p: &mut ChildSpawnerCommands, label: &str, action: MenuAction, fill: C
     .with_children(|b| hud::bold(b, label, 14.0, ink));
 }
 
+fn icon_button(p: &mut ChildSpawnerCommands, icons: &Icons, icon: Icon, action: MenuAction, fill: Color) {
+    let ink = if fill == ACCENT { Color::srgb(0.13, 0.09, 0.05) } else { INK };
+    p.spawn((
+        Interaction::default(),
+        FocusPolicy::Block,
+        action,
+        Node { padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)), border: UiRect::all(Val::Px(1.0)), border_radius: BorderRadius::all(Val::Px(5.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+        BackgroundColor(fill),
+        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+    ))
+    .with_children(|b| {
+        b.spawn(icon_node(icons, icon, 18.0, ink));
+    });
+}
+
 fn wide(p: &mut ChildSpawnerCommands, label: &str, action: MenuAction, fill: Color) {
     p.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|c| button(c, label, action, fill, false));
 }
@@ -299,6 +342,7 @@ fn rebuild_menu(
     sim: Res<Sim>,
     current: Res<CurrentMap>,
     clock: Res<SimClock>,
+    icons: Res<Icons>,
     mut root: Query<(Entity, &mut Visibility, &mut BackgroundColor), With<MenuRoot>>,
 ) {
     if !menu.is_changed() {
@@ -326,96 +370,108 @@ fn rebuild_menu(
     commands.entity(e).with_children(|r| {
         r.spawn((card, BackgroundColor(PANEL), border)).with_children(|p| match screen {
             Screen::Start => start_screen(p, &menu, &current.0),
-            Screen::Pause => pause_screen(p, &sim.0, &clock),
-            Screen::Settings => settings_screen(p, &menu),
+            Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
+            Screen::Settings => settings_screen(p, &menu, &icons),
         });
     });
 }
 
 fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) {
+    // Appendix A11: the title, Play, the map (name and size), Settings, Quit. Nothing else.
+    let _ = current;
     hud::bold(p, "Beaver Colony", 30.0, INK);
-    hud::text(p, "Shape the river, feed the family, build a colony.", 13.0, MUTED);
     p.spawn(Node { height: Val::Px(6.0), ..default() });
-    wide(p, "New game", MenuAction::NewGame, ACCENT);
+    wide(p, "Play", MenuAction::NewGame, ACCENT);
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
         button(r, "<", MenuAction::MapPrev, FAINT, false);
         r.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, flex_grow: 1.0, ..default() }).with_children(|c| {
-            hud::bold(c, menu.map.label(), 14.0, INK);
+            let label = menu.map.label();
+            hud::bold(c, label.split(',').next().unwrap_or("").to_string(), 14.0, INK);
             match &menu.map {
                 MapChoice::Real(id) => {
                     if let Some(m) = sim::maps::all().into_iter().find(|m| &m.id == id) {
-                        let ew = if m.lon < 0.0 { "W" } else { "E" };
-                        hud::text(c, format!("Real terrain, {:.1} km across, {:.2} N {:.2} {ew}", m.km(), m.lat, m.lon.abs()), 11.0, MUTED);
+                        hud::text(c, format!("{:.1} km", m.km()), 11.0, MUTED);
                     }
                 }
-                MapChoice::Generated(_) => {
+                MapChoice::Generated(seed) => {
                     c.spawn(hud::row(6.0)).with_children(|r| {
-                        button(r, "seed -", MenuAction::SeedPrev, FAINT, false);
-                        button(r, "seed +", MenuAction::SeedNext, FAINT, false);
+                        button(r, "<", MenuAction::SeedPrev, FAINT, false);
+                        hud::bold(r, format!("{seed}"), 12.0, INK);
+                        button(r, ">", MenuAction::SeedNext, FAINT, false);
                     });
                 }
             }
         });
         button(r, ">", MenuAction::MapNext, FAINT, false);
     });
-    let same = menu.map == *current;
-    hud::text(p, if same { "The valley behind this menu is the map you will play." } else { "New game builds this map (it takes a few seconds)." }, 11.0, MUTED);
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Quit", MenuAction::Quit, FAINT);
-    hud::text(p, "The game starts paused: press Space or 1, 2, 3 to let time run.", 11.0, MUTED);
-    hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM).", 9.5, MUTED);
 }
 
-fn pause_screen(p: &mut ChildSpawnerCommands, s: &sim::SimState, clock: &SimClock) {
-    let d = sim::calendar::Date::at(s.time_days);
-    hud::bold(p, "Paused", 26.0, INK);
-    hud::text(p, format!("{} {}, year {} - {} beavers - seed {}", d.season.name(), d.day, d.year, s.colony.population(), s.seed), 12.0, MUTED);
-    let _ = clock;
+fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &sim::SimState, clock: &SimClock) {
+    let _ = (s, clock);
+    if menu.confirm.is_some() {
+        // There is no saving yet: anything that leaves the colony asks first.
+        p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
+            hud::bold(r, "Lose colony?", 15.0, INK);
+            r.spawn(hud::row(8.0)).with_children(|b| {
+                icon_button(b, icons, Icon::Cross, MenuAction::Confirm(false), FAINT);
+                icon_button(b, icons, Icon::Check, MenuAction::Confirm(true), ACCENT);
+            });
+        });
+        return;
+    }
     wide(p, "Resume", MenuAction::Resume, ACCENT);
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
-    wide(p, "Restart this map", MenuAction::Restart, FAINT);
-    wide(p, "Quit to title", MenuAction::ToTitle, FAINT);
-    wide(p, "Quit game", MenuAction::Quit, FAINT);
-    hud::text(p, "There is no saving yet: restarting or quitting loses this colony.", 11.0, BAD);
-    hud::text(p, "Esc resumes.", 11.0, MUTED);
+    wide(p, "Restart", MenuAction::Ask(Ask::Restart), FAINT);
+    wide(p, "Menu", MenuAction::Ask(Ask::ToTitle), FAINT);
+    wide(p, "Quit", MenuAction::Ask(Ask::Quit), FAINT);
 }
 
-fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu) {
-    hud::bold(p, "Settings", 24.0, INK);
-    hud::bold(p, "INTERFACE SIZE", 10.0, MUTED);
+fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
+    p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
+        hud::bold(r, "Settings", 22.0, INK);
+        icon_button(r, icons, Icon::Back, MenuAction::Back, FAINT);
+    });
+    hud::bold(p, "UI size", 12.0, MUTED);
     p.spawn(hud::row(6.0)).with_children(|r| {
         for s in SCALES {
             let label = format!("{:.0}%", s * 100.0);
             button(r, &label, MenuAction::Scale(s), FAINT, (menu.ui_scale - s).abs() < 0.01);
         }
     });
-    hud::bold(p, "ALERTS", 10.0, MUTED);
+    hud::bold(p, "Alerts", 12.0, MUTED);
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-        hud::text(r, "Pause when an urgent problem appears", 13.0, INK);
-        let (label, c) = if menu.auto_pause { ("On", GOOD) } else { ("Off", MUTED) };
-        r.spawn(hud::row(6.0)).with_children(|r| {
-            hud::bold(r, label, 13.0, c);
-            button(r, "Change", MenuAction::ToggleAutoPause, FAINT, false);
-        });
+        hud::text(r, "Auto-pause", 13.0, INK);
+        button(r, if menu.auto_pause { "On" } else { "Off" }, MenuAction::ToggleAutoPause, if menu.auto_pause { GOOD.with_alpha(0.25) } else { FAINT }, menu.auto_pause);
     });
-    hud::bold(p, "CONTROLS", 10.0, MUTED);
+    hud::bold(p, "Keys", 12.0, MUTED);
     for (k, v) in [
-        ("Select, place, draw a dam", "left click, drag"),
-        ("Stop a tool, close", "right click, Esc"),
-        ("Orbit / pan / rotate / zoom", "right drag / WASD / Q E / wheel"),
-        ("Build categories", "Z X C V B N"),
-        ("Dam crest", "[ ] or Ctrl+wheel, Enter builds"),
-        ("World / Water / Goods view", "F1 F2 F3, hold Alt for water"),
-        ("Flow ledger / search / undo", "L  /  Ctrl+Z"),
-        ("Pause / speed", "Space, 1 2 3"),
-        ("Pause menu", "Esc with nothing open"),
+        ("Select", "LMB"),
+        ("Order", "RMB"),
+        ("Cancel", "RMB / Esc"),
+        ("Orbit", "RMB drag"),
+        ("Pan", "WASD"),
+        ("Rotate", "Q E"),
+        ("Zoom", "Wheel"),
+        ("Build", "Z X C V B N"),
+        ("Crest", "[ ]"),
+        ("Views", "F1 F2 F3 / Alt"),
+        ("Colony", "Tab / J / L"),
+        ("Idle", "I"),
+        ("Search", "/"),
+        ("Undo", "Ctrl+Z"),
+        ("Pause", "Space"),
+        ("Speed", "1 2 3"),
+        ("Menu", "Esc"),
     ] {
         p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
             hud::text(r, k, 11.5, MUTED);
-            hud::text(r, v, 11.5, INK);
+            hud::bold(r, v, 11.5, INK);
         });
     }
-    wide(p, "Back", MenuAction::Back, ACCENT);
+    hud::bold(p, "About", 12.0, MUTED);
+    hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
 }
 
 #[cfg(test)]

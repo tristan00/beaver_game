@@ -1444,6 +1444,120 @@ mod tests {
         assert!(cats.len() <= CAT_KEYS.len(), "{} categories but {} keys", cats.len(), CAT_KEYS.len());
     }
 
+    /// Spec F5: no sentences anywhere, at most two words per label, at most six words in any
+    /// panel outside the Colony screen, at most six per tooltip line. Names (buildings, beavers,
+    /// techs, maps) and key labels do not count.
+    #[test]
+    fn every_panel_keeps_to_the_text_budget() {
+        let (mut s, dam) = sim::starts::new_game_with_dam(1).expect("start");
+        s.apply(sim::Command::Settle { cell: dam.camp }).expect("settle");
+        for _ in 0..(6.0 / crate::sim_driver::FIXED_DT_DAYS) as usize {
+            let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
+        }
+        let mut names: Vec<String> = BuildingKind::ALL.iter().map(|k| k.spec().name.to_string()).collect();
+        names.extend(s.colony.beavers.iter().map(|b| b.name.clone()));
+        names.extend(sim::tech::TECHS.iter().map(|t| t.name.to_string()));
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        let keys = ["Ctrl+Z", "Ctrl+wheel", "Enter", "Esc", "Space", "Tab", "LMB", "RMB", "Alt", "[ ]"];
+        let count = |t: &str| -> usize {
+            let mut t = t.to_string();
+            for n in &names {
+                t = t.replace(n.as_str(), "");
+            }
+            if keys.contains(&t.trim()) {
+                return 0;
+            }
+            t.split_whitespace().filter(|w| w.chars().any(|c| c.is_alphabetic()) && w.chars().filter(|c| c.is_alphabetic()).count() > 1).count()
+        };
+        let clock = SimClock::default();
+        let log = std::collections::VecDeque::new();
+        let problems = sim::hud::problems(&s);
+        let first_building = s.buildings.buildings.first().map(|b| b.id);
+        let beaver = s.colony.beavers.first().map(|b| b.id).unwrap();
+        let mut states: Vec<(String, HudState, Selection)> = vec![("rest".into(), HudState::default(), Selection::None)];
+        let mut dam_state = HudState { line: dam.cells.clone(), ..default() };
+        dam_state.tool = Tool::Dam;
+        dam_state.preview = Some((dam.cells.clone(), dam_state.dam_height, build_logic::dam_preview(&s, &dam.cells, dam_state.dam_height)));
+        states.push(("dam".into(), dam_state, Selection::None));
+        states.push(("canal".into(), HudState { tool: Tool::Canal, line: dam.cells.clone(), ..default() }, Selection::None));
+        states.push(("place".into(), HudState { tool: Tool::Building(BuildingKind::Warehouse), ..default() }, Selection::None));
+        states.push(("beaver".into(), HudState::default(), Selection::Beaver(beaver)));
+        states.push(("cell".into(), HudState::default(), Selection::Cell(dam.camp)));
+        if let Some(b) = first_building {
+            states.push(("building".into(), HudState { details_open: true, ..default() }, Selection::Site(b)));
+        }
+        states.push(("items".into(), HudState { open_cat: Some(0), ..default() }, Selection::None));
+        states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
+        let mut failures = Vec::new();
+        for (name, hud, sel) in &states {
+            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens: MapLens::World, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, cursor: Some(Vec2::new(300.0, 300.0)) };
+            let all: Vec<(&str, Vec<ui::VNode>)> = vec![
+                ("strip", panels::strip(&ctx)),
+                ("calendar", panels::calendar(&ctx)),
+                ("right", panels::right(&ctx)),
+                ("rail", panels::rail(&ctx)),
+                ("bottom", panels::bottom(&ctx)),
+                ("profile", panels::profile(&ctx)),
+                ("cursor", panels::cursor_tag(&ctx)),
+            ];
+            for (panel, tree) in &all {
+                let texts = ui::words(tree);
+                let total: usize = texts.iter().map(|t| count(t)).sum();
+                if std::env::var_os("BUDGET_DEBUG").is_some() {
+                    eprintln!("{name}/{panel}: {total} {texts:?}");
+                }
+                if total > 6 {
+                    failures.push(format!("{name}/{panel}: {total} words {texts:?}"));
+                }
+                for t in &texts {
+                    if count(t) > 2 || t.trim_end().ends_with('.') {
+                        failures.push(format!("{name}/{panel}: label {t:?}"));
+                    }
+                }
+                for tip in tips_of(tree) {
+                    for l in tip.lines.iter().map(|l| format!("{} {}", l.label, l.value)).chain(tip.title.iter().map(|t| t.1.clone())) {
+                        if count(&l) > 6 || l.trim_end().ends_with('.') {
+                            failures.push(format!("{name}/{panel}: tip line {l:?}"));
+                        }
+                    }
+                }
+            }
+            // The Colony screen is a table: labels stay short, no sentences (the log tab is history).
+            for tab in [ColonyTab::Population, ColonyTab::Jobs, ColonyTab::Goods, ColonyTab::Water, ColonyTab::Land, ColonyTab::Research] {
+                let h = HudState { colony: Some(tab), ..default() };
+                let ctx = panels::Ctx { hud: &h, ..ctx };
+                for t in ui::words(&colony::screen(&ctx)) {
+                    if count(&t) > 2 || t.trim_end().ends_with('.') {
+                        failures.push(format!("colony {tab:?}: label {t:?}"));
+                    }
+                }
+            }
+        }
+        failures.dedup();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    fn tips_of(tree: &[ui::VNode]) -> Vec<Tip> {
+        let mut out = Vec::new();
+        fn walk(v: &ui::VNode, out: &mut Vec<Tip>) {
+            if let Some(t) = &v.tip {
+                out.push(t.clone());
+                for l in &t.lines {
+                    if let Some(n) = &l.nested {
+                        out.push((**n).clone());
+                    }
+                }
+            }
+            for c in &v.children {
+                walk(c, out);
+            }
+        }
+        for v in tree {
+            walk(v, &mut out);
+        }
+        out
+    }
+
     #[test]
     fn switching_tools_clears_the_drawn_line() {
         let mut h = HudState { line: vec![(1, 1), (2, 1)], drag_from: Some((1, 1)), ..default() };
