@@ -618,11 +618,12 @@ mod tests {
 
     #[test]
     fn water_seasons_modulate_inflow_and_freeze() {
+        let d = SEASON_DAYS;
         assert_eq!(Season::at(0.0), Season::Spring);
-        assert_eq!(Season::at(35.0), Season::Summer);
-        assert_eq!(Season::at(65.0), Season::Autumn);
-        assert_eq!(Season::at(95.0), Season::Winter);
-        assert_eq!(Season::at(125.0), Season::Spring);
+        assert_eq!(Season::at(d + 5.0), Season::Summer);
+        assert_eq!(Season::at(2.0 * d + 5.0), Season::Autumn);
+        assert_eq!(Season::at(3.0 * d + 5.0), Season::Winter);
+        assert_eq!(Season::at(4.0 * d + 5.0), Season::Spring);
         assert!(Season::Spring.inflow_mult() > 2.0 * Season::Summer.inflow_mult());
 
         let mut s = SimState::new(1);
@@ -633,7 +634,7 @@ mod tests {
         for _ in 0..20 { s.step(1.0).unwrap(); }
         assert_eq!(s.water.season(), Season::Winter);
         assert!(*s.water.ice.get(5, 5).unwrap() > 0.5);
-        for _ in 0..20 { s.step(1.0).unwrap(); }
+        while s.water.time_days < 4.0 * SEASON_DAYS + 20.0 { s.step(1.0).unwrap(); }
         assert_eq!(s.water.season(), Season::Spring);
         assert_eq!(*s.water.ice.get(5, 5).unwrap(), 0.0);
     }

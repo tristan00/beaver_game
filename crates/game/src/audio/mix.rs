@@ -3,7 +3,7 @@
 use std::f32::consts::TAU;
 
 /// Length of one in-game year in sim days (the sim has no calendar yet; this is the audio's own).
-pub const YEAR_DAYS: f64 = 96.0;
+pub const YEAR_DAYS: f64 = sim::calendar::YEAR_DAYS;
 
 pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);

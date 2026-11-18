@@ -28,7 +28,7 @@ pub const CELL_SIZE: f32 = 1.0;
 /// Cells per chunk edge.
 pub const CHUNK: usize = 16;
 /// Simulated days per in-game year.
-pub const YEAR_DAYS: f64 = 120.0;
+pub const YEAR_DAYS: f64 = sim::calendar::YEAR_DAYS;
 /// Chunk rebuilds allowed per frame (the first build is unlimited).
 const REBUILD_BUDGET: usize = 10;
 /// Camera distance beyond which a chunk uses 2x coarser cells.

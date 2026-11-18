@@ -374,6 +374,8 @@ fn around_lake(lake: &[Cell], k: usize, n: usize) -> Cell {
 
 fn finish(sim: &mut SimState, food_per_head: f32, wood_per_head: f32) {
     let n = sim.colony.population() as f32;
+    // The old lake starts predate the single stores economy and keep the abstract larder.
+    sim.colony.abstract_gathering = true;
     sim.colony.food = food_per_head * n;
     sim.colony.wood = wood_per_head * n;
     sim.work.auto_organise = true;

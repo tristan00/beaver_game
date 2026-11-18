@@ -24,7 +24,7 @@ use sim::tech::TECHS;
 use sim::water::Cell;
 use sim::{Command, SimState};
 
-const DAYS_PER_YEAR: u32 = 365;
+const DAYS_PER_YEAR: u32 = sim::calendar::YEAR_DAYS as u32;
 const SPIN_UP_DAYS: u32 = 40;
 /// Day step used once a colony has collapsed (the world keeps evolving, nobody acts).
 const COLLAPSED_STEP_DAYS: u32 = 5;

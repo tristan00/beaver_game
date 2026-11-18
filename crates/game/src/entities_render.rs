@@ -44,7 +44,7 @@ const SCREENSHOT_CLOCK: f32 = 31.0;
 fn stub_mode(cli: &Cli) -> bool {
     cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
 }
-const DAYS_PER_SEASON: f64 = 30.0;
+const DAYS_PER_SEASON: f64 = sim::calendar::SEASON_DAYS;
 
 pub struct EntitiesRenderPlugin;
 

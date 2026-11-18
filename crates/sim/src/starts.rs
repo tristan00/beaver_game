@@ -414,6 +414,8 @@ mod tests {
     fn only_adults_dig_a_placed_burrow_and_nothing_is_built_before_the_command() {
         use crate::{buildings::{BuildingKind, Status}, colony::Stage};
         let (mut s, _) = settled(1);
+        // Fed, so the test watches building rather than hunger (the family arrives empty-handed).
+        s.buildings.stores.deposit(crate::buildings::Good::Food, 60.0).unwrap();
         s.work.auto_organise = true; // the player opts the family into organising itself
         for _ in 0..200 {
             s.step(0.05).unwrap();

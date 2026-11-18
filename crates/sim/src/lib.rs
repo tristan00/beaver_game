@@ -4,6 +4,7 @@
 
 pub mod agents;
 pub mod buildings;
+pub mod calendar;
 pub mod catalogue;
 pub mod colony;
 pub mod dam_preview;
@@ -11,6 +12,8 @@ pub mod ecology;
 pub mod events;
 pub mod features;
 pub mod grid;
+pub mod hud;
+pub mod ledger;
 /// The old lake starts, kept only as test fixtures (feature `fixtures`); no player can start in them.
 #[cfg(any(test, feature = "fixtures"))]
 pub mod lakes;
@@ -102,6 +105,8 @@ pub struct SimState {
     pub agents: agents::Agents,
     pub work: work::Work,
     pub society: society::Society,
+    /// Whole-day goods history for the interface.
+    pub ledger: ledger::Ledger,
 }
 
 impl SimState {
@@ -130,9 +135,42 @@ impl SimState {
             agents: agents::Agents::default(),
             work: work::Work::default(),
             society: society::Society::default(),
+            ledger: ledger::Ledger::default(),
         };
+        sim.colony.abstract_gathering = false;
         sim.apply_features();
         sim
+    }
+
+    /// One economy: unless the colony runs its abstract larder (old fixtures), its `food` and
+    /// `wood` mirror the stores' Food and Logs. Returns the mirrored values so
+    /// [`Self::settle_colony_stores`] can book what the colony ate or used against the stores.
+    fn mirror_colony_stores(&mut self) -> Option<(f32, f32)> {
+        if self.colony.abstract_gathering {
+            return None;
+        }
+        let s = &self.buildings.stores;
+        let before = (s.amount(buildings::Good::Food), s.amount(buildings::Good::Logs));
+        (self.colony.food, self.colony.wood) = before;
+        Some(before)
+    }
+
+    /// Books the change in the colony's mirrored food and wood against the stores: eating,
+    /// spoilage and lodge building are consumption, event windfalls are production.
+    fn settle_colony_stores(&mut self, before: Option<(f32, f32)>) {
+        let Some((food0, wood0)) = before else { return };
+        let stores = &mut self.buildings.stores;
+        for (good, was, now) in [(buildings::Good::Food, food0, self.colony.food), (buildings::Good::Logs, wood0, self.colony.wood)] {
+            let d = now - was;
+            if d < 0.0 {
+                let take = (-d).min(stores.amount(good));
+                stores.withdraw(good, take).expect("clamped to stock");
+            } else if d > 0.0 {
+                stores.deposit(good, d).expect("finite positive amount");
+            }
+        }
+        self.colony.food = stores.amount(buildings::Good::Food);
+        self.colony.wood = stores.amount(buildings::Good::Logs);
     }
 
     /// Replaces the feature config and applies it at once.
@@ -162,8 +200,10 @@ impl SimState {
         self.time_days += dt_days as f64;
         self.water.step(&self.height, dt_days);
         self.ecology.step(dt_days, &self.water.depth)?;
+        let mirrored = self.mirror_colony_stores();
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
+        self.settle_colony_stores(mirrored);
         self.step_research(dt_days);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
@@ -174,6 +214,7 @@ impl SimState {
         agents::step(self, dt_days);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
+        self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
     }
 
@@ -210,10 +251,12 @@ impl SimState {
             return;
         }
         let ctx = self.event_context();
+        let mirrored = self.mirror_colony_stores();
         let mut host = ColonyHost { colony: &mut self.colony };
         if self.events.step_with(dt_days, &ctx, &mut host).is_err() {
             self.events.step(dt_days);
         }
+        self.settle_colony_stores(mirrored);
         let arrivals = if self.features.enabled(features::System::Rivals) { self.region.take_arrivals() } else { Vec::new() };
         for m in arrivals {
             self.colony.add_immigrants(m.count);
@@ -449,6 +492,25 @@ mod tests {
         let land = WorldLand { world: &s.world, depth: &s.water.depth };
         s.colony.found((c.0 as f32, c.1 as f32), &land).expect("found");
         s
+    }
+
+    #[test]
+    fn the_colony_eats_from_the_stores_and_jobs_conjure_nothing() {
+        let mut s = founded(4);
+        let food = buildings::Good::Food;
+        s.step(0.1).unwrap();
+        assert_eq!(s.buildings.stores.amount(food), 0.0, "no food appears without gatherers");
+        assert_eq!(s.colony.food, 0.0);
+        s.buildings.stores.deposit(food, 40.0).unwrap();
+        for b in s.colony.beavers.iter_mut() {
+            b.needs.food = 0.2;
+        }
+        let eaten_before = s.buildings.stores.consumed_total[food.index()];
+        s.step(0.5).unwrap();
+        let left = s.buildings.stores.amount(food);
+        assert!(left < 40.0, "hungry beavers ate from the stores ({left} left)");
+        assert!(s.buildings.stores.consumed_total[food.index()] > eaten_before, "eating is booked as consumption");
+        assert_eq!(s.colony.food, left, "the colony's larder mirrors the stores");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 pub use crate::tuning::colony::*;
 
-pub const DAYS_PER_YEAR: f64 = 365.0;
+pub const DAYS_PER_YEAR: f64 = crate::calendar::YEAR_DAYS;
 const SUBSTEP_DAYS: f32 = 0.5;
 const EVENT_LOG_CAP: usize = 2000;
 
@@ -74,7 +74,8 @@ impl Stage {
         }
     }
     /// Share of a full adult's food needs.
-    fn food_weight(self) -> f32 {
+    /// Share of an adult's food this stage eats.
+    pub fn food_weight(self) -> f32 {
         match self {
             Stage::Kit => KIT_FOOD_WEIGHT,
             Stage::Yearling => YEARLING_FOOD_WEIGHT,
@@ -417,6 +418,9 @@ pub struct Colony {
     cache_stamp: f64,
     guard_strength: f32,
     disabled_jobs: Vec<Job>,
+    /// Whether the abstract Forager and Logger jobs conjure food and wood. `SimState` turns this
+    /// off: there the colony eats and builds from the real stores that gatherers fill.
+    pub abstract_gathering: bool,
 }
 
 impl Default for Colony {
@@ -481,6 +485,7 @@ impl Colony {
             cache_stamp: 0.0,
             guard_strength: 0.0,
             disabled_jobs: Vec::new(),
+            abstract_gathering: true,
         }
     }
 
@@ -850,8 +855,11 @@ impl Colony {
             };
             let power = w.units * self.beavers[i].output_factor(w.job);
             match w.job {
-                Job::Forager => self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap),
-                Job::Logger => self.wood = (self.wood + power * LOG_YIELD * boost).min(wood_cap),
+                Job::Forager if self.abstract_gathering => {
+                    self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap)
+                }
+                Job::Logger if self.abstract_gathering => self.wood = (self.wood + power * LOG_YIELD * boost).min(wood_cap),
+                Job::Forager | Job::Logger => {}
                 Job::Builder => self.repair(power * REPAIR_YIELD * boost),
                 Job::Digger => self.dug += power,
                 Job::Crafter => self.tools = (self.tools + power * TOOLS_YIELD).min(1.0),

@@ -3,10 +3,10 @@
 //! and solver numerics stay in their modules.
 
 pub mod colony {
-    pub const KIT_DAYS: f32 = 365.0;
-    pub const ADULT_DAYS: f32 = 730.0;
+    pub const KIT_DAYS: f32 = crate::calendar::YEAR_DAYS as f32;
+    pub const ADULT_DAYS: f32 = 2.0 * crate::calendar::YEAR_DAYS as f32;
     /// Age at which an adult becomes an elder (the age old-age wear starts).
-    pub const ELDER_DAYS: f32 = 2920.0;
+    pub const ELDER_DAYS: f32 = 8.0 * crate::calendar::YEAR_DAYS as f32;
     pub const LODGE_CAPACITY: usize = 12;
     pub const LODGE_WOOD_COST: f32 = 8.0;
     pub const MIN_LODGE_SPACING: f32 = 5.0;
@@ -15,11 +15,12 @@ pub mod colony {
     pub const CACHE_LIFETIME_DAYS: f64 = 30.0;
     /// Days of continuously bad mood after which an adult or yearling leaves the colony.
     pub const DEPARTURE_BAD_MOOD_DAYS: f32 = 30.0;
-    pub const SPRING_START: f64 = 60.0;
-    pub const SPRING_END: f64 = 150.0;
-    pub const BIRTH_FROM_DAY: f64 = 75.0;
-    /// Day of the year with the warmest temperature.
-    pub const MIDSUMMER_DAY: f64 = 200.0;
+    /// Breeding window: the calendar's spring (day 0 of the year is the first day of spring).
+    pub const SPRING_START: f64 = 0.0;
+    pub const SPRING_END: f64 = crate::calendar::SEASON_DAYS;
+    pub const BIRTH_FROM_DAY: f64 = 15.0;
+    /// Day of the year with the warmest temperature: the middle of summer.
+    pub const MIDSUMMER_DAY: f64 = 1.5 * crate::calendar::SEASON_DAYS;
 
     // Terrain the colony sees.
     /// A water-depth grid cell deeper than this counts as water.
@@ -213,7 +214,8 @@ pub mod colony {
 }
 
 pub mod ecology {
-    /// Days per season; wetland formation is counted in seasons.
+    /// Ecology's time unit: wetland forms and drains over a few of these. It is a third of a
+    /// calendar season (`calendar::SEASON_DAYS`), kept at 30 days so ecology keeps its tuned pace.
     pub const SEASON_DAYS: f32 = 30.0;
     /// Water deeper than this (world units) counts as flooding the cell.
     pub const FLOOD_DEPTH: f32 = 0.05;
@@ -294,7 +296,7 @@ pub mod ecology {
 
 pub mod water {
     /// Days in one season; a year is four seasons: spring, summer, autumn, winter.
-    pub const SEASON_DAYS: f64 = 30.0;
+    pub const SEASON_DAYS: f64 = crate::calendar::SEASON_DAYS;
     /// Depth below which a cell counts as dry (for ice formation).
     pub const WET_EPS: f32 = 0.01;
     /// Vegetation density above which a cell counts as holding trees.
@@ -478,7 +480,7 @@ pub mod region {
 
 pub mod events {
     /// Default calendar length of a season, in days.
-    pub const DEFAULT_DAYS_PER_SEASON: u32 = 10;
+    pub const DEFAULT_DAYS_PER_SEASON: u32 = crate::calendar::SEASON_DAYS as u32;
     /// Days an unresolved choice waits before its default (first) option is applied.
     pub const CHOICE_EXPIRY_DAYS: f64 = 5.0;
     /// Water inflow multiplier while a drought lasts.
@@ -551,7 +553,7 @@ pub mod events {
 }
 pub mod tech {
     /// Day on which the first winter has passed (360-day year) and `Achievement::FirstWinter` is earned.
-    pub const YEAR_DAYS: f64 = 360.0;
+    pub const YEAR_DAYS: f64 = crate::calendar::YEAR_DAYS;
     /// Branch experience needed for a tier-1 tech.
     pub const TIER1_XP: f32 = 3.0;
     /// Branch experience needed for a tier-2 tech.
