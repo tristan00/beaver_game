@@ -208,7 +208,7 @@ Merge the two forest models. Tree resources become the truth, and each tree has 
 |---|---|---|---|
 | Forestry | Forest, tier 1 | Felling; 20 Forest xp; 5 beavers | Forester's lodge; the logging camp's cutting rules |
 | Coppicing | Forest, tier 2 | Forestry; 50 xp; 8 beavers | Felled trees of a chosen camp regrow from the stump as young trees (sticks-rich), instead of leaving a gap |
-| Tree nursery | Forest, tier 3 | Forestry, Weaving; 80 xp; 10 beavers; 30 lore | Tree nursery, sapling good |
+| Tree nursery | Forest, tier 3 | Forestry, Weaving; 80 xp; 10 beavers | Tree nursery, sapling good |
 
 Forestry should come early, right after Felling. In the first year a colony that fells around its camp will strip the nearby forest, and the game should offer the answer then.
 
