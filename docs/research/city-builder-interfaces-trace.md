@@ -30,7 +30,7 @@ Report: `city-builder-interfaces.md`. Every sentence of every pattern summary an
 | 1 | **Keep stockpile or finance figures on the main screen.** | 1-TB l.18; 1-RW l.19; 1-AN l.20 | Three games state it |
 | 1 | Timberborn (Inventory), RimWorld (resource list top-left), Anno 1800 (balance and income in the top bar). | 1-TB l.18; 1-RW l.19; 1-AN l.20 | Each example matches its row |
 | 1 | Their position differs between games, and only Anno 1800 (Ludo) shows them in the same bar as the time. | 1-AN l.20; 1-RW l.19; 1-TB l.18 | RimWorld splits list and time across corners; Timberborn positions not stated |
-| 1 | Colour has been used to mark need state (Timberborn) and to tell demand types apart (Cities: Skylines demand bars). | 1-TB l.18; 1-CS l.21 | TB: green satisfied needs, coloured seasons; CS: colour = zone type |
+| 1 | Colour has been used to mark need state (Timberborn: satisfied needs shown in green) and to tell demand types apart (Cities: Skylines demand bars). | 1-TB l.18; 1-CS l.21 | TB: "satisfied needs in green" (season colours are forecast, not need state, so not cited); CS: colour = zone type |
 | 1 | Confidence: medium for figures on the main screen (three games); low for the use of colour (two games, each using it differently). | 1-TB, 1-RW, 1-AN (TB and RW Single); 1-TB, 1-CS | Rule l.8: 3 games incl. Single → medium; 2 games → low |
 | 2 | **Offer a categorised build menu.** | 2-TB l.28; 2-RW l.29; 2-AN l.31; 2-BA l.30 | Four games state it |
 | 2 | Timberborn (tool groups), RimWorld (Architect tabs), Anno 1800 (hammer, category tabs), Banished (category icons). | 2-TB l.28; 2-RW l.29; 2-AN l.31; 2-BA l.30 | Each example matches its bullet |
@@ -40,11 +40,11 @@ Report: `city-builder-interfaces.md`. Every sentence of every pattern summary an
 | 3 | **Show a placement preview that is green when valid and red when blocked.** | 3-TB l.40 | Stated |
 | 3 | Timberborn. | 3-TB l.40 | — |
 | 3 | Confidence: low (one game, one source). | 3-TB l.40 "Single source" | Rule l.8 |
-| 4 | **Let the player place plans separate from real orders.** | 3-DF l.43; 3-RW l.44; 3-FA l.41 | Blueprint mode, Plan tool, ghost placement are each separate from building |
+| 4 | **Let the player place plans separate from real orders.** | 3-DF l.43; 3-RW l.44 | Blueprints ignored until converted; plans not acted on |
 | 4 | Dwarf Fortress blueprints are ignored by dwarves until converted with k. | 3-DF l.43 | Stated |
 | 4 | RimWorld plans are not acted on by colonists. | 3-RW l.44 | Stated |
-| 4 | Factorio places ghosts with Shift+LMB, with no range limit. | 3-FA l.41 | Stated |
-| 4 | Confidence: medium (three games). | 3-DF Single, 3-RW, 3-FA Strong | Rule l.8 |
+| 4 | Factorio is not counted: its finding says ghosts are placed with Shift+LMB and have no range limit, not that they are kept apart from orders or left unbuilt. | 3-FA l.41 | 3-FA states Shift+LMB and no range limit only |
+| 4 | Confidence: low (two games). | 3-DF Single, 3-RW | Rule l.8: two games → low |
 | 5 | **Right-click cancels an in-progress road placement.** | 3-CS l.42 | "click start, click end; right-click cancels" (Roads page) |
 | 5 | Cities: Skylines. | 3-CS l.42 | — |
 | 5 | **A Duplicate action places multiple copies.** | 3-TB l.40 | "'Duplicate' (B) places multiple copies" |
@@ -73,10 +73,11 @@ Report: `city-builder-interfaces.md`. Every sentence of every pattern summary an
 | 10 | "Never": RimWorld (blank), ONI ("disabled"). | 6-RW l.65; 6-ONI l.67 | "blank = never"; "'disabled' are never done" |
 | 10 | Tie-break: RimWorld (left column), ONI (hidden fixed priority, or closest task with "Enable Proximity"). | 6-RW l.65; 6-ONI l.67 | Stated |
 | 10 | Confidence: medium for small level sets (four games); low for "never" and tie-break (two games each). | 6-RW, 6-DF, 6-ONI, 6-TB; 6-RW, 6-ONI | Rule l.8 |
-| 11 | **Show alerts as a list on the main screen.** | 8-TB l.85; 8-FA l.86; 8-RW l.87; 8-AN l.88 | Alerts list; alerts beside quickbar; alerts top-right; notifications left side |
-| 11 | Timberborn (Alerts list), Factorio (beside the quickbar), RimWorld (top-right), Anno 1800 (left side, recent notifications). | same | — |
+| 11 | **Show alerts on the main screen.** | 8-TB l.85; 8-FA l.86; 8-RW l.87; 8-AN l.88 | Alerts list; alerts beside quickbar; alerts top-right; notifications left side |
+| 11 | Timberborn (Alerts), Factorio (beside the quickbar), RimWorld (top-right), Anno 1800 (left side, recent notifications). | same | — |
+| 11 | Only Timberborn's finding says the alerts form a list; the Factorio, RimWorld and Anno 1800 findings give a position but not a layout. | 8-TB l.85; 8-FA l.86; 8-RW l.87; 8-AN l.88 | 8-TB "Alerts list issues"; the other three name a position only |
 | 11 | Counts per alert, cycling through targets and a Journal log are documented only for Timberborn; timed alerts and per-type toggles only for Factorio. | 8-TB l.85; 8-FA l.86 | Stated; no other §8 finding mentions counts, cycling, a log, timing or toggles |
-| 11 | Confidence: medium for an on-screen alert list (four games); low for counts, cycling, log, timing and toggles (one game each). | 8-TB, 8-FA, 8-RW Single; 8-AN Weak | Rule l.8 |
+| 11 | Confidence: medium for alerts on the main screen (four games); low for a list layout (one game) and for counts, cycling, log, timing and toggles (one game each). | 8-TB, 8-FA, 8-RW Single; 8-AN Weak; list: 8-TB | Rule l.8: four games incl. Single → medium; one game → low |
 | 11 | Whether selecting an alert centres the camera is not established. | 8-TB l.85 | Finding says "cycles through targets", not camera movement |
 | 12 | **Provide a camera action that moves to a selected object.** | 7-TB l.79; 7-AN l.77; 7-RW l.80 | Focus centres; padlock locks camera to selection; click colonist to jump |
 | 12 | Timberborn (Focus), Anno 1800 (padlock locks the camera to a selection), RimWorld (click a colonist in the top bar to jump to them). | same | — |
@@ -106,6 +107,9 @@ Report: `city-builder-interfaces.md`. Every sentence of every pattern summary an
 | §4 Anno panel position | Old 4-AN line had no link | Both links added (page re-read) |
 | §6 Banished "detail page not read" | Mention of an unopened page | Deleted |
 | Limits: "PC Gamer's Anno 1800 article (truncated)" | Mention of a page not used for any finding | Deleted |
+| Conv. 4 counted Factorio ghosts as plans separate from orders, "medium (three games)" | 3-FA states Shift+LMB placement and no range limit, not separation from orders | Factorio removed from the count, kept as an explicit non-example; confidence recounted to low (two games) |
+| Conv. 11 "Show alerts as a list on the main screen", list counted for four games | Only 8-TB says "list"; 8-FA, 8-RW, 8-AN give positions only | Claim narrowed to "on the main screen" (four games, medium); list layout attributed to Timberborn only (low) |
+| Conv. 1 cited Timberborn's coloured forecast seasons as need state | Seasons are a forecast, not need state; 1-TB's need colour is satisfied needs in green | Seasons removed from the need-state example |
 
 ## Games named in conventions and their findings
 
@@ -118,7 +122,7 @@ Every game named in a convention has a finding with a link that describes the be
 | Anno 1800 | 1, 2, 7, 11, 12 | 1-AN, 2-AN, 4-AN, 7-AN, 8-AN |
 | Dwarf Fortress | 2, 4, 8, 10 | 2-DF, 3-DF, 5-DF, 6-DF |
 | Cities: Skylines | 1, 2, 5, 6, 8 | 1-CS, 2-CS, 3-CS, 5-CS |
-| Factorio | 4, 11, 12 | 3-FA, 7-FA, 8-FA |
+| Factorio | 11, 12 (named in 4 only as not counted) | 3-FA, 7-FA, 8-FA |
 | Banished | 2 | 2-BA |
 | Oxygen Not Included | 10 | 6-ONI |
 
