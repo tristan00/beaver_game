@@ -843,16 +843,25 @@ fn nearest_cell(near: Cell, radius: usize, want: impl Fn(Cell) -> bool) -> Optio
     best.map(|b| b.1)
 }
 
+/// The largest dry-ground building the new colony may build (the lodge is locked at the start).
+fn dry_kind(sim: &SimState) -> Option<BuildingKind> {
+    BuildingKind::ALL.into_iter().filter(|k| *k != BuildingKind::Dam && k.spec().site == sim::buildings::Site::Dry && sim.tech.allows(*k) && sim.features.allows_building(*k)).max_by_key(|k| footprint(*k, (0, 0)).len())
+}
+
 /// The cell and tool the `--demo-place` scenes show, from the camp at `near`.
 pub fn demo_place_scene(sim: &SimState, scene: &str, near: Cell) -> Option<(BuildingKind, Cell)> {
     let n = sim.world.size;
     let inside = |c: Cell| c.0 > 6 && c.1 > 6 && c.0 + 6 < n && c.1 + 6 < n;
     match scene {
-        "valid" => nearest_cell((near.0 + 6, near.1), 30, |c| inside(c) && site_preview(sim, BuildingKind::Lodge, c).is_valid()).map(|c| (BuildingKind::Lodge, c)),
+        "valid" => {
+            // The first dry-ground building the new colony may build (the lodge is locked at the start).
+            let kind = dry_kind(sim)?;
+            nearest_cell((near.0 + 6, near.1), 30, |c| inside(c) && site_preview(sim, kind, c).is_valid()).map(|c| (kind, c))
+        }
         "invalid" => {
-            // A lodge ghost half in the water: the nearest cell where the sim says "needs dry ground".
-            nearest_cell(near, 40, |c| inside(c) && matches!(site_preview(sim, BuildingKind::Lodge, c).verdict, Err(PlaceError::NeedsDry)))
-                .map(|c| (BuildingKind::Lodge, c))
+            // A ghost half in the water: the nearest cell where the sim says "needs dry ground".
+            let kind = dry_kind(sim)?;
+            nearest_cell(near, 40, |c| inside(c) && matches!(site_preview(sim, kind, c).verdict, Err(PlaceError::NeedsDry))).map(|c| (kind, c))
         }
         _ => {
             // The dam spot near the camp whose pond is largest but not the whole map.
@@ -902,7 +911,7 @@ fn demo_place(
     let scene = cli.demo_place.clone().unwrap_or_default();
     let near = flow.lodge_cell.or_else(|| sim.0.colony.beavers.first().map(|b| (b.pos.0 as usize, b.pos.1 as usize))).unwrap_or((64, 64));
     let Some((kind, hover)) = demo_place_scene(&sim.0, &scene, near) else {
-        error!("demo-place {scene}: no suitable cell near the camp");
+        error!("demo-place {scene}: no suitable cell near the camp {near:?}");
         exit.write(bevy::app::AppExit::error());
         return;
     };
@@ -912,7 +921,7 @@ fn demo_place(
     if let Ok(w) = windows.single() {
         ui.fake_cursor = Some(Vec2::new(w.width() / 2.0, w.height() / 2.0));
     }
-    *orbit = OrbitCamera { target: cell_world(&sim.0.height, (hover.0 as f32, hover.1 as f32)), yaw: 0.8, pitch: 0.85, distance: if kind == BuildingKind::Dam { 50.0 } else { 30.0 } };
+    *orbit = OrbitCamera { target: cell_world(&sim.0.height, (hover.0 as f32, hover.1 as f32)), yaw: 0.8, pitch: 0.85, distance: if kind == BuildingKind::Dam { 50.0 } else { 20.0 } };
     let all = |_: usize, _: usize| true;
     flow.fog.reveal((hover.0 as f32, hover.1 as f32), 30.0, &all);
     demo.done = true;
