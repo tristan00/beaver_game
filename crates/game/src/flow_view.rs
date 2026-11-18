@@ -1,5 +1,4 @@
-//! Views for the game flow: time-control buttons, status and detail panel, the beaver ledger,
-//! the game-over panel, scout/beaver/lodge markers, the fog colouring of the terrain and the
+//! Views for the game flow: the game-over panel, scout/beaver/lodge markers, the fog colouring of the terrain and the
 //! scripted `--autoplay-settle` run. Layout is computed in one pure function so hit-testing and
 //! drawing always agree.
 use crate::camera::OrbitCamera;
@@ -11,7 +10,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use crate::ui::kit::font;
 use bevy::window::PrimaryWindow;
-use sim::colony::{Beaver, BeaverId, LodgeId};
+use sim::colony::{BeaverId, LodgeId};
 use std::collections::HashMap;
 
 const PANEL_BG: Color = crate::ui::kit::BARK;
@@ -22,15 +21,12 @@ const BTN_ON: Color = Color::srgb(0.153, 0.416, 0.459);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
-    Pause,
-    Speed(Speed),
     Continue,
     Restart,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PanelKind {
-    Info,
     GameOver,
 }
 
@@ -69,23 +65,9 @@ fn rc(x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
 
-pub const BUTTON_Y: f32 = 10.0;
-
 /// Pure layout of all UI rectangles for a window of `win` logical pixels.
-pub fn compute_layout(win: Vec2, show_info: bool, gameover: bool) -> UiLayout {
+pub fn compute_layout(win: Vec2, gameover: bool) -> UiLayout {
     let mut l = UiLayout::default();
-    // top-right button strip
-    let widths = [(Action::Pause, 48.0), (Action::Speed(Speed::X1), 38.0), (Action::Speed(Speed::X3), 38.0), (Action::Speed(Speed::X10), 44.0)];
-    let total: f32 = widths.iter().map(|w| w.1 + 4.0).sum();
-    let mut x = win.x - 10.0 - total + 4.0;
-    for (a, w) in widths {
-        l.buttons.push((a, rc(x, BUTTON_Y, w, 28.0)));
-        x += w + 4.0;
-    }
-    // info panel: only while scouting or when something is selected
-    if show_info {
-        l.panels.push((PanelKind::Info, rc(10.0, win.y - 10.0 - 110.0, 380.0, 110.0)));
-    }
     if gameover {
         let (w, h) = (400.0, 200.0);
         let (px, py) = ((win.x - w) / 2.0, (win.y - h) / 2.0);
@@ -102,10 +84,6 @@ pub fn compute_layout(win: Vec2, show_info: bool, gameover: bool) -> UiLayout {
 struct Btn(Action);
 #[derive(Component)]
 struct PanelNode(PanelKind);
-#[derive(Component)]
-struct BtnLabel(Action);
-#[derive(Component)]
-struct InfoText;
 #[derive(Component)]
 struct BannerText;
 #[derive(Component)]
@@ -158,11 +136,6 @@ fn spawn_ui(mut commands: Commands) {
     let abs = |_: ()| Node { position_type: PositionType::Absolute, ..default() };
     // panels
     commands
-        .spawn((PanelNode(PanelKind::Info), Node { padding: UiRect::all(px(10)), ..abs(()) }, BackgroundColor(PANEL_BG)))
-        .with_children(|p| {
-            p.spawn((Text::new(""), font(14.0), TextColor(crate::ui::kit::PITH), InfoText));
-        });
-    commands
         .spawn((PanelNode(PanelKind::GameOver), Node { padding: UiRect::all(px(16)), ..abs(()) }, BackgroundColor(Color::srgba(0.12, 0.05, 0.05, 0.93))))
         .with_children(|p| {
             p.spawn((Text::new(""), font(15.0), TextColor(crate::ui::kit::PITH), GameOverText));
@@ -180,13 +153,9 @@ fn spawn_ui(mut commands: Commands) {
         commands
             .spawn((Btn(a), Node { position_type: PositionType::Absolute, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(BTN_BG)))
             .with_children(|p| {
-                p.spawn((Text::new(label), font(14.0), TextColor(crate::ui::kit::PITH), BtnLabel(a)));
+                p.spawn((Text::new(label), font(14.0), TextColor(crate::ui::kit::PITH)));
             });
     };
-    spawn_btn(Action::Pause, "Pause");
-    for s in Speed::ALL {
-        spawn_btn(Action::Speed(s), s.label());
-    }
     spawn_btn(Action::Continue, "Keep watching");
     spawn_btn(Action::Restart, "Restart");
 }
@@ -210,15 +179,13 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>) {
 
 fn layout_ui(
     windows: Query<&Window, With<PrimaryWindow>>,
-    sel: Res<Selection>,
-    sim: Res<Sim>,
     flow: Res<Flow>,
     mut layout: ResMut<UiLayout>,
     mut nodes: Query<(&mut Node, Option<&Btn>, Option<&PanelNode>)>,
 ) {
     let Ok(w) = windows.single() else { return };
     let extra = std::mem::take(&mut layout.extra);
-    *layout = compute_layout(Vec2::new(w.width(), w.height()), !sim.0.colony.is_founded() || matches!(*sel, Selection::Cell(_)), flow.phase == Phase::GameOver);
+    *layout = compute_layout(Vec2::new(w.width(), w.height()), flow.phase == Phase::GameOver);
     layout.extra = extra;
     for (mut node, btn, panel) in &mut nodes {
         let rect = btn.and_then(|b| layout.rect(b.0)).or_else(|| panel.and_then(|p| layout.panel(p.0 )));
@@ -268,8 +235,6 @@ fn detect_click(
 
 fn do_action(a: Action, clock: &mut SimClock, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection) {
     match a {
-        Action::Pause => clock.toggle_pause(),
-        Action::Speed(s) => clock.set_speed(s),
         Action::Continue => {
             if flow.fire(FlowEvent::Continue) {
                 clock.paused = false;
@@ -279,135 +244,42 @@ fn do_action(a: Action, clock: &mut SimClock, sim: &mut Sim, flow: &mut Flow, se
     }
 }
 
-fn needs_line(b: &Beaver) -> String {
-    let n = b.needs;
-    format!("food {:.0}%  rest {:.0}%  warmth {:.0}%  safety {:.0}%  social {:.0}%", n.food * 100.0, n.rest * 100.0, n.warmth * 100.0, n.safety * 100.0, n.social * 100.0)
-}
-
-fn job_name(b: &Beaver) -> String {
-    b.job.or(b.current_job).map(|j| format!("{j:?}")).unwrap_or_else(|| "idle".into())
-}
-
-pub fn selection_text(sim: &Sim, sel: Selection, hint: Option<SiteHint>) -> String {
-    let c = &sim.0.colony;
-    match sel {
-        Selection::None => String::new(),
-        Selection::Beaver(id) => match c.beaver(id) {
-            Some(b) => format!(
-                "Beaver {}  ({}, {:.1} y)  job {}  mood {:.0}%  health {:.0}%\n{}",
-                b.name,
-                c.family(b.family).map(|f| f.name.as_str()).unwrap_or("?"),
-                b.age_years(),
-                job_name(b),
-                b.mood * 100.0,
-                b.health * 100.0,
-                needs_line(b)
-            ),
-            None => "That beaver is gone".into(),
-        },
-        Selection::Lodge(id) => match c.lodges.iter().find(|l| l.id == id) {
-            Some(l) => {
-                let n = c.beavers.iter().filter(|b| b.lodge == Some(id)).count();
-                let fam = c.family(l.family).map(|f| f.name.as_str()).unwrap_or("?");
-                format!("Lodge of the {fam}  condition {:.0}%  {n} residents", l.condition * 100.0)
-            }
-            None => "That lodge is gone".into(),
-        },
-        Selection::Building(cell) => format!("Dam at ({}, {})", cell.0, cell.1),
-        Selection::Tree(_) | Selection::Site(_) => String::new(),
-        Selection::Cell(cell) => {
-            let w = &sim.0.world;
-            let valley = w.valley_of(cell).map(|v| format!("valley {}{}", v.0, if w.is_open(v) { "" } else { " (locked)" })).unwrap_or_default();
-            let h = hint.unwrap_or_else(|| site_hint(w, cell));
-            format!("Cell ({}, {})  {valley}\n{}", cell.0, cell.1, hint_text(&h))
-        }
-    }
-}
-
-pub fn hint_text(h: &SiteHint) -> String {
-    format!("Site: {}  water {:.0}%  trees {:.0}%  safety {:.0}%", h.verdict(), h.water * 100.0, h.trees * 100.0, h.safety * 100.0)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn info_text(sim: &Sim, flow: &Flow, sel: Selection, hover: &Hover) -> String {
-    let c = &sim.0.colony;
-    let mut s = String::new();
-    if !c.is_founded() {
-        let total = (sim.0.world.size * sim.0.world.size) as f32;
-        s += &format!("Scouting   explored {:.0}%   scouts {}\n", flow.fog.explored_cells() as f32 / total * 100.0, flow.scouts.len());
-        if let Some(h) = hover.hint.filter(|_| hover.cell.is_some()) {
-            s += &format!("Under cursor ({}, {})\n{}\n", hover.cell.unwrap().0, hover.cell.unwrap().1, hint_text(&h));
-        } else {
-            s += "Hover the land to read a site hint (water, trees, safety)\n";
-        }
-        if !flow.message.is_empty() {
-            s += &format!("! {}\n", flow.message);
-        }
-        s += &selection_text(sim, sel, hover.hint);
-        return s;
-    }
-    selection_text(sim, sel, hover.hint)
-}
-
 fn update_ui(
     sim: Res<Sim>,
     flow: Res<Flow>,
-    sel: Res<Selection>,
-    hover: Res<Hover>,
-    clock: Res<SimClock>,
     layout: Res<UiLayout>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut texts: ParamSet<(
-        Query<&mut Text, With<InfoText>>,
-        Query<&mut Text, With<BannerText>>,
-        Query<&mut Text, With<GameOverText>>,
-        Query<(&BtnLabel, &mut Text)>,
-    )>,
+    mut texts: ParamSet<(Query<&mut Text, With<BannerText>>, Query<&mut Text, With<GameOverText>>)>,
     mut btn_colors: Query<(&Btn, &mut BackgroundColor)>,
 ) {
-    let text = info_text(&sim, &flow, *sel, &hover);
-    for mut t in &mut texts.p0() {
-        if t.0 != text {
-            t.0 = text.clone();
-        }
-    }
     let banner = match flow.phase {
         Phase::Settled => String::new(),
         p => p.banner().to_string(),
     };
-    for mut t in &mut texts.p1() {
+    for mut t in &mut texts.p0() {
         t.0 = banner.clone();
     }
     let go = match sim.0.colony.collapse() {
         Some(r) => format!(
-            "THE COLONY HAS COLLAPSED\n\nCause: {:?}\nDay {:.0}   peak population {}\nDeaths {}   departures {}\n\nKeep watching the valley, or start over?",
+            "THE COLONY HAS COLLAPSED
+
+Cause: {:?}
+Day {:.0}   peak population {}
+Deaths {}   departures {}
+
+Keep watching the valley, or start over?",
             r.cause, r.day, r.peak_population, r.deaths, r.departures
         ),
         None if flow.phase == Phase::GameOver => "THE COLONY HAS COLLAPSED".into(),
         None => String::new(),
     };
-    for mut t in &mut texts.p2() {
+    for mut t in &mut texts.p1() {
         t.0 = go.clone();
     }
-    for (l, mut t) in &mut texts.p3() {
-        let label = match l.0 {
-            Action::Pause => if clock.paused { "Play".to_string() } else { "Pause".to_string() },
-            _ => continue,
-        };
-        if t.0 != label {
-            t.0 = label;
-        }
-    }
-    // button states
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
     for (b, mut bg) in &mut btn_colors {
         let hot = cursor.zip(layout.rect(b.0)).is_some_and(|(c, r)| r.contains(c));
-        let on = match b.0 {
-            Action::Pause => clock.paused,
-            Action::Speed(s) => !clock.paused && clock.speed == s,
-            _ => false,
-        };
-        bg.0 = if hot { BTN_HOT } else if on { BTN_ON } else { BTN_BG };
+        bg.0 = if hot { BTN_HOT } else { BTN_BG };
     }
 }
 
@@ -590,7 +462,7 @@ fn autoplay_settle(
                     Some(site) => match settle(&mut sim.0, &mut flow, site) {
                         Ok(()) => {
                             *sel = Selection::Lodge(sim.0.colony.lodges[0].id);
-                            clock.set_speed(Speed::X10);
+                            clock.set_speed(Speed::X3);
                             info!("autoplay: settled at {site:?}");
                         }
                         Err(e) => {
@@ -621,17 +493,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settled_default_view_has_only_the_time_controls() {
-        let l = compute_layout(Vec2::new(1280.0, 720.0), false, false);
-        assert!(l.panels.is_empty(), "no info card, ledger or debug text");
-        let mut acts: Vec<_> = l.buttons.iter().map(|(a, _)| *a).collect();
-        acts.sort_by_key(|a| format!("{a:?}"));
-        assert_eq!(acts.len(), 4, "pause and three speeds: {acts:?}");
+    fn the_old_hud_is_gone_the_default_layout_has_no_panels_or_buttons() {
+        let l = compute_layout(Vec2::new(1280.0, 720.0), false);
+        assert!(l.panels.is_empty() && l.buttons.is_empty(), "speed buttons and the info card now live in ui/topbar.rs and ui/inspector.rs");
     }
 
     #[test]
-    fn info_card_shows_only_when_asked_for() {
-        assert!(compute_layout(Vec2::new(1280.0, 720.0), true, false).panel(PanelKind::Info).is_some());
-        assert!(compute_layout(Vec2::new(1280.0, 720.0), false, true).panel(PanelKind::GameOver).is_some());
+    fn game_over_shows_its_panel_with_two_buttons() {
+        let l = compute_layout(Vec2::new(1280.0, 720.0), true);
+        assert!(l.panel(PanelKind::GameOver).is_some());
+        assert_eq!(l.buttons.len(), 2);
     }
 }

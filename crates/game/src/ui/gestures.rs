@@ -5,12 +5,31 @@
 use sim::agents::Assignment;
 use sim::buildings::BuildingId;
 use sim::colony::BeaverId;
+use sim::society::RequestId;
 use sim::resources::ResourceKind;
 use sim::water::Cell;
 use sim::work::{Area, Role};
 use sim::{Command, SimState};
 
-use super::orders::Gesture;
+/// What the player did on the map with beavers selected.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Gesture {
+    /// Right-click a resource of `kind` at `cell`.
+    RightClickResource { kind: ResourceKind, cell: Cell },
+    /// Right-click a construction site.
+    RightClickSite { building: BuildingId },
+    /// Drag a rectangle to collect `kind` inside it.
+    DragArea { kind: ResourceKind, area: Area },
+    /// Drag a workplace's area to a new place or size.
+    EditWorkArea { building: BuildingId, area: Area },
+    /// Answer a join request.
+    Answer { id: RequestId, accept: bool },
+}
+
+/// The command a gesture produces for the selected beavers; `None` if nothing applies.
+pub fn gesture_command(sim: &SimState, selected: &[BeaverId], g: &Gesture) -> Option<Command> {
+    gesture_commands(sim, selected, g).into_iter().next()
+}
 
 /// Whether two resource kinds are the same thing to a collector (a felled tree is still a tree).
 fn same_kind(a: ResourceKind, b: ResourceKind) -> bool {

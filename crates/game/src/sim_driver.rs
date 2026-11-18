@@ -1,4 +1,4 @@
-//! Drives `SimState` on a fixed timestep with pause and 1x/3x/10x speeds.
+//! Drives `SimState` on a fixed timestep with pause and 1x/2x/3x speeds.
 //!
 //! Real frame time is accumulated and converted to simulated days; the sim only ever advances in
 //! whole [`FIXED_DT_DAYS`] steps, so results do not depend on the frame rate.
@@ -15,24 +15,24 @@ pub const MAX_STEPS_PER_FRAME: u32 = 8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
     X1,
+    X2,
     X3,
-    X10,
 }
 
 impl Speed {
-    pub const ALL: [Speed; 3] = [Speed::X1, Speed::X3, Speed::X10];
+    pub const ALL: [Speed; 3] = [Speed::X1, Speed::X2, Speed::X3];
     pub fn multiplier(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
+            Speed::X2 => 2.0,
             Speed::X3 => 3.0,
-            Speed::X10 => 10.0,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Speed::X1 => "1x",
+            Speed::X2 => "2x",
             Speed::X3 => "3x",
-            Speed::X10 => "10x",
         }
     }
 }
@@ -92,7 +92,7 @@ fn time_keys(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
     if keys.just_pressed(KeyCode::Space) {
         clock.toggle_pause();
     }
-    for (k, s) in [(KeyCode::Digit1, Speed::X1), (KeyCode::Digit2, Speed::X3), (KeyCode::Digit3, Speed::X10)] {
+    for (k, s) in [(KeyCode::Digit1, Speed::X1), (KeyCode::Digit2, Speed::X2), (KeyCode::Digit3, Speed::X3)] {
         if keys.just_pressed(k) {
             clock.set_speed(s);
         }
@@ -130,11 +130,18 @@ mod tests {
     }
 
     #[test]
+    fn there_are_three_speeds_and_no_10x() {
+        let m: Vec<f32> = Speed::ALL.iter().map(|s| s.multiplier()).collect();
+        assert_eq!(m, vec![1.0, 2.0, 3.0]);
+        assert_eq!(Speed::ALL.map(|s| s.label()), ["1x", "2x", "3x"]);
+    }
+
+    #[test]
     fn pause_stops_steps_and_cap_holds() {
         let mut c = SimClock::default();
         c.toggle_pause();
         assert_eq!(c.advance(5.0), 0);
-        c.set_speed(Speed::X10);
+        c.set_speed(Speed::X3);
         assert!(!c.paused);
         assert_eq!(c.advance(100.0), MAX_STEPS_PER_FRAME);
     }

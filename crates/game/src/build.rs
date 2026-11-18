@@ -1,6 +1,6 @@
-//! Build UI: menu grouped by tech branch, placement ghost, dam line + pond preview with flood
-//! summary, canal paths, work orders (cancel / priority), beaver and family job panels and the
-//! jobs panel. Rules live in `build_logic`; this file is input, layout and drawing.
+//! Placement: the tool panel, placement ghost, dam line + pond preview with flood summary, canal
+//! paths and the work-order list (cancel / priority). The build menu and job panel are in
+//! `ui/buildmenu.rs` and `ui/jobs.rs`. Rules live in `build_logic`; this file is input, layout and drawing.
 use crate::build_logic::*;
 use crate::camera::{MainCamera, OrbitCamera};
 use crate::flow::{cell_world, height_at, ray_heightfield, CaptureGate, Cell, Flow, Phase, Selection};
@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::PrimaryWindow;
 use sim::buildings::{Amount, BuildingKind};
-use sim::colony::{BeaverId, FamilyId, Job, OrderId};
+use sim::colony::OrderId;
 use sim::dam_preview::DamPreview;
 use sim::SimState;
 
@@ -45,9 +45,6 @@ pub struct Preview {
 
 #[derive(Resource)]
 pub struct BuildUi {
-    pub menu_open: bool,
-    pub jobs_open: bool,
-    pub family_open: bool,
     pub tool: Option<BuildingKind>,
     pub dam_height: f32,
     /// Cells drawn so far for a dam (two ends) or canal (full path).
@@ -66,9 +63,6 @@ pub struct BuildUi {
 impl Default for BuildUi {
     fn default() -> Self {
         BuildUi {
-            menu_open: false,
-            jobs_open: false,
-            family_open: false,
             tool: None,
             dam_height: DEFAULT_DAM_HEIGHT,
             path: vec![],
@@ -111,10 +105,6 @@ pub enum BAction {
     Height(i32),
     CancelOrder(OrderTarget),
     Prioritise(OrderId),
-    SetJob(BeaverId, Option<Job>),
-    JobCount(Job, i32),
-    ToggleFamily,
-    Promote(FamilyId, usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -179,10 +169,6 @@ impl Lay {
     }
 }
 
-fn job_name(j: Job) -> String {
-    format!("{j:?}")
-}
-
 fn pond_headline(d: &DamPreview) -> (String, Color) {
     let n = d.flooded_trees + d.flooded_buildings.len();
     let text = format!(
@@ -205,81 +191,6 @@ fn build_items(
     if !sim.colony.is_founded() {
         return l.items;
     }
-    let colony = &sim.colony;
-
-    // ── build menu ──
-    if ui.menu_open {
-        let (w, y0) = (390.0, 74.0);
-        let x = win.x - 10.0 - w;
-        let entries = menu(sim);
-        let mut groups = 0;
-        let mut last = None;
-        for e in &entries {
-            if last != Some(e.group) {
-                groups += 1;
-                last = Some(e.group);
-            }
-        }
-        let h = 10.0 + groups as f32 * 22.0 + entries.len() as f32 * 24.0;
-        l.panel(rc(x, y0, w, h), PANEL_BG);
-        let mut y = y0 + 6.0;
-        let mut last = None;
-        for e in &entries {
-            if last != Some(e.group) {
-                last = Some(e.group);
-                let head = match e.group {
-                    Group::Base => "BASICS".to_string(),
-                    Group::Branch(b) => format!("{}   experience {:.1}", e.group.name().to_uppercase(), b.experience(colony)),
-                };
-                l.text(rc(x + 8.0, y + 2.0, w - 16.0, 20.0), head, Color::srgb(0.78, 0.84, 0.55), 12.0);
-                y += 22.0;
-            }
-            let spec = e.kind.spec();
-            let cost = if e.group == Group::Base || e.unlocked { path_cost_unit(e.kind) } else { vec![] };
-            let state = if !e.unlocked {
-                BtnState::Locked
-            } else if ui.tool == Some(e.kind) {
-                BtnState::On
-            } else if cursor.is_some_and(|c| rc(x + 6.0, y, 112.0, 22.0).contains(c)) {
-                BtnState::Hot
-            } else {
-                BtnState::Normal
-            };
-            l.button_state(rc(x + 6.0, y, 112.0, 22.0), BAction::Pick(e.kind), spec.name, state);
-            let (txt, col) = match e.need {
-                Some((tech, need, have)) => (format!("locked: {tech}  xp {have:.1}/{need:.0}"), DIM),
-                None => {
-                    let ok = cost.iter().all(|&(g, a)| sim.buildings.stores.amount(g) + 1e-4 >= a);
-                    (format!("{}{}", cost_text(&cost), match e.kind { BuildingKind::Dam => "  /6 cells", BuildingKind::Canal => "  /cell", _ => "" }), if ok { TXT } else { WARN })
-                }
-            };
-            l.text(rc(x + 124.0, y + 4.0, w - 130.0, 18.0), txt, col, 11.0);
-            y += 24.0;
-        }
-    }
-
-    // ── jobs panel ──
-    if ui.jobs_open {
-        let (w, y0) = (340.0, 74.0);
-        let x = win.x - 10.0 - 340.0 - if ui.menu_open { 400.0 } else { 0.0 };
-        let n_adults = adults(colony);
-        let h = 62.0 + colony.enabled_jobs().len() as f32 * 26.0 + 22.0;
-        l.panel(rc(x, y0, w, h), PANEL_BG);
-        l.text(rc(x + 10.0, y0 + 8.0, w - 20.0, 20.0), format!("JOBS   adults {}   unassigned {}", n_adults, unassigned(colony)), TXT, 13.0);
-        l.text(rc(x + 10.0, y0 + 30.0, w - 20.0, 16.0), "job            now      assigned", DIM, 11.0);
-        let mut y = y0 + 48.0;
-        for r in job_rows(colony) {
-            l.text(rc(x + 10.0, y + 5.0, 80.0, 18.0), job_name(r.job), TXT, 13.0);
-            l.text(rc(x + 96.0, y + 5.0, 40.0, 18.0), format!("{}", r.working), if r.working > 0 { GOOD } else { DIM }, 13.0);
-            l.bar(rc(x + 140.0, y + 9.0, 90.0, 10.0), r.assigned as f32 / n_adults.max(1) as f32, Color::srgb(0.45, 0.75, 0.50));
-            l.text(rc(x + 240.0, y + 5.0, 26.0, 18.0), format!("{}", r.assigned), TXT, 13.0);
-            l.button(rc(x + 270.0, y + 2.0, 26.0, 22.0), BAction::JobCount(r.job, -1), "-", false);
-            l.button(rc(x + 300.0, y + 2.0, 26.0, 22.0), BAction::JobCount(r.job, 1), "+", false);
-            y += 26.0;
-        }
-        l.text(rc(x + 10.0, y + 4.0, w - 20.0, 16.0), "Unassigned adults follow their family's priorities.", DIM, 11.0);
-    }
-
     // ── tool panel (bottom centre) ──
     if let Some(kind) = ui.tool {
         let spec = kind.spec();
@@ -366,51 +277,10 @@ fn build_items(
         }
     }
 
-    // ── right column, stacked from the bottom: beaver/family, then orders ──
+    // ── right column, stacked from the bottom: the work orders ──
     let right_w = 330.0;
     let rx = win.x - 10.0 - right_w;
-    let mut bottom = win.y - 10.0;
-    if let Selection::Beaver(id) = sel {
-        if let Some(b) = colony.beaver(id) {
-            let fam = colony.family(b.family);
-            let fam_rows = if ui.family_open { fam.map_or(0, |f| f.priorities.len()) } else { 0 };
-            let h = 10.0 + 58.0 + 3.0 * 28.0 + 30.0 + if ui.family_open { 22.0 + fam_rows as f32 * 26.0 } else { 0.0 };
-            let y0 = bottom - h;
-            l.panel(rc(rx, y0, right_w, h), PANEL_BG);
-            let cur = b.current_job.map_or("idle".to_string(), job_name);
-            let set = b.job.map_or("Auto".to_string(), job_name);
-            l.text(
-                rc(rx + 10.0, y0 + 8.0, right_w - 20.0, 54.0),
-                format!(
-                    "{}   {:?}, {:.1} years\nFamily {}   mood {:.0}%   health {:.0}%\nDoing: {}   Set to: {}",
-                    b.name, b.stage, b.age_years(), fam.map_or("?", |f| f.name.as_str()), b.mood * 100.0, b.health * 100.0, cur, set
-                ),
-                TXT,
-                12.0,
-            );
-            let mut opts: Vec<Option<Job>> = vec![None];
-            opts.extend(colony.enabled_jobs().into_iter().map(Some));
-            for (i, o) in opts.iter().enumerate() {
-                let (cx, cy) = (rx + 8.0 + (i % 3) as f32 * 106.0, y0 + 64.0 + (i / 3) as f32 * 28.0);
-                l.button(rc(cx, cy, 102.0, 24.0), BAction::SetJob(id, *o), o.map_or("Auto".to_string(), job_name), b.job == *o);
-            }
-            let fy = y0 + 64.0 + 3.0 * 28.0 + 2.0;
-            l.button(rc(rx + 8.0, fy, 200.0, 24.0), BAction::ToggleFamily, if ui.family_open { "Family priorities  v" } else { "Family priorities  >" }, ui.family_open);
-            if let (true, Some(f)) = (ui.family_open, fam) {
-                let mut y = fy + 28.0;
-                l.text(rc(rx + 10.0, y, right_w - 20.0, 16.0), "first = most wanted", DIM, 11.0);
-                y += 18.0;
-                for (i, j) in f.priorities.iter().enumerate() {
-                    l.text(rc(rx + 12.0, y + 4.0, 200.0, 18.0), format!("{}. {}", i + 1, job_name(*j)), TXT, 13.0);
-                    if i > 0 {
-                        l.button(rc(rx + 250.0, y, 60.0, 22.0), BAction::Promote(f.id, i), "up", false);
-                    }
-                    y += 26.0;
-                }
-            }
-            bottom = y0 - 8.0;
-        }
-    }
+    let bottom = win.y - 10.0;
     let rows = order_rows(sim, pending);
     if !rows.is_empty() {
         let shown = rows.len().min(7);
@@ -727,23 +597,6 @@ fn do_action(a: BAction, sim: &mut SimState, pending: &mut Pending, ui: &mut Bui
         }
         BAction::Prioritise(o) => {
             ui.message = if prioritise(&mut sim.colony, o) { "Moved to the front of the queue".into() } else { "Order already finished".into() }
-        }
-        BAction::SetJob(id, job) => {
-            if let Err(e) = sim.colony.set_job(id, job) {
-                ui.message = e.to_string();
-            }
-        }
-        BAction::JobCount(job, d) => {
-            let cur = sim.colony.beavers.iter().filter(|b| b.job == Some(job)).count() as i32;
-            if let Err(e) = set_job_count(&mut sim.colony, job, (cur + d).max(0) as usize) {
-                ui.message = e;
-            }
-        }
-        BAction::ToggleFamily => ui.family_open = !ui.family_open,
-        BAction::Promote(f, i) => {
-            if let Err(e) = promote_priority(&mut sim.colony, f, i) {
-                ui.message = e;
-            }
         }
     }
     let _ = sel;
@@ -1133,7 +986,6 @@ fn demo_dam(
             match find_demo_dam(&sim.0, near, h) {
                 Some((a, b, d)) => {
                     info!("demo-dam: line {a:?} -> {b:?}, pond {} cells, {} trees", d.pond_area, d.flooded_trees);
-                    ui.menu_open = true;
                     ui.dam_height = h;
                     ui.tool = Some(BuildingKind::Dam);
                     ui.path = vec![a, b];
@@ -1144,11 +996,9 @@ fn demo_dam(
                     let all = |_: usize, _: usize| true;
                     flow.fog.reveal(mid, 30.0, &all);
                     *sel = Selection::None;
-                    // Debug aid: BC_DEMO_UI=jobs,beaver,order also opens those panels.
+                    // Debug aid: BC_DEMO_UI=beaver,order also selects a beaver / fills the order list.
                     let extra = std::env::var("BC_DEMO_UI").unwrap_or_default();
-                    ui.jobs_open = extra.contains("jobs");
                     if extra.contains("beaver") {
-                        ui.family_open = true;
                         if let Some(b) = sim.0.colony.beavers.first() {
                             *sel = Selection::Beaver(b.id);
                         }
@@ -1199,10 +1049,9 @@ mod tests {
     }
 
     #[test]
-    fn items_show_menu_groups_locked_hint_and_pond_summary() {
+    fn items_show_the_pond_summary_and_confirm() {
         let sim = founded();
         let mut ui = BuildUi::default();
-        ui.menu_open = true; // the menu now lives on the Buildings screen; this checks the legacy panel's model
         let near = sim.world.valleys[sim.world.start.0 as usize].center;
         let (a, b, d) = find_demo_dam(&sim, (near.0 as usize, near.1 as usize), 1.5).expect("a dam site exists");
         ui.tool = Some(BuildingKind::Dam);
@@ -1213,8 +1062,6 @@ mod tests {
         assert!(ui.preview.as_ref().unwrap().result.is_ok());
         let items = build_items(Vec2::new(1280.0, 720.0), &sim, &ui, &Pending::default(), Selection::None, None);
         let texts: Vec<&str> = items.iter().filter_map(|i| if let ItemKind::Text { text, .. } = &i.kind { Some(text.as_str()) } else { None }).collect();
-        assert!(texts.iter().any(|t| t.starts_with("WATER")), "branch header");
-        assert!(texts.iter().any(|t| t.contains("locked: Flow control  xp 0.0/120")), "locked item shows experience needed");
         assert!(texts.iter().any(|t| t.contains(&format!("POND  {} cells", d.pond_area)) && t.contains("trees flooded") && t.contains("buildings flooded")));
         assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Button { action: BAction::Confirm, state: BtnState::On, .. })));
     }

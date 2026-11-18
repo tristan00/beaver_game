@@ -1,6 +1,5 @@
 //! Gesture tests: pointer gestures to sim commands, and a headless run of the resulting orders.
 use super::*;
-use crate::ui::orders::gesture_command;
 use sim::buildings::BuildingKind;
 use sim::colony::Stage;
 

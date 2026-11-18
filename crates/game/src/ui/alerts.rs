@@ -25,7 +25,7 @@ fn spawn_root(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             left: px(GRID),
-            top: px(ZONE_TOP + 20.0),
+            top: px(ZONE_TOP + 4.0),
             display: Display::None,
             flex_direction: FlexDirection::Column,
             row_gap: px(GRID),

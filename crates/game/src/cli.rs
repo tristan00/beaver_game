@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--demo-pond] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|work|stores|buildings|tech|events] [--demo-dam] [--demo-orders drag] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--demo-pond] [--stress] [--autoplay-settle] [--mode water|forest|food|work] [--open colony|stores|buildings|tech|events|build|gather|jobs|screens] [--demo-dam] [--demo-orders drag] [--demo-place valid|invalid|dam] [--showcase poses|world] [--select beaver|family|building|site|dam|tree] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
@@ -25,7 +25,7 @@ pub struct Cli {
     pub demo_pond: bool,
     /// Scripted placement preview: hold a valid or invalid building ghost, or the dam hover preview.
     pub demo_place: Option<String>,
-    /// Open this navigation screen at start (screenshots).
+    /// Open this screen or toolbar menu at start (screenshots).
     pub open: Option<String>,
     /// Staged still scene for screenshots: `poses` or `world` (see `showcase.rs`).
     pub showcase: Option<String>,
@@ -81,7 +81,8 @@ impl Cli {
                 }
                 "--open" => {
                     let v = value("--open")?;
-                    if !crate::ui::shell::NavItem::ALL.iter().any(|n| n.label().eq_ignore_ascii_case(&v)) {
+                    let known = crate::ui::shell::NavItem::ALL.iter().any(|n| n.label().eq_ignore_ascii_case(&v)) || crate::ui::shell::HudTool::ALL.iter().any(|t| t.off_reason().is_none() && t.label().eq_ignore_ascii_case(&v));
+                    if !known {
                         return Err(format!("--open: unknown screen '{v}'"));
                     }
                     cli.open = Some(v);
@@ -153,6 +154,15 @@ mod tests {
             let args: Vec<&str> = a.into_iter().filter(|s| !s.is_empty()).collect();
             assert!(p(&args).unwrap().plain_world(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn open_takes_a_screen_or_a_toolbar_menu_and_work_is_no_screen() {
+        for ok in ["stores", "buildings", "build", "jobs", "screens"] {
+            assert!(p(&["--open", ok]).is_ok(), "{ok}");
+        }
+        assert!(p(&["--open", "work"]).is_err());
+        assert!(p(&["--open", "haul"]).is_err(), "haul is off");
     }
 
     #[test]
