@@ -1,31 +1,29 @@
-//! Draws the navigation bar, the time label, the open screen and the hover explanations from the
-//! view-models in `screens.rs`, and runs what the player clicks. Content is rebuilt only when its
-//! view-model changed, so hover and scroll state survive between sim updates.
-mod entity;
-use super::explain::Explained;
+//! The screen zone: the one open ledger screen (Colony, Work, Stores, Buildings, Tech, Events)
+//! drawn centred over the map from the view-models in `screens.rs`, plus click handling for every
+//! zone. Content is rebuilt only when its view-model changed, so hover and scroll state survive
+//! between sim updates. The other zones live in `status`, `buildbar`, `alerts` and `inspector`;
+//! all of them are built from `kit`.
 use super::icons::{Icon, IconAssets};
+use super::inspector;
 use super::kit::*;
 use super::screens::*;
 use super::shell::{NavItem, Shell};
 use crate::flow::{cell_world, Flow, Selection};
-use entity::PanelShown;
 use super::selection::{self as sel2, Selection as Selection2};
-use crate::flow_view::{Action, UiLayout};
+use crate::flow_view::UiLayout;
 use crate::state::Sim;
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::ui::UiGlobalTransform;
 use bevy::window::PrimaryWindow;
-use sim::events::Season;
 use sim::ColonyHost;
 use std::collections::HashMap;
 
-pub const PANEL_W: f32 = 660.0;
-/// Space kept below the open screen for the navigation bar.
-pub const NAV_RESERVE: f32 = 84.0;
-pub const TOP: f32 = 48.0;
-const ROW_H: f32 = 24.0;
-const REFRESH_SECS: f32 = 0.25;
+pub const PANEL_W: f32 = 760.0;
+/// Space kept below the open screen for the build bar.
+pub const NAV_RESERVE: f32 = 92.0;
+pub const TOP: f32 = ZONE_TOP;
+pub const REFRESH_SECS: f32 = 0.25;
 
 #[derive(Resource)]
 pub struct ShellUi {
@@ -38,18 +36,16 @@ pub struct ShellUi {
     pub panel: Option<Selection2>,
     /// Detail groups the person opened on the panel.
     pub groups_open: std::collections::HashSet<&'static str>,
-    last_panel: Option<PanelShown>,
-    panel_timer: f32,
-    dirty: bool,
+    pub(super) last_panel: Option<inspector::PanelShown>,
+    pub(super) panel_timer: f32,
+    pub(super) dirty: bool,
     timer: f32,
-    last_nav: Option<NavBar>,
-    last_time: Option<TimeBar>,
     last_screen: Option<Shown>,
 }
 
 impl Default for ShellUi {
     fn default() -> Self {
-        ShellUi { shell: Shell::default(), sort: HashMap::new(), status: String::new(), hist: History::default(), panel: None, groups_open: Default::default(), last_panel: None, panel_timer: 0.0, dirty: true, timer: 0.0, last_nav: None, last_time: None, last_screen: None }
+        ShellUi { shell: Shell::default(), sort: HashMap::new(), status: String::new(), hist: History::default(), panel: None, groups_open: Default::default(), last_panel: None, panel_timer: 0.0, dirty: true, timer: 0.0, last_screen: None }
     }
 }
 
@@ -60,31 +56,6 @@ struct Shown {
     status: String,
 }
 
-/// Text shown while hovering a node: a title and its terms.
-#[derive(Component, Clone, PartialEq, Debug)]
-pub struct Tip {
-    pub title: String,
-    pub lines: Vec<(String, String)>,
-}
-
-impl Tip {
-    pub fn note(title: impl Into<String>) -> Tip {
-        Tip { title: title.into(), lines: Vec::new() }
-    }
-    /// "Label = value" over each term that adds up to it.
-    pub fn of(n: &Explained) -> Tip {
-        let fmt = |v: f32| format!("{v:+.*}{}", n.dec.max(if n.parts.iter().any(|p| p.value.fract().abs() > 0.004) { 1 } else { 0 }) as usize, n.unit);
-        Tip {
-            title: format!("{}: {}", n.label, n.show()),
-            lines: n.parts.iter().map(|p| (p.label.clone(), fmt(p.value))).collect(),
-        }
-    }
-}
-
-#[derive(Component)]
-struct NavRoot;
-#[derive(Component)]
-struct TimeRoot;
 #[derive(Component)]
 struct ScreenRoot;
 #[derive(Component)]
@@ -93,10 +64,6 @@ struct ScreenBody;
 struct ScreenHeader;
 #[derive(Component)]
 struct ScreenFooter;
-#[derive(Component)]
-struct TipRoot;
-#[derive(Component)]
-struct ToastRoot;
 
 pub struct PanelsPlugin;
 
@@ -110,173 +77,64 @@ impl Plugin for PanelsPlugin {
         app.insert_resource(ui).add_systems(Startup, spawn_roots).add_systems(
             Update,
             (
-                (layout_roots, refresh, refresh_toasts, hover_tint, scroll_wheel, tooltip).chain(),
+                (layout_roots, refresh, hover_tint, scroll_wheel, tooltip).chain(),
                 publish_blockers.before(crate::flow_view::ClickSet),
                 handle_clicks.after(crate::flow_view::ClickSet),
                 close_on_escape,
-                (entity::sync_flow_selection, entity::select_for_screenshot, entity::layout_entity, entity::refresh_entity).chain(),
             ),
         );
     }
 }
 
-fn shadow() -> BoxShadow {
-    BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.30), px(0), px(3), px(0), px(9))
-}
-
 fn spawn_roots(mut commands: Commands) {
-    let abs = Node { position_type: PositionType::Absolute, ..default() };
-    commands.spawn((
-        NavRoot,
-        Blocker,
-        Node { height: px(62), align_items: AlignItems::Center, column_gap: px(6), padding: UiRect::axes(px(10), px(4)), ..abs.clone() },
-        BackgroundColor(PANEL),
-        Round(22.0),
-        shadow(),
-        GlobalZIndex(10),
-    ));
-    commands.spawn((
-        TimeRoot,
-        Blocker,
-        Node { height: px(28), align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::axes(px(12), px(0)), ..abs.clone() },
-        BackgroundColor(PANEL),
-        Round(14.0),
-        shadow(),
-        GlobalZIndex(10),
-    ));
     commands
         .spawn((
             ScreenRoot,
             Blocker,
-            Node { width: px(PANEL_W), flex_direction: FlexDirection::Column, padding: UiRect::all(px(10)), row_gap: px(6), display: Display::None, ..abs.clone() },
-            BackgroundColor(PANEL),
-            Round(18.0),
-            BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.34), px(0), px(4), px(0), px(12)),
+            panel(Node { width: px(PANEL_W), position_type: PositionType::Absolute, display: Display::None, ..default() }),
             GlobalZIndex(12),
         ))
         .with_children(|p| {
-            p.spawn((ScreenHeader, Node { align_items: AlignItems::Center, column_gap: px(8), flex_shrink: 0.0, ..default() }));
+            p.spawn((ScreenHeader, Node { align_items: AlignItems::Center, column_gap: px(GRID), flex_shrink: 0.0, ..default() }));
             p.spawn((
                 ScreenBody,
                 ScrollArea,
                 ScrollPosition::default(),
-                Node { flex_direction: FlexDirection::Column, flex_shrink: 1.0, min_height: px(0), overflow: Overflow::scroll_y(), row_gap: px(10), padding: UiRect::right(px(4)), ..default() },
+                Node { flex_direction: FlexDirection::Column, flex_shrink: 1.0, min_height: px(0), overflow: Overflow::scroll_y(), row_gap: px(GRID * 2.0), padding: UiRect::right(px(4)), ..default() },
             ));
-            p.spawn((ScreenFooter, Node { min_height: px(14), flex_shrink: 0.0, ..default() }));
+            p.spawn((ScreenFooter, Node { min_height: px(18), flex_shrink: 0.0, ..default() }));
         });
-    entity::spawn_root(&mut commands);
-    commands.spawn((
-        ToastRoot,
-        Blocker,
-        Node { position_type: PositionType::Absolute, left: px(12), top: px(12), display: Display::None, flex_direction: FlexDirection::Column, row_gap: px(6), max_width: px(380), ..default() },
-        GlobalZIndex(9),
-    ));
-    commands.spawn((
-        TipRoot,
-        Node { position_type: PositionType::Absolute, display: Display::None, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(10), px(7)), row_gap: px(2), max_width: px(300), ..default() },
-        BackgroundColor(Color::srgba(0.22, 0.15, 0.10, 0.96)),
-        Round(10.0),
-        GlobalZIndex(40),
-    ));
+    spawn_tip_root(&mut commands);
 }
 
-fn season_color(s: Season) -> Color {
-    match s {
-        Season::Spring => Color::srgb(0.55, 0.78, 0.45),
-        Season::Summer => Color::srgb(0.95, 0.75, 0.30),
-        Season::Autumn => Color::srgb(0.88, 0.52, 0.25),
-        Season::Winter => Color::srgb(0.58, 0.74, 0.88),
-    }
-}
-
-#[allow(clippy::type_complexity)]
-fn layout_roots(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    layout: Res<UiLayout>,
-    sim: Res<Sim>,
-    ui: Res<ShellUi>,
-    mut q: ParamSet<(Query<(&mut Node, &ComputedNode), With<NavRoot>>, Query<&mut Node, With<TimeRoot>>, Query<&mut Node, With<ScreenRoot>>)>,
-) {
+fn layout_roots(windows: Query<&Window, With<PrimaryWindow>>, sim: Res<Sim>, ui: Res<ShellUi>, mut q: Query<&mut Node, With<ScreenRoot>>) {
     let Ok(w) = windows.single() else { return };
     let founded = sim.0.colony.is_founded();
-    let show = |on: bool| if on { Display::Flex } else { Display::None };
-    for (mut n, c) in &mut q.p0() {
-        let width = c.size.x * c.inverse_scale_factor;
-        n.display = show(founded);
-        n.left = px(((w.width() - width) / 2.0).max(8.0));
-        n.bottom = px(12);
-    }
-    for mut n in &mut q.p1() {
-        let right = layout.rect(Action::Pause).map(|r| r.min.x - 8.0).unwrap_or(w.width() - 10.0);
-        n.display = show(founded);
-        n.right = px((w.width() - right).max(8.0));
-        n.top = px(10);
-    }
-    for mut n in &mut q.p2() {
-        n.display = show(founded && ui.shell.open.is_some());
-        n.width = px(PANEL_W.min(w.width() - 20.0));
-        n.left = px((w.width() - 10.0 - PANEL_W.min(w.width() - 20.0)).max(10.0));
-        n.top = px(TOP);
+    for mut n in &mut q {
+        let width = PANEL_W.min(w.width() - 20.0);
+        n.display = if founded && ui.shell.open.is_some() { Display::Flex } else { Display::None };
+        n.width = px(width);
+        n.left = px(((w.width() - width) / 2.0).max(10.0));
+        n.top = px(TOP + 8.0);
         n.max_height = px((w.height() - TOP - NAV_RESERVE).max(200.0));
     }
 }
 
 // ───────────────────────────── drawing ─────────────────────────────
 
-fn icon_node(p: &mut Kids, icons: &IconAssets, icon: Icon, size: f32) {
-    p.spawn((Node { width: px(size), height: px(size), flex_shrink: 0.0, ..default() }, ImageNode::new(icons.get(icon))));
-}
-
-fn label(p: &mut Kids, s: impl Into<String>, size: f32, color: Color) {
-    p.spawn((Text::new(s), TextFont::from_font_size(size), TextColor(color), TextLayout::no_wrap()));
-}
-
-fn spawn_nav(p: &mut Kids, nav: &NavBar, icons: &IconAssets) {
-    for e in &nav.entries {
-        let base = if e.open { CHIP_ON } else { Color::srgba(0.0, 0.0, 0.0, 0.0) };
-        p.spawn((
-            Node { width: px(66), height: px(52), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: px(1), flex_shrink: 0.0, ..default() },
-            BackgroundColor(base),
-            Round(14.0),
-            Clickable { act: Do::Nav(e.item), layer: 5, scrolled: false, base, hot: ROW_HOT },
-            Tip::note(if e.open { format!("{} (click to close)", e.label) } else { e.label.to_string() }),
-        ))
-        .with_children(|b| {
-            icon_node(b, icons, e.icon, 30.0);
-            label(b, e.label, 11.0, INK);
-            if let Some(n) = &e.badge {
-                b.spawn((
-                    Node { position_type: PositionType::Absolute, top: px(0), right: px(6), min_width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
-                    BackgroundColor(WARN),
-                    Round(9.0),
-                    Tip::of(n),
-                ))
-                .with_children(|c| label(c, n.show(), 11.0, INK));
-            }
-        });
-    }
-}
-
-fn spawn_time(p: &mut Kids, t: &TimeBar) {
-    p.spawn((Node { padding: UiRect::axes(px(9), px(2)), ..default() }, BackgroundColor(season_color(t.season)), Round(99.0), Tip::note("Season")))
-        .with_children(|c| label(c, format!("{:?}", t.season), 12.0, INK));
-    p.spawn((Node { align_items: AlignItems::Center, ..default() }, Tip::of(&t.day))).with_children(|c| label(c, format!("Day {}", t.day.show()), 13.0, INK));
-}
-
 fn kpi_card(p: &mut Kids, k: &Kpi, icons: &IconAssets) {
     p.spawn((
-        Node { width: px(96), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(2), padding: UiRect::axes(px(6), px(6)), flex_shrink: 0.0, ..default() },
-        BackgroundColor(PANEL_SOFT),
-        Round(14.0),
-        Tip::of(&k.num),
+        Node { width: px(112), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(4), padding: UiRect::axes(px(8), px(8)), flex_shrink: 0.0, ..default() },
+        BackgroundColor(RAISED),
+        Corner::Button,
     ))
     .with_children(|c| {
-        icon_node(c, icons, k.icon, 24.0);
-        label(c, k.num.show(), 18.0, tone_color(if k.tone == Tone::Dim { Tone::Normal } else { k.tone }));
+        icon_node(c, icons, k.icon, 28.0);
+        number(c, &k.num, 20.0, tone_color(if k.tone == Tone::Dim { Tone::Normal } else { k.tone }));
         if let Some(f) = k.frac {
-            bar(c, f, 70.0, 5.0, tone_color(if matches!(k.tone, Tone::Normal | Tone::Dim) { Tone::Good } else { k.tone }));
+            bar(c, f, 80.0, 6.0, tone_color(if matches!(k.tone, Tone::Normal | Tone::Dim) { Tone::Good } else { k.tone }));
         }
-        label(c, short(&k.num.label), 10.0, DIM);
+        label(c, short(&k.num.label), T_MIN, DIM);
     });
 }
 
@@ -287,8 +145,8 @@ fn short(s: &str) -> String {
 
 fn spawn_table(body: &mut Kids, t: &Table, idx: usize, sort: Option<(usize, bool)>, icons: &IconAssets) {
     body.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_shrink: 0.0, ..default() }).with_children(|k| {
-        label(k, t.title, 13.0, INK);
-        k.spawn(Node { padding: UiRect::horizontal(px(5)), ..default() }).with_children(|h| {
+        label_bold(k, t.title, T_TITLE, PITH);
+        k.spawn(Node { padding: UiRect::horizontal(px(GRID)), ..default() }).with_children(|h| {
             let heads = std::iter::once((t.name_col, t.name_w + 22.0)).chain(t.cols.iter().map(|c| (c.name, c.width)));
             for (ci, (name, w)) in heads.enumerate() {
                 let arrow = match sort {
@@ -296,33 +154,32 @@ fn spawn_table(body: &mut Kids, t: &Table, idx: usize, sort: Option<(usize, bool
                     _ => "",
                 };
                 let mut e = h.spawn((
-                    Node { width: px(w), height: px(19), padding: UiRect::horizontal(px(3)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() },
-                    BackgroundColor(PANEL_SOFT),
-                    Round(8.0),
+                    Node { width: px(w), height: px(28), padding: UiRect::horizontal(px(4)), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() },
+                    BackgroundColor(BARK),
                 ));
                 if !name.is_empty() {
-                    e.insert((Clickable { act: Do::Sort(idx, ci), layer: 2, scrolled: false, base: PANEL_SOFT, hot: ROW_HOT }, Tip::note("Click to sort")));
+                    e.insert((Clickable { act: Do::Sort(idx, ci), layer: 2, scrolled: false, base: BARK, hot: LINE }, Tip::note("Click to sort")));
                 }
-                e.with_children(|c| label(c, format!("{name}{arrow}"), 11.0, DIM));
+                e.with_children(|c| label(c, format!("{name}{arrow}"), T_MIN, if arrow.is_empty() { DIM } else { POND }));
             }
         });
         if t.rows.is_empty() {
-            label(k, t.empty, FONT, DIM);
+            label(k, t.empty, T_BODY, DIM);
         }
-        for (ri, row) in t.rows.iter().enumerate() {
-            let base = if ri % 2 == 0 { ROW_A } else { ROW_B };
-            let mut e = k.spawn((Node { height: px(ROW_H), padding: UiRect::horizontal(px(5)), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, BackgroundColor(base), Round(8.0)));
-            if let Some(a) = &row.click {
-                e.insert(Clickable { act: a.clone(), layer: 1, scrolled: true, base, hot: ROW_HOT });
+        for (ri, row_data) in t.rows.iter().enumerate() {
+            let base = row_fill(ri);
+            let mut e = k.spawn(row(ri));
+            if let Some(a) = &row_data.click {
+                e.insert(Clickable { act: a.clone(), layer: 1, scrolled: true, base, hot: LINE });
             }
             e.with_children(|r| {
-                r.spawn(Node { width: px(t.name_w + 22.0), column_gap: px(5), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|n| {
-                    icon_node(n, icons, row.icon, 17.0);
-                    label(n, row.name.clone(), FONT, INK);
+                r.spawn(Node { width: px(t.name_w + 22.0), column_gap: px(GRID), align_items: AlignItems::Center, overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }).with_children(|n| {
+                    icon_node(n, icons, row_data.icon, 24.0);
+                    label(n, row_data.name.clone(), T_BODY, PITH);
                 });
-                for (ci, cell) in row.cells.iter().enumerate() {
+                for (ci, cell) in row_data.cells.iter().enumerate() {
                     let w = t.cols.get(ci).map(|c| c.width).unwrap_or(60.0);
-                    r.spawn(Node { width: px(w), height: percent(100), padding: UiRect::horizontal(px(3)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(1), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() })
+                    r.spawn(Node { width: px(w), height: percent(100), padding: UiRect::horizontal(px(4)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(2), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() })
                         .with_children(|c| spawn_cell(c, cell, w, icons));
                 }
             });
@@ -332,35 +189,25 @@ fn spawn_table(body: &mut Kids, t: &Table, idx: usize, sort: Option<(usize, bool
 
 fn spawn_cell(c: &mut Kids, cell: &Cell, w: f32, icons: &IconAssets) {
     match cell {
-        Cell::Text(s, tone) => label(c, s.clone(), FONT, tone_color(*tone)),
+        Cell::Text(s, tone) => label(c, s.clone(), T_BODY, tone_color(*tone)),
         Cell::Entry(icon, s) => {
             c.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|e| {
-                icon_node(e, icons, *icon, 15.0);
-                label(e, s.clone(), FONT, INK);
+                icon_node(e, icons, *icon, 20.0);
+                label(e, s.clone(), T_BODY, PITH);
             });
         }
         Cell::Num { num, tone, frac } => {
-            c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), ..default() }, Tip::of(num))).with_children(|n| {
-                label(n, num.show(), FONT, tone_color(*tone));
+            c.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|n| {
+                number(n, num, T_BODY, tone_color(*tone));
                 if let Some(f) = frac {
-                    bar(n, *f, (w - 10.0).min(48.0), 3.0, tone_color(if matches!(tone, Tone::Normal | Tone::Dim) { Tone::Good } else { *tone }));
+                    bar(n, *f, (w - 10.0).min(56.0), 6.0, tone_color(if matches!(tone, Tone::Normal | Tone::Dim) { Tone::Good } else { *tone }));
                 }
             });
         }
         Cell::Actions(list) => {
             c.spawn(Node { column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 for a in list {
-                    r.spawn((
-                        Node { padding: UiRect::axes(px(6), px(1)), column_gap: px(3), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
-                        BackgroundColor(BTN),
-                        Round(99.0),
-                        Clickable { act: a.act.clone(), layer: 3, scrolled: true, base: BTN, hot: BTN_HOT },
-                        Tip::note(a.label.clone()),
-                    ))
-                    .with_children(|b| {
-                        icon_node(b, icons, a.icon, 15.0);
-                        label(b, a.label.clone(), 11.0, INK);
-                    });
+                    spawn_button_in(r, icons, KitButton::new(a.icon, a.label.clone(), a.act.clone()).layer(3).tip(a.label.clone()).compact(), true);
                 }
             });
         }
@@ -375,8 +222,6 @@ fn refresh(
     icons: Res<IconAssets>,
     tool: Res<crate::build::BuildUi>,
     mut ui: ResMut<ShellUi>,
-    nav: Query<Entity, With<NavRoot>>,
-    time_root: Query<Entity, With<TimeRoot>>,
     header: Query<Entity, With<ScreenHeader>>,
     body: Query<Entity, With<ScreenBody>>,
     footer: Query<Entity, With<ScreenFooter>>,
@@ -384,8 +229,6 @@ fn refresh(
     let s = &sim.0;
     if !s.colony.is_founded() {
         ui.hist = History::default();
-        ui.last_nav = None;
-        ui.last_time = None;
         ui.last_screen = None;
         return;
     }
@@ -397,25 +240,7 @@ fn refresh(
     ui.timer = REFRESH_SECS;
     ui.dirty = false;
 
-    let open = ui.shell.open;
-    let nb = nav_bar(s, open);
-    if ui.last_nav.as_ref() != Some(&nb) {
-        if let Ok(e) = nav.single() {
-            commands.entity(e).despawn_children();
-            commands.entity(e).with_children(|p| spawn_nav(p, &nb, &icons));
-        }
-        ui.last_nav = Some(nb);
-    }
-    let tb = time_bar(s);
-    if ui.last_time.as_ref() != Some(&tb) {
-        if let Ok(e) = time_root.single() {
-            commands.entity(e).despawn_children();
-            commands.entity(e).with_children(|p| spawn_time(p, &tb));
-        }
-        ui.last_time = Some(tb);
-    }
-
-    let Some(item) = open else {
+    let Some(item) = ui.shell.open else {
         ui.last_screen = None;
         return;
     };
@@ -439,27 +264,17 @@ fn refresh(
     if first && let Ok(e) = header.single() {
         commands.entity(e).despawn_children();
         commands.entity(e).with_children(|p| {
-            icon_node(p, &icons, item.icon(), 26.0);
-            label(p, item.label(), 17.0, INK);
+            icon_node(p, &icons, item.icon(), 32.0);
+            label_bold(p, item.label(), T_TITLE + 2.0, PITH);
             p.spawn(Node { flex_grow: 1.0, ..default() });
-            p.spawn((
-                Node { padding: UiRect::axes(px(7), px(3)), column_gap: px(4), align_items: AlignItems::Center, ..default() },
-                BackgroundColor(CHIP),
-                Round(99.0),
-                Clickable { act: Do::Nav(item), layer: 4, scrolled: false, base: CHIP, hot: ROW_HOT },
-                Tip::note("Close"),
-            ))
-            .with_children(|b| {
-                icon_node(b, &icons, Icon::Cancel, 16.0);
-                label(b, "Close", 11.0, INK);
-            });
+            spawn_button(p, &icons, KitButton::new(Icon::Cancel, "Close", Do::Nav(item)).layer(4).tip("Close"));
         });
     }
     if let Ok(e) = body.single() {
         commands.entity(e).despawn_children();
         commands.entity(e).with_children(|p| {
             if !shown.screen.kpis.is_empty() {
-                p.spawn(Node { column_gap: px(8), row_gap: px(8), flex_wrap: FlexWrap::Wrap, flex_shrink: 0.0, ..default() }).with_children(|k| {
+                p.spawn(Node { column_gap: px(GRID), row_gap: px(GRID), flex_wrap: FlexWrap::Wrap, flex_shrink: 0.0, ..default() }).with_children(|k| {
                     for kpi in &shown.screen.kpis {
                         kpi_card(k, kpi, &icons);
                     }
@@ -474,105 +289,13 @@ fn refresh(
         commands.entity(e).despawn_children();
         commands.entity(e).with_children(|p| {
             if shown.status.is_empty() {
-                label(p, "Hover a number to see what adds up to it.", 11.0, DIM);
+                label(p, "Hover a number to see what adds up to it.", T_MIN, DIM);
             } else {
-                label(p, shown.status.clone(), 11.0, INK);
+                label(p, shown.status.clone(), T_MIN, PITH);
             }
         });
     }
     ui.last_screen = Some(shown);
-}
-
-/// Short-lived notices on the map: click one to fly the camera to its place; join requests carry
-/// accept and turn-away buttons.
-fn refresh_toasts(
-    mut commands: Commands,
-    sim: Res<Sim>,
-    notices: Res<super::NoticesRes>,
-    icons: Res<IconAssets>,
-    mut root: Query<(Entity, &mut Node), With<ToastRoot>>,
-    mut shown: Local<Vec<super::events::Toast>>,
-) {
-    let Ok((e, mut node)) = root.single_mut() else { return };
-    let now = if sim.0.colony.is_founded() { super::events::toasts(&sim.0, &notices.0) } else { Vec::new() };
-    if *shown == now {
-        return;
-    }
-    node.display = if now.is_empty() { Display::None } else { Display::Flex };
-    commands.entity(e).despawn_children();
-    commands.entity(e).with_children(|p| {
-        for t in &now {
-            p.spawn((
-                Node { padding: UiRect::axes(px(8), px(5)), column_gap: px(6), align_items: AlignItems::Center, ..default() },
-                BackgroundColor(PANEL),
-                Round(14.0),
-                Clickable { act: t.jump.clone(), layer: 3, scrolled: false, base: PANEL, hot: ROW_HOT },
-                Tip::note(format!("{} - click to fly there", t.alert.kind.label())),
-            ))
-            .with_children(|r| {
-                icon_node(r, &icons, t.alert.kind.icon(), 20.0);
-                label(r, t.alert.text.clone(), 12.0, INK);
-                for a in &t.actions {
-                    r.spawn((
-                        Node { padding: UiRect::axes(px(6), px(1)), column_gap: px(3), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() },
-                        BackgroundColor(BTN),
-                        Round(99.0),
-                        Clickable { act: a.act.clone(), layer: 5, scrolled: false, base: BTN, hot: BTN_HOT },
-                        Tip::note(a.label.clone()),
-                    ))
-                    .with_children(|b| {
-                        icon_node(b, &icons, a.icon, 15.0);
-                        label(b, a.label.clone(), 11.0, INK);
-                    });
-                }
-            });
-        }
-    });
-    *shown = now;
-}
-
-/// Shows the explanation of the number (or button) under the cursor.
-fn tooltip(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    tips: Query<(&Tip, &ComputedNode, &UiGlobalTransform, Option<&Clickable>)>,
-    mut root: Query<(Entity, &mut Node), With<TipRoot>>,
-    mut commands: Commands,
-    mut shown: Local<Option<Tip>>,
-) {
-    let Ok(w) = windows.single() else { return };
-    let Ok((e, mut node)) = root.single_mut() else { return };
-    let cursor = w.physical_cursor_position();
-    let hit = cursor.and_then(|c| {
-        tips.iter()
-            .filter(|(_, n, t, _)| n.size.x > 1.0 && n.contains_point(**t, c))
-            // innermost (smallest) node wins, so a number beats the row or card around it
-            .min_by(|a, b| (a.1.size.x * a.1.size.y).total_cmp(&(b.1.size.x * b.1.size.y)))
-            .map(|(tip, ..)| tip.clone())
-    });
-    match (hit, w.cursor_position()) {
-        (Some(tip), Some(pos)) => {
-            if shown.as_ref() != Some(&tip) {
-                commands.entity(e).despawn_children();
-                commands.entity(e).with_children(|p| {
-                    label(p, tip.title.clone(), 12.0, Color::srgb(1.0, 0.96, 0.85));
-                    for (l, v) in &tip.lines {
-                        p.spawn(Node { column_gap: px(14), justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|r| {
-                            label(r, l.clone(), 11.0, Color::srgb(0.85, 0.78, 0.66));
-                            label(r, v.clone(), 11.0, Color::srgb(1.0, 0.96, 0.85));
-                        });
-                    }
-                });
-                *shown = Some(tip);
-            }
-            node.display = Display::Flex;
-            node.left = px((pos.x + 14.0).min(w.width() - 230.0).max(4.0));
-            node.top = px((pos.y + 18.0).min(w.height() - 40.0 - 14.0 * shown.as_ref().map_or(0, |t| t.lines.len()) as f32).max(4.0));
-        }
-        _ => {
-            node.display = Display::None;
-            *shown = None;
-        }
-    }
 }
 
 /// Tells the world picking code which screen areas are UI.
@@ -686,7 +409,7 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
         }
         Do::Select(x) => {
             ui.panel = Some(x);
-            *sel = entity::to_flow(s, x);
+            *sel = inspector::to_flow(s, x);
             if let Some(at) = sel2::locate(s, x) {
                 flow.focus = Some(cell_world(&s.height, (at.0 as f32, at.1 as f32)));
             }
@@ -727,7 +450,7 @@ pub fn apply(act: Do, sim: &mut Sim, flow: &mut Flow, sel: &mut Selection, ui: &
             };
             if let Some(x) = panel {
                 ui.panel = Some(x);
-                *sel = entity::to_flow(s, x);
+                *sel = inspector::to_flow(s, x);
                 if let Some(at) = sel2::locate(s, x) {
                     flow.focus = Some(cell_world(&s.height, (at.0 as f32, at.1 as f32)));
                 }

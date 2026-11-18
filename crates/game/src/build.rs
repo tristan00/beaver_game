@@ -17,19 +17,20 @@ use sim::colony::{BeaverId, FamilyId, Job, OrderId};
 use sim::dam_preview::DamPreview;
 use sim::SimState;
 
-const PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.10, 0.86);
-const BTN_BG: Color = Color::srgba(0.16, 0.20, 0.26, 0.94);
-const BTN_HOT: Color = Color::srgba(0.30, 0.38, 0.50, 0.96);
-const BTN_ON: Color = Color::srgba(0.20, 0.48, 0.30, 0.96);
-const BTN_OFF: Color = Color::srgba(0.12, 0.13, 0.15, 0.80);
-const TXT: Color = Color::srgb(0.92, 0.93, 0.95);
-const DIM: Color = Color::srgb(0.52, 0.55, 0.60);
-const WARN: Color = Color::srgb(1.0, 0.72, 0.28);
-const BAD: Color = Color::srgb(1.0, 0.42, 0.40);
-const GOOD: Color = Color::srgb(0.50, 0.92, 0.58);
+use crate::ui::kit::{self, Corner};
+const PANEL_BG: Color = kit::BARK;
+const BTN_BG: Color = kit::RAISED;
+const BTN_HOT: Color = kit::LINE;
+const BTN_ON: Color = kit::POND;
+const BTN_OFF: Color = kit::BARK;
+const TXT: Color = kit::PITH;
+const DIM: Color = kit::DIM;
+const WARN: Color = kit::AMBER;
+const BAD: Color = kit::BERRY;
+const GOOD: Color = kit::MOSS;
 /// Space kept free at the bottom for the navigation bar.
 const NAV_CLEARANCE: f32 = 96.0;
-const POND: Color = Color::srgb(0.45, 0.72, 1.0);
+const POND: Color = kit::POND;
 
 // ───────────────────────────── state ─────────────────────────────
 
@@ -792,16 +793,19 @@ fn render_items(
         let node = |r: Rect| Node { position_type: PositionType::Absolute, left: px(r.min.x), top: px(r.min.y), width: px(r.width()), height: px(r.height()), ..default() };
         match &it.kind {
             ItemKind::Panel(c) => {
-                commands.spawn((BuildNode, node(it.rect), BackgroundColor(*c), GlobalZIndex(5)));
+                let mut e = commands.spawn((BuildNode, node(it.rect), BackgroundColor(*c), GlobalZIndex(5)));
+                if *c == PANEL_BG {
+                    e.insert((Corner::Panel, kit::hard_shadow()));
+                }
             }
             ItemKind::Text { text, color, size } => {
-                commands.spawn((BuildNode, node(it.rect), Text::new(text.clone()), TextFont::from_font_size(*size), TextColor(*color), GlobalZIndex(6)));
+                commands.spawn((BuildNode, node(it.rect), Text::new(text.clone()), kit::font(*size), TextColor(*color), GlobalZIndex(6)));
             }
             ItemKind::Button { label, state, .. } => {
                 let (bg, fg) = match state {
                     BtnState::Normal => (BTN_BG, TXT),
                     BtnState::Hot => (BTN_HOT, TXT),
-                    BtnState::On => (BTN_ON, TXT),
+                    BtnState::On => (BTN_ON, kit::RAIL),
                     BtnState::Locked => (BTN_OFF, DIM),
                     BtnState::Disabled => (BTN_OFF, DIM),
                 };
@@ -809,9 +813,9 @@ fn render_items(
                 n.justify_content = JustifyContent::Center;
                 n.align_items = AlignItems::Center;
                 commands
-                    .spawn((BuildNode, n, BackgroundColor(bg), GlobalZIndex(6)))
+                    .spawn((BuildNode, n, BackgroundColor(bg), Corner::Button, GlobalZIndex(6)))
                     .with_children(|p| {
-                        p.spawn((Text::new(label.clone()), TextFont::from_font_size(13.0), TextColor(fg)));
+                        p.spawn((Text::new(label.clone()), kit::font(kit::T_BODY), TextColor(fg)));
                     });
             }
         }

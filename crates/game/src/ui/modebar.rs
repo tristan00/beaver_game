@@ -4,7 +4,7 @@
 use super::icons::{Icon, IconAssets};
 use super::kit::*;
 use super::mapmodes::{LegendRow, MapMode};
-use super::panels::{ShellUi, Tip};
+use super::panels::ShellUi;
 use super::screens::Do;
 use crate::map_overlay::ActiveOverlay;
 use crate::state::Sim;
@@ -40,20 +40,15 @@ fn spawn_root(mut commands: Commands) {
 }
 
 fn text(p: &mut Kids, s: impl Into<String>, size: f32, color: Color) {
-    p.spawn((Text::new(s), TextFont::from_font_size(size), TextColor(color), TextLayout::no_wrap()));
+    label(p, s, size, color);
 }
 
 fn icon(p: &mut Kids, icons: &IconAssets, i: Icon, size: f32) {
-    p.spawn((Node { width: px(size), height: px(size), flex_shrink: 0.0, ..default() }, ImageNode::new(icons.get(i))));
+    icon_node(p, icons, i, size);
 }
 
 fn card() -> impl Bundle {
-    (
-        Node { flex_direction: FlexDirection::Column, padding: UiRect::all(px(8)), row_gap: px(4), min_width: px(236), ..default() },
-        BackgroundColor(PANEL),
-        Round(16.0),
-        BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.30), px(0), px(3), px(0), px(9)),
-    )
+    panel(Node { min_width: px(260), padding: UiRect::all(px(GRID * 1.5)), row_gap: px(GRID / 2.0), ..default() })
 }
 
 fn color([r, g, b, a]: [f32; 4]) -> Color {
@@ -62,13 +57,13 @@ fn color([r, g, b, a]: [f32; 4]) -> Color {
 
 fn legend_row(p: &mut Kids, r: &LegendRow, icons: &IconAssets) {
     p.spawn((Node { align_items: AlignItems::Center, column_gap: px(6), padding: UiRect::axes(px(4), px(1)), ..default() }, Tip::of(&r.num))).with_children(|row| {
-        row.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, BackgroundColor(color(r.swatch)), Round(3.0)));
+        row.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, BackgroundColor(color(r.swatch))));
         if let Some(i) = r.icon {
             icon(row, icons, i, 16.0);
         }
-        text(row, r.num.label.clone(), 12.0, INK);
+        text(row, r.num.label.clone(), T_MIN, PITH);
         row.spawn(Node { flex_grow: 1.0, min_width: px(8), ..default() });
-        text(row, r.num.show(), 13.0, INK);
+        text(row, r.num.show(), T_BODY, PITH);
     });
 }
 
@@ -104,7 +99,7 @@ fn refresh(mut commands: Commands, sim: Res<Sim>, ui: Res<ShellUi>, ov: Res<Acti
             root.spawn(card()).with_children(|c| {
                 c.spawn((Node { align_items: AlignItems::Center, column_gap: px(6), ..default() }, Tip::note(mode.hint()))).with_children(|h| {
                     icon(h, &icons, mode.icon(), 22.0);
-                    text(h, mode.label(), 15.0, INK);
+                    label_bold(h, mode.label(), T_TITLE, PITH);
                 });
                 for r in &now.legend {
                     legend_row(c, r, &icons);
@@ -112,44 +107,22 @@ fn refresh(mut commands: Commands, sim: Res<Sim>, ui: Res<ShellUi>, ov: Res<Acti
                 if !mode.actions().is_empty() {
                     c.spawn(Node { column_gap: px(6), row_gap: px(4), flex_wrap: FlexWrap::Wrap, margin: UiRect::top(px(2)), ..default() }).with_children(|bar| {
                         for a in mode.actions() {
-                            bar.spawn((
-                                Node { padding: UiRect::axes(px(8), px(4)), column_gap: px(5), align_items: AlignItems::Center, ..default() },
-                                BackgroundColor(BTN),
-                                Round(99.0),
-                                Clickable { act: Do::ModeAct(*a), layer: 6, scrolled: false, base: BTN, hot: BTN_HOT },
-                                Tip::note(a.hint()),
-                            ))
-                            .with_children(|b| {
-                                icon(b, &icons, a.icon(), 18.0);
-                                text(b, a.label(), 12.0, INK);
-                            });
+                            spawn_button(bar, &icons, KitButton::new(a.icon(), a.label(), Do::ModeAct(*a)).layer(6).compact().tip(a.hint()));
                         }
                     });
                 }
                 if now.armed || now.editor {
-                    text(c, if now.armed { "Drag on the map to assign. Esc cancels." } else { "Editing work areas. Esc closes." }, 11.0, DIM);
+                    text(c, if now.armed { "Drag on the map to assign. Esc cancels." } else { "Editing work areas. Esc closes." }, T_MIN, DIM);
                 } else if !now.status.is_empty() && mode != MapMode::Normal {
-                    text(c, now.status.clone(), 11.0, DIM);
+                    text(c, now.status.clone(), T_MIN, DIM);
                 }
             });
         }
-        root.spawn((Node { padding: UiRect::axes(px(8), px(4)), column_gap: px(4), align_items: AlignItems::Center, ..default() }, BackgroundColor(PANEL), Round(20.0), BoxShadow::new(Color::srgba(0.25, 0.15, 0.05, 0.30), px(0), px(3), px(0), px(9))))
+        root.spawn(panel_with(Node { flex_direction: FlexDirection::Row, padding: UiRect::all(px(GRID)), column_gap: px(GRID), align_items: AlignItems::Center, ..default() }))
             .with_children(|strip| {
                 for m in MapMode::PAINTED {
-                    let on = m == mode;
-                    let base = if on { CHIP_ON } else { Color::srgba(0.0, 0.0, 0.0, 0.0) };
-                    strip
-                        .spawn((
-                            Node { width: px(54), height: px(46), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, ..default() },
-                            BackgroundColor(base),
-                            Round(12.0),
-                            Clickable { act: Do::Mode(m), layer: 6, scrolled: false, base, hot: ROW_HOT },
-                            Tip::note(format!("{} map mode: {}", m.label(), m.hint())),
-                        ))
-                        .with_children(|b| {
-                            icon(b, &icons, m.icon(), 26.0);
-                            text(b, m.label(), 10.0, INK);
-                        });
+                    let kind = if m == mode { ButtonKind::Active } else { ButtonKind::Normal };
+                    spawn_button(strip, &icons, KitButton::new(m.icon(), "", Do::Mode(m)).kind(kind).layer(6).tip(format!("{} map mode: {}", m.label(), m.hint())));
                 }
             });
     });
