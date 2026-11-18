@@ -26,6 +26,8 @@ pub struct Ctx<'a> {
     pub minimap: Option<&'a Handle<Image>>,
     pub view_cell: (f32, f32),
     pub log: &'a std::collections::VecDeque<String>,
+    /// (day, population, food) samples every five days.
+    pub history: &'a [(f64, usize, f32)],
     pub cursor: Option<Vec2>,
 }
 

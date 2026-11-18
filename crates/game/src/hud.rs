@@ -1036,6 +1036,7 @@ fn refresh_panels(
         minimap: minimap.as_ref().map(|m| &m.0),
         view_cell: crate::flow::world_cell(&s.height, orbit.target),
         log: &flow.log,
+        history: &flow.history,
         cursor: cursor.0,
     };
     let founded = s.colony.is_founded();
@@ -1091,7 +1092,7 @@ fn refresh_fast(
         }
         let tree = match p {
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: MapLens::World, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, cursor: cursor.0 };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: MapLens::World, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
                 panels::cursor_tag(&ctx)
             }
             _ => match cams.single() {
@@ -1504,7 +1505,7 @@ mod tests {
         states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
         let mut failures = Vec::new();
         for (name, hud, sel) in &states {
-            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens: MapLens::World, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, cursor: Some(Vec2::new(300.0, 300.0)) };
+            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens: MapLens::World, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, history: &[], cursor: Some(Vec2::new(300.0, 300.0)) };
             let all: Vec<(&str, Vec<ui::VNode>)> = vec![
                 ("strip", panels::strip(&ctx)),
                 ("calendar", panels::calendar(&ctx)),

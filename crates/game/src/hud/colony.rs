@@ -90,8 +90,28 @@ fn cell_num(u: &mut Ui, s: impl Into<String>, w: f32, col: Color) {
 
 // ───────────────────────────── population ─────────────────────────────
 
+/// A small bar chart of samples, newest on the right, with its peak as the only label.
+fn history_bars(u: &mut Ui, icon: Icon, col: Color, values: &[f32], name: &str) {
+    let top = values.iter().copied().fold(1.0f32, f32::max);
+    u.row(8.0, |r| {
+        r.icon(icon, 16.0, col);
+        r.node(Node { height: Val::Px(28.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), ..row_node(1.0) }, |b| {
+            for v in values.iter().rev().take(72).rev() {
+                b.add(VNode::new(Node { width: Val::Px(4.0), height: Val::Px((v / top * 28.0).max(1.0)), ..default() })).bg(col);
+            }
+        });
+        r.text(num(top), 11.0, MUTED);
+    })
+    .tip(Tip::name(name).line("Every", "5d"));
+}
+
 fn population(c: &Ctx, u: &mut Ui) {
     let s = c.s;
+    if c.history.len() > 1 {
+        let pop: Vec<f32> = c.history.iter().map(|h| h.1 as f32).collect();
+        history_bars(u, Icon::Beaver, INK, &pop, "Beavers");
+        u.rule();
+    }
     let mut rows: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().collect();
     let key = c.hud.pop_sort;
     rows.sort_by(|a, b| {
