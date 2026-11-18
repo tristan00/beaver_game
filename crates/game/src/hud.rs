@@ -370,7 +370,7 @@ fn track_cursor(windows: Query<&Window, With<PrimaryWindow>>, scale: Res<UiScale
 }
 
 fn hover_cell(point: Res<world::HoverPoint>, mut hover: ResMut<HoverCell>) {
-    let cell = point.0.map(|p| (p.0.round().max(0.0) as usize, p.1.round().max(0.0) as usize));
+    let cell = point.0.map(|p| p.0);
     if hover.0 != cell {
         hover.0 = cell;
     }
@@ -666,7 +666,7 @@ fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &G
         .beavers
         .iter()
         .filter(|bv| bv.stage != sim::colony::Stage::Kit)
-        .filter(|bv| cam.world_to_viewport(gt, cell_world(&s.height, bv.pos)).ok().map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
+        .filter(|bv| world::beaver_world(s, bv.id).and_then(|w| cam.world_to_viewport(gt, w).ok()).map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
         .map(|bv| bv.id)
         .collect();
     if let Some(first) = picked.first() {
@@ -685,8 +685,8 @@ fn frame_camera(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, 
 }
 
 fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<Flow>) {
-    if let Some(b) = hud.follow.and_then(|id| sim.0.colony.beaver(id)) {
-        flow.focus = Some(cell_world(&sim.0.height, b.pos));
+    if let Some(w) = hud.follow.and_then(|id| world::beaver_world(&sim.0, id)) {
+        flow.focus = Some(w);
     }
 }
 

@@ -634,8 +634,9 @@ pub fn tip_logic(
     mut tips: ResMut<Tips>,
 ) {
     let now = time.elapsed_secs();
+    // Without a cursor (outside the window, scripted screenshots) nothing opens; frozen tips stay.
     let Some(cursor) = cursor_logical(&windows, ui_scale.0) else {
-        tips.layers.clear();
+        tips.layers.retain(|l| l.frozen);
         return;
     };
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);

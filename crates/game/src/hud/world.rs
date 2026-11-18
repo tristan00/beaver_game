@@ -51,17 +51,42 @@ impl Thing {
 #[derive(Resource, Default)]
 pub struct HoverThing(pub Option<Thing>);
 
-/// The world point under the pointer (continuous cell coordinates).
+/// The world point under the pointer: the cell, and the point in `flow::world_cell` coordinates.
 #[derive(Resource, Default)]
-pub struct HoverPoint(pub Option<(f32, f32)>);
+pub struct HoverPoint(pub Option<(Cell, (f32, f32))>);
+
+/// Where a beaver is drawn, in `flow::world_cell` coordinates (the renderer's own position).
+pub fn beaver_at(s: &sim::SimState, id: BeaverId) -> Option<(f32, f32)> {
+    let ag = s.agents.get(id)?;
+    if ag.inside {
+        return None;
+    }
+    let w = crate::entities_render::sim_view::agent_world_pos(s, ag, 0.0);
+    Some(crate::flow::world_cell(&s.height, w))
+}
+
+/// Where a beaver is drawn, as a world point.
+pub fn beaver_world(s: &sim::SimState, id: BeaverId) -> Option<Vec3> {
+    let ag = s.agents.get(id)?;
+    if ag.inside {
+        return None;
+    }
+    Some(crate::entities_render::sim_view::agent_world_pos(s, ag, 0.0))
+}
+
+/// The centre of a building's footprint in `flow::world_cell` coordinates.
+pub fn building_centre(b: &sim::buildings::Building) -> (f32, f32) {
+    let (w, d) = b.kind.spec().footprint;
+    (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0)
+}
 
 /// What is at continuous cell position `p`: a beaver within reach first, then a building, a
 /// resource, a lodge, else the cell.
-pub fn pick(s: &sim::SimState, p: (f32, f32)) -> Thing {
-    let cell = (p.0.round().max(0.0) as usize, p.1.round().max(0.0) as usize);
+pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     let d2 = |a: (f32, f32)| (a.0 - p.0).powi(2) + (a.1 - p.1).powi(2);
-    if let Some(b) = s.colony.beavers.iter().filter(|b| d2(b.pos) < 0.8 * 0.8).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) {
-        return Thing::Beaver(b.id);
+    let near = s.colony.beavers.iter().filter_map(|b| beaver_at(s, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.9 * 0.9).min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((id, _)) = near {
+        return Thing::Beaver(id);
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
@@ -69,7 +94,7 @@ pub fn pick(s: &sim::SimState, p: (f32, f32)) -> Thing {
     if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0) {
         return Thing::Resource(r.id);
     }
-    if let Some(l) = s.colony.lodges.iter().find(|l| d2(l.pos) < 1.6 * 1.6) {
+    if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 1.6 * 1.6) {
         return Thing::Lodge(l.id);
     }
     Thing::Cell(cell)
@@ -168,12 +193,12 @@ pub fn world_hover(
         let cursor = windows.single().ok()?.cursor_position()?;
         let (cam, gt) = cams.single().ok()?;
         let ray = cam.viewport_to_world(gt, cursor).ok()?;
-        crate::flow::ray_heightfield(ray.origin, *ray.direction, &sim.0.height).map(|(_, hit, _)| crate::flow::world_cell(&sim.0.height, hit))
+        crate::flow::ray_heightfield(ray.origin, *ray.direction, &sim.0.height).map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
     })();
     if point.0 != p {
         point.0 = p;
     }
-    let t = p.map(|p| pick(&sim.0, p));
+    let t = p.map(|(c, p)| pick(&sim.0, c, p));
     if thing.0 != t {
         thing.0 = t;
     }
@@ -189,11 +214,11 @@ pub fn world_hover(
 /// World-anchored icons over things that need attention, positioned on screen each frame.
 pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState) -> Vec<VNode> {
     let mut out = Vec::new();
-    let place = |p: (f32, f32), lift: f32| -> Option<Vec2> {
-        let mut w = cell_world(&s.height, p);
+    let project = |mut w: Vec3, lift: f32| -> Option<Vec2> {
         w.y += lift;
         cam.world_to_viewport(gt, w).ok().map(|v| v / scale.max(0.01))
     };
+    let place = |p: (f32, f32), lift: f32| -> Option<Vec2> { project(cell_world(&s.height, p), lift) };
     let mut push = |pos: Vec2, icons: &[(Icon, Color)]| {
         if out.len() >= 80 {
             return;
@@ -217,8 +242,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     };
     // Buildings with empty worker slots or a blocking limit.
     for b in s.buildings.buildings.iter() {
-        let (w, d) = b.kind.spec().footprint;
-        let centre = (b.pos.0 as f32 + w as f32 / 2.0 - 0.5, b.pos.1 as f32 + d as f32 / 2.0 - 0.5);
+        let centre = building_centre(b);
         let mut icons: Vec<(Icon, Color)> = Vec::new();
         if let Some(pl) = s.work.place(b.id) {
             let empty = pl.slots.iter().filter(|x| x.worker.is_none()).count();
@@ -227,7 +251,9 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
                     icons.push((Icon::RoleBuilder, WARN));
                     icons.push((Icon::Cross, BAD));
                 }
-            } else if empty > 0 && b.is_complete() {
+            } else if b.is_complete() && !pl.slots.is_empty() && empty == pl.slots.len() && pl.slots[0].role != sim::work::Role::Haul {
+                // Only a workplace with nobody at all: a half-staffed one shows its dots when
+                // selected, and stores work without haulers.
                 icons.push((role_icon(pl.slots[0].role), WARN));
                 icons.push((Icon::Cross, BAD));
             }
@@ -253,16 +279,14 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     }
     // Idle beavers.
     for id in sim::hud::idle_beavers(s) {
-        if let Some(b) = s.colony.beaver(id) {
-            if let Some(p) = place(b.pos, 1.3) {
-                push(p, &[(Icon::Idle, WARN)]);
-            }
+        if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.3)) {
+            push(p, &[(Icon::Idle, WARN)]);
         }
     }
     // Selected beavers get a ring marker (nothing else uses it).
     for id in hud.selected.iter() {
-        if let Some(b) = s.colony.beaver(*id) {
-            if let Some(p) = place(b.pos, 0.2) {
+        if s.colony.beaver(*id).is_some() {
+            if let Some(p) = beaver_world(s, *id).and_then(|w| project(w, 0.2)) {
                 let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 13.0), top: Val::Px(p.y - 13.0), width: Val::Px(26.0), height: Val::Px(26.0), border: UiRect::all(Val::Px(2.0)), border_radius: BorderRadius::all(Val::Px(13.0)), ..default() });
                 v.border = Some(BorderColor::all(SELECT));
                 out.push(v);
