@@ -85,7 +85,7 @@ Nothing here is taken from the earlier (deleted) interface or its specs; I did n
 | Work | Logging camp, Forager hut, Mud pit, Quarry camp, Mill, Workshop, Water wheel |
 | Water | Dam, Canal, Lock, Dock, Barge |
 | Store | Food cache, Storehouse, Warehouse |
-| Clear (orders, see section 8) | Gather, Cancel gather, Demolish |
+| Clear (orders, see section 9) | Gather, Cancel gather, Demolish |
 
 - Open with `B` [2-AN], groups by Ctrl+wheel and tools by Shift+wheel [2-TB] (low confidence, one game each). A hover card shows cost and footprint, and whether the site must be dry or touch water (`Site` in `buildings.rs`). Guard post and scent mound sit under Home.
 - Placement stays in the tool until `Esc` or right-click (right-click cancels [3-CS]).
