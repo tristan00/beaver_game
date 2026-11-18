@@ -192,7 +192,7 @@ impl NavGrid {
                 _ => b.cells().for_each(|c| self.set(c, Surface::Solid)),
             }
         }
-        for r in sim.resources.items.iter().filter(|r| r.kind.is_solid()) {
+        for r in sim.resources.items.iter().filter(|r| r.is_solid()) {
             self.set(r.cell, Surface::Solid);
         }
     }

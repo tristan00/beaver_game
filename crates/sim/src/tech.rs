@@ -135,6 +135,12 @@ const WEAVING: TechId = TechId(5);
 const CANAL_DIGGING: TechId = TechId(7);
 const DOCKS: TechId = TechId(8);
 const FLOW_CONTROL: TechId = TechId(9);
+const FORESTRY: TechId = TechId(17);
+
+/// Names of the forestry techs whose effects are not building unlocks (`forestry::knows`):
+/// Forestry also opens the logging camps' cutting rules, Coppicing the `Coppice` rule.
+pub const FORESTRY_TECH: &str = "Forestry";
+pub const COPPICING_TECH: &str = "Coppicing";
 
 /// Every tech, indexed by `TechId`.
 pub const TECHS: &[TechDef] = &[
@@ -166,6 +172,10 @@ pub const TECHS: &[TechDef] = &[
     exp("Forest lore", Branch::Forest, 4, 100.0, 10, &[STONEWORK], 30.0, &[B(Bonus::Storage(STORAGE_BONUS))]),
     exp("Fine tools", Branch::Craft, 2, 50.0, 10, &[WEAVING], 40.0, &[B(Bonus::CraftSpeed(CRAFT_SPEED_BONUS))]),
     exp("Territory marking", Branch::Defence, 1, 3.0, 6, &[FELLING], 0.0, &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)]),
+    // Forestry (`forestry`): planting and upkeep, right after Felling.
+    exp(FORESTRY_TECH, Branch::Forest, 1, 20.0, 5, &[FELLING], 0.0, &[U(BuildingKind::ForesterLodge)]),
+    exp(COPPICING_TECH, Branch::Forest, 2, 50.0, 8, &[FORESTRY], 0.0, &[]),
+    exp("Tree nursery", Branch::Forest, 3, 80.0, 10, &[FORESTRY, WEAVING], 30.0, &[U(BuildingKind::TreeNursery)]),
 ];
 
 /// Index into `TECHS` of the tech that unlocks `kind`, if any.

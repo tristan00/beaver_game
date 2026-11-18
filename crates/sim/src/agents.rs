@@ -56,6 +56,8 @@ pub enum Task {
     Haul { to: BuildingId },
     /// Walking to / sleeping in the home lodge.
     Rest,
+    /// A forester planting or tending in its lodge's area (`forestry`).
+    Forest(crate::forestry::ForestTask),
 }
 
 impl Task {
@@ -69,6 +71,7 @@ impl Task {
             Task::Build { .. } => "building",
             Task::Haul { .. } => "hauling",
             Task::Rest => "resting",
+            Task::Forest(_) => "foresting",
         }
     }
 }
@@ -243,6 +246,8 @@ struct Job {
     kinds: &'static [ResourceKind],
     area: Option<Area>,
     only: Option<ResourceId>,
+    /// Youngest standing tree this job fells (`forestry::cut_min_age`).
+    min_age: f32,
 }
 
 /// A plant with less than this left is bare: collectors leave it to regrow instead of standing
@@ -252,7 +257,7 @@ pub const PLANT_MIN_TAKE: f32 = 0.5;
 /// Whether anything a collector wants is left (bark is food, not part of wood loads).
 fn gatherable(r: &Resource) -> bool {
     match r.kind {
-        ResourceKind::Tree => true,
+        ResourceKind::Tree => crate::forestry::fellable(r),
         ResourceKind::Felled => r.amount > 0.0 || r.branches > 0.0,
         ResourceKind::Plant => r.amount >= PLANT_MIN_TAKE,
         _ => r.amount > 0.0,
@@ -279,12 +284,14 @@ impl Job {
                 .resources
                 .get(id)
                 .filter(|r| gatherable(r))
-                .map(|_| Job { kinds: &[], area: None, only: Some(id) }),
-            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None }),
+                .map(|_| Job { kinds: &[], area: None, only: Some(id), min_age: 0.0 }),
+            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, None) }),
             Assignment::Slot(b, slot) => {
                 let place = sim.work.place(b)?;
                 match (place.slots.get(slot)?.role, place.area) {
-                    (Role::Collect(kind), Some(area)) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None }),
+                    (Role::Collect(kind), Some(area)) => {
+                        Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, Some(b)) })
+                    }
                     _ => None,
                 }
             }
@@ -301,6 +308,7 @@ impl Job {
             && self.only.is_none_or(|id| id == r.id)
             && self.area.is_none_or(|a| a.contains(r.cell))
             && (self.only.is_some() || self.kinds.contains(&r.kind))
+            && (r.kind != ResourceKind::Tree || crate::forestry::cuttable(r, self.min_age))
     }
     /// Nearest permitted resource (preferred kind first, then squared distance, then id).
     fn pick(&self, sim: &SimState, from: Cell) -> Option<ResourceId> {
@@ -367,7 +375,7 @@ fn route_home(sim: &SimState, who: BeaverId, from: Cell) -> Option<Path> {
 // ───────────────────────────── per-agent tick ─────────────────────────────
 
 /// Follows `ag.path` for `dt_days`, at most one cell per call. True if the agent moved.
-fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
+pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
     let Some(path) = ag.path.as_mut() else { return false };
     let Some(&(next, gait)) = path.steps.first() else {
         ag.path = None;
@@ -393,7 +401,7 @@ fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
 }
 
 /// Records progress (or lack of it) for the stuck-agent check.
-fn note(ag: &mut Agent, progressed: bool) {
+pub(crate) fn note(ag: &mut Agent, progressed: bool) {
     ag.stuck_ticks = if progressed { 0 } else { ag.stuck_ticks.saturating_add(1) };
 }
 
@@ -403,6 +411,8 @@ enum Duty {
     Collect(Job),
     Build(BuildingId),
     Haul,
+    /// Slot `.1` of forester's lodge `.0` (`forestry`).
+    Forest(BuildingId, usize),
 }
 
 fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
@@ -413,6 +423,7 @@ fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
         Some((b, _, Role::Build)) if sim.work.place(b).is_some_and(|p| p.site.is_some()) => Duty::Build(b),
         Some((_, _, Role::Haul)) => Duty::Haul,
         Some((b, i, Role::Collect(_))) => Job::resolve(sim, Assignment::Slot(b, i)).map_or(Duty::None, Duty::Collect),
+        Some((b, i, Role::Forester)) if sim.work.place(b).is_some_and(|p| p.kind == BuildingKind::ForesterLodge) => Duty::Forest(b, i),
         Some(_) => Duty::None,
         None => ag.assignment.and_then(|a| Job::resolve(sim, a)).map_or(Duty::None, Duty::Collect),
     }
@@ -473,6 +484,7 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
         Duty::Collect(j) => j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 }),
         Duty::Build(site) => build_task(sim, *site, ag),
         Duty::Haul => haul_task(sim),
+        Duty::Forest(b, i) => crate::forestry::next_task(sim, *b, *i, ag.id, ag.cell).map(Task::Forest),
     }
 }
 
@@ -529,6 +541,10 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         Task::Fetch { from, good, then } => fetch(sim, ag, dt, &duty, from, good, then),
         Task::Build { site } => build(sim, ag, dt, &duty, site),
         Task::Haul { to } => haul(sim, ag, dt, to),
+        Task::Forest(t) => {
+            let lodge = if let Duty::Forest(b, _) = duty { Some(b) } else { None };
+            crate::forestry::work(sim, ag, dt, lodge, t)
+        }
     }
 }
 
@@ -951,6 +967,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
         // The tree frees its cell when it falls; the nav grid follows at once.
         if sim.resources.fell(target, dt * ag.speed * FELL_PER_DAY).expect("kind checked above") {
             sim.nav.set(res.cell, Surface::Land);
+            crate::forestry::felled(sim, ag.id, res.cell);
         }
         return;
     }
@@ -1156,7 +1173,7 @@ mod tests {
     #[test]
     fn collectors_skip_a_resource_nobody_can_reach_until_the_retry_day() {
         let mut sim = SimState::new(1);
-        let job = Job { kinds: &[ResourceKind::Tree], area: None, only: None };
+        let job = Job { kinds: &[ResourceKind::Tree], area: None, only: None, min_age: 0.0 };
         let first = job.pick(&sim, (64, 64)).expect("trees on the map");
         sim.agents.unreachable.insert(first, sim.time_days + UNREACHABLE_RETRY_DAYS);
         let second = job.pick(&sim, (64, 64)).expect("another tree");

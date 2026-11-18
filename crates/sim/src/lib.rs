@@ -12,6 +12,7 @@ pub mod dam_preview;
 pub mod ecology;
 pub mod events;
 pub mod features;
+pub mod forestry;
 pub mod grid;
 pub mod hud;
 pub mod jobs;
@@ -105,6 +106,10 @@ pub enum Command {
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     /// What a workshop or mill makes (`None` stops it).
     SetRecipe { building: buildings::BuildingId, recipe: Option<buildings::Recipe> },
+    /// What a logging camp fells (`forestry::CutRule`).
+    SetCutRule { building: buildings::BuildingId, rule: forestry::CutRule },
+    /// What a forester's lodge plants (`forestry::PlantRule`).
+    SetPlantRule { building: buildings::BuildingId, rule: forestry::PlantRule },
 }
 
 /// Complete simulation state.
@@ -134,6 +139,8 @@ pub struct SimState {
     pub ledger: ledger::Ledger,
     /// What each building produced (smoothed per day).
     pub output: output::Output,
+    /// Tree growth, cutting and planting rules, nursery stock (`forestry`).
+    pub forestry: forestry::Forestry,
 }
 
 impl SimState {
@@ -169,7 +176,9 @@ impl SimState {
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
             output: output::Output::default(),
+            forestry: forestry::Forestry::new(seed),
         };
+        forestry::init(&mut sim);
         sim.colony.abstract_gathering = false;
         sim.apply_features();
         sim
@@ -266,6 +275,7 @@ impl SimState {
             self.region.step(dt_days);
         }
         self.resources.step(dt_days).expect("dt validated above");
+        forestry::step(self, dt_days);
         agents::step(self, dt_days);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
@@ -575,8 +585,11 @@ impl SimState {
             }
             Command::Unlock { who } => jobs::unlock(self, who),
             Command::SetWorkArea { building, area } => {
+                forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
+            Command::SetCutRule { building, rule } => forestry::set_cut_rule(self, building, rule),
+            Command::SetPlantRule { building, rule } => forestry::set_plant_rule(self, building, rule),
             Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetHaul { order } => {
                 let store = |id| {
