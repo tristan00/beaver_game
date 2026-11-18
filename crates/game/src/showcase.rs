@@ -272,9 +272,10 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
 }
 
 /// Lifts the fog of war so the staged scene is lit like explored ground.
-fn reveal_map(sim: Res<Sim>, mut flow: ResMut<crate::flow::Flow>) {
+fn reveal_map(mut sim: ResMut<Sim>, mut flow: ResMut<crate::flow::Flow>) {
     let _ = &sim;
-    flow.fog.seen.fill(1.0);
-    flow.fog.dirty = true;
+    let _ = &flow;
+    sim.0.fog.seen.fill(1.0);
+    sim.0.fog.dirty = true;
     flow.message.clear();
 }

@@ -21,8 +21,11 @@ pub enum Surface {
     Canal,
     /// Walkable only by climbing; cost multiplier `CLIMB_COST`.
     Dam,
-    /// Impassable (tree, building body, stone).
+    /// Impassable (finished building body, stone).
     Solid,
+    /// A standing tree: pushed through slowly (`THICKET_COST`), so forest slows beavers but
+    /// never walls them in.
+    Thicket,
     /// Underwater lodge door; the only way into the lodge interior.
     LodgeEntrance,
     /// Lodge interior cell; reachable only through its entrance.
@@ -38,6 +41,8 @@ pub enum Gait {
 }
 
 pub const CLIMB_COST: f32 = 3.0;
+/// Pushing through a tree's cell costs this many walking steps.
+pub const THICKET_COST: f32 = 2.5;
 pub const WALK_COST: f32 = 1.0;
 pub const SWIM_COST: f32 = 0.6;
 /// Cost of a step along a canal (cheaper than open water or land).
@@ -189,11 +194,16 @@ impl NavGrid {
                 BuildingKind::Lodge if b.is_complete() => {
                     self.add_lodge(b.pos);
                 }
+                // Unfinished sites can be walked across: placing one never walls anyone in.
+                _ if !b.is_complete() => {}
                 _ => b.cells().for_each(|c| self.set(c, Surface::Solid)),
             }
         }
         for r in sim.resources.items.iter().filter(|r| r.kind.is_solid()) {
-            self.set(r.cell, Surface::Solid);
+            let s = if r.kind == crate::resources::ResourceKind::Tree { Surface::Thicket } else { Surface::Solid };
+            if self.surface.get(r.cell.0, r.cell.1) == Some(&Surface::Land) {
+                self.set(r.cell, s);
+            }
         }
     }
 
@@ -232,6 +242,7 @@ impl NavGrid {
             Surface::Water | Surface::LodgeEntrance => Some((SWIM_COST, Gait::Swim)),
             Surface::Canal => Some((CANAL_COST, Gait::Swim)),
             Surface::Dam => Some((CLIMB_COST, Gait::Climb)),
+            Surface::Thicket => Some((THICKET_COST, Gait::Walk)),
             Surface::Solid => None,
         }
     }
@@ -535,7 +546,7 @@ mod tests {
         let mut nav = sim.nav.clone();
         nav.rebuild(&sim);
         sim.nav = nav;
-        assert_eq!(sim.nav.surface_at((3, 3)), Some(Surface::Solid));
+        assert_eq!(sim.nav.surface_at((3, 3)), Some(Surface::Thicket), "trees slow beavers but never wall them in");
         assert_eq!(sim.nav.surface_at((5, 5)), Some(Surface::Dam));
         assert_eq!(sim.nav.surface_at((8, 8)), Some(Surface::Water));
     }

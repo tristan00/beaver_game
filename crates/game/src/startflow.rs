@@ -4,7 +4,7 @@
 //! dam, let the family build it, hold the picture once the pond is full.
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
-use crate::flow::{cell_world, open_at, CaptureGate, Flow, Phase, Selection};
+use crate::flow::{cell_world, CaptureGate, Flow, Phase, Selection};
 use crate::sim_driver::{SimClock, FIXED_DT_DAYS};
 use crate::state::{PlannedDam, Sim};
 use bevy::app::AppExit;
@@ -36,7 +36,7 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     flow.phase = Phase::Settled;
     flow.settled_at = Some(flow.real_secs);
     let focus = family_centre(sim);
-    flow.fog.reveal(focus, ARRIVAL_SIGHT, &open_at(&sim.world));
+
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
     orbit.distance = ARRIVAL_DISTANCE;
@@ -53,9 +53,8 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
     flow.phase = Phase::Scouting;
     flow.settled_at = None;
     let focus = around.map(|c| (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).unwrap_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0));
-    // The family has looked over only the ground around where it came in: the rest is explored
-    // by its beavers once it has settled.
-    flow.fog.reveal(focus, ARRIVAL_SIGHT, &open_at(&sim.world));
+    // The family has looked over only the ground around where it came in (the sim revealed it);
+    // the rest is explored by its beavers once it has settled.
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
     orbit.distance = SCOUT_DISTANCE;
@@ -65,8 +64,6 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
     *sel = Selection::None;
 }
 
-/// Radius (cells) the family has seen when it arrives and chooses where to settle.
-const ARRIVAL_SIGHT: f32 = 22.0;
 /// Camera while choosing where to settle: wide enough to compare banks.
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;
@@ -82,8 +79,9 @@ pub fn new_game(
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
 ) -> Result<(), String> {
-    let (s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
+    let (mut s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
     let camp = dam.camp;
+    start_recording(&mut s);
     sim.0 = s;
     planned.0 = Some(dam);
     let generation = flow.generation + 1;
@@ -102,11 +100,31 @@ impl Plugin for StartPlugin {
             return; // scripted scenes found their own colony
         }
         let demo_pond = cli.demo_pond;
-        app.add_systems(Startup, begin_new_game);
+        app.add_systems(Startup, begin_new_game).add_systems(Update, save_recording);
         if demo_pond {
             app.insert_resource(CaptureGate(false)).init_resource::<DemoPond>().add_systems(Update, demo_pond_script);
         }
     }
+}
+
+/// `BC_RECORD=FILE`: record every command of the game (`sim::script` log, replayable headless
+/// with `cargo run -p sim --example play`).
+pub fn start_recording(s: &mut SimState) {
+    if std::env::var_os("BC_RECORD").is_some() {
+        s.recorder = Some(Vec::new());
+    }
+}
+
+/// Writes the recording when it grows (every couple of seconds at most).
+pub fn save_recording(time: Res<Time>, mut last: Local<(usize, f32)>, sim: Res<Sim>) {
+    let (Ok(path), Some(log)) = (std::env::var("BC_RECORD"), sim.0.recorder.as_ref()) else { return };
+    let now = time.elapsed_secs();
+    if log.len() == last.0 || now - last.1 < 2.0 {
+        return;
+    }
+    *last = (log.len(), now);
+    let header = format!("# map seed {} — replay: cargo run --release -p sim --example play -- <script with 'replay {}'>\n", sim.0.seed, path);
+    let _ = std::fs::write(&path, header + &sim::script::write_log(log));
 }
 
 fn begin_new_game(
@@ -121,6 +139,7 @@ fn begin_new_game(
     // The sim opens with no colony and a played game never settles for the player. Only scripted
     // screenshot runs (developer tooling: `--screenshot` with `--demo-pond` or `BC_HUD_DEMO`,
     // except the `settle` view) found the colony at the designed camp by script.
+    start_recording(&mut sim.0);
     let scripted = cli.screenshot.is_some() && (cli.demo_pond || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
     if !scripted {
         let camp = planned.0.as_ref().map(|d| d.camp);

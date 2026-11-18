@@ -192,6 +192,8 @@ pub struct Work {
     /// Where the founding family dropped the supplies it carried in (a pile on the ground, not a
     /// building). Builders fetch from it until a store stands; it is gone once one does.
     pub supplies: Option<Cell>,
+    /// Canal sites: the canal to cut when the site completes.
+    pub canal_plans: Vec<CanalPlan>,
     /// Shelter buildings (burrows, lodges) and the colony home each one provides.
     pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
 }
@@ -209,9 +211,18 @@ impl Default for Work {
             role_order: RoleKind::DEFAULT_ORDER.to_vec(),
             player_orders: BTreeSet::new(),
             supplies: None,
+            canal_plans: Vec::new(),
             homes: BTreeMap::new(),
         }
     }
+}
+
+/// The canal a canal site turns into when it is finished.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanalPlan {
+    pub building: BuildingId,
+    pub cells: Vec<Cell>,
+    pub depth: f32,
 }
 
 /// The water dam a dam site turns into when it is finished.

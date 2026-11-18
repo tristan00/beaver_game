@@ -132,7 +132,6 @@ pub struct HudState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UndoItem {
     Site(BuildingId),
-    Canal(sim::colony::OrderId),
 }
 
 /// The map view the player chose. Holding Alt peeks at the water lens, and the dam and canal
@@ -498,7 +497,7 @@ fn world_input(
     if !sim.0.colony.is_founded() {
         if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
             if let Some(cell) = hover.0 {
-                match crate::flow::can_settle(&sim.0.world, &sim.0.water.depth, &flow.fog, cell) {
+                match crate::flow::can_settle(&sim.0, cell) {
                     Ok(()) => {
                         if let Err(e) = crate::flow::settle(&mut sim.0, &mut flow, cell) {
                             hud.refuse(sim_error(&e), now);
@@ -606,7 +605,7 @@ fn world_input(
                 let _ = point;
             }
         }
-        Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && flow.fog.get(cell) < crate::flow::EXPLORED => {
+        Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
             hud.refuse("Unexplored", now);
         }
         Tool::Building(kind) => {
@@ -741,7 +740,8 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
     let canal = matches!(order, BuildOrder::Canal { .. });
     match build_logic::emit(sim, pending, &order) {
         Ok(_) => {
-            let item = if canal { pending.0.last().map(|w| UndoItem::Canal(w.order)) } else { sim.buildings.buildings.last().map(|b| UndoItem::Site(b.id)) };
+            let _ = canal;
+            let item = sim.buildings.buildings.last().map(|b| UndoItem::Site(b.id));
             hud.undo.extend(item);
             hud.line.clear();
             hud.preview = None;
@@ -756,7 +756,8 @@ fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending,
         match item {
             UndoItem::Site(id) => {
                 let Some(kind) = sim.buildings.building(id).map(|b| b.kind) else { continue };
-                match sim.cancel_site(id) {
+                let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::ALL.iter().map(|g| (*g, sim.buildings.stores.amount(*g))).collect();
+                match sim.apply(sim::Command::CancelSite { building: id }).map(|_| stock.iter().map(|(g, a)| (*g, sim.buildings.stores.amount(*g) - a)).collect::<Vec<_>>()) {
                     Ok(back) => {
                         let refund = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| format!("+{}", a.1.round() as i64));
                         let icon2 = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| (good_icon(a.0), good_color(a.0)));
@@ -766,14 +767,9 @@ fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending,
                 }
                 return;
             }
-            UndoItem::Canal(order) => {
-                if build_logic::cancel(sim, pending, build_logic::OrderTarget::Pending(order)).is_ok() {
-                    hud.say(Some((Icon::Undo, INK)), Some((Icon::Canal, INK)), "", now);
-                    return;
-                }
-            }
         }
     }
+    let _ = pending;
 }
 
 /// The ≤ 2-word reason a cell cannot be settled.
@@ -784,6 +780,7 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
         Locked => "Closed",
         Unexplored => "Unexplored",
         Water => "Water",
+        NoRoom => "No room",
     }
 }
 
@@ -1203,7 +1200,7 @@ fn setup_minimap(mut commands: Commands, sim: Res<Sim>, mut images: ResMut<Asset
 
 /// Repaints the minimap every couple of seconds: land shaded by height, water by depth,
 /// buildings white, beavers orange.
-fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, flow: Res<Flow>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
+fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
     let Some(img) = img else { return };
     let now = time.elapsed_secs();
     if now < *next {
@@ -1226,13 +1223,13 @@ fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, flow: Re
                 [0.30 + 0.45 * h, 0.40 + 0.38 * h, 0.26 + 0.40 * h]
             };
             // Unexplored ground is cloud, like the fog over the map.
-            let seen = (flow.fog.get((x, y)) / crate::flow::EXPLORED).min(1.0);
+            let seen = (s.fog.get((x, y)) / crate::flow::EXPLORED).min(1.0);
             let c = [c[0] * seen + 0.78 * (1.0 - seen), c[1] * seen + 0.8 * (1.0 - seen), c[2] * seen + 0.84 * (1.0 - seen)];
             buf[i * 4..i * 4 + 4].copy_from_slice(&[(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 255]);
         }
     }
     for b in &s.buildings.buildings {
-        for (x, y) in b.cells().filter(|c| flow.fog.get(*c) >= crate::flow::EXPLORED) {
+        for (x, y) in b.cells().filter(|c| s.fog.explored(*c)) {
             if x < n && y < n {
                 buf[(y * n + x) * 4..(y * n + x) * 4 + 3].copy_from_slice(&[245, 245, 245]);
             }

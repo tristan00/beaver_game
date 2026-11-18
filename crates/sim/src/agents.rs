@@ -706,6 +706,12 @@ fn finish_sites(sim: &mut SimState) {
                 sim.work.dam_failures.push((id, e.to_string()));
             }
         }
+        if let Some(i) = sim.work.canal_plans.iter().position(|p| p.building == id) {
+            let plan = sim.work.canal_plans.remove(i);
+            if let Err(e) = sim.water.dig_canal(&mut sim.height, &plan.cells, plan.depth) {
+                sim.work.dam_failures.push((id, e.to_string()));
+            }
+        }
     }
 }
 

@@ -6,7 +6,7 @@ use crate::state::Sim;
 use bevy::prelude::*;
 
 /// Length of one sim step in days.
-pub const FIXED_DT_DAYS: f32 = 0.05;
+pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
 /// Simulated days per real second at 1x.
 pub const BASE_DAYS_PER_SECOND: f32 = 0.4;
 /// Steps per frame cap; excess time is dropped instead of spiralling.

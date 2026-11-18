@@ -402,6 +402,14 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     if !sim.world.is_open(valley) {
         return Err(invalid(format!("cell {cell:?} is in a valley that is not open yet")));
     }
+    if !sim.fog.explored(cell) {
+        return Err(invalid(format!("cell {cell:?} is unexplored")));
+    }
+    if let Err(e) = crate::site::can_settle(sim, cell) {
+        if e == crate::site::SettleError::NoRoom {
+            return Err(invalid(format!("cell {cell:?}: NoRoom for a store and a burrow nearby")));
+        }
+    }
     if sim.water.depth.get(cell.0, cell.1).is_some_and(|d| *d > crate::buildings::WET_DEPTH)
         || sim.world.river.get(cell.0, cell.1).copied().unwrap_or(false)
         || sim.world.lake.get(cell.0, cell.1).copied().unwrap_or(false)
@@ -432,6 +440,10 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     }
     sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Logs);
     sim.work.supplies = Some(cell);
+    {
+        let allowed = crate::fog::open_at(&sim.world);
+        sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT, &allowed);
+    }
     // Founding opens the landing's valley and its neighbours.
     sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
     strip_disabled(sim);
@@ -458,12 +470,37 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
 /// The start on any world: picks the designed dam and camp and settles the water (see `build_river`).
 fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> {
     sim.water.config.seepage = CLAY_SEEPAGE;
-    let plan = river_plan(&mut sim).ok_or(StartError::NoSite)?;
+    let mut plan = river_plan(&mut sim).ok_or(StartError::NoSite)?;
     // The designed camp must be settleable.
     if let Some(v) = sim.world.valley_of(plan.camp) {
         sim.world.valleys[v.0 as usize].open = true;
     }
+    // ...and must leave room to build: if it does not, the best spot near it that does.
+    if crate::site::can_settle(&sim, plan.camp).is_err() {
+        let (cx, cy) = plan.camp;
+        let r = 14usize;
+        let mut best: Option<(f32, Cell)> = None;
+        for y in cy.saturating_sub(r)..(cy + r).min(sim.world.size) {
+            for x in cx.saturating_sub(r)..(cx + r).min(sim.world.size) {
+                if crate::site::can_settle(&sim, (x, y)).is_ok() {
+                    let v = crate::site::score(&sim, (x, y)).overall() - 0.01 * (x.abs_diff(cx) + y.abs_diff(cy)) as f32;
+                    if best.is_none_or(|(b, _)| v > b) {
+                        best = Some((v, (x, y)));
+                    }
+                }
+            }
+        }
+        if let Some((_, c)) = best {
+            plan.camp = c;
+        }
+    }
     sim.work.auto_organise = true; // auto-staffing is on in every new game (spec W1)
+    // Fog of war: the family has looked over only the ground around where it comes in.
+    sim.fog = crate::fog::Fog::unseen(sim.world.size);
+    {
+        let allowed = crate::fog::open_at(&sim.world);
+        sim.fog.reveal((plan.camp.0 as f32 + 0.5, plan.camp.1 as f32 + 0.5), crate::fog::ARRIVAL_SIGHT, &allowed);
+    }
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 

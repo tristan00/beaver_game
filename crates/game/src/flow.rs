@@ -8,16 +8,11 @@ use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
 use sim::colony::{BeaverId, LodgeId};
 use sim::grid::{Grid, HeightGrid};
-use sim::worldgen::{ValleyId, World};
+use sim::worldgen::World;
 use std::collections::VecDeque;
 
 pub type Cell = (usize, usize);
 
-pub const FOCUS_SIGHT: f32 = 5.0;
-/// How far a beaver sees: exploring is done by the colony's own beavers.
-pub const BEAVER_SIGHT: f32 = 6.0;
-/// Fog value above which a cell counts as explored.
-pub const EXPLORED: f32 = 0.5;
 
 // ───────────────────────────── state machine ─────────────────────────────
 
@@ -175,193 +170,17 @@ pub fn pick_entities(origin: Vec3, dir: Vec3, cands: &[(Selection, Vec3, f32)]) 
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-// ───────────────────────────── fog of war ─────────────────────────────
+// ───────────────────────────── fog, settling (in the sim) ─────────────────────────────
 
-/// Explored amount per cell, 0 (fog) ..= 1 (seen).
-#[derive(Clone, Debug)]
-pub struct Fog {
-    pub size: usize,
-    pub seen: Vec<f32>,
-    /// Set when `seen` changed since the terrain colours were last rebuilt.
-    pub dirty: bool,
-}
-
-impl Fog {
-    pub fn new(size: usize) -> Fog {
-        Fog { size, seen: vec![0.0; size * size], dirty: true }
-    }
-    pub fn get(&self, c: Cell) -> f32 {
-        if c.0 < self.size && c.1 < self.size { self.seen[c.1 * self.size + c.0] } else { 0.0 }
-    }
-    pub fn explored_cells(&self) -> usize {
-        self.seen.iter().filter(|&&v| v >= EXPLORED).count()
-    }
-    /// Lifts fog in a soft-edged disc, only where `allowed`. Returns whether anything changed.
-    pub fn reveal(&mut self, centre: (f32, f32), radius: f32, allowed: &dyn Fn(usize, usize) -> bool) -> bool {
-        let r = radius + 2.0;
-        let (x0, x1) = ((centre.0 - r).floor().max(0.0) as usize, ((centre.0 + r).ceil().max(0.0) as usize).min(self.size - 1));
-        let (y0, y1) = ((centre.1 - r).floor().max(0.0) as usize, ((centre.1 + r).ceil().max(0.0) as usize).min(self.size - 1));
-        let mut changed = false;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                let dist = ((x as f32 - centre.0).powi(2) + (y as f32 - centre.1).powi(2)).sqrt();
-                let v = ((radius + 2.0 - dist) / 2.0).clamp(0.0, 1.0);
-                let i = y * self.size + x;
-                if v > self.seen[i] && allowed(x, y) {
-                    self.seen[i] = v;
-                    changed = true;
-                }
-            }
-        }
-        self.dirty |= changed;
-        changed
-    }
-    /// Opens a whole valley.
-    pub fn reveal_valley(&mut self, world: &World, id: ValleyId) {
-        for y in 0..self.size {
-            for x in 0..self.size {
-                if world.valley_of((x, y)) == Some(id) {
-                    self.seen[y * self.size + x] = 1.0;
-                }
-            }
-        }
-        self.dirty = true;
-    }
-}
-
-pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
-    move |x, y| world.valley_of((x, y)).is_some_and(|v| world.is_open(v))
-}
-
-// ───────────────────────────── site suitability ─────────────────────────────
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SiteHint {
-    /// Each 0..=1, higher is better.
-    pub water: f32,
-    pub trees: f32,
-    pub safety: f32,
-}
-
-impl SiteHint {
-    pub fn overall(&self) -> f32 {
-        0.4 * self.water + 0.3 * self.trees + 0.3 * self.safety
-    }
-    pub fn verdict(&self) -> &'static str {
-        match self.overall() {
-            o if o >= 0.7 => "Excellent",
-            o if o >= 0.5 => "Good",
-            o if o >= 0.3 => "Poor",
-            _ => "Bad",
-        }
-    }
-}
-
-/// Water nearness, tree cover and safety (gentle, above flood level) around `cell`.
-pub fn site_hint(world: &World, cell: Cell) -> SiteHint {
-    let n = world.size as i32;
-    let (cx, cy) = (cell.0 as i32, cell.1 as i32);
-    // water: distance to the nearest river/lake cell; best at 2-5 cells
-    let mut nearest = f32::MAX;
-    let mut river_low = f32::MAX;
-    for dy in -12..=12i32 {
-        for dx in -12..=12i32 {
-            let (x, y) = (cx + dx, cy + dy);
-            if x < 0 || y < 0 || x >= n || y >= n {
-                continue;
-            }
-            let c = (x as usize, y as usize);
-            if world.river.get(c.0, c.1) == Some(&true) || world.lake.get(c.0, c.1) == Some(&true) {
-                nearest = nearest.min(((dx * dx + dy * dy) as f32).sqrt());
-                river_low = river_low.min(*world.surface.get(c.0, c.1).unwrap());
-            }
-        }
-    }
-    let water = if nearest == f32::MAX {
-        0.0
-    } else if nearest < 1.0 {
-        0.0 // standing in the water
-    } else if nearest <= 5.0 {
-        1.0
-    } else {
-        (1.0 - (nearest - 5.0) / 8.0).clamp(0.0, 1.0)
-    };
-    // trees: forest share within radius 6
-    let (mut tot, mut forest, mut slope) = (0, 0, 0.0f32);
-    for dy in -6..=6i32 {
-        for dx in -6..=6i32 {
-            let (x, y) = (cx + dx, cy + dy);
-            if x < 0 || y < 0 || x >= n || y >= n || dx * dx + dy * dy > 36 {
-                continue;
-            }
-            tot += 1;
-            forest += world.forest.get(x as usize, y as usize).is_some_and(|t| t.is_some()) as i32;
-            slope += world.slope.get(x as usize, y as usize).copied().unwrap_or(0.0);
-        }
-    }
-    let tot = tot.max(1) as f32;
-    let trees = ((forest as f32 / tot) / 0.4).clamp(0.0, 1.0);
-    // safety: gentle ground and well above the nearby river
-    let gentle = (1.0 - (slope / tot) / 0.8).clamp(0.0, 1.0);
-    let above = if river_low == f32::MAX { 1.0 } else { ((world.surface.get(cell.0, cell.1).unwrap() - river_low) / 1.5).clamp(0.0, 1.0) };
-    SiteHint { water, trees, safety: 0.5 * gentle + 0.5 * above }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettleError {
-    OutOfBounds,
-    Locked,
-    Unexplored,
-    Water,
-}
-
-impl SettleError {
-    pub fn message(self) -> &'static str {
-        match self {
-            SettleError::OutOfBounds => "Outside the map",
-            SettleError::Locked => "That valley is not open yet",
-            SettleError::Unexplored => "Unexplored",
-            SettleError::Water => "Beavers cannot settle in the water",
-        }
-    }
-}
-
-pub fn can_settle(world: &World, depth: &Grid<f32>, fog: &Fog, cell: Cell) -> Result<(), SettleError> {
-    let valley = world.valley_of(cell).ok_or(SettleError::OutOfBounds)?;
-    if !world.is_open(valley) {
-        return Err(SettleError::Locked);
-    }
-    if fog.get(cell) < EXPLORED {
-        return Err(SettleError::Unexplored);
-    }
-    if world.river.get(cell.0, cell.1) == Some(&true) || world.lake.get(cell.0, cell.1) == Some(&true) || depth.get(cell.0, cell.1).is_some_and(|d| *d > 0.05) {
-        return Err(SettleError::Water);
-    }
-    Ok(())
-}
-
-/// Best explored, settleable cell by overall suitability (used by `--autoplay-settle`).
-pub fn best_site(world: &World, depth: &Grid<f32>, fog: &Fog) -> Option<Cell> {
-    let mut best: Option<(f32, Cell)> = None;
-    for y in (0..world.size).step_by(2) {
-        for x in (0..world.size).step_by(2) {
-            if can_settle(world, depth, fog, (x, y)).is_ok() {
-                let s = site_hint(world, (x, y)).overall();
-                if best.is_none_or(|(b, _)| s > b) {
-                    best = Some((s, (x, y)));
-                }
-            }
-        }
-    }
-    best.map(|b| b.1)
-}
+#[allow(unused_imports)]
+pub use sim::fog::{open_at, EXPLORED};
+pub use sim::site::{best_site, can_settle, score as site_hint, SettleError};
 
 // ───────────────────────────── flow resource ─────────────────────────────
 
 #[derive(Resource)]
 pub struct Flow {
     pub phase: Phase,
-    pub fog: Fog,
     /// Valley mouth: where the family comes from.
     #[allow(dead_code)]
     pub mouth: (f32, f32),
@@ -382,10 +201,8 @@ pub struct Flow {
 impl Flow {
     pub fn new(world: &World) -> Flow {
         let mouth = valley_mouth(world);
-        let fog = Fog::new(world.size);
         Flow {
             phase: Phase::Scouting,
-            fog,
             mouth,
             focus: None,
             message: String::new(),
@@ -443,7 +260,7 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
     if flow.phase != Phase::Scouting {
         return Err("The colony can only be founded while choosing the settling place".into());
     }
-    can_settle(&sim.world, &sim.water.depth, &flow.fog, cell).map_err(|e| e.message().to_string())?;
+    can_settle(sim, cell).map_err(|e| format!("{e:?}"))?;
     sim.apply(sim::Command::Settle { cell }).map_err(|e| e.to_string())?;
     after_settle(sim, flow, cell);
     Ok(())
@@ -453,8 +270,6 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
 pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     let pos = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
     flow.fire(FlowEvent::Settle);
-    let allowed = open_at(&sim.world);
-    flow.fog.reveal(pos, 10.0, &allowed);
     flow.settled_at = Some(flow.real_secs);
     flow.lodge_cell = Some(cell);
     flow.focus = Some(cell_world(&sim.height, pos));
@@ -483,7 +298,7 @@ pub fn restart(sim: &mut sim::SimState, flow: &mut Flow, clock: &mut SimClock, s
 #[derive(Resource, Default)]
 pub struct Hover {
     pub cell: Option<Cell>,
-    pub hint: Option<SiteHint>,
+    pub hint: Option<sim::site::SiteScore>,
 }
 
 /// While false, `--screenshot` does not capture (set by `--autoplay-settle` until the run is done).
@@ -515,18 +330,8 @@ fn advance_flow(
 ) {
     let dt = time.delta_secs().min(0.1);
     flow.real_secs += dt;
-    let world = &sim.0.world;
-    let allowed = open_at(world);
-    let _ = &orbit; // the camera reveals nothing: exploring is the beavers' work
-    // The colony's own beavers explore: the ground around each one is seen.
-    if flow.phase == Phase::Settled {
-        for b in &sim.0.colony.beavers {
-            flow.fog.reveal(b.pos, BEAVER_SIGHT, &allowed);
-        }
-    }
-    match flow.phase {
-        _ => {}
-    }
+    // The camera reveals nothing: exploring is the beavers' work (the sim lifts the fog).
+    let _ = (&orbit, &sim);
 }
 
 /// Valleys unlock when a beaver reaches their border; unlocking opens their fog.
@@ -669,62 +474,23 @@ mod tests {
     }
 
     #[test]
-    fn flow_fog_lifts_only_in_open_valleys() {
-        let mut fog = Fog::new(16);
-        assert_eq!(fog.explored_cells(), 0);
-        let open_left = |x: usize, _y: usize| x < 8;
-        assert!(fog.reveal((8.0, 8.0), 4.0, &open_left));
-        assert!(fog.get((6, 8)) >= EXPLORED);
-        assert_eq!(fog.get((10, 8)), 0.0, "locked side stays fogged");
-        assert!(!fog.reveal((8.0, 8.0), 4.0, &open_left), "second reveal changes nothing");
-    }
-
-    #[test]
-    fn flow_settling_founds_the_colony_and_lifts_fog() {
+    fn flow_settling_founds_the_colony() {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
-        // fogged ground is refused
-        // (the start valley is revealed at once; any fogged cell elsewhere is refused)
-        if let Some(fogged) = (0..s.world.size).flat_map(|y| (0..s.world.size).map(move |x| (x, y))).find(|c| flow.fog.get(*c) < EXPLORED) {
-            assert!(settle(&mut s, &mut flow, fogged).is_err());
-        }
-        assert!(!s.colony.is_founded());
-        flow.fog.reveal_valley(&s.world, s.world.start);
-        let before = flow.fog.explored_cells();
-        let site = best_site(&s.world, &s.water.depth, &flow.fog).expect("a settleable site in the start valley");
+        let site = best_site(&s).expect("a settleable site");
         settle(&mut s, &mut flow, site).unwrap();
         assert_eq!(flow.phase, Phase::Settled);
         assert!(s.colony.is_founded());
         assert!(s.colony.lodges.is_empty(), "no home until they build one");
         assert_eq!(s.colony.population(), 4);
-        assert!(flow.fog.explored_cells() >= before);
-        // a second settle is refused
-        assert!(settle(&mut s, &mut flow, site).is_err());
-    }
-
-    #[test]
-    fn flow_site_hint_prefers_water_and_trees() {
-        let s = sim::SimState::new(1);
-        let w = &s.world;
-        let mut scored: Vec<(f32, Cell)> = Vec::new();
-        for y in (0..w.size).step_by(4) {
-            for x in (0..w.size).step_by(4) {
-                scored.push((site_hint(w, (x, y)).overall(), (x, y)));
-            }
-        }
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let best = site_hint(w, scored[0].1);
-        let worst = site_hint(w, scored[scored.len() - 1].1);
-        assert!(best.overall() > worst.overall());
-        assert!((0.0..=1.0).contains(&best.water) && (0.0..=1.0).contains(&best.trees) && (0.0..=1.0).contains(&best.safety));
+        assert!(settle(&mut s, &mut flow, site).is_err(), "a second settle is refused");
     }
 
     #[test]
     fn flow_a_collapsed_colony_is_reported() {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
-        flow.fog.reveal_valley(&s.world, s.world.start);
-        let site = best_site(&s.world, &s.water.depth, &flow.fog).unwrap();
+        let site = best_site(&s).unwrap();
         settle(&mut s, &mut flow, site).unwrap();
         assert!(!s.colony.is_collapsed());
         assert!(flow.fire(FlowEvent::Collapse));

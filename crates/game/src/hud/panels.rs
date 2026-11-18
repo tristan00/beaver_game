@@ -717,13 +717,14 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
     let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
     v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
     let mut ui = Ui::default();
-    match crate::flow::can_settle(&s.world, &s.water.depth, &flow.fog, cell) {
+    let _ = flow;
+    match crate::flow::can_settle(s, cell) {
         Ok(()) => {
-            let h = crate::flow::site_hint(&s.world, cell);
+            let h = crate::flow::site_hint(s, cell);
             let q = h.overall();
             let col = if q >= 0.5 { GOOD } else if q >= 0.3 { WARN } else { BAD };
             ui.icon(Icon::Home, 14.0, col);
-            for (i, x) in [(Icon::Drop, h.water), (Icon::Tree, h.trees), (Icon::Health, h.safety)] {
+            for (i, x) in [(Icon::Drop, h.water), (Icon::Tree, h.trees), (Icon::Health, h.safety), (Icon::Building, h.room)] {
                 ui.icon(i, 12.0, MUTED);
                 ui.bar(x, 22.0, 4.0, if x >= 0.5 { GOOD } else if x >= 0.3 { WARN } else { BAD });
             }

@@ -360,7 +360,7 @@ pub fn check_canal(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
     if !cells.iter().any(|&(x, y)| is_wet(sim, x, y)) {
         return Err(PlaceError::NeedsWater);
     }
-    lack(sim, &path_cost(BuildingKind::Canal, cells.len()))
+    Ok(())
 }
 
 /// Pond the dam would create (None if the preview itself fails).
@@ -416,8 +416,10 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
         }
         BuildOrder::Canal { cells } => {
             check_canal(sim, cells)?;
-            let kind = BuildingKind::Canal;
-            queue_path(sim, pending, kind, cells, Command::DigCanal { cells: cells.clone(), depth: CANAL_DEPTH })
+            let _ = pending;
+            // A construction site the family supplies and digs; the sim cuts the canal when done.
+            sim.apply(Command::OrderCanal { cells: cells.clone() }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+            Ok(format!("Canal of {} cells ordered", cells.len()))
         }
     }
 }
@@ -811,7 +813,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn canal_emits_dig_canal_and_dam_needs_water() {
+    fn canal_orders_a_site_and_dam_needs_water() {
         let mut sim = SimState::new(1);
         sim.tech.unlock_all();
         found(&mut sim);
@@ -819,7 +821,8 @@ pub(crate) mod tests {
         let c = river_cell(&sim);
         let mut p = Pending::default();
         emit(&mut sim, &mut p, &BuildOrder::Canal { cells: line_cells(c, (c.0 + 3, c.1)) }).unwrap();
-        assert!(matches!(p.0[0].command, Command::DigCanal { .. }));
+        assert_eq!(sim.work.canal_plans.len(), 1, "a canal is a construction site with a plan");
+        assert!(sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Canal && !b.is_complete()));
         // a line far from any water is rejected
         let dry = (0..sim.world.size).map(|x| (x, 1)).find(|&(x, y)| !is_wet(&sim, x, y)).unwrap();
         assert_eq!(check_dam(&sim, &[dry], 1.0), Err(PlaceError::NeedsWater));
@@ -827,27 +830,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cancel_refunds_and_priority_moves_to_front() {
+    fn a_cancelled_canal_site_leaves_no_plan() {
         let mut sim = SimState::new(1);
         sim.tech.unlock_all();
         found(&mut sim);
         stock(&mut sim);
         let mut p = Pending::default();
         let c = river_cell(&sim);
-        let logs = sim.buildings.stores.amount(Good::Logs);
-        emit(&mut sim, &mut p, &BuildOrder::Canal { cells: vec![c] }).unwrap();
-        let c2 = (0..sim.world.size * sim.world.size).map(|i| (i % sim.world.size, i / sim.world.size)).find(|&q| q != c && is_wet(&sim, q.0, q.1)).unwrap();
-        emit(&mut sim, &mut p, &BuildOrder::Canal { cells: vec![c2] }).unwrap();
-        let rows = order_rows(&sim, &p);
-        assert_eq!(rows.len(), 2);
-        let last = rows[1].order;
-        assert!(prioritise(&mut sim.colony, last));
-        assert_eq!(order_rows(&sim, &p)[0].order, last);
-        let first = rows[0].target;
-        cancel(&mut sim, &mut p, first).unwrap();
-        let _ = logs;
-        assert!(sim.buildings.stores.amount(Good::Logs) <= 100.0);
-        assert_eq!(order_rows(&sim, &p).len(), 1);
+        emit(&mut sim, &mut p, &BuildOrder::Canal { cells: line_cells(c, (c.0 + 2, c.1)) }).unwrap();
+        let id = sim.buildings.buildings.last().unwrap().id;
+        sim.apply(Command::CancelSite { building: id }).unwrap();
+        assert!(sim.work.canal_plans.is_empty() && sim.buildings.building(id).is_none());
     }
 
     #[test]

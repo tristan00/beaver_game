@@ -10,6 +10,7 @@ pub mod catalogue;
 pub mod colony;
 pub mod dam_preview;
 pub mod ecology;
+pub mod fog;
 pub mod events;
 pub mod features;
 pub mod grid;
@@ -24,6 +25,8 @@ pub mod nav;
 pub mod output;
 pub mod region;
 pub mod resources;
+pub mod script;
+pub mod site;
 pub mod society;
 pub mod starts;
 pub mod tech;
@@ -54,6 +57,10 @@ impl fmt::Display for SimError {
     }
 }
 impl std::error::Error for SimError {}
+
+/// Length of one simulation step (days). The game steps by exactly this, so a recorded game
+/// replays step for step (`script`).
+pub const STEP_DAYS: f32 = 0.05;
 
 /// Player/UI requests that mutate the simulation.
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +112,11 @@ pub enum Command {
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     /// What a workshop or mill makes (`None` stops it).
     SetRecipe { building: buildings::BuildingId, recipe: Option<buildings::Recipe> },
+    /// Order a canal along `cells`: a construction site the family supplies and digs; the canal
+    /// is cut when the site is finished.
+    OrderCanal { cells: Vec<water::Cell> },
+    /// Take back an unfinished site; delivered materials return to the stores (undo).
+    CancelSite { building: buildings::BuildingId },
 }
 
 /// Complete simulation state.
@@ -134,6 +146,12 @@ pub struct SimState {
     pub ledger: ledger::Ledger,
     /// What each building produced (smoothed per day).
     pub output: output::Output,
+    /// What the colony has seen (fog of war).
+    pub fog: fog::Fog,
+    /// Steps taken since the start (replays apply recorded commands at the same step).
+    pub steps: u64,
+    /// When set, every command that succeeds is appended with the step it was given at.
+    pub recorder: Option<Vec<(u64, Command)>>,
 }
 
 impl SimState {
@@ -169,6 +187,9 @@ impl SimState {
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
             output: output::Output::default(),
+            fog: fog::Fog::clear(size),
+            steps: 0,
+            recorder: None,
         };
         sim.colony.abstract_gathering = false;
         sim.apply_features();
@@ -251,6 +272,7 @@ impl SimState {
         }
         self.apply_features();
         self.time_days += dt_days as f64;
+        self.steps += 1;
         self.water.step(&self.height, dt_days);
         self.ecology.step(dt_days, &self.water.depth)?;
         let mirrored = self.mirror_colony_stores();
@@ -267,6 +289,7 @@ impl SimState {
         }
         self.resources.step(dt_days).expect("dt validated above");
         agents::step(self, dt_days);
+        self.explore();
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         for (b, g, a) in std::mem::take(&mut self.buildings.crafted) {
@@ -275,6 +298,15 @@ impl SimState {
         self.output.step(dt_days);
         self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
+    }
+
+    /// The ground around every beaver outside a lodge is seen.
+    fn explore(&mut self) {
+        let world = &self.world;
+        let allowed = fog::open_at(world);
+        for a in self.agents.by_id.values().filter(|a| !a.inside) {
+            self.fog.reveal((a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5), fog::BEAVER_SIGHT, &allowed);
+        }
     }
 
     /// Each finished burrow or lodge provides one colony home; unhoused beavers move in. Once a
@@ -389,8 +421,22 @@ impl SimState {
     /// Whether `place_site` would accept `kind` at `pos`; changes nothing.
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
         self.check_off_pile(kind, pos)?;
+        self.check_explored(kind, pos)?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.can_place_site(kind, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
+    }
+
+    /// Nothing may be built on ground the colony has not seen.
+    fn check_explored(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
+        let (w, d) = kind.spec().footprint;
+        for y in pos.1..pos.1 + d {
+            for x in pos.0..pos.0 + w {
+                if x < self.fog.size && y < self.fog.size && !self.fog.explored((x, y)) {
+                    return Err(SimError::InvalidCommand("Unexplored: the colony has not seen that ground".into()));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Nothing may be built on the founding supply pile.
@@ -410,6 +456,7 @@ impl SimState {
     /// cells, and raises the water dam when finished.
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
         self.check_off_pile(kind, pos)?;
+        self.check_explored(kind, pos)?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
@@ -455,6 +502,50 @@ impl SimState {
     /// scaled by length and its labour scales the same way; `agents::step` applies the water dam
     /// when the site completes. Errors (state unchanged) if `cells` are not a valid dam line, the
     /// height is not finite and positive, or the site cannot be placed.
+    /// Longest canal one order may cut.
+    pub const MAX_CANAL_CELLS: usize = 40;
+    /// How deep a canal is cut.
+    pub const CANAL_DEPTH: f32 = 0.5;
+
+    /// Orders a canal along `cells` (a connected line that touches water): one construction site at
+    /// its first buildable cell, costing the canal's materials and labour for its length; the canal
+    /// is cut when the site is finished. Errors (state unchanged) for an invalid line.
+    pub fn order_canal(&mut self, cells: &[water::Cell]) -> Result<buildings::BuildingId, SimError> {
+        use buildings::BuildingKind::Canal;
+        let invalid = |m: &str| SimError::InvalidCommand(m.to_string());
+        if cells.is_empty() || cells.len() > Self::MAX_CANAL_CELLS {
+            return Err(invalid("not a valid canal line (empty or too long)"));
+        }
+        if cells.iter().any(|&(x, y)| !self.water.depth.in_bounds(x, y)) {
+            return Err(invalid("out of bounds"));
+        }
+        if cells.windows(2).any(|w| w[0].0.abs_diff(w[1].0).max(w[0].1.abs_diff(w[1].1)) != 1) {
+            return Err(invalid("not a valid canal line (cells must touch)"));
+        }
+        if let Some(c) = cells.iter().find(|c| !self.fog.explored(**c)) {
+            return Err(invalid(&format!("Unexplored at {c:?}")));
+        }
+        if !self.tech.allows(Canal) {
+            return Err(invalid("Locked: Canal digging"));
+        }
+        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let pos = cells
+            .iter()
+            .copied()
+            .find(|&c| self.buildings.can_place_site(Canal, c, &self.tech, terrain).is_ok())
+            .ok_or_else(|| invalid("needs water: a canal starts from water"))?;
+        let id = self.buildings.place_site(Canal, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+        let n = cells.len() as f32;
+        let cost: Vec<buildings::Amount> = Canal.spec().cost.iter().map(|&(g, a)| (g, a * n)).collect();
+        let labour = Canal.spec().work * n * self.tech.build_work_factor();
+        if let Err(e) = self.work.add_site(id, Canal, &cost, labour) {
+            self.buildings.buildings.retain(|b| b.id != id);
+            return Err(SimError::InvalidCommand(format!("{e:?}")));
+        }
+        self.work.canal_plans.push(work::CanalPlan { building: id, cells: cells.to_vec(), depth: Self::CANAL_DEPTH });
+        Ok(id)
+    }
+
     pub fn order_dam(&mut self, cells: &[water::Cell], height: f32) -> Result<buildings::BuildingId, SimError> {
         if dam_preview::preview(self, cells, height).is_none() {
             return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
@@ -500,6 +591,7 @@ impl SimState {
             }
         }
         self.work.dam_plans.retain(|d| d.building != id);
+        self.work.canal_plans.retain(|d| d.building != id);
         self.work.managed.retain(|_, duty| !matches!(duty, work::ManagedDuty::Slot(b, _) if *b == id));
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
@@ -513,6 +605,18 @@ impl SimState {
 
     /// Applies a command. Errors on invalid arguments, leaving state unchanged.
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
+        let logged = self.recorder.is_some().then(|| cmd.clone());
+        let res = self.apply_inner(cmd);
+        if let (Ok(()), Some(c)) = (&res, logged) {
+            let step = self.steps;
+            if let Some(r) = self.recorder.as_mut() {
+                r.push((step, c));
+            }
+        }
+        res
+    }
+
+    fn apply_inner(&mut self, cmd: Command) -> Result<(), SimError> {
         match cmd {
             Command::Regenerate { seed } => {
                 *self = SimState::new(seed);
@@ -577,6 +681,8 @@ impl SimState {
             Command::SetWorkArea { building, area } => {
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
+            Command::OrderCanal { cells } => self.order_canal(&cells).map(|_| ()),
+            Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
             Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetHaul { order } => {
                 let store = |id| {

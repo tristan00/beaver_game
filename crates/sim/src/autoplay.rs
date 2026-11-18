@@ -148,12 +148,13 @@ pub fn place_near(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<
                         continue;
                     }
                 }
-                let id = s.place_site(kind, (x, y)).map_err(|e| e.to_string())?;
+                s.apply(Command::PlaceSite { kind, pos: (x, y) }).map_err(|e| e.to_string())?;
+                let id = s.buildings.buildings.last().map(|b| b.id).ok_or("placed nothing")?;
                 // A careful player does not wall the family in: undo a site that cuts the first
                 // adult off from the supply pile.
                 if let (Some(w), Some(f), Some(pile)) = (walker, from, s.work.supplies) {
                     if s.nav.find_path(w, f, crate::nav::Goal::Beside(pile)).is_none() {
-                        let _ = s.cancel_site(id);
+                        let _ = s.apply(Command::CancelSite { building: id });
                         last = "would wall the family in".into();
                         continue;
                     }

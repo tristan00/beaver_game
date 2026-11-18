@@ -1,7 +1,8 @@
 //! Fog of war, drawn: a soft cloud sheet floating above the canopy over everything the colony
 //! has not seen (`Flow::fog`). Exploring is the colony's own work: only the ground around its
 //! beavers (and the start the family overlooks) clears; the camera reveals nothing by itself.
-use crate::flow::{Flow, EXPLORED};
+use crate::flow::Flow;
+use sim::fog::EXPLORED;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::asset::RenderAssetUsages;
@@ -39,8 +40,8 @@ impl Plugin for FogRenderPlugin {
 fn update_fog(
     mut commands: Commands,
     time: Res<Time>,
-    sim: Res<Sim>,
-    mut flow: ResMut<Flow>,
+    mut sim: ResMut<Sim>,
+    flow: Res<Flow>,
     mut state: ResMut<FogState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -48,12 +49,12 @@ fn update_fog(
 ) {
     let now = time.elapsed_secs();
     let fresh = state.generation != Some(flow.generation);
-    if !fresh && (!flow.fog.dirty || now < state.next) {
+    if !fresh && (!sim.0.fog.dirty || now < state.next) {
         return;
     }
     state.next = now + REBUILD_SECS;
-    flow.fog.dirty = false;
-    let mesh = fog_mesh(&sim.0, &flow.fog);
+    sim.0.fog.dirty = false;
+    let mesh = fog_mesh(&sim.0);
     if fresh {
         for (e, _) in &sheets {
             commands.entity(e).despawn();
@@ -69,7 +70,8 @@ fn update_fog(
 }
 
 /// The sheet: one vertex per cell centre, opacity from how unexplored the cells around it are.
-fn fog_mesh(s: &sim::SimState, fog: &crate::flow::Fog) -> Mesh {
+fn fog_mesh(s: &sim::SimState) -> Mesh {
+    let fog = &s.fog;
     let h = &s.height;
     let n = fog.size;
     let (ox, oz) = (h.width() as f32 * CELL_SIZE / 2.0, h.height() as f32 * CELL_SIZE / 2.0);
