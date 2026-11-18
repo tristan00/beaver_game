@@ -1,6 +1,6 @@
 //! Navigation grid for beaver agents (owner: `nav`). Pure data plus path planning; no task logic.
 //! Rules: trees and buildings are solid; dams are climbable (slow); lodges are entered only from
-//! their underwater entrance cell; water is swimmable and usually faster; one agent per cell.
+//! their underwater entrance cell; water is swimmable and usually faster; one agent per cell (lodges are shared space).
 //! Movement is 4-connected, one cell per step, so no step can cut a corner.
 
 use std::cell::RefCell;
@@ -30,6 +30,12 @@ pub enum Surface {
     LodgeEntrance,
     /// Lodge interior cell; reachable only through its entrance.
     LodgeInside,
+}
+
+/// A lodge's interior and door are shared space: any number of beavers may be in them, so a
+/// beaver resting by the door never shuts the others out.
+pub fn shared(s: Surface) -> bool {
+    matches!(s, Surface::LodgeInside | Surface::LodgeEntrance)
 }
 
 /// How an agent is moving; drives animation in `render_agents`.
@@ -97,6 +103,12 @@ pub struct NavGrid {
     pub reserved: Grid<Option<BeaverId>>,
     /// Owning lodge id of each `LodgeInside`/`LodgeEntrance` cell (0 = none).
     pub lodge: Grid<u32>,
+    /// Connected region of each cell (0 = solid), ignoring other agents: two cells in different
+    /// regions have no route between them, so a search between them is refused at once instead of
+    /// flooding the whole map. Valid only while `regions_ok` (a `set` that may cut or join routes
+    /// clears it until the next `rebuild`).
+    region: Vec<u32>,
+    regions_ok: bool,
 }
 
 /// Reusable search buffers, generation-stamped so a search only pays for the cells it touches.
@@ -157,7 +169,87 @@ thread_local! {
 
 impl NavGrid {
     pub fn new(width: usize, height: usize) -> Self {
-        Self { surface: Grid::new(width, height, Surface::Land), reserved: Grid::new(width, height, None), lodge: Grid::new(width, height, 0) }
+        Self {
+            surface: Grid::new(width, height, Surface::Land),
+            reserved: Grid::new(width, height, None),
+            lodge: Grid::new(width, height, 0),
+            region: Vec::new(),
+            regions_ok: false,
+        }
+    }
+
+    /// Labels connected regions by flood fill (see `region`).
+    pub fn label_regions(&mut self) {
+        let (w, h) = (self.surface.width(), self.surface.height());
+        let surf = self.surface.as_slice();
+        let mut region = vec![0u32; w * h];
+        let mut next = 0u32;
+        let mut stack = Vec::new();
+        for start in 0..w * h {
+            if region[start] != 0 || surf[start] == Surface::Solid {
+                continue;
+            }
+            next += 1;
+            region[start] = next;
+            stack.push(start);
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % w, i / w);
+                let nbrs = [(y > 0).then(|| i - w), (x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y + 1 < h).then(|| i + w)];
+                for j in nbrs.into_iter().flatten() {
+                    if region[j] == 0 && self.can_step_surf(surf[i], surf[j], (x, y), (j % w, j / w)) {
+                        region[j] = next;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        self.region = region;
+        self.regions_ok = true;
+    }
+
+    fn region_of(&self, c: Cell) -> u32 {
+        self.region[c.1 * self.surface.width() + c.0]
+    }
+
+    /// Regions a beaver at `from` can set out into: its own, or (standing in a solid cell, e.g. a
+    /// building finished around it) those of the open cells it can step out onto.
+    fn start_regions(&self, from: Cell) -> [u32; 4] {
+        let mut out = [0; 4];
+        if self.region_of(from) != 0 {
+            out[0] = self.region_of(from);
+            return out;
+        }
+        for (k, n) in self.neighbours(from).into_iter().enumerate() {
+            if let Some(n) = n.filter(|&n| self.can_step(from, n)) {
+                out[k] = self.region_of(n);
+            }
+        }
+        out
+    }
+
+    fn neighbours(&self, c: Cell) -> [Option<Cell>; 4] {
+        let (w, h) = (self.surface.width(), self.surface.height());
+        [
+            (c.1 > 0).then(|| (c.0, c.1 - 1)),
+            (c.0 > 0).then(|| (c.0 - 1, c.1)),
+            (c.0 + 1 < w).then(|| (c.0 + 1, c.1)),
+            (c.1 + 1 < h).then(|| (c.0, c.1 + 1)),
+        ]
+    }
+
+    /// False only when no route from `from` can end on any of `ends` (connectivity alone; other
+    /// agents may still block a route this allows). Always true while regions are stale.
+    pub fn may_reach(&self, from: Cell, ends: impl IntoIterator<Item = Cell>) -> bool {
+        if !self.regions_ok || self.surface_at(from).is_none() {
+            return true;
+        }
+        let starts = self.start_regions(from);
+        ends.into_iter().any(|e| self.surface_at(e).is_some() && self.region_of(e) != 0 && starts.contains(&self.region_of(e)))
+    }
+
+    /// `may_reach` for standing beside `target`.
+    pub fn may_reach_beside(&self, from: Cell, target: Cell) -> bool {
+        self.may_reach(from, self.neighbours(target).into_iter().flatten())
     }
 
     /// Rebuilds `surface` from water, dams, buildings and resources. Reservations are kept.
@@ -205,11 +297,17 @@ impl NavGrid {
                 self.set(r.cell, s);
             }
         }
+        self.label_regions();
     }
 
     /// Sets a cell's surface; out-of-bounds cells are ignored.
     pub fn set(&mut self, cell: Cell, s: Surface) {
         if let Some(slot) = self.surface.get_mut(cell.0, cell.1) {
+            // Changes between open surfaces (a tree felled, water turned canal) keep regions whole.
+            let open = |s: Surface| !matches!(s, Surface::Solid | Surface::LodgeInside | Surface::LodgeEntrance);
+            if !(open(*slot) && open(s)) {
+                self.regions_ok = false;
+            }
             *slot = s;
         }
     }
@@ -276,7 +374,6 @@ impl NavGrid {
     /// `from` is out of bounds or solid, the goal is invalid (out of bounds, solid, not a lodge
     /// interior for `Inside`), or no route exists with the cells currently held by others.
     pub fn find_path(&self, who: BeaverId, from: Cell, goal: Goal) -> Option<Path> {
-        let (w, h) = (self.surface.width(), self.surface.height());
         // A beaver can always step out of the cell it stands in (a building may have gone up
         // around it); only off-map starts are refused.
         self.surface_at(from)?;
@@ -289,15 +386,76 @@ impl NavGrid {
             (Goal::Inside(_), s) if s != Surface::LodgeInside => return None,
             _ => {}
         }
+        let connected = if beside { self.may_reach_beside(from, target) } else { from == target || self.may_reach(from, [target]) };
+        // Every end cell held by someone else: no search can succeed.
+        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, c);
+        let open_end = if beside { self.neighbours(target).into_iter().flatten().any(free) } else { from == target || free(target) };
+        if !connected || !open_end {
+            return None;
+        }
         let is_goal = |c: Cell| {
             if beside { c.0.abs_diff(target.0) + c.1.abs_diff(target.1) == 1 } else { c == target }
         };
-        let blocked = |i: usize| matches!(self.reserved.as_slice()[i], Some(o) if o != who);
         let heur = |c: Cell| {
             let d = (c.0.abs_diff(target.0) + c.1.abs_diff(target.1)) as u32;
             d.saturating_sub(beside as u32) * MIN_STEP
         };
+        self.search(who, from, is_goal, heur)
+    }
+
+    /// Cheapest path to stand beside any of `targets` (e.g. a building's footprint): one search
+    /// instead of one per cell. `None` if `from` is off the map or no route exists.
+    pub fn find_path_beside_any(&self, who: BeaverId, from: Cell, targets: &[Cell]) -> Option<Path> {
+        self.surface_at(from)?;
+        if targets.is_empty() || !targets.iter().any(|&t| self.may_reach_beside(from, t)) {
+            return None;
+        }
+        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, c);
+        if !targets.iter().any(|&t| self.neighbours(t).into_iter().flatten().any(free)) {
+            return None;
+        }
+        let (x0, x1) = (targets.iter().map(|t| t.0).min()?, targets.iter().map(|t| t.0).max()?);
+        let (y0, y1) = (targets.iter().map(|t| t.1).min()?, targets.iter().map(|t| t.1).max()?);
+        let is_goal = |c: Cell| targets.iter().any(|t| c.0.abs_diff(t.0) + c.1.abs_diff(t.1) == 1);
+        // Distance to the targets' bounding box, less the one step of "beside": admissible.
+        let heur = |c: Cell| {
+            let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
+            let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
+            ((dx + dy) as u32).saturating_sub(1) * MIN_STEP
+        };
+        self.search(who, from, is_goal, heur)
+    }
+
+    /// Cheapest path to stand on any of `cells` (e.g. any free cell inside a lodge).
+    pub fn find_path_onto_any(&self, who: BeaverId, from: Cell, cells: &[Cell]) -> Option<Path> {
+        self.surface_at(from)?;
+        if cells.contains(&from) {
+            return Some(Path { steps: Vec::new(), cost: 0.0 });
+        }
+        let free = |c: &&Cell| self.surface_at(**c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, **c);
+        let ends: Vec<Cell> = cells.iter().filter(free).copied().collect();
+        if ends.is_empty() || !self.may_reach(from, ends.iter().copied()) {
+            return None;
+        }
+        let (x0, x1) = (ends.iter().map(|t| t.0).min()?, ends.iter().map(|t| t.0).max()?);
+        let (y0, y1) = (ends.iter().map(|t| t.1).min()?, ends.iter().map(|t| t.1).max()?);
+        let heur = |c: Cell| {
+            let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
+            let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
+            (dx + dy) as u32 * MIN_STEP
+        };
+        self.search(who, from, |c| ends.contains(&c), heur)
+    }
+
+    fn held_by_other(&self, who: BeaverId, c: Cell) -> bool {
+        !self.surface_at(c).is_some_and(shared) && matches!(self.reserved.get(c.0, c.1), Some(Some(o)) if *o != who)
+    }
+
+    /// A* from `from` until `is_goal`, treating other agents' cells as blocked.
+    fn search(&self, who: BeaverId, from: Cell, is_goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> u32) -> Option<Path> {
+        let (w, h) = (self.surface.width(), self.surface.height());
         let surf = self.surface.as_slice();
+        let blocked = |i: usize| !shared(surf[i]) && matches!(self.reserved.as_slice()[i], Some(o) if o != who);
         let start = from.1 * w + from.0;
 
         SCRATCH.with(|sc| {
@@ -342,7 +500,8 @@ impl NavGrid {
     /// Moves `who` from `from` to the adjacent cell `to`: checks holding, adjacency and surface
     /// rules, reserves `to` and releases `from`. Nothing changes on error.
     pub fn advance(&mut self, who: BeaverId, from: Cell, to: Cell) -> Result<(), NavError> {
-        if self.reserved.get(from.0, from.1).copied().flatten() != Some(who) {
+        let from_shared = self.surface_at(from).is_some_and(shared);
+        if !from_shared && self.reserved.get(from.0, from.1).copied().flatten() != Some(who) {
             return Err(NavError::NotHolder(from));
         }
         if from.0.abs_diff(to.0) + from.1.abs_diff(to.1) != 1 {
@@ -363,6 +522,9 @@ impl NavGrid {
 
     /// Reserves `cell` for `who`; false if another agent holds it. Idempotent for the holder.
     pub fn reserve(&mut self, who: BeaverId, cell: Cell) -> bool {
+        if self.surface_at(cell).is_some_and(shared) {
+            return true; // shared space: never held
+        }
         match self.reserved.get_mut(cell.0, cell.1) {
             Some(slot) if slot.is_none() || *slot == Some(who) => {
                 *slot = Some(who);
@@ -525,12 +687,41 @@ mod tests {
     }
 
     #[test]
+    fn a_walled_off_goal_is_refused_without_a_search_and_regions_follow_changes() {
+        let mut n = map(&["..#..", "..#..", "..#.."]);
+        n.label_regions();
+        assert!(!n.may_reach((0, 0), [(4, 0)]), "left and right are cut apart");
+        assert!(n.find_path(A, (0, 0), Goal::Cell((4, 2))).is_none());
+        assert!(n.find_path_beside_any(A, (0, 0), &[(4, 1)]).is_none());
+        assert!(n.find_path_beside_any(A, (0, 0), &[(2, 1)]).is_some(), "beside the wall is on this side");
+        n.set((2, 1), Surface::Land); // a gap opens: regions are stale, searches go ahead
+        assert!(n.find_path(A, (0, 0), Goal::Cell((4, 2))).is_some());
+        n.label_regions();
+        assert!(n.may_reach((0, 0), [(4, 0)]));
+    }
+
+    #[test]
+    fn a_beaver_resting_by_the_door_never_shuts_the_lodge() {
+        let b = BeaverId(2);
+        let mut n = map(&["LLL", "LLL", "LLL", "~E~", "~~~"]);
+        n.label_regions();
+        assert!(n.reserve(b, (1, 2)), "the cell just inside the door");
+        let p = n.find_path_onto_any(A, (0, 4), &[(0, 0), (1, 0), (2, 0)]).expect("in past the resting beaver");
+        assert!(p.steps.iter().any(|s| s.0 == (1, 2)));
+        assert!(n.reserve(A, (0, 4)));
+        for &(c, _) in &p.steps {
+            let from = if c == p.steps[0].0 { (0, 4) } else { p.steps[p.steps.iter().position(|s| s.0 == c).unwrap() - 1].0 };
+            n.advance(A, from, c).expect("lodge cells are shared");
+        }
+    }
+
+    #[test]
     fn advance_enforces_rules() {
         let mut n = map(&[".#E", "L.~"]);
         assert!(n.reserve(A, (0, 0)));
         assert_eq!(n.advance(A, (0, 0), (1, 0)), Err(NavError::Forbidden(Surface::Solid)));
         assert_eq!(n.advance(A, (0, 0), (1, 1)), Err(NavError::NotAdjacent));
-        assert_eq!(n.advance(A, (0, 1), (1, 1)), Err(NavError::NotHolder((0, 1))));
+        assert_eq!(n.advance(A, (2, 1), (1, 1)), Err(NavError::NotHolder((2, 1))));
         assert_eq!(n.advance(A, (0, 0), (0, 1)), Err(NavError::Forbidden(Surface::LodgeInside)));
         assert_eq!(n.advance(A, (0, 0), (9, 0)), Err(NavError::NotAdjacent));
         assert_eq!(n.reserved.get(0, 0), Some(&Some(A)));
@@ -641,13 +832,18 @@ mod tests {
             }
             // Invariants: distinct cells, none solid, reservations agree with positions.
             let mut seen = std::collections::HashSet::new();
+            let mut outside = 0;
             for (k, &c) in pos.iter().enumerate() {
-                assert!(seen.insert(c), "two beavers share {c:?} at tick {tick}");
                 assert_ne!(n.surface_at(c), Some(Surface::Solid), "beaver in solid at tick {tick}");
+                if n.surface_at(c).is_some_and(shared) {
+                    continue; // lodges are shared space
+                }
+                outside += 1;
+                assert!(seen.insert(c), "two beavers share {c:?} at tick {tick}");
                 assert_eq!(n.reserved.get(c.0, c.1), Some(&Some(ids[k])));
             }
             let held = n.reserved.as_slice().iter().flatten().count();
-            assert_eq!(held, ids.len(), "leaked reservation at tick {tick}");
+            assert_eq!(held, outside, "leaked reservation at tick {tick}");
         }
         assert!(moved > 20_000, "beavers barely moved: {moved}");
     }

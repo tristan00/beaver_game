@@ -314,7 +314,9 @@ impl Job {
     fn pick(&self, sim: &SimState, from: Cell) -> Option<ResourceId> {
         let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
         let rank = |r: &Resource| self.kinds.iter().position(|&k| k == r.kind).unwrap_or(0);
-        let reachable = |r: &Resource| sim.agents.unreachable.get(&r.id).is_none_or(|until| sim.time_days >= *until);
+        let reachable = |r: &Resource| {
+            sim.agents.unreachable.get(&r.id).is_none_or(|until| sim.time_days >= *until) && sim.nav.may_reach_beside(from, r.cell)
+        };
         sim.resources
             .items
             .iter()
@@ -348,10 +350,8 @@ fn nearest_store(sim: &SimState, who: BeaverId, from: Cell, good: Good) -> Optio
             if adjacent(from, b) {
                 return Some((b.id, Path { steps: Vec::new(), cost: 0.0 }));
             }
-            let path = b
-                .cells()
-                .filter_map(|c| sim.nav.find_path(who, from, Goal::Beside(c)))
-                .min_by(|a, b| a.cost.total_cmp(&b.cost))?;
+            let cells: Vec<Cell> = b.cells().collect();
+            let path = sim.nav.find_path_beside_any(who, from, &cells)?;
             Some((b.id, path))
         })
         .min_by(|a, b| a.1.cost.total_cmp(&b.1.cost).then(a.0.cmp(&b.0)))
@@ -361,15 +361,28 @@ fn has_lodge(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && b.is_complete())
 }
 
-/// Cheapest route into a lodge interior cell.
+/// The finished building that is `who`'s home (a lodge or burrow), if any.
+fn home_of(sim: &SimState, who: BeaverId) -> Option<&Building> {
+    let home = sim.colony.beaver(who)?.lodge?;
+    let (&b, _) = sim.work.homes.iter().find(|(_, h)| **h == home)?;
+    sim.buildings.building(b).filter(|b| b.is_complete())
+}
+
+/// Route home: into any free cell of the beaver's own lodge, or beside its burrow; a beaver with
+/// no home building of its own shelters in the nearest lodge with room.
 fn route_home(sim: &SimState, who: BeaverId, from: Cell) -> Option<Path> {
-    sim.buildings
-        .buildings
-        .iter()
-        .filter(|b| b.kind == BuildingKind::Lodge && b.is_complete())
-        .flat_map(|b| b.cells().collect::<Vec<_>>())
-        .filter_map(|c| sim.nav.find_path(who, from, Goal::Inside(c)))
-        .min_by(|a, b| a.cost.total_cmp(&b.cost))
+    let cells = |b: &Building| b.cells().collect::<Vec<_>>();
+    match home_of(sim, who) {
+        Some(b) if b.kind == BuildingKind::Lodge => sim.nav.find_path_onto_any(who, from, &cells(b)),
+        Some(b) => sim.nav.find_path_beside_any(who, from, &cells(b)),
+        None => sim
+            .buildings
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Lodge && b.is_complete())
+            .filter_map(|b| sim.nav.find_path_onto_any(who, from, &cells(b)))
+            .min_by(|a, b| a.cost.total_cmp(&b.cost)),
+    }
 }
 
 // ───────────────────────────── per-agent tick ─────────────────────────────
@@ -561,11 +574,7 @@ fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> 
         return true;
     }
     if ag.path.is_none() {
-        let nav = &sim.nav;
-        ag.path = cells
-            .iter()
-            .filter_map(|c| nav.find_path(ag.id, ag.cell, Goal::Beside(*c)))
-            .min_by(|a, b| a.cost.total_cmp(&b.cost));
+        ag.path = sim.nav.find_path_beside_any(ag.id, ag.cell, &cells);
         if ag.path.is_none() {
             // No way there: give the errand up rather than stand still for ever.
             note(ag, false);

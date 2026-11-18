@@ -254,13 +254,13 @@ pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
                     .any(|p| p.paused && p.slots.iter().any(|s| s.worker.is_none() && can_fill(b.stage, s.role)));
                 return Some((id, if paused { IdleReason::Paused } else { IdleReason::NoOpenSlot }));
             }
-            // A route to any of the first few workplaces with room (route searches are not free).
+            // Connected to any of the first few workplaces with room.
             let mut places: Vec<BuildingId> = open.iter().map(|o| o.0).collect();
             places.dedup();
             let reachable = sim.agents.get(id).is_none_or(|a| {
                 places.iter().take(4).filter_map(|&bid| sim.buildings.building(bid)).any(|bd| {
                     bd.cells().any(|c| {
-                        a.cell.0.abs_diff(c.0) + a.cell.1.abs_diff(c.1) == 1 || sim.nav.find_path(id, a.cell, crate::nav::Goal::Beside(c)).is_some()
+                        a.cell.0.abs_diff(c.0) + a.cell.1.abs_diff(c.1) == 1 || sim.nav.may_reach_beside(a.cell, c)
                     })
                 })
             });

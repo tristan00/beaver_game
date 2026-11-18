@@ -183,11 +183,20 @@ impl ResourceWorld {
         out
     }
 
+    /// `items` stay in id order (ids only grow, removals keep order), so lookups are a binary
+    /// search; a linear scan is the fallback should anything ever insert out of order.
+    fn index_of(&self, id: ResourceId) -> Option<usize> {
+        match self.items.binary_search_by_key(&id, |r| r.id) {
+            Ok(i) => Some(i),
+            Err(_) => self.items.iter().position(|r| r.id == id),
+        }
+    }
     pub fn get(&self, id: ResourceId) -> Option<&Resource> {
-        self.items.iter().find(|r| r.id == id)
+        self.index_of(id).map(|i| &self.items[i])
     }
     fn get_mut(&mut self, id: ResourceId) -> Result<&mut Resource, ResourceError> {
-        self.items.iter_mut().find(|r| r.id == id).ok_or(ResourceError::NoSuchResource)
+        let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
+        Ok(&mut self.items[i])
     }
     /// All resources on `cell`.
     pub fn at(&self, cell: Cell) -> impl Iterator<Item = &Resource> {

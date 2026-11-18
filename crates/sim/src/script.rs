@@ -297,6 +297,7 @@ struct Runner {
     next_report: f64,
     next_day: f64,
     done: std::collections::BTreeSet<u64>,
+    started: std::time::Instant,
     out: Outcome,
 }
 
@@ -436,6 +437,9 @@ impl Runner {
             metric(s, &self.out.stats, "mature").unwrap_or(0.0),
             crate::hud::problems(s).iter().map(|p| format!("{:?}", p.kind)).collect::<Vec<_>>().join(",")
         );
+        if std::env::var_os("PLAY_LIVE").is_some() {
+            eprintln!("[{:>6.1}s] {line}", self.started.elapsed().as_secs_f32());
+        }
         self.out.lines.push(line);
     }
 
@@ -560,6 +564,7 @@ pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>
                 next_report: 0.0,
                 next_day: 0.0,
                 done: Default::default(),
+                started: std::time::Instant::now(),
                 out: Outcome { stats: Stats { min_food: f32::MAX, ..Default::default() }, ..Default::default() },
             });
             r.as_mut().unwrap().s.recorder = Some(Vec::new());
