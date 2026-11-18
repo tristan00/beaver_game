@@ -202,6 +202,20 @@ pub fn world_hover(
     if thing.0 != t {
         thing.0 = t;
     }
+    // The supply pile has its own tip: what is left of the bundle.
+    if let (Some((c, _)), Some(pile)) = (p, sim.0.work.supplies) {
+        if c == pile && hud.tool == Tool::None {
+            let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
+            for g in Good::ALL {
+                let a = sim.0.buildings.stores.amount(g);
+                if a > 0.05 {
+                    tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+                }
+            }
+            tips.world = Some((u64::MAX, tip));
+            return;
+        }
+    }
     // Tips for world things only while no tool is active (a tool has its own cursor tag).
     tips.world = match (t, hud.tool) {
         (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))),
@@ -275,6 +289,12 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             if let Some(p) = place(centre, 2.2) {
                 push(p, &icons);
             }
+        }
+    }
+    // The founding supply pile, until a store stands.
+    if let Some(c) = s.work.supplies {
+        if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
+            push(p, &[(Icon::Logs, good_color(Good::Logs)), (Icon::Food, good_color(Good::Food))]);
         }
     }
     // Idle beavers.

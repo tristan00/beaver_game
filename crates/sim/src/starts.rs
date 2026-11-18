@@ -388,6 +388,10 @@ const SWIM_REACH: usize = 12;
 /// in a locked valley or in water.
 /// Days of food the founding family carries in.
 pub const START_LARDER_DAYS: f32 = 30.0;
+/// What the family carries in besides food: enough for the first dam (about nine cells), a
+/// warehouse and a little over. A burrow costs only labour.
+pub const START_BUNDLE: [(crate::buildings::Good, f32); 4] =
+    [(crate::buildings::Good::Logs, 50.0), (crate::buildings::Good::Sticks, 50.0), (crate::buildings::Good::Mud, 12.0), (crate::buildings::Good::Rope, 2.0)];
 
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);
@@ -405,7 +409,8 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         return Err(invalid(format!("cell {cell:?} is water: beavers cannot settle there")));
     }
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
-    sim.colony.found((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
+    // No home is waiting for them: shelter comes from what they build.
+    sim.colony.arrive((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
     for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
         b.age_days = KIT_AGE_DAYS;
         b.stage = crate::colony::Stage::Kit;
@@ -417,11 +422,16 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
-    // The family brings a small larder of food (enough for START_LARDER_DAYS) and nothing else:
-    // no wood, and nothing in any paw. It buys time to set up foraging before hunger bites.
+    // The family brings a bundle: a larder of food (START_LARDER_DAYS) and the materials for a
+    // first dam, a shelter and a store (START_BUNDLE). They drop it as a pile where they land;
+    // builders fetch from the pile until a store stands.
     let larder = crate::hud::food_need_per_day(sim) * START_LARDER_DAYS;
     sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Food, larder).map_err(|e| invalid(e.to_string()))?;
-    sim.colony.wood = 0.0;
+    for (g, a) in START_BUNDLE {
+        sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
+    }
+    sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Logs);
+    sim.work.supplies = Some(cell);
     // Founding opens the landing's valley and its neighbours.
     sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
     strip_disabled(sim);
@@ -740,13 +750,13 @@ mod tests {
     }
 
     #[test]
-    fn adults_fell_and_haul_wood_to_a_placed_dam_which_completes_only_from_delivered_wood_and_the_pond_rises() {
+    fn adults_haul_the_bundle_to_a_placed_dam_which_completes_only_from_delivered_wood_and_the_pond_rises() {
         use crate::buildings::Good;
         use crate::colony::Stage;
         let (mut s, dam) = settled(1);
         s.work.auto_organise = true;
         let watch = dam.watch(&s).unwrap();
-        let trees_before = s.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).count();
+        let logs_before = s.buildings.stores.amount(Good::Logs);
         let id = s.order_dam(&dam.cells, dam.height).unwrap();
         let (mut built, mut held) = (None, None);
         while s.time_days < 200.0 && held.is_none() {
@@ -766,9 +776,7 @@ mod tests {
         }
         assert!(built.is_some(), "the dam was never finished");
         assert!(held.is_some(), "the pond never rose to the dam crest");
-        let trees_after = s.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).count();
-        assert!(trees_after < trees_before, "the adults felled trees");
-        assert_eq!(s.buildings.stores.amount(Good::Logs), 0.0, "wood went to the dam, not a stockpile");
+        assert!(s.buildings.stores.amount(Good::Logs) < logs_before, "the dam was built from the bundle on the pile");
     }
 
     #[test]
@@ -813,7 +821,8 @@ mod tests {
         s.apply(Command::Settle { cell: dam.camp }).unwrap();
         assert!(s.colony.is_founded());
         assert_eq!(s.colony.beavers.len(), 4);
-        assert_eq!(s.colony.lodges[0].pos, (dam.camp.0 as f32 + 0.5, dam.camp.1 as f32 + 0.5));
+        assert!(s.colony.lodges.is_empty() && s.buildings.buildings.is_empty(), "they arrive with no home and nothing built");
+        assert_eq!(s.work.supplies, Some(dam.camp), "the bundle lies where they chose to settle");
         assert!(s.apply(Command::Settle { cell: dam.camp }).is_err(), "only one colony");
     }
 
@@ -857,15 +866,66 @@ mod tests {
         assert_eq!(start(&s, kit), before.2, "the kit was not moved");
     }
 
+    /// The opening the player is meant to play: settle, then a burrow, a warehouse and the dam,
+    /// all built from the bundle with nothing else ordered (auto-staffing on).
     #[test]
-    fn the_family_arrives_with_a_small_larder_and_nothing_else() {
+    fn the_bundle_builds_a_shelter_a_store_and_the_first_dam() {
+        use crate::buildings::BuildingKind;
+        let (mut s, dam) = settled(1);
+        let burrow = place_near(&mut s, BuildingKind::Burrow);
+        let store = place_near(&mut s, BuildingKind::Warehouse);
+        let dam_site = s.order_dam(&dam.cells, dam.height).unwrap();
+        let done = |s: &SimState, id| s.buildings.building(id).is_some_and(|b| b.is_complete());
+        // The player acts on the top alert once a day (as the HUD's fix button does).
+        let mut next = 0.0;
+        while s.time_days < 90.0 && !(done(&s, burrow) && done(&s, store) && done(&s, dam_site)) {
+            if s.time_days >= next {
+                next += 1.0;
+                if let Some(p) = crate::hud::problems(&s).first() {
+                    if !matches!(p.fix, crate::hud::Fix::Place(_)) {
+                        let _ = crate::hud::apply_fix(&mut s, p.fix);
+                    }
+                }
+            }
+            s.step(0.1).unwrap();
+        }
+        assert!(done(&s, burrow), "burrow by day {:.0}", s.time_days);
+        assert!(done(&s, store), "warehouse by day {:.0}", s.time_days);
+        assert!(done(&s, dam_site), "dam by day {:.0}", s.time_days);
+        s.step(0.1).unwrap();
+        assert!(s.work.supplies.is_none(), "the pile is gone once the store stands");
+        assert_eq!(s.colony.population(), 4, "nobody died building the camp");
+    }
+
+    #[test]
+    fn a_finished_burrow_houses_the_family_and_a_store_replaces_the_pile() {
+        let (mut s, _) = settled(1);
+        let burrow = place_near(&mut s, crate::buildings::BuildingKind::Burrow);
+        for _ in 0..(40.0 / 0.1) as usize {
+            s.step(0.1).unwrap();
+            if s.buildings.building(burrow).is_some_and(|b| b.is_complete()) {
+                break;
+            }
+        }
+        assert!(s.buildings.building(burrow).is_some_and(|b| b.is_complete()), "the burrow was dug");
+        s.step(0.1).unwrap();
+        assert_eq!(s.colony.lodges.len(), 1, "the burrow is the family's home");
+        assert!(s.colony.beavers.iter().all(|b| b.lodge == Some(s.colony.lodges[0].id)));
+        assert!(s.work.supplies.is_some(), "no store yet, the pile stays");
+    }
+
+    #[test]
+    fn the_family_arrives_with_a_bundle_and_no_home() {
         use crate::buildings::Good;
         let (mut s, _) = settled(1);
         let need = crate::hud::food_need_per_day(&s);
         let food = s.buildings.stores.amount(Good::Food);
         assert!((food - need * START_LARDER_DAYS).abs() < 1e-3 && food > 0.0, "larder {food} for need {need}/day");
         assert_eq!(s.colony.food, food, "the colony eats from that same store");
-        assert_eq!((s.colony.wood, s.buildings.stores.amount(Good::Logs)), (0.0, 0.0));
+        for (g, a) in START_BUNDLE {
+            assert_eq!(s.buildings.stores.amount(g), a, "{g:?} in the bundle");
+        }
+        assert!(s.colony.lodges.is_empty() && s.colony.beavers.iter().all(|b| b.lodge.is_none()), "no home until they build one");
         assert!(s.agents.by_id.values().all(|a| a.load.is_none()));
         // With no foraging ordered, the larder runs low but nobody starves in the first two weeks.
         while s.time_days < 14.0 {

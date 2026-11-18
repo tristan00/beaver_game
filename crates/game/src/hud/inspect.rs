@@ -183,6 +183,23 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             }
         }
+        // Workshops and mills: what they make (nothing until chosen).
+        if matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill) && b.is_complete() {
+            use sim::buildings::Recipe;
+            u.rule();
+            u.row(6.0, |r| {
+                r.icon(Icon::Tools, 14.0, MUTED);
+                for (rec, g) in [(Recipe::Rope, Good::Rope), (Recipe::Baskets, Good::Baskets), (Recipe::Tools, Good::Tools)] {
+                    let on = b.recipe == Some(rec);
+                    let (inputs, out) = rec.batch();
+                    let mut tip = Tip::titled(Some((good_icon(g), good_color(g))), good_name(g)).with_value(format!("+{}", num(out.1)));
+                    for (ig, a) in inputs {
+                        tip.push(TipLine::new(good_name(*ig), format!("-{}", num(*a))).icon(good_icon(*ig), good_color(*ig)).color(BAD));
+                    }
+                    r.icon_button(good_icon(g), 16.0, HudAction::Recipe(id, if on { None } else { Some(rec) }), FAINT, on).tip(tip);
+                }
+            });
+        }
         // Stores: stock and room per good.
         if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) && b.is_complete() {
             u.rule();

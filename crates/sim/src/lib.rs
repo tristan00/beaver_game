@@ -102,6 +102,8 @@ pub enum Command {
     SetHaul { order: work::HaulOrder },
     /// Accept or turn away a wandering beaver.
     AnswerJoin { id: society::RequestId, answer: society::Answer },
+    /// What a workshop or mill makes (`None` stops it).
+    SetRecipe { building: buildings::BuildingId, recipe: Option<buildings::Recipe> },
 }
 
 /// Complete simulation state.
@@ -258,6 +260,7 @@ impl SimState {
         self.step_research(dt_days);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
+        self.sync_homes();
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
@@ -271,6 +274,32 @@ impl SimState {
         self.output.step(dt_days);
         self.ledger.record(self.time_days, &self.buildings.stores);
         Ok(())
+    }
+
+    /// Each finished burrow or lodge provides one colony home; unhoused beavers move in. Once a
+    /// store stands, the founding supply pile is gone (its goods count as moved in).
+    fn sync_homes(&mut self) {
+        use buildings::BuildingKind::{Burrow, Lodge};
+        if self.colony.homes_from_buildings {
+            let new: Vec<(buildings::BuildingId, (f32, f32))> = self
+                .buildings
+                .buildings
+                .iter()
+                .filter(|b| matches!(b.kind, Burrow | Lodge) && b.is_complete() && !self.work.homes.contains_key(&b.id))
+                .map(|b| {
+                    let (w, d) = b.kind.spec().footprint;
+                    (b.id, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0))
+                })
+                .collect();
+            for (id, pos) in new {
+                let home = self.colony.add_home(pos);
+                self.work.homes.insert(id, home);
+            }
+            self.colony.house_homeless();
+        }
+        if self.work.supplies.is_some() && self.buildings.buildings.iter().any(|b| b.is_complete() && agents::accepts(b.kind, buildings::Good::Logs)) {
+            self.work.supplies = None;
+        }
     }
 
     /// One job model (`work` module docs): unless the colony runs its abstract plan (old
@@ -534,6 +563,7 @@ impl SimState {
             Command::SetWorkArea { building, area } => {
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
+            Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetHaul { order } => {
                 let store = |id| {
                     self.buildings.building(id).is_some_and(|b| b.is_complete() && agents::accepts(b.kind, order.good))

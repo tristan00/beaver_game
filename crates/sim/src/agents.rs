@@ -154,6 +154,16 @@ const EPS: f32 = 1e-3;
 const SPAWN_RADIUS: usize = 12;
 /// Placeholder `Carry` destination meaning "choose the nearest store".
 const NO_STORE: BuildingId = BuildingId(0);
+/// The founding supply pile (`Work::supplies`), as a place to fetch from.
+pub const SUPPLIES: BuildingId = BuildingId(u64::MAX);
+
+/// Footprint cells of a place goods are fetched from: a building, or the supply pile.
+fn place_cells(sim: &SimState, id: BuildingId) -> Vec<Cell> {
+    if id == SUPPLIES {
+        return sim.work.supplies.into_iter().collect();
+    }
+    sim.buildings.building(id).map(|b| b.cells().collect()).unwrap_or_default()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnError {
@@ -434,7 +444,8 @@ fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     for &(good, _) in &progress.needed {
         let outstanding = progress.missing(good) - promised(sim, site, good);
         if outstanding > WORK_EPS && sim.buildings.stores.amount(good) > WORK_EPS {
-            if let Some(from) = closest_store(sim, ag.cell, good) {
+            // A store if one stands, else the pile the family brought in.
+            if let Some(from) = closest_store(sim, ag.cell, good).or(sim.work.supplies.map(|_| SUPPLIES)) {
                 return Some(Task::Fetch { from, good, then: site });
             }
         }
@@ -513,20 +524,21 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
 
 /// Walks beside building `target`; true once there.
 fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> bool {
-    let Some(b) = sim.buildings.building(target) else {
+    let cells = place_cells(sim, target);
+    if cells.is_empty() {
         ag.path = None;
         note(ag, false);
         return false;
-    };
-    if adjacent(ag.cell, b) {
+    }
+    if cells.iter().any(|f| f.0.abs_diff(ag.cell.0) + f.1.abs_diff(ag.cell.1) <= 1) {
         ag.path = None;
         return true;
     }
     if ag.path.is_none() {
         let nav = &sim.nav;
-        ag.path = b
-            .cells()
-            .filter_map(|c| nav.find_path(ag.id, ag.cell, Goal::Beside(c)))
+        ag.path = cells
+            .iter()
+            .filter_map(|c| nav.find_path(ag.id, ag.cell, Goal::Beside(*c)))
             .min_by(|a, b| a.cost.total_cmp(&b.cost));
     }
     let moved = follow(&mut sim.nav, ag, dt);
@@ -549,7 +561,8 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
         Duty::Haul => !site && sim.work.hauls.iter().any(|o| (o.from, o.to, o.good) == (from, then, good)),
         _ => false,
     };
-    if !still_wanted || !sim.buildings.building(from).is_some_and(|b| b.is_complete()) {
+    let from_ok = if from == SUPPLIES { sim.work.supplies.is_some() } else { sim.buildings.building(from).is_some_and(|b| b.is_complete()) };
+    if !still_wanted || !from_ok {
         return abandon(ag);
     }
     if !approach(sim, ag, dt, from) {
@@ -1026,8 +1039,11 @@ fn producer(sim: &SimState, ag: &Agent) -> crate::buildings::Producer {
 /// founding larder is kept there). `None` for a beaver without one.
 fn larder_cell(sim: &SimState, who: BeaverId) -> Option<Cell> {
     let b = sim.colony.beaver(who)?;
-    let l = sim.colony.lodges.iter().find(|l| Some(l.id) == b.lodge).or(sim.colony.lodges.first())?;
-    Some((l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize))
+    match sim.colony.lodges.iter().find(|l| Some(l.id) == b.lodge).or(sim.colony.lodges.first()) {
+        Some(l) => Some((l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize)),
+        // Not housed yet: food goes on the supply pile where the family landed.
+        None => sim.work.supplies,
+    }
 }
 
 /// Cells (Chebyshev) around the lodge that count as home: a beaver with no route to the lodge

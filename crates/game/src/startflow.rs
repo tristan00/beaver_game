@@ -1,5 +1,6 @@
-//! The one start: the game opens on the founding family swimming in along the river, camera on
-//! them. Nothing is built for them. `--demo-pond` scripts it for screenshots: order the designed
+//! The one start: nothing stands on the map and no colony exists. The player looks over the valley
+//! and picks where the family settles (never chosen for them); the family swims in there and drops
+//! the bundle it carried, from which it builds its first dam, shelter and store. `--demo-pond` scripts it for screenshots: order the designed
 //! dam, let the family build it, hold the picture once the pond is full.
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
@@ -49,8 +50,31 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     *sel = Selection::None;
 }
 
-/// Builds a fresh new game on `map` (world, river start and designed dam), settles the family at
-/// the designed camp and begins play paused. The renderers follow the new world on their own.
+/// Opens the choice of a settling place: the start valley is revealed, the camera overlooks it
+/// around `around` (the designed camp, only a framing hint), the clock waits.
+pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection, around: Option<(usize, usize)>) {
+    flow.phase = Phase::Scouting;
+    flow.settled_at = None;
+    let focus = around.map(|c| (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).unwrap_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0));
+    flow.fog.reveal_valley(&sim.world, sim.world.start);
+    if let Some(v) = sim.world.valley_of((focus.0 as usize, focus.1 as usize)) {
+        flow.fog.reveal_valley(&sim.world, v);
+    }
+    flow.focus = None;
+    orbit.target = cell_world(&sim.height, focus);
+    orbit.distance = SCOUT_DISTANCE;
+    orbit.pitch = SCOUT_PITCH;
+    *clock = SimClock::default();
+    clock.paused = true;
+    *sel = Selection::None;
+}
+
+/// Camera while choosing where to settle: wide enough to compare banks.
+const SCOUT_DISTANCE: f32 = 60.0;
+const SCOUT_PITCH: f32 = 1.0;
+
+/// Builds a fresh new game on `map` (world, river start and designed dam) and opens the choice of
+/// a settling place. Nothing is settled for the player. The renderers follow the new world on their own.
 pub fn new_game(
     map: &crate::state::MapChoice,
     sim: &mut Sim,
@@ -60,14 +84,14 @@ pub fn new_game(
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
 ) -> Result<(), String> {
-    let (mut s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
-    s.apply(Command::Settle { cell: dam.camp }).map_err(|e| format!("cannot settle the camp: {e}"))?;
+    let (s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
+    let camp = dam.camp;
     sim.0 = s;
     planned.0 = Some(dam);
     let generation = flow.generation + 1;
     *flow = Flow::new(&sim.0.world);
     flow.generation = generation;
-    begin(&sim.0, flow, clock, orbit, sel);
+    begin_scouting(&sim.0, flow, clock, orbit, sel, Some(camp));
     Ok(())
 }
 
@@ -96,7 +120,15 @@ fn begin_new_game(
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
 ) {
-    // The sim opens with no colony; the designed camp is settled for the player.
+    // The sim opens with no colony and a played game never settles for the player. Only scripted
+    // screenshot runs (developer tooling: `--screenshot` with `--demo-pond` or `BC_HUD_DEMO`,
+    // except the `settle` view) found the colony at the designed camp by script.
+    let scripted = cli.screenshot.is_some() && (cli.demo_pond || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
+    if !scripted {
+        let camp = planned.0.as_ref().map(|d| d.camp);
+        begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);
+        return;
+    }
     if let Some(dam) = planned.0.as_ref().filter(|_| !sim.0.colony.is_founded()) {
         if let Err(e) = sim.0.apply(Command::Settle { cell: dam.camp }) {
             eprintln!("error: cannot settle the designed camp {:?}: {e}", dam.camp);

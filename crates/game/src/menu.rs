@@ -200,9 +200,13 @@ fn menu_actions(
                             continue;
                         }
                     }
-                } else {
+                } else if sim.0.colony.is_founded() {
                     // Same world: frame the family again (the title screen turned the camera).
                     crate::startflow::begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
+                } else {
+                    // Same world, nobody settled yet: back to choosing the place.
+                    let camp = planned.0.as_ref().map(|d| d.camp);
+                    crate::startflow::begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);
                 }
                 clock.paused = true;
                 menu.seen_urgent.clear();

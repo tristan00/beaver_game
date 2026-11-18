@@ -425,6 +425,9 @@ pub struct Colony {
     /// Whether the abstract Forager and Logger jobs conjure food and wood. `SimState` turns this
     /// off: there the colony eats and builds from the real stores that gatherers fill.
     pub abstract_gathering: bool,
+    /// Homes come only from shelters the colony builds (new games); otherwise the colony raises
+    /// lodges itself from stored wood (old fixtures).
+    pub homes_from_buildings: bool,
     /// One job model (`work` module docs): when `Some`, the job each beaver works this step and
     /// whether it is at work, derived by `SimState` from the work slots. It replaces the family
     /// plan: free beavers do no abstract work, and jobs have no colony-wide
@@ -501,6 +504,7 @@ impl Colony {
             guard_strength: 0.0,
             disabled_jobs: Vec::new(),
             abstract_gathering: true,
+            homes_from_buildings: false,
             slot_jobs: None,
             eaten: [0.0; 4],
             spoiled: 0.0,
@@ -564,6 +568,51 @@ impl Colony {
         self.founded = true;
         self.stats.peak_population = self.beavers.len();
         Ok(fam)
+    }
+
+    /// The founding family arrives at `pos` with no home: two adults and two young, no lodge.
+    /// Homes come only from shelters the colony builds (`add_home`); from now on new pairs move
+    /// into a free home instead of raising one for free. Errors like `found`.
+    pub fn arrive(&mut self, pos: (f32, f32), land: &dyn Landscape) -> Result<FamilyId, ColonyError> {
+        let fam = self.found(pos, land)?;
+        let lodges: Vec<LodgeId> = self.lodges.iter().map(|l| l.id).collect();
+        self.lodges.retain(|l| !lodges.contains(&l.id));
+        for b in self.beavers.iter_mut() {
+            b.lodge = None;
+        }
+        self.homes_from_buildings = true;
+        Ok(fam)
+    }
+
+    /// A home provided by a finished shelter at `pos`, given to the first family with beavers
+    /// still unhoused; those beavers (up to capacity) move in. Returns the new home.
+    pub fn add_home(&mut self, pos: (f32, f32)) -> LodgeId {
+        let family = self.beavers.iter().find(|b| b.lodge.is_none()).map(|b| b.family).or(self.families.first().map(|f| f.id)).unwrap_or(FamilyId(0));
+        let id = self.new_lodge(family, pos, 1.0);
+        self.house_homeless();
+        id
+    }
+
+    /// Moves unhoused beavers into homes with room, own family first.
+    pub fn house_homeless(&mut self) {
+        let mut occupancy: HashMap<LodgeId, usize> = HashMap::new();
+        for b in &self.beavers {
+            if let Some(l) = b.lodge {
+                *occupancy.entry(l).or_insert(0) += 1;
+            }
+        }
+        let homes: Vec<(LodgeId, FamilyId)> = self.lodges.iter().map(|l| (l.id, l.family)).collect();
+        for b in self.beavers.iter_mut().filter(|b| b.lodge.is_none()) {
+            let pick = homes
+                .iter()
+                .filter(|(l, _)| occupancy.get(l).copied().unwrap_or(0) < LODGE_CAPACITY)
+                .min_by_key(|(_, f)| *f != b.family)
+                .map(|(l, _)| *l);
+            if let Some(l) = pick {
+                b.lodge = Some(l);
+                *occupancy.entry(l).or_insert(0) += 1;
+            }
+        }
     }
 
     /// Seats a whole household at `pos` (dry land): a lodge, a mated pair, kits born there and
@@ -1226,14 +1275,42 @@ impl Colony {
             .collect();
         let mut used: HashSet<BeaverId> = HashSet::new();
         for &(a, sex, family) in &eligible {
-            if used.contains(&a) || self.wood < LODGE_WOOD_COST {
+            if used.contains(&a) || (!self.homes_from_buildings && self.wood < LODGE_WOOD_COST) {
                 continue;
             }
+            // With homes from buildings, a new pair needs an empty home the colony built.
+            let empty_home = if self.homes_from_buildings {
+                let taken: HashSet<LodgeId> = self.beavers.iter().filter_map(|b| b.lodge).collect();
+                match self.lodges.iter().find(|l| !taken.contains(&l.id)).map(|l| l.id) {
+                    Some(l) => Some(l),
+                    None => continue,
+                }
+            } else {
+                None
+            };
             let partner = eligible.iter().find(|(b, s, f)| !used.contains(b) && *s != sex && *f != family).map(|p| p.0);
             if partner.is_none() && !(self.food_per_capita() >= HUNGRY_FOOD_PER_CAPITA && self.chance(WANDERER_CHANCE_PER_DAY * dt)) {
                 continue;
             }
             let near = self.beaver(a).map_or((0.0, 0.0), |b| self.lodge_pos(b));
+            if let Some(home) = empty_home {
+                let b = partner.unwrap_or_else(|| self.immigrant(sex.opposite()));
+                used.insert(a);
+                used.insert(b);
+                let fam = self.new_family();
+                let site = self.lodges.iter().find(|l| l.id == home).map(|l| l.pos).unwrap_or(near);
+                if let Some(l) = self.lodges.iter_mut().find(|l| l.id == home) {
+                    l.family = fam;
+                }
+                for x in self.beavers.iter_mut().filter(|x| x.id == a || x.id == b) {
+                    x.family = fam;
+                    x.lodge = Some(home);
+                    x.pos = site;
+                }
+                self.set_mates(a, b);
+                self.log(Event::NewFamily { family: fam, lodge: home, a, b });
+                continue;
+            }
             let Some(site) = self.find_lodge_site(near, land) else {
                 if !self.events.iter().rev().take(20).any(|e| matches!(e.event, Event::NoLodgeSite { .. })) {
                     self.log(Event::NoLodgeSite { near });

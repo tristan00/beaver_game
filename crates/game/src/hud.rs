@@ -311,6 +311,7 @@ pub enum HudAction {
     SortPop(u8),
     EditArea(BuildingId),
     Pin(Selection),
+    Recipe(BuildingId, Option<sim::buildings::Recipe>),
 }
 
 pub struct HudPlugin;
@@ -487,11 +488,28 @@ fn world_input(
     mut sel: ResMut<Selection>,
     mut pending: ResMut<PendingWorks>,
     menu: Res<MenuOpen>,
+    mut flow: ResMut<Flow>,
 ) {
     if menu.0 {
         return;
     }
     let now = time.elapsed_secs();
+    // Before the colony exists the only verb is choosing where the family settles.
+    if !sim.0.colony.is_founded() {
+        if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
+            if let Some(cell) = hover.0 {
+                match crate::flow::can_settle(&sim.0.world, &sim.0.water.depth, &flow.fog, cell) {
+                    Ok(()) => {
+                        if let Err(e) = crate::flow::settle(&mut sim.0, &mut flow, cell) {
+                            hud.refuse(sim_error(&e), now);
+                        }
+                    }
+                    Err(e) => hud.refuse(settle_error(e), now),
+                }
+            }
+        }
+        return;
+    }
     // Ctrl + wheel sets the dam crest (the plain wheel keeps zooming).
     if matches!(hud.tool, Tool::Dam) && keys.pressed(KeyCode::ControlLeft) && scroll.delta.y != 0.0 {
         let lines = match scroll.unit {
@@ -747,6 +765,17 @@ fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending,
     }
 }
 
+/// The ≤ 2-word reason a cell cannot be settled.
+pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
+    use crate::flow::SettleError::*;
+    match e {
+        OutOfBounds => "Off map",
+        Locked => "Closed",
+        Unexplored => "Unexplored",
+        Water => "Water",
+    }
+}
+
 pub(crate) fn building_at(sim: &sim::SimState, cell: Cell) -> Option<BuildingId> {
     sim.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)).map(|b| b.id)
 }
@@ -870,6 +899,7 @@ fn button_actions(
             HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::SortPop(k) => hud.pop_sort = k,
+            HudAction::Recipe(building, recipe) => cmd(s, &mut hud, sim::Command::SetRecipe { building, recipe }, now),
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);
@@ -990,12 +1020,15 @@ fn refresh_panels(
         if !SLOW_PANELS.contains(p) && *p != Panel::Lane {
             continue;
         }
-        if menu.0 || !founded {
+        if menu.0 || (!founded && flow.phase != crate::flow::Phase::Scouting) {
             ui::clear(&mut commands, e, &mut m);
             continue;
         }
         let placing = ctx.placing();
         let tree = match p {
+            Panel::Bottom if !founded => panels::settle_chip(&ctx),
+            Panel::Lane if !founded => panels::lane(&ctx),
+            _ if !founded => Vec::new(),
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
             Panel::Right => panels::right(&ctx),
@@ -1032,11 +1065,16 @@ fn refresh_fast(
         if !matches!(p, Panel::Cursor | Panel::Markers) {
             continue;
         }
-        if menu.0 || !s.colony.is_founded() {
+        if menu.0 {
             ui::clear(&mut commands, e, &mut m);
             continue;
         }
         let tree = match p {
+            Panel::Cursor if !s.colony.is_founded() => match (hover.0, cursor.0) {
+                (Some(cell), Some(cur)) if flow.phase == crate::flow::Phase::Scouting => panels::settle_tag(s, &flow, cell, cur),
+                _ => Vec::new(),
+            },
+            _ if !s.colony.is_founded() => Vec::new(),
             Panel::Cursor => {
                 let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: MapLens::World, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
                 panels::cursor_tag(&ctx)

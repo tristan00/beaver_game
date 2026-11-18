@@ -189,6 +189,11 @@ pub struct Work {
     /// Beavers on a direct player order (`Command::Assign`): auto-staffing leaves them alone
     /// until `Command::Unlock`.
     pub player_orders: BTreeSet<BeaverId>,
+    /// Where the founding family dropped the supplies it carried in (a pile on the ground, not a
+    /// building). Builders fetch from it until a store stands; it is gone once one does.
+    pub supplies: Option<Cell>,
+    /// Shelter buildings (burrows, lodges) and the colony home each one provides.
+    pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
 }
 
 impl Default for Work {
@@ -203,6 +208,8 @@ impl Default for Work {
             managed: BTreeMap::new(),
             role_order: RoleKind::DEFAULT_ORDER.to_vec(),
             player_orders: BTreeSet::new(),
+            supplies: None,
+            homes: BTreeMap::new(),
         }
     }
 }

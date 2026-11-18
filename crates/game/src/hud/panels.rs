@@ -670,6 +670,74 @@ fn key_hints(u: &mut Ui, tool: Tool) {
     });
 }
 
+// ───────────────────────────── choosing where to settle ─────────────────────────────
+
+/// Before the colony exists: one chip with the family, what it carries, and the click that settles.
+pub fn settle_chip(c: &Ctx) -> Vec<VNode> {
+    let food = sim::hud::food_need_per_day(c.s);
+    let mut bundle: Vec<(Good, String)> = vec![(Good::Food, days(sim::starts::START_LARDER_DAYS))];
+    for (g, a) in sim::starts::START_BUNDLE {
+        bundle.push((g, num(a)));
+    }
+    let _ = food;
+    vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
+        u.row(4.0, |r| {
+            r.icon(Icon::Beaver, 22.0, INK);
+            r.bold("4", 14.0, INK);
+        })
+        .tip(Tip::titled(Some((Icon::Beaver, INK)), "The family").line("Adults", "2").line("Young", "2"));
+        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(22.0), ..default() })).bg(LINE);
+        u.row(8.0, |r| {
+            for (g, a) in &bundle {
+                r.row(2.0, |x| {
+                    x.icon(good_icon(*g), 16.0, good_color(*g));
+                    x.bold(a.clone(), 12.0, INK);
+                })
+                .tip(Tip::name(good_name(*g)));
+            }
+        })
+        .tip({
+            let mut t = Tip::titled(Some((Icon::Haul, INK)), "What they carry");
+            t.push(TipLine::new("Dam", "").icon(Icon::Dam, INK));
+            t.push(TipLine::new("Shelter", "").icon(Icon::Burrow, INK));
+            t.push(TipLine::new("Store", "").icon(Icon::Warehouse, INK));
+            t
+        });
+        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(22.0), ..default() })).bg(LINE);
+        u.row(4.0, |r| {
+            r.icon(Icon::Home, 18.0, ACCENT);
+            r.keycap("LMB");
+        })
+        .tip(Tip::name("Settle here").line("Pick the spot", ""));
+    }))]
+}
+
+/// At the cursor while choosing: whether the family can settle here and how good the spot is.
+pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: Vec2) -> Vec<VNode> {
+    let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
+    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
+    let mut ui = Ui::default();
+    match crate::flow::can_settle(&s.world, &s.water.depth, &flow.fog, cell) {
+        Ok(()) => {
+            let h = crate::flow::site_hint(&s.world, cell);
+            let q = h.overall();
+            let col = if q >= 0.5 { GOOD } else if q >= 0.3 { WARN } else { BAD };
+            ui.icon(Icon::Home, 14.0, col);
+            for (i, x) in [(Icon::Drop, h.water), (Icon::Tree, h.trees), (Icon::Health, h.safety)] {
+                ui.icon(i, 12.0, MUTED);
+                ui.bar(x, 22.0, 4.0, if x >= 0.5 { GOOD } else if x >= 0.3 { WARN } else { BAD });
+            }
+            ui.bold(h.verdict(), 12.0, col);
+        }
+        Err(e) => {
+            ui.icon(Icon::Cross, 14.0, BAD);
+            ui.bold(super::settle_error(e), 12.0, INK);
+        }
+    }
+    v.children = ui.nodes;
+    vec![v]
+}
+
 // ───────────────────────────── cursor tag (5.2) ─────────────────────────────
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
