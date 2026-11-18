@@ -437,7 +437,7 @@ fn assemble_early(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), StartE
         sim.tech.record(a);
     }
     finish(&mut sim, 12.0, 4.0);
-    let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height }, level, lake, canals: Vec::new() };
+    let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height, camp: plan.cells[plan.cells.len() / 2] }, level, lake, canals: Vec::new() };
     Ok((sim, info))
 }
 
@@ -590,7 +590,7 @@ fn assemble_industrial(seed: u64, plan: &Plan) -> Result<(SimState, LakeInfo), S
     }
     sim.tech.unlock_all();
     finish(&mut sim, 14.0, 5.0);
-    let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height }, level, lake, canals };
+    let info = LakeInfo { dam: DamSite { cells: plan.cells.clone(), height: plan.height, camp: plan.cells[plan.cells.len() / 2] }, level, lake, canals };
     Ok((sim, info))
 }
 

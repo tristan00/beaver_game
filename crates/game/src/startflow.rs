@@ -65,12 +65,20 @@ impl Plugin for StartPlugin {
 
 fn begin_new_game(
     cli: Res<Cli>,
-    sim: Res<Sim>,
+    planned: Res<PlannedDam>,
+    mut sim: ResMut<Sim>,
     mut flow: ResMut<Flow>,
     mut clock: ResMut<SimClock>,
     mut orbit: ResMut<OrbitCamera>,
     mut sel: ResMut<Selection>,
 ) {
+    // The sim opens with no colony; until the settling choice has a screen, settle at the designed camp.
+    if let Some(dam) = planned.0.as_ref().filter(|_| !sim.0.colony.is_founded()) {
+        if let Err(e) = sim.0.apply(Command::Settle { cell: dam.camp }) {
+            eprintln!("error: cannot settle the designed camp {:?}: {e}", dam.camp);
+            std::process::exit(1);
+        }
+    }
     // `--cam lodge` / `pond`: keep the view the camera plugin framed.
     let framed = orbit.clone();
     begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
@@ -124,6 +132,7 @@ fn demo_pond_script(
             exit.write(AppExit::error());
             return;
         }
+        sim.0.work.auto_organise = true; // the scripted demo has no player to order the family about
         if let Err(e) = sim.0.apply(Command::OrderDam { cells: dam.cells.clone(), height: dam.height }) {
             error!("--demo-pond: the dam order was refused: {e}");
             exit.write(AppExit::error());
