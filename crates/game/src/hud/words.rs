@@ -228,6 +228,7 @@ pub fn place_error(e: &PlaceError) -> String {
         PlaceError::NeedsDry => "Wet".into(),
         PlaceError::NeedsWater => "No water".into(),
         PlaceError::NeedsDock => "Needs dock".into(),
+        PlaceError::NeedsDam => "Needs dam".into(),
         PlaceError::Afford(_, need, have) => format!("{}/{}", num(*have), num(*need)),
         PlaceError::NoCells => String::new(),
         PlaceError::TooLong(max) => format!("Max {max}"),

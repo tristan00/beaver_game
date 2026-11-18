@@ -767,7 +767,7 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
             let q = h.overall();
             let col = if q >= 0.5 { GOOD } else if q >= 0.3 { WARN } else { BAD };
             ui.icon(Icon::Home, 14.0, col);
-            for (i, x) in [(Icon::Drop, h.water), (Icon::Tree, h.trees), (Icon::Health, h.safety), (Icon::Building, h.room)] {
+            for (i, x) in [(Icon::Drop, h.water), (Icon::Tree, h.trees), (Icon::Food, h.food), (Icon::Health, h.safety), (Icon::Building, h.room)] {
                 ui.icon(i, 12.0, MUTED);
                 ui.bar(x, 22.0, 4.0, if x >= 0.5 { GOOD } else if x >= 0.3 { WARN } else { BAD });
             }

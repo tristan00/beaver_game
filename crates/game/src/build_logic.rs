@@ -8,7 +8,9 @@ use sim::{Command, SimState};
 
 pub const DEFAULT_DAM_HEIGHT: f32 = 1.0;
 pub const MIN_DAM_HEIGHT: f32 = 0.5;
-pub const MAX_DAM_HEIGHT: f32 = 3.0;
+pub const MAX_DAM_HEIGHT: f32 = sim::dam_preview::MAX_DAM_HEIGHT;
+/// One press of the crest control: half a unit of height.
+pub const DAM_STEP: f32 = 0.5;
 pub const MAX_DAM_CELLS: usize = 48;
 pub const MAX_CANAL_CELLS: usize = 80;
 pub const CANAL_DEPTH: f32 = 0.5;
@@ -98,6 +100,8 @@ pub enum PlaceError {
     NeedsDry,
     NeedsWater,
     NeedsDock,
+    /// A lock stands on a dam (`SimState::place_site`).
+    NeedsDam,
     Afford(Good, f32, f32),
     NoCells,
     TooLong(usize),
@@ -113,6 +117,7 @@ impl std::fmt::Display for PlaceError {
             PlaceError::NeedsDry => write!(f, "Needs dry ground"),
             PlaceError::NeedsWater => write!(f, "Must touch water"),
             PlaceError::NeedsDock => write!(f, "Needs a free water cell next to a finished dock"),
+            PlaceError::NeedsDam => write!(f, "A lock is built on a dam"),
             PlaceError::Afford(g, need, have) => write!(f, "Not enough {g:?}: need {}, have {}", fmt_amount(*need), fmt_amount(*have)),
             PlaceError::NoCells => write!(f, "Nothing drawn yet"),
             PlaceError::TooLong(max) => write!(f, "Too long (max {max} cells)"),
@@ -200,7 +205,12 @@ pub fn check_building(sim: &SimState, kind: BuildingKind, pos: Cell) -> Result<(
         } else {
             PlaceError::Sim(m)
         }
-    })
+    })?;
+    // `place_site` (not `check_site`) refuses a lock with no footprint cell on a dam.
+    if kind == BuildingKind::Lock && !footprint(kind, pos).iter().any(|&(x, y)| sim.water.has_dam(x, y)) {
+        return Err(PlaceError::NeedsDam);
+    }
+    Ok(())
 }
 
 // ───────────────────────────── hover preview ─────────────────────────────
@@ -336,10 +346,11 @@ pub fn check_dam(sim: &SimState, cells: &[Cell], height: f32) -> Result<(), Plac
     if cells.iter().any(|&(x, y)| !sim.water.depth.in_bounds(x, y)) {
         return Err(PlaceError::OutOfBounds);
     }
-    if !cells.iter().any(|&(x, y)| is_wet(sim, x, y)) {
+    // A line over an existing dam raises or extends it.
+    if !cells.iter().any(|&(x, y)| is_wet(sim, x, y) || sim.water.has_dam(x, y)) {
         return Err(PlaceError::NeedsWater);
     }
-    if !(MIN_DAM_HEIGHT..=MAX_DAM_HEIGHT).contains(&height) {
+    if !(MIN_DAM_HEIGHT..=MAX_DAM_HEIGHT + 1e-3).contains(&height) {
         return Err(PlaceError::Sim(format!("Dam height must be {MIN_DAM_HEIGHT}..{MAX_DAM_HEIGHT}")));
     }
     // No affordability check: a dam is a construction site and the family hauls the wood in.
@@ -368,6 +379,88 @@ pub fn dam_preview(sim: &SimState, cells: &[Cell], height: f32) -> Option<sim::d
     sim::dam_preview::preview(sim, cells, height)
 }
 
+/// The cells and heights a drawn line is built to: `height` above the ground on every cell, or,
+/// once the line was extended to hold (`crest`), each cell up to that world crest (cells already
+/// that high are left out, as `Command::OrderDamTo` does).
+pub fn line_heights(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> (Vec<Cell>, Vec<f32>) {
+    match crest {
+        Some(c) => sim::dam_preview::heights_to(sim, cells, c),
+        None => (cells.to_vec(), vec![height; cells.len()]),
+    }
+}
+
+/// The preview of a drawn line (see `line_heights`).
+pub fn line_preview(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> Option<sim::dam_preview::DamPreview> {
+    let (c, h) = line_heights(sim, cells, height, crest);
+    sim::dam_preview::preview_heights(sim, &c, &h)
+}
+
+/// What the line costs to build (only height added to existing dam cells counts).
+pub fn line_cost(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> Vec<Amount> {
+    let (c, h) = line_heights(sim, cells, height, crest);
+    sim::dam_preview::cost_for(sim, &c, &h).0
+}
+
+/// "Extend to hold": the longer line that stops water walking round the dam, and the world crest
+/// every cell is built to. `None` if the line already holds, is not valid, or cannot be made to.
+pub fn extend_line(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> Option<(Vec<Cell>, f32)> {
+    let (c, h) = line_heights(sim, cells, height, crest);
+    sim::dam_preview::preview_heights(sim, &c, &h)?.spill_at?;
+    let (longer, _, p) = sim::dam_preview::extend_to_hold(sim, &c, &h, MAX_DAM_CELLS)?;
+    // Keep the drawn cells (even those already high enough) and add the new ones.
+    let mut out = cells.to_vec();
+    out.extend(longer.into_iter().filter(|x| !cells.contains(x)));
+    Some((out, p.crest))
+}
+
+/// The dam cells joined (8-way) to `seed` (a cell on a dam): the line "raise" builds on.
+pub fn dam_line_at(sim: &SimState, seed: Cell) -> Vec<Cell> {
+    if !sim.water.has_dam(seed.0, seed.1) {
+        return Vec::new();
+    }
+    let mut out = vec![seed];
+    let mut i = 0;
+    while i < out.len() && out.len() < MAX_DAM_CELLS {
+        let (x, y) = out[i];
+        for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+            if nx < 0 || ny < 0 || out.len() >= MAX_DAM_CELLS {
+                continue;
+            }
+            let c = (nx as usize, ny as usize);
+            if sim.water.has_dam(c.0, c.1) && !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        i += 1;
+    }
+    out.sort();
+    out
+}
+
+/// A dam cell of a finished dam building, if any.
+pub fn dam_cell_of(sim: &SimState, id: BuildingId) -> Option<Cell> {
+    let b = sim.buildings.building(id).filter(|b| b.kind == BuildingKind::Dam && b.is_complete())?;
+    b.cells().find(|&(x, y)| sim.water.has_dam(x, y))
+}
+
+/// Height above the ground of the tallest cell of a dam line.
+pub fn dam_line_height(sim: &SimState, cells: &[Cell]) -> f32 {
+    cells.iter().filter_map(|&(x, y)| sim.water.dam_height.get(x, y).copied()).fold(0.0, f32::max)
+}
+
+/// The "raise" order for the dam through `seed`: its cells, one step (`DAM_STEP`) above its
+/// tallest cell. `None` when there is no dam there or it already stands as high as beavers build.
+pub fn raise_order(sim: &SimState, seed: Cell) -> Option<BuildOrder> {
+    let cells = dam_line_at(sim, seed);
+    if cells.is_empty() {
+        return None;
+    }
+    let now = dam_line_height(sim, &cells);
+    let height = ((now / DAM_STEP).round() * DAM_STEP + DAM_STEP).min(MAX_DAM_HEIGHT);
+    (height > now + 1e-3).then_some(BuildOrder::Dam { cells, height })
+}
+
 // ───────────────────────────── emission ─────────────────────────────
 
 /// What the player asked for.
@@ -375,6 +468,8 @@ pub fn dam_preview(sim: &SimState, cells: &[Cell], height: f32) -> Option<sim::d
 pub enum BuildOrder {
     Building { kind: BuildingKind, pos: Cell },
     Dam { cells: Vec<Cell>, height: f32 },
+    /// A dam line built to a world-height crest (after "extend to hold").
+    DamTo { cells: Vec<Cell>, crest: f32 },
     Canal { cells: Vec<Cell> },
 }
 
@@ -412,6 +507,11 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
             // A construction site: the family fells, hauls and builds; the sim raises the water dam
             // when the site is finished (`Command::OrderDam`).
             sim.apply(Command::OrderDam { cells: cells.clone(), height: *height }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+            Ok(format!("Dam of {} cells ordered", cells.len()))
+        }
+        BuildOrder::DamTo { cells, crest } => {
+            check_dam(sim, cells, MIN_DAM_HEIGHT)?;
+            sim.apply(Command::OrderDamTo { cells: cells.clone(), crest: *crest }).map_err(|e| PlaceError::Sim(e.to_string()))?;
             Ok(format!("Dam of {} cells ordered", cells.len()))
         }
         BuildOrder::Canal { cells } => {
@@ -705,6 +805,9 @@ pub(crate) mod tests {
             return false;
         }
         let wet = |c: &Cell| sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= WET_DEPTH);
+        if kind == BuildingKind::Lock && !cells.iter().any(|c| sim.water.has_dam(c.0, c.1)) {
+            return false; // a lock is built on a dam
+        }
         match spec.site {
             Site::Dry => !cells.iter().any(wet),
             Site::TouchesWater => cells.iter().any(wet),
@@ -721,6 +824,9 @@ pub(crate) mod tests {
         // something already built, so overlap is exercised too
         let d = dry_sites(&sim)[0];
         sim.apply(Command::PlaceSite { kind: BuildingKind::Warehouse, pos: d }).unwrap();
+        // and a dam across the river, so a lock has somewhere to go
+        let c = river_cell(&sim);
+        sim.apply(Command::BuildDam { cells: line_cells((c.0, c.1 - 2), (c.0, c.1 + 2)), height: 1.0 }).unwrap();
         let cells = window(&sim);
         assert_eq!(cells.len(), 32 * 32);
         for kind in BuildingKind::ALL {
@@ -856,6 +962,62 @@ pub(crate) mod tests {
         assert_eq!(set_job_count(&mut sim.colony, Job::Logger, 1).unwrap(), 1);
         assert_eq!(set_job_count(&mut sim.colony, Job::Logger, 999).unwrap(), n);
         assert_eq!(set_job_count(&mut sim.colony, Job::Logger, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_lock_is_valid_only_with_a_cell_on_a_dam() {
+        let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
+        found(&mut sim);
+        let c = river_cell(&sim);
+        // beside the river, off any dam: refused with the lock's own reason
+        assert_eq!(check_building(&sim, BuildingKind::Lock, c), Err(PlaceError::NeedsDam));
+        sim.apply(Command::BuildDam { cells: line_cells((c.0, c.1 - 2), (c.0, c.1 + 2)), height: 1.0 }).unwrap();
+        assert_eq!(check_building(&sim, BuildingKind::Lock, c), Ok(()));
+        sim.apply(Command::PlaceSite { kind: BuildingKind::Lock, pos: c }).expect("the sim agrees");
+    }
+
+    #[test]
+    fn a_line_over_a_dam_raises_it_and_raise_adds_one_step() {
+        let mut sim = SimState::new(1);
+        sim.tech.unlock_all();
+        found(&mut sim);
+        let c = river_cell(&sim);
+        let line = line_cells((c.0, c.1 - 2), (c.0, c.1 + 2));
+        sim.apply(Command::BuildDam { cells: line.clone(), height: 1.0 }).unwrap();
+        // the whole line is dam now: still a valid line to draw, and only the added height costs
+        assert_eq!(check_dam(&sim, &line, 1.5), Ok(()));
+        assert!(line_cost(&sim, &line, 1.0, None).is_empty(), "already that high: free");
+        let raise = line_cost(&sim, &line, 1.5, None);
+        assert!(raise.iter().any(|a| a.0 == Good::Mud), "above one unit a dam is packed with mud: {raise:?}");
+        // "raise" on any of its cells rebuilds the joined line one step up
+        match raise_order(&sim, line[2]) {
+            Some(BuildOrder::Dam { cells, height }) => {
+                assert_eq!(cells.len(), line.len());
+                assert!((height - 1.5).abs() < 1e-4, "{height}");
+            }
+            o => panic!("{o:?}"),
+        }
+        assert_eq!(raise_order(&sim, (c.0 + 5, c.1 + 5)), None, "no dam there");
+        let mut p = Pending::default();
+        let order = raise_order(&sim, line[0]).unwrap();
+        emit(&mut sim, &mut p, &order).expect("the raise is ordered");
+    }
+
+    #[test]
+    fn a_line_built_to_a_crest_brings_each_cell_up_to_it() {
+        let mut sim = SimState::new(1);
+        let c = river_cell(&sim);
+        let line = line_cells((c.0, c.1 - 2), (c.0, c.1 + 2));
+        let ground: Vec<f32> = line.iter().map(|&(x, y)| *sim.height.get(x, y).unwrap()).collect();
+        let crest = ground.iter().copied().fold(f32::MIN, f32::max) + 1.0;
+        let (cells, heights) = line_heights(&sim, &line, 1.0, Some(crest));
+        assert_eq!(cells, line);
+        for (h, g) in heights.iter().zip(&ground) {
+            assert!((h + g - crest).abs() < 1e-4);
+        }
+        assert_eq!(line_heights(&sim, &line, 1.5, None).1, vec![1.5; line.len()]);
+        sim.tech.unlock_all();
     }
 
     #[test]
