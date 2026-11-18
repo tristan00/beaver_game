@@ -233,6 +233,8 @@ pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32
         1 => return (mix_rgb([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (d / 3.0).clamp(0.0, 1.0).sqrt()), 0.93),
         // Goods lens: water steps back.
         2 => return ([0.62, 0.69, 0.75], 0.9),
+        // Elevation lens: one flat blue, so a pond reads as a level over the height ramp.
+        crate::terrain_render::ELEVATION_LENS => return (crate::terrain_render::ELEVATION_WATER, 0.95),
         _ => {}
     }
     let foam = if in_foam { 1.0 } else { 0.0 };

@@ -212,8 +212,8 @@ pub fn at(g: &sim::Grid<f32>, x: i32, y: i32) -> f32 {
     g.as_slice()[y * g.width() + x]
 }
 
-/// The map view the HUD asks for: 0 the normal world, 1 the water lens, 2 the goods lens. Chunks
-/// fold it into their hash, so changing it recolours terrain and water.
+/// The map view the HUD asks for (`hud::MapLens::code`): 0 the normal world, 1 water, 2 goods,
+/// 3 forest, 4 elevation. Chunks fold it into their hash, so changing it recolours terrain and water.
 pub static MAP_LENS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn map_lens() -> u8 {
@@ -271,6 +271,25 @@ pub fn chunk_dims(s: &SimState) -> (usize, usize) {
 pub fn max_height(s: &SimState) -> f32 {
     s.height.as_slice().iter().cloned().fold(1.0, f32::max)
 }
+
+pub fn min_height(s: &SimState) -> f32 {
+    s.height.as_slice().iter().cloned().fold(f32::MAX, f32::min).min(max_height(s) - 0.5)
+}
+
+/// Lens code of the elevation view (`hud::MapLens::Elevation`).
+pub const ELEVATION_LENS: u8 = 4;
+
+/// The elevation lens' calm sequential ramp (sRGB) at `t` in 0..1: dark slate teal on low ground
+/// through sage and tan to pale cream on the heights.
+pub fn elevation_ramp(t: f32) -> Rgb {
+    const STOPS: [Rgb; 4] = [[0.25, 0.36, 0.39], [0.45, 0.57, 0.47], [0.76, 0.71, 0.53], [0.96, 0.92, 0.80]];
+    let t = t.clamp(0.0, 1.0) * (STOPS.len() - 1) as f32;
+    let i = (t.floor() as usize).min(STOPS.len() - 2);
+    mix(STOPS[i], STOPS[i + 1], t - i as f32)
+}
+
+/// Water in the elevation lens: one flat blue whatever the depth, so a pond reads as a level.
+pub const ELEVATION_WATER: Rgb = [0.31, 0.56, 0.86];
 
 fn noise(x: i32, y: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(0x85eb_ca6b) ^ (y as u32).wrapping_mul(0xc2b2_ae35);
@@ -477,11 +496,24 @@ pub fn rock_weight(slope: f32) -> f32 {
 /// Colour of one terrain vertex (sRGB). Grass runs from Meadow light to Meadow deep: sunny flat
 /// ground and large soft patches are light, hollows and slopes away from the sun are deep. Rock is
 /// Stone; nothing is darker than the style guide's floors (Meadow deep on grass, Stone shade on rock).
-fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
+fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: i32) -> Rgb {
     match map_lens() {
         0 => world_color(s, p, maxh, x, y),
+        ELEVATION_LENS => elevation_color(s, minh, maxh, x, y),
         lens => lens_color(s, maxh, x, y, lens),
     }
+}
+
+/// Elevation lens colouring: the ramp by height between the map's lowest and highest ground, with
+/// a light hillshade so slopes still read; wet ground takes the flat water blue.
+fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
+    let t = (at(&s.height, x, y) - minh) / (maxh - minh).max(0.5);
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
+    let c = elevation_ramp(t);
+    let k = 0.92 + 0.2 * sunny;
+    let land = [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)];
+    mix(land, ELEVATION_WATER, smooth(WET_EPS, 0.15, at(&s.water.depth, x, y)))
 }
 
 /// Lens colouring: land in grey clay by height (lit from the sun side so the shape still reads);
@@ -562,6 +594,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
 /// Builds the mesh of one chunk at `step` cells per vertex, with skirts on its border.
 pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Mesh {
     let maxh = max_height(s);
+    let range = (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, maxh);
     let (w, d) = (s.height.width() as i32, s.height.height() as i32);
     let n = CHUNK / step;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
@@ -573,7 +606,7 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         pos.push([wx, h - drop, wz]);
         let (gx, gz) = smooth_gradient(s, x, y, st);
         nor.push(Vec3::new(-gx, 1.0, -gz).normalize().to_array());
-        let c = vertex_color(s, p, maxh, x, y);
+        let c = vertex_color(s, p, range, x, y);
         col.push(lin([c[0] * shade, c[1] * shade, c[2] * shade], 1.0));
         uv.push([x as f32 / w as f32, y as f32 / d as f32]);
     };

@@ -10,6 +10,7 @@
 //! clicks survive updates. Words follow Appendix A: icons first, the fewest words possible.
 #![allow(deprecated)]
 mod colony;
+mod elevation;
 mod inspect;
 mod panels;
 mod ui;
@@ -145,6 +146,8 @@ pub enum MapLens {
     Goods,
     /// Trees by stage and the logging and forestry areas (`world::draw_world_overlay`).
     Forest,
+    /// Ground tinted by height with contour lines over terrain and dam crests (`elevation`).
+    Elevation,
 }
 
 impl MapLens {
@@ -154,6 +157,7 @@ impl MapLens {
             MapLens::Water => 1,
             MapLens::Goods => 2,
             MapLens::Forest => 3,
+            MapLens::Elevation => 4,
         }
     }
 }
@@ -342,6 +346,7 @@ impl Plugin for HudPlugin {
             .init_resource::<Tips>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
+            .init_resource::<elevation::Contours>()
             .insert_resource(RefreshTimer(Timer::from_seconds(REFRESH_SECS, TimerMode::Repeating)))
             .add_systems(Startup, (spawn_hosts, ui::spawn_tip_hosts, setup_minimap))
             .add_systems(
@@ -353,6 +358,7 @@ impl Plugin for HudPlugin {
                     .chain()
                     .in_set(HudSet),
             )
+            .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet))
             .add_systems(Update, demo.before(pointer_over_ui));
     }
 }
@@ -407,7 +413,7 @@ fn hotkeys(
         return; // the search box or a menu has the keyboard
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest)] {
+    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest), (KeyCode::F5, MapLens::Elevation)] {
         if keys.just_pressed(k) {
             *lens = l;
         }
@@ -1074,6 +1080,7 @@ fn refresh_fast(
     scale: Res<UiScale>,
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
+    lens: Res<MapLens>,
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let s = &sim.0;
@@ -1092,7 +1099,7 @@ fn refresh_fast(
             },
             _ if !s.colony.is_founded() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: MapLens::World, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
                 panels::cursor_tag(&ctx)
             }
             _ => match cams.single() {
@@ -1299,7 +1306,7 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
 
 // ───────────────────────────── scripted views for screenshots ─────────────────────────────
 
-/// `BC_HUD_DEMO=rest|dam|canal|place|inspect|camp|beaver|ledger|jobs|pop|research|goods|water|forest|search|tip`
+/// `BC_HUD_DEMO=rest|dam|canal|place|inspect|camp|beaver|ledger|jobs|pop|research|goods|water|forest|elevation|search|tip`
 /// (with `BC_HUD=1` and `--screenshot`): once the colony stands, runs `BC_HUD_DAYS` days (default
 /// 12) and sets up that view, so each state can be captured without a mouse. `camp`, `ledger`,
 /// `jobs` and `goods` first stand up a staffed logging camp, forager hut and warehouse beside the
@@ -1364,6 +1371,7 @@ fn demo(
             "goods" => hud.colony = Some(ColonyTab::Goods),
             "research" => hud.colony = Some(ColonyTab::Research),
             "log" => hud.colony = Some(ColonyTab::Log),
+            "elevation" => *lens = MapLens::Elevation,
             "building" => {
                 if let Some(b) = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::ForagerHut).or(s.buildings.buildings.first()) {
                     *sel = Selection::Site(b.id);
@@ -1378,7 +1386,7 @@ fn demo(
             _ => {}
         }
         if let Some(c) = camp {
-            look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), 42.0);
+            look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), if view == "elevation" { 60.0 } else { 42.0 });
         }
         return;
     }
@@ -1440,6 +1448,7 @@ fn demo(
                 "research" => hud.colony = Some(ColonyTab::Research),
                 "water" => *lens = MapLens::Water,
                 "forest" => *lens = MapLens::Forest,
+                "elevation" => *lens = MapLens::Elevation,
                 "search" => hud.search = Some("food".into()),
                 "tip" => {
                     tips.layers.push(ui::Layer {
@@ -1454,7 +1463,7 @@ fn demo(
                 _ => {}
             }
             if let Some(c) = camp {
-                look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), if other == "water" { 60.0 } else { 45.0 });
+                look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), if matches!(other, "water" | "elevation") { 60.0 } else { 45.0 });
             }
         }
     }
@@ -1591,9 +1600,12 @@ mod tests {
         states.push(("place lodge".into(), HudState { tool: Tool::Building(BuildingKind::ForesterLodge), ..default() }, Selection::None));
         states.push(("items".into(), HudState { open_cat: Some(0), ..default() }, Selection::None));
         states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
+        // The elevation lens: its legend in the rail and the heights tag at the cursor.
+        states.push(("elevation".into(), HudState::default(), Selection::None));
         let mut failures = Vec::new();
         for (name, hud, sel) in &states {
-            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens: MapLens::World, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, history: &[], cursor: Some(Vec2::new(300.0, 300.0)) };
+            let lens = if name == "elevation" { MapLens::Elevation } else { MapLens::World };
+            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, history: &[], cursor: Some(Vec2::new(300.0, 300.0)) };
             let all: Vec<(&str, Vec<ui::VNode>)> = vec![
                 ("strip", panels::strip(&ctx)),
                 ("calendar", panels::calendar(&ctx)),

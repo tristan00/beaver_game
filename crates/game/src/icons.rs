@@ -46,6 +46,7 @@ icons! {
     RoleElder, RoleGuard, RoleForester,
     // Map views
     ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
+    ViewElevation,
     // Status and shapes
     Idle, Unstaffed, Blocked, Full, NoStore, NoPower, Padlock, HandLock, Warn, Urgent, Up, Down,
     Dot, DotEmpty, Check, Cross,
@@ -915,6 +916,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.part(21.0, 38.0, 0.62, 0.0, 0.0, house_door);
             c.part(42.0, 30.0, 0.7, 0.0, 3.0, house_door);
         }
+        ViewElevation => {
+            // Nested contour rings of a hill, off-centre like a real summit, with the peak filled.
+            c.add(ellipse(33.0, 37.0, 26.0, 19.0).outline(W - 1.0));
+            c.add(ellipse(30.0, 32.0, 16.0, 11.5).outline(W - 1.0));
+            c.add(circle(28.0, 29.0, 5.5));
+        }
         // ---- status
         Idle => {
             c.add(circle(30.0, 33.0, 23.0).minus(circle(43.0, 24.0, 19.0)));
@@ -1328,7 +1335,7 @@ mod tests {
             &[CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence],
             &Icon::ALL[Dam.index()..=TreeNursery.index()],
             &Icon::ALL[RoleForager.index()..=RoleForester.index()],
-            &Icon::ALL[ViewWorld.index()..=ViewHousing.index()],
+            &Icon::ALL[ViewWorld.index()..=ViewElevation.index()],
             &Icon::ALL[Idle.index()..=Cross.index()],
             &Icon::ALL[Pause.index()..=Settings.index()],
             &Icon::ALL[Beaver.index()..=DrySummer.index()],
