@@ -485,7 +485,12 @@ pub(crate) fn unlock(sim: &mut SimState, who: BeaverId) -> Result<(), SimError> 
     if sim.colony.beaver(who).is_none() {
         return Err(invalid(format!("no beaver {}", who.0)));
     }
-    sim.work.set_locked(who, false);
+    if sim.work.set_locked(who, false) {
+        // Auto-staffing now owns the slot: it keeps the beaver there while the slot is wanted.
+        if let Some((b, i, _)) = sim.work.slot_of(who) {
+            sim.work.managed.insert(who, ManagedDuty::Slot(b, i));
+        }
+    }
     if sim.work.player_orders.remove(&who) {
         sim.agents.assign(who, None);
     }
@@ -614,6 +619,10 @@ mod tests {
         assert!(s.apply(Command::AddWorker { building: BuildingId(999) }).is_err());
         assert!(s.apply(Command::RemoveWorker { building: low }).is_ok());
         assert!(s.apply(Command::RemoveWorker { building: low }).is_err(), "nobody left to remove");
+        // Unlocking a hand-placed beaver hands its slot to auto-staffing.
+        s.apply(Command::Unlock { who: ids[3] }).unwrap();
+        assert!(!s.work.is_locked(ids[3]));
+        assert_eq!(s.work.managed.get(&ids[3]), Some(&ManagedDuty::Slot(hut, 0)));
     }
 
     #[test]
