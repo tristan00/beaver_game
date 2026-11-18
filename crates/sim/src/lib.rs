@@ -14,6 +14,7 @@ pub mod features;
 pub mod grid;
 pub mod hud;
 pub mod ledger;
+pub mod maps;
 /// The old lake starts, kept only as test fixtures (feature `fixtures`); no player can start in them.
 #[cfg(any(test, feature = "fixtures"))]
 pub mod lakes;
@@ -116,6 +117,11 @@ impl SimState {
     /// Builds a world deterministically from `seed`.
     pub fn new(seed: u64) -> Self {
         let world = worldgen::WorldGen::new(seed).generate().expect("default world generation failed");
+        Self::from_world(seed, world)
+    }
+
+    /// A fresh state on a given world (generated or real terrain from `maps`).
+    pub fn from_world(seed: u64, world: worldgen::World) -> Self {
         let height = world.height.clone();
         let size = world.size;
         let water = water::Water::from_world(&world);

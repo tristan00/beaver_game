@@ -247,6 +247,32 @@ pub fn dam_effect(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamEffect
     Some(DamEffect { rise: p.rise, flooded: p.flooded.len(), newly_flooded: p.flooded.iter().filter(|c| !wet(c)).count(), drop })
 }
 
+/// Dam sites a dam visibly changes (`DamEffect::is_visible`) on separate streams: two sites count
+/// as separate when neither lies within `SEPARATE_REACH` river cells downstream of the other. The
+/// map checks use it to make sure a map offers more than one river worth damming.
+pub fn dammable_streams(sim: &SimState) -> Vec<Cell> {
+    const SEPARATE_REACH: usize = 40;
+    let below = |from: Cell, to: Cell| {
+        let mut at = from;
+        for _ in 0..SEPARATE_REACH {
+            match sim.world.downstream(at.0, at.1) {
+                Some(d) if d == to => return true,
+                Some(d) => at = d,
+                None => return false,
+            }
+        }
+        false
+    };
+    let mut picked: Vec<Cell> = Vec::new();
+    for (_, dam, height) in dam_candidates(sim) {
+        let (Some(effect), Some(at)) = (dam_effect(sim, &dam, height), dam_river_cell(sim, &dam)) else { continue };
+        if effect.is_visible() && picked.iter().all(|&p| !below(at, p) && !below(p, at) && dist2(p, at) > 64) {
+            picked.push(at);
+        }
+    }
+    picked
+}
+
 /// Runs the water alone until the rivers carry what the springs now give, then starts its clock
 /// and books afresh (as `Water::from_world` does for the generated springs).
 fn settle_water(sim: &mut SimState) {
@@ -415,7 +441,11 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
 /// Springs above it are added so the river can fill that pond against evaporation and seepage,
 /// and the water is settled into them before day 0, so the river runs as it will.
 fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
-    let mut sim = SimState::new(seed);
+    build_river_on(SimState::new(seed))
+}
+
+/// The start on any world: picks the designed dam and camp and settles the water (see `build_river`).
+fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> {
     sim.water.config.seepage = CLAY_SEEPAGE;
     let plan = river_plan(&mut sim).ok_or(StartError::NoSite)?;
     // The designed camp must be settleable.
@@ -559,6 +589,18 @@ impl PondWatch {
 /// scripted demo order that dam; the player picks their own spot.
 pub fn new_game_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {
     build_river(seed)
+}
+
+/// Builds the new game on the real-terrain map `id` (see `maps::all`) and returns the dam it is
+/// designed around, like `new_game_with_dam`.
+pub fn new_game_on_map(id: &str) -> Result<(SimState, DamSite), StartError> {
+    let (info, world) = crate::maps::world(id).map_err(|e| StartError::Build(e.to_string()))?;
+    build_river_on(SimState::from_world(info.seed(), world))
+}
+
+/// Builds the new game on a parsed map (bundled or a candidate being checked).
+pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::World) -> Result<(SimState, DamSite), StartError> {
+    build_river_on(SimState::from_world(info.seed(), world))
 }
 
 /// Builds the new game for `seed` (see `new_game_with_dam`).

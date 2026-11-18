@@ -949,7 +949,7 @@ fn calendar_panel(p: &mut ChildSpawnerCommands, s: &sim::SimState, clock: &SimCl
         bold(r, format!("{} {}", d.season.name(), d.day), 14.0, INK);
         text(r, format!("Year {}", d.year), 11.0, MUTED);
         r.spawn(Node { flex_grow: 1.0, ..default() });
-        button(r, "||", HudAction::Pause, if clock.paused { Color::srgb(0.94, 0.91, 0.86) } else { FAINT }, false);
+        button(r, if clock.paused { "|| paused" } else { "||" }, HudAction::Pause, FAINT, clock.paused);
         for sp in Speed::ALL {
             button(r, sp.label(), HudAction::Speed(sp), FAINT, !clock.paused && clock.speed == sp);
         }

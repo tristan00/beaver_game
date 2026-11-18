@@ -796,16 +796,71 @@ fn classify_tree(moisture: f32, slope: f32, height_frac: f32) -> Option<Tree> {
 
 fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
     let n = p.size;
-    let nf = n as f32;
     let lay = layout(seed, n);
     let mut raw = terrain(seed, n, p.amplitude, &lay);
     carve_ponds(&mut raw, n, seed, lay.centers[0]);
     let narrows = carve_narrows(&mut raw, n, &lay, p.amplitude).map(|i| (i % n, i / n));
+    let world = finish(p.seed, seed, n, p.amplitude, raw, lay, narrows, &[])?;
+    validate(&world)?;
+    Ok(world)
+}
+
+/// A world on real terrain: `raw` is a `size` x `size` height grid in world units (row-major)
+/// and `inflows` are border cells where a river enters from outside the map, with the cells it
+/// drains out there. Drainage, rivers, lakes, springs, moisture and forest follow from the
+/// terrain exactly as for generated worlds. The whole map is one open valley.
+pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, inflows: &[(usize, usize, u32)]) -> Result<World, WorldError> {
+    if size < MIN_SIZE || raw.len() != size * size || raw.iter().any(|h| !h.is_finite()) {
+        return Err(WorldError::InvalidSize(size));
+    }
+    let amplitude = raw.iter().copied().fold(1.0f32, f32::max);
+    let half = size as f32 / 2.0;
+    let lay = Layout { centers: vec![(half, half)], label: vec![0; size * size], gap: vec![0.0; size * size], passes: Vec::new() };
+    let fail = |reason: String| WorldError::GenerationFailed { seed, reason };
+    let world = finish(seed, seed, size, amplitude, raw, lay, None, inflows).map_err(fail)?;
+    let river = world.river.as_slice().iter().filter(|r| **r).count();
+    if river < 20 {
+        return Err(fail(format!("only {river} river cells")));
+    }
+    Ok(world)
+}
+
+/// Everything after the raw terrain: drainage, lakes, rivers, channels, springs, moisture,
+/// forest. `inflows` add the water of rivers that enter across the map border.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    world_seed: u64,
+    seed: u64,
+    n: usize,
+    amplitude: f32,
+    raw: Vec<f32>,
+    lay: Layout,
+    narrows: Option<(usize, usize)>,
+    inflows: &[(usize, usize, u32)],
+) -> Result<World, String> {
+    let nf = n as f32;
+    let p = WorldGen { seed: world_seed, size: n, amplitude };
     let (surface, flow) = fill_depressions(&raw, n);
     let lake = find_lakes(&raw, &surface, n);
     let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
 
-    let acc = accumulate(&surface, &flow);
+    let mut acc = accumulate(&surface, &flow);
+    // Water from outside the map joins at the border and runs down its drainage path.
+    for &(x, y, extra) in inflows {
+        if x >= n || y >= n {
+            continue;
+        }
+        let mut cur = Some(y * n + x);
+        let mut steps = 0;
+        while let Some(i) = cur {
+            acc[i] = acc[i].saturating_add(extra);
+            cur = flow[i];
+            steps += 1;
+            if steps > n * n {
+                break;
+            }
+        }
+    }
     let mut river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
     prune_short_branches(&mut river, &flow);
     let streams = classify_streams(&surface, &flow, &acc, &river);
@@ -869,7 +924,6 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
         lake: grid_from(n, lake), pond: grid_from(n, pond), springs, narrows,
         moisture: grid_from(n, moisture), slope: grid_from(n, slope), forest: grid_from(n, forest),
     };
-    validate(&world)?;
     Ok(world)
 }
 

@@ -7,7 +7,7 @@ use crate::cli::Cli;
 use crate::flow::{Flow, Selection};
 use crate::hud::{self, MenuOpen, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER};
 use crate::sim_driver::SimClock;
-use crate::state::{PlannedDam, Sim};
+use crate::state::{CurrentMap, MapChoice, PlannedDam, Sim};
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
@@ -27,8 +27,8 @@ pub struct Menu {
     back_to: Screen,
     /// Whether the sim was paused before the pause menu opened (Resume restores it).
     was_paused: bool,
-    /// Map seed for the next new game.
-    pub seed: u64,
+    /// The map the next new game is played on.
+    pub map: MapChoice,
     pub ui_scale: f32,
     /// Pause the game when a new urgent problem appears.
     pub auto_pause: bool,
@@ -39,9 +39,10 @@ pub struct Menu {
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 enum MenuAction {
     NewGame,
+    MapPrev,
+    MapNext,
     SeedPrev,
     SeedNext,
-    SeedRandom,
     OpenSettings,
     Back,
     Resume,
@@ -76,7 +77,11 @@ impl Plugin for MenuPlugin {
             screen: first,
             back_to: if first == Some(Screen::Pause) { Screen::Pause } else { Screen::Start },
             was_paused: true,
-            seed: cli.seed,
+            map: match cli.map.as_deref() {
+                Some("generated") => MapChoice::Generated(cli.seed),
+                Some(id) => MapChoice::Real(id.to_string()),
+                None => MapChoice::first(),
+            },
             ui_scale: 1.0,
             auto_pause: true,
             seen_urgent: Vec::new(),
@@ -142,6 +147,7 @@ fn menu_actions(
     q: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     mut menu: ResMut<Menu>,
     mut sim: ResMut<Sim>,
+    mut current: ResMut<CurrentMap>,
     mut planned: ResMut<PlannedDam>,
     mut flow: ResMut<Flow>,
     mut clock: ResMut<SimClock>,
@@ -155,11 +161,14 @@ fn menu_actions(
         match a {
             MenuAction::NewGame | MenuAction::Restart => {
                 // Keep the world already on screen if it is the chosen map and nothing has happened.
-                let fresh = sim.0.seed == menu.seed && sim.0.time_days == 0.0 && a == MenuAction::NewGame;
+                let fresh = current.0 == menu.map && sim.0.time_days == 0.0 && a == MenuAction::NewGame;
                 if !fresh {
-                    let seed = if a == MenuAction::Restart { sim.0.seed } else { menu.seed };
-                    match crate::startflow::new_game(seed, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel) {
-                        Ok(()) => commands.queue(hud::reset_for_new_game),
+                    let map = if a == MenuAction::Restart { current.0.clone() } else { menu.map.clone() };
+                    match crate::startflow::new_game(&map, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel) {
+                        Ok(()) => {
+                            current.0 = map;
+                            commands.queue(hud::reset_for_new_game)
+                        }
                         Err(e) => {
                             error!("{e}");
                             continue;
@@ -173,11 +182,23 @@ fn menu_actions(
                 menu.seen_urgent.clear();
                 menu.screen = None;
             }
-            MenuAction::SeedPrev => menu.seed = menu.seed.saturating_sub(1).max(1),
-            MenuAction::SeedNext => menu.seed = menu.seed.saturating_add(1),
-            MenuAction::SeedRandom => {
-                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(7);
-                menu.seed = (t ^ (t >> 17)) % 9999 + 1;
+            MenuAction::MapPrev | MenuAction::MapNext => {
+                // Real maps in order, then the generated valley.
+                let mut options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
+                let seed = match menu.map {
+                    MapChoice::Generated(s) => s,
+                    _ => 1,
+                };
+                options.push(MapChoice::Generated(seed));
+                let i = options.iter().position(|o| *o == menu.map).unwrap_or(0);
+                let n = options.len();
+                let j = if a == MenuAction::MapNext { (i + 1) % n } else { (i + n - 1) % n };
+                menu.map = options[j].clone();
+            }
+            MenuAction::SeedPrev | MenuAction::SeedNext => {
+                if let MapChoice::Generated(s) = menu.map {
+                    menu.map = MapChoice::Generated(if a == MenuAction::SeedNext { s.saturating_add(1) } else { s.saturating_sub(1).max(1) });
+                }
             }
             MenuAction::OpenSettings => {
                 menu.back_to = menu.screen.unwrap_or(Screen::Pause);
@@ -189,7 +210,7 @@ fn menu_actions(
                 clock.paused = menu.was_paused;
             }
             MenuAction::ToTitle => {
-                menu.seed = sim.0.seed;
+                menu.map = current.0.clone();
                 menu.screen = Some(Screen::Start);
             }
             MenuAction::Quit => {
@@ -275,6 +296,7 @@ fn rebuild_menu(
     mut commands: Commands,
     menu: Res<Menu>,
     sim: Res<Sim>,
+    current: Res<CurrentMap>,
     clock: Res<SimClock>,
     mut root: Query<(Entity, &mut Visibility, &mut BackgroundColor), With<MenuRoot>>,
 ) {
@@ -302,32 +324,45 @@ fn rebuild_menu(
     let border = BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
     commands.entity(e).with_children(|r| {
         r.spawn((card, BackgroundColor(PANEL), border)).with_children(|p| match screen {
-            Screen::Start => start_screen(p, &menu, &sim.0),
+            Screen::Start => start_screen(p, &menu, &current.0),
             Screen::Pause => pause_screen(p, &sim.0, &clock),
             Screen::Settings => settings_screen(p, &menu),
         });
     });
 }
 
-fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, s: &sim::SimState) {
+fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) {
     hud::bold(p, "Beaver Colony", 30.0, INK);
     hud::text(p, "Shape the river, feed the family, build a colony.", 13.0, MUTED);
     p.spawn(Node { height: Val::Px(6.0), ..default() });
     wide(p, "New game", MenuAction::NewGame, ACCENT);
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-        hud::text(r, "Map", 13.0, MUTED);
-        r.spawn(hud::row(6.0)).with_children(|r| {
-            button(r, "<", MenuAction::SeedPrev, FAINT, false);
-            hud::bold(r, format!("Seed {}", menu.seed), 15.0, INK);
-            button(r, ">", MenuAction::SeedNext, FAINT, false);
-            button(r, "Random", MenuAction::SeedRandom, FAINT, false);
+        button(r, "<", MenuAction::MapPrev, FAINT, false);
+        r.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, flex_grow: 1.0, ..default() }).with_children(|c| {
+            hud::bold(c, menu.map.label(), 14.0, INK);
+            match &menu.map {
+                MapChoice::Real(id) => {
+                    if let Some(m) = sim::maps::all().into_iter().find(|m| &m.id == id) {
+                        let ew = if m.lon < 0.0 { "W" } else { "E" };
+                        hud::text(c, format!("Real terrain, {:.1} km across, {:.2} N {:.2} {ew}", m.km(), m.lat, m.lon.abs()), 11.0, MUTED);
+                    }
+                }
+                MapChoice::Generated(_) => {
+                    c.spawn(hud::row(6.0)).with_children(|r| {
+                        button(r, "seed -", MenuAction::SeedPrev, FAINT, false);
+                        button(r, "seed +", MenuAction::SeedNext, FAINT, false);
+                    });
+                }
+            }
         });
+        button(r, ">", MenuAction::MapNext, FAINT, false);
     });
-    let same = menu.seed == s.seed;
-    hud::text(p, if same { "The valley behind this menu is the map you will play." } else { "A new valley will be made from this seed." }, 11.0, MUTED);
+    let same = menu.map == *current;
+    hud::text(p, if same { "The valley behind this menu is the map you will play." } else { "New game builds this map (it takes a few seconds)." }, 11.0, MUTED);
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Quit", MenuAction::Quit, FAINT);
     hud::text(p, "The game starts paused: press Space or 1, 2, 3 to let time run.", 11.0, MUTED);
+    hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM).", 9.5, MUTED);
 }
 
 fn pause_screen(p: &mut ChildSpawnerCommands, s: &sim::SimState, clock: &SimClock) {

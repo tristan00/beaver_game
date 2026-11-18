@@ -2,13 +2,16 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world] [--screenshot out.png [--frames N]]";
 /// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct Cli {
     pub seed: u64,
+    /// Real-terrain map to start on (`sim::maps`), or `generated` for the seed's generated world.
+    /// `None` starts on the first real map.
+    pub map: Option<String>,
     pub cam: String,
     /// When set, wait until the terrain is drawn (and at least `frames` frames ran), save a PNG here and exit.
     pub screenshot: Option<PathBuf>,
@@ -28,12 +31,20 @@ pub struct Cli {
 impl Cli {
     /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, showcase: None };
+        let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, showcase: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
             match arg.as_str() {
                 "--seed" => cli.seed = value("--seed")?.parse().map_err(|e| format!("--seed: {e}"))?,
+                "--map" => {
+                    let m = value("--map")?;
+                    if m != "generated" && !sim::maps::all().iter().any(|i| i.id == m) {
+                        let ids: Vec<String> = sim::maps::all().into_iter().map(|i| i.id).collect();
+                        return Err(format!("--map: unknown map '{m}' (maps: {}, generated)", ids.join(", ")));
+                    }
+                    cli.map = Some(m);
+                }
                 "--frames" => {
                     cli.frames = value("--frames")?.parse().map_err(|e| format!("--frames: {e}"))?;
                     if cli.frames == 0 {

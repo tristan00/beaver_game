@@ -49,10 +49,10 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     *sel = Selection::None;
 }
 
-/// Builds a fresh new game on `seed` (world, river start and designed dam), settles the family at
+/// Builds a fresh new game on `map` (world, river start and designed dam), settles the family at
 /// the designed camp and begins play paused. The renderers follow the new world on their own.
 pub fn new_game(
-    seed: u64,
+    map: &crate::state::MapChoice,
     sim: &mut Sim,
     planned: &mut PlannedDam,
     flow: &mut Flow,
@@ -60,7 +60,7 @@ pub fn new_game(
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
 ) -> Result<(), String> {
-    let (mut s, dam) = sim::starts::new_game_with_dam(seed).map_err(|e| format!("cannot build a new game for seed {seed}: {e}"))?;
+    let (mut s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
     s.apply(Command::Settle { cell: dam.camp }).map_err(|e| format!("cannot settle the camp: {e}"))?;
     sim.0 = s;
     planned.0 = Some(dam);
