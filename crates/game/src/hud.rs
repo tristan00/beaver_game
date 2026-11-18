@@ -12,7 +12,11 @@ use crate::camera::MainCamera;
 use crate::flow::{cell_world, height_at, ray_heightfield, Cell, Flow, Selection};
 use crate::sim_driver::{SimClock, Speed};
 use crate::state::Sim;
+use bevy::asset::RenderAssetUsages;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::ui::RelativeCursorPosition;
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontWeight};
 use bevy::ui::FocusPolicy;
@@ -97,7 +101,50 @@ pub struct HudState {
     preview: Option<(Vec<Cell>, f32, Option<DamPreview>)>,
     pub msg: Option<(String, f32)>,
     idle_cursor: usize,
+    /// The flow ledger screen is open.
+    pub ledger_open: bool,
+    /// The building search box, with what has been typed.
+    pub search: Option<String>,
+    /// Placements that can still be taken back, newest last.
+    undo: Vec<UndoItem>,
 }
+
+/// Something the player placed that undo can take back while it is unfinished.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UndoItem {
+    Site(BuildingId),
+    Canal(sim::colony::OrderId),
+}
+
+/// The map view the player chose. Holding Alt peeks at the water lens, and the dam and canal
+/// tools switch it on while they are in use.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MapLens {
+    #[default]
+    World,
+    Water,
+    Goods,
+}
+
+impl MapLens {
+    fn code(self) -> u8 {
+        match self {
+            MapLens::World => 0,
+            MapLens::Water => 1,
+            MapLens::Goods => 2,
+        }
+    }
+}
+
+/// True while a text box has the keyboard (camera, speed and build hotkeys stand down).
+#[derive(Resource, Default)]
+pub struct TextCapture(pub bool);
+
+#[derive(Resource)]
+struct MinimapImage(Handle<Image>);
+
+#[derive(Component)]
+struct MinimapPicture;
 
 impl Default for HudState {
     fn default() -> Self {
@@ -110,6 +157,9 @@ impl Default for HudState {
             preview: None,
             msg: None,
             idle_cursor: 0,
+            ledger_open: false,
+            search: None,
+            undo: Vec::new(),
         }
     }
 }
@@ -159,6 +209,9 @@ enum Panel {
     Profile,
     Inspector,
     Toast,
+    Rail,
+    FlowLedger,
+    Minimap,
 }
 
 #[derive(Component)]
@@ -180,6 +233,10 @@ enum HudAction {
     CloseInspector,
     FillSlot(BuildingId, usize),
     EmptySlot(BuildingId, usize),
+    SetLens(MapLens),
+    ToggleLedger,
+    Undo,
+    OpenSearch,
 }
 
 pub struct HudPlugin;
@@ -195,18 +252,24 @@ impl Plugin for HudPlugin {
             .init_resource::<PointerOverUi>()
             .init_resource::<HoverGood>()
             .init_resource::<PendingWorks>()
+            .init_resource::<MapLens>()
+            .init_resource::<TextCapture>()
             .insert_resource(RebuildTimer(Timer::from_seconds(REBUILD_SECS, TimerMode::Repeating)))
-            .add_systems(Startup, spawn_panels)
+            .add_systems(Startup, (spawn_panels, setup_minimap))
             .add_systems(
                 Update,
                 (
                     pointer_over_ui,
                     hover_cell,
                     hotkeys,
+                    search_input,
                     world_input,
                     button_actions,
+                    minimap_click,
                     track_good_hover,
                     poll_pending_works,
+                    sync_lens,
+                    update_minimap,
                     rebuild_panels,
                     draw_world_overlay,
                 )
@@ -308,6 +371,9 @@ fn spawn_panels(mut commands: Commands) {
     spawn(Panel::Problems, Node { padding: UiRect::ZERO, border: UiRect::ZERO, ..panel_node(edge(None, Some(12.0), Some(124.0), None), Some(360.0), FlexDirection::Column) });
     spawn(Panel::ToolCard, panel_node(edge(None, Some(12.0), Some(124.0), None), Some(360.0), FlexDirection::Column));
     spawn(Panel::Inspector, panel_node(edge(None, Some(12.0), Some(124.0), None), Some(360.0), FlexDirection::Column));
+    spawn(Panel::Rail, panel_node(edge(Some(12.0), None, Some(200.0), None), Some(116.0), FlexDirection::Column));
+    spawn(Panel::FlowLedger, panel_node(edge(Some(140.0), Some(384.0), Some(62.0), None), None, FlexDirection::Column));
+    spawn(Panel::Minimap, panel_node(edge(Some(12.0), None, None, Some(12.0)), Some(176.0), FlexDirection::Column));
     spawn(Panel::BuildBar, panel_node(edge(Some(0.0), Some(0.0), None, Some(12.0)), None, FlexDirection::Row));
     spawn(Panel::Items, panel_node(edge(Some(0.0), Some(0.0), None, Some(70.0)), None, FlexDirection::Row));
     spawn(Panel::Profile, panel_node(edge(Some(0.0), Some(0.0), None, Some(150.0)), Some(600.0), FlexDirection::Column));
@@ -344,7 +410,34 @@ fn hover_cell(
     }
 }
 
-fn hotkeys(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut hud: ResMut<HudState>, mut sel: ResMut<Selection>) {
+fn hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    sim: Res<Sim>,
+    typing: Res<TextCapture>,
+    mut hud: ResMut<HudState>,
+    mut sel: ResMut<Selection>,
+    mut lens: ResMut<MapLens>,
+) {
+    if typing.0 {
+        return; // the search box has the keyboard (`search_input` handles Esc and Enter)
+    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods)] {
+        if keys.just_pressed(k) {
+            *lens = l;
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyL) {
+        hud.ledger_open = !hud.ledger_open;
+    }
+    if keys.just_pressed(KeyCode::Slash) {
+        hud.search = Some(String::new());
+        return;
+    }
+    if keys.just_pressed(KeyCode::Escape) && hud.ledger_open {
+        hud.ledger_open = false;
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
@@ -356,7 +449,7 @@ fn hotkeys(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut hud: ResMut<HudSt
     }
     let n = categories(&sim.0).len();
     for (i, k) in CAT_KEYS.iter().enumerate().take(n) {
-        if keys.just_pressed(*k) {
+        if !ctrl && keys.just_pressed(*k) {
             hud.open_cat = if hud.open_cat == Some(i) { None } else { Some(i) };
         }
     }
@@ -395,7 +488,12 @@ fn world_input(
         hud.set_tool(Tool::None);
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if ctrl && keys.just_pressed(KeyCode::KeyZ) {
+        undo_last(&mut sim.0, &mut hud, &mut pending.0, now);
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.search.is_none() {
         commit_line(&mut sim.0, &mut hud, &mut pending.0, now);
         return;
     }
@@ -416,7 +514,12 @@ fn world_input(
             if mouse.just_pressed(MouseButton::Left) {
                 let p = build_logic::site_preview(&sim.0, kind, cell);
                 match build_logic::emit(&mut sim.0, &mut pending.0, &BuildOrder::Building { kind, pos: p.pos }) {
-                    Ok(m) => hud.say(m, now),
+                    Ok(m) => {
+                        if let Some(b) = sim.0.buildings.buildings.last() {
+                            hud.undo.push(UndoItem::Site(b.id));
+                        }
+                        hud.say(format!("{m} (Ctrl+Z undoes)"), now)
+                    }
                     Err(e) => hud.say(e.to_string(), now),
                 }
             }
@@ -449,14 +552,44 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
         Tool::Canal => BuildOrder::Canal { cells: hud.line.clone() },
         _ => return,
     };
+    let canal = matches!(order, BuildOrder::Canal { .. });
     match build_logic::emit(sim, pending, &order) {
         Ok(m) => {
-            hud.say(m, now);
+            let item = if canal { pending.0.last().map(|w| UndoItem::Canal(w.order)) } else { sim.buildings.buildings.last().map(|b| UndoItem::Site(b.id)) };
+            hud.undo.extend(item);
+            hud.say(format!("{m} (Ctrl+Z undoes)"), now);
             hud.line.clear();
             hud.preview = None;
         }
         Err(e) => hud.say(e.to_string(), now),
     }
+}
+
+/// Takes back the newest placement that is still unfinished, refunding what was delivered.
+fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending, now: f32) {
+    while let Some(item) = hud.undo.pop() {
+        match item {
+            UndoItem::Site(id) => {
+                let Some(name) = sim.buildings.building(id).map(|b| b.kind.spec().name) else { continue };
+                match sim.cancel_site(id) {
+                    Ok(back) => {
+                        let back: Vec<String> = back.iter().filter(|a| a.1 > 0.05).map(|a| format!("{:.0} {}", a.1, good_name(a.0).to_lowercase())).collect();
+                        let refund = if back.is_empty() { String::new() } else { format!(", {} back in store", back.join(", ")) };
+                        hud.say(format!("Undid the {}{refund}", name.to_lowercase()), now);
+                    }
+                    Err(e) => hud.say(format!("Cannot undo: {e}"), now),
+                }
+                return;
+            }
+            UndoItem::Canal(order) => {
+                if build_logic::cancel(sim, pending, build_logic::OrderTarget::Pending(order)).is_ok() {
+                    hud.say("Undid the canal, materials refunded", now);
+                    return;
+                }
+            }
+        }
+    }
+    hud.say("Nothing unfinished to undo", now);
 }
 
 fn building_at(sim: &sim::SimState, cell: Cell) -> Option<BuildingId> {
@@ -473,6 +606,7 @@ fn button_actions(
     mut flow: ResMut<Flow>,
     mut sel: ResMut<Selection>,
     mut pending: ResMut<PendingWorks>,
+    mut lens: ResMut<MapLens>,
 ) {
     let now = time.elapsed_secs();
     let actions: Vec<HudAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| a.clone()).collect();
@@ -519,6 +653,13 @@ fn button_actions(
             }
             HudAction::CloseInspector => *sel = Selection::None,
             HudAction::FillSlot(b, slot) => apply_fix(s, &mut hud, Fix::FillSlot { building: b, slot }, now),
+            HudAction::SetLens(l) => {
+                *lens = l;
+                hud.set_changed();
+            }
+            HudAction::ToggleLedger => hud.ledger_open = !hud.ledger_open,
+            HudAction::Undo => undo_last(s, &mut hud, &mut pending.0, now),
+            HudAction::OpenSearch => hud.search = Some(String::new()),
             HudAction::EmptySlot(b, slot) => {
                 if let Err(e) = s.apply(sim::Command::EmptySlot { building: b, slot }) {
                     hud.say(e.to_string(), now);
@@ -597,10 +738,13 @@ fn rebuild_panels(
     sel: Res<Selection>,
     hover: Res<HoverCell>,
     hg: Res<HoverGood>,
+    lens: Res<MapLens>,
+    orbit: Res<crate::camera::OrbitCamera>,
+    minimap: Option<Res<MinimapImage>>,
     mut panels: Query<(Entity, &Panel, &mut Visibility)>,
 ) {
     let due = timer.0.tick(time.delta()).just_finished();
-    let all = due || hud.is_changed() || sel.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
+    let all = due || hud.is_changed() || sel.is_changed() || lens.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
     // A hovered good only redraws its tooltip, so the strip under the pointer is never rebuilt
     // while it is being hovered.
     let tip_only = !all && hg.is_changed();
@@ -629,12 +773,14 @@ fn rebuild_panels(
         let show = match panel {
             Panel::Ledger | Panel::Calendar | Panel::BuildBar => s.colony.is_founded(),
             Panel::LedgerTip => hg.0.is_some(),
-            Panel::Problems => !problems.is_empty() && hud.tool == Tool::None && *sel == Selection::None,
-            Panel::Items => hud.open_cat.is_some(),
+            Panel::Problems => !problems.is_empty() && hud.tool == Tool::None && *sel == Selection::None && !hud.ledger_open,
+            Panel::Items => hud.open_cat.is_some() || hud.search.is_some(),
             Panel::ToolCard => hud.tool != Tool::None,
             Panel::Profile => hud.tool == Tool::Dam,
             Panel::Inspector => matches!(*sel, Selection::Site(_)) && hud.tool == Tool::None,
             Panel::Toast => hud.msg.is_some(),
+            Panel::Rail | Panel::Minimap => s.colony.is_founded(),
+            Panel::FlowLedger => hud.ledger_open,
         };
         let want = if show { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
@@ -661,6 +807,13 @@ fn rebuild_panels(
             Panel::Toast => {
                 if let Some((m, _)) = &hud.msg {
                     text(p, m.clone(), 12.0, INK)
+                }
+            }
+            Panel::Rail => rail(p, hud, *lens),
+            Panel::FlowLedger => flow_ledger(p, s),
+            Panel::Minimap => {
+                if let Some(img) = minimap.as_ref() {
+                    minimap_panel(p, s, &img.0, orbit.target)
                 }
             }
         });
@@ -881,10 +1034,23 @@ fn build_bar(p: &mut ChildSpawnerCommands, s: &sim::SimState, hud: &HudState) {
 }
 
 fn items_row(p: &mut ChildSpawnerCommands, s: &sim::SimState, hud: &HudState) {
-    let Some(cat) = hud.open_cat else { return };
-    let cats = categories(s);
-    let Some(group) = cats.get(cat) else { return };
-    for e in build_logic::menu(s).into_iter().filter(|e| e.group == *group) {
+    let entries: Vec<build_logic::MenuEntry> = if let Some(q) = &hud.search {
+        p.spawn(Node { width: Val::Px(150.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(2.0), ..default() }).with_children(|c| {
+            bold(c, format!("Search: {q}_"), 12.0, INK);
+            text(c, "Enter picks the first - Esc closes", 9.5, MUTED);
+        });
+        let found = search_matches(s, q);
+        if found.is_empty() {
+            text(p, "No building matches", 11.0, MUTED);
+        }
+        found
+    } else {
+        let Some(cat) = hud.open_cat else { return };
+        let cats = categories(s);
+        let Some(group) = cats.get(cat) else { return };
+        build_logic::menu(s).into_iter().filter(|e| e.group == *group).collect()
+    };
+    for e in entries {
         let kind = e.kind;
         let selected = match hud.tool {
             Tool::Building(k) => k == kind,
@@ -913,6 +1079,7 @@ fn items_row(p: &mut ChildSpawnerCommands, s: &sim::SimState, hud: &HudState) {
         .with_children(|b| {
             bold(b, kind.spec().name, 12.0, if e.unlocked { INK } else { MUTED });
             match e.need {
+                Some((tech, need, _)) if need <= 0.0 => text(b, format!("Locked: needs {tech}"), 9.5, MUTED),
                 Some((tech, need, have)) => text(b, format!("Locked: {tech} {:.0}/{:.0} xp", have, need), 9.5, MUTED),
                 None => text(b, if cost.is_empty() { "free".to_string() } else { cost }, 9.5, MUTED),
             }
@@ -1144,14 +1311,336 @@ fn inspector(p: &mut ChildSpawnerCommands, s: &sim::SimState, id: BuildingId) {
             });
         }
     }
+    if let Some(rep) = sim::hud::building_report(s, id) {
+        bold(p, "OUTPUT", 10.0, MUTED);
+        match rep.measured {
+            Some((g, rate, steady)) => {
+                let note = if steady { "" } else { " (still settling)" };
+                kv(p, "Measured", format!("{rate:.1} {}/day{note}", good_name(g).to_lowercase()), if rate > 0.05 { GOOD } else { WARN });
+            }
+            None => kv(p, "Measured", "nothing made yet", WARN),
+        }
+        for f in &rep.factors {
+            let c = match f.ok {
+                Some(true) => GOOD,
+                Some(false) => WARN,
+                None => INK,
+            };
+            kv(p, f.label.clone(), f.value.clone(), c);
+        }
+        if let Some((g, max)) = rep.ceiling {
+            kv(p, "At most", format!("{max:.1} {}/day, every slot filled, no walking", good_name(g).to_lowercase()), MUTED);
+        }
+    }
     hint(p, "Esc closes");
+}
+
+// ───────────────────────────── rail, search, flow ledger, minimap ─────────────────────────────
+
+fn rail(p: &mut ChildSpawnerCommands, hud: &HudState, lens: MapLens) {
+    bold(p, "VIEW", 9.5, MUTED);
+    for (l, name) in [(MapLens::World, "World  F1"), (MapLens::Water, "Water  F2"), (MapLens::Goods, "Goods  F3")] {
+        button(p, name, HudAction::SetLens(l), if lens == l { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, lens == l);
+    }
+    bold(p, "TOOLS", 9.5, MUTED);
+    button(p, "Ledger  L", HudAction::ToggleLedger, FAINT, hud.ledger_open);
+    button(p, "Search  /", HudAction::OpenSearch, FAINT, hud.search.is_some());
+    button(p, "Undo  ^Z", HudAction::Undo, FAINT, false);
+}
+
+/// Words players type for what they want, mapped to the buildings that provide it.
+const SYNONYMS: [(&str, &[BuildingKind]); 18] = [
+    ("food", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
+    ("eat", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
+    ("wood", &[BuildingKind::LoggingCamp]),
+    ("log", &[BuildingKind::LoggingCamp]),
+    ("stick", &[BuildingKind::LoggingCamp]),
+    ("tree", &[BuildingKind::LoggingCamp]),
+    ("mud", &[BuildingKind::MudPit]),
+    ("stone", &[BuildingKind::QuarryCamp]),
+    ("rock", &[BuildingKind::QuarryCamp]),
+    ("stor", &[BuildingKind::Warehouse, BuildingKind::Storehouse, BuildingKind::FoodCache]),
+    ("home", &[BuildingKind::Lodge, BuildingKind::Burrow]),
+    ("house", &[BuildingKind::Lodge, BuildingKind::Burrow]),
+    ("water", &[BuildingKind::Dam, BuildingKind::Canal, BuildingKind::WaterWheel, BuildingKind::Lock, BuildingKind::Dock]),
+    ("power", &[BuildingKind::WaterWheel]),
+    ("craft", &[BuildingKind::Workshop, BuildingKind::Mill]),
+    ("rope", &[BuildingKind::Workshop]),
+    ("tool", &[BuildingKind::Workshop, BuildingKind::Mill]),
+    ("boat", &[BuildingKind::Dock, BuildingKind::Barge]),
+];
+
+/// Menu entries whose name contains the query, then those a synonym points to (unlocked first).
+fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::MenuEntry> {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let menu = build_logic::menu(s);
+    let mut out: Vec<build_logic::MenuEntry> = menu.iter().filter(|e| e.kind.spec().name.to_lowercase().contains(&q)).cloned().collect();
+    for (word, kinds) in SYNONYMS {
+        if word.starts_with(&q) || q.starts_with(word) {
+            for k in kinds.iter() {
+                if !out.iter().any(|e| e.kind == *k) {
+                    out.extend(menu.iter().filter(|e| e.kind == *k).cloned());
+                }
+            }
+        }
+    }
+    out.sort_by_key(|e| !e.unlocked);
+    out.truncate(8);
+    out
+}
+
+fn search_input(
+    mut keys: MessageReader<KeyboardInput>,
+    sim: Res<Sim>,
+    mut hud: ResMut<HudState>,
+    mut typing: ResMut<TextCapture>,
+) {
+    let open = hud.search.is_some();
+    if typing.0 != open {
+        typing.0 = open;
+    }
+    if !open {
+        keys.clear();
+        return;
+    }
+    for ev in keys.read() {
+        if !ev.state.is_pressed() {
+            continue;
+        }
+        match &ev.logical_key {
+            Key::Escape => hud.search = None,
+            Key::Backspace => {
+                if let Some(q) = hud.search.as_mut() {
+                    q.pop();
+                }
+            }
+            Key::Enter => {
+                let q = hud.search.clone().unwrap_or_default();
+                if let Some(e) = search_matches(&sim.0, &q).into_iter().find(|e| e.unlocked) {
+                    let t = match e.kind {
+                        BuildingKind::Dam => Tool::Dam,
+                        BuildingKind::Canal => Tool::Canal,
+                        k => Tool::Building(k),
+                    };
+                    hud.set_tool(t);
+                }
+                hud.search = None;
+            }
+            _ => {
+                if let Some(t) = &ev.text {
+                    let add: String = t.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+                    if !add.is_empty() {
+                        if let Some(q) = hud.search.as_mut() {
+                            q.push_str(&add);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    typing.0 = hud.search.is_some();
+}
+
+fn cell_text(p: &mut ChildSpawnerCommands, w: f32, s: impl Into<String>, c: Color, right: bool) {
+    p.spawn(Node { width: Val::Px(w), justify_content: if right { JustifyContent::FlexEnd } else { JustifyContent::FlexStart }, ..default() })
+        .with_children(|b| text(b, s, 11.5, c));
+}
+
+/// The whole colony's goods per day, how long each lasts, 60 days of stock, who makes what,
+/// and the water held in ponds.
+fn flow_ledger(p: &mut ChildSpawnerCommands, s: &sim::SimState) {
+    p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..row(8.0) }).with_children(|r| {
+        r.spawn(row(8.0)).with_children(|r| {
+            bold(r, "Flow ledger", 15.0, INK);
+            text(r, "per day, 7-day average - L or Esc closes", 10.5, MUTED);
+        });
+        button(r, "x", HudAction::ToggleLedger, FAINT, false);
+    });
+    let widths = [96.0, 58.0, 58.0, 58.0, 58.0, 58.0];
+    p.spawn(row(6.0)).with_children(|r| {
+        for (i, h) in ["GOOD", "STORED", "IN", "OUT", "NET", "LASTS"].iter().enumerate() {
+            r.spawn(Node { width: Val::Px(widths[i]), justify_content: if i == 0 { JustifyContent::FlexStart } else { JustifyContent::FlexEnd }, ..default() })
+                .with_children(|b| bold(b, *h, 9.5, MUTED));
+        }
+        bold(r, "STOCK, LAST 60 DAYS", 9.5, MUTED);
+    });
+    let st = &s.buildings.stores;
+    for g in Good::ALL {
+        let (have, inn, out) = (st.amount(g), s.ledger.in_per_day(g), s.ledger.out_per_day(g));
+        if have < 0.05 && inn < 0.01 && out < 0.01 {
+            continue;
+        }
+        let net = inn - out;
+        let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
+        p.spawn(row(6.0)).with_children(|r| {
+            r.spawn(Node { width: Val::Px(widths[0]), ..row(5.0) }).with_children(|c| {
+                swatch(c, good_color(g), 8.0, 12.0);
+                text(c, good_name(g), 11.5, INK);
+            });
+            cell_text(r, widths[1], format!("{:.0}", have), INK, true);
+            cell_text(r, widths[2], format!("{inn:.1}"), if inn > 0.0 { GOOD } else { MUTED }, true);
+            cell_text(r, widths[3], format!("{out:.1}"), if out > 0.0 { BAD } else { MUTED }, true);
+            let (t, c) = fmt_rate(net);
+            cell_text(r, widths[4], t, c, true);
+            cell_text(r, widths[5], lasts.map_or("-".to_string(), |d| format!("{:.0} d", d)), if lasts.is_some_and(|d| d < 20.0) { WARN } else { MUTED }, true);
+            // Sparkline of end-of-day stock.
+            let days: Vec<f32> = s.ledger.days.iter().map(|d| d.stock[g.index()]).collect();
+            let top = days.iter().copied().fold(1.0f32, f32::max);
+            r.spawn(Node { height: Val::Px(18.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), ..row(1.0) }).with_children(|sp| {
+                for v in &days {
+                    sp.spawn((Node { width: Val::Px(2.0), height: Val::Px((v / top * 18.0).max(1.0)), ..default() }, BackgroundColor(good_color(g))));
+                }
+            });
+        });
+    }
+    if !s.ledger.has_data() {
+        text(p, "Rates appear after the first whole day.", 10.5, MUTED);
+    }
+    bold(p, "MADE BY", 9.5, MUTED);
+    let mut makers: Vec<(BuildingId, sim::output::Flow)> = s.output.by.iter().map(|(b, f)| (*b, *f)).filter(|(_, f)| f.per_day > 0.01).collect();
+    makers.sort_by(|a, b| b.1.per_day.total_cmp(&a.1.per_day));
+    if makers.is_empty() {
+        text(p, "No workplace has produced yet. Beavers gathering by order (not from a building) count only in the totals above.", 10.5, MUTED);
+    }
+    for (id, f) in makers.into_iter().take(8) {
+        let Some(b) = s.buildings.building(id) else { continue };
+        p.spawn(row(8.0)).with_children(|r| {
+            cell_text(r, 150.0, format!("{} #{}", b.kind.spec().name, id.0), INK, false);
+            let g = f.good.map_or("", good_name);
+            cell_text(r, 120.0, format!("{:.1} {}/day", f.per_day, g.to_lowercase()), GOOD, true);
+            button(r, "Show >", HudAction::Focus(b.pos), FAINT, false);
+        });
+    }
+    bold(p, "WATER", 9.5, MUTED);
+    let ponds = sim::hud::ponds(s);
+    let dams = s.water.dam_height.as_slice().iter().filter(|h| **h > 0.0).count();
+    let cover = ponds.summer_cover_days().map_or("no dam yet".to_string(), |d| format!("{:.0} of {:.0} summer days", d.min(999.0), calendar::SEASON_DAYS));
+    kv(p, "Dam cells", format!("{dams}"), INK);
+    if ponds.dammed {
+        kv(p, "Ponds behind dams", format!("{:.0} water on {} cells", ponds.volume, ponds.cells), WATER);
+    } else {
+        kv(p, "Ponds behind dams", "no dam yet", MUTED);
+    }
+    kv(p, "Summer cover", cover, INK);
+}
+
+fn setup_minimap(mut commands: Commands, sim: Res<Sim>, mut images: ResMut<Assets<Image>>) {
+    let n = sim.0.world.size as u32;
+    let img = Image::new_fill(
+        Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[30, 30, 30, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    commands.insert_resource(MinimapImage(images.add(img)));
+}
+
+/// Repaints the minimap every couple of seconds: land shaded by height, water by depth,
+/// buildings white, beavers orange.
+fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
+    let Some(img) = img else { return };
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 2.0;
+    let s = &sim.0;
+    let n = s.world.size;
+    let maxh = s.height.as_slice().iter().copied().fold(1.0f32, f32::max);
+    let mut buf = vec![0u8; n * n * 4];
+    for y in 0..n {
+        for x in 0..n {
+            let i = y * n + x;
+            let h = s.height.as_slice()[i] / maxh;
+            let d = s.water.depth.as_slice()[i];
+            let c: [f32; 3] = if d > sim::buildings::WET_DEPTH {
+                let k = (d / 3.0).clamp(0.0, 1.0).sqrt();
+                [0.42 - 0.34 * k, 0.70 - 0.36 * k, 0.92 - 0.26 * k]
+            } else {
+                [0.30 + 0.45 * h, 0.40 + 0.38 * h, 0.26 + 0.40 * h]
+            };
+            buf[i * 4..i * 4 + 4].copy_from_slice(&[(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 255]);
+        }
+    }
+    for b in &s.buildings.buildings {
+        for (x, y) in b.cells() {
+            if x < n && y < n {
+                buf[(y * n + x) * 4..(y * n + x) * 4 + 3].copy_from_slice(&[245, 245, 245]);
+            }
+        }
+    }
+    for bv in &s.colony.beavers {
+        let (x, y) = (bv.pos.0.max(0.0) as usize, bv.pos.1.max(0.0) as usize);
+        if x < n && y < n {
+            buf[(y * n + x) * 4..(y * n + x) * 4 + 3].copy_from_slice(&[232, 132, 58]);
+        }
+    }
+    if let Some(mut image) = images.get_mut(&img.0) {
+        image.data = Some(buf);
+    }
+}
+
+fn minimap_panel(p: &mut ChildSpawnerCommands, s: &sim::SimState, img: &Handle<Image>, target: Vec3) {
+    const SIZE: f32 = 160.0;
+    let (cx, cy) = crate::flow::world_cell(&s.height, target);
+    let n = s.world.size as f32;
+    p.spawn((
+        ImageNode::new(img.clone()),
+        Node { width: Val::Px(SIZE), height: Val::Px(SIZE), ..default() },
+        MinimapPicture,
+        RelativeCursorPosition::default(),
+        Interaction::default(),
+        FocusPolicy::Block,
+        Blocks,
+    ))
+    .with_children(|m| {
+        m.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px((cx / n * SIZE - 7.0).clamp(0.0, SIZE - 14.0)),
+                top: Val::Px((cy / n * SIZE - 7.0).clamp(0.0, SIZE - 14.0)),
+                width: Val::Px(14.0),
+                height: Val::Px(14.0),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor::all(Color::WHITE),
+        ));
+    });
+    text(p, "North up - click or drag to look", 9.5, MUTED);
+}
+
+/// Click or drag on the minimap moves the camera there.
+fn minimap_click(q: Query<(&Interaction, &RelativeCursorPosition), With<MinimapPicture>>, sim: Res<Sim>, mut orbit: ResMut<crate::camera::OrbitCamera>) {
+    for (i, rel) in &q {
+        if *i != Interaction::Pressed {
+            continue;
+        }
+        let Some(n) = rel.normalized else { continue };
+        let size = sim.0.world.size as f32;
+        let cell = (((n.x + 0.5) * size).clamp(0.0, size - 1.0), ((n.y + 0.5) * size).clamp(0.0, size - 1.0));
+        orbit.target = cell_world(&sim.0.height, cell);
+    }
+}
+
+/// Publishes the lens to the renderers: Alt peeks at water, line tools turn the water lens on.
+fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>) {
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
+    crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
 
 // ───────────────────────────── scripted views for screenshots ─────────────────────────────
 
-/// `BC_HUD_DEMO=rest|dam|inspect` (with `BC_HUD=1` and `--screenshot`): once the colony stands,
-/// runs `BC_HUD_DAYS` days (default 12) and sets up that view, so each state can be captured
-/// without a mouse.
+/// `BC_HUD_DEMO=rest|dam|inspect|camp|ledger|goods|water|search` (with `BC_HUD=1` and
+/// `--screenshot`): once the colony stands, runs `BC_HUD_DAYS` days (default 12) and sets up that
+/// view, so each state can be captured without a mouse. `camp`, `ledger` and `goods` first stand
+/// up a staffed logging camp, forager hut and warehouse beside the camp (finished by script) so
+/// there is real production to show.
 #[allow(clippy::too_many_arguments)]
 fn demo(
     mut done: Local<bool>,
@@ -1161,6 +1650,7 @@ fn demo(
     mut sel: ResMut<Selection>,
     mut orbit: ResMut<crate::camera::OrbitCamera>,
     mut pending: ResMut<PendingWorks>,
+    mut lens: ResMut<MapLens>,
 ) {
     if *done || !sim.0.colony.is_founded() {
         return;
@@ -1182,6 +1672,12 @@ fn demo(
                     }
                 }
             }
+        }
+    }
+    let mut staffed = Vec::new();
+    if matches!(which.as_str(), "camp" | "ledger" | "goods") {
+        if let Some(c) = camp {
+            staffed = stand_up_camp(s, &mut pending.0, c);
         }
     }
     for _ in 0..(days / crate::sim_driver::FIXED_DT_DAYS) as usize {
@@ -1210,15 +1706,91 @@ fn demo(
                 look(&mut orbit, &s.height, (b.pos.0 as f32, b.pos.1 as f32), 30.0);
             }
         }
-        _ => {
+        "camp" => {
+            if let Some(&id) = staffed.first() {
+                *sel = Selection::Site(id);
+                let b = s.buildings.building(id).map(|b| b.pos).unwrap_or((0, 0));
+                look(&mut orbit, &s.height, (b.0 as f32, b.1 as f32), 32.0);
+            }
+        }
+        other => {
+            match other {
+                "ledger" => hud.ledger_open = true,
+                "goods" => *lens = MapLens::Goods,
+                "water" => *lens = MapLens::Water,
+                "search" => hud.search = Some("food".into()),
+                _ => {}
+            }
             if let Some(c) = camp {
-                look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), 45.0);
+                look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), if other == "water" { 60.0 } else { 45.0 });
             }
         }
     }
 }
 
+/// Screenshot scaffolding: places a logging camp, a forager hut and a warehouse near `camp`,
+/// finishes them at once and puts one adult in each camp. Returns the two camps.
+fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Vec<BuildingId> {
+    s.tech.record(sim::tech::Achievement::FirstBurrow);
+    s.tech.record(sim::tech::Achievement::FirstDam);
+    s.tech.update(&s.colony);
+    let mut placed = Vec::new();
+    // Only where the family can walk to from where it stands (the river banks can be too steep).
+    let walker = s.colony.beavers.iter().find(|b| b.stage == sim::colony::Stage::Adult).map(|b| b.id);
+    let from = walker.and_then(|w| s.agents.get(w)).map(|a| a.cell);
+    for kind in [BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::Warehouse] {
+        'search: for r in 3..30usize {
+            for y in camp.1.saturating_sub(r)..=camp.1 + r {
+                for x in camp.0.saturating_sub(r)..=camp.0 + r {
+                    let reachable = match (walker, from) {
+                        (Some(w), Some(f)) => s.nav.find_path(w, f, sim::nav::Goal::Beside((x, y))).is_some(),
+                        _ => true,
+                    };
+                    if !reachable {
+                        continue;
+                    }
+                    if build_logic::emit(s, pending, &BuildOrder::Building { kind, pos: (x, y) }).is_ok() {
+                        if let Some(b) = s.buildings.buildings.last() {
+                            placed.push(b.id);
+                        }
+                        break 'search;
+                    }
+                }
+            }
+        }
+    }
+    let adults: Vec<_> = s.colony.beavers.iter().filter(|b| b.stage == sim::colony::Stage::Adult).map(|b| b.id).collect();
+    let mut camps = Vec::new();
+    for id in placed {
+        let Some(b) = s.buildings.buildings.iter_mut().find(|b| b.id == id) else { continue };
+        b.status = Status::Complete;
+        let kind = b.kind;
+        let area = sim::catalogue::work_area(s.buildings.building(id).unwrap());
+        let slots = sim::catalogue::def(kind).slots;
+        let _ = s.work.finish_site(id, &slots, area);
+        if let Some(pl) = s.work.places.iter_mut().find(|p| p.building == id) {
+            pl.site = None;
+        }
+        if !slots.is_empty() {
+            camps.push(id);
+        }
+    }
+    for (id, who) in camps.iter().zip(adults) {
+        let _ = s.apply(sim::Command::FillSlot { building: *id, slot: 0, who });
+    }
+    camps // store capacity follows on the next sim step
+}
+
 // ───────────────────────────── world overlay ─────────────────────────────
+
+/// Stores that take a good (mirrors the sim's store rule).
+fn store_takes(kind: BuildingKind, g: Good) -> bool {
+    match kind {
+        BuildingKind::Warehouse | BuildingKind::Storehouse => true,
+        BuildingKind::FoodCache => g == Good::Food,
+        _ => false,
+    }
+}
 
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
     let (x, z) = (c.0 as f32, c.1 as f32);
@@ -1236,9 +1808,65 @@ fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f3
     }
 }
 
-fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>) {
+fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>) {
     let s = &sim.0;
     let h = &s.height;
+    let lens = crate::terrain_render::map_lens();
+    let (tx, ty) = crate::flow::world_cell(h, orbit.target);
+    if lens == 1 {
+        // Flow arrows on water near the view centre: direction of net flow, length by strength.
+        let r = 40i32;
+        for y in ((ty as i32 - r).max(1)..(ty as i32 + r).min(s.world.size as i32 - 1)).step_by(3) {
+            for x in ((tx as i32 - r).max(1)..(tx as i32 + r).min(s.world.size as i32 - 1)).step_by(3) {
+                let (cx, cy) = (x as usize, y as usize);
+                let d = s.water.depth.get(cx, cy).copied().unwrap_or(0.0);
+                if d < 0.05 {
+                    continue;
+                }
+                let (fx, fy) = s.water.flow_at(cx, cy);
+                let m = (fx * fx + fy * fy).sqrt();
+                if m < 1e-5 {
+                    continue;
+                }
+                let len = (m.sqrt() * 12.0).clamp(0.35, 1.4);
+                let dir = Vec2::new(fx, fy) / m;
+                let mut a = cell_world(h, (cx as f32, cy as f32));
+                a.y = h.get(cx, cy).copied().unwrap_or(0.0) + d + 0.12;
+                let b = a + Vec3::new(dir.x, 0.0, dir.y) * len;
+                let side = Vec3::new(-dir.y, 0.0, dir.x) * 0.25;
+                let back = Vec3::new(dir.x, 0.0, dir.y) * 0.3;
+                g.line(a, b, Color::WHITE);
+                g.line(b, b - back + side, Color::WHITE);
+                g.line(b, b - back - side, Color::WHITE);
+            }
+        }
+    }
+    if lens == 2 {
+        // Goods lens: each workplace outlined by how it is doing, with a line to its store.
+        for b in s.buildings.buildings.iter().filter(|b| b.is_complete()) {
+            let Some(rep) = sim::hud::building_report(s, b.id) else { continue };
+            let col = if rep.factors.first().is_some_and(|f| f.value.starts_with("0 of")) {
+                BAD
+            } else if rep.factors.iter().any(|f| f.ok == Some(false)) {
+                WARN
+            } else {
+                GOOD
+            };
+            for c in b.cells() {
+                cell_outline(&mut g, h, c, None, col);
+            }
+            if let Some((good, _)) = rep.ceiling {
+                let (w, d) = b.kind.spec().footprint;
+                let from = (b.pos.0 as f32 + w as f32 / 2.0 - 0.5, b.pos.1 as f32 + d as f32 / 2.0 - 0.5);
+                let store = s.buildings.buildings.iter().filter(|o| o.is_complete() && o.id != b.id && store_takes(o.kind, good)).min_by_key(|o| o.pos.0.abs_diff(b.pos.0) + o.pos.1.abs_diff(b.pos.1));
+                if let Some(o) = store {
+                    let to = (o.pos.0 as f32, o.pos.1 as f32);
+                    let lift = Vec3::Y * 1.2;
+                    g.line(cell_world(h, from) + lift, cell_world(h, to) + lift, good_color(good));
+                }
+            }
+        }
+    }
     if let Selection::Site(id) = *sel {
         if let Some(b) = s.buildings.building(id) {
             for c in b.cells() {

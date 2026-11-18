@@ -12,7 +12,7 @@ pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PointerOverUi>().add_systems(Update, orbit_input);
+        app.init_resource::<PointerOverUi>().init_resource::<crate::hud::TextCapture>().add_systems(Update, orbit_input);
     }
 }
 
@@ -35,18 +35,21 @@ fn orbit_input(
     scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     over_ui: Res<PointerOverUi>,
+    typing: Res<crate::hud::TextCapture>,
     sim: Res<Sim>,
     mut orbit: ResMut<OrbitCamera>,
 ) {
     let mut next = *orbit;
+    // While the search box has the keyboard, letters are text, not camera keys.
+    let keys_free = !typing.0;
     if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
         next.yaw -= motion.delta.x * 0.006;
         next.pitch += motion.delta.y * 0.006;
     }
     let spin = time.delta_secs() * 1.5;
-    if keys.pressed(KeyCode::KeyQ) { next.yaw -= spin; }
-    if keys.pressed(KeyCode::KeyE) { next.yaw += spin; }
-    let held = |a: KeyCode, b: KeyCode| (keys.pressed(a) || keys.pressed(b)) as i32 as f32;
+    if keys_free && keys.pressed(KeyCode::KeyQ) { next.yaw -= spin; }
+    if keys_free && keys.pressed(KeyCode::KeyE) { next.yaw += spin; }
+    let held = |a: KeyCode, b: KeyCode| (keys_free && (keys.pressed(a) || keys.pressed(b))) as i32 as f32;
     let forward = held(KeyCode::KeyW, KeyCode::ArrowUp) - held(KeyCode::KeyS, KeyCode::ArrowDown);
     let right = held(KeyCode::KeyD, KeyCode::ArrowRight) - held(KeyCode::KeyA, KeyCode::ArrowLeft);
     let pan = pan_vector(next.yaw, forward, right) * PAN_PER_DISTANCE * next.distance * time.delta_secs();

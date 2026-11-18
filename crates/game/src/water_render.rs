@@ -228,6 +228,13 @@ fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
 /// the shore, Deep rim just inside it (and in really deep water), Shallow body, Mid glow centre.
 pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32) {
     use crate::palette::{FOAM, WATER_MID_GLOW};
+    match crate::terrain_render::map_lens() {
+        // Water lens: one sequential blue by depth, light in the shallows, dark in deep pools.
+        1 => return (mix_rgb([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (d / 3.0).clamp(0.0, 1.0).sqrt()), 0.93),
+        // Goods lens: water steps back.
+        2 => return ([0.62, 0.69, 0.75], 0.9),
+        _ => {}
+    }
     let foam = if in_foam { 1.0 } else { 0.0 };
     let rim = 1.0 - smooth_step(0.6, 1.2, f);
     let very_deep = smooth_step(2.2, 5.0, d);

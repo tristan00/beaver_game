@@ -212,8 +212,17 @@ pub fn at(g: &sim::Grid<f32>, x: i32, y: i32) -> f32 {
     g.as_slice()[y * g.width() + x]
 }
 
+/// The map view the HUD asks for: 0 the normal world, 1 the water lens, 2 the goods lens. Chunks
+/// fold it into their hash, so changing it recolours terrain and water.
+pub static MAP_LENS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn map_lens() -> u8 {
+    MAP_LENS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Hash of every field value in the chunk region padded by `pad` cells, mixed with `extra`.
 pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, with_veg: bool) -> u64 {
+    let extra = extra ^ ((map_lens() as u64) << 48);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ extra.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let (x0, y0) = ((cx * CHUNK) as i32 - pad, (cy * CHUNK) as i32 - pad);
     let n = CHUNK as i32 + 2 * pad;
@@ -469,6 +478,31 @@ pub fn rock_weight(slope: f32) -> f32 {
 /// ground and large soft patches are light, hollows and slopes away from the sun are deep. Rock is
 /// Stone; nothing is darker than the style guide's floors (Meadow deep on grass, Stone shade on rock).
 fn vertex_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
+    match map_lens() {
+        0 => world_color(s, p, maxh, x, y),
+        lens => lens_color(s, maxh, x, y, lens),
+    }
+}
+
+/// Lens colouring: land in grey clay by height (lit from the sun side so the shape still reads);
+/// the water lens colours the bed by water depth, the goods lens mutes it.
+fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32, lens: u8) -> Rgb {
+    let t = (at(&s.height, x, y) / maxh).clamp(0.0, 1.0);
+    let depth = at(&s.water.depth, x, y);
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
+    let g = (0.52 + 0.36 * t) * (0.86 + 0.28 * sunny);
+    let land = [g, g * 0.985, g * 0.955];
+    let wet = smooth(WET_EPS, 0.3, depth);
+    let water = if lens == 1 {
+        mix([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (depth / 3.0).clamp(0.0, 1.0).sqrt())
+    } else {
+        [0.62, 0.69, 0.75]
+    };
+    mix(land, water, wet)
+}
+
+fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let h = at(&s.height, x, y);
     let t = h / maxh;
     let depth = at(&s.water.depth, x, y);
