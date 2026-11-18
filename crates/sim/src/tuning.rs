@@ -393,8 +393,9 @@ pub mod buildings {
             BuildingKind::WaterWheel => (&[(Logs, 12.0), (Rope, 2.0), (Tools, 1.0)], 7.0),
             BuildingKind::Workshop => (&[(Logs, 8.0), (Sticks, 6.0), (Mud, 4.0)], 6.0),
             BuildingKind::Warehouse => (&[(Logs, 25.0), (Sticks, 15.0), (Mud, 10.0), (Rope, 2.0)], 10.0),
-            BuildingKind::Dock => (&[(Logs, 10.0), (Rope, 2.0)], 4.0),
-            BuildingKind::Barge => (&[(Logs, 8.0), (Rope, 3.0), (Baskets, 2.0)], 5.0),
+            // A jetty of logs and sticks; a barge needs rope for its lines.
+            BuildingKind::Dock => (&[(Logs, 10.0), (Sticks, 6.0)], 4.0),
+            BuildingKind::Barge => (&[(Logs, 12.0), (Sticks, 8.0), (Rope, 2.0)], 5.0),
             BuildingKind::LoggingCamp => (&[(Logs, 4.0), (Sticks, 6.0)], 2.0),
             BuildingKind::ForagerHut => (&[(Sticks, 8.0), (Mud, 4.0)], 2.0),
             BuildingKind::MudPit => (&[(Logs, 3.0), (Sticks, 4.0)], 2.0),

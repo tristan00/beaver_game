@@ -842,9 +842,13 @@ struct Opening {
 /// Clears slots whose worker is gone or whose workplace is paused, and orders of beavers that left.
 fn tidy(sim: &mut SimState) {
     let alive: std::collections::BTreeSet<BeaverId> = sim.colony.beavers.iter().map(|b| b.id).collect();
+    // A site waiting for materials with its labour done has nothing for builders: they go free
+    // (hand-placed ones too) and come back when the materials do.
+    let stalled: Vec<BuildingId> = sim.work.places.iter().filter(|p| is_site(sim, p) && site_stalled(sim, p)).map(|p| p.building).collect();
     for p in &mut sim.work.places {
+        let idle_site = stalled.contains(&p.building);
         for s in &mut p.slots {
-            if s.worker.is_some_and(|w| p.paused || !alive.contains(&w)) {
+            if s.worker.is_some_and(|w| p.paused || !alive.contains(&w) || (idle_site && s.role == Role::Build)) {
                 s.worker = None;
                 s.locked = false;
             }
@@ -1037,12 +1041,20 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     }
     // Gather into the load; a load holds one good. Foragers strip bark from felled wood.
     let bark = res.kind == ResourceKind::Felled && job.is_some_and(|j| j.forages());
+    let room = |g: Good| sim.buildings.stores.space(g) > EPS;
     let good = match res.kind {
         _ if bark => Good::Food,
         ResourceKind::Felled if res.amount > 0.0 => Good::Logs,
         ResourceKind::Felled => Good::Sticks,
         k => k.yields()[0],
     };
+    // Nothing gathered for goods the colony cannot store (a load already held is still carried).
+    let has_store = closest_store(sim, ag.cell, good).is_some();
+    if has_store && !room(good) && ag.load.is_none() && site_short_of(sim, ag.cell, good).is_none() {
+        sim.agents.unreachable.insert(target, sim.time_days + UNREACHABLE_RETRY_DAYS);
+        ag.task = Task::Idle;
+        return;
+    }
     if ag.load.is_some_and(|l| l.good != good) {
         ag.task = Task::Carry { dest: NO_STORE };
         return;
@@ -1091,6 +1103,15 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
     if let Some(site) = site_short_of(sim, ag.cell, load.good) {
         ag.path = None;
         ag.task = Task::Carry { dest: site };
+        return;
+    }
+    // The colony has no room left for this good: carrying it on helps nobody and a queue of full
+    // carriers would block the stores. The load is left where it is.
+    if closest_store(sim, ag.cell, load.good).is_some() && sim.buildings.stores.space(load.good) <= EPS {
+        ag.load = None;
+        ag.path = None;
+        ag.task = Task::Idle;
+        note(ag, false);
         return;
     }
     if load.good == Good::Food && closest_store(sim, ag.cell, Good::Food).is_none() {

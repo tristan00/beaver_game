@@ -318,7 +318,7 @@ pub fn cuttable(r: &Resource, min_age: f32) -> bool {
 
 /// The youngest a tree may be for the collectors of workplace `camp` to fell it: a logging camp
 /// follows its rule; everything else (forager huts, gather orders) spares young trees.
-pub(crate) fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
+pub fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
     let Some(b) = camp.filter(|b| sim.work.place(*b).is_some_and(|p| p.kind == BuildingKind::LoggingCamp)) else {
         return MATURE_AGE;
     };

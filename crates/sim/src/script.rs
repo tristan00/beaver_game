@@ -429,7 +429,7 @@ impl Runner {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | logs {:>5.1} sticks {:>5.1} mud {:>4.1} stone {:>4.1} rope {:>3.1} | built {} sites {} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | logs {:>5.1} sticks {:>5.1} mud {:>4.1} stone {:>4.1} rope {:>3.1} | built {} sites {} | barges {} carried {:.0} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),
@@ -447,6 +447,8 @@ impl Runner {
             st.amount(Good::Rope),
             s.buildings.buildings.iter().filter(|b| b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| !b.is_complete()).count(),
+            s.buildings.barges.len(),
+            s.buildings.barges.iter().map(|b| b.carried).sum::<f32>(),
             metric(s, &self.out.stats, "mature").unwrap_or(0.0),
             crate::hud::problems(s).iter().map(|p| format!("{:?}", p.kind)).collect::<Vec<_>>().join(",")
         );

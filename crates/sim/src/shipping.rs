@@ -20,7 +20,9 @@ pub const BARGE_SPEED: f32 = 18.0;
 /// Goods a barge carries.
 pub const BARGE_CAPACITY: f32 = 40.0;
 /// Water depth a laden barge needs.
-pub const BARGE_DRAFT: f32 = 0.15;
+pub const BARGE_DRAFT: f32 = 0.12;
+/// A barge berths this far (cells) from a dock's footprint: a short jetty reaches deeper water.
+pub const BERTH_REACH: usize = 2;
 /// Cost of a step along a canal, in open-water steps (canals are straight and still).
 pub const CANAL_STEP: f32 = 0.6;
 /// A pass through a lock takes as long as this many open-water steps.
@@ -82,18 +84,36 @@ fn neighbours(c: Cell, n: usize) -> impl Iterator<Item = Cell> {
         .flatten()
 }
 
-/// Cells where a barge can lie at `dock`: on or beside its footprint, deep enough.
+/// Cells where a barge can lie at `dock`: within `BERTH_REACH` of its footprint, deep enough,
+/// nearest first.
 pub fn berths(sim: &SimState, locks: &HashSet<Cell>, dock: &Building) -> Vec<Cell> {
     let n = sim.water.depth.width();
-    let mut out: Vec<Cell> = Vec::new();
-    for c in dock.cells() {
-        for b in std::iter::once(c).chain(neighbours(c, n)) {
-            if !out.contains(&b) && step_cost(sim, locks, b, false).is_some() && !locks.contains(&b) {
-                out.push(b);
+    let r = BERTH_REACH;
+    let mut out: Vec<(usize, Cell)> = Vec::new();
+    let (x0, y0) = (dock.pos.0.saturating_sub(r), dock.pos.1.saturating_sub(r));
+    let (w, h) = dock.kind.spec().footprint;
+    for y in y0..(dock.pos.1 + h + r).min(n) {
+        for x in x0..(dock.pos.0 + w + r).min(n) {
+            let d = crate::stock::dist((x, y), dock);
+            if d <= r && step_cost(sim, locks, (x, y), false).is_some() && !locks.contains(&(x, y)) {
+                out.push((d, (x, y)));
             }
         }
     }
-    out
+    out.sort();
+    out.into_iter().map(|o| o.1).collect()
+}
+
+/// Berths a dock placed at `pos` would have (for choosing where to build one).
+pub fn berths_at(sim: &SimState, pos: Cell) -> Vec<Cell> {
+    let probe = Building { id: BuildingId(0), kind: BuildingKind::Dock, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0 };
+    berths(sim, &lock_cells(sim), &probe)
+}
+
+/// Whether a barge could sail (ice aside) between berths `a` and `b`, through finished locks.
+pub fn joined(sim: &SimState, a: &[Cell], b: &[Cell]) -> bool {
+    let locks = lock_cells(sim);
+    a.first().is_some_and(|&s| route(sim, &locks, s, b, false).is_some())
 }
 
 /// Cheapest water route from `from` to any of `to` (cells after `from`, in order), with `cost`

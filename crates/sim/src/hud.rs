@@ -507,12 +507,12 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Sites nobody is building.
+    // Sites nobody is building (a site waiting for materials needs gatherers, not builders).
     let stalled: Vec<BuildingId> = sim
         .work
         .places
         .iter()
-        .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.slots.iter().all(|s| s.worker.is_none()))
+        .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.slots.iter().all(|s| s.worker.is_none()) && !crate::agents::site_stalled(sim, p))
         .map(|p| p.building)
         .collect();
     if let Some(&first) = stalled.first() {
@@ -685,7 +685,7 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
                 .work
                 .places
                 .iter()
-                .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.filled() == 0)
+                .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.filled() == 0 && !crate::agents::site_stalled(sim, p))
                 .map(|p| p.building)
                 .collect();
             let mut placed = 0;

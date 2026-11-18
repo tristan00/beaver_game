@@ -80,6 +80,7 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
         RoleKind::Logger => &[Good::Logs, Good::Sticks],
         RoleKind::MudDigger => &[Good::Mud],
         RoleKind::Quarrier => &[Good::Stone],
+        RoleKind::Crafter => &[Good::Rope, Good::Baskets, Good::Tools],
         _ => return false,
     };
     // Homes are repaired with logs: below this reserve the colony is short of wood whatever is built.

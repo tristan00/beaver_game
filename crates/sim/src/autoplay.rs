@@ -38,6 +38,8 @@ pub struct Player {
     routed: bool,
 }
 
+/// A far camp's dock stands within this many cells of it.
+pub const FAR_DOCK_REACH: usize = 8;
 /// A deposit further than this (cells) from the home store is shipped home by barge.
 pub const FAR_DEPOSIT: usize = 16;
 /// Gathering camps for concentrated deposits look this far from the camp (explored ground only).
@@ -137,6 +139,7 @@ impl Player {
         }
         self.explore(s);
         self.ship(s);
+        self.tend_logging(s);
         // Homes and wood keep pace with the colony: a lodge per eight beavers, a logging camp per ten.
         let pop = s.colony.population();
         let count = |s: &SimState, k: BuildingKind| s.buildings.buildings.iter().filter(|b| b.kind == k).count();
@@ -216,28 +219,97 @@ impl Player {
         }
     }
 
+    fn place_dock(&mut self, s: &mut SimState, spot: Option<Cell>) -> Option<BuildingId> {
+        let r = match spot {
+            Some(p) => s.apply(Command::PlaceSite { kind: BuildingKind::Dock, pos: p }).map_err(|e| e.to_string()).and_then(|_| s.buildings.buildings.last().map(|b| b.id).ok_or_else(|| "placed nothing".into())),
+            None => Err("no dock spot on water a barge can reach".to_string()),
+        };
+        self.placed.push((s.time_days, BuildingKind::Dock, r.clone()));
+        self.note(s, format!("dock: {r:?}"));
+        r.ok()
+    }
+
+    /// Moves a logging camp's area to fresh forest once it is nearly cut out: the richest explored
+    /// area of the same size within 24 cells of the camp.
+    fn tend_logging(&mut self, s: &mut SimState) {
+        if (s.time_days as u64) % 5 != 0 {
+            return;
+        }
+        let camps: Vec<(BuildingId, Cell, crate::work::Area)> = s
+            .buildings
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::LoggingCamp && b.is_complete())
+            .filter_map(|b| Some((b.id, b.pos, s.work.place(b.id)?.area?)))
+            .collect();
+        for (id, pos, area) in camps {
+            if crate::forestry::cuttable_in_area(s, id) >= 6 {
+                continue;
+            }
+            let min_age = crate::forestry::cut_min_age(s, Some(id));
+            let (w, h) = (area.max.0 - area.min.0, area.max.1 - area.min.1);
+            let n = s.world.size;
+            let mut best: Option<(usize, crate::work::Area)> = None;
+            for cy in (pos.1.saturating_sub(24)..(pos.1 + 24).min(n)).step_by(3) {
+                for cx in (pos.0.saturating_sub(24)..(pos.0 + 24).min(n)).step_by(3) {
+                    if !s.fog.explored((cx, cy)) {
+                        continue;
+                    }
+                    let a = crate::work::Area { min: (cx.saturating_sub(w / 2), cy.saturating_sub(h / 2)), max: ((cx + w / 2).min(n - 1), (cy + h / 2).min(n - 1)) };
+                    let k = s.resources.items.iter().filter(|r| a.contains(r.cell) && crate::forestry::cuttable(r, min_age)).count();
+                    if best.as_ref().is_none_or(|b| k > b.0) {
+                        best = Some((k, a));
+                    }
+                }
+            }
+            if let Some((k, a)) = best.filter(|b| b.0 >= 12) {
+                let r = s.apply(Command::SetWorkArea { building: id, area: a });
+                self.note(s, format!("moved logging area to {:?} ({k} trees): {r:?}", a.min));
+            }
+        }
+    }
+
     /// Ships a far deposit home: a dock by the quarry or clay pit, a dock by the home store, a barge
     /// running between them (and a lock on any dam in the way).
     fn ship(&mut self, s: &mut SimState) {
         let home = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::Warehouse && b.is_complete()).cloned();
         let Some(home) = home else { return };
-        let far = s
-            .buildings
-            .buildings
-            .iter()
-            .filter(|b| matches!(b.kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) && b.is_complete())
-            .filter(|b| crate::stock::gap(b, &home) > FAR_DEPOSIT)
-            .max_by_key(|b| crate::stock::gap(b, &home))
-            .cloned();
-        let Some(far) = far else { return };
         if !s.tech.allows(BuildingKind::Dock) {
             return;
         }
-        if self.home_dock.is_none() && !self.tried_lately(s, BuildingKind::Dock) {
-            self.home_dock = self.place_at(s, BuildingKind::Dock, home.pos);
-        }
-        if self.far_dock.is_none() && self.home_dock.is_some() && !self.placed.iter().any(|(d, k, _)| *k == BuildingKind::Dock && s.time_days - d < 1.0) {
-            self.far_dock = self.place_at(s, BuildingKind::Dock, far.pos);
+        // Where the home dock goes (or stands), and a far camp with a dock spot water joins to it.
+        let home_spot = match self.home_dock.and_then(|d| s.buildings.building(d)) {
+            Some(d) => Some(d.pos),
+            None => dock_spot(s, home.pos, None, 14),
+        };
+        let Some(home_spot) = home_spot else { return };
+        let home_berths = crate::shipping::berths_at(s, home_spot);
+        if self.far_dock.is_none() {
+            if self.placed.iter().any(|(d, k, _)| *k == BuildingKind::Dock && s.time_days - d < 10.0) {
+                return;
+            }
+            let mut far: Vec<crate::buildings::Building> = s
+                .buildings
+                .buildings
+                .iter()
+                .filter(|b| matches!(b.kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) && b.is_complete())
+                .filter(|b| crate::stock::gap(b, &home) > FAR_DEPOSIT)
+                .cloned()
+                .collect();
+            far.sort_by_key(|b| std::cmp::Reverse(crate::stock::gap(b, &home)));
+            let Some((camp, spot)) = far.iter().find_map(|b| dock_spot(s, b.pos, Some(&home_berths), FAR_DOCK_REACH).map(|p| (b.pos, p))) else {
+                self.placed.push((s.time_days, BuildingKind::Dock, Err("no far camp on water joined to home".into())));
+                return;
+            };
+            if self.home_dock.is_none() {
+                self.home_dock = self.place_dock(s, Some(home_spot));
+                if self.home_dock.is_none() {
+                    return;
+                }
+            }
+            self.note(s, format!("shipping from the camp at {camp:?}"));
+            self.far_dock = self.place_dock(s, Some(spot));
+            return;
         }
         let done = |id: Option<BuildingId>| id.and_then(|i| s.buildings.building(i)).is_some_and(|b| b.is_complete());
         let (Some(fd), Some(hd)) = (self.far_dock, self.home_dock) else { return };
@@ -246,8 +318,13 @@ impl Player {
         }
         if s.buildings.barges.is_empty() {
             if !self.has(BuildingKind::Barge) && !self.tried_lately(s, BuildingKind::Barge) {
-                let at = s.buildings.building(hd).map(|b| b.pos).unwrap_or(home.pos);
-                let r = place_ring(s, BuildingKind::Barge, at, 0..=3);
+                // Launched at the home dock's own berth, on the water its route runs on.
+                let berths = s.buildings.building(hd).map(|b| crate::shipping::berths_at(s, b.pos)).unwrap_or_default();
+                let r = berths
+                    .into_iter()
+                    .find_map(|c| s.apply(Command::PlaceSite { kind: BuildingKind::Barge, pos: c }).ok())
+                    .ok_or_else(|| "no berth takes a barge".to_string())
+                    .and_then(|_| s.buildings.buildings.last().map(|b| b.id).ok_or_else(|| "placed nothing".to_string()));
                 self.placed.push((s.time_days, BuildingKind::Barge, r.clone()));
                 self.note(s, format!("barge: {r:?}"));
             }
@@ -284,6 +361,22 @@ impl Player {
             }
         }
     }
+}
+
+/// The nearest spot (within `radius` cells of `near`) where a dock can stand with water deep enough
+/// for a barge beside it, and, given `reach`, joined by water to those berths.
+pub fn dock_spot(s: &SimState, near: Cell, reach: Option<&[Cell]>, radius: usize) -> Option<Cell> {
+    let n = s.world.size;
+    let mut cands: Vec<(usize, Cell)> = Vec::new();
+    for y in near.1.saturating_sub(radius)..(near.1 + radius).min(n) {
+        for x in near.0.saturating_sub(radius)..(near.0 + radius).min(n) {
+            if s.check_site(BuildingKind::Dock, (x, y)).is_ok() && !crate::shipping::berths_at(s, (x, y)).is_empty() {
+                cands.push((x.abs_diff(near.0) + y.abs_diff(near.1), (x, y)));
+            }
+        }
+    }
+    cands.sort();
+    cands.into_iter().map(|c| c.1).find(|&p| reach.is_none_or(|r| crate::shipping::joined(s, &crate::shipping::berths_at(s, p), r)))
 }
 
 /// Places a quarry or clay pit at the richest deposit in sight: explored cells within
