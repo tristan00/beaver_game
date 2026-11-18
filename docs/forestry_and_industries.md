@@ -2,6 +2,28 @@
 
 *How resources, jobs, buildings and research fit together today, and a plan for a forest planting and upkeep industry. 18 Nov 2026, branch `interface-v2`.*
 
+## Update: the water network, deposits and growing dams
+
+What changed after this plan was written, and what now holds:
+
+- **Water transport is core.** Docks are stores. A barge runs a standing route between two docks: it loads the chosen goods at one, sails to the other over water deep enough to float it, unloads, and returns. A barge sails 18 cells a day with 40 goods aboard. A beaver walks 40 cells a day, half that with a load of 3, and swims faster than it walks. Barges are slower but carry far more. Ice stops barges in winter, and shallow reaches stop them in any season.
+- **Locks are how barges pass dams.** A dam stops a barge. A lock built on a dam lets it through, up or down, at the cost of about ten cells' sailing time; the dam keeps holding its water. A route refused for a dam names the cell to put the lock on.
+- **Stone and clay lie in deposits.** Each map has three stone deposits and four clay beds, kept far apart. Other banks hold a little stray mud, enough for a family's first buildings. A growing colony quarries far from home and has to haul the stone and clay back.
+- **Goods stay in the store they were put in.** Every store keeps its own stock. Builders fetch from a store that holds the good, and workshops craft from stores within 12 cells. Distance, hauling and barges therefore matter.
+- **Dams grow.** Ordering a dam over existing dam cells raises, extends or repairs it. Only the height it adds costs, and every unit above the first needs mud. A dam can be built to a chosen crest level, up to 3 above the ground. The preview finds where rising water would walk round the dam's ends (the spill point) and offers to extend the dam over it. The Elevation view (F5) shows height contours for planning water levels.
+- **Ponds feed the colony.** Food plants sprout on shores and in shallow water, regrow only while the water is near, and drown in deep water. Damming a stream is how a colony grows its food.
+- **No elders.** Every tech now comes from colony size, branch experience and earlier research. Canals, docks, barges and locks open within the first year or so.
+- **Buildings have prerequisites:**
+  - a lodge needs a burrow
+  - a workshop, dock, quarry camp or storehouse needs a warehouse
+  - a food cache needs a forager hut
+  - a water wheel needs a workshop
+  - a lock needs a dock
+  - a mill needs a workshop and a water wheel
+  - a tree nursery needs a forester's lodge
+  - a guard post needs a scent mound
+- **Trees grow over years:** young at 1 year, mature at 3, old at 15 (360-day years).
+
 ## Part 1: the economy as it stands
 
 ### Goods
@@ -43,10 +65,9 @@ Since this redesign, a beaver's job is the role of the work slot it fills. Free 
 | Quarrier | quarry camp (2) | breaks stone in its area |
 | Hauler | warehouse, food cache, dock (1); storehouse (2) | moves goods between stores on standing orders |
 | Crafter | workshop (1), mill (2) | makes the chosen recipe |
-| Elder | elders' den (2) | studies lore for research |
 
 - **Gathering camps:** each has a 9×9 work area that can be redrawn.
-- **Auto-staffing:** fills empty slots by building priority, then role order (Builder, Forager, Logger, Hauler, Mud digger, Quarrier, Crafter, Elder), then distance.
+- **Auto-staffing:** fills empty slots by building priority, then role order (Builder, Forager, Logger, Forester, Hauler, Mud digger, Quarrier, Crafter). Food short: foragers first. A site waiting on a material the stores can't cover: that material's gatherers (or crafters) come before builders. Logs under 20: loggers come before builders, then distance.
 - **Kits:** they don't work.
 
 ### Buildings
@@ -63,12 +84,11 @@ Since this redesign, a beaver's job is the role of the work slot it fills. Free 
 | Lodge | 3×3 | 20 logs, 25 sticks, 20 mud | 12 | — | Lodge building |
 | Quarry camp | 2×2 | 5 logs, 6 sticks, 3 mud | 3 | 2 quarriers | Stonework |
 | Workshop | 3×2 | 8 logs, 6 sticks, 4 mud | 6 | 1 crafter | Weaving |
-| Elders' den | 3×3 | 12 logs, 8 mud | 6 | 2 elders | Elders' lore |
 | Canal | per cell | 2 mud | 1 | — | Canal digging |
-| Dock | 2×1 | 10 logs, 2 rope | 4 | 1 hauler | Docks |
+| Dock | 2×1 | 10 logs, 6 sticks | 4 | 1 hauler (store, 60 per good) | Docks |
 | Lock | 2×1 | 10 logs, 6 stone, 8 mud, 1 tool | 6 | — | Flow control |
 | Water wheel | 2×2 | 12 logs, 2 rope, 1 tool | 7 | — | Flow control |
-| Barge | 1×1 | 8 logs, 3 rope, 2 baskets | 5 | — | Barges |
+| Barge | 1×1 | 12 logs, 8 sticks, 2 rope | 5 | — | Barges |
 | Storehouse | 4×3 | 40 logs, 20 sticks, 12 stone, 4 rope | 16 | 2 haulers | Grand storage |
 | Mill | 3×3 | 30 logs, 10 stone, 4 rope, 3 tools | 14 | 2 crafters | Industrial milling |
 
@@ -79,7 +99,6 @@ The scent mound and guard post exist but are switched off.
 Research comes three ways:
 - **Achievements:** first burrow, first dam, first winter.
 - **Branch experience:** work done in a branch's jobs, plus a minimum colony size.
-- **Lore:** studied by elders at the elders' den, needed for later techs.
 
 | Tech | Branch | Needs | Unlocks |
 |---|---|---|---|
@@ -89,16 +108,15 @@ Research comes three ways:
 | Lodge building | Building | Felling; 16 xp; 5 beavers | Lodge |
 | Stonework | Forest | Felling; 40 xp; 6 beavers | Quarry camp |
 | Weaving | Forest | Felling; 60 xp; 8 beavers | Workshop |
-| Elders' lore | Building | Lodge building; 8 beavers; an elder | Elders' den |
-| Master builders | Building | Lodge building; 60 xp; 10 beavers; 40 lore | faster building |
-| Fine tools | Craft | Weaving; 50 xp; 10 beavers; 40 lore | faster crafting |
-| Forest lore | Forest | Stonework; 100 xp; 10 beavers; 30 lore | more storage |
-| Canal digging | Water | Stonework, Lodge building; 60 xp; 12 beavers; 30 lore | Canal |
-| Docks | Transport | Canal digging; 40 xp; 14 beavers; 40 lore | Dock |
-| Flow control | Water | Canal digging; 120 xp; 18 beavers; 60 lore | Lock, water wheel |
-| Barges | Transport | Docks; 80 xp; 20 beavers; 60 lore | Barge |
-| Grand storage | Building | Lodge building; 100 xp; 20 beavers; 60 lore | Storehouse |
-| Industrial milling | Craft | Weaving, Flow control; 100 xp; 24 beavers; 80 lore | Mill |
+| Master builders | Building | Lodge building; 60 xp; 10 beavers | faster building |
+| Fine tools | Craft | Weaving; 50 xp; 10 beavers | faster crafting |
+| Dry stores | Forest | Stonework; 100 xp; 10 beavers | more storage |
+| Canal digging | Water | Lodge building; 30 xp; 8 beavers | Canal |
+| Docks | Building | Lodge building; 30 xp; 8 beavers | Dock |
+| Flow control | Water | Docks, Stonework; 60 xp; 12 beavers | Lock, water wheel |
+| Barges | Building | Docks, Weaving; 60 xp; 10 beavers | Barge |
+| Grand storage | Building | Lodge building; 100 xp; 20 beavers | Storehouse |
+| Industrial milling | Craft | Weaving, Flow control; 100 xp; 24 beavers | Mill |
 
 ### The chains
 
@@ -135,10 +153,10 @@ Merge the two forest models. Tree resources become the truth, and each tree has 
 
 | Stage | Age (days, untended) | Yield if felled | Notes |
 |---|---|---|---|
-| Sapling | 0–60 | nothing (can't be felled) | trampled or flooded easily |
-| Young | 60–150 | 1 log, 2 sticks | thinning gives sticks |
-| Mature | 150–400 | 3 logs, 4 sticks, 2 bark (today's tree) | seeds new saplings nearby |
-| Old | 400+ | 2 logs, 4 sticks | slowly dies to a snag (sticks only) |
+| Sapling | 0–360 (1 year) | nothing (can't be felled) | trampled or flooded easily |
+| Young | 360–1080 (1–3 years) | 1 log, 2 sticks | thinning gives sticks |
+| Mature | 1080–5400 (3–15 years) | 3 logs, 4 sticks, 2 bark | seeds new saplings nearby |
+| Old | 5400+ | 2 logs, 4 sticks | slowly dies to a snag (sticks only) |
 
 - **Growth rate:**
   - Base 1 day of age per day.
