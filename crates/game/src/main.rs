@@ -5,6 +5,7 @@ mod camera;
 mod cli;
 mod entities_render;
 mod flow;
+mod hud;
 mod input;
 mod opening;
 mod palette;
@@ -57,6 +58,7 @@ fn main() -> AppExit {
         showcase::ShowcasePlugin,
         input::InputPlugin,
         startflow::StartPlugin,
+        hud::HudPlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,

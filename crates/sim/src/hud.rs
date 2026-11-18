@@ -297,6 +297,70 @@ pub fn river_profile(sim: &SimState) -> Vec<ProfilePoint> {
     out
 }
 
+/// The river through `near` (the river cell closest to it, within 12 cells): up to `up` cells
+/// upstream (always following the larger branch) and `down` cells downstream, in flow order.
+/// Returns the points and the index of the anchor cell, or `None` with no river nearby.
+pub fn river_profile_through(sim: &SimState, near: (f32, f32), up: usize, down: usize) -> Option<(Vec<ProfilePoint>, usize)> {
+    let w = &sim.world;
+    let n = w.size as i64;
+    let (cx, cy) = (near.0.round() as i64, near.1.round() as i64);
+    let mut best: Option<(i64, Cell)> = None;
+    for dy in -12..=12i64 {
+        for dx in -12..=12i64 {
+            let (x, y) = (cx + dx, cy + dy);
+            if x < 0 || y < 0 || x >= n || y >= n || !w.river.get(x as usize, y as usize).copied().unwrap_or(false) {
+                continue;
+            }
+            let d = dx * dx + dy * dy;
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, (x as usize, y as usize)));
+            }
+        }
+    }
+    let (_, anchor) = best?;
+    // Upstream: the river neighbour draining into the current cell with the largest catchment.
+    let mut ups = Vec::new();
+    let mut cur = anchor;
+    for _ in 0..up {
+        let mut next: Option<(u32, Cell)> = None;
+        for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let (x, y) = (cur.0 as i64 + dx, cur.1 as i64 + dy);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let c = (x as usize, y as usize);
+            if w.river.get(c.0, c.1).copied().unwrap_or(false) && w.downstream(c.0, c.1) == Some(cur) {
+                let acc = w.flow_acc.get(c.0, c.1).copied().unwrap_or(0);
+                if next.is_none_or(|(b, _)| acc > b) {
+                    next = Some((acc, c));
+                }
+            }
+        }
+        match next {
+            Some((_, c)) => {
+                ups.push(c);
+                cur = c;
+            }
+            None => break,
+        }
+    }
+    ups.reverse();
+    let at = ups.len();
+    let mut cells = ups;
+    cells.push(anchor);
+    let mut cur = anchor;
+    for _ in 0..down {
+        match w.downstream(cur.0, cur.1) {
+            Some(c) if !cells.contains(&c) => {
+                cells.push(c);
+                cur = c;
+            }
+            _ => break,
+        }
+    }
+    Some((cells.into_iter().map(|c| profile_point(sim, c)).collect(), at))
+}
+
 fn profile_point(sim: &SimState, (x, y): Cell) -> ProfilePoint {
     let bed = sim.height.get(x, y).copied().unwrap_or(0.0);
     let crest = bed + sim.water.dam_height.get(x, y).copied().unwrap_or(0.0);
@@ -317,6 +381,8 @@ pub fn profile_with_preview(points: &[ProfilePoint], preview: &crate::dam_previe
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ponds {
+    /// Whether any dam stands (without one, standing water is just puddles and hollows).
+    pub dammed: bool,
     /// Cells holding standing water that the river and lakes do not keep level (dammed ponds).
     pub cells: usize,
     pub volume: f32,
@@ -327,7 +393,7 @@ pub struct Ponds {
 impl Ponds {
     /// Days the ponds would last through summer with no inflow; `None` without ponds.
     pub fn summer_cover_days(&self) -> Option<f32> {
-        (self.cells > 0 && self.summer_loss_per_day > 0.0).then(|| self.volume / self.summer_loss_per_day)
+        (self.dammed && self.cells > 0 && self.summer_loss_per_day > 0.0).then(|| self.volume / self.summer_loss_per_day)
     }
 }
 
@@ -341,7 +407,8 @@ pub fn ponds(sim: &SimState) -> Ponds {
         }
     }
     let per_cell = w.config.evaporation * Season::Summer.evap_mult() + w.config.seepage;
-    Ponds { cells, volume, summer_loss_per_day: cells as f32 * per_cell }
+    let dammed = w.dam_height.as_slice().iter().any(|h| *h > 0.0);
+    Ponds { dammed, cells, volume, summer_loss_per_day: cells as f32 * per_cell }
 }
 
 #[cfg(test)]
@@ -379,10 +446,25 @@ mod tests {
     }
 
     #[test]
+    fn profile_through_a_river_cell_runs_downstream_and_holds_the_anchor() {
+        let s = SimState::new(5);
+        let main = river_profile(&s);
+        let c = main[main.len() / 2].cell;
+        let (pts, at) = river_profile_through(&s, (c.0 as f32, c.1 as f32), 20, 10).expect("a river is right there");
+        assert_eq!(pts[at].cell, c);
+        assert!(pts.len() > 10 && at <= 20 && pts.len() - at - 1 <= 10);
+        for pair in pts.windows(2) {
+            assert_eq!(s.world.downstream(pair[0].cell.0, pair[0].cell.1), Some(pair[1].cell), "points follow the flow");
+        }
+    }
+
+    #[test]
     fn pond_cover_needs_ponds() {
-        let p = Ponds { cells: 0, volume: 0.0, summer_loss_per_day: 0.0 };
+        let p = Ponds { dammed: true, cells: 0, volume: 0.0, summer_loss_per_day: 0.0 };
         assert_eq!(p.summer_cover_days(), None);
-        let p = Ponds { cells: 10, volume: 50.0, summer_loss_per_day: 2.0 };
+        let p = Ponds { dammed: false, cells: 10, volume: 50.0, summer_loss_per_day: 2.0 };
+        assert_eq!(p.summer_cover_days(), None, "puddles without a dam are not a reservoir");
+        let p = Ponds { dammed: true, cells: 10, volume: 50.0, summer_loss_per_day: 2.0 };
         assert_eq!(p.summer_cover_days(), Some(25.0));
     }
 }
