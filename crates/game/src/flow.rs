@@ -1,4 +1,4 @@
-//! Game flow: opening (arrival, scouting, settling), picking, selection, fog of war, valley
+//! Game flow: opening (choosing where to settle, settling), picking, selection, fog of war, valley
 //! unlocking and colony collapse. The pure parts (state machine, picking math, fog, suitability)
 //! are plain functions so they can be tested without a window.
 use crate::camera::OrbitCamera;
@@ -13,11 +13,9 @@ use std::collections::VecDeque;
 
 pub type Cell = (usize, usize);
 
-pub const SCOUT_COUNT: usize = 4;
-pub const SCOUT_SPEED: f32 = 7.0;
-pub const SCOUT_SIGHT: f32 = 7.0;
 pub const FOCUS_SIGHT: f32 = 5.0;
-pub const ARRIVAL_SECS: f32 = 1.5;
+/// How far a beaver sees: exploring is done by the colony's own beavers.
+pub const BEAVER_SIGHT: f32 = 6.0;
 /// Fog value above which a cell counts as explored.
 pub const EXPLORED: f32 = 0.5;
 
@@ -25,9 +23,7 @@ pub const EXPLORED: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    /// Scouts walk in from the valley mouth.
-    Arrival,
-    /// The player explores and picks a site.
+    /// The player looks over the start valley and picks where the family settles.
     Scouting,
     /// The first lodge stands and the colony lives.
     Settled,
@@ -39,7 +35,6 @@ pub enum Phase {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlowEvent {
-    ScoutsArrived,
     Settle,
     Collapse,
     Continue,
@@ -52,17 +47,15 @@ impl Phase {
         use FlowEvent::*;
         use Phase::*;
         match (self, ev) {
-            (Arrival, ScoutsArrived) => Some(Scouting),
             (Scouting, Settle) => Some(Settled),
             (Settled, Collapse) => Some(GameOver),
             (GameOver, Continue) => Some(Watching),
-            (Scouting | Settled | GameOver | Watching, Restart) => Some(Arrival),
+            (Settled | GameOver | Watching, Restart) => Some(Scouting),
             _ => None,
         }
     }
     pub fn banner(self) -> &'static str {
         match self {
-            Phase::Arrival => "Scouts arrive at the valley mouth...",
             Phase::Scouting => "",
             Phase::Settled => "",
             Phase::GameOver => "The colony has collapsed",
@@ -327,7 +320,7 @@ impl SettleError {
         match self {
             SettleError::OutOfBounds => "Outside the map",
             SettleError::Locked => "That valley is not open yet",
-            SettleError::Unexplored => "Unexplored - scouts are sent there",
+            SettleError::Unexplored => "Unexplored",
             SettleError::Water => "Beavers cannot settle in the water",
         }
     }
@@ -363,65 +356,15 @@ pub fn best_site(world: &World, depth: &Grid<f32>, fog: &Fog) -> Option<Cell> {
     best.map(|b| b.1)
 }
 
-// ───────────────────────────── scouts ─────────────────────────────
-
-#[derive(Clone, Copy, Debug)]
-pub struct Scout {
-    pub pos: (f32, f32),
-    pub target: (f32, f32),
-}
-
-impl Scout {
-    /// Walks toward the target; returns true once there.
-    pub fn walk(&mut self, dt: f32) -> bool {
-        let (dx, dy) = (self.target.0 - self.pos.0, self.target.1 - self.pos.1);
-        let dist = (dx * dx + dy * dy).sqrt();
-        let step = SCOUT_SPEED * dt;
-        if dist <= step {
-            self.pos = self.target;
-            true
-        } else {
-            self.pos = (self.pos.0 + dx / dist * step, self.pos.1 + dy / dist * step);
-            false
-        }
-    }
-}
-
-/// Nearest unexplored dry cell of an open valley, steering clear of `avoid` targets.
-pub fn explore_target(world: &World, fog: &Fog, from: (f32, f32), avoid: &[(f32, f32)]) -> Option<(f32, f32)> {
-    let open = open_at(world);
-    let mut best: Option<(f32, (f32, f32))> = None;
-    for y in (1..world.size).step_by(3) {
-        for x in (1..world.size).step_by(3) {
-            if fog.get((x, y)) >= EXPLORED || !open(x, y) || world.lake.get(x, y) == Some(&true) {
-                continue;
-            }
-            let p = (x as f32, y as f32);
-            let mut score = ((p.0 - from.0).powi(2) + (p.1 - from.1).powi(2)).sqrt();
-            for a in avoid {
-                if ((p.0 - a.0).powi(2) + (p.1 - a.1).powi(2)).sqrt() < 12.0 {
-                    score += 40.0;
-                }
-            }
-            if best.is_none_or(|(b, _)| score < b) {
-                best = Some((score, p));
-            }
-        }
-    }
-    best.map(|b| b.1)
-}
-
 // ───────────────────────────── flow resource ─────────────────────────────
 
 #[derive(Resource)]
 pub struct Flow {
     pub phase: Phase,
-    pub scouts: Vec<Scout>,
     pub fog: Fog,
-    /// Valley mouth where the scouts arrive.
+    /// Valley mouth: where the family comes from.
     #[allow(dead_code)]
     pub mouth: (f32, f32),
-    pub arrival_t: f32,
     /// Camera focus target while the camera eases toward a spot (e.g. the new lodge).
     pub focus: Option<Vec3>,
     pub message: String,
@@ -439,21 +382,12 @@ pub struct Flow {
 impl Flow {
     pub fn new(world: &World) -> Flow {
         let mouth = valley_mouth(world);
-        let scouts = (0..SCOUT_COUNT)
-            .map(|i| {
-                let a = i as f32 * std::f32::consts::TAU / SCOUT_COUNT as f32;
-                let p = (mouth.0 + 2.0 * a.cos(), mouth.1 + 2.0 * a.sin());
-                Scout { pos: p, target: p }
-            })
-            .collect();
         let mut fog = Fog::new(world.size);
-        fog.reveal(mouth, SCOUT_SIGHT + 2.0, &open_at(world));
+        fog.reveal_valley(world, world.start);
         Flow {
-            phase: Phase::Arrival,
-            scouts,
+            phase: Phase::Scouting,
             fog,
             mouth,
-            arrival_t: 0.0,
             focus: None,
             message: String::new(),
             log: VecDeque::new(),
@@ -587,33 +521,13 @@ fn advance_flow(
     // camera focus lifts fog too
     let (fx, fy) = world_cell(&sim.0.height, orbit.target);
     flow.fog.reveal((fx, fy), FOCUS_SIGHT, &allowed);
+    // The colony's own beavers explore: the ground around each one is seen.
+    if flow.phase == Phase::Settled {
+        for b in &sim.0.colony.beavers {
+            flow.fog.reveal(b.pos, BEAVER_SIGHT, &allowed);
+        }
+    }
     match flow.phase {
-        Phase::Arrival => {
-            flow.arrival_t += dt;
-            if flow.arrival_t >= ARRIVAL_SECS {
-                flow.fire(FlowEvent::ScoutsArrived);
-            }
-        }
-        Phase::Scouting => {
-            let targets: Vec<_> = flow.scouts.iter().map(|s| s.target).collect();
-            let mut new_targets = targets.clone();
-            for i in 0..flow.scouts.len() {
-                let arrived = {
-                    let s = &mut flow.scouts[i];
-                    s.walk(dt)
-                };
-                if arrived {
-                    let others: Vec<_> = new_targets.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, t)| *t).collect();
-                    let from = flow.scouts[i].pos;
-                    if let Some(t) = explore_target(world, &flow.fog, from, &others) {
-                        flow.scouts[i].target = t;
-                        new_targets[i] = t;
-                    }
-                }
-                let p = flow.scouts[i].pos;
-                flow.fog.reveal(p, SCOUT_SIGHT, &allowed);
-            }
-        }
         _ => {}
     }
 }
@@ -746,17 +660,15 @@ mod tests {
     fn flow_settle_state_machine() {
         use FlowEvent::*;
         use Phase::*;
-        assert_eq!(Arrival.on(ScoutsArrived), Some(Scouting));
         assert_eq!(Scouting.on(Settle), Some(Settled));
         assert_eq!(Settled.on(Collapse), Some(GameOver));
         assert_eq!(GameOver.on(Continue), Some(Watching));
-        assert_eq!(Watching.on(Restart), Some(Arrival));
-        assert_eq!(GameOver.on(Restart), Some(Arrival));
+        assert_eq!(Watching.on(Restart), Some(Scouting));
+        assert_eq!(GameOver.on(Restart), Some(Scouting));
         // invalid transitions are refused
-        assert_eq!(Arrival.on(Settle), None);
         assert_eq!(Scouting.on(Collapse), None);
         assert_eq!(Settled.on(Settle), None);
-        assert_eq!(Arrival.on(Restart), None);
+        assert_eq!(Scouting.on(Restart), None);
     }
 
     #[test]
@@ -771,12 +683,9 @@ mod tests {
     }
 
     #[test]
-    fn flow_settling_founds_a_lodge_and_lifts_fog() {
+    fn flow_settling_founds_the_colony_and_lifts_fog() {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
-        // not allowed before scouts have arrived
-        assert!(settle(&mut s, &mut flow, (5, 5)).is_err());
-        flow.fire(FlowEvent::ScoutsArrived);
         // fogged ground is refused
         let fogged = (0..s.world.size).flat_map(|y| (0..s.world.size).map(move |x| (x, y))).find(|c| flow.fog.get(*c) < EXPLORED && s.world.valley_of(*c) == Some(s.world.start)).unwrap();
         assert!(settle(&mut s, &mut flow, fogged).is_err());
@@ -786,7 +695,7 @@ mod tests {
         settle(&mut s, &mut flow, site).unwrap();
         assert_eq!(flow.phase, Phase::Settled);
         assert!(s.colony.is_founded());
-        assert_eq!(s.colony.lodges.len(), 1);
+        assert!(s.colony.lodges.is_empty(), "no home until they build one");
         assert_eq!(s.colony.population(), 4);
         assert!(flow.fog.explored_cells() >= before);
         // a second settle is refused
@@ -814,7 +723,6 @@ mod tests {
     fn flow_a_collapsed_colony_is_reported() {
         let mut s = sim::SimState::new(1);
         let mut flow = Flow::new(&s.world);
-        flow.fire(FlowEvent::ScoutsArrived);
         let site = best_site(&s.world, &s.water.depth, &flow.fog).unwrap();
         settle(&mut s, &mut flow, site).unwrap();
         assert!(!s.colony.is_collapsed());

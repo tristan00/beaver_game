@@ -37,6 +37,8 @@ pub enum Assignment {
     Area(ResourceKind, Area),
     /// Slot `slot` of a workplace (uses that workplace's area and role).
     Slot(BuildingId, usize),
+    /// Walk to this cell (exploring); the order ends on arrival and the beaver is free again.
+    Go(Cell),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -286,6 +288,7 @@ impl Job {
                     _ => None,
                 }
             }
+            Assignment::Go(_) => None,
         }
     }
     /// A forager's job (bark on felled wood is its food).
@@ -483,6 +486,13 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         ag.path = None;
         ag.task = Task::Rest;
     }
+    // A walk order: go there, then the order ends (exploring is done by the colony's own beavers).
+    if let Some(Assignment::Go(to)) = ag.assignment {
+        if can_work && !tired && ag.load.is_none() {
+            go_to(sim, ag, dt, to);
+            return;
+        }
+    }
     // A single-resource assignment ends when its resource is used up.
     if matches!(duty, Duty::None) && can_work && !tired && matches!(ag.assignment, Some(Assignment::Resource(_))) {
         ag.assignment = None;
@@ -544,6 +554,28 @@ fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> 
     let moved = follow(&mut sim.nav, ag, dt);
     note(ag, moved);
     false
+}
+
+/// Walks toward `to`; on arrival (or with no way there) the order ends and the beaver is free.
+fn go_to(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
+    let done = |ag: &mut Agent, sim: &mut SimState| {
+        ag.assignment = None;
+        ag.path = None;
+        ag.task = Task::Idle;
+        sim.work.player_orders.remove(&ag.id);
+    };
+    if ag.cell.0.abs_diff(to.0).max(ag.cell.1.abs_diff(to.1)) <= 1 {
+        return done(ag, sim);
+    }
+    if ag.inside || ag.path.is_none() {
+        ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(to)).or_else(|| sim.nav.find_path(ag.id, ag.cell, Goal::Beside(to)));
+        if ag.path.is_none() {
+            return done(ag, sim);
+        }
+    }
+    ag.task = Task::Idle;
+    let moved = follow(&mut sim.nav, ag, dt);
+    note(ag, moved);
 }
 
 /// Gives up on the current errand; a held load goes to the nearest store.
@@ -1143,6 +1175,25 @@ mod tests {
         sim.colony.found(spot, &land).unwrap();
         let ids = sim.colony.beavers.iter().map(|b| b.id).collect();
         (sim, ids)
+    }
+
+    #[test]
+    fn a_walk_order_goes_there_and_then_ends() {
+        let (mut sim, ids) = setup();
+        place_beavers(&mut sim);
+        let from = sim.agents.get(ids[0]).unwrap().cell;
+        let to = (from.0 + 8, from.1);
+        sim.apply(crate::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Go(to)) }).unwrap();
+        for _ in 0..4000 {
+            sim.step(DT).unwrap();
+            if sim.agents.get(ids[0]).unwrap().assignment.is_none() {
+                break;
+            }
+        }
+        let a = sim.agents.get(ids[0]).unwrap();
+        assert!(a.assignment.is_none(), "the order ended");
+        assert!(a.cell.0.abs_diff(to.0).max(a.cell.1.abs_diff(to.1)) <= 1, "arrived at {:?}, wanted {:?}", a.cell, to);
+        assert!(!sim.work.player_orders.contains(&ids[0]), "free again for auto-staffing");
     }
 
     fn warehouse(sim: &mut SimState, id: u64, pos: Cell) -> BuildingId {

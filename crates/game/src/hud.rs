@@ -667,6 +667,14 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
+        world::Thing::Cell(c) => {
+            // Explore: walk there (the beavers see the ground around them; reaching a valley's
+            // edge opens it).
+            match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(sim::agents::Assignment::Go(c)) }) {
+                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
+                Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+            }
+        }
         world::Thing::Building(b) => {
             let mut placed = 0;
             for &w in who {

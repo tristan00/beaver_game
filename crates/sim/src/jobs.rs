@@ -88,6 +88,7 @@ fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
         Assignment::Resource(id) => sim.resources.get(id).map(|r| gather_role(r.kind)),
         Assignment::Area(k, _) => Some(gather_role(k)),
         Assignment::Slot(b, i) => sim.work.place(b)?.slots.get(i).map(|s| role_kind(s.role)),
+        Assignment::Go(_) => None,
     }
 }
 

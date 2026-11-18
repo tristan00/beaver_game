@@ -16,12 +16,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_start_has_a_family_and_a_lodge() {
+    fn default_start_has_a_family_and_no_home() {
         let mut sim = sim::SimState::new(1);
         let mut flow = Flow::new(&sim.world);
         found(&mut sim, &mut flow).expect("founds");
         assert_eq!(flow.phase, Phase::Settled);
         assert_eq!(sim.colony.population(), 4);
-        assert_eq!(sim.colony.lodges.len(), 1);
+        assert!(sim.colony.lodges.is_empty());
     }
 }

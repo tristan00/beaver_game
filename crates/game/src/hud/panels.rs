@@ -13,7 +13,7 @@ use sim::calendar::{self, Date, Season};
 use sim::colony::Stage;
 use sim::hud::{Breakdown, Fix, Problem, ProblemKind, Severity, Source, Subject};
 use sim::jobs::RoleKind;
-use sim::work::Role;
+
 
 /// Everything a panel may read.
 pub struct Ctx<'a> {
