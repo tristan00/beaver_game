@@ -7,6 +7,7 @@ mod entities_render;
 mod flow;
 mod hud;
 mod input;
+mod menu;
 mod opening;
 mod palette;
 mod screenshot;
@@ -59,6 +60,7 @@ fn main() -> AppExit {
         input::InputPlugin,
         startflow::StartPlugin,
         hud::HudPlugin,
+        menu::MenuPlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,

@@ -43,8 +43,32 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     orbit.target = cell_world(&sim.height, focus);
     orbit.distance = ARRIVAL_DISTANCE;
     orbit.pitch = ARRIVAL_PITCH;
+    // A new game waits for the player: it starts paused (Space or 1-3 to run).
     *clock = SimClock::default();
+    clock.paused = true;
     *sel = Selection::None;
+}
+
+/// Builds a fresh new game on `seed` (world, river start and designed dam), settles the family at
+/// the designed camp and begins play paused. The renderers follow the new world on their own.
+pub fn new_game(
+    seed: u64,
+    sim: &mut Sim,
+    planned: &mut PlannedDam,
+    flow: &mut Flow,
+    clock: &mut SimClock,
+    orbit: &mut OrbitCamera,
+    sel: &mut Selection,
+) -> Result<(), String> {
+    let (mut s, dam) = sim::starts::new_game_with_dam(seed).map_err(|e| format!("cannot build a new game for seed {seed}: {e}"))?;
+    s.apply(Command::Settle { cell: dam.camp }).map_err(|e| format!("cannot settle the camp: {e}"))?;
+    sim.0 = s;
+    planned.0 = Some(dam);
+    let generation = flow.generation + 1;
+    *flow = Flow::new(&sim.0.world);
+    flow.generation = generation;
+    begin(&sim.0, flow, clock, orbit, sel);
+    Ok(())
 }
 
 pub struct StartPlugin;

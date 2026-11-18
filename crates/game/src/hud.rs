@@ -30,18 +30,18 @@ use sim::work::Role;
 // ───────────────────────────── look ─────────────────────────────
 // Theme lives in the frame (dark, warm glass with a timber top edge); data stays neutral.
 
-const PANEL: Color = Color::srgba(0.106, 0.09, 0.075, 0.93);
-const TIMBER: Color = Color::srgb(0.59, 0.41, 0.24);
-const INK: Color = Color::srgb(0.94, 0.91, 0.86);
-const MUTED: Color = Color::srgb(0.76, 0.71, 0.64);
-const FAINT: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
-const GOOD: Color = Color::srgb(0.39, 0.79, 0.55);
-const WARN: Color = Color::srgb(0.94, 0.75, 0.29);
-const BAD: Color = Color::srgb(0.94, 0.45, 0.38);
+pub(crate) const PANEL: Color = Color::srgba(0.106, 0.09, 0.075, 0.93);
+pub(crate) const TIMBER: Color = Color::srgb(0.59, 0.41, 0.24);
+pub(crate) const INK: Color = Color::srgb(0.94, 0.91, 0.86);
+pub(crate) const MUTED: Color = Color::srgb(0.76, 0.71, 0.64);
+pub(crate) const FAINT: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
+pub(crate) const GOOD: Color = Color::srgb(0.39, 0.79, 0.55);
+pub(crate) const WARN: Color = Color::srgb(0.94, 0.75, 0.29);
+pub(crate) const BAD: Color = Color::srgb(0.94, 0.45, 0.38);
 /// Water only: never a button, never a status.
 const WATER: Color = Color::srgb(0.29, 0.64, 0.87);
 /// Fix and commit buttons only.
-const ACCENT: Color = Color::srgb(0.91, 0.52, 0.23);
+pub(crate) const ACCENT: Color = Color::srgb(0.91, 0.52, 0.23);
 const DAM_WOOD: Color = Color::srgb(0.54, 0.35, 0.2);
 const BED: Color = Color::srgb(0.42, 0.3, 0.2);
 
@@ -139,6 +139,21 @@ impl MapLens {
 /// True while a text box has the keyboard (camera, speed and build hotkeys stand down).
 #[derive(Resource, Default)]
 pub struct TextCapture(pub bool);
+
+/// True while the start, pause or settings menu covers the game: the HUD hides and its keys and
+/// world clicks stand down (`menu.rs` sets it).
+#[derive(Resource, Default)]
+pub struct MenuOpen(pub bool);
+
+/// Forgets the HUD's per-game state (tool, undo list, open panels) when a new game starts.
+pub fn reset_for_new_game(world: &mut World) {
+    world.insert_resource(HudState::default());
+    world.insert_resource(PendingWorks::default());
+    world.insert_resource(MapLens::default());
+    if let Some(mut s) = world.get_resource_mut::<Selection>() {
+        *s = Selection::None;
+    }
+}
 
 #[derive(Resource)]
 struct MinimapImage(Handle<Image>);
@@ -241,6 +256,10 @@ enum HudAction {
 
 pub struct HudPlugin;
 
+/// The HUD's per-frame systems (menus run before them).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HudSet;
+
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
@@ -254,6 +273,7 @@ impl Plugin for HudPlugin {
             .init_resource::<PendingWorks>()
             .init_resource::<MapLens>()
             .init_resource::<TextCapture>()
+            .init_resource::<MenuOpen>()
             .insert_resource(RebuildTimer(Timer::from_seconds(REBUILD_SECS, TimerMode::Repeating)))
             .add_systems(Startup, (spawn_panels, setup_minimap))
             .add_systems(
@@ -273,7 +293,8 @@ impl Plugin for HudPlugin {
                     rebuild_panels,
                     draw_world_overlay,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(HudSet),
             )
             .add_systems(Update, demo.before(pointer_over_ui));
     }
@@ -281,23 +302,23 @@ impl Plugin for HudPlugin {
 
 // ───────────────────────────── building blocks ─────────────────────────────
 
-fn font(size: f32, bold: bool) -> TextFont {
+pub(crate) fn font(size: f32, bold: bool) -> TextFont {
     TextFont { font_size: FontSize::Px(size), weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL }, ..default() }
 }
 
-fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
+pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, false), TextColor(color)));
 }
 
-fn bold(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
+pub(crate) fn bold(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, true), TextColor(color)));
 }
 
-fn row(gap: f32) -> Node {
+pub(crate) fn row(gap: f32) -> Node {
     Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(gap), ..default() }
 }
 
-fn swatch(p: &mut ChildSpawnerCommands, c: Color, w: f32, h: f32) {
+pub(crate) fn swatch(p: &mut ChildSpawnerCommands, c: Color, w: f32, h: f32) {
     p.spawn((Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() }, BackgroundColor(c)));
 }
 
@@ -417,9 +438,10 @@ fn hotkeys(
     mut hud: ResMut<HudState>,
     mut sel: ResMut<Selection>,
     mut lens: ResMut<MapLens>,
+    menu: Res<MenuOpen>,
 ) {
-    if typing.0 {
-        return; // the search box has the keyboard (`search_input` handles Esc and Enter)
+    if typing.0 || menu.0 {
+        return; // the search box or a menu has the keyboard
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods)] {
@@ -474,7 +496,11 @@ fn world_input(
     mut hud: ResMut<HudState>,
     mut sel: ResMut<Selection>,
     mut pending: ResMut<PendingWorks>,
+    menu: Res<MenuOpen>,
 ) {
+    if menu.0 {
+        return;
+    }
     let now = time.elapsed_secs();
     // Ctrl + wheel sets the dam crest (the plain wheel keeps zooming).
     if matches!(hud.tool, Tool::Dam) && keys.pressed(KeyCode::ControlLeft) && scroll.delta.y != 0.0 {
@@ -741,10 +767,11 @@ fn rebuild_panels(
     lens: Res<MapLens>,
     orbit: Res<crate::camera::OrbitCamera>,
     minimap: Option<Res<MinimapImage>>,
+    menu: Res<MenuOpen>,
     mut panels: Query<(Entity, &Panel, &mut Visibility)>,
 ) {
     let due = timer.0.tick(time.delta()).just_finished();
-    let all = due || hud.is_changed() || sel.is_changed() || lens.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
+    let all = due || hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
     // A hovered good only redraws its tooltip, so the strip under the pointer is never rebuilt
     // while it is being hovered.
     let tip_only = !all && hg.is_changed();
@@ -781,7 +808,7 @@ fn rebuild_panels(
             Panel::Toast => hud.msg.is_some(),
             Panel::Rail | Panel::Minimap => s.colony.is_founded(),
             Panel::FlowLedger => hud.ledger_open,
-        };
+        } && !menu.0;
         let want = if show { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
