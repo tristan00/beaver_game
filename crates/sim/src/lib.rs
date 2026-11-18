@@ -58,6 +58,8 @@ pub enum Command {
     /// Order a dam: a construction site the family fells, hauls and builds; the water dam (and
     /// the pond behind it) appears when the site is finished.
     OrderDam { cells: Vec<water::Cell>, height: f32 },
+    /// Found the colony at `cell` (the player's settling choice); rejected for an unusable cell.
+    Settle { cell: water::Cell },
     /// Remove the dam at (x, y); the pond drains downstream.
     BreachDam { x: usize, y: usize },
     /// Dig canals `depth` deep on `cells`.
@@ -302,6 +304,7 @@ impl SimState {
             }
             Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
             Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
+            Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)

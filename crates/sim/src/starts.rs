@@ -24,10 +24,6 @@ impl std::fmt::Display for StartError {
 }
 impl std::error::Error for StartError {}
 
-fn build_err(e: impl std::fmt::Debug) -> StartError {
-    StartError::Build(format!("{e:?}"))
-}
-
 /// Removes every disabled system's state from a start (`Features` says which): no rival
 /// neighbours or arrivals, no predators, no scouting or guard experience. The sim never fires
 /// them either way (`SimState::apply_features`); this keeps them out of the state a screen reads.
@@ -176,43 +172,70 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
     pack
 }
 
-/// The new game: two adults and two kits in the river beside a dry landing bank, no lodge, no
-/// stockpile, no building of any kind and no dam. The player places a burrow and a dam
-/// (`SimState::place_site`, `SimState::order_dam`); the adults dig and fell and haul for them,
-/// the kits never work.
-///
-/// Returns the state and the dam the game is designed around (cells across the river and its
-/// height), which leaves the landing dry. Springs across the future pond are added so the river can
-/// keep that pond full against evaporation and seepage; they flow from day 0.
-fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
-    let mut sim = SimState::new(seed);
-    let plan = river_plan(&sim).ok_or(StartError::NoSite)?;
-    let camp = plan.camp;
-    sim.water.config.seepage = CLAY_SEEPAGE;
-    feed_river(&mut sim, &plan.dam, plan.height)?;
+/// A river cell within this many cells of the settling cell is where the family swims in from;
+/// with none that close they start on the cell itself.
+const SWIM_REACH: usize = 12;
+
+/// Founds the colony at `cell`: two adults and two kits (swimming in from the river if one is
+/// near, else standing on the cell) with a lodge, and opens the cell's valley and its
+/// neighbours. Errors (state unchanged) if the colony is already founded, `cell` is off the map,
+/// in a locked valley or in water.
+pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
+    let invalid = |m: String| crate::SimError::InvalidCommand(m);
+    if sim.colony.is_founded() {
+        return Err(invalid("the colony is already founded".into()));
+    }
+    let valley = sim.world.valley_of(cell).ok_or_else(|| invalid(format!("cell {cell:?} is off the map")))?;
+    if !sim.world.is_open(valley) {
+        return Err(invalid(format!("cell {cell:?} is in a valley that is not open yet")));
+    }
+    if sim.water.depth.get(cell.0, cell.1).is_some_and(|d| *d > crate::buildings::WET_DEPTH)
+        || sim.world.river.get(cell.0, cell.1).copied().unwrap_or(false)
+        || sim.world.lake.get(cell.0, cell.1).copied().unwrap_or(false)
+    {
+        return Err(invalid(format!("cell {cell:?} is water: beavers cannot settle there")));
+    }
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
-    sim.colony.found((camp.0 as f32 + 0.5, camp.1 as f32 + 0.5), &land).map_err(build_err)?;
+    sim.colony.found((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
     for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
         b.age_days = KIT_AGE_DAYS;
         b.stage = crate::colony::Stage::Kit;
     }
-    // They arrive swimming: each starts in its own river cell near the landing.
-    let swim = swim_cells(&sim, camp, sim.colony.beavers.len());
-    if swim.len() < sim.colony.beavers.len() {
-        return Err(StartError::NoSite);
+    let swim = swim_cells(sim, cell, sim.colony.beavers.len());
+    let near = swim.first().is_some_and(|&c| dist2(c, cell) <= SWIM_REACH * SWIM_REACH);
+    if near && swim.len() == sim.colony.beavers.len() {
+        for (b, c) in sim.colony.beavers.iter_mut().zip(swim) {
+            b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+        }
     }
-    for (b, c) in sim.colony.beavers.iter_mut().zip(swim) {
-        b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
-    }
-    // Founding opens the landing's valley and its neighbours, as settling does.
-    if let Some(v) = sim.world.valley_of(camp) {
+    // Founding opens the landing's valley and its neighbours.
+    sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
+    strip_disabled(sim);
+    crate::agents::place_beavers(sim);
+    Ok(())
+}
+
+/// The new game: the world with its river, no colony yet, no building of any kind and no dam.
+/// The player picks the settling cell (`Command::Settle`, which founds two adults and two kits
+/// swimming in beside it), then places a burrow and a dam (`SimState::place_site`,
+/// `SimState::order_dam`). Beavers act only on orders: `auto_organise` is off, so the adults dig,
+/// fell and haul only once the player assigns them (`Command::Assign`, `Command::FillSlot`); the
+/// kits never work.
+///
+/// Returns the state and the dam and camp the game is designed around (the camp leaves its
+/// landing dry). Springs across the future pond are added so the river can keep that pond full
+/// against evaporation and seepage; they flow from day 0.
+fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
+    let mut sim = SimState::new(seed);
+    let plan = river_plan(&sim).ok_or(StartError::NoSite)?;
+    sim.water.config.seepage = CLAY_SEEPAGE;
+    feed_river(&mut sim, &plan.dam, plan.height)?;
+    // The designed camp must be settleable.
+    if let Some(v) = sim.world.valley_of(plan.camp) {
         sim.world.valleys[v.0 as usize].open = true;
     }
-    sim.world.unlock(camp).map_err(build_err)?;
-    sim.work.auto_organise = true;
-    strip_disabled(&mut sim);
-    crate::agents::place_beavers(&mut sim);
-    Ok((sim, DamSite { cells: plan.dam, height: plan.height }))
+    sim.work.auto_organise = false;
+    Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 
 /// Tops up the river above the planned dam so the pond can fill and stay full: steady springs
@@ -263,6 +286,8 @@ pub(crate) fn feed_river(sim: &mut SimState, dam: &[Cell], height: f32) -> Resul
 pub struct DamSite {
     pub cells: Vec<Cell>,
     pub height: f32,
+    /// The settling cell the start is designed around (dry, beside the river, trees about).
+    pub camp: Cell,
 }
 
 /// How close (depth units) the water must come to the dam crest for the pond to count as full.
@@ -331,6 +356,13 @@ mod tests {
         format!("{} {} {:?} {:?} {:?} {:?} {:?}", s.seed, s.time_days, s.height.as_slice().iter().map(|h| h.to_bits()).fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)), beavers, trees, agents, s.buildings.buildings)
     }
 
+    /// The new game with its colony founded at the designed camp (as the player's settle would).
+    fn settled(seed: u64) -> (SimState, DamSite) {
+        let (mut s, dam) = new_game_with_dam(seed).unwrap();
+        s.apply(Command::Settle { cell: dam.camp }).unwrap();
+        (s, dam)
+    }
+
     #[test]
     fn new_game_is_identical_per_seed_differs_between_seeds_and_runs_no_step() {
         let (a, b, c) = (new_game(7).unwrap(), new_game(7).unwrap(), new_game(8).unwrap());
@@ -344,7 +376,7 @@ mod tests {
     #[test]
     fn new_game_is_two_adults_and_two_kits_in_the_river_and_no_buildings() {
         use crate::colony::Stage;
-        let s = new_game(3).unwrap();
+        let (s, _) = settled(3);
         assert_eq!((s.colony.count_stage(Stage::Adult), s.colony.count_stage(Stage::Kit), s.colony.population()), (2, 2, 4));
         assert!(s.buildings.buildings.is_empty(), "no stockpile, lodge or burrow: {:?}", s.buildings.buildings);
         assert!(s.work.places.is_empty());
@@ -378,7 +410,8 @@ mod tests {
     #[test]
     fn only_adults_dig_a_placed_burrow_and_nothing_is_built_before_the_command() {
         use crate::{buildings::{BuildingKind, Status}, colony::Stage};
-        let mut s = new_game(1).unwrap();
+        let (mut s, _) = settled(1);
+        s.work.auto_organise = true; // the player opts the family into organising itself
         for _ in 0..200 {
             s.step(0.05).unwrap();
         }
@@ -404,7 +437,7 @@ mod tests {
     #[test]
     fn kits_cannot_be_ordered_to_work() {
         use crate::colony::Stage;
-        let mut s = new_game(1).unwrap();
+        let (mut s, _) = settled(1);
         let kit = s.colony.beavers.iter().find(|b| b.stage == Stage::Kit).unwrap().id;
         let cell = s.agents.get(kit).unwrap().cell;
         let area = crate::work::Area { min: cell, max: cell };
@@ -417,8 +450,9 @@ mod tests {
     /// ever commanded. Returns the day the dam stood, the day the pond first held its level
     /// (after the dam stood), and the end state.
     fn run(seed: u64, order: bool, days: f32) -> (SimState, Option<f64>, Option<f64>) {
-        let (mut s, dam) = new_game_with_dam(seed).unwrap();
+        let (mut s, dam) = settled(seed);
         let watch = dam.watch(&s).unwrap();
+        s.work.auto_organise = order;
         if order {
             s.apply(Command::OrderDam { cells: dam.cells.clone(), height: dam.height }).unwrap();
         }
@@ -439,7 +473,8 @@ mod tests {
     fn adults_fell_and_haul_wood_to_a_placed_dam_which_completes_only_from_delivered_wood_and_the_pond_rises() {
         use crate::buildings::Good;
         use crate::colony::Stage;
-        let (mut s, dam) = new_game_with_dam(1).unwrap();
+        let (mut s, dam) = settled(1);
+        s.work.auto_organise = true;
         let watch = dam.watch(&s).unwrap();
         let trees_before = s.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).count();
         let id = s.order_dam(&dam.cells, dam.height).unwrap();
@@ -476,7 +511,7 @@ mod tests {
 
     #[test]
     fn dam_order_is_rejected_for_a_bad_line_and_the_family_idles_without_orders() {
-        let (mut s, _) = new_game_with_dam(1).unwrap();
+        let (mut s, _) = settled(1);
         assert!(s.apply(Command::OrderDam { cells: vec![], height: 1.0 }).is_err());
         assert!(s.apply(Command::OrderDam { cells: vec![(5, 5), (5, 5)], height: 1.0 }).is_err());
         assert!(s.apply(Command::OrderDam { cells: vec![(5, 5), (5, 6)], height: -1.0 }).is_err());
@@ -485,5 +520,69 @@ mod tests {
             s.step(0.05).unwrap();
         }
         assert!(s.agents.by_id.values().all(|a| a.load.is_none() && matches!(a.task, agents::Task::Idle)), "nothing to do, nothing done");
+    }
+
+    #[test]
+    fn no_colony_is_founded_until_settle_which_founds_at_the_chosen_cell_and_rejects_an_unusable_one() {
+        let (mut s, dam) = new_game_with_dam(1).unwrap();
+        assert!(!s.colony.is_founded() && s.colony.beavers.is_empty() && s.agents.by_id.is_empty());
+        for _ in 0..100 {
+            s.step(0.05).unwrap();
+        }
+        assert!(!s.colony.is_founded(), "stepping never founds a colony");
+        // Unusable: off the map, in the river, and in a locked valley.
+        let size = s.world.size;
+        assert!(s.apply(Command::Settle { cell: (size, 0) }).is_err());
+        let river = (0..size * size).map(|i| (i % size, i / size)).find(|&(x, y)| s.world.river.get(x, y) == Some(&true)).unwrap();
+        assert!(s.apply(Command::Settle { cell: river }).is_err());
+        if let Some(c) = (0..size * size).map(|i| (i % size, i / size)).find(|&c| s.world.valley_of(c).is_some_and(|v| !s.world.is_open(v))) {
+            assert!(s.apply(Command::Settle { cell: c }).is_err(), "a locked valley cannot be settled");
+        }
+        assert!(!s.colony.is_founded() && s.agents.by_id.is_empty(), "a rejected settle changes nothing");
+        // A usable cell founds the colony there.
+        s.apply(Command::Settle { cell: dam.camp }).unwrap();
+        assert!(s.colony.is_founded());
+        assert_eq!(s.colony.beavers.len(), 4);
+        assert_eq!(s.colony.lodges[0].pos, (dam.camp.0 as f32 + 0.5, dam.camp.1 as f32 + 0.5));
+        assert!(s.apply(Command::Settle { cell: dam.camp }).is_err(), "only one colony");
+    }
+
+    #[test]
+    fn a_long_run_with_no_orders_gives_no_duties_and_builds_nothing() {
+        let (mut s, _) = settled(2);
+        for _ in 0..1200 {
+            s.step(0.05).unwrap();
+        }
+        assert!(!s.work.auto_organise && s.work.managed.is_empty());
+        assert!(s.buildings.buildings.is_empty() && s.work.places.is_empty(), "nothing built");
+        assert!(s.agents.by_id.values().all(|a| a.assignment.is_none() && a.load.is_none()), "no gather duty");
+        assert!(s.work.places.iter().all(|p| p.site.is_none()), "no build duty");
+    }
+
+    #[test]
+    fn an_assign_gather_order_moves_only_idle_beavers_and_a_job_keeps_being_worked_unordered() {
+        use crate::{buildings::BuildingKind, colony::Stage, resources::ResourceKind, work::Area};
+        let (mut s, _) = settled(1);
+        let adults: Vec<_> = s.colony.beavers.iter().filter(|b| b.stage == Stage::Adult).map(|b| b.id).collect();
+        let kit = s.colony.beavers.iter().find(|b| b.stage == Stage::Kit).unwrap().id;
+        let (worker, idle) = (adults[0], adults[1]);
+        let site = place_near(&mut s, BuildingKind::Burrow);
+        s.apply(Command::FillSlot { building: site, slot: 0, who: worker }).unwrap();
+        let start = |s: &SimState, id| s.agents.get(id).unwrap().cell;
+        let before = (start(&s, worker), start(&s, idle), start(&s, kit));
+        let c = before.1;
+        let area = Area { min: (c.0.saturating_sub(25), c.1.saturating_sub(25)), max: (c.0 + 25, c.1 + 25) };
+        s.apply(Command::Assign { who: vec![idle], to: Some(agents::Assignment::Area(ResourceKind::Tree, area)) }).unwrap();
+        let labour = |s: &SimState| s.work.place(site).unwrap().site.as_ref().unwrap().labour_done;
+        let (mut gathered, mut worked) = (false, false);
+        for _ in 0..400 {
+            s.step(0.05).unwrap();
+            gathered |= s.agents.get(idle).unwrap().task != agents::Task::Idle;
+            worked |= labour(&s) > 0.0;
+        }
+        assert!(gathered, "the idle beaver took the gather order");
+        assert!(worked && s.agents.get(worker).unwrap().assignment.is_none(), "the slot holder kept working its job, never ordered");
+        assert_eq!(s.agents.get(kit).unwrap().task, agents::Task::Idle);
+        assert_eq!(start(&s, kit), before.2, "the kit was not moved");
     }
 }
