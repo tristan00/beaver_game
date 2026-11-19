@@ -36,6 +36,16 @@ follows from the terrain, the dams and canals, and the inflows.
 
 ## Cost
 
+The calendar targets one game day per **30 real seconds** at normal speed (ten times the
+previous pace). Keys 2 and 3 request 6x and 24x: **5 seconds** and **1.25 seconds** per day.
+The speed-button tooltips show these targets. Large floods can limit the achieved rate;
+the performance log reports actual real seconds per day as well as the speed multiplier.
+This changes the shared game clock for both colony play and sandbox, without changing
+hydraulic time steps, water volumes, or per-game-day production and climate rates.
+
+With the new pace, the same Telemark clear-spring sandbox measured **29.99–30.01 real
+seconds per day at 75–78 fps** on the machine below. Log: `tmp/river-polish/pace-normal.err`.
+
 `SimState::step_timings` and `Water::timings` record where time goes. Set `BC_PERF=5` to log
 every 5 seconds the frame rate, the game speed reached, the sim's milliseconds per second by
 system and the water solver's breakdown; `BC_SPEED=1|2|3` and `BC_PERF_EXIT=S` make it a
@@ -44,8 +54,10 @@ use twenty/thirty-second slices. Pool detection, rainfall and catchment forcing 
 batched every five simulation minutes. Terrain height range is computed once per update,
 instead of scanning the entire map for each rebuilt chunk.
 
-Measured November 19, 2026 on Core Ultra 9 285K / RTX 5090, Windows Vulkan, 1440x900,
-forest visible, Telemark camera `170,424,65,0.8,1.0` (1x = 288 simulation seconds/second):
+Earlier hydraulic measurements, before the calendar acceleration, on Core Ultra 9 285K /
+RTX 5090, Windows Vulkan, 1440x900, forest visible, Telemark camera
+`170,424,65,0.8,1.0`. In this historical table 1x means the former five-minute day
+(288 simulation seconds/second), not the current 30-second day:
 
 | scenario | simulation speed reached | frame rate |
 |---|---|---|
@@ -54,7 +66,7 @@ forest visible, Telemark camera `170,424,65,0.8,1.0` (1x = 288 simulation second
 | Clear spring, 24x requested | 21–22x | 46–51 fps |
 | Inherited engine, 24x requested, same map/camera | 18.5–19.7x | 44–47 fps |
 
-These are short local runs, not cross-hardware guarantees. At normal speed the clear-stream
+These are short local runs, not cross-hardware guarantees. At the former normal speed the clear-stream
 water update costs about 43–44 ms of wall time per second of play. Finite lakes and heavy
 overland runoff require more work than a narrow stream. Detailed logs and scenario results
 are in the workspace's `tmp/river-polish` directory.

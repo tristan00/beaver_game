@@ -245,7 +245,9 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             r.spacer();
             r.icon_button(Icon::Pause, 14.0, HudAction::Pause, FAINT, clock.paused).tip(Tip::name("Pause").key("Space"));
             for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
-                r.icon_button(icon, 14.0, HudAction::Speed(sp), FAINT, !clock.paused && clock.speed == sp).tip(Tip::name(format!("Speed x{key}")).key(key));
+                let day_seconds = 1.0 / (crate::sim_driver::BASE_DAYS_PER_SECOND * sp.multiplier());
+                r.icon_button(icon, 14.0, HudAction::Speed(sp), FAINT, !clock.paused && clock.speed == sp)
+                    .tip(Tip::name(format!("{}x speed", sp.multiplier() as u32)).with_value(format!("Target: {day_seconds:.2} seconds / day")).key(key));
             }
         });
         let phase = calendar::year_phase(t);
