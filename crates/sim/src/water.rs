@@ -308,6 +308,7 @@ pub struct Water {
     since_pools: f64,
     since_environment: f64,
     work_dirty: bool,
+    scoped_growth: bool,
     work_cells: u64,
     bands: Vec<usize>,
     band_out: Vec<BandOut>,
@@ -403,6 +404,7 @@ impl Water {
             since_pools: 0.0,
             since_environment: 0.0,
             work_dirty: true,
+            scoped_growth: std::env::var_os("WATER_FULL_GROWTH_SCAN").is_none(),
             work_cells: 0,
             bands: Vec::new(),
             band_out: Vec::new(),
@@ -762,6 +764,16 @@ impl Water {
             if self.is_seed(y * n + x) {
                 push_run(&mut runs, x as u32, x as u32 + 1);
             }
+        }
+        runs
+    }
+
+    fn row_wet_runs_active(&self,y:usize)->Vec<(u32,u32)> {
+        let mut runs=Vec::new();
+        // Between forcing/geometry updates only computed cells can change.
+        // Sources, rain, excavation and pool changes use the full rebuild.
+        for &(a,b) in &self.rows[y] {
+            for x in a..b {if self.is_seed(y*self.n+x as usize) {push_run(&mut runs,x,x+1);}}
         }
         runs
     }
@@ -1166,9 +1178,12 @@ impl Water {
         let outs_ptr = SendPtr(self.band_out.as_mut_ptr());
         let cont = |t: usize, y0: usize, y1: usize, v: &View| unsafe {
             v.continuity(y0, y1, k, dt, &mut *outs_ptr.get().add(t));
-            v.step_pools(t, tasks, k, dt);
         };
         run(&cont);
+        // Pool rims can lie in any row band. Updating them inside a worker's
+        // continuity task races another band's reads/writes of the same depth.
+        // All cell balances must finish before any pool publishes its new level.
+        unsafe { view.step_pools(0, 1, k, dt); }
         let t3 = std::time::Instant::now();
         self.timings.continuity_s += (t3 - t2).as_secs_f64();
         let (mut hmax, mut lake_change, mut edge) = (0u32, 0.0f64, 0.0f64);
@@ -1180,7 +1195,7 @@ impl Water {
             grew.extend_from_slice(&o.grew);
         }
 
-        // (Pools were stepped inside the continuity phase, a share per task.)
+        // Pools are published only after every continuity band has finished.
         let pool_cells: u64 = self.pools.iter().map(|p| p.members.len() as u64).sum();
         let t4 = std::time::Instant::now();
         self.timings.pools_s += (t4 - t3).as_secs_f64();
@@ -1193,11 +1208,15 @@ impl Water {
             self.rebuild_activity_full();
         } else if !grew.is_empty() {
             for &y in &grew {
-                self.wet_rows[y] = self.row_wet_runs(y);
+                self.wet_rows[y] = if self.scoped_growth {self.row_wet_runs_active(y)} else {self.row_wet_runs(y)};
             }
-            for &y in &grew {
-                self.rebuild_rows(y.saturating_sub(1), (y + 2).min(n));
+            let mut start=grew[0].saturating_sub(1);
+            let mut end=(grew[0]+2).min(n);
+            for &y in &grew[1..] {
+                let a=y.saturating_sub(1);let b=(y+2).min(n);
+                if a<=end {end=end.max(b);} else {self.rebuild_rows(start,end);start=a;end=b;}
             }
+            self.rebuild_rows(start,end);
         }
         self.h_max = f32::from_bits(hmax);
         self.timings.activity_s += t4.elapsed().as_secs_f64();
@@ -1849,5 +1868,35 @@ mod tests {
         assert!(w.h.iter().all(|h|h.is_finite() && *h>=0.0));
         let expected=w.budget().added()-w.budget().lost();
         assert!((w.total_volume()-expected).abs()<0.003, "stored {} expected {expected}",w.total_volume());
+    }
+
+    #[test]
+    fn pooled_rims_are_not_overwritten_by_parallel_cell_balances() {
+        let (mut w, _) = tank(96, |_,_|0.0, 0.03, false);
+        for y in 0..96 {for x in 0..96 {
+            w.h[y*96+x]=if (42..54).contains(&x) && (42..54).contains(&y) {0.06} else {0.05+0.02*((x+y)%2) as f32};
+        }}
+        w.src[48*96+48]=0.01;w.source_total=0.01;
+        w.rebuild_masks();w.find_pools(&[]);w.rebuild_activity_full();
+        assert!(!w.pools.is_empty());
+        assert!(w.rows.iter().flatten().map(|&(a,b)|(b-a) as u64).sum::<u64>()>PARALLEL_CELLS);
+        w.h_max=0.07;
+        for _ in 0..20 {
+            w.substep(0.25);
+            for p in &w.pools {for &i in &p.rim {
+                assert_eq!(w.h[i as usize],(p.level-w.z[i as usize]).max(0.0),"pool rim {i} was overwritten");
+            }}
+        }
+    }
+
+    #[test]
+    fn growth_scans_only_need_the_current_active_cells() {
+        let (mut w, _) = tank(64, |x,y| if (28..36).contains(&x) {0.01*(63-y) as f32} else {4.0}, 0.03, false);
+        w.src[10*64+31]=0.01;w.source_total=0.01;
+        w.rebuild_masks();w.h_max=0.01;
+        for _ in 0..100 {
+            w.substep(0.5);
+            for y in 0..64 {assert_eq!(w.row_wet_runs_active(y),w.row_wet_runs(y));}
+        }
     }
 }
