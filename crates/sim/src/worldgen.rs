@@ -20,6 +20,9 @@ pub const MAX_STEP: f32 = 0.6;
 const FLOW_EPS: f32 = 1e-3;
 const MIN_SIZE: usize = 64;
 const MOISTURE_REACH_M: f32 = 15.0;
+/// Banks of streams and lakes are open: no trees start within this distance of the water (crowns
+/// over a stream would hide it, and beaver country is cleared along its banks).
+const RIPARIAN_CLEAR_M: f32 = 6.0;
 const TREES_PER_M2: [(u8, f32); 5] = [(10, 0.06), (20, 0.025), (90, 0.012), (30, 0.002), (100, 0.002)];
 pub const INFLOW_WALL_M: f32 = 12.0;
 
@@ -506,7 +509,7 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         let (u, v) = ((i % n) as f32 / n as f32, (i / n) as f32 / n as f32);
         let near = if dist[i] == u32::MAX { 0.0 } else { (-(dist[i] as f32) * cell_m / MOISTURE_REACH_M).exp() };
         moisture[i] = if lake[i] || lake_level[i].is_finite() { 1.0 } else { (0.30 + 0.55 * near + 0.5 * (wet.sample(u, v) - 0.5) - 0.25 * surface[i] / amplitude - 0.25 * slope[i].min(1.0)).clamp(0.0, 1.0) };
-        if lake[i] || river[i] || lake_level[i].is_finite() {
+        if lake[i] || river[i] || lake_level[i].is_finite() || (dist[i] as f32) * cell_m < RIPARIAN_CLEAR_M {
             continue;
         }
         let class = map.cover.map_or(10, |c| c[i]);
