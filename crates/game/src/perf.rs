@@ -74,6 +74,7 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
         let ms = |a: f64, b: f64| (a - b) * 1000.0 / secs;
         let speed = (s.time_days - w.days0) / secs / BASE_DAYS_PER_SECOND as f64;
         let day_seconds = secs / (s.time_days - w.days0).max(f64::MIN_POSITIVE);
+        let hydraulic_day_seconds = (s.water.timings.physics_s - w.water0.physics_s) / (s.time_days - w.days0).max(f64::MIN_POSITIVE);
         let wanted = if clock.paused { 0.0 } else { clock.speed.multiplier() as f64 };
         let wm = (WATER_MESH_NS.load(Ordering::Relaxed) - w.water_mesh0) as f64 / 1e6 / secs;
         let tm = (TERRAIN_MESH_NS.load(Ordering::Relaxed) - w.terrain_mesh0) as f64 / 1e6 / secs;
@@ -94,7 +95,7 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
             pool_samples: wt.pool_samples - w.water0.pool_samples,
         };
         info!(
-            "perf: {:.0} fps (frame avg {:.1} ms, max {:.1} ms) | speed x{:.1} of x{:.0} wanted | {day_seconds:.2} real seconds/day | per second: sim {:.1} ms = water {:.1} + ecology {:.1} + colony {:.1} + buildings {:.1} + agents {:.1} + shipping {:.1} + fog {:.1} + other {:.1}; meshes water {:.1} terrain {:.1}",
+            "perf: {:.0} fps (frame avg {:.1} ms, max {:.1} ms) | speed x{:.1} of x{:.0} wanted | {day_seconds:.2} real seconds/day | {hydraulic_day_seconds:.0} hydraulic seconds/day | per second: sim {:.1} ms = water {:.1} + ecology {:.1} + colony {:.1} + buildings {:.1} + agents {:.1} + shipping {:.1} + fog {:.1} + other {:.1}; meshes water {:.1} terrain {:.1}",
             w.frames as f64 / secs,
             secs * 1000.0 / w.frames as f64,
             w.frame_max * 1000.0,

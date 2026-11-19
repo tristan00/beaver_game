@@ -9,6 +9,10 @@ pub use crate::tuning::water::*;
 pub type Cell = (usize, usize);
 
 const DAY_S: f64 = 86_400.0;
+/// Conservative starting rate for gameplay's adaptive hydraulic clock. The live
+/// driver can recover the full reference rate when CPU capacity allows it.
+pub const GAME_HYDRAULIC_DAY_S: f64 = 3_600.0;
+pub const MAX_GAME_HYDRAULIC_DAY_S: f64 = DAY_S;
 mod gang;
 mod kernels;
 mod view;
@@ -256,6 +260,7 @@ pub struct Water {
     pub lost_volume: f64,
     pub cell_m: f32,
     pub physics_seconds: f64,
+    hydraulic_day_s: f64,
     pub steps_taken: u64,
     pub timings: WaterTimings,
     pub pools_enabled: bool,
@@ -283,6 +288,7 @@ pub struct Water {
     pools: Vec<Pool>,
     source_key: Option<u64>,
     source_total: f64,
+    source_cells: Vec<usize>,
     rows: Vec<Vec<(u32, u32)>>,
     yrows: Vec<Vec<(u32, u32)>>,
     wet_rows: Vec<Vec<(u32, u32)>>,
@@ -297,6 +303,7 @@ pub struct Water {
     ice_any: bool,
     since_shrink: u32,
     since_pools: f64,
+    since_environment: f64,
 }
 
 /// Below this many active cells a substep runs on one thread (the fork-join costs more).
@@ -343,6 +350,7 @@ impl Water {
             lost_volume: 0.0,
             cell_m: 1.0,
             physics_seconds: 0.0,
+            hydraulic_day_s: DAY_S,
             steps_taken: 0,
             timings: WaterTimings::default(),
             pools_enabled: std::env::var_os("WATER_NOPOOLS").is_none(),
@@ -368,6 +376,7 @@ impl Water {
             pools: Vec::new(),
             source_key: None,
             source_total: 0.0,
+            source_cells: Vec::new(),
             rows: vec![Vec::new(); n],
             yrows: vec![Vec::new(); n + 1],
             wet_rows: vec![Vec::new(); n],
@@ -381,6 +390,7 @@ impl Water {
             ice_any: false,
             since_shrink: 0,
             since_pools: 0.0,
+            since_environment: 0.0,
         }
     }
 
@@ -687,19 +697,26 @@ impl Water {
         if self.source_key == Some(key) {
             return;
         }
-        self.src.fill(0.0);
+        for &i in &self.source_cells { self.src[i] = 0.0; }
+        let mut source_cells = Vec::with_capacity(self.sources.len());
         let n = self.n;
         for s in &self.sources {
             let rate = s.rate * (1.0 + s.seasonality * (inflow - 1.0)).max(0.0);
             // Source rates are metres of depth per day on their cell; src is metres per second.
             self.src[s.y * n + s.x] += rate / DAY_S as f32;
+            if rate > 0.0 { source_cells.push(s.y * n + s.x); }
         }
         for p in &mut self.pools {
             p.source = p.members.iter().map(|&i| self.src[i as usize]).sum();
         }
         self.source_key = Some(key);
-        self.source_total = self.src.iter().map(|&r| r as f64).sum();
-        self.rebuild_activity_full();
+        source_cells.sort_unstable();
+        source_cells.dedup();
+        self.source_total = source_cells.iter().map(|&i| self.src[i] as f64).sum();
+        if source_cells != self.source_cells {
+            self.source_cells = source_cells;
+            self.rebuild_activity_full();
+        }
     }
 
     fn is_seed(&self, i: usize) -> bool {
@@ -761,6 +778,16 @@ impl Water {
     }
 
     pub fn step(&mut self, height: &HeightGrid, dt_days: f32) {
+        self.step_with_clock(height, dt_days, DAY_S);
+    }
+
+    pub fn step_game(&mut self, height: &HeightGrid, dt_days: f32) {
+        self.step_with_clock(height, dt_days, GAME_HYDRAULIC_DAY_S);
+    }
+
+    pub fn hydraulic_seconds_per_day(&self) -> f64 { self.hydraulic_day_s }
+
+    pub(crate) fn step_with_clock(&mut self, height: &HeightGrid, dt_days: f32, hydraulic_day_s: f64) {
         let t0 = std::time::Instant::now();
         self.load_bed(height);
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
@@ -768,7 +795,8 @@ impl Water {
             self.publish();
             return;
         }
-        self.run_for(dt_days as f64 * DAY_S, true);
+        self.hydraulic_day_s = hydraulic_day_s;
+        self.run_for_with_clock(dt_days as f64 * hydraulic_day_s, true, DAY_S / hydraulic_day_s);
         let t0 = std::time::Instant::now();
         self.update_dams(height, dt_days);
         self.update_ice(dt_days);
@@ -779,9 +807,14 @@ impl Water {
     /// Runs the physics for `seconds`, finding pools again (and applying rain and losses) every
     /// `POOL_EVERY_S`.
     fn run_for(&mut self, seconds: f64, losses: bool) {
+        self.run_for_with_clock(seconds, losses, 1.0);
+    }
+
+    fn run_for_with_clock(&mut self, seconds: f64, losses: bool, calendar_scale: f64) {
         let mut t = 0.0;
-        while t < seconds - 1e-6 {
-            let chunk = (POOL_EVERY_S - self.since_pools).min(seconds - t).max(1e-3);
+        while t < seconds - 1e-9 {
+            let environment_limit = if losses { (POOL_EVERY_S - self.since_environment) / calendar_scale } else { f64::INFINITY };
+            let chunk = (POOL_EVERY_S - self.since_pools).min(environment_limit).min(seconds - t).max(1e-9);
             let upkeep = std::time::Instant::now();
             self.refresh_sources();
             self.timings.upkeep_s += upkeep.elapsed().as_secs_f64();
@@ -789,10 +822,24 @@ impl Water {
             while done < chunk - 1e-6 {
                 done += self.substep((chunk - done) as f32) as f64;
             }
-            t += done;
-            self.since_pools += done;
+            // Substeps use f32. Do not dispatch the whole solver for a residual
+            // below a microsecond, but keep the calendar on its exact boundary.
+            // Hydraulic counters and water books retain the actual stepped time.
+            t += chunk;
+            self.since_pools += chunk;
             if losses {
-                self.time_days += done / DAY_S;
+                self.since_environment += chunk * calendar_scale;
+                self.time_days += chunk * calendar_scale / DAY_S;
+            }
+            if losses && self.since_environment >= POOL_EVERY_S - 1e-3 {
+                let t0 = std::time::Instant::now();
+                let grew = self.apply_rain_and_losses((self.since_environment / DAY_S) as f32);
+                self.since_environment = 0.0;
+                if grew {
+                    self.rebuild_activity_full();
+                    self.full_publish = true;
+                }
+                self.timings.upkeep_s += t0.elapsed().as_secs_f64();
             }
             // Public durations are f32 days; summing ten-second frame slices can
             // land a few microseconds below a five-minute boundary.
@@ -800,9 +847,6 @@ impl Water {
                 let t0 = std::time::Instant::now();
                 let old_members: Vec<u32> = self.pools.iter().flat_map(|p| p.members.iter().copied()).collect();
                 self.dissolve_pools();
-                if losses {
-                    self.apply_rain_and_losses((self.since_pools / DAY_S) as f32);
-                }
                 if self.pools_enabled {
                     self.find_pools(&old_members);
                 }
@@ -820,19 +864,25 @@ impl Water {
     }
 
     /// Rain on open water, evaporation and seepage from wet ground (millimetres a day).
-    fn apply_rain_and_losses(&mut self, dt_days: f32) {
+    fn apply_rain_and_losses(&mut self, dt_days: f32) -> bool {
+        // Environment updates need current depths, including pool interiors that
+        // the hydraulic solver normally only publishes to their boundary cells.
+        for p in &self.pools {
+            for &i in &p.members { self.h[i as usize] = (p.level - self.z[i as usize]).max(0.0); }
+        }
         self.update_riverbed(dt_days);
         let forcing = self.forcing();
         let cfg = &self.config;
         let (r, e, s) = (forcing.rain * dt_days, (cfg.evaporation * forcing.evaporation) * dt_days, cfg.seepage * dt_days);
         if (r == 0.0 && e == 0.0 && s == 0.0) || dt_days <= 0.0 {
-            return;
+            return false;
         }
         let lake = self.lake_level.as_slice();
         let (mut rain, mut evap, mut seep) = (0.0f64, 0.0f64, 0.0f64);
+        let mut grew = false;
         for i in 0..self.h.len() {
             let hh = self.h[i];
-            if lake[i].is_finite() {
+            if lake[i].is_finite() || (hh == 0.0 && r == 0.0) {
                 continue;
             }
             // Infiltration absorbs light rain on dry ground. Sustained precipitation
@@ -842,15 +892,25 @@ impl Water {
             let infiltration = if self.riverbed.as_slice()[i] < 0.5 && !self.canal.as_slice()[i] { s * 4.0 } else { s };
             let sp = infiltration.min(hh + rr - ev);
             self.h[i] = hh + rr - ev - sp;
+            grew |= hh <= WET_SEED && self.h[i] > WET_SEED;
+            if self.member[i] > 0.0 {
+                self.pools[self.member[i] as usize - 1].volume += rr as f64 - ev as f64 - sp as f64;
+            }
             rain += rr as f64;
             evap += ev as f64;
             seep += sp as f64;
+        }
+        for p in &mut self.pools {
+            p.volume = p.volume.max(0.0);
+            p.level = p.level_for(p.volume);
+            for &i in &p.members { self.h[i as usize] = (p.level - self.z[i as usize]).max(0.0); }
         }
         self.books.rain += rain;
         self.books.evaporation += evap;
         self.books.seepage += seep;
         self.added_volume += rain;
         self.lost_volume += evap + seep;
+        grew
     }
 
     fn update_riverbed(&mut self, dt: f32) {
@@ -1025,7 +1085,8 @@ impl Water {
         let n = self.n;
         let dx = self.cell_m;
         let c = (G * self.h_max.max(0.01)).sqrt();
-        let dt = (CFL * dx / c).min(DT_MAX_S).min(limit.max(1.0e-4));
+        debug_assert!(limit.is_finite() && limit > 0.0);
+        let dt = (CFL * dx / c).min(DT_MAX_S).min(limit);
         let p = kernels::Params { gdt: G * dt, fric: G * dt * self.config.manning * self.config.manning, inv_dx: 1.0 / dx };
         let k = dt / dx;
 
@@ -1642,5 +1703,51 @@ mod tests {
         for _ in 0..30 { sliced.step(&ground, 10.0 / DAY_S as f32); }
         assert!((whole.total_volume() - sliced.total_volume()).abs() < 1e-5, "whole {} sliced {}", whole.total_volume(), sliced.total_volume());
         assert!((whole.budget().rain - sliced.budget().rain).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gameplay_clock_keeps_calendar_weather_and_hydraulic_mass_separate() {
+        let (mut w, ground) = tank(8, |_, _| 0.0, 0.04, false);
+        w.weather = Weather::Storm;
+        w.sources.push(Source { x: 4, y: 4, rate: 24.0, seasonality: 0.0 });
+        let before = w.total_volume();
+        w.step_game(&ground, 1.0);
+        assert!((w.time_days - 1.0).abs() < 1e-6);
+        assert!((w.physics_seconds - GAME_HYDRAULIC_DAY_S).abs() < 0.001);
+        assert!((w.budget().sources - 1.0).abs() < 1e-5);
+        assert!(w.budget().rain > 1.0, "a full calendar day of rain must be integrated");
+        let expected = before + (w.budget().added() - w.budget().lost()) * w.area();
+        assert!((w.total_volume() - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn gameplay_weather_does_not_depend_on_render_frame_slices() {
+        let (mut whole, ground) = tank(8, |_, _| 0.0, 0.04, false);
+        whole.weather = Weather::Storm;
+        whole.time_days = 45.0;
+        let mut sliced = whole.clone();
+        whole.step_game(&ground, 300.0 / DAY_S as f32);
+        for _ in 0..30 { sliced.step_game(&ground, 10.0 / DAY_S as f32); }
+        assert!((whole.total_volume() - sliced.total_volume()).abs() < 1e-5);
+        assert!((whole.budget().rain - sliced.budget().rain).abs() < 1e-5);
+        assert!((whole.time_days - sliced.time_days).abs() < 1e-7, "whole {} sliced {}", whole.time_days, sliced.time_days);
+        assert!((whole.physics_seconds - sliced.physics_seconds).abs() < 1e-4);
+    }
+
+    #[test]
+    fn changing_hydraulic_budget_preserves_weather_time_and_water() {
+        let (mut w, ground) = tank(8, |_, _| 0.0, 0.04, false);
+        w.weather = Weather::Storm;
+        w.sources.push(Source { x: 4, y: 4, rate: 24.0, seasonality: 0.0 });
+        let rates = [3600.0, 60.0, 1200.0, 3600.0];
+        for rate in rates {
+            for _ in 0..36 { w.step_with_clock(&ground, 1.0 / 144.0, rate); }
+        }
+        let physics = rates.iter().sum::<f64>() * 0.25;
+        assert!((w.time_days - 1.0).abs() < 1e-6, "calendar {} physics {}", w.time_days, w.physics_seconds);
+        assert!((w.physics_seconds - physics).abs() < 0.001);
+        assert!((w.budget().sources - physics * 24.0 / DAY_S).abs() < 1e-5);
+        assert!(w.budget().rain > 1.0);
+        assert!((w.total_volume() - (w.budget().added() - w.budget().lost()) * w.area()).abs() < 0.001);
     }
 }

@@ -688,13 +688,13 @@ pub fn cell_rows(s: &sim::SimState, cell: crate::flow::Cell) -> Vec<(Icon, Color
     let (x, y) = cell;
     let h = s.height.get(x, y).copied().unwrap_or(0.0);
     let d = s.water.depth.get(x, y).copied().unwrap_or(0.0);
-    let (fx, fy) = s.water.flow_at(x, y);
+    let discharge = s.water.discharge.get(x, y).copied().unwrap_or(0.0);
     let veg = s.ecology.vegetation.get(x, y).copied().unwrap_or(0.0);
     let flood = s.ecology.flood_days.get(x, y).copied().unwrap_or(0.0);
     let mut rows = vec![(Icon::Profile, MUTED, "Height", num(h))];
     if d > 0.01 {
         rows.push((Icon::Drop, WATER, "Depth", format!("{:.2}", d)));
-        rows.push((Icon::Push, WATER, "Flow", format!("{:.1}/d", (fx * fx + fy * fy).sqrt())));
+        rows.push((Icon::Push, WATER, "Flow", format!("{discharge:.3} m3/s")));
     }
     rows.push((Icon::Plant, GOOD, "Cover", format!("{:.0}%", veg * 100.0)));
     if flood > 0.5 {

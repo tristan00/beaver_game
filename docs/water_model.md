@@ -23,7 +23,7 @@ changes little, and leaving it out makes a cell update a few multiply-adds.
 * **Time step.** Explicit, 0.7 dx / sqrt(g h) for the deepest water the solver steps, at most 10 s.
   About 0.25 to 0.45 s on the shipped maps.
 * **Still water.** Flat, still water (a pond behind a dam, a wetland, a deep hole) is found every
-  5 minutes of game time and held as a *pool*: one level for the whole body, set from its volume
+  5 minutes of hydraulic time and held as a *pool*: one level for the whole body, set from its volume
   by its bed shape. Only the faces on its rim are computed, it gains what crosses them, and its
   depth no longer limits the time step. When the water starts to move or tilt (a breach, a new
   inflow) the cells leave the pool and are stepped again.
@@ -36,40 +36,49 @@ follows from the terrain, the dams and canals, and the inflows.
 
 ## Cost
 
-The calendar targets one game day per **30 real seconds** at normal speed (ten times the
-previous pace). Keys 2 and 3 request 6x and 24x: **5 seconds** and **1.25 seconds** per day.
-The speed-button tooltips show these targets. Large floods can limit the achieved rate;
-the performance log reports actual real seconds per day as well as the speed multiplier.
-This changes the shared game clock for both colony play and sandbox, without changing
-hydraulic time steps, water volumes, or per-game-day production and climate rates.
+The live game calendar runs at **30 real seconds per day** on 1, **5 seconds** on 2,
+and **1.25 seconds** on 3. The clock retains unfinished steps when a render frame reaches
+its CPU budget; only completed simulation work is deducted. It uses real elapsed time,
+including long frames, and does not accumulate elapsed time while paused.
 
-With the new pace, the same Telemark clear-spring sandbox measured **29.99–30.01 real
-seconds per day at 75–78 fps** on the machine below. Log: `tmp/river-polish/pace-normal.err`.
+Gameplay separates calendar time from an **adaptive hydraulic clock**. The live driver
+starts at 3,600 hydraulic seconds per calendar day, estimates the cost of water updates, and
+adjusts within 60–86,400 seconds/day to leave room for rendering and input. Light workloads
+can recover the full reference rate; extensive flooding gets fewer hydraulic seconds per
+calendar day. The same conservative, CFL-limited solver runs at every rate: no cells are
+skipped, no extra water is invented, and fluid time steps are never enlarged past the CFL bound.
+
+This deliberately changes the relationship between fluid time and the calendar. Source
+discharge remains in physical m3/s; under load, reservoir filling and river travel take more
+calendar days. Rainfall, evaporation, infiltration, ice, soil recovery, dam aging and seasonal
+forcing retain their calendar-day rates. The performance log reports **both** clocks. Flow tooltips use m3/s, and dam-fill estimates
+convert catchment inflow to the current hydraulic seconds per calendar day.
+`SimState::step` and `Water::step` retain 86,400 hydraulic seconds per day for reference tests;
+`step_game_at_hydraulic_rate` is the live entry point, and `step_game` uses a reproducible
+3,600-second rate for headless gameplay scenarios. This is a gameplay pacing change, not a
+claim to calculate 24 physical hours of fluid motion in 1.25 real seconds.
+
+Pool discovery runs every five hydraulic minutes. Environment updates run every five calendar
+minutes and update pool volumes directly, without repeatedly dissolving and rebuilding them.
+Dry ground needs no evaporation/seepage calculation when it is not raining. Activity expands
+only when precipitation creates new wet cells. Source-rate changes touch cached source cells;
+changing the source locations still rebuilds activity. Terrain height range is computed once
+per update, rather than once per rebuilt chunk.
+
+Measured in the Telemark clear-spring sandbox on Core Ultra 9 285K / RTX 5090, Windows Vulkan,
+1440x900, forest visible, camera `170,424,65,0.8,1.0`: fastest speed held **1.25 real seconds/day
+at 74–77 fps**, versus approximately 13–14 seconds/day before this change. A map-wide storm
+also held **1.25 seconds/day at 60–63 fps**, using the lowest hydraulic rate. Logs are
+`tmp/river-polish/pace-adaptive-clear.err` and `pace-verified-storm.err` in the workspace.
+Normal speed recovered 86,400 hydraulic seconds/day and held about 30 real seconds/day at
+118-121 fps in the seasonal sandbox (`updated-play.err`). These are local measurements;
+rendering and large colony workloads can still limit throughput.
 
 `SimState::step_timings` and `Water::timings` record where time goes. Set `BC_PERF=5` to log
-every 5 seconds the frame rate, the game speed reached, the sim's milliseconds per second by
-system and the water solver's breakdown; `BC_SPEED=1|2|3` and `BC_PERF_EXIT=S` make it a
-benchmark. A normal-speed sandbox frame advances water in ten-second slices; faster settings
-use twenty/thirty-second slices. Pool detection, rainfall and catchment forcing updates are
-batched every five simulation minutes. Terrain height range is computed once per update,
-instead of scanning the entire map for each rebuilt chunk.
-
-Earlier hydraulic measurements, before the calendar acceleration, on Core Ultra 9 285K /
-RTX 5090, Windows Vulkan, 1440x900, forest visible, Telemark camera
-`170,424,65,0.8,1.0`. In this historical table 1x means the former five-minute day
-(288 simulation seconds/second), not the current 30-second day:
-
-| scenario | simulation speed reached | frame rate |
-|---|---|---|
-| Clear spring, 1x requested | 1x | 110–114 fps |
-| Spring storm, 1x requested | 1x | 116–117 fps |
-| Clear spring, 24x requested | 21–22x | 46–51 fps |
-| Inherited engine, 24x requested, same map/camera | 18.5–19.7x | 44–47 fps |
-
-These are short local runs, not cross-hardware guarantees. At the former normal speed the clear-stream
-water update costs about 43–44 ms of wall time per second of play. Finite lakes and heavy
-overland runoff require more work than a narrow stream. Detailed logs and scenario results
-are in the workspace's `tmp/river-polish` directory.
+actual calendar throughput, frame rate, and CPU time by subsystem. `BC_SPEED=1|2|3` and
+`BC_PERF_EXIT=S` make a repeatable benchmark. Sandbox slices contain 120, 240 or 480 calendar
+seconds, depending on speed, with a 12 ms frame CPU budget. Hydraulic duration adapts to
+measured cost. Unfinished calendar time stays queued, and pausing freezes the queue.
 
 ## Terrain
 
@@ -100,7 +109,7 @@ heights. Two map corrections are applied when a map is built:
 * **Rain reaches dry land as well as water.** Turf infiltrates four times faster than mineral
   beds; rain exceeding infiltration and evaporation builds surface runoff, using the same
   conservative solver as rivers. Rain, losses and riverbed exposure are accumulated in
-  five-minute physics batches, independent of render-frame duration.
+  five-minute calendar batches, independent of render-frame duration.
 * **Ice** grows in winter and melts outside winter. Rendering uses the simulated thickness
   at each vertex; a change of season does not instantly paint every river white.
 * **Books:** every source and loss is counted; total stored water always equals what came in
@@ -161,7 +170,12 @@ normals using one third of the previous noise evaluations.
 * rainfall on dry ground balances infiltration and is independent of outer frame slices;
 * source edits, diagonal canal flow, reservoir breaches, and excavation into pooled water
   conserve the expected volume;
-* interior lakes hold finite water and exposed beds persist after drainage.
+* interior lakes hold finite water and exposed beds persist after drainage;
+* the gameplay hydraulic clock conserves water while integrating a full calendar day of
+  weather, independently of render-frame slicing.
+
+`cargo test --release -p game sim_driver::tests` verifies all three day rates and that
+frame budgets and pause/resume preserve unfinished time.
 
 `cargo test --release -p game water_render::tests` checks shallow one-cell streams at distant
 LOD, water triangles above the bed, and flow/ice mesh invalidation. Sandbox scenarios and images
@@ -186,7 +200,8 @@ script first and prints its report:
     breach X,Y X,Y                # breach every dam cell on the line
     weather storm                # seasonal | clear | rain | storm | drought
     season summer                # advance to the midpoint of the named season
-    run DAYS
+    run DAYS                     # reference clock: 86,400 hydraulic seconds per day
+    run-game DAYS                # fixed gameplay test clock: 3,600 hydraulic seconds per day
     probe X,Y [label]             # ground, dam, depth, surface, flow, speed
     check depth X,Y > 0.3         # also surface ground dam width discharge speed bed ice
     check rain > 20              # mm/day; also inflow (multiplier), volume, balance, day
