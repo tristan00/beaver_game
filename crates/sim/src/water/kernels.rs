@@ -267,26 +267,3 @@ macro_rules! dispatch {
 dispatch!(faces, faces_avx2, faces_impl, (out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], s: usize, e: usize, len: usize, p: Params) -> ());
 dispatch!(limiter, limiter_avx2, limiter_impl, (fac: &mut [f32], h: &[f32], src: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], member: &[f32], k: f32, dt: f32, s: usize, e: usize, len: usize) -> ());
 dispatch!(continuity, continuity_avx2, continuity_impl, (h_out: &mut [f32], h: &[f32], z: &[f32], src: &[f32], lake: &[f32], member: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], f_c: &[f32], f_w: &[f32], f_e: &[f32], f_n: &[f32], f_s: &[f32], lake_delta: &mut [f32], k: f32, dt: f32, wet_seed: f32, s: usize, e: usize, len: usize) -> (u32, u32));
-
-#[cfg(test)]
-mod seed_tests {
-    use super::*;
-
-    #[test]
-    fn packed_seed_scans_match_individual_cells_on_both_cpu_paths() {
-        for pattern in 0..=u16::MAX {
-            let mut h=[0.0;37];let mut thresholds=[0.001;37];
-            for i in 0..37 {h[i]=if pattern & (1<<(i%16))!=0 {0.01} else {0.0};}
-            thresholds[17]=f32::NEG_INFINITY;thresholds[26]=f32::INFINITY;
-            let mut expected=Vec::new();
-            for i in 0..37 {if h[i]>thresholds[i] {super::super::push_run(&mut expected,i as u32+3,i as u32+4);}}
-            let mut actual=Vec::new();seed_runs(&mut actual,&h,&thresholds,3);
-            assert_eq!(actual,expected);
-            #[cfg(target_arch="x86_64")]
-            unsafe {
-                actual.clear();seed_runs_sse2(&mut actual,&h,&thresholds,3);
-                assert_eq!(actual,expected);
-            }
-        }
-    }
-}

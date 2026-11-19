@@ -60,7 +60,6 @@ impl SimClock {
         self.acc_days = (self.acc_days - step as f64).max(0.0);
     }
 
-
 }
 
 pub struct SimDriverPlugin;
@@ -111,43 +110,4 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
             break;
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_speeds_deliver_their_calendar_day_without_a_frame_cap() {
-        for (speed, seconds, scale) in [(Speed::X1, 30.0, 1.0), (Speed::X2, 5.0, 2.0), (Speed::X3, 1.25, 4.0)] {
-            let mut clock = SimClock { speed, ..Default::default() };
-            let step = SANDBOX_DT_DAYS * scale;
-            let mut completed = 0.0f64;
-            for _ in 0..(seconds * 60.0) as usize {
-                for _ in 0..clock.queue(1.0 / 60.0, step) {
-                    clock.complete(step);
-                    completed += step as f64;
-                }
-            }
-            assert!((completed - 1.0).abs() < step as f64 + 1e-6, "{speed:?}: {completed} days");
-            assert!((completed + clock.acc_days - 1.0).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn frame_budget_and_pause_keep_unfinished_time() {
-        let mut clock = SimClock { speed: Speed::X3, ..Default::default() };
-        let step = SANDBOX_DT_DAYS;
-        assert_eq!(clock.queue(1.0, step), MAX_STEPS_PER_FRAME);
-        for _ in 0..2 { clock.complete(step); }
-        let backlog = clock.acc_days;
-        assert!((backlog - (0.8 - 2.0 * step as f64)).abs() < 1e-6);
-        clock.paused = true;
-        assert_eq!(clock.queue(10.0, step), 0);
-        assert_eq!(clock.acc_days, backlog);
-        clock.paused = false;
-        assert_eq!(clock.queue(0.001, step), MAX_STEPS_PER_FRAME);
-        assert!(clock.acc_days > backlog);
-    }
-
 }

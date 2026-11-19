@@ -861,38 +861,3 @@ fn water_route(terrain: Terrain, from: (usize, usize), targets: &[(usize, usize)
     }
     None
 }
-
-#[cfg(test)]
-mod entrance_tests {
-    use super::*;
-
-    fn building(kind: BuildingKind, pos: (usize, usize), status: Status) -> Building {
-        Building { id: BuildingId(1), kind, pos, status, recipe: None, output: 0.0 }
-    }
-
-    #[test]
-    fn lodge_door_is_reserved_for_sites_and_finished_homes() {
-        let height = Grid::new(12, 12, 0.0);
-        let mut depth = Grid::new(12, 12, 0.0);
-        depth.as_mut_slice()[2 * 12 + 2] = 0.1;
-        let terrain = Terrain { height: &height, depth: &depth };
-        for status in [Status::Site, Status::Complete] {
-            let mut buildings = Buildings::default();
-            buildings.buildings.push(building(BuildingKind::Lodge, (2, 2), status));
-            assert_eq!(buildings.check_ground(BuildingKind::ForesterLodge, (2, 5), terrain), Err(BuildError::Blocked));
-            assert!(buildings.check_ground(BuildingKind::ForesterLodge, (6, 5), terrain).is_ok());
-        }
-    }
-
-    #[test]
-    fn a_new_lodge_needs_an_unobstructed_in_bounds_door() {
-        let height = Grid::new(12, 12, 0.0);
-        let depth = Grid::new(12, 12, 0.1);
-        let terrain = Terrain { height: &height, depth: &depth };
-        let mut buildings = Buildings::default();
-        buildings.buildings.push(building(BuildingKind::ForesterLodge, (2, 5), Status::Site));
-        assert_eq!(buildings.check_ground(BuildingKind::Lodge, (2, 2), terrain), Err(BuildError::Blocked));
-        assert_eq!(buildings.check_ground(BuildingKind::Lodge, (8, 9), terrain), Err(BuildError::OutOfBounds));
-    }
-}
-

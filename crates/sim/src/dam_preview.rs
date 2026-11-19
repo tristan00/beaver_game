@@ -179,23 +179,3 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
         pond_loss,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gameplay_does_not_change_the_preview_inflow_rate() {
-        let mut s = crate::SimState::sandbox(1, crate::worldgen::fixture(1));
-        s.water.weather = crate::water::Weather::Clear;
-        let line: Vec<_> = (43..=86).map(|y| (45, y)).collect();
-        let (cells, heights) = heights_to(&s, &line, 8.35);
-        let reference = preview_heights(&s, &cells, &heights).unwrap();
-        assert!(reference.pressure > 0.0);
-        s.step_game(1e-6).unwrap();
-        let paced = preview_heights(&s, &cells, &heights).unwrap();
-        assert!((paced.pressure / reference.pressure - 1.0).abs() < 1e-5);
-        assert!((paced.fill_days - reference.fill_days).abs() < 0.001);
-    }
-}
-

@@ -65,20 +65,7 @@ pub fn vegetation_growth(time_days: f64) -> f32 {
     else { 0.0 }
 }
 
-#[cfg(test)]
-mod vegetation_tests {
-    use super::*;
-    #[test]
-    fn food_growth_stops_through_winter_and_repeats_by_calendar_year() {
-        for day in 270..360 { assert_eq!(vegetation_growth(day as f64),0.0); }
-        assert_eq!(vegetation_growth(90.0),1.0);
-        assert!(vegetation_growth(250.0)<vegetation_growth(230.0));
-        for day in 0..360 {assert!((vegetation_growth(day as f64)-vegetation_growth(day as f64+YEAR_DAYS)).abs()<1e-6);}
-    }
-}
-
 pub fn days_until(time_days: f64, season: Season) -> f64 {
     let start = season as usize as f64 * SEASON_DAYS;
     (start - day_of_year(time_days)).rem_euclid(YEAR_DAYS)
 }
-

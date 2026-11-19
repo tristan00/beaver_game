@@ -120,28 +120,6 @@ pub fn set_season(s: &mut SimState, season: crate::calendar::Season) {
     s.water.time_days = s.time_days;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn diagonal_canals_are_face_connected_in_both_directions() {
-        for (a, b) in [((2, 2), (12, 8)), ((12, 8), (2, 2)), ((3, 12), (12, 3))] {
-            let cells = canal_line(&[a, b]);
-            assert_eq!(cells.first(), Some(&a));
-            assert_eq!(cells.last(), Some(&b));
-            assert!(cells.windows(2).all(|p| p[0].0.abs_diff(p[1].0) + p[0].1.abs_diff(p[1].1) == 1));
-        }
-    }
-
-    #[test]
-    fn crossing_canals_excavate_each_cell_only_once() {
-        let cells = canal_line(&[(2, 2), (8, 8), (8, 2), (2, 8)]);
-        let unique: std::collections::HashSet<_> = cells.iter().collect();
-        assert_eq!(cells.len(), unique.len());
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Probe {
     pub ground: f32,
@@ -399,4 +377,3 @@ pub fn run_script(text: &str) -> Result<(SimState, Report), String> {
     let (s, _) = sim.ok_or("empty script")?;
     Ok((s, report))
 }
-

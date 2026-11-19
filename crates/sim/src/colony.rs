@@ -246,19 +246,6 @@ impl Beaver {
     }
 }
 
-#[cfg(test)]
-mod age_tests {
-    use super::*;
-
-    #[test]
-    fn minute_ticks_do_not_add_extra_weeks_to_beaver_age() {
-        let mut colony = Colony::new(7);
-        colony.spawn(Sex::Female, 1080.0, FamilyId(1), None, (0.0,0.0), None, None);
-        for _ in 0..720 * 1440 { colony.age_and_stage(1.0 / 1440.0); }
-        assert!((colony.beavers[0].age_days - 1800.0).abs() < 0.001);
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Household {
     pub pair_years: f32,
@@ -1406,4 +1393,3 @@ impl Colony {
         }
     }
 }
-

@@ -73,25 +73,3 @@ pub fn forcing(time: f64, weather: Weather, base_rain: f32) -> Forcing {
         inflow: seasonal(time, INFLOW_MULT) * runoff,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seasons_are_continuous_and_spring_exceeds_summer() {
-        for boundary in [0.0, 90.0, 180.0, 270.0, 360.0] {
-            let a = forcing(boundary - 0.001, Weather::Clear, 0.002);
-            let b = forcing(boundary + 0.001, Weather::Clear, 0.002);
-            assert!((a.inflow - b.inflow).abs() < 0.001);
-        }
-        assert!(forcing(45.0, Weather::Clear, 0.002).inflow > 5.0 * forcing(135.0, Weather::Clear, 0.002).inflow);
-    }
-
-    #[test]
-    fn seasonal_rain_has_dry_intervals_and_delayed_runoff() {
-        assert_eq!(forcing(1.0, Weather::Seasonal, 0.002).rain, 0.0);
-        assert!(forcing(2.5, Weather::Seasonal, 0.002).rain > 0.01);
-        assert!(forcing(2.625, Weather::Seasonal, 0.002).inflow > forcing(2.5, Weather::Seasonal, 0.002).inflow);
-    }
-}

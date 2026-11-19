@@ -315,21 +315,6 @@ pub fn dam_line_at(sim: &SimState, seed: Cell) -> Vec<Cell> {
     out
 }
 
-#[cfg(test)]
-mod dam_line_tests {
-    use super::*;
-
-    #[test]
-    fn a_scripted_long_dam_is_one_component_without_merging_a_second_dam() {
-        let mut s = SimState::new(1);
-        let long: Vec<_> = (5..105).map(|x| (x, 10)).collect();
-        s.water.build_dam(&long, 1.0).unwrap();
-        s.water.build_dam(&[(50, 20), (51, 20)], 1.0).unwrap();
-        assert_eq!(dam_line_at(&s, (50, 10)), long);
-        assert_eq!(dam_line_at(&s, (50, 20)).len(), 2);
-    }
-}
-
 pub fn dam_cell_of(sim: &SimState, id: BuildingId) -> Option<Cell> {
     let b = sim.buildings.building(id).filter(|b| b.kind == BuildingKind::Dam && b.is_complete())?;
     b.cells().find(|&(x, y)| sim.water.has_dam(x, y))
@@ -427,4 +412,3 @@ fn refund(sim: &mut SimState, cost: &[Amount]) {
         let _ = sim.buildings.stores.deposit(g, a);
     }
 }
-

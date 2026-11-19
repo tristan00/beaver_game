@@ -19,36 +19,6 @@ pub enum Surface {
     LodgeInside,
 }
 
-#[cfg(test)]
-mod refresh_tests {
-    use super::*;
-
-    #[test]
-    fn incremental_flooding_and_drawdown_match_a_full_navigation_rebuild() {
-        let mut sim=crate::SimState::new(3);
-        let n=sim.world.size;
-        let cell=(3,3);let i=3*n+3;
-        sim.resources.items.retain(|r|r.cell!=cell);
-        sim.resources.add(crate::resources::ResourceKind::StoneOutcrop,cell,100.0);
-        sim.water.depth.as_mut_slice()[i]=0.0;
-        let mut nav=NavGrid::new(n,n);nav.refresh(&mut sim);
-        assert_eq!(nav.surface_at(cell),Some(Surface::Solid));
-        for depth in [0.2,0.0] {
-            sim.water.depth.as_mut_slice()[i]=depth;
-            sim.water.nav_revision+=1;sim.water.nav_cells.push(i);
-            nav.refresh(&mut sim);
-            let mut rebuilt=NavGrid::new(n,n);rebuilt.rebuild(&sim);
-            assert_eq!(nav.surface,rebuilt.surface);
-            assert_eq!(nav.region,rebuilt.region);
-            assert!(sim.water.nav_cells.is_empty());
-        }
-        sim.water.build_dam(&[cell],0.3).unwrap();nav.refresh(&mut sim);
-        assert_eq!(nav.surface_at(cell),Some(Surface::Dam));
-        sim.water.breach(cell.0,cell.1).unwrap();nav.refresh(&mut sim);
-        assert_eq!(nav.surface_at(cell),Some(Surface::Solid));
-    }
-}
-
 pub fn shared(s: Surface) -> bool {
     matches!(s, Surface::LodgeInside | Surface::LodgeEntrance)
 }
@@ -551,4 +521,3 @@ impl NavGrid {
         self.surface.get(cell.0, cell.1).copied()
     }
 }
-

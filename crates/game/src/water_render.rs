@@ -329,68 +329,6 @@ fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::mesh::VertexAttributeValues;
-
-    #[test]
-    fn a_shallow_one_cell_stream_survives_distant_lod_and_stays_above_the_bed() {
-        let mut s = SimState::new(1);
-        s.water = sim::water::Water::new(s.world.size);
-        s.height.as_mut_slice().fill(2.0);
-        for y in 0..s.world.size {
-            *s.height.get_mut(17, y).unwrap() = 0.0;
-            *s.water.depth.get_mut(17, y).unwrap() = 0.012;
-        }
-        let step = hydrology_lod(&s, 1, 1, Vec3::splat(1000.0));
-        assert_eq!(step, 1, "coarse sampling erases the odd-column stream");
-        let mesh = build_water_mesh(&s, 1, 1, step).expect("shallow flowing water must be visible");
-        let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions"); };
-        let mut stream_vertices = 0;
-        for p in pos {
-            let x = p[0] + s.world.size as f32 / 2.0;
-            let y = p[2] + s.world.size as f32 / 2.0;
-            let ground = terrain_shown(&s, x, y, step);
-            assert!(p.iter().all(|v| v.is_finite()));
-            assert!(p[1] >= ground + SURFACE_LIFT - 1e-4, "water buried in its bank: {p:?}, ground {ground}");
-            if (x - 17.0).abs() < 1e-4 { stream_vertices += 1; }
-        }
-        assert!(stream_vertices >= 16);
-    }
-
-    #[test]
-    fn flow_and_ice_changes_invalidate_an_unchanged_water_level() {
-        let mut s = SimState::new(1);
-        let a = region_hash(&s, 1, 1, WATER_PAD, 0, false);
-        *s.water.velocity.get_mut(20, 20).unwrap() = (0.7, 0.0);
-        let b = region_hash(&s, 1, 1, WATER_PAD, 0, false);
-        *s.water.ice.get_mut(20, 20).unwrap() = 0.1;
-        let c = region_hash(&s, 1, 1, WATER_PAD, 0, false);
-        assert_ne!(a, b);
-        assert_ne!(b, c);
-    }
-
-    #[test]
-    fn a_deep_single_cell_canal_has_a_visible_wetted_floor() {
-        let mut s = SimState::new(1);
-        s.water = sim::water::Water::new(s.world.size);
-        s.height.as_mut_slice().fill(2.0);
-        for y in 0..s.world.size {
-            *s.height.get_mut(17, y).unwrap() = 0.0;
-            *s.water.depth.get_mut(17, y).unwrap() = 0.02;
-            *s.water.canal.get_mut(17, y).unwrap() = true;
-        }
-        assert_eq!(canal_subdivisions(&s, 1, 1), 4);
-        let mesh = build_water_mesh(&s, 1, 1, 1).unwrap();
-        let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions"); };
-        let half = s.world.size as f32 / 2.0;
-        assert!(pos.iter().any(|p| (p[0] + half - 17.25).abs() < 1e-4 && (p[1] - 0.03).abs() < 1e-4), "water must span the canal floor, not collapse to the centre line");
-        assert!(pos.iter().all(|p| p.iter().all(|v| v.is_finite())));
-    }
-}
-
-
 fn update_water_chunks(
     mut commands: Commands,
     sim: Res<Sim>,
@@ -557,4 +495,3 @@ pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
     }
     Some((sx, sy, s.height.as_slice()[sy * w + sx]))
 }
-

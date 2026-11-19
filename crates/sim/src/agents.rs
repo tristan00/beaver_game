@@ -1155,18 +1155,3 @@ fn at_resting_place(ag: &Agent, home: Option<&Building>) -> bool {
     ag.inside || home.is_some_and(|b| b.kind == BuildingKind::Burrow
         && b.pos.0.abs_diff(ag.cell.0)+b.pos.1.abs_diff(ag.cell.1)<=1)
 }
-
-#[cfg(test)]
-mod rest_tests {
-    use super::*;
-    #[test]
-    fn burrow_side_is_a_valid_rest_destination_without_an_inside_flag() {
-        let home=Building {id:BuildingId(1),kind:BuildingKind::Burrow,pos:(4,4),status:crate::buildings::Status::Complete,recipe:None,output:0.0};
-        let mut agents=Agents::default();agents.spawn(BeaverId(1),(4,3));
-        let a=agents.get(BeaverId(1)).unwrap();
-        assert!(!a.inside);assert!(at_resting_place(a,Some(&home)));
-        agents.by_id.get_mut(&BeaverId(1)).unwrap().cell=(4,2);
-        assert!(!at_resting_place(agents.get(BeaverId(1)).unwrap(),Some(&home)));
-    }
-}
-

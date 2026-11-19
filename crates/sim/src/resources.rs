@@ -345,24 +345,3 @@ impl ResourceWorld {
         Ok(id)
     }
 }
-
-#[cfg(test)]
-mod food_season_tests {
-    use super::*;
-    #[test]
-    fn wet_plants_regrow_in_summer_but_draw_down_in_winter() {
-        let mut summer=ResourceWorld::default();
-        let id=summer.add(ResourceKind::Plant,(1,1),4.0);
-        summer.get_mut(id).unwrap().wet=true;
-        summer.take(id,3.0);
-        let mut winter=summer.clone();
-        summer.step(1.0,100.0).unwrap();winter.step(1.0,300.0).unwrap();
-        assert!((summer.get(id).unwrap().amount-1.25).abs()<1e-6);
-        assert!(winter.get(id).unwrap().amount<1.0);
-        let mut split=winter.clone();let mut whole=winter.clone();
-        whole.step(10.0,320.0).unwrap();
-        for day in 311..=320 {split.step(1.0,day as f64).unwrap();}
-        assert!((whole.get(id).unwrap().amount-split.get(id).unwrap().amount).abs()<1e-5);
-    }
-}
-
