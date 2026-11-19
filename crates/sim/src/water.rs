@@ -271,6 +271,7 @@ pub struct Water {
     n: usize,
     h: Vec<f32>,
     z: Vec<f32>,
+    bed_version: Option<((u64,u64),(u64,u64))>,
     qx: Vec<f32>,
     qy: Vec<f32>,
     qx_new: Vec<f32>,
@@ -372,6 +373,7 @@ impl Water {
             n,
             h: vec![0.0; n * n],
             z: vec![0.0; n * n],
+            bed_version: None,
             qx: vec![0.0; n * (n + 1)],
             qy: vec![0.0; (n + 1) * n],
             qx_new: vec![0.0; n * (n + 1)],
@@ -660,6 +662,8 @@ impl Water {
     /// Bed = terrain + dams.
     fn load_bed(&mut self, height: &HeightGrid) {
         assert_eq!((height.width(), height.height()), (self.n, self.n), "terrain size must match water size");
+        let version=(height.version(),self.dam_height.version());
+        if self.bed_version==Some(version) {return;}
         let mut changed = false;
         for (i, t) in height.as_slice().iter().enumerate() {
             let z = t + self.dam_height.as_slice()[i];
@@ -677,6 +681,7 @@ impl Water {
             self.masks_dirty = true;
             self.full_publish = true;
         }
+        self.bed_version=Some(version);
     }
 
     /// Face masks: 1 where water may cross, 0 at closed edges and between two fixed-level lake cells.
@@ -1912,5 +1917,24 @@ mod tests {
             w.substep(0.5);
             for y in 0..64 {assert_eq!(w.row_wet_runs_active(y),w.row_wet_runs(y));}
         }
+    }
+
+    #[test]
+    fn cached_beds_follow_edits_and_replacement_grids() {
+        let (mut w,mut ground)=tank(8,|_,_|0.0,0.03,false);
+        w.load_bed(&ground);
+        *ground.get_mut(3,3).unwrap()=2.0;w.load_bed(&ground);
+        assert_eq!(w.z[27],2.0);
+        w.build_dam(&[(3,3)],0.3).unwrap();w.load_bed(&ground);
+        assert_eq!(w.z[27],2.3);
+        ground.as_mut_slice()[27]=1.0;w.load_bed(&ground);
+        assert_eq!(w.z[27],1.3);
+        let mut replacement=Grid::new(8,8,0.0);
+        replacement.as_mut_slice()[27]=4.0;w.load_bed(&replacement);
+        assert_eq!(w.z[27],4.3);
+        let duplicate=replacement.clone();assert_eq!(duplicate,replacement);
+        assert_ne!(duplicate.version(),replacement.version());
+        w.load_bed(&duplicate);assert_eq!(w.z[27],4.3);
+        w.breach(3,3).unwrap();w.load_bed(&duplicate);assert_eq!(w.z[27],4.0);
     }
 }
