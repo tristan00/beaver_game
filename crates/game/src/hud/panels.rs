@@ -1,5 +1,3 @@
-//! What each panel shows, as [`VNode`] trees (spec §5, §7, Appendix A). Words only where
-//! Appendix A allows them; everything else is icons, numbers, bars and tooltips.
 use super::ui::*;
 use super::words::*;
 use super::{ColonyTab, HudAction, HudState, MapLens, Tool, CAT_KEY_LABELS};
@@ -14,8 +12,6 @@ use sim::colony::Stage;
 use sim::hud::{Breakdown, Fix, Problem, ProblemKind, Severity, Source, Subject};
 use sim::jobs::RoleKind;
 
-
-/// Everything a panel may read.
 pub struct Ctx<'a> {
     pub s: &'a sim::SimState,
     pub hud: &'a HudState,
@@ -27,22 +23,18 @@ pub struct Ctx<'a> {
     pub minimap: Option<&'a Handle<Image>>,
     pub view_cell: (f32, f32),
     pub log: &'a std::collections::VecDeque<String>,
-    /// (day, population, food) samples every five days.
     pub history: &'a [(f64, usize, f32)],
     pub cursor: Option<Vec2>,
 }
 
 impl Ctx<'_> {
-    /// A placement or line tool is active (spec F3.3 build mode).
     pub fn placing(&self) -> bool {
         self.hud.tool != Tool::None
     }
 }
 
-/// Goods always in the strip; crafted ones join once the colony has any.
 pub const STRIP_GOODS: [Good; 5] = [Good::Food, Good::Logs, Good::Sticks, Good::Mud, Good::Stone];
 pub const RIGHT_W: f32 = 320.0;
-/// Space the right column keeps free above the bottom edge (the dam profile docks below it).
 pub const RIGHT_BOTTOM: f32 = 150.0;
 
 fn abs(left: Option<f32>, right: Option<f32>, top: Option<f32>, bottom: Option<f32>) -> Node {
@@ -66,7 +58,6 @@ fn panel_row(node: Node, gap: f32, f: impl FnOnce(&mut Ui)) -> VNode {
     v
 }
 
-/// A transparent full-width strip that centres its child horizontally and lets the pointer through.
 fn centred(bottom: f32, child: VNode) -> VNode {
     let mut v = VNode::new(Node { justify_content: JustifyContent::Center, ..abs(Some(0.0), Some(0.0), None, Some(bottom)) });
     v.children.push(child);
@@ -89,9 +80,6 @@ fn rate_color(r: f32) -> Color {
     }
 }
 
-// ───────────────────────────── goods strip (A1) ─────────────────────────────
-
-/// A sim breakdown as tooltip rows: label, signed value, the source's icon.
 pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) -> Vec<TipLine> {
     b.rows
         .iter()
@@ -219,7 +207,6 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
         })
         .tip(headcount_tip(s))
         .action(HudAction::Colony(Some(ColonyTab::Population)));
-        // Free beavers who are not resting.
         let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
         if !free.is_empty() {
             let mut t = Tip::titled(Some((Icon::Idle, WARN)), "Free").with_value(format!("{}", free.len()));
@@ -233,8 +220,6 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
         }
     })]
 }
-
-// ───────────────────────────── calendar (A2) ─────────────────────────────
 
 fn season_color(se: Season) -> Color {
     match se {
@@ -263,7 +248,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
                 r.icon_button(icon, 14.0, HudAction::Speed(sp), FAINT, !clock.paused && clock.speed == sp).tip(Tip::name(format!("Speed x{key}")).key(key));
             }
         });
-        // Year ribbon: four seasons, a tick for today.
         let phase = calendar::year_phase(t);
         u.node(Node { width: Val::Percent(100.0), height: Val::Px(8.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(2.0), ..default() }, |r| {
             for se in Season::ALL {
@@ -272,7 +256,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             r.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Percent(phase * 100.0), top: Val::Px(-3.0), width: Val::Px(2.0), height: Val::Px(14.0), ..default() })).bg(SELECT);
         });
         u.row(10.0, |r| {
-            // Next thing that matters, as an icon and a count of days.
             let (icon, col, n, tip) = match d.season {
                 Season::Summer => (Icon::Autumn, WARN, calendar::days_until(t, Season::Autumn), Tip::titled(Some((Icon::DrySummer, WARN)), "Dry summer").line("Autumn in", days(calendar::days_until(t, Season::Autumn).ceil() as f32))),
                 Season::Winter => (Icon::Spring, MUTED, calendar::days_until(t, Season::Spring), Tip::titled(Some((Icon::Winter, INK)), "Winter: low inflow").line("Spring in", days(calendar::days_until(t, Season::Spring).ceil() as f32))),
@@ -284,7 +267,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             })
             .tip(tip);
             r.spacer();
-            // Pond cover gauge: stored water against a dry summer.
             let ponds = sim::hud::ponds(s);
             let season = calendar::SEASON_DAYS as f32;
             match ponds.summer_cover_days() {
@@ -313,8 +295,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-// ───────────────────────────── alerts (A3) ─────────────────────────────
-
 pub fn role_kind_icon(r: RoleKind) -> Icon {
     match r {
         RoleKind::Forager => Icon::RoleForager,
@@ -341,7 +321,6 @@ pub fn role_kind_name(r: RoleKind) -> &'static str {
     }
 }
 
-/// The icons and number an alert shows instead of a title (A3).
 fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
     let v = p.value;
     match p.kind {
@@ -380,7 +359,6 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
     }
 }
 
-/// The face of a fix button and its tooltip (≤ 6 words).
 fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
         Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
@@ -433,9 +411,6 @@ pub fn alerts(c: &Ctx, u: &mut Ui) {
     }
 }
 
-// ───────────────────────────── right column ─────────────────────────────
-
-/// Alerts at rest, the inspector on a selection, the line-tool card while drawing.
 pub fn right(c: &Ctx) -> Vec<VNode> {
     let bottom = if c.placing() { RIGHT_BOTTOM } else { 90.0 };
     let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
@@ -447,7 +422,6 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
         Tool::Building(_) => {}
         Tool::None => {
             if c.hud.colony.is_none() {
-                // Pinned inspectors stay open above the current one (spec 4.2).
                 for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
                     if let Some(v) = super::inspect::inspector(c, *p) {
                         ui.add(v);
@@ -475,8 +449,6 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-// ───────────────────────────── view rail (A10) ─────────────────────────────
-
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
         for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4"), (MapLens::Elevation, Icon::ViewElevation, "Elevation", "F5")] {
@@ -494,14 +466,11 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-/// A contour step as written in the legend: `0.25`, `0.5`, `2`.
 fn step_label(v: f32) -> String {
     let t = format!("{v:.2}");
     t.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// The elevation lens legend under its button: the height ramp between the map's lowest and
-/// highest ground, then the contour interval (thin line) and every fourth line (thick).
 fn elevation_legend(c: &Ctx, u: &mut Ui) {
     use super::elevation::{interval_for, surface_range, MAJOR_EVERY};
     let (lo, hi) = surface_range(c.s);
@@ -529,8 +498,6 @@ fn elevation_legend(c: &Ctx, u: &mut Ui) {
         .tip(Tip::name("Contour").line("Every", step_label(every)));
     }
 }
-
-// ───────────────────────────── build bar, items, search (A4) ─────────────────────────────
 
 pub fn categories(s: &sim::SimState) -> Vec<Group> {
     let mut out: Vec<Group> = Vec::new();
@@ -635,9 +602,8 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
     let hud = c.hud;
     let mut out = Vec::new();
     if c.placing() {
-        // Build mode: one chip with the tool's icon, its keys and close.
         if hud.tool == Tool::Dam {
-            return out; // the profile takes the bottom edge and carries the keys
+            return out;
         }
         let icon = match hud.tool {
             Tool::Building(k) => building_icon(k),
@@ -666,7 +632,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
         let can_undo = !hud.undo_is_empty();
         u.icon_button(Icon::Undo, 18.0, HudAction::Undo, FAINT, false).tip(Tip::name("Undo").key("Ctrl+Z")).style(|_| {}).bg = if can_undo { FAINT } else { Color::NONE };
     })));
-    // Items above the bar: the open category or the search results.
     let entries: Option<(Option<String>, Vec<build_logic::MenuEntry>)> = if let Some(q) = &hud.search {
         Some((Some(q.clone()), search_matches(s, q)))
     } else {
@@ -698,7 +663,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
     out
 }
 
-/// Keycaps for the active tool: place, cancel, undo (and crest, confirm for line tools).
 fn key_hints(u: &mut Ui, tool: Tool) {
     let pairs: Vec<(Icon, &str)> = match tool {
         Tool::Dam => vec![(Icon::Check, "Enter"), (Icon::Crest, "[ ]"), (Icon::Flood, "G"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
@@ -715,9 +679,6 @@ fn key_hints(u: &mut Ui, tool: Tool) {
     });
 }
 
-// ───────────────────────────── choosing where to settle ─────────────────────────────
-
-/// Before the colony exists: one chip with the family, what it carries, and the click that settles.
 pub fn settle_chip(c: &Ctx) -> Vec<VNode> {
     let food = sim::hud::food_need_per_day(c.s);
     let mut bundle: Vec<(Good, String)> = vec![(Good::Food, days(sim::starts::START_LARDER_DAYS))];
@@ -757,7 +718,6 @@ pub fn settle_chip(c: &Ctx) -> Vec<VNode> {
     }))]
 }
 
-/// At the cursor while choosing: whether the family can settle here and how good the spot is.
 pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: Vec2) -> Vec<VNode> {
     let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
     v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
@@ -783,8 +743,6 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
     v.children = ui.nodes;
     vec![v]
 }
-
-// ───────────────────────────── cursor tag (5.2) ─────────────────────────────
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
     if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {
@@ -815,8 +773,6 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
     vec![v]
 }
 
-/// At the cursor in the elevation lens: the ground height, a dam's crest where there is one, and
-/// the water surface where the cell is wet. Numbers and icons only.
 pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
     let get = |g: &sim::Grid<f32>| g.get(cell.0, cell.1).copied().unwrap_or(0.0);
     let (ground, dam, depth) = (get(&s.height), get(&s.water.dam_height), get(&s.water.depth));
@@ -836,8 +792,6 @@ pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
     v.children = ui.nodes;
     vec![v]
 }
-
-// ───────────────────────────── line-tool card (A5) ─────────────────────────────
 
 fn card_row(u: &mut Ui, label: &str, value: String, col: Color, tip: Tip) {
     u.row(8.0, |r| {
@@ -870,7 +824,6 @@ pub fn line_card(c: &Ctx) -> VNode {
                 let high = hud.dam_height >= MAX_DAM_HEIGHT - 1e-3 && hud.dam_crest.is_none();
                 r.icon_button(Icon::Minus, 11.0, HudAction::DamHeight(-build_logic::DAM_STEP), if low { Color::NONE } else { FAINT }, false).tip(Tip::name("Lower").key("["));
                 match hud.dam_crest {
-                    // Extended to hold: every cell is built up to one crest (a world height).
                     Some(crest) => {
                         r.bold(num(crest), 14.0, ACCENT).style(|nn| nn.min_width = Val::Px(30.0)).tip(Tip::name("Crest").with_value(num(crest)));
                     }
@@ -911,7 +864,6 @@ pub fn line_card(c: &Ctx) -> VNode {
                     card_row(u, "Rise", format!("+{}", num(r.rise)), WATER, Tip::name("Water rises").line("Level", num(r.level)));
                     card_row(u, "Flood", format!("{new}"), INK, Tip::name("Newly flooded").line("Under water", format!("{}", r.flooded_cells)));
                     card_row(u, "Trees", format!("{}", r.flooded_trees), if r.flooded_trees > 0 { WARN } else { INK }, Tip::name("Trees drowned"));
-                    // Only the added height costs (`dam_preview::cost_for`); above one unit, mud.
                     let cost = build_logic::line_cost(s, &hud.line, hud.dam_height, hud.dam_crest);
                     u.row(8.0, |x| {
                         x.spacer();
@@ -926,7 +878,6 @@ pub fn line_card(c: &Ctx) -> VNode {
                         }
                     })
                     .tip(Tip::name("Materials").line("Added height only", ""));
-                    // Water walks round the dam below its crest: the pond stops at that saddle.
                     if let Some(at) = pv.spill_at {
                         u.row(6.0, |x| {
                             x.icon(Icon::Flood, 15.0, BAD);
@@ -976,8 +927,6 @@ pub fn line_card(c: &Ctx) -> VNode {
         });
     })
 }
-
-// ───────────────────────────── river profile (A6) ─────────────────────────────
 
 pub fn profile(c: &Ctx) -> Vec<VNode> {
     if c.hud.tool != Tool::Dam {
@@ -1056,8 +1005,6 @@ pub fn profile(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-// ───────────────────────────── minimap (A10) ─────────────────────────────
-
 pub fn minimap(c: &Ctx) -> Vec<VNode> {
     if c.placing() {
         return Vec::new();
@@ -1120,8 +1067,6 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-// ───────────────────────────── message lane (A8) ─────────────────────────────
-
 pub fn lane(c: &Ctx) -> Vec<VNode> {
     let Some((m, _)) = &c.hud.msg else { return Vec::new() };
     let row = panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..default() }, 6.0, |u| {
@@ -1140,14 +1085,12 @@ pub fn lane(c: &Ctx) -> Vec<VNode> {
     vec![v]
 }
 
-/// Status of a finished or unfinished building in at most two words, with its colour.
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {
     let b = s.buildings.building(id)?;
     let place = s.work.place(id);
     let empty = place.map_or(0, |pl| pl.slots.iter().filter(|sl| sl.worker.is_none()).count());
     let slots = place.map_or(0, |pl| pl.slots.len());
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
-        // its water has gone: no work, no deposits, a home wearing out (`Buildings::stranded`)
         (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (None, "High and dry".into(), vec![], WARN),
         (Status::Complete, _) if b.kind == BuildingKind::WaterWheel => {
             if b.output > 0.0 {

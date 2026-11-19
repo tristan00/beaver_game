@@ -1,13 +1,3 @@
-﻿//! Living soundscape and gentle music, synthesised live (no audio assets).
-//!
-//! - `audio/synth.rs`: the sound engine (water, wind, birds, frogs, gnawing, splashes, thunks,
-//!   ice, generative music). - `audio/mix.rs`: season/place to layer volumes, and the small
-//!   `AudioWorld` adapter through which sim state is read (stub data works too).
-//!
-//! Volume controls (also the `AudioVolumes` resource for a future UI): `-`/`=` master,
-//! `[`/`]` music, `;`/`'` effects, `,`/`.` ambience, `M` mute.
-//! Beaver work sites are not in the sim yet: other systems push world (x, z) positions into
-//! `AudioWorkSites` and the thunks and gnawing follow the camera towards them.
 mod mix;
 mod synth;
 
@@ -23,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use synth::{Mix, SAMPLE_RATE, Synth};
 
-/// User volume settings.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct AudioVolumes(pub VolumeSettings);
 
@@ -33,11 +22,9 @@ impl Default for AudioVolumes {
     }
 }
 
-/// World (x, z) positions where beavers are working; filled by the colony/buildings systems.
 #[derive(Resource, Default, Clone, Debug)]
 pub struct AudioWorkSites(pub Vec<(f32, f32)>);
 
-/// Adapter from the real simulation to what the mixer reads.
 struct SimWorld<'a> {
     sim: &'a sim::SimState,
     sites: &'a [(f32, f32)],
@@ -66,11 +53,9 @@ impl AudioWorld for SimWorld<'_> {
     }
 }
 
-/// Mix parameters shared between the game thread (writer) and the audio thread (reader).
 #[derive(Resource, Clone)]
 struct SharedMix(Arc<Mutex<Mix>>);
 
-/// The never-ending procedural audio asset.
 #[derive(Asset, TypePath)]
 struct Soundscape {
     shared: Arc<Mutex<Mix>>,
@@ -128,7 +113,6 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        // Screenshot runs and machines without the audio plugin stay silent.
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some()
             || app.world().get_resource::<Assets<AudioSource>>().is_none()
         {

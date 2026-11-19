@@ -1,7 +1,3 @@
-//! Pure, deterministic simulation core (no rendering dependencies).
-//! `SimState` composes one struct per system; the game crate only reads it,
-//! advances it with `step`, and mutates it through `apply`.
-
 pub mod agents;
 pub mod autoplay;
 pub mod buildings;
@@ -19,9 +15,6 @@ pub mod hud;
 pub mod jobs;
 pub mod ledger;
 pub mod maps;
-/// The old lake starts, kept only as test fixtures (feature `fixtures`); no player can start in them.
-#[cfg(any(test, feature = "fixtures"))]
-pub mod lakes;
 pub mod nav;
 pub mod output;
 pub mod region;
@@ -45,12 +38,9 @@ use std::fmt;
 
 pub use grid::Grid;
 
-/// Errors returned by `SimState` operations. Nothing fails silently.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SimError {
-    /// `dt_days` was NaN, infinite or negative.
     InvalidDt(f32),
-    /// A command carried an invalid argument.
     InvalidCommand(String),
 }
 
@@ -64,86 +54,46 @@ impl fmt::Display for SimError {
 }
 impl std::error::Error for SimError {}
 
-/// Length of one simulation step (days). The game steps by exactly this, so a recorded game
-/// replays step for step (`script`).
-pub const STEP_DAYS: f32 = 0.05;
+pub const STEP_DAYS: f32 = 1.0 / 1440.0;
 
-/// Player/UI requests that mutate the simulation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Rebuild the world from a new seed (resets time).
     Regenerate { seed: u64 },
-    /// Build dams of `height` above terrain on `cells`.
     BuildDam { cells: Vec<water::Cell>, height: f32 },
-    /// Order a dam: a construction site the family fells, hauls and builds; the water dam (and
-    /// the pond behind it) appears when the site is finished.
     OrderDam { cells: Vec<water::Cell>, height: f32 },
-    /// Order a dam built (or raised, or extended) to a crest at world height `crest` along `cells`.
     OrderDamTo { cells: Vec<water::Cell>, crest: f32 },
-    /// Found the colony at `cell` (the player's settling choice); rejected for an unusable cell.
     Settle { cell: water::Cell },
-    /// Remove the dam at (x, y); the pond drains downstream.
     BreachDam { x: usize, y: usize },
-    /// Dig canals `depth` deep on `cells`.
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
-    /// Send beavers to collect (`Some`) or stand down (`None`). Right-click and area drag.
-    /// `Some` takes them out of any slot and locks them to the order (auto-staffing leaves them
-    /// alone until `Unlock`); `None` returns them to auto-staffing.
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
-    /// Place a construction site (no cost taken; builders haul the materials in).
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
-    /// Put a beaver into a workplace slot by hand (the slot is locked) / empty a slot (lowering
-    /// the workplace's "Max" so auto-staffing does not refill it at once).
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
     EmptySlot { building: buildings::BuildingId, slot: usize },
-    /// Fill the next empty slot with the nearest free beaver, else one taken from the
-    /// lowest-priority unlocked job (`jobs::add_worker_preview` says who). The beaver is locked.
     AddWorker { building: buildings::BuildingId },
-    /// Free the last-filled slot; the beaver becomes free (unlocked).
     RemoveWorker { building: buildings::BuildingId },
     SetPriority { building: buildings::BuildingId, priority: work::Priority },
-    /// Pausing frees every worker; a paused workplace gets none.
     SetPaused { building: buildings::BuildingId, paused: bool },
-    /// Jobs board − / +: move beavers between `role` and the free pool (building by priority,
-    /// then distance).
     AdjustRole { role: jobs::RoleKind, delta: i32 },
-    /// Role priority, first = highest (roles left out follow in their old order).
     SetRoleOrder { order: Vec<jobs::RoleKind> },
     SetAutoStaff { on: bool },
-    /// Return a beaver to auto-staffing: clears its slot lock and any direct order.
     Unlock { who: colony::BeaverId },
-    /// Move or resize a workplace's work area.
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
-    /// Standing haul between two stores.
     SetHaul { order: work::HaulOrder },
-    /// Set a store to balance its goods with the other balanced stores (its haulers do it).
     SetBalance { building: buildings::BuildingId, on: bool },
-    /// Set barge `barge` to run between docks `from` and `to` carrying `goods` (`shipping`).
     SetBargeRoute { barge: buildings::BargeId, from: buildings::BuildingId, to: buildings::BuildingId, goods: Vec<buildings::Good> },
-    /// Take a barge off its route.
     ClearBargeRoute { barge: buildings::BargeId },
-    /// Accept or turn away a wandering beaver.
     AnswerJoin { id: society::RequestId, answer: society::Answer },
-    /// What a workshop or mill makes (`None` stops it).
     SetRecipe { building: buildings::BuildingId, recipe: Option<buildings::Recipe> },
-    /// Order a canal along `cells`: a construction site the family supplies and digs; the canal
-    /// is cut when the site is finished.
     OrderCanal { cells: Vec<water::Cell> },
-    /// Take back an unfinished site; delivered materials return to the stores (undo).
     CancelSite { building: buildings::BuildingId },
-    /// What a logging camp fells (`forestry::CutRule`).
     SetCutRule { building: buildings::BuildingId, rule: forestry::CutRule },
-    /// What a forester's lodge plants (`forestry::PlantRule`).
     SetPlantRule { building: buildings::BuildingId, rule: forestry::PlantRule },
 }
 
-/// Complete simulation state.
 pub struct SimState {
     pub seed: u64,
-    /// Elapsed simulated days.
     pub time_days: f64,
     pub height: grid::HeightGrid,
-    /// Full generated region (valleys, rivers, lakes, moisture, forest).
     pub world: worldgen::World,
     pub water: water::Water,
     pub ecology: ecology::Ecology,
@@ -152,36 +102,26 @@ pub struct SimState {
     pub tech: tech::Tech,
     pub region: region::Region,
     pub events: events::Events,
-    /// The one switch for out-of-scope systems.
     pub features: features::Features,
-    /// Navigation surfaces and cell reservations.
     pub nav: nav::NavGrid,
     pub resources: resources::ResourceWorld,
     pub agents: agents::Agents,
     pub work: work::Work,
     pub society: society::Society,
-    /// Whole-day goods history for the interface.
     pub ledger: ledger::Ledger,
-    /// What each building produced (smoothed per day).
     pub output: output::Output,
-    /// What the colony has seen (fog of war).
     pub fog: fog::Fog,
-    /// Steps taken since the start (replays apply recorded commands at the same step).
     pub steps: u64,
-    /// When set, every command that succeeds is appended with the step it was given at.
     pub recorder: Option<Vec<(u64, Command)>>,
-    /// Tree growth, cutting and planting rules, nursery stock (`forestry`).
     pub forestry: forestry::Forestry,
 }
 
 impl SimState {
-    /// Builds a world deterministically from `seed`.
     pub fn new(seed: u64) -> Self {
-        let world = worldgen::WorldGen::new(seed).generate().expect("default world generation failed");
+        let world = worldgen::fixture(seed);
         Self::from_world(seed, world)
     }
 
-    /// A fresh state on a given world (generated or real terrain from `maps`).
     pub fn from_world(seed: u64, world: worldgen::World) -> Self {
         let height = world.height.clone();
         let size = world.size;
@@ -218,9 +158,6 @@ impl SimState {
         sim
     }
 
-    /// One economy: unless the colony runs its abstract larder (old fixtures), its `food` and
-    /// `wood` mirror the stores' Food and Logs. Returns the mirrored values so
-    /// [`Self::settle_colony_stores`] can book what the colony ate or used against the stores.
     fn mirror_colony_stores(&mut self) -> Option<Mirror> {
         if self.colony.abstract_gathering {
             return None;
@@ -232,8 +169,6 @@ impl SimState {
         Some(Mirror { food, wood, eaten: c.eaten, spoiled: c.spoiled, repair_wood: c.repair_wood })
     }
 
-    /// Books the change in the colony's mirrored food and wood against the stores: eating (by
-    /// life stage), spoilage and lodge repairs are consumption, event windfalls are production.
     fn settle_colony_stores(&mut self, before: Option<Mirror>) {
         use buildings::{Good, Use};
         let Some(m) = before else { return };
@@ -247,7 +182,6 @@ impl SimState {
             let d = now - was;
             if d < 0.0 {
                 let take = (-d).min(stores.amount(good));
-                // Split what was taken over its known uses; anything else (events) is `Other`.
                 let known: f32 = uses.iter().map(|u| u.1.max(0.0)).sum();
                 let scale = if known > take { take / known } else { 1.0 };
                 let mut left = take;
@@ -269,14 +203,11 @@ impl SimState {
         self.colony.wood = stores.amount(Good::Logs);
     }
 
-    /// Replaces the feature config and applies it at once.
     pub fn set_features(&mut self, features: features::Features) {
         self.features = features;
         self.apply_features();
     }
 
-    /// Pushes `self.features` into every system that must never fire when off. Idempotent; called
-    /// on construction and at the start of every step so direct edits of `features` also hold.
     fn apply_features(&mut self) {
         use features::System;
         let f = self.features;
@@ -287,7 +218,6 @@ impl SimState {
         }
     }
 
-    /// Advances every system by `dt_days`. Errors if `dt_days` is not finite and >= 0.
     pub fn step(&mut self, dt_days: f32) -> Result<(), SimError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
@@ -332,7 +262,6 @@ impl SimState {
         Ok(())
     }
 
-    /// The ground around every beaver outside a lodge is seen.
     fn explore(&mut self) {
         let world = &self.world;
         let allowed = fog::open_at(world);
@@ -341,10 +270,6 @@ impl SimState {
         }
     }
 
-    /// Each finished burrow or lodge provides one colony home; unhoused beavers move in. Once a
-    /// store stands, the founding supply pile is gone (its goods count as moved in).
-    /// Homes (lodges, burrows) left high and dry (`Building::stranded`) crack and fall in: they lose
-    /// `DRY_HOME_WEAR` condition a day on top of the usual wear, so the family grows cold there.
     fn wear_dry_homes(&mut self, dt_days: f32) {
         let dry: Vec<colony::LodgeId> = self
             .buildings
@@ -382,9 +307,6 @@ impl SimState {
         }
     }
 
-    /// One job model (`work` module docs): unless the colony runs its abstract plan (old
-    /// fixtures), each beaver's colony job is the role of its slot or gather order, and its
-    /// position is its agent's cell.
     fn derive_colony_jobs(&mut self) {
         if self.colony.abstract_gathering {
             self.colony.slot_jobs = None;
@@ -400,7 +322,6 @@ impl SimState {
         self.colony.slot_jobs = Some(jobs);
     }
 
-    /// Records achievements and unlocks what is now ready.
     fn step_research(&mut self) {
         use tech::Achievement::*;
         let built = |k| self.buildings.buildings.iter().any(|b| b.kind == k && b.is_complete());
@@ -416,7 +337,6 @@ impl SimState {
         self.tech.update(&self.colony);
     }
 
-    /// Nobody has died of hunger or cold and the larder holds at least one food per beaver.
     fn survived_year(&self) -> bool {
         let lost = self.colony.events.iter().any(|e| {
             matches!(e.event, colony::Event::Died { cause: colony::DeathCause::Starvation | colony::DeathCause::Cold, .. })
@@ -424,7 +344,6 @@ impl SimState {
         !lost && self.colony.food >= self.colony.population() as f32
     }
 
-    /// Rolls random events against the colony, applies their effects and delivers migrants.
     fn step_events(&mut self, dt_days: f32) {
         if !self.colony.is_founded() {
             self.events.step(dt_days);
@@ -443,7 +362,6 @@ impl SimState {
         }
     }
 
-    /// The world as the event rules see it (coarse samples; cheap enough to take every step).
     pub fn event_context(&self) -> events::EventContext {
         let mean = |g: &Grid<f32>| {
             let s = g.as_slice();
@@ -463,7 +381,6 @@ impl SimState {
         }
     }
 
-    /// Whether `place_site` would accept `kind` at `pos`; changes nothing.
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
         self.check_off_pile(kind, pos)?;
         self.check_explored(kind, pos)?;
@@ -471,7 +388,6 @@ impl SimState {
         self.buildings.can_place_site(kind, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
     }
 
-    /// Nothing may be built on ground the colony has not seen.
     fn check_explored(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
         let (w, d) = kind.spec().footprint;
         for y in pos.1..pos.1 + d {
@@ -484,7 +400,6 @@ impl SimState {
         Ok(())
     }
 
-    /// Nothing may be built on the founding supply pile.
     fn check_off_pile(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
         let (w, d) = kind.spec().footprint;
         if let Some(p) = self.work.supplies {
@@ -495,10 +410,6 @@ impl SimState {
         Ok(())
     }
 
-    /// Places a construction site for `kind` at `pos` and registers it as a workplace with its
-    /// catalogue cost and (tech-adjusted) build work. A dam site is a real dam: it spans its
-    /// catalogue footprint at `dam_preview::DEFAULT_HEIGHT`, costs `dam_preview::dam_cost` for those
-    /// cells, and raises the water dam when finished.
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
         if let Some(need) = self.missing_prerequisites(kind).first() {
             return Err(SimError::InvalidCommand(format!("needs a finished {} first", need.spec().name.to_lowercase())));
@@ -531,7 +442,6 @@ impl SimState {
         Ok(id)
     }
 
-    /// Prerequisite buildings (`catalogue::prerequisites`) not yet standing finished.
     pub fn missing_prerequisites(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
         catalogue::prerequisites(kind)
             .iter()
@@ -540,16 +450,12 @@ impl SimState {
             .collect()
     }
 
-    /// Everything `kind` still lacks before it can be placed: research, then buildings.
     pub fn build_gaps(&self, kind: buildings::BuildingKind) -> Vec<tech::Gap> {
         let mut gaps = self.tech.missing(kind, &self.colony);
         gaps.extend(self.missing_prerequisites(kind).into_iter().map(tech::Gap::Building));
         gaps
     }
 
-    /// Where a dam on `cells` puts its construction site: the line cell nearest its middle (the
-    /// middle first, ties toward the start) where the site can be placed (it must touch water).
-    /// The error is the middle cell's if none can. Changes nothing.
     pub fn dam_site(&self, cells: &[water::Cell]) -> Result<water::Cell, buildings::BuildError> {
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let mid = cells.len() / 2;
@@ -567,18 +473,9 @@ impl SimState {
         Err(first.unwrap_or(buildings::BuildError::OutOfBounds))
     }
 
-    /// Places a dam construction site on `cells` (at `dam_site`). Its cost is the dam cost
-    /// scaled by length and its labour scales the same way; `agents::step` applies the water dam
-    /// when the site completes. Errors (state unchanged) if `cells` are not a valid dam line, the
-    /// height is not finite and positive, or the site cannot be placed.
-    /// Longest canal one order may cut.
-    pub const MAX_CANAL_CELLS: usize = 40;
-    /// How deep a canal is cut.
+    pub const MAX_CANAL_CELLS: usize = 150;
     pub const CANAL_DEPTH: f32 = 0.5;
 
-    /// Orders a canal along `cells` (a connected line that touches water): one construction site at
-    /// its first buildable cell, costing the canal's materials and labour for its length; the canal
-    /// is cut when the site is finished. Errors (state unchanged) for an invalid line.
     pub fn order_canal(&mut self, cells: &[water::Cell]) -> Result<buildings::BuildingId, SimError> {
         use buildings::BuildingKind::Canal;
         let invalid = |m: &str| SimError::InvalidCommand(m.to_string());
@@ -619,8 +516,6 @@ impl SimState {
         self.order_dam_heights(cells, &vec![height; cells.len()])
     }
 
-    /// Orders a dam whose crest stands at world height `crest` along `cells` (each cell as high as
-    /// the ground under it needs; cells already that high are left out).
     pub fn order_dam_to(&mut self, cells: &[water::Cell], crest: f32) -> Result<buildings::BuildingId, SimError> {
         let (cells, heights) = dam_preview::heights_to(self, cells, crest);
         if cells.is_empty() {
@@ -629,8 +524,6 @@ impl SimState {
         self.order_dam_heights(&cells, &heights)
     }
 
-    /// Orders a dam, or raises, extends or repairs one: each cell is built up to its height above
-    /// the ground, and only what is missing costs materials and work (`dam_preview::cost_for`).
     pub fn order_dam_heights(&mut self, cells: &[water::Cell], heights: &[f32]) -> Result<buildings::BuildingId, SimError> {
         if dam_preview::preview_heights(self, cells, heights).is_none() {
             return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
@@ -659,11 +552,6 @@ impl SimState {
         Ok(id)
     }
 
-    /// Cancels an unfinished construction site (`Site` or `UnderConstruction`): the building, its
-    /// workplace and any dam plan go, materials already delivered return to the stores and any
-    /// beaver assigned to its slots stands down. A partly built dam stays standing as far as it
-    /// was built, and the materials built into it stay in it. Returns what was refunded. Errors (state
-    /// unchanged) for an unknown or finished building.
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
         if b.is_complete() {
@@ -676,8 +564,6 @@ impl SimState {
             return Ok(before);
         }
         let mut refunded = Vec::new();
-        // A dam rises as it is built (`agents::grow_dam`): what stands of it stays, and the
-        // materials built into it are not given back.
         let is_dam = self.work.dam_plans.iter().any(|d| d.building == id);
         if let Some(i) = self.work.places.iter().position(|p| p.building == id) {
             let place = self.work.places.remove(i);
@@ -705,7 +591,6 @@ impl SimState {
         Ok(refunded)
     }
 
-    /// Applies a command. Errors on invalid arguments, leaving state unchanged.
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         let logged = self.recorder.is_some().then(|| cmd.clone());
         let res = self.apply_inner(cmd);
@@ -821,7 +706,6 @@ impl SimState {
     }
 }
 
-/// The colony's food and wood (and its use counters) before a colony or event step.
 struct Mirror {
     food: f32,
     wood: f32,
@@ -830,7 +714,6 @@ struct Mirror {
     repair_wood: f32,
 }
 
-/// Terrain seen by the colony: rivers, lakes and ponded water are water.
 pub struct WorldLand<'a> {
     pub world: &'a worldgen::World,
     pub depth: &'a grid::Grid<f32>,
@@ -840,7 +723,6 @@ fn water_wet() -> f32 {
     buildings::WET_DEPTH
 }
 
-/// Lets events and trade read and change the colony's stores and beavers.
 pub struct ColonyHost<'a> {
     pub colony: &'a mut colony::Colony,
 }
@@ -898,7 +780,6 @@ mod tests {
         let line: Vec<water::Cell> = (x0 - 8..=x0).map(|x| (x, y0)).collect();
         assert!(s.dam_site(&line).is_err(), "a line on dry ground has no site");
         *s.water.depth.get_mut(x0, y0).unwrap() = 0.5;
-        // The middle cell's 3x1 site is dry; the nearest that reaches the water starts two short of it.
         assert_eq!(s.dam_site(&line), Ok((x0 - 2, y0)));
         let id = s.order_dam(&line, 1.0).unwrap();
         assert_eq!(s.buildings.building(id).unwrap().pos, (x0 - 2, y0));
@@ -981,11 +862,9 @@ mod tests {
         assert_eq!(s.buildings.stores.amount(Good::Logs), logs + 5.0);
         assert!(s.buildings.building(id).is_none() && s.work.place(id).is_none());
         assert!(s.cancel_site(id).is_err(), "already gone");
-        s.step(0.2).unwrap(); // nobody trips over the vanished site
+        s.step(0.2).unwrap();
     }
 
-    /// Cancelling a dam half built leaves the half that stands, and gives back only the
-    /// materials not yet built into it.
     #[test]
     fn a_cancelled_half_built_dam_stays_as_built() {
         let (mut s, dam) = starts::new_game_with_dam(2).unwrap();
@@ -1033,8 +912,6 @@ mod tests {
         assert!(s.colony.beavers.iter().all(|b| b.current_job.is_none_or(|j| s.features.allows_job(j))));
     }
 
-    /// One job model: the colony job follows the work slot, skills grow from slot work, and free
-    /// beavers do no abstract work with colony-wide effects.
     #[test]
     fn slot_work_drives_the_colony_job_and_free_beavers_do_no_abstract_work() {
         use crate::jobs::fixtures::{colony, near, workplace};

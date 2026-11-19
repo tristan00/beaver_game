@@ -1,6 +1,3 @@
-//! Procedural sound synthesis (pure std, no assets): continuous beds (water, wind), one-shot
-//! voices (birds, frogs, gnawing, splashes, thunks, ice) and a gentle generative music loop.
-//! `Synth::render` produces interleaved stereo f32 at `SAMPLE_RATE`.
 use super::mix::{LayerVolumes, Season, VolumeSettings};
 use std::f32::consts::{PI, TAU};
 
@@ -8,7 +5,6 @@ pub const SAMPLE_RATE: u32 = 44_100;
 const BLOCK: usize = 256;
 const MAX_VOICES: usize = 72;
 
-/// Layer volumes plus user settings: everything the synth is steered by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mix {
     pub layers: LayerVolumes,
@@ -20,8 +16,6 @@ impl Default for Mix {
         Self { layers: LayerVolumes::SILENT, settings: VolumeSettings::default() }
     }
 }
-
-// ---- small DSP helpers ----------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct Rng(u64);
@@ -50,7 +44,6 @@ impl Rng {
     }
 }
 
-/// Chamberlin state-variable filter: returns (low, band, high).
 #[derive(Clone, Copy, Default)]
 struct Svf {
     lp: f32,
@@ -67,7 +60,6 @@ impl Svf {
     }
 }
 
-/// Slow wandering control signal in 0..1 (sum of three incommensurate sines).
 #[derive(Clone, Copy)]
 struct Wander {
     ph: [f32; 3],
@@ -96,32 +88,21 @@ fn midi_hz(m: f32) -> f32 {
     440.0 * ((m - 69.0) / 12.0).exp2()
 }
 
-// ---- one-shot voices ----------------------------------------------------------------------
-
 enum Kind {
-    /// Water bubble: rising sine blip.
     Bubble { f0: f32, ph: f32 },
-    /// A run of syllables (bird phrase or frog peeper series). `shape`: 0 up, 1 down, 2 trill, 3 peeper.
     Phrase { n: u32, syl: f32, gap: f32, base: f32, span: f32, shape: u8, seed: f32, ph: f32 },
-    /// Frog croak: pulse-train modulated harmonic tone.
     Croak { f0: f32, rate: f32, len: f32, ph: f32, pp: f32 },
-    /// Beaver gnawing: a rapid run of tiny woody clicks.
     Gnaw { rate: f32, len: f32, next: f32, env: f32, svf: Svf, fc: f32 },
-    /// Water plop, or a tail slap (crack + thump + spray).
     Splash { slap: bool, a: Svf, b: Svf, ph: f32 },
-    /// Wood thunk: modal body plus a click.
     Thunk { f0: f32, ph: [f32; 3], lp: f32 },
-    /// Ice: 0 creak, 1 tinkle, 2 deep boom.
     Ice { kind: u8, f0: f32, f1: f32, len: f32, ph: f32 },
 }
 
 struct Voice {
     kind: Kind,
-    /// Seconds since start; negative = delayed start.
     t: f32,
     amp: f32,
     pan: f32,
-    /// true = effects bus, false = ambience bus.
     effect: bool,
 }
 
@@ -134,7 +115,6 @@ impl Voice {
         self
     }
 
-    /// Next mono sample; `None` once the voice has finished.
     fn tick(&mut self, rng: &mut Rng) -> Option<f32> {
         let dt = 1.0 / SAMPLE_RATE as f32;
         self.t += dt;
@@ -215,7 +195,6 @@ impl Voice {
                     *ph = (*ph + TAU * (55.0 + 90.0 * (-t / 0.05).exp()) * dt) % TAU;
                     s += crack * (-t / 0.012).exp() * 2.2 + ph.sin() * (-t / 0.11).exp() * 0.9;
                 } else {
-                    // a little "bloop" under the splash
                     *ph = (*ph + TAU * (260.0 + 900.0 * t) * dt) % TAU;
                     s += ph.sin() * (-t / 0.05).exp() * 0.5;
                 }
@@ -265,8 +244,6 @@ impl Voice {
     }
 }
 
-// ---- generative music -------------------------------------------------------------------------
-
 struct PadOsc {
     freq: f32,
     ph: f32,
@@ -300,7 +277,6 @@ struct Music {
 
 const MAJOR_PENT: [i32; 5] = [0, 2, 4, 7, 9];
 const MINOR_PENT: [i32; 5] = [0, 3, 5, 7, 10];
-/// ~54 bpm; a step is half a beat.
 const STEP_SAMPLES: i32 = (SAMPLE_RATE as f32 * 60.0 / 54.0 / 2.0) as i32;
 
 impl Music {
@@ -328,7 +304,6 @@ impl Music {
     }
 
     fn new_chord(&mut self, season: Season) {
-        // Season picks key and mood: bright and open in spring/summer, mellow in autumn, hushed in winter.
         let (root, minor) = match season {
             Season::Spring => (55.0, false),
             Season::Summer => (48.0, false),
@@ -337,7 +312,6 @@ impl Music {
         };
         self.root = root;
         self.minor = minor;
-        // Wander along the scale, tending to come home.
         let moves = [-3, -2, 0, 2, 3, 5];
         self.degree = (self.degree + moves[(self.rng.f() * 6.0) as usize % 6]).clamp(-2, 7);
         if self.rng.chance(0.3) {
@@ -408,7 +382,6 @@ impl Music {
             r += s * gr;
         }
         self.plucks.retain(|p| p.t < 4.5);
-        // Soft cross-fed echo for space.
         let (il, ir) = (self.di % self.delay[0].len(), self.di % self.delay[1].len());
         let (wl, wr) = (self.delay[0][il], self.delay[1][ir]);
         self.damp[0] += 0.35 * (wr * 0.55 - self.damp[0]);
@@ -418,14 +391,11 @@ impl Music {
         self.di = self.di.wrapping_add(1);
         l += wl * 0.5;
         r += wr * 0.5;
-        // Take the edge off.
         self.lowpass[0] += 0.3 * (l - self.lowpass[0]);
         self.lowpass[1] += 0.3 * (r - self.lowpass[1]);
         (self.lowpass[0], self.lowpass[1])
     }
 }
-
-// ---- the synth ------------------------------------------------------------------------------
 
 const N_LAYERS: usize = 9;
 const WATER: usize = 0;
@@ -448,7 +418,6 @@ pub struct Synth {
     music_cur: f32,
     voices: Vec<Voice>,
     music: Music,
-    // continuous beds, per channel
     water_a: [Svf; 2],
     water_b: [Svf; 2],
     water_c: [Svf; 2],
@@ -490,7 +459,6 @@ impl Synth {
         }
     }
 
-    /// Renders interleaved stereo frames into `out` (length must be even).
     pub fn render(&mut self, mix: &Mix, out: &mut [f32]) {
         let settings = mix.settings.clamped();
         let target = layer_array(&mix.layers);
@@ -538,7 +506,6 @@ impl Synth {
         self.frames += (out.len() / 2) as u64;
     }
 
-    /// Continuous layers: flowing water, summer breeze and leaves, winter wind.
     fn beds(&mut self) -> (f32, f32) {
         let mut out = [0.0f32; 2];
         let (w, wd, ww) = (self.cur[WATER], self.cur[WIND], self.cur[WWIND]);
@@ -581,20 +548,17 @@ impl Synth {
         }
     }
 
-    /// Poisson-ish scheduling of one-shot voices, once per block, rate scaled by layer volume.
     fn spawn_events(&mut self, mix: &Mix) {
         let dt = BLOCK as f32 / SAMPLE_RATE as f32;
         let c = self.cur;
         let eff = true;
         let roll = |s: &mut Self, rate: f32, vol: f32| vol > 0.01 && s.rng.f() < rate * vol * dt;
 
-        // water: bubbles
         if roll(self, 26.0, c[WATER]) {
             let f0 = self.rng.range(380.0, 1500.0);
             let (amp, pan) = (self.rng.range(0.05, 0.14) * c[WATER], self.rng.range(-0.8, 0.8));
             self.spawn(Voice::new(Kind::Bubble { f0, ph: 0.0 }, amp, pan, false));
         }
-        // birds
         if roll(self, 0.55, c[BIRDS]) {
             let amp = (0.12 + 0.22 * c[BIRDS]) * self.rng.range(0.6, 1.0);
             let pan = self.rng.range(-0.9, 0.9);
@@ -607,7 +571,6 @@ impl Synth {
             };
             self.spawn(Voice::new(kind, amp, pan, eff));
         }
-        // frogs: croaks and peepers
         if roll(self, 1.3, c[FROGS]) {
             let f0 = self.rng.range(95.0, 190.0);
             let amp = (0.13 + 0.25 * c[FROGS]) * self.rng.range(0.6, 1.0);
@@ -621,13 +584,11 @@ impl Synth {
             let pan = self.rng.range(-0.9, 0.9);
             self.spawn(Voice::new(kind, amp, pan, eff));
         }
-        // beavers gnawing
         if roll(self, 0.3, c[GNAW]) {
             let kind = Kind::Gnaw { rate: self.rng.range(7.0, 11.0), len: self.rng.range(0.9, 2.4), next: 0.0, env: 0.0, svf: Svf::default(), fc: self.rng.range(1500.0, 2600.0) };
             let (amp, pan) = (0.18 + 0.3 * c[GNAW], self.rng.range(-0.6, 0.6));
             self.spawn(Voice::new(kind, amp, pan, eff));
         }
-        // splashes and tail slaps
         if roll(self, 0.22, c[SPLASH]) {
             let (amp, pan) = (0.4 + 0.6 * c[SPLASH], self.rng.range(-0.8, 0.8));
             self.spawn(Voice::new(Kind::Splash { slap: false, a: Svf::default(), b: Svf::default(), ph: 0.0 }, amp, pan, eff));
@@ -636,7 +597,6 @@ impl Synth {
             let (amp, pan) = (0.6 + 0.6 * c[SPLASH], self.rng.range(-0.8, 0.8));
             self.spawn(Voice::new(Kind::Splash { slap: true, a: Svf::default(), b: Svf::default(), ph: 0.0 }, amp, pan, eff));
         }
-        // wood thunks at work sites (often in pairs)
         if roll(self, 0.8, c[THUNK]) {
             let (amp, pan) = (0.22 + 0.35 * c[THUNK], self.rng.range(-0.6, 0.6));
             let f0 = self.rng.range(150.0, 260.0);
@@ -648,7 +608,6 @@ impl Synth {
                 self.spawn(Voice::new(Kind::Thunk { f0: f1, ph: [0.0; 3], lp: 0.0 }, amp * 0.8, pan, eff).delayed(delay));
             }
         }
-        // ice
         if roll(self, 0.14, c[ICE]) {
             let f0 = self.rng.range(900.0, 2200.0);
             let kind = Kind::Ice { kind: 0, f0, f1: f0 * self.rng.range(0.15, 0.4), len: self.rng.range(0.35, 0.8), ph: 0.0 };
@@ -753,7 +712,6 @@ mod tests {
         let summer = LayerVolumes { water: 0.9, wind: 0.4, birds: 0.7, frogs: 0.4, music: 0.6, ..LayerVolumes::SILENT };
         let winter = LayerVolumes { water: 0.15, winter_wind: 0.6, ice: 0.9, music: 0.5, warmth: 0.0, season: Season::Winter, ..LayerVolumes::SILENT };
         let (s, w) = (render(summer, 6, 4), render(winter, 6, 4));
-        // Zero-crossing rate is a crude brightness measure: birdsong keeps summer brighter.
         let zc = |x: &[f32]| x.chunks(2).map(|f| f[0]).collect::<Vec<_>>().windows(2).filter(|p| p[0] * p[1] < 0.0).count();
         assert!(zc(&s) > zc(&w), "summer {} winter {}", zc(&s), zc(&w));
     }

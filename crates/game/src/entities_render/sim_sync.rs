@@ -1,10 +1,3 @@
-//! Systems that keep the drawn world equal to `SimState`: one sprite per beaver agent at its sim
-//! position and pose, one entity per map resource (standing trees, felled trees and logs, mud banks,
-//! stone outcrops, plants) and one per building or construction site (rising with progress).
-//!
-//! Everything is diffed against the sim each frame by id and a small signature, so only things that
-//! changed touch the ECS. Beaver sprites carry no meshes here; `attach_rigs` in the parent module
-//! adds the animated rig, which keeps these systems testable without a renderer.
 use super::scene::{height_at, Species, StructKind};
 use super::sim_view::*;
 use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod, WheelSpin};
@@ -17,8 +10,6 @@ use sim::resources::{ResourceId, ResourceKind};
 use sim::worldgen::Tree;
 use std::collections::{HashMap, HashSet};
 
-/// Sim time that has passed since the last fixed step, in days, so drawn motion is continuous
-/// between steps. Zero when the sim has just stepped (and always in tests).
 #[derive(Resource, Default)]
 pub struct PendingDays(pub f32);
 
@@ -26,30 +17,16 @@ pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) 
     p.0 = clock.map_or(0.0, |c| c.pending_days());
 }
 
-/// Where a beaver was at recent sim steps, so it can be drawn moving smoothly between them.
-///
-/// The sim moves a beaver in whole steps (`sim::STEP_DAYS`), often more than a cell per step, and
-/// the renderer must not guess ahead of it (the sim may refuse a move). So a sprite is drawn one
-/// step in the past, interpolated between the positions recorded at the steps either side: it moves
-/// continuously along its path instead of running to a cell edge, stopping and jumping.
 #[derive(Component, Default)]
 pub struct Motion {
-    /// (sim day, x, z, height above the terrain) at each step seen, oldest first.
     samples: std::collections::VecDeque<(f64, Vec2, f32)>,
 }
 
-/// Drawn size of a beaver (model units to world): about a cell long, small beside a grown tree.
 pub const BEAVER_SIZE: f32 = WORLD_SCALE * 0.9;
-/// Drawn size of buildings: a little inside their footprint, so a lodge reads as a beaver's
-/// house, not a hall, beside the trees.
 pub const BUILDING_SIZE: f32 = WORLD_SCALE * 0.82;
 
-/// How far (world units) from its cell centre a beaver stands, so beavers sharing a cell do not
-/// overlap.
 const SPREAD: f32 = 0.28;
 
-/// Where in its cell beaver `id` stands: a little off the centre, always on its own side, so beavers
-/// sharing a cell do not overlap. None without the game clock (tests check exact sim positions).
 fn spread(id: u64, game: bool) -> Vec3 {
     if !game {
         return Vec3::ZERO;
@@ -58,11 +35,9 @@ fn spread(id: u64, game: bool) -> Vec3 {
     Vec3::new(a.cos(), 0.0, a.sin()) * SPREAD
 }
 
-/// A move longer than this between two steps is a jump (into or out of a lodge), not a walk: snap.
 const SNAP_DISTANCE: f32 = 4.0;
 
 impl Motion {
-    /// Records the sprite's sim position at sim day `t` (once per step).
     fn record(&mut self, t: f64, xz: Vec2, lift: f32) {
         match self.samples.back_mut() {
             Some(b) if b.0 == t => *b = (t, xz, lift),
@@ -72,13 +47,11 @@ impl Motion {
             }
             _ => self.samples.push_back((t, xz, lift)),
         }
-        while self.samples.len() > 8 {
+        while self.samples.len() > 256 {
             self.samples.pop_front();
         }
     }
 
-    /// The position (x, z, lift) at sim day `t`, between the samples either side of it, and the
-    /// direction of travel there (`None` when standing still).
     fn at(&mut self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
         while self.samples.len() > 2 && self.samples[1].0 <= t {
             self.samples.pop_front();
@@ -91,7 +64,6 @@ impl Motion {
     }
 }
 
-/// Spawns, updates and removes one beaver sprite per sim agent.
 #[allow(clippy::too_many_arguments)]
 pub fn sync_sim_beavers(
     mut commands: Commands,
@@ -106,7 +78,6 @@ pub fn sync_sim_beavers(
         return;
     }
     seen.clear();
-    // Drawn one step behind while the game clock runs (tests step the sim themselves: no delay).
     let delay = if clock.is_some() { sim::STEP_DAYS as f64 } else { 0.0 };
     let pending = clock.as_ref().map_or(pending.0, |c| c.pending_days());
     let now = sim.0.time_days + pending as f64 - delay;
@@ -118,7 +89,19 @@ pub fn sync_sim_beavers(
         seen.insert(sprite.id);
         let p = agent_world_pos(&sim.0, ag, 0.0) + spread(sprite.id, clock.is_some());
         let ground = |xz: Vec2| height_at(&sim.0.height, xz.x, xz.y);
-        motion.record(sim.0.time_days, p.xz(), p.y - ground(p.xz()));
+        let mut end = sim.0.time_days;
+        if motion.samples.back().is_none_or(|b| b.0 < sim.0.time_days) && !ag.trail.is_empty() {
+            let pace = sim::agents::MOVE_COST_PER_DAY * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
+            let mut t = sim.0.time_days - sim::STEP_DAYS as f64;
+            for &(c, gait) in &ag.trail {
+                t = (t + (super::sim_view::gait_cost(gait) / pace) as f64).min(sim.0.time_days);
+                let q = super::sim_view::cell_xz(&sim.0, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + spread(sprite.id, clock.is_some()).xz();
+                motion.record(t, q, super::sim_view::stand_y(&sim.0, c) - ground(q));
+            }
+            end = t;
+        }
+        let last = motion.samples.back().map_or(end, |b| b.0);
+        motion.record(end.max(last), p.xz(), p.y - ground(p.xz()));
         let heading = match motion.at(now) {
             Some((xz, lift, dir)) => {
                 tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
@@ -132,7 +115,6 @@ pub fn sync_sim_beavers(
         sprite.pose = pose_of(&sim.0, ag);
         sprite.load = load_of(ag);
         sprite.wet = is_wet(&sim.0, ag);
-        // face the way it is actually going; standing, face what it works on
         if let Some(d) = heading {
             sprite.yaw = d.x.atan2(d.y);
         } else if let Some(y) = facing_of(&sim.0, ag) {
@@ -158,18 +140,10 @@ pub fn sync_sim_beavers(
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Resources
-// ---------------------------------------------------------------------------------------------
-
-/// What a resource entity currently shows; the entity is only touched when this changes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResSig {
-    /// A standing tree and its stage (`sim::forestry::TreeStage as u8`).
     Tree(u8),
-    /// Logs still lying there (whole logs, rounded up) and whether the branches remain.
     Felled(u8, bool),
-    /// Remaining stock quantised to eighths (mud, stone) or quarters (plants).
     Stock(ResourceKindTag, u8),
 }
 
@@ -211,18 +185,14 @@ fn species_at(sim: &sim::SimState, c: (usize, usize)) -> Species {
 
 #[derive(Default)]
 pub struct WorldSync {
-    /// (seed, game generation) the drawn state belongs to: a restart or new game on the same map
-    /// keeps the seed but must start drawing from scratch.
     seed: Option<(u64, u32)>,
     time: f64,
     res: HashMap<ResourceId, (Entity, ResSig)>,
     bld: HashMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
-    /// Floor height each water building was last drawn at (see `building_transform`).
     anchors: HashMap<BuildingId, f32>,
     lodges: HashMap<u64, Entity>,
 }
 
-/// A tree's size by stage: saplings small, young trees half grown, old ones a little broader.
 pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
     use sim::forestry::TreeStage::*;
     match st {
@@ -267,13 +237,10 @@ fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3)
     Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(scale)
 }
 
-/// Old trees are drawn darker; everything else with the shared material.
 fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<StandardMaterial> {
     if r.stage() == Some(sim::forestry::TreeStage::Old) { models.old_tree.clone() } else { models.white.clone() }
 }
 
-/// Standing trees (scaled by stage, old ones darker, snags as bare trunks), felled trees with
-/// their logs, mud banks, stone deposits and plants.
 pub fn sync_sim_resources(
     mut commands: Commands,
     cli: Res<Cli>,
@@ -300,7 +267,8 @@ pub fn sync_sim_resources(
     }
     st.time = sim.time_days;
     let mut live: HashSet<ResourceId> = HashSet::with_capacity(sim.resources.items.len());
-    for r in &sim.resources.items {
+    let no_trees = std::env::var_os("BC_NO_TREES").is_some();
+    for r in sim.resources.items.iter().filter(|r| !(no_trees && r.kind == ResourceKind::Tree)) {
         live.insert(r.id);
         let sig = res_sig(r);
         match st.res.get(&r.id).copied() {
@@ -336,11 +304,6 @@ pub fn sync_sim_resources(
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Buildings and sites
-// ---------------------------------------------------------------------------------------------
-
-/// The model that stands for a sim building kind (kinds without their own model borrow the nearest).
 pub fn model_kind(k: BuildingKind) -> StructKind {
     match k {
         BuildingKind::Dam => StructKind::Dam,
@@ -367,16 +330,10 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
     }
 }
 
-/// Construction progress `0..=1` of a building as shown (1 once complete).
 pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 {
     if b.status == Status::Complete { 1.0 } else { sim.work.progress(b.id).unwrap_or(0.0).clamp(0.0, 0.999) }
 }
 
-/// Where a building stands. Dry-ground buildings sit on their lowest footprint cell. A water
-/// building (one with a footing, `models::footing_of`) stands with its floor on the mean ground of
-/// its footprint or, where that is under water, just above the water, its footing reaching down to
-/// the bed. `anchor` is the floor height it was last drawn at: a building never sinks when its water
-/// drops, so a pond that drains leaves it standing on its exposed footing.
 fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor: Option<f32>) -> Transform {
     let (w, h) = b.kind.spec().footprint;
     let c = cell_xz(sim, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0));
@@ -392,7 +349,6 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
             .cells()
             .filter_map(|(x, y)| Some(sim.height.get(x, y)? + sim.water.depth.get(x, y).copied().filter(|d| *d > 0.02)?))
             .fold(f32::MIN, f32::max);
-        // with no water left in the footprint (a drained pond), it stood at about its highest bank
         let dry = if surface == f32::MIN { grounds.iter().copied().fold(f32::MIN, f32::max) - 0.05 } else { f32::MIN };
         mean.max(surface + 0.08).max(dry).max(anchor.unwrap_or(f32::MIN))
     } else {
@@ -438,12 +394,10 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
         e.id()
     };
     for b in &sim.buildings.buildings {
-        // dams are drawn cell by cell (`sync_sim_dams`); a dam site without a plan keeps its model
         if b.kind == BuildingKind::Dam && (b.is_complete() || sim.work.dam_plans.iter().any(|p| p.building == b.id)) {
             continue;
         }
         live.insert(b.id);
-        // a finished water building whose water has gone stands abandoned
         let stage = if sim.buildings.stranded(b, &sim.water.depth) { models::DRY_STAGE } else { models::stage_of(build_progress(sim, b)) };
         let sig = (b.kind, b.pos, stage);
         if st.bld.get(&b.id).is_some_and(|(_, s)| *s == sig) {
@@ -464,7 +418,6 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
             commands.entity(e).despawn();
         }
     }
-    // A colony lodge that is gone (abandoned, or a new game) is no longer drawn.
     let homes: HashSet<u64> = sim.colony.lodges.iter().map(|l| l.id.0).collect();
     let stale: Vec<u64> = st.lodges.keys().copied().filter(|id| !homes.contains(id)).collect();
     for id in stale {
@@ -472,7 +425,6 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
             commands.entity(e).despawn();
         }
     }
-    // The founding lodge lives in the colony, not the building list.
     let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Lodge).map(|b| b.pos).collect();
     for l in &sim.colony.lodges {
         if st.lodges.contains_key(&l.id.0) || lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
@@ -485,12 +437,6 @@ pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, 
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Dams
-// ---------------------------------------------------------------------------------------------
-
-/// What one dam cell shows: height in `DAM_STEP`s, line direction (`structures::dam_dir`), and
-/// whether it is still being built.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DamCellVis {
     pub steps: u8,
@@ -498,9 +444,6 @@ pub struct DamCellVis {
     pub site: bool,
 }
 
-/// Every dam cell to draw: built cells at their sim height, and the cells of unfinished dam orders
-/// risen a third, then two thirds of the way to their planned height as the work goes on (a low
-/// staked course before that).
 pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
     let (w, h) = (sim.water.dam_height.width(), sim.water.dam_height.height());
     let mut height: HashMap<(usize, usize), (f32, bool)> = HashMap::new();
@@ -536,15 +479,11 @@ pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
 
 #[derive(Default)]
 pub struct DamSync {
-    /// (seed, game generation) the drawn state belongs to: a restart or new game on the same map
-    /// keeps the seed but must start drawing from scratch.
     seed: Option<(u64, u32)>,
     time: f64,
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
 }
 
-/// Draws the dams: one bank segment per dam cell, turned along the line and as tall as the sim's
-/// dam there, so the bank follows the line the player drew and grows as it is raised.
 pub fn sync_sim_dams(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
     let Some(mut models) = models else { return };
     if super::stub_mode(&cli) {
@@ -590,31 +529,21 @@ pub fn sync_sim_dams(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, model
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Barges
-// ---------------------------------------------------------------------------------------------
-
-/// Length (model units, doubled) of a barge on the water.
 const BARGE_LEN2: u32 = 6;
-/// A barge is drawn a little larger than buildings so it reads among the trees on a river.
 const BARGE_SCALE: f32 = WORLD_SCALE * 1.4;
 
-/// One drawn barge: it glides from where it was drawn to its sim cell over about as long as the
-/// sim took to move it there, so it moves smoothly between cells at any game speed.
 #[derive(Component, Clone, Debug)]
 pub struct BargeVis {
     pub id: u64,
     pub cell: (usize, usize),
     pub from: Vec3,
     pub to: Vec3,
-    /// Sim day the glide to `to` began, and how many days it takes.
     pub t0: f64,
     pub dur: f32,
     pub yaw: f32,
     pub loaded: bool,
 }
 
-/// The water surface at the middle of a cell, where a barge floats.
 pub fn barge_point(sim: &sim::SimState, c: (usize, usize)) -> Vec3 {
     let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
     let ground = height_at(&sim.height, p.x, p.y);
@@ -622,14 +551,11 @@ pub fn barge_point(sim: &sim::SimState, c: (usize, usize)) -> Vec3 {
     Vec3::new(p.x, ground.max(water), p.y)
 }
 
-/// Where a glide is at sim day `now`.
 pub fn glide(v: &BargeVis, now: f64) -> Vec3 {
     let t = if v.dur <= 0.0 { 1.0 } else { (((now - v.t0) as f32) / v.dur).clamp(0.0, 1.0) };
     v.from.lerp(v.to, t)
 }
 
-/// Starts the glide to a barge's new cell from where it is drawn at `now`; the glide lasts as long
-/// as the last cell took (clamped to a sane range), and the barge turns to face the way it goes.
 pub fn retarget(v: &mut BargeVis, cell: (usize, usize), to: Vec3, now: f64) {
     let here = glide(v, now);
     v.dur = ((now - v.t0) as f32).clamp(1.0 / sim::shipping::BARGE_SPEED, 0.6);
@@ -639,7 +565,7 @@ pub fn retarget(v: &mut BargeVis, cell: (usize, usize), to: Vec3, now: f64) {
     v.cell = cell;
     let d = to - here;
     if d.x.abs() + d.z.abs() > 1e-3 {
-        v.yaw = d.x.atan2(d.z); // the model's bow is +Z
+        v.yaw = d.x.atan2(d.z);
     }
 }
 
@@ -647,8 +573,6 @@ fn is_loaded(b: &sim::buildings::Barge) -> bool {
     b.hold.iter().any(|h| h.1 > 0.05) || b.cargo.is_some_and(|c| c.1 > 0.05)
 }
 
-/// Spawns, moves and removes one model per sim barge (`sim.buildings.barges`), with a load on
-/// deck while anything is aboard.
 pub fn sync_sim_barges(
     mut commands: Commands,
     cli: Res<Cli>,
@@ -710,10 +634,8 @@ mod motion_tests {
         let (p, lift, dir) = m.at(0.025).unwrap();
         assert!((p.x - 1.0).abs() < 1e-4 && (lift - 0.1).abs() < 1e-4, "half way between the steps");
         assert_eq!(dir.map(|d| d.normalize()), Some(Vec2::X), "heading is the way it is going");
-        // standing still: no heading
         m.record(0.1, Vec2::new(2.0, 0.0), 0.2);
         assert_eq!(m.at(0.075).unwrap().2, None);
-        // into a lodge across the map: no slide
         m.record(0.15, Vec2::new(40.0, 0.0), 0.0);
         assert_eq!(m.at(0.12).unwrap().0, Vec2::new(40.0, 0.0));
     }

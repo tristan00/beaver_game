@@ -1,14 +1,3 @@
-//! Soft, light-hearted terrain: chunked, vertex-coloured heightmap with seasonal palette, gentle
-//! sun/ambient/sky, incremental updates and distance LOD.
-//!
-//! * The world is cut into `CHUNK`-cell chunks; each chunk is its own mesh entity.
-//! * Every frame each chunk's input fields (height, water depth, vegetation) are hashed; only
-//!   chunks whose hash (or LOD / season bucket) changed are rebuilt, at most `REBUILD_BUDGET` per frame.
-//! * Chunks far from the camera use a coarser grid (LOD); small skirts hide LOD cracks.
-//! * `Season` (resource) is derived from `SimState::time_days`; `Palette` turns it into colours.
-//!
-//! Debug env vars (all optional): `BEAVER_SEASON=spring|summer|autumn|winter|0..1` pins the season,
-//! `BEAVER_FRAMELOG=<file>` measures frame time (vsync off) and writes the result.
 use crate::camera::MainCamera;
 use crate::state::Sim;
 use bevy::app::AppExit;
@@ -20,36 +9,26 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::PresentMode;
-use sim::grid::HeightGrid;
 use sim::SimState;
 
-/// World units between neighbouring grid cells.
 pub const CELL_SIZE: f32 = 1.0;
-/// Cells per chunk edge.
 pub const CHUNK: usize = 16;
-/// Simulated days per in-game year.
 pub const YEAR_DAYS: f64 = sim::calendar::YEAR_DAYS;
-/// Chunk rebuilds allowed per frame (the first build is unlimited).
 const REBUILD_BUDGET: usize = 10;
-/// Camera distance beyond which a chunk uses 2x coarser cells.
 const LOD1_DISTANCE: f32 = 150.0;
-/// Depth below which a cell counts as dry.
 pub const WET_EPS: f32 = 0.02;
 
 pub struct TerrainRenderPlugin;
 
-/// Marks every terrain chunk entity (used e.g. by screenshot mode to know when it is drawn).
 #[derive(Component)]
 pub struct Terrain;
 
-/// Position in the year: 0..1, spring is centred on 0.125, summer 0.375, autumn 0.625, winter 0.875.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct Season {
     pub phase: f32,
 }
 
 impl Season {
-    /// Bucketed phase so the world is only recoloured in small steps.
     pub fn bucket(&self) -> u32 {
         (self.phase * 120.0) as u32
     }
@@ -79,24 +58,19 @@ impl Plugin for TerrainRenderPlugin {
     }
 }
 
-// ───────────────────────────── palette ─────────────────────────────
-
 use crate::palette::{self as pal, mix, rgb, Rgb};
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
-/// sRGB triple to linear RGBA (vertex colours are linear).
 pub fn lin(c: Rgb, a: f32) -> [f32; 4] {
     let l = Color::srgb(c[0], c[1], c[2]).to_linear();
     [l.red, l.green, l.blue, a]
 }
 
-/// All season-dependent colours, in sRGB.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub grass: Rgb,
-    /// Sunlit and shaded ends of the grass gradient (`docs/STYLE.md` section 2).
     pub grass_light: Rgb,
     pub grass_deep: Rgb,
     pub mud: Rgb,
@@ -111,23 +85,17 @@ pub struct Palette {
     pub water_shallow: Rgb,
     pub water_deep: Rgb,
     pub ice: Rgb,
-    /// 0..1: how wintry (snow cover, ice).
     pub winter: f32,
 }
 
-// Keyframes: spring, summer, autumn, winter. Summer is exactly the style guide's Meadow trio.
 const GRASS_LIGHT: [Rgb; 4] = [rgb(0xB6E284), pal::MEADOW_LIGHT, rgb(0xE8D890), rgb(0xE2E8E4)];
 const GRASS: [Rgb; 4] = [rgb(0x94CE70), pal::MEADOW, pal::STRAW, rgb(0xCBD8D0)];
 const GRASS_DEEP: [Rgb; 4] = [rgb(0x68B35C), pal::MEADOW_DEEP, rgb(0xB7AE66), rgb(0xA9BAB6)];
 const WETLAND: [Rgb; 4] = [rgb(0x74C48A), rgb(0x6CBE86), rgb(0xBFB574), rgb(0xA8C2BC)];
 const SKY: [Rgb; 4] = [pal::SKY, pal::SKY, rgb(0xB4D0EC), pal::SKY_WINTER];
 const SUN: [Rgb; 4] = [pal::SUN, pal::SUN, pal::SUN_AUTUMN, rgb(0xF0F2FF)];
-/// Sun and ambient are "linear light" factors on the albedo (tone mapping is off, so a vertex colour
-/// appears as itself under ambient 1.0): the sun only adds on top, nothing is ever darker than the
-/// ambient floor.
 const SUN_LUX: [f32; 4] = [1_300.0, 1_400.0, 1_250.0, 1_000.0];
 const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0.93], [0.96, 0.96, 0.98]];
-/// Ambient radiance on a surface (~4400 = full albedo at the default camera exposure, measured).
 pub const AMBIENT_LUX: f32 = 4_400.0;
 const WATER_SHALLOW: [Rgb; 4] = [pal::WATER_SHALLOW, pal::WATER_SHALLOW, rgb(0x7CCBD0), rgb(0x9CCFE2)];
 const WATER_DEEP: [Rgb; 4] = [pal::WATER_DEEP, pal::WATER_DEEP, rgb(0x3C84A0), rgb(0x5A9CC0)];
@@ -144,7 +112,6 @@ fn cyc<T: Copy>(k: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
 impl Palette {
     pub fn at(phase: f32) -> Palette {
         let c = |k: &[Rgb; 4]| cyc(k, phase, mix);
-        // Winter peaks at 0.875 and fades over ~0.17 of a year either side (snow lingers a bit).
         let d = (phase.rem_euclid(1.0) - 0.875).abs();
         let d = d.min(1.0 - d);
         Palette {
@@ -177,7 +144,6 @@ fn update_season(sim: Res<Sim>, mut season: ResMut<Season>, mut started: Local<O
     }
     let base = *started.get_or_insert(season.phase);
     let phase = ((base as f64 + sim.0.time_days / YEAR_DAYS).rem_euclid(1.0)) as f32;
-    // Only publish changes in coarse steps so change detection stays meaningful.
     let next = Season { phase };
     if next.bucket() != season.bucket() {
         *season = next;
@@ -203,24 +169,18 @@ fn update_sky_and_light(
     }
 }
 
-// ───────────────────────────── field access / hashing ─────────────────────────────
-
-/// Reads a grid with coordinates clamped into range (works for ±1 borders).
 pub fn at(g: &sim::Grid<f32>, x: i32, y: i32) -> f32 {
     let x = x.clamp(0, g.width() as i32 - 1) as usize;
     let y = y.clamp(0, g.height() as i32 - 1) as usize;
     g.as_slice()[y * g.width() + x]
 }
 
-/// The map view the HUD asks for (`hud::MapLens::code`): 0 the normal world, 1 water, 2 goods,
-/// 3 forest, 4 elevation. Chunks fold it into their hash, so changing it recolours terrain and water.
 pub static MAP_LENS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn map_lens() -> u8 {
     MAP_LENS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Hash of every field value in the chunk region padded by `pad` cells, mixed with `extra`.
 pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, with_veg: bool) -> u64 {
     let extra = extra ^ ((map_lens() as u64) << 48);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ extra.wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -228,14 +188,11 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     let n = CHUNK as i32 + 2 * pad;
     for y in y0..=y0 + n {
         for x in x0..=x0 + n {
-            // depth quantised to 1/64 unit: rain/evaporation drift far below what is visible must
-            // not rebuild every wet chunk every frame
             let dq = (at(&s.water.depth, x, y) * 64.0).round() as i32;
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             if with_veg {
                 let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
                 v ^= (vq as u32 as u64).rotate_left(17);
-                // a drained bed greens over in a few visible steps, not every frame
                 let bq = (dried_bed(s, x, y) * 6.0).round() as u64;
                 v ^= bq.rotate_left(41);
             }
@@ -246,7 +203,6 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     h
 }
 
-/// LOD step (cells per vertex) for a chunk at `centre` seen from `cam`.
 pub fn lod_step(cam: Vec3, centre: Vec3) -> usize {
     if cam.distance(centre) > LOD1_DISTANCE { 2 } else { 1 }
 }
@@ -279,11 +235,8 @@ pub fn min_height(s: &SimState) -> f32 {
     s.height.as_slice().iter().cloned().fold(f32::MAX, f32::min).min(max_height(s) - 0.5)
 }
 
-/// Lens code of the elevation view (`hud::MapLens::Elevation`).
 pub const ELEVATION_LENS: u8 = 4;
 
-/// The elevation lens' calm sequential ramp (sRGB) at `t` in 0..1: dark slate teal on low ground
-/// through sage and tan to pale cream on the heights.
 pub fn elevation_ramp(t: f32) -> Rgb {
     const STOPS: [Rgb; 4] = [[0.25, 0.36, 0.39], [0.45, 0.57, 0.47], [0.76, 0.71, 0.53], [0.96, 0.92, 0.80]];
     let t = t.clamp(0.0, 1.0) * (STOPS.len() - 1) as f32;
@@ -291,7 +244,6 @@ pub fn elevation_ramp(t: f32) -> Rgb {
     mix(STOPS[i], STOPS[i + 1], t - i as f32)
 }
 
-/// Water in the elevation lens: one flat blue whatever the depth, so a pond reads as a level.
 pub const ELEVATION_WATER: Rgb = [0.31, 0.56, 0.86];
 
 fn noise(x: i32, y: i32) -> f32 {
@@ -302,14 +254,9 @@ fn noise(x: i32, y: i32) -> f32 {
     (h & 0xffff) as f32 / 65535.0 * 2.0 - 1.0
 }
 
-/// Grass gradient position (0 Meadow deep .. 0.5 Meadow .. 1 Meadow light): centre and how far the
-/// large patches and the sun-facing lift push it. Terrain shows its albedo on screen (see
-/// `terrain_shadow.wesl`), so the spread is what puts all three greens on screen (STYLE.md section 2).
 const GRADE_MID: f32 = 0.58;
 const GRADE_PATCH: f32 = 1.3;
 const GRADE_SUN: f32 = 1.2;
-
-// ───────────────────────────── terrain meshing ─────────────────────────────
 
 #[derive(Default)]
 struct Slot {
@@ -325,23 +272,14 @@ pub struct TerrainChunks {
     material: Handle<TerrainMaterial>,
 }
 
-// ───────────── plum sun shadows (docs/STYLE.md shared lighting rule) ─────────────
-
-/// Terrain material: StandardMaterial plus the plum sun-shadow pass in `terrain_shadow.wesl`.
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, PlumShadow>;
 
-/// Sun shadows on terrain show the lit colour blended `SHADOW_BLEND` toward `pal::PLUM` (in sRGB),
-/// the shared `pal::SHADOW_MIX`; lighting alone only scales colour and gives a dull dark green.
 pub const SHADOW_BLEND: f32 = pal::SHADOW_MIX;
-/// Shadow-map visibility window mapped to fully shadowed..fully lit: a narrow window keeps the soft
-/// PCF penumbra to a thin edge (a few px), so shadowed ground reads as one flat plum shape.
 const SHADOW_EDGE: [f32; 2] = [0.42, 0.58];
-/// Share of the sun/slope lighting relief kept on lit terrain (flat sunlit ground shows its albedo).
 const LIGHT_RELIEF: f32 = 0.5;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct PlumShadow {
-    /// rgb: shadow colour (sRGB), a: blend toward it.
     #[uniform(100)]
     pub plum: Vec4,
     #[uniform(100)]
@@ -351,7 +289,6 @@ pub struct PlumShadow {
 impl Default for PlumShadow {
     fn default() -> Self {
         let p = pal::PLUM;
-        // `BC_SHADOW_MASK=1`: paint terrain flat by sun visibility, shadow magenta / penumbra cyan / lit yellow (tools/shadow_check.py).
         let mask = if std::env::var_os("BC_SHADOW_MASK").is_some() { 1.0 } else { 0.0 };
         PlumShadow { plum: Vec4::new(p[0], p[1], p[2], SHADOW_BLEND), edge: Vec4::new(SHADOW_EDGE[0], SHADOW_EDGE[1], mask, LIGHT_RELIEF) }
     }
@@ -376,8 +313,6 @@ pub fn spawn_terrain(
         base: StandardMaterial { perceptual_roughness: 1.0, reflectance: 0.05, ..default() },
         extension: PlumShadow::default(),
     });
-    // Underside of the world slab. Always drawn (no frustum culling), so it doubles as the
-    // `Terrain` marker screenshot mode waits on even when the camera is zoomed into one corner.
     let (w, d) = (sim.0.height.width() as f32 * CELL_SIZE / 2.0, sim.0.height.height() as f32 * CELL_SIZE / 2.0);
     let slab = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-w, -2.5, -d], [w, -2.5, -d], [w, -2.5, d], [-w, -2.5, d]])
@@ -459,10 +394,8 @@ fn update_terrain_chunks(
     }
 }
 
-/// Stone shade albedo (`#8C8290`) used as the rock shadow end of the gradient.
 const STONE_SHADE_ALBEDO: Rgb = rgb(0x8C8290);
 
-/// Smooth value noise in -1..1; one lattice cell is `scale` grid cells wide (soft, blobby patches).
 fn patch_noise(x: f32, y: f32, scale: f32, seed: i32) -> f32 {
     let (fx, fy) = (x / scale, y / scale);
     let (ix, iy) = (fx.floor(), fy.floor());
@@ -473,8 +406,6 @@ fn patch_noise(x: f32, y: f32, scale: f32, seed: i32) -> f32 {
     top + (bot - top) * ty
 }
 
-/// Gradient of the terrain around a vertex, smoothed over a 3x3 neighbourhood of `st`-cell taps
-/// (rounded hills instead of per-cell facets). Returns (dh/dx, dh/dz) per world unit.
 fn smooth_gradient(s: &SimState, x: i32, y: i32, st: i32) -> (f32, f32) {
     let h = |dx: i32, dy: i32| at(&s.height, x + dx * st, y + dy * st);
     let gx = (h(1, -1) - h(-1, -1) + 2.0 * (h(1, 0) - h(-1, 0)) + h(1, 1) - h(-1, 1)) / 8.0;
@@ -487,8 +418,6 @@ fn slope_at(s: &SimState, x: i32, y: i32) -> f32 {
     (gx * gx + gz * gz).sqrt()
 }
 
-/// Share of rock (0..1) on ground of this slope: exactly 0 up to `pal::ROCK_SLOPE_MIN` (docs/STYLE.md
-/// section 2), then a soft ramp. Height alone never makes rock.
 pub fn rock_weight(slope: f32) -> f32 {
     if slope <= pal::ROCK_SLOPE_MIN {
         return 0.0;
@@ -496,9 +425,6 @@ pub fn rock_weight(slope: f32) -> f32 {
     smooth(pal::ROCK_SLOPE_MIN, pal::ROCK_SLOPE_MIN + pal::ROCK_SLOPE_BLEND, slope)
 }
 
-/// Colour of one terrain vertex (sRGB). Grass runs from Meadow light to Meadow deep: sunny flat
-/// ground and large soft patches are light, hollows and slopes away from the sun are deep. Rock is
-/// Stone; nothing is darker than the style guide's floors (Meadow deep on grass, Stone shade on rock).
 fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: i32) -> Rgb {
     match map_lens() {
         0 => world_color(s, p, maxh, x, y),
@@ -507,8 +433,6 @@ fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: 
     }
 }
 
-/// Elevation lens colouring: the ramp by height between the map's lowest and highest ground, with
-/// a light hillshade so slopes still read; wet ground takes the flat water blue.
 fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
     let t = (at(&s.height, x, y) - minh) / (maxh - minh).max(0.5);
     let (gx, gz) = smooth_gradient(s, x, y, 1);
@@ -519,8 +443,6 @@ fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
     mix(land, ELEVATION_WATER, smooth(WET_EPS, 0.15, at(&s.water.depth, x, y)))
 }
 
-/// Lens colouring: land in grey clay by height (lit from the sun side so the shape still reads);
-/// the water lens colours the bed by water depth, the goods lens mutes it.
 fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32, lens: u8) -> Rgb {
     let t = (at(&s.height, x, y) / maxh).clamp(0.0, 1.0);
     let depth = at(&s.water.depth, x, y);
@@ -544,7 +466,6 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let (gx, gz) = smooth_gradient(s, x, y, 1);
     let slope = (gx * gx + gz * gz).sqrt();
     let veg = at(&s.ecology.vegetation, x, y).clamp(0.0, 1.0);
-    // Share of wet cells within 2 cells: drives wetland and the muddy shore band.
     let (mut wet2, mut wet1) = (0.0, 0.0);
     for dy in -2..=2 {
         for dx in -2..=2 {
@@ -558,52 +479,38 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     }
     let submerged = smooth(WET_EPS, 0.4, depth);
 
-    // Gradient position 0 (deep) .. 1 (light): large patches (60-140 px ~ 8-20 cells), a lift on
-    // sunny faces (light comes from -x/-z, the upper left) and a dip in hollows. No per-cell noise.
     let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
-    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5); // slope rising away from the sun faces it
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
     let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
     let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
-    // rock: steep or high
     let rock = rock_weight(slope);
     let rock_c = mix(STONE_SHADE_ALBEDO, p.rock, (0.55 + sunny * 0.9 + patch * 0.3).clamp(0.0, 1.0));
-    // soil shows through on the steep-but-not-rock slopes; leaf litter (Autumn rust) scatters in autumn
     let soil = smooth(0.35, pal::ROCK_SLOPE_MIN, slope) * (1.0 - rock);
     c = mix(c, pal::MUD, soil * 0.55);
     let autumn = smooth(0.45, 0.58, p.grass[0] - p.grass[2] + 0.2) * (1.0 - p.winter);
     let litter = smooth(0.15, 0.6, patch_noise(x as f32, y as f32, 5.0, 3) * 0.5 + 0.5) * autumn * veg.max(0.4);
     c = mix(c, pal::AUTUMN_RUST, litter * 0.35 * (1.0 - rock));
     c = mix(c, rock_c, rock);
-    // wetland on low ground near water
     let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
     c = mix(c, p.wetland, wetland * (1.0 - rock));
-    // muddy bank
     c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.7);
-    // river/lake bed: sandy teal in the shallows, cooling to the Deep blue (never grey) so water
-    // reads as clear cyan from far away
     let bed = mix([0.56, 0.78, 0.66], mix(p.water_shallow, p.water_deep, 0.6), (depth / 2.5).max(0.0).sqrt().min(1.0));
     c = mix(c, bed, submerged);
-    // a drained bed: where water stood until lately (`flood_days` still draining), pale cracked
-    // silt that greens over as the memory of the water fades
     let dried = dried_bed(s, x, y) * (1.0 - submerged);
     if dried > 0.0 {
         let mottle = smooth(-0.35, 0.45, patch_noise(x as f32, y as f32, 2.5, 4));
         let silt = mix(rgb(0xA88A66), rgb(0xD8C6A2), mottle);
         c = mix(c, silt, dried * 0.9);
     }
-    // snow: seasonal blanket above the waterline (no permanent white caps: high ground is Stone)
     let cap = smooth(0.8, 0.95, t);
     let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.0);
     c = mix(c, p.snow, cover * (1.0 - submerged));
-    // floor: nothing darker than Meadow deep (grass) or Stone shade (rock), per channel, above water
     let lo = mix(p.grass_deep, STONE_SHADE_ALBEDO, rock);
     let f = 1.0 - submerged;
     let lift = |v: f32, floor: f32| v + (v.max(floor * 1.05) - v) * f;
     [lift(c[0], lo[0]), lift(c[1], lo[1]), lift(c[2], lo[2])]
 }
 
-/// How strongly a dry cell shows as a drained bed (0..1), from the days it lay flooded that the
-/// ecology has not yet let drain away.
 fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
     if at(&s.water.depth, x, y) > WET_EPS {
         return 0.0;
@@ -611,7 +518,6 @@ fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
     smooth(0.5, 20.0, at(&s.ecology.flood_days, x, y))
 }
 
-/// Builds the mesh of one chunk at `step` cells per vertex, with skirts on its border.
 pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Mesh {
     let maxh = max_height(s);
     let range = (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, maxh);
@@ -647,7 +553,6 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         }
     };
     cells(&mut idx);
-    // Skirts: duplicate each border vertex lower down and join with a strip.
     let skirt = 2.5;
     let edges: [(Box<dyn Fn(usize) -> (usize, usize)>, bool); 4] = [
         (Box::new(|k| (k, 0)), false),
@@ -685,9 +590,6 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         .with_inserted_indices(Indices::U32(idx))
 }
 
-// ───────────────────────────── ground detail ─────────────────────────────
-
-/// Mesh arrays the ground detail is appended to (same mesh and material as the terrain chunk).
 struct Detail<'a> {
     pos: &'a mut Vec<[f32; 3]>,
     nor: &'a mut Vec<[f32; 3]>,
@@ -697,15 +599,13 @@ struct Detail<'a> {
     uvs: [f32; 2],
 }
 
-/// Soft ellipsoid blob (6 segments, 3 rings) with radii `r`, turned by `yaw` and tilted by `lean`,
-/// shaded from `dark` at its base to `light` at the top.
 fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, light: Rgb) {
     const SEG: usize = 6;
     const RINGS: usize = 3;
     let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(lean);
     let base = d.pos.len() as u32;
     for j in 0..=RINGS {
-        let v = j as f32 / RINGS as f32; // 0 = top pole
+        let v = j as f32 / RINGS as f32;
         let (sv, cv) = (v * std::f32::consts::PI).sin_cos();
         for i in 0..SEG {
             let a = i as f32 / SEG as f32 * std::f32::consts::TAU;
@@ -727,13 +627,8 @@ fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, l
     }
 }
 
-/// Share of open-grass cells that get an item. A cell is about 36 px across in the close views (`--cam pond`),
-/// so this gives about one item per 40x40 px there (docs/STYLE.md section 2; measured in `artifacts/R19-29`).
 const DETAIL_DENSITY: f32 = 0.7;
 
-/// Sparse small ground detail on open grass (`docs/STYLE.md` section 2): grass tufts (two crossed
-/// strokes), flowers (white, pink, yellow) and pebbles, about one item per 1.4 cells (`DETAIL_DENSITY`). Never on
-/// water, wet banks, a lately drained bed, rock or snow. Deterministic per cell.
 fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {
     let (w, h) = (s.height.width() as i32, s.height.height() as i32);
     for y in y0..y0 + CHUNK as i32 {
@@ -746,7 +641,6 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
                 continue;
             }
             let (fx, fz) = (r.1 * 0.8 + 0.1, r.2 * 0.8 + 0.1);
-                        // reject water, wet banks (3x3 around the cell), steep, high ground
             let mut ok = true;
             for dy in -1..=2 {
                 for dx in -1..=2 {
@@ -754,7 +648,6 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
                 }
             }
             let t = at(&s.height, x, y) / maxh;
-            // nothing grows yet on a lately drained bed
             ok &= dried_bed(s, x, y) < 0.35;
             if !ok || slope_at(s, x, y) > 0.45 || t > 0.62 || p.winter > 0.7 {
                 continue;
@@ -765,10 +658,9 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
             let ground = top + (bot - top) * fz;
             let (wx, wz) = world_pos(s, x, y);
             let c = Vec3::new(wx + fx * CELL_SIZE, ground, wz + fz * CELL_SIZE);
-            let kind = r.0 / DETAIL_DENSITY; // 0..1 deterministic pick
+            let kind = r.0 / DETAIL_DENSITY;
             let yaw = r.2 * std::f32::consts::TAU;
             if kind < 0.5 {
-                // tuft: two crossed strokes, Lily at the tip fading to Meadow deep
                 for k in 0..2 {
                     blob(d, c + Vec3::Y * 0.1, Vec3::new(0.04, 0.17, 0.15), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, pal::MEADOW_DEEP, pal::LILY);
                 }
@@ -783,16 +675,11 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
     }
 }
 
-// ───────────────────────────── frame-time logging ─────────────────────────────
-
 const WARMUP_FRAMES: usize = 60;
 
-/// Terrain + water chunk meshes rebuilt so far (reported by the frame log).
 pub static MESH_REBUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const SAMPLE_FRAMES: usize = 300;
 
-/// With `BEAVER_FRAMELOG=<file>`: turns vsync off, samples frame time after warm-up, logs and
-/// writes avg / p99 / max in ms to the file, then exits (unless screenshot mode is active).
 fn frame_log(
     time: Res<Time<Real>>,
     cli: Res<crate::cli::Cli>,
@@ -839,48 +726,6 @@ fn frame_log(
     }
 }
 
-fn legacy_height_color(t: f32) -> [f32; 4] {
-    // low = Meadow, mid = Meadow light, high = Stone (style palette, no cold greys)
-    let t = t.clamp(0.0, 1.0);
-    let c = if t < 0.6 { mix(pal::MEADOW, pal::MEADOW_LIGHT, t / 0.6) } else { mix(pal::MEADOW_LIGHT, pal::STONE, (t - 0.6) / 0.4) };
-    [c[0], c[1], c[2], 1.0]
-}
-
-
-/// Full-resolution single mesh of a height field (height-tinted vertex colours), used by the fog overlay in `flow_view`.
-pub fn build_mesh(h: &HeightGrid) -> Mesh {
-    let max_height = h.as_slice().iter().cloned().fold(f32::EPSILON, f32::max);
-    let (w, d) = (h.width(), h.height());
-    let at = |x: usize, y: usize| *h.get(x.min(w - 1), y.min(d - 1)).expect("clamped in bounds");
-    let (ox, oz) = (w as f32 * CELL_SIZE / 2.0, d as f32 * CELL_SIZE / 2.0);
-    let (mut pos, mut nor, mut col, mut uv) = (vec![], vec![], vec![], vec![]);
-    for y in 0..d {
-        for x in 0..w {
-            let ht = at(x, y);
-            // sits just under the styled chunk meshes so it never z-fights through them
-            pos.push([x as f32 * CELL_SIZE - ox, ht - 0.3, y as f32 * CELL_SIZE - oz]);
-            let dx = at(x + 1, y) - at(x.saturating_sub(1), y);
-            let dz = at(x, y + 1) - at(x, y.saturating_sub(1));
-            nor.push(Vec3::new(-dx, 2.0 * CELL_SIZE, -dz).normalize().to_array());
-            col.push(legacy_height_color(ht / max_height));
-            uv.push([x as f32 / w as f32, y as f32 / d as f32]);
-        }
-    }
-    let mut idx = Vec::with_capacity((w - 1) * (d - 1) * 6);
-    for y in 0..d - 1 {
-        for x in 0..w - 1 {
-            let i = (y * w + x) as u32;
-            let (a, b, c, e) = (i, i + 1, i + w as u32, i + w as u32 + 1);
-            idx.extend_from_slice(&[a, c, b, b, c, e]);
-        }
-    }
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nor)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-        .with_inserted_indices(Indices::U32(idx))
-}
 
 
 #[cfg(test)]
@@ -890,7 +735,7 @@ mod tests {
     #[test]
     fn rock_only_above_style_guide_slope() {
         for i in 0..=90 {
-            let slope = i as f32 * 0.01; // 0.00 ..= 0.90
+            let slope = i as f32 * 0.01;
             assert_eq!(rock_weight(slope), 0.0, "slope {slope} must stay natural ground");
         }
         assert!(rock_weight(pal::ROCK_SLOPE_MIN + 0.05) > 0.0);

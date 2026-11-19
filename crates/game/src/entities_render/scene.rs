@@ -1,5 +1,3 @@
-//! Render-side description of everything that is drawn (`RenderScene`) and the stub layout used while
-//! the sim crates do not yet expose beavers, trees or buildings.
 use super::meshgen::Rng;
 use crate::terrain_render::CELL_SIZE as CELL;
 use bevy::prelude::*;
@@ -18,7 +16,6 @@ pub enum Species {
 pub enum TreeState {
     Alive,
     Stump,
-    /// Drowned dead tree standing in water.
     Snag,
 }
 
@@ -38,22 +35,16 @@ pub enum Pose {
     Swim,
     Gnaw,
     Carry,
-    /// Going over a dam.
     Climb,
-    /// Building or gathering: paws busy in front.
     Work,
-    /// Curled up asleep.
     Rest,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct BeaverState {
-    /// Ground position (world xz) and facing (radians around +Y, 0 = +Z).
     pub pos: Vec2,
     pub yaw: f32,
     pub pose: Pose,
-    pub moving: bool,
-    /// What the beaver holds in its mouth.
     pub load: Option<(sim::buildings::Good, f32)>,
 }
 
@@ -66,9 +57,7 @@ pub enum StructKind {
     Workshop,
     WaterWheel,
     Dock,
-    /// A barge; finished (stage 3) it carries a load of logs on deck.
     Barge,
-    /// A finished barge with nothing aboard.
     BargeEmpty,
     FoodCache,
     ScentMound,
@@ -82,19 +71,15 @@ pub enum StructKind {
     QuarryCamp,
     ForesterLodge,
     Mill,
-    /// The gates where barges pass through a dam.
     Lock,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct StructVis {
     pub kind: StructKind,
-    /// Base position; `y` is the ground (or water) height the model stands on.
     pub pos: Vec3,
     pub yaw: f32,
-    /// Length along local X for dams, canals, docks, barges.
     pub len: f32,
-    /// 0..1; below 1 the construction-site look is used.
     pub progress: f32,
 }
 
@@ -102,25 +87,21 @@ pub struct StructVis {
 pub struct Pond {
     pub center: Vec2,
     pub level: f32,
-    /// Shore radius on `RAYS` evenly spaced rays (angle 0 = +Z, increasing toward +X).
     pub shore_r: [f32; RAYS],
 }
 
 impl Pond {
-    /// Shore radius toward angle `a` (radians, 0 = +Z).
     pub fn radius(&self, a: f32) -> f32 {
         let t = a.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * RAYS as f32;
         let (i, f) = (t.floor() as usize % RAYS, t.fract());
         self.shore_r[i] * (1.0 - f) + self.shore_r[(i + 1) % RAYS] * f
     }
 
-    /// Whether `p` lies inside the shore line pushed `margin` units outward.
     pub fn contains(&self, p: Vec2, margin: f32) -> bool {
         let d = p - self.center;
         d.length() < self.radius(d.x.atan2(d.y)) + margin
     }
 
-    /// Whether `p` is pond water deep enough to swim in.
     pub fn swimmable(&self, h: &HeightGrid, p: Vec2) -> bool {
         self.contains(p, 0.0) && height_at(h, p.x, p.y) < self.level - 0.15
     }
@@ -133,7 +114,6 @@ enum Leg {
     Hold(Pose),
 }
 
-/// Looping stub itinerary: shore -> tree -> gnaw -> carry home -> swim -> ...
 #[derive(Clone, Debug)]
 pub struct Route {
     pts: Vec<Vec2>,
@@ -145,7 +125,6 @@ pub struct Route {
 }
 
 pub struct BeaverVis {
-    pub id: u32,
     pub state: BeaverState,
     pub route: Option<Route>,
 }
@@ -156,8 +135,6 @@ pub struct RenderScene {
     pub structs: Vec<StructVis>,
     pub beavers: Vec<BeaverVis>,
     pub pond: Option<Pond>,
-    /// True while the data is stub data rather than sim state.
-    pub stub: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -171,7 +148,6 @@ impl SceneConfig {
     pub const STRESS: Self = Self { trees: 5000, beavers: 300 };
 }
 
-/// Bilinear terrain height at world (x, z); matches the terrain mesh layout.
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
     let (w, d) = (h.width(), h.height());
     let gx = (x / CELL + w as f32 / 2.0).clamp(0.0, w as f32 - 1.001);
@@ -194,7 +170,6 @@ fn hash(a: i32, b: i32, seed: u32) -> f32 {
     (x & 0xffff) as f32 / 65535.0
 }
 
-/// Smooth low-frequency noise in 0..1.
 fn vnoise(x: f32, z: f32, seed: u32) -> f32 {
     let (xi, zi) = (x.floor(), z.floor());
     let (fx, fz) = (x - xi, z - zi);
@@ -205,23 +180,16 @@ fn vnoise(x: f32, z: f32, seed: u32) -> f32 {
     a + (b - a) * sz
 }
 
-/// Rays used to describe the pond shore.
 pub const RAYS: usize = 24;
-/// Shore radius limits (world units).
 const SHORE_MIN: f32 = 6.0;
 const SHORE_MAX: f32 = 20.0;
-/// How far below the pond level the ground under a dam may sit (the dam is ~1.5 tall).
 const DAM_MAX_DROP: f32 = 1.1;
 
-/// Where the stub colony lives: a pond in a hollow near the map centre, banked by terrain where the
-/// ground rises and closed by beaver dams across the gaps where it falls away.
 struct Site {
     center: Vec2,
     level: f32,
     shore_r: [f32; RAYS],
-    /// Rays with no natural bank: the shore there is the dam line.
     open: [bool; RAYS],
-    /// Angle of the lodge on the shore.
     a0: f32,
     mean_r: f32,
 }
@@ -233,7 +201,6 @@ fn ray_dir(i: usize) -> Vec2 {
     Vec2::new(a.sin(), a.cos())
 }
 
-/// Pond candidate at `c` with surface `level`: per-ray bank radius (None where no bank within reach).
 fn banks(h: &HeightGrid, c: Vec2, level: f32) -> [Option<f32>; RAYS] {
     std::array::from_fn(|i| {
         let dir = ray_dir(i);
@@ -248,8 +215,6 @@ fn banks(h: &HeightGrid, c: Vec2, level: f32) -> [Option<f32>; RAYS] {
     })
 }
 
-/// Fills rays without a bank by interpolating between the nearest banked rays on either side, so a
-/// gap is closed by a straight-ish dam line. None if there are no banks at all.
 fn close_gaps(b: &[Option<f32>; RAYS]) -> Option<[f32; RAYS]> {
     if b.iter().all(|r| r.is_none()) {
         return None;
@@ -276,7 +241,6 @@ fn close_gaps(b: &[Option<f32>; RAYS]) -> Option<[f32; RAYS]> {
 impl Site {
     fn find(h: &HeightGrid) -> Site {
         let size = (h.width().min(h.height())) as f32 * CELL;
-        // Keep the colony (pond + ~14 units of bank) inside the map.
         let lim = (size * 0.5 - SHORE_MAX - 14.0).max(4.0);
         let mut best: Option<(f32, Vec2, f32, [f32; RAYS], [bool; RAYS])> = None;
         let step = 2.0 * CELL;
@@ -295,7 +259,6 @@ impl Site {
                         continue;
                     }
                     let Some(mut shore) = close_gaps(&b) else { continue };
-                    // A believable pond: not a puddle, not a lake, and every dam stands on the ground.
                     let mut ok = true;
                     for i in 0..RAYS {
                         shore[i] = shore[i].clamp(SHORE_MIN, SHORE_MAX);
@@ -308,7 +271,6 @@ impl Site {
                     if !ok || !(8.5..=16.0).contains(&mean) {
                         continue;
                     }
-                    // Prefer natural banks, a roomy pond, and a site near the middle of the map.
                     let score = closed as f32 + mean * 0.6 - c.length() * 0.05;
                     if best.as_ref().is_none_or(|bb| score > bb.0) {
                         best = Some((score, c, level, shore, std::array::from_fn(|i| b[i].is_none())));
@@ -320,7 +282,6 @@ impl Site {
         let (center, level, mut shore_r, open) = match best {
             Some((_, c, l, s, o)) => (c, l, s, o),
             None => {
-                // No hollow anywhere: a small pond at the centre, dammed wherever the ground falls away.
                 let level = height_at(h, 0.0, 0.0) + 0.8;
                 let b = banks(h, Vec2::ZERO, level);
                 let s = close_gaps(&b).unwrap_or([10.0; RAYS]).map(|r| r.clamp(SHORE_MIN, 12.0));
@@ -335,7 +296,6 @@ impl Site {
         }
         let mean_r = shore_r.iter().sum::<f32>() / RAYS as f32;
         let mut site = Site { center, level, shore_r, open, a0: 0.0, mean_r };
-        // Lodge on the flattest natural bank that still leaves room (and stays inside the map).
         let mut best_score = f32::MAX;
         for i in 0..RAYS {
             if open[i] || open[(i + 1) % RAYS] || open[(i + RAYS - 1) % RAYS] {
@@ -358,13 +318,11 @@ impl Site {
         site
     }
 
-    /// Whether angle `a` (radians) points at a dammed stretch of shore.
     fn is_open(&self, a: f32) -> bool {
         let t = a.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * RAYS as f32;
         self.open[t.round() as usize % RAYS]
     }
 
-    /// Maximal runs of open rays as (first ray, count).
     fn open_runs(&self) -> Vec<(usize, usize)> {
         let Some(start) = (0..RAYS).find(|&i| !self.open[i]) else { return vec![(0, RAYS)] };
         let mut runs = Vec::new();
@@ -389,15 +347,11 @@ impl Site {
 
     fn radius(&self, a: f32) -> f32 { self.pond().radius(a) }
 
-    /// Shore point at angle `a`, pushed `inset` outward (onto land), and the outward direction.
     fn shore(&self, a: f32, inset: f32) -> (Vec2, Vec2) {
         let dir = Vec2::new(a.sin(), a.cos());
         (self.center + dir * (self.radius(a) + inset), dir)
     }
 
-    /// Shore position `arc` world units along the bank from the lodge.
-    /// Buildings stand on natural banks, so an arc that lands on a dammed stretch slides to the
-    /// nearest bank.
     fn along(&self, arc: f32, inset: f32) -> (Vec2, Vec2) {
         let mut a = arc;
         for k in 1..(self.mean_r * std::f32::consts::TAU) as i32 {
@@ -411,20 +365,15 @@ impl Site {
     }
 }
 
-/// Camera focus for the `lodge` preset: (look-at point, yaw that views the lodge from the pond).
 pub fn lodge_view(h: &HeightGrid) -> (Vec3, f32) {
     let site = Site::find(h);
     let (p, o) = site.along(0.0, 3.6);
     let y = height_at(h, p.x, p.y);
-    // Look slightly toward the pond so the dock, dam and swimmers are in frame too.
     let t = p - o * 3.0;
     (Vec3::new(t.x, y + 1.2, t.y), ((-o.x).atan2(-o.y) + 0.4).rem_euclid(std::f32::consts::TAU))
 }
 
-/// Builds the scene from sim state. The sim has no beaver/tree/building data yet, so this falls back
-/// to a deterministic stub colony derived from the seed and terrain.
 pub fn scene_from_sim(sim: &SimState, cfg: SceneConfig) -> RenderScene {
-    // When `sim.colony` / `sim.buildings` / `sim.ecology` expose entities, convert them here and return.
     stub_scene(sim, cfg)
 }
 
@@ -433,7 +382,6 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
     let site = Site::find(h);
     let seed = sim.seed as u32 ^ 0x5eed;
     let gy = |p: Vec2| height_at(h, p.x, p.y);
-    // Lowest ground under a round footprint: buildings sink into a slope instead of floating over it.
     let foot = |p: Vec2, r: f32| {
         (0..8).fold(gy(p), |m, k| {
             let a = k as f32 * std::f32::consts::FRAC_PI_4;
@@ -442,10 +390,9 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
     };
     let lvl = site.level;
     let mut structs: Vec<StructVis> = Vec::new();
-    let yaw_of = |dir: Vec2| dir.x.atan2(dir.y); // model +Z faces `dir`
+    let yaw_of = |dir: Vec2| dir.x.atan2(dir.y);
     let mut sites: Vec<Vec2> = Vec::new();
 
-    // Footprints placed so far, so buildings slide along the bank instead of overlapping.
     let mut taken: Vec<(Vec2, f32)> = Vec::new();
     let mut place = |arc: f32, inset: f32, r: f32, dir: f32| -> (f32, Vec2, Vec2) {
         let a = (0..40)
@@ -460,30 +407,24 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         (a, p, o)
     };
 
-    // Lodge (finished) facing the water.
     let (_, lp, lo) = place(0.0, 3.8, 3.6, 1.0);
     structs.push(StructVis { kind: StructKind::Lodge, pos: Vec3::new(lp.x, foot(lp, 2.6).max(lvl - 0.3), lp.y), yaw: yaw_of(-lo), len: 1.0, progress: 1.0 });
     sites.push(lp - lo * 4.2);
-    // Dock with a barge alongside.
     let (_, p, o) = place(8.5, 0.3, 3.0, 1.0);
     structs.push(StructVis { kind: StructKind::Dock, pos: Vec3::new(p.x, lvl, p.y), yaw: yaw_of(-o), len: 6.0, progress: 1.0 });
     sites.push(p + o * 0.5);
     let bp = p - o * 4.6 + Vec2::new(-o.y, o.x) * 3.2;
     structs.push(StructVis { kind: StructKind::Barge, pos: Vec3::new(bp.x, lvl, bp.y), yaw: yaw_of(-o) + 0.12, len: 7.0, progress: 1.0 });
-    // Workshop (finished) with a water wheel, plus one under construction.
     let (wa, p, o) = place(-9.0, 5.5, 3.4, -1.0);
     structs.push(StructVis { kind: StructKind::Workshop, pos: Vec3::new(p.x, foot(p, 0.9), p.y), yaw: yaw_of(-o), len: 1.0, progress: 1.0 });
     sites.push(p - o * 3.5);
     let (_, p, o) = place(wa - 4.2, 1.3, 2.4, -1.0);
     structs.push(StructVis { kind: StructKind::WaterWheel, pos: Vec3::new(p.x, lvl, p.y), yaw: yaw_of(-o), len: 1.0, progress: 1.0 });
-    // Second lodge going up.
     let (_, p, o) = place(-17.0, 4.5, 3.6, -1.0);
     structs.push(StructVis { kind: StructKind::Lodge, pos: Vec3::new(p.x, foot(p, 2.6).max(lvl - 0.3), p.y), yaw: yaw_of(-o), len: 1.0, progress: 0.5 });
     sites.push(p - o * 4.5);
     let (_, p, o) = place(-27.0, 4.5, 3.4, -1.0);
     structs.push(StructVis { kind: StructKind::Workshop, pos: Vec3::new(p.x, foot(p, 0.9), p.y), yaw: yaw_of(-o), len: 1.0, progress: 0.3 });
-    // Dams close every stretch of shore where the ground falls away; the last segment of the longest
-    // one is still being built. A pond banked all round still gets a dam at its outlet.
     let mut runs: Vec<(f32, f32)> = site
         .open_runs()
         .iter()
@@ -515,7 +456,6 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         let (p, o) = site.shore((a0 + a1) * 0.5, 1.0);
         sites.push(p - o * 2.0);
     }
-    // Canal leading away from the pond, last stretch unfinished.
     let (cs, co) = site.along(-34.0, 0.0);
     for k in 0..6 {
         let m = cs + co * (2.0 + 4.0 * k as f32) + co * 0.0;
@@ -527,14 +467,12 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
             progress: if k >= 4 { 0.3 } else { 1.0 },
         });
     }
-    // Burrows in the bank.
     for (arc, inset) in [(-22.0f32, 6.5), (-24.5, 8.5), (28.0, 6.5)] {
         let (_, p, o) = place(arc, inset, 1.8, arc.signum());
         structs.push(StructVis { kind: StructKind::Burrow, pos: Vec3::new(p.x, foot(p, 1.2), p.y), yaw: yaw_of(-o), len: 1.0, progress: 1.0 });
         sites.push(p - o * 1.6);
     }
 
-    // ---- trees -------------------------------------------------------------------------------
     let half = h.width() as f32 * CELL * 0.5 - 2.0;
     let mut rng = Rng(seed | 1);
     let clear: Vec<(Vec2, f32)> = structs
@@ -552,7 +490,6 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         .collect();
     let lodge2 = Vec2::new(structs[0].pos.x, structs[0].pos.z);
     let mut trees: Vec<TreeVis> = Vec::with_capacity(cfg.trees);
-    // A hand-placed grove behind the lodge and a few stumps in front, so the hero view reads well.
     let back = lodge2 - (site.center - lodge2).normalize_or_zero();
     for i in 0..26 {
         let a = rng.range(-1.4, 1.4);
@@ -580,27 +517,24 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
     while trees.len() < cfg.trees && tries < cfg.trees * 6 {
         tries += 1;
         let p = Vec2::new(rng.range(-half, half), rng.range(-half, half));
-        // Denser woods inland, thinner near the lodge clearing.
         if clear.iter().any(|(c, r)| p.distance(*c) < *r + 1.0) {
             continue;
         }
         let ground = gy(p);
         let near_lodge = p.distance(lodge2);
         if cfg.trees <= SceneConfig::NORMAL.trees && near_lodge > 12.0 && vnoise(p.x * 0.07, p.y * 0.07, seed) < 0.38 {
-            continue; // meadows
+            continue;
         }
-        // Streams and ponds in the sim water field (and a cell of shore round them) stay open.
         let (cx, cy) = (p.x / crate::terrain_render::CELL_SIZE + sim.height.width() as f32 / 2.0, p.y / crate::terrain_render::CELL_SIZE + sim.height.height() as f32 / 2.0);
         let wet_near = (-1..=1).any(|dy| (-1..=1).any(|dx| crate::terrain_render::at(&sim.water.depth, cx.round() as i32 + dx, cy.round() as i32 + dy) > crate::terrain_render::WET_EPS));
         if wet_near && !site.pond().contains(p, 0.8) {
             continue;
         }
-        // Only the pond floods trees; ground below the pond level outside the dams is dry.
         let depth = if site.pond().contains(p, 0.8) { lvl - ground } else { -1.0 };
         let state = if depth > 0.3 {
             if depth < 1.4 && rng.next() < 0.18 { TreeState::Snag } else { continue }
         } else if depth > -0.4 {
-            continue; // soggy shore
+            continue;
         } else if near_lodge < 26.0 && rng.next() < 0.10 {
             TreeState::Stump
         } else {
@@ -622,7 +556,6 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
         trees.push(TreeVis { pos: Vec3::new(p.x, y, p.y), species, state, scale: rng.range(0.75, 1.3), yaw: rng.range(0.0, 6.28), });
     }
 
-    // ---- beavers -----------------------------------------------------------------------------
     let alive: Vec<usize> = (0..trees.len()).filter(|&i| trees[i].state == TreeState::Alive).collect();
     let pc = site.center;
     let mut homes = sites.clone();
@@ -634,10 +567,8 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
     }
     let mut beavers = Vec::with_capacity(cfg.beavers);
     for id in 0..cfg.beavers as u32 {
-        // Spread beavers sharing a home around it so they do not pile up on one spot.
         let ring = extra.range(0.0, std::f32::consts::TAU);
         let home = homes[id as usize % homes.len()] + Vec2::new(ring.sin(), ring.cos()) * extra.range(0.6, 2.4);
-        // k-th nearest alive tree so beavers at the same home spread over different trees.
         let mut cand: Vec<(f32, usize)> = alive
             .iter()
             .map(|&i| (Vec2::new(trees[i].pos.x, trees[i].pos.z).distance(home), i))
@@ -665,10 +596,10 @@ fn stub_scene(sim: &SimState, cfg: SceneConfig) -> RenderScene {
             vec![0.0, hold_dir(stand, tp), 0.0, hold_dir(dest, pc), 0.0, 0.0, 0.0],
             extra.range(0.0, 200.0),
         );
-        beavers.push(BeaverVis { id, state: BeaverState { pos: dest, yaw: 0.0, pose: Pose::Idle, moving: false, load: None }, route: Some(route) });
+        beavers.push(BeaverVis { state: BeaverState { pos: dest, yaw: 0.0, pose: Pose::Idle, load: None }, route: Some(route) });
     }
 
-    RenderScene { trees, structs, beavers, pond: Some(site.pond()), stub: true }
+    RenderScene { trees, structs, beavers, pond: Some(site.pond()) }
 }
 
 const WALK_SPEED: f32 = 1.9;
@@ -686,7 +617,6 @@ impl Route {
         Route { pts, legs, durs, hold_yaw, total, offset }
     }
 
-    /// Where the itinerary puts the beaver at `time` seconds. `water_at` says whether a point is in water.
     pub fn eval(&self, time: f32, in_water: impl Fn(Vec2) -> bool) -> BeaverState {
         let mut u = (time + self.offset).rem_euclid(self.total);
         let n = self.pts.len();
@@ -696,7 +626,7 @@ impl Route {
                 let f = if d > 1e-4 { (u / d).clamp(0.0, 1.0) } else { 1.0 };
                 let (a, b) = (self.pts[i], self.pts[(i + 1) % n]);
                 return match self.legs[i] {
-                    Leg::Hold(pose) => BeaverState { pos: a, yaw: self.hold_yaw[i], pose, moving: false, load: None },
+                    Leg::Hold(pose) => BeaverState { pos: a, yaw: self.hold_yaw[i], pose, load: None },
                     leg => {
                         let pos = a.lerp(b, f);
                         let dir = b - a;
@@ -708,13 +638,12 @@ impl Route {
                         } else {
                             Pose::Walk
                         };
-                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, moving: true, load: matches!(leg, Leg::Carry).then_some((sim::buildings::Good::Logs, 3.0)) }
+                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, load: matches!(leg, Leg::Carry).then_some((sim::buildings::Good::Logs, 3.0)) }
                     }
                 };
             }
             u -= d;
         }
-        BeaverState { pos: self.pts[0], yaw: 0.0, pose: Pose::Idle, moving: false, load: None }
+        BeaverState { pos: self.pts[0], yaw: 0.0, pose: Pose::Idle, load: None }
     }
 }
-

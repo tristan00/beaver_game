@@ -1,6 +1,3 @@
-//! The world side of the HUD: what is under the pointer (hover tips, selection), markers over
-//! things that need attention (spec W6), outlines and arrows drawn on the terrain, and moving the
-//! camera so a placement sits in the clear part of the screen (F3.3).
 #![allow(deprecated)]
 use super::panels::{stage_icon, status_line};
 use super::ui::*;
@@ -17,7 +14,6 @@ use sim::buildings::{BargeId, BuildingId, BuildingKind, Good};
 use sim::colony::{BeaverId, LodgeId};
 use sim::resources::ResourceId;
 
-/// A thing in the world the pointer can be on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Thing {
     Beaver(BeaverId),
@@ -54,11 +50,9 @@ impl Thing {
 #[derive(Resource, Default)]
 pub struct HoverThing(pub Option<Thing>);
 
-/// The world point under the pointer: the cell, and the point in `flow::world_cell` coordinates.
 #[derive(Resource, Default)]
 pub struct HoverPoint(pub Option<(Cell, (f32, f32))>);
 
-/// Where a beaver is drawn, in `flow::world_cell` coordinates (the renderer's own position).
 pub fn beaver_at(s: &sim::SimState, id: BeaverId) -> Option<(f32, f32)> {
     let ag = s.agents.get(id)?;
     if ag.inside {
@@ -68,7 +62,6 @@ pub fn beaver_at(s: &sim::SimState, id: BeaverId) -> Option<(f32, f32)> {
     Some(crate::flow::world_cell(&s.height, w))
 }
 
-/// Where a beaver is drawn, as a world point.
 pub fn beaver_world(s: &sim::SimState, id: BeaverId) -> Option<Vec3> {
     let ag = s.agents.get(id)?;
     if ag.inside {
@@ -77,14 +70,11 @@ pub fn beaver_world(s: &sim::SimState, id: BeaverId) -> Option<Vec3> {
     Some(crate::entities_render::sim_view::agent_world_pos(s, ag, 0.0))
 }
 
-/// The centre of a building's footprint in `flow::world_cell` coordinates.
 pub fn building_centre(b: &sim::buildings::Building) -> (f32, f32) {
     let (w, d) = b.kind.spec().footprint;
     (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0)
 }
 
-/// What is at continuous cell position `p`: a beaver within reach first, then a building, a
-/// resource, a lodge, else the cell.
 pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     let d2 = |a: (f32, f32)| (a.0 - p.0).powi(2) + (a.1 - p.1).powi(2);
     let near = s.colony.beavers.iter().filter_map(|b| beaver_at(s, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.9 * 0.9).min_by(|a, b| a.1.total_cmp(&b.1));
@@ -107,7 +97,6 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     Thing::Cell(cell)
 }
 
-/// The short hover tip for a world thing (spec §4.1).
 pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
     match t {
         Thing::Beaver(id) => {
@@ -191,7 +180,6 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
     }
 }
 
-/// Tracks the thing under the pointer and offers its tip to the tooltip system.
 pub fn world_hover(
     windows: Query<&Window, With<PrimaryWindow>>,
     cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -219,7 +207,6 @@ pub fn world_hover(
     if thing.0 != t {
         thing.0 = t;
     }
-    // The supply pile has its own tip: what is left of the bundle.
     if let (Some((c, _)), Some(pile)) = (p, sim.0.work.supplies) {
         if c == pile && hud.tool == Tool::None {
             let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
@@ -233,8 +220,6 @@ pub fn world_hover(
             return;
         }
     }
-    // Tips for world things only while no tool is active (a tool has its own cursor tag). In the
-    // elevation lens a bare cell shows its heights in the cursor tag instead.
     let elevation = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     tips.world = match (t, hud.tool) {
         (Some(Thing::Cell(_)), Tool::None) if elevation => None,
@@ -243,9 +228,6 @@ pub fn world_hover(
     };
 }
 
-// ───────────────────────────── markers (W6) ─────────────────────────────
-
-/// World-anchored icons over things that need attention, positioned on screen each frame.
 pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection) -> Vec<VNode> {
     let mut out = Vec::new();
     let project = |mut w: Vec3, lift: f32| -> Option<Vec2> {
@@ -274,7 +256,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         v.children = ui.nodes;
         out.push(v);
     };
-    // Buildings with empty worker slots or a blocking limit.
     for b in s.buildings.buildings.iter() {
         let centre = building_centre(b);
         let mut icons: Vec<(Icon, Color)> = Vec::new();
@@ -286,8 +267,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
                     icons.push((Icon::Cross, BAD));
                 }
             } else if b.is_complete() && !pl.slots.is_empty() && empty == pl.slots.len() && pl.slots[0].role != sim::work::Role::Haul {
-                // Only a workplace with nobody at all: a half-staffed one shows its dots when
-                // selected, and stores work without haulers.
                 icons.push((role_icon(pl.slots[0].role), WARN));
                 icons.push((Icon::Cross, BAD));
             }
@@ -311,8 +290,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
-    // With a barge selected: each dock's number over it (the route picker names docks by number),
-    // and the dam a refused route needs a lock on.
     let mut labels = Vec::new();
     if let Selection::Barge(bid) = sel {
         for (i, d) in super::inspect::docks(s).iter().enumerate() {
@@ -334,7 +311,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
-    // The dam tool: where water would walk round the drawn dam.
     if hud.tool == Tool::Dam {
         if let Some(c) = hud.dam_preview().and_then(|p| p.spill_at) {
             if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.4) {
@@ -342,19 +318,16 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
-    // The founding supply pile, until a store stands.
     if let Some(c) = s.work.supplies {
         if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
             push(p, &[(Icon::Logs, good_color(Good::Logs)), (Icon::Food, good_color(Good::Food))]);
         }
     }
-    // Idle beavers.
     for id in sim::hud::idle_beavers(s) {
         if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.3)) {
             push(p, &[(Icon::Idle, WARN)]);
         }
     }
-    // Selected beavers get a ring marker (nothing else uses it).
     for id in hud.selected.iter() {
         if s.colony.beaver(*id).is_some() {
             if let Some(p) = beaver_world(s, *id).and_then(|w| project(w, 0.2)) {
@@ -368,8 +341,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     out
 }
 
-/// Where the camera target must move so `p` lands in the middle of the work rect (spec F3.3), or
-/// `None` when it is already inside.
 pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimState, target: Vec3, p: Vec3) -> Option<Vec3> {
     let v = cam.world_to_viewport(gt, p).ok()?;
     let inside = v.x > win.x * 0.15 && v.x < win.x * 0.72 && v.y > win.y * 0.08 && v.y < win.y * 0.78;
@@ -383,8 +354,6 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
     Some(Vec3::new(p.x + d.x, target.y, p.z + d.z))
 }
 
-// ───────────────────────────── terrain overlay ─────────────────────────────
-
 fn store_takes(kind: BuildingKind, g: Good) -> bool {
     match kind {
         BuildingKind::Warehouse | BuildingKind::Storehouse => true,
@@ -393,7 +362,6 @@ fn store_takes(kind: BuildingKind, g: Good) -> bool {
     }
 }
 
-/// The water surface over a cell (terrain plus depth), world height.
 fn water_y(s: &sim::SimState, c: Cell) -> f32 {
     s.height.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0)
 }
@@ -414,7 +382,6 @@ fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f3
     }
 }
 
-/// Forest lens colours: saplings pale, young mid, mature deep, old brown, snags grey.
 pub fn stage_color(st: sim::forestry::TreeStage) -> Color {
     use sim::forestry::TreeStage::*;
     match st {
@@ -426,14 +393,11 @@ pub fn stage_color(st: sim::forestry::TreeStage) -> Color {
     }
 }
 
-/// Role colours of the work areas in the forest lens.
 pub const LOGGER_AREA: Color = Color::srgb(0.91, 0.52, 0.23);
 pub const FORESTER_AREA: Color = Color::srgb(0.55, 0.88, 0.45);
 
-/// Height above the ground of the forest lens' dots: over the canopy, like a map layer.
 const FOREST_DOT_LIFT: f32 = 2.6;
 
-/// A tree in the forest lens: a diamond sized by stage, with a cross through it.
 fn tree_dot(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, st: sim::forestry::TreeStage) {
     use sim::forestry::TreeStage::*;
     let r = match st {
@@ -464,7 +428,7 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
     let mut edge = |from: (f32, f32), to: (f32, f32)| {
         for i in 0..n {
             if i % 2 == 1 {
-                continue; // dashed
+                continue;
             }
             let t0 = i as f32 / n as f32;
             let t1 = (i + 1) as f32 / n as f32;
@@ -502,7 +466,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 if m < 1e-5 {
                     continue;
                 }
-                // m is flow per day: a brook of ~1/day gets a short arrow, a river of ~30/day a long one
                 let len = (0.25 * m.sqrt()).clamp(0.35, 1.4);
                 let dir = Vec2::new(fx, fy) / m;
                 let mut a = cell_world(h, (cx as f32, cy as f32));
@@ -542,7 +505,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         }
     }
     if lens == MapLens::Forest.code() {
-        // Trees near the view by stage, and every logging and forestry area in its role colour.
         let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
         for t in s.resources.items.iter().filter(|t| t.cell.0.abs_diff(tx) <= r && t.cell.1.abs_diff(ty) <= r) {
             if let Some(st) = t.stage() {
@@ -560,7 +522,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
-    // The selected building and its work area.
     if let Selection::Site(id) = *sel {
         if let Some(b) = s.buildings.building(id) {
             for c in b.cells() {
@@ -571,7 +532,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
-    // The selected barge: its cell, and the docks of its route (or the draft being picked).
     if let Selection::Barge(id) = *sel {
         if let Some(b) = s.buildings.barge(id) {
             cell_outline(&mut g, h, b.cell, Some(water_y(s, b.cell)), SELECT);
@@ -585,11 +545,9 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
-    // A work area being drawn.
     if let (Some(id), Some(a), Some(b)) = (hud.area_edit, hud.area_from, hover.0) {
         area_outline(&mut g, h, super::drawn_area(s, id, a, b), ACCENT);
     }
-    // Hovered thing (no tool): a light outline.
     if hud.tool == Tool::None {
         if let Some(Thing::Building(id)) = thing.0 {
             if let Some(b) = s.buildings.building(id) {
@@ -605,7 +563,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
                 let col = if pv.is_valid() { Color::WHITE } else { BAD };
-                // A gathering building shows the work area it will start with.
                 let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, recipe: None, output: 0.0 };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = match kind {
@@ -618,7 +575,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 for c in &pv.cells {
                     cell_outline(&mut g, h, *c, None, col);
                     if !pv.is_valid() {
-                        // A cross in each blocked cell: shape, not only colour.
                         let a = cell_world(h, (c.0 as f32 - 0.35, c.1 as f32 - 0.35)) + Vec3::Y * 0.1;
                         let b = cell_world(h, (c.0 as f32 + 0.35, c.1 as f32 + 0.35)) + Vec3::Y * 0.1;
                         let a2 = cell_world(h, (c.0 as f32 + 0.35, c.1 as f32 - 0.35)) + Vec3::Y * 0.1;
@@ -634,8 +590,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 for c in &pv.flooded {
                     cell_outline(&mut g, h, *c, Some(pv.level), WATER);
                 }
-                // Where water gets round the dam below its crest: a red post with a ring at the
-                // pond level (shape and colour), so the line can be extended over it.
                 if let Some(c) = pv.spill_at {
                     let base = cell_world(h, (c.0 as f32, c.1 as f32));
                     let top = Vec3::new(base.x, pv.crest.max(base.y) + 2.0, base.z);

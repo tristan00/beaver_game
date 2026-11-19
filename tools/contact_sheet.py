@@ -1,5 +1,3 @@
-"""Builds artifacts/R19-18/contact_sheet.png from six `--showcase poses` screenshots.
-Usage: python tools/contact_sheet.py OUT.png poses_0.png ... poses_5.png"""
 import sys
 from PIL import Image, ImageDraw
 LABELS = ["walking", "swimming", "climbing over a dam", "working (building)", "resting", "carrying a log by water"]

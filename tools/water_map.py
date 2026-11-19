@@ -1,16 +1,7 @@
-"""Draws `water_map` dumps (cargo run -p sim --release --example water_map -- MAP --out F) as PNGs.
-
-  python tools/water_map.py OUT.png DUMP [DUMP ...]
-
-Each dump becomes one panel, side by side: hillshaded terrain (trees darker green), water depth
-in blues (river cells with a thin dark outline where they are dry), the planned or built dam in
-red, the camp in yellow, sources in magenta.
-"""
 import sys
 
 import numpy as np
 from PIL import Image, ImageDraw
-
 
 def panel(path, scale=4):
     b = open(path, 'rb').read()
@@ -36,7 +27,6 @@ def panel(path, scale=4):
     im = Image.fromarray(rgb.clip(0, 255).astype(np.uint8)).resize((n * scale, n * scale), Image.NEAREST)
     return im
 
-
 def main(out, dumps):
     ims = [panel(p) for p in dumps]
     w = sum(i.width for i in ims) + 6 * (len(ims) - 1)
@@ -48,7 +38,6 @@ def main(out, dumps):
         draw.text((x + 2, 2), p.replace('\\', '/').split('/')[-1], fill='black')
         x += im.width + 6
     sheet.save(out)
-
 
 if __name__ == '__main__':
     main(sys.argv[1], sys.argv[2:])

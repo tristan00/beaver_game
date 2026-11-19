@@ -1,15 +1,3 @@
-//! Renders beavers, trees, lodges, dams, canals, burrows, workshops, water wheels, docks and barges
-//! as round, cute, procedural low-poly models.
-//!
-//! * `entities_render/meshgen.rs` â€“ vertex-coloured mesh toolkit.
-//! * `entities_render/models.rs`  â€“ the actual models (beaver parts, trees per species/season/LOD, structures).
-//! * `entities_render/scene.rs`   â€“ `RenderScene`, the render-side view of the world, plus the stub
-//!   colony used while the sim crates do not expose entities yet.
-//!
-//! Performance: every model is a vertex-coloured mesh drawn with one shared white material, so Bevy
-//! batches/instances all trees of a kind into few draw calls. Trees pick one of three meshes by distance
-//! (full, reduced, blob); beavers switch from a 9-part animated rig to a single static mesh and stop
-//! animating when far away.
 mod meshgen;
 mod models;
 mod scene;
@@ -33,15 +21,10 @@ use std::collections::HashMap;
 pub use scene::{height_at, lodge_view};
 
 const BEAVER_SCALE: f32 = 0.9;
-/// Beavers further than this from the camera use the single static mesh and are not animated.
 const BEAVER_NEAR: f32 = 85.0;
-/// Tree LOD switch distances.
 const TREE_LOD0: f32 = 55.0;
 const TREE_LOD1: f32 = 120.0;
-/// Seconds of render time shown in `--screenshot` mode (chosen so the hero shot has varied poses).
 const SCREENSHOT_CLOCK: f32 = 31.0;
-/// Whether the stress scene's itinerary beavers and stub trees are drawn instead of the live sim.
-/// `--stress` measures that fixed scene; set `BC_STRESS_SIM=1` to measure the sim-driven world (use with `--stress`).
 fn stub_mode(cli: &Cli) -> bool {
     cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
 }
@@ -78,15 +61,10 @@ impl Plugin for EntitiesRenderPlugin {
                     stress_report,
                 )
                     .chain()
-                    // draw from the sim after this frame's steps, never half a frame behind them
                     .after(crate::sim_driver::step_sim),
             );
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Resources and components
-// ---------------------------------------------------------------------------------------------
 
 #[derive(Resource, Default)]
 struct RenderClock(f32);
@@ -100,11 +78,9 @@ impl Default for CurrentSeason {
 #[derive(Resource)]
 struct Models {
     white: Handle<StandardMaterial>,
-    /// Old trees: the shared material, darker and browner.
     old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
     water_mat: Handle<StandardMaterial>,
-    /// Indexed by (species, season, lod).
     trees: Vec<Handle<Mesh>>,
     stump: Handle<Mesh>,
     snag: Handle<Mesh>,
@@ -115,9 +91,7 @@ struct Models {
     leg_hind: Handle<Mesh>,
     lids: Handle<Mesh>,
     chips: Handle<Mesh>,
-    /// Loads held in the mouth, indexed by `Good::index`.
     loads: Vec<Handle<Mesh>>,
-    /// Felled trees by (whole logs left * 2 + branches left).
     felled: Vec<Handle<Mesh>>,
     mud: Handle<Mesh>,
     stone: Handle<Mesh>,
@@ -127,7 +101,6 @@ struct Models {
     blob: Handle<Mesh>,
     wheel: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
-    /// Dam cell banks by (height steps, diagonal, variant, under construction).
     dams: HashMap<(u8, bool, u32, bool), Handle<Mesh>>,
 }
 
@@ -148,7 +121,6 @@ impl Models {
     }
 }
 
-/// Everything spawned from the scene, so it can be rebuilt when the world is regenerated.
 #[derive(Component)]
 struct SceneEntity;
 
@@ -159,32 +131,24 @@ struct TreeLod {
     season: Season,
 }
 
-/// A standing tree's resting rotation; `sway_trees` tilts it in the wind while it is near the camera.
 #[derive(Component)]
 struct Sway(Quat);
 
 #[derive(Component)]
 struct WheelSpin(f32);
 
-/// Marks entities drawn from the live sim (resources, buildings).
 #[derive(Component)]
 struct SimEntity;
 
-/// Marks beaver sprites that follow a sim agent (as opposed to the stress scene's itineraries).
 #[derive(Component)]
 struct SimBeaver;
 
-/// What one beaver sprite shows, copied from the sim each frame. The sprite's `Transform` translation
-/// is the beaver's world position; the rig (see `BeaverRig`) animates the body for `pose`.
 #[derive(Component, Clone, Debug)]
 pub struct BeaverSprite {
-    /// `BeaverId` of the sim agent (or the stress scene's beaver index).
     pub id: u64,
     pub pose: Pose,
     pub load: Option<(sim::buildings::Good, f32)>,
-    /// Heading about +Y the beaver is turning towards.
     pub yaw: f32,
-    /// True only when the beaver is actually over water; foam ripples show for this, not for the swim pose alone.
     pub wet: bool,
 }
 
@@ -192,9 +156,8 @@ pub struct BeaverSprite {
 pub(crate) struct BeaverRig {
     body: Entity,
     far: Entity,
-    parts: [Entity; 6], // head, tail, 4 legs
+    parts: [Entity; 6],
     log: Entity,
-    /// Closed eyelids (blinks, sleep) and flying wood chips (gnawing), both on the head.
     lids: Entity,
     chips: Entity,
     ripple: Entity,
@@ -205,39 +168,27 @@ pub(crate) struct BeaverRig {
     near: bool,
     init: bool,
     load: Option<sim::buildings::Good>,
-    /// Gait phase (radians): advances with the distance actually covered, so feet keep pace with
-    /// the ground instead of a clock.
     stride: f32,
     last_pos: Option<Vec3>,
 }
 
-/// A sprite moving further than this in one frame was moved, not walked (no gait for it).
 const SNAP_JUMP: f32 = 3.0;
-/// World distance one full gait cycle covers (two steps of each foot).
 const STRIDE: f32 = 0.66;
-/// Fastest gait cycles per second: a beaver hurrying scurries rather than blurring its legs.
 const MAX_STRIDE_HZ: f32 = 4.5;
 
-// ---------------------------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------------------------
-
-/// Vertex colours are the palette colours; the sun plus the high ambient (docs/STYLE.md, shared lighting rule) would
-/// light them well past those colours (fur read `#DE9C63` for `#B9783F`), so the shared material scales
-/// them back until a sun-facing surface shows its palette colour (STYLE.md section 5; measured, `artifacts/R19-29`).
 pub const ENTITY_GAIN: f32 = 0.55;
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let old_tree = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * 0.62, ENTITY_GAIN * 0.55, ENTITY_GAIN * 0.45), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let blob_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.42, 0.353, 0.541, 0.40), // plum shadow, never black
+        base_color: Color::srgba(0.42, 0.353, 0.541, 0.40),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
     });
     let water_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.957, 0.984, 0.965, 0.92), // Foam
+        base_color: Color::srgba(0.957, 0.984, 0.965, 0.92),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
@@ -294,9 +245,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     });
 }
 
-/// Stress mode measures real throughput, so turn vsync off. Keep the window on top and focused: covered
-/// windows are throttled to the display refresh by Windows, and unfocused ones can be capped by the
-/// GPU driver's "background application max frame rate", which would measure the desktop, not us.
 fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
     if cli.stress {
         for mut w in &mut windows {
@@ -308,24 +256,17 @@ fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<Prima
 }
 
 fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
-    // `BC_CLOCK=<secs>` picks the instant a screenshot shows (to catch a pose mid-animation)
     let shot = || std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK);
-    // a burst capture (`BC_BURST`) records motion, so its clock runs
     let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none();
     clock.0 = if frozen { shot() } else { time.elapsed_secs() };
     let idx = match std::env::var("BEAVER_SEASON").ok().and_then(|s| s.parse::<usize>().ok()) {
         Some(i) => i % 4,
-        // Year starts in early summer.
         None => ((sim.0.time_days / DAYS_PER_SEASON).floor() as usize + 1) % 4,
     };
     if season.0 != Season::ALL[idx] {
         season.0 = Season::ALL[idx];
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Spawning
-// ---------------------------------------------------------------------------------------------
 
 fn spawn_scene(
     mut commands: Commands,
@@ -386,12 +327,10 @@ fn spawn_scene(
     }
 
     if let (Some(pond), true) = (scene.pond, water_dry) {
-        // Stub water until the water renderer draws the sim's water field.
         let surface = meshes.add(models::pond_surface(&pond));
         commands.spawn((SceneEntity, Mesh3d(surface), MeshMaterial3d(models.water_mat.clone()), Transform::from_xyz(pond.center.x, pond.level, pond.center.y)));
     }
 
-    // Stress-scene beavers: sprites driven by itineraries; `attach_rigs` gives them their bodies.
     let pond = scene.pond;
     for i in 0..scene.beavers.len() {
         let st = eval_beaver(&scene, i, clock.0, &sim);
@@ -425,14 +364,9 @@ fn eval_beaver(scene: &RenderScene, i: usize, t: f32, sim: &Sim) -> BeaverState 
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Per-frame systems
-// ---------------------------------------------------------------------------------------------
-
 #[derive(Component)]
 struct StubBeaver(usize);
 
-/// Stress scene only: beavers walk looping itineraries instead of following sim agents.
 fn sync_stub_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMut<RenderScene>>, mut q: Query<(&StubBeaver, &mut Transform, &mut BeaverSprite)>) {
     let Some(mut scene) = scene else { return };
     for i in 0..scene.beavers.len() {
@@ -450,7 +384,6 @@ fn sync_stub_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMu
     }
 }
 
-/// Gives every new sprite its animated body: head, tail, legs, a held load, far LOD mesh, ripple, shadow.
 fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
     let Some(m) = models else { return };
     let w = &m.white;
@@ -484,8 +417,6 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
     }
 }
 
-/// One frame of the beaver rig: (translation, rotation) of the body, head, tail and four legs, plus
-/// a squash-and-stretch scale on the body (which carries every other part with it).
 #[derive(Clone, Copy)]
 struct Rig {
     parts: [(Vec3, Quat); 7],
@@ -517,8 +448,6 @@ impl Rig {
         r
     }
 
-    /// Pitches the body by `rot` about the point `pivot` of its own frame (e.g. the hind feet when
-    /// sitting up), so that point stays put.
     fn pivot_body(&mut self, pivot: Vec3, rot: Quat) {
         self.parts[0] = (self.parts[0].0 + pivot - rot * pivot, rot * self.parts[0].1);
     }
@@ -529,13 +458,10 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// 1 inside `a..b`, easing in and out over `ramp` seconds at either end.
 fn window(x: f32, a: f32, b: f32, ramp: f32) -> f32 { smooth(a, a + ramp, x) * (1.0 - smooth(b - ramp, b, x)) }
 
-/// Length of the idle behaviour loop: look around, sniff the air, sit up and groom.
 const IDLE_LOOP: f32 = 14.0;
 
-/// Whether a beaver's eyes are shut this instant: a quick blink every few seconds, staggered by id.
 pub(crate) fn blinking(t: f32, id: f32) -> bool { (t * 0.29 + id * 0.37).rem_euclid(1.0) < 0.04 }
 
 fn idle_rig(t: f32, id: f32) -> Rig {
@@ -544,7 +470,6 @@ fn idle_rig(t: f32, id: f32) -> Rig {
     let br = (t * 1.8 + id).sin();
     r.parts[0].0.y = 0.015 * br;
     r.squash = Vec3::new(1.0 + 0.012 * br, 1.0 + 0.018 * br, 1.0);
-    // look about: hold a direction, then turn to the next (a smoothed staircase)
     let k = t * 0.32 + id;
     let (i, f) = (k.floor(), k.fract());
     let dir = |n: f32| ((n * 12.9898 + id).sin() * 43758.547).fract() * 2.0 - 1.0;
@@ -552,7 +477,6 @@ fn idle_rig(t: f32, id: f32) -> Rig {
     r.parts[1].1 = ry(0.55 * look) * rx(0.05 * (t * 1.8).sin() - 0.05);
     r.parts[2].1 = rx(0.1) * ry(0.15 * (t * 0.9 + id).sin());
     let c = (t + id * 3.1).rem_euclid(IDLE_LOOP);
-    // sniffing: nose up, quick small nods
     let sniff = window(c, 3.0, 5.2, 0.35);
     if sniff > 0.0 {
         let mut s = r;
@@ -560,7 +484,6 @@ fn idle_rig(t: f32, id: f32) -> Rig {
         s.parts[0].1 = rx(-0.05);
         r = r.lerp(&s, sniff);
     }
-    // sitting up on the haunches, tail flat behind, grooming the face with both forepaws
     let sit = window(c, 7.0, 11.8, 0.5);
     if sit > 0.0 {
         let mut s = Rig::rest();
@@ -580,8 +503,6 @@ fn idle_rig(t: f32, id: f32) -> Rig {
     r
 }
 
-/// The rig for `pose` at render time `t`; `gait` is the beaver's gait phase (radians, advanced by
-/// distance travelled) that the moving poses step to.
 fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
     let rx = Quat::from_rotation_x;
     let ry = Quat::from_rotation_y;
@@ -592,7 +513,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
         Pose::Idle => r = idle_rig(t, id),
         Pose::Walk | Pose::Carry => {
             let (s, c2) = (ph.sin(), (2.0 * ph).cos());
-            // a bouncy waddle: bob twice a stride, roll side to side, squash on each footfall
             r.parts[0].0.y = 0.06 * (2.0 * ph).sin().abs();
             r.parts[0].1 = rz(0.08 * s) * rx(0.03 * (2.0 * ph).sin());
             r.squash = Vec3::new(1.0 + 0.025 * c2, 1.0 - 0.04 * c2, 1.0 + 0.015 * c2);
@@ -603,7 +523,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.parts[5].1 = rx(-0.8 * (ph - 0.3).sin());
             r.parts[6].1 = rx(0.8 * (ph - 0.3).sin());
             if pose == Pose::Carry {
-                // paws up holding the load in the teeth, head high, a heavier bob
                 r.parts[1].1 = rx(-0.3 + 0.05 * (2.0 * ph).sin());
                 r.parts[3].1 = rx(-1.0 + 0.1 * s);
                 r.parts[4].1 = rx(-1.0 - 0.1 * s);
@@ -624,7 +543,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.parts[6].1 = rx(-0.55);
         }
         Pose::Climb => {
-            // hauling up the dam: body pitched up, forepaws reaching, hind legs pushing, alternating
             let s = gait.sin();
             let c2 = (2.0 * gait).cos();
             r.parts[0].0.y = 0.1 + 0.04 * (2.0 * gait).sin().abs();
@@ -638,7 +556,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.parts[6].1 = rx(0.5 + 0.6 * s);
         }
         Pose::Work => {
-            // crouched over the job, forepaws patting/packing in alternation, tail braced
             let s = (t * 8.0 + id).sin();
             r.parts[0].0.y = 0.025 * s.abs();
             r.parts[0].1 = rx(0.1) * rz(0.04 * s);
@@ -651,7 +568,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.parts[6].1 = rx(-0.2);
         }
         Pose::Rest => {
-            // curled up asleep: belly low, head tucked on the paws, tail wrapped round, slow breathing
             let b = (t * 1.5 + id).sin();
             r.parts[0].0.y = -0.2 + 0.012 * b;
             r.parts[0].1 = rz(0.04);
@@ -665,8 +581,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.parts[6].1 = rx(-0.5);
         }
         Pose::Swim => {
-            // low in the water, nose up, tail sculling up and down, webbed hind feet kicking (kicking
-            // keeps going while treading water: paddle on the clock, faster when under way)
             let p2 = gait + t * 3.0;
             r.parts[0].0.y = -0.34 + 0.02 * (t * 2.5 + id).sin();
             r.parts[0].1 = rx(-0.06 + 0.025 * (2.0 * p2).sin());
@@ -682,8 +596,6 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
     r
 }
 
-/// The chip cluster `u` (0..1) of the way through one flight from the teeth, alternating sides; it
-/// shrinks away as it lands.
 fn chip_flight(t: f32, id: f32) -> Transform {
     let k = t * 2.3 + id;
     let (u, side) = (k.rem_euclid(1.0), if k.floor().rem_euclid(2.0) < 1.0 { 1.0 } else { -1.0 });
@@ -693,8 +605,6 @@ fn chip_flight(t: f32, id: f32) -> Transform {
         .with_scale(Vec3::splat((1.0 - u * u).max(0.05)))
 }
 
-/// Foam ripple arcs (and no ground shadow) only for a swimming beaver that is actually over water:
-/// a beaver on land, even one in the swim gait about to enter the water, shows none.
 pub(crate) fn shows_ripple(pose: Pose, wet: bool) -> bool {
     pose == Pose::Swim && wet
 }
@@ -714,7 +624,6 @@ fn animate_beavers(
     let dt = time.delta_secs();
     let turn = 1.0 - (-dt * 8.0).exp();
     for (mut tr, mut rig, sprite) in &mut roots {
-        // The sprite's translation is the sim position and is never smoothed; only the heading eases.
         let target_rot = Quat::from_rotation_y(sprite.yaw);
         tr.rotation = if rig.init { tr.rotation.slerp(target_rot, turn) } else { target_rot };
 
@@ -747,7 +656,6 @@ fn animate_beavers(
         if let Ok(mut v) = vis.get_mut(rig.blob) {
             *v = if wet { Visibility::Hidden } else { Visibility::Inherited };
         }
-        // The load follows the head; its model and size show what it is and how much.
         let good = sprite.load.map(|l| l.0);
         if good != rig.load || !rig.init {
             rig.load = good;
@@ -773,7 +681,6 @@ fn animate_beavers(
             continue;
         }
         let id = sprite.id as f32 * 1.7;
-        // gait from the ground actually covered this frame, capped so a dash is a scurry
         let moved = rig.last_pos.map_or(0.0, |p| (tr.translation - p).xz().length());
         rig.last_pos = Some(tr.translation);
         if moved < SNAP_JUMP {
@@ -792,7 +699,6 @@ fn animate_beavers(
                 }
             }
         }
-        // eyes shut while asleep and for a blink; chips fly while gnawing
         let shut = rig.cur == Pose::Rest || blinking(clock.0, id);
         if let Ok(mut v) = vis.get_mut(rig.lids) {
             v.set_if_neq(if shut { Visibility::Inherited } else { Visibility::Hidden });
@@ -809,7 +715,6 @@ fn animate_beavers(
     }
 }
 
-/// Swaps tree meshes with distance and season.
 fn update_tree_lod(
     season: Res<CurrentSeason>,
     models: Option<Res<Models>>,
@@ -830,7 +735,6 @@ fn update_tree_lod(
     }
 }
 
-/// Near trees lean gently in a travelling breeze that gusts now and then; far ones stand still.
 fn sway_trees(clock: Res<RenderClock>, mut trees: Query<(&mut Transform, &TreeLod, &Sway)>) {
     let t = clock.0;
     let gust = 1.0 + 0.45 * (t * 0.23).sin();
@@ -856,14 +760,8 @@ fn spin_wheels(time: Res<Time>, mut q: Query<(&mut Transform, &WheelSpin)>) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Stress mode: log frame times, then exit.
-// ---------------------------------------------------------------------------------------------
-
 const STRESS_WARMUP: u32 = 240;
 
-/// Main-world CPU time of the current frame (First..Last), to tell our own work apart from
-/// render/present/OS stalls when a frame goes over budget.
 #[derive(Resource, Default)]
 struct FrameWork {
     start: Option<std::time::Instant>,
@@ -893,7 +791,6 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), 
         return;
     }
     samples.push(time.delta_secs() * 1000.0);
-    // `delta` measures the previous frame, whose main-world work is `work.last_ms`.
     works.push((work.last_ms, work.last_focused));
     if samples.len() < STRESS_FRAMES {
         return;
@@ -903,7 +800,6 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), 
     let avg = s.iter().sum::<f32>() / s.len() as f32;
     let pct = |p: f32| s[((s.len() as f32 * p) as usize).min(s.len() - 1)];
     let max = s[s.len() - 1];
-    // Every frame counts: a single hitch over budget is a visible stutter, so the gate is the max.
     let over: Vec<String> = samples
         .iter()
         .enumerate()
@@ -913,7 +809,6 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), 
     let unfocused = works.iter().filter(|w| !w.1).count();
     let mut w: Vec<f32> = works.iter().map(|w| w.0).collect();
     w.sort_by(|a, b| a.total_cmp(b));
-    // Count what is actually drawn, so the sim-driven run (`BC_STRESS_SIM=1`) reports its own world.
     let (trees, beavers) = (drawn_trees.iter().count(), drawn_beavers.iter().count());
     let source = if stub_mode(&cli) { "stub itinerary scene" } else { "live sim world" };
     let line = format!(
@@ -983,8 +878,6 @@ mod tests {
         }
     }
 
-    /// The stub pond must sit in the terrain, not flood it: most trees stay alive, the pond is
-    /// pond-sized, and the buildings do not overlap.
     #[test]
     fn stub_pond_fits_the_terrain() {
         for seed in 1..=4 {
@@ -1013,7 +906,7 @@ mod tests {
         let a = scene_from_sim(&sim, SceneConfig::STRESS);
         let b = scene_from_sim(&sim, SceneConfig::STRESS);
         assert_eq!(a.trees.len(), 5000);
-        
+
         assert!(a.beavers.len() >= 295, "got {}", a.beavers.len());
         assert_eq!(a.trees[17].pos, b.trees[17].pos);
         assert!(a.structs.len() >= 20);

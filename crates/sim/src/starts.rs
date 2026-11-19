@@ -1,16 +1,8 @@
-//! The one founding start: two adults and two kits swim in along a river. Nothing is built and
-//! nothing is chosen for them; the player scouts, places a burrow (the adults dig it) and a dam
-//! (the adults fell trees and haul the wood), and the pond fills. Built directly, never simulated
-//! forward: the same seed gives an identical `SimState`.
-
 use crate::SimState;
 
-/// Why a start could not be built.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StartError {
-    /// The generated world has no usable spot (dry ground beside the river with trees nearby).
     NoSite,
-    /// A step of building the start failed; the message names it.
     Build(String),
 }
 
@@ -24,9 +16,6 @@ impl std::fmt::Display for StartError {
 }
 impl std::error::Error for StartError {}
 
-/// Removes every disabled system's state from a start (`Features` says which): no rival
-/// neighbours or arrivals, no predators, no scouting or guard experience. The sim never fires
-/// them either way (`SimState::apply_features`); this keeps them out of the state a screen reads.
 pub(crate) fn strip_disabled(sim: &mut SimState) {
     use crate::features::System;
     let f = sim.features;
@@ -45,64 +34,34 @@ pub(crate) fn strip_disabled(sim: &mut SimState) {
     sim.buildings.buildings.retain(|b| f.allows_building(b.kind));
 }
 
-/// Dams tried, in cells above the river bed.
 const DAM_HEIGHTS: [f32; 7] = [0.5, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0];
-/// A first pond of this many cells: big enough to see, small enough to fill in days.
-const POND_AREA: usize = 150;
-const POND_AREA_RANGE: std::ops::RangeInclusive<usize> = 50..=250;
-/// The valley floor is clay: seepage is a quarter of the default, so a river can hold a pond.
-/// Evaporation and seepage then take about 0.02 depth per wet cell per day in spring.
-pub(crate) const CLAY_SEEPAGE: f32 = 0.0; // switched off with the other losses (see tuning::water)
-/// The lake fixtures' springs (`feed_river`) are put on at most this many river cells, found by
-/// following the river at most `RIVER_WALK` cells; they bring one unit of inflow per
-/// `CELLS_PER_INFLOW` pond cells.
-#[cfg(any(test, feature = "fixtures"))]
-const MAX_SPRINGS: usize = 20;
-#[cfg(any(test, feature = "fixtures"))]
-const RIVER_WALK: usize = 60;
-#[cfg(any(test, feature = "fixtures"))]
-const CELLS_PER_INFLOW: f32 = 15.0;
-const MAX_DAM_CELLS: usize = 10;
-/// A dam's ends tie into ground above the head its river's flow times this raises over the crest
-/// (spring brings more than the base flow).
+const POND_AREA: usize = 1500;
+const POND_AREA_RANGE: std::ops::RangeInclusive<usize> = 300..=6000;
+const MAX_DAM_CELLS: usize = 50;
+const CANDIDATE_STRIDE: usize = 3;
 const SPILL_FLOW_MARGIN: f32 = 1.5;
-/// Start 1 is a flowing stream a dam visibly changes. Its planned dam must raise the water at least
-/// `START_RISE` above the river as it runs once the springs have settled, and flood at least
-/// `START_NEW` cells (and a quarter of its pond) that are dry ground now.
 pub const START_RISE: f32 = 0.6;
-pub const START_NEW: usize = 40;
-/// The river must fall at least `MIN_DROP` over the `REACH` cells either side of the dam (bed
-/// before, water surface once settled): a filled flat falls about a tenth of that, and a dam
-/// there would sit in standing water.
+pub const START_NEW: usize = 100;
 pub const MIN_DROP: f32 = 0.1;
-pub const REACH: usize = 6;
-/// Start 1's river must bring the full planned pond at least this many times what it loses per
-/// day (`DamPreview::fills`), from its own catchment, so the pond fills and stays full.
+pub const REACH: usize = 24;
 pub const START_INFLOW_MARGIN: f32 = 1.25;
-/// Dam lines are looked for this far inside the map.
-const EDGE_MARGIN: usize = 4;
-/// The camp is this far from the dam centre, this close to the river bank, with this many trees about.
-const CAMP_DAM_DIST: std::ops::RangeInclusive<usize> = 5..=16;
-const BANK_MAX: usize = 7;
+const EDGE_MARGIN: usize = 16;
+const CAMP_DAM_DIST: std::ops::RangeInclusive<usize> = 20..=60;
+const BANK_MAX: usize = 25;
 const TREES_WANTED: usize = 10;
-const TREE_RADIUS: usize = 14;
-/// Kits are this many days old (under a year).
+const TREE_RADIUS: usize = 30;
 const KIT_AGE_DAYS: f32 = 150.0;
 
 pub(crate) fn dist2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
 }
 
-/// Where start 1 camps and the dam it is meant to build.
 struct RiverPlan {
     camp: Cell,
     dam: Vec<Cell>,
     height: f32,
 }
 
-/// The best dam a family camped at `camp` can see: a candidate line (as `dam_candidates`) whose
-/// middle lies within `radius` cells and whose cells are all explored. For scripted players and
-/// the HUD's suggestion; `None` if there is none in reach.
 pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>, f32)> {
     dam_candidates(sim)
         .into_iter()
@@ -111,12 +70,9 @@ pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>,
             dist2(mid, camp) <= radius * radius && cells.iter().all(|&c| sim.fog.explored(c))
         })
         .map(|(_, cells, h)| (cells, h))
-        // A first dam of sticks and logs: anything taller needs mud the family has not got.
         .min_by_key(|(_, h)| (*h > crate::dam_preview::DEFAULT_HEIGHT + 1e-3) as u8)
 }
 
-/// Straight cross-river dam lines with a pond of a sensible size, best first (score, cells,
-/// height). The score prefers a pond near `POND_AREA`, a short dam and a quick fill.
 fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
     let size = sim.world.size;
     let is_river = |x: usize, y: usize| sim.world.river.get(x, y).copied().unwrap_or(false);
@@ -125,22 +81,19 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
     let mut out = Vec::new();
     for y in EDGE_MARGIN..size - EDGE_MARGIN {
         for x in EDGE_MARGIN..size - EDGE_MARGIN {
-            if !is_river(x, y) {
+            if !is_river(x, y) || (x + y) % CANDIDATE_STRIDE != 0 {
                 continue;
             }
             if reach_drop(sim, &up, (x, y), bed) < MIN_DROP {
                 continue;
             }
-            for horizontal in [true, false] {
-                let at = |t: isize| if horizontal { ((x as isize + t) as usize, y) } else { (x, (y as isize + t) as usize) };
+            for (dx, dy) in [(1isize, 0isize), (0, 1), (1, 1), (1, -1)] {
+                let at = |t: isize| ((x as isize + dx * t) as usize, (y as isize + dy * t) as usize);
                 let reach = |dir: isize| (1..12).find(|&k| !is_river(at(dir * k).0, at(dir * k).1)).unwrap_or(12);
                 let (left, right) = (-reach(-1), reach(1));
                 let low = (left + 1..right).map(|t| bed(at(t))).fold(f32::INFINITY, f32::min);
                 for height in DAM_HEIGHTS {
-                    // Both banks, plus bank on each side until the line ties into ground above
-                    // the pond level, so the water cannot walk round its ends: above the crest by
-                    // the head a full pond stands over it as it spills its river (spring flow).
-                    let head = crate::water::spill_head(SPILL_FLOW_MARGIN * sim.world.river_flow.get(x, y).copied().unwrap_or(0.0));
+                    let head = crate::water::spill_head(SPILL_FLOW_MARGIN * sim.world.river_flow.get(x, y).copied().unwrap_or(0.0), sim.water.cell_m);
                     let ties_in = |t: isize| bed(at(t)) >= low + height + head;
                     let (Some(l), Some(r)) = ((0..MAX_DAM_CELLS as isize).map(|k| left - k).find(|&t| ties_in(t - 1)), (0..MAX_DAM_CELLS as isize).map(|k| right + k).find(|&t| ties_in(t + 1))) else { continue };
                     let cells: Vec<Cell> = (l..=r).map(at).collect();
@@ -149,7 +102,7 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
                     }
                     let Some(p) = crate::dam_preview::preview(sim, &cells, height) else { continue };
                     if p.spill_at.is_some() {
-                        continue; // the water would walk round it
+                        continue;
                     }
                     let area = p.flooded.len();
                     if p.rise >= START_RISE && POND_AREA_RANGE.contains(&area) && holds(sim, &cells, &p.flooded) {
@@ -164,8 +117,6 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
     out
 }
 
-/// Whether a pond of `flooded` cells is held by the dam: it stays off the map edge and off the
-/// river below the dam (a dam the water walks round floods its own tailwater).
 fn holds(sim: &SimState, dam: &[Cell], flooded: &[Cell]) -> bool {
     let size = sim.world.size;
     let pond: std::collections::HashSet<Cell> = flooded.iter().copied().collect();
@@ -188,8 +139,6 @@ fn holds(sim: &SimState, dam: &[Cell], flooded: &[Cell]) -> bool {
     true
 }
 
-/// For each river cell (by index), the river cell draining into it with the largest catchment:
-/// the stem upstream.
 fn upstream_map(sim: &SimState) -> Vec<Option<Cell>> {
     let size = sim.world.size;
     let is_river = |(x, y): Cell| sim.world.river.get(x, y).copied().unwrap_or(false);
@@ -206,8 +155,6 @@ fn upstream_map(sim: &SimState) -> Vec<Option<Cell>> {
     up
 }
 
-/// How far `level` falls along the river from `REACH` cells above `at` to `REACH` cells below it
-/// (fewer where the river starts or leaves the map).
 fn reach_drop(sim: &SimState, up: &[Option<Cell>], at: Cell, level: impl Fn(Cell) -> f32) -> f32 {
     let size = sim.world.size;
     let (mut top, mut bottom) = (at, at);
@@ -222,42 +169,30 @@ fn reach_drop(sim: &SimState, up: &[Option<Cell>], at: Cell, level: impl Fn(Cell
     level(top) - level(bottom)
 }
 
-/// The dam's river cell: the lowest river cell of the line.
 fn dam_river_cell(sim: &SimState, dam: &[Cell]) -> Option<Cell> {
     let bed = |c: &Cell| sim.height.get(c.0, c.1).copied().unwrap_or(f32::INFINITY);
     dam.iter().copied().filter(|&(x, y)| sim.world.river.get(x, y) == Some(&true)).min_by(|a, b| bed(a).total_cmp(&bed(b)))
 }
 
-/// What a planned dam does to the river as it runs now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DamEffect {
-    /// Rise of the water at the dam (the HUD preview's "Water rises").
     pub rise: f32,
-    /// Cells the pond would cover.
     pub flooded: usize,
-    /// Of those, cells that are dry ground now (not river, lake or standing water).
     pub newly_flooded: usize,
-    /// Fall of the water surface along the river through the dam site (see `MIN_DROP`).
     pub drop: f32,
-    /// Whether the river brings enough water to fill the pond on its own
-    /// (`DamPreview::fills` with `START_INFLOW_MARGIN`).
     pub fills: bool,
 }
 
 impl DamEffect {
-    /// How near this comes to `is_visible` (1 or more when rise and new ground both suffice).
     fn closeness(&self) -> f32 {
         (self.rise / START_RISE).min(self.newly_flooded as f32 / START_NEW.max(self.flooded / 4) as f32)
     }
 
-    /// Whether this is the flowing stream a dam visibly changes that start 1 is built around.
     pub fn is_visible(&self) -> bool {
         self.rise >= START_RISE && self.newly_flooded >= START_NEW.max(self.flooded / 4) && self.drop >= MIN_DROP
     }
 }
 
-/// What a dam of `height` on `dam` does to the river in `sim` as it stands. `None` if the line is
-/// not a valid dam or crosses no river.
 pub fn dam_effect(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamEffect> {
     let p = crate::dam_preview::preview(sim, dam, height)?;
     let wet = |&&(x, y): &&Cell| {
@@ -270,11 +205,8 @@ pub fn dam_effect(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamEffect
     Some(DamEffect { rise: p.rise, flooded: p.flooded.len(), newly_flooded: p.flooded.iter().filter(|c| !wet(c)).count(), drop, fills: p.fills(START_INFLOW_MARGIN) })
 }
 
-/// Dam sites a dam visibly changes (`DamEffect::is_visible`) on separate streams: two sites count
-/// as separate when neither lies within `SEPARATE_REACH` river cells downstream of the other. The
-/// map checks use it to make sure a map offers more than one river worth damming.
 pub fn dammable_streams(sim: &SimState) -> Vec<Cell> {
-    const SEPARATE_REACH: usize = 40;
+    const SEPARATE_REACH: usize = 150;
     let below = |from: Cell, to: Cell| {
         let mut at = from;
         for _ in 0..SEPARATE_REACH {
@@ -289,27 +221,19 @@ pub fn dammable_streams(sim: &SimState) -> Vec<Cell> {
     let mut picked: Vec<Cell> = Vec::new();
     for (_, dam, height) in dam_candidates(sim) {
         let (Some(effect), Some(at)) = (dam_effect(sim, &dam, height), dam_river_cell(sim, &dam)) else { continue };
-        if effect.is_visible() && picked.iter().all(|&p| !below(at, p) && !below(p, at) && dist2(p, at) > 64) {
+        if effect.is_visible() && picked.iter().all(|&p| !below(at, p) && !below(p, at) && dist2(p, at) > 900) {
             picked.push(at);
         }
     }
     picked
 }
 
-/// Runs the water alone until the rivers carry what the springs now give, then starts its clock
-/// and books afresh (as `Water::from_world` does for the generated springs).
 fn settle_water(sim: &mut SimState) {
-    use crate::water::{SETTLE_DAYS, SETTLE_DT};
-    for _ in 0..(SETTLE_DAYS / SETTLE_DT).round() as usize {
-        sim.water.step(&sim.height, SETTLE_DT);
-    }
+    sim.water.refresh(&sim.height);
     sim.water.time_days = 0.0;
     sim.water.reset_books();
 }
 
-
-/// Dry ground within reach of the dam, outside the future pond, beside the river with trees
-/// around; the cell nearest the dam among those qualifying (ties by cell order).
 fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
     let size = sim.world.size;
     let pond: std::collections::HashSet<Cell> =
@@ -325,7 +249,7 @@ fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
         (c.1.saturating_sub(r)..=(c.1 + r).min(size - 1)).flat_map(move |y| (c.0.saturating_sub(r)..=(c.0 + r).min(size - 1)).map(move |x| (x, y)))
     };
     let trees: Vec<Cell> = sim.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect();
-    near_cells(mid, 16)
+    near_cells(mid, 60)
         .filter(|&c| c.0 >= 3 && c.1 >= 3 && c.0 + 3 < size && c.1 + 3 < size)
         .filter(|&c| CAMP_DAM_DIST.contains(&(dist2(c, mid).isqrt())))
         .filter(|&c| near_cells(c, 2).all(|(x, y)| !wet(x, y)))
@@ -334,18 +258,9 @@ fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
         .min_by_key(|&c| (dist2(c, mid), c.1, c.0))
 }
 
-/// The best (camp, dam) pair for a state as `SimState::new` leaves it (with clay seepage). Settles
-/// the water once (each river carries what its catchment gives, `Water::from_world`; no water is
-/// added for the start), then takes the first candidate that visibly changes the river and whose
-/// pond the river fills on its own (`DamEffect::fills`); else the best of the rest: one that is
-/// visible or fills before one that is neither, one on running water (`MIN_DROP`) before one on
-/// a flat, then the nearest to visible (`DamEffect::closeness`).
 fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
     settle_water(sim);
-    // Dams across the world's narrows go first (best score first within each group).
-    let mut candidates = dam_candidates(sim);
-    let at_narrows = |dam: &[Cell]| sim.world.narrows.is_some_and(|nw| dam.iter().any(|&c| dist2(c, nw) <= 2));
-    candidates.sort_by_key(|(_, dam, _)| !at_narrows(dam));
+    let candidates = dam_candidates(sim);
     let mut best: Option<((u8, bool, f32), RiverPlan)> = None;
     for (_, dam, height) in candidates {
         let Some(effect) = dam_effect(sim, &dam, height) else { continue };
@@ -369,10 +284,6 @@ fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
     best.map(|(_, plan)| plan)
 }
 
-/// The river cells the family swims in on: one per beaver, packed around the river cell nearest
-/// the landing bank (nearest to that anchor first, ties by cell order). Cells with a walkable
-/// route to the landing come first, so a pocket of river walled in by cliffs does not strand
-/// them; a landing buried in forest (no route until trees fall) falls back to plain river cells.
 fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
     use crate::nav::Goal;
     let size = sim.world.size;
@@ -393,18 +304,9 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
     pack
 }
 
-/// A river cell within this many cells of the settling cell is where the family swims in from;
-/// with none that close they start on the cell itself.
-const SWIM_REACH: usize = 12;
+const SWIM_REACH: usize = 40;
 
-/// Founds the colony at `cell`: two adults and two kits (swimming in from the river if one is
-/// near, else standing on the cell) with a lodge, and opens the cell's valley and its
-/// neighbours. Errors (state unchanged) if the colony is already founded, `cell` is off the map,
-/// in a locked valley or in water.
-/// Days of food the founding family carries in.
 pub const START_LARDER_DAYS: f32 = 45.0;
-/// What the family carries in besides food: enough for the first dam (about nine cells), a
-/// warehouse and a little over. A burrow costs only labour.
 pub const START_BUNDLE: [(crate::buildings::Good, f32); 4] =
     [(crate::buildings::Good::Logs, 60.0), (crate::buildings::Good::Sticks, 60.0), (crate::buildings::Good::Mud, 30.0), (crate::buildings::Good::Rope, 2.0)];
 
@@ -432,7 +334,6 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         return Err(invalid(format!("cell {cell:?} is water: beavers cannot settle there")));
     }
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
-    // No home is waiting for them: shelter comes from what they build.
     sim.colony.arrive((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
     for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
         b.age_days = KIT_AGE_DAYS;
@@ -445,9 +346,6 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
-    // The family brings a bundle: a larder of food (START_LARDER_DAYS) and the materials for a
-    // first dam, a shelter and a store (START_BUNDLE). They drop it as a pile where they land;
-    // builders fetch from the pile until a store stands.
     let larder = crate::hud::food_need_per_day(sim) * START_LARDER_DAYS;
     sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Food, larder).map_err(|e| invalid(e.to_string()))?;
     for (g, a) in START_BUNDLE {
@@ -459,41 +357,24 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         let allowed = crate::fog::open_at(&sim.world);
         sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT, &allowed);
     }
-    // Founding opens the landing's valley and its neighbours.
     sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
     strip_disabled(sim);
     crate::agents::place_beavers(sim);
     Ok(())
 }
 
-/// The new game: the world with its river, no colony yet, no building of any kind and no dam.
-/// The player picks the settling cell (`Command::Settle`, which founds two adults and two kits
-/// swimming in beside it), then places a burrow and a dam (`SimState::place_site`,
-/// `SimState::order_dam`). Auto-staffing (`auto_organise`) is on: free adults staff the sites and
-/// workplaces the player places and fetch what sites lack; the player can also assign them by hand
-/// (`Command::Assign`, `Command::FillSlot`) or switch it off (`Command::SetAutoStaff`); the
-/// kits never work.
-///
-/// Returns the state and the dam and camp the game is designed around (the camp leaves its
-/// landing dry). The dam sits where the river runs downhill, not on a flat where it would stand.
-/// Its river brings enough water from its own catchment to fill that pond against evaporation
-/// and seepage (`fills`), and the water is settled before day 0, so the river runs as it will.
 fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
     build_river_on(SimState::new(seed))
 }
 
-/// The start on any world: picks the designed dam and camp and settles the water (see `build_river`).
 fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> {
-    sim.water.config.seepage = CLAY_SEEPAGE;
     let mut plan = river_plan(&mut sim).ok_or(StartError::NoSite)?;
-    // The designed camp must be settleable.
     if let Some(v) = sim.world.valley_of(plan.camp) {
         sim.world.valleys[v.0 as usize].open = true;
     }
-    // ...and must leave room to build: if it does not, the best spot near it that does.
     if crate::site::can_settle(&sim, plan.camp).is_err() {
         let (cx, cy) = plan.camp;
-        let r = 14usize;
+        let r = 50usize;
         let mut best: Option<(f32, Cell)> = None;
         for y in cy.saturating_sub(r)..(cy + r).min(sim.world.size) {
             for x in cx.saturating_sub(r)..(cx + r).min(sim.world.size) {
@@ -509,8 +390,7 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
             plan.camp = c;
         }
     }
-    sim.work.auto_organise = true; // auto-staffing is on in every new game (spec W1)
-    // Fog of war: the family has looked over only the ground around where it comes in.
+    sim.work.auto_organise = true;
     sim.fog = crate::fog::Fog::unseen(sim.world.size);
     {
         let allowed = crate::fog::open_at(&sim.world);
@@ -519,73 +399,22 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 
-/// Tops up the river above the planned dam so the pond can fill and stay full: steady springs
-/// on the river cells that flow into it, nearest first (under the water if the river rises inside
-/// the pond). They sit in the channel, so before the dam
-/// the extra water simply runs past.
-#[cfg(any(test, feature = "fixtures"))]
-pub(crate) fn feed_river(sim: &mut SimState, dam: &[Cell], height: f32) -> Result<(), StartError> {
-    let p = crate::dam_preview::preview(sim, dam, height).ok_or(StartError::NoSite)?;
-    let needed = p.flooded.len() as f32 / CELLS_PER_INFLOW - p.inflow;
-    if needed <= 0.0 {
-        return Ok(());
-    }
-    let pond: std::collections::HashSet<Cell> = p.flooded.iter().chain(dam).copied().collect();
-    let size = sim.world.size;
-    let mut upstream: Vec<(usize, Cell)> = (0..size * size)
-        .map(|i| (i % size, i / size))
-        .filter(|&(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false) && !pond.contains(&(x, y)))
-        .filter_map(|start| {
-            let mut at = start;
-            (1..=RIVER_WALK).find_map(|steps| {
-                at = sim.world.downstream(at.0, at.1)?;
-                pond.contains(&at).then_some((steps, start))
-            })
-        })
-        .collect();
-    upstream.sort();
-    upstream.truncate(MAX_SPRINGS);
-    let mut cells: Vec<Cell> = upstream.into_iter().map(|(_, c)| c).collect();
-    if cells.is_empty() {
-        // The river rises inside the pond: springs under the water, spread over the flooded cells.
-        let mut flooded = p.flooded.clone();
-        flooded.sort_by_key(|&(x, y)| (y, x));
-        let n = MAX_SPRINGS.min(flooded.len());
-        cells = (0..n).map(|k| flooded[k * flooded.len() / n]).collect();
-    }
-    if cells.is_empty() {
-        return Err(StartError::NoSite);
-    }
-    let rate = needed / cells.len() as f32;
-    for (x, y) in cells {
-        sim.water.sources.push(crate::water::Source { x, y, rate, seasonality: 0.0 });
-    }
-    Ok(())
-}
 
-/// A dam a start is designed around: a line of cells across the river and its height.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamSite {
     pub cells: Vec<Cell>,
     pub height: f32,
-    /// The settling cell the start is designed around (dry, beside the river, trees about).
     pub camp: Cell,
 }
 
-/// How close (depth units) the water must come to the dam crest for the pond to count as full.
 const FULL_WITHIN: f32 = 0.05;
-/// Pond cells this close (cells) to the dam are the ones inspected.
-const WATCH_RADIUS: usize = 8;
+const WATCH_RADIUS: usize = 30;
 
 impl DamSite {
-    /// Whether the dam stands finished: every cell of the line holds a water dam of the planned
-    /// height (a dam under construction rises toward it as the builders work).
     pub fn is_built(&self, sim: &SimState) -> bool {
         self.cells.iter().all(|c| sim.water.dam_height.get(c.0, c.1).is_some_and(|h| *h >= self.height - 1e-3))
     }
 
-    /// Watches the pond this dam would make, as `sim` is now (before it is built). `None` if the
-    /// line is not a valid dam.
     pub fn watch(&self, sim: &SimState) -> Option<PondWatch> {
         let p = crate::dam_preview::preview(sim, &self.cells, self.height)?;
         let mid = self.cells[self.cells.len() / 2];
@@ -593,17 +422,13 @@ impl DamSite {
     }
 }
 
-/// The pond cells beside a dam and the level they should reach.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PondWatch {
-    /// Water surface height of a full pond (the dam crest).
     pub level: f32,
     near: Vec<Cell>,
 }
 
 impl PondWatch {
-    /// The pond is full when at least three wet pond cells beside the dam have their water
-    /// surface within `FULL_WITHIN` of the crest.
     pub fn is_full(&self, sim: &SimState) -> bool {
         let full = |c: &&Cell| {
             let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
@@ -613,25 +438,19 @@ impl PondWatch {
     }
 }
 
-/// Builds the new game for `seed` and also returns the dam it is designed around. Tests and the
-/// scripted demo order that dam; the player picks their own spot.
 pub fn new_game_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {
     build_river(seed)
 }
 
-/// Builds the new game on the real-terrain map `id` (see `maps::all`) and returns the dam it is
-/// designed around, like `new_game_with_dam`.
 pub fn new_game_on_map(id: &str) -> Result<(SimState, DamSite), StartError> {
     let (info, world) = crate::maps::world(id).map_err(|e| StartError::Build(e.to_string()))?;
     build_river_on(SimState::from_world(info.seed(), world))
 }
 
-/// Builds the new game on a parsed map (bundled or a candidate being checked).
 pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::World) -> Result<(SimState, DamSite), StartError> {
     build_river_on(SimState::from_world(info.seed(), world))
 }
 
-/// Builds the new game for `seed` (see `new_game_with_dam`).
 pub fn new_game(seed: u64) -> Result<SimState, StartError> {
     build_river(seed).map(|(sim, _)| sim)
 }
@@ -643,7 +462,6 @@ mod tests {
     use super::*;
     use crate::{agents, Command};
 
-    /// Everything a test can see of a state, for equality.
     fn fingerprint(s: &SimState) -> String {
         let beavers: Vec<_> = s.colony.beavers.iter().map(|b| (b.id, b.age_days.to_bits(), b.stage, b.pos.0.to_bits(), b.pos.1.to_bits())).collect();
         let trees: Vec<_> = s.resources.items.iter().map(|r| (r.id, r.kind, r.cell)).collect();
@@ -651,7 +469,6 @@ mod tests {
         format!("{} {} {:?} {:?} {:?} {:?} {:?}", s.seed, s.time_days, s.height.as_slice().iter().map(|h| h.to_bits()).fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)), beavers, trees, agents, s.buildings.buildings)
     }
 
-    /// The new game with its colony founded at the designed camp (as the player's settle would).
     fn settled(seed: u64) -> (SimState, DamSite) {
         let (mut s, dam) = new_game_with_dam(seed).unwrap();
         s.apply(Command::Settle { cell: dam.camp }).unwrap();
@@ -680,7 +497,6 @@ mod tests {
         assert!(s.agents.by_id.values().all(|a| s.world.river.get(a.cell.0, a.cell.1) == Some(&true)), "all four swim in the river");
     }
 
-    /// Places `kind` on the first free cell scanning outwards from the first beaver.
     fn place_near(s: &mut SimState, kind: crate::buildings::BuildingKind) -> crate::buildings::BuildingId {
         let c = s.colony.beavers[0].pos;
         let (cx, cy) = (c.0 as usize, c.1 as usize);
@@ -706,9 +522,8 @@ mod tests {
     fn only_adults_dig_a_placed_burrow_and_nothing_is_built_before_the_command() {
         use crate::{buildings::{BuildingKind, Status}, colony::Stage};
         let (mut s, _) = settled(1);
-        // Fed, so the test watches building rather than hunger (the family arrives empty-handed).
         s.buildings.stores.deposit(crate::buildings::Good::Food, 60.0).unwrap();
-        s.work.auto_organise = true; // the player opts the family into organising itself
+        s.work.auto_organise = true;
         for _ in 0..200 {
             s.step(0.05).unwrap();
         }
@@ -743,9 +558,6 @@ mod tests {
         assert_eq!(s.agents.get(kit).unwrap().assignment, None);
     }
 
-    /// Runs start 1 for `days`; with `order` the planned dam is ordered at once and nothing else is
-    /// ever commanded. Returns the day the dam stood, the day the pond first held its level
-    /// (after the dam stood), and the end state.
     fn run(seed: u64, order: bool, days: f32) -> (SimState, Option<f64>, Option<f64>) {
         let (mut s, dam) = settled(seed);
         let watch = dam.watch(&s).unwrap();
@@ -770,10 +582,8 @@ mod tests {
     fn adults_haul_the_bundle_to_a_placed_dam_which_completes_only_from_delivered_wood_and_the_pond_rises() {
         use crate::buildings::Good;
         use crate::colony::Stage;
-        // A start whose river brings enough water to fill the planned pond (seed 1's stream is
-        // too small to: its pond levels off below the crest).
         let seed = (1..20)
-            .find(|&seed| new_game_with_dam(seed).is_ok_and(|(s, d)| dam_effect(&s, &d.cells, d.height).is_some_and(|e| e.fills)))
+            .find(|&seed| new_game_with_dam(seed).is_ok_and(|(s, d)| crate::dam_preview::preview(&s, &d.cells, d.height).is_some_and(|p| p.fill_days < 120.0)))
             .expect("some seed's river fills its planned pond");
         let (mut s, dam) = settled(seed);
         s.work.auto_organise = true;
@@ -830,7 +640,6 @@ mod tests {
             s.step(0.05).unwrap();
         }
         assert!(!s.colony.is_founded(), "stepping never founds a colony");
-        // Unusable: off the map, in the river, and in a locked valley.
         let size = s.world.size;
         assert!(s.apply(Command::Settle { cell: (size, 0) }).is_err());
         let river = (0..size * size).map(|i| (i % size, i / size)).find(|&(x, y)| s.world.river.get(x, y) == Some(&true)).unwrap();
@@ -839,7 +648,6 @@ mod tests {
             assert!(s.apply(Command::Settle { cell: c }).is_err(), "a locked valley cannot be settled");
         }
         assert!(!s.colony.is_founded() && s.agents.by_id.is_empty(), "a rejected settle changes nothing");
-        // A usable cell founds the colony there.
         s.apply(Command::Settle { cell: dam.camp }).unwrap();
         assert!(s.colony.is_founded());
         assert_eq!(s.colony.beavers.len(), 4);
@@ -854,7 +662,6 @@ mod tests {
         for _ in 0..1200 {
             s.step(0.05).unwrap();
         }
-        // Auto-staffing is on, but with nothing placed there is nothing to staff.
         assert!(s.work.auto_organise && s.work.managed.is_empty());
         assert!(s.buildings.buildings.is_empty() && s.work.places.is_empty(), "nothing built");
         assert!(s.agents.by_id.values().all(|a| a.assignment.is_none() && a.load.is_none()), "no gather duty");
@@ -888,8 +695,6 @@ mod tests {
         assert_eq!(start(&s, kit), before.2, "the kit was not moved");
     }
 
-    /// The opening the player is meant to play: settle, then a burrow, a warehouse and the dam,
-    /// all built from the bundle with nothing else ordered (auto-staffing on).
     #[test]
     fn the_bundle_builds_a_shelter_a_store_and_the_first_dam() {
         use crate::buildings::BuildingKind;
@@ -898,7 +703,6 @@ mod tests {
         let store = place_near(&mut s, BuildingKind::Warehouse);
         let dam_site = s.order_dam(&dam.cells, dam.height).unwrap();
         let done = |s: &SimState, id| s.buildings.building(id).is_some_and(|b| b.is_complete());
-        // The player acts on the top alert once a day (as the HUD's fix button does).
         let mut next = 0.0;
         while s.time_days < 90.0 && !(done(&s, burrow) && done(&s, store) && done(&s, dam_site)) {
             if s.time_days >= next {
@@ -949,7 +753,6 @@ mod tests {
         }
         assert!(s.colony.lodges.is_empty() && s.colony.beavers.iter().all(|b| b.lodge.is_none()), "no home until they build one");
         assert!(s.agents.by_id.values().all(|a| a.load.is_none()));
-        // With no foraging ordered, the larder runs low but nobody starves in the first two weeks.
         while s.time_days < 14.0 {
             s.step(0.5).unwrap();
         }
@@ -957,10 +760,6 @@ mod tests {
         assert!(s.buildings.stores.amount(Good::Food) < food, "they ate from the larder");
     }
 
-    /// The start is a flowing stream a dam visibly changes: for several seeds the planned dam, at
-    /// its own crest, raises the water at least half a unit above the river as it runs and floods
-    /// ground that is dry now; the pond is held behind the dam (not round it), no lake stands in
-    /// it, and the dam can be ordered.
     #[test]
     fn the_start_river_flows_and_its_planned_dam_visibly_raises_it() {
         for seed in [1, 2, 4, 6, 8] {
@@ -976,8 +775,6 @@ mod tests {
         }
     }
 
-    /// What the HUD shows after its demo's twelve days: the river runs as it did at the start, so
-    /// the planned dam still raises it visibly.
     #[test]
     fn the_planned_dam_still_raises_the_river_after_twelve_days() {
         let (mut s, dam) = settled(1);
@@ -990,7 +787,6 @@ mod tests {
         assert!(after.newly_flooded >= 30, "{} of {} pond cells dry after 12 days", after.newly_flooded, after.flooded);
     }
 
-    /// A valley sloping down toward +x with sides rising 0.15 per cell, its river along y = 64.
     fn sloping_valley() -> SimState {
         let mut s = SimState::new(1);
         let n = s.world.size;
@@ -1010,7 +806,6 @@ mod tests {
     fn a_dam_the_water_walks_round_does_not_hold_its_pond() {
         let s = sloping_valley();
         let line = |half: usize| -> Vec<Cell> { (64 - half..=64 + half).map(|y| (40, y)).collect() };
-        // At crest 1 the banks rise above the pond seven cells out: a shorter line leaks round its ends.
         let short = crate::dam_preview::preview(&s, &line(1), 1.0).unwrap();
         let at = short.spill_at.expect("a three-cell dam is walked round in this valley");
         assert!(short.level < short.crest - 0.4, "the pond only rises to the saddle: {} of {}", short.level, short.crest);
@@ -1018,7 +813,6 @@ mod tests {
         let full = crate::dam_preview::preview(&s, &line(7), 1.0).unwrap();
         assert!(full.spill_at.is_none() && holds(&s, &line(7), &full.flooded), "a dam tied into both banks holds");
         assert!(full.flooded.iter().all(|c| c.0 < 40), "the held pond lies upstream");
-        // Extending the short dam over each spill point ties it in.
         let (cells, _, _) = crate::dam_preview::extend_to_hold(&s, &line(1), &[1.0; 3], 20).expect("can be tied in");
         assert!(cells.len() > 3 && crate::dam_preview::preview_heights(&s, &cells, &vec![1.0; cells.len()]).is_some());
     }
@@ -1026,12 +820,10 @@ mod tests {
     #[test]
     fn a_dam_effect_tells_a_running_river_from_a_flat() {
         let mut s = sloping_valley();
-        // Crest 2, tied into banks that rise above it 14 cells out.
         let line: Vec<Cell> = (50..=78).map(|y| (40, y)).collect();
         let running = dam_effect(&s, &line, 2.0).unwrap();
         assert!(running.drop >= 2.0, "0.2 per cell over 12 cells: {}", running.drop);
         assert!((running.rise - 2.0).abs() < 0.01 && running.is_visible(), "{running:?}");
-        // The same river standing on a filled flat: no fall, and a dam on it is not the start's.
         for x in 0..s.world.size {
             *s.height.get_mut(x, 64).unwrap() = 17.6;
         }
@@ -1039,7 +831,6 @@ mod tests {
         assert!(flat.drop < MIN_DROP && !flat.is_visible(), "{flat:?}");
     }
 
-    /// Three years with no order at all: nothing is built, nothing hostile or foreign ever appears.
     #[test]
     fn a_three_year_unordered_run_builds_nothing_and_has_no_predators_rivals_or_disasters() {
         use crate::events::EventKind;

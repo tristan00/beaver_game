@@ -1,21 +1,3 @@
-﻿//! `--screenshot` mode: wait until the scene is actually loaded, save the primary window to a
-//! PNG, then exit.
-//!
-//! Loaded means all of it, not just the ground: the colony is founded (a new game settles at
-//! start), every sim beaver has its sprite and animated body, the scene has stopped spawning
-//! entities for `STABLE_FRAMES` frames, every mesh on screen is uploaded to the GPU, and
-//! `BC_WAIT_DAYS=<days>` of sim time have run (to catch the world as a player sees it a while in).
-//!
-//! `BC_BURST=<n>`: instead of one picture, unpause the game at 1x once loaded and save `n` frames
-//! in a row as `<stem>_000.png`.. (every `BC_BURST_EVERY` frames, default 2), with the animation
-//! clock running, to judge motion frame by frame.
-//!
-//! Capture is gated on render-world state, not on a frame count: the render world reports
-//! (through [`SharedReadiness`]) whether the terrain entity is extracted, its mesh and material
-//! are prepared on the GPU, and the pipeline cache has nothing left to compile. `--frames N` is
-//! only the *minimum* number of frames to run before capturing. If the terrain never becomes
-//! renderable within [`READY_TIMEOUT`], or a pipeline fails to compile, the app exits with an
-//! error instead of writing a blank image.
 use crate::cli::Cli;
 use crate::terrain_render::Terrain;
 use bevy::app::AppExit;
@@ -33,28 +15,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Consecutive frames the render world must report "ready" before capturing. Covers the
-/// one-frame lag of pipelined rendering and the frame in which a just-compiled pipeline is
-/// first used to queue the terrain.
 const READY_STREAK: u32 = 3;
-/// Wall-clock limit for the terrain to become renderable (cold shader caches can be slow).
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
-/// Frames to wait for the PNG to appear after requesting it before failing.
 const WRITE_TIMEOUT_FRAMES: u32 = 600;
-/// Frames the number of drawn entities must hold still before the scene counts as spawned.
 const STABLE_FRAMES: u32 = 20;
 
-/// Whether the terrain can be drawn, as last observed by the render world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
-    /// Not drawable yet; the string names what is still missing.
     Pending(String),
     Ready,
-    /// Will never become drawable (e.g. a pipeline failed to compile).
     Failed(String),
 }
 
-/// Readiness shared between the main world and the render world.
 #[derive(Resource, Clone)]
 struct SharedReadiness(Arc<Mutex<Readiness>>);
 
@@ -69,11 +41,9 @@ impl SharedReadiness {
     }
 }
 
-/// Render-world copy of the terrain's ids, refreshed every extract.
 #[derive(Resource, Default)]
 struct ExtractedTerrain(Option<(MainEntity, AssetId<Mesh>, AssetId<crate::terrain_render::TerrainMaterial>)>);
 
-/// Render-world copy of every distinct mesh the main world draws, refreshed every extract.
 #[derive(Resource, Default)]
 struct ExtractedMeshes(std::collections::HashSet<AssetId<Mesh>>);
 
@@ -154,7 +124,6 @@ fn terrain_readiness(
         total += 1;
         match &p.state {
             CachedPipelineState::Ok(_) => {}
-            // Bevy re-queues these two itself once the shader (import) asset loads.
             CachedPipelineState::Err(ShaderCacheError::ShaderNotLoaded(_) | ShaderCacheError::ShaderImportNotYetAvailable) => {
                 return pending("shaders loading")
             }
@@ -168,7 +137,6 @@ fn terrain_readiness(
     Readiness::Ready
 }
 
-/// What the main world should do this frame.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
     Wait,
@@ -176,8 +144,6 @@ enum Step {
     Fail(String),
 }
 
-/// Pure capture decision: capture once at least `min_frames` frames have run and the terrain
-/// has been ready for `READY_STREAK` consecutive frames; fail on a hard error or timeout.
 fn decide(frame: u32, min_frames: u32, streak: u32, readiness: &Readiness, elapsed: Duration) -> Step {
     match readiness {
         Readiness::Failed(msg) => Step::Fail(msg.clone()),
@@ -195,7 +161,6 @@ struct Progress {
     streak: u32,
     requested_at: Option<u32>,
     last_size: Option<u64>,
-    /// Burst mode: frame the burst began and pictures requested so far.
     burst: Option<(u32, u32)>,
 }
 
@@ -205,8 +170,6 @@ impl Default for Progress {
     }
 }
 
-/// What the main world still lacks before the picture shows the scene a player would see, or
-/// `None` once it is all there.
 fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64) -> Option<String> {
     if !cli.plain_world() && !sim.colony.is_founded() {
         return Some("the colony is not founded yet".into());
@@ -243,7 +206,6 @@ fn drive_screenshot(
 ) {
     let path: &PathBuf = cli.screenshot.as_ref().expect("system only added in screenshot mode");
     p.frame += 1;
-    // burst: running at 1x, a picture every few frames, then wait for the files and exit
     if let Some((from, taken)) = p.burst {
         let n: u32 = std::env::var("BC_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
         let every: u32 = std::env::var("BC_BURST_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(2).max(1);
@@ -261,7 +223,6 @@ fn drive_screenshot(
         return;
     }
     if let Some(at) = p.requested_at {
-        // Done once the file exists and its size is stable between two frames.
         let size = std::fs::metadata(path).ok().map(|m| m.len()).filter(|&n| n > 0);
         if size.is_some() && size == p.last_size {
             info!("screenshot saved to {}", path.display());
@@ -274,8 +235,6 @@ fn drive_screenshot(
         return;
     }
     let wait_days = std::env::var("BC_WAIT_DAYS").ok().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
-    // The game opens paused for the player: run the sim here up to the requested day (a fifth of a
-    // day per frame, so the drawn world keeps up with it).
     if sim.0.colony.is_founded() && sim.0.time_days < wait_days {
         for _ in 0..4 {
             if sim.0.time_days >= wait_days {
@@ -306,7 +265,6 @@ fn drive_screenshot(
             exit.write(AppExit::error());
         }
         Step::Capture => {
-            // Remove a stale file so we only ever accept the one we are about to write.
             let _ = std::fs::remove_file(path);
             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 if let Err(e) = std::fs::create_dir_all(dir) {

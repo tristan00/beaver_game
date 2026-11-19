@@ -1,22 +1,11 @@
-//! HUD icon set (§F2), drawn procedurally at startup into one RGBA atlas.
-//!
-//! Every icon is a white glyph on transparent (alpha = coverage), so the UI tints it with
-//! `ImageNode.color`. Glyphs are built from signed-distance shapes (circles, rounded rects,
-//! capsules, arcs, polygons) combined with union / subtract / knock-out, then turned into
-//! antialiased coverage. Cells are 64x64 px with ~4 px padding; the uploaded texture carries a
-//! box-filtered mip chain so the icons stay clean at the 16 px and 24 px sizes the HUD uses.
-
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::f32::consts::{PI, TAU};
 
-/// Cell size in atlas pixels.
 pub const CELL: u32 = 64;
-/// Atlas columns.
 pub const COLUMNS: u32 = 16;
-/// Mip levels uploaded (64, 32, 16, 8 px cells).
 const MIPS: u32 = 4;
 
 macro_rules! icons {
@@ -24,54 +13,39 @@ macro_rules! icons {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Icon { $($name),* }
         impl Icon {
-            /// Every icon, in atlas order (`ALL[i].index() == i`).
             pub const ALL: &'static [Icon] = &[$(Icon::$name),*];
-            /// Position of this icon's cell in the atlas.
             pub fn index(self) -> usize { self as usize }
         }
     };
 }
 
 icons! {
-    // Goods
     Food, Logs, Sticks, Mud, Stone, Baskets, Rope, Tools,
-    // Build categories
     CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence,
-    // Buildings
     Dam, Lodge, Burrow, FoodCache, ScentMound, GuardPost, Canal, Lock, WaterWheel, Workshop,
     Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, QuarryCamp, Mill, Storehouse,
     ForesterLodge, TreeNursery,
-    // Roles
     RoleForager, RoleLogger, RoleMudDigger, RoleQuarrier, RoleBuilder, RoleHauler, RoleCrafter,
     RoleGuard, RoleForester,
-    // Map views
     ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
     ViewElevation,
-    // Status and shapes
     Idle, Unstaffed, Blocked, Full, NoStore, NoPower, Padlock, HandLock, Warn, Urgent, Up, Down,
     Dot, DotEmpty, Check, Cross,
-    // Controls
     Pause, Play, Fast2, Fast3, Undo, Search, Pin, PriorityUp, PriorityDown, Plus, Minus, Focus,
     Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Balance, Menu, Back, Settings,
-    // Beaver
     Beaver, Adult, Yearling, Kit, MoodGood, MoodOk, MoodBad, Health,
-    // Seasons
     Spring, Summer, Autumn, Winter, DrySummer,
-    // Rows and misc
     Hourglass, Walk, Tree, Plant, MudBank, Outcrop, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Profile, Upstream, North, Gauge, Wheel,
-    // Tree stages (mature is `Tree`) and coppicing
     Sapling, TreeYoung, TreeOld, Coppice,
 }
 
-/// The icon atlas: one image plus a grid layout with one cell per [`Icon`].
 #[derive(Resource, Clone)]
 pub struct Icons {
     pub image: Handle<Image>,
     pub layout: Handle<TextureAtlasLayout>,
 }
 
-/// Rasterizes the atlas once, before any schedule runs, and inserts [`Icons`].
 pub struct IconsPlugin;
 
 impl Plugin for IconsPlugin {
@@ -91,7 +65,6 @@ impl Plugin for IconsPlugin {
     }
 }
 
-/// UI image node for `icon` at `px` square, tinted `color`.
 pub fn icon_node(icons: &Icons, icon: Icon, px: f32, color: Color) -> (ImageNode, Node) {
     (
         ImageNode::from_atlas_image(icons.image.clone(), TextureAtlas { layout: icons.layout.clone(), index: icon.index() })
@@ -108,7 +81,6 @@ fn atlas_layout() -> TextureAtlasLayout {
     TextureAtlasLayout::from_grid(UVec2::splat(CELL), COLUMNS, atlas_rows(), None, None)
 }
 
-/// Raw atlas rasterization, pure function (for tests and the contact sheet): returns (width, height, rgba8 bytes).
 pub fn rasterize_atlas() -> (u32, u32, Vec<u8>) {
     let (w, h) = (COLUMNS * CELL, atlas_rows() * CELL);
     let mut rgba = vec![0u8; (w * h * 4) as usize];
@@ -127,7 +99,6 @@ pub fn rasterize_atlas() -> (u32, u32, Vec<u8>) {
     (w, h, rgba)
 }
 
-/// The GPU image: the atlas plus a box-filtered mip chain (white RGB, so only alpha changes).
 fn atlas_image() -> Image {
     let (w, h, base) = rasterize_atlas();
     let mut data = base.clone();
@@ -157,17 +128,11 @@ fn atlas_image() -> Image {
     img
 }
 
-/// Alpha coverage of one icon cell, row-major, `CELL * CELL` bytes.
 fn rasterize_icon(icon: Icon) -> Vec<u8> {
     let mut c = Canvas::new(Xf::ID);
     draw(icon, &mut c);
     c.d.iter().map(|&d| ((0.5 - d).clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
 }
-
-// ---------------------------------------------------------------------------------------------
-// Signed-distance shapes. Coordinates are in a 64x64 cell, y down; angles in degrees, clockwise
-// on screen, 0 = right, 90 = down. Negative distance = inside.
-// ---------------------------------------------------------------------------------------------
 
 struct S(Box<dyn Fn(Vec2) -> f32>);
 
@@ -187,21 +152,17 @@ impl S {
     fn and(self, o: S) -> S {
         S::new(move |p| self.at(p).max(o.at(p)))
     }
-    /// Grow outwards by `k` (negative shrinks); rounds convex corners.
     fn grow(self, k: f32) -> S {
         S::new(move |p| self.at(p) - k)
     }
-    /// Stroke of width `w` centred on the shape's edge.
     fn outline(self, w: f32) -> S {
         S::new(move |p| self.at(p).abs() - w * 0.5)
     }
-    /// Rotate clockwise by `deg` around (cx, cy).
     fn rot(self, cx: f32, cy: f32, deg: f32) -> S {
         let c = v(cx, cy);
         let r = Vec2::from_angle(-deg.to_radians());
         S::new(move |p| self.at(c + r.rotate(p - c)))
     }
-    /// Keep only the part above y (y smaller).
     fn above(self, y: f32) -> S {
         S::new(move |p| self.at(p).max(p.y - y))
     }
@@ -234,7 +195,6 @@ fn ellipse(cx: f32, cy: f32, rx: f32, ry: f32) -> S {
     })
 }
 
-/// Rounded rectangle from its centre and half size.
 fn rect(cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> S {
     let (c, h) = (v(cx, cy), v(hw, hh));
     S::new(move |p| {
@@ -243,7 +203,6 @@ fn rect(cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> S {
     })
 }
 
-/// Rounded rectangle from its corners.
 fn rect_c(x0: f32, y0: f32, x1: f32, y1: f32, rad: f32) -> S {
     rect((x0 + x1) * 0.5, (y0 + y1) * 0.5, (x1 - x0) * 0.5, (y1 - y0) * 0.5, rad)
 }
@@ -254,7 +213,6 @@ fn seg_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     (pa - ba * t).length()
 }
 
-/// Capsule (thick line with round caps).
 fn seg(x0: f32, y0: f32, x1: f32, y1: f32, w: f32) -> S {
     let (a, b) = (v(x0, y0), v(x1, y1));
     S::new(move |p| seg_dist(p, a, b) - w * 0.5)
@@ -268,7 +226,6 @@ fn polyline(pts: &[(f32, f32)], w: f32) -> S {
     polyline_v(pts.iter().map(|&(x, y)| v(x, y)).collect(), w)
 }
 
-/// Filled polygon (even-odd), concave allowed.
 fn poly_v(pts: Vec<Vec2>) -> S {
     S::new(move |p| {
         let n = pts.len();
@@ -297,7 +254,6 @@ fn poly(pts: &[(f32, f32)]) -> S {
     poly_v(pts.iter().map(|&(x, y)| v(x, y)).collect())
 }
 
-/// Arc stroke around (cx, cy) from angle a0 to a1 (clockwise, degrees), round caps.
 fn arc(cx: f32, cy: f32, r: f32, a0: f32, a1: f32, w: f32) -> S {
     let c = v(cx, cy);
     let span = a1 - a0;
@@ -321,12 +277,10 @@ fn qbez_pts(a: Vec2, c: Vec2, b: Vec2, n: usize) -> Vec<Vec2> {
         .collect()
 }
 
-/// Quadratic Bezier stroke.
 fn qbez(a: (f32, f32), c: (f32, f32), b: (f32, f32), w: f32) -> S {
     polyline_v(qbez_pts(v(a.0, a.1), v(c.0, c.1), v(b.0, b.1), 20), w)
 }
 
-/// Pointed leaf (vesica) from tip `a` to tip `b`, `width` across the middle.
 fn leaf(a: (f32, f32), b: (f32, f32), width: f32) -> S {
     let (a, b) = (v(a.0, a.1), v(b.0, b.1));
     let m = (a + b) * 0.5;
@@ -336,7 +290,6 @@ fn leaf(a: (f32, f32), b: (f32, f32), width: f32) -> S {
     poly_v(pts)
 }
 
-/// Sine wave stroke from x0 to x1 around height y.
 fn wave(x0: f32, x1: f32, y: f32, amp: f32, periods: f32, w: f32) -> S {
     let pts = (0..=40)
         .map(|i| {
@@ -347,7 +300,6 @@ fn wave(x0: f32, x1: f32, y: f32, amp: f32, periods: f32, w: f32) -> S {
     polyline_v(pts, w)
 }
 
-/// Region below a sine wave (top edge at ytop), down to ybot, between x0 and x1.
 fn wave_fill(x0: f32, x1: f32, ytop: f32, ybot: f32, amp: f32, periods: f32) -> S {
     let k = periods * TAU / (x1 - x0);
     S::new(move |p| {
@@ -360,28 +312,11 @@ fn wave_fill(x0: f32, x1: f32, ytop: f32, ybot: f32, amp: f32, periods: f32) -> 
     })
 }
 
-/// Regular star with `n` points.
-fn star(cx: f32, cy: f32, ro: f32, ri: f32, n: usize) -> S {
-    let pts = (0..2 * n)
-        .map(|i| {
-            let a = -PI / 2.0 + i as f32 * PI / n as f32;
-            let r = if i % 2 == 0 { ro } else { ri };
-            v(cx + r * a.cos(), cy + r * a.sin())
-        })
-        .collect();
-    poly_v(pts)
-}
 
-/// Shape repeated `n` times rotated around (cx, cy).
 fn radial(n: usize, cx: f32, cy: f32, f: impl Fn() -> S) -> S {
     union((0..n).map(|i| f().rot(cx, cy, i as f32 * 360.0 / n as f32)).collect())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Canvas: a distance field per pixel, edited by shapes and sub-canvases ("parts").
-// ---------------------------------------------------------------------------------------------
-
-/// Local-to-pixel transform: p = o + k * rotate(r, q).
 #[derive(Clone, Copy)]
 struct Xf {
     o: Vec2,
@@ -404,8 +339,8 @@ struct Canvas {
     xf: Xf,
 }
 
-const W: f32 = 5.5; // standard stroke weight
-const GAP: f32 = 3.0; // standard knock-out gap
+const W: f32 = 5.5;
+const GAP: f32 = 3.0;
 
 impl Canvas {
     fn new(xf: Xf) -> Self {
@@ -427,13 +362,10 @@ impl Canvas {
     fn cut(&mut self, s: S) {
         self.each(&s, |a, b| a.max(-b));
     }
-    /// Add `s` with a transparent margin of `GAP` around it over what is already drawn.
     fn knock(&mut self, s: S) {
         let g = GAP * self.xf.k;
         self.each(&s, move |a, b| a.max(g - b).min(b));
     }
-    /// Draw `f` in a sub-canvas whose centre (32, 32) lands at (cx, cy), scaled by k and rotated
-    /// clockwise by deg, then merge it with a knock-out margin `gap` (0 = plain union).
     fn part(&mut self, cx: f32, cy: f32, k: f32, deg: f32, gap: f32, f: impl FnOnce(&mut Canvas)) {
         let r = Vec2::from_angle(deg.to_radians());
         let child = Xf { o: v(cx, cy) - r.rotate(v(32.0, 32.0)) * k, k, r };
@@ -444,7 +376,6 @@ impl Canvas {
             *a = if gap > 0.0 { a.max(g - b).min(b) } else { a.min(b) };
         }
     }
-    /// Cut the shape drawn by `f` (placed as in `part`) out of the canvas, grown by `grow`.
     fn cut_part(&mut self, cx: f32, cy: f32, k: f32, deg: f32, grow: f32, f: impl FnOnce(&mut Canvas)) {
         let r = Vec2::from_angle(deg.to_radians());
         let child = Xf { o: v(cx, cy) - r.rotate(v(32.0, 32.0)) * k, k, r };
@@ -457,11 +388,6 @@ impl Canvas {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reusable pictograms, each drawn in its own 64x64 local space.
-// ---------------------------------------------------------------------------------------------
-
-/// Beaver head, front view: round head, ears, eye and nose holes, buck teeth.
 fn head(c: &mut Canvas) {
     c.add(circle(14.5, 16.0, 7.5).or(circle(49.5, 16.0, 7.5)));
     c.add(ellipse(32.0, 32.0, 22.5, 19.5));
@@ -572,7 +498,6 @@ fn round_tree(c: &mut Canvas) {
     c.knock(circle(32.0, 22.0, 15.0).or(circle(19.0, 31.0, 11.5)).or(circle(45.0, 31.0, 11.5)).or(rect_c(19.0, 28.0, 45.0, 42.5, 8.0)));
 }
 
-/// A seedling: a stem with two leaves on a line of ground.
 fn seedling(c: &mut Canvas) {
     c.add(qbez((32.0, 56.0), (31.0, 42.0), (33.0, 26.0), 5.0));
     c.add(leaf((32.0, 36.0), (8.0, 20.0), 9.0));
@@ -644,7 +569,6 @@ fn tri_rounded(pts: &[(f32, f32)]) -> S {
     poly(pts).grow(2.5)
 }
 
-/// A role: beaver head top-left with the role's tool as a badge bottom-right.
 fn role(c: &mut Canvas, deg: f32, tool: impl FnOnce(&mut Canvas)) {
     c.part(23.0, 24.0, 0.66, 0.0, 0.0, head);
     c.part(41.0, 41.0, 0.66, deg, 3.5, tool);
@@ -653,7 +577,6 @@ fn role(c: &mut Canvas, deg: f32, tool: impl FnOnce(&mut Canvas)) {
 fn draw(icon: Icon, c: &mut Canvas) {
     use Icon::*;
     match icon {
-        // ---- goods
         Food => berries(c),
         Logs => {
             for (x, y) in [(19.0, 45.0), (45.0, 45.0), (32.0, 22.0)] {
@@ -697,7 +620,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
                 c.cut(rect_c(27.5, -4.0, 36.5, 15.0, 1.5));
             });
         }
-        // ---- build categories
         CatBasics => lodge_dome(c),
         CatWater => {
             c.add(wave(8.0, 56.0, 24.0, 4.5, 1.5, 6.0));
@@ -734,7 +656,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(poly(&[(28.0, 15.0), (28.0, 34.0), (14.0, 34.0)]).grow(1.0));
         }
         CatDefence => shield(c),
-        // ---- buildings
         Dam => {
             for y in [17.0, 29.0, 41.0, 53.0] {
                 c.add(wave(5.0, 23.0, y, 2.8, 1.0, 5.0));
@@ -866,7 +787,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
                 c.part(x, 22.0, 0.42, 0.0, 2.5, seedling);
             }
         }
-        // ---- roles
         RoleForager => role(c, 0.0, berries),
         RoleLogger => role(c, 35.0, axe),
         RoleMudDigger => role(c, 30.0, shovel),
@@ -876,7 +796,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleCrafter => role(c, -30.0, saw),
         RoleGuard => role(c, 0.0, shield),
         RoleForester => role(c, 0.0, seedling),
-        // ---- views
         ViewWorld => {
             c.add(poly(&[(6.0, 14.0), (21.0, 8.0), (21.0, 50.0), (6.0, 56.0)]).grow(1.0));
             c.add(poly(&[(26.0, 8.0), (38.0, 14.0), (38.0, 56.0), (26.0, 50.0)]).grow(1.0));
@@ -911,12 +830,10 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.part(42.0, 30.0, 0.7, 0.0, 3.0, house_door);
         }
         ViewElevation => {
-            // Nested contour rings of a hill, off-centre like a real summit, with the peak filled.
             c.add(ellipse(33.0, 37.0, 26.0, 19.0).outline(W - 1.0));
             c.add(ellipse(30.0, 32.0, 16.0, 11.5).outline(W - 1.0));
             c.add(circle(28.0, 29.0, 5.5));
         }
-        // ---- status
         Idle => {
             c.add(circle(30.0, 33.0, 23.0).minus(circle(43.0, 24.0, 19.0)));
         }
@@ -956,7 +873,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         DotEmpty => c.add(ring(32.0, 32.0, 17.0, 6.5)),
         Check => c.add(polyline(&[(11.0, 33.0), (25.0, 47.0), (53.0, 17.0)], 8.0)),
         Cross => c.add(seg(14.0, 14.0, 50.0, 50.0, 8.0).or(seg(50.0, 14.0, 14.0, 50.0, 8.0))),
-        // ---- controls
         Pause => c.add(rect_c(14.0, 10.0, 27.0, 54.0, 3.0).or(rect_c(37.0, 10.0, 50.0, 54.0, 3.0))),
         Play => c.add(tri_rounded(&[(19.0, 12.0), (52.0, 32.0), (19.0, 52.0)])),
         Fast2 => {
@@ -1064,7 +980,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(radial(8, 32.0, 32.0, || rect(32.0, 10.0, 5.0, 6.0, 1.5)));
             c.cut(circle(32.0, 32.0, 8.0));
         }
-        // ---- beaver
         Beaver => head(c),
         Adult => c.part(32.0, 33.0, 0.98, 0.0, 0.0, head),
         Yearling => c.part(32.0, 37.0, 0.8, 0.0, 0.0, head),
@@ -1082,7 +997,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(arc(32.0, 54.0, 13.0, 220.0, 320.0, 5.0));
         }
         Health => c.add(heart()),
-        // ---- seasons
         Spring => {
             c.add(qbez((32.0, 56.0), (31.0, 42.0), (33.0, 30.0), 5.0));
             c.add(leaf((32.0, 34.0), (9.0, 22.0), 13.0));
@@ -1108,7 +1022,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(polyline(&[(20.0, 44.0), (24.0, 51.0), (19.0, 60.0)], 3.0));
             c.cut(polyline(&[(42.0, 44.0), (38.0, 51.0), (44.0, 60.0)], 3.0));
         }
-        // ---- rows and misc
         Hourglass => {
             c.add(rect_c(12.0, 5.0, 52.0, 12.0, 2.5).or(rect_c(12.0, 52.0, 52.0, 59.0, 2.5)));
             c.add(poly(&[(17.0, 14.0), (47.0, 14.0), (34.5, 32.0), (47.0, 50.0), (17.0, 50.0), (29.5, 32.0)]).grow(1.0));
@@ -1137,7 +1050,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(poly(&[(6.0, 56.0), (10.0, 38.0), (20.0, 30.0), (30.0, 40.0), (32.0, 56.0)]).grow(1.5));
         }
         Hammer => c.part(32.0, 32.0, 1.0, -40.0, 0.0, hammer),
-        // A pair of scales: post, beam and two pans.
         Balance => {
             c.add(seg(32.0, 12.0, 32.0, 52.0, 5.0));
             c.add(seg(18.0, 54.0, 46.0, 54.0, 5.0));
@@ -1241,7 +1153,6 @@ mod tests {
             if !(0.05..0.75).contains(&coverage) {
                 bad.push(format!("{icon:?}: coverage {coverage:.2}"));
             }
-            // A clear 1 px frame keeps neighbours from bleeding in when the GPU filters the atlas.
             if !(0..CELL).all(|t| a(t, 0) == 0 && a(t, CELL - 1) == 0 && a(0, t) == 0 && a(CELL - 1, t) == 0) {
                 bad.push(format!("{icon:?}: touches the cell edge"));
             }
@@ -1249,146 +1160,8 @@ mod tests {
         assert!(bad.is_empty(), "{bad:#?}");
     }
 
-    /// Contact sheets for eyeballing: `ICON_SHEET_DIR=<dir> cargo test -p game icons -- --ignored`.
-    /// Writes the atlas at 64 px and every icon box-filtered to 24 px and 16 px (plus 3x
-    /// nearest-neighbour blow-ups of those) on dark and light backgrounds, one group per row.
-    #[test]
-    #[ignore]
-    fn write_contact_sheets() {
-        let Ok(dir) = std::env::var("ICON_SHEET_DIR") else { return };
-        let dir = std::path::PathBuf::from(dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let cells: Vec<Vec<u8>> = Icon::ALL.iter().map(|&i| rasterize_icon(i)).collect();
-        let mut rows = sheet_rows();
-        // ICON_SHEET_PICK=Tools,Lock,... writes only those icons (one row), for close-ups.
-        if let Ok(pick) = std::env::var("ICON_SHEET_PICK") {
-            let names: Vec<&str> = pick.split(',').collect();
-            rows = vec![Icon::ALL.iter().copied().filter(|i| names.contains(&format!("{i:?}").as_str())).collect()];
-        }
-        for (size, zoom) in [(64u32, 1u32), (24, 1), (16, 1), (24, 3), (16, 3), (64, 2)] {
-            let pad = (size / 4).max(4);
-            let pitch = size + pad;
-            let cols = rows.iter().map(|r| r.len()).max().unwrap() as u32;
-            let (pw, ph) = (cols * pitch + pad, rows.len() as u32 * pitch + pad);
-            let (w, h) = (pw * zoom, ph * zoom);
-            for (theme, bg, fg) in [("dark", [0x1b, 0x17, 0x13], [0xf3, 0xef, 0xe7]), ("light", [0xf3, 0xef, 0xe7], [0x1b, 0x17, 0x13])] {
-                let mut img = vec![0u8; (w * h * 3) as usize];
-                for y in 0..ph {
-                    for x in 0..pw {
-                        put(&mut img, w, zoom, x, y, bg);
-                    }
-                }
-                for (r, row) in rows.iter().enumerate() {
-                    for (k, icon) in row.iter().enumerate() {
-                        let a = resample(&cells[icon.index()], size);
-                        let (ox, oy) = (pad + k as u32 * pitch, pad + r as u32 * pitch);
-                        for y in 0..size {
-                            for x in 0..size {
-                                let t = a[(y * size + x) as usize];
-                                let c = std::array::from_fn(|ch| (bg[ch] as f32 + (fg[ch] as f32 - bg[ch] as f32) * t).round() as u8);
-                                put(&mut img, w, zoom, ox + x, oy + y, c);
-                            }
-                        }
-                    }
-                }
-                let name = if zoom == 1 { format!("icons_{size}_{theme}.png") } else { format!("icons_{size}_x{zoom}_{theme}.png") };
-                std::fs::write(dir.join(name), png_rgb(w, h, &img)).unwrap();
-            }
-        }
-    }
 
-    fn put(img: &mut [u8], w: u32, zoom: u32, x: u32, y: u32, c: [u8; 3]) {
-        for dy in 0..zoom {
-            for dx in 0..zoom {
-                let i = (((y * zoom + dy) * w + x * zoom + dx) * 3) as usize;
-                img[i..i + 3].copy_from_slice(&c);
-            }
-        }
-    }
 
-    /// Area-weighted box filter of a CELL x CELL alpha cell down to `size` square, 0..1.
-    fn resample(a: &[u8], size: u32) -> Vec<f32> {
-        let s = CELL as f32 / size as f32;
-        let mut out = vec![0.0; (size * size) as usize];
-        for oy in 0..size {
-            for ox in 0..size {
-                let (x0, y0) = (ox as f32 * s, oy as f32 * s);
-                let mut acc = 0.0;
-                for y in y0.floor() as u32..((y0 + s).ceil() as u32).min(CELL) {
-                    let wy = ((y + 1) as f32).min(y0 + s) - (y as f32).max(y0);
-                    for x in x0.floor() as u32..((x0 + s).ceil() as u32).min(CELL) {
-                        let wx = ((x + 1) as f32).min(x0 + s) - (x as f32).max(x0);
-                        acc += wx * wy * a[(y * CELL + x) as usize] as f32 / 255.0;
-                    }
-                }
-                out[(oy * size + ox) as usize] = acc / (s * s);
-            }
-        }
-        out
-    }
 
-    fn sheet_rows() -> Vec<Vec<Icon>> {
-        use Icon::*;
-        let groups: Vec<&[Icon]> = vec![
-            &[Food, Logs, Sticks, Mud, Stone, Baskets, Rope, Tools],
-            &[CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence],
-            &Icon::ALL[Dam.index()..=TreeNursery.index()],
-            &Icon::ALL[RoleForager.index()..=RoleForester.index()],
-            &Icon::ALL[ViewWorld.index()..=ViewElevation.index()],
-            &Icon::ALL[Idle.index()..=Cross.index()],
-            &Icon::ALL[Pause.index()..=Settings.index()],
-            &Icon::ALL[Beaver.index()..=DrySummer.index()],
-            &Icon::ALL[Hourglass.index()..=Coppice.index()],
-        ];
-        groups.into_iter().flat_map(|g| g.chunks(12).map(|c| c.to_vec()).collect::<Vec<_>>()).collect()
-    }
 
-    /// Minimal PNG writer: 8-bit RGB, stored (uncompressed) deflate blocks.
-    fn png_rgb(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
-        fn crc32(data: &[u8]) -> u32 {
-            let mut c = !0u32;
-            for &b in data {
-                c ^= b as u32;
-                for _ in 0..8 {
-                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-                }
-            }
-            !c
-        }
-        fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
-            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            let mut body = kind.to_vec();
-            body.extend_from_slice(data);
-            out.extend_from_slice(&body);
-            out.extend_from_slice(&crc32(&body).to_be_bytes());
-        }
-        let mut raw = Vec::with_capacity(((w * 3 + 1) * h) as usize);
-        for row in rgb.chunks_exact((w * 3) as usize) {
-            raw.push(0);
-            raw.extend_from_slice(row);
-        }
-        let mut z = vec![0x78, 0x01];
-        let blocks: Vec<&[u8]> = raw.chunks(65535).collect();
-        for (i, b) in blocks.iter().enumerate() {
-            z.push((i + 1 == blocks.len()) as u8);
-            z.extend_from_slice(&(b.len() as u16).to_le_bytes());
-            z.extend_from_slice(&(!(b.len() as u16)).to_le_bytes());
-            z.extend_from_slice(b);
-        }
-        let (mut s1, mut s2) = (1u32, 0u32);
-        for &b in &raw {
-            s1 = (s1 + b as u32) % 65521;
-            s2 = (s2 + s1) % 65521;
-        }
-        z.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
-        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-        let mut ihdr = Vec::new();
-        ihdr.extend_from_slice(&w.to_be_bytes());
-        ihdr.extend_from_slice(&h.to_be_bytes());
-        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
-        chunk(&mut out, b"IHDR", &ihdr);
-        chunk(&mut out, b"IDAT", &z);
-        chunk(&mut out, b"IEND", &[]);
-        out
-    }
 }

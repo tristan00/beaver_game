@@ -1,33 +1,25 @@
-//! What each building actually produced: gathering by its workers and crafting at its benches,
-//! as a smoothed per-day rate for each good. The inspector's "why this rate" reads it next to the
-//! factors that limit the building, so the explanation rests on measured output, not an estimate.
 use crate::buildings::{BuildingId, Good};
 use std::collections::BTreeMap;
 
-/// Days the per-day rate averages over (exponential smoothing time constant).
 pub const SMOOTH_DAYS: f32 = 5.0;
 
 const N: usize = Good::ALL.len();
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Flow {
-    /// Smoothed amount per day, per good (a logging camp makes logs and sticks).
     pub per_day: [f32; N],
     pub total: [f32; N],
-    /// Days since the building started producing (rates are shaky before `SMOOTH_DAYS`).
     pub age_days: f32,
     pending: [f32; N],
 }
 
 impl Flow {
-    /// Goods made at a meaningful rate, largest first.
     pub fn rates(&self) -> Vec<(Good, f32)> {
         let mut v: Vec<(Good, f32)> = Good::ALL.iter().map(|g| (*g, self.per_day[g.index()])).filter(|(_, r)| *r > 0.01).collect();
         v.sort_by(|a, b| b.1.total_cmp(&a.1));
         v
     }
 
-    /// All goods together, per day.
     pub fn sum_per_day(&self) -> f32 {
         self.per_day.iter().sum()
     }
@@ -39,7 +31,6 @@ pub struct Output {
 }
 
 impl Output {
-    /// Books `amount` of `good` made by building `b` during the current step.
     pub fn record(&mut self, b: BuildingId, good: Good, amount: f32) {
         if !(amount.is_finite() && amount > 0.0) {
             return;
@@ -49,7 +40,6 @@ impl Output {
         f.total[good.index()] += amount;
     }
 
-    /// Ends a step of `dt` days: folds what was booked into each building's smoothed rates.
     pub fn step(&mut self, dt: f32) {
         if !(dt.is_finite() && dt > 0.0) {
             return;
@@ -68,7 +58,6 @@ impl Output {
         self.by.get(&b)
     }
 
-    /// Forgets a building that is gone.
     pub fn forget(&mut self, b: BuildingId) {
         self.by.remove(&b);
     }
@@ -83,8 +72,8 @@ mod tests {
         let mut o = Output::default();
         let b = BuildingId(7);
         for _ in 0..1000 {
-            o.record(b, Good::Logs, 0.3); // 6 logs per day in 0.05-day steps
-            o.record(b, Good::Sticks, 0.1); // 2 sticks per day
+            o.record(b, Good::Logs, 0.3);
+            o.record(b, Good::Sticks, 0.1);
             o.step(0.05);
         }
         let f = o.of(b).unwrap();

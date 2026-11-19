@@ -1,31 +1,20 @@
-//! Daily goods ledger: what came into and went out of the stores each whole day, per good, over a
-//! rolling window. The HUD's "net per day" and "lasts N days" come from here, so they average over
-//! days instead of flickering with each sim step.
 use crate::buildings::{Good, Producer, Stores, Use};
 use std::collections::{BTreeMap, VecDeque};
 
 const N: usize = Good::ALL.len();
-/// Days of history kept (graphs and averages).
 pub const HISTORY_DAYS: usize = 60;
-/// Days averaged for the rates the HUD shows.
 pub const RATE_DAYS: usize = 7;
 
-/// One finished day.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DaySample {
-    /// Whole day number (`floor(time_days)`) this sample covers.
     pub day: u64,
     pub produced: [f32; N],
     pub consumed: [f32; N],
-    /// Stock at the end of the day.
     pub stock: [f32; N],
-    /// What each producer added this day (only non-zero entries).
     pub produced_by: Vec<(Producer, Good, f32)>,
-    /// What each use took this day, `[Use::index][Good::index]`.
     pub consumed_by: [[f32; N]; Use::COUNT],
 }
 
-/// The stores' lifetime totals at the start of the open day.
 #[derive(Clone, Debug, Default)]
 struct Open {
     day: u64,
@@ -43,15 +32,11 @@ impl Open {
 
 #[derive(Clone, Debug, Default)]
 pub struct Ledger {
-    /// The day currently being accumulated, with the stores' lifetime totals at its start.
     open: Option<Open>,
-    /// Finished days, oldest first, at most [`HISTORY_DAYS`].
     pub days: VecDeque<DaySample>,
 }
 
 impl Ledger {
-    /// Call after each sim step. Closes every whole day that ended since the last call; a step that
-    /// spans several days spreads its flow evenly over them.
     pub fn record(&mut self, time_days: f64, stores: &Stores) {
         let today = time_days.max(0.0).floor() as u64;
         let Some(open) = &self.open else {
@@ -83,8 +68,6 @@ impl Ledger {
         self.open = Some(Open::at(today, stores));
     }
 
-    /// Mean daily amount of `g` each producer added over the last [`RATE_DAYS`] finished days,
-    /// largest first. Sums to [`Self::in_per_day`].
     pub fn in_by(&self, g: Good) -> Vec<(Producer, f32)> {
         let n = self.days.len().min(RATE_DAYS);
         let mut by: BTreeMap<Producer, f32> = BTreeMap::new();
@@ -100,7 +83,6 @@ impl Ledger {
         v
     }
 
-    /// Mean daily amount of `g` taken for `use_` over the last [`RATE_DAYS`] finished days.
     pub fn out_for(&self, g: Good, use_: Use) -> f32 {
         self.mean(|d| d.consumed_by[use_.index()][g.index()])
     }
@@ -113,12 +95,10 @@ impl Ledger {
         self.days.iter().rev().take(n).map(f).sum::<f32>() / n as f32
     }
 
-    /// Mean daily amount added to the stores over the last [`RATE_DAYS`] finished days.
     pub fn in_per_day(&self, g: Good) -> f32 {
         self.mean(|d| d.produced[g.index()])
     }
 
-    /// Mean daily amount taken from the stores over the last [`RATE_DAYS`] finished days.
     pub fn out_per_day(&self, g: Good) -> f32 {
         self.mean(|d| d.consumed[g.index()])
     }
@@ -127,13 +107,11 @@ impl Ledger {
         self.in_per_day(g) - self.out_per_day(g)
     }
 
-    /// Days `stock` lasts at the current net rate, or `None` when the good is not falling.
     pub fn days_left(&self, g: Good, stock: f32) -> Option<f32> {
         let net = self.net_per_day(g);
         (net < -1e-3).then(|| (stock.max(0.0) / -net).max(0.0))
     }
 
-    /// Whether at least one whole day has been recorded (rates mean something).
     pub fn has_data(&self) -> bool {
         !self.days.is_empty()
     }

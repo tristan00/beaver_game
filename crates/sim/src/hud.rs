@@ -1,7 +1,3 @@
-//! Read-only views the interface needs: idle beavers, current problems with their cause and a fix,
-//! number breakdowns (spec §4.3), the river's side profile, and how long the ponds would last
-//! through a dry summer. Nothing here changes the state except [`apply_fix`], which performs a
-//! problem's fix through `Command`s.
 use crate::agents::{Assignment, Task};
 use crate::buildings::{BuildingId, BuildingKind, Good, Producer, Use, WET_DEPTH};
 use crate::colony::{BeaverId, DeathCause, Stage};
@@ -11,23 +7,15 @@ use crate::society::RequestId;
 use crate::water::{Cell, Season};
 use crate::work::Role;
 use crate::{Command, SimState};
-/// Stage counts, planting and tending rates and the next mature tree of an area (`forestry`).
 pub use crate::forestry::{forest_report, ForestReport};
 
-/// Most problems the interface shows at once.
 pub const MAX_PROBLEMS: usize = 4;
-/// Food stocks lasting fewer days than this raise a warning; under a third of it, urgent.
 pub const FOOD_WARN_DAYS: f32 = 20.0;
-/// A good counts as full at this share of its capacity.
 pub const FULL_SHARE: f32 = 0.98;
-/// A dam weaker than this is reported.
 pub const WEAK_DAM: f32 = 0.35;
-/// Beavers a food or idle fix puts to work at once (the "+2" on its button).
 pub const FIX_WORKERS: usize = 2;
-/// Half-size (cells) of the area around the lodge where a food fix sends gatherers.
-pub const FOOD_GATHER_RADIUS: usize = 30;
+pub const FOOD_GATHER_RADIUS: usize = 80;
 
-/// Working-age beavers (yearlings and adults) with no collect assignment and no workplace slot.
 pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
     sim.colony
         .beavers
@@ -39,9 +27,6 @@ pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
         .collect()
 }
 
-// ───────────────────────────── breakdowns ─────────────────────────────
-
-/// What a breakdown row links to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Source {
     Building(BuildingId),
@@ -50,7 +35,6 @@ pub enum Source {
     None,
 }
 
-/// One itemised term behind a number. `label` is at most three words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BreakdownRow {
     pub label: String,
@@ -58,7 +42,6 @@ pub struct BreakdownRow {
     pub source: Source,
 }
 
-/// A number and what makes it up; rows are sorted by `|value|`, largest first.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Breakdown {
     pub total: f32,
@@ -84,8 +67,6 @@ fn building_name(sim: &SimState, b: BuildingId) -> String {
     sim.buildings.building(b).map_or("Gone", |b| b.kind.spec().name).to_string()
 }
 
-/// Each good's daily inflow (7-day mean of what reached the stores), per producing building,
-/// "By order" for gatherers on a gather order, "Other" for the rest.
 pub fn good_in_breakdown(sim: &SimState, g: Good) -> Breakdown {
     let rows = sim
         .ledger
@@ -113,8 +94,6 @@ fn use_label(u: Use) -> &'static str {
     }
 }
 
-/// Each good's daily outflow (7-day mean) by use, as negative values: eating by life stage,
-/// spoilage, building sites, crafting inputs, repairs.
 pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
     let rows = Use::ALL
         .iter()
@@ -125,8 +104,6 @@ pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
     Breakdown::new(-sim.ledger.out_per_day(g), rows)
 }
 
-/// Days the food lasts: total = days (`f32::INFINITY` when food is not falling); rows: the
-/// stock, each stage's eating per day (negative), gathering per day.
 pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
     let stock = sim.buildings.stores.amount(Good::Food);
     let need = food_need_per_day(sim);
@@ -142,8 +119,6 @@ pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
     Breakdown::new(total, rows)
 }
 
-/// The population: adults, yearlings, kits, housed and unhoused, and this season's births,
-/// arrivals and deaths. Total = population (the rows overlap; they do not sum to it).
 pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
     let c = &sim.colony;
     let mut rows = Vec::new();
@@ -170,9 +145,6 @@ pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
     Breakdown::new(c.population() as f32, rows)
 }
 
-/// A beaver's mood: each need's share of the mood target (weight x need x the health factor),
-/// plus how far the mood still lags behind that target. Rows sum to the mood. `None`-like empty
-/// breakdown for an unknown beaver.
 pub fn mood_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
     use crate::tuning::colony::*;
     let Some(bv) = sim.colony.beaver(b) else { return Breakdown::default() };
@@ -194,8 +166,6 @@ pub fn mood_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
     Breakdown::new(bv.mood, rows)
 }
 
-/// A beaver's health: full health less the harm from each cause, plus what healed back. Rows sum
-/// to the health.
 pub fn health_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
     let Some(bv) = sim.colony.beaver(b) else { return Breakdown::default() };
     let mut rows = vec![row("Full health", 1.0, Source::Beaver(b))];
@@ -220,9 +190,6 @@ pub fn health_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
     Breakdown::new(bv.health, rows)
 }
 
-/// Days of summer cover per pond (its volume over its own summer evaporation and seepage).
-/// Total = the colony's cover (`Ponds::summer_cover_days`, 0 without ponds). Rows link to a
-/// cell of each pond.
 pub fn pond_cover_breakdown(sim: &SimState) -> Breakdown {
     let w = &sim.water;
     let n = w.depth.width();
@@ -250,7 +217,6 @@ pub fn pond_cover_breakdown(sim: &SimState) -> Breakdown {
                 }
             }
         }
-        // Puddles of a cell or two are not ponds.
         if cells >= 4 && per_cell > 0.0 {
             rows.push((volume, row("", volume / (cells as f32 * per_cell), Source::Cell((start % n, start / n)))));
         }
@@ -263,7 +229,6 @@ pub fn pond_cover_breakdown(sim: &SimState) -> Breakdown {
     Breakdown::new(ponds(sim).summer_cover_days().unwrap_or(0.0), rows.collect())
 }
 
-/// The dam cells of dam building `b`: its footprint's dam cells and every dam cell joined to them.
 fn dam_cells(sim: &SimState, b: BuildingId) -> Vec<Cell> {
     let Some(bd) = sim.buildings.building(b).filter(|bd| bd.kind == BuildingKind::Dam) else { return Vec::new() };
     let w = &sim.water;
@@ -289,8 +254,6 @@ fn dam_cells(sim: &SimState, b: BuildingId) -> Vec<Cell> {
     out
 }
 
-/// Strength of dam `b`: total = its weakest cell's integrity (0..=1); rows: what wears it per day
-/// at that cell (age, water over the crest), negative. `None` if `b` is not a standing dam.
 pub fn dam_strength_breakdown(sim: &SimState, b: BuildingId) -> Option<Breakdown> {
     let cells = dam_cells(sim, b);
     let w = &sim.water;
@@ -312,34 +275,22 @@ fn dam_wear(sim: &SimState, c: Cell, source: Source) -> Breakdown {
     Breakdown::new(integrity, rows)
 }
 
-// ───────────────────────────── problems ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Urgent,
     Warning,
 }
 
-/// The one action a problem's fix button performs (spec W7). [`apply_fix`] performs the ones the
-/// sim can; `Place`, `OpenJobs` and `Focus` are the interface's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fix {
-    /// `n` beavers into this workplace (`Command::AddWorker` each).
     AddWorkers { building: BuildingId, n: usize },
-    /// `n` beavers gather `kind` around the lodge (a direct `Assignment::Area` order).
     Gather { kind: ResourceKind, n: usize },
-    /// Start placing this building.
     Place(BuildingKind),
-    /// Fill every stalled site's slots (W2 rules).
     StaffSites,
-    /// `n` beavers into `role` (`Command::AdjustRole`).
     PutToWork { role: RoleKind, n: usize },
-    /// Open the Jobs board.
     OpenJobs,
     Accept(RequestId),
-    /// Turn a stranger away.
     Decline(RequestId),
-    /// Nothing to do but look: the jump button.
     Focus,
 }
 
@@ -352,22 +303,15 @@ pub enum ProblemKind {
     WeakDam,
     DamFailed,
     Stranger,
-    /// A logging camp's area has fewer than `forestry::RUNNING_OUT` mature trees (value: how many).
     LoggingAreaRunningOut,
-    /// Mature trees around the colony fell by more than `forestry::FALLING_SHARE` over the last
-    /// `forestry::FALLING_DAYS` (value: percent lost).
     ForestFalling,
-    /// Water buildings left high and dry (`Buildings::stranded`; value: how many). Urgent when a
-    /// home is among them: it wears out and the family grows cold.
     HighAndDry,
 }
 
-/// What a problem is about, for its icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subject {
     Good(Good),
     Building(BuildingKind),
-    /// A stranger's life stage.
     Stage(Stage),
 }
 
@@ -375,16 +319,11 @@ pub enum Subject {
 pub struct Problem {
     pub kind: ProblemKind,
     pub severity: Severity,
-    /// The alert's number: Food days left (floored), Idle beavers, NoBuilders sites, StoreFull
-    /// percent full, WeakDam percent strength, DamFailed dams, Stranger 1.
     pub value: f32,
-    /// What makes up the number (the tooltip).
     pub cause: Breakdown,
     pub subject: Option<Subject>,
     pub fix: Fix,
-    /// A second button: `Decline` beside a stranger's `Accept`.
     pub alt_fix: Option<Fix>,
-    /// Where the jump button takes the camera.
     pub focus: Option<Cell>,
 }
 
@@ -392,19 +331,15 @@ fn building_cell(sim: &SimState, id: BuildingId) -> Option<Cell> {
     sim.buildings.building(id).map(|b| b.pos)
 }
 
-/// The colony's home: the first lodge, else the first beaver.
 fn colony_cell(sim: &SimState) -> Option<Cell> {
     let p = sim.colony.lodges.first().map(|l| l.pos).or(sim.colony.beavers.first().map(|b| b.pos))?;
     Some((p.0.max(0.0) as usize, p.1.max(0.0) as usize))
 }
 
-/// Food the colony eats per day when everyone is fed (hunger rate times each stage's share).
 pub fn food_need_per_day(sim: &SimState) -> f32 {
     sim.colony.beavers.iter().map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum()
 }
 
-/// Beavers a gather order may take: adults and yearlings not locked to a slot or order, free
-/// ones first, then nearest the lodge.
 fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
     let home = colony_cell(sim).unwrap_or((0, 0));
     let mut v: Vec<(bool, usize, BeaverId)> = sim
@@ -418,8 +353,6 @@ fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
     v.into_iter().take(n).map(|t| t.2).collect()
 }
 
-/// The food fix (W7): staff a forager hut with free slots; else place one if unlocked (and none
-/// is being built); else gather plants around the lodge; else just look.
 fn food_fix(sim: &SimState) -> Fix {
     let hut = sim
         .work
@@ -442,8 +375,6 @@ fn food_fix(sim: &SimState) -> Fix {
     }
 }
 
-/// Current problems, urgent first, at most [`MAX_PROBLEMS`]. Each carries its number, what makes
-/// it up and a fix.
 pub fn problems(sim: &SimState) -> Vec<Problem> {
     let mut out = Vec::new();
     if !sim.colony.is_founded() {
@@ -452,7 +383,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     let idle = idle_beavers(sim);
     let pop = sim.colony.population();
 
-    // Food: the stock the colony actually eats from, against what the colony needs per day.
     let food = sim.buildings.stores.amount(Good::Food);
     let need = food_need_per_day(sim);
     let gain = sim.ledger.in_per_day(Good::Food);
@@ -472,7 +402,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         }
     }
 
-    // Dams that finished but could not be raised.
     if let Some((b, _)) = sim.work.dam_failures.last() {
         let rows = sim.work.dam_failures.iter().map(|(d, _)| row("Not raised", 1.0, building_source(sim, *d))).collect();
         out.push(Problem {
@@ -487,7 +416,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Weak dams: they breach at zero and release the pond.
     let n = sim.water.dam_height.width();
     let weak: Vec<Cell> = (0..n * n)
         .map(|i| (i % n, i / n))
@@ -510,7 +438,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Water buildings whose water has gone: no work, no deposits, homes falling in.
     let dry: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| sim.buildings.stranded(b, &sim.water.depth)).collect();
     if let Some(first) = dry.iter().find(|b| matches!(b.kind, BuildingKind::Lodge | BuildingKind::Burrow)).or(dry.first()) {
         let home = matches!(first.kind, BuildingKind::Lodge | BuildingKind::Burrow);
@@ -527,7 +454,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Sites nobody is building (a site waiting for materials needs gatherers, not builders).
     let stalled: Vec<BuildingId> = sim
         .work
         .places
@@ -550,7 +476,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Idle beavers (only when no card above already puts them to work).
     let busy_fix = |f: &Fix| matches!(f, Fix::AddWorkers { .. } | Fix::Gather { .. } | Fix::StaffSites);
     if !idle.is_empty() && !out.iter().any(|p| busy_fix(&p.fix)) {
         let reasons = crate::jobs::idle_reasons(sim);
@@ -567,7 +492,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 row(label, 1.0, Source::Beaver(id))
             })
             .collect();
-        // The highest-priority role with an open slot someone can take.
         let open = sim.work.role_order.iter().find_map(|&role| {
             let slots: usize = sim
                 .work
@@ -591,7 +515,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    // Full stores: gatherers' loads are lost.
     for g in Good::ALL {
         let (have, cap) = (sim.buildings.stores.amount(g), sim.buildings.stores.capacity(g));
         let arriving = sim.ledger.in_per_day(g);
@@ -611,7 +534,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         }
     }
 
-    // Wood running out: a logging camp's area nearly cut out, or the colony's forest shrinking.
     let low_camp = sim
         .work
         .places
@@ -655,7 +577,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         }
     }
 
-    // A stranger waiting for an answer.
     if let Some(r) = sim.society.pending().first() {
         let stage = if r.adult { Stage::Adult } else { Stage::Yearling };
         out.push(Problem {
@@ -675,9 +596,6 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     out
 }
 
-/// Performs `fix` through `Command`s. `Place`, `OpenJobs` and `Focus` belong to the interface:
-/// they return `Ok` and change nothing. Errors (with nothing or only part done) when the fix
-/// cannot be carried out now, e.g. nobody is free.
 pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
     let err = |e: crate::SimError| e.to_string();
     match fix {
@@ -700,8 +618,6 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
             sim.apply(Command::Assign { who, to: Some(Assignment::Area(kind, area)) }).map_err(err)
         }
         Fix::StaffSites => {
-            // Every site builders can work at that is short of builders, filled up: the ones with
-            // none first, then the partly staffed ones.
             let mut sites: Vec<(usize, BuildingId)> = sim
                 .work
                 .places
@@ -726,10 +642,6 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
     }
 }
 
-// ───────────────────────────── building report ─────────────────────────────
-
-/// One line of a building's "why this rate": a measured fact and whether it helps (`Some(true)`),
-/// holds the building back (`Some(false)`), or is neutral (`None`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Factor {
     pub label: String,
@@ -739,12 +651,8 @@ pub struct Factor {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
-    /// Measured output per good, largest first (smoothed over `output::SMOOTH_DAYS`); empty when
-    /// nothing has been made yet.
     pub measured: Vec<(Good, f32)>,
-    /// Whether the building has produced long enough for the rates to be steady.
     pub steady: bool,
-    /// The most the building could make per day with every slot filled and no walking.
     pub ceiling: Option<(Good, f32)>,
     pub factors: Vec<Factor>,
 }
@@ -753,8 +661,6 @@ fn factor(label: impl Into<String>, value: impl Into<String>, ok: Option<bool>) 
     Factor { label: label.into(), value: value.into(), ok }
 }
 
-/// What a finished workplace produces and every measurable thing that limits it. `None` for
-/// unknown or unfinished buildings and for ones that produce nothing (stores, lodges, dams).
 pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     let b = sim.buildings.building(id)?;
     if !b.is_complete() {
@@ -782,7 +688,6 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     };
     let collect = def.slots.iter().find_map(|r| if let Role::Collect(k) = r { Some(*k) } else { None });
     if let Some(kind) = collect {
-        // A gathering camp: workers, what is left in its area, and the walk to a store.
         let kinds: Vec<ResourceKind> = if kind == ResourceKind::Tree { vec![ResourceKind::Tree, ResourceKind::Felled] } else { vec![kind] };
         let good = if kind == ResourceKind::Tree { Good::Logs } else { kind.yields().first().copied()? };
         factors.push(factor("Workers", format!("{filled} of {total}"), Some(filled == total)));
@@ -805,7 +710,6 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
         return Some(Report { measured, steady, ceiling, factors });
     }
     if def.batches_per_day > 0.0 {
-        // A workshop: crafters, recipe inputs on hand, room for the output, wheel power.
         factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled == total)));
         let Some(recipe) = b.recipe else {
             factors.push(factor("Recipe", "none chosen", Some(false)));
@@ -827,21 +731,14 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     None
 }
 
-// ───────────────────────────── river profile ─────────────────────────────
-
-/// One river cell seen from the side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProfilePoint {
     pub cell: Cell,
-    /// Terrain height.
     pub bed: f32,
-    /// Top of the dam on this cell; equals `bed` where there is none.
     pub crest: f32,
-    /// Water surface (the crest where the cell is dry).
     pub surface: f32,
 }
 
-/// The main river from its source to its outlet, one point per cell.
 pub fn river_profile(sim: &SimState) -> Vec<ProfilePoint> {
     let w = &sim.world;
     let n = w.size;
@@ -863,9 +760,6 @@ pub fn river_profile(sim: &SimState) -> Vec<ProfilePoint> {
     out
 }
 
-/// The river through `near` (the river cell closest to it, within 12 cells): up to `up` cells
-/// upstream (always following the larger branch) and `down` cells downstream, in flow order.
-/// Returns the points and the index of the anchor cell, or `None` with no river nearby.
 pub fn river_profile_through(sim: &SimState, near: (f32, f32), up: usize, down: usize) -> Option<(Vec<ProfilePoint>, usize)> {
     let w = &sim.world;
     let n = w.size as i64;
@@ -884,7 +778,6 @@ pub fn river_profile_through(sim: &SimState, near: (f32, f32), up: usize, down: 
         }
     }
     let (_, anchor) = best?;
-    // Upstream: the river neighbour draining into the current cell with the largest catchment.
     let mut ups = Vec::new();
     let mut cur = anchor;
     for _ in 0..up {
@@ -934,8 +827,6 @@ fn profile_point(sim: &SimState, (x, y): Cell) -> ProfilePoint {
     ProfilePoint { cell: (x, y), bed, crest, surface }
 }
 
-/// The surface each profile point would have with the previewed dam: its pond level where the
-/// pond reaches, unchanged elsewhere.
 pub fn profile_with_preview(points: &[ProfilePoint], preview: &crate::dam_preview::DamPreview) -> Vec<f32> {
     points
         .iter()
@@ -943,21 +834,15 @@ pub fn profile_with_preview(points: &[ProfilePoint], preview: &crate::dam_previe
         .collect()
 }
 
-// ───────────────────────────── ponds and the dry season ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ponds {
-    /// Whether any dam stands (without one, standing water is just puddles and hollows).
     pub dammed: bool,
-    /// Cells holding standing water that the river and lakes do not keep level (dammed ponds).
     pub cells: usize,
     pub volume: f32,
-    /// Water the ponds lose per day in summer (evaporation and seepage).
     pub summer_loss_per_day: f32,
 }
 
 impl Ponds {
-    /// Days the ponds would last through summer with no inflow; `None` without ponds.
     pub fn summer_cover_days(&self) -> Option<f32> {
         (self.dammed && self.cells > 0 && self.summer_loss_per_day > 0.0).then(|| self.volume / self.summer_loss_per_day)
     }
@@ -999,7 +884,6 @@ mod tests {
         let fix = food(&s).fix;
         apply_fix(&mut s, fix).unwrap();
         assert_eq!(s.work.place(hut).unwrap().filled(), 2);
-        // A gather fix sends the beavers left on a locked order around the lodge.
         apply_fix(&mut s, Fix::Gather { kind: ResourceKind::Plant, n: 2 }).unwrap();
         let ordered: Vec<_> = s.colony.beavers.iter().filter(|b| s.work.player_orders.contains(&b.id)).collect();
         assert_eq!(ordered.len(), 2);
@@ -1017,7 +901,6 @@ mod tests {
         assert_eq!((first[0].kind, first[0].value, first[0].fix), (ProblemKind::Idle, 4.0, Fix::PutToWork { role: RoleKind::Forager, n: 2 }));
         apply_fix(&mut s, first[0].fix).unwrap();
         assert_eq!(s.work.place(hut).unwrap().filled(), 2);
-        // A site nobody builds.
         let site = BuildingId(60);
         let pos = crate::jobs::fixtures::near(&s, 0, 6);
         s.buildings.buildings.push(crate::buildings::Building { id: site, kind: BuildingKind::Burrow, pos, status: crate::buildings::Status::Site, recipe: None, output: 0.0 });
@@ -1027,12 +910,10 @@ mod tests {
         assert!(!problems(&s).iter().any(|p| p.kind == ProblemKind::Idle), "the site card already puts them to work");
         apply_fix(&mut s, Fix::StaffSites).unwrap();
         assert_eq!(s.work.place(site).unwrap().filled(), 2);
-        // A site one builder short is filled up too.
         s.apply(Command::RemoveWorker { building: site }).unwrap();
         assert_eq!(s.work.place(site).unwrap().filled(), 1);
         apply_fix(&mut s, Fix::StaffSites).unwrap();
         assert_eq!(s.work.place(site).unwrap().filled(), 2, "the half-staffed site is filled");
-        // A stranger: accept or turn away.
         let id = s.society.raise(&s.colony, true, 0.0).unwrap();
         let p = problems(&s).into_iter().find(|p| p.kind == ProblemKind::Stranger).unwrap();
         assert_eq!((p.fix, p.alt_fix, p.subject), (Fix::Accept(id), Some(Fix::Decline(id)), Some(Subject::Stage(Stage::Adult))));
@@ -1068,7 +949,6 @@ mod tests {
         assert_eq!(pond_cover_breakdown(&s).total, 0.0, "no dam, no reservoir");
     }
 
-    /// Places `kind` on the nearest valid, reachable cell around the lodge (the sim's own check).
     fn place_near_lodge(s: &mut SimState, kind: BuildingKind) -> bool {
         let c = colony_cell(s).unwrap();
         let walker = s.colony.beavers.iter().find(|b| b.stage == Stage::Adult).map(|b| b.id).unwrap();
@@ -1090,10 +970,6 @@ mod tests {
         false
     }
 
-    /// Spec W8 on a real map's standard start: auto-staffing on, and each day only the first
-    /// problem's fix (a `Place` placed near the lodge). The family reaches day 30 without
-    /// starving and food comes in beyond the larder. One map here (Telemark, the densest forest
-    /// start; about 2 s); the other three maps pass the same run.
     #[test]
     fn w8_first_fixes_feed_the_family_through_the_first_month() {
         let (mut s, dam) = crate::starts::new_game_on_map("telemark").unwrap();
@@ -1186,7 +1062,6 @@ mod tests {
             .find_map(|p| s.place_site(BuildingKind::LoggingCamp, p).ok())
             .expect("room for a logging camp");
         assert!(building_report(&s, id).is_none(), "a site produces nothing yet");
-        // Finish it by hand and staff one slot.
         s.buildings.buildings.iter_mut().find(|b| b.id == id).unwrap().status = crate::buildings::Status::Complete;
         let area = crate::catalogue::work_area(s.buildings.building(id).unwrap());
         let slots: Vec<Role> = crate::catalogue::def(BuildingKind::LoggingCamp).slots;

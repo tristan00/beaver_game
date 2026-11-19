@@ -1,30 +1,15 @@
-"""Pixel samples of terrain, fur and shadow colours, compared with the docs/STYLE.md palette.
-
-usage: python tools/style_samples.py SHOT_DIR > table.md
-SHOT_DIR holds the *_noglow.png twins (BC_NO_GLOW=1: the warm UI glow tints the whole upper-left of
-a product frame, so colours are sampled without it) of `beaver_colony --start 1 --seed N --cam iso|lodge|pond`
-and `fur_poses_{0,1}_noglow.png` (BC_NO_MENU=1 BC_NO_GLOW=1 BC_STATION=N --showcase poses).
-Each sample is the mean of a 3x3 patch; it passes when every RGB channel is within 12 of the target.
-Exit status 1 if any sample fails.
-"""
 import sys
 import numpy as np
 from PIL import Image
 
 PLUM = np.array([0x6B, 0x5A, 0x8A], float)
 
-
 def rgb(h):
     return np.array([(h >> 16) & 255, (h >> 8) & 255, h & 255], float)
-
 
 def shadow(h, t=0.40):
     return rgb(h) * (1 - t) + PLUM * t
 
-
-# (STYLE.md section, shot, x, y, name, target colour)
-# Water is not sampled here: nearly clear water shows the bed, so it has no single target colour;
-# check it against docs/style/water.png and the band opacities in palette.rs.
 S = [
     ("2 Ground", "lodge_seed1_noglow", 800, 250, "Stone, sunlit rock", rgb(0xB9AFA8)),
     ("2 Ground", "lodge_seed2_noglow", 1270, 125, "Stone, sunlit rock", rgb(0xB9AFA8)),
@@ -50,10 +35,8 @@ S = [
 ]
 S = [s for s in S if "see iso" not in s[4]]
 
-
 def hexs(v):
     return "#%02X%02X%02X" % tuple(int(round(x)) for x in v)
-
 
 def main(d):
     cache = {}
@@ -68,12 +51,12 @@ def main(d):
         ok = diff <= 12
         bad += not ok
         print(f"| {sec} | {shot}.png | {x},{y} | {name} | {hexs(m)} | {hexs(tgt)} | {diff:.0f} | {'PASS' if ok else 'FAIL'} |")
-    # terrain floor (shared rules): the darkest sun-lit terrain patch in each shot must not fall below the floor
+
     from scipy import ndimage as ndi
     print()
     print("| Terrain floor shot | Darkest 5x5 patch of sun-lit terrain (x,y) | Colour | Floor (lower of Meadow deep / Stone shade, -12/channel) | Result |")
     print("|---|---|---|---|---|")
-    # terrain is grass or rock or a blend of the two, so the floor is the lower of Meadow deep / Stone shade per channel
+
     floor = np.minimum(rgb(0x5FA85A), rgb(0x8C8290)) - 12
     for shot in ["iso_seed1", "iso_seed2", "lodge_seed1", "lodge_seed2", "pond_seed1", "pond_seed2"]:
         a = np.asarray(Image.open(f"{d}/{shot}_noglow.png").convert("RGB")).astype(float)
@@ -83,7 +66,7 @@ def main(d):
         lit = ndi.binary_erosion(lit, iterations=3)
         patch = np.stack([ndi.uniform_filter(a[..., k], size=5) for k in range(3)], -1)
         lum = patch @ np.array([0.2126, 0.7152, 0.0722])
-        # smooth ground only: a 7x7 window with no props, tree edges or other steps (luminance spread < 4)
+
         l1 = a @ np.array([0.2126, 0.7152, 0.0722])
         spread = ndi.maximum_filter(l1, size=7) - ndi.minimum_filter(l1, size=7)
         lum[~lit | (spread >= 4)] = 1e9
@@ -92,7 +75,7 @@ def main(d):
         ok = bool((c >= floor).all())
         bad += not ok
         print(f"| {shot}_noglow.png | {x},{y} | {hexs(c)} | {hexs(floor)} | {'PASS' if ok else 'FAIL'} |")
-    # brightness (shared rules: nothing dark): mean luminance
+
     print()
     print("| Brightness shot | Mean luminance (0-255) | Result |")
     print("|---|---|---|")
@@ -103,7 +86,6 @@ def main(d):
         bad += not ok
         print(f"| {shot}_noglow.png | {lum:.1f} | {'PASS (> 128)' if ok else 'FAIL'} |")
     return 1 if bad else 0
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1]))

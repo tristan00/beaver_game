@@ -1,41 +1,24 @@
-//! Elevation lens (F5): contour lines over the terrain-plus-dam surface, so the player can see
-//! which ground a pond at a given level floods and where water would spill round a dam's ends.
-//!
-//! The lines are marching triangles over the height grid, using the same two triangles per quad as
-//! the terrain mesh (`terrain_render::build_chunk_mesh`, diagonal from (x+1, y) to (x, y+1)), so
-//! every segment lies on the drawn ground. Triangles wholly under water get no lines: the pond
-//! shows as one flat level. They live in two retained gizmo assets (minor and major lines) that are
-//! rebuilt only when the terrain, a dam crest or the wet/dry outline changes, never per frame.
 use super::MapLens;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
 
-/// Every this-many-th contour is drawn heavier.
 pub const MAJOR_EVERY: i32 = 4;
-/// Lift of the lines above the surface (world units), against z-fighting with the ground.
 const LIFT: f32 = 0.05;
-/// How often the lens checks whether the terrain or a dam changed (seconds).
 const CHECK_SECS: f32 = 0.5;
-/// Dam crests are compared at this resolution (height units), so a crest settling by hair-widths
-/// does not rebuild the lines.
 const DAM_QUANTUM: f32 = 1.0 / 32.0;
 
 pub const MINOR_COLOR: Color = Color::srgba(0.16, 0.12, 0.08, 0.55);
 pub const MAJOR_COLOR: Color = Color::srgba(0.12, 0.08, 0.05, 0.85);
 
-/// The contour interval for a surface spanning `range` height units: the smallest of 0.25, 0.5,
-/// 1, 2, 5 (else 10) that keeps the map to at most 32 lines.
 pub fn interval_for(range: f32) -> f32 {
     [0.25, 0.5, 1.0, 2.0, 5.0].into_iter().find(|st| range / st <= 32.0).unwrap_or(10.0)
 }
 
-/// The surface the contours follow at each grid point: terrain plus dam crest.
 pub fn surface(s: &sim::SimState) -> Vec<f32> {
     s.height.as_slice().iter().zip(s.water.dam_height.as_slice()).map(|(t, d)| t + d.max(0.0)).collect()
 }
 
-/// Lowest and highest point of the terrain-plus-dam surface.
 pub fn surface_range(s: &sim::SimState) -> (f32, f32) {
     let z = surface(s);
     let lo = z.iter().copied().fold(f32::MAX, f32::min);
@@ -43,15 +26,11 @@ pub fn surface_range(s: &sim::SimState) -> (f32, f32) {
     if z.is_empty() { (0.0, 0.0) } else { (lo, hi) }
 }
 
-/// The contour interval the lens uses for this map.
 pub fn interval(s: &sim::SimState) -> f32 {
     let (lo, hi) = surface_range(s);
     interval_for(hi - lo)
 }
 
-/// Contour segments of the `w` x `d` row-major grid `z` at every multiple of `step`: (minor,
-/// major), each segment two points as (grid x, height, grid y). Levels that are a multiple of
-/// `major_every` steps go in the major list. Triangles whose three corners are all `wet` are skipped.
 pub fn contours(z: &[f32], wet: &[bool], w: usize, d: usize, step: f32, major_every: i32) -> (Vec<[Vec3; 2]>, Vec<[Vec3; 2]>) {
     let (mut minor, mut major) = (Vec::new(), Vec::new());
     if w < 2 || d < 2 || z.len() < w * d || step <= 0.0 {
@@ -74,17 +53,15 @@ pub fn contours(z: &[f32], wet: &[bool], w: usize, d: usize, step: f32, major_ev
     (minor, major)
 }
 
-/// Which grid points are under water (deeper than the terrain renderer's dry threshold).
 pub fn wet_mask(s: &sim::SimState) -> Vec<bool> {
     s.water.depth.as_slice().iter().map(|&d| d > crate::terrain_render::WET_EPS).collect()
 }
 
-/// Marching triangles: the segment where each contour level crosses one triangle.
 fn triangle(t: [Vec3; 3], step: f32, major_every: i32, minor: &mut Vec<[Vec3; 2]>, major: &mut Vec<[Vec3; 2]>) {
     let lo = t[0].y.min(t[1].y).min(t[2].y);
     let hi = t[0].y.max(t[1].y).max(t[2].y);
     if hi - lo < 1e-6 {
-        return; // flat: no line runs across it
+        return;
     }
     for k in (lo / step).ceil() as i32..=(hi / step).floor() as i32 {
         let level = k as f32 * step;
@@ -103,8 +80,6 @@ fn triangle(t: [Vec3; 3], step: f32, major_every: i32, minor: &mut Vec<[Vec3; 2]
     }
 }
 
-/// Hash of the terrain, the dam crests (quantised) and the wet cells: the lines are rebuilt when it
-/// changes.
 fn surface_key(s: &sim::SimState, wet: &[bool]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ ((s.height.width() as u64) << 32 | s.height.height() as u64);
     for ((t, d), &w) in s.height.as_slice().iter().zip(s.water.dam_height.as_slice()).zip(wet) {
@@ -115,7 +90,6 @@ fn surface_key(s: &sim::SimState, wet: &[bool]) -> u64 {
     h
 }
 
-/// The lens' line entities and what they were built from.
 #[derive(Resource, Default)]
 pub struct Contours {
     key: Option<u64>,
@@ -135,8 +109,6 @@ fn asset(segs: &[[Vec3; 2]], w: usize, d: usize, color: Color) -> GizmoAsset {
     g
 }
 
-/// Shows the contour lines while the elevation lens is on, rebuilding them when the terrain or a
-/// dam or the water's outline changes (checked twice a second); hides them otherwise.
 pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, mut c: ResMut<Contours>, mut assets: ResMut<Assets<GizmoAsset>>) {
     let on = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     if !on {
@@ -186,7 +158,6 @@ mod tests {
 
     #[test]
     fn a_slope_gives_one_straight_line_per_level_and_every_fourth_is_major() {
-        // 5 x 3 grid rising 1 per column in x: levels 0.5 .. 4 cross it.
         let (w, d) = (5, 3);
         let z: Vec<f32> = (0..w * d).map(|i| (i % w) as f32).collect();
         let (minor, major) = contours(&z, &[], w, d, 0.5, MAJOR_EVERY);
@@ -194,7 +165,6 @@ mod tests {
             assert!((seg[0].y - seg[1].y).abs() < 1e-6, "a segment stays on one level");
             assert!((seg[0].x - seg[0].y).abs() < 1e-5, "the line sits where the ground has that height");
         }
-        // In half-units: levels 2 and 4 (every fourth step of 0.5) are major, the rest minor.
         let levels = |v: &[[Vec3; 2]]| {
             let mut l: Vec<i32> = v.iter().map(|s| (s[0].y * 2.0).round() as i32).collect();
             l.sort();
@@ -203,7 +173,6 @@ mod tests {
         };
         assert_eq!(levels(&major), vec![4, 8]);
         assert!(levels(&minor).contains(&1) && levels(&minor).contains(&7));
-        // Each level's segments together span the full depth of the grid (0..2 in y).
         let span: f32 = minor.iter().filter(|s| (s[0].y - 0.5).abs() < 1e-6).map(|s| (s[0].z - s[1].z).abs()).sum();
         assert!((span - 2.0).abs() < 1e-4, "level 0.5 runs the whole grid, got {span}");
     }
@@ -215,7 +184,7 @@ mod tests {
         let (a, b) = contours(&flat, &[], w, d, 0.5, MAJOR_EVERY);
         assert!(a.is_empty() && b.is_empty());
         let mut dam = flat.clone();
-        dam[w + 1] += 1.2; // a crest 1.2 above the ground at one point
+        dam[w + 1] += 1.2;
         let (minor, major) = contours(&dam, &[], w, d, 0.5, MAJOR_EVERY);
         assert!(!minor.is_empty() || !major.is_empty(), "the crest shows as raised ground");
         assert!(minor.iter().chain(&major).all(|s| s[0].y > 1.0 && s[0].y <= 2.2));
@@ -225,7 +194,6 @@ mod tests {
     fn ground_wholly_under_water_has_no_lines() {
         let (w, d) = (5, 3);
         let z: Vec<f32> = (0..w * d).map(|i| (i % w) as f32).collect();
-        // The two low columns are a pond: only lines on triangles that touch dry ground remain.
         let wet: Vec<bool> = (0..w * d).map(|i| i % w < 2).collect();
         let (minor, major) = contours(&z, &wet, w, d, 0.5, MAJOR_EVERY);
         let (all_minor, _) = contours(&z, &[], w, d, 0.5, MAJOR_EVERY);

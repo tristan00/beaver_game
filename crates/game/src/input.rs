@@ -1,6 +1,3 @@
-//! Camera input. Left click belongs to the interface and the world (select, place, draw).
-//! Right or middle drag orbits, the wheel zooms (not over a panel, not with Ctrl, which sets dam
-//! height), Q/E rotate and WASD or the arrow keys pan across the ground.
 use crate::camera::OrbitCamera;
 use crate::flow::{height_at, world_cell};
 use crate::hud::PointerOverUi;
@@ -16,12 +13,9 @@ impl Plugin for InputPlugin {
     }
 }
 
-/// Ground distance panned per second at the default zoom; scales with the camera distance.
 const PAN_PER_DISTANCE: f32 = 0.9;
 
-/// Pan direction on the ground for held keys, relative to the camera's yaw (unit or zero).
 pub fn pan_vector(yaw: f32, forward: f32, right: f32) -> Vec2 {
-    // The camera sits at +dir from the target, so "forward" on screen is -dir on the ground.
     let fwd = Vec2::new(-yaw.sin(), -yaw.cos());
     let side = Vec2::new(fwd.y, -fwd.x) * -1.0;
     (fwd * forward + side * right).normalize_or_zero()
@@ -40,7 +34,6 @@ fn orbit_input(
     mut orbit: ResMut<OrbitCamera>,
 ) {
     let mut next = *orbit;
-    // While the search box has the keyboard, letters are text, not camera keys.
     let keys_free = !typing.0;
     if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
         next.yaw -= motion.delta.x * 0.006;
@@ -69,7 +62,6 @@ fn orbit_input(
         next.distance *= 0.9f32.powf(lines);
     }
     next.clamp();
-    // Only touch the resource when something changed so change detection stays meaningful.
     if next.yaw != orbit.yaw || next.pitch != orbit.pitch || next.distance != orbit.distance || next.target != orbit.target {
         *orbit = next;
     }
@@ -81,7 +73,6 @@ mod tests {
 
     #[test]
     fn panning_forward_moves_away_from_the_camera() {
-        // Yaw 0: the camera sits on +z of the target, so forward is -z.
         let v = pan_vector(0.0, 1.0, 0.0);
         assert!((v - Vec2::new(0.0, -1.0)).length() < 1e-5, "{v:?}");
         let r = pan_vector(0.0, 0.0, 1.0);

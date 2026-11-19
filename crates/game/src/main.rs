@@ -1,4 +1,3 @@
-//! Entry point: parses the command line and only adds plugins.
 mod audio;
 mod build_logic;
 mod camera;
@@ -22,7 +21,6 @@ mod water_render;
 
 use bevy::prelude::*;
 
-/// Window size: 1280x720, or `BEAVER_WINDOW=WxH` (screenshots at 1920x1080).
 fn window_size() -> (u32, u32) {
     std::env::var("BEAVER_WINDOW")
         .ok()
@@ -45,15 +43,12 @@ fn main() -> AppExit {
         tp.compute = bevy::app::TaskPoolThreadAssignmentPolicy { min_threads: n, max_threads: n, percent: 1.0, on_thread_spawn: None, on_thread_destroy: None };
     }
     app.add_plugins(DefaultPlugins.set(TaskPoolPlugin { task_pool_options: tp }).set(AssetPlugin {
-        // Bevy's default root is the crate folder or the executable folder; our assets live at the workspace root.
         file_path: "assets".to_string(),
         ..default()
     }).set(WindowPlugin {
         primary_window: Some(Window { title: "Beaver Colony".into(), resolution: window_size().into(), ..default() }),
         ..default()
     }).set(bevy::render::RenderPlugin {
-        // Start the graphics API we use instead of probing every one (DX12 and GL cost about a
-        // quarter second at start-up). `WGPU_BACKEND` still picks another.
         render_creation: bevy::render::settings::WgpuSettings {
             backends: Some(bevy::render::settings::Backends::from_env().unwrap_or(if cfg!(windows) {
                 bevy::render::settings::Backends::VULKAN
@@ -87,18 +82,9 @@ fn main() -> AppExit {
         audio::AudioPlugin,
         screenshot::ScreenshotPlugin,
     ));
-    // Propagate the exit status (e.g. a failed `--stress` budget) to the shell.
     app.run()
 }
 
-/// OS scheduling tweaks for smooth frame pacing.
-///
-/// Bevy spreads each frame over its worker threads and the main thread waits for all of them. On a
-/// loaded machine Windows can preempt one worker for a full 15.6 ms scheduler tick, turning a 3 ms
-/// frame into a 16 or 32 ms hitch (measured with `--stress`). Like most games we therefore ask for a
-/// 1 ms timer resolution and above-normal process priority, and opt out of Windows 11 power throttling
-/// (EcoQoS), which otherwise parks a window that is not in the foreground on efficiency cores and
-/// ignores its timer request. Windows undoes all of this when the process exits.
 mod os_timer {
     #[cfg(windows)]
     pub fn high_resolution() {
@@ -123,14 +109,11 @@ mod os_timer {
             fn SetPriorityClass(process: Handle, class: u32) -> i32;
             fn SetProcessInformation(process: Handle, class: i32, info: *const core::ffi::c_void, size: u32) -> i32;
         }
-        // Control both mechanisms, enable neither: never throttle this process.
         let no_throttle = PowerThrottlingState {
             version: 1,
             control_mask: THROTTLE_EXECUTION_SPEED | THROTTLE_IGNORE_TIMER_RESOLUTION,
             state_mask: 0,
         };
-        // SAFETY: Win32 calls on the current-process pseudo handle; `no_throttle` is a live, correctly
-        // sized PROCESS_POWER_THROTTLING_STATE for the duration of the call. Failures are harmless (default scheduling).
         unsafe {
             timeBeginPeriod(1);
             SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
@@ -147,8 +130,6 @@ mod os_timer {
     pub fn high_resolution() {}
 }
 
-/// `BC_FRAME_LOG=1`: log every frame slower than 50 ms (with the time since start), to find
-/// stalls such as a long wait before the first playable frame.
 fn log_slow_frames(time: Res<Time<Real>>, mut n: Local<u64>) {
     *n += 1;
     if std::env::var_os("BC_FRAME_LOG").is_none() {

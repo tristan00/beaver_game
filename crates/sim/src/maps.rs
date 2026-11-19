@@ -1,15 +1,6 @@
-//! Real-terrain maps: 512 m windows of lidar elevation (4 m cells) from places beavers live, each
-//! crossed by at least two dammable streams that enter from upstream across the map edge, with
-//! gentle valley floors, a mix of forest and open land and almost no farmland
-//! (`tools/hires_fetch.py` downloads the data, `tools/hires_maps.py` chooses and exports windows).
-//! Each `.map` file is a short text header (`key=value` lines, ended by `---`) followed by
-//! `size * size` little-endian f32 heights in metres and, if the header lists the `cover` layer,
-//! `size * size` land-cover bytes (ESA WorldCover classes). Rivers, lakes and forest come from
-//! these via `worldgen::from_heights`.
 use crate::worldgen::{self, World};
 use std::fmt;
 
-/// Every bundled map, in menu order.
 const FILES: [(&str, &[u8]); 4] = [
     ("algonquin", include_bytes!("../maps/algonquin.map")),
     ("voyageurs", include_bytes!("../maps/voyageurs.map")),
@@ -24,31 +15,23 @@ pub struct MapInfo {
     pub place: String,
     pub lat: f32,
     pub lon: f32,
-    /// Real metres per cell.
     pub cell_m: f32,
     pub size: usize,
-    /// Where the elevation comes from (shown in the menu as credit).
     pub source: String,
-    /// Border cells where a river enters from outside, with the catchment it drains out there (km2).
     pub inflows: Vec<(usize, usize, f32)>,
 }
 
-/// A map file's contents.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapData {
     pub info: MapInfo,
-    /// Heights in metres, row-major.
     pub heights: Vec<f32>,
-    /// Land cover per cell (ESA WorldCover classes), if the file has the layer.
     pub cover: Option<Vec<u8>>,
 }
 
 impl MapInfo {
-    /// A stable seed for this map (trees, beaver names and other random draws).
     pub fn seed(&self) -> u64 {
         self.id.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01B3))
     }
-    /// Side of the map in real kilometres.
     pub fn km(&self) -> f32 {
         self.cell_m * self.size as f32 / 1000.0
     }
@@ -73,7 +56,6 @@ impl fmt::Display for MapError {
 
 impl std::error::Error for MapError {}
 
-/// Reads a `.map` file's bytes (the bundled ones, or a candidate being checked).
 pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
     let bad = |m: &str| MapError::Corrupt(m.to_string());
     let end = bytes.windows(4).position(|w| w == b"---\n").ok_or_else(|| bad("no header end"))?;
@@ -123,19 +105,16 @@ pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
     Ok(MapData { info, heights, cover: has_cover.then(|| c.to_vec()) })
 }
 
-/// The bundled maps' descriptions, in menu order.
 pub fn all() -> Vec<MapInfo> {
     FILES.iter().filter_map(|(_, b)| parse(b).ok().map(|d| d.info)).collect()
 }
 
-/// The world for parsed map data.
 pub fn world_from(data: MapData) -> Result<World, MapError> {
     let MapData { info, heights, cover } = data;
     let real = worldgen::RealMap { cell_m: info.cell_m, inflows: &info.inflows, cover: cover.as_deref() };
     worldgen::from_heights(info.seed(), info.size, heights, &real).map_err(|e| MapError::World(e.to_string()))
 }
 
-/// The world for map `id`.
 pub fn world(id: &str) -> Result<(MapInfo, World), MapError> {
     let (_, bytes) = FILES.iter().find(|(k, _)| *k == id).ok_or_else(|| MapError::Unknown(id.to_string()))?;
     let data = parse(bytes)?;
@@ -153,16 +132,12 @@ mod tests {
         assert_eq!(maps.len(), FILES.len(), "a bundled map failed to parse");
         for m in &maps {
             assert!(!m.name.is_empty() && !m.place.is_empty() && !m.source.is_empty());
-            // a map is about one beaver family's stretch of stream: a few hundred metres across
-            assert!((3.0..=6.0).contains(&m.cell_m), "{}: {} m cells", m.id, m.cell_m);
+            assert_eq!(m.cell_m, 1.0, "{}: cells must be one metre", m.id);
             assert!((300.0..=800.0).contains(&(m.km() * 1000.0)), "{}: {} km across", m.id, m.km());
             assert!(m.inflows.len() >= 2, "{}: fewer than two rivers enter it", m.id);
         }
     }
 
-    /// What makes a map worth playing, checked on the real start the game builds on it: the
-    /// designed dam visibly changes a flowing stream, more than one stream has such a site, the
-    /// rivers stay narrow and the map is not mostly lake.
     fn check_map(id: &str) {
         use crate::buildings::WET_DEPTH;
         let (sim, dam) = crate::starts::new_game_on_map(id).unwrap_or_else(|e| panic!("{id}: no start: {e}"));

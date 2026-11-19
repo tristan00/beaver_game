@@ -1,34 +1,22 @@
-//! Fog of war: how much of each cell the colony has seen, 0 (never) ..= 1 (seen). Exploring is the
-//! colony's own work: the ground around every beaver outside a lodge is seen as it goes; the family
-//! has looked over the ground around where it came in. Building and settling need seen ground.
-//!
-//! A bare `SimState` sees everything (tests and tools); new games start in fog (`starts`).
 use crate::water::Cell;
 use crate::worldgen::{ValleyId, World};
 
-/// Seen at least this much counts as explored.
 pub const EXPLORED: f32 = 0.5;
-/// How far (cells) a beaver sees.
-pub const BEAVER_SIGHT: f32 = 6.0;
-/// How far (cells) the family has looked around where it arrives.
-pub const ARRIVAL_SIGHT: f32 = 22.0;
-/// How far (cells) settling reveals around the chosen spot.
-pub const SETTLE_SIGHT: f32 = 10.0;
+pub const BEAVER_SIGHT: f32 = 30.0;
+pub const ARRIVAL_SIGHT: f32 = 80.0;
+pub const SETTLE_SIGHT: f32 = 40.0;
 
 #[derive(Clone, Debug)]
 pub struct Fog {
     pub size: usize,
     pub seen: Vec<f32>,
-    /// Set when `seen` changed (renderers clear it once they have redrawn).
     pub dirty: bool,
 }
 
 impl Fog {
-    /// Nothing seen.
     pub fn unseen(size: usize) -> Fog {
         Fog { size, seen: vec![0.0; size * size], dirty: true }
     }
-    /// Everything seen.
     pub fn clear(size: usize) -> Fog {
         Fog { size, seen: vec![1.0; size * size], dirty: true }
     }
@@ -41,7 +29,6 @@ impl Fog {
     pub fn explored_cells(&self) -> usize {
         self.seen.iter().filter(|&&v| v >= EXPLORED).count()
     }
-    /// Lifts fog in a soft-edged disc, only where `allowed`. Returns whether anything changed.
     pub fn reveal(&mut self, centre: (f32, f32), radius: f32, allowed: &dyn Fn(usize, usize) -> bool) -> bool {
         if self.size == 0 {
             return false;
@@ -64,7 +51,6 @@ impl Fog {
         self.dirty |= changed;
         changed
     }
-    /// Sees a whole valley.
     pub fn reveal_valley(&mut self, world: &World, id: ValleyId) {
         for y in 0..self.size {
             for x in 0..self.size {
@@ -77,7 +63,6 @@ impl Fog {
     }
 }
 
-/// Cells in open valleys (fog only lifts where the colony may go).
 pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
     move |x, y| world.valley_of((x, y)).is_some_and(|v| world.is_open(v))
 }

@@ -1,29 +1,3 @@
-//! Scripting: drive the game through everything a player can do, headless and deterministic.
-//!
-//! - Every player action that changes the world is a [`Command`]. Each has a one-line text form
-//!   ([`to_line`], [`parse_command`]); a recorded game (`SimState::recorder`) is a list of
-//!   `step line` pairs ([`write_log`], [`parse_log`]) that replays step for step.
-//! - A script ([`run_script`]) builds a start, settles, applies commands, scheduled or repeating
-//!   statements and scripted players (`autoplay`), runs days, and checks results. It reports a
-//!   timeline and a summary. `cargo run --release -p sim --example play -- file.script`.
-//!
-//! Script statements, one per line (`#` starts a comment):
-//! ```text
-//! map algonquin | seed 7             # the start (first statement)
-//! policy attentive|ignores|handsoff   # a scripted player acting once a day
-//! settle designed | settle best | settle X Y
-//! place KIND near designed|X Y        # nearest buildable reachable cell
-//! dam designed                        # order the start's designed dam
-//! fix top                             # the top alert's fix, as its button does
-//! do COMMAND                          # any command in its text form (see to_line)
-//! at DAY: STATEMENT                   # once, on that day
-//! every DAYS: STATEMENT               # repeatedly
-//! replay FILE                         # recorded commands at their steps
-//! report every DAYS                   # a timeline line every so often
-//! run DAYS                            # advance to that day
-//! check METRIC OP VALUE | check alive # METRIC: pop starved deaths births food logs sticks mud
-//!                                     # stone rope buildings sites homeless day mature
-//! ```
 use crate::agents::Assignment;
 use crate::autoplay::{Player, Style};
 use crate::buildings::{BuildingId, BuildingKind, Good, Recipe};
@@ -36,8 +10,6 @@ use crate::water::Cell;
 use crate::work::{Area, HaulOrder, Priority};
 use crate::{Command, SimState, STEP_DAYS};
 use std::collections::BTreeMap;
-
-// ───────────────────────────── commands as text ─────────────────────────────
 
 fn cell(c: Cell) -> String {
     format!("{},{}", c.0, c.1)
@@ -74,7 +46,6 @@ fn parse_good(s: &str) -> Result<Good, String> {
     Good::ALL.into_iter().find(|k| format!("{k:?}").eq_ignore_ascii_case(s)).ok_or_else(|| format!("unknown good '{s}'"))
 }
 
-/// The one-line text form of a command.
 pub fn to_line(c: &Command) -> String {
     match c {
         Command::Regenerate { seed } => format!("regenerate {seed}"),
@@ -134,7 +105,6 @@ fn parse_cells(v: &[&str]) -> Result<Vec<Cell>, String> {
         .collect()
 }
 
-/// Parses the text form of a command ([`to_line`]).
 pub fn parse_command(line: &str) -> Result<Command, String> {
     let t: Vec<&str> = line.split_whitespace().collect();
     let b = |i: usize| -> Result<BuildingId, String> { Ok(BuildingId(num(t.get(i), "building id")?)) };
@@ -243,12 +213,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
     })
 }
 
-/// A recorded game as text: one `step command` line per command.
 pub fn write_log(log: &[(u64, Command)]) -> String {
     log.iter().map(|(s, c)| format!("{s} {}\n", to_line(c))).collect()
 }
 
-/// Parses a recorded game ([`write_log`]).
 pub fn parse_log(text: &str) -> Result<Vec<(u64, Command)>, String> {
     text.lines()
         .map(str::trim)
@@ -261,8 +229,6 @@ pub fn parse_log(text: &str) -> Result<Vec<(u64, Command)>, String> {
         .collect()
 }
 
-// ───────────────────────────── scripts ─────────────────────────────
-
 #[derive(Clone, Debug)]
 enum Stmt {
     Settle(Option<Cell>, bool),
@@ -272,7 +238,6 @@ enum Stmt {
     Do(Command),
 }
 
-/// What a run measured.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub deaths: BTreeMap<String, u32>,
@@ -281,19 +246,15 @@ pub struct Stats {
     pub homeless_days: u32,
     pub free_beaver_days: u32,
     pub min_food: f32,
-    /// Buildings finished, with the day.
     pub completed: Vec<(f64, BuildingKind)>,
-    /// Sites waiting more than 10 days for a material the colony had none of.
     pub stalled: BTreeMap<u64, (BuildingKind, u32)>,
     pub techs: Vec<(f64, String)>,
-    /// When the top alert changed, and to what.
     pub top_alerts: Vec<(f64, String)>,
     pub alert_days: BTreeMap<String, u32>,
     pub refused: Vec<(f64, String)>,
     pub collapsed: Option<f64>,
 }
 
-/// The outcome of a script.
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub lines: Vec<String>,
@@ -470,7 +431,6 @@ impl Runner {
 
     fn run_to(&mut self, day: f64) {
         while self.s.time_days + 1e-9 < day {
-            // Replayed commands at their exact step.
             while self.replay.first().is_some_and(|(st, _)| *st <= self.s.steps) {
                 let (_, c) = self.replay.remove(0);
                 if let Err(e) = self.s.apply(c.clone()) {
@@ -532,7 +492,6 @@ impl Runner {
     }
 }
 
-/// A named number about the colony, for `check` and reports.
 pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
     let g = |g: Good| s.buildings.stores.amount(g) as f64;
     Some(match name {
@@ -556,12 +515,10 @@ pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
     })
 }
 
-/// Runs a script; `load` reads files named by `replay`.
 pub fn run_script(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> Result<Outcome, String> {
     run_script_with(text, load, &mut |_| {})
 }
 
-/// Like [`run_script`], and hands the final state to `last` (for recordings and comparisons).
 pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>, last: &mut dyn FnMut(&SimState)) -> Result<Outcome, String> {
     let mut r: Option<Runner> = None;
     for (n, raw) in text.lines().enumerate() {
@@ -617,7 +574,6 @@ pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>
             }
             ["replay", f] => {
                 run.replay = parse_log(&load(f).map_err(&err)?).map_err(&err)?;
-                // Apply what was recorded before the first step now.
                 run.run_to(run.s.time_days);
             }
             ["check", "alive"] => {
@@ -672,7 +628,6 @@ pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>
     Ok(run.out)
 }
 
-/// Runs a script and returns its outcome with the game it recorded (a replayable log).
 pub fn run_and_record(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> Result<(Outcome, String), String> {
     let mut log = String::new();
     let out = run_script_with(text, load, &mut |s| log = write_log(s.recorder.as_deref().unwrap_or(&[])))?;

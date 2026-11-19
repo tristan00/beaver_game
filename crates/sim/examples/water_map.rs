@@ -1,13 +1,3 @@
-//! Runs a map's water with nobody playing and reports what the rivers do; dumps the state for
-//! `tools/water_map.py` to draw.
-//!
-//! `cargo run -p sim --release --example water_map -- MAP [--days D] [--dam] [--out FILE]`
-//!
-//! MAP is a bundled map id or a `.map` file. `--dam` builds the start's planned dam at full height
-//! first. Prints, after D days (default 30): water in and out per day over the last day (in must
-//! equal out once settled), river cells dry / over their banks, wet ground away from the rivers,
-//! and the depth along each river. The dump (FILE, default none) is: size as u32, then per cell
-//! f32 terrain, f32 water depth, u8 flags (1 river, 2 lake, 4 tree, 8 dam, 16 camp, 32 source).
 use sim::water::Water;
 
 fn main() {
@@ -27,6 +17,12 @@ fn main() {
         let info = data.info.clone();
         let world = sim::maps::world_from(data).unwrap();
         sim::starts::new_game_on_world(&info, world).unwrap()
+    } else if std::env::var_os("NOSTART").is_some() {
+        let (info, world) = sim::maps::world(&map).unwrap();
+        let t = std::time::Instant::now();
+        let s = sim::SimState::from_world(info.seed(), world);
+        println!("  world + water built in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        (s, sim::starts::DamSite { cells: vec![(0, 0)], height: 1.0, camp: (0, 0) })
     } else {
         sim::starts::new_game_on_map(&map).unwrap()
     };
@@ -55,7 +51,6 @@ fn main() {
     let wet = |i: usize| d[i] >= sim::buildings::WET_DEPTH;
     let river_n = river.iter().filter(|r| **r).count();
     let dry = (0..n * n).filter(|&i| river[i] && d[i] < 0.02).count();
-    // over the banks: the water stands above the land beside the channel (its drainage surface)
     let over = (0..n * n).filter(|&i| river[i] && h[i] + d[i] > surf[i] + 0.02).count();
     let mut near = vec![false; n * n];
     for i in (0..n * n).filter(|&i| river[i] || lake[i]) {
@@ -97,7 +92,7 @@ fn main() {
         let mut i = xy[1] * n + xy[0];
         for _ in 0..400 {
             let lvl = h[i] + d[i];
-            println!("  trace ({:>3}, {:>3}) bed {:.2} depth {:.2} level {:.3} surf {:.2} river {} lake {} dam {}", i % n, i / n, h[i], d[i], lvl, surf[i], river[i], lake[i], w.dam_height.as_slice()[i]);
+            println!("  trace ({:>3}, {:>3}) bed {:.2} depth {:.3} width {:.2} q {:.4} level {:.3} surf {:.2} river {} lake {}", i % n, i / n, h[i], d[i], w.width.as_slice()[i], w.discharge.as_slice()[i], lvl, surf[i], river[i], lake[i]);
             match sim.world.flow_to.as_slice()[i] { Some(t) => i = t, None => break }
         }
     }

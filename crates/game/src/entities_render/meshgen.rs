@@ -1,13 +1,8 @@
-//! Tiny procedural mesh toolkit: lathes, ellipsoids, cylinders and flat-shaded hexahedra, all with
-//! vertex colours so one white material draws every model (which lets Bevy batch/instance them).
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::*;
 use bevy::render::render_resource::PrimitiveTopology;
 
-/// Vertex colour for an sRGB hex value (so palette colours can be picked by eye): the scene-linear colour
-/// that the tone-mapped camera shows as exactly that hex, before the shared material's lighting gain
-/// (docs/STYLE.md section 5: fur on screen is `#B9783F`, not a paler brown).
 pub fn hex(rgb: u32) -> [f32; 3] {
     crate::palette::display_linear(crate::palette::rgb(rgb))
 }
@@ -16,7 +11,6 @@ pub fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
 
-/// Deterministic tiny RNG for decoration jitter.
 pub struct Rng(pub u32);
 impl Rng {
     pub fn next(&mut self) -> f32 {
@@ -45,9 +39,6 @@ impl Mb {
         i
     }
 
-    /// Surface of revolution around local Y. `prof` runs bottom to top as (radius, y); the outside is
-    /// on the right of the direction of travel. `smooth` shares ring normals (round), otherwise each
-    /// profile segment is shaded flat (crisp rims and caps). Colour blends `ca`..`cb` along the profile.
     pub fn lathe(&mut self, m: Mat4, prof: &[(f32, f32)], seg: usize, ca: [f32; 3], cb: [f32; 3], smooth: bool) {
         let nm = Mat3::from_mat4(m).inverse().transpose();
         let n = prof.len();
@@ -59,7 +50,7 @@ impl Mb {
             let (r1, y1) = prof[i + 1];
             let (dr, dy) = (r1 - r0, y1 - y0);
             let l = (dr * dr + dy * dy).sqrt().max(1e-6);
-            (dy / l, -dr / l) // (radial, y)
+            (dy / l, -dr / l)
         };
         let ring = |this: &mut Mb, r: f32, y: f32, nrm: (f32, f32), c: [f32; 3]| -> Vec<u32> {
             (0..=seg)
@@ -113,17 +104,14 @@ impl Mb {
 
     pub fn ellipsoid(&mut self, c: Vec3, r: Vec3, col: [f32; 3]) { self.ellipsoid_g(c, r, col, col, 10, 7) }
 
-    /// Ellipsoid with a vertical colour gradient `ca` (bottom) to `cb` (top).
     pub fn ellipsoid_g(&mut self, c: Vec3, r: Vec3, ca: [f32; 3], cb: [f32; 3], seg: usize, rings: usize) {
         self.ellipsoid_m(Mat4::from_translation(c) * Mat4::from_scale(r), seg, rings, ca, cb);
     }
 
-    /// Ellipsoid scaled then rotated about its centre.
     pub fn ellipsoid_r(&mut self, c: Vec3, r: Vec3, rot: Quat, col: [f32; 3]) {
         self.ellipsoid_m(Mat4::from_rotation_translation(rot, c) * Mat4::from_scale(r), 10, 7, col, col);
     }
 
-    /// Capped (optionally tapered) cylinder from `a` to `b`.
     pub fn cyl(&mut self, a: Vec3, b: Vec3, r0: f32, r1: f32, ca: [f32; 3], cb: [f32; 3], seg: usize) {
         let d = b - a;
         let len = d.length();
@@ -134,7 +122,6 @@ impl Mb {
         self.lathe(m, &[(0.0, 0.0), (r0, 0.0), (r1, len), (0.0, len)], seg, ca, cb, false);
     }
 
-    /// Cylinder with a different colour on the end caps (log ends, sawn stumps).
     pub fn log(&mut self, a: Vec3, b: Vec3, r: f32, bark: [f32; 3], end: [f32; 3], seg: usize) {
         let d = b - a;
         let len = d.length();
@@ -147,7 +134,6 @@ impl Mb {
         self.lathe(m, &[(r * 0.8, len), (0.0, len)], seg, end, end, false);
     }
 
-    /// Flat-shaded hexahedron from 8 corners: bottom 0..4 as (-,-,-) (+,-,-) (+,-,+) (-,-,+), top 4..8 the same.
     pub fn hex(&mut self, p: [Vec3; 8], ca: [f32; 3], cb: [f32; 3]) {
         let faces: [[usize; 4]; 6] = [[0, 1, 2, 3], [7, 6, 5, 4], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]];
         let id = Mat4::IDENTITY;
@@ -163,7 +149,6 @@ impl Mb {
         }
     }
 
-    /// Box centred on `c`, rotated by `rot`.
     pub fn cuboid(&mut self, c: Vec3, half: Vec3, rot: Quat, ca: [f32; 3], cb: [f32; 3]) {
         let s = |x: f32, y: f32, z: f32| c + rot * Vec3::new(x * half.x, y * half.y, z * half.z);
         self.hex(
@@ -173,14 +158,11 @@ impl Mb {
         );
     }
 
-    /// Flat horizontal disc, visible from above (ground shade, water).
     pub fn disc(&mut self, c: Vec3, rx: f32, rz: f32, col: [f32; 3], seg: usize) {
         let m = Mat4::from_translation(c) * Mat4::from_scale(Vec3::new(rx, 1.0, rz));
         self.lathe(m, &[(1.0, 0.0), (0.0, 0.0)], seg, col, col, false);
     }
 
-    /// Flat upward-facing polygon fanned from `c` to the closed `rim` (rim angles increasing from +Z
-    /// toward +X).
     pub fn fan(&mut self, c: Vec3, rim: &[Vec3], col: [f32; 3]) {
         let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
         let ci = self.push(&m, &nm, c, Vec3::Y, col);
@@ -194,9 +176,6 @@ impl Mb {
         }
     }
 
-    /// Prism along X from `x0` to `x1` with the cross-section `prof` as (z, y) points running from
-    /// one foot (-z) over the top to the other (+z), convex. Normals are smoothed around the
-    /// profile (a rounded bank), both ends are capped, and colour runs `ca` (lowest) to `cb` (highest).
     pub fn extrude_x(&mut self, prof: &[(f32, f32)], x0: f32, x1: f32, ca: [f32; 3], cb: [f32; 3]) {
         let n = prof.len();
         if n < 3 {
@@ -236,8 +215,6 @@ impl Mb {
         }
     }
 
-    /// Fades every vertex colour `t` of the way toward `to` (e.g. a dusty grey for a building left
-    /// high and dry).
     pub fn weather(&mut self, to: [f32; 3], t: f32) {
         for c in &mut self.col {
             for k in 0..3 {
@@ -246,7 +223,6 @@ impl Mb {
         }
     }
 
-    /// Appends another builder's geometry translated by `off`.
     pub fn append(&mut self, other: Mb, off: Vec3) {
         let base = self.pos.len() as u32;
         self.pos.extend(other.pos.iter().map(|p| (Vec3::from(*p) + off).to_array()));

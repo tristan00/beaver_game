@@ -1,5 +1,3 @@
-//! Position and pose test: a stepped scene where every beaver sprite must stand exactly at its sim
-//! position and show the pose of its sim task.
 use super::scene::{height_at, Pose};
 use super::sim_sync::*;
 use super::sim_view::DAM_TOP;
@@ -13,9 +11,8 @@ use sim::nav::Surface;
 use sim::resources::{ResourceKind, FELL_WORK};
 use std::collections::BTreeSet;
 
-const DT: f32 = 0.02;
+const DT: f32 = sim::STEP_DAYS;
 
-/// A walled field with a river (swim) and a dam (climb) between the forest side and a warehouse.
 fn scene_sim() -> (sim::SimState, Vec<BeaverId>) {
     let mut sim = sim::SimState::new(3);
     sim.resources = Default::default();
@@ -26,8 +23,6 @@ fn scene_sim() -> (sim::SimState, Vec<BeaverId>) {
     let land = sim::WorldLand { world: &sim.world, depth: &sim.water.depth };
     sim.colony.found(spot, &land).unwrap();
     let ids: Vec<BeaverId> = sim.colony.beavers.iter().map(|b| b.id).collect();
-    // `agents::step` rebuilds the nav grid from water, dams and buildings, so shape those: a river
-    // two cells wide and a dam crest across the whole field (nothing cheaper than crossing them).
     let mut dam = Vec::new();
     for y in 60..sim.world.size.min(160) {
         for x in 3..60 {
@@ -55,12 +50,11 @@ fn app_with(sim: sim::SimState) -> App {
     app
 }
 
-/// Independent restatement of the pose table.
 fn expected_pose(sim: &sim::SimState, ag: &sim::agents::Agent) -> Pose {
     use sim::nav::Gait;
-    let moving = ag.path.as_ref().is_some_and(|p| !p.steps.is_empty());
+    let moving = !ag.trail.is_empty() || ag.path.as_ref().is_some_and(|p| !p.steps.is_empty());
     if moving {
-        return match (ag.gait, ag.load.is_some()) {
+        return match (super::sim_view::moving_gait(ag), ag.load.is_some()) {
             (Gait::Swim, _) => Pose::Swim,
             (Gait::Climb, _) => Pose::Climb,
             (Gait::Walk, true) => Pose::Carry,
@@ -78,9 +72,6 @@ fn expected_pose(sim: &sim::SimState, ag: &sim::agents::Agent) -> Pose {
     }
 }
 
-/// Every sprite stands exactly where the sim says its agent is and shows the pose and load of its
-/// task, at every sampled step of a run with walking, swimming, dam climbing, felling, building and
-/// carrying a log across water.
 #[test]
 fn sprites_match_sim_positions_and_task_poses_while_stepping() {
     let (mut sim, ids) = scene_sim();
@@ -89,7 +80,6 @@ fn sprites_match_sim_positions_and_task_poses_while_stepping() {
     sim::agents::spawn_on(&mut sim, ids[1], (8, 106)).unwrap();
     sim::agents::spawn_on(&mut sim, ids[2], (6, 110)).unwrap();
     sim.apply(sim::Command::Assign { who: vec![ids[0]], to: Some(Assignment::Resource(tree)) }).unwrap();
-    // A site beside the builder, materials already delivered so it can be built at once.
     let site = BuildingId(2);
     sim.buildings.buildings.push(Building { id: site, kind: BuildingKind::Burrow, pos: (11, 106), status: Status::Site, recipe: None, output: 0.0 });
     let spec = BuildingKind::Burrow.spec();
@@ -103,7 +93,7 @@ fn sprites_match_sim_positions_and_task_poses_while_stepping() {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut loads = BTreeSet::new();
     let mut checked = 0;
-    for i in 0..3000 {
+    for i in 0..(60.0 / DT) as usize {
         sim::agents::step(&mut app.world_mut().resource_mut::<Sim>().0, DT);
         app.update();
         let mut q = app.world_mut().query::<(&BeaverSprite, &GlobalTransform, &Visibility)>();
@@ -112,7 +102,6 @@ fn sprites_match_sim_positions_and_task_poses_while_stepping() {
         assert_eq!(sprites.len(), sim.agents.by_id.len(), "one sprite per agent");
         for (s, pos, vis) in sprites {
             let ag = sim.agents.get(BeaverId(s.id)).expect("sprite has an agent");
-            // sim position: cell centre, moved step_frac towards the next path cell
             let (cx, cy) = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
             let (nx, ny, f) = match ag.path.as_ref().and_then(|p| p.steps.first()) {
                 Some(&(n, _)) => (n.0 as f32 + 0.5, n.1 as f32 + 0.5, ag.step_frac.clamp(0.0, 0.98)),
@@ -140,7 +129,6 @@ fn sprites_match_sim_positions_and_task_poses_while_stepping() {
     assert!(checked > 500);
 }
 
-/// A beaver resting outside shows the rest pose, and sprites go with their agents.
 #[test]
 fn rest_pose_and_despawn_follow_the_sim() {
     let (mut sim, ids) = scene_sim();
@@ -155,8 +143,6 @@ fn rest_pose_and_despawn_follow_the_sim() {
     assert!(poses(&mut app).is_empty());
 }
 
-/// `is_wet` is false on a land cell, also while the next step goes into water but is under half
-/// done, and true once past halfway or standing in water; the ripple follows it, not the swim pose.
 #[test]
 fn ripples_only_on_beavers_over_water() {
     use super::sim_view::{is_wet, pose_of};
@@ -178,7 +164,6 @@ fn ripples_only_on_beavers_over_water() {
         assert_eq!(shows_ripple(pose_of(&sim, ag), is_wet(&sim, ag)), wet);
     };
 
-    // Standing on grass, idle or walking along the bank.
     ag.cell = land;
     ag.path = None;
     ag.gait = Gait::Walk;
@@ -188,7 +173,6 @@ fn ripples_only_on_beavers_over_water() {
     ag.step_frac = 0.7;
     check(&ag, false);
 
-    // About to step into the water in the swim gait: swim pose, but still on land, so no arcs.
     ag.path = Some(Path { steps: vec![(water, Gait::Swim)], cost: 1.0 });
     ag.gait = Gait::Swim;
     for frac in [0.0, 0.2, 0.49] {
@@ -196,11 +180,9 @@ fn ripples_only_on_beavers_over_water() {
         assert_eq!(pose_of(&sim, &ag), Pose::Swim);
         check(&ag, false);
     }
-    // Past halfway into the water cell.
     ag.step_frac = 0.5;
     check(&ag, true);
 
-    // Swimming in the river, still or moving on.
     ag.cell = water;
     ag.step_frac = 0.0;
     ag.path = Some(Path { steps: vec![((21, 100), Gait::Swim)], cost: 1.0 });
@@ -208,59 +190,50 @@ fn ripples_only_on_beavers_over_water() {
     ag.path = None;
     check(&ag, true);
 
-    // Unit rule: the swim pose alone, or wetness without the swim pose, never shows arcs.
     assert!(!shows_ripple(Pose::Swim, false));
     assert!(!shows_ripple(Pose::Walk, true));
     assert!(shows_ripple(Pose::Swim, true));
 }
 
-/// A barge glides from where it is drawn to its new cell over about as long as the last cell took,
-/// facing the way it goes, and never overshoots.
 #[test]
 fn a_barge_glides_between_cells_and_faces_its_way() {
     let a = Vec3::new(0.0, 1.0, 0.0);
     let mut v = BargeVis { id: 1, cell: (0, 0), from: a, to: a, t0: 0.0, dur: 0.0, yaw: 0.0, loaded: false };
     assert_eq!(glide(&v, 5.0), a, "a still barge stays put");
-    // One cell east, 0.1 days after the last move (slower than a barge's fastest cell).
     retarget(&mut v, (1, 0), Vec3::new(1.0, 1.0, 0.0), 0.1);
     assert!((v.dur - 0.1).abs() < 1e-4, "{}", v.dur);
     assert_eq!(glide(&v, 0.1), a);
     assert!((glide(&v, 0.15).x - 0.5).abs() < 1e-3, "halfway");
     assert_eq!(glide(&v, 1.0), Vec3::new(1.0, 1.0, 0.0), "arrives and stops");
     assert!((v.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "bow (+Z) turned to +X: {}", v.yaw);
-    // A new cell mid-glide starts from where the barge is drawn, not from the old cell.
     let mut w = v.clone();
     retarget(&mut w, (1, 1), Vec3::new(1.0, 1.0, 1.0), 0.15);
     assert!((w.from.x - 0.5).abs() < 1e-3);
 }
 
-/// Moves the test beaver like the sim does: whole fixed steps from the game clock, each one
-/// `MOVE_COST_PER_DAY * STEP_DAYS` cells along a straight path (several cells a step at 1x).
 fn walk_steps(time: Res<Time>, mut clock: ResMut<crate::sim_driver::SimClock>, mut sim: ResMut<Sim>, mut walked: Local<f32>) {
     for _ in 0..clock.advance(time.delta_secs()) {
         let s = &mut sim.0;
         s.time_days += sim::STEP_DAYS as f64;
-        *walked = (*walked + sim::agents::MOVE_COST_PER_DAY * sim::STEP_DAYS).min(30.0);
-        let (from, done) = ((10usize, 90usize), *walked);
+        let before = walked.floor() as usize;
+        *walked = (*walked + sim::agents::MOVE_COST_PER_DAY * sim::STEP_DAYS).min(100.0);
+        let (from, done) = ((10usize, 14usize), *walked);
         let ag = s.agents.by_id.values_mut().next().expect("a beaver");
+        ag.trail = (before + 1..=done.floor() as usize).map(|k| ((from.0, from.1 + k), sim::nav::Gait::Walk)).collect();
         ag.cell = (from.0, from.1 + done.floor() as usize);
         ag.step_frac = done.fract();
         ag.gait = sim::nav::Gait::Walk;
-        let left = 30 - done.floor() as usize;
+        let left = 100 - done.floor() as usize;
         let steps: Vec<_> = (1..=left).map(|k| ((ag.cell.0, ag.cell.1 + k), sim::nav::Gait::Walk)).collect();
         ag.path = (!steps.is_empty()).then(|| sim::nav::Path { cost: steps.len() as f32, steps });
     }
 }
 
-/// Frame-by-frame smoothness of a walking beaver as the game draws it: the fixed-step clock at 60
-/// frames a second moving the beaver in whole sim steps (two cells each), the sprite drawn by
-/// `sync_sim_beavers`. A smooth walk covers about the same distance every frame: no frame stands
-/// still mid-walk and none jumps.
 #[test]
 fn a_walking_beaver_moves_smoothly_frame_to_frame() {
     let (mut sim, _) = scene_sim();
     sim.agents = Default::default();
-    sim.agents.spawn(BeaverId(1), (10, 90));
+    sim.agents.spawn(BeaverId(1), (10, 14));
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, TransformPlugin))
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
@@ -280,7 +253,6 @@ fn a_walking_beaver_moves_smoothly_frame_to_frame() {
     let steps: Vec<f32> = track.windows(2).map(|w| w[0].distance(w[1])).collect();
     let first = steps.iter().position(|d| *d > 1e-4).expect("the beaver walked");
     let last = steps.iter().rposition(|d| *d > 1e-4).unwrap();
-    // the walk itself, without its first and last step (starting and stopping)
     let walk = &steps[first + 8..last.saturating_sub(8)];
     let mut sorted = walk.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));

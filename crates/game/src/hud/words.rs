@@ -1,5 +1,3 @@
-//! Every word the HUD may show lives here or in a tooltip (spec F5, Appendix A): names for
-//! tooltips, one-word labels, and the ≤ 2-word forms of placement and command errors.
 use crate::build_logic::{Group, PlaceError};
 use crate::icons::Icon;
 use bevy::prelude::Color;
@@ -34,7 +32,6 @@ pub fn good_icon(g: Good) -> Icon {
     }
 }
 
-/// One colour per good, everywhere (never blue: blue is water).
 pub fn good_color(g: Good) -> Color {
     match g {
         Good::Logs => Color::srgb(0.79, 0.54, 0.29),
@@ -137,7 +134,6 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
     }
 }
 
-/// A tree stage's icon (mature is the plain tree) and its one-word name.
 pub fn tree_stage_icon(st: sim::forestry::TreeStage) -> Icon {
     use sim::forestry::TreeStage::*;
     match st {
@@ -160,7 +156,6 @@ pub fn tree_stage_name(st: sim::forestry::TreeStage) -> &'static str {
     }
 }
 
-/// A logging camp's cutting rule: icon and tooltip (Appendix A).
 pub fn cut_rule_face(r: sim::forestry::CutRule) -> (Icon, &'static str) {
     use sim::forestry::CutRule::*;
     match r {
@@ -171,7 +166,6 @@ pub fn cut_rule_face(r: sim::forestry::CutRule) -> (Icon, &'static str) {
     }
 }
 
-/// A forester's lodge's planting rule: icon and tooltip (Appendix A).
 pub fn plant_rule_face(r: sim::forestry::PlantRule) -> (Icon, &'static str) {
     use sim::forestry::PlantRule::*;
     match r {
@@ -190,7 +184,6 @@ pub fn season_icon(s: Season) -> Icon {
     }
 }
 
-/// A signed rate with one decimal and no unit ("+0.4", "-1.2", "0").
 pub fn signed(r: f32) -> String {
     if r.abs() < 0.05 {
         "0".into()
@@ -201,7 +194,6 @@ pub fn signed(r: f32) -> String {
     }
 }
 
-/// A number with the fewest digits that still says something.
 pub fn num(v: f32) -> String {
     let a = v.abs();
     if a >= 100.0 || (a - a.round()).abs() < 0.05 {
@@ -211,12 +203,10 @@ pub fn num(v: f32) -> String {
     }
 }
 
-/// Days as `8d`.
 pub fn days(d: f32) -> String {
     format!("{}d", d.max(0.0).floor() as i64)
 }
 
-/// The ≤ 2-word form of a placement error (Appendix A7).
 pub fn place_error(e: &PlaceError) -> String {
     match e {
         PlaceError::Locked(t, _, _) => (*t).to_string(),
@@ -226,14 +216,12 @@ pub fn place_error(e: &PlaceError) -> String {
         PlaceError::NeedsWater => "No water".into(),
         PlaceError::NeedsDock => "Needs dock".into(),
         PlaceError::NeedsDam => "Needs dam".into(),
-        PlaceError::Afford(_, need, have) => format!("{}/{}", num(*have), num(*need)),
         PlaceError::NoCells => String::new(),
         PlaceError::TooLong(max) => format!("Max {max}"),
         PlaceError::Sim(m) => sim_error(m),
     }
 }
 
-/// The dam a barge route is blocked by, from the sim's "a dam at x,y is in the way" refusal.
 pub fn blocking_dam(m: &str) -> Option<(usize, usize)> {
     let rest = m.split("a dam at ").nth(1)?;
     let xy = rest.split_whitespace().next()?;
@@ -241,11 +229,9 @@ pub fn blocking_dam(m: &str) -> Option<(usize, usize)> {
     Some((x.parse().ok()?, y.trim_end_matches([',', ':']).parse().ok()?))
 }
 
-/// The ≤ 2-word form of a sim command error (Appendix A7). Unknown messages fall back to "Refused".
 pub fn sim_error(m: &str) -> String {
     let l = m.to_lowercase();
     let table: &[(&str, &str)] = &[
-        // barge routes (`shipping::set_route`) and locks
         ("in the way", "Needs lock"),
         ("two different docks", "Same dock"),
         ("at least one good", "No goods"),
@@ -254,7 +240,6 @@ pub fn sim_error(m: &str) -> String {
         ("deep enough", "Too shallow"),
         ("not a finished dock", "Needs dock"),
         ("lock is built on a dam", "Needs dam"),
-        // growing dams (`SimState::order_dam_heights`)
         ("is too high", "Too high"),
         ("already that high", "Built"),
         ("dam height", "Crest 0.5-3"),

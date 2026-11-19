@@ -1,22 +1,3 @@
-//! Forestry (owner: `forestry`): one forest model. Standing trees (`ResourceKind::Tree`) are the
-//! truth; each has a growth age and a stage, and the ecology forest density is derived from them.
-//!
-//! - **Stages** (growth days, untended, average ground; a year is 360 days): sapling `0..360`
-//!   (cannot be felled, does not block), young `360..1080` (1 log, 2 sticks, 1 bark), mature
-//!   `1080..5400` (3 logs, 4 sticks, 2 bark: seeds saplings nearby), old `5400+` (2 logs, 4 sticks,
-//!   1 bark: may die to a snag). A snag (sticks only) rots away after `SNAG_ROT_DAYS`, freeing the cell.
-//! - **Growth** per day: 1 day of age × 1.4 on moist ground (within 3 cells of standing water) or
-//!   × 0.7 on dry ground (soil moisture below `DRY_MOISTURE`), × 1.5 while tended, × 0 in winter.
-//! - **Spread:** each mature or old tree has a `SPREAD_CHANCE` per growing day to seed one of its
-//!   eight neighbours, if that cell is empty, can hold a tree, is dry, not built on and not flooded.
-//! - **Floods** kill saplings (`SAPLING_FLOOD_DAYS` under water) and young trees (the ecology
-//!   drowning rule); mature and old trees drowned for `MATURE_DROWN_DAYS` become snags.
-//! - **Work:** logging camps fell by their `CutRule`; forester's lodges plant and tend in their
-//!   area by their `PlantRule`; tree nurseries grow a colony-wide sapling stock that lets the
-//!   lodges plant at a quarter of the labour, with a head start of `NURSERY_AGE`.
-//!
-//! Everything runs once per whole sim day (`step`), seeded and in item order, so it is deterministic.
-
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use rand_core::{Rng, SeedableRng};
@@ -33,66 +14,37 @@ use crate::water::Cell;
 use crate::work::{Area, Role};
 use crate::SimState;
 
-// ───────────────────────────── numbers ─────────────────────────────
-
-/// Growth age (days) at which a sapling becomes a young tree.
 pub const YOUNG_AGE: f32 = 360.0;
-/// Growth age at which a young tree is mature.
 pub const MATURE_AGE: f32 = 1080.0;
-/// Growth age at which a mature tree is old.
 pub const OLD_AGE: f32 = 5400.0;
-/// Age of a tree added with `ResourceWorld::add` (a mature tree, as every tree used to be).
 pub const DEFAULT_TREE_AGE: f32 = 2000.0;
-/// Growth factor on moist ground (within `MOIST_RANGE` cells of standing water).
 pub const MOIST_GROWTH: f32 = 1.4;
-pub const MOIST_RANGE: usize = 3;
-/// Growth factor on dry ground (soil moisture below `DRY_MOISTURE`, not moist).
+pub const MOIST_RANGE: usize = 15;
 pub const DRY_GROWTH: f32 = 0.7;
 pub const DRY_MOISTURE: f32 = 0.32;
-/// Growth factor while a forester's tending lasts, and how long it lasts.
 pub const TENDED_GROWTH: f32 = 1.5;
 pub const TEND_DAYS: f32 = 30.0;
-/// Age a nursery sapling is planted at.
 pub const NURSERY_AGE: f32 = 120.0;
-/// Age a coppiced stump regrows at (a young tree).
 pub const STUMP_AGE: f32 = 400.0;
-/// Chance per mature or old tree per growing day to seed a neighbour: about 1.5 saplings per 100
-/// trees per year where there is room (270 growing days).
 pub const SPREAD_CHANCE: f32 = 5.5e-5;
-/// Chance per old tree per day of dying to a snag (about 5.5 years on average).
 pub const OLD_DEATH_CHANCE: f32 = 1.0 / 2000.0;
-/// Days a snag stands before it rots away.
 pub const SNAG_ROT_DAYS: f32 = 720.0;
-/// Days under water that kill a sapling.
 pub const SAPLING_FLOOD_DAYS: f32 = 5.0;
-/// Days under deep water that turn a mature or old tree into a snag.
 pub const MATURE_DROWN_DAYS: f32 = 60.0;
-/// Work days to plant one sapling, and with nursery stock.
 pub const PLANT_WORK: f32 = 0.5;
 pub const NURSERY_PLANT_WORK: f32 = PLANT_WORK / 4.0;
-/// Work days to tend one tree, and the deadwood sticks it clears.
 pub const TEND_WORK: f32 = 0.25;
 pub const TEND_STICKS: f32 = 0.2;
-/// Sapling stock a staffed nursery slot grows per day, and the most the colony keeps.
 pub const NURSERY_PER_DAY: f32 = 1.0;
 pub const NURSERY_MAX_STOCK: f32 = 60.0;
-/// Largest work area side for logging camps and forester's lodges.
-pub const MAX_AREA: usize = 15;
-/// A logging camp's area is running out below this many mature (or old) trees.
+pub const MAX_AREA: usize = 61;
 pub const RUNNING_OUT: usize = 10;
-/// "Forest falling": mature trees around the colony down by more than this share over `FALLING_DAYS`.
 pub const FALLING_SHARE: f32 = 0.05;
 pub const FALLING_DAYS: f64 = 90.0;
-/// Radius (cells) around the colony home whose mature trees `ForestFalling` watches.
-pub const WATCH_RADIUS: usize = 32;
-/// Window of the planted / tended / felled per-day rates.
+pub const WATCH_RADIUS: usize = 120;
 pub const STATS_DAYS: f64 = 30.0;
-/// Days a cell nobody could reach is skipped by planters.
 const UNREACHABLE_DAYS: f64 = 10.0;
-/// Slope (world units per cell) above which nothing can be planted.
 const CLIFF_SLOPE: f32 = 1.2;
-
-// ───────────────────────────── stages and rules ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TreeStage {
@@ -100,14 +52,12 @@ pub enum TreeStage {
     Young,
     Mature,
     Old,
-    /// Dead and standing: sticks only, rots away.
     Snag,
 }
 
 impl TreeStage {
     pub const ALL: [TreeStage; 5] = [TreeStage::Sapling, TreeStage::Young, TreeStage::Mature, TreeStage::Old, TreeStage::Snag];
 
-    /// Stage of a living tree of growth age `age`.
     pub fn of_age(age: f32) -> TreeStage {
         if age < YOUNG_AGE {
             TreeStage::Sapling
@@ -120,7 +70,6 @@ impl TreeStage {
         }
     }
 
-    /// (logs, sticks, bark) a tree of this stage leaves when felled; `None` for a sapling.
     pub fn fell_yield(self) -> Option<(f32, f32, f32)> {
         match self {
             TreeStage::Sapling => None,
@@ -131,14 +80,12 @@ impl TreeStage {
         }
     }
 
-    /// Living and young or older: the tree counts as forest cover.
     pub fn is_grown(self) -> bool {
         matches!(self, TreeStage::Young | TreeStage::Mature | TreeStage::Old)
     }
 }
 
 impl Resource {
-    /// A standing tree's stage; `None` for anything else.
     pub fn stage(&self) -> Option<TreeStage> {
         match self.kind {
             ResourceKind::Tree if self.snag => Some(TreeStage::Snag),
@@ -148,18 +95,12 @@ impl Resource {
     }
 }
 
-/// What a logging camp fells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CutRule {
-    /// Mature and old trees (and snags).
     #[default]
     MatureOnly,
-    /// Everything young or older.
     ClearCut,
-    /// Oldest first, keeping at least half the area's cells forested.
     Thin,
-    /// Mature and old trees; each felled tree's stump regrows as a young tree (`STUMP_AGE`).
-    /// Needs the Coppicing tech.
     Coppice,
 }
 
@@ -167,15 +108,11 @@ impl CutRule {
     pub const ALL: [CutRule; 4] = [CutRule::MatureOnly, CutRule::ClearCut, CutRule::Thin, CutRule::Coppice];
 }
 
-/// What a forester's lodge plants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PlantRule {
-    /// Only cells that have held a tree (at the start or since).
     #[default]
     FillGaps,
-    /// Every suitable cell.
     PlantAll,
-    /// No planting: tending only.
     TendOnly,
 }
 
@@ -183,16 +120,12 @@ impl PlantRule {
     pub const ALL: [PlantRule; 3] = [PlantRule::FillGaps, PlantRule::PlantAll, PlantRule::TendOnly];
 }
 
-/// A forester's errand in its lodge's area.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ForestTask {
-    /// Walk beside `cell` and plant a sapling there.
     Plant { cell: Cell, progress: f32 },
-    /// Walk beside a young tree or sapling and tend it.
     Tend { tree: ResourceId, progress: f32 },
 }
 
-/// One planting, tending or felling, for the per-day read-outs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Deed {
     pub day: f64,
@@ -208,33 +141,20 @@ pub enum DeedKind {
     Felled,
 }
 
-/// Forestry state (owned by `SimState::forestry`).
 #[derive(Clone, Debug)]
 pub struct Forestry {
-    /// Logging camps' cutting rules (absent = `CutRule::MatureOnly`).
     pub cut_rules: BTreeMap<BuildingId, CutRule>,
-    /// Forester's lodges' planting rules (absent = `PlantRule::FillGaps`).
     pub plant_rules: BTreeMap<BuildingId, PlantRule>,
-    /// Nursery sapling stock, colony-wide (no `Good`: saplings never go into the stores).
     pub saplings: f32,
-    /// Recent plantings, tendings and fellings (the last `STATS_DAYS`).
     pub deeds: VecDeque<Deed>,
-    /// Mature (and old) trees within `WATCH_RADIUS` of the colony home, one sample per day.
     pub history: VecDeque<(f64, usize)>,
     size: usize,
-    /// Cells that have held a tree (row-major).
     had_tree: Vec<bool>,
-    /// Ground growth factor per cell (moist / average / dry), refreshed daily.
     growth: Vec<f32>,
-    /// Cells a dam still being built will flood.
     flood_plan: BTreeSet<Cell>,
-    /// Coppiced stumps waiting for their felled wood to be cleared.
     stumps: Vec<Cell>,
-    /// Thinning camps: trees at least this old may be felled.
     thin_age: BTreeMap<BuildingId, f32>,
-    /// Cells planters could not reach, with the day they may be tried again.
     unreachable: BTreeMap<Cell, f64>,
-    /// Last whole day processed.
     day: Option<i64>,
     rng: Pcg32,
 }
@@ -246,7 +166,6 @@ impl Default for Forestry {
 }
 
 impl Forestry {
-    /// Empty forestry state with a seeded random stream (call `init` once trees exist).
     pub fn new(seed: u64) -> Self {
         Forestry {
             cut_rules: BTreeMap::new(),
@@ -274,19 +193,15 @@ impl Forestry {
         self.plant_rules.get(&b).copied().unwrap_or_default()
     }
 
-    /// Whether `cell` has held a tree since the start.
     pub fn had_tree(&self, cell: Cell) -> bool {
         cell.0 < self.size && cell.1 < self.size && self.had_tree[cell.1 * self.size + cell.0]
     }
 
-    /// Ground growth factor of `cell` (1 when unknown).
     pub fn ground_growth(&self, cell: Cell) -> f32 {
         if cell.0 < self.size && cell.1 < self.size { self.growth[cell.1 * self.size + cell.0] } else { 1.0 }
     }
 }
 
-/// Deterministic starting age of the tree on `cell` for `seed`: mostly mature (3–12 years), about
-/// 15 % young (1–3 years) and 10 % old (15–23 years).
 pub fn start_age(seed: u64, cell: Cell) -> f32 {
     let mut h = seed ^ 0xA6E5_7A6E_u64 ^ ((cell.0 as u64) << 32) ^ (cell.1 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut next = || {
@@ -306,18 +221,14 @@ pub fn start_age(seed: u64, cell: Cell) -> f32 {
     }
 }
 
-/// A tree a collector may fell at all (not a sapling).
 pub fn fellable(r: &Resource) -> bool {
     r.kind == ResourceKind::Tree && r.stage() != Some(TreeStage::Sapling)
 }
 
-/// A tree a collector with age limit `min_age` may fell: snags always, living trees from `min_age`.
 pub fn cuttable(r: &Resource, min_age: f32) -> bool {
     fellable(r) && (r.snag || r.age_days >= min_age)
 }
 
-/// The youngest a tree may be for the collectors of workplace `camp` to fell it: a logging camp
-/// follows its rule; everything else (forager huts, gather orders) spares young trees.
 pub fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
     let Some(b) = camp.filter(|b| sim.work.place(*b).is_some_and(|p| p.kind == BuildingKind::LoggingCamp)) else {
         return MATURE_AGE;
@@ -329,19 +240,14 @@ pub fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
     }
 }
 
-// ───────────────────────────── commands ─────────────────────────────
-
 fn invalid(m: impl Into<String>) -> crate::SimError {
     crate::SimError::InvalidCommand(m.into())
 }
 
-/// Whether the colony knows the tech named `name`.
 pub fn knows(sim: &SimState, name: &str) -> bool {
     crate::tech::TECHS.iter().position(|t| t.name == name).is_some_and(|i| sim.tech.is_unlocked(crate::tech::TechId(i)))
 }
 
-/// `Command::SetCutRule`: a logging camp's rule. Every rule but `MatureOnly` needs Forestry;
-/// `Coppice` needs Coppicing.
 pub(crate) fn set_cut_rule(sim: &mut SimState, building: BuildingId, rule: CutRule) -> Result<(), crate::SimError> {
     if sim.buildings.building(building).is_none_or(|b| b.kind != BuildingKind::LoggingCamp) {
         return Err(invalid(format!("building {} is not a logging camp", building.0)));
@@ -357,7 +263,6 @@ pub(crate) fn set_cut_rule(sim: &mut SimState, building: BuildingId, rule: CutRu
     Ok(())
 }
 
-/// `Command::SetPlantRule`: a forester's lodge's rule.
 pub(crate) fn set_plant_rule(sim: &mut SimState, building: BuildingId, rule: PlantRule) -> Result<(), crate::SimError> {
     if sim.buildings.building(building).is_none_or(|b| b.kind != BuildingKind::ForesterLodge) {
         return Err(invalid(format!("building {} is not a forester's lodge", building.0)));
@@ -366,7 +271,6 @@ pub(crate) fn set_plant_rule(sim: &mut SimState, building: BuildingId, rule: Pla
     Ok(())
 }
 
-/// Logging camps and forester's lodges take work areas of at most `MAX_AREA` × `MAX_AREA`.
 pub(crate) fn check_area(sim: &SimState, building: BuildingId, area: &Area) -> Result<(), crate::SimError> {
     let limited = sim.buildings.building(building).is_some_and(|b| max_area(b.kind).is_some());
     let (w, h) = (area.max.0.saturating_sub(area.min.0) + 1, area.max.1.saturating_sub(area.min.1) + 1);
@@ -376,15 +280,10 @@ pub(crate) fn check_area(sim: &SimState, building: BuildingId, area: &Area) -> R
     Ok(())
 }
 
-/// The largest work-area side `kind` accepts, if it is limited.
 pub fn max_area(kind: BuildingKind) -> Option<usize> {
     matches!(kind, BuildingKind::LoggingCamp | BuildingKind::ForesterLodge).then_some(MAX_AREA)
 }
 
-// ───────────────────────────── the daily forest ─────────────────────────────
-
-/// Sets up forestry for a fresh state: which cells held trees, the ground growth factors and the
-/// ecology forest density derived from the trees.
 pub fn init(sim: &mut SimState) {
     let n = sim.world.size;
     let f = &mut sim.forestry;
@@ -400,8 +299,6 @@ pub fn init(sim: &mut SimState) {
     derive_ecology(sim);
 }
 
-/// Advances forestry by `dt_days`: nurseries grow stock continuously; trees grow, spread, drown and
-/// die once per whole day crossed.
 pub fn step(sim: &mut SimState, dt_days: f32) {
     if sim.forestry.size != sim.world.size {
         init(sim);
@@ -432,8 +329,6 @@ fn chance(rng: &mut Pcg32, p: f32) -> bool {
     ((rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32) < p
 }
 
-/// Whether trees can grow on `cell` at all (spread): a tree species belongs there and it is not
-/// river or lake.
 fn can_hold_tree(sim: &SimState, cell: Cell) -> bool {
     let (x, y) = cell;
     sim.world.forest.get(x, y).is_some_and(|t| t.is_some())
@@ -441,7 +336,6 @@ fn can_hold_tree(sim: &SimState, cell: Cell) -> bool {
         && !sim.world.lake.get(x, y).copied().unwrap_or(false)
 }
 
-/// Dry and not flooded now.
 fn is_dry(sim: &SimState, cell: Cell) -> bool {
     sim.water.depth.get(cell.0, cell.1).is_some_and(|d| *d < crate::buildings::WET_DEPTH)
         && !sim.world.river.get(cell.0, cell.1).copied().unwrap_or(false)
@@ -452,7 +346,6 @@ fn building_cells(sim: &SimState) -> HashSet<Cell> {
     sim.buildings.buildings.iter().flat_map(|b| b.cells().collect::<Vec<_>>()).collect()
 }
 
-/// One day of the forest (`day` is the day that just ended).
 fn daily(sim: &mut SimState, day: i64) {
     refresh_growth(sim);
     refresh_flood_plan(sim);
@@ -542,7 +435,6 @@ fn daily(sim: &mut SimState, day: i64) {
     record_history(sim, today);
 }
 
-/// Coppiced stumps regrow once their felled wood is cleared (unless something was built there).
 fn regrow_stumps(sim: &mut SimState, built: &HashSet<Cell>) {
     let stumps = std::mem::take(&mut sim.forestry.stumps);
     for c in stumps {
@@ -557,7 +449,6 @@ fn regrow_stumps(sim: &mut SimState, built: &HashSet<Cell>) {
     }
 }
 
-/// Moist (within `MOIST_RANGE` of standing water), dry (low soil moisture) or average, per cell.
 fn refresh_growth(sim: &mut SimState) {
     let n = sim.world.size;
     let wet: Vec<bool> = (0..n * n)
@@ -568,7 +459,6 @@ fn refresh_growth(sim: &mut SimState) {
                 || sim.world.lake.get(x, y).copied().unwrap_or(false)
         })
         .collect();
-    // Separable dilation by `MOIST_RANGE` (Chebyshev).
     let r = MOIST_RANGE;
     let mut rows = vec![false; n * n];
     for y in 0..n {
@@ -587,7 +477,6 @@ fn refresh_growth(sim: &mut SimState) {
     sim.forestry.growth = growth;
 }
 
-/// Cells the dams still under construction will flood.
 fn refresh_flood_plan(sim: &mut SimState) {
     let mut plan = BTreeSet::new();
     for p in &sim.work.dam_plans {
@@ -598,7 +487,6 @@ fn refresh_flood_plan(sim: &mut SimState) {
     sim.forestry.flood_plan = plan;
 }
 
-/// Each thinning camp's age threshold: the oldest trees beyond half the area's cells may go.
 fn refresh_thinning(sim: &mut SimState) {
     let camps: Vec<(BuildingId, Area)> = sim
         .forestry
@@ -631,7 +519,6 @@ fn refresh_thinning(sim: &mut SimState) {
     sim.forestry.thin_age = out;
 }
 
-/// Share of cells holding a young-or-older tree, smoothed over 3×3, as the ecology forest density.
 fn derive_ecology(sim: &mut SimState) {
     let n = sim.ecology.size();
     if n == 0 {
@@ -659,13 +546,11 @@ fn derive_ecology(sim: &mut SimState) {
     sim.ecology.set_forest(&g);
 }
 
-/// The colony's home cell: the first lodge, else the first beaver.
 fn home(sim: &SimState) -> Option<Cell> {
     let p = sim.colony.lodges.first().map(|l| l.pos).or(sim.colony.beavers.first().map(|b| b.pos))?;
     Some((p.0.max(0.0) as usize, p.1.max(0.0) as usize))
 }
 
-/// Mature and old trees within `WATCH_RADIUS` of the colony home.
 pub fn colony_mature_trees(sim: &SimState) -> Option<usize> {
     let h = home(sim)?;
     Some(
@@ -690,19 +575,13 @@ fn record_history(sim: &mut SimState, today: f64) {
     }
 }
 
-/// Mature trees around the colony now and `FALLING_DAYS` ago, once that much history exists.
 pub fn forest_trend(sim: &SimState) -> Option<(usize, usize)> {
     let h = &sim.forestry.history;
     let (first, last) = (h.front()?, h.back()?);
     (last.0 - first.0 >= FALLING_DAYS - 0.5).then_some((first.1, last.1))
 }
 
-// ───────────────────────────── ageing without a sim (tests, tools) ─────────────────────────────
-
 impl ResourceWorld {
-    /// Ages every living tree by `days` growth days at `growth(cell)` (× `TENDED_GROWTH` while
-    /// tended) and counts tending down. `forestry::step` does this once a day with the ground and
-    /// season factors; this is the same rule for callers without a `SimState`.
     pub fn grow_trees(&mut self, days: f32, growth: impl Fn(Cell) -> f32) {
         for r in self.items.iter_mut().filter(|r| r.kind == ResourceKind::Tree && !r.snag) {
             let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
@@ -712,10 +591,6 @@ impl ResourceWorld {
     }
 }
 
-// ───────────────────────────── foresters ─────────────────────────────
-
-/// Whether a sapling may be planted on `cell` under `rule` now: dry ground with no resource,
-/// building, supply pile or planned flood on it (for `FillGaps`, a cell that has held a tree).
 fn plantable(sim: &SimState, cell: Cell, rule: PlantRule, occupied: &HashSet<Cell>, built: &HashSet<Cell>) -> bool {
     let (x, y) = cell;
     let ground = match rule {
@@ -733,7 +608,6 @@ fn plantable(sim: &SimState, cell: Cell, rule: PlantRule, occupied: &HashSet<Cel
         && sim.forestry.unreachable.get(&cell).is_none_or(|until| sim.time_days >= *until)
 }
 
-/// Cells and trees other foresters are already on.
 fn claimed(sim: &SimState, me: BeaverId) -> (HashSet<Cell>, HashSet<ResourceId>) {
     let (mut cells, mut trees) = (HashSet::new(), HashSet::new());
     for a in sim.agents.by_id.values().filter(|a| a.id != me) {
@@ -754,7 +628,6 @@ fn d2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
 }
 
-/// The nearest cell of `area` a sapling may go on under `rule`, skipping `taken`.
 pub fn plant_spot(sim: &SimState, area: &Area, rule: PlantRule, from: Cell, taken: &HashSet<Cell>) -> Option<Cell> {
     if rule == PlantRule::TendOnly {
         return None;
@@ -768,7 +641,6 @@ pub fn plant_spot(sim: &SimState, area: &Area, rule: PlantRule, from: Cell, take
         .min_by_key(|&c| (d2(c, from), c.1, c.0))
 }
 
-/// The youngest untended sapling or young tree in `area` (then the nearest), skipping `taken`.
 pub fn tend_target(sim: &SimState, area: &Area, from: Cell, taken: &HashSet<ResourceId>) -> Option<ResourceId> {
     sim.resources
         .items
@@ -779,8 +651,6 @@ pub fn tend_target(sim: &SimState, area: &Area, from: Cell, taken: &HashSet<Reso
         .map(|r| r.id)
 }
 
-/// The next errand of the forester in slot `slot` of lodge `lodge`, standing at `from`: even slots
-/// plant first, odd slots tend first; each falls back to the other.
 pub(crate) fn next_task(sim: &SimState, lodge: BuildingId, slot: usize, who: BeaverId, from: Cell) -> Option<ForestTask> {
     let place = sim.work.place(lodge)?;
     if place.kind != BuildingKind::ForesterLodge || !sim.buildings.building(lodge).is_some_and(|b| b.is_complete()) {
@@ -799,7 +669,6 @@ fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>
     sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
 }
 
-/// A tree fell to `who`: logged for the camp's rate, and a coppicing camp leaves a stump.
 pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
     let camp = sim.work.slot_of(who).map(|s| s.0);
     record(sim, cell, DeedKind::Felled, camp);
@@ -810,7 +679,6 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
     }
 }
 
-/// One tick of a forester on `task` for lodge `lodge` (`None`: no longer a forester there).
 pub(crate) fn work(sim: &mut SimState, ag: &mut Agent, dt: f32, lodge: Option<BuildingId>, task: ForestTask) {
     let quit = |ag: &mut Agent| {
         ag.path = None;
@@ -894,10 +762,6 @@ pub(crate) fn work(sim: &mut SimState, ag: &mut Agent, dt: f32, lodge: Option<Bu
     }
 }
 
-// ───────────────────────────── read-outs ─────────────────────────────
-
-/// Trees of each stage in an area, what foresters did there lately, and when the next tree there
-/// will be mature.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ForestReport {
     pub saplings: usize,
@@ -906,8 +770,6 @@ pub struct ForestReport {
     pub old: usize,
     pub planted_per_day: f32,
     pub tended_per_day: f32,
-    /// Calendar days until the most advanced sapling or young tree in the area is mature (winter
-    /// counted as no growth); `None` with nothing growing there.
     pub logs_ready_in_days: Option<f32>,
 }
 
@@ -917,14 +779,12 @@ fn per_day(sim: &SimState, area: &Area, kind: DeedKind) -> f32 {
     n as f32 / window as f32
 }
 
-/// Calendar days a living tree needs to reach `MATURE_AGE` (growing seasons only, ground factor).
 fn days_to_mature(sim: &SimState, r: &Resource) -> f32 {
     let rate = sim.forestry.ground_growth(r.cell) * 0.75;
     let tended = r.tended_days.min(TEND_DAYS) * (TENDED_GROWTH - 1.0) * rate;
     ((MATURE_AGE - r.age_days - tended).max(0.0) / rate.max(1e-3)).max(0.0)
 }
 
-/// The forest in `area` (see `ForestReport`).
 pub fn forest_report(sim: &SimState, area: &Area) -> ForestReport {
     let mut rep = ForestReport::default();
     let mut soonest: Option<f32> = None;
@@ -947,22 +807,18 @@ pub fn forest_report(sim: &SimState, area: &Area) -> ForestReport {
     rep
 }
 
-/// Trees logging camp `camp` may still fell in its area under its rule.
 pub fn cuttable_in_area(sim: &SimState, camp: BuildingId) -> usize {
     let Some(area) = sim.work.place(camp).and_then(|p| p.area) else { return 0 };
     let min_age = cut_min_age(sim, Some(camp));
     sim.resources.items.iter().filter(|r| area.contains(r.cell) && cuttable(r, min_age)).count()
 }
 
-/// Trees logging camp `camp` felled per day lately.
 pub fn felled_per_day(sim: &SimState, camp: BuildingId) -> f32 {
     let window = STATS_DAYS.min(sim.time_days.max(1.0));
     let n = sim.forestry.deeds.iter().filter(|d| d.kind == DeedKind::Felled && d.by == Some(camp) && d.day >= sim.time_days - STATS_DAYS).count();
     n as f32 / window as f32
 }
 
-/// Days until logging camp `camp` has felled every tree its rule allows in its area, at its recent
-/// rate; `None` while it fells nothing.
 pub fn days_until_out(sim: &SimState, camp: BuildingId) -> Option<f32> {
     let rate = felled_per_day(sim, camp);
     (rate > 1e-3).then(|| cuttable_in_area(sim, camp) as f32 / rate)
@@ -974,7 +830,6 @@ mod tests {
     use crate::buildings::{Building, Status};
     use crate::work::{Priority, Slot, Workplace};
 
-    /// A state with no resources, plain average ground (no water, mid moisture) and forestry set up.
     fn bare(seed: u64) -> SimState {
         let mut s = SimState::new(seed);
         s.resources = Default::default();
@@ -995,7 +850,6 @@ mod tests {
         s
     }
 
-    /// Runs whole days of forestry only (no water, agents or colony).
     fn days(s: &mut SimState, n: usize) {
         for _ in 0..n {
             s.time_days += 1.0;
@@ -1017,19 +871,17 @@ mod tests {
         let moist = s.resources.add_tree((62, 60), 0.0);
         *s.world.moisture.get_mut(20, 20).unwrap() = 0.1;
         let dry = s.resources.add_tree((20, 20), 0.0);
-        days(&mut s, 10); // spring
+        days(&mut s, 10);
         assert!((age(&s, plain) - 10.0).abs() < 1e-3, "{}", age(&s, plain));
         assert!((age(&s, tended) - 15.0).abs() < 1e-3);
         assert!((age(&s, moist) - 14.0).abs() < 1e-3);
         assert!((age(&s, dry) - 7.0).abs() < 1e-3);
-        // Into winter: nothing grows.
         s.time_days = 270.0;
         s.forestry.day = Some(270);
         let before = age(&s, plain);
         days(&mut s, 30);
         assert_eq!(age(&s, plain), before, "no growth in winter");
         assert_eq!(s.resources.get(plain).unwrap().stage(), Some(TreeStage::Sapling));
-        // A year of growing seasons makes a sapling young; it is then fellable.
         s.resources.items.iter_mut().find(|r| r.id == plain).unwrap().age_days = YOUNG_AGE;
         assert_eq!(s.resources.get(plain).unwrap().stage(), Some(TreeStage::Young));
         assert!(fellable(s.resources.get(plain).unwrap()));
@@ -1094,7 +946,6 @@ mod tests {
     #[test]
     fn spread_seeds_about_one_or_two_saplings_per_hundred_mature_trees_a_year() {
         let mut s = bare(3);
-        // 400 lone mature trees with empty neighbours.
         for i in 0..400 {
             s.resources.add_tree((5 + (i % 20) * 5, 5 + (i / 20) * 5), 2000.0);
         }
@@ -1127,8 +978,6 @@ mod tests {
         assert!(mean(&s) < dense * 400.0 * 0.5);
     }
 
-    /// A finished building of `kind` at `pos` registered as a workplace with its catalogue slots
-    /// and `area`.
     fn place(s: &mut SimState, id: u64, kind: BuildingKind, pos: Cell, area: Area) -> BuildingId {
         let b = BuildingId(id);
         s.buildings.buildings.push(Building { id: b, kind, pos, status: Status::Complete, recipe: None, output: 0.0 });
@@ -1143,7 +992,7 @@ mod tests {
     fn mature_only_never_offers_young_trees_and_thin_keeps_half() {
         let mut s = bare(5);
         s.tech.unlock_all();
-        let area = Area { min: (10, 10), max: (13, 13) }; // 16 cells
+        let area = Area { min: (10, 10), max: (13, 13) };
         let camp = place(&mut s, 900, BuildingKind::LoggingCamp, (20, 20), area);
         for (i, age) in [500.0, 700.0, 900.0, 1500.0, 3000.0, 6000.0].into_iter().enumerate() {
             s.resources.add_tree((10 + i % 4, 10 + i / 4), age);
@@ -1160,7 +1009,6 @@ mod tests {
         s.apply(crate::Command::SetCutRule { building: camp, rule: CutRule::ClearCut }).unwrap();
         assert_eq!(ok(&s).len(), 12);
         s.apply(crate::Command::SetCutRule { building: camp, rule: CutRule::Thin }).unwrap();
-        // 12 forested cells of 16: keep 8, so the 4 oldest may go.
         let mut thin = ok(&s);
         thin.sort_by(f32::total_cmp);
         assert_eq!(thin, vec![900.0, 1500.0, 3000.0, 6000.0]);
@@ -1213,7 +1061,6 @@ mod tests {
             }
         }
         assert!(alert(&s, ProblemKind::LoggingAreaRunningOut).is_none(), "enough mature trees again");
-        // The forest around the colony: steady, then down 10 % over a season.
         assert!(alert(&s, ProblemKind::ForestFalling).is_none());
         s.forestry.history = [(0.0, 200), (90.0, 195)].into_iter().collect();
         assert!(alert(&s, ProblemKind::ForestFalling).is_none(), "2.5 % is not falling");
@@ -1242,7 +1089,6 @@ mod tests {
         let stump = s.resources.at((12, 12)).next().expect("the stump regrew");
         assert_eq!((stump.stage(), stump.age_days), (Some(TreeStage::Young), STUMP_AGE));
         assert_eq!(felled_per_day(&s, camp) * STATS_DAYS.min(s.time_days) as f32, 1.0);
-        // A staffed nursery grows stock; a lodge forester plants from it at a quarter of the work.
         let nursery = place(&mut s, 902, BuildingKind::TreeNursery, (40, 40), area);
         s.work.assign(nursery, 0, BeaverId(78)).unwrap();
         step(&mut s, 2.0);
@@ -1264,7 +1110,6 @@ mod tests {
         assert!((s.forestry.saplings - 1.0).abs() < 1e-4, "one sapling used");
     }
 
-    /// Forestry bookkeeping for a hand-made state.
     fn forestry_ready(s: &mut SimState) {
         init(s);
     }
@@ -1294,10 +1139,6 @@ mod tests {
         assert!(s.apply(crate::Command::SetWorkArea { building: lodge, area: too_big }).is_err());
     }
 
-    /// Scripted three years on a 15×15 area: a logging camp fells its allowed trees at `rate` a
-    /// day (nearest first) while, with `lodge_on`, two foresters plant every free cell (from nursery
-    /// stock) and tend the same area. Returns (mature at the start, fewest mature on any day,
-    /// mature at the end). Forestry only (no agents), so three years take well under a second.
     fn camp_run(lodge_on: bool, rate: f32) -> (usize, usize, usize) {
         let mut s = bare(6);
         s.tech.unlock_all();
@@ -1309,14 +1150,12 @@ mod tests {
                 }
             }
         }
-        // A pond along one side keeps part of the area moist.
         for y in 30..=44 {
             *s.water.depth.get_mut(46, y).unwrap() = 1.0;
         }
         init(&mut s);
         let camp = place(&mut s, 900, BuildingKind::LoggingCamp, (50, 50), area);
         let lodge = place(&mut s, 901, BuildingKind::ForesterLodge, (50, 54), area);
-        // The old forest has gaps (a third of the cells), so the lodge plants every free cell.
         s.forestry.plant_rules.insert(lodge, PlantRule::PlantAll);
         let mature = |s: &SimState| {
             let r = forest_report(s, &area);
@@ -1341,7 +1180,6 @@ mod tests {
             if !lodge_on {
                 continue;
             }
-            // A staffed nursery, and two foresters each with most of a day for errands.
             s.forestry.saplings += 1.0;
             for (slot, w) in work.iter_mut().enumerate() {
                 *w += 0.8;
@@ -1372,7 +1210,6 @@ mod tests {
 
     #[test]
     fn a_camp_and_a_forester_lodge_keep_the_area_from_collapsing_over_three_years() {
-        // One tree every eight days: about the 0.4–0.5 logs a day the audit measured for a camp.
         let (start, low, kept) = camp_run(true, 0.125);
         let (_, _, bare_end) = camp_run(false, 0.125);
         assert!(start > 100, "the area starts as a forest ({start} mature)");

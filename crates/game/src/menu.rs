@@ -1,7 +1,4 @@
-//! Start menu, pause menu and settings. The game opens on the start menu over the slowly turning
-//! valley; a new game begins paused. Esc with nothing else open brings up the pause menu. While a
-//! menu is up the sim stands still, the HUD hides and its keys stand down (`hud::MenuOpen`).
-#![allow(deprecated)] // `Interaction` drives the buttons, as in the HUD
+#![allow(deprecated)]
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
 use crate::flow::{Flow, Selection};
@@ -24,18 +21,12 @@ pub enum Screen {
 #[derive(Resource)]
 pub struct Menu {
     pub screen: Option<Screen>,
-    /// Where Back from settings returns.
     back_to: Screen,
-    /// Whether the sim was paused before the pause menu opened (Resume restores it).
     was_paused: bool,
-    /// The map the next new game is played on.
     pub map: MapChoice,
     pub ui_scale: f32,
-    /// Pause the game when a new urgent problem appears.
     pub auto_pause: bool,
-    /// Urgent problem titles already seen (auto-pause fires once per new one).
     seen_urgent: Vec<String>,
-    /// A colony-losing action waiting for a tick or a cross (there is no saving yet).
     confirm: Option<MenuAction>,
 }
 
@@ -54,7 +45,6 @@ enum MenuAction {
     Quit,
     Scale(f32),
     ToggleAutoPause,
-    /// Ask before Restart, ToTitle or Quit from the pause menu.
     Ask(Ask),
     Confirm(bool),
 }
@@ -76,8 +66,6 @@ const SCALES: [f32; 4] = [0.85, 1.0, 1.15, 1.3];
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().resource::<Cli>().clone();
-        // Scripted scenes and plain screenshots run without menus; BC_MENU=start|pause|settings
-        // opens one for a screenshot.
         let forced = std::env::var("BC_MENU").ok();
         let scripted = cli.plain_world() || cli.demo_pond || (cli.screenshot.is_some() && forced.is_none());
         let first = match forced.as_deref() {
@@ -125,7 +113,6 @@ fn spawn_root(mut commands: Commands) {
     ));
 }
 
-/// Esc opens the pause menu when nothing else is open, and closes a menu again.
 fn menu_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<Menu>,
@@ -171,7 +158,6 @@ fn menu_actions(
     mut exit: MessageWriter<AppExit>,
 ) {
     let mut pressed: Vec<MenuAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| *a).collect();
-    // The tick carries out the action that asked; the cross forgets it.
     for a in pressed.iter_mut() {
         if let MenuAction::Confirm(yes) = *a {
             let asked = menu.confirm.take();
@@ -186,7 +172,6 @@ fn menu_actions(
     for a in pressed {
         match a {
             MenuAction::NewGame | MenuAction::Restart => {
-                // Keep the world already on screen if it is the chosen map and nothing has happened.
                 let fresh = current.0 == menu.map && sim.0.time_days == 0.0 && a == MenuAction::NewGame;
                 if !fresh {
                     let map = if a == MenuAction::Restart { current.0.clone() } else { menu.map.clone() };
@@ -201,10 +186,8 @@ fn menu_actions(
                         }
                     }
                 } else if sim.0.colony.is_founded() {
-                    // Same world: frame the family again (the title screen turned the camera).
                     crate::startflow::begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
                 } else {
-                    // Same world, nobody settled yet: back to choosing the place.
                     let camp = planned.0.as_ref().map(|d| d.camp);
                     crate::startflow::begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);
                 }
@@ -213,7 +196,6 @@ fn menu_actions(
                 menu.screen = None;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
-                // Real maps in order, then the generated valley.
                 let mut options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
                 let seed = match menu.map {
                     MapChoice::Generated(s) => s,
@@ -257,7 +239,6 @@ fn menu_actions(
     }
 }
 
-/// Publishes whether a menu is up, and keeps the sim still under it.
 fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<SimClock>) {
     let up = menu.screen.is_some();
     if open.0 != up {
@@ -268,7 +249,6 @@ fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<Sim
     }
 }
 
-/// Pauses once for each new urgent problem (food about to run out, a dam about to break), if on.
 fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>, hud_state: Option<ResMut<hud::HudState>>) {
     let now = time.elapsed_secs();
     if now < *next || menu.screen.is_some() {
@@ -289,7 +269,6 @@ fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: Re
     }
 }
 
-/// The title screen slowly turns the camera around the valley.
 fn title_orbit(time: Res<Time>, menu: Res<Menu>, mut orbit: ResMut<OrbitCamera>) {
     if menu.screen == Some(Screen::Start) {
         orbit.yaw += time.delta_secs() * 0.06;
@@ -298,8 +277,6 @@ fn title_orbit(time: Res<Time>, menu: Res<Menu>, mut orbit: ResMut<OrbitCamera>)
         }
     }
 }
-
-// ───────────────────────────── drawing ─────────────────────────────
 
 fn button(p: &mut ChildSpawnerCommands, label: &str, action: MenuAction, fill: Color, on: bool) {
     let ink = if fill == ACCENT { Color::srgb(0.13, 0.09, 0.05) } else { INK };
@@ -359,7 +336,6 @@ fn rebuild_menu(
     }
     commands.entity(e).despawn_related::<Children>();
     let Some(screen) = menu.screen else { return };
-    // The title screen lets the valley show; pause and settings dim the game more.
     bg.0 = if screen == Screen::Start { Color::srgba(0.05, 0.04, 0.03, 0.25) } else { Color::srgba(0.05, 0.04, 0.03, 0.55) };
     let card = Node {
         width: Val::Px(440.0),
@@ -381,7 +357,6 @@ fn rebuild_menu(
 }
 
 fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) {
-    // Appendix A11: the title, Play, the map (name and size), Settings, Quit. Nothing else.
     let _ = current;
     hud::bold(p, "Beaver Colony", 30.0, INK);
     p.spawn(Node { height: Val::Px(6.0), ..default() });
@@ -415,7 +390,6 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) 
 fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &sim::SimState, clock: &SimClock) {
     let _ = (s, clock);
     if menu.confirm.is_some() {
-        // There is no saving yet: anything that leaves the colony asks first.
         p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
             hud::bold(r, "Lose colony?", 15.0, INK);
             r.spawn(hud::row(8.0)).with_children(|b| {

@@ -1,10 +1,3 @@
-﻿//! Ecology: forest density, drowning, wetlands, wetland wildlife, roaming predators and the
-//! danger field. All state is deterministic (seeded `Pcg32`); inputs from other systems are
-//! passed to `step` (water depth) or set through the public fields (`lodges`, `defence`, `hideout`).
-//!
-//! **One forest model.** The forest density has no growth law of its own: in a game it is derived
-//! from the standing trees every day (`set_forest`, called by `forestry`), so felling and planting
-//! show up here. On its own (tests, tools) it only falls, by felling (`fell`) and drowning.
 use crate::SimError;
 use crate::grid::{Grid, VegetationGrid, WaterGrid};
 use rand_core::{Rng, SeedableRng};
@@ -13,16 +6,13 @@ pub use crate::tuning::ecology::*;
 
 const MAX_SUBSTEP_DAYS: f32 = 1.0;
 
-/// Predator species. Eagles fly over water; the rest roam land only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PredatorKind { Wolf, Lynx, Bear, Eagle }
 
 impl PredatorKind {
-    /// Cells moved per day.
     fn speed(self) -> f32 {
         predator_speed(self)
     }
-    /// Threat weight in the danger field.
     fn threat(self) -> f32 {
         predator_threat(self)
     }
@@ -31,35 +21,24 @@ impl PredatorKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Predator { pub kind: PredatorKind, pub x: f32, pub y: f32 }
 
-/// Colony-wide effects of wetland life (each >= 0; normalised by map area, roughly 0..1).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WetlandEffects {
-    /// Extra food from fish, waterfowl and frogs.
     pub food: f32,
-    /// Morale from waterfowl and herons.
     pub morale: f32,
-    /// Disease pressure from mosquitoes.
     pub disease: f32,
-    /// Competition from otters for fish.
     pub otter_competition: f32,
 }
 
-/// Map layers the UI can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapMode { Food, Forest, Wetland, Danger }
 
-/// Per-cell ecology fields. All grids are `size x size`.
 #[derive(Clone, Debug)]
 pub struct Ecology {
-    /// Overall ground cover 0..=1 (forest + half meadow + half wetland).
     pub vegetation: VegetationGrid,
-    /// Living tree density 0..=1 (derived from the trees in a game: `set_forest`).
     pub forest: Grid<f32>,
-    /// Dead standing trees left by drowning 0..=1.
     pub snags: Grid<f32>,
     pub meadow: Grid<f32>,
     pub wetland: Grid<f32>,
-    /// Consecutive days flooded (drains at twice the rate when dry).
     pub flood_days: Grid<f32>,
     pub fish: Grid<f32>,
     pub waterfowl: Grid<f32>,
@@ -67,15 +46,10 @@ pub struct Ecology {
     pub herons: Grid<f32>,
     pub mosquitoes: Grid<f32>,
     pub otters: Grid<f32>,
-    /// Food availability map 0..=1.
     pub food: Grid<f32>,
-    /// Predator danger 0..=1.
     pub danger: Grid<f32>,
-    /// Defence strength 0..=1 per cell (written by the buildings system).
     pub defence: Grid<f32>,
-    /// Hideout strength 0..=1 per cell (written by the buildings system).
     pub hideout: Grid<f32>,
-    /// Lodge cells; protect their surroundings. Use `add_lodge`.
     pub lodges: Vec<(usize, usize)>,
     pub predators: Vec<Predator>,
     pub effects: WetlandEffects,
@@ -85,10 +59,8 @@ pub struct Ecology {
 fn clamp01(v: f32) -> f32 { v.clamp(0.0, 1.0) }
 
 impl Ecology {
-    /// Ecology of a `size x size` world with default seed 0. Panics if `size == 0`.
     pub fn new(size: usize) -> Self { Self::seeded(size, 0) }
 
-    /// Deterministic ecology: dense forest with seeded variation and a few predators.
     pub fn seeded(size: usize, seed: u64) -> Self {
         let g = |v: f32| Grid::new(size, size, v);
         let mut rng = Pcg32::seed_from_u64(seed ^ 0xEC01_06E5);
@@ -110,7 +82,6 @@ impl Ecology {
 
     pub fn size(&self) -> usize { self.forest.width() }
 
-    /// Layer for a map mode.
     pub fn layer(&self, mode: MapMode) -> &Grid<f32> {
         match mode {
             MapMode::Food => &self.food,
@@ -120,15 +91,12 @@ impl Ecology {
         }
     }
 
-    /// Registers a lodge at (x, y). Errors if out of bounds.
     pub fn add_lodge(&mut self, x: usize, y: usize) -> Result<(), SimError> {
         self.check_cell(x, y)?;
         self.lodges.push((x, y));
         Ok(())
     }
 
-    /// Fells up to `amount` (>= 0) of forest density at (x, y); returns the density actually
-    /// removed (wood); the ground becomes meadow. (In a game the next `set_forest` overrides it.)
     pub fn fell(&mut self, x: usize, y: usize, amount: f32) -> Result<f32, SimError> {
         self.check_cell(x, y)?;
         if !amount.is_finite() || amount < 0.0 {
@@ -141,9 +109,6 @@ impl Ecology {
         Ok(removed)
     }
 
-    /// Sets the forest density from the trees (`forestry`: the share of cells with a young-or-older
-    /// tree, smoothed), capped by the ground wetland leaves free. Felled ground turns to meadow.
-    /// Ignored if `density` is not `size x size`.
     pub fn set_forest(&mut self, density: &Grid<f32>) {
         let n = self.size();
         if density.width() != n || density.height() != n {
@@ -169,8 +134,6 @@ impl Ecology {
         }
     }
 
-    /// Advances ecology by `dt_days` (finite, >= 0) given current water depth.
-    /// Errors if the water grid size differs from the ecology size.
     pub fn step(&mut self, dt_days: f32, water: &WaterGrid) -> Result<(), SimError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
@@ -199,7 +162,6 @@ impl Ecology {
             let fd = &mut self.flood_days.as_mut_slice()[i];
             *fd = if flooded { *fd + dt } else { (*fd - FLOOD_DAYS_DRAIN_RATE * dt).max(0.0) };
             let fd = *fd;
-            // Drowning: flooded trees die and leave snags.
             let forest = &mut self.forest.as_mut_slice()[i];
             let snags = &mut self.snags.as_mut_slice()[i];
             if flooded && fd >= DROWN_FLOOD_DAYS && depth >= DROWN_DEPTH {
@@ -207,9 +169,7 @@ impl Ecology {
                 *forest -= lost;
                 *snags = clamp01(*snags + lost);
             }
-            // Snags rot over `SNAG_ROT_DAYS`.
             *snags = (*snags - dt / SNAG_ROT_DAYS).max(0.0);
-            // Wetland forms on long-flooded shallow cells; drained wetland becomes meadow.
             let wetland = &mut self.wetland.as_mut_slice()[i];
             if flooded && fd >= wet_days && depth <= WETLAND_MAX_DEPTH {
                 *wetland = clamp01(*wetland + dt / SEASON_DAYS);
@@ -219,11 +179,9 @@ impl Ecology {
                 if !flooded { self.meadow.as_mut_slice()[i] += shift; }
             }
         }
-        // No forest growth here: the trees grow (`forestry`) and `set_forest` follows them.
         for i in 0..n * n {
             let room = (1.0 - self.forest.as_slice()[i] - self.wetland.as_slice()[i]).max(0.0);
             let m = &mut self.meadow.as_mut_slice()[i];
-            // Meadow gives way to forest slowly and never exceeds free ground.
             *m = (*m - dt / MEADOW_REGROW_DAYS).max(0.0).min(room);
         }
         self.move_predators(dt, water);
@@ -243,7 +201,6 @@ impl Ecology {
         }
     }
 
-    /// Wetland-linked wildlife relaxes toward targets set by nearby wetland.
     fn relax_wildlife(&mut self, dt: f32) {
         let n = self.size();
         let k = clamp01(dt * WILDLIFE_RATE);
@@ -267,7 +224,6 @@ impl Ecology {
         }
     }
 
-    /// Recomputes derived layers: vegetation, food, danger, colony effects.
     fn refresh_derived(&mut self, water: &WaterGrid) {
         let n = self.size();
         let cells = (n * n) as f32;
@@ -290,8 +246,6 @@ impl Ecology {
         self.update_danger(water);
     }
 
-    /// Danger is high far from water and lodges, raised near predators, and lowered by
-    /// defences and hideouts.
     fn update_danger(&mut self, water: &WaterGrid) {
         let n = self.size();
         let mut sources: Vec<bool> = water.as_slice().iter().map(|d| *d > FLOOD_DEPTH).collect();
@@ -319,10 +273,8 @@ impl Ecology {
     }
 }
 
-/// Uniform f32 in [0, 1).
 fn unit(rng: &mut Pcg32) -> f32 { (rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32 }
 
-/// 3x3 box blur with edge clamping.
 fn blur(g: &Grid<f32>) -> Grid<f32> {
     let n = g.width();
     let mut out = g.clone();
@@ -341,7 +293,6 @@ fn blur(g: &Grid<f32>) -> Grid<f32> {
     out
 }
 
-/// Chamfer distance (cells) to the nearest source; very large when there are no sources.
 fn distance_field(sources: &[bool], n: usize) -> Vec<f32> {
     const INF: f32 = f32::MAX / 4.0;
     let mut d: Vec<f32> = sources.iter().map(|&s| if s { 0.0 } else { INF }).collect();
@@ -422,8 +373,6 @@ mod ecology {
         assert_eq!(mean(&e.wetland), 0.0);
     }
 
-    /// One forest model: the density does not regrow by itself after felling (trees regrow, in
-    /// `forestry`); it follows the tree cover it is given.
     #[test]
     fn felled_forest_stays_down_until_the_trees_come_back() {
         let mut e = Ecology::seeded(N, 3);
@@ -441,7 +390,7 @@ mod ecology {
         assert!(start > 0.5);
         e.set_forest(&Grid::new(N, N, 0.3));
         assert!((mean(&e.forest) - 0.3).abs() < 1e-4 && mean(&e.vegetation) >= 0.3);
-        e.set_forest(&Grid::new(4, 4, 1.0)); // wrong size: ignored
+        e.set_forest(&Grid::new(4, 4, 1.0));
         assert!((mean(&e.forest) - 0.3).abs() < 1e-4);
     }
 
@@ -449,7 +398,7 @@ mod ecology {
     fn danger_is_lower_near_water_and_lodges_than_deep_forest() {
         let mut e = Ecology::seeded(N, 4);
         let mut w = flood(0.0);
-        for y in 0..N { *w.get_mut(0, y).unwrap() = 1.0; } // river on the west edge
+        for y in 0..N { *w.get_mut(0, y).unwrap() = 1.0; }
         e.add_lodge(N - 1, N - 1).unwrap();
         run(&mut e, &w, 5.0);
         let at = |x, y| *e.danger.get(x, y).unwrap();

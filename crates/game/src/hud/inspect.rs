@@ -1,4 +1,3 @@
-//! Inspectors (spec §4.2): one panel in the right column for whatever is selected.
 use super::panels::{status_line, stage_icon, Ctx, RIGHT_W};
 use super::ui::*;
 use super::words::*;
@@ -46,15 +45,11 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
         Selection::Tree(rid) => Some(resource(c, rid)),
         Selection::Cell(cell) => Some(cell_panel(c, cell)),
         Selection::Lodge(id) => Some(lodge(c, id)),
-        Selection::Building(cell) => super::building_at(c.s, cell).map(|id| building(c, id)),
         Selection::Barge(id) => Some(barge(c, id)),
         Selection::None => None,
     }
 }
 
-// ───────────────────────────── barges and docks ─────────────────────────────
-
-/// Finished docks in a fixed order (by id): a dock's number is its place here, plus one.
 pub fn docks(s: &sim::SimState) -> Vec<BuildingId> {
     let mut v: Vec<BuildingId> = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete()).map(|b| b.id).collect();
     v.sort_by_key(|b| b.0);
@@ -65,12 +60,10 @@ pub fn dock_number(s: &sim::SimState, id: BuildingId) -> usize {
     docks(s).iter().position(|d| *d == id).map_or(0, |i| i + 1)
 }
 
-/// A barge's number: its place in the sim's list, plus one.
 pub fn barge_number(s: &sim::SimState, id: BargeId) -> usize {
     s.buildings.barges.iter().position(|b| b.id == id).map_or(0, |i| i + 1)
 }
 
-/// Goods aboard: the route hold, or a single trip's cargo.
 pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
     let mut v: Vec<(Good, f32)> = b.hold.iter().copied().filter(|h| h.1 > 0.05).collect();
     if let Some(c) = b.cargo.filter(|c| c.1 > 0.05) {
@@ -79,7 +72,6 @@ pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
     v
 }
 
-/// What a barge is doing, as an icon, its colour and a tooltip name.
 pub fn barge_face(b: &sim::buildings::Barge) -> (Icon, Color, &'static str) {
     if b.state == BargeState::Stranded {
         return (Icon::Blocked, BAD, "Stranded");
@@ -96,7 +88,6 @@ pub fn barge_face(b: &sim::buildings::Barge) -> (Icon, Color, &'static str) {
     }
 }
 
-/// A dock as a small button: its icon and number; selecting it is the route picker's job.
 fn dock_chip(u: &mut Ui, s: &sim::SimState, dock: BuildingId, action: HudAction, on: bool, tip: Tip) {
     u.icon_label_button(Icon::Dock, format!("{}", dock_number(s, dock)), 13.0, action, FAINT, on).tip(tip);
 }
@@ -112,7 +103,6 @@ fn barge(c: &Ctx, id: BargeId) -> VNode {
         header(c, Selection::Barge(id), u, Icon::Barge, format!("Barge {}", barge_number(s, id)), None, |r| {
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.cell), FAINT, false).tip(Tip::name("Show"));
         });
-        // What it is doing, what is aboard, and what it has delivered.
         let held = aboard(b);
         let total: f32 = held.iter().map(|h| h.1).sum();
         u.row(8.0, |r| {
@@ -137,7 +127,6 @@ fn barge(c: &Ctx, id: BargeId) -> VNode {
             })
             .tip(Tip::name("Delivered"));
         });
-        // The route as it stands: loading dock ▶ unloading dock, and the goods it carries.
         u.row(5.0, |r| match &b.service {
             Some(svc) => {
                 r.icon(Icon::Up, 11.0, GOOD);
@@ -156,7 +145,6 @@ fn barge(c: &Ctx, id: BargeId) -> VNode {
             }
         })
         .tip(Tip::name("Route"));
-        // Picking a route: the loading dock, the unloading dock, the goods, then ✓.
         u.rule();
         let d = super::RouteDraft::of(s, c.hud, id);
         let all = docks(s);
@@ -182,7 +170,6 @@ fn barge(c: &Ctx, id: BargeId) -> VNode {
             }
         });
         u.row(6.0, |r| {
-            // The last refusal: why, and for a dam in the way, where (a lock goes there).
             if let Some((_, m)) = c.hud.route_err.as_ref().filter(|e| e.0 == id) {
                 r.icon(Icon::Cross, 12.0, BAD);
                 match blocking_dam(m) {
@@ -207,7 +194,6 @@ fn barge(c: &Ctx, id: BargeId) -> VNode {
     })
 }
 
-/// A dam's crest (height above the ground) and the button that raises it one step.
 fn dam_row(s: &sim::SimState, u: &mut Ui, cell: crate::flow::Cell) {
     let line = crate::build_logic::dam_line_at(s, cell);
     if line.is_empty() {
@@ -235,8 +221,6 @@ fn dam_row(s: &sim::SimState, u: &mut Ui, cell: crate::flow::Cell) {
         }
     });
 }
-
-// ───────────────────────────── buildings and sites ─────────────────────────────
 
 fn bar_row(u: &mut Ui, icon: Icon, col: Color, frac: f32, value: String, tip: Tip) {
     u.row(6.0, |r| {
@@ -270,7 +254,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             }
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
         });
-        // Status: icon + at most two words (A9).
         if let Some((icon, words, goods, col)) = status_line(s, id) {
             let line = u.row(5.0, |r| {
                 r.icon(if col == GOOD { Icon::Dot } else { Icon::Warn }, 9.0, col);
@@ -286,7 +269,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             line.node.border_radius = BorderRadius::all(Val::Px(5.0));
             line.bg = col.with_alpha(0.12);
         }
-        // Construction: materials got/need, labour, progress.
         if let Some(site) = place.and_then(|pl| pl.site.as_ref()) {
             u.rule();
             u.row(10.0, |r| {
@@ -301,7 +283,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             });
             bar_row(u, Icon::Hammer, INK, site.fraction(), format!("{:.0}%", site.fraction() * 100.0), Tip::name("Built").line("Labour", format!("{}/{}", num(site.labour_done), num(site.labour_needed))));
         }
-        // Workers: dots, one per slot, with − and +.
         if let Some(pl) = place.filter(|pl| !pl.slots.is_empty()) {
             u.rule();
             let role = pl.slots[0].role;
@@ -326,7 +307,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 r.icon_button(Icon::Plus, 11.0, HudAction::AddWorker(id), if add_tip.lines.is_empty() { Color::NONE } else { FAINT }, false).tip(add_tip);
             });
         }
-        // Production: measured output, the limiting factor, details behind an expander.
         if let Some(rep) = sim::hud::building_report(s, id) {
             u.rule();
             u.row(8.0, |r| {
@@ -350,7 +330,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             })
             .tip(Tip::name("Made per day").line(if rep.steady { "" } else { "Settling" }, ""));
-            // Worker counts are already the dots above.
             let shown: Vec<&sim::hud::Factor> = rep.factors.iter().filter(|f| !matches!(f.label.as_str(), "Workers" | "Crafters")).collect();
             let limiting: Vec<&sim::hud::Factor> = shown.iter().copied().filter(|f| f.ok == Some(false)).collect();
             if let Some(f) = limiting.first() {
@@ -369,7 +348,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             }
         }
-        // Workshops and mills: what they make (nothing until chosen).
         if matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill) && b.is_complete() {
             use sim::buildings::Recipe;
             u.rule();
@@ -386,22 +364,18 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             });
         }
-        // Logging camps: the cutting rule (once Forestry opens the others) and when the area runs out.
         if b.kind == BuildingKind::LoggingCamp && b.is_complete() {
             u.rule();
             forestry_camp(s, id, u);
         }
-        // Forester's lodges: the planting rule, the trees in the area by stage, the next logs.
         if b.kind == BuildingKind::ForesterLodge && b.is_complete() {
             u.rule();
             forestry_lodge(s, id, u);
         }
-        // A finished dam: its height and "raise".
         if let Some(cell) = crate::build_logic::dam_cell_of(s, id) {
             u.rule();
             dam_row(s, u, cell);
         }
-        // A dock: its number (the route picker names docks by it) and the barges that serve it.
         if b.kind == BuildingKind::Dock && b.is_complete() {
             u.rule();
             u.row(6.0, |r| {
@@ -415,7 +389,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             })
             .tip(Tip::name("Barges"));
         }
-        // Stores: stock and room per good.
         if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache | BuildingKind::Dock) && b.is_complete() {
             u.rule();
             u.row(10.0, |r| {
@@ -429,14 +402,12 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                         .tip(Tip::name(good_name(g)));
                     }
                 }
-                // Balance: this store's haulers even out its goods with the other balanced stores.
                 r.spacer();
                 let on = s.work.balanced.contains(&id);
                 r.icon_button(Icon::Balance, 14.0, HudAction::Balance(id, !on), FAINT, on)
                     .tip(Tip::name("Balance").line(if on { "On" } else { "Off" }, "").line("Haulers share goods with balanced stores", ""));
             });
         }
-        // Gatherers: edit the work area.
         if place.is_some_and(|pl| pl.area.is_some()) && b.is_complete() {
             let editing = c.hud.area_edit == Some(id);
             u.row(6.0, |r| {
@@ -446,7 +417,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     })
 }
 
-/// The cutting rules a camp may choose now: Forestry opens all but coppicing, Coppicing that one.
 fn open_cut_rules(s: &sim::SimState) -> Vec<sim::forestry::CutRule> {
     use sim::forestry::{knows, CutRule};
     CutRule::ALL
@@ -459,7 +429,6 @@ fn open_cut_rules(s: &sim::SimState) -> Vec<sim::forestry::CutRule> {
         .collect()
 }
 
-/// A logging camp: rule picker (icons, one-word tips) and days until its area runs out.
 fn forestry_camp(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
     let rules = open_cut_rules(s);
     let now = s.forestry.cut_rule(id);
@@ -486,7 +455,6 @@ fn forestry_camp(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
     });
 }
 
-/// A forester's lodge: rule picker, stage counts, planted and tended per day, logs ready in N d.
 fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
     use sim::forestry::{PlantRule, TreeStage};
     let now = s.forestry.plant_rule(id);
@@ -536,7 +504,6 @@ fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
     });
 }
 
-/// One of a building's limits as icon + number (A9).
 fn factor_row(u: &mut Ui, f: &sim::hud::Factor) {
     let l = f.label.to_lowercase();
     let icon = if l.contains("tree") {
@@ -567,7 +534,6 @@ fn factor_row(u: &mut Ui, f: &sim::hud::Factor) {
         Some(false) => WARN,
         None => INK,
     };
-    // Values are numbers where the sim gives one; words are cut to their first token.
     let v = f.value.split([' ', ',', ':']).next().unwrap_or("").to_string();
     let value = if v == "none" { "0".to_string() } else { v };
     u.row(6.0, |r| {
@@ -580,8 +546,6 @@ fn factor_row(u: &mut Ui, f: &sim::hud::Factor) {
     })
     .tip(Tip::name(f.label.clone()).with_value(f.value.clone()));
 }
-
-// ───────────────────────────── beavers ─────────────────────────────
 
 fn job_icon(j: Job) -> Icon {
     match j {
@@ -635,7 +599,6 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         header(c, Selection::Beaver(id), u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
             r.icon_button(Icon::Follow, 12.0, HudAction::Follow(id), FAINT, c.hud.follow == Some(id)).tip(Tip::name("Follow"));
         });
-        // Job: role and workplace, or free.
         u.row(6.0, |r| {
             match s.work.slot_of(id) {
                 Some((bid, _, role)) => {
@@ -663,7 +626,6 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
             .tip(health_tip(s, b));
         });
         u.rule();
-        // Needs: one-word labels, bars.
         let n = &b.needs;
         for (name, v) in [("Food", n.food), ("Rest", n.rest), ("Warmth", n.warmth), ("Safety", n.safety), ("Social", n.social)] {
             u.row(6.0, |r| {
@@ -674,7 +636,6 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
             });
         }
         u.rule();
-        // Skills: one bar per job.
         u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(10.0), row_gap: Val::Px(4.0), ..default() }, |r| {
             for j in Job::ALL {
                 let v = b.skills[j.index()];
@@ -697,8 +658,6 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         }
     })
 }
-
-// ───────────────────────────── trees, cells, lodges ─────────────────────────────
 
 fn resource(c: &Ctx, rid: sim::resources::ResourceId) -> VNode {
     let s = c.s;

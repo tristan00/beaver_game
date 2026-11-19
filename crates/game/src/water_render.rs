@@ -1,11 +1,3 @@
-//! Nearly clear water: a chunked surface mesh over `SimState::water.depth` whose vertex colour
-//! carries a light tint and a depth-based alpha, so riverbeds, beavers and lodges show through.
-//! A scrolling procedural normal map gives a gentle animated surface; in winter the shallows freeze
-//! into pale, mostly opaque ice that spreads with the season.
-//!
-//! Debug env: `BEAVER_DEMO=1` fills a lake into the sim's water field and drops a test object on
-//! its bed (`BEAVER_DEMO_CAM=close` or `mid` also frames it with the camera). Used for screenshots until
-//! the water/colony tasks provide real water and beavers.
 use crate::camera::{MainCamera, OrbitCamera};
 use crate::state::Sim;
 use crate::terrain_render::*;
@@ -19,11 +11,9 @@ use sim::SimState;
 
 pub struct WaterRenderPlugin;
 
-/// Marks a water surface chunk.
 #[derive(Component)]
 pub struct WaterSurface;
 
-/// Marks the demo underwater test object.
 #[derive(Component)]
 pub struct DemoObject;
 
@@ -49,12 +39,10 @@ struct WaterChunks {
     material: Handle<StandardMaterial>,
 }
 
-/// Tileable procedural ripple normal map (sum of a few sines, tangent-space).
 fn ripple_normal_map() -> Image {
     const N: usize = 128;
     let tau = std::f32::consts::TAU;
     let height = |x: f32, y: f32| -> (f32, f32) {
-        // returns d(height)/dx, d(height)/dy for a few tileable waves
         let waves: [(f32, f32, f32, f32); 5] =
             [(1.0, 2.0, 0.0, 1.0), (3.0, 1.0, 1.7, 0.6), (2.0, -3.0, 4.1, 0.5), (5.0, 4.0, 2.3, 0.25), (-4.0, 6.0, 0.9, 0.2)];
         let (mut gx, mut gy) = (0.0, 0.0);
@@ -98,7 +86,7 @@ fn setup_water(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     water.material = materials.add(StandardMaterial {
-        base_color: Color::WHITE, // colour and alpha come from vertices
+        base_color: Color::WHITE,
         alpha_mode: AlphaMode::Blend,
         perceptual_roughness: 0.35,
         reflectance: 0.06,
@@ -110,40 +98,19 @@ fn setup_water(
     water.slots = (0..cols * rows).map(|_| WSlot::default()).collect();
 }
 
-/// Margin (cells) of sim data outside a chunk that its water mesh reads: shore distances look up to
-/// `SHORE_SEARCH` cells away, and the field's gradient one cell further.
-/// Main-thread time per frame for water chunk rebuilds.
 const WATER_REBUILD_BUDGET_S: f32 = 0.002;
 pub const WATER_PAD: i32 = SHORE_SEARCH + 1;
 const SHORE_SEARCH: i32 = 3;
-/// Rings measured inward from the shore, in cells (current look; `docs/STYLE.md` section 3 sets the nearly-clear target):
-/// a solid Foam ring, then a Deep rim, the Shallow body and a Mid glow centre.
 pub const FOAM_W: f32 = 0.2;
-/// Water vertex colours are the palette colours seen through the tone mapping (`palette::display_linear`);
-/// the lit surface then multiplies them by this gain (same sun and ambient as `ENTITY_GAIN`) so a flat
-/// sun-facing patch shows its palette hex (docs/STYLE.md section 3).
 const WATER_GAIN: f32 = crate::entities_render::ENTITY_GAIN;
-/// Extra cuts through the surface (shore distance, cells) so colour ramps follow the rings
-/// instead of zig-zagging across the grid's triangles.
 const RING_CUTS: [f32; 6] = [0.6, 0.9, 1.2, 1.6, 2.0, 2.5];
-/// The shore is where the Gaussian-blurred wet mask crosses this value.
 const SHORE_LEVEL: f32 = 0.3;
-/// 5-tap binomial (σ ≈ 1 cell).
 const BLUR5: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
 
-/// Smooth signed distance to the shore, in cells, at every cell of a `(n+1)²` window starting at
-/// `(x0, y0)`: positive in water, negative on land.
-///
-/// The shore line is a level of the wet mask blurred over about a cell, so one-cell streams that
-/// run diagonally as 4-connected staircases become smooth ribbons and pond corners round off. Near
-/// it the blurred value is turned into a distance by dividing by its gradient, so the Foam and Deep
-/// rings keep a constant width; further in, the Euclidean distance to the nearest dry cell takes
-/// over so wide ponds reach their Mid glow centre.
 pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
     let r = SHORE_SEARCH;
-    let pad = 1; // for the gradient
+    let pad = 1;
     let side = n as i32 + 1 + 2 * pad;
-    // wet mask over the window plus the search margin
     let m = side + 2 * r;
     let (mx0, my0) = (x0 - pad - r, y0 - pad - r);
     let mut wet = vec![0.0f32; (m * m) as usize];
@@ -152,7 +119,6 @@ pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
             wet[(j * m + i) as usize] = (at(&s.water.depth, mx0 + i, my0 + j) > WET_EPS) as u8 as f32;
         }
     }
-    // separable blur: horizontal over the whole mask, then vertical into the window
     let mut hb = vec![0.0f32; (m * m) as usize];
     for j in 0..m {
         for i in 2..m - 2 {
@@ -188,7 +154,6 @@ pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
             let grad = (gx * gx + gy * gy).sqrt().max(0.1);
             let near = ((b(0, 0) - SHORE_LEVEL) / grad).clamp(-3.0, 3.0);
             let d = dist[(cj * side + ci) as usize];
-            // the gradient estimate overshoots where the blur flattens out
             out.push(near.min(d + 1.0));
         }
     }
@@ -207,7 +172,6 @@ fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
     WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], f: l(a.f, b.f), d: l(a.d, b.d) }
 }
 
-/// Sutherland–Hodgman clip of a convex polygon to `f >= level` (`above`) or `f <= level`.
 fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
     let inside = |v: &WV| if above { v.f >= level } else { v.f <= level };
     let mut out = Vec::with_capacity(poly.len() + 2);
@@ -224,16 +188,11 @@ fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
     out
 }
 
-/// Colour (sRGB) and alpha of the water at shore distance `f` (cells) and depth `d`: Foam ring at
-/// the shore, Deep rim just inside it (and in really deep water), Shallow body, Mid glow centre.
 pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32) {
     use crate::palette::{FOAM, WATER_MID_GLOW};
     match crate::terrain_render::map_lens() {
-        // Water lens: one sequential blue by depth, light in the shallows, dark in deep pools.
         1 => return (mix_rgb([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (d / 3.0).clamp(0.0, 1.0).sqrt()), 0.93),
-        // Goods lens: water steps back.
         2 => return ([0.62, 0.69, 0.75], 0.9),
-        // Elevation lens: one flat blue, so a pond reads as a level over the height ramp.
         crate::terrain_render::ELEVATION_LENS => return (crate::terrain_render::ELEVATION_WATER, 0.95),
         _ => {}
     }
@@ -246,15 +205,12 @@ pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32
     c = mix_rgb(c, p.water_deep, deep);
     c = mix_rgb(c, FOAM, foam);
     let mut a = 0.8 + 0.2 * deep + 0.15 * foam;
-    // ice: freezes from the shore inwards as winter deepens
     let ice = if p.winter > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { 0.0 };
     c = mix_rgb(c, p.ice, ice);
     a += (0.86 - a) * ice;
     (c, a.min(0.97))
 }
 
-/// Height of the displayed terrain at cell coordinates `(x, y)` when its chunk is meshed at `step`
-/// cells per vertex: the same triangles (diagonal from (1,0) to (0,1)) as `build_chunk_mesh`.
 fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     let st = step as f32;
     let (gx, gy) = ((x / st).floor(), (y / st).floor());
@@ -271,14 +227,6 @@ fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     }
 }
 
-/// Builds the water mesh for one chunk; `None` if it has no water at all.
-///
-/// The surface is a fine vertex grid (two vertices per cell when the terrain is at full detail)
-/// clipped along the zero line of a smooth shore-distance field (marching triangles), so outlines
-/// are smooth curves rather than cell staircases. A second cut at `FOAM_W` gives a crisp Foam ring
-/// of constant width along every bank; inside it the Deep rim, Shallow body and Mid glow centre
-/// follow the same distance. The sheet never dips below the terrain as displayed at `step`, so
-/// the ground never clips the foam away, at any level of detail.
 pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     let depth = |x: i32, y: i32| at(&s.water.depth, x, y);
@@ -286,7 +234,6 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     if !full.iter().any(|&f| f > 0.0) {
         return None;
     }
-    // per cell: (shore distance, water level, depth)
     let cs = CHUNK + 1;
     let mut cell = Vec::with_capacity(cs * cs);
     for j in 0..cs as i32 {
@@ -294,7 +241,6 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
             let (x, y) = (x0 + i, y0 + j);
             let h = at(&s.height, x, y);
             let d = depth(x, y);
-            // water level: own if wet, else the mean of wet cells within two cells
             let level = if d > WET_EPS {
                 h + d
             } else {
@@ -346,13 +292,11 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     for j in 0..n {
         for i in 0..n {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
-            // same diagonal as the terrain mesh, so the sheet stays above the ground inside triangles too
             for tri in [[a, c, b], [b, c, e]] {
                 let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
                 if t.iter().all(|v| v.f <= 0.0) {
                     continue;
                 }
-                // shore cut, then the hard-edged Foam band, then one band per ring level
                 let mut rest = clip_poly(&t, 0.0, true);
                 for (k, lvl) in std::iter::once(FOAM_W).chain(RING_CUTS).enumerate() {
                     if rest.len() < 3 {
@@ -388,13 +332,10 @@ pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     )
 }
 
-/// Camera focus for the `pond` preset: the still pond with the most open banks (look-at point on its
-/// surface), so close screenshots show a whole pond with its rings.
 pub fn pond_view(s: &SimState) -> Option<Vec3> {
     let g = &s.world.pond;
     let (w, h) = (g.width(), g.height());
     let is_pond = |x: usize, y: usize| g.get(x, y).copied().unwrap_or(false);
-    // one seed cell per pond (ponds are at least 16 cells apart)
     let mut seeds: Vec<(usize, usize)> = Vec::new();
     for y in 0..h {
         for x in 0..w {
@@ -403,7 +344,6 @@ pub fn pond_view(s: &SimState) -> Option<Vec3> {
             }
         }
     }
-    // centroid of each pond, scored by how much vegetation (trees) crowds its banks
     let (cxm, cym) = (w as f32 / 2.0, h as f32 / 2.0);
     let (fx, fy) = seeds
         .iter()
@@ -461,11 +401,9 @@ fn update_water_chunks(
     }
     let mut budget = if *first { 10 } else { usize::MAX };
     *first = true;
-    // Rebuilds cost ~0.1-0.4 ms a chunk; spread a map-wide change (season step, flood) over frames.
     let started = std::time::Instant::now();
     let n_chunks = cols * rows;
     let palette = Palette::at(season.phase);
-    // Ice only depends on the season while it is frozen-ish; recolour in coarse steps.
     let sea_bucket = season.bucket() as u64;
     for k in 0..n_chunks {
         {
@@ -478,7 +416,7 @@ fn update_water_chunks(
                 continue;
             }
             if budget == 0 || started.elapsed().as_secs_f32() > WATER_REBUILD_BUDGET_S {
-                *cursor = idx; // resume here next frame
+                *cursor = idx;
                 return;
             }
             budget -= 1;
@@ -506,10 +444,9 @@ fn update_water_chunks(
     }
 }
 
-/// Slowly drifts and swirls the ripple normal map.
 fn animate_water(time: Res<Time>, water: Res<WaterChunks>, mut materials: ResMut<Assets<StandardMaterial>>, season: Res<Season>) {
     let t = time.elapsed_secs();
-    let calm = 1.0 - 0.9 * Palette::at(season.phase).winter; // frozen surfaces barely move
+    let calm = 1.0 - 0.9 * Palette::at(season.phase).winter;
     if let Some(mut m) = materials.get_mut(&water.material) {
         m.uv_transform = Affine2::from_scale_angle_translation(
             Vec2::splat(1.0),
@@ -519,12 +456,6 @@ fn animate_water(time: Res<Time>, water: Res<WaterChunks>, mut materials: ResMut
     }
 }
 
-/// Demo scene (`BEAVER_DEMO=1`): a lake in the sim's water field and a test object on its bed.
-///
-/// Floods everything below the 22nd-percentile height, then always carves a round basin
-/// (radius `R`, `DEMO_DEPTH` deep at its centre) at the lowest spot near the middle of the map
-/// and fills it to its spill height, so every heightmap (flat floodplains included) gets
-/// clearly deep water with the test object resting on its bed.
 fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut orbit: ResMut<OrbitCamera>) {
     if std::env::var("BEAVER_DEMO").is_err() {
         return;
@@ -534,7 +465,6 @@ fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<A
     let (wx, wz) = world_pos(s, x as i32, y as i32);
     const SCALE: f32 = 1.6;
     let pos = Vec3::new(wx, bed + 0.9 * SCALE, wz);
-    // beaver-ish: warm brown body with a flat tail and a yellow marker
     let body = materials.add(StandardMaterial { base_color: Color::srgb(crate::palette::FUR[0], crate::palette::FUR[1], crate::palette::FUR[2]), perceptual_roughness: 0.9, ..default() });
     commands
         .spawn((DemoObject, Transform::from_translation(pos).with_scale(Vec3::splat(SCALE)), Visibility::default()))
@@ -550,10 +480,8 @@ fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<A
     }
 }
 
-/// Depth of the carved demo basin at its centre.
 pub const DEMO_DEPTH: f32 = 4.5;
 
-/// Floods the low ground and carves the guaranteed demo basin; returns its centre cell and bed height.
 pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
     const R: f32 = 11.0;
     let (w, d) = (s.height.width(), s.height.height());
@@ -564,10 +492,7 @@ pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
     let mut sorted: Vec<f32> = s.height.as_slice().to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     let level = sorted[sorted.len() * 22 / 100];
-    // site: lowest (3x3-averaged) ground in the central half, mildly preferring the middle
     let h = |x: usize, y: usize| s.height.as_slice()[y * w + x];
-    // The whole-world camera must see the basin: march from the site towards the "iso" preset
-    // camera and reject sites whose sightline dips under the terrain.
     let eye = crate::camera::preset("iso").map(|o| o.eye()).unwrap_or(Vec3::new(100.0, 100.0, 100.0));
     let visible = |x: usize, y: usize| -> bool {
         let (wx, wz) = world_pos(s, x as i32, y as i32);
@@ -598,7 +523,6 @@ pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
         }
     }
     let (_, sx, sy) = best;
-    // spill height: lowest terrain on the ring just outside the basin, or the flood level if higher
     let ring = |x: usize, y: usize| ((x as f32 - sx as f32).powi(2) + (y as f32 - sy as f32).powi(2)).sqrt();
     let mut spill = f32::MAX;
     let r = R as usize + 2;
@@ -641,12 +565,9 @@ mod tests {
         let dep = s.water.depth.as_slice()[y * w + x];
         assert!((DEMO_DEPTH - 0.01..=DEMO_DEPTH + 3.0).contains(&dep), "centre depth {dep}");
         assert_eq!(bed, s.height.as_slice()[y * w + x]);
-        // the basin is filled all the way to its rim: neighbours of the centre are wet too
         assert!(s.water.depth.as_slice()[y * w + x + 5] > 1.0);
     }
 
-    /// Every wet chunk gets a mesh with a Foam ring at its shore and Deep/Shallow rings inside,
-    /// and rebuilding the whole map's water stays cheap (printed; `--nocapture`).
     #[test]
     fn water_rings_and_rebuild_cost() {
         let s = SimState::new(1);

@@ -1,20 +1,3 @@
-"""Sample sun-shadow and lit terrain pixels per STYLE terrain colour (docs/STYLE.md shared lighting rule).
-
-usage: shadow_check.py LIT MEASURED MASK [--glow] [--out table.md] [--title T]
-  LIT       the frame rendered with BC_NO_SUN_SHADOWS=1 BC_NO_GLOW=1: classifies the terrain colour under each pixel
-  MEASURED  the frame whose colours are checked (product render, or its BC_NO_GLOW=1 twin)
-  MASK      the frame with BC_SHADOW_MASK=1 BC_NO_GLOW=1: terrain fully in sun shadow is magenta,
-            penumbra cyan, lit terrain yellow; everything else (trees, water, UI) renders normally
-  --glow    MEASURED has the warm top-left UI glow overlay: skip the pixels it covers
-
-Only pixels whose 3x3 neighbourhood is all one mask colour count (no edges / anti-aliasing).
-Terrain colour = the STYLE hex the LIT pixel is within 12 of (per channel; 11 for the lit check,
-leaving one level for the deband dither that differs between renders).
-Shadow pixel (magenta) passes if some blend of its hex 35-45% toward Plum #6B5A8A (sRGB) is within
-12 on every channel; lit pixel (yellow) passes if it is within 12 of its hex.
-A terrain passes with >= 95% of its pixels passing and its mean within tolerance. Exit status 1 if
-a terrain with >= 30 samples fails.
-"""
 import argparse
 import numpy as np
 from PIL import Image
@@ -34,22 +17,17 @@ ap.add_argument("--out")
 ap.add_argument("--title", default="")
 a = ap.parse_args()
 
-
 def rgb(h):
     return np.array([(h >> 16) & 255, (h >> 8) & 255, h & 255], float)
-
 
 def load(p):
     return np.asarray(Image.open(p).convert("RGB")).astype(float)
 
-
 def hexs(v):
     return "-" if v is None else "#%02X%02X%02X" % tuple(int(round(x)) for x in v)
 
-
 def is_col(img, c):
     return np.all(np.abs(img - np.array(c, float) * 255) < 6, axis=2)
-
 
 def core(m):
     out = m.copy()
@@ -59,15 +37,14 @@ def core(m):
     out[0, :] = out[-1, :] = out[:, 0] = out[:, -1] = False
     return out
 
-
 lit, meas, mk = load(a.lit), load(a.measured), load(a.mask)
 H, W, _ = lit.shape
 yy, xx = np.mgrid[0:H, 0:W]
 skip = np.zeros((H, W), bool)
-skip[:50, :] = True  # top bar (season chip, speed buttons)
-skip[H - 80:, :] = True  # bottom navigation bar
+skip[:50, :] = True
+skip[H - 80:, :] = True
 if a.glow:
-    skip |= np.hypot(xx, yy) < 0.72 * W  # radial glow from the top-left corner, radius 70% of the width
+    skip |= np.hypot(xx, yy) < 0.72 * W
 
 shadow = core(is_col(mk, (1, 0, 1))) & ~skip
 lit_t = core(is_col(mk, (1, 1, 0))) & ~skip
@@ -83,14 +60,13 @@ for k, (name, h) in enumerate(T.items()):
     c = rgb(h)
     tg = np.stack([c + t * (PLUM - c) for t in ts])
     cls = (near == k) & (d_lit[..., k] <= TOL)
-    # lit terrain: classified one level inside the tolerance, so the +-1 deband dither between two
-    # renders cannot move a pixel across the boundary
+
     lpx = meas[lit_t & (near == k) & (d_lit[..., k] <= TOL - 1)]
     ln = len(lpx)
     lfrac = (np.abs(lpx - c).max(axis=1) <= TOL).mean() if ln else None
     lmean = lpx.mean(0) if ln else None
     lit_ok = ln > 0 and lfrac >= PASS_FRAC and np.abs(lmean - c).max() <= TOL
-    # shadowed terrain
+
     sm = shadow & cls
     spx = meas[sm]
     n = len(spx)
@@ -101,7 +77,7 @@ for k, (name, h) in enumerate(T.items()):
         worst = err.min(axis=1).max()
         mean = spx.mean(0)
         t_est = float(np.clip(np.dot(mean - c, PLUM - c) / np.dot(PLUM - c, PLUM - c), 0, 1))
-        # blend actually applied: shadow mean against the lit mean of the same terrain class
+
         t_own = float(np.dot(mean - lmean, PLUM - lmean) / np.dot(PLUM - lmean, PLUM - lmean)) if ln else None
         mean_ok = np.abs(mean[None] - tg).max(axis=1).min() <= TOL
         ys, xs = np.nonzero(sm)

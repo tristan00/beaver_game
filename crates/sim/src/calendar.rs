@@ -1,6 +1,3 @@
-//! The one calendar every system shares: a 360-day year of four 90-day seasons, starting with
-//! spring on day 0. Water, ecology, events, ageing, tech and the interface all read it from here.
-
 pub const SEASON_DAYS: f64 = 90.0;
 pub const YEAR_DAYS: f64 = 4.0 * SEASON_DAYS;
 
@@ -15,7 +12,6 @@ pub enum Season {
 impl Season {
     pub const ALL: [Season; 4] = [Season::Spring, Season::Summer, Season::Autumn, Season::Winter];
 
-    /// Season at `time_days` (0 = first day of spring, year 1).
     pub fn at(time_days: f64) -> Season {
         Season::ALL[((time_days / SEASON_DAYS).floor() as i64).rem_euclid(4) as usize]
     }
@@ -34,7 +30,6 @@ impl Season {
     }
 }
 
-/// A calendar date: `year` and `day` (within the season) are 1-based.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Date {
     pub year: u32,
@@ -51,17 +46,14 @@ impl Date {
     }
 }
 
-/// Day within the year, `0..YEAR_DAYS`.
 pub fn day_of_year(time_days: f64) -> f64 {
     time_days.rem_euclid(YEAR_DAYS)
 }
 
-/// Fraction of the year elapsed, `0..1`.
 pub fn year_phase(time_days: f64) -> f32 {
     (day_of_year(time_days) / YEAR_DAYS) as f32
 }
 
-/// Days from `time_days` until the next start of `season` (0 if it starts right now).
 pub fn days_until(time_days: f64, season: Season) -> f64 {
     let start = season as usize as f64 * SEASON_DAYS;
     (start - day_of_year(time_days)).rem_euclid(YEAR_DAYS)

@@ -1,23 +1,16 @@
-//! Beaver society layered on `colony::Colony` (owner: `society`): mood terms, join requests,
-//! work-speed from mood. Births, ageing and skills stay in `colony.rs`.
-
 use crate::colony::{BeaverId, Colony};
 use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUEST_CHANCE_PER_DAY};
-/// Days a join request waits for an answer before the wanderer moves on.
 pub const JOIN_EXPIRES_DAYS: f64 = 12.0;
-/// Stored food per head (days of an adult's hunger: 15 days) below which nobody asks to join.
 pub const JOIN_MIN_FOOD_PER_HEAD: f32 = 15.0 * crate::tuning::colony::HUNGER_PER_DAY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
 
-/// A wandering beaver asking to join; needs the player's answer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JoinRequest {
     pub id: RequestId,
     pub name: String,
     pub adult: bool,
-    /// Map cell where the stranger waits (events and alerts point here).
     pub at: crate::water::Cell,
     pub arrived_day: f64,
 }
@@ -31,11 +24,9 @@ pub enum Answer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SocietyError {
     NoSuchRequest,
-    /// The colony could not take the beaver in (the message says why); the request stays open.
     Colony(String),
 }
 
-/// One term of a mood or work-speed breakdown, shown on hover.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Factor {
     pub label: &'static str,
@@ -54,8 +45,6 @@ impl Society {
         &self.requests
     }
 
-    /// Answers a request. Accept adds the beaver to a family via `Colony::admit_wanderer` (on failure the
-    /// request stays open and the error is returned); turn away removes the request and adds nobody.
     pub fn answer(&mut self, id: RequestId, a: Answer, colony: &mut Colony) -> Result<(), SocietyError> {
         let i = self.requests.iter().position(|r| r.id == id).ok_or(SocietyError::NoSuchRequest)?;
         if a == Answer::Accept {
@@ -65,8 +54,6 @@ impl Society {
         Ok(())
     }
 
-    /// Raises a request now (used by `step`; also lets callers stage one). Errors if the colony has no lodge to
-    /// point at.
     pub fn raise(&mut self, colony: &Colony, adult: bool, sim_time: f64) -> Result<RequestId, SocietyError> {
         let at = colony.lodges.first().map(|l| (l.pos.0.round() as usize, l.pos.1.round() as usize));
         let at = at.ok_or_else(|| SocietyError::Colony("colony has no lodge".into()))?;
@@ -77,14 +64,11 @@ impl Society {
         Ok(id)
     }
 
-    /// Wanderers arrive now and then while a colony is founded and fewer than `JOIN_MAX_PENDING` wait.
     pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &Colony) {
-        // A request nobody answers is withdrawn after a while.
         self.requests.retain(|r| sim_time - r.arrived_day < JOIN_EXPIRES_DAYS);
         if !colony.is_founded() || colony.is_collapsed() || self.requests.len() >= JOIN_MAX_PENDING {
             return;
         }
-        // Wanderers keep away from a colony that cannot feed them.
         if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
             return;
         }
@@ -94,7 +78,6 @@ impl Society {
         }
     }
 
-    /// splitmix64, uniform in `0..1`; the stream depends only on how often it was asked.
     fn unit(&mut self) -> f32 {
         self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.rng;
@@ -104,13 +87,10 @@ impl Society {
     }
 }
 
-/// Mood split into terms whose sum is `Beaver::mood`. (`society` task.)
 pub fn mood_factors(_colony: &crate::colony::Colony, _who: BeaverId) -> Vec<Factor> {
     Vec::new()
 }
 
-/// Work-speed multiplier from mood: `WORK_MOOD_BASE + WORK_MOOD_SCALE * mood` (0.7 at mood 0, 1.0 at mood 1).
-/// The colony's work output and the agents' work rates both use this one factor.
 pub fn work_speed(mood: f32) -> f32 {
     use crate::tuning::colony::{WORK_MOOD_BASE, WORK_MOOD_SCALE};
     WORK_MOOD_BASE + WORK_MOOD_SCALE * mood.clamp(0.0, 1.0)
@@ -146,7 +126,7 @@ mod tests {
     #[test]
     fn requests_arrive_during_steps_and_are_capped() {
         let mut c = founded();
-        c.food = 1000.0; // wanderers only come to a colony with food to spare
+        c.food = 1000.0;
         let mut s = Society::default();
         let (mut most, mut arrived) = (0, 0);
         for d in 0..2000 {
@@ -157,11 +137,9 @@ mod tests {
         }
         assert!(arrived > 0, "wanderers came");
         assert!(most <= JOIN_MAX_PENDING, "never more than {JOIN_MAX_PENDING} wait");
-        // Unanswered requests are withdrawn after JOIN_EXPIRES_DAYS.
         let at = s.pending().iter().map(|r| r.arrived_day).fold(f64::MAX, f64::min);
         s.step(1.0, at + JOIN_EXPIRES_DAYS + 1.0, &c);
         assert!(s.pending().iter().all(|r| r.arrived_day > at), "old requests expire");
-        // A hungry colony gets no wanderers.
         c.food = 0.0;
         let mut hungry = Society::default();
         for d in 0..2000 {

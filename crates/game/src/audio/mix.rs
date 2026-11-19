@@ -1,8 +1,5 @@
-//! Mixing logic (pure std, no Bevy): turns season, time of day and what the camera is near
-//! into per-layer volumes. Everything here is deterministic and unit-tested.
 use std::f32::consts::TAU;
 
-/// Length of one in-game year in sim days (the sim has no calendar yet; this is the audio's own).
 pub const YEAR_DAYS: f64 = sim::calendar::YEAR_DAYS;
 
 pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
@@ -19,7 +16,6 @@ pub enum Season {
 }
 
 impl Season {
-    /// `phase` is the year fraction in 0..1 (spring first).
     pub fn from_phase(phase: f32) -> Season {
         match (phase.rem_euclid(1.0) * 4.0) as u32 {
             0 => Season::Spring,
@@ -30,20 +26,17 @@ impl Season {
     }
 }
 
-/// Year fraction (0..1) for a sim time in days.
 pub fn year_phase(time_days: f64) -> f32 {
     (time_days / YEAR_DAYS).rem_euclid(1.0) as f32
 }
 
-/// 0 at night, 1 in full daylight. The game starts on a bright morning.
 pub fn daylight(time_days: f64) -> f32 {
     let f = (time_days + 0.35).rem_euclid(1.0) as f32;
     smoothstep(-0.1, 0.35, (TAU * (f - 0.25)).sin())
 }
 
-/// How warm the year is: 1 mid-summer, 0 mid-winter, smooth in between.
 pub fn warmth(phase: f32) -> f32 {
-    const ANCHORS: [f32; 4] = [0.65, 1.0, 0.45, 0.0]; // mid spring, summer, autumn, winter
+    const ANCHORS: [f32; 4] = [0.65, 1.0, 0.45, 0.0];
     let mut x = phase.rem_euclid(1.0) * 4.0 - 0.5;
     if x < 0.0 {
         x += 4.0;
@@ -54,7 +47,6 @@ pub fn warmth(phase: f32) -> f32 {
     ANCHORS[i] + (ANCHORS[(i + 1) % 4] - ANCHORS[i]) * s
 }
 
-/// How much of each kind of place is around the camera, each 0..=1.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Surroundings {
     pub water: f32,
@@ -63,17 +55,14 @@ pub struct Surroundings {
     pub work: f32,
 }
 
-/// Everything the mixer needs, produced by the adapter from sim and camera state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Snapshot {
     pub year_phase: f32,
     pub daylight: f32,
     pub place: Surroundings,
-    /// 0 camera close to the ground, 1 camera far away (detail sounds fade with distance).
     pub zoom: f32,
 }
 
-/// User volume controls, each 0..=1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeSettings {
     pub master: f32,
@@ -95,7 +84,6 @@ impl VolumeSettings {
     }
 }
 
-/// Target volume (0..=1) of every sound layer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerVolumes {
     pub water: f32,
@@ -129,7 +117,6 @@ impl LayerVolumes {
     };
 }
 
-/// Season and place to layer volumes.
 pub fn layer_volumes(s: &Snapshot) -> LayerVolumes {
     let c = |v: f32| v.clamp(0.0, 1.0);
     let p = s.place;
@@ -139,7 +126,6 @@ pub fn layer_volumes(s: &Snapshot) -> LayerVolumes {
     let warm = warmth(s.year_phase);
     let chill = 1.0 - smoothstep(0.0, 0.4, warm);
     let frozen = chill * chill;
-    // Detail sounds fade as the camera pulls away; the broad beds barely do.
     let detail = 1.0 - 0.6 * c(s.zoom);
     let bed = 1.0 - 0.25 * c(s.zoom);
 
@@ -171,26 +157,20 @@ pub fn layer_volumes(s: &Snapshot) -> LayerVolumes {
     }
 }
 
-// ---- Adapter: how the mixer reads the world ------------------------------------------------
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cell {
     pub water_depth: f32,
     pub vegetation: f32,
 }
 
-/// The small adapter the soundscape reads; implemented for the real sim and for stub data.
 pub trait AudioWorld {
     fn time_days(&self) -> f64;
-    /// Cell under world position (x, z); `None` off the map.
     fn cell(&self, x: f32, z: f32) -> Option<Cell>;
-    /// World (x, z) of places where beavers are working (felling, building).
     fn work_sites(&self) -> &[(f32, f32)];
 }
 
-/// Samples the world around (cx, cz) within `radius` to see what the camera is near.
 pub fn surroundings(world: &dyn AudioWorld, cx: f32, cz: f32, radius: f32) -> Surroundings {
-    const N: i32 = 4; // samples per side of centre: a 9x9 grid
+    const N: i32 = 4;
     let radius = radius.max(1.0);
     let step = radius / N as f32;
     let (mut total, mut water, mut forest, mut wet) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
@@ -238,7 +218,6 @@ pub fn surroundings(world: &dyn AudioWorld, cx: f32, cz: f32, radius: f32) -> Su
     }
 }
 
-/// Builds the mixer input from a world and a camera.
 pub fn snapshot(world: &dyn AudioWorld, cam_x: f32, cam_z: f32, cam_distance: f32) -> Snapshot {
     let t = world.time_days();
     let radius = (cam_distance * 0.5).clamp(10.0, 60.0);
@@ -250,8 +229,7 @@ pub fn snapshot(world: &dyn AudioWorld, cam_x: f32, cam_z: f32, cam_distance: f3
     }
 }
 
-#[allow(dead_code)] // used by tests and the audio_dump example
-/// Stub data: a round pond with a marshy rim, a forest patch and optional work sites.
+#[allow(dead_code)]
 pub struct StubWorld {
     pub days: f64,
     pub pond: Option<(f32, f32, f32)>,

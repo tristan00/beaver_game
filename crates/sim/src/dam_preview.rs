@@ -1,28 +1,14 @@
-//! Dam preview (owner: `dam`): what a candidate dam would do, as a pure function of the state.
-//!
-//! Contract: `preview(sim, cells, height)` never mutates `sim`. It returns `None` when the cells
-//! are not a valid dam line (empty, out of bounds, duplicated, or `height` not finite and > 0).
-//! The pond is the steady one from `water::preview_dam`; this adds what the player must weigh:
-//! trees and buildings lost, material cost, the push of the river on the dam and the fill time.
-
 use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::resources::ResourceKind;
 use crate::water::{preview_dam_heights, Cell};
 use std::collections::HashSet;
 
-/// Dam cells one catalogue cost buys (a standard six-cell span); cost scales linearly with length.
-pub const DAM_SPAN_CELLS: f32 = 6.0;
+pub const DAM_SPAN_CELLS: f32 = 20.0;
 
-/// Height of the dam a `PlaceSite { kind: Dam }` command builds, above terrain.
 pub const DEFAULT_HEIGHT: f32 = 1.0;
-/// Tallest dam beavers can build, above the ground under it.
 pub const MAX_DAM_HEIGHT: f32 = 3.0;
-/// Materials per dam cell for each unit of height above the first: a tall dam is packed with mud
-/// (the first unit is sticks and logs only, the catalogue cost per cell).
 pub const UPPER_PER_UNIT: [Amount; 3] = [(Good::Logs, 1.5), (Good::Sticks, 2.5), (Good::Mud, 3.0)];
 
-/// Units of new dam on `cell` to bring it to `h` above terrain: (first unit, units above it).
-/// What the cell already has counts at its integrity, so repairing a worn dam costs too.
 pub fn build_units(sim: &crate::SimState, cell: Cell, h: f32) -> (f32, f32) {
     let have = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0)
         * sim.water.dam_integrity.get(cell.0, cell.1).copied().unwrap_or(0.0);
@@ -31,7 +17,6 @@ pub fn build_units(sim: &crate::SimState, cell: Cell, h: f32) -> (f32, f32) {
     (base, upper)
 }
 
-/// Materials and builder work to bring each cell to its height (see `build_units`).
 pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<Amount>, f32) {
     let (mut base, mut upper) = (0.0, 0.0);
     for (&c, &h) in cells.iter().zip(heights) {
@@ -50,9 +35,6 @@ pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<
     (cost, BuildingKind::Dam.spec().work * (base + upper) / DAM_SPAN_CELLS)
 }
 
-/// Extends a dam over the places where water would get round it (`DamPreview::spill_at`), each
-/// added cell built to the dam's crest, until it holds or `max_cells` is reached. Returns the
-/// longer line, its heights and its preview; `None` if the line is not valid or cannot be made to hold.
 pub fn extend_to_hold(sim: &crate::SimState, cells: &[Cell], heights: &[f32], max_cells: usize) -> Option<(Vec<Cell>, Vec<f32>, DamPreview)> {
     let (mut cells, mut heights) = (cells.to_vec(), heights.to_vec());
     let mut crest = None;
@@ -69,8 +51,6 @@ pub fn extend_to_hold(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ma
     }
 }
 
-/// Heights above terrain that bring `cells` up to a crest at world height `crest`; cells already
-/// at or above it are left out.
 pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cell>, Vec<f32>) {
     cells
         .iter()
@@ -82,7 +62,6 @@ pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cel
         .unzip()
 }
 
-/// Cells a dam placed at `pos` (top-left of the catalogue footprint) spans.
 pub fn spot_cells(pos: Cell) -> Vec<Cell> {
     let (w, h) = BuildingKind::Dam.spec().footprint;
     (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).collect()
@@ -90,60 +69,38 @@ pub fn spot_cells(pos: Cell) -> Vec<Cell> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamPreview {
-    /// Water surface the pond fills to (the lowest crest of the dam), in world units.
     pub level: f32,
-    /// Rise of the pond surface above the current water surface at the dam, in world units.
     pub rise: f32,
-    /// Cells that would be under water afterwards, sorted by index (y, then x).
     pub flooded: Vec<Cell>,
-    /// Standing trees on flooded cells.
     pub flooded_trees: usize,
-    /// Buildings (finished or under construction) with a footprint cell flooded.
     pub flooded_buildings: Vec<BuildingId>,
-    /// Materials to build (or raise, or repair) the dam to this height (`cost_for`).
     pub cost: Vec<Amount>,
-    /// Lowest crest of the dam, world height: what it could hold back if the valley were closed.
     pub crest: f32,
-    /// Where water gets round the dam below its crest (extend the dam over it); `None` if it holds.
     pub spill_at: Option<Cell>,
-    /// Inflow pushing on the dam, water units per day (main river above tributary): the sum of
-    /// the current seasonal rates of every spring/source whose water drains to the dam.
     pub pressure: f32,
-    /// Days for the pond to reach `level` at the current inflow; 0 if it already holds that much
-    /// water, `f32::INFINITY` if nothing flows in. Ignores rain, evaporation and seepage.
     pub fill_days: f32,
-    /// Water that reaches the pond per day as the rivers run now: `pressure` less what the wet
-    /// ground draining to the dam (outside the pond) loses to evaporation and seepage.
     pub inflow: f32,
-    /// What the full pond would lose per day to evaporation and seepage (its cells the water
-    /// table does not keep).
     pub pond_loss: f32,
 }
 
 impl DamPreview {
-    /// Whether the river brings the full pond at least `margin` times what it loses, so it fills
-    /// and stays full (as the season stands).
     pub fn fills(&self, margin: f32) -> bool {
         self.inflow >= margin * self.pond_loss
     }
 }
 
-/// How many standard spans a dam of `n` cells is (the cost and labour multiplier).
 pub fn length_factor(n: usize) -> f32 {
     n as f32 / DAM_SPAN_CELLS
 }
 
-/// Cost of a dam of `n` cells.
 pub fn dam_cost(n: usize) -> Vec<Amount> {
     BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * length_factor(n))).collect()
 }
 
-/// Evaluates a dam of `height` on `cells`; `None` if the cells are not a valid dam line.
 pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<DamPreview> {
     preview_heights(sim, cells, &vec![height; cells.len()])
 }
 
-/// `preview` with a height per cell.
 pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<DamPreview> {
     let unique: HashSet<&Cell> = cells.iter().collect();
     if unique.len() != cells.len() || heights.len() != cells.len() {
@@ -159,7 +116,6 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     let flooded_buildings = sim.buildings.buildings.iter()
         .filter(|b| b.cells().any(|c| flooded_set.contains(&c))).map(|b| b.id).collect();
 
-    // Current surface at the dam cell that sets the level (lowest crest).
     let terrain = sim.height.as_slice();
     let (water, dams) = (sim.water.depth.as_slice(), sim.water.dam_height.as_slice());
     let by_cell: std::collections::HashMap<Cell, f32> = cells.iter().copied().zip(heights.iter().copied()).collect();
@@ -167,7 +123,6 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     let low = cells.iter().min_by(|a, b| crest(a).total_cmp(&crest(b)))?;
     let rise = (pond.level - (terrain[idx(low)] + dams[idx(low)] + water[idx(low)])).max(0.0);
 
-    // Catchment: cells whose steepest descent reaches the dam, plus the pond itself.
     let neighbours = |i: usize| {
         let (x, y) = (i % w, i / w);
         [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)]
@@ -191,8 +146,6 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     let pressure: f32 = sim.water.sources.iter().filter(|s| seen[s.y * w + s.x])
         .map(|s| s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0))).sum();
 
-    // At steady state what reaches the pond is what the sources give less what the wet ground
-    // on the way loses; the full pond then loses the same on each of its cells.
     let cfg = &sim.water.config;
     let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
     let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * season.evap_mult() * (1.0 - ice[i]) + cfg.seepage };
@@ -205,12 +158,8 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     let inflow = (pressure - lost_on_way).max(0.0);
     let pond_loss: f32 = pond.flooded_cells.iter().map(idx).map(loss_at).sum();
 
-    // Water still missing from the pond.
     let missing: f32 = pond.flooded_cells.iter().map(idx)
         .map(|i| (pond.level - terrain[i] - dams[i] - water[i]).max(0.0)).sum();
-    // While it fills the pond loses water on the ground already under water: about half its full
-    // loss on average (it spreads as it rises). If the full pond loses as much as reaches it, it
-    // never fills.
     let net = inflow - 0.5 * pond_loss;
     let fill_days = if missing <= 0.0 { 0.0 } else if inflow > pond_loss && net > 0.0 { missing / net } else { f32::INFINITY };
 
@@ -237,7 +186,6 @@ mod tests {
     use crate::water::{Source, Water, WaterConfig};
     use crate::SimState;
 
-    /// Dry valley sloping toward +x with rising sides, no seeded water, no climate losses.
     fn valley() -> SimState {
         let mut s = SimState::new(1);
         let n = s.height.width();
@@ -264,8 +212,8 @@ mod tests {
         let mut s = valley();
         let (tree_cells, b_cell) = ([(35, 64), (37, 66), (33, 63)], (34, 64));
         for c in tree_cells { s.resources.add(ResourceKind::Tree, c, 1.0); }
-        s.resources.add(ResourceKind::Tree, (60, 64), 1.0); // downstream: dry
-        s.resources.add(ResourceKind::Tree, (35, 120), 1.0); // too high up the bank: dry
+        s.resources.add(ResourceKind::Tree, (60, 64), 1.0);
+        s.resources.add(ResourceKind::Tree, (35, 120), 1.0);
         s.buildings.buildings.push(Building {
             id: BuildingId(7), kind: BuildingKind::Burrow, pos: b_cell, status: Status::Complete, recipe: None, output: 0.0,
         });
@@ -276,7 +224,6 @@ mod tests {
         let lowest = row().iter().map(|&(x, y)| s.height.get(x, y).unwrap() + 2.0).fold(f32::INFINITY, f32::min);
         assert!((p.level - lowest).abs() < 0.05, "level {}", p.level);
 
-        // Exactly the upstream (x < 40) cells whose bed is below the crest.
         let mut want: Vec<Cell> = (0..40).flat_map(|x| (0..128).map(move |y| (x, y)))
             .filter(|&(x, y)| *s.height.get(x, y).unwrap() < p.level).collect();
         want.sort_by_key(|&(x, y)| (y, x));
@@ -307,8 +254,6 @@ mod tests {
         assert!(preview(&s, &[(40, 1), (40, 1)], 1.0).is_none());
     }
 
-    /// Main valley along y = 30 flowing toward +x; a tributary valley along x = 90 flowing toward
-    /// -y joins it at (90, 30). Walls rise 0.5 per cell either side of each channel.
     fn junction() -> SimState {
         let mut s = valley();
         let n = s.height.width();
@@ -325,9 +270,9 @@ mod tests {
     #[test]
     fn main_river_pushes_harder_than_a_tributary() {
         let mut s = junction();
-        s.water.sources.push(src(70, 30, 2.0)); // main river spring
-        s.water.sources.push(src(90, 80, 0.5)); // tributary spring
-        let main_cells: Vec<Cell> = (10..51).map(|y| (110, y)).collect(); // below the junction
+        s.water.sources.push(src(70, 30, 2.0));
+        s.water.sources.push(src(90, 80, 0.5));
+        let main_cells: Vec<Cell> = (10..51).map(|y| (110, y)).collect();
         let trib_cells: Vec<Cell> = (85..96).map(|x| (x, 60)).collect();
         let main = preview(&s, &main_cells, 2.0).unwrap();
         let trib = preview(&s, &trib_cells, 2.0).unwrap();
@@ -358,7 +303,6 @@ mod tests {
         let outside = (0..w * w).map(|i| (i % w, i / w))
             .filter(|&(x, y)| *s.water.depth.get(x, y).unwrap() > 0.02 && !s.water.has_dam(x, y))
             .filter(|&(x, y)| *s.height.get(x, y).unwrap() < p.level && !p.flooded.contains(&(x, y))).count();
-        // (The trickle of the stream feeding the pond lies above the level and is not flooding.)
         assert_eq!(outside, 0, "water ponded outside the previewed cells");
     }
 }

@@ -1,13 +1,3 @@
-//! Retained interface layer (spec F1, F4).
-//!
-//! Panels describe what they show as a small tree of [`VNode`]s each time they refresh. The tree
-//! is reconciled against what is already on screen: when the shape is unchanged (same kinds of
-//! nodes in the same places) only the components that differ are written, so entities, hover and
-//! press state survive; only a change of shape respawns a panel's children.
-//!
-//! Tooltips ([`Tip`]) hang off any node. They open after a short hover (at once with Alt), follow
-//! the breakdown format (title, then signed rows), can nest (a row with its own tip), and freeze
-//! when the pointer rests on the source for 1.5 s or on a middle click; a frozen tip shows a pin.
 #![allow(deprecated)]
 use super::{Blocks, HudAction};
 use crate::icons::{icon_node, Icon, Icons};
@@ -15,8 +5,6 @@ use bevy::prelude::*;
 use bevy::text::{FontSize, FontWeight};
 use bevy::ui::{FocusPolicy, RelativeCursorPosition};
 use bevy::window::PrimaryWindow;
-
-// ───────────────────────────── palette (the game's own, not the page's) ─────────────────────────────
 
 pub const PANEL: Color = Color::srgba(0.106, 0.09, 0.075, 0.94);
 pub const TIMBER: Color = Color::srgb(0.59, 0.41, 0.24);
@@ -27,22 +15,15 @@ pub const LINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
 pub const GOOD: Color = Color::srgb(0.39, 0.79, 0.55);
 pub const WARN: Color = Color::srgb(0.94, 0.75, 0.29);
 pub const BAD: Color = Color::srgb(0.94, 0.45, 0.38);
-/// Water only: never a button, never a status.
 pub const WATER: Color = Color::srgb(0.29, 0.64, 0.87);
-/// Fix and commit buttons only.
 pub const ACCENT: Color = Color::srgb(0.91, 0.52, 0.23);
 pub const ON_ACCENT: Color = Color::srgb(0.13, 0.09, 0.05);
-/// Selected: tile, building, tool, view.
 pub const SELECT: Color = Color::srgb(0.97, 0.95, 0.9);
 
 pub fn font(size: f32, bold: bool) -> TextFont {
     TextFont { font_size: FontSize::Px(size), weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL }, ..default() }
 }
 
-// ───────────────────────────── tooltips ─────────────────────────────
-
-/// One row of a tooltip: optional icon, a short label, a value, and optionally a nested tip, a
-/// place to jump to and a key binding drawn as a keycap.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TipLine {
     pub icon: Option<(Icon, Color)>,
@@ -64,7 +45,6 @@ impl Tip {
     pub fn titled(icon: Option<(Icon, Color)>, title: impl Into<String>) -> Tip {
         Tip { title: Some((icon, title.into(), String::new())), lines: Vec::new() }
     }
-    /// A one-line tip: just a name (and a key).
     pub fn name(s: impl Into<String>) -> Tip {
         Tip::titled(None, s)
     }
@@ -114,8 +94,6 @@ impl TipLine {
     }
 }
 
-// ───────────────────────────── virtual nodes ─────────────────────────────
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Box,
@@ -130,16 +108,12 @@ impl Kind {
     }
 }
 
-/// Extra markers some nodes carry for systems outside the reconciler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tag {
     #[default]
     None,
     Minimap,
-    /// Root of tooltip layer `n` (cursor-over checks).
     TipLayer(u8),
-    /// A text box with the keyboard.
-    Search,
 }
 
 #[derive(Clone, Debug)]
@@ -150,10 +124,8 @@ pub struct VNode {
     pub kind: Kind,
     pub action: Option<HudAction>,
     pub tip: Option<Tip>,
-    /// Swallows the pointer (panels, buttons and anything with a tip).
     pub solid: bool,
     pub tag: Tag,
-    /// Tooltip depth of the layer this node is drawn in (0 = the HUD itself).
     pub depth: u8,
     pub children: Vec<VNode>,
 }
@@ -210,7 +182,6 @@ impl VNode {
     }
 }
 
-/// Builder the panel functions write into.
 #[derive(Default)]
 pub struct Ui {
     pub nodes: Vec<VNode>,
@@ -229,7 +200,6 @@ impl Ui {
         self.nodes.push(v);
         self.nodes.last_mut().unwrap()
     }
-    /// A container with children built by `f`.
     pub fn node(&mut self, node: Node, f: impl FnOnce(&mut Ui)) -> &mut VNode {
         let mut inner = Ui::default();
         f(&mut inner);
@@ -256,7 +226,6 @@ impl Ui {
         v.kind = Kind::Text { s: s.into(), size, color, bold: true };
         self.add(v)
     }
-    /// A number set in tabular style (bold, right aligned in a fixed width when `w` > 0).
     pub fn num(&mut self, s: impl Into<String>, size: f32, color: Color, w: f32) -> &mut VNode {
         if w <= 0.0 {
             return self.bold(s, size, color);
@@ -281,8 +250,6 @@ impl Ui {
         v.bg = c;
         self.add(v)
     }
-    /// A square icon button. `on` draws the selection outline; `fill` is the background
-    /// (`ACCENT` for fix and commit buttons only).
     pub fn icon_button(&mut self, icon: Icon, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
         let tint = if fill == ACCENT { ON_ACCENT } else { INK };
         let pad = (px * 0.3).round();
@@ -293,7 +260,6 @@ impl Ui {
         v.border = Some(BorderColor::all(if on { SELECT } else { LINE }));
         v.action(action)
     }
-    /// An icon button with a short label or number after the icon (≤ 1 word, spec F5).
     pub fn icon_label_button(&mut self, icon: Icon, label: impl Into<String>, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
         let tint = if fill == ACCENT { ON_ACCENT } else { INK };
         let label = label.into();
@@ -305,18 +271,6 @@ impl Ui {
         v.border = Some(BorderColor::all(if on { SELECT } else { LINE }));
         v.action(action)
     }
-    /// A text button (one word, from Appendix A).
-    pub fn word_button(&mut self, label: impl Into<String>, action: HudAction, fill: Color, on: bool) -> &mut VNode {
-        let tint = if fill == ACCENT { ON_ACCENT } else { INK };
-        let label = label.into();
-        let v = self.node(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..button_node(0.0, on) }, |u| {
-            u.bold(label, 12.5, tint);
-        });
-        v.bg = fill;
-        v.border = Some(BorderColor::all(if on { SELECT } else { LINE }));
-        v.action(action)
-    }
-    /// A keycap: the key's name in a small outlined box.
     pub fn keycap(&mut self, k: impl Into<String>) -> &mut VNode {
         let k = k.into();
         let v = self.node(
@@ -329,13 +283,11 @@ impl Ui {
         v.bg = Color::srgba(1.0, 1.0, 1.0, 0.05);
         v
     }
-    /// A thin horizontal rule between sections (instead of a header).
     pub fn rule(&mut self) -> &mut VNode {
         let v = self.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), margin: UiRect::vertical(Val::Px(2.0)), ..default() }));
         v.bg = LINE;
         v
     }
-    /// A horizontal bar `frac` full.
     pub fn bar(&mut self, frac: f32, w: f32, h: f32, fill: Color) -> &mut VNode {
         let f = frac.clamp(0.0, 1.0);
         let v = self.node(Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(2.0)), overflow: Overflow::clip(), ..default() }, |u| {
@@ -358,7 +310,6 @@ pub fn button_node(pad: f32, on: bool) -> Node {
     }
 }
 
-/// A floating panel's look: dark warm glass, timber top edge.
 pub fn panel(v: &mut VNode) -> &mut VNode {
     v.bg = PANEL;
     v.border = Some(BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.06)) });
@@ -371,9 +322,6 @@ pub fn panel(v: &mut VNode) -> &mut VNode {
     v
 }
 
-// ───────────────────────────── reconciling ─────────────────────────────
-
-/// The tip a node carries, with the tooltip layer it is drawn in.
 #[derive(Component, Clone)]
 pub struct TipComp {
     pub tip: Tip,
@@ -383,7 +331,6 @@ pub struct TipComp {
 #[derive(Component)]
 pub struct TagComp(pub Tag);
 
-/// What a host currently shows: the last tree and the entities that draw it.
 #[derive(Component, Default)]
 pub struct Mounted {
     tree: Vec<VNode>,
@@ -516,7 +463,6 @@ fn update_tree(cmd: &mut Commands, icons: &Icons, old: &VNode, new: &VNode, m: &
     }
 }
 
-/// Shows `tree` under `host`, reusing what is there when the shape allows.
 pub fn reconcile(cmd: &mut Commands, icons: &Icons, host: Entity, mounted: &mut Mounted, mut tree: Vec<VNode>, depth: u8) {
     for v in &mut tree {
         v.set_depth(depth);
@@ -539,7 +485,6 @@ pub fn reconcile(cmd: &mut Commands, icons: &Icons, host: Entity, mounted: &mut 
     mounted.tree = tree;
 }
 
-/// Empties a host.
 pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
     if !mounted.tree.is_empty() {
         cmd.entity(host).despawn_related::<Children>();
@@ -548,24 +493,6 @@ pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
     }
 }
 
-/// Every word the tree would show (for the text-budget test).
-pub fn words(tree: &[VNode]) -> Vec<String> {
-    let mut out = Vec::new();
-    fn walk(v: &VNode, out: &mut Vec<String>) {
-        if let Kind::Text { s, .. } = &v.kind {
-            out.push(s.clone());
-        }
-        for c in &v.children {
-            walk(c, out);
-        }
-    }
-    for v in tree {
-        walk(v, &mut out);
-    }
-    out
-}
-
-// ───────────────────────────── tooltip layers ─────────────────────────────
 
 pub const TIP_LAYERS: usize = 3;
 const OPEN_SECS: f32 = 0.3;
@@ -573,7 +500,6 @@ const FREEZE_SECS: f32 = 1.5;
 const GRACE_SECS: f32 = 0.25;
 const FROZEN_GRACE_SECS: f32 = 0.7;
 
-/// Where an open tip came from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TipSrc {
     Ui(Entity),
@@ -587,7 +513,6 @@ pub struct Layer {
     pub pos: Vec2,
     pub frozen: bool,
     pub opened: f32,
-    /// Last time the pointer was over the source, the layer or a deeper layer.
     pub last_held: f32,
 }
 
@@ -595,7 +520,6 @@ pub struct Layer {
 pub struct Tips {
     pub layers: Vec<Layer>,
     pending: Option<(TipSrc, u8, Tip, f32)>,
-    /// A world thing under the pointer, set by the world hover system: (key, tip).
     pub world: Option<(u64, Tip)>,
     pub sizes: [Vec2; TIP_LAYERS],
 }
@@ -620,7 +544,6 @@ fn cursor_logical(windows: &Query<&Window, With<PrimaryWindow>>, scale: f32) -> 
     windows.single().ok()?.cursor_position().map(|p| p / scale.max(0.01))
 }
 
-/// Opens, keeps, freezes and closes tooltip layers.
 #[allow(clippy::too_many_arguments)]
 pub fn tip_logic(
     time: Res<Time>,
@@ -634,13 +557,11 @@ pub fn tip_logic(
     mut tips: ResMut<Tips>,
 ) {
     let now = time.elapsed_secs();
-    // Without a cursor (outside the window, scripted screenshots) nothing opens; frozen tips stay.
     let Some(cursor) = cursor_logical(&windows, ui_scale.0) else {
         tips.layers.retain(|l| l.frozen);
         return;
     };
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    // What the pointer is on: a tipped node (deepest layer wins), else a world thing.
     let mut on: Option<(TipSrc, u8, Tip)> = None;
     for (e, i, t) in &hovered {
         if *i != Interaction::None && on.as_ref().is_none_or(|o| t.depth > o.1) {
@@ -662,7 +583,6 @@ pub fn tip_logic(
             }
         }
     }
-    // Keep or close, top layer first (a layer is held while a deeper one is held).
     let mut deeper_held = false;
     for k in (0..tips.layers.len()).rev() {
         let src_on = on.as_ref().is_some_and(|o| o.0 == tips.layers[k].src);
@@ -675,7 +595,6 @@ pub fn tip_logic(
             tips.layers[k].frozen = true;
         }
     }
-    // A closed layer takes the ones above it along.
     if let Some(first) = tips.layers.iter().position(|l| now - l.last_held > if l.frozen { FROZEN_GRACE_SECS } else { GRACE_SECS }) {
         tips.layers.truncate(first);
     }
@@ -687,13 +606,11 @@ pub fn tip_logic(
     if keys.just_pressed(KeyCode::Escape) {
         tips.layers.clear();
     }
-    // Open a new layer after a short hover.
     match on {
         Some((src, depth, tip)) => {
             let d = depth as usize;
             let already = tips.layers.get(d).is_some_and(|l| l.src == src);
             if already {
-                // Refresh the content (numbers move) without moving the layer.
                 tips.layers[d].tip = tip;
                 tips.pending = None;
             } else if d <= tips.layers.len() && d < TIP_LAYERS {
@@ -713,7 +630,6 @@ pub fn tip_logic(
     }
 }
 
-/// Draws the open layers, kept inside the window.
 pub fn tip_draw(
     mut commands: Commands,
     icons: Res<Icons>,
@@ -724,7 +640,6 @@ pub fn tip_draw(
     computed: Query<&ComputedNode>,
 ) {
     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / ui_scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
-    // Measure what was drawn last frame.
     for (_, h, _, _, _, children) in &hosts {
         if let Some(c) = children.and_then(|c| c.first()).and_then(|c| computed.get(*c).ok()) {
             tips.sizes[h.0 as usize] = c.size() * c.inverse_scale_factor();
@@ -767,7 +682,6 @@ fn draw_layer(commands: &mut Commands, icons: &Icons, e: Entity, k: u8, layers: 
     }
 }
 
-/// A tooltip as a tree: title row (icon, name, value, pin when frozen), then rows.
 pub fn tip_tree(t: &Tip, frozen: bool, layer: u8) -> VNode {
     let mut ui = Ui::default();
     ui.col(3.0, |u| {

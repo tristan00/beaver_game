@@ -1,8 +1,3 @@
-//! Renders 20 s stereo WAV mixes of the procedural soundscape without opening a window or an
-//! audio device: a summer pond and a frozen winter pond (both built from stub world data
-//! through the same adapter and mixer the game uses).
-//!
-//! `cargo run -p game --example audio_dump --release [-- OUT_DIR]` (default `target/audio_dump`).
 #![allow(dead_code)]
 mod audio {
     #[path = "../../src/audio/mix.rs"]
@@ -24,8 +19,8 @@ fn write_wav(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()> {
     f.write_all(&(36 + data_len).to_le_bytes())?;
     f.write_all(b"WAVEfmt ")?;
     f.write_all(&16u32.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?; // PCM
-    f.write_all(&2u16.to_le_bytes())?; // stereo
+    f.write_all(&1u16.to_le_bytes())?;
+    f.write_all(&2u16.to_le_bytes())?;
     f.write_all(&SAMPLE_RATE.to_le_bytes())?;
     f.write_all(&(SAMPLE_RATE * 4).to_le_bytes())?;
     f.write_all(&4u16.to_le_bytes())?;
@@ -41,7 +36,6 @@ fn write_wav(path: &std::path::Path, samples: &[f32]) -> std::io::Result<()> {
 fn main() -> std::io::Result<()> {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "target/audio_dump".into()));
     std::fs::create_dir_all(&dir)?;
-    // (file, year fraction, day fraction offset in days, camera distance)
     let scenes = [("summer_pond", 0.375, 0.0, 40.0), ("winter", 0.875, 0.0, 40.0)];
     for (name, year, day, distance) in scenes {
         let world = StubWorld {
@@ -55,7 +49,6 @@ fn main() -> std::io::Result<()> {
         let mix = Mix { layers, settings: VolumeSettings::default() };
         let mut synth = Synth::new(7);
         let mut out = vec![0.0f32; SECONDS * SAMPLE_RATE as usize * 2];
-        // Render in game-sized chunks, as the live stream does.
         for chunk in out.chunks_mut(2048) {
             synth.render(&mix, chunk);
         }

@@ -1,27 +1,3 @@
-"""Choose beaver map windows from fine elevation and export them as game maps.
-
-  python tools/hires_maps.py DATA_DIR OUT_DIR PREVIEW_DIR [region ...]
-
-DATA_DIR holds `hires_fetch.py`'s 4 m grids (DATA_DIR/<region>/dem.npy + dem.json). A map is a
-128 x 128 window of 4 m cells: 512 m a side, about one beaver family's stretch of stream. At that
-scale a stream only flows all year if it drains a real catchment (a few tenths of a square
-kilometre or more), which no 512 m window holds on its own: every river on a map enters from
-upstream across the map edge and leaves downstream across another. So the drainage is routed
-over the whole region (8 m cells), and a window is a good beaver map when:
-
-  * at least two dammable streams enter it from outside (catchments A_MIN..A_MAX km2: big
-    enough to flow, small enough for a beaver to dam; no bigger river crosses it);
-  * the streams run gently (median gradient GRAD_RANGE) and do not hug the map edge;
-  * there is valley floor beside them a beaver can reach (ground a few metres above the stream
-    within a couple of hundred metres), little open water, little steep ground and modest relief;
-  * it is natural ground (ESA WorldCover: almost no cropland or built-up land) with a mix of
-    forest and open land (TREE_RANGE of it under trees).
-
-The best windows of each region (not overlapping) are written as OUT_DIR/<region>_<rank>.map:
-a BEAVERMAP 2 text header (cell size, real coordinates, the inflows as border cell + catchment
-in km2) and 128 x 128 little-endian f32 heights in metres. PREVIEW_DIR gets a hillshade PNG of
-each with the streams and inflows marked.
-"""
 import heapq
 import json
 import math
@@ -33,24 +9,20 @@ import pyproj
 from PIL import Image
 from scipy import ndimage
 
-N = 128                      # map side, cells
-CELL_M = 4.0                 # map cell, metres
-COARSE = 2                   # routing cells are COARSE x COARSE map cells (8 m)
-A_MIN, A_MAX = 0.2, 25.0     # dammable stream catchments, km2
-GRAD_RANGE = (0.002, 0.04)   # median stream gradient, m per m
-MAX_RELIEF = 40.0            # metres
-TREE_RANGE = (0.35, 0.9)     # share of the window under trees
-MAX_FARMED = 0.03            # share of cropland and built-up land
-TOP = int(os.environ.get('MAPS_TOP', 4))                     # windows exported per region
-BASE = 3.0                   # metres added under the lowest cell (room to carve channels)
+N = 128
+CELL_M = 4.0
+COARSE = 2
+A_MIN, A_MAX = 0.2, 25.0
+GRAD_RANGE = (0.002, 0.04)
+MAX_RELIEF = 40.0
+TREE_RANGE = (0.35, 0.9)
+MAX_FARMED = 0.03
+TOP = int(os.environ.get('MAPS_TOP', 4))
+BASE = 3.0
 D8 = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
 
-
 def fill_and_route(h, closed=()):
-    """Priority-flood fill (tiny gradient on flats), D8 flow on the filled surface and flow
-    accumulation in cells. Cells with no data (NaN) are walls; flow to them is not routed. Border
-    cells in `closed` (flat indices) are not outlets: a river enters there from upstream, so the
-    ground beyond is higher and water cannot leave by them."""
+
     rows, cols = h.shape
     closed = set(closed)
     hv = np.where(np.isfinite(h), h, np.inf).ravel()
@@ -79,13 +51,12 @@ def fill_and_route(h, closed=()):
                     done[j] = True
                     v = max(hv[j], e + 1e-4)
                     filled[j] = v
-                    flow[j] = i  # the cell it was reached from drains it (always lower)
+                    flow[j] = i
                     heapq.heappush(pq, (v, j))
-    # Steepest descent where it is defined (keeps routing out of filled pits the flood order chose).
+
     f2 = filled.reshape(rows, cols)
     pad = np.pad(f2, 1, constant_values=np.inf)
-    # (an outlet border cell may also drain off the map: only an inner neighbour lower than it
-    # can take its flow, so `best` starts at zero)
+
     best = np.zeros((rows, cols))
     tgt = flow.reshape(rows, cols).copy()
     yy, xx = np.mgrid[0:rows, 0:cols]
@@ -104,10 +75,8 @@ def fill_and_route(h, closed=()):
             acc[t] += acc[i]
     return filled.reshape(rows, cols), flow, acc.reshape(rows, cols)
 
-
 def height_above_stream(h, filled, flow, stream):
-    """For each cell, the height above and the flow-path distance (cells) to the first stream
-    cell its water reaches ('height above nearest drainage')."""
+
     rows, cols = h.shape
     ref = np.full(rows * cols, -1, np.int64)
     dist = np.full(rows * cols, np.inf)
@@ -124,11 +93,9 @@ def height_above_stream(h, filled, flow, stream):
     hand = np.where(ref >= 0, hv - hv[np.maximum(ref, 0)], np.inf)
     return hand.reshape(rows, cols), dist.reshape(rows, cols)
 
-
 def block_mean(a, k):
     r, c = a.shape[0] // k * k, a.shape[1] // k * k
     return np.nanmean(a[:r, :c].reshape(r // k, k, c // k, k), axis=(1, 3))
-
 
 def scan(rid, data_dir):
     meta = json.load(open(os.path.join(data_dir, rid, 'dem.json')))
@@ -142,8 +109,7 @@ def scan(rid, data_dir):
     filled, flow, acc = fill_and_route(g)
     km2 = acc * cm * cm / 1e6
     stream = (km2 >= A_MIN) & np.isfinite(g)
-    # Streams whose catchment reaches the edge of the downloaded area have an unknown (maybe much
-    # bigger) catchment: windows they cross are not used.
+
     unknown = np.zeros(g.size, bool)
     unknown.reshape(g.shape)[[0, -1], :] = True
     unknown.reshape(g.shape)[:, [0, -1]] = True
@@ -154,13 +120,13 @@ def scan(rid, data_dir):
     hand, hdist = height_above_stream(g, filled, flow, stream)
     gy, gx = np.gradient(np.where(np.isfinite(g), g, np.nanmean(g)), cm)
     slope = np.hypot(gx, gy)
-    # Open water in a lidar model is flat (water surfaces are flattened): big level patches.
+
     flat = slope < 0.002
     lab, nl = ndimage.label(flat)
     sizes = ndimage.sum(flat, lab, range(1, nl + 1)) if nl else []
     water = np.isin(lab, [k + 1 for k, s in enumerate(sizes) if s >= 25]) | ((filled - g) > 0.5)
     rows, cols = g.shape
-    # Stream edges c -> t (flat indices) with their catchment and gradient.
+
     sc = np.flatnonzero(stream.ravel() & (flow >= 0))
     st = flow[sc]
     scy, scx, sty, stx = sc // cols, sc % cols, st // cols, st % cols
@@ -184,7 +150,7 @@ def scan(rid, data_dir):
                 continue
             if enter.sum() < 2 or s_km2[cin].max(initial=0) > A_MAX or s_km2[enter].max(initial=0) > A_MAX:
                 continue
-            # one inflow per stream: crossings next to each other are the same stream
+
             ins = sorted(zip(s_km2[enter], stx[enter], sty[enter]), reverse=True)
             kept = []
             for a, x, y in ins:
@@ -195,7 +161,7 @@ def scan(rid, data_dir):
             leave = cin & ~tin
             if not leave.any():
                 continue
-            # a river that leaves and comes back in would bring its water in twice
+
             back = False
             for t in st[leave]:
                 for _ in range(80):
@@ -213,7 +179,7 @@ def scan(rid, data_dir):
             grad = float(np.median(s_grad[cin])) if cin.any() else 0.0
             if not GRAD_RANGE[0] <= grad <= GRAD_RANGE[1]:
                 continue
-            # streams hugging the edge (away from where they cross it)
+
             ex, ey = scx[inside] - x0, scy[inside] - y0
             edge = np.minimum.reduce([ex, ey, w - 1 - ex, w - 1 - ey]) <= 1
             crossings = [(k[1] - x0, k[2] - y0) for k in kept] + list(zip(stx[leave] - x0, sty[leave] - y0)) + list(zip(scx[leave] - x0, scy[leave] - y0))
@@ -236,11 +202,8 @@ def scan(rid, data_dir):
     cands.sort(key=lambda c: -c[0])
     return meta, dem, cover, cands
 
-
-
 def fine_inflows(win4, coarse_inflows):
-    """Inflows on the 4 m window border: for each coarse crossing, the lowest border cell on the
-    same side within a few cells (the stream's channel), with its catchment."""
+
     out = []
     for a, cx, cy in coarse_inflows:
         x, y = cx * COARSE + COARSE // 2, cy * COARSE + COARSE // 2
@@ -257,29 +220,25 @@ def fine_inflows(win4, coarse_inflows):
             out.append((bx, by, a))
     return out
 
-
-MIN_PATH = 48      # cells a river runs inside the map before it leaves
-MIN_OWN = 24       # cells a second stream runs on its own before it joins another
-STEEP = 0.05       # a river reach steeper than this (m per m) runs as a thin film in the game
-MAX_STEEP = 0.15   # share of the river cells that may be that steep (riffles)...
-MAX_STEEP_RUN = 10 # ...and the longest steep run (cells): a steep creek is no beaver stream
-INFLOW_WALL = 3    # border cells either side of an inflow that are not outlets
-
+MIN_PATH = 48
+MIN_OWN = 24
+STEEP = 0.05
+MAX_STEEP = 0.15
+MAX_STEEP_RUN = 10
+INFLOW_WALL = 3
 
 def closed_cells(inflows):
     out = []
     for x, y, _ in inflows:
-        for k in range(-INFLOW_WALL, INFLOW_WALL + 1):
-            for cx, cy in ((x + k, y), (x, y + k)):
-                if 0 <= cx < N and 0 <= cy < N and (cx in (0, N - 1) or cy in (0, N - 1)):
+        for cy in range(max(0, y - INFLOW_WALL), min(N, y + INFLOW_WALL + 1)):
+            for cx in range(max(0, x - INFLOW_WALL), min(N, x + INFLOW_WALL + 1)):
+                if cx in (0, N - 1) or cy in (0, N - 1):
                     out.append(cy * N + cx)
     return out
 
 
 def game_route(h, closed):
-    """The game's own drainage (`worldgen::fill_depressions`): a priority flood from the open
-    border cells in float32 with a 1 mm step, each cell draining to the cell it was reached from.
-    The window checks use it so a river runs here exactly where it will run in the game."""
+
     n = h.shape[0]
     hv = h.astype(np.float32).ravel()
     surface = hv.copy()
@@ -309,10 +268,8 @@ def game_route(h, closed):
                         heapq.heappush(pq, (float(surface[j]), j))
     return surface.reshape(n, n), flow
 
-
 def river_paths(win, inflows):
-    """Each inflow's river through the window: the cells from its border cell down the game's
-    drainage (inflow edges closed) to where it leaves the map."""
+
     _, flow = game_route(win, closed_cells(inflows))
     paths = []
     for x, y, _ in inflows:
@@ -323,11 +280,8 @@ def river_paths(win, inflows):
         paths.append(path)
     return paths
 
-
 def fine_check(win, inflows):
-    """Whether the rivers really run through the window at 4 m: every inflow's river runs at
-    least MIN_PATH cells before it leaves, and at least two of them run MIN_OWN cells on their own
-    (separate streams, not one stream entering twice)."""
+
     if len(inflows) < 2:
         return False, 'fewer than two inflows'
     paths = river_paths(win, inflows)
@@ -345,7 +299,7 @@ def fine_check(win, inflows):
         seen.update(p)
     if own < 2:
         return False, 'only one separate stream'
-    # how steep the rivers run, over 3 cells (from the filled surface the game's drainage uses)
+
     filled, _ = game_route(win, closed_cells(inflows))
     f = filled.ravel().astype(np.float64)
     steep = total = longest = 0
@@ -362,11 +316,9 @@ def fine_check(win, inflows):
         return False, f'{steep} of {total} river cells steeper than {STEEP:.0%}, longest run {longest}'
     return True, ''
 
-
 def map_heights(win):
-    """A window's heights as the map file holds them (metres above its lowest cell plus BASE)."""
-    return (win - win.min() + BASE).astype('<f4')
 
+    return (win - win.min() + BASE).astype('<f4')
 
 def export(rid, rank, meta, dem, cover, cand, inflows, out_dir, prev_dir, name, place):
     score, y0, x0, info = cand
@@ -389,7 +341,7 @@ def export(rid, rank, meta, dem, cover, cand, inflows, out_dir, prev_dir, name, 
         f.write(('\n'.join(header) + '\n').encode('utf-8'))
         f.write(heights.tobytes())
         f.write(land.tobytes())
-    # Preview: hillshade (forest tinted green), the rivers from the inflows blue, inflows red.
+
     gy, gx = np.gradient(win)
     shade = np.clip(0.6 + (gx - gy) * 0.35, 0, 1)
     rgb = np.dstack([shade * 200 + 30] * 3)
@@ -401,15 +353,14 @@ def export(rid, rank, meta, dem, cover, cand, inflows, out_dir, prev_dir, name, 
     Image.fromarray(rgb.astype(np.uint8)).resize((N * 4, N * 4), Image.NEAREST).save(os.path.join(prev_dir, f'{rid}_{rank}.png'))
     print(f'{rid}_{rank} score={score:.1f} at ({lat:.5f}, {lon:.5f})', {k: v for k, v in info.items() if k != 'inflows'}, 'inflows', [(x, y, round(float(a), 2)) for x, y, a in inflows], flush=True)
 
-
 REGION_NAMES = {
     'algonquin': ('Algonquin Park', 'Ontario, Canada'),
     'algonquin_b': ('Algonquin Park', 'Ontario, Canada'),
     'voyageurs': ('Voyageurs', 'Minnesota, USA'),
     'bavarian': ('Bavarian Forest', 'Bavaria, Germany'),
+    'bavarian_b': ('Bavarian Forest', 'Bavaria, Germany'),
     'telemark': ('Telemark', 'Norway'),
 }
-
 
 def main(data_dir, out_dir, prev_dir, regions):
     os.makedirs(out_dir, exist_ok=True)
@@ -437,7 +388,6 @@ def main(data_dir, out_dir, prev_dir, regions):
             if len(chosen) == TOP:
                 break
         print(f'{rid}: {len(cands)} candidate windows, {rejected} failed the 4 m check, {len(chosen)} exported', flush=True)
-
 
 if __name__ == '__main__':
     main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])

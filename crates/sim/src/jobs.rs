@@ -1,8 +1,3 @@
-//! The player's view of the worker model (spec W2–W5): roles, the Jobs board, headcount, why
-//! beavers are idle, and who a "+" would move. Also the worker commands behind
-//! `Command::AddWorker`, `RemoveWorker`, `AdjustRole` and friends. One job model: a beaver's
-//! role is the role of the slot it fills (or of its gather order); see the `work` module docs.
-
 use crate::agents::{can_fill, is_site, Assignment};
 use crate::buildings::{BuildingId, Good};
 use crate::colony::{BeaverId, Job, Stage};
@@ -11,7 +6,6 @@ use crate::water::Cell;
 use crate::work::{ManagedDuty, Priority, Role};
 use crate::{SimError, SimState};
 
-/// A role on the Jobs board.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RoleKind {
     Forager,
@@ -35,7 +29,6 @@ impl RoleKind {
         RoleKind::Crafter,
         RoleKind::Forester,
     ];
-    /// Default role priority, first = highest.
     pub const DEFAULT_ORDER: [RoleKind; 8] = [
         RoleKind::Builder,
         RoleKind::Forager,
@@ -48,12 +41,8 @@ impl RoleKind {
     ];
 }
 
-/// The role of a slot.
-/// Days of food below which foraging outranks every other role for auto-staffing.
 pub const FOOD_EMERGENCY_DAYS: f32 = 12.0;
 
-/// A role's rank for auto-staffing right now: the player's role order, except that foraging comes
-/// first while food would run out within `FOOD_EMERGENCY_DAYS`.
 pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     let need = crate::hud::food_need_per_day(sim);
     let gain = sim.ledger.in_per_day(crate::buildings::Good::Food);
@@ -62,18 +51,14 @@ pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     if short && role == RoleKind::Forager {
         return 0;
     }
-    // Sites waiting on a raw material the stores cannot cover: its gatherers come before builders,
-    // who would only stand at the site.
     if material_short(sim, role) {
         return 1;
     }
     sim.work.role_rank(role) + 2
 }
 
-/// Logs kept for repairing homes before winter; fewer and loggers come before builders.
 pub const WOOD_RESERVE: f32 = 20.0;
 
-/// Whether open construction sites lack more of what `role` gathers than the stores hold.
 pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
     use crate::buildings::Good;
     let goods: &[Good] = match role {
@@ -83,7 +68,6 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
         RoleKind::Crafter => &[Good::Rope, Good::Baskets, Good::Tools],
         _ => return false,
     };
-    // Homes are repaired with logs: below this reserve the colony is short of wood whatever is built.
     if role == RoleKind::Logger && sim.buildings.stores.amount(Good::Logs) < WOOD_RESERVE {
         return true;
     }
@@ -110,7 +94,6 @@ pub fn role_kind(r: Role) -> RoleKind {
     }
 }
 
-/// The role of gathering `k`.
 pub fn gather_role(k: ResourceKind) -> RoleKind {
     match k {
         ResourceKind::Plant => RoleKind::Forager,
@@ -120,11 +103,9 @@ pub fn gather_role(k: ResourceKind) -> RoleKind {
     }
 }
 
-/// The colony job (skills, experience) a role trains. Elders' study has none.
 pub fn colony_job(r: RoleKind) -> Option<Job> {
     match r {
         RoleKind::Forager => Some(Job::Forager),
-        // Forestry trains the logger's skill and counts as Forest experience.
         RoleKind::Logger | RoleKind::Forester => Some(Job::Logger),
         RoleKind::MudDigger | RoleKind::Quarrier => Some(Job::Digger),
         RoleKind::Builder => Some(Job::Builder),
@@ -133,7 +114,6 @@ pub fn colony_job(r: RoleKind) -> Option<Job> {
     }
 }
 
-/// The role of a gather assignment.
 fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
     match a {
         Assignment::Resource(id) => sim.resources.get(id).map(|r| gather_role(r.kind)),
@@ -143,7 +123,6 @@ fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
     }
 }
 
-/// The role `who` works: its slot's, else its gather order's; `None` when free.
 pub fn role_of(sim: &SimState, who: BeaverId) -> Option<RoleKind> {
     if let Some((_, _, r)) = sim.work.slot_of(who) {
         return Some(role_kind(r));
@@ -151,27 +130,19 @@ pub fn role_of(sim: &SimState, who: BeaverId) -> Option<RoleKind> {
     sim.agents.get(who).and_then(|a| a.assignment).and_then(|a| assignment_role(sim, a))
 }
 
-/// Whether `who` holds a slot or a gather order.
 pub fn is_busy(sim: &SimState, who: BeaverId) -> bool {
     sim.work.slot_of(who).is_some() || sim.agents.get(who).is_some_and(|a| a.assignment.is_some())
 }
 
-// ───────────────────────────── jobs board ─────────────────────────────
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoleRow {
     pub role: RoleKind,
-    /// Beavers working this role: slot workers plus gatherers on an order (a site's material run
-    /// or a direct order), who also count as one slot each.
     pub filled: usize,
     pub slots: usize,
-    /// Position in `Work::role_order` (0 = highest priority).
     pub rank: usize,
-    /// Measured output of the workplaces with this role's slots, largest first.
     pub output_per_day: Vec<(Good, f32)>,
 }
 
-/// Workplaces whose slots are open to work: unpaused, and complete or a site still being built.
 fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplace> {
     sim.work
         .places
@@ -179,7 +150,6 @@ fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplac
         .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.is_complete() && !sim.buildings.stranded(b, &sim.water.depth)) || is_site(sim, p)))
 }
 
-/// One row per role in `Work::role_order`, only roles with slots or workers.
 pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
     sim.work
         .role_order
@@ -216,8 +186,6 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
         .collect()
 }
 
-/// The Jobs board header. `working + free + kits == total`: working and free count
-/// adults and yearlings only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Headcount {
     pub working: usize,
@@ -238,23 +206,15 @@ pub fn headcount(sim: &SimState) -> Headcount {
     h
 }
 
-// ───────────────────────────── idle reasons ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IdleReason {
-    /// No empty slot it may take (or every workplace is at its "Max").
     NoOpenSlot,
-    /// Empty slots exist but no route reaches any of them.
     Unreachable,
-    /// Tired: back to work once rested.
     Resting,
-    /// The only empty slots are in paused workplaces.
     Paused,
-    /// Empty slots wait but auto-staffing is off.
     AutoOff,
 }
 
-/// Empty slots `stage` may take in unpaused workplaces below their "Max", with the building.
 fn open_slots(sim: &SimState, stage: Stage) -> Vec<(BuildingId, usize)> {
     working_places(sim)
         .filter(|p| !p.paused && p.filled() < p.max_workers)
@@ -264,7 +224,6 @@ fn open_slots(sim: &SimState, stage: Stage) -> Vec<(BuildingId, usize)> {
         .collect()
 }
 
-/// Each idle beaver (`hud::idle_beavers`) with why.
 pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
     crate::hud::idle_beavers(sim)
         .into_iter()
@@ -282,7 +241,6 @@ pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
                     .any(|p| p.paused && p.slots.iter().any(|s| s.worker.is_none() && can_fill(b.stage, s.role)));
                 return Some((id, if paused { IdleReason::Paused } else { IdleReason::NoOpenSlot }));
             }
-            // Connected to any of the first few workplaces with room.
             let mut places: Vec<BuildingId> = open.iter().map(|o| o.0).collect();
             places.dedup();
             let reachable = sim.agents.get(id).is_none_or(|a| {
@@ -297,12 +255,9 @@ pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
         .collect()
 }
 
-// ───────────────────────────── who a "+" moves ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AddPreview {
     pub who: BeaverId,
-    /// Where they would be taken from (`None`: they were free).
     pub from: Option<(BuildingId, RoleKind)>,
 }
 
@@ -314,9 +269,6 @@ fn agent_cell(sim: &SimState, who: BeaverId) -> Option<Cell> {
     sim.agents.get(who).map(|a| a.cell)
 }
 
-/// The beaver a "+" on a slot with `role` at `at` would place: the nearest free beaver who may
-/// take it, else one taken from the lowest-priority unlocked job (lowest building priority, then
-/// lowest role priority, then nearest). Never takes from `not_from` or from a job of `same_role`.
 fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same_role: Option<RoleKind>) -> Option<(AddPreview, usize)> {
     let stage = |id: BeaverId| sim.colony.beaver(id).map(|b| b.stage);
     let free = sim
@@ -329,7 +281,6 @@ fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same
     if let Some((who, d)) = free {
         return Some((AddPreview { who, from: None }, d));
     }
-    // Unlocked jobs: slot workers not placed by hand, and gatherers auto-staffing sent.
     let mut jobs: Vec<(Priority, usize, usize, BeaverId, BuildingId, RoleKind)> = Vec::new();
     for p in &sim.work.places {
         if Some(p.building) == not_from {
@@ -369,14 +320,11 @@ fn pick(sim: &SimState, role: Role, at: Cell, not_from: Option<BuildingId>, same
         let prio = sim.work.place(site).map_or(Priority::Normal, |p| p.priority);
         jobs.push((prio, rank(sim, rk), d2(c, at), w, site, rk));
     }
-    // Lowest building priority, then lowest role priority (largest rank), then nearest.
     jobs.into_iter()
         .min_by_key(|j| (j.0, std::cmp::Reverse(j.1), j.2, j.3))
         .map(|j| (AddPreview { who: j.3, from: Some((j.4, j.5)) }, j.2))
 }
 
-/// The first empty slot of workplace `b` (with `role`, if given) and its role; `None` if the
-/// workplace is missing, paused, finished as a site or full.
 fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(usize, Role, Cell)> {
     let p = sim.work.place(b)?;
     let bd = sim.buildings.building(b)?;
@@ -387,13 +335,11 @@ fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(
     Some((i, p.slots[i].role, bd.pos))
 }
 
-/// Who a "+" on workplace `b` would place, and from where. `None`: no slot free or nobody available.
 pub fn add_worker_preview(sim: &SimState, b: BuildingId) -> Option<AddPreview> {
     let (_, role, at) = empty_slot(sim, b, None)?;
     pick(sim, role, at, Some(b), None).map(|p| p.0)
 }
 
-/// The workplace a Jobs-board "+" on `role` fills: highest priority, then the nearest beaver.
 fn role_target(sim: &SimState, role: RoleKind) -> Option<(BuildingId, usize, AddPreview)> {
     sim.work
         .places
@@ -407,19 +353,14 @@ fn role_target(sim: &SimState, role: RoleKind) -> Option<(BuildingId, usize, Add
         .map(|t| (t.2, t.3, t.4))
 }
 
-/// Who a Jobs-board "+" on `role` would place, and from where.
 pub fn role_add_preview(sim: &SimState, role: RoleKind) -> Option<AddPreview> {
     role_target(sim, role).map(|t| t.2)
 }
-
-// ───────────────────────────── commands ─────────────────────────────
 
 fn invalid(m: impl Into<String>) -> SimError {
     SimError::InvalidCommand(m.into())
 }
 
-/// Puts `who` into slot `slot` of `b` by hand: they leave any slot or order, the slot is locked,
-/// and the workplace's "Max" rises to hold them.
 pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
     if sim.buildings.building(b).is_some_and(|bd| sim.buildings.stranded(bd, &sim.water.depth)) {
         return Err(workplace_error(sim, b));
@@ -450,7 +391,6 @@ pub(crate) fn add_worker(sim: &mut SimState, b: BuildingId) -> Result<(), SimErr
     place_by_hand(sim, b, slot, pv.who)
 }
 
-/// Frees the highest filled slot of `b`, and lowers its "Max" so the beaver is not sent back.
 fn free_last(sim: &mut SimState, b: BuildingId, role: Option<RoleKind>) -> Result<BeaverId, SimError> {
     let p = sim.work.place(b).ok_or_else(|| invalid(format!("building {} has no worker slots", b.0)))?;
     let i = p
@@ -475,7 +415,6 @@ pub(crate) fn set_priority(sim: &mut SimState, b: BuildingId, priority: Priority
     Ok(())
 }
 
-/// Pausing frees every worker (locked ones too); auto-staffing leaves the workplace empty.
 pub(crate) fn set_paused(sim: &mut SimState, b: BuildingId, paused: bool) -> Result<(), SimError> {
     let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no worker slots", b.0)))?;
     p.paused = paused;
@@ -498,7 +437,6 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: RoleKind, delta: i32) -> Res
                 None => Err(invalid(format!("no open {role:?} slot with a beaver to take it"))),
             }
         } else {
-            // The lowest-priority workplace with this role filled, newest first.
             let from = sim
                 .work
                 .places
@@ -511,7 +449,6 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: RoleKind, delta: i32) -> Res
                 None => Err(invalid(format!("nobody works as {role:?}"))),
             }
         };
-        // Later steps may run out; only the first must succeed.
         if let Err(e) = step {
             return if n == 0 { Err(e) } else { Ok(()) };
         }
@@ -519,7 +456,6 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: RoleKind, delta: i32) -> Res
     Ok(())
 }
 
-/// Sets the role priority; roles left out keep their old relative order after the given ones.
 pub(crate) fn set_role_order(sim: &mut SimState, order: Vec<RoleKind>) -> Result<(), SimError> {
     let mut seen = Vec::new();
     for r in &order {
@@ -534,13 +470,11 @@ pub(crate) fn set_role_order(sim: &mut SimState, order: Vec<RoleKind>) -> Result
     Ok(())
 }
 
-/// Returns `who` to auto-staffing: unlocks their slot and ends any direct order.
 pub(crate) fn unlock(sim: &mut SimState, who: BeaverId) -> Result<(), SimError> {
     if sim.colony.beaver(who).is_none() {
         return Err(invalid(format!("no beaver {}", who.0)));
     }
     if sim.work.set_locked(who, false) {
-        // Auto-staffing now owns the slot: it keeps the beaver there while the slot is wanted.
         if let Some((b, i, _)) = sim.work.slot_of(who) {
             sim.work.managed.insert(who, ManagedDuty::Slot(b, i));
         }
@@ -551,8 +485,6 @@ pub(crate) fn unlock(sim: &mut SimState, who: BeaverId) -> Result<(), SimError> 
     Ok(())
 }
 
-/// A direct gather order (`Command::Assign`): `Some` takes the beaver out of its slot and locks
-/// it to the order; `None` stands it down and returns it to auto-staffing.
 pub(crate) fn order(sim: &mut SimState, who: BeaverId, to: Option<Assignment>) {
     sim.work.managed.remove(&who);
     match to {
@@ -566,7 +498,6 @@ pub(crate) fn order(sim: &mut SimState, who: BeaverId, to: Option<Assignment>) {
     }
 }
 
-/// Each beaver's job this step from its slot or order, and whether it is at work (for the colony).
 pub(crate) fn slot_jobs(sim: &SimState) -> std::collections::HashMap<BeaverId, (Job, bool)> {
     sim.colony
         .beavers
@@ -579,7 +510,6 @@ pub(crate) fn slot_jobs(sim: &SimState) -> std::collections::HashMap<BeaverId, (
         .collect()
 }
 
-/// A founded colony of four adults on the map, no resources, and hand-made workplaces.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
@@ -603,13 +533,11 @@ pub(crate) mod fixtures {
         (sim, ids)
     }
 
-    /// The first beaver's cell offset by `(dx, dy)`.
     pub fn near(sim: &SimState, dx: usize, dy: usize) -> Cell {
         let c = sim.agents.by_id.values().next().unwrap().cell;
         (c.0 + dx, c.1 + dy)
     }
 
-    /// A finished workplace of `kind` with its catalogue slots, `at` cells from the first beaver.
     pub fn workplace(sim: &mut SimState, id: u64, kind: BuildingKind, at: (usize, usize), priority: Priority) -> BuildingId {
         let pos = near(sim, at.0, at.1);
         let b = Building { id: BuildingId(id), kind, pos, status: Status::Complete, recipe: None, output: 0.0 };
@@ -649,14 +577,13 @@ mod tests {
     fn a_workplace_left_high_and_dry_lets_its_workers_go_and_takes_none_until_the_water_returns() {
         let (mut s, ids) = colony();
         let hut = workplace(&mut s, 50, BuildingKind::ForagerHut, (3, 3), Priority::High);
-        s.buildings.water_bound.insert(hut); // as if placed at the water by the site rule
+        s.buildings.water_bound.insert(hut);
         let pos = s.buildings.building(hut).unwrap().pos;
-        let wet = (pos.0 + 2, pos.1); // just beside the footprint
+        let wet = (pos.0 + 2, pos.1);
         let set = |s: &mut SimState, d: f32| *s.water.depth.get_mut(wet.0, wet.1).unwrap() = d;
         set(&mut s, 0.5);
         s.apply(Command::FillSlot { building: hut, slot: 0, who: ids[0] }).unwrap();
         assert_eq!(filled(&s, hut), 1);
-        // the water goes (from everywhere near the hut)
         let (x0, y0) = (pos.0.saturating_sub(1), pos.1.saturating_sub(1));
         for y in y0..=pos.1 + 2 {
             for x in x0..=pos.0 + 2 {
@@ -693,7 +620,6 @@ mod tests {
         assert_eq!((filled(&s, hut), filled(&s, low), filled(&s, mid)), (2, 1, 1));
         assert_eq!(add_worker_preview(&s, hut), None, "the hut is full");
         assert!(s.apply(Command::AddWorker { building: hut }).is_err());
-        // The mud pit takes the last logger, never a locked forager.
         assert_eq!(add_worker_preview(&s, mid).unwrap().from, Some((low, RoleKind::Logger)));
         s.apply(Command::RemoveWorker { building: hut }).unwrap();
         assert_eq!(s.work.slot_of(pv.who), None, "the last-filled slot is freed");
@@ -702,7 +628,6 @@ mod tests {
         assert!(s.apply(Command::AddWorker { building: BuildingId(999) }).is_err());
         assert!(s.apply(Command::RemoveWorker { building: low }).is_ok());
         assert!(s.apply(Command::RemoveWorker { building: low }).is_err(), "nobody left to remove");
-        // Unlocking a hand-placed beaver hands its slot to auto-staffing.
         s.apply(Command::Unlock { who: ids[3] }).unwrap();
         assert!(!s.work.is_locked(ids[3]));
         assert_eq!(s.work.managed.get(&ids[3]), Some(&ManagedDuty::Slot(hut, 0)));
@@ -715,7 +640,6 @@ mod tests {
         let camp = workplace(&mut s, 50, BuildingKind::LoggingCamp, (2, 2), Priority::Normal);
         let hut = workplace(&mut s, 51, BuildingKind::ForagerHut, (6, 6), Priority::High);
         s.apply(Command::FillSlot { building: camp, slot: 1, who: ids[0] }).unwrap();
-        // A beaver on a direct order is not auto-staffed either.
         let area = crate::work::Area { min: (0, 0), max: (1, 1) };
         s.apply(Command::Assign { who: vec![ids[1]], to: Some(Assignment::Area(ResourceKind::Plant, area)) }).unwrap();
         crate::agents::step(&mut s, 0.0);
@@ -723,12 +647,10 @@ mod tests {
         assert_eq!(filled(&s, camp), 1);
         assert_eq!(s.work.slot_of(ids[0]).map(|t| (t.0, t.1)), Some((camp, 1)), "the hand-placed beaver stays");
         assert_eq!(s.work.slot_of(ids[1]), None, "the ordered beaver stays on its order");
-        // Raising the camp above the hut moves an auto-staffed forager over.
         s.apply(Command::SetPriority { building: camp, priority: Priority::High }).unwrap();
         s.apply(Command::SetPriority { building: hut, priority: Priority::Low }).unwrap();
         crate::agents::step(&mut s, 0.0);
         assert_eq!((filled(&s, camp), filled(&s, hut)), (2, 1));
-        // Pausing the hut frees its worker and leaves it empty.
         s.apply(Command::SetPaused { building: hut, paused: true }).unwrap();
         crate::agents::step(&mut s, 0.0);
         assert_eq!(filled(&s, hut), 0);
@@ -737,7 +659,6 @@ mod tests {
         assert_eq!(idle_reasons(&s), vec![(free[0], IdleReason::Paused)]);
         let h = headcount(&s);
         assert_eq!((h.working, h.free, h.working + h.free + h.kits), (3, 1, h.total));
-        // With auto-staffing off nothing moves.
         s.apply(Command::SetPaused { building: hut, paused: false }).unwrap();
         s.apply(Command::SetAutoStaff { on: false }).unwrap();
         crate::agents::step(&mut s, 0.0);
@@ -761,7 +682,6 @@ mod tests {
         assert!(s.apply(Command::SetRoleOrder { order: vec![RoleKind::Crafter, RoleKind::Crafter] }).is_err());
         s.apply(Command::SetRoleOrder { order: vec![RoleKind::Crafter] }).unwrap();
         assert_eq!((s.work.role_order[0], s.work.role_order[1], s.work.role_order.len()), (RoleKind::Crafter, RoleKind::Builder, 8));
-        // A direct order takes the forager out of its slot and locks it; Unlock returns it.
         let w = s.work.place(hut).unwrap().slots.iter().find_map(|s| s.worker).unwrap();
         let area = crate::work::Area { min: (0, 0), max: (3, 3) };
         s.apply(Command::Assign { who: vec![w], to: Some(Assignment::Area(ResourceKind::Tree, area)) }).unwrap();

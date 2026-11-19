@@ -1,16 +1,8 @@
-﻿//! Neighbouring AI beaver colonies in other valleys.
-//!
-//! Colonies grow by simple procedural rules (population, stores, specialty) and are mostly
-//! friendly. Linking one by water or path ([`Region::connect`]) opens trade offers
-//! ([`TradeOffer`], accepted with [`Region::accept_offer`]) and lets beavers move between
-//! colonies ([`Region::send_migrants`], [`Region::take_arrivals`]). Deterministic per seed.
-
 use crate::events::EventHost;
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 use std::fmt;
 pub use crate::tuning::region::*;
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Specialty {
@@ -45,13 +37,11 @@ pub enum Link {
 pub struct Neighbour {
     pub id: u32,
     pub name: String,
-    /// Position on the regional map.
     pub pos: (f32, f32),
     pub population: f32,
     pub food: f32,
     pub wood: f32,
     pub specialty: Specialty,
-    /// `0..=1`; below [`WARY_BELOW`] the colony refuses contact.
     pub friendliness: f32,
     pub link: Option<Link>,
 }
@@ -80,7 +70,6 @@ impl Neighbour {
     }
 }
 
-/// A neighbour offers `give` of one resource for `want` of the other.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradeOffer {
     pub id: u64,
@@ -90,7 +79,6 @@ pub struct TradeOffer {
     pub expires_day: f64,
 }
 
-/// Beavers that moved from a neighbour into the player's colony.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Migrants {
     pub from: u32,
@@ -101,15 +89,11 @@ pub struct Migrants {
 pub enum RegionError {
     UnknownColony(u32),
     AlreadyConnected(u32),
-    /// The colony is wary and refuses to open a route.
     Refused(u32),
     NotConnected(u32),
     UnknownOffer(u64),
-    /// The player cannot afford the offer.
     CannotAfford { needed: f32, have: f32 },
-    /// The neighbour no longer holds enough to honour the offer (the offer is withdrawn).
     NeighbourShort(u32),
-    /// Zero migrants, or more than the destination can hold.
     InvalidMigrants(u32),
 }
 
@@ -131,7 +115,6 @@ impl std::error::Error for RegionError {}
 
 const NAMES: [&str; 5] = ["Alder Bend", "Cattail Run", "Birchwater", "Mudslide Hollow", "Willow Reach"];
 const SPECIALTIES: [Specialty; 4] = [Specialty::Fishing, Specialty::Lumber, Specialty::Farming, Specialty::Crafts];
-// Every generated neighbour needs a name.
 const _: () = assert!((MIN_NEIGHBOURS + NEIGHBOUR_SPREAD - 1) as usize <= NAMES.len());
 
 fn unit(rng: &mut Pcg32) -> f32 {
@@ -155,13 +138,10 @@ impl Default for Region {
 }
 
 impl Region {
-    /// A region with no neighbours, offers or arrivals (the rival system absent from the state).
     pub fn none(seed: u64) -> Self {
         Self { rng: Pcg32::seed_from_u64(seed ^ 0x2E61_0000), time_days: 0.0, colonies: Vec::new(), offers: Vec::new(), arrivals: Vec::new(), next_offer: 0 }
     }
 
-    /// Generates `MIN_NEIGHBOURS..MIN_NEIGHBOURS + NEIGHBOUR_SPREAD` neighbouring colonies; a share
-    /// `WARY_CHANCE` of them is wary.
     pub fn new(seed: u64) -> Self {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0x2E61_0000);
         let n = MIN_NEIGHBOURS + rng.next_u32() % NEIGHBOUR_SPREAD;
@@ -203,7 +183,6 @@ impl Region {
         &self.offers
     }
 
-    /// Opens a water or path route to colony `id`.
     pub fn connect(&mut self, id: u32, link: Link) -> Result<(), RegionError> {
         let c = self.colony_mut(id)?;
         if c.link.is_some() {
@@ -216,7 +195,6 @@ impl Region {
         Ok(())
     }
 
-    /// Closes the route (e.g. a path floods); open offers from that colony are withdrawn.
     pub fn disconnect(&mut self, id: u32) -> Result<(), RegionError> {
         let c = self.colony_mut(id)?;
         if c.link.take().is_none() {
@@ -226,7 +204,6 @@ impl Region {
         Ok(())
     }
 
-    /// Accepts an offer: the host pays `want`, receives `give`. Nothing changes on error.
     pub fn accept_offer(&mut self, offer_id: u64, host: &mut dyn EventHost) -> Result<(), RegionError> {
         let idx = self.offers.iter().position(|o| o.id == offer_id).ok_or(RegionError::UnknownOffer(offer_id))?;
         let o = self.offers[idx].clone();
@@ -255,7 +232,6 @@ impl Region {
         Ok(())
     }
 
-    /// Moves `count` beavers from the player's colony to neighbour `id` (the caller removes them).
     pub fn send_migrants(&mut self, id: u32, count: u32) -> Result<(), RegionError> {
         let c = self.colony_mut(id)?;
         if c.link.is_none() {
@@ -268,12 +244,10 @@ impl Region {
         Ok(())
     }
 
-    /// Drains neighbours' beavers that moved to the player's colony; the caller adds them.
     pub fn take_arrivals(&mut self) -> Vec<Migrants> {
         std::mem::take(&mut self.arrivals)
     }
 
-    /// Advances `dt_days` (finite, >= 0) in sub-steps of at most one day.
     pub fn step(&mut self, dt_days: f32) {
         let mut left = dt_days as f64;
         while left > 0.0 {
@@ -289,7 +263,6 @@ impl Region {
         self.offers.retain(|o| o.expires_day > now);
         for c in &mut self.colonies {
             let (food_gain, wood_gain) = specialty_gain(c.specialty);
-            // Everyone eats and wears wood each day; base gathering covers most of it.
             c.food = (c.food + c.population * (BASE_FOOD_GAIN + food_gain - FOOD_USE) * dt).clamp(0.0, MAX_STORE);
             c.wood = (c.wood + c.population * (BASE_WOOD_GAIN + wood_gain - WOOD_USE) * dt).clamp(0.0, MAX_STORE);
             let rate = if c.food > c.population * RESERVE_PER_HEAD {
@@ -306,7 +279,6 @@ impl Region {
             }
             let (id, pop, res, friendliness) = (c.id, c.population, c.surplus_resource(), c.friendliness);
             let surplus = c.stock(res) - pop * RESERVE_PER_HEAD;
-            // Crowded neighbours send migrants.
             if pop > CROWDED_SHARE * MAX_POPULATION && unit(&mut self.rng) < MIGRATION_CHANCE * friendliness * dt {
                 self.colonies[i].population -= 1.0;
                 self.arrivals.push(Migrants { from: id, count: 1 });
@@ -337,7 +309,6 @@ mod tests {
         Stockpile { population: 10, food: 1000.0, wood: 1000.0, health: 1.0 }
     }
 
-    /// Id of a friendly colony.
     fn friendly(r: &Region) -> u32 {
         r.colonies.iter().find(|c| c.friendliness >= WARY_BELOW).unwrap().id
     }
@@ -351,7 +322,6 @@ mod tests {
         (r, id)
     }
 
-    /// Steps day by day until an offer is open (offers are random but must appear eventually).
     fn first_offer(r: &mut Region) -> TradeOffer {
         for _ in 0..100 {
             r.step(1.0);

@@ -1,18 +1,3 @@
-//! `--showcase poses|world`: stages a still scene in the sim for screenshots and contact sheets.
-//! Nothing here draws; it only sets up `SimState` (agents mid-step, resources, sites) and the camera, and
-//! the normal sim-driven renderer shows it. The colony is never founded, so the sim does not advance and the
-//! scene holds still (animation keeps running).
-//!
-//! * `poses`: six stations along a line, picked with `BC_STATION=0..5` (camera frames that station):
-//!   0 walking, 1 swimming, 2 climbing over a dam, 3 working at a site, 4 resting by a lodge,
-//!   5 carrying a log through water past a felled tree, 6 at a shore: one beaver on the grass, one
-//!   about to step into the water (swim gait, under half way), one swimming (only it shows foam arcs).
-//! * `world`: felled trees and logs, mud banks and stone outcrops, plants and three construction sites
-//!   at 15 %, 50 % and 85 % progress.
-//! * `buildings`: a pond with the water buildings standing half in it on both shores (small ones
-//!   north, large ones south), the dry-ground ones back from the water, and a drained pond whose
-//!   buildings stand high and dry. `BC_STATION` frames 0 the north shore, 1 the south shore, 2 the
-//!   drained pond; anything else shows the whole scene.
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
 use crate::state::Sim;
@@ -75,7 +60,6 @@ fn station_cell(o: (usize, usize), i: usize) -> (usize, usize) {
     (o.0 + 4 + i * SPACING, o.1 + 8)
 }
 
-/// A block of dry, gently sloping land near the start valley that fits the staged scenes.
 fn find_flat(sim: &SimState) -> (usize, usize) {
     let c = sim.world.valleys.get(sim.world.start.0 as usize).map_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0), |v| v.center);
     let (w, h) = (STATIONS * SPACING + 8, 24usize);
@@ -105,9 +89,7 @@ fn find_flat(sim: &SimState) -> (usize, usize) {
     best.1
 }
 
-/// Clears the staged block of other resources and flattens the nav surface to land.
 fn prepare(sim: &mut SimState, o: (usize, usize), w: usize, h: usize) {
-    // level the block, easing back into the hillside over a margin, so every station stands on flat ground
     let level = sim.height.get(o.0 + w / 2, o.1 + h / 2).copied().unwrap_or(0.0);
     let m = 6usize;
     for y in o.1.saturating_sub(m)..o.1 + h + m {
@@ -192,17 +174,14 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     let (land, swim, climb, work, rest, carry, shore) = (0, 1, 2, 3, 4, 5, 6);
     let c = |i| station_cell(o, i);
 
-    // 0 walking: two land cells ahead, half way into the first
     let b = c(land);
     agent(sim, 1, b, &[((b.0 + 1, b.1), Gait::Walk), ((b.0 + 2, b.1), Gait::Walk)], 0.4);
     sim.resources.add(ResourceKind::Tree, (b.0 + 4, b.1 - 2), FELL_WORK);
 
-    // 1 swimming in a pond
     let b = c(swim);
     pool(sim, b.0 - 3, b.1 - 3, 9, 6, 1.1);
     agent(sim, 2, b, &[((b.0 + 1, b.1), Gait::Swim), ((b.0 + 2, b.1), Gait::Swim)], 0.5);
 
-    // 2 climbing onto a dam with a pond behind it
     let b = c(climb);
     pool(sim, b.0 - 2, b.1 - 4, 7, 3, 1.0);
     add_done(sim, 10, BuildingKind::Dam, (b.0, b.1 - 1));
@@ -213,19 +192,16 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     }
     agent(sim, 3, (b.0 + 1, b.1), &[((b.0 + 1, b.1 - 1), Gait::Climb), ((b.0 + 1, b.1 - 2), Gait::Swim)], 0.55);
 
-    // 3 working on a lodge site (two builders' worth of progress)
     let b = c(work);
     let site = add_site(sim, 11, BuildingKind::Lodge, (b.0 + 1, b.1 - 3), 0.5);
     let id = agent(sim, 4, (b.0 + 1, b.1), &[], 0.0);
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Build { site };
 
-    // 4 resting by a finished lodge
     let b = c(rest);
     add_done(sim, 12, BuildingKind::Lodge, (b.0 + 1, b.1 - 4));
     let id = agent(sim, 5, (b.0 + 1, b.1), &[], 0.0);
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Rest;
 
-    // 5 carrying a log across the water, a felled tree on the bank
     let b = c(carry);
     pool(sim, b.0 - 1, b.1 - 3, 8, 6, 1.1);
     felled(sim, (b.0 - 3, b.1 - 1), 2.0, true);
@@ -233,10 +209,7 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Logs, amount: 3.0 });
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Carry { dest: BuildingId(1) };
 
-    // 6 shore: water from x+2 on; a beaver standing on grass, one stepping into the water (under half
-    // way, so still on land), and one swimming past
     let b = c(shore);
-    // sunk into the ground so the water surface is level with the grass bank, as in a real pond
     for y in b.1 - 4..b.1 + 3 {
         for x in b.0 + 2..b.0 + 8 {
             if let Some(g) = sim.height.get_mut(x, y) {
@@ -253,7 +226,6 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
 fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     prepare(sim, o, 40, 24);
     let at = |dx: usize, dy: usize| (o.0 + dx, o.1 + dy);
-    // standing trees, then felled ones with logs and branches left, fewer logs, bare logs
     let mut first_tree = None;
     for i in 0..3 {
         let t = sim.resources.add(ResourceKind::Tree, at(2 + i * 3, 2), FELL_WORK);
@@ -263,7 +235,6 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     felled(sim, at(20, 3), 2.0, true);
     felled(sim, at(26, 2), 1.0, false);
     felled(sim, at(32, 4), 3.0, false);
-    // deposits
     sim.resources.add(ResourceKind::MudBank, at(3, 9), sim::resources::MUD_AMOUNT);
     sim.resources.add(ResourceKind::MudBank, at(8, 9), sim::resources::MUD_AMOUNT * 0.4);
     sim.resources.add(ResourceKind::StoneOutcrop, at(15, 9), sim::resources::STONE_AMOUNT);
@@ -271,12 +242,10 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     for i in 0..3 {
         sim.resources.add(ResourceKind::Plant, at(27 + i * 2, 9 + i % 2), 3.0);
     }
-    // a lodge site at three stages of progress, and a finished lodge for reference
     for (i, p) in [0.15f32, 0.5, 0.85].into_iter().enumerate() {
         add_site(sim, 20 + i as u64, BuildingKind::Lodge, at(2 + i * 6, 15), p);
     }
     add_done(sim, 30, BuildingKind::Lodge, at(21, 15));
-    // a few beavers at work so the scene is alive
     let id = agent(sim, 40, at(16, 12), &[(at(17, 12), Gait::Walk)], 0.3);
     sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Stone, amount: 3.0 });
     let id = agent(sim, 41, at(9, 12), &[(at(10, 12), Gait::Walk)], 0.6);
@@ -287,7 +256,6 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Sticks, amount: 3.0 });
 }
 
-/// Sinks the ground of a `w` x `h` block by `d` and, if `water`, fills it level with the land around.
 fn dig_pond(sim: &mut SimState, x0: usize, y0: usize, w: usize, h: usize, d: f32, water: bool) {
     for y in y0..y0 + h {
         for x in x0..x0 + w {
@@ -299,7 +267,6 @@ fn dig_pond(sim: &mut SimState, x0: usize, y0: usize, w: usize, h: usize, d: f32
     if water {
         pool(sim, x0, y0, w, h, d);
     } else {
-        // drained lately: the ecology still remembers the water (a pale silt bed)
         for y in y0..y0 + h {
             for x in x0..x0 + w {
                 if let Some(f) = sim.ecology.flood_days.get_mut(x, y) {
@@ -310,7 +277,6 @@ fn dig_pond(sim: &mut SimState, x0: usize, y0: usize, w: usize, h: usize, d: f32
     }
 }
 
-/// A building finished where the site rules would put it: water ones bound to their water.
 fn add_water_done(sim: &mut SimState, id: u64, kind: BuildingKind, pos: (usize, usize)) {
     add_done(sim, id, kind, pos);
     if kind.needs_water() {
@@ -321,7 +287,6 @@ fn add_water_done(sim: &mut SimState, id: u64, kind: BuildingKind, pos: (usize, 
 fn stage_buildings(sim: &mut SimState, o: (usize, usize)) {
     prepare(sim, o, 44, 34);
     let at = |dx: usize, dy: usize| (o.0 + dx, o.1 + dy);
-    // a pond across the block; the water buildings stand half in it on both shores
     dig_pond(sim, o.0 + 1, o.1 + 10, 42, 6, 0.9, true);
     let north = [
         BuildingKind::FoodCache,
@@ -344,11 +309,9 @@ fn stage_buildings(sim: &mut SimState, o: (usize, usize)) {
         add_water_done(sim, 120 + i as u64, k, at(x, 15));
         x += k.spec().footprint.0 + 4;
     }
-    // the few that keep to dry ground, back from the water
     for (i, k) in [BuildingKind::QuarryCamp, BuildingKind::ForesterLodge, BuildingKind::TreeNursery, BuildingKind::GuardPost].into_iter().enumerate() {
         add_water_done(sim, 130 + i as u64, k, at(4 + i * 6, 3));
     }
-    // a pond that has drained away: its buildings stand high and dry on the cracked bed's edge
     dig_pond(sim, o.0 + 1, o.1 + 24, 34, 6, 0.9, false);
     let mut x = 2;
     for (i, k) in [BuildingKind::Lodge, BuildingKind::Warehouse, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::Mill].into_iter().enumerate() {
@@ -361,7 +324,6 @@ fn stage_buildings(sim: &mut SimState, o: (usize, usize)) {
     agent(sim, 151, at(14, 12), &[(at(15, 12), Gait::Swim), (at(16, 12), Gait::Swim)], 0.5);
 }
 
-/// Lifts the fog of war so the staged scene is lit like explored ground.
 fn reveal_map(mut sim: ResMut<Sim>, mut flow: ResMut<crate::flow::Flow>) {
     let _ = &sim;
     let _ = &flow;

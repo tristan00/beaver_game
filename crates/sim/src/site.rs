@@ -1,17 +1,12 @@
-//! Choosing where to settle: how good a spot is (water, trees, safety, room to build) and whether
-//! the family can settle there at all. The settle tag in the game and scripted players both use it.
 use crate::water::Cell;
 use crate::SimState;
 
-/// A spot's qualities, each 0..=1 (higher is better).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SiteScore {
     pub water: f32,
     pub trees: f32,
     pub safety: f32,
-    /// Clear, dry ground close by: room for a store and a burrow.
     pub room: f32,
-    /// Food plants and mud close by: what the family lives and builds on before it can haul.
     pub food: f32,
 }
 
@@ -29,31 +24,25 @@ impl SiteScore {
     }
 }
 
-/// Why a spot cannot be settled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettleError {
     OutOfBounds,
     Locked,
     Unexplored,
     Water,
-    /// No room within reach for a store and a burrow.
     NoRoom,
 }
 
-/// Plants within `FOOD_REACH` cells (Manhattan) that make a spot's food full marks, and the mud.
-const FOOD_REACH: usize = 14;
+const FOOD_REACH: usize = 60;
 const GOOD_PLANTS: f32 = 20.0;
 const GOOD_MUD: f32 = 40.0;
 
-/// How far (cells) from the settling spot the camp's first buildings must fit.
-pub const CAMP_RADIUS: usize = 8;
+pub const CAMP_RADIUS: usize = 25;
 
 fn wet(s: &SimState, c: Cell) -> bool {
     s.world.river.get(c.0, c.1) == Some(&true) || s.world.lake.get(c.0, c.1) == Some(&true) || s.water.depth.get(c.0, c.1).is_some_and(|d| *d > 0.05)
 }
 
-/// Spots at the water's edge near `cell` where a warehouse (3×3) fits, as a share of what a
-/// comfortable camp wants (four such spots), and whether at least one exists.
 fn room(s: &SimState, cell: Cell) -> (f32, bool) {
     let n = s.world.size;
     let mut spots = 0;
@@ -63,9 +52,6 @@ fn room(s: &SimState, cell: Cell) -> (f32, bool) {
             if (x, y) == cell || x.abs_diff(cell.0) + y.abs_diff(cell.1) > r + 2 {
                 continue;
             }
-            // A store stands at the water's edge: a free 3×3, mostly dry, with a cell on a river,
-            // lake or pond. Trees on the bank are felled for it; a shallow stream counts, as the
-            // family's first dam deepens it enough to build on.
             let fp: Vec<Cell> = (0..3).flat_map(|dy| (0..3).map(move |dx| (x + dx, y + dy))).collect();
             let n_wet = fp.iter().filter(|&&c| wet(s, c)).count();
             let clear = fp.iter().all(|&c| !s.buildings.buildings.iter().any(|b| b.cells().any(|k| k == c)));
@@ -80,7 +66,6 @@ fn room(s: &SimState, cell: Cell) -> (f32, bool) {
     (spots as f32 / 4.0, spots > 0)
 }
 
-/// The qualities of `cell` as a place to settle.
 pub fn score(s: &SimState, cell: Cell) -> SiteScore {
     let world = &s.world;
     let n = world.size as i32;
@@ -119,14 +104,12 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
         }
     }
     let tot = tot.max(1) as f32;
-    // Some forest close by is good (wood); a thick one leaves no room.
     let share = forest as f32 / tot;
     let trees = (1.0 - (share - 0.35).abs() / 0.35).clamp(0.0, 1.0);
     let gentle = (1.0 - (slope / tot) / 0.8).clamp(0.0, 1.0);
     let above = if river_low == f32::MAX { 1.0 } else { ((world.surface.get(cell.0, cell.1).copied().unwrap_or(0.0) - river_low) / 1.5).clamp(0.0, 1.0) };
     let edge = cell.0.min(cell.1).min(world.size - 1 - cell.0).min(world.size - 1 - cell.1);
     let room = if edge < 4 { 0.0 } else { room(s, cell).0 };
-    // Plants within a forager's easy reach, and some mud for the first buildings.
     use crate::resources::ResourceKind;
     let near = |c: Cell, r: usize| c.0.abs_diff(cell.0) + c.1.abs_diff(cell.1) <= r;
     let plants = s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && near(r.cell, FOOD_REACH)).count();
@@ -135,8 +118,6 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
     SiteScore { water, trees, safety: 0.5 * gentle + 0.5 * above, room, food }
 }
 
-/// Whether the family can settle at `cell`: on the map, in an open valley, explored, dry, away
-/// from the map's edge, with room for a store and a burrow within reach.
 pub fn can_settle(s: &SimState, cell: Cell) -> Result<(), SettleError> {
     let valley = s.world.valley_of(cell).ok_or(SettleError::OutOfBounds)?;
     if !s.world.is_open(valley) {
@@ -155,7 +136,6 @@ pub fn can_settle(s: &SimState, cell: Cell) -> Result<(), SettleError> {
     Ok(())
 }
 
-/// The best explored spot to settle, by overall score (scripted players, `settle best`).
 pub fn best_site(s: &SimState) -> Option<Cell> {
     let mut best: Option<(f32, Cell)> = None;
     for y in (0..s.world.size).step_by(2) {

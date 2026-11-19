@@ -34,4 +34,3 @@ def count(path, box, out):
 A = "artifacts/R19-29/after/"
 count(A + "pond_seed1_noglow.png", (900, 330, 1040, 520), "tmp/d1.png")
 count(A + "pond_seed2_noglow.png", (1000, 330, 1160, 470), "tmp/d2.png")
-

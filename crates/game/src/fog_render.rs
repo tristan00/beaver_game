@@ -1,6 +1,3 @@
-//! Fog of war, drawn: a soft cloud sheet floating above the canopy over everything the colony
-//! has not seen (`Flow::fog`). Exploring is the colony's own work: only the ground around its
-//! beavers (and the start the family overlooks) clears; the camera reveals nothing by itself.
 use crate::flow::Flow;
 use sim::fog::EXPLORED;
 use crate::state::Sim;
@@ -10,13 +7,9 @@ use bevy::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::prelude::*;
 
-/// Height of the cloud sheet above the highest ground nearby: above the treetops.
 const LIFT: f32 = 2.8;
-/// Opacity over unexplored ground (a hint of the land shows through).
 const DENSITY: f32 = 0.9;
-/// Cloud colour (sRGB): cool, pale, unlike any terrain or water colour.
 const CLOUD: [f32; 3] = [0.78, 0.8, 0.84];
-/// Seconds between rebuilds while the fog is changing.
 const REBUILD_SECS: f32 = 0.25;
 
 #[derive(Component)]
@@ -24,7 +17,6 @@ struct FogSheet;
 
 #[derive(Resource, Default)]
 struct FogState {
-    /// The world generation the sheet was built for.
     generation: Option<u32>,
     next: f32,
 }
@@ -47,6 +39,9 @@ fn update_fog(
     mut materials: ResMut<Assets<StandardMaterial>>,
     sheets: Query<(Entity, &Mesh3d), With<FogSheet>>,
 ) {
+    if std::env::var_os("BC_NO_FOG").is_some() {
+        return;
+    }
     let now = time.elapsed_secs();
     let fresh = state.generation != Some(flow.generation);
     if !fresh && (!sim.0.fog.dirty || now < state.next) {
@@ -69,7 +64,6 @@ fn update_fog(
     }
 }
 
-/// The sheet: one vertex per cell centre, opacity from how unexplored the cells around it are.
 fn fog_mesh(s: &sim::SimState) -> Mesh {
     let fog = &s.fog;
     let h = &s.height;
@@ -79,8 +73,6 @@ fn fog_mesh(s: &sim::SimState) -> Mesh {
     let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
     for y in 0..n {
         for x in 0..n {
-            // Highest ground and mean fog in the 3x3 around: the sheet clears softly and rides
-            // above ridges.
             let (mut top, mut unseen, mut k) = (f32::MIN, 0.0, 0.0);
             for dy in -1i32..=1 {
                 for dx in -1i32..=1 {

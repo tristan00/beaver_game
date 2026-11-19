@@ -1,35 +1,23 @@
-//! Command-line parsing: `beaver_colony [--screenshot PATH --frames N] [--seed S] [--cam PRESET]`.
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world|buildings] [--screenshot out.png [--frames N]]";
-/// Minimum frames before capturing; the capture also waits until the terrain is renderable.
 pub const DEFAULT_FRAMES: u32 = 10;
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct Cli {
     pub seed: u64,
-    /// Real-terrain map to start on (`sim::maps`), or `generated` for the seed's generated world.
-    /// `None` starts on the first real map.
     pub map: Option<String>,
     pub cam: String,
-    /// When set, wait until the terrain is drawn (and at least `frames` frames ran), save a PNG here and exit.
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
-    /// Render the 5000-tree / 300-beaver stress scene, log frame times, then exit (non-zero if any
-    /// measured frame took 16 ms or more).
     pub stress: bool,
-    /// Scripted opening: scout, settle at the best site, then let `--screenshot` capture.
     pub autoplay_settle: bool,
-    /// Scripted new game: order the designed dam, let the family build it, hold
-    /// the picture until the pond has filled.
     pub demo_pond: bool,
-    /// Staged still scene for screenshots: `poses`, `world` or `buildings` (see `showcase.rs`).
     pub showcase: Option<String>,
 }
 
 impl Cli {
-    /// Parses arguments (without the program name). Errors name the offending argument.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, showcase: None };
         let mut it = args.into_iter();
@@ -74,8 +62,6 @@ impl Cli {
         Ok(cli)
     }
 
-    /// Whether a scripted scene (stress, autoplay, showcase) founds its own colony on a plain
-    /// world instead of the new game.
     pub fn plain_world(&self) -> bool {
         self.stress || self.autoplay_settle || self.showcase.is_some()
     }

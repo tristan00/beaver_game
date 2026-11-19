@@ -1,6 +1,3 @@
-//! First-year audit runs: scripted players (`sim::autoplay`) play the first 360 days on every real
-//! map, acting only through player commands and alert fixes. Prints a timeline and a summary per
-//! run. Usage: cargo run --release -p sim --example first_year -- [days=360]
 use sim::autoplay::{Player, Style};
 use sim::buildings::{BuildingKind, Good};
 use sim::colony::{DeathCause, Event, Stage};
@@ -19,8 +16,6 @@ fn main() {
     }
 }
 
-/// A dry cell about 12 cells from the designed camp with the river within 6: a different but
-/// reasonable choice of settling place.
 fn other_site(s: &SimState, camp: (usize, usize)) -> Option<(usize, usize)> {
     let n = s.world.size;
     let mut best = None;
@@ -55,10 +50,8 @@ fn run(map: &str, style: Style, alt: bool, days: f64) {
     if settle.is_err() {
         return;
     }
-    // The designed dam only fits the designed camp.
     let mut p = Player::new(style, camp, if alt { None } else { Some((dam.cells.clone(), dam.height)) });
     if alt {
-        // Elsewhere, the player places a dam by its footprint like any building.
         p.dam = None;
     }
     let mut done: BTreeMap<u64, (BuildingKind, f64)> = BTreeMap::new();
@@ -91,7 +84,6 @@ fn run(map: &str, style: Style, alt: bool, days: f64) {
                     );
                 }
             }
-            // Daily observations.
             let food = s.buildings.stores.amount(Good::Food);
             min_food = min_food.min(food);
             if food < 0.5 {

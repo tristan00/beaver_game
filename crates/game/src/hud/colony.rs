@@ -1,4 +1,3 @@
-//! The Colony screen (spec §4.4, Tab): docked tables that leave a quarter of the map live.
 use super::inspect::mood_icon;
 use super::panels::{food_days, gap_line, stage_icon, Ctx};
 use super::ui::*;
@@ -62,7 +61,6 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     vec![v]
 }
 
-/// A header cell: an icon (with a tooltip) in a fixed width, clickable to sort.
 fn head(u: &mut Ui, icon: Option<Icon>, name: &str, w: f32, sort: Option<u8>, active: bool) {
     let v = u.node(Node { width: Val::Px(w), justify_content: JustifyContent::FlexEnd, column_gap: Val::Px(2.0), ..row_node(2.0) }, |x| {
         match icon {
@@ -87,9 +85,6 @@ fn cell_num(u: &mut Ui, s: impl Into<String>, w: f32, col: Color) {
     u.num(s, 12.0, col, w);
 }
 
-// ───────────────────────────── population ─────────────────────────────
-
-/// A small bar chart of samples, newest on the right, with its peak as the only label.
 fn history_bars(u: &mut Ui, icon: Icon, col: Color, values: &[f32], name: &str) {
     let top = values.iter().copied().fold(1.0f32, f32::max);
     u.row(8.0, |r| {
@@ -170,8 +165,6 @@ fn population(c: &Ctx, u: &mut Ui) {
     }
 }
 
-// ───────────────────────────── jobs ─────────────────────────────
-
 pub fn jobs(c: &Ctx, u: &mut Ui) {
     use super::panels::{role_kind_icon, role_kind_name};
     let s = c.s;
@@ -232,8 +225,6 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
     }
 }
 
-// ───────────────────────────── goods ─────────────────────────────
-
 fn goods(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let w = [40.0, 58.0, 58.0, 58.0, 58.0, 58.0];
@@ -274,7 +265,6 @@ fn goods(c: &Ctx, u: &mut Ui) {
         .tip(super::panels::good_tip(s, g));
     }
     u.rule();
-    // Sources: who makes what.
     let mut makers: Vec<(sim::buildings::BuildingId, sim::output::Flow)> = s.output.by.iter().map(|(b, f)| (*b, *f)).filter(|(_, f)| f.sum_per_day() > 0.01).collect();
     makers.sort_by(|a, b| b.1.sum_per_day().total_cmp(&a.1.sum_per_day()));
     u.row(6.0, |r| {
@@ -297,7 +287,6 @@ fn goods(c: &Ctx, u: &mut Ui) {
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
         });
     }
-    // Stores: stock held in each.
     let stores: Vec<&sim::buildings::Building> = s.buildings.buildings.iter().filter(|b| b.is_complete() && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache)).collect();
     if !stores.is_empty() {
         u.rule();
@@ -319,8 +308,6 @@ fn goods(c: &Ctx, u: &mut Ui) {
         }
     }
 }
-
-// ───────────────────────────── water ─────────────────────────────
 
 fn water(c: &Ctx, u: &mut Ui) {
     let s = c.s;
@@ -372,8 +359,6 @@ fn water(c: &Ctx, u: &mut Ui) {
     }
 }
 
-// ───────────────────────────── land ─────────────────────────────
-
 fn land(c: &Ctx, u: &mut Ui) {
     let e = &c.s.ecology;
     let sum = |g: &sim::grid::Grid<f32>| g.as_slice().iter().sum::<f32>();
@@ -396,8 +381,6 @@ fn land(c: &Ctx, u: &mut Ui) {
         .style(|n| n.max_width = Val::Px(320.0));
     }
 }
-
-// ───────────────────────────── research ─────────────────────────────
 
 fn research(c: &Ctx, u: &mut Ui) {
     let s = c.s;
@@ -435,8 +418,6 @@ fn research(c: &Ctx, u: &mut Ui) {
         .tip(tip);
     }
 }
-
-// ───────────────────────────── log ─────────────────────────────
 
 fn log(c: &Ctx, u: &mut Ui) {
     if c.log.is_empty() {

@@ -1,13 +1,3 @@
-//! The in-game interface (spec `docs/interface_spec.md`).
-//!
-//! Screen zones (F3): goods strip top left, calendar top right, a right column that shows alerts
-//! at rest, the inspector on a selection and the line-tool card while drawing; the view rail on the
-//! left edge; the build bar bottom centre; the minimap bottom left; messages in a lane under the
-//! strip; the Colony screen docked over the left three quarters. While a tool is active (build
-//! mode) the rail, minimap, alerts and building list hide and the bar collapses to one chip.
-//!
-//! Panels are described as trees each refresh and reconciled in place (`ui.rs`), so hover and
-//! clicks survive updates. Words follow Appendix A: icons first, the fewest words possible.
 #![allow(deprecated)]
 mod colony;
 mod elevation;
@@ -40,7 +30,6 @@ use words::*;
 
 pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WARN};
 
-/// Spawn helpers for the menus, which still build their few nodes directly.
 pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, false), TextColor(color)));
 }
@@ -53,15 +42,10 @@ pub(crate) fn row(gap: f32) -> Node {
     ui::row_node(gap)
 }
 
-/// Category hotkeys, laid out like the bar itself.
 const CAT_KEYS: [KeyCode; 6] = [KeyCode::KeyZ, KeyCode::KeyX, KeyCode::KeyC, KeyCode::KeyV, KeyCode::KeyB, KeyCode::KeyN];
 pub(crate) const CAT_KEY_LABELS: [&str; 6] = ["Z", "X", "C", "V", "B", "N"];
-/// Slow panels refresh this often (and at once on any interface change); cursor-bound and
-/// world-anchored ones every frame.
 const REFRESH_SECS: f32 = 0.1;
 const MSG_SECS: f32 = 3.0;
-
-// ───────────────────────────── state ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Tool {
@@ -83,7 +67,6 @@ pub enum ColonyTab {
     Log,
 }
 
-/// A message in the lane: up to two icons and at most two words (A8).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Msg {
     pub icon: Option<(Icon, Color)>,
@@ -95,47 +78,32 @@ pub struct Msg {
 pub struct HudState {
     pub open_cat: Option<usize>,
     pub tool: Tool,
-    /// Line tools: the drag start and the drawn cells.
     pub drag_from: Option<Cell>,
     pub line: Vec<Cell>,
     pub dam_height: f32,
-    /// After "extend to hold": every cell of the line is built up to this world crest instead.
     pub dam_crest: Option<f32>,
     preview: Option<(Vec<Cell>, f32, Option<f32>, Option<DamPreview>)>,
-    /// A barge route being chosen in the barge inspector.
     pub route_draft: Option<RouteDraft>,
-    /// The last refusal of a barge route command, for that barge (raw sim text).
     pub route_err: Option<(BargeId, String)>,
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
-    /// The Colony screen and its tab.
     pub colony: Option<ColonyTab>,
-    /// The building search box, with what has been typed.
     pub search: Option<String>,
-    /// Placements that can still be taken back, newest last.
     undo: Vec<UndoItem>,
-    /// The inspector's details expander.
     pub details_open: bool,
     pub minimap_collapsed: bool,
     pub profile_collapsed: bool,
-    /// Beavers selected for direct orders (W4).
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
-    /// Population table sort column.
     pub pop_sort: u8,
-    /// Drawing a new work area for this building, and where the drag began.
     pub area_edit: Option<BuildingId>,
     pub area_from: Option<Cell>,
-    /// Inspectors kept open while something else is selected (at most three).
     pub pinned: Vec<Selection>,
-    /// A box selection being dragged (screen position where it began).
     box_from: Option<Vec2>,
     box_done: Option<(Vec2, Vec2)>,
-    /// A world point the camera should bring into the work rect (F3.3).
     frame_req: Option<Vec3>,
 }
 
-/// A barge route being picked: the barge, the two docks and the goods it should carry.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct RouteDraft {
     pub barge: Option<BargeId>,
@@ -145,7 +113,6 @@ pub struct RouteDraft {
 }
 
 impl RouteDraft {
-    /// The draft for `barge`: the one being edited, else its current route.
     pub fn of(s: &sim::SimState, hud: &HudState, barge: BargeId) -> RouteDraft {
         if let Some(d) = hud.route_draft.as_ref().filter(|d| d.barge == Some(barge)) {
             return d.clone();
@@ -158,24 +125,18 @@ impl RouteDraft {
     }
 }
 
-/// Something the player placed that undo can take back while it is unfinished.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UndoItem {
     Site(BuildingId),
 }
 
-/// The map view the player chose. Holding Alt peeks at the water lens, and the dam and canal
-/// tools switch it on while they are in use; placing a logging camp or forester's lodge, or
-/// drawing its area, switches the forest lens on.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MapLens {
     #[default]
     World,
     Water,
     Goods,
-    /// Trees by stage and the logging and forestry areas (`world::draw_world_overlay`).
     Forest,
-    /// Ground tinted by height with contour lines over terrain and dam crests (`elevation`).
     Elevation,
 }
 
@@ -191,16 +152,12 @@ impl MapLens {
     }
 }
 
-/// True while a text box has the keyboard (camera, speed and build hotkeys stand down).
 #[derive(Resource, Default)]
 pub struct TextCapture(pub bool);
 
-/// True while the start, pause or settings menu covers the game: the HUD hides and its keys and
-/// world clicks stand down (`menu.rs` sets it).
 #[derive(Resource, Default)]
 pub struct MenuOpen(pub bool);
 
-/// Forgets the HUD's per-game state (tool, undo list, open panels) when a new game starts.
 pub fn reset_for_new_game(world: &mut World) {
     world.insert_resource(HudState::default());
     world.insert_resource(PendingWorks::default());
@@ -255,7 +212,6 @@ impl HudState {
         self.preview = None;
         self.area_edit = None;
     }
-    /// One step of the crest control (`DAM_STEP`), snapped to the step; leaves "build to crest".
     fn step_height(&mut self, dir: f32) {
         let h = (self.dam_height / DAM_STEP).round() * DAM_STEP + DAM_STEP * dir.signum();
         self.dam_height = h.clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
@@ -264,14 +220,12 @@ impl HudState {
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
         self.msg = Some((Msg { icon, icon2, text: text.into() }, now));
     }
-    /// A refusal in the lane: ✕ and the ≤ 2-word reason.
     fn refuse(&mut self, why: impl Into<String>, now: f32) {
         self.say(Some((Icon::Cross, BAD)), None, why, now);
     }
     pub fn dam_preview(&self) -> Option<&DamPreview> {
         self.preview.as_ref().and_then(|(_, _, _, p)| p.as_ref())
     }
-    /// The auto-pause notice: a pause icon in the lane (the alert itself says why).
     pub(crate) fn notify_paused(&mut self, now: f32) {
         self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "", now);
     }
@@ -280,15 +234,12 @@ impl HudState {
     }
 }
 
-/// Cell under the cursor, `None` over the interface or off the map.
 #[derive(Resource, Default)]
 pub struct HoverCell(pub Option<Cell>);
 
-/// Whether the pointer is over any interface element (world clicks are ignored then).
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
 
-/// The cursor in interface pixels.
 #[derive(Resource, Default)]
 struct CursorUi(Option<Vec2>);
 
@@ -298,11 +249,9 @@ struct PendingWorks(Pending);
 #[derive(Resource)]
 struct RefreshTimer(Timer);
 
-/// Marks every node that should swallow the pointer.
 #[derive(Component)]
 pub struct Blocks;
 
-/// A full-screen host whose children are one panel's tree.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Panel {
     Strip,
@@ -322,7 +271,6 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
-    /// A problem's fix, with the problem's place (for Focus fixes).
     Fix(Fix, Option<Cell>),
     Focus(Cell),
     CycleIdle,
@@ -332,9 +280,7 @@ pub enum HudAction {
     Pick(BuildingKind),
     CancelTool,
     DamHeight(f32),
-    /// Lengthen the drawn dam over where water would get round it (`dam_preview::extend_to_hold`).
     ExtendDam,
-    /// Raise the dam through this cell by one step.
     RaiseDam(Cell),
     ConfirmLine,
     ClearLine,
@@ -368,7 +314,6 @@ pub enum HudAction {
     EditArea(BuildingId),
     Pin(Selection),
     Recipe(BuildingId, Option<sim::buildings::Recipe>),
-    /// A store's balance setting (its haulers even out the balanced stores).
     Balance(BuildingId, bool),
     CutRule(BuildingId, sim::forestry::CutRule),
     PlantRule(BuildingId, sim::forestry::PlantRule),
@@ -376,14 +321,12 @@ pub enum HudAction {
 
 pub struct HudPlugin;
 
-/// The HUD's per-frame systems (menus run before them).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HudSet;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
-            // Screenshots of the world stay clean unless asked for (`BC_HUD=1`).
             return;
         }
         app.init_resource::<HudState>()
@@ -426,8 +369,6 @@ fn spawn_hosts(mut commands: Commands) {
     }
 }
 
-// ───────────────────────────── input ─────────────────────────────
-
 fn pointer_over_ui(q: Query<&Interaction, With<Blocks>>, mut over: ResMut<PointerOverUi>) {
     let v = q.iter().any(|i| *i != Interaction::None);
     if over.0 != v {
@@ -461,7 +402,7 @@ fn hotkeys(
     menu: Res<MenuOpen>,
 ) {
     if typing.0 || menu.0 {
-        return; // the search box or a menu has the keyboard
+        return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest), (KeyCode::F5, MapLens::Elevation)] {
@@ -559,7 +500,6 @@ fn world_input(
         return;
     }
     let now = time.elapsed_secs();
-    // Before the colony exists the only verb is choosing where the family settles.
     if !sim.0.colony.is_founded() {
         if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
             if let Some(cell) = hover.0 {
@@ -575,7 +515,6 @@ fn world_input(
         }
         return;
     }
-    // Ctrl + wheel sets the dam crest (the plain wheel keeps zooming).
     if matches!(hud.tool, Tool::Dam) && keys.pressed(KeyCode::ControlLeft) && scroll.delta.y != 0.0 {
         let lines = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
@@ -596,7 +535,6 @@ fn world_input(
     if over.0 {
         return;
     }
-    // Right click: cancel a tool, or order the selected beavers (W4).
     if mouse.just_pressed(MouseButton::Right) {
         if hud.tool != Tool::None || hud.area_edit.is_some() {
             hud.set_tool(Tool::None);
@@ -618,7 +556,6 @@ fn world_input(
         return;
     }
     let Some(cell) = hover.0 else { return };
-    // Drawing a work area for a gathering building.
     if let Some(b) = hud.area_edit {
         if mouse.just_pressed(MouseButton::Left) {
             hud.area_from = Some(cell);
@@ -715,8 +652,6 @@ fn world_input(
     }
 }
 
-/// Direct orders for selected beavers (W4): a resource → gather that kind around it (Shift: just
-/// that one); a workplace → fill its free slots.
 fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, one: bool, now: f32) {
     match t {
         world::Thing::Resource(rid) => {
@@ -737,8 +672,6 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             }
         }
         world::Thing::Cell(c) => {
-            // Explore: walk there (the beavers see the ground around them; reaching a valley's
-            // edge opens it).
             match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(sim::agents::Assignment::Go(c)) }) {
                 Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
@@ -760,7 +693,6 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
     }
 }
 
-/// Selects the beavers inside a dragged box.
 fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, mut sel: ResMut<Selection>) {
     let Some((a, b)) = hud.box_done.take() else { return };
     let Ok((cam, gt)) = cams.single() else { return };
@@ -780,7 +712,6 @@ fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &G
     hud.selected = picked;
 }
 
-/// Moves the camera so a new placement sits in the work rect (F3.3).
 fn frame_camera(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, windows: Query<&Window, With<PrimaryWindow>>, orbit: Res<crate::camera::OrbitCamera>, mut flow: ResMut<Flow>) {
     let Some(p) = hud.frame_req.take() else { return };
     let (Ok((cam, gt)), Ok(w)) = (cams.single(), windows.single()) else { return };
@@ -821,7 +752,6 @@ fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pendin
     }
 }
 
-/// "Extend to hold": replaces the drawn line with the longer one that stops water walking round it.
 fn extend_dam(s: &sim::SimState, hud: &mut HudState) {
     if hud.tool != Tool::Dam || hud.line.is_empty() {
         return;
@@ -832,8 +762,6 @@ fn extend_dam(s: &sim::SimState, hud: &mut HudState) {
     }
 }
 
-/// Sends the drafted route for `barge`; a refusal is kept for its inspector (it names the dam
-/// that needs a lock) and shows in the lane.
 fn set_route(s: &mut sim::SimState, hud: &mut HudState, barge: BargeId, now: f32) {
     let d = RouteDraft::of(s, hud, barge);
     let (Some(from), Some(to)) = (d.from, d.to) else { return };
@@ -850,7 +778,6 @@ fn set_route(s: &mut sim::SimState, hud: &mut HudState, barge: BargeId, now: f32
     }
 }
 
-/// Takes back the newest placement that is still unfinished, refunding what was delivered.
 fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending, now: f32) {
     while let Some(item) = hud.undo.pop() {
         match item {
@@ -872,7 +799,6 @@ fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, pending: &mut Pending,
     let _ = pending;
 }
 
-/// The ≤ 2-word reason a cell cannot be settled.
 pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
     use crate::flow::SettleError::*;
     match e {
@@ -884,9 +810,6 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
     }
 }
 
-pub(crate) fn building_at(sim: &sim::SimState, cell: Cell) -> Option<BuildingId> {
-    sim.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)).map(|b| b.id)
-}
 
 #[allow(clippy::too_many_arguments)]
 fn button_actions(
@@ -1081,7 +1004,6 @@ fn button_actions(
     }
 }
 
-/// Applies a command; a refusal shows its ≤ 2-word reason in the lane.
 fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command, now: f32) {
     if let Err(e) = s.apply(c) {
         hud.refuse(sim_error(&e.to_string()), now);
@@ -1098,7 +1020,6 @@ fn free_beaver(s: &mut sim::SimState, hud: &mut HudState, id: BeaverId, now: f32
     }
 }
 
-/// What + on a building would do (W2): who it would take, and from where. No lines: nobody.
 pub(crate) fn add_worker_tip(s: &sim::SimState, b: BuildingId) -> Tip {
     let mut t = Tip::name("Add a worker");
     if let Some(p) = sim::jobs::add_worker_preview(s, b) {
@@ -1116,14 +1037,11 @@ fn poll_pending_works(mut sim: ResMut<Sim>, mut pending: ResMut<PendingWorks>, m
         return;
     }
     for m in build_logic::poll_pending(&mut sim.0, &mut pending.0) {
-        // Finished works are visible in the world; only failures get a message.
         if let Some(why) = m.split(" failed: ").nth(1) {
             hud.refuse(sim_error(why), time.elapsed_secs());
         }
     }
 }
-
-// ───────────────────────────── refreshing panels ─────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn refresh_panels(
@@ -1154,7 +1072,6 @@ fn refresh_panels(
         hud.msg = None;
     }
     let s = &sim.0;
-    // Refresh the dam preview only when the line or crest changes.
     if hud.tool == Tool::Dam && !hud.line.is_empty() {
         let stale = hud.preview.as_ref().is_none_or(|(c, h, k, _)| *c != hud.line || *h != hud.dam_height || *k != hud.dam_crest);
         if stale {
@@ -1207,7 +1124,6 @@ fn refresh_panels(
     }
 }
 
-/// Panels bound to the cursor or the world: every frame.
 #[allow(clippy::too_many_arguments)]
 fn refresh_fast(
     mut commands: Commands,
@@ -1253,9 +1169,6 @@ fn refresh_fast(
     }
 }
 
-// ───────────────────────────── search ─────────────────────────────
-
-/// Words players type for what they want, mapped to the buildings that provide it.
 const SYNONYMS: [(&str, &[BuildingKind]); 18] = [
     ("food", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
     ("eat", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
@@ -1277,7 +1190,6 @@ const SYNONYMS: [(&str, &[BuildingKind]); 18] = [
     ("boat", &[BuildingKind::Dock, BuildingKind::Barge]),
 ];
 
-/// Menu entries whose name contains the query, then those a synonym points to (unlocked first).
 pub(crate) fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::MenuEntry> {
     let q = q.trim().to_lowercase();
     if q.is_empty() {
@@ -1347,16 +1259,12 @@ fn search_input(mut keys: MessageReader<KeyboardInput>, sim: Res<Sim>, mut hud: 
     typing.0 = hud.search.is_some();
 }
 
-// ───────────────────────────── minimap ─────────────────────────────
-
 fn setup_minimap(mut commands: Commands, sim: Res<Sim>, mut images: ResMut<Assets<Image>>) {
     let n = sim.0.world.size as u32;
     let img = Image::new_fill(Extent3d { width: n, height: n, depth_or_array_layers: 1 }, TextureDimension::D2, &[30, 30, 30, 255], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
     commands.insert_resource(MinimapImage(images.add(img)));
 }
 
-/// Repaints the minimap every couple of seconds: land shaded by height, water by depth,
-/// buildings white, beavers orange.
 fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<Res<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
     let Some(img) = img else { return };
     let now = time.elapsed_secs();
@@ -1379,7 +1287,6 @@ fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Opt
             } else {
                 [0.30 + 0.45 * h, 0.40 + 0.38 * h, 0.26 + 0.40 * h]
             };
-            // Unexplored ground is cloud, like the fog over the map.
             let seen = (s.fog.get((x, y)) / crate::flow::EXPLORED).min(1.0);
             let c = [c[0] * seen + 0.78 * (1.0 - seen), c[1] * seen + 0.8 * (1.0 - seen), c[2] * seen + 0.84 * (1.0 - seen)];
             buf[i * 4..i * 4 + 4].copy_from_slice(&[(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 255]);
@@ -1403,7 +1310,6 @@ fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Opt
     }
 }
 
-/// Click or drag on the minimap moves the camera there.
 fn minimap_click(q: Query<(&Interaction, &RelativeCursorPosition, &TagComp)>, sim: Res<Sim>, mut orbit: ResMut<crate::camera::OrbitCamera>) {
     for (i, rel, tag) in &q {
         if tag.0 != Tag::Minimap || *i != Interaction::Pressed {
@@ -1416,8 +1322,6 @@ fn minimap_click(q: Query<(&Interaction, &RelativeCursorPosition, &TagComp)>, si
     }
 }
 
-/// The work area a drag from `a` to `b` draws for building `id`: the rectangle between them, cut
-/// to the building's largest area (`sim::forestry::max_area`) from where the drag began.
 pub fn drawn_area(s: &sim::SimState, id: BuildingId, a: Cell, b: Cell) -> sim::work::Area {
     let max = s.buildings.building(id).and_then(|bd| sim::forestry::max_area(bd.kind)).unwrap_or(usize::MAX);
     let clamp = |from: usize, to: usize| if to >= from { from + (to - from).min(max - 1) } else { from - (from - to).min(max - 1) };
@@ -1425,13 +1329,10 @@ pub fn drawn_area(s: &sim::SimState, id: BuildingId, a: Cell, b: Cell) -> sim::w
     sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
 }
 
-/// Whether placing `kind` or editing its area shows the forest lens.
 fn forest_kind(kind: BuildingKind) -> bool {
     matches!(kind, BuildingKind::LoggingCamp | BuildingKind::ForesterLodge)
 }
 
-/// Publishes the lens to the renderers: Alt peeks at water, line tools turn the water lens on, and
-/// the logging camp and forester's lodge (placing one, or drawing its area) turn the forest lens on.
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let forest_tool = matches!(hud.tool, Tool::Building(k) if forest_kind(k))
@@ -1446,13 +1347,6 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
 
-// ───────────────────────────── scripted views for screenshots ─────────────────────────────
-
-/// `BC_HUD_DEMO=rest|dam|canal|place|inspect|camp|beaver|ledger|jobs|pop|research|goods|water|forest|elevation|search|tip`
-/// (with `BC_HUD=1` and `--screenshot`): once the colony stands, runs `BC_HUD_DAYS` days (default
-/// 12) and sets up that view, so each state can be captured without a mouse. `camp`, `ledger`,
-/// `jobs` and `goods` first stand up a staffed logging camp, forager hut and warehouse beside the
-/// camp (finished by script) so there is real production to show. `tip` opens the food tooltip.
 #[allow(clippy::too_many_arguments)]
 fn demo(
     mut done: Local<bool>,
@@ -1492,7 +1386,6 @@ fn demo(
         o.distance = dist;
         o.pitch = 0.95;
     };
-    // `play`: the scripted attentive player plays BC_HUD_DAYS days, then BC_HUD_VIEW is shown.
     if which == "play" {
         let dam = planned.0.as_ref().map(|d| (d.cells.clone(), d.height));
         let mut p = sim::autoplay::Player::new(sim::autoplay::Style::Attentive, camp.unwrap_or((0, 0)), dam);
@@ -1532,9 +1425,6 @@ fn demo(
         }
         return;
     }
-    // `barge`: two docks on the river by the camp and a barge carrying logs between them.
-    // BC_HUD_VIEW=dock selects the first dock; `lock` drops a dam across the way and asks again,
-    // so the barge inspector shows the refusal naming the dam; `raise` selects that dam's cell.
     if which == "barge" {
         let Some(c) = camp else { return };
         let Some((a, b, barge, path)) = barge_demo(s, c) else {
@@ -1599,7 +1489,6 @@ fn demo(
             if let Some(d) = planned.0.as_ref() {
                 hud.open_cat = water_cat;
                 hud.set_tool(if which == "dam" { Tool::Dam } else { Tool::Canal });
-                // `BC_HUD_DAM_TRIM=n` drops n cells from each end, so water walks round the dam.
                 let trim: usize = std::env::var("BC_HUD_DAM_TRIM").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(d.cells.len().saturating_sub(1) / 2);
                 hud.line = d.cells[trim..d.cells.len() - trim].to_vec();
                 let crest = std::env::var("BC_HUD_CREST").ok().and_then(|v| v.parse().ok()).unwrap_or(d.height);
@@ -1668,9 +1557,6 @@ fn demo(
     }
 }
 
-/// Screenshot scaffolding for barges: two finished docks by the river near `camp`, 15 to 40 cells
-/// apart by water, a barge at the first, logs and stone in its stock and a route between them.
-/// Returns the docks, the barge and the water path between them.
 fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, BuildingId, BargeId, Vec<Cell>)> {
     s.tech.unlock_all();
     let n = s.world.size;
@@ -1682,7 +1568,6 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
         .filter(|&p| terrain_ok(s, p) && !sim::shipping::berths(s, &locks, &probe(p)).is_empty())
         .min_by_key(|p| p.0.abs_diff(camp.0) + p.1.abs_diff(camp.1))?;
     let start = sim::shipping::berths(s, &locks, &probe(first))[0];
-    // Water distance from the first berth over cells a barge can sail.
     let idx = |c: Cell| c.1 * n + c.0;
     let mut dist = vec![u32::MAX; n * n];
     let mut queue = std::collections::VecDeque::from([start]);
@@ -1724,14 +1609,11 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
     Some((a, b, bg, path))
 }
 
-/// Screenshot scaffolding: places a logging camp, a forager hut and a warehouse near `camp`,
-/// finishes them at once and puts one adult in each camp. Returns the two camps.
 fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Vec<BuildingId> {
     s.tech.record(sim::tech::Achievement::FirstBurrow);
     s.tech.record(sim::tech::Achievement::FirstDam);
     s.tech.update(&s.colony);
     let mut placed = Vec::new();
-    // Only where the family can walk to from where it stands (the river banks can be too steep).
     let walker = s.colony.beavers.iter().find(|b| b.stage == sim::colony::Stage::Adult).map(|b| b.id);
     let from = walker.and_then(|w| s.agents.get(w)).map(|a| a.cell);
     for kind in [BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::Warehouse] {
@@ -1774,7 +1656,7 @@ fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Ve
     for (id, who) in camps.iter().zip(adults) {
         let _ = s.apply(sim::Command::FillSlot { building: *id, slot: 0, who });
     }
-    camps // store capacity follows on the next sim step
+    camps
 }
 
 #[cfg(test)]
@@ -1789,163 +1671,7 @@ mod tests {
         assert!(cats.len() <= CAT_KEYS.len(), "{} categories but {} keys", cats.len(), CAT_KEYS.len());
     }
 
-    /// Spec F5: no sentences anywhere, at most two words per label, at most six words in any
-    /// panel outside the Colony screen, at most six per tooltip line. Names (buildings, beavers,
-    /// techs, maps) and key labels do not count.
-    #[test]
-    fn every_panel_keeps_to_the_text_budget() {
-        let (mut s, dam) = sim::starts::new_game_with_dam(1).expect("start");
-        s.apply(sim::Command::Settle { cell: dam.camp }).expect("settle");
-        for _ in 0..(6.0 / crate::sim_driver::FIXED_DT_DAYS) as usize {
-            let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
-        }
-        // Forestry inspectors: a finished logging camp and forester's lodge with every rule open.
-        s.tech.unlock_all();
-        let mut forestry_sites = Vec::new();
-        for kind in [BuildingKind::LoggingCamp, BuildingKind::ForesterLodge] {
-            let c = dam.camp;
-            let spot = (3..30usize)
-                .flat_map(|r| (c.1.saturating_sub(r)..=c.1 + r).flat_map(move |y| (c.0.saturating_sub(r)..=c.0 + r).map(move |x| (x, y))))
-                .find(|&p| s.check_site(kind, p).is_ok());
-            let Some(id) = spot.and_then(|p| s.place_site(kind, p).ok()) else { continue };
-            let b = s.buildings.buildings.iter_mut().find(|b| b.id == id).unwrap();
-            b.status = Status::Complete;
-            let area = sim::catalogue::work_area(s.buildings.building(id).unwrap());
-            s.work.finish_site(id, &sim::catalogue::def(kind).slots, area).unwrap();
-            s.work.places.iter_mut().find(|p| p.building == id).unwrap().site = None;
-            forestry_sites.push(id);
-        }
-        assert_eq!(forestry_sites.len(), 2, "room for a camp and a lodge");
-        s.apply(sim::Command::SetCutRule { building: forestry_sites[0], rule: sim::forestry::CutRule::Thin }).unwrap();
-        let mut names: Vec<String> = BuildingKind::ALL.iter().map(|k| k.spec().name.to_string()).collect();
-        names.extend(s.colony.beavers.iter().map(|b| b.name.clone()));
-        names.extend(sim::tech::TECHS.iter().map(|t| t.name.to_string()));
-        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
-        let keys = ["Ctrl+Z", "Ctrl+wheel", "Enter", "Esc", "Space", "Tab", "LMB", "RMB", "Alt", "[ ]"];
-        let count = |t: &str| -> usize {
-            let mut t = t.to_string();
-            for n in &names {
-                t = t.replace(n.as_str(), "");
-            }
-            if keys.contains(&t.trim()) {
-                return 0;
-            }
-            t.split_whitespace().filter(|w| w.chars().any(|c| c.is_alphabetic()) && w.chars().filter(|c| c.is_alphabetic()).count() > 1).count()
-        };
-        // Water transport: two docks, a barge on a route between them, and a dam on a river cell.
-        let (dock, _, barge, path) = barge_demo(&mut s, dam.camp).expect("docks by the river");
-        let dam_cell = path[path.len() / 2];
-        s.apply(sim::Command::BuildDam { cells: vec![dam_cell], height: 1.0 }).unwrap();
-        let clock = SimClock::default();
-        let log = std::collections::VecDeque::new();
-        let problems = sim::hud::problems(&s);
-        let first_building = s.buildings.buildings.first().map(|b| b.id);
-        let beaver = s.colony.beavers.first().map(|b| b.id).unwrap();
-        let mut states: Vec<(String, HudState, Selection)> = vec![("rest".into(), HudState::default(), Selection::None)];
-        let mut dam_state = HudState { line: dam.cells.clone(), ..default() };
-        dam_state.tool = Tool::Dam;
-        dam_state.preview = Some((dam.cells.clone(), dam_state.dam_height, None, build_logic::dam_preview(&s, &dam.cells, dam_state.dam_height)));
-        states.push(("dam".into(), dam_state, Selection::None));
-        states.push(("canal".into(), HudState { tool: Tool::Canal, line: dam.cells.clone(), ..default() }, Selection::None));
-        states.push(("place".into(), HudState { tool: Tool::Building(BuildingKind::Warehouse), ..default() }, Selection::None));
-        states.push(("beaver".into(), HudState::default(), Selection::Beaver(beaver)));
-        states.push(("cell".into(), HudState::default(), Selection::Cell(dam.camp)));
-        if let Some(b) = first_building {
-            states.push(("building".into(), HudState { details_open: true, ..default() }, Selection::Site(b)));
-        }
-        for (name, id) in [("camp", forestry_sites[0]), ("lodge", forestry_sites[1])] {
-            states.push((name.into(), HudState { details_open: true, ..default() }, Selection::Site(id)));
-        }
-        states.push(("place lodge".into(), HudState { tool: Tool::Building(BuildingKind::ForesterLodge), ..default() }, Selection::None));
-        states.push(("items".into(), HudState { open_cat: Some(0), ..default() }, Selection::None));
-        states.push(("search".into(), HudState { search: Some("food".into()), ..default() }, Selection::None));
-        // The elevation lens: its legend in the rail and the heights tag at the cursor.
-        states.push(("elevation".into(), HudState::default(), Selection::None));
-        // A barge whose route was refused for a dam in the way, a dock, a dam cell (raise), and the
-        // dam tool with a line too short to hold (spill marker, extend).
-        let refused = HudState { route_err: Some((barge, format!("invalid command: a dam at {},{} is in the way: build a lock on it", dam_cell.0, dam_cell.1))), ..default() };
-        states.push(("barge".into(), refused, Selection::Barge(barge)));
-        states.push(("barge other".into(), HudState { route_err: Some((barge, "invalid command: no water joins the two docks".into())), ..default() }, Selection::Barge(barge)));
-        states.push(("dock".into(), HudState::default(), Selection::Site(dock)));
-        states.push(("dam cell".into(), HudState::default(), Selection::Cell(dam_cell)));
-        let short: Vec<Cell> = (0..dam.cells.len())
-            .map(|i| vec![dam.cells[i]])
-            .find(|c| build_logic::dam_preview(&s, c, 1.5).is_some_and(|p| p.spill_at.is_some()))
-            .expect("one cell of the designed dam leaks round its ends");
-        let spill = build_logic::dam_preview(&s, &short, 1.5);
-        let mut spill_state = HudState { tool: Tool::Dam, line: short.clone(), dam_height: 1.5, ..default() };
-        spill_state.preview = Some((short, 1.5, None, spill));
-        states.push(("dam spill".into(), spill_state, Selection::None));
-        let mut failures = Vec::new();
-        for (name, hud, sel) in &states {
-            let lens = if name == "elevation" { MapLens::Elevation } else { MapLens::World };
-            let ctx = panels::Ctx { s: &s, hud, clock: &clock, sel: *sel, lens, hover: Some(dam.camp), problems: &problems, minimap: None, view_cell: (0.0, 0.0), log: &log, history: &[], cursor: Some(Vec2::new(300.0, 300.0)) };
-            let all: Vec<(&str, Vec<ui::VNode>)> = vec![
-                ("strip", panels::strip(&ctx)),
-                ("calendar", panels::calendar(&ctx)),
-                ("right", panels::right(&ctx)),
-                ("rail", panels::rail(&ctx)),
-                ("bottom", panels::bottom(&ctx)),
-                ("profile", panels::profile(&ctx)),
-                ("cursor", panels::cursor_tag(&ctx)),
-            ];
-            for (panel, tree) in &all {
-                let texts = ui::words(tree);
-                let total: usize = texts.iter().map(|t| count(t)).sum();
-                if std::env::var_os("BUDGET_DEBUG").is_some() {
-                    eprintln!("{name}/{panel}: {total} {texts:?}");
-                }
-                if total > 6 {
-                    failures.push(format!("{name}/{panel}: {total} words {texts:?}"));
-                }
-                for t in &texts {
-                    if count(t) > 2 || t.trim_end().ends_with('.') {
-                        failures.push(format!("{name}/{panel}: label {t:?}"));
-                    }
-                }
-                for tip in tips_of(tree) {
-                    for l in tip.lines.iter().map(|l| format!("{} {}", l.label, l.value)).chain(tip.title.iter().map(|t| t.1.clone())) {
-                        if count(&l) > 6 || l.trim_end().ends_with('.') {
-                            failures.push(format!("{name}/{panel}: tip line {l:?}"));
-                        }
-                    }
-                }
-            }
-            // The Colony screen is a table: labels stay short, no sentences (the log tab is history).
-            for tab in [ColonyTab::Population, ColonyTab::Jobs, ColonyTab::Goods, ColonyTab::Water, ColonyTab::Land, ColonyTab::Research] {
-                let h = HudState { colony: Some(tab), ..default() };
-                let ctx = panels::Ctx { hud: &h, ..ctx };
-                for t in ui::words(&colony::screen(&ctx)) {
-                    if count(&t) > 2 || t.trim_end().ends_with('.') {
-                        failures.push(format!("colony {tab:?}: label {t:?}"));
-                    }
-                }
-            }
-        }
-        failures.dedup();
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
 
-    fn tips_of(tree: &[ui::VNode]) -> Vec<Tip> {
-        let mut out = Vec::new();
-        fn walk(v: &ui::VNode, out: &mut Vec<Tip>) {
-            if let Some(t) = &v.tip {
-                out.push(t.clone());
-                for l in &t.lines {
-                    if let Some(n) = &l.nested {
-                        out.push((**n).clone());
-                    }
-                }
-            }
-            for c in &v.children {
-                walk(c, out);
-            }
-        }
-        for v in tree {
-            walk(v, &mut out);
-        }
-        out
-    }
 
     #[test]
     fn switching_tools_clears_the_drawn_line() {

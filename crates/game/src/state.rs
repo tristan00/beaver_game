@@ -1,9 +1,7 @@
-//! Holds the simulation as a Bevy resource and advances it each frame.
 use bevy::prelude::*;
 use sim::starts::DamSite;
 use sim::SimState;
 
-/// What a new game is played on: a real-terrain map or the generated world for a seed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapChoice {
     Real(String),
@@ -11,7 +9,6 @@ pub enum MapChoice {
 }
 
 impl MapChoice {
-    /// The default: the first real map.
     pub fn first() -> MapChoice {
         sim::maps::all().first().map_or(MapChoice::Generated(1), |m| MapChoice::Real(m.id.clone()))
     }
@@ -31,14 +28,12 @@ impl MapChoice {
     }
 }
 
-/// The map the running game was started on.
 #[derive(Resource, Clone, Debug)]
 pub struct CurrentMap(pub MapChoice);
 
 #[derive(Resource)]
 pub struct Sim(pub SimState);
 
-/// The dam the new game is designed around, for scripted demos. Players pick their own.
 #[derive(Resource, Default)]
 pub struct PlannedDam(pub Option<DamSite>);
 
@@ -54,7 +49,6 @@ impl Plugin for StatePlugin {
             None => MapChoice::first(),
         };
         let (sim, dam) = if cli.plain_world() {
-            // Scripted scenes (stress, autoplay, showcase) found their own colony on a plain world.
             (SimState::new(seed), None)
         } else {
             choice.build().map(|(s, d)| (s, Some(d))).unwrap_or_else(|e| {

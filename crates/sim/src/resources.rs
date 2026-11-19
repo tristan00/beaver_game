@@ -1,15 +1,3 @@
-//! Gatherable resource entities (owner: `resources`): individual trees, felled logs and branches,
-//! bark, plants, mud banks and stone outcrops. Pure data with queries; agents act through `Task`s.
-//!
-//! Contract summary:
-//! - `fell(id, work)` applies felling work to a standing `Tree`; at `FELL_WORK` it becomes `Felled`
-//!   (logs, branches, bark) and stops blocking its cell.
-//! - `take(id, want)` gathers logs, then branches, from `Felled`, or food/mud/stone from the rest.
-//! - `strip(id, want)` takes bark (`Good::Food`) from `Felled` wood.
-//! - `step(dt)` regrows plants on wet ground and removes used-up deposits and wood.
-//! - Trees have an age and a stage (`crate::forestry`): `fell` yields by stage, saplings cannot be
-//!   felled and do not block, and `forestry` ages, spreads, drowns and kills them day by day.
-
 use crate::buildings::Good;
 use crate::water::Cell;
 use crate::work::Area;
@@ -20,22 +8,16 @@ use rand_pcg::Pcg32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId(pub u64);
 
-/// What a map resource is; agents are assigned by kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
-    /// Standing tree: solid, fells into `Felled`.
     Tree,
-    /// Felled tree: yields logs, branches and bark.
     Felled,
-    /// Edible plant on wet ground; regrows.
     Plant,
     MudBank,
     StoneOutcrop,
 }
 
 impl ResourceKind {
-    /// Goods a load of this kind can yield (`Tree` yields nothing until felled). Bark counts as
-    /// `Food` and is taken with `ResourceWorld::strip`, not `take`.
     pub fn yields(self) -> &'static [Good] {
         match self {
             ResourceKind::Tree => &[],
@@ -45,89 +27,62 @@ impl ResourceKind {
             ResourceKind::StoneOutcrop => &[Good::Stone],
         }
     }
-    /// True if the entity blocks navigation.
     pub fn is_solid(self) -> bool {
         matches!(self, ResourceKind::Tree | ResourceKind::StoneOutcrop)
     }
 }
 
-/// Felling work (work days) a standing tree needs.
 pub const FELL_WORK: f32 = 2.0;
-/// What a felled mature tree leaves behind (other stages: `forestry::TreeStage::fell_yield`).
 pub const TREE_LOGS: f32 = 3.0;
 pub const TREE_BRANCHES: f32 = 4.0;
 pub const TREE_BARK: f32 = 2.0;
-/// Plant stock per cell and regrowth per day (a harvested plant is full again after 8 days).
 pub const PLANT_MAX: f32 = 4.0;
 pub const PLANT_REGROW_PER_DAY: f32 = 0.5;
-/// Minimum soil moisture for a plant to grow.
 pub const WET_MOISTURE: f32 = 0.5;
-/// Minimum surface slope (world units per cell) for a treeless dry cell to be a stone outcrop.
 pub const OUTCROP_SLOPE: f32 = 0.6;
 pub const MUD_AMOUNT: f32 = 20.0;
 pub const STONE_AMOUNT: f32 = 30.0;
-/// Chance per eligible cell of holding a plant.
 const PLANT_CHANCE: f32 = 0.25;
-/// Stone lies in a few deposits, not everywhere: each is a patch of rock `STONE_DEPOSIT_RADIUS`
-/// across around a steep, treeless spot, the deposits at least `DEPOSIT_SPACING` apart. A colony
-/// quarries one far from home and must haul the stone back.
 pub const STONE_DEPOSITS: usize = 3;
-pub const STONE_DEPOSIT_RADIUS: f32 = 4.0;
+pub const STONE_DEPOSIT_RADIUS: f32 = 8.0;
 pub const STONE_DEPOSIT_AMOUNT: f32 = 40.0;
 const STONE_DEPOSIT_FILL: f32 = 0.45;
-/// Clay beds: rich mud along a few stretches of bank. Elsewhere a bank holds a little stray mud,
-/// enough for a family's first buildings but not for a growing colony.
 pub const CLAY_BEDS: usize = 4;
-pub const CLAY_BED_RADIUS: f32 = 5.0;
+pub const CLAY_BED_RADIUS: f32 = 10.0;
 pub const CLAY_AMOUNT: f32 = 30.0;
 const CLAY_FILL: f32 = 0.8;
 const STRAY_MUD_CHANCE: f32 = 0.15;
 pub const STRAY_MUD_AMOUNT: f32 = 10.0;
-pub const DEPOSIT_SPACING: f32 = 28.0;
+pub const DEPOSIT_SPACING: f32 = 100.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
     NoSuchResource,
-    /// The operation does not apply to this kind (e.g. felling a plant).
     WrongKind,
-    /// Work, amount or time was negative or not finite.
     InvalidAmount,
-    /// Plants only grow on wet cells.
     NotWet,
-    /// A sapling cannot be felled yet.
     TooYoung,
 }
 
-/// A map resource. `branches`/`bark` are only non-zero on `Felled`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resource {
     pub id: ResourceId,
     pub kind: ResourceKind,
     pub cell: Cell,
-    /// Units left to gather. `Tree`: felling work still needed. `Felled`: logs left.
     pub amount: f32,
-    /// Plants regrow up to this amount.
     pub max_amount: f32,
-    /// `Felled` only: branches (`Good::Sticks`) left.
     pub branches: f32,
-    /// `Felled` only: bark (`Good::Food`) left until stripped.
     pub bark: f32,
-    /// `Plant` only: whether the ground is wet, so it regrows.
     pub wet: bool,
-    /// `Tree` only: growth age in days (`forestry::TreeStage`); for a snag, days since it died.
     pub age_days: f32,
-    /// `Tree` only: a dead standing tree (sticks only), which rots away and frees the cell.
     pub snag: bool,
-    /// `Tree` only: days of a forester's tending left (it grows faster meanwhile).
     pub tended_days: f32,
 }
 
 impl Resource {
-    /// Whether it blocks navigation: solid kinds, except saplings (beavers step over them).
     pub fn is_solid(&self) -> bool {
         self.kind.is_solid() && !(self.kind == ResourceKind::Tree && self.stage() == Some(crate::forestry::TreeStage::Sapling))
     }
-    /// Whether anything is left to gather (a standing tree always has felling work left).
     pub fn has_yield(&self) -> bool {
         match self.kind {
             ResourceKind::Felled => self.amount > 0.0 || self.branches > 0.0 || self.bark > 0.0,
@@ -136,7 +91,6 @@ impl Resource {
     }
 }
 
-/// All resource entities.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceWorld {
     pub items: Vec<Resource>,
@@ -147,7 +101,6 @@ fn is_water(world: &World, (x, y): Cell) -> bool {
     world.river.get(x, y).copied().unwrap_or(false) || world.lake.get(x, y).copied().unwrap_or(false)
 }
 
-/// Bank cell: not water itself but 4-adjacent to water.
 pub fn is_bank(world: &World, cell: Cell) -> bool {
     let (x, y) = cell;
     if !world.moisture.in_bounds(x, y) || is_water(world, cell) {
@@ -157,7 +110,6 @@ pub fn is_bank(world: &World, cell: Cell) -> bool {
     near.iter().any(|&(nx, ny)| world.moisture.in_bounds(nx, ny) && is_water(world, (nx, ny)))
 }
 
-/// Outcrop cell: dry, steep, treeless rock.
 pub fn is_outcrop(world: &World, cell: Cell) -> bool {
     let (x, y) = cell;
     world.slope.get(x, y).is_some_and(|&s| s >= OUTCROP_SLOPE)
@@ -165,15 +117,11 @@ pub fn is_outcrop(world: &World, cell: Cell) -> bool {
         && world.forest.get(x, y).is_some_and(|t| t.is_none())
 }
 
-/// Wet ground: moist, not under water.
 pub fn is_wet(world: &World, (x, y): Cell) -> bool {
     !is_water(world, (x, y)) && world.moisture.get(x, y).is_some_and(|&m| m >= WET_MOISTURE)
 }
 
 impl ResourceWorld {
-    /// Deterministic placement for a seed: a tree on every forest cell, stone in a few deposits
-    /// (`STONE_DEPOSITS`), rich mud in a few clay beds along the banks (`CLAY_BEDS`) and a little
-    /// stray mud on other banks, plants on wet ground. Same `(seed, world)` gives the same placement.
     pub fn seeded(seed: u64, world: &World) -> Self {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0x5E50_0C35);
         let mut out = Self::default();
@@ -181,7 +129,6 @@ impl ResourceWorld {
         let n = world.size;
         let treeless = |x: usize, y: usize| world.forest.get(x, y).is_some_and(|t| t.is_none());
         let rock_ok = |c: Cell| !is_water(world, c) && treeless(c.0, c.1);
-        // Deposit centres: best-scoring spots, kept apart.
         let pick = |cands: Vec<(f32, Cell)>, count: usize, apart: &[Cell]| {
             let mut cands = cands;
             cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -210,7 +157,6 @@ impl ResourceWorld {
             }
             v
         };
-        // Stone: steep, high, treeless ground with room for a patch of rock.
         let mut cands = Vec::new();
         for y in (2..n.saturating_sub(2)).step_by(2) {
             for x in (2..n.saturating_sub(2)).step_by(2) {
@@ -235,7 +181,6 @@ impl ResourceWorld {
                 }
             }
         }
-        // Clay: stretches of bank, kept apart from each other and from the stone.
         let mut cands = Vec::new();
         for y in 0..n {
             for x in 0..n {
@@ -268,8 +213,6 @@ impl ResourceWorld {
         out
     }
 
-    /// `items` stay in id order (ids only grow, removals keep order), so lookups are a binary
-    /// search; a linear scan is the fallback should anything ever insert out of order.
     fn index_of(&self, id: ResourceId) -> Option<usize> {
         match self.items.binary_search_by_key(&id, |r| r.id) {
             Ok(i) => Some(i),
@@ -283,17 +226,13 @@ impl ResourceWorld {
         let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
         Ok(&mut self.items[i])
     }
-    /// All resources on `cell`.
     pub fn at(&self, cell: Cell) -> impl Iterator<Item = &Resource> {
         self.items.iter().filter(move |r| r.cell == cell)
     }
-    /// True if a standing tree (not a sapling) or stone outcrop occupies `cell`.
     pub fn blocks(&self, cell: Cell) -> bool {
         self.at(cell).any(|r| r.is_solid() && r.has_yield())
     }
 
-    /// Nearest resource of `kind` to `from` (squared distance, ties by id; optionally inside
-    /// `area`) that still has something to gather. A standing tree counts as having felling work.
     pub fn nearest(&self, kind: ResourceKind, from: Cell, area: Option<&Area>) -> Option<ResourceId> {
         let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
         self.items
@@ -303,8 +242,6 @@ impl ResourceWorld {
             .map(|r| r.id)
     }
 
-    /// Applies `work` days of felling to a standing tree. Returns `Ok(true)` when it falls: the
-    /// tree becomes `Felled` with logs, branches and bark and no longer blocks its cell.
     pub fn fell(&mut self, id: ResourceId, work: f32) -> Result<bool, ResourceError> {
         if !work.is_finite() || work < 0.0 {
             return Err(ResourceError::InvalidAmount);
@@ -328,7 +265,6 @@ impl ResourceWorld {
         Ok(true)
     }
 
-    /// Strips bark from felled wood; bark is food. Returns `(Good::Food, taken)` (0 when none left).
     pub fn strip(&mut self, id: ResourceId, want: f32) -> Result<(Good, f32), ResourceError> {
         if !want.is_finite() || want < 0.0 {
             return Err(ResourceError::InvalidAmount);
@@ -342,9 +278,6 @@ impl ResourceWorld {
         Ok((Good::Food, got))
     }
 
-    /// Takes up to `want` from a resource and returns what was taken. `None` if the resource does
-    /// not exist, is a standing tree (use `fell`), or has nothing left. Felled wood gives logs
-    /// first, then branches; bark is taken with `strip`.
     pub fn take(&mut self, id: ResourceId, want: f32) -> Option<(Good, f32)> {
         if !want.is_finite() || want <= 0.0 {
             return None;
@@ -366,8 +299,6 @@ impl ResourceWorld {
         Some((good, got))
     }
 
-    /// Plant regrowth on wet ground, then removal of used-up deposits and wood. Plants stay when
-    /// empty so they can regrow. Errors if `dt_days` is not finite and >= 0.
     pub fn step(&mut self, dt_days: f32) -> Result<(), ResourceError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(ResourceError::InvalidAmount);
@@ -379,9 +310,6 @@ impl ResourceWorld {
         Ok(())
     }
 
-    /// Adds a resource with `amount` (also its maximum). Plants added this way do not regrow;
-    /// use `add_plant` for that. A tree added this way is mature (`forestry::DEFAULT_TREE_AGE`);
-    /// use `add_tree` for another age.
     pub fn add(&mut self, kind: ResourceKind, cell: Cell, amount: f32) -> ResourceId {
         self.next_id += 1;
         let id = ResourceId(self.next_id);
@@ -390,14 +318,12 @@ impl ResourceWorld {
         id
     }
 
-    /// Adds a standing tree of growth age `age_days` (a sapling below `forestry::YOUNG_AGE`).
     pub fn add_tree(&mut self, cell: Cell, age_days: f32) -> ResourceId {
         let id = self.add(ResourceKind::Tree, cell, FELL_WORK);
         self.items.last_mut().expect("just added").age_days = age_days.max(0.0);
         id
     }
 
-    /// Adds a regrowing plant; only wet cells of `world` can hold one.
     pub fn add_plant(&mut self, world: &World, cell: Cell) -> Result<ResourceId, ResourceError> {
         if !is_wet(world, cell) {
             return Err(ResourceError::NotWet);
@@ -411,10 +337,9 @@ impl ResourceWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worldgen::WorldGen;
 
     fn world(seed: u64) -> World {
-        WorldGen::new(seed).generate().unwrap()
+        crate::worldgen::fixture(seed)
     }
 
     fn cells(w: &World) -> impl Iterator<Item = Cell> + '_ {
@@ -509,7 +434,6 @@ mod tests {
         let a = ResourceWorld::seeded(11, &wa);
         let stone: Vec<Cell> = a.items.iter().filter(|r| r.kind == ResourceKind::StoneOutcrop).map(|r| r.cell).collect();
         assert!(!stone.is_empty());
-        // Group stones lying within a deposit's width of each other: at most STONE_DEPOSITS groups.
         let mut groups: Vec<Cell> = Vec::new();
         for &c in &stone {
             let near = |g: &Cell| c.0.abs_diff(g.0) + c.1.abs_diff(g.1) <= (4.0 * STONE_DEPOSIT_RADIUS) as usize;

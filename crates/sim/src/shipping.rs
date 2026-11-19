@@ -1,12 +1,3 @@
-//! Water transport (owner: `shipping`). A barge runs a standing route between two docks: at the
-//! first it loads the listed goods from the dock's stock, sails to the second over water deep
-//! enough to float it, unloads into that dock's stock and sails back for more. Docks are stores,
-//! so gatherers drop goods at a dock by their camp and builders fetch from a dock by their site:
-//! a barge route is how a colony moves stone and clay from a far deposit home.
-//!
-//! A dam stops a barge; a lock built on the dam lets it through, up or down, at the cost of some
-//! time. Ice stops barges in winter. Goods aboard are off the colony ledger until unloaded.
-
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
@@ -14,31 +5,18 @@ use crate::buildings::{Amount, BargeId, BargeState, Building, BuildingId, Buildi
 use crate::water::Cell;
 use crate::SimState;
 
-/// Cells a barge sails per day on open water: slower than a beaver (who walks 40 a day, swims
-/// faster, and goes at half pace with a load of 3), but it carries a great deal more.
-pub const BARGE_SPEED: f32 = 18.0;
-/// Goods a barge carries.
+pub const BARGE_SPEED: f32 = 43_000.0;
 pub const BARGE_CAPACITY: f32 = 40.0;
-/// Water depth a laden barge needs.
 pub const BARGE_DRAFT: f32 = 0.12;
-/// A barge berths this far (cells) from a dock's footprint: a short jetty reaches deeper water.
-pub const BERTH_REACH: usize = 2;
-/// Cost of a step along a canal, in open-water steps (canals are straight and still).
+pub const BERTH_REACH: usize = 4;
 pub const CANAL_STEP: f32 = 0.6;
-/// A pass through a lock takes as long as this many open-water steps.
 pub const LOCK_STEP: f32 = 10.0;
-/// Ice this thick stops barges.
 pub const ICE_STOPS: f32 = 0.4;
-/// Days at a dock to load or unload.
 pub const DWELL_DAYS: f32 = 0.1;
-/// A barge leaves with at least this much once the dock has nothing more to give it ...
 pub const MIN_LOAD: f32 = 6.0;
-/// ... or with whatever it has after waiting this long.
 pub const MAX_WAIT_DAYS: f32 = 2.0;
-/// A barge with no way through tries again after this long.
 pub const RETRY_DAYS: f32 = 0.5;
 
-/// A barge's standing route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Service {
     pub from: BuildingId,
@@ -46,7 +24,6 @@ pub struct Service {
     pub goods: Vec<Good>,
 }
 
-/// Where a barge on a route is in its round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Leg {
     #[default]
@@ -56,13 +33,10 @@ pub enum Leg {
     Unloading,
 }
 
-/// Cells of every finished lock.
 pub fn lock_cells(sim: &SimState) -> HashSet<Cell> {
     sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Lock && b.is_complete()).flat_map(|b| b.cells()).collect()
 }
 
-/// Cost of sailing into `c` (open-water steps); `None` where a barge cannot go: shallow water,
-/// land, a dam (unless through a lock) or, when `ice` is on, thick ice.
 pub fn step_cost(sim: &SimState, locks: &HashSet<Cell>, c: Cell, ice: bool) -> Option<f32> {
     let w = &sim.water;
     let depth = *w.depth.get(c.0, c.1)?;
@@ -84,8 +58,6 @@ fn neighbours(c: Cell, n: usize) -> impl Iterator<Item = Cell> {
         .flatten()
 }
 
-/// Cells where a barge can lie at `dock`: within `BERTH_REACH` of its footprint, deep enough,
-/// nearest first.
 pub fn berths(sim: &SimState, locks: &HashSet<Cell>, dock: &Building) -> Vec<Cell> {
     let n = sim.water.depth.width();
     let r = BERTH_REACH;
@@ -104,20 +76,16 @@ pub fn berths(sim: &SimState, locks: &HashSet<Cell>, dock: &Building) -> Vec<Cel
     out.into_iter().map(|o| o.1).collect()
 }
 
-/// Berths a dock placed at `pos` would have (for choosing where to build one).
 pub fn berths_at(sim: &SimState, pos: Cell) -> Vec<Cell> {
     let probe = Building { id: BuildingId(0), kind: BuildingKind::Dock, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0 };
     berths(sim, &lock_cells(sim), &probe)
 }
 
-/// Whether a barge could sail (ice aside) between berths `a` and `b`, through finished locks.
 pub fn joined(sim: &SimState, a: &[Cell], b: &[Cell]) -> bool {
     let locks = lock_cells(sim);
     a.first().is_some_and(|&s| route(sim, &locks, s, b, false).is_some())
 }
 
-/// Cheapest water route from `from` to any of `to` (cells after `from`, in order), with `cost`
-/// deciding where a barge may go. `None` if none.
 fn route_with(sim: &SimState, from: Cell, to: &[Cell], cost: impl Fn(Cell) -> Option<f32>) -> Option<Vec<Cell>> {
     let n = sim.water.depth.width();
     if to.contains(&from) {
@@ -157,13 +125,10 @@ fn route_with(sim: &SimState, from: Cell, to: &[Cell], cost: impl Fn(Cell) -> Op
     None
 }
 
-/// Water route for a barge (see `step_cost`).
 pub fn route(sim: &SimState, locks: &HashSet<Cell>, from: Cell, to: &[Cell], ice: bool) -> Option<Vec<Cell>> {
     route_with(sim, from, to, |c| step_cost(sim, locks, c, ice))
 }
 
-/// Why two docks are not joined by water: the first dam a route would have to cross (build a
-/// lock there), or `None` if there is no water between them at all.
 pub fn blocking_dam(sim: &SimState, from: &Building, to: &Building) -> Option<Cell> {
     let locks = lock_cells(sim);
     let start = *berths(sim, &locks, from).first()?;
@@ -184,9 +149,6 @@ fn dock(sim: &SimState, id: BuildingId) -> Result<&Building, String> {
         .ok_or_else(|| format!("building {} is not a finished dock", id.0))
 }
 
-/// Sets barge `id` to run between docks `from` and `to` carrying `goods`; checks that water joins
-/// the barge, the docks and each other (ice aside), and says which dam needs a lock if one is in
-/// the way. Errors leave the barge as it was.
 pub fn set_route(sim: &mut SimState, id: BargeId, from: BuildingId, to: BuildingId, goods: Vec<Good>) -> Result<(), String> {
     if from == to {
         return Err("a route needs two different docks".into());
@@ -219,7 +181,6 @@ pub fn set_route(sim: &mut SimState, id: BargeId, from: BuildingId, to: Building
     Ok(())
 }
 
-/// Takes barge `id` off its route; it stays where it is, with any goods aboard.
 pub fn clear_route(sim: &mut SimState, id: BargeId) -> Result<(), String> {
     let bg = sim.buildings.barges.iter_mut().find(|x| x.id == id).ok_or_else(|| format!("no barge {}", id.0))?;
     bg.service = None;
@@ -232,7 +193,6 @@ fn aboard(hold: &[Amount]) -> f32 {
     hold.iter().map(|h| h.1).sum()
 }
 
-/// Advances every barge on a route.
 pub fn step(sim: &mut SimState, dt: f32) {
     if sim.buildings.barges.iter().all(|b| b.service.is_none()) {
         return;
@@ -249,7 +209,6 @@ pub fn step(sim: &mut SimState, dt: f32) {
 
 fn run(sim: &mut SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge, svc: &Service, dt: f32) {
     let (Ok(from), Ok(to)) = (dock(sim, svc.from).cloned(), dock(sim, svc.to).cloned()) else {
-        // A dock is gone: the route ends where the barge is.
         bg.service = None;
         bg.route.clear();
         bg.state = BargeState::Idle;
@@ -314,7 +273,6 @@ fn run(sim: &mut SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Bar
     }
 }
 
-/// Moves a barge along its route toward `ends`, planning (or re-planning) the route as needed.
 fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge, ends: &[Cell], dt: f32) {
     if bg.state == BargeState::Stranded {
         bg.wait += dt;
@@ -325,13 +283,13 @@ fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge,
     if bg.route.is_empty() {
         match route(sim, locks, bg.cell, ends, true) {
             Some(mut r) => {
-                r.reverse(); // next cell last
+                r.reverse();
                 bg.route = r;
                 bg.state = BargeState::Sailing;
                 bg.wait = 0.0;
             }
             None => {
-                bg.state = BargeState::Stranded; // iced in, dried up or cut off: try again later
+                bg.state = BargeState::Stranded;
                 bg.wait = 0.0;
                 return;
             }
@@ -340,7 +298,7 @@ fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge,
     bg.progress += BARGE_SPEED * dt;
     while let Some(&next) = bg.route.last() {
         let Some(cost) = step_cost(sim, locks, next, true) else {
-            bg.route.clear(); // the way closed: plan again next step
+            bg.route.clear();
             return;
         };
         if bg.progress < cost {
@@ -360,8 +318,6 @@ mod tests {
     use super::*;
     use crate::buildings::{Barge, Status};
 
-    /// A flat map with a straight channel along y = 10 from x = 2 to x = 60, a dam across it at
-    /// x = 30, and a dock at each end.
     fn channel() -> (SimState, BuildingId, BuildingId, BargeId) {
         let mut s = SimState::new(1);
         let n = s.water.depth.width();

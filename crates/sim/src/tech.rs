@@ -1,14 +1,3 @@
-//! Research tree (see `docs/PROGRESSION.md` section 3). Only `BASE_BUILDINGS` can be placed at
-//! first; every other building is unlocked by a tech, learned in one of two ways:
-//!
-//! * **Achievement:** the first time something is done (`Tech::record`), the tech is granted at once.
-//! * **Experience:** once every need is met (`Tech::needs` is empty) it unlocks the same tick
-//!   (`Tech::update`). Needs: branch experience (`Colony::experience` summed by `Branch::jobs`),
-//!   colony size, prerequisite techs, an elder alive for the den, and lore studied by elders in an
-//!   elders' den (`den_lore`, `Tech::study`).
-//!
-//! `Tech::missing` reports what a locked building still lacks.
-
 use crate::buildings::BuildingKind;
 use crate::colony::{Colony, Job};
 
@@ -26,7 +15,6 @@ impl Branch {
     pub const ALL: [Branch; 6] =
         [Branch::Water, Branch::Forest, Branch::Building, Branch::Craft, Branch::Transport, Branch::Defence];
 
-    /// Jobs whose colony experience counts towards this branch.
     pub fn jobs(self) -> &'static [Job] {
         match self {
             Branch::Water => &[Job::Digger],
@@ -38,20 +26,15 @@ impl Branch {
         }
     }
 
-    /// Experience of `colony` in this branch.
     pub fn experience(self, colony: &Colony) -> f32 {
         self.jobs().iter().map(|j| colony.experience[j.index()]).sum()
     }
 }
 
-/// Multiplicative colony-wide bonuses granted by techs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Bonus {
-    /// Multiplies construction work required (< 1 is faster).
     BuildWork(f32),
-    /// Multiplies workshop crafting speed.
     CraftSpeed(f32),
-    /// Multiplies storage capacity.
     Storage(f32),
 }
 
@@ -64,7 +47,6 @@ pub enum Effect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TechId(pub usize);
 
-/// Things done for the first time that grant research at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Achievement {
     FirstBurrow,
@@ -79,7 +61,6 @@ impl Achievement {
     }
 }
 
-/// How a tech is learned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
     Achievement(Achievement),
@@ -89,16 +70,11 @@ pub enum Route {
 #[derive(Clone, Copy, Debug)]
 pub struct TechDef {
     pub name: &'static str,
-    /// Branch whose experience counts (`xp`).
     pub branch: Branch,
-    /// Display tier within the branch (1 = earliest).
     pub tier: u8,
     pub route: Route,
-    /// Branch experience required (experience route).
     pub xp: f32,
-    /// Living beavers required (experience route).
     pub size: usize,
-    /// Techs that must be known first (experience route).
     pub requires: &'static [TechId],
     pub effects: &'static [Effect],
 }
@@ -130,22 +106,16 @@ const DOCKS: TechId = TechId(7);
 const FLOW_CONTROL: TechId = TechId(8);
 const FORESTRY: TechId = TechId(16);
 
-/// Names of the forestry techs whose effects are not building unlocks (`forestry::knows`):
-/// Forestry also opens the logging camps' cutting rules, Coppicing the `Coppice` rule.
 pub const FORESTRY_TECH: &str = "Forestry";
 pub const COPPICING_TECH: &str = "Coppicing";
 
-/// Every tech, indexed by `TechId`.
 pub const TECHS: &[TechDef] = &[
     ach("Foraging", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::ForagerHut)]),
-    // Wood and mud are needed from the first weeks: felling comes with the first shelter.
     ach("Felling", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::LoggingCamp), U(BuildingKind::MudPit)]),
     ach("Winter stores", Branch::Forest, Achievement::FirstWinter, &[U(BuildingKind::FoodCache)]),
     exp("Lodge building", Branch::Building, 1, 16.0, 5, &[FELLING], &[U(BuildingKind::Lodge)]),
     exp("Stonework", Branch::Forest, 2, 40.0, 6, &[FELLING], &[U(BuildingKind::QuarryCamp)]),
     exp("Weaving", Branch::Forest, 3, 60.0, 8, &[FELLING], &[U(BuildingKind::Workshop)]),
-    // Water transport grows with the colony, not with elders' lore: a colony past its first
-    // year needs it to reach far deposits.
     exp("Canal digging", Branch::Water, 1, 30.0, 8, &[LODGE_BUILDING], &[U(BuildingKind::Canal)]),
     exp("Docks", Branch::Building, 1, 30.0, 8, &[LODGE_BUILDING], &[U(BuildingKind::Dock)]),
     exp("Flow control", Branch::Water, 2, 60.0, 12, &[DOCKS, STONEWORK], &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)]),
@@ -156,34 +126,24 @@ pub const TECHS: &[TechDef] = &[
     exp("Dry stores", Branch::Forest, 4, 100.0, 10, &[STONEWORK], &[B(Bonus::Storage(STORAGE_BONUS))]),
     exp("Fine tools", Branch::Craft, 2, 50.0, 10, &[WEAVING], &[B(Bonus::CraftSpeed(CRAFT_SPEED_BONUS))]),
     exp("Territory marking", Branch::Defence, 1, 3.0, 6, &[FELLING], &[U(BuildingKind::ScentMound), U(BuildingKind::GuardPost)]),
-    // Forestry (`forestry`): planting and upkeep, right after Felling.
     exp(FORESTRY_TECH, Branch::Forest, 1, 20.0, 5, &[FELLING], &[U(BuildingKind::ForesterLodge)]),
     exp(COPPICING_TECH, Branch::Forest, 2, 50.0, 8, &[FORESTRY], &[]),
     exp("Tree nursery", Branch::Forest, 3, 80.0, 10, &[FORESTRY, WEAVING], &[U(BuildingKind::TreeNursery)]),
 ];
 
-/// Index into `TECHS` of the tech that unlocks `kind`, if any.
 pub fn unlock_index(kind: BuildingKind) -> Option<usize> {
     TECHS.iter().position(|t| t.effects.contains(&Effect::Unlock(kind)))
 }
 
-/// Buildings available without any research.
 pub const BASE_BUILDINGS: [BuildingKind; 3] = [BuildingKind::Burrow, BuildingKind::Dam, BuildingKind::Warehouse];
 
-/// One thing a tech (or a building's tech) still lacks.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Gap {
-    /// A prerequisite tech not yet known.
     Research(&'static str),
-    /// Colony too small.
     Size { have: usize, need: usize },
-    /// Branch experience short.
     Experience { branch: Branch, have: f32, need: f32 },
-    /// Only an achievement grants this tech; it has not happened yet.
     Achievement(Achievement),
-    /// A building that must stand finished first (`catalogue::prerequisites`).
     Building(BuildingKind),
-    /// No tech unlocks this building at all (cannot happen for catalogue kinds).
     NoTech,
 }
 
@@ -194,7 +154,6 @@ pub struct Tech {
 }
 
 impl Tech {
-    /// Unlocks every tech (tests and scripted scenes).
     pub fn unlock_all(&mut self) {
         self.unlocked = vec![true; TECHS.len()];
         self.achieved = [true; 3];
@@ -212,14 +171,11 @@ impl Tech {
         self.achieved[a.index()]
     }
 
-    /// Whether `kind` may be built: only `BASE_BUILDINGS`, or a kind unlocked by known research.
     pub fn allows(&self, kind: BuildingKind) -> bool {
         BASE_BUILDINGS.contains(&kind)
             || self.unlocked_ids().any(|id| TECHS[id.0].effects.contains(&Effect::Unlock(kind)))
     }
 
-    /// Records `a`; the first time, unlocks (at once, free) every tech it grants and returns them.
-    /// Recording again returns nothing, so each achievement grants research once.
     pub fn record(&mut self, a: Achievement) -> Vec<TechId> {
         if std::mem::replace(&mut self.achieved[a.index()], true) {
             return Vec::new();
@@ -235,7 +191,6 @@ impl Tech {
         new
     }
 
-    /// What tech `id` still lacks (empty = ready to unlock or already known).
     pub fn needs(&self, id: TechId, colony: &Colony) -> Vec<Gap> {
         let t = &TECHS[id.0];
         if self.is_unlocked(id) {
@@ -256,7 +211,6 @@ impl Tech {
         gaps
     }
 
-    /// What is missing before `kind` can be built: empty if it already can be.
     pub fn missing(&self, kind: BuildingKind, colony: &Colony) -> Vec<Gap> {
         if self.allows(kind) {
             return Vec::new();
@@ -267,7 +221,6 @@ impl Tech {
         }
     }
 
-    /// Product of every unlocked bonus selected by `pick` (1.0 if none).
     fn product(&self, pick: impl Fn(Bonus) -> Option<f32>) -> f32 {
         self.unlocked_ids()
             .flat_map(|id| TECHS[id.0].effects.iter())
@@ -284,8 +237,6 @@ impl Tech {
         self.product(|b| if let Bonus::Storage(f) = b { Some(f) } else { None })
     }
 
-    /// Unlocks every experience tech whose needs are all met (chains resolve in one call).
-    /// Returns the newly unlocked techs.
     pub fn update(&mut self, colony: &Colony) -> Vec<TechId> {
         self.unlocked.resize(TECHS.len(), false);
         let mut new = Vec::new();
@@ -325,8 +276,6 @@ mod tests {
 
     #[test]
     fn each_achievement_grants_research_once() {
-        // The first burrow brings foraging and felling (food and wood from the first weeks); the
-        // first winter brings winter stores; the first dam grants nothing of its own.
         for a in [Achievement::FirstBurrow, Achievement::FirstWinter] {
             let mut t = Tech::default();
             let first = t.record(a);
@@ -348,7 +297,6 @@ mod tests {
         assert!(gaps.contains(&Gap::Size { have: 2, need: 5 }), "{gaps:?}");
         assert!(gaps.contains(&Gap::Experience { branch: Branch::Building, have: 0.0, need: 16.0 }), "{gaps:?}");
         assert!(t.missing(Dam, &c).is_empty());
-        // Meeting every need unlocks it at the next update.
         let mut t = Tech::default();
         t.record(Achievement::FirstBurrow);
         c = colony_of(5);
@@ -360,7 +308,6 @@ mod tests {
 
     #[test]
     fn every_tech_comes_with_size_experience_and_known_research() {
-        // With every need met, everything opens: no elders, no study.
         let mut t = Tech::default();
         t.record(Achievement::FirstBurrow);
         let mut c = colony_of(30);

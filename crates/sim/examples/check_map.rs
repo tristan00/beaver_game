@@ -1,5 +1,3 @@
-//! Checks candidate `.map` files the way the bundled maps are tested (`maps::tests`), and prints
-//! the numbers: `cargo run -p sim --release --example check_map -- a.map b.map ...`
 use sim::buildings::WET_DEPTH;
 
 fn main() {

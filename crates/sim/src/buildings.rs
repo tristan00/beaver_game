@@ -1,15 +1,9 @@
-﻿//! Buildings: catalogue, stores ledger, construction via builder work orders, workshops,
-//! water wheels (need flow) and barges (travel only on connected water).
-
 use crate::colony::{Colony, ColonyError, Job, OrderId};
 use crate::grid::Grid;
 use crate::tech::Tech;
 use crate::work::{Role, Work};
 use std::fmt;
 pub use crate::tuning::buildings::*;
-
-
-// ───────────────────────────── goods & stores ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Good {
@@ -33,12 +27,10 @@ impl Good {
 
 const N: usize = Good::ALL.len();
 
-/// A (good, amount) pair used for costs, inputs and cargo.
 pub type Amount = (Good, f32);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StoresError {
-    /// Amount was NaN, infinite or negative.
     InvalidAmount(f32),
     Insufficient { good: Good, needed: f32, have: f32 },
 }
@@ -58,29 +50,21 @@ fn check_amount(a: f32) -> Result<(), StoresError> {
     if a.is_finite() && a >= 0.0 { Ok(()) } else { Err(StoresError::InvalidAmount(a)) }
 }
 
-/// Who put goods into the stores (the goods strip's "in" breakdown).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Producer {
-    /// A workplace's slot workers (gatherers) or its benches (crafting).
     Building(BuildingId),
-    /// Gatherers on a direct or automatic gather order, with no slot.
     Order,
-    /// Anything else: the founding larder, event windfalls, tests.
     Other,
 }
 
-/// What goods were taken out of the stores for (the goods strip's "out" breakdown).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Use {
     EatenAdults,
     EatenYearlings,
     EatenKits,
     Spoiled,
-    /// Materials fetched for construction sites.
     Sites,
-    /// Workshop recipe inputs.
     Crafting,
-    /// Lodge repairs.
     Repairs,
     Other,
 }
@@ -100,7 +84,6 @@ impl Use {
     pub fn index(self) -> usize {
         self as usize
     }
-    /// Eating by a life stage.
     pub fn eaten_by(stage: crate::colony::Stage) -> Use {
         match stage {
             crate::colony::Stage::Kit => Use::EatenKits,
@@ -110,19 +93,14 @@ impl Use {
     }
 }
 
-/// Stores ledger: current amounts, capacity, and production/consumption totals and rates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stores {
     amounts: [f32; N],
     capacity: [f32; N],
-    /// Lifetime totals.
     pub produced_total: [f32; N],
     pub consumed_total: [f32; N],
-    /// Lifetime production by producer (sums to `produced_total` per good).
     pub produced_by: std::collections::BTreeMap<(Producer, Good), f32>,
-    /// Lifetime consumption by use, indexed `[Use::index][Good::index]` (sums to `consumed_total`).
     pub consumed_by: [[f32; N]; Use::COUNT],
-    /// Rates per day over the last step with dt > 0.
     pub production_rate: [f32; N],
     pub consumption_rate: [f32; N],
     tick_produced: [f32; N],
@@ -160,12 +138,10 @@ impl Stores {
         self.production_rate[g.index()] - self.consumption_rate[g.index()]
     }
 
-    /// Adds produced goods (counted as production); returns the amount accepted given capacity.
     pub fn deposit(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.deposit_by(g, amount, Producer::Other)
     }
 
-    /// `deposit`, booked to `who` for the breakdowns.
     pub fn deposit_by(&mut self, g: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_raw(g, amount)?;
         self.tick_produced[g.index()] += taken;
@@ -176,12 +152,10 @@ impl Stores {
         Ok(taken)
     }
 
-    /// Removes goods as consumption. Errors (changing nothing) if there is not enough.
     pub fn withdraw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
         self.withdraw_for(g, amount, Use::Other)
     }
 
-    /// `withdraw`, booked to `use_` for the breakdowns.
     pub fn withdraw_for(&mut self, g: Good, amount: f32, use_: Use) -> Result<(), StoresError> {
         self.take_raw(g, amount)?;
         self.tick_consumed[g.index()] += amount;
@@ -200,7 +174,6 @@ impl Stores {
         Ok(())
     }
 
-    /// Withdraws all `costs` atomically.
     pub fn withdraw_all(&mut self, costs: &[Amount]) -> Result<(), StoresError> {
         self.can_afford(costs)?;
         for &(g, a) in costs {
@@ -209,13 +182,10 @@ impl Stores {
         Ok(())
     }
 
-    /// Puts goods back without counting them as production (a cancelled site's materials).
-    /// Returns the amount that fit.
     pub fn refund(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.put_raw(g, amount)
     }
 
-    /// Moves goods without touching the ledger (refunds, barge cargo).
     pub(crate) fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(g));
@@ -244,8 +214,6 @@ impl Stores {
     }
 }
 
-// ───────────────────────────── catalogue ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BuildingKind {
     Dam,
@@ -261,28 +229,20 @@ pub enum BuildingKind {
     Warehouse,
     Dock,
     Barge,
-    // Early-lake elementary gathering camps.
     LoggingCamp,
     ForagerHut,
     MudPit,
     QuarryCamp,
-    // Industrial lake.
     Mill,
     Storehouse,
-    /// Foresters plant and tend trees in its work area (`forestry`).
     ForesterLodge,
-    /// A forester grows sapling stock here for the forester's lodges (`forestry`).
     TreeNursery,
 }
 
-/// Terrain rule for a footprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
-    /// Every footprint cell dry.
     Dry,
-    /// At least one footprint cell wet.
     TouchesWater,
-    /// A single wet cell next to a completed dock.
     WaterByDock,
 }
 
@@ -290,17 +250,12 @@ pub enum Site {
 pub struct Spec {
     pub name: &'static str,
     pub cost: &'static [Amount],
-    /// Footprint width and height in cells.
     pub footprint: (usize, usize),
-    /// Builder work units (one adult working day is about 0.6).
     pub work: f32,
     pub site: Site,
 }
 
 impl BuildingKind {
-    /// Whether this kind works only while it has water (see `Building::stranded`): everything
-    /// placed at the water, except the water works themselves (a dry dam, canal or lock is still
-    /// there) and barges.
     pub fn needs_water(self) -> bool {
         self.spec().site == Site::TouchesWater && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
     }
@@ -314,7 +269,6 @@ impl BuildingKind {
         BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
     ];
 
-    /// Name, footprint and site rule; cost and build work come from `tuning::buildings::cost_and_work`.
     pub fn spec(self) -> Spec {
         let (name, footprint, site) = match self {
             BuildingKind::Dam => ("Dam", (3, 1), Site::TouchesWater),
@@ -344,7 +298,6 @@ impl BuildingKind {
     }
 }
 
-/// Workshop recipes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recipe {
     Baskets,
@@ -353,13 +306,10 @@ pub enum Recipe {
 }
 
 impl Recipe {
-    /// (inputs, output) for one batch.
     pub fn batch(self) -> (&'static [Amount], Amount) {
         recipe_batch(self)
     }
 }
-
-// ───────────────────────────── state ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BuildingId(pub u64);
@@ -368,10 +318,7 @@ pub struct BargeId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Status {
-    /// Waiting for builders; the colony work order tracks progress.
     UnderConstruction(OrderId),
-    /// A construction site fed by hauled materials and builder labour; `work::Work` tracks it and
-    /// marks the building `Complete` when its cost is delivered and its labour done.
     Site,
     Complete,
 }
@@ -380,12 +327,9 @@ pub enum Status {
 pub struct Building {
     pub id: BuildingId,
     pub kind: BuildingKind,
-    /// Top-left footprint cell.
     pub pos: (usize, usize),
     pub status: Status,
-    /// Workshops only.
     pub recipe: Option<Recipe>,
-    /// Water wheels: current output 0..=1 (0 without flow).
     pub output: f32,
 }
 
@@ -400,16 +344,12 @@ impl Building {
     }
 }
 
-/// Water depth that still counts as water for a finished building to keep working. Lower than
-/// `WET_DEPTH`, which a site needs, and the ring around the footprint counts too, so a building
-/// does not flicker in and out of use as the waterline wavers.
 pub const KEEP_WET_DEPTH: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BargeState {
     Idle,
     Sailing,
-    /// Water along the route dried up; cargo stays aboard.
     Stranded,
 }
 
@@ -419,20 +359,14 @@ pub struct Barge {
     pub cell: (usize, usize),
     pub cargo: Option<Amount>,
     pub state: BargeState,
-    /// Remaining route, reversed so the last element is the next cell.
     pub(crate) route: Vec<(usize, usize)>,
     dest: Option<BuildingId>,
     pub(crate) progress: f32,
-    /// Dock where an idle barge sits.
     pub at_dock: Option<BuildingId>,
-    /// Standing route between two docks (`shipping`); `None` for a barge sent on single trips.
     pub service: Option<crate::shipping::Service>,
     pub leg: crate::shipping::Leg,
-    /// Days spent at the dock (loading, unloading) or waiting for a way through.
     pub wait: f32,
-    /// Goods aboard on a route, several kinds at once.
     pub hold: Vec<Amount>,
-    /// Goods delivered so far on routes.
     pub carried: f32,
 }
 
@@ -469,7 +403,6 @@ pub enum BuildError {
     UnknownBarge(BargeId),
     NotComplete,
     WrongKind(&'static str),
-    /// Barge is not on water, or the destination is not reachable over connected water.
     NoWaterRoute,
     BargeBusy,
     CargoTooLarge { max: f32 },
@@ -492,7 +425,6 @@ impl From<ColonyError> for BuildError {
     }
 }
 
-/// Read-only terrain used by buildings.
 #[derive(Clone, Copy)]
 pub struct Terrain<'a> {
     pub height: &'a Grid<f32>,
@@ -506,7 +438,6 @@ impl Terrain<'_> {
     fn surface(&self, x: usize, y: usize) -> f32 {
         self.height.get(x, y).copied().unwrap_or(0.0) + self.depth.get(x, y).copied().unwrap_or(0.0)
     }
-    /// Largest surface drop from this wet cell to a wet 4-neighbour; 0 if the cell is dry or still.
     pub fn flow(&self, x: usize, y: usize) -> f32 {
         if !self.wet(x, y) {
             return 0.0;
@@ -528,22 +459,13 @@ pub struct Buildings {
     pub stores: Stores,
     pub buildings: Vec<Building>,
     pub barges: Vec<Barge>,
-    /// Total running water-wheel output (sum of wheel outputs).
     pub power: f32,
-    /// Buildings placed under a water site rule that need their water to work
-    /// (`BuildingKind::needs_water`); see `Buildings::stranded`.
     pub water_bound: std::collections::BTreeSet<BuildingId>,
-    /// What each workshop crafted this step; `SimState` moves it into `output::Output`.
     pub crafted: Vec<(BuildingId, Good, f32)>,
     next_id: u64,
 }
 
 impl Buildings {
-    /// A finished water building with no water left in its footprint or the ring of cells around
-    /// it: it stands high and dry and does no work until the water comes back. Workplaces among them
-    /// lose their workers, stores take nothing new and add no room (what they hold can still be
-    /// fetched), and homes wear out fast. Only buildings placed at the water by the site rule
-    /// (`water_bound`) can be stranded.
     pub fn stranded(&self, b: &Building, depth: &Grid<f32>) -> bool {
         if !b.is_complete() || !self.water_bound.contains(&b.id) {
             return false;
@@ -553,7 +475,6 @@ impl Buildings {
         !(y0..=b.pos.1 + h).any(|y| (x0..=b.pos.0 + w).any(|x| depth.get(x, y).is_some_and(|&d| d >= KEEP_WET_DEPTH)))
     }
 
-    /// Records that `id`, just placed by the site rules, needs water to work if its kind does.
     fn bind_water(&mut self, id: BuildingId, kind: BuildingKind) {
         if kind.needs_water() {
             self.water_bound.insert(id);
@@ -575,12 +496,10 @@ impl Buildings {
         self.next_id
     }
 
-    /// Placeholder-free probe used to compute footprints before a building exists.
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
         Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0 }.cells().collect()
     }
 
-    /// Checks tech, bounds, overlap and terrain for placing `kind` at `pos`; changes nothing.
     fn check_placement(
         &self,
         kind: BuildingKind,
@@ -594,15 +513,12 @@ impl Buildings {
         self.check_ground(kind, pos, terrain)
     }
 
-    /// Bounds, overlap and terrain rules only (no tech check); changes nothing.
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
         let spec = kind.spec();
         let cells = Self::footprint(kind, pos);
         if cells.iter().any(|&(x, y)| !terrain.depth.in_bounds(x, y)) {
             return Err(BuildError::OutOfBounds);
         }
-        // A dam is raised or extended by building on it: a dam site may stand on a finished dam.
-        // A lock is built into a dam the same way.
         let on_dam = |b: &Building| matches!(kind, BuildingKind::Dam | BuildingKind::Lock) && b.kind == BuildingKind::Dam && b.is_complete();
         if self.buildings.iter().any(|b| !on_dam(b) && b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
@@ -627,13 +543,10 @@ impl Buildings {
         Ok(())
     }
 
-    /// Whether `place_site` would accept `kind` at `pos` (tech, bounds, overlap, terrain); changes nothing.
     pub fn can_place_site(&self, kind: BuildingKind, pos: (usize, usize), tech: &Tech, terrain: Terrain) -> Result<(), BuildError> {
         self.check_placement(kind, pos, tech, terrain)
     }
 
-    /// Places an empty construction site (`Status::Site`) with the same checks as `place` but no
-    /// cost taken: materials are hauled in later. The caller registers it with `work::Work`.
     pub fn place_site(
         &mut self,
         kind: BuildingKind,
@@ -648,8 +561,6 @@ impl Buildings {
         Ok(id)
     }
 
-    /// Adds an already finished building (a start's founding stockpile): same ground checks as
-    /// `place_site` but no tech requirement, no cost, no work. Returns its id.
     pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
@@ -658,8 +569,6 @@ impl Buildings {
         Ok(id)
     }
 
-    /// Places `kind` with its top-left at `pos`: checks tech, bounds, terrain and overlap, consumes
-    /// the cost from stores and queues a builder work order. Nothing changes on error.
     pub fn place(
         &mut self,
         kind: BuildingKind,
@@ -681,8 +590,6 @@ impl Buildings {
         Ok(id)
     }
 
-    /// Cancels an unfinished building: cancels its work order and refunds the full cost.
-    /// Errors if the building is unknown or its construction has already finished.
     pub fn cancel(&mut self, id: BuildingId, colony: &mut Colony) -> Result<(), BuildError> {
         let i = self.buildings.iter().position(|b| b.id == id).ok_or(BuildError::UnknownBuilding(id))?;
         let Status::UnderConstruction(order) = self.buildings[i].status else {
@@ -713,8 +620,6 @@ impl Buildings {
         self.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete())
     }
 
-    /// Loads `cargo` from stores onto an idle barge and sends it to dock `dest` over connected
-    /// water. Errors with `NoWaterRoute` (loading nothing) if no water path joins them.
     pub fn dispatch(
         &mut self,
         barge: BargeId,
@@ -755,9 +660,6 @@ impl Buildings {
         Ok(())
     }
 
-    /// Advances construction, workshops, water wheels and barges by `dt_days`.
-    /// `dt_days` must be finite and >= 0 (validated by `SimState::step`). Workshops craft only as
-    /// fast as they are staffed (see `crafters`): `work` holds slot workers of site-built workplaces.
     pub fn step(&mut self, dt_days: f32, tech: &Tech, terrain: Terrain, colony: &Colony, work: &Work) {
         self.complete_finished(colony, terrain);
         self.update_capacity(tech, terrain);
@@ -789,8 +691,6 @@ impl Buildings {
         }
     }
 
-    /// Capacity per good: the base plus every complete store's catalogue capacity for goods it
-    /// takes. A stranded store adds none.
     pub(crate) fn update_capacity(&mut self, tech: &Tech, terrain: Terrain) {
         let f = tech.storage_factor();
         for g in Good::ALL {
@@ -813,10 +713,6 @@ impl Buildings {
         }
     }
 
-    /// Workers crafting at each complete building that has a recipe, in building order.
-    /// A building registered in `work` (placed as a site) counts its filled `Craft` slots. A
-    /// building placed by work order has no workplace; it is staffed from the colony's working
-    /// `Crafter`s, shared out in building order, each building taking at most its slot count.
     fn crafters(&self, colony: &Colony, work: &Work) -> Vec<(BuildingId, usize)> {
         let mut pool = colony.beavers.iter().filter(|b| b.current_job == Some(Job::Crafter)).count();
         self.buildings
@@ -837,7 +733,6 @@ impl Buildings {
             .collect()
     }
 
-    /// Crafts at every staffed workshop: `batches_per_worker` x workers, limited by inputs and space.
     fn run_workshops(&mut self, dt: f32, tech: &Tech, crafters: &[(BuildingId, usize)], work: &Work) {
         if dt <= 0.0 {
             return;
@@ -853,13 +748,10 @@ impl Buildings {
         if recipes.is_empty() {
             return;
         }
-        // Wheel power is shared evenly; a fully powered workshop gains `WHEEL_MAX_BOOST`.
         let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
         for (id, r, rate) in recipes {
             let (inputs, (out, per)) = r.batch();
             let mut batches = rate * dt * boost * tech.craft_speed_factor();
-            // Only goods in stores within reach count (see `stock`); a workshop with no store
-            // registered at all (old fixtures) uses the ledger.
             let me = self.building(id).expect("crafting building exists").clone();
             for &(g, a) in inputs {
                 let near: f32 = self
@@ -903,7 +795,6 @@ impl Buildings {
                     b.at_dock = b.dest.take();
                 }
             }
-            // Idle barges at a dock hand over cargo as capacity allows.
             if b.state == BargeState::Idle && b.at_dock.is_some() {
                 if let Some((g, a)) = b.cargo {
                     let put = self.stores.put_raw(g, a).expect("cargo amount is valid");
@@ -914,7 +805,6 @@ impl Buildings {
     }
 }
 
-/// Wet cells inside or 4-adjacent to a dock's footprint, where barges can berth.
 fn dock_access(dock: &Building, terrain: Terrain) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (x, y) in dock.cells() {
@@ -927,8 +817,6 @@ fn dock_access(dock: &Building, terrain: Terrain) -> Vec<(usize, usize)> {
     out
 }
 
-/// Shortest 4-connected path over wet cells from `from` to any of `targets` (excluding `from`).
-/// `None` if `from` is dry or no target is connected.
 fn water_route(terrain: Terrain, from: (usize, usize), targets: &[(usize, usize)]) -> Option<Vec<(usize, usize)>> {
     if !terrain.wet(from.0, from.1) {
         return None;
@@ -970,7 +858,6 @@ mod tests {
         depth: Grid<f32>,
     }
     impl World {
-        /// 16x8 land with a horizontal river on rows 3..=4.
         fn new() -> Self {
             let height = Grid::new(16, 8, 1.0);
             let mut depth = Grid::new(16, 8, 0.0);
@@ -1004,7 +891,6 @@ mod tests {
         }
     }
 
-    /// Completes all builder orders by clearing them (stands in for builders).
     fn finish_orders(c: &mut Colony) {
         c.orders.clear();
     }
@@ -1050,22 +936,19 @@ mod tests {
         let (tech, mut c) = (all_tech(), Colony::new(1));
         let mut b = Buildings::default();
         rich(&mut b);
-        // a lodge on rows 2..=4, its bottom rows in the river
         let id = b.place(BuildingKind::Lodge, (1, 2), &tech, w.t(), &mut c).unwrap();
         finish_orders(&mut c);
         b.step(0.0, &tech, w.t(), &c, &Work::default());
         let lodge = b.building(id).unwrap().clone();
         assert!(lodge.is_complete() && !b.stranded(&lodge, &w.depth));
-        // the river drops out of the footprint but still runs beside it: still usable
         for x in 0..16 {
             *w.depth.get_mut(x, 3).unwrap() = 0.0;
             *w.depth.get_mut(x, 4).unwrap() = 0.0;
         }
-        *w.depth.get_mut(4, 3).unwrap() = KEEP_WET_DEPTH; // one cell of the ring
+        *w.depth.get_mut(4, 3).unwrap() = KEEP_WET_DEPTH;
         assert!(!b.stranded(&lodge, &w.depth), "water right beside the footprint keeps it working");
         *w.depth.get_mut(4, 3).unwrap() = 0.0;
         assert!(b.stranded(&lodge, &w.depth), "no water in or around: high and dry");
-        // dry-ground kinds, and buildings not placed by the site rules, are never stranded
         let post = b.place(BuildingKind::GuardPost, (8, 0), &tech, w.t(), &mut c).unwrap();
         finish_orders(&mut c);
         b.step(0.0, &tech, w.t(), &c, &Work::default());
@@ -1099,7 +982,6 @@ mod tests {
         let mut b = Buildings::default();
         rich(&mut b);
         assert_eq!(b.place(BuildingKind::Lodge, (15, 0), &tech, w.t(), &mut c), Err(BuildError::OutOfBounds));
-        // a lodge stands at the water: wholly on dry land it is refused, at the river's edge accepted
         assert_eq!(b.place(BuildingKind::Lodge, (1, 0), &tech, w.t(), &mut c), Err(BuildError::BadTerrain("needs water")));
         assert_eq!(b.place(BuildingKind::GuardPost, (1, 3), &tech, w.t(), &mut c), Err(BuildError::BadTerrain("needs dry ground")));
         assert!(matches!(b.place(BuildingKind::Dock, (1, 0), &tech, w.t(), &mut c), Err(BuildError::BadTerrain(_))));
@@ -1125,7 +1007,6 @@ mod tests {
         b.set_recipe(id, Some(Recipe::Baskets)).unwrap();
         finish_orders(&mut c);
         b.step(0.0, &tech, w.t(), &c, &Work::default());
-        // Placed by work order, so staffed by the colony's crafters: none yet, nothing made.
         let (baskets, sticks) = (b.stores.amount(Good::Baskets), b.stores.amount(Good::Sticks));
         b.step(0.5, &tech, w.t(), &c, &Work::default());
         assert_eq!((b.stores.amount(Good::Baskets), b.stores.amount(Good::Sticks)), (baskets, sticks));
@@ -1148,12 +1029,10 @@ mod tests {
         rich(&mut b);
         let id = b.place(BuildingKind::WaterWheel, (5, 3), &tech, w.t(), &mut c).unwrap();
         finish_orders(&mut c);
-        // still water: flat surface
         b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(b.building(id).unwrap().is_complete());
         assert_eq!(b.building(id).unwrap().output, 0.0);
         assert_eq!(b.power, 0.0);
-        // slope the riverbed so the surface drops downstream
         for x in 0..16 {
             for y in 3..=4 {
                 *w.height.get_mut(x, y).unwrap() = 1.0 - 0.1 * x as f32;
@@ -1161,7 +1040,6 @@ mod tests {
         }
         b.step(1.0, &tech, w.t(), &c, &Work::default());
         assert!(b.building(id).unwrap().output > 0.0 && b.power > 0.0);
-        // dry the river: no output
         for x in 0..16 {
             w.set_column(x, 0.0);
         }
@@ -1188,12 +1066,10 @@ mod tests {
         rich(&mut b);
         let (d2, barge) = setup_docks_and_barge(&w, &tech, &mut c, &mut b);
         assert!(b.barge(barge).unwrap().at_dock.is_some());
-        // dry land across the river at column 7 cuts the route
         w.set_column(7, 0.0);
         let logs = b.stores.amount(Good::Logs);
         assert_eq!(b.dispatch(barge, d2, Some((Good::Logs, 5.0)), w.t()), Err(BuildError::NoWaterRoute));
         assert_eq!(b.stores.amount(Good::Logs), logs, "failed dispatch must not load cargo");
-        // reconnect
         w.set_column(7, 0.5);
         b.dispatch(barge, d2, Some((Good::Logs, 5.0)), w.t()).unwrap();
         assert_eq!(b.stores.amount(Good::Logs), logs - 5.0);

@@ -1,7 +1,3 @@
-//! Dams drawn cell by cell from the sim's dam heights, and the buildings that used to borrow the
-//! burrow or workshop model: food cache, scent mound, guard post, forager hut, mud pit, tree
-//! nursery, warehouse, storehouse, logging camp, quarry camp, forester's lodge, mill and lock.
-//! Same conventions as `models.rs`: vertex colours, round edges, local +Z is the front.
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::models::{hex_roof_c, mud_lump, site_markers, stake, stick, stick_c, stick_pile};
 use crate::palette::{self, pack};
@@ -14,26 +10,14 @@ const DAM_MUD: u32 = pack(palette::DAM_MUD);
 const CUT_WOOD: u32 = pack(palette::CUT_WOOD);
 const INK: u32 = pack(palette::INK);
 
-/// Bark peeled off by the beavers (they eat it): the pale sticks that make a dam look lived in.
 fn peeled() -> [f32; 3] { mix(hex(CUT_WOOD), hex(0xd8c29a), 0.4) }
 
-// ---------------------------------------------------------------------------------------------
-// Dams
-// ---------------------------------------------------------------------------------------------
-
-/// Quarter-unit steps a drawn dam height is rounded to (so cells share meshes).
 pub const DAM_STEP: f32 = 0.25;
 
-/// One cell of a dam in world units, origin on the ground at the cell centre, the dam running
-/// along local X for `len` (a little over a cell, so neighbours merge into one bank). A mud core
-/// `h` tall with a narrow crest and a broad foot; sticks laid down both faces with the flow, some
-/// peeled pale; a crest of long sticks under mud lumps; stones and mud at the foot. `site` adds the
-/// builders' stakes and a pile of sticks (still being built). `variant` reshuffles the sticks.
 pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
     let hl = len * 0.5;
     let h = h.max(0.1);
     let (wt, wb, bury) = (0.2f32, 0.3 + 0.5 * h, 0.45f32);
-    // face distance from the axis at height fraction t: straight foot-to-crest, bellied out a little
     let face = |t: f32| wb + (wt - wb) * t + 0.22 * h.min(1.5) * t * (1.0 - t);
     let (mud_lo, mud_hi) = (hex(0x4d3520), hex(DAM_MUD));
     let mut prof: Vec<(f32, f32)> = vec![(-(wb + bury * (wb - wt) / h), -bury)];
@@ -49,10 +33,8 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
     let mut r = Rng(9001 + variant * 7717 + (h * 8.0) as u32 * 31);
     let dark_bark = |r: &mut Rng| mix(hex(0x5d3a20), hex(0x7a5230), r.next());
     for s in [-1.0f32, 1.0] {
-        // a smear of wetter mud packed into each face
         let t = r.range(0.25, 0.6);
         mb.ellipsoid_g(v(r.range(-hl * 0.5, hl * 0.5), t * h, s * (face(t) - 0.04)), v(r.range(0.3, 0.45), h * 0.22 + 0.05, 0.12), mud_lo, mix(mud_lo, mud_hi, 0.6), 8, 4);
-        // sticks down the face: mostly with the flow (down the slope), some across
         let n = (len * h * 12.0) as usize + 5;
         for _ in 0..n {
             let t = r.range(0.05, 0.95);
@@ -75,7 +57,6 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
             }
         }
     }
-    // the crest: long sticks along the top under lumps of mud, a sprig of leaves now and then
     for k in 0..3 {
         let z = (k as f32 - 1.0) * wt * 0.6 + r.range(-0.04, 0.04);
         let (x0, x1) = (-hl - r.range(0.0, 0.2), hl + r.range(0.0, 0.2));
@@ -96,7 +77,6 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
             mb.ellipsoid_r(c + o, v(0.13 * k, 0.035, 0.07 * k), Quat::from_rotation_y(o.x * 4.0), hex(0x6ab84a));
         }
     }
-    // the foot: river stones and slumped mud on both sides
     for s in [-1.0f32, 1.0] {
         for _ in 0..2 {
             let p = v(r.range(-hl, hl), 0.06, s * (wb + r.range(0.0, 0.2)));
@@ -114,7 +94,6 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
     }
 }
 
-/// A dam cell mesh (world units): height in `DAM_STEP`s, diagonal cells drawn longer.
 pub fn dam_cell_mesh(steps: u8, diagonal: bool, variant: u32, site: bool) -> Mesh {
     let mut mb = Mb::new();
     let len = if diagonal { std::f32::consts::SQRT_2 } else { 1.0 } + 0.35;
@@ -122,9 +101,6 @@ pub fn dam_cell_mesh(steps: u8, diagonal: bool, variant: u32, site: bool) -> Mes
     mb.build()
 }
 
-/// Line direction through a dam cell from which of its 8 neighbours are dam too: the doubled-angle
-/// mean (so left/right and up/down count alike), snapped to the nearest 45 degrees. Returns the
-/// step (0 = along +X, 1 = diagonal, 2 = along +Z, 3 = the other diagonal). No neighbours: along X.
 pub fn dam_dir(is_dam: impl Fn(i32, i32) -> bool) -> u8 {
     let mut acc = Vec2::ZERO;
     for dy in -1..=1 {
@@ -142,34 +118,19 @@ pub fn dam_dir(is_dam: impl Fn(i32, i32) -> bool) -> u8 {
     ((a / (TAU / 8.0)).round() as i32).rem_euclid(4) as u8
 }
 
-// ---------------------------------------------------------------------------------------------
-// Water footings: what a building at the waterline stands on
-// ---------------------------------------------------------------------------------------------
-
-/// How deep (model units) a footing reaches below the floor: a building stands with its floor at
-/// the waterline (or the top of its bank) and its footing goes down to the bed; on land it is
-/// buried in the bank.
 pub const FOOTING_DEPTH: f32 = 4.2;
 
-/// The footing under a water building.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Footing {
-    /// A heaped mound of mud and sticks of radius `r` (lodge, burrow, food cache, mud pit).
     Mound(f32),
-    /// A round drum of stone of radius `r` (mill).
     Stone(f32),
-    /// A plank deck on timber piles, half size `hx` x `hz` (timber buildings).
     Piles(f32, f32),
 }
 
-/// Pale tide mark where the water stood, just under the floor.
 const STAIN_Y: f32 = -0.42;
 fn stain() -> [f32; 3] { hex(0xd9d0bf) }
-/// Dried weed and algae left hanging when the water went.
 fn dried_weed() -> [f32; 3] { hex(0x8a7a4a) }
 
-/// Draws `f` below y = 0. `dry` adds the marks of water that has gone: a tide line, dried weed
-/// hanging off it, and cracked mud.
 pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
     let d = FOOTING_DEPTH;
     let mut r = Rng(4242);
@@ -177,7 +138,6 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
         Footing::Mound(rad) => {
             let (lo, hi) = (hex(0x3f2c1b), hex(DAM_MUD));
             mb.lathe(Mat4::IDENTITY, &[(0.0, -d), (rad * 1.3, -d), (rad * 1.16, -d * 0.5), (rad * 1.05, -0.5), (rad * 1.0, 0.08), (0.0, 0.08)], 16, lo, hi, true);
-            // sticks bedded in the mound, slanting down into the water
             for i in 0..16 {
                 let a = i as f32 / 16.0 * TAU + r.range(-0.15, 0.15);
                 let y = r.range(-d * 0.6, -0.25);
@@ -221,7 +181,6 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
             let nz = ((hz * 2.0 / 1.3).ceil() as usize).max(1);
             let px = |i: usize| -hx + 2.0 * hx * i as f32 / nx as f32;
             let pz = |j: usize| -hz + 2.0 * hz * j as f32 / nz as f32;
-            // deck
             let planks = (hx * 2.0 / 0.42) as usize;
             for i in 0..planks {
                 let x = -hx - 0.15 + (2.0 * hx + 0.3) * (i as f32 + 0.5) / planks as f32;
@@ -229,9 +188,8 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
                 mb.cuboid(v(x, -0.04, 0.0), v((2.0 * hx + 0.3) / planks as f32 * 0.5 - 0.015, 0.09, hz + 0.2), Quat::IDENTITY, a, b);
             }
             for s in [-1.0f32, 1.0] {
-                mb.cuboid(v(0.0, -0.22, s * (hz + 0.15)), v(hx + 0.2, 0.1, 0.08), Quat::IDENTITY, wood.0, wood.1); // joists
+                mb.cuboid(v(0.0, -0.22, s * (hz + 0.15)), v(hx + 0.2, 0.1, 0.08), Quat::IDENTITY, wood.0, wood.1);
             }
-            // piles on the outline, and X braces between neighbours along each side
             let mut posts = Vec::new();
             for i in 0..=nx {
                 for j in 0..=nz {
@@ -262,7 +220,6 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
                 }
             }
             if dry {
-                // a dried-out hull of weed caught on the cross braces
                 for _ in 0..6 {
                     let p = posts[(r.next() * posts.len() as f32) as usize % posts.len()];
                     mb.cyl(p + v(r.range(-0.3, 0.3), -0.6, 0.18), p + v(r.range(-0.3, 0.3), -1.3, 0.25), 0.06, 0.015, dried_weed(), mix(dried_weed(), stain(), 0.4), 4);
@@ -272,11 +229,8 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
     }
 }
 
-/// Dusty colour a building fades toward once its water has gone and it stands abandoned.
 pub fn abandoned_tint() -> [f32; 3] { hex(0xa39a8f) }
 
-/// What an abandoned building shows above its floor: dead grass grown up around it and fallen
-/// sticks, so it reads as left behind even from the strategy camera.
 pub fn abandoned_dressing(mb: &mut Mb, hx: f32, hz: f32) {
     let mut r = Rng(777);
     let grass = (hex(0x9a8a52), hex(0xd2bf7c));
@@ -296,12 +250,6 @@ pub fn abandoned_dressing(mb: &mut Mb, hx: f32, hz: f32) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Buildings
-// ---------------------------------------------------------------------------------------------
-
-/// A construction site for a building `2*hx` by `2*hz`: stage 0 staked out with materials; 1 a
-/// footing and short corner posts; 2 full-height posts and a ridge pole.
 fn site_frame(mb: &mut Mb, hx: f32, hz: f32, stage: u8, seed: u32) {
     site_markers(mb, hx + 0.5, hz + 0.5, 0.0);
     stick_pile(mb, v(-hx - 0.2, 0.0, hz + 1.0), 0.4, 6, seed);
@@ -329,7 +277,7 @@ fn site_frame(mb: &mut Mb, hx: f32, hz: f32, stage: u8, seed: u32) {
 fn basket(mb: &mut Mb, p: Vec3, s: f32, fill: [f32; 3]) {
     let (a, b) = (hex(0xb98a52), hex(0xd9b47a));
     mb.lathe(Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s)), &[(0.0, 0.0), (0.32, 0.0), (0.42, 0.35), (0.45, 0.42), (0.0, 0.42)], 10, a, b, false);
-    mb.lathe(Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s)), &[(0.38, 0.12), (0.43, 0.22)], 10, hex(0x8a5a32), hex(0x8a5a32), false); // weave band
+    mb.lathe(Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(s)), &[(0.38, 0.12), (0.43, 0.22)], 10, hex(0x8a5a32), hex(0x8a5a32), false);
     mb.ellipsoid_g(p + v(0.0, 0.42 * s, 0.0), v(0.36 * s, 0.14 * s, 0.36 * s), mix(fill, hex(INK), 0.2), fill, 8, 4);
 }
 
@@ -388,7 +336,6 @@ fn lean_to(mb: &mut Mb, cx: f32, cz: f32, w: f32) {
     }
 }
 
-/// A pile of branches stocked with leafy food, berries and a basket of greens.
 pub fn food_cache(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         return site_frame(mb, 1.5, 1.5, stage, 501);
@@ -423,14 +370,13 @@ pub fn food_cache(mb: &mut Mb, stage: u8) {
     basket(mb, v(-1.7, 0.0, 1.1), 0.8, hex(0xd9434a));
 }
 
-/// A little cone of mud marking the territory, a stick standing in it.
 pub fn scent_mound(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         stake(mb, v(0.6, 0.0, 0.6), 1.0, true);
         return mud_lump(mb, v(0.0, 0.1, 0.0), 0.5 + 0.3 * stage as f32);
     }
     mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (1.0, -0.1), (0.78, 0.3), (0.35, 0.68), (0.0, 0.75)], 12, hex(0x4d3520), hex(DAM_MUD), true);
-    mb.ellipsoid_g(v(0.0, 0.62, 0.0), v(0.35, 0.14, 0.35), hex(0x3a281a), hex(0x5d4228), 8, 4); // fresh wet top
+    mb.ellipsoid_g(v(0.0, 0.62, 0.0), v(0.35, 0.14, 0.35), hex(0x3a281a), hex(0x5d4228), 8, 4);
     stick(mb, v(0.05, 0.4, 0.0), v(0.15, 1.5, 0.05), 0.05, 0.4);
     mb.ellipsoid_g(v(0.22, 1.5, 0.08), v(0.16, 0.09, 0.12), hex(0x4aa042), hex(0x8ad25a), 7, 4);
     for (x, z) in [(0.9f32, 0.4f32), (-0.7, 0.75), (-0.5, -0.9)] {
@@ -438,7 +384,6 @@ pub fn scent_mound(mb: &mut Mb, stage: u8) {
     }
 }
 
-/// A lookout: four poles holding a railed platform, a ladder and a pennant.
 pub fn guard_post(mb: &mut Mb, stage: u8) {
     let wood = (hex(0x8a5a32), hex(0xb07840));
     let top = [0.9, 1.6, 2.4, 2.4][stage as usize];
@@ -454,7 +399,6 @@ pub fn guard_post(mb: &mut Mb, stage: u8) {
     for (a, b) in [((-0.6f32, -0.6f32), (0.6f32, -0.6f32)), ((0.6, -0.6), (0.6, 0.6)), ((-0.6, 0.6), (-0.6, -0.6))] {
         mb.cyl(v(a.0, top + 0.55, a.1), v(b.0, top + 0.55, b.1), 0.05, 0.05, wood.0, wood.1, 5);
     }
-    // ladder up the front
     for s in [-0.25f32, 0.25] {
         mb.cyl(v(s, -0.05, 1.5), v(s, top + 0.1, 0.85), 0.05, 0.05, wood.0, wood.1, 5);
     }
@@ -467,7 +411,6 @@ pub fn guard_post(mb: &mut Mb, stage: u8) {
     mb.cuboid(v(0.85, top + 1.42, -0.6), v(0.25, 0.14, 0.015), Quat::from_rotation_z(-0.1), hex(0xff7a1a), hex(0xffa040));
 }
 
-/// A round hut of woven sticks under a straw cone, baskets of greens by the door.
 pub fn forager_hut(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         return site_frame(mb, 1.4, 1.4, stage, 601);
@@ -476,22 +419,21 @@ pub fn forager_hut(mb: &mut Mb, stage: u8) {
     mb.lathe(Mat4::IDENTITY, &[(1.35, -0.1), (1.32, 1.1)], 14, hex(0x7c5530), hex(0x9a7040), false);
     for k in 0..4 {
         let y = 0.15 + k as f32 * 0.27;
-        mb.lathe(Mat4::IDENTITY, &[(1.37, y), (1.39, y + 0.1), (1.37, y + 0.18)], 14, hex(0x6a4627), hex(0x8d6537), true); // weave bands
+        mb.lathe(Mat4::IDENTITY, &[(1.37, y), (1.39, y + 0.1), (1.37, y + 0.18)], 14, hex(0x6a4627), hex(0x8d6537), true);
     }
     mb.lathe(Mat4::IDENTITY, &[(0.0, 0.95), (1.85, 0.95), (1.8, 1.08), (1.1, 1.75), (0.35, 2.35), (0.0, 2.5)], 14, straw0, straw1, true);
     for k in 0..3 {
         let y = 1.25 + k as f32 * 0.35;
         let rr = 1.55 - k as f32 * 0.4;
-        mb.lathe(Mat4::IDENTITY, &[(rr + 0.06, y - 0.05), (rr - 0.05, y + 0.07)], 14, mix(straw0, hex(INK), 0.15), straw0, false); // thatch steps
+        mb.lathe(Mat4::IDENTITY, &[(rr + 0.06, y - 0.05), (rr - 0.05, y + 0.07)], 14, mix(straw0, hex(INK), 0.15), straw0, false);
     }
     mb.ellipsoid_g(v(0.0, 2.52, 0.0), v(0.18, 0.18, 0.18), straw0, straw1, 8, 4);
-    mb.ellipsoid(v(0.0, 0.5, 1.33), v(0.42, 0.55, 0.12), hex(0x140c09)); // doorway
+    mb.ellipsoid(v(0.0, 0.5, 1.33), v(0.42, 0.55, 0.12), hex(0x140c09));
     basket(mb, v(1.45, 0.0, 1.35), 0.9, hex(0x7bc653));
     basket(mb, v(-1.5, 0.0, 1.2), 0.75, hex(0xd9434a));
     basket(mb, v(-1.85, 0.0, 0.3), 0.7, hex(0xf2c94c));
 }
 
-/// A dug pit of glossy mud ringed by its spoil, mud balls stacked to dry and a paddle stuck in.
 pub fn mud_pit(mb: &mut Mb, stage: u8) {
     let mut r = Rng(701);
     let n = 10;
@@ -505,7 +447,7 @@ pub fn mud_pit(mb: &mut Mb, stage: u8) {
         return mb.disc(v(0.0, 0.06, 0.0), 1.2, 1.1, hex(0x5d4228), 14);
     }
     mb.disc(v(0.0, 0.1, 0.0), 1.3, 1.2, hex(0x3a281a), 16);
-    mb.disc(v(-0.3, 0.11, -0.25), 0.45, 0.2, hex(0x6a5038), 10); // shine
+    mb.disc(v(-0.3, 0.11, -0.25), 0.45, 0.2, hex(0x6a5038), 10);
     for (p, s) in [(v(1.95, 0.0, 0.9), 1.0f32), (v(2.3, 0.0, 0.6), 1.0), (v(2.05, 0.0, 0.3), 1.0), (v(2.12, 0.3, 0.6), 0.95)] {
         mb.ellipsoid_g(p + v(0.0, 0.18 * s, 0.0), v(0.2 * s, 0.18 * s, 0.2 * s), hex(0x5d4228), hex(DAM_MUD), 8, 4);
     }
@@ -513,7 +455,6 @@ pub fn mud_pit(mb: &mut Mb, stage: u8) {
     mb.cuboid(v(0.38, 0.12, 0.18), v(0.14, 0.22, 0.03), Quat::from_rotation_y(0.6) * Quat::from_rotation_z(0.25), hex(0xa97a46), hex(0xc4965c));
 }
 
-/// Rows of saplings on little mounds inside a low wattle fence.
 pub fn tree_nursery(mb: &mut Mb, stage: u8) {
     let wood = (hex(0x8a5a32), hex(0xb07840));
     let (hx, hz) = (1.8f32, 1.8f32);
@@ -540,12 +481,10 @@ pub fn tree_nursery(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         return stick_pile(mb, v(-1.9, 0.0, 2.4), 0.2, 5, 88);
     }
-    mb.lathe(Mat4::from_translation(v(2.2, 0.0, 1.5)), &[(0.0, 0.0), (0.22, 0.0), (0.26, 0.4), (0.0, 0.4)], 10, hex(0x7d5430), hex(0xa97a46), false); // bucket
+    mb.lathe(Mat4::from_translation(v(2.2, 0.0, 1.5)), &[(0.0, 0.0), (0.22, 0.0), (0.26, 0.4), (0.0, 0.4)], 10, hex(0x7d5430), hex(0xa97a46), false);
     mb.disc(v(2.2, 0.36, 1.5), 0.22, 0.22, hex(0x6fd3e0), 10);
 }
 
-/// Log-cabin walls (logs crossing at the corners) of half size `hx` x `hz`, `layers` high, with a
-/// doorway `door` wide in the front wall.
 fn log_walls(mb: &mut Mb, hx: f32, hz: f32, layers: usize, door: f32) {
     let r = 0.16;
     for i in 0..layers {
@@ -553,9 +492,9 @@ fn log_walls(mb: &mut Mb, hx: f32, hz: f32, layers: usize, door: f32) {
         let k = (i % 3) as f32 * 0.35;
         let bark = mix(hex(0x7a5230), hex(0x9a6e3e), k);
         let end = hex(0xecd2a0);
-        mb.log(v(-hx - 0.25, y, -hz), v(hx + 0.25, y, -hz), r, bark, end, 7); // back
+        mb.log(v(-hx - 0.25, y, -hz), v(hx + 0.25, y, -hz), r, bark, end, 7);
         for s in [-1.0f32, 1.0] {
-            mb.log(v(s * hx, y, -hz - 0.25), v(s * hx, y, hz + 0.25), r, bark, end, 7); // sides
+            mb.log(v(s * hx, y, -hz - 0.25), v(s * hx, y, hz + 0.25), r, bark, end, 7);
         }
         if i < layers.saturating_sub(2) && door > 0.0 {
             mb.log(v(-hx - 0.25, y, hz), v(-door, y, hz), r, bark, end, 7);
@@ -566,7 +505,6 @@ fn log_walls(mb: &mut Mb, hx: f32, hz: f32, layers: usize, door: f32) {
     }
 }
 
-/// A big log cabin with double doors and a red roof; crates and sacks out front.
 pub fn warehouse(mb: &mut Mb, stage: u8) {
     let (hx, hz) = (2.4f32, 2.0f32);
     mb.cuboid(v(0.0, 0.0, 0.0), v(hx + 0.35, 0.25, hz + 0.35), Quat::IDENTITY, hex(0x6f6b66), hex(0x9a968f));
@@ -579,7 +517,7 @@ pub fn warehouse(mb: &mut Mb, stage: u8) {
     hex_roof_c(mb, hx + 0.6, hz + 0.6, 2.75, hex(0xa63f28), hex(0xd75c38), hex(0x8f3320));
     for s in [-1.0f32, 1.0] {
         mb.cuboid(v(0.42 * s, 1.1, hz + 0.05), v(0.4, 0.85, 0.06), Quat::IDENTITY, hex(0x6a4020), hex(0x8a5a30));
-        mb.cuboid(v(0.42 * s, 1.1, hz + 0.12), v(0.3, 0.05, 0.03), Quat::from_rotation_z(0.7 * s), hex(0x5a3a20), hex(0x6a4528)); // brace
+        mb.cuboid(v(0.42 * s, 1.1, hz + 0.12), v(0.3, 0.05, 0.03), Quat::from_rotation_z(0.7 * s), hex(0x5a3a20), hex(0x6a4528));
     }
     crate_box(mb, v(1.7, 0.25, hz + 1.0), 0.32, 0.2);
     crate_box(mb, v(1.75, 0.89, hz + 1.0), 0.26, -0.3);
@@ -588,7 +526,6 @@ pub fn warehouse(mb: &mut Mb, stage: u8) {
     sack(mb, v(-2.1, 0.25, hz + 0.7), 0.9, -0.5);
 }
 
-/// A long open-fronted shed on posts, its bays stacked with logs, stone, sacks and pots.
 pub fn storehouse(mb: &mut Mb, stage: u8) {
     let (hx, hz) = (3.4f32, 2.3f32);
     let wood = (hex(0x8a5a32), hex(0xb07840));
@@ -606,14 +543,12 @@ pub fn storehouse(mb: &mut Mb, stage: u8) {
         site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
         return stick_pile(mb, v(-hx, 0.0, hz + 1.4), 0.2, 8, 141);
     }
-    // back wall of planks
     for i in 0..12 {
         let x = -hx + (i as f32 + 0.5) * hx * 2.0 / 12.0;
         let (a, b) = if i % 2 == 0 { (hex(0xb9814a), hex(0xd49a5c)) } else { (hex(0xa97445), hex(0xc48c52)) };
         mb.cuboid(v(x, 1.35, -hz), v(hx / 12.0 - 0.01, 1.1, 0.06), Quat::IDENTITY, a, b);
     }
     hex_roof_c(mb, hx + 0.5, hz + 0.6, 2.5, hex(0x8a5a32), hex(0xb98650), hex(0x6a4528));
-    // bays: logs, cut stone, sacks, pots
     log_stack(mb, v(-2.3, 0.25, -0.6), 1.9, 0.2, 3);
     for (i, (x, y)) in [(0.0f32, 0.0f32), (0.75, 0.0), (0.38, 0.5)].into_iter().enumerate() {
         mb.cuboid(v(x - 0.3, 0.5 + y, -0.9), v(0.34, 0.24, 0.3), Quat::from_rotation_y(0.05 * i as f32), hex(0x8c8290), hex(0xb9afa8));
@@ -626,7 +561,6 @@ pub fn storehouse(mb: &mut Mb, stage: u8) {
     }
 }
 
-/// A lean-to shelter, a big stack of logs and a chopping stump in a scatter of chips.
 pub fn logging_camp(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         site_frame(mb, 1.4, 1.2, stage, 801);
@@ -644,7 +578,6 @@ pub fn logging_camp(mb: &mut Mb, stage: u8) {
     stick_pile(mb, v(-1.6, 0.0, -0.1), 0.9, 5, 812);
 }
 
-/// Heaps of quarried stone, stacked cut blocks, a little cart and a lean-to.
 pub fn quarry_camp(mb: &mut Mb, stage: u8) {
     if stage < 3 {
         site_frame(mb, 1.4, 1.2, stage, 901);
@@ -659,7 +592,6 @@ pub fn quarry_camp(mb: &mut Mb, stage: u8) {
     for (i, (x, y, z)) in [(0.7f32, 0.0f32, 0.9f32), (1.35, 0.0, 0.9), (1.0, 0.42, 0.9), (0.75, 0.0, 1.5)].into_iter().enumerate() {
         mb.cuboid(v(x, y + 0.21, z), v(0.3, 0.2, 0.26), Quat::from_rotation_y(0.08 * i as f32), hex(0x8c8290), hex(0xc4bcb4));
     }
-    // cart
     let (cx, cz) = (1.7f32, -0.2f32);
     mb.cuboid(v(cx, 0.65, cz), v(0.4, 0.22, 0.6), Quat::IDENTITY, hex(0xa97a46), hex(0xd1a266));
     for s in [-1.0f32, 1.0] {
@@ -669,7 +601,6 @@ pub fn quarry_camp(mb: &mut Mb, stage: u8) {
     mb.ellipsoid_g(v(cx, 0.95, cz), v(0.3, 0.18, 0.4), hex(0x77777c), hex(0xb2b2b6), 7, 4);
 }
 
-/// A small plank cabin with a mossy green roof, potted saplings by the door and a watering can.
 pub fn forester_lodge(mb: &mut Mb, stage: u8) {
     let (hx, hz) = (1.45f32, 1.2f32);
     if stage < 3 {
@@ -689,20 +620,16 @@ pub fn forester_lodge(mb: &mut Mb, stage: u8) {
         mb.lathe(Mat4::from_translation(v(x, 0.0, z)), &[(0.0, 0.0), (0.16, 0.0), (0.22, 0.3), (0.0, 0.3)], 8, hex(0xb0603a), hex(0xd9844e), false);
         sapling(mb, v(x, 0.25, z), s, (0x4aa042, 0x8ad25a));
     }
-    // watering can
     let c = v(-0.8, 0.0, 1.9);
     mb.lathe(Mat4::from_translation(c), &[(0.0, 0.0), (0.2, 0.0), (0.2, 0.32), (0.0, 0.32)], 10, hex(0x8a9aa8), hex(0xb8c4ce), false);
     mb.cyl(c + v(0.15, 0.1, 0.0), c + v(0.45, 0.4, 0.0), 0.03, 0.02, hex(0x8a9aa8), hex(0xb8c4ce), 5);
 }
 
-/// A round stone mill with a timber top and a cone roof; a millstone leans by the door and flour
-/// sacks wait to be carried.
 pub fn mill(mb: &mut Mb, stage: u8) {
     let (s0, s1) = (hex(0x8c8290), hex(0xc4bcb4));
     let wall = [0.0, 0.9, 1.9, 1.9][stage as usize];
     if wall > 0.0 {
         mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (1.85, -0.1), (1.7, 0.2), (1.6, wall), (0.0, wall)], 14, s0, s1, false);
-        // stone courses
         let mut y = 0.45;
         while y < wall {
             mb.lathe(Mat4::IDENTITY, &[(1.63, y - 0.03), (1.66, y), (1.63, y + 0.03)], 14, mix(s0, hex(INK), 0.2), s0, true);
@@ -716,9 +643,8 @@ pub fn mill(mb: &mut Mb, stage: u8) {
     mb.lathe(Mat4::IDENTITY, &[(1.55, 1.9), (1.45, 3.0), (0.0, 3.0)], 14, hex(0xb9814a), hex(0xd49a5c), false);
     for k in 0..8 {
         let a = k as f32 / 8.0 * TAU;
-        mb.cyl(v(a.cos() * 1.5, 1.9, a.sin() * 1.5), v(a.cos() * 1.46, 3.0, a.sin() * 1.46), 0.05, 0.05, hex(0x7d5430), hex(0x8f6038), 4); // studs
+        mb.cyl(v(a.cos() * 1.5, 1.9, a.sin() * 1.5), v(a.cos() * 1.46, 3.0, a.sin() * 1.46), 0.05, 0.05, hex(0x7d5430), hex(0x8f6038), 4);
     }
-    // a steep cone roof with a rounded eave and a finial
     mb.lathe(Mat4::IDENTITY, &[(0.0, 2.85), (1.95, 2.85), (1.98, 2.95), (1.85, 3.08), (1.0, 4.05), (0.25, 4.85), (0.0, 4.95)], 14, hex(0xa63f28), hex(0xd75c38), false);
     for k in 1..4 {
         let t = k as f32 / 4.0;
@@ -729,7 +655,6 @@ pub fn mill(mb: &mut Mb, stage: u8) {
     mb.ellipsoid(v(0.0, 5.4, 0.0), v(0.1, 0.1, 0.1), hex(0xf2c94c));
     mb.cuboid(v(0.0, 0.85, 1.62), v(0.45, 0.7, 0.08), Quat::IDENTITY, hex(0x6a4020), hex(0x8a5a30));
     mb.cuboid(v(0.0, 2.4, 1.5), v(0.25, 0.22, 0.06), Quat::IDENTITY, hex(0xa8dcf0), hex(0xd6f2ff));
-    // millstone leaning by the door
     let ms = Mat4::from_translation(v(1.25, 0.65, 2.0)) * Mat4::from_rotation_x(FRAC_PI_2 - 0.25);
     mb.lathe(ms, &[(0.0, -0.13), (0.62, -0.13), (0.66, 0.0), (0.62, 0.13), (0.12, 0.13), (0.12, 0.2), (0.0, 0.2)], 14, s0, s1, false);
     sack(mb, v(-1.0, 0.0, 2.0), 1.0, 0.4);
@@ -737,8 +662,6 @@ pub fn mill(mb: &mut Mb, stage: u8) {
     sack(mb, v(-1.25, 0.55, 1.85), 0.8, 1.0);
 }
 
-/// A timber lock: walls of stacked logs either side of the channel, a closed gate at each end and
-/// a plank walkway over the top with a winch.
 pub fn lock(mb: &mut Mb, stage: u8) {
     let wood = (hex(0x8a5a32), hex(0xb07840));
     let wall = [0.6, 1.2, 1.9, 1.9][stage as usize];
@@ -764,7 +687,7 @@ pub fn lock(mb: &mut Mb, stage: u8) {
             let (a, b) = if i % 2 == 0 { (hex(0x8a5a32), hex(0xb07840)) } else { (hex(0x7d5430), hex(0x9e6c3c)) };
             mb.cuboid(v(x, wall * 0.5 - 0.4, z), v(1.2 / 5.0 - 0.01, wall * 0.5 + 0.35, 0.08), Quat::IDENTITY, a, b);
         }
-        mb.cyl(v(-1.25, wall - 0.05, z + 0.1), v(1.25, 0.0, z + 0.1), 0.05, 0.05, hex(0x6a4528), hex(0x6a4528), 4); // brace
+        mb.cyl(v(-1.25, wall - 0.05, z + 0.1), v(1.25, 0.0, z + 0.1), 0.05, 0.05, hex(0x6a4528), hex(0x6a4528), 4);
     }
     for i in 0..7 {
         let x = -1.95 + (i as f32 + 0.5) * 3.9 / 7.0;
@@ -773,7 +696,7 @@ pub fn lock(mb: &mut Mb, stage: u8) {
     let w = v(1.75, wall + 0.1, 0.0);
     mb.cyl(w - v(0.0, 0.0, 0.35), w + v(0.0, 0.0, 0.35), 0.18, 0.18, hex(0x6a4528), hex(0x8a5a32), 8);
     mb.cyl(w + v(0.0, 0.0, 0.35), w + v(0.0, 0.45, 0.6), 0.04, 0.04, hex(0x8a5a32), hex(0x8a5a32), 5);
-    mb.cyl(w - v(0.0, 0.0, 0.2), v(1.3, 0.2, -1.0), 0.02, 0.02, hex(0xe9d9aa), hex(0xe9d9aa), 4); // rope to the gate
+    mb.cyl(w - v(0.0, 0.0, 0.2), v(1.3, 0.2, -1.0), 0.02, 0.02, hex(0xe9d9aa), hex(0xe9d9aa), 4);
 }
 
 #[cfg(test)]

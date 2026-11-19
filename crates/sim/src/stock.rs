@@ -1,34 +1,19 @@
-//! Where goods are (owner: `stock`). Every store keeps its own stock (`Work::stock`), and the
-//! stocks of all stores add up to the colony ledger (`Buildings::stores`). Goods move between
-//! stores only by being carried (haulers, barges); a builder fetches from a store that holds what
-//! the site needs, and a workshop crafts only from stores within `WORKSHOP_REACH`. That is what
-//! makes distance, hauling and the water network matter.
-//!
-//! The main flows book stock where they happen (a carrier's delivery, a builder's fetch, a
-//! workshop's batch). Whatever changes the ledger without a place (food eaten, a refund, the
-//! founding bundle) is settled by `reconcile` at the end of each step: a shortfall is taken from
-//! every holder in proportion, a surplus goes to the oldest store.
-
 use crate::agents::{accepts, SUPPLIES};
 use crate::buildings::{Building, BuildingId, Good};
 use crate::water::Cell;
 use crate::SimState;
 
-/// A workshop crafts from stores whose footprint lies within this many cells (Manhattan) of its own.
-pub const WORKSHOP_REACH: usize = 12;
+pub const WORKSHOP_REACH: usize = 40;
 const EPS: f32 = 1e-4;
 
-/// Manhattan gap between two footprints (0 when they touch or overlap).
 pub fn gap(a: &Building, b: &Building) -> usize {
     a.cells().flat_map(|p| b.cells().map(move |q| p.0.abs_diff(q.0) + p.1.abs_diff(q.1))).min().unwrap_or(usize::MAX)
 }
 
-/// Manhattan distance from `c` to the nearest footprint cell of `b`.
 pub fn dist(c: Cell, b: &Building) -> usize {
     b.cells().map(|q| c.0.abs_diff(q.0) + c.1.abs_diff(q.1)).min().unwrap_or(usize::MAX)
 }
 
-/// Every place that holds `good`: complete stores that take it, plus the founding pile while it lies.
 pub fn holders(sim: &SimState, good: Good) -> Vec<BuildingId> {
     let mut out: Vec<BuildingId> = sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).map(|b| b.id).collect();
     if sim.work.supplies.is_some() {
@@ -44,7 +29,6 @@ fn cell_dist(sim: &SimState, from: Cell, id: BuildingId) -> usize {
     sim.buildings.building(id).map_or(usize::MAX, |b| dist(from, b))
 }
 
-/// The nearest place (straight-line) holding at least `min` of `good`.
 pub fn nearest_holding(sim: &SimState, from: Cell, good: Good, min: f32) -> Option<BuildingId> {
     holders(sim, good)
         .into_iter()
@@ -52,7 +36,6 @@ pub fn nearest_holding(sim: &SimState, from: Cell, good: Good, min: f32) -> Opti
         .min_by_key(|&id| (cell_dist(sim, from, id), id))
 }
 
-/// Goods within a workshop's reach.
 pub fn within_reach(sim: &SimState, workshop: &Building, good: Good) -> f32 {
     sim.buildings
         .buildings
@@ -62,7 +45,6 @@ pub fn within_reach(sim: &SimState, workshop: &Building, good: Good) -> f32 {
         .sum()
 }
 
-/// Takes `amount` of `good` from the stores nearest `near`, nearest first; returns what was taken.
 pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -> f32 {
     let mut ids: Vec<(usize, BuildingId)> =
         sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).map(|b| (gap(near, b), b.id)).collect();
@@ -77,7 +59,6 @@ pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -
     amount - left
 }
 
-/// Adds `amount` of `good` to the store nearest `near` that takes it; false if there is none.
 pub fn put_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -> bool {
     let best = sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).min_by_key(|b| (gap(near, b), b.id)).map(|b| b.id);
     match best {
@@ -89,18 +70,12 @@ pub fn put_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) ->
     }
 }
 
-/// Goods short of their share by less than this are left where they are (a load is 3).
 pub const BALANCE_SLACK: f32 = 3.0;
 
-/// The next move that brings the balanced stores closer to holding each good in proportion to
-/// their size: `(from, to, good)`, from the store furthest over its share to the one furthest under,
-/// counting loads already on their way. A hauler at store `at` prefers a move to or from its own
-/// store. `None` when every balanced store is within `BALANCE_SLACK` of its share.
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
     if sim.work.balanced.len() < 2 {
         return None;
     }
-    // Loads under way between stores: off their source already, not yet at their goal.
     let mut moving: Vec<(BuildingId, BuildingId, Good, f32)> = Vec::new();
     for a in sim.agents.by_id.values() {
         match (&a.task, a.load) {
@@ -143,8 +118,6 @@ pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingI
     best.map(|b| (b.2, b.3, b.4))
 }
 
-/// Books each workshop batch of this step: inputs leave the stores nearest the workshop, the
-/// product goes into the nearest store that takes it.
 pub fn book_crafting(sim: &mut SimState) {
     let crafted = sim.buildings.crafted.clone();
     for (id, out, made) in crafted {
@@ -160,9 +133,6 @@ pub fn book_crafting(sim: &mut SimState) {
     }
 }
 
-/// Makes the stocks add up to the ledger again (see the module docs). Stock left in a place
-/// that no longer holds the good (a store demolished, the pile picked up) is moved by this too:
-/// it is dropped there and reappears in the oldest store.
 pub fn reconcile(sim: &mut SimState) {
     for g in Good::ALL {
         let holders = holders(sim, g);
@@ -171,7 +141,6 @@ pub fn reconcile(sim: &mut SimState) {
         let ledger = sim.buildings.stores.amount(g);
         let diff = ledger - total;
         if diff > EPS {
-            // The oldest store (usually the colony's first), else the pile.
             if let Some(&first) = holders.iter().min() {
                 sim.work.stock_add(first, g, diff);
             }
@@ -221,7 +190,7 @@ mod tests {
         reconcile(&mut sim);
         assert!((sim.work.stock_of(a, Good::Stone) - 30.0).abs() < 1e-3, "unplaced goods land in the oldest store");
         sim.work.stock_take(a, Good::Stone, 10.0);
-        sim.work.stock_add(b, Good::Stone, 10.0); // a hauler moved ten
+        sim.work.stock_add(b, Good::Stone, 10.0);
         sim.buildings.stores.withdraw(Good::Stone, 15.0).unwrap();
         reconcile(&mut sim);
         let (sa, sb) = (sim.work.stock_of(a, Good::Stone), sim.work.stock_of(b, Good::Stone));

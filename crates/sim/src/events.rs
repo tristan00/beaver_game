@@ -1,32 +1,14 @@
-//! Calendar and random events.
-//!
-//! * [`Calendar`]: seasons pass quickly (`days_per_season` is configurable).
-//! * [`Events`]: rolls floods, droughts, hard freezes, fires, disease, predator raids, wandering
-//!   beavers and wetland arrivals. Each kind has season/context conditions and concrete
-//!   [`Effect`]s. Some events pop up as a [`PendingChoice`] the player resolves (or that expires
-//!   with its default option). Every event is stored in the [`EventRecord`] log with its date.
-//!
-//! The system is decoupled from the colony through [`EventHost`]. All randomness comes from a
-//! seeded `Pcg32`; rolls happen in sub-steps of at most one day, so results do not depend on how
-//! `dt` is chopped up by the caller.
-
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 use std::fmt;
 pub use crate::tuning::events::*;
 
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventError {
-    /// `days_per_season` was zero.
     InvalidCalendar(u32),
-    /// A context value was NaN/infinite.
     InvalidContext(&'static str),
-    /// No pending choice with this id.
     UnknownChoice(u64),
-    /// Option index out of range for the choice.
     UnknownOption { choice: u64, option: usize },
-    /// The event kind is switched off by the feature config.
     Disabled(EventKind),
 }
 
@@ -45,8 +27,6 @@ impl fmt::Display for EventError {
 }
 impl std::error::Error for EventError {}
 
-// ───────────────────────────── calendar ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Season {
     Spring,
@@ -59,7 +39,6 @@ impl Season {
     pub const ALL: [Season; 4] = [Season::Spring, Season::Summer, Season::Autumn, Season::Winter];
 }
 
-/// A calendar date. `day` is 1-based within the season.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Date {
     pub year: u32,
@@ -76,7 +55,6 @@ impl fmt::Display for Date {
 #[derive(Clone, Debug)]
 pub struct Calendar {
     days_per_season: u32,
-    /// Elapsed days since the start (spring, day 1 of year 1 is 0).
     elapsed: f64,
 }
 
@@ -96,7 +74,6 @@ impl Calendar {
     pub fn elapsed_days(&self) -> f64 {
         self.elapsed
     }
-    /// Advances by `dt` days (caller guarantees finite, >= 0).
     pub fn advance(&mut self, dt: f64) {
         self.elapsed += dt;
     }
@@ -114,8 +91,6 @@ impl Calendar {
         self.date().season
     }
 }
-
-// ───────────────────────────── events ─────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -142,7 +117,6 @@ impl EventKind {
     ];
 }
 
-/// What the world looks like to the event rules. Fractions are clamped to `0..=1`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EventContext {
     pub population: u32,
@@ -185,44 +159,32 @@ impl EventContext {
     }
 }
 
-/// A concrete consequence. Quantities are decided when the event is created.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
-    /// Added to (or, if negative, removed from) food stores; stores never go below zero.
     Food(f32),
     Wood(f32),
-    /// Beavers lost.
     Deaths(u32),
-    /// Health damage applied to every beaver.
     Illness(f32),
-    /// Beavers that join the colony.
     Arrivals(u32),
-    /// Water inflow is multiplied by `factor` for `days`.
     Inflow { factor: f32, days: f32 },
 }
 
-/// The colony as seen by events. Implementations apply the effects.
 pub trait EventHost {
     fn population(&self) -> u32;
     fn food(&self) -> f32;
     fn wood(&self) -> f32;
-    /// Adds `amount` (may be negative); must clamp at zero.
     fn add_food(&mut self, amount: f32);
     fn add_wood(&mut self, amount: f32);
-    /// Kills up to `n` beavers; returns how many died.
     fn kill_beavers(&mut self, n: u32) -> u32;
     fn damage_health(&mut self, amount: f32);
-    /// Adds `n` beavers; returns how many joined.
     fn add_beavers(&mut self, n: u32) -> u32;
 }
 
-/// Minimal [`EventHost`] with plain numbers; also handy for tests and previews.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stockpile {
     pub population: u32,
     pub food: f32,
     pub wood: f32,
-    /// Average health `0..=1`.
     pub health: f32,
 }
 
@@ -262,7 +224,6 @@ pub struct ChoiceOption {
     pub effects: Vec<Effect>,
 }
 
-/// A popup waiting for the player. Option 0 is the default if it expires.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingChoice {
     pub id: u64,
@@ -273,7 +234,6 @@ pub struct PendingChoice {
     pub options: Vec<ChoiceOption>,
 }
 
-/// One entry of the event log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventRecord {
     pub id: u64,
@@ -281,9 +241,7 @@ pub struct EventRecord {
     pub date: Date,
     pub day: f64,
     pub description: String,
-    /// Effects applied immediately (for choice events: only once resolved, see `choice`).
     pub effects: Vec<Effect>,
-    /// For choice events: the chosen label and whether it was chosen by expiry.
     pub choice: Option<(String, bool)>,
 }
 
@@ -302,7 +260,6 @@ pub struct Events {
     drought: Option<ActiveDrought>,
     inflow_factor: f32,
     inflow_days: f32,
-    /// Kinds that never roll or fire (set from the feature config).
     muted: Vec<EventKind>,
 }
 
@@ -331,7 +288,6 @@ impl Events {
         })
     }
 
-    /// Replaces the set of kinds that never roll or fire.
     pub fn set_muted(&mut self, kinds: Vec<EventKind>) {
         self.muted = kinds;
     }
@@ -351,13 +307,10 @@ impl Events {
     pub fn is_drought(&self) -> bool {
         self.drought.is_some()
     }
-    /// Multiplier for water inflow (`1.0` normally, lower in a drought).
     pub fn water_inflow_factor(&self) -> f32 {
         if self.inflow_days > 0.0 { self.inflow_factor } else { 1.0 }
     }
 
-    /// Advances the calendar and timed effects only; no new events are rolled
-    /// (rolling needs the world context, see [`Events::step_with`]).
     pub fn step(&mut self, dt_days: f32) {
         self.advance_time(dt_days as f64);
     }
@@ -376,8 +329,6 @@ impl Events {
         }
     }
 
-    /// Advances `dt_days` (finite, >= 0), rolling events day by day against `ctx` and applying
-    /// their effects to `host`. Returns the ids of events logged during this call.
     pub fn step_with(
         &mut self,
         dt_days: f32,
@@ -406,7 +357,6 @@ impl Events {
         Ok(produced)
     }
 
-    /// Forces an event of `kind` now (ignores conditions); used by scripted scenarios and tests.
     pub fn trigger(&mut self, kind: EventKind, ctx: &EventContext, host: &mut dyn EventHost) -> Result<u64, EventError> {
         if self.muted.contains(&kind) {
             return Err(EventError::Disabled(kind));
@@ -416,7 +366,6 @@ impl Events {
         Ok(self.fire(kind, &ctx, host))
     }
 
-    /// Resolves a pending choice with option `option`.
     pub fn resolve(&mut self, choice: u64, option: usize, host: &mut dyn EventHost) -> Result<(), EventError> {
         let idx = self.pending.iter().position(|c| c.id == choice).ok_or(EventError::UnknownChoice(choice))?;
         if option >= self.pending[idx].options.len() {
@@ -472,7 +421,6 @@ impl Events {
         }
     }
 
-    /// Per-day probability of `kind`; zero when its conditions are not met.
     fn probability(&self, kind: EventKind, c: &EventContext) -> f32 {
         let s = self.calendar.season();
         let drought = self.is_drought();
@@ -507,7 +455,6 @@ impl Events {
     fn unit(&mut self) -> f32 {
         (self.rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32
     }
-    /// Uniform value in `lo..hi`.
     fn between(&mut self, (lo, hi): (f32, f32)) -> f32 {
         lo + (hi - lo) * self.unit()
     }
@@ -517,7 +464,6 @@ impl Events {
         self.next_id += 1;
         let pop = c.population.max(1) as f32;
         let opt = |label: &str, effects: Vec<Effect>| ChoiceOption { label: label.to_string(), effects };
-        // (description, immediate effects) or (prompt, options)
         let (desc, effects, options): (String, Vec<Effect>, Vec<ChoiceOption>) = match kind {
             EventKind::Flood => {
                 let wood = -self.between(FLOOD_WOOD_LOSS) * pop.sqrt();
@@ -591,7 +537,6 @@ impl Events {
     }
 }
 
-/// Fires need dry weather: never in winter or the spring melt.
 fn fire_season(s: Season) -> bool {
     matches!(s, Season::Summer | Season::Autumn)
 }
@@ -609,7 +554,6 @@ mod tests {
         let mut h = host();
         for _ in 0..days {
             ev.step_with(1.0, &EventContext::default(), &mut h).unwrap();
-            // Keep the colony alive so rolls continue.
             h.population = h.population.max(10);
         }
         (ev, h)
@@ -690,7 +634,6 @@ mod tests {
         assert_eq!(ev.resolve(id, 0, &mut h), Err(EventError::UnknownChoice(id)));
         assert_eq!(ev.log()[0].choice.as_ref().unwrap().1, false);
 
-        // Expiry applies the default option and is logged as such.
         let id = ev.trigger(EventKind::PredatorRaid, &ctx, &mut h).unwrap();
         ev.step_with(CHOICE_EXPIRY_DAYS as f32 + 1.0, &EventContext { danger: 0.0, ..ctx }, &mut h).unwrap();
         assert!(ev.pending().iter().all(|c| c.id != id));

@@ -1,15 +1,9 @@
-//! Building catalogue (owner: `content`): for every `BuildingKind`, its cost, footprint, site rule
-//! and build work (`BuildingKind::spec`) plus the worker slots, work area, unlock tech, tier,
-//! storage capacity and crafting rate defined here. `def` is an exhaustive match, so a new kind
-//! cannot be added without a full definition. Numbers live in `tuning::buildings`.
-
 use crate::buildings::BuildingKind;
 use crate::features::System;
 use crate::resources::ResourceKind;
 use crate::tuning::buildings::{batches_per_day, store_capacity};
 use crate::work::Role;
 
-/// Era a building belongs to; start 2 uses `Elementary`, start 3 adds `Industrial`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     Elementary,
@@ -20,34 +14,26 @@ pub enum Tier {
 pub struct Def {
     pub kind: BuildingKind,
     pub tier: Tier,
-    /// One entry per worker slot (empty for passive buildings).
     pub slots: Vec<Role>,
-    /// Default work-area size (w, h) in cells around the building; `None` if workers do not gather.
     pub area: Option<(usize, usize)>,
-    /// Tech index (into `tech::TECHS`) needed, or `None` if always available.
     pub unlock: Option<usize>,
-    /// Belongs to a switchable system (guard post, scent mound): hidden when it is disabled.
     pub system: Option<System>,
-    /// Storage added per good the building accepts (0 if not a store).
     pub capacity: f32,
-    /// Crafting batches per day at base speed (0 if it does not craft).
     pub batches_per_day: f32,
 }
 
 impl Def {
-    /// Crafting batches per day each worker slot yields (0 without slots or crafting).
     pub fn batches_per_worker(&self) -> f32 {
         if self.slots.is_empty() { 0.0 } else { self.batches_per_day / self.slots.len() as f32 }
     }
 }
 
-const GATHER_AREA: (usize, usize) = (9, 9);
+const GATHER_AREA: (usize, usize) = (31, 31);
 
 fn camp(kind: ResourceKind) -> (Tier, Vec<Role>, Option<(usize, usize)>) {
     (Tier::Elementary, vec![Role::Collect(kind); 2], Some(GATHER_AREA))
 }
 
-/// Definition for `kind`.
 pub fn def(kind: BuildingKind) -> Def {
     use BuildingKind::*;
     let passive = (Tier::Elementary, vec![], None);
@@ -76,7 +62,6 @@ pub fn def(kind: BuildingKind) -> Def {
     }
 }
 
-/// The default gather area of building `b` (around its first cell); `None` if it does not gather.
 pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
     let c = b.cells().next().unwrap_or(b.pos);
     def(b.kind).area.map(|(w, h)| crate::work::Area {
@@ -85,9 +70,6 @@ pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
     })
 }
 
-/// Buildings that must stand finished before `kind` can be placed: a colony grows in steps, each
-/// building resting on the ones before it (a store before the trades that fill it, a workshop
-/// before the wheel that drives it, a forester's lodge before its nursery).
 pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
     use BuildingKind::*;
     match kind {
@@ -103,7 +85,6 @@ pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
     }
 }
 
-/// Kinds the player may see and place given features (and, in `content`, tech).
 pub fn available(sim: &crate::SimState) -> Vec<BuildingKind> {
     BuildingKind::ALL
         .iter()
@@ -127,7 +108,6 @@ mod tests {
         for k in crate::tech::BASE_BUILDINGS {
             assert!(prerequisites(k).is_empty(), "{k:?}");
         }
-        // Following prerequisites always ends: no building needs itself, however far back.
         for k in BuildingKind::ALL {
             let mut seen = vec![k];
             let mut todo = prerequisites(k).to_vec();
@@ -179,7 +159,6 @@ mod tests {
             assert_eq!(shown.contains(&k), system.is_none(), "{k:?}");
             assert!(system.is_none_or(|s| System::OUT_OF_SCOPE.contains(&s)));
         }
-        // Only the guard post (guard) and scent mound (predators) belong to a switchable system.
         let hidden: Vec<_> = BuildingKind::ALL.into_iter().filter(|k| !shown.contains(k)).collect();
         assert_eq!(hidden, [BuildingKind::ScentMound, BuildingKind::GuardPost]);
     }
@@ -190,7 +169,6 @@ mod tests {
         b
     }
 
-    /// Steps `b` once with default tech on dry land, staffed from `work`.
     fn step_with(b: &mut Buildings, dt: f32, work: &Work) {
         let (h, d) = (Grid::new(8, 8, 1.0), Grid::new(8, 8, 0.0));
         b.step(dt, &Tech::default(), Terrain { height: &h, depth: &d }, &crate::colony::Colony::new(1), work);
@@ -215,8 +193,6 @@ mod tests {
         assert!(capacity(BuildingKind::Storehouse) > capacity(BuildingKind::Warehouse));
     }
 
-    /// Rope produced in one day by a complete `kind` (id 1) with `staff` of its craft slots
-    /// filled, from plentiful inputs.
     fn rope_in_a_day(kind: BuildingKind, staff: usize) -> f32 {
         let mut b = complete(kind, Some(Recipe::Rope));
         b.stores.deposit(Good::Sticks, 100.0).unwrap();
@@ -246,7 +222,6 @@ mod tests {
     fn advanced_production_yields_more_per_worker_than_elementary() {
         let (elem, adv) = (def(BuildingKind::Workshop), def(BuildingKind::Mill));
         assert!(adv.tier > elem.tier && adv.batches_per_worker() > elem.batches_per_worker());
-        // Both fully staffed; output divided by the beavers actually working there.
         let per_worker = |kind: BuildingKind| {
             let staff = def(kind).slots.iter().filter(|r| **r == Role::Craft).count();
             assert!(staff > 0);
@@ -254,7 +229,6 @@ mod tests {
         };
         let (w, m) = (per_worker(BuildingKind::Workshop), per_worker(BuildingKind::Mill));
         assert!(w > 0.0 && m > w, "mill {m} per worker vs workshop {w}");
-        // Same head-count comparison: one beaver in each.
         let (w1, m1) = (rope_in_a_day(BuildingKind::Workshop, 1), rope_in_a_day(BuildingKind::Mill, 1));
         assert!(m1 > w1, "one mill worker {m1} vs one workshop worker {w1}");
     }

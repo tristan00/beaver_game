@@ -1,4 +1,3 @@
-//! Orbit camera: `OrbitCamera` holds the parameters, this plugin applies them to the transform.
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -17,13 +16,11 @@ impl OrbitCamera {
     pub const MAX_PITCH: f32 = 1.55;
     pub const MIN_PITCH: f32 = 0.05;
 
-    /// Clamps pitch and distance into their valid ranges.
     pub fn clamp(&mut self) {
         self.pitch = self.pitch.clamp(Self::MIN_PITCH, Self::MAX_PITCH);
         self.distance = self.distance.clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
     }
 
-    /// World-space camera position.
     pub fn eye(&self) -> Vec3 {
         let dir = Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos());
         self.target + dir * self.distance
@@ -34,20 +31,15 @@ impl OrbitCamera {
     }
 }
 
-/// Named camera presets for `--cam`: "iso", "top", "low".
 pub fn preset(name: &str) -> Option<OrbitCamera> {
     let target = Vec3::new(0.0, 6.0, 0.0);
     let (yaw, pitch, distance) = match name {
         "iso" => (0.8, 0.7, 150.0),
-        // Same angle as "iso", zoomed in on the map centre: tree, building and rock shadows fill the frame.
         "iso-close" => (0.8, 0.7, 55.0),
-        // Same angle as "iso", far out. The new game keeps these two views (see `startflow::begin_new_game`).
         "iso-wide" => (0.8, 0.7, 150.0),
         "top" => (0.0, 1.5, 170.0),
         "low" => (0.5, 0.25, 110.0),
-        // Target and yaw are refined from the terrain in `CameraPlugin::build` (see `entities_render::lodge_view`).
         "lodge" => (0.0, 0.55, 32.0),
-        // Target is the still pond nearest the map centre (see `water_render::pond_view`).
         "pond" => (0.6, 1.2, 24.0),
         _ => return None,
     };
@@ -76,26 +68,35 @@ impl Plugin for CameraPlugin {
         app.insert_resource(orbit)
             .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.92)))
             .add_systems(Startup, spawn_camera)
-            .add_systems(Update, apply_orbit);
+            .add_systems(Update, (camera_at_cell, apply_orbit).chain());
     }
 }
 
-/// Sun shadow maps on; terrain turns them into the plum shadow colour (`terrain_shadow.wesl`).
-/// `BC_NO_SUN_SHADOWS=1` renders the same frame without them (tools/shadow_check.py classifies terrain on it).
 const SUN_SHADOWS: bool = true;
 
+fn camera_at_cell(sim: Res<crate::state::Sim>, mut orbit: ResMut<OrbitCamera>, spec: Local<Option<Option<Vec<f32>>>>) {
+    let mut spec = spec;
+    let p = spec.get_or_insert_with(|| {
+        std::env::var("BC_CAM_AT").ok().map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect::<Vec<f32>>()).filter(|p| p.len() >= 2)
+    });
+    let Some(p) = p else { return };
+    let s = &sim.0;
+    let (x, y) = (p[0] as i32, p[1] as i32);
+    let (wx, wz) = crate::terrain_render::world_pos(s, x, y);
+    let h = s.height.get(x.max(0) as usize, y.max(0) as usize).copied().unwrap_or(0.0);
+    orbit.target = Vec3::new(wx, h, wz);
+    orbit.distance = p.get(2).copied().unwrap_or(orbit.distance);
+    orbit.yaw = p.get(3).copied().unwrap_or(orbit.yaw);
+    orbit.pitch = p.get(4).copied().unwrap_or(orbit.pitch);
+}
+
 fn spawn_camera(mut commands: Commands, orbit: Res<OrbitCamera>) {
-    // Near-linear tone mapping with soft highlight roll-off: colours on screen stay the palette colours (docs/STYLE.md, "Checking the running game").
     commands.spawn((Camera3d::default(), Tonemapping::SomewhatBoringDisplayTransform, orbit.transform(), MainCamera));
-    // Key light: late-morning sun from the upper left, soft shadows; `update_sky_and_light` sets
-    // colour and strength per season.
     commands.spawn((
         DirectionalLight { illuminance: 1_400.0, shadow_maps_enabled: SUN_SHADOWS && std::env::var_os("BC_NO_SUN_SHADOWS").is_none(), ..default() },
         CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 1.0, maximum_distance: 260.0, first_cascade_far_bound: 45.0, overlap_proportion: 0.3 }.build(),
         Transform::from_xyz(-70.0, 90.0, -45.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    // Faint warm glow hanging in the upper-left corner (the sun's side); a translucent UI overlay.
-    // `BC_NO_GLOW=1` leaves it out: surface colours can then be sampled over the whole frame (tools/shadow_check.py).
     if std::env::var_os("BC_NO_GLOW").is_none() {
         spawn_glow(&mut commands);
     }
@@ -123,7 +124,6 @@ fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCa
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
