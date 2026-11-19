@@ -304,7 +304,7 @@ const WET_SEED: f32 = 1.0e-3;
 const SHRINK_EVERY: u32 = 256;
 /// Pools are found again this often (seconds of physics).
 const POOL_EVERY_S: f64 = 300.0;
-const POOL_MIN_DEPTH: f32 = 0.03;
+const POOL_MIN_DEPTH: f32 = 0.005;
 const POOL_MAX_SPEED: f32 = 0.08;
 const POOL_FLAT_FACE: f32 = 1.5e-3;
 const POOL_FLAT_RANGE: f32 = 1.5e-2;

@@ -107,12 +107,12 @@ impl Drop for Gang {
     }
 }
 
-/// The process-wide gang, sized to the machine (at most 8 tasks; `WATER_THREADS` overrides).
+/// The process-wide gang, sized to the machine (half the cores, at most 12; `WATER_THREADS` overrides).
 pub fn gang() -> &'static Gang {
     static G: OnceLock<Gang> = OnceLock::new();
     G.get_or_init(|| {
         let cores = thread::available_parallelism().map_or(1, |n| n.get());
-        let want = std::env::var("WATER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or((cores / 2).clamp(1, 8));
+        let want = std::env::var("WATER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or((cores / 2).clamp(1, 12));
         Gang::new(want.max(1) - 1)
     })
 }
