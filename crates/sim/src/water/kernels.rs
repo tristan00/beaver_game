@@ -54,12 +54,12 @@ pub fn face(q_old: f32, q_before: f32, q_after: f32, za: f32, zb: f32, ha: f32, 
 /// Faces between cells `a[i]` and `b[i]`; `q_before`/`q_after` are the old discharges of the
 /// faces on either side along the same direction.
 #[allow(clippy::too_many_arguments)]
-pub fn faces(out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], p: Params) {
+pub fn faces(out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], p: Params) {
     let m = out.len();
-    let (q, q_before, q_after, za, zb, ha, hb, fa, fb, mask) =
-        (&q[..m], &q_before[..m], &q_after[..m], &za[..m], &zb[..m], &ha[..m], &hb[..m], &fa[..m], &fb[..m], &mask[..m]);
+    let (q, q_before, q_after, za, zb, ha, hb, fa, fb, mask, act_a, act_b) =
+        (&q[..m], &q_before[..m], &q_after[..m], &za[..m], &zb[..m], &ha[..m], &hb[..m], &fa[..m], &fb[..m], &mask[..m], &act_a[..m], &act_b[..m]);
     for i in 0..m {
-        out[i] = face(q[i], q_before[i], q_after[i], za[i], zb[i], ha[i], hb[i], fa[i], fb[i], mask[i], p);
+        out[i] = face(q[i], q_before[i], q_after[i], za[i], zb[i], ha[i], hb[i], fa[i], fb[i], mask[i] * act_a[i] * act_b[i], p);
     }
 }
 
@@ -142,7 +142,7 @@ mod bench {
         let reps = 20000;
         let t = std::time::Instant::now();
         for _ in 0..reps {
-            faces(&mut out, &q, &q, &q, &z, &z[1..], &h, &h[1..], &f, &f[1..], &mask, p);
+            faces(&mut out, &q, &q, &q, &z, &z[1..], &h, &h[1..], &f, &f[1..], &mask, &mask, &mask, p);
             std::hint::black_box(&mut out);
         }
         let ns = t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64;
@@ -170,7 +170,7 @@ mod bench {
             for _ in 0..reps / 4 {
                 let mut a = 0;
                 while a + seg + 1 < m {
-                    faces(&mut out[a..a + seg], &q[a..], &q[a..], &q[a + 1..], &z[a..], &z[a + 1..], &h[a..], &h[a + 1..], &f[a..], &f[a + 1..], &mask[a..], p);
+                    faces(&mut out[a..a + seg], &q[a..], &q[a..], &q[a + 1..], &z[a..], &z[a + 1..], &h[a..], &h[a + 1..], &f[a..], &f[a + 1..], &mask[a..], &mask[a..], &mask[a..], p);
                     a += seg + 3;
                     calls += 1;
                 }

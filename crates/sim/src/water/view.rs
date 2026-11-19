@@ -34,6 +34,7 @@ pub(super) struct View {
     src: *const f32,
     lake: *const f32,
     member: *const f32,
+    act: *const f32,
     lake_delta: *mut f32,
     rows: *const Vec<(u32, u32)>,
     yrows: *const Vec<(u32, u32)>,
@@ -59,6 +60,7 @@ impl View {
             src: w.src.as_ptr(),
             lake: w.lake_level.as_slice().as_ptr(),
             member: w.member.as_ptr(),
+            act: w.act.as_ptr(),
             lake_delta: w.lake_delta.as_mut_ptr(),
             rows: w.rows.as_ptr(),
             yrows: w.yrows.as_ptr(),
@@ -112,6 +114,8 @@ impl View {
                             self.cells(self.fac, r + lo - 1),
                             self.cells(self.fac, r + lo),
                             self.xf(self.ox, base + lo),
+                            self.cells(self.act, r + lo - 1),
+                            self.cells(self.act, r + lo),
                             p,
                         );
                     }
@@ -150,6 +154,8 @@ impl View {
                             self.cells(self.fac, base - n + a),
                             self.cells(self.fac, base + a),
                             self.yf(self.oy, base + a),
+                            self.cells(self.act, base - n + a),
+                            self.cells(self.act, base + a),
                             p,
                         );
                     } else {
