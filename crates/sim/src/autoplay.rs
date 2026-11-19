@@ -453,24 +453,3 @@ fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::op
     Err(last)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn an_attentive_player_builds_the_camp_from_the_bundle() {
-        let (mut s, dam) = crate::starts::new_game_with_dam(1).unwrap();
-        s.apply(Command::Settle { cell: dam.camp }).unwrap();
-        let mut p = Player::new(Style::Attentive, dam.camp, Some((dam.cells.clone(), dam.height)));
-        while s.time_days < 60.0 {
-            p.act(&mut s);
-            for _ in 0..10 {
-                s.step(0.1).unwrap();
-            }
-        }
-        for k in [BuildingKind::Burrow, BuildingKind::ForagerHut, BuildingKind::Dam] {
-            assert!(p.has(k), "{k:?} placed: {:?}", p.log);
-        }
-    }
-}

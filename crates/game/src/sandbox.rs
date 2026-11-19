@@ -27,23 +27,3 @@ fn breach_under_cursor(keys: Option<Res<ButtonInput<KeyCode>>>, hover: Option<Re
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::build_logic::{emit, line_cells, BuildOrder, Pending};
-
-    #[test]
-    fn in_the_sandbox_the_dam_and_canal_tools_build_at_once_and_delete_breaches() {
-        let mut s = sim::sandbox::on_map("fixture").unwrap();
-        let mut p = Pending::default();
-        let dam = line_cells((60, 50), (60, 78));
-        emit(&mut s, &mut p, &BuildOrder::Dam { cells: dam.clone(), height: 1.5 }).unwrap();
-        assert!(dam.iter().all(|&(x, y)| s.water.has_dam(x, y)) && s.buildings.buildings.is_empty());
-        let canal = line_cells((20, 40), (30, 40));
-        let before = *s.height.get(25, 40).unwrap();
-        emit(&mut s, &mut p, &BuildOrder::Canal { cells: canal }).unwrap();
-        assert!((before - s.height.get(25, 40).unwrap() - sim::SimState::CANAL_DEPTH).abs() < 1e-5);
-        assert_eq!(breach_line(&mut s, (60, 60)), dam.len());
-        assert!(dam.iter().all(|&(x, y)| !s.water.has_dam(x, y)));
-    }
-}

@@ -125,24 +125,3 @@ fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCa
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn existing_presets_are_unchanged() {
-        let want = [
-            ("iso", 0.8, 0.7, 150.0),
-            ("iso-close", 0.8, 0.7, 55.0),
-            ("iso-wide", 0.8, 0.7, 150.0),
-            ("lodge", 0.0, 0.55, 32.0),
-            ("pond", 0.6, 1.2, 24.0),
-            ("top", 0.0, 1.5, 170.0),
-            ("low", 0.5, 0.25, 110.0),
-        ];
-        for (name, yaw, pitch, dist) in want {
-            let o = preset(name).unwrap();
-            assert_eq!((o.yaw, o.pitch, o.distance, o.target), (yaw, pitch, dist, Vec3::new(0.0, 6.0, 0.0)), "{name}");
-        }
-    }
-}

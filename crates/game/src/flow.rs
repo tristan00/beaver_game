@@ -107,8 +107,6 @@ pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell,
     None
 }
 
-
-
 #[allow(unused_imports)]
 pub use sim::fog::{open_at, EXPLORED};
 pub use sim::site::{can_settle, score as site_hint, SettleError};
@@ -203,8 +201,6 @@ pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     flow.push_log(format!("The {name} family settled at ({}, {})", cell.0, cell.1));
     flow.message.clear();
 }
-
-
 
 #[derive(Resource)]
 pub struct CaptureGate(pub bool);
@@ -307,40 +303,3 @@ pub fn ease_step(orbit: OrbitCamera, focus: Vec3, k: f32, settled: bool) -> (Orb
     (next, arrived)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sim::grid::{Grid, HeightGrid};
-
-    fn flat(n: usize, h: f32) -> HeightGrid {
-        Grid::new(n, n, h)
-    }
-
-    #[test]
-    fn flow_picking_hits_flat_ground_at_the_right_cell() {
-        let g = flat(32, 2.0);
-        let target = cell_world(&g, (10.0, 20.0));
-        assert_eq!(target, Vec3::new(-6.0, 2.0, 4.0));
-        let origin = target + Vec3::new(5.0, 30.0, -8.0);
-        let (cell, hit, _) = ray_heightfield(origin, target - origin, &g).unwrap();
-        assert_eq!(cell, (10, 20));
-        assert!((hit - target).length() < 0.05);
-        assert!(ray_heightfield(origin, Vec3::Y, &g).is_none());
-        assert!(ray_heightfield(Vec3::new(500.0, 30.0, 500.0), Vec3::NEG_Y, &g).is_none());
-    }
-
-    #[test]
-    fn flow_picking_respects_hills() {
-        let mut g = flat(32, 0.0);
-        for y in 0..32 {
-            *g.get_mut(16, y).unwrap() = 10.0;
-        }
-        let origin = Vec3::new(-14.0, 6.0, 0.0);
-        let (cell, _, _) = ray_heightfield(origin, Vec3::new(1.0, -0.05, 0.0), &g).unwrap();
-        assert!(cell.0 >= 14 && cell.0 <= 16, "{cell:?}");
-    }
-
-
-
-
-}

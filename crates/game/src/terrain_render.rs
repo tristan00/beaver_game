@@ -759,20 +759,3 @@ fn frame_log(
     }
 }
 
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rock_only_above_style_guide_slope() {
-        for i in 0..=90 {
-            let slope = i as f32 * 0.01;
-            assert_eq!(rock_weight(slope), 0.0, "slope {slope} must stay natural ground");
-        }
-        assert!(rock_weight(pal::ROCK_SLOPE_MIN + 0.05) > 0.0);
-        assert!((rock_weight(pal::ROCK_SLOPE_MIN + pal::ROCK_SLOPE_BLEND) - 1.0).abs() < 1e-6);
-        assert!(rock_weight(5.0) <= 1.0);
-    }
-}

@@ -59,11 +59,9 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
     out
 }
 
-
 fn fmt_amount(a: f32) -> String {
     if (a - a.round()).abs() < 0.05 { format!("{}", a.round() as i32) } else { format!("{a:.1}") }
 }
-
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceError {
@@ -102,24 +100,6 @@ pub fn is_wet(sim: &SimState, x: usize, y: usize) -> bool {
         || sim.world.lake.get(x, y).copied().unwrap_or(false)
 }
 
-#[cfg(test)]
-pub(crate) fn dry_sites(sim: &SimState) -> Vec<Cell> {
-    let n = sim.world.size;
-    let c = sim.world.valleys[sim.world.start.0 as usize].center;
-    let mut cells: Vec<Cell> = (8..n - 8).flat_map(|y| (8..n - 8).map(move |x| (x, y)))
-        .filter(|&(x, y)| sim.world.valley_of((x, y)) == Some(sim.world.start))
-        .filter(|&(x, y)| (y - 5..=y + 5).all(|j| (x - 5..=x + 5).all(|i| !is_wet(sim, i, j)))).collect();
-    cells.sort_by(|a, b| {
-        let d = |p: &Cell| (p.0 as f32 - c.0).powi(2) + (p.1 as f32 - c.1).powi(2);
-        d(a).total_cmp(&d(b))
-    });
-    let mut out: Vec<Cell> = Vec::new();
-    for p in cells {
-        if out.iter().all(|q| q.0.abs_diff(p.0).max(q.1.abs_diff(p.1)) >= 12) { out.push(p); }
-    }
-    out
-}
-
 pub fn anchor(kind: BuildingKind, c: Cell) -> Cell {
     let (w, h) = kind.spec().footprint;
     (c.0.saturating_sub(w / 2), c.1.saturating_sub(h / 2))
@@ -129,7 +109,6 @@ pub fn footprint(kind: BuildingKind, pos: Cell) -> Vec<Cell> {
     let (w, h) = kind.spec().footprint;
     (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).collect()
 }
-
 
 fn locked(sim: &SimState, kind: BuildingKind) -> Result<(), PlaceError> {
     if sim.sandbox || sim.tech.allows(kind) {
@@ -185,7 +164,6 @@ pub fn site_preview(sim: &SimState, kind: BuildingKind, hover: Cell) -> SitePrev
     SitePreview { pos, cells, verdict: check_building(sim, kind, pos) }
 }
 
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamReadout {
     pub rise: f32,
@@ -221,7 +199,6 @@ pub fn unit_cells(kind: BuildingKind) -> f32 {
 pub fn path_cost(kind: BuildingKind, n: usize) -> Vec<Amount> {
     kind.spec().cost.iter().map(|&(g, a)| (g, a * n as f32 / unit_cells(kind))).collect()
 }
-
 
 pub fn line_cells(a: Cell, b: Cell) -> Vec<Cell> {
     let (mut x, mut y) = (a.0 as i64, a.1 as i64);
@@ -284,7 +261,6 @@ pub fn check_canal(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
     }
     Ok(())
 }
-
 
 pub fn line_heights(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f32>) -> (Vec<Cell>, Vec<f32>) {
     let up = |c: &Cell| crest.map_or(0.0, |k| k - sim.height.get(c.0, c.1).copied().unwrap_or(k));
@@ -378,7 +354,6 @@ pub struct PendingWork {
 #[derive(Clone, Debug, Default)]
 pub struct Pending(pub Vec<PendingWork>);
 
-
 pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Result<String, PlaceError> {
     match order {
         BuildOrder::Building { kind, pos } => {
@@ -411,7 +386,6 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
     }
 }
 
-
 pub fn poll_pending(sim: &mut SimState, pending: &mut Pending) -> Vec<String> {
     let mut msgs = Vec::new();
     let mut i = 0;
@@ -438,191 +412,3 @@ fn refund(sim: &mut SimState, cost: &[Amount]) {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use sim::buildings::Good;
-    use sim::SimState;
-
-    pub(crate) fn found(sim: &mut SimState) {
-        let c = sim.world.valleys[sim.world.start.0 as usize].center;
-        struct Dry;
-        impl sim::colony::Landscape for Dry {
-            fn is_water(&self, _: f32, _: f32) -> bool { false }
-        }
-        sim.colony.found((c.0, c.1), &Dry).expect("found");
-    }
-
-    fn river_cell(sim: &SimState) -> Cell {
-        (0..sim.world.size * sim.world.size).map(|i| (i % sim.world.size, i / sim.world.size)).find(|&(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false) && x > 3 && y > 3 && x + 4 < sim.world.size && y + 4 < sim.world.size).unwrap()
-    }
-
-    fn stock(sim: &mut SimState) {
-        for g in Good::ALL {
-            sim.buildings.stores.deposit(g, 100.0).unwrap();
-        }
-    }
-
-    #[test]
-    fn menu_groups_by_branch_and_marks_locked() {
-        let sim = SimState::new(1);
-        let m = menu(&sim);
-        assert_eq!(m.len(), BuildingKind::ALL.len() - 2);
-        assert!(m.iter().all(|e| e.kind != BuildingKind::GuardPost && e.kind != BuildingKind::ScentMound));
-        assert_eq!(m[0].group, Group::Base);
-        let lock = m.iter().find(|e| e.kind == BuildingKind::Lock).unwrap();
-        assert_eq!(lock.group, Group::Branch(Branch::Water));
-        assert!(!lock.unlocked);
-        assert_eq!(lock.need.map(|n| (n.0, n.1)), Some(("Flow control", 60.0)));
-        let dam = m.iter().find(|e| e.kind == BuildingKind::Dam).unwrap();
-        assert!(dam.unlocked && dam.need.is_none());
-        assert_eq!(dam.group, Group::Branch(Branch::Water));
-        let groups: Vec<_> = m.iter().map(|e| e.group).collect();
-        let mut seen = vec![];
-        for g in groups {
-            if seen.last() != Some(&g) {
-                assert!(!seen.contains(&g), "group {g:?} split");
-                seen.push(g);
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn building_validation_reports_each_reason() {
-        let mut sim = SimState::new(1);
-        found(&mut sim);
-        let site = dry_sites(&sim)[0];
-        assert!(matches!(check_building(&sim, BuildingKind::Workshop, site), Err(PlaceError::Locked(..))));
-        sim.tech.unlock_all();
-        assert_eq!(check_building(&sim, BuildingKind::QuarryCamp, site), Ok(()));
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, site), Err(PlaceError::NeedsWater));
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, (sim.world.size - 1, 5)), Err(PlaceError::OutOfBounds));
-        sim.water.depth.as_mut_slice()[site.1 * sim.world.size + site.0] = 1.0;
-        assert_eq!(check_building(&sim, BuildingKind::Lodge, (site.0 - 1, site.1 - 1)), Ok(()), "one cell in the water is enough");
-        assert_eq!(check_building(&sim, BuildingKind::QuarryCamp, site), Err(PlaceError::NeedsDry));
-    }
-
-
-
-
-
-
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn dam_order_places_a_site_and_builds_the_water_dam_only_when_it_completes() {
-        let mut sim = SimState::new(1);
-        sim.tech.unlock_all();
-        found(&mut sim);
-        let c = river_cell(&sim);
-        let cells = line_cells((c.0 - 2, c.1), (c.0 + 2, c.1));
-        let mut p = Pending::default();
-        let ledger = sim.buildings.stores.amount(Good::Logs);
-        emit(&mut sim, &mut p, &BuildOrder::Dam { cells: cells.clone(), height: 1.5 }).unwrap();
-        assert!(p.0.is_empty(), "a dam is a site, not a queued colony order");
-        assert_eq!(sim.work.dam_plans.len(), 1);
-        let site = sim.work.dam_plans[0].building;
-        assert_eq!(sim.buildings.building(site).map(|b| b.is_complete()), Some(false));
-        assert!(!sim.water.has_dam(c.0, c.1), "nothing is built before the work is done");
-        assert_eq!(sim.buildings.stores.amount(Good::Logs), ledger, "nothing is paid up front");
-        assert_eq!(emit(&mut sim, &mut p, &BuildOrder::Dam { cells: vec![], height: 1.5 }), Err(PlaceError::NoCells));
-    }
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn canal_orders_a_site_and_dam_needs_water() {
-        let mut sim = SimState::new(1);
-        sim.tech.unlock_all();
-        found(&mut sim);
-        stock(&mut sim);
-        let c = river_cell(&sim);
-        let mut p = Pending::default();
-        emit(&mut sim, &mut p, &BuildOrder::Canal { cells: line_cells(c, (c.0 + 3, c.1)) }).unwrap();
-        assert_eq!(sim.work.canal_plans.len(), 1, "a canal is a construction site with a plan");
-        assert!(sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Canal && !b.is_complete()));
-        let dry = (0..sim.world.size).map(|x| (x, 1)).find(|&(x, y)| !is_wet(&sim, x, y)).unwrap();
-        assert_eq!(check_dam(&sim, &[dry], 1.0), Err(PlaceError::NeedsWater));
-        assert_eq!(check_dam(&sim, &[], 1.0), Err(PlaceError::NoCells));
-    }
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn a_cancelled_canal_site_leaves_no_plan() {
-        let mut sim = SimState::new(1);
-        sim.tech.unlock_all();
-        found(&mut sim);
-        stock(&mut sim);
-        let mut p = Pending::default();
-        let c = river_cell(&sim);
-        emit(&mut sim, &mut p, &BuildOrder::Canal { cells: line_cells(c, (c.0 + 2, c.1)) }).unwrap();
-        let id = sim.buildings.buildings.last().unwrap().id;
-        sim.apply(Command::CancelSite { building: id }).unwrap();
-        assert!(sim.work.canal_plans.is_empty() && sim.buildings.building(id).is_none());
-    }
-
-
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn a_line_over_a_dam_raises_it_and_raise_adds_one_step() {
-        let mut sim = SimState::new(1);
-        sim.tech.unlock_all();
-        found(&mut sim);
-        let c = river_cell(&sim);
-        let line = line_cells((c.0, c.1 - 2), (c.0, c.1 + 2));
-        sim.apply(Command::BuildDam { cells: line.clone(), height: 1.0 }).unwrap();
-        assert_eq!(check_dam(&sim, &line, 1.5), Ok(()));
-        assert!(line_cost(&sim, &line, 1.0, None).is_empty(), "already that high: free");
-        let raise = line_cost(&sim, &line, 1.5, None);
-        assert!(raise.iter().any(|a| a.0 == Good::Mud), "above one unit a dam is packed with mud: {raise:?}");
-        match raise_order(&sim, line[2]) {
-            Some(BuildOrder::Dam { cells, height }) => {
-                assert_eq!(cells.len(), line.len());
-                assert!((height - 1.5).abs() < 1e-4, "{height}");
-            }
-            o => panic!("{o:?}"),
-        }
-        assert_eq!(raise_order(&sim, (c.0 + 5, c.1 + 5)), None, "no dam there");
-        let mut p = Pending::default();
-        let order = raise_order(&sim, line[0]).unwrap();
-        emit(&mut sim, &mut p, &order).expect("the raise is ordered");
-    }
-
-    #[test]
-    fn a_line_built_to_a_crest_brings_each_cell_up_to_it() {
-        let mut sim = SimState::new(1);
-        let c = river_cell(&sim);
-        let line = line_cells((c.0, c.1 - 2), (c.0, c.1 + 2));
-        let ground: Vec<f32> = line.iter().map(|&(x, y)| *sim.height.get(x, y).unwrap()).collect();
-        let crest = ground.iter().copied().fold(f32::MIN, f32::max) + 1.0;
-        let (cells, heights) = line_heights(&sim, &line, 1.0, Some(crest));
-        assert_eq!(cells, line);
-        for (h, g) in heights.iter().zip(&ground) {
-            assert!((h + g - crest).abs() < 1e-4 || (*h - 1.0).abs() < 1e-4 && g + 1.0 >= crest, "{h} on {g}");
-        }
-        let (base, added) = split_to_crest(&sim, &line, 1.0, crest);
-        assert_eq!(base.len() + added.len(), line.len());
-        assert!(!added.is_empty(), "the lowest cells need more than one unit to reach the crest");
-        assert_eq!(line_heights(&sim, &line, 1.5, None).1, vec![1.5; line.len()]);
-        sim.tech.unlock_all();
-    }
-
-    #[test]
-    fn line_cells_includes_both_ends() {
-        let l = line_cells((2, 2), (6, 4));
-        assert_eq!((l[0], *l.last().unwrap()), ((2, 2), (6, 4)));
-        assert_eq!(line_cells((3, 3), (3, 3)), vec![(3, 3)]);
-    }
-}

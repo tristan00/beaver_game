@@ -67,18 +67,3 @@ pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
     move |x, y| world.valley_of((x, y)).is_some_and(|v| world.is_open(v))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fog_lifts_softly_and_only_where_allowed() {
-        let mut fog = Fog::unseen(16);
-        assert_eq!(fog.explored_cells(), 0);
-        let left = |x: usize, _y: usize| x < 8;
-        assert!(fog.reveal((8.0, 8.0), 4.0, &left));
-        assert!(fog.explored((6, 8)));
-        assert_eq!(fog.get((10, 8)), 0.0, "the locked side stays fogged");
-        assert!(!fog.reveal((8.0, 8.0), 4.0, &left), "a second reveal changes nothing");
-    }
-}

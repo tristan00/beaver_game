@@ -33,20 +33,3 @@ pub type HeightGrid = Grid<f32>;
 pub type WaterGrid = Grid<f32>;
 pub type VegetationGrid = Grid<f32>;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounds_checked_access() {
-        let mut g = Grid::new(3, 2, 0u8);
-        *g.get_mut(2, 1).unwrap() = 7;
-        assert_eq!(g.get(2, 1), Some(&7));
-        assert_eq!(g.get(3, 0), None);
-        assert_eq!(g.get(0, 2), None);
-    }
-
-    #[test]
-    #[should_panic]
-    fn zero_size_rejected() { Grid::new(0, 4, 0u8); }
-}

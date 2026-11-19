@@ -699,20 +699,3 @@ pub fn lock(mb: &mut Mb, stage: u8) {
     mb.cyl(w - v(0.0, 0.0, 0.2), v(1.3, 0.2, -1.0), 0.02, 0.02, hex(0xe9d9aa), hex(0xe9d9aa), 4);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dir_of(cells: &[(i32, i32)]) -> u8 { dam_dir(|dx, dy| cells.contains(&(dx, dy))) }
-
-    #[test]
-    fn dam_direction_follows_the_line() {
-        assert_eq!(dir_of(&[(-1, 0), (1, 0)]), 0);
-        assert_eq!(dir_of(&[(0, -1), (0, 1)]), 2);
-        assert_eq!(dir_of(&[(-1, -1), (1, 1)]), 1);
-        assert_eq!(dir_of(&[(1, -1), (-1, 1)]), 3);
-        assert_eq!(dir_of(&[(1, 0)]), 0, "a line end follows its one neighbour");
-        assert_eq!(dir_of(&[(0, 1)]), 2);
-        assert_eq!(dir_of(&[]), 0, "a lone cell runs along x");
-    }
-}

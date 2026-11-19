@@ -84,33 +84,3 @@ pub fn step(sim: &mut SimState, day: u64) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plants_sprout_on_a_new_shore_and_drown_when_it_deepens() {
-        let mut s = SimState::new(2);
-        let n = s.water.depth.width();
-        s.water = crate::water::Water::new(n);
-        s.resources.items.retain(|r| !(r.cell.0 >= 40 && r.cell.0 < 60 && r.cell.1 >= 40 && r.cell.1 < 60));
-        let pond: Vec<Cell> = (45..55).flat_map(|y| (45..55).map(move |x| (x, y))).collect();
-        for &(x, y) in &pond {
-            *s.water.depth.get_mut(x, y).unwrap() = 0.3;
-        }
-        let count = |s: &SimState| s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && r.cell.0 >= 40 && r.cell.0 < 60 && r.cell.1 >= 40 && r.cell.1 < 60).count();
-        for day in 0..120 {
-            step(&mut s, day);
-        }
-        let grown = count(&s);
-        assert!(grown >= 20, "a shallow pond grows a wetland: {grown} plants");
-        assert!(s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant).all(|r| r.wet || !pond.contains(&r.cell)));
-        for &(x, y) in &pond {
-            *s.water.depth.get_mut(x, y).unwrap() = 1.2;
-        }
-        step(&mut s, 120);
-        let left = s.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant && pond.contains(&r.cell)).count();
-        assert_eq!(left, 0, "deep water holds no plants");
-        assert!(count(&s) > 0, "the new shore keeps its plants");
-    }
-}

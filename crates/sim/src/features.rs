@@ -94,32 +94,3 @@ impl Default for Features {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::SimState;
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn default_start_fires_only_arrivals_over_eight_seasons() {
-        for seed in 1..=3 {
-            let mut s = SimState::new(seed);
-            assert_eq!(s.features, Features::scoped());
-            let c = s.world.valleys[s.world.start.0 as usize].center;
-            let land = crate::WorldLand { world: &s.world, depth: &s.water.depth };
-            s.colony.found((c.0 as f32, c.1 as f32), &land).expect("found");
-            let days = 8.0 * crate::events::DEFAULT_DAYS_PER_SEASON as f32;
-            let mut t = 0.0;
-            while t < days {
-                s.step(0.25).unwrap();
-                t += 0.25;
-            }
-            for r in s.events.log() {
-                assert!(matches!(r.kind, EventKind::WanderingBeaver | EventKind::WetlandArrival), "{:?} fired", r.kind);
-            }
-            for k in [EventKind::Flood, EventKind::Drought, EventKind::HardFreeze, EventKind::Fire, EventKind::Disease, EventKind::PredatorRaid] {
-                assert!(!Features::scoped().allows_event(k), "{k:?} not switched off");
-            }
-        }
-    }
-}

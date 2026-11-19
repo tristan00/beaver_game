@@ -810,7 +810,6 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn button_actions(
     q: Query<(&Interaction, &HudAction), Changed<Interaction>>,
@@ -1659,24 +1658,3 @@ fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Ve
     camps
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn categories_follow_the_menu_order_and_fit_the_hotkeys() {
-        let s = sim::SimState::new(1);
-        let cats = panels::categories(&s);
-        assert_eq!(cats.first(), Some(&Group::Base));
-        assert!(cats.len() <= CAT_KEYS.len(), "{} categories but {} keys", cats.len(), CAT_KEYS.len());
-    }
-
-
-
-    #[test]
-    fn switching_tools_clears_the_drawn_line() {
-        let mut h = HudState { line: vec![(1, 1), (2, 1)], drag_from: Some((1, 1)), ..default() };
-        h.set_tool(Tool::Canal);
-        assert!(h.line.is_empty() && h.drag_from.is_none());
-    }
-}

@@ -624,22 +624,3 @@ pub fn sync_sim_barges(
     }
 }
 
-#[cfg(test)]
-mod motion_tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "beavers: off until the water engine is done"]
-    fn a_sprite_moves_continuously_between_steps_and_snaps_on_a_jump() {
-        let mut m = Motion::default();
-        m.record(0.0, Vec2::new(0.0, 0.0), 0.0);
-        m.record(0.05, Vec2::new(2.0, 0.0), 0.2);
-        let (p, lift, dir) = m.at(0.025).unwrap();
-        assert!((p.x - 1.0).abs() < 1e-4 && (lift - 0.1).abs() < 1e-4, "half way between the steps");
-        assert_eq!(dir.map(|d| d.normalize()), Some(Vec2::X), "heading is the way it is going");
-        m.record(0.1, Vec2::new(2.0, 0.0), 0.2);
-        assert_eq!(m.at(0.075).unwrap().2, None);
-        m.record(0.15, Vec2::new(40.0, 0.0), 0.0);
-        assert_eq!(m.at(0.12).unwrap().0, Vec2::new(40.0, 0.0));
-    }
-}

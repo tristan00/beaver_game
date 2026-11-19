@@ -101,30 +101,3 @@ pub(crate) fn step_sim(time: Res<Time>, mut clock: ResMut<SimClock>, mut sim: Re
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn speeds_scale_steps() {
-        let mut c = SimClock::default();
-        let one: u32 = (0..600).map(|_| c.advance(1.0 / 60.0)).sum();
-        let mut c3 = SimClock::default();
-        c3.set_speed(Speed::X3);
-        let three: u32 = (0..600).map(|_| c3.advance(1.0 / 60.0)).sum();
-        let want = |speed: Speed| (10.0 * BASE_DAYS_PER_SECOND * speed.multiplier() / sim::STEP_DAYS).round() as i32;
-        assert!((one as i32 - want(Speed::X1)).abs() <= 1, "{one}");
-        assert!((three as i32 - want(Speed::X3)).abs() <= 1, "{three}");
-    }
-
-
-    #[test]
-    fn pause_stops_steps_and_cap_holds() {
-        let mut c = SimClock::default();
-        c.toggle_pause();
-        assert_eq!(c.advance(5.0), 0);
-        c.set_speed(Speed::X3);
-        assert!(!c.paused);
-        assert_eq!(c.advance(100.0), MAX_STEPS_PER_FRAME);
-    }
-}

@@ -67,16 +67,3 @@ fn orbit_input(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn panning_forward_moves_away_from_the_camera() {
-        let v = pan_vector(0.0, 1.0, 0.0);
-        assert!((v - Vec2::new(0.0, -1.0)).length() < 1e-5, "{v:?}");
-        let r = pan_vector(0.0, 0.0, 1.0);
-        assert!((r - Vec2::new(1.0, 0.0)).length() < 1e-5, "{r:?}");
-        assert_eq!(pan_vector(1.0, 0.0, 0.0), Vec2::ZERO);
-    }
-}

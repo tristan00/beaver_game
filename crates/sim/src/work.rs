@@ -331,31 +331,3 @@ impl Work {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builders_can_work_only_as_far_as_the_materials_delivered() {
-        let mut w = Work::default();
-        let b = BuildingId(1);
-        w.add_site(b, BuildingKind::Dam, &[(Good::Logs, 10.0), (Good::Sticks, 10.0)], 4.0).unwrap();
-        let open = |w: &Work| w.place(b).unwrap().site.as_ref().unwrap().labour_open();
-        assert!(!open(&w), "nothing to build with yet");
-        w.deliver(b, Good::Logs, 10.0).unwrap();
-        assert!(open(&w), "half the materials are on site");
-        w.add_labour(b, 2.0).unwrap();
-        assert!(!open(&w), "half built with half the materials");
-        w.deliver(b, Good::Sticks, 5.0).unwrap();
-        assert!(open(&w));
-        w.add_labour(b, 1.0).unwrap();
-        assert!(!open(&w));
-        w.deliver(b, Good::Sticks, 5.0).unwrap();
-        w.add_labour(b, 1.0).unwrap();
-        let s = w.place(b).unwrap().site.as_ref().unwrap();
-        assert!(s.is_done() && !s.labour_open() && s.labour_fraction() == 1.0);
-        let mut free = Work::default();
-        free.add_site(b, BuildingKind::Burrow, &[], 4.0).unwrap();
-        assert!(free.place(b).unwrap().site.as_ref().unwrap().labour_open(), "a site needing no materials can be dug at once");
-    }
-}

@@ -36,8 +36,6 @@ pub const SHADOW_MIX: f32 = 0.40;
 pub const AUTUMN_RUST: Rgb = rgb(0xD9814E);
 pub const DAM_MUD: Rgb = rgb(0x8F6E52);
 
-
-
 pub const fn pack(c: Rgb) -> u32 {
     (((c[0] * 255.0 + 0.5) as u32) << 16) | (((c[1] * 255.0 + 0.5) as u32) << 8) | ((c[2] * 255.0 + 0.5) as u32)
 }
@@ -81,8 +79,3 @@ pub fn display_linear(c: Rgb) -> [f32; 3] {
     undo_display_transform([ch(c[0]), ch(c[1]), ch(c[2])])
 }
 
-#[cfg(test)]
-mod tests {
-    
-
-}

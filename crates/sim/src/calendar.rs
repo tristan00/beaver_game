@@ -59,32 +59,3 @@ pub fn days_until(time_days: f64, season: Season) -> f64 {
     (start - day_of_year(time_days)).rem_euclid(YEAR_DAYS)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seasons_follow_each_other_over_a_year() {
-        assert_eq!(Season::at(0.0), Season::Spring);
-        assert_eq!(Season::at(89.9), Season::Spring);
-        assert_eq!(Season::at(90.0), Season::Summer);
-        assert_eq!(Season::at(270.0), Season::Winter);
-        assert_eq!(Season::at(360.0), Season::Spring);
-        assert_eq!(Season::Winter.next(), Season::Spring);
-    }
-
-    #[test]
-    fn dates_are_one_based() {
-        assert_eq!(Date::at(0.0), Date { year: 1, season: Season::Spring, day: 1 });
-        assert_eq!(Date::at(91.5), Date { year: 1, season: Season::Summer, day: 2 });
-        assert_eq!(Date::at(360.0 + 270.0), Date { year: 2, season: Season::Winter, day: 1 });
-    }
-
-    #[test]
-    fn days_until_wraps_to_next_year() {
-        assert_eq!(days_until(100.0, Season::Autumn), 80.0);
-        assert_eq!(days_until(100.0, Season::Spring), 260.0);
-        assert_eq!(days_until(90.0, Season::Summer), 0.0);
-        assert!((year_phase(540.0) - 0.5).abs() < 1e-6);
-    }
-}

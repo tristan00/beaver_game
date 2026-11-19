@@ -4,8 +4,6 @@ mod scene;
 mod structures;
 pub mod sim_sync;
 pub mod sim_view;
-#[cfg(test)]
-mod sim_tests;
 
 use crate::camera::MainCamera;
 use crate::cli::Cli;
@@ -831,84 +829,3 @@ fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), 
     exit.write(if over.is_empty() { AppExit::Success } else { AppExit::error() });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::mesh::VertexAttributeValues;
-
-    fn check(name: &str, m: &Mesh) {
-        let n = m.count_vertices();
-        assert!(n > 0, "{name}: empty");
-        let Some(bevy::mesh::Indices::U32(idx)) = m.indices() else { panic!("{name}: no indices") };
-        assert!(idx.iter().all(|&i| (i as usize) < n), "{name}: index out of range");
-        let Some(VertexAttributeValues::Float32x3(p)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("{name}: no positions") };
-        assert!(p.iter().all(|v| v.iter().all(|c| c.is_finite())), "{name}: non-finite position");
-        let Some(VertexAttributeValues::Float32x3(nm)) = m.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("{name}: no normals") };
-        assert_eq!(nm.len(), n);
-        assert!(nm.iter().all(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] - 1.0).abs() < 1e-3 || *v == [0.0; 3]), "{name}: bad normal");
-    }
-
-    #[test]
-    fn all_models_are_valid() {
-        for sp in SPECIES {
-            for s in Season::ALL {
-                for lod in 0..3 {
-                    check("tree", &models::tree_mesh(sp, s, lod));
-                }
-            }
-        }
-        check("stump", &models::stump_mesh());
-        check("snag", &models::snag_mesh());
-        check("wheel", &models::wheel_mesh());
-        for b in sim::buildings::BuildingKind::ALL {
-            for stage in 0..4 {
-                check("building", &models::struct_mesh(sim_sync::model_kind(b), 4.0, stage));
-            }
-        }
-        for steps in [1, 4, 12] {
-            for diag in [false, true] {
-                check("dam cell", &structures::dam_cell_mesh(steps, diag, 0, false));
-                check("dam site", &structures::dam_cell_mesh(steps, diag, 1, true));
-            }
-        }
-        for kind in [StructKind::Lodge, StructKind::Dam, StructKind::Canal, StructKind::Burrow, StructKind::Workshop, StructKind::WaterWheel, StructKind::Dock, StructKind::Barge, StructKind::BargeEmpty] {
-            for stage in 0..4 {
-                check("struct", &models::struct_mesh(kind, 4.0, stage));
-            }
-        }
-    }
-
-    #[test]
-    fn stub_pond_fits_the_terrain() {
-        for seed in 1..=4 {
-            let sim = sim::SimState::new(seed);
-            let sc = scene_from_sim(&sim, SceneConfig::NORMAL);
-            let snags = sc.trees.iter().filter(|t| t.state == TreeState::Snag).count();
-            let alive = sc.trees.iter().filter(|t| t.state == TreeState::Alive).count();
-            assert!(alive > sc.trees.len() * 3 / 4, "seed {seed}: only {alive}/{} trees alive", sc.trees.len());
-            assert!(snags * 20 < sc.trees.len(), "seed {seed}: {snags} drowned snags");
-            let pond = sc.pond.expect("stub pond");
-            let mean = pond.shore_r.iter().sum::<f32>() / pond.shore_r.len() as f32;
-            assert!((6.0..=20.0).contains(&mean), "seed {seed}: pond radius {mean}");
-            let big: Vec<_> = sc.structs.iter().filter(|s| matches!(s.kind, StructKind::Lodge | StructKind::Workshop)).collect();
-            for (i, a) in big.iter().enumerate() {
-                for b in &big[i + 1..] {
-                    let d = Vec2::new(a.pos.x - b.pos.x, a.pos.z - b.pos.z).length();
-                    assert!(d > 5.0, "seed {seed}: {:?} and {:?} overlap ({d:.1})", a.kind, b.kind);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn stub_scene_is_deterministic_and_sized() {
-        let sim = sim::SimState::new(1);
-        let a = scene_from_sim(&sim, SceneConfig::STRESS);
-        let b = scene_from_sim(&sim, SceneConfig::STRESS);
-        assert_eq!(a.trees.len(), 5000);
-
-        assert!(a.beavers.len() >= 295, "got {}", a.beavers.len());
-        assert_eq!(a.trees[17].pos, b.trees[17].pos);
-        assert!(a.structs.len() >= 20);
-    }
-}

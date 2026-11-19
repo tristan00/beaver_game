@@ -493,7 +493,6 @@ pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
     }
 }
 
-
 pub const TIP_LAYERS: usize = 3;
 const OPEN_SECS: f32 = 0.3;
 const FREEZE_SECS: f32 = 1.5;

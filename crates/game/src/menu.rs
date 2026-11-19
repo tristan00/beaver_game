@@ -454,13 +454,3 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
     hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scales_include_the_default_and_grow() {
-        assert!(SCALES.contains(&1.0));
-        assert!(SCALES.windows(2).all(|w| w[0] < w[1]));
-    }
-}

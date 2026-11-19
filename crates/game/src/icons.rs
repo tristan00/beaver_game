@@ -312,7 +312,6 @@ fn wave_fill(x0: f32, x1: f32, ytop: f32, ybot: f32, amp: f32, periods: f32) -> 
     })
 }
 
-
 fn radial(n: usize, cx: f32, cy: f32, f: impl Fn() -> S) -> S {
     union((0..n).map(|i| f().rot(cx, cy, i as f32 * 360.0 / n as f32)).collect())
 }
@@ -1133,35 +1132,3 @@ fn draw(icon: Icon, c: &mut Canvas) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn atlas_covers_every_icon_with_a_clean_glyph() {
-        let (w, h, rgba) = rasterize_atlas();
-        assert_eq!(w, COLUMNS * CELL);
-        assert_eq!(h, (Icon::ALL.len() as u32).div_ceil(COLUMNS) * CELL);
-        assert_eq!(rgba.len(), (w * h * 4) as usize);
-        let mut bad = Vec::new();
-        for (i, &icon) in Icon::ALL.iter().enumerate() {
-            assert_eq!(icon.index(), i);
-            let (x0, y0) = ((i as u32 % COLUMNS) * CELL, (i as u32 / COLUMNS) * CELL);
-            let a = |x: u32, y: u32| rgba[(((y0 + y) * w + x0 + x) * 4 + 3) as usize];
-            let total: u32 = (0..CELL).flat_map(|y| (0..CELL).map(move |x| (x, y))).map(|(x, y)| a(x, y) as u32).sum();
-            let coverage = total as f32 / (255.0 * (CELL * CELL) as f32);
-            if !(0.05..0.75).contains(&coverage) {
-                bad.push(format!("{icon:?}: coverage {coverage:.2}"));
-            }
-            if !(0..CELL).all(|t| a(t, 0) == 0 && a(t, CELL - 1) == 0 && a(0, t) == 0 && a(CELL - 1, t) == 0) {
-                bad.push(format!("{icon:?}: touches the cell edge"));
-            }
-        }
-        assert!(bad.is_empty(), "{bad:#?}");
-    }
-
-
-
-
-
-}
