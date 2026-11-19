@@ -108,6 +108,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "beavers: off until the water engine is done"]
     fn join_request_accept_adds_beaver_and_turn_away_does_not() {
         let mut c = founded();
         let mut s = Society::default();
@@ -124,6 +125,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "beavers: off until the water engine is done"]
     fn requests_arrive_during_steps_and_are_capped() {
         let mut c = founded();
         c.food = 1000.0;

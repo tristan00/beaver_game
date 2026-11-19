@@ -89,7 +89,7 @@ fn time_keys(
 }
 
 pub(crate) fn step_sim(time: Res<Time>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>) {
-    if !sim.0.colony.is_founded() {
+    if !sim.0.is_running() {
         return;
     }
     for _ in 0..clock.advance(time.delta_secs()) {

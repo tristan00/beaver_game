@@ -92,7 +92,7 @@ fn main() {
         let mut i = xy[1] * n + xy[0];
         for _ in 0..400 {
             let lvl = h[i] + d[i];
-            println!("  trace ({:>3}, {:>3}) bed {:.2} depth {:.3} width {:.2} q {:.4} level {:.3} surf {:.2} river {} lake {}", i % n, i / n, h[i], d[i], w.width.as_slice()[i], w.discharge.as_slice()[i], lvl, surf[i], river[i], lake[i]);
+            println!("  trace ({:>3}, {:>3}) bed {:.2} depth {:.3} width {:.2} chan {} q {:.4} level {:.3} river {}", i % n, i / n, h[i], d[i], w.width.as_slice()[i], w.channel.as_slice()[i], w.discharge.as_slice()[i], lvl, river[i]);
             match sim.world.flow_to.as_slice()[i] { Some(t) => i = t, None => break }
         }
     }

@@ -20,8 +20,9 @@ pub struct DemoObject;
 impl Plugin for WaterRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterChunks>()
+            .init_resource::<StreamRibbon>()
             .add_systems(Startup, (demo_world.before(spawn_terrain), setup_water))
-            .add_systems(Update, (update_water_chunks, animate_water));
+            .add_systems(Update, (update_water_chunks, update_streams, animate_water));
     }
 }
 
@@ -116,7 +117,7 @@ pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
     let mut wet = vec![0.0f32; (m * m) as usize];
     for j in 0..m {
         for i in 0..m {
-            wet[(j * m + i) as usize] = (at(&s.water.depth, mx0 + i, my0 + j) > WET_EPS) as u8 as f32;
+            wet[(j * m + i) as usize] = (pond_depth(s, mx0 + i, my0 + j) > WET_EPS) as u8 as f32;
         }
     }
     let mut hb = vec![0.0f32; (m * m) as usize];
@@ -227,9 +228,163 @@ fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     }
 }
 
+pub fn in_channel(s: &SimState, x: i32, y: i32) -> bool {
+    x >= 0 && y >= 0 && s.water.channel.get(x as usize, y as usize).copied().unwrap_or(false)
+}
+
+pub fn pond_depth(s: &SimState, x: i32, y: i32) -> f32 {
+    if in_channel(s, x, y) { 0.0 } else { at(&s.water.depth, x, y) }
+}
+
+#[derive(Resource, Default)]
+struct StreamRibbon {
+    entity: Option<Entity>,
+    mesh: Handle<Mesh>,
+    hash: u64,
+    since: f32,
+}
+
+const STREAM_MIN_WIDTH: f32 = 0.35;
+const STREAM_LIFT: f32 = 0.015;
+const STREAM_REBUILD_S: f32 = 0.25;
+const STREAM_SCREEN_WIDTH: f32 = 0.004;
+
+pub fn stream_mesh(s: &SimState, p: &Palette, min_width: f32) -> Option<Mesh> {
+    let n = s.height.width() as i32;
+    let level = |x: i32, y: i32| at(&s.height, x, y) + at(&s.water.depth, x, y);
+    let wet = |x: i32, y: i32| (0..n).contains(&x) && (0..n).contains(&y) && at(&s.water.depth, x, y) > 0.0;
+    let (mut pos, mut col) = (Vec::new(), Vec::new());
+    let colour = |x: i32, y: i32| {
+        let d = at(&s.water.depth, x, y);
+        let c = mix_rgb(p.water_shallow, p.water_deep, 0.55 + 0.45 * (d / 0.5).min(1.0));
+        let l = crate::palette::display_linear(c).map(|v| v * WATER_GAIN);
+        [l[0], l[1], l[2], 0.92]
+    };
+    let origin = world_pos(s, 0, 0);
+    let lift = |v: Vec3| {
+        let ground = terrain_shown(s, (v.x - origin.0) / CELL_SIZE, (v.z - origin.1) / CELL_SIZE, 1);
+        Vec3::new(v.x, v.y.max(ground) + STREAM_LIFT, v.z)
+    };
+    let centre = |i: i32, j: i32| {
+        let (wx, wz) = world_pos(s, i, j);
+        Vec3::new(wx, level(i, j), wz)
+    };
+    let river = |x: i32, y: i32| x >= 0 && y >= 0 && s.world.river.get(x as usize, y as usize).copied().unwrap_or(false);
+    let lake_arm = |x: i32, y: i32| river(x, y) && s.water.in_lake(x as usize, y as usize);
+    let width = |i: i32, j: i32| {
+        let w = if lake_arm(i, j) { sim::water::bankfull(at(&s.world.river_flow, i, j)).0 } else { at(&s.water.width, i, j) };
+        (w.max(STREAM_MIN_WIDTH) * CELL_SIZE / s.water.cell_m).max(min_width)
+    };
+    for y in 0..n {
+        for x in 0..n {
+            if !(in_channel(s, x, y) || lake_arm(x, y)) || at(&s.water.depth, x, y) <= 0.0 {
+                continue;
+            }
+            let here = level(x, y);
+            let path = s
+                .water
+                .downstream(x as usize, y as usize)
+                .or_else(|| s.world.downstream(x as usize, y as usize).filter(|_| lake_arm(x, y)))
+                .map(|(i, j)| (i as i32, j as i32))
+                .filter(|&(i, j)| wet(i, j));
+            let down = path.or_else(|| {
+                (-1..=1)
+                    .flat_map(|dy| (-1..=1).map(move |dx| (x + dx, y + dy)))
+                    .filter(|&(i, j)| (i, j) != (x, y) && wet(i, j) && level(i, j) < here)
+                    .min_by(|a, b| level(a.0, a.1).total_cmp(&level(b.0, b.1)))
+            });
+            let a = centre(x, y);
+            let (wa, ca) = (width(x, y), colour(x, y));
+            if let Some((i, j)) = down {
+                let b = centre(i, j);
+                let wb = if in_channel(s, i, j) || lake_arm(i, j) { width(i, j) } else { wa };
+                let cb = colour(i, j);
+                let d = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize_or_zero();
+                let side = Vec3::new(-d.z, 0.0, d.x);
+                for k in 0..4 {
+                    let (t0, t1) = (k as f32 / 4.0, (k + 1) as f32 / 4.0);
+                    let (p0, p1) = (a.lerp(b, t0), a.lerp(b, t1));
+                    let (w0, w1) = (wa + (wb - wa) * t0, wa + (wb - wa) * t1);
+                    let (c0, c1) = (if t0 < 0.5 { ca } else { cb }, if t1 <= 0.5 { ca } else { cb });
+                    let quad = [(lift(p0 - side * w0 * 0.5), c0), (lift(p1 - side * w1 * 0.5), c1), (lift(p0 + side * w0 * 0.5), c0), (lift(p0 + side * w0 * 0.5), c0), (lift(p1 - side * w1 * 0.5), c1), (lift(p1 + side * w1 * 0.5), c1)];
+                    for (v, c) in quad {
+                        pos.push(v.to_array());
+                        col.push(c);
+                    }
+                }
+            }
+            let r = wa * 0.5;
+            for k in 0..6 {
+                let (t0, t1) = (k as f32 * std::f32::consts::TAU / 6.0, (k + 1) as f32 * std::f32::consts::TAU / 6.0);
+                for v in [a, a + Vec3::new(t0.cos() * r, 0.0, t0.sin() * r), a + Vec3::new(t1.cos() * r, 0.0, t1.sin() * r)] {
+                    pos.push(lift(v).to_array());
+                    col.push(ca);
+                }
+            }
+        }
+    }
+    if pos.is_empty() {
+        return None;
+    }
+    let count = pos.len();
+    let uv: Vec<[f32; 2]> = pos.iter().map(|p| [p[0] * 0.045, p[2] * 0.045]).collect();
+    Some(
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; count])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, -1.0]; count])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
+            .with_inserted_indices(Indices::U32((0..count as u32).collect())),
+    )
+}
+
+fn update_streams(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    season: Res<Season>,
+    time: Res<Time>,
+    water: Res<WaterChunks>,
+    orbit: Res<OrbitCamera>,
+    mut st: ResMut<StreamRibbon>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    st.since += time.delta_secs();
+    if st.entity.is_some() && st.since < STREAM_REBUILD_S {
+        return;
+    }
+    st.since = 0.0;
+    let s = &sim.0;
+    let min_width = (orbit.distance * STREAM_SCREEN_WIDTH * 4.0).round() / 4.0;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ season.bucket() as u64 ^ (min_width.to_bits() as u64).rotate_left(40);
+    for (d, w) in s.water.depth.as_slice().iter().zip(s.water.width.as_slice()) {
+        if *w > 0.0 {
+            hash = (hash ^ ((d * 200.0) as u64) ^ ((w * 20.0) as u64).rotate_left(20)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    if hash == st.hash && st.entity.is_some() {
+        return;
+    }
+    st.hash = hash;
+    match (stream_mesh(s, &Palette::at(season.phase), min_width), st.entity) {
+        (Some(m), Some(_)) => {
+            let _ = meshes.insert(&st.mesh, m);
+        }
+        (Some(m), None) => {
+            st.mesh = meshes.add(m);
+            st.entity = Some(commands.spawn((WaterSurface, Mesh3d(st.mesh.clone()), MeshMaterial3d(water.material.clone()), Transform::default())).id());
+        }
+        (None, Some(e)) => {
+            commands.entity(e).despawn();
+            st.entity = None;
+        }
+        (None, None) => {}
+    }
+}
+
 pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
-    let depth = |x: i32, y: i32| at(&s.water.depth, x, y);
+    let depth = |x: i32, y: i32| pond_depth(s, x, y);
     let full = shore_field(s, x0, y0, CHUNK);
     if !full.iter().any(|&f| f > 0.0) {
         return None;
@@ -393,7 +548,9 @@ fn update_water_chunks(
     cam: Query<&Transform, With<MainCamera>>,
     mut first: Local<bool>,
     mut cursor: Local<usize>,
+    mut backlog: ResMut<MeshBacklog>,
 ) {
+    backlog.water = true;
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
     let (cols, rows) = chunk_dims(&sim.0);
     if water.slots.len() != cols * rows {
@@ -403,6 +560,7 @@ fn update_water_chunks(
     *first = true;
     let started = std::time::Instant::now();
     let n_chunks = cols * rows;
+    let mut rebuilt = false;
     let palette = Palette::at(season.phase);
     let sea_bucket = season.bucket() as u64;
     for k in 0..n_chunks {
@@ -420,6 +578,7 @@ fn update_water_chunks(
                 return;
             }
             budget -= 1;
+            rebuilt = true;
             MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mesh = build_water_mesh(&sim.0, &palette, cx, cy, step);
             let material = water.material.clone();
@@ -442,6 +601,7 @@ fn update_water_chunks(
             }
         }
     }
+    backlog.water = rebuilt;
 }
 
 fn animate_water(time: Res<Time>, water: Res<WaterChunks>, mut materials: ResMut<Assets<StandardMaterial>>, season: Res<Season>) {
@@ -545,11 +705,13 @@ pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
         }
     }
     let wd = s.water.depth.as_mut_slice();
+    let channel = s.water.channel.as_mut_slice();
     for (i, &hh) in s.height.as_slice().iter().enumerate() {
         let (x, y) = (i % w, i / w);
         let target = if ring(x, y) < R { lake } else { level };
         if hh < target {
             wd[i] = target - hh;
+            channel[i] = false;
         }
     }
     Some((sx, sy, s.height.as_slice()[sy * w + sx]))
@@ -570,28 +732,32 @@ mod tests {
 
     #[test]
     fn water_rings_and_rebuild_cost() {
-        let s = SimState::new(1);
+        let mut s = SimState::new(1);
+        carve_demo_lake(&mut s).expect("lake");
         let p = Palette::at(0.3);
         let (cols, rows) = chunk_dims(&s);
         let foam = crate::palette::display_linear(crate::palette::FOAM).map(|v| v * WATER_GAIN);
         for step in [1, 2] {
             let t = std::time::Instant::now();
-            let (mut wet, mut with_foam, mut tris) = (0, 0, 0);
+            let (mut wet, mut shore, mut with_foam, mut tris) = (0, 0, 0, 0);
             for cy in 0..rows {
                 for cx in 0..cols {
                     let Some(m) = build_water_mesh(&s, &p, cx, cy, step) else { continue };
                     wet += 1;
+                    let cells = (0..CHUNK as i32).flat_map(|j| (0..CHUNK as i32).map(move |i| ((cx * CHUNK) as i32 + i, (cy * CHUNK) as i32 + j)));
+                    let wet_cells = cells.map(|(x, y)| pond_depth(&s, x, y) > WET_EPS).collect::<Vec<_>>();
+                    let has_shore = wet_cells.iter().any(|&w| w) && wet_cells.iter().any(|&w| !w);
                     let Some(bevy::mesh::VertexAttributeValues::Float32x4(c)) = m.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colours") };
                     tris += c.len() / 3;
-                    if c.iter().any(|v| (v[0] - foam[0]).abs() < 0.02 && (v[2] - foam[2]).abs() < 0.02) {
-                        with_foam += 1;
-                    }
+                    let foamed = c.iter().any(|v| (v[0] - foam[0]).abs() < 0.02 && (v[2] - foam[2]).abs() < 0.02);
+                    shore += has_shore as usize;
+                    with_foam += (has_shore && foamed) as usize;
                 }
             }
             let ms = t.elapsed().as_secs_f64() * 1e3;
             println!("step {step}: {wet} wet chunks, {tris} triangles, {ms:.1} ms total, {:.3} ms/chunk", ms / wet.max(1) as f64);
             assert!(wet > 0);
-            assert!(with_foam * 10 >= wet * 9, "foam ring in only {with_foam} of {wet} wet chunks");
+            assert!(shore > 0 && with_foam * 10 >= shore * 9, "foam ring in only {with_foam} of {shore} shore chunks");
         }
     }
 

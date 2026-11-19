@@ -7,6 +7,14 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::fmt;
 
 const LAKE_MIN_DEPTH: f32 = 0.5;
+const CULVERT_MAX_M: f32 = 25.0;
+const CULVERT_FALL_M: f32 = 0.05;
+const CULVERT_ROUNDS: usize = 12;
+const OPEN_WATER: u8 = 80;
+const LAKE_COVER_MIN_M2: f32 = 200.0;
+const LAKE_LEVEL_TOL_M: f32 = 0.10;
+const LAKE_SHORE_SLOPE: f32 = 0.05;
+const LAKE_MAX_DEPTH_M: f32 = 3.0;
 const LAKE_AREA_M2: std::ops::RangeInclusive<f32> = 50.0..=20_000.0;
 pub const MAX_STEP: f32 = 0.6;
 const FLOW_EPS: f32 = 1e-3;
@@ -69,6 +77,7 @@ pub struct World {
     pub main_river: Grid<bool>,
     pub river_flow: Grid<f32>,
     pub lake: Grid<bool>,
+    pub lake_level: Grid<f32>,
     pub pond: Grid<bool>,
     pub water_inputs: Vec<WaterInput>,
     pub moisture: Grid<f32>,
@@ -173,14 +182,14 @@ fn grid_from<T: Clone>(n: usize, data: Vec<T>) -> Grid<T> {
     g
 }
 
-fn fill_depressions(h: &[f32], n: usize, closed: &[bool]) -> (Vec<f32>, Vec<Option<usize>>) {
+fn fill_depressions(h: &[f32], n: usize, closed: &[bool], sinks: &[f32]) -> (Vec<f32>, Vec<Option<usize>>) {
     let mut surface = h.to_vec();
     let mut flow = vec![None; n * n];
     let mut done = vec![false; n * n];
     let mut heap = BinaryHeap::new();
     for i in 0..n * n {
         let (x, y) = (i % n, i / n);
-        if (x == 0 || y == 0 || x == n - 1 || y == n - 1) && !closed[i] {
+        if ((x == 0 || y == 0 || x == n - 1 || y == n - 1) && !closed[i]) || sinks.get(i).is_some_and(|l| l.is_finite()) {
             done[i] = true;
             heap.push(Reverse((surface[i].to_bits(), i)));
         }
@@ -196,6 +205,118 @@ fn fill_depressions(h: &[f32], n: usize, closed: &[bool]) -> (Vec<f32>, Vec<Opti
         }
     }
     (surface, flow)
+}
+
+fn on_inflow_paths(flow: &[Option<usize>], n: usize, inflows: &[(usize, usize, f32)]) -> Vec<bool> {
+    let mut path = vec![false; n * n];
+    for &(x, y, _) in inflows.iter().filter(|&&(x, y, km2)| x < n && y < n && km2 > 0.0) {
+        let mut cur = Some(y * n + x);
+        while let Some(i) = cur.filter(|&i| !path[i]) {
+            path[i] = true;
+            cur = flow[i];
+        }
+    }
+    path
+}
+
+fn culvert(h: &[f32], n: usize, cell_m: f32, comp: &[usize]) -> Option<Vec<usize>> {
+    let inside: std::collections::HashSet<usize> = comp.iter().copied().collect();
+    let bottom = *comp.iter().min_by(|&&a, &&b| h[a].total_cmp(&h[b]).then(a.cmp(&b)))?;
+    let floor = h[bottom];
+    let limit = CULVERT_MAX_M / cell_m;
+    let mut cost: std::collections::HashMap<usize, f32> = std::collections::HashMap::from([(bottom, 0.0)]);
+    let mut prev: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut heap = BinaryHeap::from([Reverse(((0.0f32).to_bits(), bottom))]);
+    while let Some(Reverse((bits, c))) = heap.pop() {
+        let at = f32::from_bits(bits);
+        if at > cost[&c] {
+            continue;
+        }
+        if !inside.contains(&c) && h[c] < floor - CULVERT_FALL_M {
+            let mut path = vec![c];
+            while let Some(&p) = prev.get(path.last().unwrap()) {
+                path.push(p);
+            }
+            path.reverse();
+            return Some(path);
+        }
+        for j in crate::water::neighbours8(n, c) {
+            let step = if j % n != c % n && j / n != c / n { std::f32::consts::SQRT_2 } else { 1.0 };
+            let dig = if inside.contains(&j) || h[j] < floor { 0.0 } else { step };
+            let next = at + dig;
+            if next <= limit && cost.get(&j).is_none_or(|&k| next < k) {
+                cost.insert(j, next);
+                prev.insert(j, c);
+                heap.push(Reverse((next.to_bits(), j)));
+            }
+        }
+    }
+    None
+}
+
+fn open_water(h: &mut [f32], n: usize, cell_m: f32, cover: Option<&[u8]>) -> Vec<f32> {
+    let mut level = vec![f32::NAN; n * n];
+    let Some(cover) = cover else { return level };
+    let water: Vec<bool> = cover.iter().map(|&c| c == OPEN_WATER).collect();
+    for comp in components(&water, n) {
+        if (comp.len() as f32) * cell_m * cell_m < LAKE_COVER_MIN_M2 {
+            continue;
+        }
+        let mut count: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
+        for &i in &comp {
+            *count.entry((h[i] * 100.0).round() as i64).or_default() += 1;
+        }
+        let Some((&cm, _)) = count.iter().max_by_key(|&(k, c)| (*c, Reverse(*k))) else { continue };
+        let lvl = cm as f32 / 100.0;
+        let mut queue: VecDeque<usize> = comp.iter().copied().filter(|&i| h[i] <= lvl + LAKE_LEVEL_TOL_M && level[i].is_nan()).collect();
+        queue.iter().for_each(|&i| level[i] = lvl);
+        while let Some(i) = queue.pop_front() {
+            for j in crate::water::neighbours8(n, i) {
+                let limit = if water[j] { lvl + LAKE_LEVEL_TOL_M } else { lvl };
+                if level[j].is_nan() && h[j] <= limit {
+                    level[j] = lvl;
+                    queue.push_back(j);
+                }
+            }
+        }
+    }
+    let mut dist = vec![u32::MAX; n * n];
+    let mut queue: VecDeque<usize> = (0..n * n).filter(|&i| level[i].is_finite() && crate::water::neighbours8(n, i).any(|j| level[j].is_nan())).collect();
+    queue.iter().for_each(|&i| dist[i] = 1);
+    while let Some(i) = queue.pop_front() {
+        for j in crate::water::neighbours8(n, i) {
+            if level[j].is_finite() && dist[j] == u32::MAX {
+                dist[j] = dist[i] + 1;
+                queue.push_back(j);
+            }
+        }
+    }
+    for i in (0..n * n).filter(|&i| level[i].is_finite()) {
+        let deep = (LAKE_SHORE_SLOPE * dist[i].min(n as u32) as f32 * cell_m).min(LAKE_MAX_DEPTH_M);
+        h[i] = h[i].min(level[i] - deep);
+    }
+    level
+}
+
+fn cut_culverts(h: &mut [f32], n: usize, cell_m: f32, inflows: &[(usize, usize, f32)], sinks: &[f32]) {
+    for _ in 0..CULVERT_ROUNDS {
+        let (surface, flow) = fill_depressions(h, n, &inflow_walls(n, cell_m, inflows), sinks);
+        let path = on_inflow_paths(&flow, n, inflows);
+        let deep: Vec<bool> = (0..n * n).map(|i| surface[i] - h[i] >= LAKE_MIN_DEPTH).collect();
+        let mut cut = false;
+        for comp in components(&deep, n).into_iter().filter(|c| c.iter().any(|&i| path[i])) {
+            let Some(line) = culvert(h, n, cell_m, &comp) else { continue };
+            let (from, to) = (h[line[0]], h[*line.last().unwrap()]);
+            let last = (line.len() - 1).max(1) as f32;
+            for (k, &i) in line.iter().enumerate() {
+                h[i] = h[i].min(from + (to - from) * k as f32 / last);
+            }
+            cut = true;
+        }
+        if !cut {
+            return;
+        }
+    }
 }
 
 fn components(mask: &[bool], n: usize) -> Vec<Vec<usize>> {
@@ -318,7 +439,10 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     }
     let fail = |reason: String| WorldError::GenerationFailed { seed, reason };
     let cell_m = map.cell_m;
-    let (surface, flow) = fill_depressions(&raw, n, &inflow_walls(n, cell_m, map.inflows));
+    let mut raw = raw;
+    let lake_level = open_water(&mut raw, n, cell_m, map.cover);
+    cut_culverts(&mut raw, n, cell_m, map.inflows, &lake_level);
+    let (surface, flow) = fill_depressions(&raw, n, &inflow_walls(n, cell_m, map.inflows), &lake_level);
     let lake = find_lakes(&raw, &surface, n, cell_m);
     let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
     let mut order: Vec<usize> = (0..n * n).collect();
@@ -333,7 +457,7 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         while let (Some(i), true) = (cur, steps <= n * n) {
             acc[i] = acc[i].saturating_add(extra);
             on_path[i] = true;
-            river[i] |= !lake[i];
+            river[i] |= !lake[i] && lake_level[i].is_nan();
             cur = flow[i];
             steps += 1;
         }
@@ -393,8 +517,8 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     for i in 0..n * n {
         let (u, v) = ((i % n) as f32 / n as f32, (i / n) as f32 / n as f32);
         let near = if dist[i] == u32::MAX { 0.0 } else { (-(dist[i] as f32) * cell_m / MOISTURE_REACH_M).exp() };
-        moisture[i] = if lake[i] { 1.0 } else { (0.30 + 0.55 * near + 0.5 * (wet.sample(u, v) - 0.5) - 0.25 * surface[i] / amplitude - 0.25 * slope[i].min(1.0)).clamp(0.0, 1.0) };
-        if lake[i] || river[i] {
+        moisture[i] = if lake[i] || lake_level[i].is_finite() { 1.0 } else { (0.30 + 0.55 * near + 0.5 * (wet.sample(u, v) - 0.5) - 0.25 * surface[i] / amplitude - 0.25 * slope[i].min(1.0)).clamp(0.0, 1.0) };
+        if lake[i] || river[i] || lake_level[i].is_finite() {
             continue;
         }
         let class = map.cover.map_or(10, |c| c[i]);
@@ -419,6 +543,7 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         main_river: grid_from(n, main),
         river_flow: grid_from(n, river_flow),
         lake: grid_from(n, lake),
+        lake_level: grid_from(n, lake_level),
         pond: grid_from(n, pond),
         water_inputs: inputs,
         moisture: grid_from(n, moisture),
@@ -446,7 +571,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_real_map_has_rivers_only_on_the_paths_of_its_inflows_each_running_to_another_edge() {
+    fn a_real_map_has_rivers_only_on_the_paths_of_its_inflows_each_running_to_another_edge_or_a_lake() {
         let (info, w) = crate::maps::world(&crate::maps::all()[0].id).unwrap();
         let n = w.size;
         for (&(x, y, km2), inp) in info.inflows.iter().zip(&w.water_inputs) {
@@ -466,7 +591,7 @@ mod tests {
             }
             on_path[i] = true;
             let (ex, ey) = (i % n, i / n);
-            assert!(ex == 0 || ey == 0 || ex == n - 1 || ey == n - 1);
+            assert!(ex == 0 || ey == 0 || ex == n - 1 || ey == n - 1 || w.lake_level.as_slice()[i].is_finite());
             assert!((ex.abs_diff(inp.cell.0) + ey.abs_diff(inp.cell.1)) as f32 * info.cell_m > INFLOW_WALL_M, "{:?} leaves where it came in", inp.cell);
             assert!(len as f32 * info.cell_m >= 100.0, "{:?} runs only {len} cells", inp.cell);
         }
@@ -509,6 +634,50 @@ mod tests {
         let (forest, grass) = (trees(10), trees(30));
         assert!((300.0..1200.0).contains(&forest), "{forest} trees per hectare of forest");
         assert!(grass < 0.1 * forest, "{grass} trees per hectare of grass");
+    }
+
+    fn valley(n: usize, bump: impl Fn(usize, usize) -> f32) -> Vec<f32> {
+        (0..n * n).map(|i| {
+            let (x, y) = (i % n, i / n);
+            10.0 - 0.02 * x as f32 + 0.1 * (y as f32 - n as f32 / 2.0).abs() + bump(x, y)
+        }).collect()
+    }
+
+    fn real_world(n: usize, raw: Vec<f32>, cover: Option<&[u8]>) -> World {
+        from_heights(1, n, raw, &RealMap { cell_m: 1.0, inflows: &[(0, n / 2, 0.5)], cover }).unwrap()
+    }
+
+    #[test]
+    fn a_stream_passes_a_narrow_embankment_through_a_culvert_but_a_broad_rise_still_ponds_it() {
+        let n = 160;
+        let narrow = real_world(n, valley(n, |x, _| if (100..=104).contains(&x) { 1.0 } else { 0.0 }), None);
+        assert!(!narrow.lake.as_slice().iter().any(|&l| l), "the embankment ponds the stream");
+        assert!((0..n).any(|y| narrow.river.as_slice()[y * n + 106]), "the stream stops at the embankment");
+        let broad = real_world(n, valley(n, |x, _| if (100..=130).contains(&x) { 1.0 } else { 0.0 }), None);
+        assert!(broad.lake.as_slice().iter().any(|&l| l), "a 31 m rise was cut through");
+    }
+
+    #[test]
+    fn open_water_in_the_land_cover_is_a_lake_at_its_flattened_level_with_a_shelving_bed() {
+        let n = 96;
+        let lake = |x: usize| x >= 72;
+        let raw: Vec<f32> = valley(n, |_, _| 0.0).into_iter().enumerate().map(|(i, h)| if lake(i % n) { 8.0 } else { h.max(8.3) }).collect();
+        let cover: Vec<u8> = (0..n * n).map(|i| if lake(i % n) { OPEN_WATER } else { 10 }).collect();
+        let w = real_world(n, raw, Some(&cover));
+        for i in 0..n * n {
+            let level = w.lake_level.as_slice()[i];
+            assert_eq!(level.is_finite(), lake(i % n), "cell {i}");
+            if level.is_finite() {
+                let h = w.height.as_slice()[i];
+                let shore = (i % n - 71) as f32;
+                assert!((level - 8.0).abs() < 1e-6 && h < level && level - h <= (LAKE_SHORE_SLOPE * shore).min(LAKE_MAX_DEPTH_M) + 1e-4);
+                assert!(!w.river.as_slice()[i] && w.forest.as_slice()[i].is_none());
+            }
+        }
+        assert!((0..n * n).any(|i| w.river.as_slice()[i] && i % n == 71), "the stream does not reach the lake");
+        let s = crate::SimState::sandbox(1, w);
+        let at = (90, n / 2);
+        assert!((s.water.depth.get(at.0, at.1).unwrap() - (8.0 - s.height.get(at.0, at.1).unwrap())).abs() < 1e-5);
     }
 
     #[test]

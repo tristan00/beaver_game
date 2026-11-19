@@ -51,7 +51,7 @@ pub const CLAY_BEDS: usize = 4;
 pub const CLAY_BED_RADIUS: f32 = 10.0;
 pub const CLAY_AMOUNT: f32 = 30.0;
 const CLAY_FILL: f32 = 0.8;
-const STRAY_MUD_CHANCE: f32 = 0.15;
+const STRAY_MUD_CHANCE: f32 = 0.01;
 pub const STRAY_MUD_AMOUNT: f32 = 10.0;
 pub const DEPOSIT_SPACING: f32 = 100.0;
 
@@ -98,7 +98,7 @@ pub struct ResourceWorld {
 }
 
 fn is_water(world: &World, (x, y): Cell) -> bool {
-    world.river.get(x, y).copied().unwrap_or(false) || world.lake.get(x, y).copied().unwrap_or(false)
+    world.river.get(x, y).copied().unwrap_or(false) || world.lake.get(x, y).copied().unwrap_or(false) || world.lake_level.get(x, y).is_some_and(|l| l.is_finite())
 }
 
 pub fn is_bank(world: &World, cell: Cell) -> bool {

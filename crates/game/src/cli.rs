@@ -1,7 +1,7 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
-pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--showcase poses|world|buildings] [--screenshot out.png [--frames N]]";
+pub const USAGE: &str = "usage: beaver_colony [--map ID|generated] [--seed S] [--cam iso|top|low|lodge] [--stress] [--autoplay-settle] [--demo-pond] [--sandbox] [--sandbox-script FILE] [--showcase poses|world|buildings] [--screenshot out.png [--frames N]]";
 pub const DEFAULT_FRAMES: u32 = 10;
 
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -15,11 +15,13 @@ pub struct Cli {
     pub autoplay_settle: bool,
     pub demo_pond: bool,
     pub showcase: Option<String>,
+    pub sandbox: bool,
+    pub sandbox_script: Option<PathBuf>,
 }
 
 impl Cli {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, showcase: None };
+        let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, stress: false, autoplay_settle: false, demo_pond: false, showcase: None, sandbox: false, sandbox_script: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -48,6 +50,11 @@ impl Cli {
                 "--stress" => cli.stress = true,
                 "--autoplay-settle" => cli.autoplay_settle = true,
                 "--demo-pond" => cli.demo_pond = true,
+                "--sandbox" => cli.sandbox = true,
+                "--sandbox-script" => {
+                    cli.sandbox_script = Some(PathBuf::from(value("--sandbox-script")?));
+                    cli.sandbox = true;
+                }
                 "--showcase" => {
                     let v = value("--showcase")?;
                     if !["poses", "world", "buildings"].contains(&v.as_str()) {
@@ -58,6 +65,12 @@ impl Cli {
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),
             }
+        }
+        if cli.sandbox && (cli.demo_pond || cli.stress || cli.autoplay_settle || cli.showcase.is_some()) {
+            return Err("--sandbox has no beavers and cannot run with --demo-pond, --stress, --autoplay-settle or --showcase".into());
+        }
+        if cli.sandbox && cli.map.as_deref() == Some("generated") {
+            return Err("--sandbox runs on the real maps only".into());
         }
         Ok(cli)
     }
@@ -98,6 +111,16 @@ mod tests {
     #[test]
     fn midgame_is_gone() {
         assert!(p(&["--midgame"]).unwrap_err().contains("--midgame"));
+    }
+
+    #[test]
+    fn sandbox_flags() {
+        let c = p(&["--sandbox", "--map", "bavarian"]).unwrap();
+        assert!(c.sandbox && c.sandbox_script.is_none() && !c.plain_world());
+        let c = p(&["--sandbox-script", "s.txt"]).unwrap();
+        assert!(c.sandbox && c.sandbox_script == Some("s.txt".into()));
+        assert!(p(&["--sandbox", "--demo-pond"]).is_err());
+        assert!(p(&["--sandbox", "--map", "generated"]).is_err());
     }
 
     #[test]

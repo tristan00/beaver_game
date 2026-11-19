@@ -500,7 +500,7 @@ fn world_input(
         return;
     }
     let now = time.elapsed_secs();
-    if !sim.0.colony.is_founded() {
+    if !sim.0.is_running() {
         if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
             if let Some(cell) = hover.0 {
                 match crate::flow::can_settle(&sim.0, cell) {
@@ -1095,7 +1095,7 @@ fn refresh_panels(
         history: &flow.history,
         cursor: cursor.0,
     };
-    let founded = s.colony.is_founded();
+    let founded = s.is_running();
     for (e, p, mut m) in &mut hosts {
         if !SLOW_PANELS.contains(p) && *p != Panel::Lane {
             continue;
@@ -1151,11 +1151,11 @@ fn refresh_fast(
             continue;
         }
         let tree = match p {
-            Panel::Cursor if !s.colony.is_founded() => match (hover.0, cursor.0) {
+            Panel::Cursor if !s.is_running() => match (hover.0, cursor.0) {
                 (Some(cell), Some(cur)) if flow.phase == crate::flow::Phase::Scouting => panels::settle_tag(s, &flow, cell, cur),
                 _ => Vec::new(),
             },
-            _ if !s.colony.is_founded() => Vec::new(),
+            _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
                 let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
                 panels::cursor_tag(&ctx)

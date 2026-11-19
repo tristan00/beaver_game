@@ -7,7 +7,7 @@ use bevy::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::prelude::*;
 
-const LIFT: f32 = 2.8;
+const LIFT: f32 = 25.0;
 const DENSITY: f32 = 0.9;
 const CLOUD: [f32; 3] = [0.78, 0.8, 0.84];
 const REBUILD_SECS: f32 = 0.25;

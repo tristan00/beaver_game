@@ -11,6 +11,7 @@ mod input;
 mod menu;
 mod opening;
 mod palette;
+mod sandbox;
 mod screenshot;
 mod showcase;
 mod sim_driver;
@@ -73,6 +74,7 @@ fn main() -> AppExit {
         icons::IconsPlugin,
         hud::HudPlugin,
         menu::MenuPlugin,
+        sandbox::SandboxPlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,

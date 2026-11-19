@@ -170,8 +170,8 @@ impl Default for Progress {
     }
 }
 
-fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64) -> Option<String> {
-    if !cli.plain_world() && !sim.colony.is_founded() {
+fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64, meshes_settling: bool) -> Option<String> {
+    if !cli.plain_world() && !sim.is_running() {
         return Some("the colony is not founded yet".into());
     }
     let agents = sim.agents.by_id.len();
@@ -180,6 +180,10 @@ fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, 
     }
     if sim.time_days < wait_days {
         return Some(format!("sim at day {:.2} of {wait_days}", sim.time_days));
+    }
+    if meshes_settling {
+        *stable = (drawn, 0);
+        return Some("terrain or water meshes still rebuilding".into());
     }
     if stable.0 != drawn {
         *stable = (drawn, 0);
@@ -203,6 +207,7 @@ fn drive_screenshot(
     mut stable: Local<(usize, u32)>,
     mut clock: ResMut<crate::sim_driver::SimClock>,
     mut exit: MessageWriter<AppExit>,
+    backlog: Option<Res<crate::terrain_render::MeshBacklog>>,
 ) {
     let path: &PathBuf = cli.screenshot.as_ref().expect("system only added in screenshot mode");
     p.frame += 1;
@@ -235,7 +240,7 @@ fn drive_screenshot(
         return;
     }
     let wait_days = std::env::var("BC_WAIT_DAYS").ok().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
-    if sim.0.colony.is_founded() && sim.0.time_days < wait_days {
+    if sim.0.is_running() && sim.0.time_days < wait_days {
         for _ in 0..4 {
             if sim.0.time_days >= wait_days {
                 break;
@@ -247,7 +252,7 @@ fn drive_screenshot(
             }
         }
     }
-    let readiness = match (shared.get(), scene_pending(&cli, &sim.0, sprites.iter().count(), rigged.iter().count(), drawn.iter().count(), &mut stable, wait_days)) {
+    let readiness = match (shared.get(), scene_pending(&cli, &sim.0, sprites.iter().count(), rigged.iter().count(), drawn.iter().count(), &mut stable, wait_days, backlog.is_some_and(|b| b.terrain || b.water))) {
         (Readiness::Ready, Some(what)) => Readiness::Pending(what),
         (r, _) => r,
     };
@@ -303,6 +308,18 @@ mod tests {
     fn frames_is_a_minimum() {
         assert_eq!(decide(5, 10, 50, &Readiness::Ready, T0), Step::Wait);
         assert_eq!(decide(10, 10, 50, &Readiness::Ready, T0), Step::Capture);
+    }
+
+    #[test]
+    fn waits_while_terrain_or_water_meshes_rebuild() {
+        let cli = Cli::parse(["--sandbox".to_string()]).unwrap();
+        let sim = sim::sandbox::on_map("fixture").unwrap();
+        let mut stable = (0, 0);
+        assert!(scene_pending(&cli, &sim, 0, 0, 5, &mut stable, 0.0, true).is_some());
+        for _ in 1..STABLE_FRAMES {
+            assert!(scene_pending(&cli, &sim, 0, 0, 5, &mut stable, 0.0, false).is_some());
+        }
+        assert!(scene_pending(&cli, &sim, 0, 0, 5, &mut stable, 0.0, false).is_none());
     }
 
     #[test]

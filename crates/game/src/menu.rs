@@ -185,6 +185,8 @@ fn menu_actions(
                             continue;
                         }
                     }
+                } else if sim.0.sandbox {
+                    crate::startflow::begin_sandbox(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
                 } else if sim.0.colony.is_founded() {
                     crate::startflow::begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
                 } else {

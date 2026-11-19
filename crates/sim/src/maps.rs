@@ -149,7 +149,7 @@ mod tests {
         let lake = sim.world.lake.as_slice().iter().filter(|l| **l).count();
         assert!((lake as f32) < 0.06 * n as f32, "{id}: {lake} lake cells of {n}");
         let river = sim.world.river.as_slice().iter().filter(|r| **r).count();
-        let wet = (0..n).filter(|&i| sim.water.depth.as_slice()[i] >= WET_DEPTH && !sim.world.lake.as_slice()[i]).count();
+        let wet = (0..n).filter(|&i| sim.water.depth.as_slice()[i] >= WET_DEPTH && !sim.world.lake.as_slice()[i] && sim.world.lake_level.as_slice()[i].is_nan()).count();
         assert!((wet as f32) < 3.5 * river as f32, "{id}: {wet} wet cells for {river} river cells: the rivers spread wide");
     }
 

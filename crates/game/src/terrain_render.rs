@@ -52,6 +52,7 @@ impl Plugin for TerrainRenderPlugin {
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default());
         app.insert_resource(Season { phase: start })
             .init_resource::<TerrainChunks>()
+            .init_resource::<MeshBacklog>()
             .add_systems(Startup, spawn_terrain)
             .add_systems(Update, (update_season, update_sky_and_light, update_terrain_chunks).chain())
             .add_systems(Update, frame_log);
@@ -368,6 +369,13 @@ fn rebuild_chunk(
     true
 }
 
+#[derive(Resource, Default)]
+pub struct MeshBacklog {
+    pub terrain: bool,
+    pub water: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn update_terrain_chunks(
     mut commands: Commands,
     sim: Res<Sim>,
@@ -375,7 +383,9 @@ fn update_terrain_chunks(
     mut chunks: ResMut<TerrainChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
+    mut backlog: ResMut<MeshBacklog>,
 ) {
+    backlog.terrain = true;
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
     let (cols, rows) = chunk_dims(&sim.0);
     if chunks.slots.len() != cols * rows {
@@ -392,6 +402,7 @@ fn update_terrain_chunks(
             }
         }
     }
+    backlog.terrain = budget < REBUILD_BUDGET;
 }
 
 const STONE_SHADE_ALBEDO: Rgb = rgb(0x8C8290);
@@ -494,6 +505,8 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
     c = mix(c, p.wetland, wetland * (1.0 - rock));
     c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.7);
+    let channel = stream_bed(s, x, y);
+    c = mix(c, mix(STREAM_GRAVEL, STREAM_MUD, smooth(0.0, 0.3, depth)), channel);
     let bed = mix([0.56, 0.78, 0.66], mix(p.water_shallow, p.water_deep, 0.6), (depth / 2.5).max(0.0).sqrt().min(1.0));
     c = mix(c, bed, submerged);
     let dried = dried_bed(s, x, y) * (1.0 - submerged);
@@ -509,6 +522,26 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let f = 1.0 - submerged;
     let lift = |v: f32, floor: f32| v + (v.max(floor * 1.05) - v) * f;
     [lift(c[0], lo[0]), lift(c[1], lo[1]), lift(c[2], lo[2])]
+}
+
+const STREAM_GRAVEL: Rgb = [0.55, 0.50, 0.42];
+const STREAM_MUD: Rgb = [0.36, 0.31, 0.25];
+
+fn stream_bed(s: &SimState, x: i32, y: i32) -> f32 {
+    let n = s.world.size as i32;
+    let mut best = 0.0f32;
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let (i, j) = (x + dx, y + dy);
+            if !(0..n).contains(&i) || !(0..n).contains(&j) || !s.world.river.get(i as usize, j as usize).copied().unwrap_or(false) {
+                continue;
+            }
+            let half = sim::water::bankfull(*s.world.river_flow.get(i as usize, j as usize).unwrap()).0 / s.world.cell_m * 0.5;
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            best = best.max((half + 0.5 - d).clamp(0.0, 1.0));
+        }
+    }
+    best
 }
 
 fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
@@ -627,7 +660,7 @@ fn blob(d: &mut Detail, centre: Vec3, r: Vec3, yaw: f32, lean: f32, dark: Rgb, l
     }
 }
 
-const DETAIL_DENSITY: f32 = 0.7;
+const DETAIL_DENSITY: f32 = 0.15;
 
 fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mut Detail) {
     let (w, h) = (s.height.width() as i32, s.height.height() as i32);

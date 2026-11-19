@@ -12,7 +12,7 @@ const ARRIVAL_DISTANCE: f32 = 18.0;
 const ARRIVAL_PITCH: f32 = 1.2;
 const DEMO_HOLD_SECS: f32 = 2.0;
 const DEMO_MAX_DAYS: f64 = 200.0;
-const DEMO_STEPS_PER_FRAME: usize = 100;
+const DEMO_STEPS_PER_FRAME: usize = 720;
 
 fn family_centre(sim: &SimState) -> (f32, f32) {
     let n = sim.colony.beavers.len().max(1) as f32;
@@ -47,6 +47,19 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
     *sel = Selection::None;
 }
 
+pub fn begin_sandbox(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
+    flow.phase = Phase::Settled;
+    flow.settled_at = Some(flow.real_secs);
+    flow.focus = None;
+    let half = sim.world.size as f32 / 2.0;
+    orbit.target = cell_world(&sim.height, (half, half));
+    orbit.distance = SANDBOX_DISTANCE;
+    orbit.pitch = SCOUT_PITCH;
+    *clock = SimClock::default();
+    *sel = Selection::None;
+}
+
+const SANDBOX_DISTANCE: f32 = 220.0;
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;
 
@@ -59,15 +72,23 @@ pub fn new_game(
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
 ) -> Result<(), String> {
-    let (mut s, dam) = map.build().map_err(|e| format!("cannot build the new game: {e}"))?;
-    let camp = dam.camp;
+    let (mut s, dam) = if sim.0.sandbox {
+        (map.sandbox().map_err(|e| format!("cannot build the sandbox: {e}"))?, None)
+    } else {
+        map.build().map(|(s, d)| (s, Some(d))).map_err(|e| format!("cannot build the new game: {e}"))?
+    };
+    let camp = dam.as_ref().map(|d| d.camp);
     start_recording(&mut s);
     sim.0 = s;
-    planned.0 = Some(dam);
+    planned.0 = dam;
     let generation = flow.generation + 1;
     *flow = Flow::new(&sim.0.world);
     flow.generation = generation;
-    begin_scouting(&sim.0, flow, clock, orbit, sel, Some(camp));
+    if sim.0.sandbox {
+        begin_sandbox(&sim.0, flow, clock, orbit, sel);
+    } else {
+        begin_scouting(&sim.0, flow, clock, orbit, sel, camp);
+    }
     Ok(())
 }
 
@@ -114,6 +135,11 @@ fn begin_new_game(
     mut sel: ResMut<Selection>,
 ) {
     start_recording(&mut sim.0);
+    if sim.0.sandbox {
+        begin_sandbox(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
+        clock.paused = cli.screenshot.is_some();
+        return;
+    }
     let settle = std::env::var_os("BC_SETTLE").is_some();
     let scripted = cli.screenshot.is_some() && (cli.demo_pond || settle || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
     if !scripted {

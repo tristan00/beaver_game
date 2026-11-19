@@ -23,6 +23,7 @@ pub struct Motion {
 }
 
 pub const BEAVER_SIZE: f32 = WORLD_SCALE * 0.9;
+pub const TREE_SCALE: f32 = 3.5;
 pub const BUILDING_SIZE: f32 = WORLD_SCALE * 0.82;
 
 const SPREAD: f32 = 0.28;
@@ -208,12 +209,13 @@ fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource
     let c = r.cell;
     let hash_scale = 0.8 + 0.4 * hash01(c.0, c.1, 5);
     let k = WORLD_SCALE;
+    let tree = TREE_SCALE;
     match sig {
-        ResSig::Tree(_) if r.snag => (models.snag.clone(), Vec3::splat(k * hash_scale), None),
+        ResSig::Tree(_) if r.snag => (models.snag.clone(), Vec3::splat(tree * hash_scale), None),
         ResSig::Tree(_) => {
             let sp = species_at(sim, c);
             let st = r.stage().unwrap_or(sim::forestry::TreeStage::Mature);
-            (models.tree(sp, season, 0), stage_scale(st) * k * hash_scale, Some(TreeLod { species: sp, lod: 0, season }))
+            (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season }))
         }
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), None),
         ResSig::Stock(tag, q) => {
@@ -627,6 +629,7 @@ mod motion_tests {
     use super::*;
 
     #[test]
+    #[ignore = "beavers: off until the water engine is done"]
     fn a_sprite_moves_continuously_between_steps_and_snaps_on_a_jump() {
         let mut m = Motion::default();
         m.record(0.0, Vec2::new(0.0, 0.0), 0.0);

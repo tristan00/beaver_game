@@ -16,6 +16,7 @@ const DRY_Q: f32 = 1.0e-7;
 const MIN_WETTED: f32 = 0.2;
 const FLOOD_REACH: isize = 30;
 const BATCH_DAYS: f32 = 1.0 / 144.0;
+const SLOPE_REACH_M: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Season { Spring, Summer, Autumn, Winter }
@@ -176,7 +177,9 @@ pub struct Water {
     pub structures: Grid<bool>,
     pub closed_edge: Grid<bool>,
     pub width: Grid<f32>,
+    pub channel: Grid<bool>,
     pub discharge: Grid<f32>,
+    pub lake_level: Grid<f32>,
     pub sources: Vec<Source>,
     pub config: WaterConfig,
     pub time_days: f64,
@@ -196,6 +199,8 @@ pub struct Water {
     releases: Vec<(usize, f64)>,
     shown: Vec<f32>,
     channel_volume: f64,
+    lake_at: Vec<f32>,
+    lake_volume: f64,
     pending: f32,
 }
 
@@ -212,7 +217,9 @@ impl Water {
             structures: Grid::new(size, size, false),
             closed_edge: Grid::new(size, size, false),
             width: Grid::new(size, size, 0.0),
+            channel: Grid::new(size, size, false),
             discharge: Grid::new(size, size, 0.0),
+            lake_level: Grid::new(size, size, f32::NAN),
             sources: Vec::new(),
             config: WaterConfig::default(),
             time_days: 0.0,
@@ -232,6 +239,8 @@ impl Water {
             releases: Vec::new(),
             shown: vec![0.0; n],
             channel_volume: 0.0,
+            lake_at: vec![f32::NAN; n],
+            lake_volume: 0.0,
             pending: 0.0,
         }
     }
@@ -249,6 +258,7 @@ impl Water {
         for (f, &l) in w.fed.as_mut_slice().iter_mut().zip(world.lake.as_slice()) {
             *f = l;
         }
+        w.lake_level = world.lake_level.clone();
         w.base_down = world.flow_to.as_slice().to_vec();
         w.route(&world.height);
         let mean = w.mean_flow();
@@ -307,6 +317,22 @@ impl Water {
             }
             _ => (0.0, 0.0),
         }
+    }
+
+    pub fn in_lake(&self, x: usize, y: usize) -> bool {
+        self.depth.in_bounds(x, y) && self.lake_at.get(y * self.depth.width() + x).is_some_and(|l| l.is_finite())
+    }
+
+    pub fn bank_depth(&self, i: usize) -> f32 {
+        self.bank.get(i).map_or(0.0, |b| b.1)
+    }
+
+    pub fn downstream(&self, x: usize, y: usize) -> Option<Cell> {
+        let n = self.depth.width();
+        if !self.depth.in_bounds(x, y) {
+            return None;
+        }
+        self.down.get(y * n + x).copied().flatten().map(|t| (t % n, t / n))
     }
 
     pub fn has_dam(&self, x: usize, y: usize) -> bool {
@@ -418,6 +444,11 @@ impl Water {
         let mut down = vec![None; len];
         let mut done = vec![false; len];
         let mut heap = BinaryHeap::new();
+        self.lake_at = self.lake_cells();
+        for i in (0..len).filter(|&i| self.lake_at[i].is_finite()) {
+            done[i] = true;
+            heap.push(Reverse((filled[i].to_bits() ^ sign_flip(filled[i]), i)));
+        }
         let closed = self.closed_edge.as_slice();
         let dams = self.dam_height.as_slice().to_vec();
         let open = self.config.open_edges;
@@ -495,6 +526,25 @@ impl Water {
             basins.push(b);
         }
         (self.filled, self.down, self.order, self.basin_of, self.basins) = (filled, down, order, basin_of, basins);
+    }
+
+    fn lake_cells(&self) -> Vec<f32> {
+        let n = self.depth.width();
+        let mut at = vec![f32::NAN; n * n];
+        let seeds = self.lake_level.as_slice();
+        let dams = self.dam_height.as_slice();
+        let mut queue: std::collections::VecDeque<usize> = (0..n * n).filter(|&i| seeds[i].is_finite() && self.bed[i] < seeds[i]).collect();
+        queue.iter().for_each(|&i| at[i] = seeds[i]);
+        while let Some(i) = queue.pop_front() {
+            let lvl = at[i];
+            for j in neighbours8(n, i) {
+                if at[j].is_nan() && self.bed[j] < lvl && corner(&self.bed, |k| dams[k] > 0.0, n, i, j) < lvl {
+                    at[j] = lvl;
+                    queue.push_back(j);
+                }
+            }
+        }
+        at
     }
 
     fn make_basin(&self, mut cells: Vec<usize>, outlet: usize, spill: f32, basin_of: &[Option<usize>], id: usize) -> Basin {
@@ -640,6 +690,11 @@ impl Water {
         let cm = self.cell_m;
         let mut depth = vec![0f32; n * n];
         let mut width = vec![0f32; n * n];
+        let mut in_channel = vec![false; n * n];
+        for i in (0..n * n).filter(|&i| self.lake_at[i].is_finite()) {
+            depth[i] = (self.lake_at[i] - self.bed[i]).max(0.0);
+            width[i] = cm;
+        }
         for b in &self.basins {
             let level = b.level(a);
             for &i in &b.cells {
@@ -650,16 +705,18 @@ impl Water {
             }
         }
         let q = self.discharge.as_slice().to_vec();
+        let levels: Vec<f32> = self.basins.iter().map(|b| b.level(a)).collect();
         for i in 0..n * n {
-            if self.basin_of[i].is_some() || q[i] <= DRY_Q {
+            if self.basin_of[i].is_some() || q[i] <= DRY_Q || self.lake_at[i].is_finite() {
                 continue;
             }
-            let slope = self.slope(i);
+            let slope = self.slope(i, &levels);
             let (bw, bd) = self.bank[i];
             if bw <= 0.0 {
                 let d = manning_depth(q[i], cm, slope, MANNING_OVERLAND);
-                depth[i] = depth[i].max(d);
-                width[i] = cm;
+                if depth[i] < d {
+                    (depth[i], width[i], in_channel[i]) = (d, cm, true);
+                }
                 continue;
             }
             let qbf = (bw / BANK_WIDTH.0).powf(1.0 / BANK_WIDTH.1);
@@ -667,7 +724,7 @@ impl Water {
             let d = manning_depth(q[i], w, slope, MANNING_CHANNEL);
             if d <= bd {
                 if depth[i] < d {
-                    (depth[i], width[i]) = (d, w);
+                    (depth[i], width[i], in_channel[i]) = (d, w, true);
                 }
                 continue;
             }
@@ -677,8 +734,10 @@ impl Water {
                 }
             }
         }
+        let lake: f64 = (0..n * n).filter(|&i| self.lake_at[i].is_finite()).map(|i| depth[i] as f64).sum();
+        let lake_change = lake - std::mem::replace(&mut self.lake_volume, lake);
         let channel: f64 = (0..n * n)
-            .filter(|&i| self.basin_of[i].is_none())
+            .filter(|&i| self.basin_of[i].is_none() && self.lake_at[i].is_nan())
             .map(|i| depth[i] as f64 * if width[i] > 0.0 { (width[i] / cm).min(1.0) as f64 } else { 1.0 })
             .sum();
         let stored = channel - self.channel_volume;
@@ -690,11 +749,11 @@ impl Water {
             0.0
         };
         let edges = edge / a - stored;
-        self.books.sources += sourced;
+        self.books.sources += sourced + lake_change;
         self.books.rain += climate[0] / a;
         self.books.evaporation += climate[1] / a;
         self.books.seepage += climate[2] / a;
-        self.added_volume += sourced + climate[0] / a;
+        self.added_volume += sourced + lake_change + climate[0] / a;
         self.lost_volume += edges + (climate[1] + climate[2]) / a;
         let winter = self.season() == Season::Winter;
         let (grow, melt) = (self.config.ice_growth_per_day * dt_days, self.config.ice_melt_per_day * dt_days);
@@ -703,18 +762,29 @@ impl Water {
         }
         self.depth.as_mut_slice().copy_from_slice(&depth);
         self.width.as_mut_slice().copy_from_slice(&width);
+        self.channel.as_mut_slice().copy_from_slice(&in_channel);
         self.shown = depth;
     }
 
-    fn slope(&self, i: usize) -> f32 {
+    fn slope(&self, i: usize, levels: &[f32]) -> f32 {
         let n = self.depth.width();
         let dist = |a: usize, b: usize| if a % n != b % n && a / n != b / n { std::f32::consts::SQRT_2 } else { 1.0 };
-        let Some(t) = self.down[i] else { return MIN_SLOPE };
-        let (end, len) = match self.down[t] {
-            Some(u) => (u, dist(i, t) + dist(t, u)),
-            None => (t, dist(i, t)),
-        };
-        ((self.filled[i] - self.filled[end]) / (len * self.cell_m)).max(MIN_SLOPE)
+        let (mut c, mut len, mut end) = (i, 0.0, self.bed[i]);
+        while len * self.cell_m < SLOPE_REACH_M {
+            let Some(t) = self.down[c] else { break };
+            len += dist(c, t);
+            c = t;
+            if let Some(b) = self.basin_of[t] {
+                end = levels[b].max(self.bed[t]).min(end);
+                break;
+            }
+            end = self.bed[t];
+        }
+        if len <= 0.0 {
+            let up = neighbours8(n, i).filter(|&j| self.down[j] == Some(i)).max_by(|&a, &b| self.bed[a].total_cmp(&self.bed[b]));
+            return up.map_or(MIN_SLOPE, |j| ((self.bed[j] - self.bed[i]) / (dist(i, j) * self.cell_m)).max(MIN_SLOPE));
+        }
+        ((self.bed[i] - end) / (len * self.cell_m)).max(MIN_SLOPE)
     }
 
     fn overbank(&self, i: usize, q: f32, slope: f32) -> Vec<(usize, f32)> {

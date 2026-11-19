@@ -69,7 +69,8 @@ At game time scales river flow is in equilibrium, so rivers are computed, not cr
   catchment x unit runoff x season) plus lateral inflow from the land draining to the river.
 * **Channel geometry** from the cell's bankfull flow: width 3.0 Q^0.5 m, depth 0.35 Q^0.4 m.
 * **Flow depth** by Manning (n = 0.04) on the wetted width (bankfull width x (Q/Qbf)^0.26) and the
-  river's local slope; above bankfull the water spreads over the floodplain cells of the cross
+  river's slope, measured on the bed over the next 6 m of the reach and ending at a pond's actual
+  water level when the reach runs into one (one cell of flat lidar is not a flat river); above bankfull the water spreads over the floodplain cells of the cross
   section until it carries the flow.
 * **Basins** (ponds behind dams, lakes, any hollow on a river) store water: volume rises by inflow
   minus outflow; outflow is the weir flow over the spill (or the inflow, once full). A breach
@@ -78,3 +79,36 @@ At game time scales river flow is in equilibrium, so rivers are computed, not cr
   depth, floodplain depth. Every river cell with flow reports its depth and wetted width; the
   renderer draws the bed and the water ribbon at their real widths, so a stream is always seen.
 * **Books:** inflows, lateral inflow, outflow at the map edge and storage balance exactly.
+
+## Map conditioning (lidar to rivers)
+
+* **Culverts.** Bare-earth lidar keeps road and rail embankments but not the culverts under them,
+  so a stream meeting one ponds behind it. A depression on a river's path is cut through when
+  ground lower than its floor lies at most 25 m beyond its rim (a 1 m channel graded from the floor
+  to that ground). Broader rises are left as real lakes.
+* **Open-water lakes.** Land cover class 80 (open water) marks lakes the lidar flattened to one
+  surface. Each becomes a lake at that surface (the most common height, to the centimetre), with a
+  bed shelving 5% from the shore to at most 3 m deep. A lake holds its level (it runs on beyond the
+  map): streams flow into it and leave the books there, ground joined to it below its level fills
+  to it (a canal dug from it becomes an arm), and a dam above the level shuts it out.
+
+## Sandbox (water engine without beavers)
+
+`beaver_colony --sandbox --map ID` opens a map with no colony: only water runs, the dam and canal
+tools build at once (no tech, no cost, no water needed), and Delete breaches the dam under the
+cursor. `--sandbox-script FILE` runs a script first and prints its report:
+
+    map telemark                  # first line; 'fixture' is the small test valley
+    dam 1.5 X,Y X,Y ...           # dam this high along the line through the points
+    dam-to 23.0 X,Y X,Y           # dam whose crest stands at this level
+    canal 2.0 X,Y X,Y             # dig this deep
+    breach X,Y X,Y                # breach every dam cell on the line
+    run DAYS
+    probe X,Y [label]             # ground, dam, depth, surface, wetted width, flow, next cell
+    check depth X,Y > 0.3         # also surface ground dam width discharge; 'balance' and 'day'
+    dump FILE                     # grids for tools/sandbox_overview.py and tools/sandbox_cells.py
+
+`cargo run --release -p sim --example sandbox -- FILE` runs a script headless.
+`tools/sandbox_shot.sh FILE|MAP X,Y[,DIST,YAW,PITCH] OUT.png [notrees]` photographs the result in
+the game; `tools/sandbox_overview.py DUMP OUT.png [X0,Y0,X1,Y1 SCALE]` draws a top-down map with
+coordinates, and `tools/sandbox_cells.py DUMP X0,Y0,X1,Y1` lists the wet cells.
