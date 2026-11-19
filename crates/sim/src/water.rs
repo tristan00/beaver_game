@@ -285,6 +285,7 @@ pub struct Water {
     member: Vec<f32>,
     /// 1 for cells the solver steps this substep, else 0: water crosses a face only between two.
     act: Vec<f32>,
+    activity_threshold: Vec<f32>,
     /// Scratch for new depths (the mass kernel may compute a lane twice).
     h_new: Vec<f32>,
     rim_mask: Vec<bool>,
@@ -309,6 +310,7 @@ pub struct Water {
     since_environment: f64,
     work_dirty: bool,
     scoped_growth: bool,
+    activity_scratch: Vec<(u32,u32)>,
     work_cells: u64,
     bands: Vec<usize>,
     band_out: Vec<BandOut>,
@@ -383,6 +385,7 @@ impl Water {
             lake_delta: vec![0.0; n * n],
             member: vec![0.0; n * n],
             act: vec![0.0; n * n],
+            activity_threshold: vec![WET_SEED;n*n],
             h_new: vec![0.0; n * n],
             rim_mask: vec![false; n * n],
             pools: Vec::new(),
@@ -405,6 +408,7 @@ impl Water {
             since_environment: 0.0,
             work_dirty: true,
             scoped_growth: std::env::var_os("WATER_FULL_GROWTH_SCAN").is_none(),
+            activity_scratch: Vec::new(),
             work_cells: 0,
             bands: Vec::new(),
             band_out: Vec::new(),
@@ -753,10 +757,12 @@ impl Water {
         }
     }
 
+    #[cfg(test)]
     fn is_seed(&self, i: usize) -> bool {
         (self.h[i] > WET_SEED && (self.member[i] == 0.0 || self.rim_mask[i]) && !self.lake_inner[i]) || self.src[i] > 0.0 || self.rim_mask[i]
     }
 
+    #[cfg(test)]
     fn row_wet_runs(&self, y: usize) -> Vec<(u32, u32)> {
         let n = self.n;
         let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -768,6 +774,7 @@ impl Water {
         runs
     }
 
+    #[cfg(test)]
     fn row_wet_runs_active(&self,y:usize)->Vec<(u32,u32)> {
         let mut runs=Vec::new();
         // Between forcing/geometry updates only computed cells can change.
@@ -778,11 +785,24 @@ impl Water {
         runs
     }
 
+    fn refresh_wet_row(&mut self,y:usize,active_only:bool) {
+        let mut runs=std::mem::take(&mut self.wet_rows[y]);runs.clear();
+        let r=y*self.n;
+        if active_only {
+            for &(a,b) in &self.rows[y] {kernels::seed_runs(&mut runs,&self.h[r+a as usize..r+b as usize],&self.activity_threshold[r+a as usize..r+b as usize],a);}
+        } else {kernels::seed_runs(&mut runs,&self.h[r..r+self.n],&self.activity_threshold[r..r+self.n],0);}
+        self.wet_rows[y]=runs;
+    }
+
     /// Rows of cells to compute: every wet cell outside a pool, every source, every pool's rim,
     /// and their 4-neighbours.
     fn rebuild_activity_full(&mut self) {
+        for i in 0..self.h.len() {
+            self.activity_threshold[i]=if self.src[i]>0.0 || self.rim_mask[i] {f32::NEG_INFINITY}
+                else if self.member[i]==0.0 && !self.lake_inner[i] {WET_SEED} else {f32::INFINITY};
+        }
         for y in 0..self.n {
-            self.wet_rows[y] = self.row_wet_runs(y);
+            self.refresh_wet_row(y,false);
         }
         self.since_shrink = 0;
         self.rebuild_rows(0, self.n);
@@ -790,36 +810,30 @@ impl Water {
 
     /// Recompute active rows y0..y1 (and the face rows around them) from the wet runs.
     fn rebuild_rows(&mut self, y0: usize, y1: usize) {
-        self.work_dirty = true;
-        let n = self.n as u32;
+        let n=self.n as u32;
+        let mut runs=std::mem::take(&mut self.activity_scratch);
         for y in y0..y1 {
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            for yy in y.saturating_sub(1)..(y + 2).min(self.n) {
-                for &(a, b) in &self.wet_rows[yy] {
-                    runs.push((a.saturating_sub(1), (b + 1).min(n)));
-                }
+            runs.clear();
+            for yy in y.saturating_sub(1)..(y+2).min(self.n) {
+                for &(a,b) in &self.wet_rows[yy] {runs.push((a.saturating_sub(1),(b+1).min(n)));}
             }
-            runs.sort_unstable();
-            let w = self.n;
-            for &(a, b) in &self.rows[y] {
-                self.act[y * w + a as usize..y * w + b as usize].fill(0.0);
-            }
-            self.rows[y] = merge_runs(runs, ACTIVE_GAP);
-            for &(a, b) in &self.rows[y] {
-                self.act[y * w + a as usize..y * w + b as usize].fill(1.0);
+            runs.sort_unstable();merge_runs_in_place(&mut runs,ACTIVE_GAP);
+            if runs!=self.rows[y] {
+                self.work_dirty=true;
+                let w=self.n;
+                for &(a,b) in &self.rows[y] {self.act[y*w+a as usize..y*w+b as usize].fill(0.0);}
+                for &(a,b) in &runs {self.act[y*w+a as usize..y*w+b as usize].fill(1.0);}
+                std::mem::swap(&mut self.rows[y],&mut runs);
             }
         }
         for y in y0..=y1.min(self.n) {
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            if y > 0 {
-                runs.extend_from_slice(&self.rows[y - 1]);
-            }
-            if y < self.n {
-                runs.extend_from_slice(&self.rows[y]);
-            }
-            runs.sort_unstable();
-            self.yrows[y] = merge_runs(runs, 0);
+            runs.clear();
+            if y>0 {runs.extend_from_slice(&self.rows[y-1]);}
+            if y<self.n {runs.extend_from_slice(&self.rows[y]);}
+            runs.sort_unstable();merge_runs_in_place(&mut runs,0);
+            if runs!=self.yrows[y] {std::mem::swap(&mut self.yrows[y],&mut runs);}
         }
+        self.activity_scratch=runs;
     }
 
     pub fn step(&mut self, height: &HeightGrid, dt_days: f32) {
@@ -1208,7 +1222,7 @@ impl Water {
             self.rebuild_activity_full();
         } else if !grew.is_empty() {
             for &y in &grew {
-                self.wet_rows[y] = if self.scoped_growth {self.row_wet_runs_active(y)} else {self.row_wet_runs(y)};
+                self.refresh_wet_row(y,self.scoped_growth);
             }
             let mut start=grew[0].saturating_sub(1);
             let mut end=(grew[0]+2).min(n);
@@ -1391,16 +1405,16 @@ fn push_run(runs: &mut Vec<(u32, u32)>, a: u32, b: u32) {
     }
 }
 
-fn merge_runs(runs: Vec<(u32, u32)>, gap: u32) -> Vec<(u32, u32)> {
-    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(runs.len());
-    for (a, b) in runs {
-        match merged.last_mut() {
-            Some(last) if a <= last.1 + gap => last.1 = last.1.max(b),
-            _ => merged.push((a, b)),
-        }
+fn merge_runs_in_place(runs:&mut Vec<(u32,u32)>,gap:u32) {
+    let mut count=0;
+    for read in 0..runs.len() {
+        let (a,b)=runs[read];
+        if count>0 && a<=runs[count-1].1+gap {runs[count-1].1=runs[count-1].1.max(b);}
+        else {runs[count]=(a,b);count+=1;}
     }
-    merged
+    runs.truncate(count);
 }
+
 
 const SPIN_UP_S: f64 = 9000.0;
 
