@@ -4,30 +4,49 @@ Maps are 512 m windows of 1 m cells from 1 m lidar, heights in metres.
 
 ## Physics
 
-Water is simulated with the two-dimensional shallow-water (Saint-Venant) equations on the 1 m
-grid: conservation of mass and of momentum in x and y, with gravity, the pressure of the water
-column, advection of momentum and Manning bed friction.
+Water is simulated with the local-inertial form of the two-dimensional shallow-water equations
+(Bates et al. 2010, the scheme of LISFLOOD-FP and similar flood models) on the 1 m grid: mass is
+conserved exactly, and each face's discharge is driven by the water-surface slope against Manning
+bed friction. Only the advection of momentum is left out; at the speeds of beaver streams it
+changes little, and leaving it out makes a cell update a few multiply-adds.
 
-* **Scheme.** First-order finite volumes. Fluxes across each cell face come from the HLL
-  approximate Riemann solver. The bed under each face is the higher of the two cells' beds, and
-  the water depth on each side is reconstructed against it (hydrostatic reconstruction, Audusse et
-  al. 2004). Still water over any bed therefore stays exactly still, a step in the bed (a dam
-  face, a bank) acts as a weir, and a cell's depth never goes negative.
-* **Steps in the bed.** When water rises onto a higher face, the reconstruction keeps the flow
-  per metre (velocity rises as the water thins) rather than the deep-water velocity, capped at
-  the shallow-water wave speed. Without this a first-order scheme loses about a third of the head
-  over a sharp-crested sill.
-* **Friction.** Manning, n = 0.04 (natural stream), applied semi-implicitly so thin films on steep
-  ground stay stable.
-* **Time step.** Explicit, CFL 0.45 on the fastest wave (|u| + sqrt(g h)), at most 2 s. Typically
-  0.1 to 0.4 s of physical time per step.
-* **Cost.** Only 16 x 16 m tiles holding water (and their neighbours) are computed, in parallel.
-  On Telemark the solver runs about 1000 s of physics per real second with streams only, less
-  with deep ponds. The game at 1x needs 288 s per second; faster game speeds run as fast as the
-  physics allows.
+* **Faces.** Discharge per metre q on each face: q' = (q - g h_f dt dη/dx) / (1 + g dt n² |q| /
+  h_f^(7/3)), with h_f the depth over the higher of the two beds (so still water over any bed
+  stays still). A little of the neighbouring faces' discharge is mixed in (de Almeida et al. 2012,
+  θ = 0.8), which damps the sloshing the plain scheme leaves undamped.
+* **Steps in the bed.** Where the water falls freely off a step (a dam crest, a bank), the face is
+  a weir: its discharge is capped at critical flow, 1.705 H^1.5 for a head H over the crest.
+  Elsewhere the Froude number is capped at 1.
+* **Mass.** No cell may send out more water than it holds: outflows are scaled down when they
+  would, so depths never go negative and every cubic metre is accounted for.
+* **Friction.** Manning, n = 0.04 (natural stream), semi-implicit.
+* **Time step.** Explicit, 0.7 dx / sqrt(g h) for the deepest water the solver steps, at most 10 s.
+  About 0.25 to 0.45 s on the shipped maps.
+* **Still water.** Flat, still water (a pond behind a dam, a wetland, a deep hole) is found every
+  5 minutes of game time and held as a *pool*: one level for the whole body, set from its volume
+  by its bed shape. Only the faces on its rim are computed, it gains what crosses them, and its
+  depth no longer limits the time step. When the water starts to move or tilt (a breach, a new
+  inflow) the cells leave the pool and are stepped again.
+* **Active area.** Only rows of cells holding water, and their neighbours, are stepped, in row
+  bands on a small worker gang (up to 12 threads), with SIMD kernels (AVX2 when the CPU has it,
+  bit-identical to the SSE2 path).
 
 Nothing about where water goes, how wide or deep it is, or how fast it moves is prescribed: it
 follows from the terrain, the dams and canals, and the inflows.
+
+## Cost
+
+`SimState::step_timings` and `Water::timings` record where time goes. Set `BC_PERF=5` to log
+every 5 seconds the frame rate, the game speed reached, the sim's milliseconds per second by
+system and the water solver's breakdown; `BC_SPEED=1|2|3` and `BC_PERF_EXIT=S` make it a
+benchmark. Measured on a 24-core desktop (1x is 288 s of game time per second):
+
+| map | water alone reaches | game at 6x | game at 24x asked |
+|---|---|---|---|
+| Telemark (streams) | x30 | x6, 108 fps | x18, 45 fps |
+| Algonquin (pond chain and lake) | x9 | x5.6, 51 fps | x7, 35 fps |
+
+At 1x water costs about 40 ms of CPU per second of play.
 
 ## Terrain
 
@@ -49,7 +68,7 @@ heights. Two map corrections are applied when a map is built:
   Spring runs 3x the mean, late summer 0.3x.
 * **Edges** are open: water leaves with the slope of the ground at the edge. The edge cells
   beside each inflow are closed so a stream cannot leave where it came in.
-* **Rain, evaporation and seepage** on wet cells, by season.
+* **Rain** on open water, **evaporation and seepage** from wet ground, by season.
 * **Books:** every source and loss is counted; total stored water always equals what came in
   minus what left.
 
@@ -60,10 +79,20 @@ reach their steady flow before play begins.
 
 ## Known limits
 
-* First-order accuracy: sharp fronts (a breach flood, a hydraulic jump) are smeared over a few
-  metres.
+* No momentum advection: water does not carry its speed round a bend or form hydraulic jumps; a
+  breach flood front is smeared over a few metres.
+* Pools are flat to within 1.5 cm; the slight tilt of water flowing slowly through a pond is lost.
 * Cells are 1 m, so a stream narrower than a cell is represented as a thin sheet across the cell.
 * Dams are watertight (real beaver dams leak).
+
+## Drawing
+
+The water surface is a mesh over the visibly wet cells (3 cm or more). Each vertex takes the
+surface level of the water around it, so the waterline falls where that level meets the ground
+and follows the banks. `water.wesl` colours it by depth (the bed shows through shallow water),
+carries ripples and streaks along the flow velocity, lays lace along the waterline and white
+water where the Froude number is high (rapids, the face of a dam), and freezes over in winter.
+Trees do not start within 6 m of streams and lakes, so the water shows under the canopy.
 
 ## Tests
 
@@ -74,8 +103,7 @@ reach their steady flow before play begins.
 * a small wave on still water 1 m deep reaches a gauge 120 m away at sqrt(g h);
 * steady flow down a uniform slope settles at Manning's normal depth (q n / sqrt(S))^(3/5);
 * a closed pond's volume rises by exactly inflow x time;
-* the head over a broad-crested sill matches critical flow, 1.5 (q^2 / g)^(1/3), within the
-  discharge coefficient of a real square-edged crest.
+* the head over a broad-crested sill matches critical flow, 1.5 (q^2 / g)^(1/3), within 15%.
 
 ## Sandbox
 

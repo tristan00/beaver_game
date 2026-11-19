@@ -204,36 +204,3 @@ macro_rules! dispatch {
 dispatch!(faces, faces_avx2, faces_impl, (out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], s: usize, e: usize, len: usize, p: Params) -> ());
 dispatch!(limiter, limiter_avx2, limiter_impl, (fac: &mut [f32], h: &[f32], src: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], member: &[f32], k: f32, dt: f32, s: usize, e: usize, len: usize) -> ());
 dispatch!(continuity, continuity_avx2, continuity_impl, (h_out: &mut [f32], h: &[f32], z: &[f32], src: &[f32], lake: &[f32], member: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], f_c: &[f32], f_w: &[f32], f_e: &[f32], f_n: &[f32], f_s: &[f32], lake_delta: &mut [f32], k: f32, dt: f32, wet_seed: f32, s: usize, e: usize, len: usize) -> (u32, u32));
-
-/// Prints the face kernel's cost per face for long runs and for runs of a few lanes.
-pub fn bench_faces() {
-    let m = 4096;
-    let mut out = vec![0.0f32; m + 16];
-    let q: Vec<f32> = (0..m + 16).map(|i| (i as f32 * 0.37).sin() * 0.05).collect();
-    let z: Vec<f32> = (0..m + 16).map(|i| 10.0 - i as f32 * 0.01 + (i as f32 * 1.3).sin() * 0.05).collect();
-    let h: Vec<f32> = (0..m + 16).map(|i| 0.1 + (i as f32 * 0.7).cos().abs() * 0.2).collect();
-    let f = vec![1.0f32; m + 16];
-    let p = Params { gdt: 9.81 * 0.3, fric: 9.81 * 0.3 * 0.0016, inv_dx: 1.0 };
-    let reps = 20000;
-    let t = std::time::Instant::now();
-    for _ in 0..reps {
-        faces(&mut out, &q, &q, &q[1..], &z, &z[1..], &h, &h[1..], &f, &f[1..], &f, &f, &f, 0, m, m, p);
-        std::hint::black_box(&mut out);
-    }
-    println!("faces, long run: {:.2} ns/face", t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64);
-    for seg in [4usize, 11, 32] {
-        let t = std::time::Instant::now();
-        let mut calls = 0usize;
-        for _ in 0..reps / 4 {
-            let mut a = 0;
-            while a + seg + 1 < m {
-                faces(&mut out, &q, &q, &q[1..], &z, &z[1..], &h, &h[1..], &f, &f[1..], &f, &f, &f, a, a + seg, m, p);
-                a += seg + 3;
-                calls += 1;
-            }
-            std::hint::black_box(&mut out);
-        }
-        let ns = t.elapsed().as_secs_f64() * 1e9;
-        println!("faces, runs of {seg}: {:.1} ns/call, {:.2} ns/face", ns / calls as f64, ns / (calls * seg) as f64);
-    }
-}

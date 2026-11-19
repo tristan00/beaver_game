@@ -10,8 +10,7 @@ pub type Cell = (usize, usize);
 
 const DAY_S: f64 = 86_400.0;
 mod gang;
-pub mod kernels;
-pub use kernels::bench_faces;
+mod kernels;
 mod view;
 use kernels::{FACE_DRY, G};
 use view::{BandOut, SendPtr, View};
@@ -866,40 +865,6 @@ impl Water {
         };
         for &i in &check {
             cand[i] = test(i);
-        }
-        if std::env::var_os("WATER_POOL_DEBUG").is_some() {
-            let deep: Vec<usize> = (0..n * n).filter(|&i| h[i] > POOL_MIN_DEPTH && !lake[i].is_finite()).collect();
-            let slow = deep.iter().filter(|&&i| {
-                let (x, y) = (i % n, i / n);
-                let q = qx[y * w1 + x].abs().max(qx[y * w1 + x + 1].abs()).max(qy[y * n + x].abs()).max(qy[(y + 1) * n + x].abs());
-                q <= POOL_MAX_SPEED * h[i]
-            }).count();
-            let c = cand.iter().filter(|&&c| c).count();
-            let mut speeds: Vec<f32> = deep.iter().map(|&i| {
-                let (x, y) = (i % n, i / n);
-                qx[y * w1 + x].abs().max(qx[y * w1 + x + 1].abs()).max(qy[y * n + x].abs()).max(qy[(y + 1) * n + x].abs()) / h[i]
-            }).collect();
-            speeds.sort_by(|a, b| a.total_cmp(b));
-            let pc = |p: usize| speeds.get(speeds.len().saturating_sub(1) * p / 100).copied().unwrap_or(0.0);
-            let mut dl: Vec<f32> = deep.iter().map(|&i| neighbours4(n, i).filter(|&j| h[j] > 0.0 && eta(j) >= z[i]).map(|j| (eta(j) - eta(i)).abs()).fold(0.0, f32::max)).collect();
-            dl.sort_by(|a, b| a.total_cmp(b));
-            let pd = |p: usize| dl.get(dl.len().saturating_sub(1) * p / 100).copied().unwrap_or(0.0);
-            eprintln!("  level step to neighbours p25 {:.1e} p50 {:.1e} p75 {:.1e} p90 {:.1e}", pd(25), pd(50), pd(75), pd(90));
-            eprintln!("pools: deep {} slow {} candidates {} | speed p25 {:.4} p50 {:.4} p75 {:.4} p90 {:.4}", deep.len(), slow, c, pc(25), pc(50), pc(75), pc(90));
-        }
-        if let Ok(v) = std::env::var("WATER_POOL_CELL") {
-            let xy: Vec<usize> = v.split(',').filter_map(|t| t.parse().ok()).collect();
-            if xy.len() == 2 {
-                let i = xy[1] * n + xy[0];
-                let (x, y) = (xy[0], xy[1]);
-                eprintln!(
-                    "cell {:?}: h {:.3} eta {:.4} member {} cand {} q w {:.4} e {:.4} n {:.4} s {:.4}",
-                    (x, y), h[i], eta(i), self.member[i], cand[i], qx[y * w1 + x], qx[y * w1 + x + 1], qy[y * n + x], qy[(y + 1) * n + x]
-                );
-                for j in neighbours4(n, i) {
-                    eprintln!("   nb {:?}: h {:.3} eta {:.4} z {:.3} cand {}", (j % n, j / n), h[j], eta(j), z[j], cand[j]);
-                }
-            }
         }
         let mut seen = vec![false; n * n];
         let mut found: Vec<Vec<u32>> = Vec::new();

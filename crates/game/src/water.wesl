@@ -16,6 +16,7 @@ struct WaterStyle {
     shallow: vec4<f32>,
     deep: vec4<f32>,
     foam: vec4<f32>,
+    ice: vec4<f32>,
     // x: depth (m) at which water reads deep, y: alpha in a film, z: alpha when deep,
     // w: ice cover 0..1 (winter)
     look: vec4<f32>,
@@ -160,7 +161,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Ice in winter: a pale matte sheet.
     let ice = water.look.w * smoothstep(0.0, 0.05, depth);
-    col = mix(col, vec3(0.86, 0.92, 0.95), ice);
+    col = mix(col, water.ice.rgb, ice);
     alpha = mix(alpha, 0.92, ice);
 
     var out: FragmentOutput;

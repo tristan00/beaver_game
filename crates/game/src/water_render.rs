@@ -38,6 +38,8 @@ pub struct WaterStyle {
     pub deep: Vec4,
     #[uniform(100)]
     pub foam: Vec4,
+    #[uniform(100)]
+    pub ice: Vec4,
     /// x: depth at which water reads deep (m), y: alpha of a film, z: alpha when deep, w: ice.
     #[uniform(100)]
     pub look: Vec4,
@@ -72,6 +74,7 @@ fn style_for(p: &Palette) -> WaterStyle {
         shallow: lin(SURFACE_SHALLOW),
         deep: lin(SURFACE_DEEP),
         foam: lin(crate::palette::FOAM),
+        ice: lin(p.ice),
         look: Vec4::new(WATER_DEEP_M, WATER_FILM_ALPHA, WATER_DEEP_ALPHA, (p.winter * 1.5).clamp(0.0, 1.0)),
     }
 }
@@ -308,10 +311,6 @@ fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn mix_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    let t = t.clamp(0.0, 1.0);
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
-}
 
 fn update_water_chunks(
     mut commands: Commands,
