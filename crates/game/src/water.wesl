@@ -39,16 +39,22 @@ fn noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 1.6;
 }
 
-// Ripple height at p, in a frame stretched along the flow (streaks) when it runs.
-fn ripples(p: vec2<f32>, dir: vec2<f32>, stretch: f32) -> f32 {
-    let along = dot(p, dir);
-    let across = dot(p, vec2(-dir.y, dir.x));
-    let q = vec2(along / (1.0 + 2.5 * stretch), across);
-    return noise(q * 1.1) * 0.65 + noise(q * 2.3 + 7.3) * 0.3;
+// Ripple height at p. Running water draws its ripples out into streaks along the flow by
+// averaging samples a short way upstream (local offsets only: rotating world coordinates by a
+// direction that varies over the surface would shear the pattern into stripes).
+fn ripples(p: vec2<f32>, dir: vec2<f32>, stretch: f32, detail: f32) -> f32 {
+    var h = 0.0;
+    for (var k = 0; k < 3; k++) {
+        let q = p - dir * (f32(k) * 0.45 * stretch);
+        h += noise(q * 1.1) * 0.65 + noise(q * 2.3 + 7.3) * 0.3 * detail;
+    }
+    return h / 3.0;
 }
 
 // Surface height and slope from two flow-map phases half a period apart.
-fn surface(p: vec2<f32>, vel: vec2<f32>, t: f32) -> vec3<f32> {
+fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> vec3<f32> {
+    // Fast water drags the pattern no faster than this, or streaks shear into stripes.
+    let vel = vel_in * min(1.0, 1.2 / max(length(vel_in), 1e-4));
     let speed = length(vel);
     let dir = select(vec2(1.0, 0.0), vel / max(speed, 1e-4), speed > 1e-3);
     let stretch = smoothstep(0.03, 0.4, speed);
@@ -62,9 +68,9 @@ fn surface(p: vec2<f32>, vel: vec2<f32>, t: f32) -> vec3<f32> {
         let w = 1.0 - abs(2.0 * ph - 1.0);
         let q = p - flow * ph * period + f32(k) * vec2(3.7, 1.9);
         let e = 0.15;
-        let h0 = ripples(q, dir, stretch);
-        let hx = ripples(q + vec2(e, 0.0), dir, stretch);
-        let hz = ripples(q + vec2(0.0, e), dir, stretch);
+        let h0 = ripples(q, dir, stretch, detail);
+        let hx = ripples(q + vec2(e, 0.0), dir, stretch, detail);
+        let hz = ripples(q + vec2(0.0, e), dir, stretch, detail);
         acc += w * vec3(h0, (hx - h0) / e, (hz - h0) / e);
     }
     return acc;
@@ -111,11 +117,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     let p = in.world_position.xz;
     let t = view_bindings::globals.time;
-    let s = surface(p, vel, t);
+    // Ripples finer than a pixel or two only shimmer; fade them with the pixel footprint.
+    let pix = length(fwidth(p));
+    let detail = 1.0 - smoothstep(0.08, 0.35, pix);
+    let s = surface(p, vel, t, detail);
     let speed = length(vel);
 
     // Normal from the ripple slopes; calmer when deep and still, livelier when it runs.
-    let amp = 0.06 + 0.18 * smoothstep(0.05, 0.6, speed);
+    let amp = (0.06 + 0.18 * smoothstep(0.05, 0.6, speed)) * (1.0 - 0.7 * smoothstep(0.15, 0.8, pix));
     let n = normalize(vec3(-s.y * amp, 1.0, -s.z * amp));
     let v = normalize(view_bindings::view.world_position - in.world_position.xyz);
 
