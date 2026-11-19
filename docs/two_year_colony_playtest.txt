@@ -1,0 +1,238 @@
+Two-year normal-colony playtest: Telemark
+19 November 2026
+Tested game build: 54e7bc4 (sandbox-river-polish)
+
+Completed 720 game days, or two 360-day years, with sandbox=false.
+This report records findings; no production game code was changed during the run.
+
+RESULT
+Starting population: 4 (two adults and two kits).
+Final population: 21; kits: 0; homeless: 0.
+Deaths: 15; births: 9; immigrants: 23.
+Recorded death categories: {'Injury': 4, 'Cold': 11}. No starvation deaths.
+Completed buildings: 48; unfinished sites: 0.
+Barges in the last periodic sample: 1; at least 175 units of
+delivered cargo confirmed (short mud route, last sample on day 705).
+Final food: 1316.83; lowest daily food sample: 24.61
+on day 18.
+Invalid/negative water cells in all daily checks: 0.
+Largest absolute cumulative water-budget residual: 0.3890 m3.
+Full harness wall time: 5269.6 seconds (87.8 minutes).
+Simulation core: 4372.6 seconds, or 6.07 seconds/game-day.
+Fastest calendar target: 1.25 seconds/game-day. This run did not meet it.
+Slowest 30-day core window: days 630-660, 10.73 seconds/game-day.
+Core phase totals: water 1642.9s, agents 2174.2s,
+ecology 133.0s, colony 15.7s,
+buildings 13.1s, shipping 0.4s,
+fog 75.0s, other 318.1s.
+Last measured founder Iris age (day 690): 1807.7344 days,
+versus 1770 expected; observed error: +37.7344 days.
+
+Recorded deaths:
+day 679.333350: Died { id: BeaverId(26), cause: Injury, at: (165.5, 362.5) }
+day 694.654183: Died { id: BeaverId(40), cause: Cold, at: (164.5, 385.5) }
+day 694.654183: Died { id: BeaverId(41), cause: Cold, at: (164.5, 385.5) }
+day 694.654878: Died { id: BeaverId(39), cause: Cold, at: (168.5, 385.5) }
+day 694.654878: Died { id: BeaverId(44), cause: Cold, at: (186.5, 376.5) }
+day 694.654878: Died { id: BeaverId(45), cause: Cold, at: (186.5, 376.5) }
+day 694.654878: Died { id: BeaverId(46), cause: Cold, at: (186.5, 376.5) }
+day 697.115295: Died { id: BeaverId(3), cause: Injury, at: (169.5, 385.5) }
+day 698.703489: Died { id: BeaverId(10), cause: Injury, at: (168.5, 389.5) }
+day 706.806962: Died { id: BeaverId(13), cause: Injury, at: (309.5, 225.5) }
+day 706.806962: Died { id: BeaverId(17), cause: Cold, at: (164.5, 385.5) }
+day 706.806962: Died { id: BeaverId(32), cause: Cold, at: (165.5, 360.5) }
+day 706.807656: Died { id: BeaverId(6), cause: Cold, at: (310.5, 226.5) }
+day 706.807656: Died { id: BeaverId(20), cause: Cold, at: (141.5, 343.5) }
+day 706.807656: Died { id: BeaverId(52), cause: Cold, at: (186.5, 376.5) }
+
+Reed (#26) died on day 679.333350, recorded as Injury. His health was 0.5747
+on day 600, 0.4373 on day 630 and 0.2900 on day 660. That last snapshot recorded
+1.5 accumulated injury damage and 0.3842 cold damage. Normal work injuries remain
+enabled in scoped mode. remove_dead selects the largest accumulated harm category;
+the label is not a precise account of the final tick's damage. This observation
+does not independently establish a new defect or prove which earlier bug caused
+the death. The complete event log is retained for follow-up.
+
+METHOD
+Release-mode headless runner linked to the repository's actual sim crate. Telemark,
+seed from its map definition; normal founding location chosen by settle best.
+The attentive scripted player used regular commands, alert fixes, construction
+materials, worker labor, research, fog, stores, births and immigration. Additional
+normal commands exercised manual controls. No resource grants, instant builds,
+instant excavation, forced unlocks, or sandbox flags were used in this colony.
+
+The run executed 1,036,800 one-minute colony ticks. It used the live
+adaptive SimClock logic at X3, sampled every 20 ticks with the corresponding target
+frame duration. The copied controller differed only in visibility and removal of
+the Bevy Resource annotation. The game simulation source was unchanged. The
+hydraulic clock stayed near its 60-second/day floor for most of the run.
+This is not a rendered FPS, mouse/keyboard UX, or visual layering test.
+
+Default scoped feature flags were kept: ordinary weather, seasons and colony
+systems ran; disabled hazard/event systems (predators, special flood/drought events,
+hard freeze, fire, disease, rivals, trade, guard and the abstract scouting job)
+were not enabled. Manual exploration through move orders was exercised.
+
+BUILDINGS AT COMPLETION
+Burrow: 1
+Canal: 2
+Dam: 1
+Dock: 2
+FoodCache: 1
+ForagerHut: 8
+ForesterLodge: 12
+Lock: 1
+Lodge: 5
+LoggingCamp: 4
+MudPit: 1
+QuarryCamp: 1
+Storehouse: 1
+TreeNursery: 1
+Warehouse: 5
+WaterWheel: 1
+Workshop: 1
+
+Barge is a vehicle and is counted separately above.
+
+EXERCISED ACTIONS AND PRODUCTION
+- Founded and housed a real colony; accepted immigrants; observed births and
+  maturation over both years.
+- Built and staffed food gathering, logging, mud gathering, quarry, forestry,
+  nursery and workshop buildings. Quarry produced stone; workshop produced rope,
+  baskets and tools. Food gathering supplied the colony through both winters;
+  the observed mortality was not starvation.
+- Changed role order, priorities, worker assignments and work areas; toggled
+  automatic staffing; paused and resumed production; used mature-tree and planting
+  rules on the appropriate forestry building.
+- Paused then cancelled an unfinished nursery (day 391); the first nursery remained.
+- Built a dam with normal labor, two connected canal orders, two docks and a barge.
+  Set a short mud-cargo route; verified unloading through the carried counter.
+  Cleared the route on day 579 and resumed it on day 587; both commands succeeded.
+- Set storage balancing and haul orders. Local quantities delivered by individual
+  manual haul orders were not independently logged, so acceptance is the verified
+  result for those orders.
+- Constructed a water wheel, large storehouse and lock. Wheel output was zero in
+  the day-630 snapshot. Powered industry and vessel passage through the lock were
+  not verified. The mill remained research-locked when attempted on day 617.
+- Observed valid refusals for dry building/canal sites, locked technology,
+  unavailable worker slots, a finished building cancellation, an invalid haul
+  source, and a forester-only rule applied to a nursery. Those are not defects.
+
+Confirmed findings in build 54e7bc4
+
+P1 - Housing maintenance cannot keep pace with a larger colony.
+All six kits died from Cold around day 694.655 despite assigned homes and over
+1500 food. At day 690 their warmth was about 0.103 and health about 0.105; they
+were fed and fully rested. This is a serious winter survival failure.
+The only real-agent repair path is passive_repair: WORK_FRACTION (0.6) times
+REPAIR_YIELD (0.04), capped at 0.024 condition/day for the ENTIRE colony.
+Each home wears by up to 0.006/day in winter. Five wet homes therefore exceed
+the budget; four use it all with no recovery margin. Each high-and-dry home
+adds another 0.03/day, individually exceeding the whole repair budget. Adding
+builders does not increase this repair path because derived-job do_work skips
+abstract builder repair. Timber was available: 14.3 logs on day 675 and 12.9
+on day 690, above the repair minimum of 2. This fixed repair capacity, together
+with dry-home wear and the water-clock regression, needs correction and another
+winter test. Home condition was not directly included in snapshots; poor thermal
+protection is observed through needs, and the repair-capacity mismatch is verified
+from code. Do not attribute every injury-labeled adult death solely to housing.
+Relevant code: crates/sim/src/colony.rs (do_work, passive_repair, wear, update_needs);
+crates/sim/src/lib.rs (wear_dry_homes); crates/sim/src/tuning.rs.
+
+P1 - Adaptive water pacing changes the amount of water available to the colony.
+The controller repeatedly reached its 60 hydraulic seconds/game-day floor. Catchment
+inflow uses that shortened hydraulic duration, while precipitation, evaporation and
+seepage use the full calendar duration. Identical clear-weather, five-day diagnostic
+runs supplied 1.2267 m3 at 60 s/day and 1766.4568 m3 at 86400 s/day: a 1440-fold
+difference caused by the clock setting. Final water volumes were 58.8087 and
+109.7701 m3 from the same 159.7185 m3 starting state. These were separate water-only
+diagnostics, not substituted for the colony playtest.
+In the colony, water-dependent buildings became high and dry before the first dam
+was built. Staffing Workshop #12 was refused on day 113 for lack of water. Food
+production repeatedly stopped in summer; rain restored access. Map water reached
+2.64565 m3 on day 158. The pacing fix therefore changes gameplay with machine load.
+Preserve water delivered/lost per calendar day while optimizing integration work.
+Relevant code: crates/game/src/sim_driver.rs (record_water_cost);
+crates/sim/src/water.rs (step_with_clock, sourced-volume accounting).
+
+P1 - Full-colony simulation misses the fastest calendar target.
+The measured simulation-core time already exceeds the 1.25 real seconds/game-day
+target, without rendering or scripted-player overhead. See the full-run average
+and phase costs above. Water and agent updates dominate. The adaptive
+water controller reaches its lower limit and cannot maintain the promised pace.
+This is a headless elapsed-time measurement on the shared machine, not an FPS test.
+Relevant code: crates/sim/src/lib.rs (step_with_clock); crates/sim/src/agents.rs;
+crates/game/src/sim_driver.rs (fixed minute ticks and adaptive controller).
+
+P1 - Valid building placements can seal a lodge entrance.
+Lodge #9 at (174,382) has its entrance at (175,385). Completed ForesterLodge #22 at
+(174,385) covers that entrance. Several adult Rest agents repeatedly failed to
+enter homes while agent-update costs grew. An isolated placement/navigation
+reproduction accepted both buildings, made the entrance Solid, and found no path
+inside. Moving the forester aside restored a path. That fixture was separate from
+the normal colony run. Placement checks reserve footprints but not the lodge's
+extra entrance cell. Reserve entrances and check reachability when placing sites;
+avoid retrying a known impossible home path on every minute tick.
+Relevant code: crates/sim/src/nav.rs (lodge_entrance);
+crates/sim/src/buildings.rs (check_ground); crates/sim/src/agents.rs (Task::Rest).
+
+P2 - Resting burrow residents are falsely counted as stuck.
+The burrow-resident kits #5/#6/#8 stood beside their burrow, Task::Rest, path=None,
+inside=false, while stuck_ticks grew from about 18221 at day 60 to hundreds of
+thousands later. route_home correctly routes burrow residents beside the burrow,
+but Rest recognizes arrival only through inside=true. A zero-length path then
+increments the stuck counter forever. Treat reaching the burrow-side resting
+position as success. This is separate from the adult blocked-lodge problem; no
+production loss was established from these kit counters alone.
+Relevant code: crates/sim/src/agents.rs (route_home, note, Task::Rest).
+
+P2 - Beaver ages drift from the calendar.
+age_days is f32 and receives a tiny increment every simulated minute. Founder Iris
+started at 1080 days old but was 1269.8438 after 180 calendar days, rather than
+1260. A direct f32 replay gives a 39.375-day excess after 720 days. Iris died
+before the end; his observed day-690 error was +37.7344 days. This affects
+maturation and aging.
+Use a higher-precision age clock or derive age from a birth timestamp.
+Relevant code: crates/sim/src/colony.rs (age_days increment).
+
+
+BALANCE OBSERVATION (NOT COUNTED AS AN ADDITIONAL CONFIRMED DEFECT)
+Winter food production stayed strong: reserves rose from 1239.6 on day 630 to
+1570.2 on day 660. Wet plants regrow at a constant 0.5 units/day in
+resources::ResourceWorld::step, and wetland sprouting has no season/temperature
+check. The temperature-based forage multiplier in colony::do_work applies to
+abstract gathering, which this real-agent colony does not use. Foragers can also
+collect bark. Review seasonal food availability if winter scarcity is intended;
+the observations alone do not establish the intended balance.
+
+LIMITS
+One map, one attentive policy with recorded interventions, one complete two-year
+run. Findings come from observed play and targeted code-level diagnostics,
+not proof of every map, all canal geometries, long-distance shipping, lock
+navigation, powered mills, all difficulty features, or rendered performance.
+Temporary forager-first role ordering caused a NoBuilders period and was corrected;
+that scripted decision is not counted as a game bug. Summer drying in year two
+also followed construction of a dam; the clock defect is independently established
+by pre-dam failures and the equal-forcing diagnostic, rather than by assuming all
+dry cells had the same cause.
+
+EVIDENCE
+All harnesses and integration fixtures remain outside the repository, as required.
+Local artifact directory:
+D:\harness_work\workspaces\beaver\tmp\two-year-playtest\telemark-adaptive
+  input.script          normal-colony run configuration
+  commands.log          complete recorded simulation command stream
+  extra-actions.log     additional normal commands and their results
+  daily.csv             population, food, water and validity samples
+  events.log            birth, immigration, maturation and death events
+  day-NNN.txt           detailed 30-day snapshots
+  final-state.txt       final beaver/building/worker state and core timings
+  result.txt            scripted-player actions, checks, stats and unlock history
+  analysis.json         extracted measurements
+  two-year-playtest.png  population, food, water and core-time plots
+Separate diagnostics in the parent directory:
+  clock-comparison.csv  equal-forcing water clock comparison
+  lodge-entry-repro.txt  accepted placement that blocks a lodge entrance
+
+Last periodic progress record (see final-state.txt for the actual day-720 state):
+[5108.2s] day  705 Winter pop 27 (kits 0) homeless 0 | food 1414.5 (+0.0 -10.8/d need 6.5) jobs Forager12,Logger8,MudDigger3,Forester2,Quarrier2 | logs  11.4 sticks 157.9 mud 162.0 stone 1285.0 rope 249.4 | built 48 sites 0 dry Warehouse,Warehouse,Lodge | barges 1 carried 175 | mature trees 2141 | alerts WeakDam,HighAndDry,LoggingAreaRunningOut
