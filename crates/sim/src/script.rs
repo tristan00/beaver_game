@@ -368,7 +368,7 @@ impl Runner {
             }
             Stmt::Place(k, near) => {
                 let around = near.or(self.camp).unwrap_or((0, 0));
-                crate::autoplay::place_best(&mut self.s, *k, around).map(|id| format!("placed {k:?} #{}", id.0))
+                crate::autoplay::place_best(&mut self.s, *k, around, &[]).map(|id| format!("placed {k:?} #{}", id.0))
             }
             Stmt::DesignedDam => match self.dam.clone() {
                 Some(d) => self.s.apply(Command::OrderDam { cells: d.cells, height: d.height }).map(|_| "ordered the designed dam".into()).map_err(|e| e.to_string()),
@@ -376,7 +376,7 @@ impl Runner {
             },
             Stmt::FixTop => match crate::hud::problems(&self.s).into_iter().next() {
                 Some(p) => match p.fix {
-                    crate::hud::Fix::Place(k) => crate::autoplay::place_best(&mut self.s, k, self.camp.unwrap_or((0, 0))).map(|_| format!("fix: placed {k:?}")),
+                    crate::hud::Fix::Place(k) => crate::autoplay::place_best(&mut self.s, k, self.camp.unwrap_or((0, 0)), &[]).map(|_| format!("fix: placed {k:?}")),
                     crate::hud::Fix::OpenJobs | crate::hud::Fix::Focus => Ok(String::new()),
                     f => crate::hud::apply_fix(&mut self.s, f).map(|_| format!("fix: {f:?}")),
                 },

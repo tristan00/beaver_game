@@ -32,6 +32,13 @@ pub const MAX_STEP: f32 = 1.5;
 pub const BORDER_REACH: usize = 3;
 /// Minimum drop per cell along drainage, guarantees strict descent on flats.
 const FLOW_EPS: f32 = 1e-3;
+/// Real maps (`carve_flow_channels`): a channel's bank depth for a river carrying `q` is
+/// `CHANNEL_BANK_MIN + CHANNEL_BANK_PER_FLOW * q`, at most `CHANNEL_BANK_MAX` (metres), and its bed
+/// falls steeply enough to carry `q` at `CHANNEL_FLOW_FILL` of the bank depth.
+const CHANNEL_BANK_MIN: f32 = 0.3;
+const CHANNEL_BANK_PER_FLOW: f32 = 0.05;
+const CHANNEL_BANK_MAX: f32 = 0.7;
+const CHANNEL_FLOW_FILL: f32 = 0.75;
 /// Channel depth carved below the drainage surface at a river's minimum accumulation, and per
 /// doubling of the upstream area beyond it (capped at `CHANNEL_MAX`). Monotone downstream.
 pub const CHANNEL_BASE: f32 = 0.30;
@@ -141,6 +148,9 @@ pub struct World {
     pub moisture: Grid<f32>,
     /// Surface gradient magnitude, world units per cell.
     pub slope: Grid<f32>,
+    /// Real maps: the flow each river cell carries from the inflows above it (depth units over one
+    /// cell per day, before the seasons). Zero off the rivers and on generated worlds.
+    pub river_flow: Grid<f32>,
     pub forest: Grid<Option<Tree>>,
 }
 
@@ -412,14 +422,16 @@ fn terrain(seed: u64, n: usize, amplitude: f32, lay: &Layout) -> Vec<f32> {
 
 /// Priority-flood with an epsilon (Barnes et al.): returns the filled surface and, for each
 /// cell, the neighbour it drains to. Surface strictly decreases along every drainage path.
-fn fill_depressions(h: &[f32], n: usize) -> (Vec<f32>, Vec<Option<usize>>) {
+/// Border cells marked `closed` are not outlets (a river enters there from higher ground beyond
+/// the map): they drain into the map like inner cells.
+fn fill_depressions(h: &[f32], n: usize, closed: &[bool]) -> (Vec<f32>, Vec<Option<usize>>) {
     let mut surface = h.to_vec();
     let mut flow = vec![None; n * n];
     let mut done = vec![false; n * n];
     let mut heap = BinaryHeap::new();
     for i in 0..n * n {
         let (x, y) = (i % n, i / n);
-        if x == 0 || y == 0 || x == n - 1 || y == n - 1 {
+        if (x == 0 || y == 0 || x == n - 1 || y == n - 1) && !closed[i] {
             done[i] = true;
             heap.push(Reverse((surface[i].to_bits(), i))); // heights are >= 0, so bits order like values
         }
@@ -474,7 +486,7 @@ fn accumulate(surface: &[f32], flow: &[Option<usize>]) -> Vec<u32> {
 /// if depression filling turns it into a small lake no river feeds; otherwise it is undone.
 fn carve_ponds(raw: &mut [f32], n: usize, seed: u64, start_center: (f32, f32)) {
     let mut rng = Pcg32::seed_from_u64(seed ^ 0x90ED);
-    let (surface, flow) = fill_depressions(raw, n);
+    let (surface, flow) = fill_depressions(raw, n, &vec![false; n * n]);
     let acc = accumulate(&surface, &flow);
     let mut near_river = vec![u32::MAX; n * n];
     let mut q: VecDeque<usize> = (0..n * n).filter(|&i| acc[i] >= RIVER_MIN_ACCUMULATION / 2).collect();
@@ -509,7 +521,7 @@ fn carve_ponds(raw: &mut [f32], n: usize, seed: u64, start_center: (f32, f32)) {
                 raw[i] -= POND_DEPTH * (1.0 - d2 / (radius * radius + 1.0));
             }
         } }
-        let (s2, f2) = fill_depressions(raw, n);
+        let (s2, f2) = fill_depressions(raw, n, &vec![false; n * n]);
         let a2 = accumulate(&s2, &f2);
         let lake = find_lakes(raw, &s2, n);
         let hollow = lake_components(&lake, n).into_iter().find(|comp| comp.contains(&c));
@@ -549,7 +561,7 @@ const NARROWS_SPAN: f32 = 40.0;
 /// basin above the notch is closed by the notch and holds `NARROWS_POND` cells; otherwise the
 /// terrain is left as it was. Returns the notch's middle cell if a bar was raised.
 fn carve_narrows(raw: &mut [f32], n: usize, lay: &Layout, ceiling: f32) -> Option<usize> {
-    let (surface, flow) = fill_depressions(raw, n);
+    let (surface, flow) = fill_depressions(raw, n, &vec![false; n * n]);
     let acc = accumulate(&surface, &flow);
     let waters = |raw: &[f32], surface: &[f32], acc: &[u32]| {
         let lake = find_lakes(raw, surface, n);
@@ -629,7 +641,7 @@ fn carve_narrows(raw: &mut [f32], n: usize, lay: &Layout, ceiling: f32) -> Optio
             }
         }
         let kept = closed && {
-            let (s2, f2) = fill_depressions(raw, n);
+            let (s2, f2) = fill_depressions(raw, n, &vec![false; n * n]);
             let a2 = accumulate(&s2, &f2);
             let same_lakes = waters(raw, &s2, &a2) == lakes;
             let held = basin_held(&s2, n, c, up[c], f2[c], (ax, ay), base + NARROWS_POND_RISE);
@@ -806,13 +818,14 @@ pub enum InputKind {
     Baseflow,
 }
 
-/// A cell where water enters the map, fed by `catchment` cells of ground: the water sim gives it
-/// `WATER_PER_CATCHMENT_CELL` per catchment cell per day (`Water::from_world`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A cell where water enters the map, fed by `catchment` cells of ground, bringing `rate` (depth
+/// units over one cell per day, before the seasons) into the water sim (`Water::from_world`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WaterInput {
     pub cell: (usize, usize),
     pub catchment: u32,
     pub kind: InputKind,
+    pub rate: f32,
 }
 
 /// The map's water inputs. Rain is soaked up by the ground and comes back as groundwater where
@@ -839,15 +852,16 @@ fn water_inputs(
         }
     }
     let cell = |i: usize| (i % n, i / n);
+    let rate = |catchment: u32| crate::tuning::water::WATER_PER_CATCHMENT_CELL * catchment as f32;
     let mut out: Vec<WaterInput> = inflow_at
         .iter()
-        .map(|&(i, extra)| WaterInput { cell: cell(i), catchment: extra, kind: InputKind::Inflow })
+        .map(|&(i, extra)| WaterInput { cell: cell(i), catchment: extra, kind: InputKind::Inflow, rate: rate(extra) })
         .collect();
     for i in (0..n * n).filter(|&i| wet[i]) {
         let catchment = acc[i] - from_water[i];
         if catchment > 0 {
             let kind = if river[i] && !fed_by_water[i] { InputKind::Spring } else { InputKind::Baseflow };
-            out.push(WaterInput { cell: cell(i), catchment, kind });
+            out.push(WaterInput { cell: cell(i), catchment, kind, rate: rate(catchment) });
         }
     }
     out
@@ -871,29 +885,127 @@ fn build(p: &WorldGen, seed: u64) -> Result<World, String> {
     let mut raw = terrain(seed, n, p.amplitude, &lay);
     carve_ponds(&mut raw, n, seed, lay.centers[0]);
     let narrows = carve_narrows(&mut raw, n, &lay, p.amplitude).map(|i| (i % n, i / n));
-    let world = finish(p.seed, seed, n, p.amplitude, raw, lay, narrows, &[])?;
+    let world = finish(p.seed, seed, n, p.amplitude, raw, lay, narrows, None)?;
     validate(&world)?;
     Ok(world)
 }
 
-/// A world on real terrain: `raw` is a `size` x `size` height grid in world units (row-major)
-/// and `inflows` are border cells where a river enters from outside the map, with the cells it
-/// drains out there. Drainage, rivers, lakes, springs, moisture and forest follow from the
-/// terrain exactly as for generated worlds. The whole map is one open valley.
-pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, inflows: &[(usize, usize, u32)]) -> Result<World, WorldError> {
+/// What a real map gives world generation besides its heights.
+#[derive(Clone, Copy, Debug)]
+pub struct RealMap<'a> {
+    /// Real metres per cell (heights are in metres).
+    pub cell_m: f32,
+    /// Border cells where a river enters from beyond the map, with the catchment it drains out
+    /// there in square kilometres.
+    pub inflows: &'a [(usize, usize, f32)],
+    /// Land cover per cell (ESA WorldCover classes: 10 trees, 20 shrubs, 30 grass, 90 wetland ...).
+    pub cover: Option<&'a [u8]>,
+}
+
+/// Border cells either side of an inflow that are not outlets: the river comes from higher ground
+/// beyond them, so neither the drainage nor the water may leave the map there.
+pub const INFLOW_WALL: usize = 3;
+
+/// The border cells within `INFLOW_WALL` of an inflow, along the border.
+pub fn inflow_walls(n: usize, inflows: &[(usize, usize, f32)]) -> Vec<bool> {
+    let mut closed = vec![false; n * n];
+    let border = |x: usize, y: usize| x == 0 || y == 0 || x == n - 1 || y == n - 1;
+    for &(x, y, _) in inflows.iter().filter(|&&(x, y, _)| x < n && y < n) {
+        for k in -(INFLOW_WALL as isize)..=INFLOW_WALL as isize {
+            for (cx, cy) in [(x as isize + k, y as isize), (x as isize, y as isize + k)] {
+                if (0..n as isize).contains(&cx) && (0..n as isize).contains(&cy) && border(cx as usize, cy as usize) {
+                    closed[cy as usize * n + cx as usize] = true;
+                }
+            }
+        }
+    }
+    closed
+}
+
+/// What a river from beyond the map brings in (depth units over one cell per day, before the
+/// seasons), from the catchment it drains out there: growing as its square root (a beaver-sized
+/// stream stays small), within `INFLOW_RATE_RANGE`. See `tuning::water::INFLOW_RATE_PER_SQRT_KM2`.
+pub fn inflow_rate(km2: f32) -> f32 {
+    use crate::tuning::water::{INFLOW_RATE_PER_SQRT_KM2, INFLOW_RATE_RANGE};
+    (INFLOW_RATE_PER_SQRT_KM2 * km2.max(0.0).sqrt()).clamp(*INFLOW_RATE_RANGE.start(), *INFLOW_RATE_RANGE.end())
+}
+
+/// A world on real terrain: `raw` is a `size` x `size` height grid in metres (row-major) and `map`
+/// says what else the map file holds: its cell size, the rivers entering across the border and the
+/// land cover. Rivers are exactly the paths of those inflows down the drainage to the map edge,
+/// channels are carved to carry their flow, lakes, moisture and forest follow from the terrain and
+/// the land cover. The whole map is one open valley.
+pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Result<World, WorldError> {
     if size < MIN_SIZE || raw.len() != size * size || raw.iter().any(|h| !h.is_finite()) {
+        return Err(WorldError::InvalidSize(size));
+    }
+    if map.cover.is_some_and(|c| c.len() != size * size) {
         return Err(WorldError::InvalidSize(size));
     }
     let amplitude = raw.iter().copied().fold(1.0f32, f32::max);
     let half = size as f32 / 2.0;
     let lay = Layout { centers: vec![(half, half)], label: vec![0; size * size], gap: vec![0.0; size * size], passes: Vec::new() };
     let fail = |reason: String| WorldError::GenerationFailed { seed, reason };
-    let world = finish(seed, seed, size, amplitude, raw, lay, None, inflows).map_err(fail)?;
+    let world = finish(seed, seed, size, amplitude, raw, lay, None, Some(map)).map_err(fail)?;
     let river = world.river.as_slice().iter().filter(|r| **r).count();
     if river < 20 {
         return Err(fail(format!("only {river} river cells")));
     }
     Ok(world)
+}
+
+/// Bank depth of a channel carrying `q` (depth units over one cell per day): deeper for bigger
+/// rivers, from `CHANNEL_BANK_MIN` to `CHANNEL_BANK_MAX`.
+pub fn channel_bank(q: f32) -> f32 {
+    (CHANNEL_BANK_MIN + CHANNEL_BANK_PER_FLOW * q).min(CHANNEL_BANK_MAX)
+}
+
+/// Carves river channels sized to the flow `q` each river cell carries (`Water`'s own pipe law,
+/// `water::face_carry`): a channel `channel_bank(q)` below its banks whose bed falls at least as
+/// steeply as the river needs to carry `q` at `CHANNEL_FLOW_FILL` of that depth, so a river's
+/// normal flow stays inside its banks. Where the land is flatter than that (a filled hollow, a
+/// level meadow) the bed cuts a little deeper as it goes, as a stream does. Diagonal drainage
+/// steps also lower the lower corner cell so the channel stays 4-connected for the water sim.
+fn carve_flow_channels(height: &mut [f32], surface: &[f32], flow: &[Option<usize>], river: &[bool], q: &[f32], n: usize) {
+    let mut order: Vec<usize> = (0..n * n).filter(|&i| river[i]).collect();
+    order.sort_by(|&a, &b| surface[b].total_cmp(&surface[a]).then(a.cmp(&b)));
+    // Upstream first: each bed is below its banks and below every bed draining into it by the fall
+    // its own flow needs over one cell.
+    let mut from_above = vec![f32::INFINITY; n * n];
+    for &i in &order {
+        let bank = channel_bank(q[i]);
+        let fall = q[i] / crate::water::face_carry(CHANNEL_FLOW_FILL * bank, 1.0);
+        let bed = (surface[i] - bank).min(from_above[i]);
+        height[i] = height[i].min(bed);
+        if let Some(t) = flow[i] {
+            if river[t] {
+                // a diagonal step passes the water through two faces (via the corner cell below),
+                // each needing the fall
+                let faces = if i % n != t % n && i / n != t / n { 2.0 } else { 1.0 };
+                from_above[t] = from_above[t].min(bed - faces * fall);
+            }
+        }
+    }
+    for &i in &order {
+        let Some(t) = flow[i] else { continue };
+        let ((x, y), (tx, ty)) = ((i % n, i / n), (t % n, t / n));
+        if x != tx && y != ty {
+            let corner = [y * n + tx, ty * n + x].into_iter().min_by(|&a, &b| surface[a].total_cmp(&surface[b]).then(a.cmp(&b))).unwrap();
+            if !river[corner] {
+                let target = 0.5 * (height[i] + if river[t] { height[t] } else { surface[t] });
+                height[corner] = height[corner].min(target);
+            }
+        }
+    }
+}
+
+/// A fixed pseudo-random number in 0..1 for cell `i` of world `seed`.
+fn hash01(seed: u64, i: usize) -> f32 {
+    let mut h = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    h ^= h >> 33;
+    (h >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// Everything after the raw terrain: drainage, lakes, rivers, channels, springs, moisture,
@@ -907,60 +1019,73 @@ fn finish(
     raw: Vec<f32>,
     lay: Layout,
     narrows: Option<(usize, usize)>,
-    inflows: &[(usize, usize, u32)],
+    real: Option<&RealMap>,
 ) -> Result<World, String> {
     let nf = n as f32;
     let p = WorldGen { seed: world_seed, size: n, amplitude };
-    let (surface, flow) = fill_depressions(&raw, n);
+    let closed = match real {
+        Some(m) => inflow_walls(n, m.inflows),
+        None => vec![false; n * n],
+    };
+    let (surface, flow) = fill_depressions(&raw, n, &closed);
     let lake = find_lakes(&raw, &surface, n);
     let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
 
     let local_acc = accumulate(&surface, &flow);
     let mut acc = local_acc.clone();
-    // A river from beyond the map enters at a border cell, which is an outlet here: its water joins
-    // at the inner neighbour it runs on to (the lowest one) and follows the drainage from there.
-    let mut inflow_at = Vec::new();
-    for &(x, y, extra) in inflows {
-        if x >= n || y >= n || extra == 0 {
-            continue;
-        }
-        let border = y * n + x;
-        let inner = |j: usize| (1..n - 1).contains(&(j % n)) && (1..n - 1).contains(&(j / n));
-        let entry = if inner(border) {
-            border
-        } else {
-            match neighbours8(border, n).filter(|&j| inner(j)).min_by(|&a, &b| raw[a].total_cmp(&raw[b]).then(a.cmp(&b))) {
-                Some(j) => j,
-                None => continue,
-            }
-        };
-        inflow_at.push((entry, extra));
-        let mut cur = Some(entry);
-        let mut steps = 0;
-        while let Some(i) = cur {
-            acc[i] = acc[i].saturating_add(extra);
-            cur = flow[i];
-            steps += 1;
-            if steps > n * n {
-                break;
-            }
-        }
-    }
-    let mut river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
-    prune_short_branches(&mut river, &flow, &acc);
-    let streams = classify_streams(&surface, &flow, &acc, &river);
     let mut pond = vec![false; n * n];
-    for comp in lake_components(&lake, n) {
-        if comp.iter().all(|&i| acc[i] < RIVER_MIN_ACCUMULATION) { comp.iter().for_each(|&i| pond[i] = true); }
-    }
-    carve_channels(&mut height, &surface, &flow, &acc, &river, n);
-    let mut has_upstream = vec![false; n * n];
-    for i in 0..n * n {
-        if let (true, Some(t)) = (river[i], flow[i]) { has_upstream[t] = true; }
-    }
-    let springs: Vec<(usize, usize)> =
-        (0..n * n).filter(|&i| river[i] && !has_upstream[i]).map(|i| (i % n, i / n)).collect();
-    let water_inputs = water_inputs(&flow, &local_acc, &river, &lake, &pond, &inflow_at, n);
+    let (river, springs, water_inputs, river_flow) = if let Some(m) = real {
+        // Rivers come only from beyond the map: each enters at its border cell (an inflow wall, so
+        // its water runs inward) and follows the drainage down to where it leaves the map. The
+        // ground inside the map drains too little to keep a stream flowing.
+        let cell_km2 = m.cell_m * m.cell_m / 1.0e6;
+        let mut river = vec![false; n * n];
+        let mut on_path = vec![false; n * n];
+        let mut flow_rate = vec![0f32; n * n];
+        let mut inputs = Vec::new();
+        for &(x, y, km2) in m.inflows {
+            if x >= n || y >= n || km2.is_nan() || km2 <= 0.0 {
+                continue;
+            }
+            let (entry, extra, rate) = (y * n + x, (km2 / cell_km2).round() as u32, inflow_rate(km2));
+            inputs.push(WaterInput { cell: (x, y), catchment: extra, kind: InputKind::Inflow, rate });
+            let mut cur = Some(entry);
+            let mut steps = 0;
+            while let Some(i) = cur {
+                acc[i] = acc[i].saturating_add(extra);
+                flow_rate[i] += rate;
+                on_path[i] = true;
+                river[i] |= !lake[i];
+                cur = flow[i];
+                steps += 1;
+                if steps > n * n {
+                    break;
+                }
+            }
+        }
+        for comp in lake_components(&lake, n) {
+            if comp.iter().all(|&i| !on_path[i]) { comp.iter().for_each(|&i| pond[i] = true); }
+        }
+        carve_flow_channels(&mut height, &surface, &flow, &river, &flow_rate, n);
+        let river_flow = (0..n * n).map(|i| if river[i] { flow_rate[i] } else { 0.0 }).collect();
+        (river, Vec::new(), inputs, river_flow)
+    } else {
+        let mut river: Vec<bool> = (0..n * n).map(|i| acc[i] >= RIVER_MIN_ACCUMULATION && !lake[i]).collect();
+        prune_short_branches(&mut river, &flow, &acc);
+        for comp in lake_components(&lake, n) {
+            if comp.iter().all(|&i| acc[i] < RIVER_MIN_ACCUMULATION) { comp.iter().for_each(|&i| pond[i] = true); }
+        }
+        carve_channels(&mut height, &surface, &flow, &acc, &river, n);
+        let mut has_upstream = vec![false; n * n];
+        for i in 0..n * n {
+            if let (true, Some(t)) = (river[i], flow[i]) { has_upstream[t] = true; }
+        }
+        let springs: Vec<(usize, usize)> =
+            (0..n * n).filter(|&i| river[i] && !has_upstream[i]).map(|i| (i % n, i / n)).collect();
+        let inputs = water_inputs(&flow, &local_acc, &river, &lake, &pond, &[], n);
+        (river, springs, inputs, vec![0.0; n * n])
+    };
+    let streams = classify_streams(&surface, &flow, &acc, &river);
 
     // Slope of the drainage surface.
     let at = |x: isize, y: isize| surface[(y.clamp(0, n as isize - 1) as usize) * n + x.clamp(0, n as isize - 1) as usize];
@@ -990,8 +1115,23 @@ fn finish(
             (0.30 + 0.55 * prox + 0.5 * (wet.sample(u, v) - 0.5) - 0.25 * hf - 0.25 * slope[i].min(1.0)).clamp(0.0, 1.0)
         };
         moisture[i] = m;
-        if !lake[i] && !river[i] && tree_noise.sample(u, v) + 0.3 * (m - 0.5) > 0.45 {
-            forest[i] = classify_tree(m, slope[i], hf);
+        if lake[i] || river[i] {
+            continue;
+        }
+        match real.and_then(|r| r.cover) {
+            // Real land cover: trees where the satellite sees forest (with a few gaps), scattered
+            // in shrub and wetland, rare in open grass. One tree per 4 m cell is about real spacing.
+            Some(cover) => {
+                let share = match cover[i] { 10 => 0.85, 20 => 0.35, 90 => 0.2, 30 | 100 => 0.04, _ => 0.0 };
+                if 0.5 * tree_noise.sample(u, v) + 0.5 * hash01(seed, i) < share {
+                    forest[i] = classify_tree(m, slope[i], 0.0).or(Some(Tree::Pine));
+                }
+            }
+            None => {
+                if tree_noise.sample(u, v) + 0.3 * (m - 0.5) > 0.45 {
+                    forest[i] = classify_tree(m, slope[i], hf);
+                }
+            }
         }
     }
 
@@ -1009,6 +1149,7 @@ fn finish(
         confluences: streams.confluences.iter().map(|&i| (i % n, i / n)).collect(),
         lake: grid_from(n, lake), pond: grid_from(n, pond), springs, water_inputs, narrows,
         moisture: grid_from(n, moisture), slope: grid_from(n, slope), forest: grid_from(n, forest),
+        river_flow: grid_from(n, river_flow),
     };
     Ok(world)
 }
@@ -1282,8 +1423,7 @@ mod tests {
     /// into it: every head is the top of its stream (or the outlet of a lake).
     #[test]
     fn no_head_inside_the_map_sits_at_a_confluence() {
-        let mut worlds: Vec<(String, World)> = (1..=6).map(|s| (format!("seed {s}"), world(s))).collect();
-        worlds.push(("algonquin".into(), crate::maps::world("algonquin").unwrap().1));
+        let worlds: Vec<(String, World)> = (1..=6).map(|s| (format!("seed {s}"), world(s))).collect();
         for (name, w) in worlds {
             let n = w.size;
             let (flow, acc, lake) = (w.flow_to.as_slice(), w.flow_acc.as_slice(), w.lake.as_slice());
@@ -1298,35 +1438,59 @@ mod tests {
         }
     }
 
-    /// Water enters where it should: a river from beyond the map at the inner neighbour of its
-    /// border cell with the catchment it carries, every head with its whole catchment, and the
-    /// inputs add up to the catchment the water network drains.
+    /// A real map's water comes only from beyond it: one input per inflow, at its border cell,
+    /// with the inflow's rate; every river cell lies on an inflow's path, and every path runs
+    /// inward from its border cell to another stretch of the map edge.
     #[test]
-    fn water_inputs_follow_the_catchment() {
-        let (info, w) = crate::maps::world("algonquin").unwrap();
+    fn on_a_real_map_the_rivers_are_the_paths_of_the_inflows() {
+        let (info, w) = crate::maps::world(&crate::maps::all()[0].id).unwrap();
         let n = w.size;
-        let border = |(x, y): (usize, usize)| x == 0 || y == 0 || x + 1 == n || y + 1 == n;
-        let inflows: Vec<&WaterInput> = w.water_inputs.iter().filter(|i| i.kind == InputKind::Inflow).collect();
-        assert_eq!(inflows.len(), info.inflows.len());
-        for (&(x, y, extra), inp) in info.inflows.iter().zip(&inflows) {
-            assert!(!border(inp.cell) && inp.cell.0.abs_diff(x) <= 1 && inp.cell.1.abs_diff(y) <= 1, "inflow at ({x}, {y}) fed at {:?}", inp.cell);
-            assert_eq!(inp.catchment, extra);
+        assert!(w.springs.is_empty(), "no stream starts inside the map");
+        assert_eq!(w.water_inputs.len(), info.inflows.len());
+        for (&(x, y, km2), inp) in info.inflows.iter().zip(&w.water_inputs) {
+            assert_eq!((inp.kind, inp.cell, inp.rate), (InputKind::Inflow, (x, y), inflow_rate(km2)));
         }
-        let big = inflows.iter().find(|i| i.catchment == 5545).expect("the big western river");
-        assert!(w.river.get(big.cell.0, big.cell.1) == Some(&true), "the big inflow runs on as a river");
-        // Heads take their own catchment, which is that of the land above them.
-        let acc = w.flow_acc.as_slice();
-        for inp in w.water_inputs.iter().filter(|i| i.kind == InputKind::Spring) {
-            let i = inp.cell.1 * n + inp.cell.0;
-            let from_inflows: u32 = inflows.iter().filter(|f| f.cell == inp.cell).map(|f| f.catchment).sum();
-            assert_eq!(inp.catchment + from_inflows, acc[i], "head {:?}", inp.cell);
-        }
-        // Everything entering the network leaves it where the network ends (the map edge, or dry
-        // ground below a pond).
-        let wet = |i: usize| w.river.as_slice()[i] || (w.lake.as_slice()[i] && !w.pond.as_slice()[i]);
         let flow = w.flow_to.as_slice();
-        let leaving: u64 = (0..n * n).filter(|&i| wet(i) && flow[i].is_none_or(|t| !wet(t))).map(|i| acc[i] as u64).sum();
-        let given: u64 = w.water_inputs.iter().map(|i| i.catchment as u64).sum();
-        assert_eq!(given, leaving);
+        let mut on_path = vec![false; n * n];
+        for inp in &w.water_inputs {
+            let (mut i, mut len) = (inp.cell.1 * n + inp.cell.0, 0);
+            while let Some(t) = flow[i] {
+                on_path[i] = true;
+                (i, len) = (t, len + 1);
+            }
+            on_path[i] = true;
+            let (ex, ey) = (i % n, i / n);
+            assert!(ex == 0 || ey == 0 || ex == n - 1 || ey == n - 1, "a path ends inside the map at ({ex}, {ey})");
+            assert!(ex.abs_diff(inp.cell.0) + ey.abs_diff(inp.cell.1) > INFLOW_WALL, "{:?} leaves where it came in", inp.cell);
+            assert!(len >= 20, "{:?} runs only {len} cells", inp.cell);
+        }
+        assert!((0..n * n).all(|i| !w.river.as_slice()[i] || on_path[i]), "a river cell off every inflow's path");
+    }
+
+    /// Channels are carved to carry their river: on a dead-level floor the bed still falls by the
+    /// fall the flow needs (`water::face_carry`) every cell, and it is everywhere at least the bank
+    /// depth below the land beside it; a bigger flow gets a deeper channel.
+    #[test]
+    fn a_channel_carries_its_flow_in_its_banks_even_across_flat_ground() {
+        let n = 16;
+        let surface: Vec<f32> = (0..n * n).map(|i| 5.0 + 1e-3 * (n - 1 - i % n) as f32).collect();
+        let flow: Vec<Option<usize>> = (0..n * n).map(|i| (i % n + 1 < n).then_some(i + 1)).collect();
+        let river: Vec<bool> = (0..n * n).map(|i| i / n == 8).collect();
+        for q in [1.0f32, 4.0] {
+            let rate = vec![q; n * n];
+            let mut height = surface.clone();
+            carve_flow_channels(&mut height, &surface, &flow, &river, &rate, n);
+            let bank = channel_bank(q);
+            let fall = q / crate::water::face_carry(CHANNEL_FLOW_FILL * bank, 1.0);
+            for x in 0..n {
+                let i = 8 * n + x;
+                assert!(surface[i] - height[i] >= bank - 1e-5, "q {q}: channel at {x} only {} deep", surface[i] - height[i]);
+                if x + 1 < n {
+                    assert!(height[i] - height[i + 1] >= fall - 1e-5, "q {q}: bed falls only {} at {x}", height[i] - height[i + 1]);
+                }
+                assert_eq!(height[7 * n + x], surface[7 * n + x], "the banks are left alone");
+            }
+        }
+        assert!(channel_bank(4.0) > channel_bank(1.0));
     }
 }

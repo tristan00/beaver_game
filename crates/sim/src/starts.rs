@@ -63,6 +63,9 @@ const RIVER_WALK: usize = 60;
 #[cfg(any(test, feature = "fixtures"))]
 const CELLS_PER_INFLOW: f32 = 15.0;
 const MAX_DAM_CELLS: usize = 10;
+/// A dam's ends tie into ground above the head its river's flow times this raises over the crest
+/// (spring brings more than the base flow).
+const SPILL_FLOW_MARGIN: f32 = 1.5;
 /// Start 1 is a flowing stream a dam visibly changes. Its planned dam must raise the water at least
 /// `START_RISE` above the river as it runs once the springs have settled, and flood at least
 /// `START_NEW` cells (and a quarter of its pond) that are dry ground now.
@@ -135,8 +138,10 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
                 let low = (left + 1..right).map(|t| bed(at(t))).fold(f32::INFINITY, f32::min);
                 for height in DAM_HEIGHTS {
                     // Both banks, plus bank on each side until the line ties into ground above
-                    // the pond level, so the water cannot walk round its ends.
-                    let ties_in = |t: isize| bed(at(t)) >= low + height;
+                    // the pond level, so the water cannot walk round its ends: above the crest by
+                    // the head a full pond stands over it as it spills its river (spring flow).
+                    let head = crate::water::spill_head(SPILL_FLOW_MARGIN * sim.world.river_flow.get(x, y).copied().unwrap_or(0.0));
+                    let ties_in = |t: isize| bed(at(t)) >= low + height + head;
                     let (Some(l), Some(r)) = ((0..MAX_DAM_CELLS as isize).map(|k| left - k).find(|&t| ties_in(t - 1)), (0..MAX_DAM_CELLS as isize).map(|k| right + k).find(|&t| ties_in(t + 1))) else { continue };
                     let cells: Vec<Cell> = (l..=r).map(at).collect();
                     if cells.len() > MAX_DAM_CELLS {

@@ -81,7 +81,9 @@ impl Player {
 
     /// Places `kind` as near `around` as the sim allows (gathering camps where their area is richest).
     pub fn place_at(&mut self, s: &mut SimState, kind: BuildingKind, around: Cell) -> Option<BuildingId> {
-        let res = if matches!(kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) { place_deposit(s, kind, around) } else { place_best(s, kind, around) };
+        // Keep the planned dam's line clear: a hut built on it would block the dam.
+        let keep_clear: Vec<Cell> = if kind == BuildingKind::Dam { Vec::new() } else { self.dam.iter().flat_map(|(c, _)| c.iter().copied()).collect() };
+        let res = if matches!(kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) { place_deposit(s, kind, around, &keep_clear) } else { place_best(s, kind, around, &keep_clear) };
         self.placed.push((s.time_days, kind, res.clone()));
         match res {
             Ok(id) => {
@@ -395,7 +397,7 @@ pub fn dock_spot(s: &SimState, near: Cell, reach: Option<&[Cell]>, radius: usize
 
 /// Places a quarry or clay pit at the richest deposit in sight: explored cells within
 /// `DEPOSIT_REACH` of `around` whose work area holds the most, nearer winning ties.
-pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
+pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     let n = s.world.size;
     let r = DEPOSIT_REACH;
     let mut cands: Vec<(usize, usize, Cell)> = Vec::new();
@@ -413,7 +415,7 @@ pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell) -> Resu
     }
     cands.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     for (_, _, c) in cands.into_iter().take(12) {
-        if let Ok(id) = place_near_within(s, kind, c, 1) {
+        if let Ok(id) = place_near_within(s, kind, c, 1, keep_clear) {
             return Ok(id);
         }
     }
@@ -430,10 +432,11 @@ pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate:
 }
 
 /// Places a gathering camp where its work area holds the most of what it gathers (within 20 cells
-/// of `around`, nearer wins ties); other buildings go to the nearest suitable cell.
-pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
+/// of `around`, nearer wins ties); other buildings go to the nearest suitable cell. Nothing is
+/// placed over `keep_clear`.
+pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     if area_yield(s, kind, around).is_none() {
-        return place_near(s, kind, around);
+        return place_ring(s, kind, around, 2..=29, keep_clear);
     }
     let mut cands: Vec<(usize, usize, Cell)> = Vec::new();
     for y in around.1.saturating_sub(20)..around.1 + 20 {
@@ -448,23 +451,23 @@ pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<
     }
     cands.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     for (_, _, c) in cands.into_iter().take(12) {
-        if let Ok(id) = place_near_within(s, kind, c, 1) {
+        if let Ok(id) = place_near_within(s, kind, c, 1, keep_clear) {
             return Ok(id);
         }
     }
-    place_near(s, kind, around)
+    place_ring(s, kind, around, 2..=29, keep_clear)
 }
 
-fn place_near_within(s: &mut SimState, kind: BuildingKind, around: Cell, max_r: usize) -> Result<BuildingId, String> {
-    place_ring(s, kind, around, 0..=max_r)
+fn place_near_within(s: &mut SimState, kind: BuildingKind, around: Cell, max_r: usize, keep_clear: &[Cell]) -> Result<BuildingId, String> {
+    place_ring(s, kind, around, 0..=max_r, keep_clear)
 }
 
 /// The nearest cell to `around` where `kind` can be placed and the first adult can walk beside.
 pub fn place_near(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
-    place_ring(s, kind, around, 2..=29)
+    place_ring(s, kind, around, 2..=29, &[])
 }
 
-fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::ops::RangeInclusive<usize>) -> Result<BuildingId, String> {
+fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::ops::RangeInclusive<usize>, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     let walker = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id);
     let from = walker.and_then(|w| s.agents.get(w)).map(|a| a.cell);
     let mut last = String::from("no cell tried");
@@ -476,6 +479,10 @@ fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::op
                 }
                 if let Err(e) = s.check_site(kind, (x, y)) {
                     last = e.to_string();
+                    continue;
+                }
+                if crate::buildings::Buildings::footprint(kind, (x, y)).iter().any(|c| keep_clear.contains(c)) {
+                    last = "on the planned dam".into();
                     continue;
                 }
                 if let (Some(w), Some(f)) = (walker, from) {

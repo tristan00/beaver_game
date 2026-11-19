@@ -1,8 +1,11 @@
-//! Real-terrain maps: windows of real elevation from places beavers live, chosen for a flowing
-//! river with several dammable streams, narrow channels, few lakes and walkable banks
-//! (`tools/scan_maps.py` scores and exports them). Each `.map` file is a short text header
-//! (`key=value` lines, ended by `---`) followed by `size * size` little-endian f32 heights in
-//! world units. Rivers, lakes and forest come from the terrain via `worldgen::from_heights`.
+//! Real-terrain maps: 512 m windows of lidar elevation (4 m cells) from places beavers live, each
+//! crossed by at least two dammable streams that enter from upstream across the map edge, with
+//! gentle valley floors, a mix of forest and open land and almost no farmland
+//! (`tools/hires_fetch.py` downloads the data, `tools/hires_maps.py` chooses and exports windows).
+//! Each `.map` file is a short text header (`key=value` lines, ended by `---`) followed by
+//! `size * size` little-endian f32 heights in metres and, if the header lists the `cover` layer,
+//! `size * size` land-cover bytes (ESA WorldCover classes). Rivers, lakes and forest come from
+//! these via `worldgen::from_heights`.
 use crate::worldgen::{self, World};
 use std::fmt;
 
@@ -26,8 +29,18 @@ pub struct MapInfo {
     pub size: usize,
     /// Where the elevation comes from (shown in the menu as credit).
     pub source: String,
-    /// Border cells where a river enters from outside, with the cells it drains out there.
-    pub inflows: Vec<(usize, usize, u32)>,
+    /// Border cells where a river enters from outside, with the catchment it drains out there (km2).
+    pub inflows: Vec<(usize, usize, f32)>,
+}
+
+/// A map file's contents.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapData {
+    pub info: MapInfo,
+    /// Heights in metres, row-major.
+    pub heights: Vec<f32>,
+    /// Land cover per cell (ESA WorldCover classes), if the file has the layer.
+    pub cover: Option<Vec<u8>>,
 }
 
 impl MapInfo {
@@ -61,13 +74,13 @@ impl fmt::Display for MapError {
 impl std::error::Error for MapError {}
 
 /// Reads a `.map` file's bytes (the bundled ones, or a candidate being checked).
-pub fn parse(bytes: &[u8]) -> Result<(MapInfo, Vec<f32>), MapError> {
+pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
     let bad = |m: &str| MapError::Corrupt(m.to_string());
     let end = bytes.windows(4).position(|w| w == b"---\n").ok_or_else(|| bad("no header end"))?;
     let header = std::str::from_utf8(&bytes[..end]).map_err(|_| bad("header is not text"))?;
     let mut lines = header.lines();
-    if lines.next() != Some("BEAVERMAP 1") {
-        return Err(bad("not a BEAVERMAP 1 file"));
+    if lines.next() != Some("BEAVERMAP 2") {
+        return Err(bad("not a BEAVERMAP 2 file"));
     }
     let kv: std::collections::HashMap<&str, &str> = lines.filter_map(|l| l.split_once('=')).collect();
     let get = |k: &str| kv.get(k).copied().ok_or_else(|| bad(&format!("missing {k}")));
@@ -78,8 +91,9 @@ pub fn parse(bytes: &[u8]) -> Result<(MapInfo, Vec<f32>), MapError> {
         .split(';')
         .filter(|s| !s.is_empty())
         .map(|t| {
-            let v: Vec<u32> = t.split(',').filter_map(|n| n.parse().ok()).collect();
-            if v.len() == 3 { Ok((v[0] as usize, v[1] as usize, v[2])) } else { Err(bad("bad inflow")) }
+            let v: Vec<f32> = t.split(',').filter_map(|n| n.parse().ok()).collect();
+            let ok = v.len() == 3 && v[0] >= 0.0 && v[1] >= 0.0 && (v[0] as usize) < size && (v[1] as usize) < size && v[2] > 0.0;
+            if ok { Ok((v[0] as usize, v[1] as usize, v[2])) } else { Err(bad("bad inflow")) }
         })
         .collect::<Result<Vec<_>, _>>()?;
     let info = MapInfo {
@@ -93,30 +107,40 @@ pub fn parse(bytes: &[u8]) -> Result<(MapInfo, Vec<f32>), MapError> {
         source: get("source").unwrap_or("").to_string(),
         inflows,
     };
+    let layers: Vec<&str> = get("layers").unwrap_or("height").split(',').collect();
+    let has_cover = match layers.as_slice() {
+        ["height"] => false,
+        ["height", "cover"] => true,
+        _ => return Err(bad("unknown layers")),
+    };
     let data = &bytes[end + 4..];
-    if data.len() != size * size * 4 {
-        return Err(bad(&format!("{} height bytes for a {size}x{size} map", data.len())));
+    let want = size * size * if has_cover { 5 } else { 4 };
+    if data.len() != want {
+        return Err(bad(&format!("{} data bytes for a {size}x{size} map (want {want})", data.len())));
     }
-    let heights = data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-    Ok((info, heights))
+    let (h, c) = data.split_at(size * size * 4);
+    let heights = h.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    Ok(MapData { info, heights, cover: has_cover.then(|| c.to_vec()) })
 }
 
 /// The bundled maps' descriptions, in menu order.
 pub fn all() -> Vec<MapInfo> {
-    FILES.iter().filter_map(|(_, b)| parse(b).ok().map(|(i, _)| i)).collect()
+    FILES.iter().filter_map(|(_, b)| parse(b).ok().map(|d| d.info)).collect()
 }
 
 /// The world for parsed map data.
-pub fn world_from(info: &MapInfo, heights: Vec<f32>) -> Result<World, MapError> {
-    worldgen::from_heights(info.seed(), info.size, heights, &info.inflows).map_err(|e| MapError::World(e.to_string()))
+pub fn world_from(data: MapData) -> Result<World, MapError> {
+    let MapData { info, heights, cover } = data;
+    let real = worldgen::RealMap { cell_m: info.cell_m, inflows: &info.inflows, cover: cover.as_deref() };
+    worldgen::from_heights(info.seed(), info.size, heights, &real).map_err(|e| MapError::World(e.to_string()))
 }
 
 /// The world for map `id`.
 pub fn world(id: &str) -> Result<(MapInfo, World), MapError> {
     let (_, bytes) = FILES.iter().find(|(k, _)| *k == id).ok_or_else(|| MapError::Unknown(id.to_string()))?;
-    let (info, heights) = parse(bytes)?;
-    let w = worldgen::from_heights(info.seed(), info.size, heights, &info.inflows).map_err(|e| MapError::World(e.to_string()))?;
-    Ok((info, w))
+    let data = parse(bytes)?;
+    let info = data.info.clone();
+    Ok((info, world_from(data)?))
 }
 
 #[cfg(test)]
@@ -129,7 +153,10 @@ mod tests {
         assert_eq!(maps.len(), FILES.len(), "a bundled map failed to parse");
         for m in &maps {
             assert!(!m.name.is_empty() && !m.place.is_empty() && !m.source.is_empty());
-            assert!(m.cell_m > 5.0 && m.cell_m < 60.0, "{}: {} m cells", m.id, m.cell_m);
+            // a map is about one beaver family's stretch of stream: a few hundred metres across
+            assert!((3.0..=6.0).contains(&m.cell_m), "{}: {} m cells", m.id, m.cell_m);
+            assert!((300.0..=800.0).contains(&(m.km() * 1000.0)), "{}: {} km across", m.id, m.km());
+            assert!(m.inflows.len() >= 2, "{}: fewer than two rivers enter it", m.id);
         }
     }
 
@@ -174,7 +201,7 @@ mod tests {
     #[test]
     fn a_damaged_file_is_refused_with_a_reason() {
         assert!(matches!(parse(b"nonsense"), Err(MapError::Corrupt(_))));
-        let mut short = b"BEAVERMAP 1\nid=x\nname=x\nplace=x\nlat=1\nlon=1\ncell_m=10\nsize=64\n---\n".to_vec();
+        let mut short = b"BEAVERMAP 2\nid=x\nname=x\nplace=x\nlat=1\nlon=1\ncell_m=4\nsize=64\n---\n".to_vec();
         short.extend_from_slice(&[0; 16]);
         assert!(matches!(parse(&short), Err(MapError::Corrupt(_))));
         assert!(matches!(world("atlantis"), Err(MapError::Unknown(_))));

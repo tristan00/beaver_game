@@ -365,7 +365,7 @@ fn water_spilling_over_a_dam_wears_it_away_and_a_dam_not_overtopped_holds() {
     let cfg = WaterConfig { overtop_erosion: crate::water::OVERTOP_EROSION, ..cfg };
     // a big river over a low dam: deep overtopping
     let mut s = dammed_valley(0.5, cfg.clone());
-    s.w.add_source(2, MID, 40.0).unwrap();
+    s.w.add_source(2, MID, 160.0).unwrap();
     s.w.sources[0].seasonality = 0.0;
     s.run(60.0, DT);
     assert!(!s.w.has_dam(DAM_X, MID), "a torrent over its crest breaks the dam");
@@ -666,9 +666,27 @@ fn a_dam_wears_faster_the_more_water_pours_over_it_and_ordinary_spill_does_not_w
         s.run(20.0, DT);
         1.0 - *s.w.dam_integrity.get(DAM_X, MID).unwrap()
     };
-    let (normal, flood, torrent) = (wear(2.0), wear(30.0), wear(120.0));
+    let (normal, flood, torrent) = (wear(2.0), wear(80.0), wear(160.0));
     assert!(normal < 1e-6, "a river's ordinary spill over its full pond does not wear the dam: {normal}");
     assert!(flood > 0.0 && torrent > flood, "wear grows with the flood: {flood:.3} then {torrent:.3}");
+}
+
+/// A dam is tied into its banks, which stand higher than its crest: dry ground beside a dam cell
+/// pours nothing over it. And a full pond passes its river over the crest: up to the biggest river
+/// a map brings in, that ordinary spill does not wear the dam either. No cell of the dam wears.
+#[test]
+fn neither_the_dry_banks_a_dam_is_tied_into_nor_its_ordinary_spill_wear_it() {
+    for q in [2.0, 10.0] {
+        let cfg = WaterConfig { dam_decay_per_day: 0.0, overtop_erosion: crate::water::OVERTOP_EROSION, ..still() };
+        let mut s = dammed_valley(1.5, cfg);
+        s.w.add_source(2, MID, q).unwrap();
+        s.w.sources[0].seasonality = 0.0;
+        s.run(60.0, DT);
+        for y in 0..N {
+            let integrity = *s.w.dam_integrity.get(DAM_X, y).unwrap();
+            assert_eq!(integrity, 1.0, "river {q}: dam cell at y {y} wore to {integrity}");
+        }
+    }
 }
 
 #[test]
@@ -988,3 +1006,4 @@ fn probe_channels_vs_flow() {
             info.id, chan_sum / riv as f32, over, riv, flood_near, flood_far, inflow, spring, base);
     }
 }
+

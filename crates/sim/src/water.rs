@@ -26,19 +26,53 @@ pub type Cell = (usize, usize);
 
 
 /// Flow substeps per simulated day. The number of substeps a step runs scales with its length, so
-/// how far water travels in a day does not depend on the step size.
-const FLOW_STEPS_PER_DAY: f32 = 1000.0;
+/// how far water travels in a day does not depend on the step size. A face passes at most
+/// `PIPE_CAP` of the surface drop per substep, so this also sets how much a river channel can carry
+/// (`face_carry`): at 4 m cells a stream of a few units a day needs it this high to stay in a
+/// one-cell channel on a gentle (0.2%) valley floor. Still far slower than real water.
+const FLOW_STEPS_PER_DAY: f32 = 4000.0;
 /// Upper bound on substeps in one step (a guard against absurd steps, far above any real use).
-const MAX_SUBSTEPS: usize = 4000;
+const MAX_SUBSTEPS: usize = 16000;
 const FRICTION: f32 = 0.9;
 const PUSH: f32 = 0.2;
 /// Max fraction of the surface difference one pipe moves (keeps neighbours from overshooting).
 const PIPE_CAP: f32 = 0.24;
 /// Water depth over a cell face at which it passes water freely. Shallower water conducts in
 /// proportion to its depth (flow needs depth: a film creeps, a river runs, a deep canal pours), so
-/// a river stands as deep as the flow it carries needs.
-const FULL_FLOW_DEPTH: f32 = 2.35;
+/// a river stands as deep as the flow it carries needs. Scaled with `FLOW_STEPS_PER_DAY` so shallow
+/// flow per day is unchanged by the substep count; deeper channels carry more, up to the cap
+/// (reached at about 1.1 m).
+const FULL_FLOW_DEPTH: f32 = 9.4;
 const WALL: f32 = 1.0e9;
+
+/// Steady flow (depth units over one cell per day) one cell face passes with water `depth` over it
+/// and the surface falling `drop` across it: the pipe law of `flow_substep` once its momentum has
+/// settled, `PUSH / (1 - FRICTION)` of the drop scaled by the depth, at most `PIPE_CAP` of the drop
+/// per substep. Deeper water carries more up to `FULL_FLOW_DEPTH`; past the cap only a steeper
+/// surface does. World generation sizes river channels with it.
+pub fn face_carry(depth: f32, drop: f32) -> f32 {
+    let g = (depth.max(0.0) / FULL_FLOW_DEPTH).min(1.0);
+    FLOW_STEPS_PER_DAY * (PUSH / (1.0 - FRICTION) * g).min(PIPE_CAP) * drop.max(0.0)
+}
+
+/// How far a full pond stands above the crest it spills `q` over (water pouring off into a fall,
+/// so the head over the crest is also the drop that drives it: `face_carry(head, head) = q`).
+pub fn spill_head(q: f32) -> f32 {
+    (q.max(0.0) / face_carry(1.0, 1.0)).sqrt()
+}
+
+/// The depth at which one face passes `q` with the surface falling `drop` across it (the inverse
+/// of `face_carry`); infinite if no depth can.
+pub fn normal_depth(q: f32, drop: f32) -> f32 {
+    let per_depth = FLOW_STEPS_PER_DAY * PUSH / (1.0 - FRICTION) / FULL_FLOW_DEPTH * drop.max(0.0);
+    if q <= 0.0 {
+        0.0
+    } else if per_depth <= 0.0 || q > FLOW_STEPS_PER_DAY * PIPE_CAP * drop {
+        f32::INFINITY
+    } else {
+        q / per_depth
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Season { Spring, Summer, Autumn, Winter }
@@ -131,9 +165,8 @@ impl Budget {
     pub fn lost(&self) -> f64 { self.edges + self.evaporation + self.seepage }
 }
 
-/// The sources a world's water inputs give (`worldgen::water_inputs`): `WATER_PER_CATCHMENT_CELL`
-/// per catchment cell per day, rivers from beyond the map following the seasons by
-/// `INFLOW_SEASONALITY`, springs and baseflow by `SPRING_SEASONALITY`.
+/// The sources a world's water inputs give (`worldgen::WaterInput::rate`), rivers from beyond the
+/// map following the seasons by `INFLOW_SEASONALITY`, springs and baseflow by `SPRING_SEASONALITY`.
 pub fn sources_for(world: &World) -> Vec<Source> {
     world
         .water_inputs
@@ -141,7 +174,7 @@ pub fn sources_for(world: &World) -> Vec<Source> {
         .map(|inp| Source {
             x: inp.cell.0,
             y: inp.cell.1,
-            rate: WATER_PER_CATCHMENT_CELL * inp.catchment as f32,
+            rate: inp.rate,
             seasonality: if inp.kind == InputKind::Inflow { INFLOW_SEASONALITY } else { SPRING_SEASONALITY },
         })
         .collect()
@@ -208,6 +241,9 @@ pub struct Water {
     pub fed: Grid<bool>,
     /// Cells occupied by buildings (set by the buildings system; used by `preview_dam`).
     pub structures: Grid<bool>,
+    /// Border cells water never leaves the map by, whatever the slope: where a river enters from
+    /// beyond the map (`worldgen::inflow_walls`), the ground outside is upstream and higher.
+    pub closed_edge: Grid<bool>,
     pub sources: Vec<Source>,
     pub config: WaterConfig,
     pub time_days: f64,
@@ -242,13 +278,36 @@ impl Water {
         for ((d, &h), &s) in w.depth.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
             *d = s - h; // zero except lake beds and river channels
         }
-        for (d, &river) in w.depth.as_mut_slice().iter_mut().zip(world.river.as_slice()) {
-            if river { *d *= RIVER_FILL; }
+        // A river starts at the depth its own flow runs at down its bed (real maps), or a share of
+        // its channel (generated worlds, whose springs settle into it).
+        let n = world.size;
+        let (h, flow, q) = (world.height.as_slice(), world.flow_to.as_slice(), world.river_flow.as_slice());
+        for (i, d) in w.depth.as_mut_slice().iter_mut().enumerate() {
+            if !world.river.as_slice()[i] {
+                // only lakes start full: the corner cells a diagonal channel step is lowered
+                // through fill from the river as it settles
+                if !world.lake.as_slice()[i] {
+                    *d = 0.0;
+                }
+                continue;
+            }
+            *d = match flow[i] {
+                Some(t) if q[i] > 0.0 => {
+                    let faces = if i % n != t % n && i / n != t / n { 2.0 } else { 1.0 };
+                    d.min(normal_depth(q[i], (h[i] - h[t]) / faces))
+                }
+                _ => *d * RIVER_FILL,
+            };
         }
         for ((f, &h), &sf) in w.fed.as_mut_slice().iter_mut().zip(world.height.as_slice()).zip(world.surface.as_slice()) {
             *f = h < sf;
         }
         w.sources = sources_for(world);
+        let inflows: Vec<(usize, usize, f32)> =
+            world.water_inputs.iter().filter(|i| i.kind == InputKind::Inflow).map(|i| (i.cell.0, i.cell.1, 1.0)).collect();
+        for (c, closed) in w.closed_edge.as_mut_slice().iter_mut().zip(crate::worldgen::inflow_walls(world.size, &inflows)) {
+            *c = closed;
+        }
         // Let the springs' flow settle into the channels, then start the clock and the books afresh.
         for _ in 0..(SETTLE_DAYS / SETTLE_DT).round() as usize { w.step(&world.height, SETTLE_DT); }
         w.time_days = 0.0;
@@ -279,6 +338,7 @@ impl Water {
             canal: Grid::new(size, size, false),
             fed: Grid::new(size, size, false),
             structures: Grid::new(size, size, false),
+            closed_edge: Grid::new(size, size, false),
             sources: Vec::new(),
             config: WaterConfig::default(),
             time_days: 0.0,
@@ -440,23 +500,24 @@ impl Water {
         {
             let bed = |x: usize, y: usize| terrain[y * w + x] + dam[y * w + x];
             let open = self.config.open_edges;
-            let out = |e: f32, inner: f32| {
+            let closed = self.closed_edge.as_slice();
+            let out = |e: f32, inner: f32, x: usize, y: usize| {
                 let beyond = 2.0 * e - inner;
-                if open && beyond <= e { beyond } else { WALL }
+                if open && beyond <= e && !closed[y * w + x] { beyond } else { WALL }
             };
             for y in 0..h {
                 let row = (y + 1) * stride;
                 let inner_l = if w > 1 { bed(1, y) } else { bed(0, y) };
                 let inner_r = if w > 1 { bed(w - 2, y) } else { bed(w - 1, y) };
-                self.hs[row] = out(bed(0, y), inner_l);
-                self.hs[row + w + 1] = out(bed(w - 1, y), inner_r);
+                self.hs[row] = out(bed(0, y), inner_l, 0, y);
+                self.hs[row + w + 1] = out(bed(w - 1, y), inner_r, w - 1, y);
                 (self.bs[row], self.bs[row + w + 1]) = (self.hs[row], self.hs[row + w + 1]);
             }
             for x in 0..w {
                 let inner_t = if h > 1 { bed(x, 1) } else { bed(x, 0) };
                 let inner_b = if h > 1 { bed(x, h - 2) } else { bed(x, h - 1) };
-                self.hs[x + 1] = out(bed(x, 0), inner_t);
-                self.hs[(h + 1) * stride + x + 1] = out(bed(x, h - 1), inner_b);
+                self.hs[x + 1] = out(bed(x, 0), inner_t, x, 0);
+                self.hs[(h + 1) * stride + x + 1] = out(bed(x, h - 1), inner_b, x, h - 1);
                 self.bs[x + 1] = self.hs[x + 1];
                 self.bs[(h + 1) * stride + x + 1] = self.hs[(h + 1) * stride + x + 1];
             }
@@ -624,7 +685,9 @@ impl Water {
         let cfg = &self.config;
         let (w, h) = (self.depth.width(), self.depth.height());
         let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), self.depth.as_slice());
-        let surface = |i: usize| terrain[i] + dam[i] + depth[i];
+        // Only water counts: the dry bank a dam is tied into stands above its crest and pours
+        // nothing over it.
+        let surface = |i: usize| if depth[i] > WET_EPS { terrain[i] + dam[i] + depth[i] } else { f32::NEG_INFINITY };
         let mut broken = Vec::new();
         for &i in &self.dams {
             let (x, y) = (i % w, i / w);
@@ -902,33 +965,33 @@ mod tests {
         assert!(preview_dam(&s, &[], 1.0).is_err());
     }
 
-    /// A 64-cell valley falling eastward, its floor along y = 32, with a river entering at its
-    /// west edge from `extra` cells of catchment beyond the map.
-    fn inflow_valley(extra: u32) -> World {
+    /// A 64-cell valley of 4 m cells falling eastward 1 m in 100, its floor along y = 32, with a
+    /// river entering at its west edge from `km2` of catchment beyond the map.
+    fn inflow_valley(km2: f32) -> World {
         let n = 64;
         let raw: Vec<f32> = (0..n * n)
             .map(|i| {
                 let (x, y) = ((i % n) as f32, (i / n) as f32);
-                4.0 + 0.12 * (n as f32 - 1.0 - x) + 0.25 * (y - 32.0).abs()
+                4.0 + 0.04 * (n as f32 - 1.0 - x) + 0.25 * (y - 32.0).abs()
             })
             .collect();
-        crate::worldgen::from_heights(9, n, raw, &[(0, 32, extra)]).unwrap()
+        let real = crate::worldgen::RealMap { cell_m: 4.0, inflows: &[(0, 32, km2)], cover: None };
+        crate::worldgen::from_heights(9, n, raw, &real).unwrap()
     }
 
-    /// The water budget of a map at steady state: what the sources bring in (the river from
-    /// beyond the map, springs, baseflow) leaves again through the downstream edge, evaporation
-    /// and seepage, within 5%; and the river leaves the map carrying about what entered it plus
-    /// what its own catchment gave (at least 80% of all the water brought in drains off the edge).
+    /// The water budget of a map at steady state: the river from beyond the map is the only
+    /// source, and what it brings in leaves again through the downstream edge, evaporation and
+    /// seepage; the inflow edge never lets water out.
     #[test]
     fn water_budget_balances_at_steady_state_and_the_river_leaves_as_it_came() {
-        let world = inflow_valley(3000);
+        let world = inflow_valley(2.0);
         let inflow = world.water_inputs.iter().find(|i| i.kind == InputKind::Inflow).expect("the river from beyond the map");
-        assert_eq!((inflow.cell, inflow.catchment), ((1, 32), 3000), "fed at the border cell's inner neighbour");
-        let local: u32 = world.water_inputs.iter().filter(|i| i.kind != InputKind::Inflow).map(|i| i.catchment).sum();
+        assert_eq!(inflow.cell, (0, 32), "fed at its border cell");
+        assert_eq!(world.water_inputs.len(), 1, "no water from inside the map: {:?}", world.water_inputs);
         let mut w = Water::from_world(&world);
-        w.config.seepage = 0.01; // a clay valley floor, as the starts have
+        assert!(*w.closed_edge.get(0, 32).unwrap() && !*w.closed_edge.get(63, 32).unwrap(), "the inflow edge is closed, the outlet open");
         let given: f32 = w.sources.iter().map(|s| s.rate).sum();
-        assert!((given - WATER_PER_CATCHMENT_CELL * (3000 + local) as f32).abs() < 1e-3, "sources follow the catchment: {given}");
+        assert!((given - crate::worldgen::inflow_rate(2.0)).abs() < 1e-6, "the source brings the inflow's rate: {given}");
         // Settle further into steady flow, then keep the books over a stretch of days.
         for _ in 0..800 {
             w.step(&world.height, 0.05);
@@ -945,7 +1008,7 @@ mod tests {
         let (inn, out) = (b.sources, b.edges + b.evaporation + b.seepage);
         assert!((inn - out).abs() < 0.05 * inn, "steady: in {:.2}/day, out {:.2}/day ({b:?})", inn / days as f64, out / days as f64);
         assert!(b.edges >= 0.8 * inn, "the river leaves with what came in: edges {:.2} of {:.2}/day", b.edges / days as f64, inn / days as f64);
-        assert!(b.edges >= WATER_PER_CATCHMENT_CELL as f64 * 3000.0 * days as f64, "more leaves than entered from beyond the map");
+        assert!(b.edges >= 0.99 * inn, "all of it leaves down the river: {:.3} of {:.3}/day", b.edges / days as f64, inn / days as f64);
     }
 
 }

@@ -1,0 +1,135 @@
+//! Runs a map's water with nobody playing and reports what the rivers do; dumps the state for
+//! `tools/water_map.py` to draw.
+//!
+//! `cargo run -p sim --release --example water_map -- MAP [--days D] [--dam] [--out FILE]`
+//!
+//! MAP is a bundled map id or a `.map` file. `--dam` builds the start's planned dam at full height
+//! first. Prints, after D days (default 30): water in and out per day over the last day (in must
+//! equal out once settled), river cells dry / over their banks, wet ground away from the rivers,
+//! and the depth along each river. The dump (FILE, default none) is: size as u32, then per cell
+//! f32 terrain, f32 water depth, u8 flags (1 river, 2 lake, 4 tree, 8 dam, 16 camp, 32 source).
+use sim::water::Water;
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let map = args.next().expect("map id or .map file");
+    let (mut days, mut dam, mut out) = (30.0f32, false, None);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--days" => days = args.next().unwrap().parse().unwrap(),
+            "--dam" => dam = true,
+            "--out" => out = args.next(),
+            _ => panic!("unknown argument {a}"),
+        }
+    }
+    let (mut sim, site) = if map.ends_with(".map") {
+        let data = sim::maps::parse(&std::fs::read(&map).unwrap()).unwrap();
+        let info = data.info.clone();
+        let world = sim::maps::world_from(data).unwrap();
+        sim::starts::new_game_on_world(&info, world).unwrap()
+    } else {
+        sim::starts::new_game_on_map(&map).unwrap()
+    };
+    let n = sim.world.size;
+    if dam {
+        sim.water.build_dam(&site.cells, site.height).unwrap();
+    }
+    println!("  planned dam {:?} height {}", site.cells, site.height);
+    let mut w: Water = sim.water.clone();
+    let steps = (days / sim::STEP_DAYS).round() as usize;
+    let last_day = (1.0 / sim::STEP_DAYS).round() as usize;
+    let (mut a0, mut l0, mut v0) = (0.0, 0.0, 0.0);
+    let clock = std::time::Instant::now();
+    for k in 0..steps {
+        if k + last_day == steps {
+            (a0, l0, v0) = (w.added_volume, w.lost_volume, w.total_volume());
+        }
+        w.step(&sim.height, sim::STEP_DAYS);
+    }
+    let ms_per_day = clock.elapsed().as_secs_f64() * 1000.0 / days as f64;
+    let (inn, out_d, stored) = (w.added_volume - a0, w.lost_volume - l0, w.total_volume() - v0);
+    let d = w.depth.as_slice();
+    let (river, lake) = (sim.world.river.as_slice(), sim.world.lake.as_slice());
+    let h = sim.height.as_slice();
+    let surf = sim.world.surface.as_slice();
+    let wet = |i: usize| d[i] >= sim::buildings::WET_DEPTH;
+    let river_n = river.iter().filter(|r| **r).count();
+    let dry = (0..n * n).filter(|&i| river[i] && d[i] < 0.02).count();
+    // over the banks: the water stands above the land beside the channel (its drainage surface)
+    let over = (0..n * n).filter(|&i| river[i] && h[i] + d[i] > surf[i] + 0.02).count();
+    let mut near = vec![false; n * n];
+    for i in (0..n * n).filter(|&i| river[i] || lake[i]) {
+        let (x, y) = ((i % n) as isize, (i / n) as isize);
+        for dy in -2..=2isize {
+            for dx in -2..=2isize {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < n && (ny as usize) < n {
+                    near[ny as usize * n + nx as usize] = true;
+                }
+            }
+        }
+    }
+    let wet_off = (0..n * n).filter(|&i| wet(i) && !river[i] && !lake[i]).count();
+    let wet_far = (0..n * n).filter(|&i| wet(i) && !near[i]).count();
+    let mut depths: Vec<f32> = (0..n * n).filter(|&i| river[i]).map(|i| d[i]).collect();
+    depths.sort_by(|a, b| a.total_cmp(b));
+    let pct = |p: usize| depths[(depths.len() - 1) * p / 100];
+    println!(
+        "{map}: day {days} ({ms_per_day:.1} ms/day): in {inn:.2}/day out {out_d:.2}/day stored {stored:+.2}/day | river cells {river_n}: dry {dry}, over banks {over}, depth p10 {:.3} p50 {:.3} p90 {:.3} | wet off-river {wet_off}, beyond 2 cells of water {wet_far}",
+        pct(10),
+        pct(50),
+        pct(90)
+    );
+    if std::env::var("DEEP").is_ok() {
+        let mut deep: Vec<usize> = (0..n * n).filter(|&i| river[i]).collect();
+        deep.sort_by(|&a, &b| d[b].total_cmp(&d[a]));
+        for &i in deep.iter().take(12) {
+            let t = sim.world.flow_to.as_slice()[i];
+            println!(
+                "  deep ({}, {}) depth {:.2} bed {:.2} surf {:.2} q {:.2} -> {:?} bed {:.2} lake {} surf {:.2}",
+                i % n, i / n, d[i], h[i], surf[i], sim.world.river_flow.as_slice()[i],
+                t.map(|t| (t % n, t / n)), t.map_or(f32::NAN, |t| h[t]), t.is_some_and(|t| lake[t]), t.map_or(f32::NAN, |t| surf[t])
+            );
+        }
+    }
+    if let Ok(v) = std::env::var("TRACE") {
+        let xy: Vec<usize> = v.split(',').map(|t| t.parse().unwrap()).collect();
+        let mut i = xy[1] * n + xy[0];
+        for _ in 0..400 {
+            let lvl = h[i] + d[i];
+            println!("  trace ({:>3}, {:>3}) bed {:.2} depth {:.2} level {:.3} surf {:.2} river {} lake {} dam {}", i % n, i / n, h[i], d[i], lvl, surf[i], river[i], lake[i], w.dam_height.as_slice()[i]);
+            match sim.world.flow_to.as_slice()[i] { Some(t) => i = t, None => break }
+        }
+    }
+    if dam {
+        let integ: Vec<String> = site.cells.iter().map(|&(x, y)| format!("{:.2}", w.dam_integrity.get(x, y).unwrap())).collect();
+        println!("  dam integrity {}", integ.join(" "));
+    }
+    let mut cuts: Vec<f32> = (0..n * n).filter(|&i| river[i]).map(|i| surf[i] - h[i]).collect();
+    cuts.sort_by(|a, b| a.total_cmp(b));
+    println!("  channel depth below the land: p50 {:.2} p90 {:.2} max {:.2}", cuts[cuts.len() / 2], cuts[cuts.len() * 9 / 10], cuts[cuts.len() - 1]);
+    for s in &w.sources {
+        println!("  source ({}, {}) rate {:.2}", s.x, s.y, s.rate);
+    }
+    if let Some(path) = out {
+        let mut bytes = (n as u32).to_le_bytes().to_vec();
+        for &v in h {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in d {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for i in 0..n * n {
+            let c = (i % n, i / n);
+            let mut f = 0u8;
+            f |= river[i] as u8;
+            f |= (lake[i] as u8) << 1;
+            f |= (sim.world.forest.as_slice()[i].is_some() as u8) << 2;
+            f |= ((w.dam_height.as_slice()[i] > 0.0 || (!dam && site.cells.contains(&c))) as u8) << 3;
+            f |= ((c == site.camp) as u8) << 4;
+            f |= (w.sources.iter().any(|s| (s.x, s.y) == c) as u8) << 5;
+            bytes.push(f);
+        }
+        std::fs::write(&path, bytes).unwrap();
+    }
+}

@@ -323,7 +323,10 @@ pub mod water {
     pub const DAM_DECAY_PER_DAY: f32 = 0.002;
     /// Integrity lost per day per unit of water depth above `OVERTOP_DEPTH` on the crest.
     pub const OVERTOP_EROSION: f32 = 1.0;
-    pub const OVERTOP_DEPTH: f32 = 0.05;
+    /// Head over a crest below which spilling water does no harm: a full pond passes its river over
+    /// the dam, and the head that takes grows as the square root of the flow (about 0.11 for the
+    /// 10 units a day of the biggest map rivers). Only floods stand higher.
+    pub const OVERTOP_DEPTH: f32 = 0.15;
     pub const ICE_GROWTH_PER_DAY: f32 = 0.1;
     pub const ICE_MELT_PER_DAY: f32 = 0.15;
     /// Water (depth units over one cell) the ground gives the water network per day for each cell
@@ -335,6 +338,13 @@ pub mod water {
     /// more and the rivers entering from far upstream (bavarian's drains ~35 000 cells) spread over
     /// their valley floors.
     pub const WATER_PER_CATCHMENT_CELL: f32 = 0.005;
+    /// Real maps: a river from beyond the map brings this times the square root of the catchment it
+    /// drains out there (km2) per day (`worldgen::inflow_rate`), within `INFLOW_RATE_RANGE`. Much
+    /// less than a real stream carries (the pipe model passes about `water::face_carry`, far below
+    /// real hydraulics), chosen so a 0.2-10 km2 stream runs 0.1-0.4 m deep in its 4 m channel and
+    /// a first pond of ~150 cells fills in a few weeks.
+    pub const INFLOW_RATE_PER_SQRT_KM2: f32 = 2.5;
+    pub const INFLOW_RATE_RANGE: std::ops::RangeInclusive<f32> = 1.0..=6.0;
     /// Share of the seasonal inflow swing springs and baseflow follow (groundwater runs steadier
     /// than snowmelt).
     pub const SPRING_SEASONALITY: f32 = 0.0;

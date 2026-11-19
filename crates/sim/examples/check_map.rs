@@ -11,14 +11,15 @@ fn main() {
                 continue;
             }
         };
-        let (info, heights) = match sim::maps::parse(&bytes) {
+        let data = match sim::maps::parse(&bytes) {
             Ok(v) => v,
             Err(e) => {
                 println!("{path}: {e}");
                 continue;
             }
         };
-        let world = match sim::maps::world_from(&info, heights) {
+        let info = data.info.clone();
+        let world = match sim::maps::world_from(data) {
             Ok(w) => w,
             Err(e) => {
                 println!("{path}: {e}");
