@@ -144,9 +144,8 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     }
     let season = sim.water.season();
     let forcing = sim.water.forcing();
-    let hydraulic_days_per_calendar_day = (sim.water.hydraulic_seconds_per_day() / 86_400.0) as f32;
     let pressure: f32 = sim.water.sources.iter().filter(|s| seen[s.y * w + s.x])
-        .map(|s| s.rate * (1.0 + s.seasonality * (forcing.inflow - 1.0)).max(0.0) * hydraulic_days_per_calendar_day).sum();
+        .map(|s| s.rate * (1.0 + s.seasonality * (forcing.inflow - 1.0)).max(0.0)).sum();
 
     let cfg = &sim.water.config;
     let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
@@ -186,17 +185,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fill_estimate_uses_calendar_inflow_at_the_current_hydraulic_rate() {
+    fn gameplay_does_not_change_the_preview_inflow_rate() {
         let mut s = crate::SimState::sandbox(1, crate::worldgen::fixture(1));
         s.water.weather = crate::water::Weather::Clear;
         let line: Vec<_> = (43..=86).map(|y| (45, y)).collect();
         let (cells, heights) = heights_to(&s, &line, 8.35);
         let reference = preview_heights(&s, &cells, &heights).unwrap();
         assert!(reference.pressure > 0.0);
-        s.step_game_at_hydraulic_rate(1e-6, 3600.0).unwrap();
+        s.step_game(1e-6).unwrap();
         let paced = preview_heights(&s, &cells, &heights).unwrap();
-        assert!((paced.pressure / reference.pressure - 1.0 / 24.0).abs() < 1e-5);
-        assert!(paced.fill_days >= reference.fill_days);
+        assert!((paced.pressure / reference.pressure - 1.0).abs() < 1e-5);
+        assert!((paced.fill_days - reference.fill_days).abs() < 0.001);
     }
 }
 

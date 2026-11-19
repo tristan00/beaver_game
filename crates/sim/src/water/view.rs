@@ -3,7 +3,7 @@
 
 use super::{edge_bed, kernels, Pool, Water, WET_SEED};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct BandOut {
     pub hmax: u32,
     pub lake_change: f64,
@@ -266,11 +266,10 @@ impl View {
     }
 
     /// Mass for the cells of rows y0..y1, then the new y faces of the band become current.
-    pub unsafe fn continuity(&self, y0: usize, y1: usize, k: f32, dt: f32) -> BandOut {
+    pub unsafe fn continuity(&self, y0: usize, y1: usize, k: f32, dt: f32, out: &mut BandOut) {
         unsafe {
             let n = self.n;
             let w1 = n + 1;
-            let mut out = BandOut::default();
             for y in y0..y1 {
                 let r = y * n;
                 let mut row_new = 0u32;
@@ -350,7 +349,6 @@ impl View {
                     std::ptr::copy_nonoverlapping(self.qy_new.add(base + a as usize), self.qy.add(base + a as usize), (b - a) as usize);
                 }
             }
-            out
         }
     }
 

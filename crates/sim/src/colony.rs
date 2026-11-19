@@ -195,6 +195,7 @@ pub struct Beaver {
     pub id: BeaverId,
     pub name: String,
     pub age_days: f32,
+    age_remainder: f64,
     pub sex: Sex,
     pub family: FamilyId,
     pub mother: Option<BeaverId>,
@@ -242,6 +243,19 @@ impl Beaver {
     pub fn output_factor(&self, job: Job) -> f32 {
         let s = self.skill(job);
         (SKILL_BASE + s) * if s >= SPECIALIST_SKILL { SPECIALIST_BONUS } else { 1.0 }
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::*;
+
+    #[test]
+    fn minute_ticks_do_not_add_extra_weeks_to_beaver_age() {
+        let mut colony = Colony::new(7);
+        colony.spawn(Sex::Female, 1080.0, FamilyId(1), None, (0.0,0.0), None, None);
+        for _ in 0..720 * 1440 { colony.age_and_stage(1.0 / 1440.0); }
+        assert!((colony.beavers[0].age_days - 1800.0).abs() < 0.001);
     }
 }
 
@@ -993,7 +1007,9 @@ impl Colony {
     fn age_and_stage(&mut self, dt: f32) {
         let mut matured = Vec::new();
         for b in self.beavers.iter_mut() {
-            b.age_days += dt;
+            let exact = b.age_days as f64 + b.age_remainder + dt as f64;
+            b.age_days = exact as f32;
+            b.age_remainder = exact - b.age_days as f64;
             let s = Stage::of_age_days(b.age_days);
             if s != b.stage {
                 b.stage = s;
@@ -1279,6 +1295,7 @@ impl Colony {
             id,
             name,
             age_days,
+            age_remainder: 0.0,
             sex,
             family,
             mother,

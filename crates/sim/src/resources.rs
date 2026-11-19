@@ -96,6 +96,7 @@ impl Resource {
 pub struct ResourceWorld {
     pub items: Vec<Resource>,
     next_id: u64,
+    nav_revision: u64,
 }
 
 fn is_water(world: &World, (x, y): Cell) -> bool {
@@ -263,6 +264,7 @@ impl ResourceWorld {
         r.max_amount = logs;
         r.branches = branches;
         r.bark = bark;
+        self.nav_revision = self.nav_revision.wrapping_add(1);
         Ok(true)
     }
 
@@ -319,11 +321,14 @@ impl ResourceWorld {
 
     pub fn add(&mut self, kind: ResourceKind, cell: Cell, amount: f32) -> ResourceId {
         self.next_id += 1;
+        self.nav_revision = self.nav_revision.wrapping_add(1);
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
         self.items.push(Resource { id, kind, cell, amount, max_amount: amount, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0 });
         id
     }
+
+    pub(crate) fn nav_revision(&self) -> u64 { self.nav_revision }
 
     pub fn add_tree(&mut self, cell: Cell, age_days: f32) -> ResourceId {
         let id = self.add(ResourceKind::Tree, cell, FELL_WORK);

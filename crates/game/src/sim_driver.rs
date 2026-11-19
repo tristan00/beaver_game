@@ -29,13 +29,11 @@ pub struct SimClock {
     pub paused: bool,
     pub speed: Speed,
     acc_days: f64,
-    hydraulic_day_s: f64,
-    water_cost_per_second: Option<f64>,
 }
 
 impl Default for SimClock {
     fn default() -> Self {
-        SimClock { paused: false, speed: Speed::X1, acc_days: 0.0, hydraulic_day_s: sim::water::GAME_HYDRAULIC_DAY_S, water_cost_per_second: None }
+        SimClock { paused: false, speed: Speed::X1, acc_days: 0.0 }
     }
 }
 
@@ -62,18 +60,7 @@ impl SimClock {
         self.acc_days = (self.acc_days - step as f64).max(0.0);
     }
 
-    fn record_water_cost(&mut self, physics_s: f64, cpu_s: f64, real_dt: f64) {
-        if physics_s <= 0.0 || cpu_s <= 0.0 || !cpu_s.is_finite() { return; }
-        let sample = cpu_s / physics_s;
-        let cost = self.water_cost_per_second.map_or(sample, |old| 0.7 * old + 0.3 * sample);
-        self.water_cost_per_second = Some(cost);
-        // Leave time for rendering and event handling, including when the GPU
-        // renders fewer frames. Larger wet areas get fewer hydraulic seconds,
-        // never larger/unstable fluid steps or discarded calendar days.
-        let cpu_fraction = (FRAME_SIM_BUDGET_S as f64 / real_dt.max(1.0 / 240.0)).min(0.45) * 0.9;
-        let days_per_second = BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
-        self.hydraulic_day_s = (cpu_fraction / (days_per_second * cost)).clamp(60.0, sim::water::MAX_GAME_HYDRAULIC_DAY_S);
-    }
+
 }
 
 pub struct SimDriverPlugin;
@@ -113,10 +100,8 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
         SANDBOX_DT_DAYS * match clock.speed { Speed::X1 => 1.0, Speed::X2 => 2.0, Speed::X3 => 4.0 }
     } else { FIXED_DT_DAYS };
     let count = clock.queue(time.delta_secs_f64(), dt);
-    let physics0 = sim.0.water.physics_seconds;
-    let cpu0 = sim.0.step_timings.water_s;
     for _ in 0..count {
-        if let Err(e) = sim.0.step_game_at_hydraulic_rate(dt, clock.hydraulic_day_s) {
+        if let Err(e) = sim.0.step_game(dt) {
             error!("sim step failed: {e}");
             clock.paused = true;
             return;
@@ -126,7 +111,6 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
             break;
         }
     }
-    clock.record_water_cost(sim.0.water.physics_seconds - physics0, sim.0.step_timings.water_s - cpu0, time.delta_secs_f64());
 }
 
 #[cfg(test)]
@@ -166,18 +150,4 @@ mod tests {
         assert!(clock.acc_days > backlog);
     }
 
-    #[test]
-    fn hydraulic_work_adapts_without_changing_calendar_rate() {
-        let mut clock = SimClock { speed: Speed::X3, ..Default::default() };
-        clock.record_water_cost(10.0, 0.001, 1.0 / 60.0);
-        assert!(clock.hydraulic_day_s >= sim::water::GAME_HYDRAULIC_DAY_S);
-        for _ in 0..30 { clock.record_water_cost(10.0, 0.02, 1.0 / 60.0); }
-        assert!(clock.hydraulic_day_s < 300.0);
-        clock.queue(1.25, SANDBOX_DT_DAYS);
-        assert!((clock.acc_days - 1.0).abs() < 1e-6);
-        clock.speed = Speed::X1;
-        for _ in 0..30 { clock.record_water_cost(10.0, 0.001, 1.0 / 60.0); }
-        assert_eq!(clock.hydraulic_day_s, sim::water::MAX_GAME_HYDRAULIC_DAY_S);
-    }
 }
-

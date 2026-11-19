@@ -19,6 +19,36 @@ pub enum Surface {
     LodgeInside,
 }
 
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_flooding_and_drawdown_match_a_full_navigation_rebuild() {
+        let mut sim=crate::SimState::new(3);
+        let n=sim.world.size;
+        let cell=(3,3);let i=3*n+3;
+        sim.resources.items.retain(|r|r.cell!=cell);
+        sim.resources.add(crate::resources::ResourceKind::StoneOutcrop,cell,100.0);
+        sim.water.depth.as_mut_slice()[i]=0.0;
+        let mut nav=NavGrid::new(n,n);nav.refresh(&mut sim);
+        assert_eq!(nav.surface_at(cell),Some(Surface::Solid));
+        for depth in [0.2,0.0] {
+            sim.water.depth.as_mut_slice()[i]=depth;
+            sim.water.nav_revision+=1;sim.water.nav_cells.push(i);
+            nav.refresh(&mut sim);
+            let mut rebuilt=NavGrid::new(n,n);rebuilt.rebuild(&sim);
+            assert_eq!(nav.surface,rebuilt.surface);
+            assert_eq!(nav.region,rebuilt.region);
+            assert!(sim.water.nav_cells.is_empty());
+        }
+        sim.water.build_dam(&[cell],0.3).unwrap();nav.refresh(&mut sim);
+        assert_eq!(nav.surface_at(cell),Some(Surface::Dam));
+        sim.water.breach(cell.0,cell.1).unwrap();nav.refresh(&mut sim);
+        assert_eq!(nav.surface_at(cell),Some(Surface::Solid));
+    }
+}
+
 pub fn shared(s: Surface) -> bool {
     matches!(s, Surface::LodgeInside | Surface::LodgeEntrance)
 }
@@ -75,6 +105,9 @@ pub struct NavGrid {
     /// lodges): relabel only when it differs. Water coming and going does not change regions.
     labelled: Vec<u8>,
     labelled_lodge: Vec<u32>,
+    refresh_key: Option<(u64,u64,u64,u64,usize,u64)>,
+    dry_surface: Vec<Surface>,
+    wet_surface: Vec<Surface>,
 }
 
 #[derive(Default)]
@@ -140,6 +173,9 @@ impl NavGrid {
             regions_ok: false,
             labelled: Vec::new(),
             labelled_lodge: Vec::new(),
+            refresh_key: None,
+            dry_surface: vec![Surface::Land;width*height],
+            wet_surface: vec![Surface::Water;width*height],
         }
     }
 
@@ -231,47 +267,70 @@ impl NavGrid {
         self.may_reach(from, self.neighbours(target).into_iter().flatten())
     }
 
+    fn key(sim: &crate::SimState) -> (u64,u64,u64,u64,usize,u64) {
+        let mut buildings=0xcbf29ce484222325u64;
+        for b in &sim.buildings.buildings {
+            for value in [b.id.0,b.kind as u64,b.pos.0 as u64,b.pos.1 as u64,b.is_complete() as u64] {
+                buildings=(buildings^value).wrapping_mul(0x100000001b3);
+            }
+        }
+        (sim.water.nav_revision,sim.water.topology_revision,buildings,sim.resources.nav_revision(),sim.resources.items.len(),sim.time_days.floor() as u64)
+    }
+
+    /// Water-level changes only update affected cells. Buildings and vegetation
+    /// rebuild the cached dry/wet surfaces when their topology changes.
+    pub fn refresh(&mut self, sim: &mut crate::SimState) {
+        let key=Self::key(sim);
+        let static_key=|k:(u64,u64,u64,u64,usize,u64)|(k.1,k.2,k.3,k.4,k.5);
+        if self.refresh_key.is_some_and(|old|static_key(old)==static_key(key)) {
+            if self.refresh_key!=Some(key) {
+                let mut connectivity=false;
+                let blocked=|s:Surface|matches!(s,Surface::Solid|Surface::LodgeInside|Surface::LodgeEntrance);
+                for &i in &sim.water.nav_cells {
+                    let next=if sim.water.depth.as_slice()[i]>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};
+                    let old=self.surface.as_slice()[i];
+                    connectivity|=blocked(old)!=blocked(next);
+                    self.surface.as_mut_slice()[i]=next;
+                }
+                if connectivity {self.label_regions();}
+            }
+            self.refresh_key=Some(key);
+        } else {self.rebuild(sim);}
+        sim.water.clear_navigation_changes();
+    }
+
     pub fn rebuild(&mut self, sim: &crate::SimState) {
-        let w = self.surface.width();
+        let w=self.surface.width();
         self.lodge.as_mut_slice().fill(0);
-        let _ = w;
-        let (depth, dam, canal) = (sim.water.depth.as_slice(), sim.water.dam_height.as_slice(), sim.water.canal.as_slice());
-        for (((slot, &d), &dm), &cn) in self.surface.as_mut_slice().iter_mut().zip(depth).zip(dam).zip(canal) {
-            let wet = d > crate::buildings::WET_DEPTH;
-            *slot = if dm > 0.0 {
-                Surface::Dam
-            } else if wet && cn {
-                Surface::Canal
-            } else if wet {
-                Surface::Water
-            } else {
-                Surface::Land
-            };
+        let (depth,dam,canal)=(sim.water.depth.as_slice(),sim.water.dam_height.as_slice(),sim.water.canal.as_slice());
+        for i in 0..depth.len() {
+            self.dry_surface[i]=if dam[i]>0.0 {Surface::Dam} else {Surface::Land};
+            self.wet_surface[i]=if dam[i]>0.0 {Surface::Dam} else if canal[i] {Surface::Canal} else {Surface::Water};
+            self.surface.as_mut_slice()[i]=if depth[i]>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};
         }
         for b in &sim.buildings.buildings {
             match b.kind {
-                BuildingKind::Canal if b.is_complete() => {
-                    for c in b.cells() {
-                        if self.surface.get(c.0, c.1) == Some(&Surface::Water) {
-                            self.set(c, Surface::Canal);
-                        }
+                BuildingKind::Canal if b.is_complete()=>{
+                    for (x,y) in b.cells() {if self.wet_surface[y*w+x]==Surface::Water {self.wet_surface[y*w+x]=Surface::Canal;}}
+                }
+                BuildingKind::Dam|BuildingKind::Canal|BuildingKind::Lock|BuildingKind::Dock|BuildingKind::Barge=>{}
+                BuildingKind::Lodge if b.is_complete()=>{
+                    self.add_lodge(b.pos);
+                    for (x,y) in b.cells().chain(std::iter::once(lodge_entrance(b.pos))) {
+                        let i=y*w+x;
+                        self.dry_surface[i]=self.surface.as_slice()[i];self.wet_surface[i]=self.surface.as_slice()[i];
                     }
                 }
-                BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge => {}
-                BuildingKind::Lodge if b.is_complete() => {
-                    self.add_lodge(b.pos);
-                }
-                _ if !b.is_complete() => {}
-                _ => b.cells().for_each(|c| self.set(c, Surface::Solid)),
+                _ if !b.is_complete()=>{}
+                _=>for (x,y) in b.cells() {self.dry_surface[y*w+x]=Surface::Solid;self.wet_surface[y*w+x]=Surface::Solid;},
             }
         }
-        for r in sim.resources.items.iter().filter(|r| r.is_solid()) {
-            let s = if r.kind == crate::resources::ResourceKind::Tree { Surface::Thicket } else { Surface::Solid };
-            if self.surface.get(r.cell.0, r.cell.1) == Some(&Surface::Land) {
-                self.set(r.cell, s);
-            }
+        for r in sim.resources.items.iter().filter(|r|r.is_solid()) {
+            let i=r.cell.1*w+r.cell.0;
+            if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind==crate::resources::ResourceKind::Tree {Surface::Thicket} else {Surface::Solid};}
         }
-        self.label_regions();
+        for (i,&d) in depth.iter().enumerate() {self.surface.as_mut_slice()[i]=if d>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};}
+        self.label_regions();self.refresh_key=Some(Self::key(sim));
     }
 
     pub fn set(&mut self, cell: Cell, s: Surface) {

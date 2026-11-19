@@ -63,6 +63,8 @@ pub struct Agent {
     pub stuck_ticks: u32,
     pub speed: f32,
     pub trail: Vec<(Cell, Gait)>,
+    pub next_work_probe: f64,
+    pub next_home_probe: f64,
 }
 
 pub const STUCK_TICKS: u32 = 600;
@@ -95,12 +97,16 @@ impl Agents {
                 stuck_ticks: 0,
                 speed: 1.0,
                 trail: Vec::new(),
+                next_work_probe: 0.0,
+                next_home_probe: 0.0,
             },
         );
     }
     pub fn assign(&mut self, id: BeaverId, a: Option<Assignment>) -> bool {
         match self.by_id.get_mut(&id) {
             Some(ag) => {
+                ag.next_work_probe=0.0;
+                ag.next_home_probe=0.0;
                 ag.assignment = a;
                 true
             }
@@ -475,16 +481,23 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
             }
         }
         Task::Rest => {
-            if ag.load.is_some() || next_task(sim, &duty, ag).is_some() {
+            let work = if sim.time_days >= ag.next_work_probe {
+                ag.next_work_probe=sim.time_days+1.0/96.0;
+                next_task(sim, &duty, ag).is_some()
+            } else {false};
+            if ag.load.is_some() || work {
                 ag.task = Task::Idle;
                 return;
             }
-            if ag.inside {
+            if at_resting_place(ag, home_of(sim, ag.id)) {
                 ag.path = None;
+                note(ag,true);
                 return;
             }
             if ag.path.is_none() {
+                if sim.time_days < ag.next_home_probe { return; }
                 ag.path = route_home(sim, ag.id, ag.cell);
+                if ag.path.is_none() { ag.next_home_probe=sim.time_days+1.0/96.0; }
             }
             let moved = follow(&mut sim.nav, ag, dt);
             note(ag, moved);
@@ -1122,7 +1135,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         return;
     }
     let mut nav = std::mem::replace(&mut sim.nav, NavGrid::new(1, 1));
-    nav.rebuild(sim);
+    nav.refresh(sim);
     sim.nav = nav;
     sync_agents(sim);
     tidy(sim);
@@ -1136,5 +1149,24 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         sim.agents.by_id.insert(id, ag);
     }
     finish_sites(sim);
+}
+
+fn at_resting_place(ag: &Agent, home: Option<&Building>) -> bool {
+    ag.inside || home.is_some_and(|b| b.kind == BuildingKind::Burrow
+        && b.pos.0.abs_diff(ag.cell.0)+b.pos.1.abs_diff(ag.cell.1)<=1)
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+    #[test]
+    fn burrow_side_is_a_valid_rest_destination_without_an_inside_flag() {
+        let home=Building {id:BuildingId(1),kind:BuildingKind::Burrow,pos:(4,4),status:crate::buildings::Status::Complete,recipe:None,output:0.0};
+        let mut agents=Agents::default();agents.spawn(BeaverId(1),(4,3));
+        let a=agents.get(BeaverId(1)).unwrap();
+        assert!(!a.inside);assert!(at_resting_place(a,Some(&home)));
+        agents.by_id.get_mut(&BeaverId(1)).unwrap().cell=(4,2);
+        assert!(!at_resting_place(agents.get(BeaverId(1)).unwrap(),Some(&home)));
+    }
 }
 

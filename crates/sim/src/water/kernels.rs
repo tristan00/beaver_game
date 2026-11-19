@@ -78,6 +78,7 @@ fn faces_impl(out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za:
     for i in 0..m {
         out[i] = face(q[i], q_before[i], q_after[i], za[i], zb[i], ha[i], hb[i], fa[i], fb[i], mask[i] * act_a[i] * act_b[i], p);
     }
+
 }
 
 /// Outflow limiter: the share of a cell's outflow it can actually supply this step.
@@ -110,13 +111,12 @@ fn mass(old: f32, z: f32, src: f32, lake: f32, member: f32, qw: f32, qe: f32, qn
     let fe = qe * if qe > 0.0 { f_c } else { f_e };
     let fnn = qn * if qn > 0.0 { f_n } else { f_c };
     let fs = qs * if qs > 0.0 { f_c } else { f_s };
-    let flowed = (old + k * (fw - fe + fnn - fs)).max(0.0);
     let hh = (old + k * (fw - fe + fnn - fs) + src * dt).max(0.0);
     // Lake cells hold their level (NaN elsewhere, so the comparison fails off-lake).
     let is_lake = lake > -1.0e30;
     let want = (lake - z).max(0.0);
+    let booked = if is_lake { want - hh } else { 0.0 };
     let hh = if is_lake { want } else { hh };
-    let booked = if is_lake { want - flowed } else { 0.0 };
     let pool = member > 0.0;
     let hh = if pool { old } else { hh };
     let counted = if is_lake | pool { 0 } else { hh.to_bits() };

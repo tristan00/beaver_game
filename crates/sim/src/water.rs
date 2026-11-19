@@ -9,10 +9,8 @@ pub use crate::tuning::water::*;
 pub type Cell = (usize, usize);
 
 const DAY_S: f64 = 86_400.0;
-/// Conservative starting rate for gameplay's adaptive hydraulic clock. The live
-/// driver can recover the full reference rate when CPU capacity allows it.
-pub const GAME_HYDRAULIC_DAY_S: f64 = 3_600.0;
-pub const MAX_GAME_HYDRAULIC_DAY_S: f64 = DAY_S;
+/// A game day advances the same water and environmental day on every device.
+pub const GAME_HYDRAULIC_DAY_S: f64 = DAY_S;
 mod gang;
 mod kernels;
 mod view;
@@ -260,7 +258,12 @@ pub struct Water {
     pub lost_volume: f64,
     pub cell_m: f32,
     pub physics_seconds: f64,
-    hydraulic_day_s: f64,
+    /// Changes when published water or navigable waterworks change.
+    pub revision: u64,
+    pub(crate) nav_revision: u64,
+    pub(crate) topology_revision: u64,
+    pub(crate) nav_cells: Vec<usize>,
+    nav_marked: Vec<bool>,
     pub steps_taken: u64,
     pub timings: WaterTimings,
     pub pools_enabled: bool,
@@ -304,6 +307,10 @@ pub struct Water {
     since_shrink: u32,
     since_pools: f64,
     since_environment: f64,
+    work_dirty: bool,
+    work_cells: u64,
+    bands: Vec<usize>,
+    band_out: Vec<BandOut>,
 }
 
 /// Below this many active cells a substep runs on one thread (the fork-join costs more).
@@ -350,7 +357,11 @@ impl Water {
             lost_volume: 0.0,
             cell_m: 1.0,
             physics_seconds: 0.0,
-            hydraulic_day_s: DAY_S,
+            revision: 0,
+            nav_revision: 0,
+            topology_revision: 0,
+            nav_cells: Vec::new(),
+            nav_marked: vec![false;n*n],
             steps_taken: 0,
             timings: WaterTimings::default(),
             pools_enabled: std::env::var_os("WATER_NOPOOLS").is_none(),
@@ -391,6 +402,10 @@ impl Water {
             since_shrink: 0,
             since_pools: 0.0,
             since_environment: 0.0,
+            work_dirty: true,
+            work_cells: 0,
+            bands: Vec::new(),
+            band_out: Vec::new(),
         }
     }
 
@@ -574,6 +589,9 @@ impl Water {
         for &(_, h) in cells {
             Self::check_positive("dam height", h)?;
         }
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
         for (i, &(_, h)) in idx.into_iter().zip(cells) {
             let cur = &mut self.dam_height.as_mut_slice()[i];
             *cur = cur.max(h);
@@ -585,6 +603,9 @@ impl Water {
     pub fn build_dam(&mut self, cells: &[Cell], height: f32) -> Result<(), WaterError> {
         let idx = self.check_cells(cells)?;
         Self::check_positive("dam height", height)?;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
         for i in idx {
             self.dam_height.as_mut_slice()[i] = height;
             self.dam_integrity.as_mut_slice()[i] = 1.0;
@@ -599,6 +620,9 @@ impl Water {
         }
         self.dam_height.as_mut_slice()[i] = 0.0;
         self.dam_integrity.as_mut_slice()[i] = 0.0;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
         Ok(())
     }
 
@@ -606,12 +630,20 @@ impl Water {
         assert_eq!(height.width(), self.depth.width(), "terrain size must match water size");
         let idx = self.check_cells(cells)?;
         Self::check_positive("canal depth", depth)?;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
         for i in idx {
             height.as_mut_slice()[i] -= depth;
             self.canal.as_mut_slice()[i] = true;
             self.riverbed.as_mut_slice()[i] = 1.0;
         }
         Ok(())
+    }
+
+    pub(crate) fn clear_navigation_changes(&mut self) {
+        for &i in &self.nav_cells {self.nav_marked[i]=false;}
+        self.nav_cells.clear();
     }
 
     pub fn refresh(&mut self, height: &HeightGrid) {
@@ -746,6 +778,7 @@ impl Water {
 
     /// Recompute active rows y0..y1 (and the face rows around them) from the wet runs.
     fn rebuild_rows(&mut self, y0: usize, y1: usize) {
+        self.work_dirty = true;
         let n = self.n as u32;
         for y in y0..y1 {
             let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -778,16 +811,16 @@ impl Water {
     }
 
     pub fn step(&mut self, height: &HeightGrid, dt_days: f32) {
-        self.step_with_clock(height, dt_days, DAY_S);
+        self.step_physics(height, dt_days);
     }
 
     pub fn step_game(&mut self, height: &HeightGrid, dt_days: f32) {
-        self.step_with_clock(height, dt_days, GAME_HYDRAULIC_DAY_S);
+        self.step(height, dt_days);
     }
 
-    pub fn hydraulic_seconds_per_day(&self) -> f64 { self.hydraulic_day_s }
+    pub fn hydraulic_seconds_per_day(&self) -> f64 { DAY_S }
 
-    pub(crate) fn step_with_clock(&mut self, height: &HeightGrid, dt_days: f32, hydraulic_day_s: f64) {
+    fn step_physics(&mut self, height: &HeightGrid, dt_days: f32) {
         let t0 = std::time::Instant::now();
         self.load_bed(height);
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
@@ -795,8 +828,7 @@ impl Water {
             self.publish();
             return;
         }
-        self.hydraulic_day_s = hydraulic_day_s;
-        self.run_for_with_clock(dt_days as f64 * hydraulic_day_s, true, DAY_S / hydraulic_day_s);
+        self.run_for(dt_days as f64 * DAY_S, true);
         let t0 = std::time::Instant::now();
         self.update_dams(height, dt_days);
         self.update_ice(dt_days);
@@ -807,13 +839,10 @@ impl Water {
     /// Runs the physics for `seconds`, finding pools again (and applying rain and losses) every
     /// `POOL_EVERY_S`.
     fn run_for(&mut self, seconds: f64, losses: bool) {
-        self.run_for_with_clock(seconds, losses, 1.0);
-    }
 
-    fn run_for_with_clock(&mut self, seconds: f64, losses: bool, calendar_scale: f64) {
         let mut t = 0.0;
         while t < seconds - 1e-9 {
-            let environment_limit = if losses { (POOL_EVERY_S - self.since_environment) / calendar_scale } else { f64::INFINITY };
+            let environment_limit = if losses { POOL_EVERY_S - self.since_environment } else { f64::INFINITY };
             let chunk = (POOL_EVERY_S - self.since_pools).min(environment_limit).min(seconds - t).max(1e-9);
             let upkeep = std::time::Instant::now();
             self.refresh_sources();
@@ -828,8 +857,8 @@ impl Water {
             t += chunk;
             self.since_pools += chunk;
             if losses {
-                self.since_environment += chunk * calendar_scale;
-                self.time_days += chunk * calendar_scale / DAY_S;
+                self.since_environment += chunk;
+                self.time_days += chunk / DAY_S;
             }
             if losses && self.since_environment >= POOL_EVERY_S - 1e-3 {
                 let t0 = std::time::Instant::now();
@@ -1090,30 +1119,30 @@ impl Water {
         let p = kernels::Params { gdt: G * dt, fric: G * dt * self.config.manning * self.config.manning, inv_dx: 1.0 / dx };
         let k = dt / dx;
 
-        // Split the rows into bands of about equal work, one per task.
-        let cells: u64 = self.rows.iter().flatten().map(|&(a, b)| (b - a) as u64).sum();
+        // The active footprint changes far less often than the CFL substep.
+        // Reuse the partition and each worker's output allocation until it does.
         let gang = gang::gang();
-        let tasks = if cells >= PARALLEL_CELLS { gang.width().min(n) } else { 1 };
-        let mut bounds = Vec::with_capacity(tasks + 1);
-        bounds.push(0usize);
-        let mut acc = 0u64;
-        for y in 0..n {
-            acc += self.rows[y].iter().map(|&(a, b)| (b - a) as u64).sum::<u64>() + 1;
-            let t = bounds.len();
-            if t < tasks && acc * tasks as u64 >= (cells + n as u64) * t as u64 {
-                bounds.push(y + 1);
+        if self.work_dirty {
+            self.work_cells = self.rows.iter().flatten().map(|&(a,b)|(b-a) as u64).sum();
+            let tasks = if self.work_cells >= PARALLEL_CELLS {gang.width().min(n)} else {1};
+            self.bands.clear();self.bands.push(0);
+            let mut acc=0u64;
+            for y in 0..n {
+                acc+=self.rows[y].iter().map(|&(a,b)|(b-a) as u64).sum::<u64>()+1;
+                let t=self.bands.len();
+                if t<tasks && acc*tasks as u64 >= (self.work_cells+n as u64)*t as u64 {self.bands.push(y+1);}
             }
+            while self.bands.len()<=tasks {self.bands.push(n);}
+            *self.bands.last_mut().unwrap()=n;
+            for t in 1..tasks {self.bands[t]=self.bands[t].max(self.bands[t-1]+1).min(n-(tasks-t));}
+            self.band_out.resize_with(tasks,BandOut::default);
+            self.work_dirty=false;
         }
-        while bounds.len() <= tasks {
-            bounds.push(n);
-        }
-        *bounds.last_mut().unwrap() = n;
-        // Every band gets at least one row (pools are shared out by task).
-        for t in 1..tasks {
-            bounds[t] = bounds[t].max(bounds[t - 1] + 1).min(n - (tasks - t));
-        }
-        let mut outs = vec![BandOut::default(); tasks];
+        for out in &mut self.band_out {out.hmax=0;out.lake_change=0.;out.edge=0.;out.grew.clear();}
+        let cells=self.work_cells;
+        let tasks=self.band_out.len();
         let view = View::of(self);
+        let bounds = &self.bands;
         let run = |phase: &(dyn Fn(usize, usize, usize, &View) + Sync)| {
             if tasks == 1 {
                 phase(0, 0, n, &view);
@@ -1134,9 +1163,9 @@ impl Water {
         run(&|_, y0, y1, v| unsafe { v.limiter(y0, y1, k, dt) });
         let t2 = std::time::Instant::now();
         self.timings.limiter_s += (t2 - t1).as_secs_f64();
-        let outs_ptr = SendPtr(outs.as_mut_ptr());
+        let outs_ptr = SendPtr(self.band_out.as_mut_ptr());
         let cont = |t: usize, y0: usize, y1: usize, v: &View| unsafe {
-            *outs_ptr.get().add(t) = v.continuity(y0, y1, k, dt);
+            v.continuity(y0, y1, k, dt, &mut *outs_ptr.get().add(t));
             v.step_pools(t, tasks, k, dt);
         };
         run(&cont);
@@ -1144,7 +1173,7 @@ impl Water {
         self.timings.continuity_s += (t3 - t2).as_secs_f64();
         let (mut hmax, mut lake_change, mut edge) = (0u32, 0.0f64, 0.0f64);
         let mut grew: Vec<usize> = Vec::new();
-        for o in &outs {
+        for o in &self.band_out {
             hmax = hmax.max(o.hmax);
             lake_change += o.lake_change;
             edge += o.edge;
@@ -1192,6 +1221,7 @@ impl Water {
     }
 
     fn publish(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         let t0 = std::time::Instant::now();
         let n = self.n;
         for p in &self.pools {
@@ -1230,6 +1260,10 @@ impl Water {
         for x in a..b {
             let i = y * n + x;
             let h = self.h[i];
+            if (self.depth.as_slice()[i] > crate::buildings::WET_DEPTH) != (h > crate::buildings::WET_DEPTH) {
+                self.nav_revision = self.nav_revision.wrapping_add(1);
+                if !self.nav_marked[i] {self.nav_marked[i]=true;self.nav_cells.push(i);}
+            }
             let qxc = 0.5 * (self.qx[y * w1 + x] + self.qx[y * w1 + x + 1]);
             let qyc = 0.5 * (self.qy[y * n + x] + self.qy[(y + 1) * n + x]);
             let q = (qxc * qxc + qyc * qyc).sqrt();
@@ -1283,6 +1317,8 @@ impl Water {
             }
         }
         if !broken.is_empty() {
+            self.nav_revision = self.nav_revision.wrapping_add(1);
+            self.topology_revision = self.topology_revision.wrapping_add(1);
             self.dissolve_pools();
             self.masks_dirty = true;
             self.full_publish = true;
@@ -1706,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn gameplay_clock_keeps_calendar_weather_and_hydraulic_mass_separate() {
+    fn gameplay_uses_a_complete_day_for_both_inflow_and_weather() {
         let (mut w, ground) = tank(8, |_, _| 0.0, 0.04, false);
         w.weather = Weather::Storm;
         w.sources.push(Source { x: 4, y: 4, rate: 24.0, seasonality: 0.0 });
@@ -1714,7 +1750,7 @@ mod tests {
         w.step_game(&ground, 1.0);
         assert!((w.time_days - 1.0).abs() < 1e-6);
         assert!((w.physics_seconds - GAME_HYDRAULIC_DAY_S).abs() < 0.001);
-        assert!((w.budget().sources - 1.0).abs() < 1e-5);
+        assert!((w.budget().sources - 24.0).abs() < 1e-4);
         assert!(w.budget().rain > 1.0, "a full calendar day of rain must be integrated");
         let expected = before + (w.budget().added() - w.budget().lost()) * w.area();
         assert!((w.total_volume() - expected).abs() < 0.001);
@@ -1735,19 +1771,83 @@ mod tests {
     }
 
     #[test]
-    fn changing_hydraulic_budget_preserves_weather_time_and_water() {
+    fn gameplay_and_reference_use_identical_water_time() {
+        let (mut reference, ground) = tank(8, |_, _| 0.0, 0.04, false);
+        reference.weather = Weather::Storm;
+        reference.sources.push(Source { x: 4, y: 4, rate: 24.0, seasonality: 0.0 });
+        let mut gameplay=reference.clone();
+        reference.step(&ground, 600.0 / DAY_S as f32);
+        gameplay.step_game(&ground, 600.0 / DAY_S as f32);
+        assert_eq!(reference.depth, gameplay.depth);
+        assert_eq!(reference.budget(), gameplay.budget());
+        assert_eq!(reference.physics_seconds, gameplay.physics_seconds);
+        assert_eq!(reference.time_days, gameplay.time_days);
+    }
+
+    #[test]
+    fn fixed_lake_source_is_booked_once() {
         let (mut w, ground) = tank(8, |_, _| 0.0, 0.04, false);
-        w.weather = Weather::Storm;
-        w.sources.push(Source { x: 4, y: 4, rate: 24.0, seasonality: 0.0 });
-        let rates = [3600.0, 60.0, 1200.0, 3600.0];
-        for rate in rates {
-            for _ in 0..36 { w.step_with_clock(&ground, 1.0 / 144.0, rate); }
-        }
-        let physics = rates.iter().sum::<f64>() * 0.25;
-        assert!((w.time_days - 1.0).abs() < 1e-6, "calendar {} physics {}", w.time_days, w.physics_seconds);
-        assert!((w.physics_seconds - physics).abs() < 0.001);
-        assert!((w.budget().sources - physics * 24.0 / DAY_S).abs() < 1e-5);
-        assert!(w.budget().rain > 1.0);
-        assert!((w.total_volume() - (w.budget().added() - w.budget().lost()) * w.area()).abs() < 0.001);
+        fill_to(&mut w, 0.1);
+        w.lake_level.as_mut_slice()[4 * 8 + 4] = 0.1;
+        w.sources.push(Source { x: 4, y: 4, rate: 864.0, seasonality: 0.0 });
+        let before = w.total_volume();
+        w.step_game(&ground, 60.0 / DAY_S as f32);
+        let expected = before + w.budget().added() - w.budget().lost();
+        assert!((w.total_volume() - expected).abs() < 1e-5, "volume {} expected {expected}", w.total_volume());
+    }
+
+    #[test]
+    fn navigation_revision_tracks_water_access_and_waterworks() {
+        let (mut w, mut ground) = tank(8, |_, _| 0.0, 0.04, false);
+        w.publish();
+        let initial = w.nav_revision;
+        w.h[9] = crate::buildings::WET_DEPTH * 0.5;
+        w.full_publish = true; w.publish();
+        assert_eq!(w.nav_revision, initial, "subthreshold depth changes do not alter walking");
+        w.h[9] = crate::buildings::WET_DEPTH * 2.0;
+        w.full_publish = true; w.publish();
+        assert_ne!(w.nav_revision, initial);
+        let wet = w.nav_revision;
+        w.build_dam(&[(1,1)], 0.3).unwrap();
+        assert_ne!(w.nav_revision, wet);
+        let dam = w.nav_revision;
+        w.breach(1,1).unwrap();
+        assert_ne!(w.nav_revision, dam);
+        let breached = w.nav_revision;
+        w.dig_canal(&mut ground, &[(1,1)], 0.3).unwrap();
+        assert_ne!(w.nav_revision, breached);
+    }
+
+    #[test]
+    fn serial_dams_and_a_bypass_share_flow_and_preserve_storage() {
+        let (mut w, mut ground) = tank(32, |x,y| if x==6 {0.5-0.012*y as f32} else {4.0}, 0.03, true);
+        w.sources.push(Source{x:6,y:2,rate:2592.0,seasonality:0.0});
+        w.build_dam(&[(6,12)],0.24).unwrap();
+        w.build_dam(&[(6,20)],0.30).unwrap();
+        w.load_bed(&ground);
+        run(&mut w,1200.0);
+        assert!(w.h[10*32+6]>0.15, "first reservoir did not fill");
+        assert!(w.h[18*32+6]>0.15, "second reservoir did not fill");
+        assert!(w.h[28*32+6]>0.005, "serial dams blocked all downstream delivery");
+        let mut control=w.clone();
+        let bypass:Vec<_>=(7..=23).map(|x|(x,8))
+            .chain((9..=24).map(|y|(23,y)))
+            .chain((7..23).map(|x|(x,24))).collect();
+        // Excavation is represented by its actual new bed, never a teleport link.
+        w.dig_canal(&mut ground,&bypass,3.9).unwrap();
+        w.load_bed(&ground);
+        run(&mut w,1800.0);
+        run(&mut control,1800.0);
+        assert!(w.h[16*32+23]>0.005, "bypass remained dry");
+        assert!(w.h[28*32+6]>0.005, "bypass lost its outlet connection");
+        assert!(w.h[10*32+6]<control.h[10*32+6]-0.02, "bypass did not draw down the upper reservoir");
+        let open_branch=w.h[10*32+6];
+        w.build_dam(&[(23,16)],1.0).unwrap();
+        w.load_bed(&ground);
+        run(&mut w,1800.0);
+        assert!(w.h[10*32+6]>open_branch+0.02, "closing the bypass did not restore upstream storage");
+        assert!(w.h.iter().all(|h|h.is_finite() && *h>=0.0));
+        let expected=w.budget().added()-w.budget().lost();
+        assert!((w.total_volume()-expected).abs()<0.003, "stored {} expected {expected}",w.total_volume());
     }
 }

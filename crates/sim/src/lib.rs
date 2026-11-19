@@ -241,26 +241,12 @@ impl SimState {
         }
     }
 
-    pub fn step(&mut self, dt_days: f32) -> Result<(), SimError> {
-        self.step_with_clock(dt_days, 86_400.0)
-    }
-
-    /// Live gameplay uses a calendar distinct from hydraulic seconds. Headless
-    /// physical-model checks retain `step`, where a day is 86,400 fluid seconds.
+    /// Gameplay, sandbox and scripted playtests share the same physical clock.
     pub fn step_game(&mut self, dt_days: f32) -> Result<(), SimError> {
-        self.step_game_at_hydraulic_rate(dt_days, water::GAME_HYDRAULIC_DAY_S)
+        self.step(dt_days)
     }
 
-    /// The live driver may reduce hydraulic time under load; calendar effects
-    /// still consume the complete `dt_days`, and water only books actual fluxes.
-    pub fn step_game_at_hydraulic_rate(&mut self, dt_days: f32, hydraulic_day_s: f64) -> Result<(), SimError> {
-        if !hydraulic_day_s.is_finite() || hydraulic_day_s <= 0.0 {
-            return Err(SimError::InvalidDt(hydraulic_day_s as f32));
-        }
-        self.step_with_clock(dt_days, hydraulic_day_s)
-    }
-
-    fn step_with_clock(&mut self, dt_days: f32, hydraulic_day_s: f64) -> Result<(), SimError> {
+    pub fn step(&mut self, dt_days: f32) -> Result<(), SimError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
         }
@@ -268,7 +254,7 @@ impl SimState {
             let clock = std::time::Instant::now();
             self.time_days += dt_days as f64;
             self.steps += 1;
-            self.water.step_with_clock(&self.height, dt_days, hydraulic_day_s);
+            self.water.step(&self.height, dt_days);
             self.step_timings.water_s += clock.elapsed().as_secs_f64();
             self.step_timings.steps += 1;
             return Ok(());
@@ -284,7 +270,7 @@ impl SimState {
         self.time_days += dt_days as f64;
         self.steps += 1;
         lap(&mut t.other_s);
-        self.water.step_with_clock(&self.height, dt_days, hydraulic_day_s);
+        self.water.step(&self.height, dt_days);
         lap(&mut t.water_s);
         self.ecology.step(dt_days, &self.water.depth)?;
         lap(&mut t.ecology_s);
