@@ -1,4 +1,4 @@
-﻿use crate::SimState;
+use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
 use crate::worldgen::World;
 use std::cmp::Reverse;
@@ -9,58 +9,15 @@ pub use crate::tuning::water::*;
 pub type Cell = (usize, usize);
 
 const DAY_S: f64 = 86_400.0;
-const G: f32 = 9.81;
-const CFL: f32 = 0.45;
-const DT_MAX_S: f32 = 2.0;
-const FACE_DRY: f32 = 1.0e-4;
+mod gang;
+mod kernels;
+mod view;
+use kernels::{FACE_DRY, G};
+use view::{BandOut, SendPtr, View};
+const CFL: f32 = 0.7;
+const DT_MAX_S: f32 = 10.0;
 const EDGE_SLOPE_MIN: f32 = 1.0e-3;
-const TILE: usize = 16;
-const STEP_SPEED_LIMIT: f32 = 1.0;
 const MOVING: f32 = 0.02;
-const SETTLE_S: f32 = 30.0;
-const CALM_H: f32 = 1.0e-7;
-const CALM_Q: f32 = 1.0e-6;
-const DRIFT_M: f64 = 1.0e-4;
-const WAKE_H: f32 = 2.0e-3;
-const WAKE_Q: f32 = 2.0e-3;
-
-#[derive(Clone, Debug)]
-struct Frozen {
-    since: f64,
-    applied: f64,
-    rmax: f32,
-    edge: f64,
-    rain: f64,
-    evap: f64,
-    seep: f64,
-    lake: f64,
-    ring: Vec<(u32, f32, f32, f32)>,
-    border: Vec<Border>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Border {
-    face: u32,
-    horiz: bool,
-    cell: u32,
-    other: u32,
-    sign: f32,
-    f0: f32,
-    acc: f32,
-}
-
-#[derive(Clone, Copy, Default)]
-struct TileStats {
-    rain: f64,
-    evap: f64,
-    seep: f64,
-    lake: f64,
-    wave: f32,
-    edge: f64,
-    rh: f32,
-    rq: f32,
-    wet: bool,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Season { Spring, Summer, Autumn, Winter }
@@ -178,6 +135,100 @@ pub struct DamPreview {
     pub spill_at: Option<Cell>,
 }
 
+/// Where the water engine spends its time, accumulated since the last `reset_timings`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WaterTimings {
+    pub faces_s: f64,
+    pub faces_x_s: f64,
+    pub limiter_s: f64,
+    pub continuity_s: f64,
+    pub pools_s: f64,
+    pub activity_s: f64,
+    pub publish_s: f64,
+    pub upkeep_s: f64,
+    pub substeps: u64,
+    pub cell_updates: u64,
+    pub physics_s: f64,
+    pub pool_cells: u64,
+    pub pool_samples: u64,
+}
+
+impl WaterTimings {
+    pub fn total_s(&self) -> f64 {
+        self.faces_s + self.limiter_s + self.continuity_s + self.pools_s + self.activity_s + self.publish_s + self.upkeep_s
+    }
+    pub fn report(&self, wall_s: f64) -> String {
+        let t = self.total_s().max(1e-12);
+        let pct = |v: f64| 100.0 * v / t;
+        format!(
+            "water {:.1} ms ({:.0}% of wall): faces {:.0}% (x {:.0}%) limiter {:.0}% continuity {:.0}% pools {:.0}% activity {:.0}% publish {:.0}% upkeep {:.0}% | {} substeps, mean dt {:.3} s, {:.0} cells/substep, {:.0} cells in pools, {:.2} ns/cell-update, physics x{:.0} real time",
+            t * 1e3,
+            100.0 * t / wall_s.max(1e-12),
+            pct(self.faces_s),
+            pct(self.faces_x_s),
+            pct(self.limiter_s),
+            pct(self.continuity_s),
+            pct(self.pools_s),
+            pct(self.activity_s),
+            pct(self.publish_s),
+            pct(self.upkeep_s),
+            self.substeps,
+            self.physics_s / self.substeps.max(1) as f64,
+            self.cell_updates as f64 / self.substeps.max(1) as f64,
+            self.pool_cells as f64 / self.pool_samples.max(1) as f64,
+            1e9 * (self.faces_s + self.limiter_s + self.continuity_s) / self.cell_updates.max(1) as f64,
+            self.physics_s / t,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RimFace {
+    face: u32,
+    is_x: bool,
+    /// +1 when the member sits on the +x/+y side (positive discharge flows into it), else -1.
+    sign: f32,
+    a: u32,
+    b: u32,
+}
+
+/// Still, flat water (a pond, a wetland, a lake behind a dam) held as one level instead of being
+/// stepped cell by cell: only the faces on its rim are computed, and it never limits the step.
+#[derive(Clone, Debug)]
+struct Pool {
+    level: f32,
+    /// Stored water, in metres of depth summed over cells (like `total_volume`).
+    volume: f64,
+    /// Member beds, ascending, and their running sums, for level from volume.
+    beds: Vec<f32>,
+    prefix: Vec<f64>,
+    wet: usize,
+    members: Vec<u32>,
+    rim: Vec<u32>,
+    /// Faces on the rim, with the cells on either side (u32::MAX off the map).
+    faces: Vec<RimFace>,
+    source: f32,
+}
+
+impl Pool {
+    fn level_for(&mut self, volume: f64) -> f32 {
+        let m = self.beds.len();
+        let mut k = self.wet.clamp(1, m);
+        let lvl = |k: usize| ((volume + self.prefix[k]) / k as f64) as f32;
+        let mut l = lvl(k);
+        while k < m && l > self.beds[k] {
+            k += 1;
+            l = lvl(k);
+        }
+        while k > 1 && l < self.beds[k - 1] {
+            k -= 1;
+            l = lvl(k);
+        }
+        self.wet = k;
+        if volume <= 0.0 { self.beds[0] } else { l }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Water {
     pub depth: WaterGrid,
@@ -201,28 +252,57 @@ pub struct Water {
     pub cell_m: f32,
     pub physics_seconds: f64,
     pub steps_taken: u64,
+    pub timings: WaterTimings,
+    pub pools_enabled: bool,
     books: Budget,
+    n: usize,
     h: Vec<f32>,
     z: Vec<f32>,
-    hu: Vec<f32>,
-    hv: Vec<f32>,
-    fx: Vec<f32>,
-    fy: Vec<f32>,
-    active: Vec<usize>,
-    wave_max: f32,
-    pending: f64,
-    frozen: Vec<Option<Frozen>>,
-    frozen_mask: Vec<bool>,
-    calm: Vec<f32>,
-    rate: Vec<f32>,
-    src_buf: Vec<f32>,
-    frozen_season: Option<Season>,
-    pub freeze_enabled: bool,
+    qx: Vec<f32>,
+    qy: Vec<f32>,
+    qx_new: Vec<f32>,
+    qy_new: Vec<f32>,
+    ox_base: Vec<f32>,
+    oy_base: Vec<f32>,
+    ox: Vec<f32>,
+    oy: Vec<f32>,
+    fac: Vec<f32>,
+    src: Vec<f32>,
+    lake_delta: Vec<f32>,
+    member: Vec<f32>,
+    rim_mask: Vec<bool>,
+    pools: Vec<Pool>,
+    src_season: Option<Season>,
+    src_count: usize,
+    rows: Vec<Vec<(u32, u32)>>,
+    yrows: Vec<Vec<(u32, u32)>>,
+    wet_rows: Vec<Vec<(u32, u32)>>,
+    lake_rows: Vec<bool>,
+    lake_inner: Vec<bool>,
+    h_max: f32,
+    masks_dirty: bool,
+    since_shrink: u32,
+    since_pools: f64,
 }
+
+/// Below this many active cells a substep runs on one thread (the fork-join costs more).
+const PARALLEL_CELLS: u64 = 3000;
+const ACTIVE_GAP: u32 = 8;
+/// Depth below which a cell does not keep the cells around it computed (a damp film).
+const WET_SEED: f32 = 1.0e-3;
+/// Recompute the active area from scratch (letting it shrink) this often.
+const SHRINK_EVERY: u32 = 256;
+/// Pools are found again this often (seconds of physics).
+const POOL_EVERY_S: f64 = 300.0;
+const POOL_MIN_DEPTH: f32 = 0.03;
+const POOL_MAX_SPEED: f32 = 0.08;
+const POOL_FLAT_FACE: f32 = 1.5e-3;
+const POOL_FLAT_RANGE: f32 = 1.5e-2;
+const POOL_MIN_CELLS: usize = 32;
 
 impl Water {
     pub fn new(size: usize) -> Self {
-        let n = size * size;
+        let n = size;
         Self {
             depth: Grid::new(size, size, 0.0),
             ice: Grid::new(size, size, 0.0),
@@ -245,202 +325,38 @@ impl Water {
             cell_m: 1.0,
             physics_seconds: 0.0,
             steps_taken: 0,
+            timings: WaterTimings::default(),
+            pools_enabled: std::env::var_os("WATER_NOPOOLS").is_none(),
             books: Budget::default(),
-            h: vec![0.0; n],
-            z: vec![0.0; n],
-            hu: vec![0.0; n],
-            hv: vec![0.0; n],
-            fx: vec![0.0; 4 * (size + 1) * size],
-            fy: vec![0.0; 4 * size * (size + 1)],
-            active: (0..size.div_ceil(TILE) * size.div_ceil(TILE)).collect(),
-            wave_max: 0.0,
-            pending: 0.0,
-            frozen: vec![None; size.div_ceil(TILE) * size.div_ceil(TILE)],
-            frozen_mask: vec![false; size.div_ceil(TILE) * size.div_ceil(TILE)],
-            calm: vec![0.0; size.div_ceil(TILE) * size.div_ceil(TILE)],
-            rate: vec![0.0; n],
-            src_buf: vec![0.0; n],
-            frozen_season: None,
-            freeze_enabled: std::env::var_os("WATER_NOFREEZE").is_none(),
+            n,
+            h: vec![0.0; n * n],
+            z: vec![0.0; n * n],
+            qx: vec![0.0; n * (n + 1)],
+            qy: vec![0.0; (n + 1) * n],
+            qx_new: vec![0.0; n * (n + 1)],
+            qy_new: vec![0.0; (n + 1) * n],
+            ox_base: vec![0.0; n * (n + 1)],
+            oy_base: vec![0.0; (n + 1) * n],
+            ox: vec![0.0; n * (n + 1)],
+            oy: vec![0.0; (n + 1) * n],
+            fac: vec![1.0; n * n],
+            src: vec![0.0; n * n],
+            lake_delta: vec![0.0; n * n],
+            member: vec![0.0; n * n],
+            rim_mask: vec![false; n * n],
+            pools: Vec::new(),
+            src_season: None,
+            src_count: usize::MAX,
+            rows: vec![Vec::new(); n],
+            yrows: vec![Vec::new(); n + 1],
+            wet_rows: vec![Vec::new(); n],
+            lake_rows: vec![false; n],
+            lake_inner: vec![false; n * n],
+            h_max: 0.0,
+            masks_dirty: true,
+            since_shrink: 0,
+            since_pools: 0.0,
         }
-    }
-
-    pub fn frozen_tiles(&self) -> (usize, usize) {
-        (self.frozen.iter().filter(|f| f.is_some()).count(), self.active.len())
-    }
-
-    fn tile_of(&self, i: usize) -> usize {
-        let n = self.depth.width();
-        (i / n / TILE) * self.tiles() + (i % n) / TILE
-    }
-
-    fn sync_tile(&mut self, t: usize) {
-        let now = self.physics_seconds;
-        let (x0, x1, y0, y1) = self.tile_cells(t);
-        let n = self.depth.width();
-        let Some(f) = self.frozen[t].as_mut() else { return };
-        let span = (now - f.applied) as f32;
-        f.applied = now;
-        if span <= 0.0 {
-            return;
-        }
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let i = y * n + x;
-                self.h[i] = (self.h[i] + self.rate[i] * span).max(0.0);
-            }
-        }
-    }
-
-    fn sync_frozen(&mut self) {
-        for t in 0..self.frozen.len() {
-            self.sync_tile(t);
-        }
-    }
-
-    fn wake(&mut self, t: usize) {
-        if self.frozen[t].is_some() {
-            self.sync_tile(t);
-            self.frozen[t] = None;
-            self.frozen_mask[t] = false;
-        }
-        self.calm[t] = 0.0;
-    }
-
-    fn wake_around(&mut self, i: usize) {
-        let tn = self.tiles();
-        let t = self.tile_of(i);
-        let (tx, ty) = (t % tn, t / tn);
-        for ay in ty.saturating_sub(1)..(ty + 2).min(tn) {
-            for ax in tx.saturating_sub(1)..(tx + 2).min(tn) {
-                self.wake(ay * tn + ax);
-            }
-        }
-    }
-
-    fn freeze(&mut self, t: usize, s: &TileStats, dt: f32) {
-        let n = self.depth.width();
-        let (x0, x1, y0, y1) = self.tile_cells(t);
-        let mut ring = Vec::new();
-        let mut push = |x: usize, y: usize, ring: &mut Vec<(u32, f32, f32, f32)>| {
-            let i = y * n + x;
-            ring.push((i as u32, self.h[i], self.hu[i], self.hv[i]));
-        };
-        for x in x0..x1 {
-            if y0 > 0 {
-                push(x, y0 - 1, &mut ring);
-            }
-            if y1 < n {
-                push(x, y1, &mut ring);
-            }
-        }
-        for y in y0..y1 {
-            if x0 > 0 {
-                push(x0 - 1, y, &mut ring);
-            }
-            if x1 < n {
-                push(x1, y, &mut ring);
-            }
-        }
-        let w1 = n + 1;
-        let mut border = Vec::new();
-        for y in y0..y1 {
-            if x0 > 0 {
-                let f = y * w1 + x0;
-                border.push(Border { face: f as u32, horiz: true, cell: (y * n + x0) as u32, other: (y * n + x0 - 1) as u32, sign: 1.0, f0: self.fx[4 * f], acc: 0.0 });
-            }
-            if x1 < n {
-                let f = y * w1 + x1;
-                border.push(Border { face: f as u32, horiz: true, cell: (y * n + x1 - 1) as u32, other: (y * n + x1) as u32, sign: -1.0, f0: self.fx[4 * f], acc: 0.0 });
-            }
-        }
-        for x in x0..x1 {
-            if y0 > 0 {
-                let f = y0 * n + x;
-                border.push(Border { face: f as u32, horiz: false, cell: f as u32, other: ((y0 - 1) * n + x) as u32, sign: 1.0, f0: self.fy[4 * f], acc: 0.0 });
-            }
-            if y1 < n {
-                let f = y1 * n + x;
-                border.push(Border { face: f as u32, horiz: false, cell: ((y1 - 1) * n + x) as u32, other: f as u32, sign: -1.0, f0: self.fy[4 * f], acc: 0.0 });
-            }
-        }
-        let d = dt as f64;
-        let now = self.physics_seconds;
-        self.frozen[t] = Some(Frozen { since: now, applied: now, rmax: s.rh, edge: s.edge, rain: s.rain / d, evap: s.evap / d, seep: s.seep / d, lake: s.lake / d, ring, border });
-        self.frozen_mask[t] = true;
-        self.fold_borders(t);
-    }
-
-    fn fold_borders(&mut self, t: usize) {
-        let tn = self.tiles();
-        let n = self.depth.width();
-        let dx = self.cell_m;
-        let (tx, ty) = (t % tn, t / tn);
-        let mut around = vec![t];
-        if tx > 0 { around.push(t - 1) }
-        if tx + 1 < tn { around.push(t + 1) }
-        if ty > 0 { around.push(t - tn) }
-        if ty + 1 < tn { around.push(t + tn) }
-        for a in around {
-            let Some(mut f) = self.frozen[a].take() else { continue };
-            self.sync_tile_with(a, &mut f);
-            for b in f.border.iter_mut() {
-                let o = b.other as usize;
-                let ot = (o / n / TILE) * tn + (o % n) / TILE;
-                if !self.frozen_mask[ot] {
-                    continue;
-                }
-                let now = if b.horiz { self.fx[4 * b.face as usize] } else { self.fy[4 * b.face as usize] };
-                let r = &mut self.rate[b.cell as usize];
-                *r += b.sign * (now - b.f0) / dx;
-                f.rmax = f.rmax.max(r.abs());
-                b.f0 = now;
-            }
-            self.frozen[a] = Some(f);
-        }
-    }
-
-    fn sync_tile_with(&mut self, t: usize, f: &mut Frozen) {
-        let now = self.physics_seconds;
-        let (x0, x1, y0, y1) = self.tile_cells(t);
-        let n = self.depth.width();
-        let span = (now - f.applied) as f32;
-        f.applied = now;
-        if span <= 0.0 {
-            return;
-        }
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let i = y * n + x;
-                self.h[i] = (self.h[i] + self.rate[i] * span).max(0.0);
-            }
-        }
-    }
-
-    fn correct_borders(frozen: &mut [Option<Frozen>], act: &[bool], fx: &[f32], fy: &[f32], h: &mut [f32], n: usize, k: f32) -> f64 {
-        let tn = n.div_ceil(TILE);
-        let mut clipped = 0.0f64;
-        for f in frozen.iter_mut().flatten() {
-            for b in f.border.iter_mut() {
-                let o = b.other as usize;
-                if act[(o / n / TILE) * tn + (o % n) / TILE] {
-                    continue;
-                }
-                let now = if b.horiz { fx[4 * b.face as usize] } else { fy[4 * b.face as usize] };
-                let d = b.sign * k * (now - b.f0);
-                if d == 0.0 {
-                    continue;
-                }
-                let c = b.cell as usize;
-                let hh = h[c] + d;
-                if hh < 0.0 {
-                    clipped -= hh as f64;
-                }
-                h[c] = hh.max(0.0);
-                b.acc += d;
-            }
-        }
-        clipped
     }
 
     pub fn from_world(world: &World) -> Self {
@@ -464,8 +380,7 @@ impl Water {
         }
         w.fill_fed_hollows(world);
         w.load_bed(&world.height);
-        w.wave_max = (0..n * n).filter(|&i| w.lake_level.as_slice()[i].is_nan()).map(|i| (G * w.h[i]).sqrt()).fold(0.0, f32::max);
-        w.settle(SPIN_UP_S);
+        w.run_for(SPIN_UP_S, false);
         w.publish();
         w.reset_books();
         w
@@ -508,14 +423,33 @@ impl Water {
         self.books = Budget::default();
     }
 
+    pub fn reset_timings(&mut self) {
+        self.timings = WaterTimings::default();
+    }
+
     pub fn budget(&self) -> Budget {
         self.books
     }
 
     pub fn season(&self) -> Season { Season::at(self.time_days) }
 
+    /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
-        self.h.iter().map(|&v| v as f64).sum()
+        let mut v: f64 = (0..self.h.len()).filter(|&i| self.member[i] == 0.0).map(|i| self.h[i] as f64).sum();
+        v += self.pools.iter().map(|p| p.volume).sum::<f64>();
+        v
+    }
+
+    pub fn active_segments(&self) -> usize {
+        self.rows.iter().map(|r| r.len()).sum()
+    }
+
+    pub fn active_cells(&self) -> usize {
+        self.rows.iter().flatten().map(|&(a, b)| (b - a) as usize).sum()
+    }
+
+    pub fn pooled_cells(&self) -> usize {
+        self.pools.iter().map(|p| p.members.len()).sum()
     }
 
     pub fn flow_at(&self, x: usize, y: usize) -> (f32, f32) {
@@ -526,13 +460,12 @@ impl Water {
     }
 
     pub fn downstream(&self, x: usize, y: usize) -> Option<Cell> {
-        let n = self.depth.width();
+        let n = self.n;
         if x >= n || y >= n {
             return None;
         }
-        let i = y * n + x;
-        let (u, v) = (self.hu[i], self.hv[i]);
-        if (u * u + v * v).sqrt() < 1.0e-6 {
+        let (u, v) = self.velocity.as_slice()[y * n + x];
+        if (u * u + v * v).sqrt() < 1.0e-4 {
             return None;
         }
         let (dx, dy) = ((u / (u.abs().max(v.abs()))).round() as i64, (v / (u.abs().max(v.abs()))).round() as i64);
@@ -567,7 +500,6 @@ impl Water {
         self.check(x, y)?;
         Self::check_positive("source rate", rate)?;
         self.sources.push(Source { x, y, rate, seasonality: 1.0 });
-        self.wake_around(y * self.depth.width() + x);
         Ok(())
     }
 
@@ -621,405 +553,517 @@ impl Water {
         self.publish();
     }
 
+    /// Bed = terrain + dams.
     fn load_bed(&mut self, height: &HeightGrid) {
-        assert_eq!((height.width(), height.height()), (self.depth.width(), self.depth.height()), "terrain size must match water size");
+        assert_eq!((height.width(), height.height()), (self.n, self.n), "terrain size must match water size");
         let dam = self.dam_height.as_slice();
-        let mut changed = Vec::new();
+        let mut changed = false;
         for (i, (t, d)) in height.as_slice().iter().zip(dam).enumerate() {
             let z = t + d;
-            if self.z[i] != z {
-                changed.push(i);
+            if z != self.z[i] {
+                changed = true;
+                self.z[i] = z;
             }
-            self.z[i] = z;
         }
-        let tn = self.tiles();
-        let mut seen = vec![false; tn * tn];
-        for i in changed {
-            let t = self.tile_of(i);
-            if !seen[t] {
-                seen[t] = true;
-                self.wake_around(i);
+        if changed {
+            self.masks_dirty = true;
+        }
+    }
+
+    /// Face masks: 1 where water may cross, 0 at closed edges and between two fixed-level lake cells.
+    fn rebuild_masks(&mut self) {
+        self.dissolve_pools();
+        let n = self.n;
+        let lake = self.lake_level.as_slice();
+        let closed = self.closed_edge.as_slice();
+        let open = self.config.open_edges;
+        let w1 = n + 1;
+        for y in 0..n {
+            for x in 0..=n {
+                let m = if x == 0 || x == n {
+                    let c = y * n + if x == 0 { 0 } else { n - 1 };
+                    open && !closed[c]
+                } else {
+                    !(lake[y * n + x - 1].is_finite() && lake[y * n + x].is_finite())
+                };
+                self.ox_base[y * w1 + x] = if m { 1.0 } else { 0.0 };
             }
+        }
+        for y in 0..=n {
+            for x in 0..n {
+                let m = if y == 0 || y == n {
+                    let c = if y == 0 { x } else { (n - 1) * n + x };
+                    open && !closed[c]
+                } else {
+                    !(lake[(y - 1) * n + x].is_finite() && lake[y * n + x].is_finite())
+                };
+                self.oy_base[y * n + x] = if m { 1.0 } else { 0.0 };
+            }
+        }
+        self.ox.copy_from_slice(&self.ox_base);
+        self.oy.copy_from_slice(&self.oy_base);
+        for i in 0..n * n {
+            self.lake_inner[i] = lake[i].is_finite() && neighbours4(n, i).count() == 4 && neighbours4(n, i).all(|j| lake[j].is_finite());
+        }
+        for y in 0..n {
+            self.lake_rows[y] = (0..n).any(|x| lake[y * n + x].is_finite());
+        }
+        self.masks_dirty = false;
+        self.rebuild_activity_full();
+    }
+
+    fn refresh_sources(&mut self) {
+        let season = self.season();
+        if self.src_season == Some(season) && self.src_count == self.sources.len() {
+            return;
+        }
+        self.src.fill(0.0);
+        let n = self.n;
+        for s in &self.sources {
+            let rate = s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0));
+            // Source rates are metres of depth per day on their cell; src is metres per second.
+            self.src[s.y * n + s.x] += rate / DAY_S as f32;
+        }
+        for p in &mut self.pools {
+            p.source = p.members.iter().map(|&i| self.src[i as usize]).sum();
+        }
+        self.src_season = Some(season);
+        self.src_count = self.sources.len();
+        self.rebuild_activity_full();
+    }
+
+    fn is_seed(&self, i: usize) -> bool {
+        (self.h[i] > WET_SEED && (self.member[i] == 0.0 || self.rim_mask[i]) && !self.lake_inner[i]) || self.src[i] > 0.0 || self.rim_mask[i]
+    }
+
+    fn row_wet_runs(&self, y: usize) -> Vec<(u32, u32)> {
+        let n = self.n;
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        for x in 0..n {
+            if self.is_seed(y * n + x) {
+                push_run(&mut runs, x as u32, x as u32 + 1);
+            }
+        }
+        runs
+    }
+
+    /// Rows of cells to compute: every wet cell outside a pool, every source, every pool's rim,
+    /// and their 4-neighbours.
+    fn rebuild_activity_full(&mut self) {
+        for y in 0..self.n {
+            self.wet_rows[y] = self.row_wet_runs(y);
+        }
+        self.since_shrink = 0;
+        self.rebuild_rows(0, self.n);
+    }
+
+    /// Recompute active rows y0..y1 (and the face rows around them) from the wet runs.
+    fn rebuild_rows(&mut self, y0: usize, y1: usize) {
+        let n = self.n as u32;
+        for y in y0..y1 {
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            for yy in y.saturating_sub(1)..(y + 2).min(self.n) {
+                for &(a, b) in &self.wet_rows[yy] {
+                    runs.push((a.saturating_sub(1), (b + 1).min(n)));
+                }
+            }
+            runs.sort_unstable();
+            self.rows[y] = merge_runs(runs, ACTIVE_GAP);
+        }
+        for y in y0..=y1.min(self.n) {
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            if y > 0 {
+                runs.extend_from_slice(&self.rows[y - 1]);
+            }
+            if y < self.n {
+                runs.extend_from_slice(&self.rows[y]);
+            }
+            runs.sort_unstable();
+            self.yrows[y] = merge_runs(runs, 0);
         }
     }
 
     pub fn step(&mut self, height: &HeightGrid, dt_days: f32) {
+        let t0 = std::time::Instant::now();
         self.load_bed(height);
-        self.pending += dt_days.max(0.0) as f64 * DAY_S;
+        self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         if dt_days <= 0.0 {
             self.publish();
             return;
         }
-        let run = std::mem::take(&mut self.pending);
-        self.advance(run);
+        self.run_for(dt_days as f64 * DAY_S, true);
+        let t0 = std::time::Instant::now();
         self.update_dams(height, dt_days);
         self.update_ice(dt_days);
+        self.load_bed(height);
         self.time_days += dt_days as f64;
+        self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         self.publish();
     }
 
-    fn settle(&mut self, seconds: f64) {
-        let mut t = 0.0;
-        while t < seconds {
-            t += self.substep((seconds - t) as f32) as f64;
-        }
-        self.sync_frozen();
-    }
-
-    fn advance(&mut self, seconds: f64) {
+    /// Runs the physics for `seconds`, finding pools again (and applying rain and losses) every
+    /// `POOL_EVERY_S`.
+    fn run_for(&mut self, seconds: f64, losses: bool) {
         let mut t = 0.0;
         while t < seconds - 1e-6 {
-            t += self.substep((seconds - t) as f32) as f64;
-        }
-        self.sync_frozen();
-    }
-
-    fn tiles(&self) -> usize {
-        self.depth.width().div_ceil(TILE)
-    }
-
-    fn tile_cells(&self, t: usize) -> (usize, usize, usize, usize) {
-        let n = self.depth.width();
-        let tn = self.tiles();
-        let (tx, ty) = (t % tn, t / tn);
-        (tx * TILE, ((tx + 1) * TILE).min(n), ty * TILE, ((ty + 1) * TILE).min(n))
-    }
-
-    fn zero_tile_faces(&mut self, t: usize) {
-        let n = self.depth.width();
-        let (x0, x1, y0, y1) = self.tile_cells(t);
-        let tn = self.tiles();
-        let (west, north) = (x0 > 0 && self.frozen_mask[t - 1], y0 > 0 && self.frozen_mask[t - tn]);
-        for y in y0..y1 {
-            for x in x0 + usize::from(west)..x1 + usize::from(x1 == n) {
-                self.fx[4 * (y * (n + 1) + x)..4 * (y * (n + 1) + x) + 4].fill(0.0);
+            let chunk = (POOL_EVERY_S - self.since_pools).min(seconds - t).max(1e-3);
+            let mut done = 0.0;
+            while done < chunk - 1e-6 {
+                done += self.substep((chunk - done) as f32) as f64;
             }
-        }
-        for y in y0 + usize::from(north)..y1 + usize::from(y1 == n) {
-            for x in x0..x1 {
-                self.fy[4 * (y * n + x)..4 * (y * n + x) + 4].fill(0.0);
-            }
-        }
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.hu[y * n + x] = 0.0;
-                self.hv[y * n + x] = 0.0;
+            t += done;
+            self.since_pools += done;
+            if self.since_pools >= POOL_EVERY_S - 1e-6 || t >= seconds - 1e-6 {
+                let t0 = std::time::Instant::now();
+                self.dissolve_pools();
+                if losses {
+                    self.apply_rain_and_losses((self.since_pools / DAY_S) as f32);
+                }
+                if self.pools_enabled {
+                    self.find_pools();
+                }
+                self.rebuild_activity_full();
+                self.since_pools = 0.0;
+                self.timings.pools_s += t0.elapsed().as_secs_f64();
             }
         }
     }
 
-    fn refresh_activity(&mut self) {
-        let n = self.depth.width();
-        let tn = self.tiles();
+    #[cfg(test)]
+    fn advance(&mut self, seconds: f64) {
+        self.run_for(seconds, false);
+    }
+
+    /// Rain on open water, evaporation and seepage from wet ground (millimetres a day).
+    fn apply_rain_and_losses(&mut self, dt_days: f32) {
         let season = self.season();
-        if self.frozen_season != Some(season) || !self.freeze_enabled {
-            self.frozen_season = Some(season);
-            for t in 0..tn * tn {
-                self.wake(t);
-            }
-        }
-        let now = self.physics_seconds;
-        for t in 0..tn * tn {
-            let wake = match &self.frozen[t] {
-                None => false,
-                Some(f) => {
-                    f.rmax as f64 * (now - f.since) > DRIFT_M
-                        || f.ring.iter().any(|&(i, h0, u0, v0)| {
-                            let i = i as usize;
-                            (self.h[i] - h0).abs() > WAKE_H || (self.hu[i] - u0).abs() + (self.hv[i] - v0).abs() > WAKE_Q
-                        })
-                        || f.border.iter().any(|b| b.acc.abs() > WAKE_H)
-                }
-            };
-            if wake {
-                self.wake(t);
-            }
-        }
-        let mut wet = vec![false; tn * tn];
-        let lake = self.lake_level.as_slice();
-        for &t in &self.active {
-            let (x0, x1, y0, y1) = self.tile_cells(t);
-            'tile: for y in y0..y1 {
-                for x in x0..x1 {
-                    let i = y * n + x;
-                    if self.h[i] > 0.0 && lake[i].is_nan() {
-                        wet[t] = true;
-                        break 'tile;
-                    }
-                }
-            }
-        }
-        for s in &self.sources {
-            wet[(s.y / TILE) * tn + s.x / TILE] = true;
-        }
-        let frozen = &self.frozen_mask;
-        let mut on = vec![false; tn * tn];
-        for ty in 0..tn {
-            for tx in 0..tn {
-                if !wet[ty * tn + tx] || frozen[ty * tn + tx] {
-                    continue;
-                }
-                for ay in ty.saturating_sub(1)..(ty + 2).min(tn) {
-                    for ax in tx.saturating_sub(1)..(tx + 2).min(tn) {
-                        on[ay * tn + ax] |= !frozen[ay * tn + ax];
-                    }
-                }
-            }
-        }
-        let leaving: Vec<usize> = self.active.iter().copied().filter(|&t| !on[t] && !frozen[t]).collect();
-        for t in leaving {
-            self.zero_tile_faces(t);
-        }
-        self.active = (0..tn * tn).filter(|&t| on[t]).collect();
-    }
-
-    fn substep(&mut self, limit: f32) -> f32 {
-        use rayon::prelude::*;
-        self.refresh_activity();
-        let n = self.depth.width();
-        let w1 = n + 1;
-        let tn = self.tiles();
-        let dx = self.cell_m;
-        let dt = if self.active.is_empty() { limit.max(1.0e-4) } else { (CFL * dx / self.wave_max.max(0.05)).min(DT_MAX_S).min(limit.max(1.0e-4)) };
-        let nn2 = self.config.manning * self.config.manning;
-        let open = self.config.open_edges;
-        let bounds = move |t: usize| ((t % tn) * TILE, ((t % tn + 1) * TILE).min(n), (t / tn) * TILE, ((t / tn + 1) * TILE).min(n));
-        let lake = self.lake_level.as_slice();
-        let closed = self.closed_edge.as_slice();
-        let (z, h, hu, hv) = (&self.z, &self.h, &self.hu, &self.hv);
-        let vel = |i: usize| if h[i] > FACE_DRY { (hu[i] / h[i], hv[i] / h[i]) } else { (0.0, 0.0) };
-        let flux = |hl: f32, ul: f32, vl: f32, hr: f32, ur: f32, vr: f32| -> [f32; 3] {
-            if hl <= 0.0 && hr <= 0.0 {
-                return [0.0; 3];
-            }
-            let (cl, cr) = ((G * hl).sqrt(), (G * hr).sqrt());
-            let sl = (ul - cl).min(ur - cr);
-            let sr = (ul + cl).max(ur + cr);
-            let fl = [hl * ul, hl * ul * ul + 0.5 * G * hl * hl, hl * ul * vl];
-            let fr = [hr * ur, hr * ur * ur + 0.5 * G * hr * hr, hr * ur * vr];
-            if sl >= 0.0 {
-                return fl;
-            }
-            if sr <= 0.0 {
-                return fr;
-            }
-            let (ql, qr) = ([hl, hl * ul, hl * vl], [hr, hr * ur, hr * vr]);
-            let d = sr - sl;
-            [0, 1, 2].map(|k| (sr * fl[k] - sl * fr[k] + sl * sr * (qr[k] - ql[k])) / d)
-        };
-        let face = |l: (f32, f32, f32, f32), r: (f32, f32, f32, f32)| -> [f32; 4] {
-            let (zl, hl, ul, vl) = l;
-            let (zr, hr, ur, vr) = r;
-            let zf = zl.max(zr);
-            let (hls, hrs) = ((hl + zl - zf).max(0.0), (hr + zr - zf).max(0.0));
-            let carry = |h: f32, hs: f32, u: f32| {
-                let cap = STEP_SPEED_LIMIT * (G * hs).sqrt();
-                if hs > FACE_DRY { (u * h / hs).clamp(-cap, cap) } else { 0.0 }
-            };
-            let f = flux(hls, carry(hl, hls, ul), vl, hrs, carry(hr, hrs, ur), vr);
-            [f[0], f[1] + 0.5 * G * (hl * hl - hls * hls), f[1] + 0.5 * G * (hr * hr - hrs * hrs), f[2]]
-        };
-        let ghost = |c: usize, inner: usize, normal_out: f32, along_x: bool| -> (f32, f32, f32, f32) {
-            let (u, v) = vel(c);
-            let (un, ut) = if along_x { (u, v) } else { (v, u) };
-            if !open || closed[c] {
-                return (z[c], h[c], -un, ut);
-            }
-            let zg = z[c] - ((z[inner] - z[c]) / dx).max(EDGE_SLOPE_MIN) * dx;
-            let un = if un * normal_out > 0.0 { un } else { 0.0 };
-            (zg, h[c], un, ut)
-        };
-        let cell = |i: usize, along_x: bool| -> (f32, f32, f32, f32) {
-            let (u, v) = vel(i);
-            if along_x { (z[i], h[i], u, v) } else { (z[i], h[i], v, u) }
-        };
-        let (pfx, pfy) = (Shared(self.fx.as_mut_ptr()), Shared(self.fy.as_mut_ptr()));
-        let fm = &self.frozen_mask;
-        self.active.par_iter().for_each(|&t| {
-            let (x0, x1, y0, y1) = bounds(t);
-            let (east, south) = (x1 < n && fm[t + 1], y1 < n && fm[t + tn]);
-            for y in y0..y1 {
-                for x in x0..x1 + usize::from(x1 == n || east) {
-                    let k = 4 * (y * w1 + x);
-                    let f = if x == 0 {
-                        let c = y * n;
-                        face(ghost(c, c + 1, -1.0, true), cell(c, true))
-                    } else if x == n {
-                        let c = y * n + n - 1;
-                        face(cell(c, true), ghost(c, c - 1, 1.0, true))
-                    } else {
-                        let (a, b) = (y * n + x - 1, y * n + x);
-                        if (lake[a].is_finite() && lake[b].is_finite()) || (h[a] <= 0.0 && h[b] <= 0.0) { [0.0; 4] } else { face(cell(a, true), cell(b, true)) }
-                    };
-                    for (j, v) in f.into_iter().enumerate() {
-                        unsafe { pfx.write(k + j, v) };
-                    }
-                }
-            }
-            for y in y0..y1 + usize::from(y1 == n || south) {
-                for x in x0..x1 {
-                    let k = 4 * (y * n + x);
-                    let f = if y == 0 {
-                        face(ghost(x, x + n, -1.0, false), cell(x, false))
-                    } else if y == n {
-                        let c = (n - 1) * n + x;
-                        face(cell(c, false), ghost(c, c - n, 1.0, false))
-                    } else {
-                        let (a, b) = ((y - 1) * n + x, y * n + x);
-                        if (lake[a].is_finite() && lake[b].is_finite()) || (h[a] <= 0.0 && h[b] <= 0.0) { [0.0; 4] } else { face(cell(a, false), cell(b, false)) }
-                    };
-                    for (j, v) in f.into_iter().enumerate() {
-                        unsafe { pfy.write(k + j, v) };
-                    }
-                }
-            }
-        });
-        let clipped = Self::correct_borders(&mut self.frozen, &self.frozen_mask, &self.fx, &self.fy, &mut self.h, n, dt / dx);
-        let season = self.season();
-        let mut sourced = clipped;
-        for s in &self.sources {
-            let rate = s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0));
-            let a = rate * dt / DAY_S as f32;
-            if !self.frozen_mask[(s.y / TILE) * tn + s.x / TILE] {
-                self.src_buf[s.y * n + s.x] += a;
-            }
-            sourced += a as f64;
-        }
-        let day = dt as f64 / DAY_S;
         let cfg = &self.config;
-        let (r_day, e_day, s_day) = ((cfg.rain * season.rain_mult()) as f64 * day, (cfg.evaporation * season.evap_mult()) as f64 * day, cfg.seepage as f64 * day);
-        let k = dt / dx;
-        let (fx, fy) = (&self.fx, &self.fy);
-        let (ph, phu, phv) = (Shared(self.h.as_mut_ptr()), Shared(self.hu.as_mut_ptr()), Shared(self.hv.as_mut_ptr()));
-        let prate = Shared(self.rate.as_mut_ptr());
-        let src = &self.src_buf;
-        let stats: Vec<TileStats> = self
-            .active
-            .par_iter()
-            .map(|&t| {
-                let (x0, x1, y0, y1) = bounds(t);
-                let (mut rain, mut evap, mut seep, mut lake_change, mut wave, mut edge) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f32, 0.0f64);
-                let (mut rh, mut rq, mut wet) = (0.0f32, 0.0f32, false);
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let i = y * n + x;
-                        let (w, e) = (4 * (y * w1 + x), 4 * (y * w1 + x + 1));
-                        let (nf, sf) = (4 * (y * n + x), 4 * ((y + 1) * n + x));
-                        let (h0, u0, v0) = unsafe { (ph.read(i), phu.read(i), phv.read(i)) };
-                        let mut hh = h0 + src[i] - k * (fx[e] - fx[w] + fy[sf] - fy[nf]);
-                        let mut mx = u0 - k * (fx[e + 1] - fx[w + 2] + fy[sf + 3] - fy[nf + 3]);
-                        let mut my = v0 - k * (fx[e + 3] - fx[w + 3] + fy[sf + 1] - fy[nf + 2]);
-                        if x == 0 {
-                            edge -= fx[w].min(0.0) as f64;
-                        }
-                        if x + 1 == n {
-                            edge += fx[e].max(0.0) as f64;
-                        }
-                        if y == 0 {
-                            edge -= fy[nf].min(0.0) as f64;
-                        }
-                        if y + 1 == n {
-                            edge += fy[sf].max(0.0) as f64;
-                        }
-                        let lvl = lake[i];
-                        if lvl.is_finite() {
-                            let want = (lvl - z[i]).max(0.0);
-                            lake_change += (want - hh.max(0.0)) as f64;
-                            hh = want;
-                            mx = 0.0;
-                            my = 0.0;
-                        } else if hh > WET_EPS {
-                            let vv = hh as f64;
-                            let ev = e_day.min(vv + r_day);
-                            let sp = s_day.min(vv + r_day - ev);
-                            hh = (vv + r_day - ev - sp) as f32;
-                            rain += r_day;
-                            evap += ev;
-                            seep += sp;
-                        }
-                        if hh <= FACE_DRY {
-                            hh = hh.max(0.0);
-                            mx = 0.0;
-                            my = 0.0;
-                        } else {
-                            let speed = (mx * mx + my * my).sqrt() / hh;
-                            let damp = 1.0 + G * dt * nn2 * speed / hh.powf(4.0 / 3.0);
-                            mx /= damp;
-                            my /= damp;
-                            if lvl.is_nan() {
-                                wave = wave.max(speed + (G * hh).sqrt());
-                            }
-                        }
-                        let r = (hh - h0) / dt;
-                        rh = rh.max(r.abs());
-                        rq = rq.max(((mx - u0).abs() + (my - v0).abs()) / dt);
-                        wet |= hh > 0.0 && lvl.is_nan();
-                        unsafe {
-                            ph.write(i, hh);
-                            phu.write(i, mx);
-                            phv.write(i, my);
-                            prate.write(i, r);
-                        }
-                    }
-                }
-                TileStats { rain, evap, seep, lake: lake_change, wave, edge, rh, rq, wet }
-            })
-            .collect();
-        for s in &self.sources {
-            self.src_buf[s.y * n + s.x] = 0.0;
+        let (r, e, s) = ((cfg.rain * season.rain_mult()) * dt_days, (cfg.evaporation * season.evap_mult()) * dt_days, cfg.seepage * dt_days);
+        if (r == 0.0 && e == 0.0 && s == 0.0) || dt_days <= 0.0 {
+            return;
         }
-        let (mut rain, mut evap, mut seep, mut lake_change, mut wave, mut edge_out) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f32, 0.0f64);
-        for s in &stats {
-            rain += s.rain;
-            evap += s.evap;
-            seep += s.seep;
-            lake_change += s.lake;
-            wave = wave.max(s.wave);
-            edge_out += s.edge;
-        }
-        let span = dt as f64;
-        for f in self.frozen.iter().flatten() {
-            rain += f.rain * span;
-            evap += f.evap * span;
-            seep += f.seep * span;
-            lake_change += f.lake * span;
-            edge_out += f.edge;
-        }
-        self.wave_max = wave;
-        let edge = edge_out * dt as f64 * dx as f64 / self.area();
-        self.physics_seconds += dt as f64;
-        if self.freeze_enabled {
-            let active = std::mem::take(&mut self.active);
-            for (&t, s) in active.iter().zip(&stats) {
-                let calm = s.rh < CALM_H && s.rq < CALM_Q;
-                self.calm[t] = if calm { self.calm[t] + dt } else { 0.0 };
-                if self.calm[t] >= SETTLE_S && s.wet {
-                    self.freeze(t, s, dt);
-                }
+        let lake = self.lake_level.as_slice();
+        let (mut rain, mut evap, mut seep) = (0.0f64, 0.0f64, 0.0f64);
+        for i in 0..self.h.len() {
+            let hh = self.h[i];
+            if hh <= 0.0 || lake[i].is_finite() {
+                continue;
             }
-            self.active = active;
+            let rr = if hh > WET_EPS { r } else { 0.0 };
+            let ev = e.min(hh + rr);
+            let sp = s.min(hh + rr - ev);
+            self.h[i] = hh + rr - ev - sp;
+            rain += rr as f64;
+            evap += ev as f64;
+            seep += sp as f64;
         }
-        self.physics_seconds -= dt as f64;
-        self.books.sources += sourced + lake_change.max(0.0);
-        self.books.edges += edge + (-lake_change).max(0.0);
         self.books.rain += rain;
         self.books.evaporation += evap;
         self.books.seepage += seep;
-        self.added_volume += sourced + lake_change.max(0.0) + rain;
-        self.lost_volume += edge + (-lake_change).max(0.0) + evap + seep;
+        self.added_volume += rain;
+        self.lost_volume += evap + seep;
+    }
+
+    /// Hands every pool's water back to its cells as ordinary still water.
+    fn dissolve_pools(&mut self) {
+        let n = self.n;
+        let w1 = n + 1;
+        for p in std::mem::take(&mut self.pools) {
+            for &i in &p.members {
+                let i = i as usize;
+                self.h[i] = (p.level - self.z[i]).max(0.0);
+                self.member[i] = 0.0;
+                self.rim_mask[i] = false;
+                let (x, y) = (i % n, i / n);
+                for f in [y * w1 + x, y * w1 + x + 1] {
+                    self.ox[f] = self.ox_base[f];
+                }
+                for f in [y * n + x, (y + 1) * n + x] {
+                    self.oy[f] = self.oy_base[f];
+                }
+            }
+            // Rounding: put the pool's exact volume back (into its deepest cell).
+            let back: f64 = p.members.iter().map(|&i| self.h[i as usize] as f64).sum();
+            if let Some(&deep) = p.members.iter().min_by(|&&a, &&b| self.z[a as usize].total_cmp(&self.z[b as usize])) {
+                let d = &mut self.h[deep as usize];
+                *d = (*d as f64 + p.volume - back).max(0.0) as f32;
+            }
+        }
+    }
+
+    /// Finds still, flat water and turns each large enough body into a pool.
+    fn find_pools(&mut self) {
+        let n = self.n;
+        let w1 = n + 1;
+        let lake = self.lake_level.as_slice();
+        let (h, z, qx, qy) = (&self.h, &self.z, &self.qx, &self.qy);
+        let eta = |i: usize| z[i] + h[i];
+        let cand: Vec<bool> = (0..n * n)
+            .map(|i| {
+                let hh = h[i];
+                if hh <= POOL_MIN_DEPTH || lake[i].is_finite() || self.src[i] > 0.0 {
+                    return false;
+                }
+                let (x, y) = (i % n, i / n);
+                let q = qx[y * w1 + x].abs().max(qx[y * w1 + x + 1].abs()).max(qy[y * n + x].abs()).max(qy[(y + 1) * n + x].abs());
+                if q > POOL_MAX_SPEED * hh {
+                    return false;
+                }
+                neighbours4(n, i).all(|j| h[j] <= 0.0 || (eta(j) - eta(i)).abs() < POOL_FLAT_FACE || eta(j) < z[i])
+            })
+            .collect();
+        if std::env::var_os("WATER_POOL_DEBUG").is_some() {
+            let deep: Vec<usize> = (0..n * n).filter(|&i| h[i] > POOL_MIN_DEPTH && !lake[i].is_finite()).collect();
+            let slow = deep.iter().filter(|&&i| {
+                let (x, y) = (i % n, i / n);
+                let q = qx[y * w1 + x].abs().max(qx[y * w1 + x + 1].abs()).max(qy[y * n + x].abs()).max(qy[(y + 1) * n + x].abs());
+                q <= POOL_MAX_SPEED * h[i]
+            }).count();
+            let c = cand.iter().filter(|&&c| c).count();
+            let mut speeds: Vec<f32> = deep.iter().map(|&i| {
+                let (x, y) = (i % n, i / n);
+                qx[y * w1 + x].abs().max(qx[y * w1 + x + 1].abs()).max(qy[y * n + x].abs()).max(qy[(y + 1) * n + x].abs()) / h[i]
+            }).collect();
+            speeds.sort_by(|a, b| a.total_cmp(b));
+            let pc = |p: usize| speeds.get(speeds.len().saturating_sub(1) * p / 100).copied().unwrap_or(0.0);
+            let mut dl: Vec<f32> = deep.iter().map(|&i| neighbours4(n, i).filter(|&j| h[j] > 0.0 && eta(j) >= z[i]).map(|j| (eta(j) - eta(i)).abs()).fold(0.0, f32::max)).collect();
+            dl.sort_by(|a, b| a.total_cmp(b));
+            let pd = |p: usize| dl.get(dl.len().saturating_sub(1) * p / 100).copied().unwrap_or(0.0);
+            eprintln!("  level step to neighbours p25 {:.1e} p50 {:.1e} p75 {:.1e} p90 {:.1e}", pd(25), pd(50), pd(75), pd(90));
+            eprintln!("pools: deep {} slow {} candidates {} | speed p25 {:.4} p50 {:.4} p75 {:.4} p90 {:.4}", deep.len(), slow, c, pc(25), pc(50), pc(75), pc(90));
+        }
+        let mut seen = vec![false; n * n];
+        let mut found: Vec<Vec<u32>> = Vec::new();
+        for s in 0..n * n {
+            if !cand[s] || seen[s] {
+                continue;
+            }
+            let base = eta(s);
+            let mut comp = vec![s as u32];
+            seen[s] = true;
+            let mut k = 0;
+            while k < comp.len() {
+                let c = comp[k] as usize;
+                k += 1;
+                for j in neighbours4(n, c) {
+                    if cand[j] && !seen[j] && (eta(j) - base).abs() < POOL_FLAT_RANGE {
+                        seen[j] = true;
+                        comp.push(j as u32);
+                    }
+                }
+            }
+            if comp.len() >= POOL_MIN_CELLS {
+                found.push(comp);
+            }
+        }
+        for members in found {
+            let mut beds: Vec<f32> = members.iter().map(|&i| self.z[i as usize]).collect();
+            beds.sort_by(|a, b| a.total_cmp(b));
+            let mut prefix = vec![0.0f64; beds.len() + 1];
+            for (k, &b) in beds.iter().enumerate() {
+                prefix[k + 1] = prefix[k] + b as f64;
+            }
+            let volume: f64 = members.iter().map(|&i| self.h[i as usize] as f64).sum();
+            let source = members.iter().map(|&i| self.src[i as usize]).sum();
+            let mut p = Pool { level: 0.0, volume, beds, prefix, wet: members.len(), members, rim: Vec::new(), faces: Vec::new(), source };
+            p.level = p.level_for(volume);
+            let id = self.pools.len() as f32 + 1.0;
+            for &i in &p.members {
+                self.member[i as usize] = id;
+            }
+            for &i in &p.members {
+                let i = i as usize;
+                self.h[i] = (p.level - self.z[i]).max(0.0);
+                let (x, y) = (i % n, i / n);
+                let mut on_rim = false;
+                let mut side = |f: usize, is_x: bool, other: Option<usize>, positive: bool, this: &mut Self| match other {
+                    Some(j) if this.member[j] == id => {
+                        if is_x { this.ox[f] = 0.0 } else { this.oy[f] = 0.0 }
+                    }
+                    _ => {
+                        on_rim = true;
+                        let o = other.map_or(u32::MAX, |j| j as u32);
+                        let (a, b) = if positive { (o, i as u32) } else { (i as u32, o) };
+                        p.faces.push(RimFace { face: f as u32, is_x, sign: if positive { 1.0 } else { -1.0 }, a, b });
+                    }
+                };
+                side(y * w1 + x, true, (x > 0).then(|| i - 1), true, self);
+                side(y * w1 + x + 1, true, (x + 1 < n).then(|| i + 1), false, self);
+                side(y * n + x, false, (y > 0).then(|| i - n), true, self);
+                side((y + 1) * n + x, false, (y + 1 < n).then(|| i + n), false, self);
+                if on_rim {
+                    p.rim.push(i as u32);
+                    self.rim_mask[i] = true;
+                }
+            }
+            self.pools.push(p);
+        }
+        // Faces inside pools carry nothing.
+        for p in &self.pools {
+            for &i in &p.members {
+                let (x, y) = (i as usize % n, i as usize / n);
+                for f in [y * w1 + x, y * w1 + x + 1] {
+                    if self.ox[f] == 0.0 {
+                        self.qx[f] = 0.0;
+                    }
+                }
+                for f in [y * n + x, (y + 1) * n + x] {
+                    if self.oy[f] == 0.0 {
+                        self.qy[f] = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// One explicit step of the local-inertial shallow-water equations (Bates et al. 2010):
+    /// momentum per face from the water-surface slope with semi-implicit Manning friction, then
+    /// mass per cell. Pools take what crosses their rim and hold one level. Returns the step in s.
+    pub(crate) fn substep(&mut self, limit: f32) -> f32 {
+        let _ftz = FlushDenormals::new();
+        let t0 = std::time::Instant::now();
+        if self.masks_dirty {
+            self.rebuild_masks();
+        }
+        self.refresh_sources();
+        let n = self.n;
+        let dx = self.cell_m;
+        let c = (G * self.h_max.max(0.01)).sqrt();
+        let dt = (CFL * dx / c).min(DT_MAX_S).min(limit.max(1.0e-4));
+        let p = kernels::Params { gdt: G * dt, fric: G * dt * self.config.manning * self.config.manning, inv_dx: 1.0 / dx };
+        let k = dt / dx;
+
+        // Split the rows into bands of about equal work, one per task.
+        let cells: u64 = self.rows.iter().flatten().map(|&(a, b)| (b - a) as u64).sum();
+        let gang = gang::gang();
+        let tasks = if cells >= PARALLEL_CELLS { gang.width().min(n) } else { 1 };
+        let mut bounds = Vec::with_capacity(tasks + 1);
+        bounds.push(0usize);
+        let mut acc = 0u64;
+        for y in 0..n {
+            acc += self.rows[y].iter().map(|&(a, b)| (b - a) as u64).sum::<u64>() + 1;
+            let t = bounds.len();
+            if t < tasks && acc * tasks as u64 >= (cells + n as u64) * t as u64 {
+                bounds.push(y + 1);
+            }
+        }
+        while bounds.len() <= tasks {
+            bounds.push(n);
+        }
+        *bounds.last_mut().unwrap() = n;
+        let mut outs = vec![BandOut::default(); tasks];
+        let view = View::of(self);
+        let run = |phase: &(dyn Fn(usize, usize, usize, &View) + Sync)| {
+            if tasks == 1 {
+                phase(0, 0, n, &view);
+            } else {
+                gang.run(&|t: usize| {
+                    if t < tasks && bounds[t] < bounds[t + 1] {
+                        phase(t, bounds[t], bounds[t + 1], &view);
+                    }
+                });
+            }
+        };
+        self.timings.activity_s += t0.elapsed().as_secs_f64();
+
+        let t0 = std::time::Instant::now();
+        run(&|_, y0, y1, v| unsafe { v.faces(y0, y1, p, dx) });
+        let t1 = std::time::Instant::now();
+        self.timings.faces_s += (t1 - t0).as_secs_f64();
+        run(&|_, y0, y1, v| unsafe { v.limiter(y0, y1, k, dt) });
+        let t2 = std::time::Instant::now();
+        self.timings.limiter_s += (t2 - t1).as_secs_f64();
+        let outs_ptr = SendPtr(outs.as_mut_ptr());
+        let cont = |t: usize, y0: usize, y1: usize, v: &View| unsafe {
+            *outs_ptr.get().add(t) = v.continuity(y0, y1, k, dt);
+        };
+        run(&cont);
+        let t3 = std::time::Instant::now();
+        self.timings.continuity_s += (t3 - t2).as_secs_f64();
+        let (mut hmax, mut lake_change, mut edge) = (0u32, 0.0f64, 0.0f64);
+        let mut grew: Vec<usize> = Vec::new();
+        for o in &outs {
+            hmax = hmax.max(o.hmax);
+            lake_change += o.lake_change;
+            edge += o.edge;
+            grew.extend_from_slice(&o.grew);
+        }
+
+        // Pools: what crosses the rim changes the volume; the level follows; the rim cells show it.
+        let w1 = n + 1;
+        let mut pool_cells = 0u64;
+        for pi in 0..self.pools.len() {
+            let mut gain = self.pools[pi].source as f64 * dt as f64;
+            for rf in &self.pools[pi].faces {
+                let q = if rf.is_x { self.qx[rf.face as usize] } else { self.qy[rf.face as usize] };
+                let up = if q > 0.0 { rf.a } else { rf.b };
+                let eff = q * if up == u32::MAX { 1.0 } else { self.fac[up as usize] };
+                // Map-edge rim faces are booked as edge losses by the continuity pass.
+                gain += (rf.sign * eff) as f64 * k as f64;
+            }
+            let pool = &mut self.pools[pi];
+            pool.volume = (pool.volume + gain).max(0.0);
+            pool.level = pool.level_for(pool.volume);
+            for &i in &pool.rim {
+                self.h[i as usize] = (pool.level - self.z[i as usize]).max(0.0);
+            }
+            pool_cells += pool.members.len() as u64;
+        }
+        let t4 = std::time::Instant::now();
+        self.timings.pools_s += (t4 - t3).as_secs_f64();
+        self.timings.pool_cells += pool_cells;
+        self.timings.pool_samples += 1;
+
+        // Activity: grow where water reached new cells; shrink now and then.
+        self.since_shrink += 1;
+        if self.since_shrink >= SHRINK_EVERY {
+            self.rebuild_activity_full();
+        } else if !grew.is_empty() {
+            for &y in &grew {
+                self.wet_rows[y] = self.row_wet_runs(y);
+            }
+            for &y in &grew {
+                self.rebuild_rows(y.saturating_sub(1), (y + 2).min(n));
+            }
+        }
+        self.h_max = f32::from_bits(hmax);
+        self.timings.activity_s += t4.elapsed().as_secs_f64();
+
+        let sourced = self.src_total() * dt as f64;
+        let edge = edge * dt as f64 * dx as f64 / self.area();
+        self.books.sources += sourced + lake_change.max(0.0);
+        self.books.edges += edge + (-lake_change).max(0.0);
+        self.added_volume += sourced + lake_change.max(0.0);
+        self.lost_volume += edge + (-lake_change).max(0.0);
         self.physics_seconds += dt as f64;
         self.steps_taken += 1;
+        self.timings.substeps += 1;
+        self.timings.cell_updates += cells;
+        self.timings.physics_s += dt as f64;
         dt
     }
 
+    fn src_total(&self) -> f64 {
+        let season = self.season();
+        self.sources.iter().map(|s| (s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0))) as f64 / DAY_S).sum()
+    }
+
     fn publish(&mut self) {
-        let n = self.depth.width();
+        let t0 = std::time::Instant::now();
+        let n = self.n;
+        let w1 = n + 1;
         let dx = self.cell_m;
+        for p in &self.pools {
+            for &i in &p.members {
+                self.h[i as usize] = (p.level - self.z[i as usize]).max(0.0);
+            }
+        }
         for y in 0..n {
             for x in 0..n {
                 let i = y * n + x;
                 let h = self.h[i];
-                let (qxc, qyc) = (self.hu[i], self.hv[i]);
+                let qxc = 0.5 * (self.qx[y * w1 + x] + self.qx[y * w1 + x + 1]);
+                let qyc = 0.5 * (self.qy[y * n + x] + self.qy[(y + 1) * n + x]);
                 let q = (qxc * qxc + qyc * qyc).sqrt();
                 let (vx, vy) = if h > FACE_DRY { (qxc / h, qyc / h) } else { (0.0, 0.0) };
                 self.depth.as_mut_slice()[i] = h;
@@ -1029,6 +1073,7 @@ impl Water {
                 self.channel.as_mut_slice()[i] = h > 0.0 && (vx * vx + vy * vy).sqrt() > MOVING && self.lake_level.as_slice()[i].is_nan();
             }
         }
+        self.timings.publish_s += t0.elapsed().as_secs_f64();
     }
 
     fn update_ice(&mut self, dt_days: f32) {
@@ -1040,7 +1085,12 @@ impl Water {
     }
 
     fn update_dams(&mut self, height: &HeightGrid, dt: f32) {
-        let w = self.depth.width();
+        let w = self.n;
+        for p in &self.pools {
+            for &i in &p.members {
+                self.h[i as usize] = (p.level - self.z[i as usize]).max(0.0);
+            }
+        }
         let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), &self.h);
         let surface = |i: usize| if depth[i] > WET_EPS { terrain[i] + dam[i] + depth[i] } else { f32::NEG_INFINITY };
         let mut broken = Vec::new();
@@ -1067,21 +1117,58 @@ impl Water {
     }
 }
 
-const SPIN_UP_S: f64 = 9000.0;
+/// Tiny discharges decaying toward zero become denormal floats, which the CPU handles in slow
+/// microcode; flush them to zero while the solver runs (restored afterwards).
+struct FlushDenormals(#[allow(dead_code)] u32);
 
-#[derive(Clone, Copy)]
-struct Shared(*mut f32);
-unsafe impl Send for Shared {}
-unsafe impl Sync for Shared {}
-
-impl Shared {
-    unsafe fn write(self, i: usize, v: f32) {
-        unsafe { *self.0.add(i) = v }
-    }
-    unsafe fn read(self, i: usize) -> f32 {
-        unsafe { *self.0.add(i) }
+impl FlushDenormals {
+    #[allow(deprecated)]
+    fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            let old = _mm_getcsr();
+            _mm_setcsr(old | 0x8040);
+            return FlushDenormals(old);
+        }
+        #[allow(unreachable_code)]
+        FlushDenormals(0)
     }
 }
+
+impl Drop for FlushDenormals {
+    #[allow(deprecated)]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_setcsr(self.0);
+        }
+    }
+}
+
+fn edge_bed(z: &[f32], c: usize, inner: usize, dx: f32) -> f32 {
+    z[c] - ((z[inner] - z[c]) / dx).max(EDGE_SLOPE_MIN) * dx
+}
+
+fn push_run(runs: &mut Vec<(u32, u32)>, a: u32, b: u32) {
+    match runs.last_mut() {
+        Some(last) if a <= last.1 + ACTIVE_GAP => last.1 = last.1.max(b),
+        _ => runs.push((a, b)),
+    }
+}
+
+fn merge_runs(runs: Vec<(u32, u32)>, gap: u32) -> Vec<(u32, u32)> {
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(runs.len());
+    for (a, b) in runs {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 + gap => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged
+}
+
+const SPIN_UP_S: f64 = 9000.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn neighbours4(n: usize, i: usize) -> impl Iterator<Item = usize> {
@@ -1191,7 +1278,6 @@ pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) ->
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,7 +1299,7 @@ mod tests {
         for i in 0..w.h.len() {
             w.h[i] = (level - w.z[i]).max(0.0);
         }
-        w.wave_max = w.h.iter().map(|&v| (G * v).sqrt()).fold(0.0, f32::max);
+        w.h_max = w.h.iter().copied().fold(0.0, f32::max);
     }
 
     fn run(w: &mut Water, seconds: f64) {
@@ -1239,7 +1325,7 @@ mod tests {
                 w.h[y * 40 + x] = 1.0;
             }
         }
-        w.wave_max = (G * 1.0f32).sqrt();
+        w.h_max = 1.0;
         let before = w.total_volume();
         run(&mut w, 300.0);
         let after = w.total_volume();

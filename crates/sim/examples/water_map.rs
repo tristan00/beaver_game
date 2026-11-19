@@ -24,7 +24,10 @@ fn main() {
         println!("  world + water built in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         (s, sim::starts::DamSite { cells: vec![(0, 0)], height: 1.0, camp: (0, 0) })
     } else {
-        sim::starts::new_game_on_map(&map).unwrap()
+        let t = std::time::Instant::now();
+        let r = sim::starts::new_game_on_map(&map).unwrap();
+        println!("  new game (world, water spin-up, colony) in {:.0} ms; spin-up {}", t.elapsed().as_secs_f64() * 1000.0, r.0.water.timings.report(t.elapsed().as_secs_f64()));
+        r
     };
     let n = sim.world.size;
     if dam {
@@ -32,6 +35,7 @@ fn main() {
     }
     println!("  planned dam {:?} height {}", site.cells, site.height);
     let mut w: Water = sim.water.clone();
+    w.reset_timings();
     let steps = (days / sim::STEP_DAYS).round() as usize;
     let last_day = (1.0 / sim::STEP_DAYS).round() as usize;
     let (mut a0, mut l0, mut v0) = (0.0, 0.0, 0.0);
@@ -43,8 +47,10 @@ fn main() {
         w.step(&sim.height, sim::STEP_DAYS);
     }
     let ms_per_day = clock.elapsed().as_secs_f64() * 1000.0 / days as f64;
-    let (fz, act) = w.frozen_tiles();
-    println!("  tiles frozen {fz} active {act}; steps {} mean dt {:.3} s", w.steps_taken, w.physics_seconds / w.steps_taken.max(1) as f64);
+    let wall = clock.elapsed().as_secs_f64();
+    println!("  {}", w.timings.report(wall));
+    println!("  game speed reachable on water alone: x{:.1} (x1 = 288 s of physics per second)", days as f64 * 86_400.0 / wall / 288.0);
+    println!("  active cells now {} in {} row segments", w.active_cells(), w.active_segments());
     let (inn, out_d, stored) = (w.added_volume - a0, w.lost_volume - l0, w.total_volume() - v0);
     let d = w.depth.as_slice();
     let (river, lake) = (sim.world.river.as_slice(), sim.world.lake.as_slice());
@@ -105,9 +111,6 @@ fn main() {
     let mut cuts: Vec<f32> = (0..n * n).filter(|&i| river[i]).map(|i| surf[i] - h[i]).collect();
     cuts.sort_by(|a, b| a.total_cmp(b));
     println!("  channel depth below the land: p50 {:.2} p90 {:.2} max {:.2}", cuts[cuts.len() / 2], cuts[cuts.len() * 9 / 10], cuts[cuts.len() - 1]);
-    for s in &w.sources {
-        println!("  source ({}, {}) rate {:.2}", s.x, s.y, s.rate);
-    }
     if let Some(path) = out {
         let mut bytes = (n as u32).to_le_bytes().to_vec();
         for &v in h {
