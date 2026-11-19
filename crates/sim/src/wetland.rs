@@ -7,7 +7,7 @@ use crate::SimState;
 
 pub const SHALLOW: f32 = 0.5;
 pub const DROWN: f32 = 0.8;
-pub const SPROUT_PER_DAY: f32 = 0.03;
+pub const SPROUT_PER_DAY: f32 = 0.015;
 pub const CROWDED: usize = 5;
 pub const SPROUT_AMOUNT: f32 = 1.0;
 
@@ -50,6 +50,8 @@ pub fn step(sim: &mut SimState, day: u64) {
             r.wet = w;
         }
     }
+    let sprouting = SPROUT_PER_DAY * crate::calendar::vegetation_growth(day as f64 - 0.5);
+    if sprouting == 0.0 { return; }
     let taken: HashSet<Cell> = sim.resources.items.iter().map(|r| r.cell).chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
     let mut plants = vec![0u8; n * n];
     for r in sim.resources.items.iter().filter(|r| r.kind == ResourceKind::Plant) {
@@ -68,7 +70,7 @@ pub fn step(sim: &mut SimState, day: u64) {
     for y in 0..n {
         for x in 0..n {
             let c = (x, y);
-            if taken.contains(&c) || draw(sim.seed, day, y * n + x) >= SPROUT_PER_DAY || !is_shore(sim, c) || crowd(&plants, c) >= CROWDED {
+            if taken.contains(&c) || draw(sim.seed, day, y * n + x) >= sprouting || !is_shore(sim, c) || crowd(&plants, c) >= CROWDED {
                 continue;
             }
             plants[y * n + x] = 1;

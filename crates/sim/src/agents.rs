@@ -113,6 +113,7 @@ pub const MOVE_COST_PER_DAY: f32 = 43_200.0;
 pub const LADEN_PACE: f32 = 0.5;
 pub const FELL_PER_DAY: f32 = 1.0;
 pub const GATHER_PER_DAY: f32 = 6.0;
+pub const FOOD_GATHER_PER_DAY: f32 = 2.4;
 pub const LOAD_SIZE: f32 = 3.0;
 const EPS: f32 = 1e-3;
 const SPAWN_RADIUS: usize = 12;
@@ -962,7 +963,8 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     }
     let have = ag.load.map_or(0.0, |l| l.amount);
     let left = if bark { res.bark } else if good == Good::Sticks { res.branches } else { res.amount };
-    let mut want = (dt * ag.speed * GATHER_PER_DAY).min(LOAD_SIZE - have);
+    let rate = if good == Good::Food { FOOD_GATHER_PER_DAY } else { GATHER_PER_DAY };
+    let mut want = (dt * ag.speed * rate).min(LOAD_SIZE - have);
     if left - want < EPS {
         want = left;
     }

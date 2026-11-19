@@ -37,7 +37,8 @@ pub const TREE_LOGS: f32 = 3.0;
 pub const TREE_BRANCHES: f32 = 4.0;
 pub const TREE_BARK: f32 = 2.0;
 pub const PLANT_MAX: f32 = 4.0;
-pub const PLANT_REGROW_PER_DAY: f32 = 0.5;
+pub const PLANT_REGROW_PER_DAY: f32 = 0.25;
+pub const WINTER_PLANT_DECAY_PER_DAY: f32 = 0.04;
 pub const WET_MOISTURE: f32 = 0.5;
 pub const OUTCROP_SLOPE: f32 = 0.6;
 pub const MUD_AMOUNT: f32 = 20.0;
@@ -299,12 +300,18 @@ impl ResourceWorld {
         Some((good, got))
     }
 
-    pub fn step(&mut self, dt_days: f32) -> Result<(), ResourceError> {
+    pub fn step(&mut self, dt_days: f32, time_days: f64) -> Result<(), ResourceError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(ResourceError::InvalidAmount);
         }
-        for r in self.items.iter_mut().filter(|r| r.kind == ResourceKind::Plant && r.wet) {
-            r.amount = (r.amount + PLANT_REGROW_PER_DAY * dt_days).min(r.max_amount);
+        let growth = crate::calendar::vegetation_growth(time_days - dt_days as f64 * 0.5);
+        let decay = WINTER_PLANT_DECAY_PER_DAY * (1.0-growth);
+        let survival = (-decay*dt_days).exp();
+        for r in self.items.iter_mut().filter(|r| r.kind == ResourceKind::Plant) {
+            let rate = if r.wet { PLANT_REGROW_PER_DAY*growth } else {0.0};
+            r.amount = if decay > 1e-7 {
+                r.amount*survival + rate/decay*(1.0-survival)
+            } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
         }
         self.items.retain(|r| r.kind == ResourceKind::Plant || r.has_yield());
         Ok(())
@@ -331,6 +338,26 @@ impl ResourceWorld {
         let id = self.add(ResourceKind::Plant, cell, PLANT_MAX);
         self.get_mut(id)?.wet = true;
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod food_season_tests {
+    use super::*;
+    #[test]
+    fn wet_plants_regrow_in_summer_but_draw_down_in_winter() {
+        let mut summer=ResourceWorld::default();
+        let id=summer.add(ResourceKind::Plant,(1,1),4.0);
+        summer.get_mut(id).unwrap().wet=true;
+        summer.take(id,3.0);
+        let mut winter=summer.clone();
+        summer.step(1.0,100.0).unwrap();winter.step(1.0,300.0).unwrap();
+        assert!((summer.get(id).unwrap().amount-1.25).abs()<1e-6);
+        assert!(winter.get(id).unwrap().amount<1.0);
+        let mut split=winter.clone();let mut whole=winter.clone();
+        whole.step(10.0,320.0).unwrap();
+        for day in 311..=320 {split.step(1.0,day as f64).unwrap();}
+        assert!((whole.get(id).unwrap().amount-split.get(id).unwrap().amount).abs()<1e-5);
     }
 }
 

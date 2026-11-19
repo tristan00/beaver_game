@@ -54,6 +54,29 @@ pub fn year_phase(time_days: f64) -> f32 {
     (day_of_year(time_days) / YEAR_DAYS) as f32
 }
 
+/// Food vegetation uses the colony's calendar. Spring greens emerge over 15
+/// days; growth winds down through the last half of autumn and stops in winter.
+pub fn vegetation_growth(time_days: f64) -> f32 {
+    let day = day_of_year(time_days);
+    let smooth = |t: f64| { let t=t.clamp(0.0,1.0); (t*t*(3.0-2.0*t)) as f32 };
+    if day < 15.0 { smooth(day / 15.0) }
+    else if day < 225.0 { 1.0 }
+    else if day < 270.0 { 1.0-smooth((day-225.0)/45.0) }
+    else { 0.0 }
+}
+
+#[cfg(test)]
+mod vegetation_tests {
+    use super::*;
+    #[test]
+    fn food_growth_stops_through_winter_and_repeats_by_calendar_year() {
+        for day in 270..360 { assert_eq!(vegetation_growth(day as f64),0.0); }
+        assert_eq!(vegetation_growth(90.0),1.0);
+        assert!(vegetation_growth(250.0)<vegetation_growth(230.0));
+        for day in 0..360 {assert!((vegetation_growth(day as f64)-vegetation_growth(day as f64+YEAR_DAYS)).abs()<1e-6);}
+    }
+}
+
 pub fn days_until(time_days: f64, season: Season) -> f64 {
     let start = season as usize as f64 * SEASON_DAYS;
     (start - day_of_year(time_days)).rem_euclid(YEAR_DAYS)

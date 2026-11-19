@@ -304,7 +304,7 @@ impl SimState {
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
-        self.resources.step(dt_days).expect("dt validated above");
+        self.resources.step(dt_days, self.time_days).expect("dt validated above");
         let day = self.time_days.floor();
         if day > (self.time_days - dt_days as f64).floor() && self.colony.is_founded() {
             wetland::step(self, day as u64);
