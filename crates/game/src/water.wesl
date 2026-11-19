@@ -52,8 +52,9 @@ fn ripples(p: vec2<f32>, dir: vec2<f32>, stretch: f32, detail: f32) -> f32 {
     return h / 3.0;
 }
 
-// Surface height and slope from two flow-map phases half a period apart.
-fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> vec3<f32> {
+// Two flow-map phases half a period apart. Screen derivatives below supply the
+// normal, avoiding three complete noise evaluations per phase.
+fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> f32 {
     // Fast water drags the pattern no faster than this, or streaks shear into stripes.
     let vel = vel_in * min(1.0, 1.2 / max(length(vel_in), 1e-4));
     let speed = length(vel);
@@ -63,16 +64,13 @@ fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> vec3<f32> {
     let drift = vec2(0.05, 0.03);
     let flow = vel + drift * (1.0 - stretch);
     let period = 2.0;
-    var acc = vec3(0.0);
+    var acc = 0.0;
     for (var k = 0; k < 2; k++) {
         let ph = fract(t / period + f32(k) * 0.5);
         let w = 1.0 - abs(2.0 * ph - 1.0);
         let q = p - flow * ph * period + f32(k) * vec2(3.7, 1.9);
-        let e = 0.15;
         let h0 = ripples(q, dir, stretch, detail);
-        let hx = ripples(q + vec2(e, 0.0), dir, stretch, detail);
-        let hz = ripples(q + vec2(0.0, e), dir, stretch, detail);
-        acc += w * vec3(h0, (hx - h0) / e, (hz - h0) / e);
+        acc += w * h0;
     }
     return acc;
 }
@@ -108,9 +106,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let pbr_input = pbr_input_from_standard_material(in, is_front);
     var depth = 0.0;
     var white = 0.0;
+    var frozen = 0.0;
     @if(VERTEX_COLORS) {
         depth = max(in.color.r, 0.0);
         white = clamp(in.color.g, 0.0, 1.0);
+        frozen = smoothstep(0.0, 0.08, in.color.b);
     }
     var vel = vec2(0.0);
     @if(VERTEX_UVS_B) {
@@ -121,19 +121,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Ripples finer than a pixel or two only shimmer; fade them with the pixel footprint.
     let pix = length(fwidth(p));
     let detail = 1.0 - smoothstep(0.08, 0.35, pix);
-    let s = surface(p, vel, t, detail);
+    let s = surface(p, vel, t, detail) * (1.0 - frozen);
     let speed = length(vel);
 
     // Normal from the ripple slopes; calmer when deep and still, livelier when it runs.
     let amp = (0.06 + 0.18 * smoothstep(0.05, 0.6, speed)) * (1.0 - 0.7 * smoothstep(0.15, 0.8, pix));
-    let n = normalize(vec3(-s.y * amp, 1.0, -s.z * amp));
+    let displaced = in.world_position.xyz + vec3(0.0, s * amp, 0.0);
+    let normal = normalize(cross(dpdy(displaced), dpdx(displaced)));
+    let n = select(-normal, normal, normal.y >= 0.0);
     let v = normalize(view_bindings::view.world_position - in.world_position.xyz);
 
     // Colour: shallow water is mostly the bed seen through a tint; deep water is its own colour.
     let deep = 1.0 - exp(-depth / water.look.x);
     var col = mix(water.shallow.rgb, water.deep.rgb, deep);
     // Streaks: brighter and darker bands carried by the current.
-    col *= 1.0 + 0.10 * s.x * (0.4 + smoothstep(0.03, 0.4, speed));
+    col *= 1.0 + 0.16 * s * (0.4 + smoothstep(0.03, 0.4, speed));
+    let streak = smoothstep(0.14, 0.4, s) * smoothstep(0.04, 0.4, speed);
+    col = mix(col, water.shallow.rgb * 1.3, streak * 0.32);
     var alpha = mix(water.look.y, water.look.z, 1.0 - exp(-depth / 0.25));
 
     // Sky reflection at grazing angles and a glint of the sun.
@@ -148,19 +152,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Foam: a lacy line along the waterline, and white water where it runs fast or falls.
     let lace = noise(p * 2.3 + vec2(t * 0.15, -t * 0.11)) * 0.5 + 0.5;
-    let shore = (1.0 - smoothstep(0.0, 0.012, depth)) * smoothstep(0.3, 0.8, lace) * 0.7;
+    let shore = (1.0 - smoothstep(0.0, 0.025, depth)) * smoothstep(0.3, 0.8, lace) * 0.35;
     let churn = noise((p - vel * t * 0.7) * 3.1) * 0.5 + 0.5;
     let rapids = white * smoothstep(0.35, 0.7, churn + white * 0.3);
     let foam = clamp(max(shore * 0.85, rapids), 0.0, 1.0);
     col = mix(col, water.foam.rgb, foam);
     // Soft waterline: the surface fades into the wet ground over its first few centimetres.
-    alpha *= smoothstep(0.0, 0.05, depth);
+    alpha *= smoothstep(0.0, 0.008, depth);
     alpha = max(alpha, foam * 0.9);
     col += vec3(glint);
     alpha = min(1.0, alpha + glint);
 
     // Ice in winter: a pale matte sheet.
-    let ice = water.look.w * smoothstep(0.0, 0.05, depth);
+    let ice = frozen * smoothstep(0.0, 0.008, depth);
     col = mix(col, water.ice.rgb, ice);
     alpha = mix(alpha, 0.92, ice);
 

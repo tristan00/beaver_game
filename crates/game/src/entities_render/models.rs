@@ -227,16 +227,8 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
     let mut mb = Mb::new();
     let (dark, light) = foliage(sp, season);
     let trunk = trunk_color(sp);
-    let ground = hex(0x7B8B77);
-    let shade_r = match sp {
-        Species::Aspen => 1.3,
-        Species::Maple => 1.9,
-        Species::Pine => 1.6,
-        Species::Willow => 2.1,
-    };
-    if lod == 0 {
-        mb.disc(v(0.0, 0.04, 0.0), shade_r, shade_r, ground, 10);
-    }
+    // Ground contact comes from the scene shadow map. An opaque horizontal disc
+    // attached to the trunk floats over sloping banks and covers the river below.
     let bare = bare(sp, season);
     let (seg, rings) = match lod { 0 => (9, 6), 1 => (6, 4), _ => (5, 3) };
     let top_h = match sp {
@@ -395,7 +387,6 @@ fn twigs(mb: &mut Mb, base: Vec3, n: usize, reach: f32, rise: f32, col: [f32; 3]
 pub fn stump_mesh() -> Mesh {
     let mut mb = Mb::new();
     let bark = hex(0x7a5230);
-    mb.disc(v(0.0, 0.04, 0.0), 1.0, 1.0, hex(0x2f6a2a), 9);
     mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.62, -0.1), (0.44, 0.15), (0.38, 0.55)], 10, bark, bark, true);
     mb.lathe(Mat4::IDENTITY, &[(0.38, 0.55), (0.34, 0.57), (0.0, 0.57)], 10, hex(0xeed3a0), hex(0xf6e2b8), false);
     mb.lathe(Mat4::IDENTITY, &[(0.2, 0.575), (0.17, 0.575)], 10, hex(0xc9a066), hex(0xc9a066), false);

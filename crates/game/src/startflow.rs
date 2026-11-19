@@ -52,14 +52,20 @@ pub fn begin_sandbox(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbi
     flow.settled_at = Some(flow.real_secs);
     flow.focus = None;
     let half = sim.world.size as f32 / 2.0;
-    orbit.target = cell_world(&sim.height, (half, half));
+    let n = sim.world.size;
+    let stream = (0..n * n)
+        .filter(|&i| sim.water.depth.as_slice()[i] > 0.015 && sim.water.discharge.as_slice()[i] > 0.002)
+        .min_by_key(|&i| (i % n).abs_diff(n / 2).pow(2) + (i / n).abs_diff(n / 2).pow(2))
+        .map(|i| ((i % n) as f32, (i / n) as f32))
+        .unwrap_or((half, half));
+    orbit.target = cell_world(&sim.height, stream);
     orbit.distance = SANDBOX_DISTANCE;
     orbit.pitch = SCOUT_PITCH;
     *clock = SimClock::default();
     *sel = Selection::None;
 }
 
-const SANDBOX_DISTANCE: f32 = 220.0;
+const SANDBOX_DISTANCE: f32 = 100.0;
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;
 

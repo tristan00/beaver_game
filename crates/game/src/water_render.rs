@@ -71,8 +71,8 @@ fn style_for(p: &Palette) -> WaterStyle {
         Vec4::new(l[0], l[1], l[2], 1.0)
     };
     WaterStyle {
-        shallow: lin(SURFACE_SHALLOW),
-        deep: lin(SURFACE_DEEP),
+        shallow: lin(crate::palette::mix(SURFACE_SHALLOW, crate::palette::WATER_SHALLOW, 0.15)),
+        deep: lin(crate::palette::mix(SURFACE_DEEP, crate::palette::WATER_DEEP, 0.15)),
         foam: lin(crate::palette::FOAM),
         ice: lin(p.ice),
         look: Vec4::new(WATER_DEEP_M, WATER_FILM_ALPHA, WATER_DEEP_ALPHA, (p.winter * 1.5).clamp(0.0, 1.0)),
@@ -80,11 +80,11 @@ fn style_for(p: &Palette) -> WaterStyle {
 }
 
 /// Water colours: a clear green-teal where the bed shows through, river blue where it is deep.
-const SURFACE_SHALLOW: [f32; 3] = [0.30, 0.58, 0.56];
-const SURFACE_DEEP: [f32; 3] = [0.10, 0.31, 0.45];
+const SURFACE_SHALLOW: [f32; 3] = [0.32, 0.68, 0.72];
+const SURFACE_DEEP: [f32; 3] = [0.13, 0.40, 0.55];
 /// Depth at which water shows its own deep colour rather than its bed.
 const WATER_DEEP_M: f32 = 0.6;
-const WATER_FILM_ALPHA: f32 = 0.5;
+const WATER_FILM_ALPHA: f32 = 0.72;
 const WATER_DEEP_ALPHA: f32 = 0.93;
 
 fn setup_water(sim: Res<Sim>, season: Res<Season>, mut water: ResMut<WaterChunks>, mut materials: ResMut<Assets<WaterMaterial>>) {
@@ -108,19 +108,19 @@ fn update_water_style(season: Res<Season>, water: Res<WaterChunks>, mut material
 }
 
 const WATER_REBUILD_BUDGET_S: f32 = 0.002;
-pub const WATER_PAD: i32 = SHORE_SEARCH + 1;
-const SHORE_SEARCH: i32 = 3;
+pub const WATER_PAD: i32 = 3;
 #[derive(Clone, Copy)]
 struct WV {
     p: [f32; 3],
     depth: f32,
     white: f32,
     vel: [f32; 2],
+    ice: f32,
 }
 
 fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
     let l = |x: f32, y: f32| x + (y - x) * t;
-    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], depth: l(a.depth, b.depth), white: l(a.white, b.white), vel: [l(a.vel[0], b.vel[0]), l(a.vel[1], b.vel[1])] }
+    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], depth: l(a.depth, b.depth), white: l(a.white, b.white), vel: [l(a.vel[0], b.vel[0]), l(a.vel[1], b.vel[1])], ice: l(a.ice, b.ice) }
 }
 
 /// The part of a polygon where the water is at least `level` deep.
@@ -140,30 +140,19 @@ fn clip_poly(poly: &[WV], level: f32) -> Vec<WV> {
 }
 
 fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
-    let st = step as f32;
-    let (gx, gy) = ((x / st).floor(), (y / st).floor());
-    let (u, v) = (x / st - gx, y / st - gy);
-    let (ix, iy) = (gx as i32 * step as i32, gy as i32 * step as i32);
-    let s1 = step as i32;
-    let h = |dx: i32, dy: i32| at(&s.height, ix + dx * s1, iy + dy * s1);
-    if u + v <= 1.0 {
-        let (ha, hb, hc) = (h(0, 0), h(1, 0), h(0, 1));
-        ha + u * (hb - ha) + v * (hc - ha)
-    } else {
-        let (hb, hc, he) = (h(1, 0), h(0, 1), h(1, 1));
-        he + (1.0 - u) * (hc - he) + (1.0 - v) * (hb - he)
-    }
+    terrain_sample(s, x, y, step)
 }
 
 /// Water thinner than this is not drawn (a damp film reads as wet ground, not water).
-const SHOW_MIN_M: f32 = 0.03;
+const SHOW_MIN_M: f32 = 0.003;
 const SURFACE_LIFT: f32 = 0.01;
 
 /// Water at one mesh vertex: the surface level, velocity and white water of the visibly wet
 /// cells it stands for (the step x step block at and after it).
-fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2], f32)> {
+fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2], f32, f32)> {
     let n = s.height.width() as i32;
     let (mut level, mut vx, mut vy, mut white, mut k) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut ice = 0.0;
     for by in 0..step {
         for bx in 0..step {
             let (cx, cy) = ((x + bx).clamp(0, n - 1), (y + by).clamp(0, n - 1));
@@ -178,23 +167,45 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
             level += at(&s.height, cx, cy) + at(&s.water.dam_height, cx, cy) + h;
             vx += u;
             vy += v;
+            ice += at(&s.water.ice, cx, cy);
             k += 1.0;
         }
     }
-    (k > 0.0).then(|| (level / k, [vx / k, vy / k], white))
+    (k > 0.0).then(|| (level / k, [vx / k, vy / k], white, ice / k))
+}
+
+fn water_sample(s: &SimState, x: f32, y: f32, step: usize) -> Option<(f32, [f32; 2], f32, f32)> {
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (u, v) = (x - ix as f32, y - iy as f32);
+    if u == 0.0 && v == 0.0 { return vertex_water(s, ix, iy, step as i32); }
+    let (mut level, mut vx, mut vy, mut white, mut ice, mut total) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for dy in 0..=1 { for dx in 0..=1 {
+        let weight = (if dx == 0 { 1.0 - u } else { u }) * (if dy == 0 { 1.0 - v } else { v });
+        if weight <= 0.0 { continue; }
+        if let Some(w) = vertex_water(s, ix + dx, iy + dy, 1) {
+            level += w.0 * weight;
+            vx += w.1[0] * weight;
+            vy += w.1[1] * weight;
+            white += w.2 * weight;
+            ice += w.3 * weight;
+            total += weight;
+        }
+    } }
+    (total > 0.0).then(|| (level / total, [vx / total, vy / total], white / total, ice / total))
 }
 
 pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
-    let st = step as i32;
-    let side = CHUNK / step + 1;
+    let subdivisions = canal_subdivisions(s, cx, cy);
+    let spacing = step as f32 / subdivisions as f32;
+    let side = CHUNK / step * subdivisions + 1;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     // Sample one vertex beyond the chunk on every side, so shorelines extrapolate across seams.
     let ext = side + 2;
-    let mut own: Vec<Option<(f32, [f32; 2], f32)>> = Vec::with_capacity(ext * ext);
+    let mut own = Vec::with_capacity(ext * ext);
     let mut any = false;
     for j in -1..=side as i32 {
         for i in -1..=side as i32 {
-            let w = vertex_water(s, x0 + i * st, y0 + j * st, st);
+            let w = water_sample(s, x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, step);
             any |= w.is_some();
             own.push(w);
         }
@@ -205,27 +216,34 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     let mut verts: Vec<WV> = Vec::with_capacity(side * side);
     for j in 0..side {
         for i in 0..side {
-            let (x, y) = (x0 + i as i32 * st, y0 + j as i32 * st);
+            let (x, y) = (x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing);
             let at_ext = |di: i32, dj: i32| own[(j as i32 + 1 + dj) as usize * ext + (i as i32 + 1 + di) as usize];
             // A dry vertex takes the level of the water beside it, so the waterline falls where
             // that level meets the ground between them.
-            let (level, vel, white) = match at_ext(0, 0) {
+            let (level, vel, white, ice) = match at_ext(0, 0) {
                 Some(w) => w,
                 None => {
-                    let (mut l, mut k) = (0.0f32, 0.0f32);
+                    let (mut l, mut k, mut vx, mut vy, mut ice) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
                     for (di, dj) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
                         if let Some(w) = at_ext(di, dj) {
                             l += w.0;
+                            vx += w.1[0];
+                            vy += w.1[1];
+                            ice += w.3;
                             k += 1.0;
                         }
                     }
-                    if k > 0.0 { (l / k, [0.0, 0.0], 0.0) } else { (f32::NEG_INFINITY, [0.0, 0.0], 0.0) }
+                    if k > 0.0 { (l / k, [vx / k, vy / k], 0.0, ice / k) } else { (f32::NEG_INFINITY, [0.0, 0.0], 0.0, 0.0) }
                 }
             };
-            let ground = terrain_shown(s, x as f32, y as f32, step);
+            let ground = if subdivisions > 1 { canal_ground(s, x, y) } else { terrain_shown(s, x, y, step) };
+            let ground = ground + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
             let depth = if level.is_finite() { level - ground } else { -1.0 };
-            let (wx, wz) = world_pos(s, x, y);
-            verts.push(WV { p: [wx, level.max(ground) + SURFACE_LIFT, wz], depth, white, vel });
+            let (wx, wz) = ((x - s.height.width() as f32 / 2.0) * CELL_SIZE, (y - s.height.height() as f32 / 2.0) * CELL_SIZE);
+            // Clip the actual surface against the bank; lifting dry vertices to the bank
+            // before clipping bends shore triangles up over the soil.
+            let shown = if level.is_finite() { level } else { ground - 1.0 };
+            verts.push(WV { p: [wx, shown + SURFACE_LIFT, wz], depth, white, vel, ice });
         }
     }
     let (mut pos, mut col, mut uv, mut uv1) = (vec![], vec![], vec![], vec![]);
@@ -243,7 +261,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
                         pos.push(v.p);
                         uv.push([v.p[0], v.p[2]]);
                         uv1.push(v.vel);
-                        col.push([v.depth.max(0.0), v.white, 0.0, 1.0]);
+                        col.push([v.depth.max(0.0), v.white, v.ice, 1.0]);
                     }
                 }
             }
@@ -311,6 +329,67 @@ fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::mesh::VertexAttributeValues;
+
+    #[test]
+    fn a_shallow_one_cell_stream_survives_distant_lod_and_stays_above_the_bed() {
+        let mut s = SimState::new(1);
+        s.water = sim::water::Water::new(s.world.size);
+        s.height.as_mut_slice().fill(2.0);
+        for y in 0..s.world.size {
+            *s.height.get_mut(17, y).unwrap() = 0.0;
+            *s.water.depth.get_mut(17, y).unwrap() = 0.012;
+        }
+        let step = hydrology_lod(&s, 1, 1, Vec3::splat(1000.0));
+        assert_eq!(step, 1, "coarse sampling erases the odd-column stream");
+        let mesh = build_water_mesh(&s, 1, 1, step).expect("shallow flowing water must be visible");
+        let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions"); };
+        let mut stream_vertices = 0;
+        for p in pos {
+            let x = p[0] + s.world.size as f32 / 2.0;
+            let y = p[2] + s.world.size as f32 / 2.0;
+            let ground = terrain_shown(&s, x, y, step);
+            assert!(p.iter().all(|v| v.is_finite()));
+            assert!(p[1] >= ground + SURFACE_LIFT - 1e-4, "water buried in its bank: {p:?}, ground {ground}");
+            if (x - 17.0).abs() < 1e-4 { stream_vertices += 1; }
+        }
+        assert!(stream_vertices >= 16);
+    }
+
+    #[test]
+    fn flow_and_ice_changes_invalidate_an_unchanged_water_level() {
+        let mut s = SimState::new(1);
+        let a = region_hash(&s, 1, 1, WATER_PAD, 0, false);
+        *s.water.velocity.get_mut(20, 20).unwrap() = (0.7, 0.0);
+        let b = region_hash(&s, 1, 1, WATER_PAD, 0, false);
+        *s.water.ice.get_mut(20, 20).unwrap() = 0.1;
+        let c = region_hash(&s, 1, 1, WATER_PAD, 0, false);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+    }
+
+    #[test]
+    fn a_deep_single_cell_canal_has_a_visible_wetted_floor() {
+        let mut s = SimState::new(1);
+        s.water = sim::water::Water::new(s.world.size);
+        s.height.as_mut_slice().fill(2.0);
+        for y in 0..s.world.size {
+            *s.height.get_mut(17, y).unwrap() = 0.0;
+            *s.water.depth.get_mut(17, y).unwrap() = 0.02;
+            *s.water.canal.get_mut(17, y).unwrap() = true;
+        }
+        assert_eq!(canal_subdivisions(&s, 1, 1), 4);
+        let mesh = build_water_mesh(&s, 1, 1, 1).unwrap();
+        let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions"); };
+        let half = s.world.size as f32 / 2.0;
+        assert!(pos.iter().any(|p| (p[0] + half - 17.25).abs() < 1e-4 && (p[1] - 0.03).abs() < 1e-4), "water must span the canal floor, not collapse to the centre line");
+        assert!(pos.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+}
+
 
 fn update_water_chunks(
     mut commands: Commands,
@@ -339,7 +418,7 @@ fn update_water_chunks(
         {
             let idx = (*cursor + k) % n_chunks;
             let (cx, cy) = (idx % cols, idx / cols);
-            let step = lod_step(campos, chunk_centre(&sim.0, cx, cy));
+            let step = hydrology_lod(&sim.0, cx, cy, campos);
             let hash = region_hash(&sim.0, cx, cy, WATER_PAD, sea_bucket, false);
             let slot = &mut water.slots[idx];
             if slot.hash == hash.max(1) && slot.step == step {

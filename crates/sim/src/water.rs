@@ -12,6 +12,8 @@ const DAY_S: f64 = 86_400.0;
 mod gang;
 mod kernels;
 mod view;
+mod climate;
+pub use climate::{Forcing, Weather};
 use kernels::{FACE_DRY, G};
 use view::{BandOut, SendPtr, View};
 const CFL: f32 = 0.7;
@@ -241,11 +243,14 @@ pub struct Water {
     pub closed_edge: Grid<bool>,
     pub width: Grid<f32>,
     pub channel: Grid<bool>,
+    /// Exposed mineral bed, retained after water recedes (0 = turf, 1 = silt/gravel).
+    pub riverbed: Grid<f32>,
     pub discharge: Grid<f32>,
     pub velocity: Grid<(f32, f32)>,
     pub lake_level: Grid<f32>,
     pub sources: Vec<Source>,
     pub config: WaterConfig,
+    pub weather: Weather,
     pub time_days: f64,
     pub added_volume: f64,
     pub lost_volume: f64,
@@ -276,8 +281,8 @@ pub struct Water {
     h_new: Vec<f32>,
     rim_mask: Vec<bool>,
     pools: Vec<Pool>,
-    src_season: Option<Season>,
-    src_count: usize,
+    source_key: Option<u64>,
+    source_total: f64,
     rows: Vec<Vec<(u32, u32)>>,
     yrows: Vec<Vec<(u32, u32)>>,
     wet_rows: Vec<Vec<(u32, u32)>>,
@@ -326,11 +331,13 @@ impl Water {
             closed_edge: Grid::new(size, size, false),
             width: Grid::new(size, size, 0.0),
             channel: Grid::new(size, size, false),
+            riverbed: Grid::new(size, size, 0.0),
             discharge: Grid::new(size, size, 0.0),
             velocity: Grid::new(size, size, (0.0, 0.0)),
             lake_level: Grid::new(size, size, f32::NAN),
             sources: Vec::new(),
             config: WaterConfig::default(),
+            weather: Weather::default(),
             time_days: 0.0,
             added_volume: 0.0,
             lost_volume: 0.0,
@@ -359,8 +366,8 @@ impl Water {
             h_new: vec![0.0; n * n],
             rim_mask: vec![false; n * n],
             pools: Vec::new(),
-            src_season: None,
-            src_count: usize::MAX,
+            source_key: None,
+            source_total: 0.0,
             rows: vec![Vec::new(); n],
             yrows: vec![Vec::new(); n + 1],
             wet_rows: vec![Vec::new(); n],
@@ -391,14 +398,27 @@ impl Water {
             *f = l;
         }
         w.lake_level = world.lake_level.clone();
+        // Only the part of an external lake crossing the map boundary is a fixed
+        // reservoir. Interior lake cells store finite water and respond to dams,
+        // drainage canals, rain and drought just like other ponds.
+        for y in 1..n - 1 {
+            for x in 1..n - 1 {
+                w.lake_level.as_mut_slice()[y * n + x] = f32::NAN;
+            }
+        }
         let (raw, surface) = (world.height.as_slice(), world.surface.as_slice());
         for i in 0..n * n {
-            let lvl = w.lake_level.as_slice()[i];
+            let lvl = world.lake_level.as_slice()[i];
             w.h[i] = if lvl.is_finite() { (lvl - raw[i]).max(0.0) } else if world.river.as_slice()[i] || world.lake.as_slice()[i] { (surface[i] - raw[i]).max(0.0) } else { 0.0 };
         }
         w.fill_fed_hollows(world);
         w.load_bed(&world.height);
         w.run_for(SPIN_UP_S, false);
+        for i in 0..n * n {
+            if w.h[i] > 0.005 || world.river.as_slice()[i] || world.lake.as_slice()[i] {
+                w.riverbed.as_mut_slice()[i] = 1.0;
+            }
+        }
         w.publish();
         w.reset_books();
         w
@@ -450,6 +470,8 @@ impl Water {
     }
 
     pub fn season(&self) -> Season { Season::at(self.time_days) }
+
+    pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, self.config.rain) }
 
     /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
@@ -577,6 +599,7 @@ impl Water {
         for i in idx {
             height.as_mut_slice()[i] -= depth;
             self.canal.as_mut_slice()[i] = true;
+            self.riverbed.as_mut_slice()[i] = 1.0;
         }
         Ok(())
     }
@@ -589,17 +612,22 @@ impl Water {
     /// Bed = terrain + dams.
     fn load_bed(&mut self, height: &HeightGrid) {
         assert_eq!((height.width(), height.height()), (self.n, self.n), "terrain size must match water size");
-        let dam = self.dam_height.as_slice();
         let mut changed = false;
-        for (i, (t, d)) in height.as_slice().iter().zip(dam).enumerate() {
-            let z = t + d;
+        for (i, t) in height.as_slice().iter().enumerate() {
+            let z = t + self.dam_height.as_slice()[i];
             if z != self.z[i] {
+                if !changed {
+                    // Materialize stored pool volumes against the OLD bed before any
+                    // excavation or dam changes its geometry.
+                    self.dissolve_pools();
+                }
                 changed = true;
                 self.z[i] = z;
             }
         }
         if changed {
             self.masks_dirty = true;
+            self.full_publish = true;
         }
     }
 
@@ -648,22 +676,29 @@ impl Water {
     }
 
     fn refresh_sources(&mut self) {
-        let season = self.season();
-        if self.src_season == Some(season) && self.src_count == self.sources.len() {
+        let forcing_time = (self.time_days * DAY_S / POOL_EVERY_S).floor() * POOL_EVERY_S / DAY_S;
+        let inflow = climate::forcing(forcing_time, self.weather, self.config.rain).inflow;
+        let mut key = inflow.to_bits() as u64;
+        for s in &self.sources {
+            for v in [s.x as u32, s.y as u32, s.rate.to_bits(), s.seasonality.to_bits()] {
+                key = (key ^ v as u64).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        if self.source_key == Some(key) {
             return;
         }
         self.src.fill(0.0);
         let n = self.n;
         for s in &self.sources {
-            let rate = s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0));
+            let rate = s.rate * (1.0 + s.seasonality * (inflow - 1.0)).max(0.0);
             // Source rates are metres of depth per day on their cell; src is metres per second.
             self.src[s.y * n + s.x] += rate / DAY_S as f32;
         }
         for p in &mut self.pools {
             p.source = p.members.iter().map(|&i| self.src[i as usize]).sum();
         }
-        self.src_season = Some(season);
-        self.src_count = self.sources.len();
+        self.source_key = Some(key);
+        self.source_total = self.src.iter().map(|&r| r as f64).sum();
         self.rebuild_activity_full();
     }
 
@@ -729,7 +764,7 @@ impl Water {
         let t0 = std::time::Instant::now();
         self.load_bed(height);
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
-        if dt_days <= 0.0 {
+        if !dt_days.is_finite() || dt_days <= 0.0 {
             self.publish();
             return;
         }
@@ -737,7 +772,6 @@ impl Water {
         let t0 = std::time::Instant::now();
         self.update_dams(height, dt_days);
         self.update_ice(dt_days);
-        self.time_days += dt_days as f64;
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         self.publish();
     }
@@ -748,13 +782,21 @@ impl Water {
         let mut t = 0.0;
         while t < seconds - 1e-6 {
             let chunk = (POOL_EVERY_S - self.since_pools).min(seconds - t).max(1e-3);
+            let upkeep = std::time::Instant::now();
+            self.refresh_sources();
+            self.timings.upkeep_s += upkeep.elapsed().as_secs_f64();
             let mut done = 0.0;
             while done < chunk - 1e-6 {
                 done += self.substep((chunk - done) as f32) as f64;
             }
             t += done;
             self.since_pools += done;
-            if self.since_pools >= POOL_EVERY_S - 1e-6 || t >= seconds - 1e-6 {
+            if losses {
+                self.time_days += done / DAY_S;
+            }
+            // Public durations are f32 days; summing ten-second frame slices can
+            // land a few microseconds below a five-minute boundary.
+            if self.since_pools >= POOL_EVERY_S - 1e-3 {
                 let t0 = std::time::Instant::now();
                 let old_members: Vec<u32> = self.pools.iter().flat_map(|p| p.members.iter().copied()).collect();
                 self.dissolve_pools();
@@ -779,9 +821,10 @@ impl Water {
 
     /// Rain on open water, evaporation and seepage from wet ground (millimetres a day).
     fn apply_rain_and_losses(&mut self, dt_days: f32) {
-        let season = self.season();
+        self.update_riverbed(dt_days);
+        let forcing = self.forcing();
         let cfg = &self.config;
-        let (r, e, s) = ((cfg.rain * season.rain_mult()) * dt_days, (cfg.evaporation * season.evap_mult()) * dt_days, cfg.seepage * dt_days);
+        let (r, e, s) = (forcing.rain * dt_days, (cfg.evaporation * forcing.evaporation) * dt_days, cfg.seepage * dt_days);
         if (r == 0.0 && e == 0.0 && s == 0.0) || dt_days <= 0.0 {
             return;
         }
@@ -789,12 +832,15 @@ impl Water {
         let (mut rain, mut evap, mut seep) = (0.0f64, 0.0f64, 0.0f64);
         for i in 0..self.h.len() {
             let hh = self.h[i];
-            if hh <= 0.0 || lake[i].is_finite() {
+            if lake[i].is_finite() {
                 continue;
             }
-            let rr = if hh > WET_EPS { r } else { 0.0 };
+            // Infiltration absorbs light rain on dry ground. Sustained precipitation
+            // accumulates and starts overland flow through the same solver.
+            let rr = r;
             let ev = e.min(hh + rr);
-            let sp = s.min(hh + rr - ev);
+            let infiltration = if self.riverbed.as_slice()[i] < 0.5 && !self.canal.as_slice()[i] { s * 4.0 } else { s };
+            let sp = infiltration.min(hh + rr - ev);
             self.h[i] = hh + rr - ev - sp;
             rain += rr as f64;
             evap += ev as f64;
@@ -805,6 +851,20 @@ impl Water {
         self.books.seepage += seep;
         self.added_volume += rain;
         self.lost_volume += evap + seep;
+    }
+
+    fn update_riverbed(&mut self, dt: f32) {
+        for (i, bed) in self.riverbed.as_mut_slice().iter_mut().enumerate() {
+            if self.canal.as_slice()[i] {
+                *bed = 1.0;
+            } else if self.h[i] > 0.005 {
+                // Newly flooded turf becomes bare soil over half a day. Established beds
+                // remain exposed through a dry season; regrowth is deliberately slow.
+                *bed = (*bed + dt * 2.0).min(1.0);
+            } else {
+                *bed = (*bed - dt / 180.0).max(0.0);
+            }
+        }
     }
 
     /// Hands every pool's water back to its cells as ordinary still water.
@@ -962,7 +1022,6 @@ impl Water {
         if self.masks_dirty {
             self.rebuild_masks();
         }
-        self.refresh_sources();
         let n = self.n;
         let dx = self.cell_m;
         let c = (G * self.h_max.max(0.01)).sqrt();
@@ -1068,8 +1127,7 @@ impl Water {
     }
 
     fn src_total(&self) -> f64 {
-        let season = self.season();
-        self.sources.iter().map(|s| (s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0))) as f64 / DAY_S).sum()
+        self.source_total
     }
 
     fn publish(&mut self) {
@@ -1086,7 +1144,8 @@ impl Water {
             }
         } else {
             for y in 0..n {
-                for k in 0..self.rows[y].len() + self.pub_rows[y].len() {
+                let old = if self.rows[y] == self.pub_rows[y] { 0 } else { self.pub_rows[y].len() };
+                for k in 0..self.rows[y].len() + old {
                     let (a, b) = if k < self.rows[y].len() { self.rows[y][k] } else { self.pub_rows[y][k - self.rows[y].len()] };
                     self.publish_span(y, a as usize, b as usize);
                 }
@@ -1163,7 +1222,9 @@ impl Water {
             }
         }
         if !broken.is_empty() {
+            self.dissolve_pools();
             self.masks_dirty = true;
+            self.full_publish = true;
         }
         for i in broken {
             self.dam_height.as_mut_slice()[i] = 0.0;
@@ -1462,5 +1523,124 @@ mod tests {
         let head = w.z[(n / 2) * n + 30] + w.h[(n / 2) * n + 30] - crest;
         let theory = 1.5 * (q_per_m * q_per_m / G).cbrt();
         assert!((head - theory).abs() / theory < 0.15, "head {head:.4} m, critical-flow theory {theory:.4} m");
+    }
+
+    #[test]
+    fn rainfall_wets_dry_land_and_balances_infiltration() {
+        let (mut w, _) = tank(12, |_, _| 0.0, 0.04, false);
+        w.time_days = 45.0;
+        w.weather = Weather::Storm;
+        w.config.evaporation = 0.002;
+        w.config.seepage = 0.002;
+        w.apply_rain_and_losses(0.25);
+        assert!(w.h.iter().all(|&h| h > 0.01));
+        assert!((w.total_volume() - (w.added_volume - w.lost_volume)).abs() < 1e-6);
+        assert!(w.budget().seepage > 0.0);
+    }
+
+    #[test]
+    fn source_edits_with_the_same_count_refresh_flow_and_books() {
+        let (mut w, _) = tank(8, |_, _| 0.0, 0.04, false);
+        w.sources.push(Source { x: 1, y: 1, rate: 864.0, seasonality: 0.0 });
+        w.refresh_sources();
+        w.sources[0] = Source { x: 5, y: 5, rate: 1728.0, seasonality: 0.0 };
+        w.refresh_sources();
+        assert_eq!(w.src[9], 0.0);
+        assert!((w.src[45] - 0.02).abs() < 1e-7);
+        assert!((w.source_total - 0.02).abs() < 1e-7);
+    }
+
+    #[test]
+    fn excavated_and_flooded_beds_persist_after_drying() {
+        let (mut w, mut g) = tank(8, |_, _| 2.0, 0.04, false);
+        w.dig_canal(&mut g, &[(2, 2)], 1.0).unwrap();
+        w.h[27] = 0.3;
+        w.update_riverbed(0.5);
+        w.h[27] = 0.0;
+        w.update_riverbed(30.0);
+        assert_eq!(w.riverbed.as_slice()[18], 1.0);
+        assert!(w.riverbed.as_slice()[27] > 0.8);
+        assert_eq!(w.riverbed.as_slice()[0], 0.0);
+    }
+
+    #[test]
+    fn breaching_a_pooled_reservoir_releases_water_without_losing_mass() {
+        let (mut w, g) = tank(32, |_, _| 0.0, 0.04, false);
+        w.build_dam(&(0..32).map(|y| (16, y)).collect::<Vec<_>>(), 1.5).unwrap();
+        w.load_bed(&g);
+        for y in 0..32 { for x in 0..16 { w.h[y * 32 + x] = 1.0; } }
+        w.h_max = 1.0;
+        run(&mut w, 601.0);
+        assert!(w.pooled_cells() > 0);
+        let before = w.total_volume();
+        w.breach(16, 16).unwrap();
+        w.load_bed(&g);
+        run(&mut w, 120.0);
+        assert!(w.h[16 * 32 + 20] > 0.1, "breach must reach the dry downstream basin");
+        assert!((w.total_volume() - before).abs() / before < 1e-5);
+    }
+
+    #[test]
+    fn a_diagonal_canal_carries_water_to_its_outlet() {
+        let (mut w, mut g) = tank(24, |_, _| 2.0, 0.04, false);
+        let path = crate::sandbox::canal_line(&[(3, 3), (18, 18)]);
+        w.dig_canal(&mut g, &path, 1.0).unwrap();
+        w.load_bed(&g);
+        w.sources.push(Source { x: 3, y: 3, rate: 0.01 * DAY_S as f32, seasonality: 0.0 });
+        run(&mut w, 900.0);
+        assert!(w.h[18 * 24 + 18] > 0.1);
+        assert_eq!(w.h[12 * 24 + 3], 0.0, "canal should contain the water");
+        assert!((w.total_volume() - 9.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn excavating_a_settled_pool_cannot_create_water() {
+        let (mut w, mut g) = tank(24, |_, _| 1.0, 0.04, false);
+        fill_to(&mut w, 1.2);
+        run(&mut w, 601.0);
+        assert!(w.pooled_cells() > 0);
+        let before = w.total_volume();
+        let canal: Vec<_> = (2..22).flat_map(|y| (2..22).map(move |x| (x, y))).collect();
+        w.dig_canal(&mut g, &canal, 2.0).unwrap();
+        w.refresh(&g);
+        assert!((w.total_volume() - before).abs() < 0.001, "digging changed {} m3 into {} m3", before, w.total_volume());
+        run(&mut w, 100.0);
+        assert!((w.total_volume() - before).abs() / before < 1e-5);
+    }
+
+    #[test]
+    fn interior_lakes_store_water_instead_of_pinning_their_level() {
+        let mut world = crate::worldgen::fixture(1);
+        world.height.as_mut_slice().fill(2.0);
+        world.surface.as_mut_slice().fill(2.0);
+        world.river.as_mut_slice().fill(false);
+        world.lake.as_mut_slice().fill(false);
+        world.lake_level.as_mut_slice().fill(f32::NAN);
+        world.water_inputs.clear();
+        for y in 8..24 { for x in 8..24 {
+            *world.height.get_mut(x, y).unwrap() = 1.0;
+            *world.lake.get_mut(x, y).unwrap() = true;
+            *world.lake_level.get_mut(x, y).unwrap() = 2.0;
+        } }
+        let mut w = Water::from_world(&world);
+        assert!(w.lake_level.get(16, 16).unwrap().is_nan());
+        assert!((w.total_volume() - 256.0).abs() < 0.001);
+        w.dig_canal(&mut world.height, &[(16, 16)], 1.0).unwrap();
+        w.refresh(&world.height);
+        run(&mut w, 100.0);
+        assert!((w.total_volume() - 256.0).abs() < 0.001);
+        assert!(w.depth.get(16, 16).unwrap() > &1.5);
+    }
+
+    #[test]
+    fn rainfall_bookkeeping_is_independent_of_outer_frame_slices() {
+        let (mut whole, ground) = tank(8, |_, _| 0.0, 0.04, false);
+        whole.weather = Weather::Storm;
+        whole.time_days = 45.0;
+        let mut sliced = whole.clone();
+        whole.step(&ground, 300.0 / DAY_S as f32);
+        for _ in 0..30 { sliced.step(&ground, 10.0 / DAY_S as f32); }
+        assert!((whole.total_volume() - sliced.total_volume()).abs() < 1e-5, "whole {} sliced {}", whole.total_volume(), sliced.total_volume());
+        assert!((whole.budget().rain - sliced.budget().rain).abs() < 1e-5);
     }
 }

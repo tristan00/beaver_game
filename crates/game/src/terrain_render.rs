@@ -13,7 +13,6 @@ use sim::SimState;
 
 pub const CELL_SIZE: f32 = 1.0;
 pub const CHUNK: usize = 16;
-pub const YEAR_DAYS: f64 = sim::calendar::YEAR_DAYS;
 const REBUILD_BUDGET: usize = 10;
 const LOD1_DISTANCE: f32 = 150.0;
 pub const WET_EPS: f32 = 0.02;
@@ -47,7 +46,7 @@ fn season_override() -> Option<f32> {
 
 impl Plugin for TerrainRenderPlugin {
     fn build(&self, app: &mut App) {
-        let start = season_override().unwrap_or(0.3);
+        let start = season_override().unwrap_or(0.0);
         bevy::asset::embedded_asset!(app, "terrain_shadow.wesl");
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default());
         app.insert_resource(Season { phase: start })
@@ -83,8 +82,6 @@ pub struct Palette {
     pub sun_lux: f32,
     pub ambient: Rgb,
     pub ambient_lux: f32,
-    pub water_shallow: Rgb,
-    pub water_deep: Rgb,
     pub ice: Rgb,
     pub winter: f32,
 }
@@ -98,8 +95,6 @@ const SUN: [Rgb; 4] = [pal::SUN, pal::SUN, pal::SUN_AUTUMN, rgb(0xF0F2FF)];
 const SUN_LUX: [f32; 4] = [1_300.0, 1_400.0, 1_250.0, 1_000.0];
 const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0.93], [0.96, 0.96, 0.98]];
 pub const AMBIENT_LUX: f32 = 4_400.0;
-const WATER_SHALLOW: [Rgb; 4] = [pal::WATER_SHALLOW, pal::WATER_SHALLOW, rgb(0x7CCBD0), rgb(0x9CCFE2)];
-const WATER_DEEP: [Rgb; 4] = [pal::WATER_DEEP, pal::WATER_DEEP, rgb(0x3C84A0), rgb(0x5A9CC0)];
 
 fn cyc<T: Copy>(k: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
     let p = phase.rem_euclid(1.0) * 4.0 - 0.5;
@@ -128,23 +123,20 @@ impl Palette {
             sun_lux: cyc(&SUN_LUX, phase, |a, b, t| a + (b - a) * t),
             ambient: c(&AMBIENT),
             ambient_lux: AMBIENT_LUX,
-            water_shallow: c(&WATER_SHALLOW),
-            water_deep: c(&WATER_DEEP),
             ice: [0.86, 0.94, 0.99],
             winter: 1.0 - smooth(0.04, 0.2, d),
         }
     }
 }
 
-fn update_season(sim: Res<Sim>, mut season: ResMut<Season>, mut started: Local<Option<f32>>) {
+fn update_season(sim: Res<Sim>, mut season: ResMut<Season>) {
     if let Some(p) = season_override() {
         if season.phase != p {
             season.phase = p;
         }
         return;
     }
-    let base = *started.get_or_insert(season.phase);
-    let phase = ((base as f64 + sim.0.time_days / YEAR_DAYS).rem_euclid(1.0)) as f32;
+    let phase = sim::calendar::year_phase(sim.0.time_days);
     let next = Season { phase };
     if next.bucket() != season.bucket() {
         *season = next;
@@ -192,13 +184,21 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             // Terrain colour needs depth only to a few centimetres (wet ground, submerged bed);
             // water meshes follow it to 2 mm.
             let d = at(&s.water.depth, x, y);
-            let dq = if !with_veg { (d * 500.0).round() as i32 } else if d <= WET_EPS { 0 } else { 1 + (d * 25.0) as i32 };
+            let dq = if !with_veg { (d * 500.0).round() as i32 } else { (d.min(0.03) * 100.0).round() as i32 };
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
+            v ^= (at(&s.water.dam_height, x, y).to_bits() as u64).rotate_left(9);
             if with_veg {
                 let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
                 v ^= (vq as u32 as u64).rotate_left(17);
-                let bq = (dried_bed(s, x, y) * 6.0).round() as u64;
+                let bq = (at(&s.water.riverbed, x, y) * 16.0).round() as u64;
                 v ^= bq.rotate_left(41);
+            } else {
+                let ix = x.clamp(0, s.height.width() as i32 - 1) as usize;
+                let iy = y.clamp(0, s.height.height() as i32 - 1) as usize;
+                let (vx, vy) = *s.water.velocity.get(ix, iy).unwrap();
+                v ^= ((vx * 20.0).round() as i32 as u64).rotate_left(13);
+                v ^= ((vy * 20.0).round() as i32 as u64).rotate_left(37);
+                v ^= ((at(&s.water.ice, x, y) * 100.0).round() as u64).rotate_left(51);
             }
             h = (h ^ v).wrapping_mul(0x100_0000_01b3);
             h ^= h >> 29;
@@ -209,6 +209,23 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
 
 pub fn lod_step(cam: Vec3, centre: Vec3) -> usize {
     if cam.distance(centre) > LOD1_DISTANCE { 2 } else { 1 }
+}
+
+/// Never simplify a one-cell stream or excavated canal into its surrounding banks.
+/// The halo also keeps the terrain on both sides of a chunk seam at the same resolution.
+pub fn hydrology_lod(s: &SimState, cx: usize, cy: usize, cam: Vec3) -> usize {
+    if lod_step(cam, chunk_centre(s, cx, cy)) == 1 {
+        return 1;
+    }
+    for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
+        for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
+            let i = y * s.height.width() + x;
+            if s.water.depth.as_slice()[i] > 0.003 || s.water.riverbed.as_slice()[i] > 0.1 || s.water.canal.as_slice()[i] {
+                return 1;
+            }
+        }
+    }
+    2
 }
 
 pub fn chunk_centre(s: &SimState, cx: usize, cy: usize) -> Vec3 {
@@ -328,9 +345,10 @@ pub fn spawn_terrain(
     let (cols, rows) = chunk_dims(&sim.0);
     chunks.slots = (0..cols * rows).map(|_| Slot::default()).collect();
     let campos = cam.iter().next().map(|t| t.translation).unwrap_or(Vec3::new(0.0, 100.0, 100.0));
+    let range = terrain_range(&sim.0);
     for cy in 0..rows {
         for cx in 0..cols {
-            rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, true);
+            rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, true, range);
         }
     }
 }
@@ -347,8 +365,9 @@ fn rebuild_chunk(
     cy: usize,
     cols: usize,
     force: bool,
+    range: (f32, f32),
 ) -> bool {
-    let step = lod_step(campos, chunk_centre(s, cx, cy));
+    let step = hydrology_lod(s, cx, cy, campos);
     let hash = region_hash(s, cx, cy, 2, season.bucket() as u64, true);
     let idx = cy * cols + cx;
     let slot = &mut chunks.slots[idx];
@@ -357,7 +376,7 @@ fn rebuild_chunk(
     }
     MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let built = std::time::Instant::now();
-    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, step);
+    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, step, range);
     crate::perf::TERRAIN_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     match slot.entity {
         Some(_) => {
@@ -389,6 +408,7 @@ fn update_terrain_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
     mut backlog: ResMut<MeshBacklog>,
+    mut cursor: Local<usize>,
 ) {
     backlog.terrain = true;
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
@@ -397,14 +417,17 @@ fn update_terrain_chunks(
         return;
     }
     let mut budget = REBUILD_BUDGET;
-    for cy in 0..rows {
-        for cx in 0..cols {
-            if budget == 0 {
-                return;
-            }
-            if rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, false) {
-                budget -= 1;
-            }
+    let total = cols * rows;
+    let range = terrain_range(&sim.0);
+    for k in 0..total {
+        let idx = (*cursor + k) % total;
+        let (cx, cy) = (idx % cols, idx / cols);
+        if budget == 0 {
+            *cursor = idx;
+            return;
+        }
+        if rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, false, range) {
+            budget -= 1;
         }
     }
     backlog.terrain = budget < REBUILD_BUDGET;
@@ -493,7 +516,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
             }
         }
     }
-    let submerged = smooth(WET_EPS, 0.4, depth);
+    let submerged = smooth(0.003, 0.03, depth);
 
     let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
     let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
@@ -512,7 +535,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.7);
     let channel = stream_bed(s, x, y);
     c = mix(c, mix(STREAM_GRAVEL, STREAM_MUD, smooth(0.0, 0.3, depth)), channel);
-    let bed = mix([0.56, 0.78, 0.66], mix(p.water_shallow, p.water_deep, 0.6), (depth / 2.5).max(0.0).sqrt().min(1.0));
+    let bed = mix(STREAM_GRAVEL, STREAM_MUD, smooth(0.0, 0.35, depth));
     c = mix(c, bed, submerged);
     let dried = dried_bed(s, x, y) * (1.0 - submerged);
     if dried > 0.0 {
@@ -524,7 +547,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.0);
     c = mix(c, p.snow, cover * (1.0 - submerged));
     let lo = mix(p.grass_deep, STONE_SHADE_ALBEDO, rock);
-    let f = 1.0 - submerged;
+    let f = (1.0 - submerged) * (1.0 - channel) * (1.0 - dried);
     let lift = |v: f32, floor: f32| v + (v.max(floor * 1.05) - v) * f;
     [lift(c[0], lo[0]), lift(c[1], lo[1]), lift(c[2], lo[2])]
 }
@@ -533,51 +556,103 @@ const STREAM_GRAVEL: Rgb = [0.55, 0.50, 0.42];
 const STREAM_MUD: Rgb = [0.36, 0.31, 0.25];
 
 fn stream_bed(s: &SimState, x: i32, y: i32) -> f32 {
-    let n = s.world.size as i32;
-    let mut best = 0.0f32;
-    for dy in -2..=2 {
-        for dx in -2..=2 {
-            let (i, j) = (x + dx, y + dy);
-            if !(0..n).contains(&i) || !(0..n).contains(&j) || !s.world.river.get(i as usize, j as usize).copied().unwrap_or(false) {
-                continue;
-            }
-            let half = sim::water::bankfull(*s.world.river_flow.get(i as usize, j as usize).unwrap()).0 / s.world.cell_m * 0.5;
-            let d = ((dx * dx + dy * dy) as f32).sqrt();
-            best = best.max((half + 0.5 - d).clamp(0.0, 1.0));
+    let mut bed = at(&s.water.riverbed, x, y).max(smooth(0.003, 0.03, at(&s.water.depth, x, y)));
+    let ground = at(&s.height, x, y);
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        let wet = at(&s.water.depth, x + dx, y + dy);
+        let level = at(&s.height, x + dx, y + dy) + wet;
+        if wet > 0.003 && ground < level + 0.35 {
+            bed = bed.max(at(&s.water.riverbed, x + dx, y + dy) * 0.65);
         }
     }
-    best
+    bed
 }
 
 fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
     if at(&s.water.depth, x, y) > WET_EPS {
         return 0.0;
     }
-    smooth(0.5, 20.0, at(&s.ecology.flood_days, x, y))
+    at(&s.water.riverbed, x, y)
 }
 
-pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Mesh {
-    let maxh = max_height(s);
-    let range = (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, maxh);
+fn terrain_range(s: &SimState) -> (f32, f32) {
+    (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, max_height(s))
+}
+
+pub fn canal_subdivisions(s: &SimState, cx: usize, cy: usize) -> usize {
+    for y in (cy * CHUNK).saturating_sub(1)..((cy + 1) * CHUNK + 2).min(s.height.height()) {
+        for x in (cx * CHUNK).saturating_sub(1)..((cx + 1) * CHUNK + 2).min(s.height.width()) {
+            if *s.water.canal.get(x, y).unwrap() { return 4; }
+        }
+    }
+    1
+}
+
+pub fn terrain_sample(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
+    let st = step as f32;
+    let (gx, gy) = ((x / st).floor(), (y / st).floor());
+    let (u, v) = (x / st - gx, y / st - gy);
+    let (ix, iy) = (gx as i32 * step as i32, gy as i32 * step as i32);
+    let h = |dx: i32, dy: i32| at(&s.height, ix + dx * step as i32, iy + dy * step as i32);
+    if u + v <= 1.0 {
+        let (a, b, c) = (h(0, 0), h(1, 0), h(0, 1));
+        a + u * (b - a) + v * (c - a)
+    } else {
+        let (b, c, e) = (h(1, 0), h(0, 1), h(1, 1));
+        e + (1.0 - u) * (c - e) + (1.0 - v) * (b - e)
+    }
+}
+
+/// Give excavated cells a visible floor instead of a V-shaped point. This is a
+/// local reconstruction of the rendered bed; simulation heights/volumes stay unchanged.
+pub fn canal_ground(s: &SimState, x: f32, y: f32) -> f32 {
+    let base = terrain_sample(s, x, y, 1);
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (mut sum, mut weight) = (0.0, 0.0);
+    for dy in 0..=1 { for dx in 0..=1 {
+        let (cx, cy) = (ix + dx, iy + dy);
+        if cx < 0 || cy < 0 || !s.water.canal.get(cx as usize, cy as usize).copied().unwrap_or(false) { continue; }
+        let d = (x - cx as f32).abs().max((y - cy as f32).abs());
+        let w = 1.0 - smooth(0.25, 0.75, d);
+        sum += at(&s.height, cx, cy) * w;
+        weight += w;
+    } }
+    if weight > 0.0 { base + (sum / weight - base) * weight.min(1.0) } else { base }
+}
+
+pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize, range: (f32, f32)) -> Mesh {
+    let maxh = range.1;
     let (w, d) = (s.height.width() as i32, s.height.height() as i32);
-    let n = CHUNK / step;
+    let subdivisions = canal_subdivisions(s, cx, cy);
+    let n = CHUNK / step * subdivisions;
+    let spacing = step as f32 / subdivisions as f32;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     let st = step as i32;
+    // Terrain colour is low frequency; interpolate its metre samples instead of
+    // recomputing vegetation/noise for every refined canal vertex.
+    let base_side = CHUNK / step + 1;
+    let mut colours = Vec::with_capacity(base_side * base_side);
+    for j in 0..base_side { for i in 0..base_side {
+        colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32));
+    } }
     let (mut pos, mut nor, mut col, mut uv) = (vec![], vec![], vec![], vec![]);
-    let mut vert = |x: i32, y: i32, drop: f32, shade: f32| {
-        let (wx, wz) = world_pos(s, x, y);
-        let h = at(&s.height, x, y);
+    let mut vert = |x: f32, y: f32, drop: f32, shade: f32| {
+        let (wx, wz) = ((x - w as f32 / 2.0) * CELL_SIZE, (y - d as f32 / 2.0) * CELL_SIZE);
+        let h = if subdivisions > 1 { canal_ground(s, x, y) } else { at(&s.height, x as i32, y as i32) };
         pos.push([wx, h - drop, wz]);
-        let (gx, gz) = smooth_gradient(s, x, y, st);
+        let (gx, gz) = smooth_gradient(s, x.round() as i32, y.round() as i32, st);
         nor.push(Vec3::new(-gx, 1.0, -gz).normalize().to_array());
-        let c = vertex_color(s, p, range, x, y);
+        let (fx, fy) = ((x - x0 as f32) / step as f32, (y - y0 as f32) / step as f32);
+        let (i, j) = ((fx.floor() as usize).min(base_side - 1), (fy.floor() as usize).min(base_side - 1));
+        let get = |di: usize, dj: usize| colours[(j + dj).min(base_side - 1) * base_side + (i + di).min(base_side - 1)];
+        let c = mix(mix(get(0, 0), get(1, 0), fx.fract()), mix(get(0, 1), get(1, 1), fx.fract()), fy.fract());
         col.push(lin([c[0] * shade, c[1] * shade, c[2] * shade], 1.0));
         uv.push([x as f32 / w as f32, y as f32 / d as f32]);
     };
     let side = n + 1;
     for j in 0..=n {
         for i in 0..=n {
-            vert(x0 + (i * step) as i32, y0 + (j * step) as i32, 0.0, 1.0);
+            vert(x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, 0.0, 1.0);
         }
     }
     let mut idx: Vec<u32> = Vec::with_capacity(n * n * 6);
@@ -602,7 +677,7 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         let base = (side * side + e * (n + 1)) as u32;
         for k in 0..=n {
             let (i, j) = f(k);
-            vert(x0 + (i * step) as i32, y0 + (j * step) as i32, skirt, 0.78);
+            vert(x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, skirt, 0.78);
         }
         for k in 0..n {
             let (i0, j0) = f(k);
@@ -682,7 +757,8 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
             let mut ok = true;
             for dy in -1..=2 {
                 for dx in -1..=2 {
-                    ok &= at(&s.water.depth, x + dx, y + dy) <= WET_EPS;
+                    ok &= at(&s.water.depth, x + dx, y + dy) <= 0.003;
+                    ok &= at(&s.water.riverbed, x + dx, y + dy) < 0.2;
                 }
             }
             let t = at(&s.height, x, y) / maxh;

@@ -271,6 +271,12 @@ pub fn sync_sim_resources(
     let mut live: HashSet<ResourceId> = HashSet::with_capacity(sim.resources.items.len());
     let no_trees = std::env::var_os("BC_NO_TREES").is_some();
     for r in sim.resources.items.iter().filter(|r| !(no_trees && r.kind == ResourceKind::Tree)) {
+        if r.kind == ResourceKind::Plant && (
+            sim.water.depth.get(r.cell.0, r.cell.1).is_some_and(|&d| d > 0.003)
+            || sim.water.riverbed.get(r.cell.0, r.cell.1).is_some_and(|&b| b > 0.2)
+        ) {
+            continue;
+        }
         live.insert(r.id);
         let sig = res_sig(r);
         match st.res.get(&r.id).copied() {

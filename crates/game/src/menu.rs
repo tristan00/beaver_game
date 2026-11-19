@@ -67,7 +67,7 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().resource::<Cli>().clone();
         let forced = std::env::var("BC_MENU").ok();
-        let scripted = cli.plain_world() || cli.demo_pond || (cli.screenshot.is_some() && forced.is_none());
+        let scripted = cli.plain_world() || cli.demo_pond || cli.sandbox || (cli.screenshot.is_some() && forced.is_none());
         let first = match forced.as_deref() {
             Some("pause") => Some(Screen::Pause),
             Some("settings") => Some(Screen::Settings),
@@ -78,11 +78,7 @@ impl Plugin for MenuPlugin {
             screen: first,
             back_to: if first == Some(Screen::Pause) { Screen::Pause } else { Screen::Start },
             was_paused: true,
-            map: match cli.map.as_deref() {
-                Some("generated") => MapChoice::Generated(cli.seed),
-                Some(id) => MapChoice::Real(id.to_string()),
-                None => MapChoice::first(),
-            },
+            map: app.world().resource::<CurrentMap>().0.clone(),
             ui_scale: 1.0,
             auto_pause: true,
             seen_urgent: Vec::new(),

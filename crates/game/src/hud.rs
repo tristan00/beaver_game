@@ -635,7 +635,7 @@ fn world_input(
                 hud.dam_crest = None;
             } else if mouse.pressed(MouseButton::Left) {
                 if let Some(a) = hud.drag_from {
-                    let line = build_logic::line_cells(a, cell);
+                    let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&[a, cell]) } else { build_logic::line_cells(a, cell) };
                     if line != hud.line {
                         hud.line = line;
                     }

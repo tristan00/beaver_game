@@ -295,16 +295,17 @@ pub fn dam_line_at(sim: &SimState, seed: Cell) -> Vec<Cell> {
         return Vec::new();
     }
     let mut out = vec![seed];
+    let mut seen = std::collections::HashSet::from([seed]);
     let mut i = 0;
-    while i < out.len() && out.len() < MAX_DAM_CELLS {
+    while i < out.len() {
         let (x, y) = out[i];
         for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
             let (nx, ny) = (x as i64 + dx, y as i64 + dy);
-            if nx < 0 || ny < 0 || out.len() >= MAX_DAM_CELLS {
+            if nx < 0 || ny < 0 {
                 continue;
             }
             let c = (nx as usize, ny as usize);
-            if sim.water.has_dam(c.0, c.1) && !out.contains(&c) {
+            if sim.water.has_dam(c.0, c.1) && seen.insert(c) {
                 out.push(c);
             }
         }
@@ -312,6 +313,21 @@ pub fn dam_line_at(sim: &SimState, seed: Cell) -> Vec<Cell> {
     }
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod dam_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_scripted_long_dam_is_one_component_without_merging_a_second_dam() {
+        let mut s = SimState::new(1);
+        let long: Vec<_> = (5..105).map(|x| (x, 10)).collect();
+        s.water.build_dam(&long, 1.0).unwrap();
+        s.water.build_dam(&[(50, 20), (51, 20)], 1.0).unwrap();
+        assert_eq!(dam_line_at(&s, (50, 10)), long);
+        assert_eq!(dam_line_at(&s, (50, 20)).len(), 2);
+    }
 }
 
 pub fn dam_cell_of(sim: &SimState, id: BuildingId) -> Option<Cell> {
