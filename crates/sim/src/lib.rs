@@ -98,12 +98,14 @@ pub struct StepTimings {
     pub colony_s: f64,
     pub buildings_s: f64,
     pub agents_s: f64,
+    pub shipping_s: f64,
+    pub fog_s: f64,
     pub other_s: f64,
 }
 
 impl StepTimings {
     pub fn total_s(&self) -> f64 {
-        self.water_s + self.ecology_s + self.colony_s + self.buildings_s + self.agents_s + self.other_s
+        self.water_s + self.ecology_s + self.colony_s + self.buildings_s + self.agents_s + self.shipping_s + self.fog_s + self.other_s
     }
 }
 
@@ -292,9 +294,11 @@ impl SimState {
         stock::reconcile(self);
         lap(&mut t.other_s);
         agents::step(self, dt_days);
-        shipping::step(self, dt_days);
-        self.explore();
         lap(&mut t.agents_s);
+        shipping::step(self, dt_days);
+        lap(&mut t.shipping_s);
+        self.explore();
+        lap(&mut t.fog_s);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         for (b, g, a) in std::mem::take(&mut self.buildings.crafted) {

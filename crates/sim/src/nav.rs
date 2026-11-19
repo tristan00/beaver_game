@@ -71,6 +71,10 @@ pub struct NavGrid {
     pub lodge: Grid<u32>,
     region: Vec<u32>,
     regions_ok: bool,
+    /// What the regions were last labelled from (each cell solid, open or part of a lodge, and the
+    /// lodges): relabel only when it differs. Water coming and going does not change regions.
+    labelled: Vec<u8>,
+    labelled_lodge: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -134,10 +138,32 @@ impl NavGrid {
             lodge: Grid::new(width, height, 0),
             region: Vec::new(),
             regions_ok: false,
+            labelled: Vec::new(),
+            labelled_lodge: Vec::new(),
         }
     }
 
     pub fn label_regions(&mut self) {
+        // Regions depend only on the surface and the lodges; the nav grid is rebuilt every step,
+        // but they rarely change.
+        let class = |s: &Surface| match s {
+            Surface::Solid => 1u8,
+            Surface::LodgeInside => 2,
+            Surface::LodgeEntrance => 3,
+            _ => 0,
+        };
+        let same = self.region.len() == self.labelled.len()
+            && self.labelled.len() == self.surface.as_slice().len()
+            && self.labelled.iter().zip(self.surface.as_slice()).all(|(&c, s)| c == class(s))
+            && self.labelled_lodge.as_slice() == self.lodge.as_slice();
+        if same {
+            self.regions_ok = true;
+            return;
+        }
+        self.labelled.clear();
+        self.labelled.extend(self.surface.as_slice().iter().map(class));
+        self.labelled_lodge.clear();
+        self.labelled_lodge.extend_from_slice(self.lodge.as_slice());
         let (w, h) = (self.surface.width(), self.surface.height());
         let surf = self.surface.as_slice();
         let mut region = vec![0u32; w * h];
@@ -208,13 +234,13 @@ impl NavGrid {
     pub fn rebuild(&mut self, sim: &crate::SimState) {
         let w = self.surface.width();
         self.lodge.as_mut_slice().fill(0);
-        let depth = &sim.water.depth;
-        for (i, slot) in self.surface.as_mut_slice().iter_mut().enumerate() {
-            let (x, y) = (i % w, i / w);
-            let wet = depth.get(x, y).is_some_and(|&d| d > crate::buildings::WET_DEPTH);
-            *slot = if sim.water.has_dam(x, y) {
+        let _ = w;
+        let (depth, dam, canal) = (sim.water.depth.as_slice(), sim.water.dam_height.as_slice(), sim.water.canal.as_slice());
+        for (((slot, &d), &dm), &cn) in self.surface.as_mut_slice().iter_mut().zip(depth).zip(dam).zip(canal) {
+            let wet = d > crate::buildings::WET_DEPTH;
+            *slot = if dm > 0.0 {
                 Surface::Dam
-            } else if wet && sim.water.canal.get(x, y) == Some(&true) {
+            } else if wet && cn {
                 Surface::Canal
             } else if wet {
                 Surface::Water

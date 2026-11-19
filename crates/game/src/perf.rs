@@ -93,7 +93,7 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
             pool_samples: wt.pool_samples - w.water0.pool_samples,
         };
         info!(
-            "perf: {:.0} fps (frame avg {:.1} ms, max {:.1} ms) | speed x{:.1} of x{:.0} wanted | per second: sim {:.1} ms = water {:.1} + ecology {:.1} + colony {:.1} + buildings {:.1} + agents {:.1} + other {:.1}; meshes water {:.1} terrain {:.1}",
+            "perf: {:.0} fps (frame avg {:.1} ms, max {:.1} ms) | speed x{:.1} of x{:.0} wanted | per second: sim {:.1} ms = water {:.1} + ecology {:.1} + colony {:.1} + buildings {:.1} + agents {:.1} + shipping {:.1} + fog {:.1} + other {:.1}; meshes water {:.1} terrain {:.1}",
             w.frames as f64 / secs,
             secs * 1000.0 / w.frames as f64,
             w.frame_max * 1000.0,
@@ -105,6 +105,8 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
             ms(st.colony_s, w.sim0.colony_s),
             ms(st.buildings_s, w.sim0.buildings_s),
             ms(st.agents_s, w.sim0.agents_s),
+            ms(st.shipping_s, w.sim0.shipping_s),
+            ms(st.fog_s, w.sim0.fog_s),
             ms(st.other_s, w.sim0.other_s),
             wm,
             tm,
