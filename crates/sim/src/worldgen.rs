@@ -421,17 +421,6 @@ pub fn inflow_rate(km2: f32, cell_m: f32) -> f32 {
     WATER_PER_CATCHMENT_CELL * km2.max(0.0) * 1.0e6 / (cell_m * cell_m)
 }
 
-fn carve_bankfull(height: &mut [f32], surface: &[f32], flow: &[Option<usize>], river: &[bool], q_mean: &[f32], order: &[usize]) {
-    let mut from_above = vec![f32::INFINITY; height.len()];
-    for &i in order.iter().filter(|&&i| river[i]) {
-        let bed = (surface[i] - crate::water::bankfull(q_mean[i]).1).min(from_above[i] - 1.0e-3);
-        height[i] = height[i].min(bed);
-        if let Some(t) = flow[i].filter(|&t| river[t]) {
-            from_above[t] = from_above[t].min(bed);
-        }
-    }
-}
-
 pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Result<World, WorldError> {
     let n = size;
     if n < MIN_SIZE || raw.len() != n * n || raw.iter().any(|h| !h.is_finite()) || map.cover.is_some_and(|c| c.len() != n * n) {
@@ -444,7 +433,7 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     cut_culverts(&mut raw, n, cell_m, map.inflows, &lake_level);
     let (surface, flow) = fill_depressions(&raw, n, &inflow_walls(n, cell_m, map.inflows), &lake_level);
     let lake = find_lakes(&raw, &surface, n, cell_m);
-    let mut height: Vec<f32> = (0..n * n).map(|i| if lake[i] { raw[i] } else { surface[i] }).collect();
+    let height: Vec<f32> = raw.clone();
     let mut order: Vec<usize> = (0..n * n).collect();
     order.sort_by(|&a, &b| surface[b].total_cmp(&surface[a]).then(a.cmp(&b)));
     let mut acc = accumulate(&order, &flow);
@@ -487,7 +476,6 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     for comp in components(&lake, n).into_iter().filter(|c| c.iter().all(|&i| !on_path[i])) {
         comp.iter().for_each(|&i| pond[i] = true);
     }
-    carve_bankfull(&mut height, &surface, &flow, &river, &river_flow, &order);
     if river.iter().filter(|r| **r).count() < 20 {
         return Err(fail("fewer than 20 river cells".into()));
     }

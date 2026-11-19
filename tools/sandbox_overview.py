@@ -7,7 +7,7 @@ def load(path):
     n = int(np.frombuffer(raw[:4], "<u4")[0])
     cell = float(np.frombuffer(raw[4:8], "<f4")[0])
     layers = np.frombuffer(raw[8:], "<f4").reshape(-1, n, n)
-    names = ["ground", "dam", "depth", "width", "discharge", "river", "canal", "channel", "bank"]
+    names = ["ground", "dam", "depth", "width", "discharge", "river", "canal", "channel", "speed"]
     return n, cell, dict(zip(names, layers))
 
 def render(path, out, scale=2, grid=64, box=None):

@@ -119,7 +119,7 @@ pub fn dump(s: &SimState) -> Vec<u8> {
     let river: Vec<f32> = s.world.river.as_slice().iter().map(|&r| if r { 1.0 } else { 0.0 }).collect();
     let flag = |g: &crate::Grid<bool>| -> Vec<f32> { g.as_slice().iter().map(|&r| if r { 1.0 } else { 0.0 }).collect() };
     let (canal, channel) = (flag(&w.canal), flag(&w.channel));
-    let bank: Vec<f32> = (0..w.depth.as_slice().len()).map(|i| w.bank_depth(i)).collect();
+    let bank: Vec<f32> = w.velocity.as_slice().iter().map(|v| (v.0 * v.0 + v.1 * v.1).sqrt()).collect();
     for layer in [s.height.as_slice(), w.dam_height.as_slice(), w.depth.as_slice(), w.width.as_slice(), w.discharge.as_slice(), &river, &canal, &channel, &bank] {
         for v in layer {
             out.extend_from_slice(&v.to_le_bytes());
@@ -261,7 +261,7 @@ pub fn run_script(text: &str) -> Result<(SimState, Report), String> {
                 let d: f64 = number(w.get(1), "days").map_err(err)? as f64;
                 let t = std::time::Instant::now();
                 run_days(s, d);
-                report.lines.push(say(s, format!("ran {d} days in {:.1} s", t.elapsed().as_secs_f32())));
+                report.lines.push(say(s, format!("ran {d} days in {:.1} s ({} physics steps so far)", t.elapsed().as_secs_f32(), s.water.steps_taken)));
             }
             "probe" => {
                 let c = cell(w.get(1).ok_or_else(|| err("missing cell".into()))?).map_err(err)?;

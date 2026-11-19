@@ -1,102 +1,87 @@
-# Water model: audit against how streams work, and the model that replaces it
+# Water model
 
-Maps are 512 m windows of 1 m cells from 1 m lidar, heights in metres. A game day is a real day
-(seasons are 30 days); at 1x speed one game day passes in about 5 real minutes (300x real time), the
-sim steps one game minute at a time, and beavers walk 0.5 m/s and swim 1 m/s.
+Maps are 512 m windows of 1 m cells from 1 m lidar, heights in metres.
 
-## Audit of the old engine (2D "virtual pipe" model) and the maps it ran on
+## Physics
 
-Each line: what the engine did, what a real stream does.
+Water is simulated with the two-dimensional shallow-water (Saint-Venant) equations on the 1 m
+grid: conservation of mass and of momentum in x and y, with gravity, the pressure of the water
+column, advection of momentum and Manning bed friction.
 
-### Flow and speed
-1. **Flow law.** A face passed flow in proportion to the surface drop times the depth (linear in
-   slope and depth). Real open-channel flow follows Manning: discharge per width grows with depth
-   to the 5/3 power and slope to the 1/2. Consequence: depth fell as 1/slope, so steep reaches
-   became films of a few millimetres and flat reaches ran metres deep. Real depth varies only as
-   slope^-0.3 (a 50x steeper reach is ~3x shallower, not 50x).
-2. **Capacity cap.** Each face moved at most 0.24 of the surface drop per substep, whatever the
-   depth: a deeper river could not carry more. Real channels carry far more as they deepen.
-3. **Speed.** Water crept a few cells per substep-day budget; a river took days to cross 500 m.
-   Real stream water moves 0.2-1 m/s and crosses a 512 m map in 10-40 minutes, i.e. at game
-   time scale a river is always in equilibrium with its inflow.
-4. **Discharge.** Rivers carried 1-8 "units"/day (16-130 m3/day). A 1 km2 catchment in these
-   regions yields about 0.01 m3/s mean (about 315 mm of runoff a year), 860 m3/day: the game ran
-   10-50x too little water, chosen only so the slow pipe model would not overflow.
-5. **Seasons.** Inflow followed 10% of the snowmelt swing. Real boreal/alpine streams run about 3x
-   the mean in the spring freshet and a third of it in late summer and under winter ice.
+* **Scheme.** First-order finite volumes. Fluxes across each cell face come from the HLL
+  approximate Riemann solver. The bed under each face is the higher of the two cells' beds, and
+  the water depth on each side is reconstructed against it (hydrostatic reconstruction, Audusse et
+  al. 2004). Still water over any bed therefore stays exactly still, a step in the bed (a dam
+  face, a bank) acts as a weir, and a cell's depth never goes negative.
+* **Steps in the bed.** When water rises onto a higher face, the reconstruction keeps the flow
+  per metre (velocity rises as the water thins) rather than the deep-water velocity, capped at
+  the shallow-water wave speed. Without this a first-order scheme loses about a third of the head
+  over a sharp-crested sill.
+* **Friction.** Manning, n = 0.04 (natural stream), applied semi-implicitly so thin films on steep
+  ground stay stable.
+* **Time step.** Explicit, CFL 0.45 on the fastest wave (|u| + sqrt(g h)), at most 2 s. Typically
+  0.1 to 0.4 s of physical time per step.
+* **Cost.** Only 16 x 16 m tiles holding water (and their neighbours) are computed, in parallel.
+  On Telemark the solver runs about 1000 s of physics per real second with streams only, less
+  with deep ponds. The game at 1x needs 288 s per second; faster game speeds run as fast as the
+  physics allows.
 
-### Channels
-6. **Width.** Every channel was a whole 4 m cell. Real streams of 0.2-25 km2 are 0.5-6 m wide,
-   growing as the square root of their bankfull flow (hydraulic geometry).
-7. **Wetted width.** The water filled the cell or nothing. A real stream at low flow occupies part
-   of its bed (wetted width grows as flow^0.26 at a station); the rest of the bed is wet gravel.
-8. **Depth.** Channels were cut 0.3-0.7 m whatever the stream, then steepened through flat ground
-   so the slow model could pass its flow (trenches up to 2 m). Real bankfull depth is 0.2-0.6 m for
-   these streams and follows the landscape.
-9. **Diagonal flow.** Water could only cross cell faces, so diagonal reaches ran through lowered
-   corner cells, doubling path length and halving capacity there.
+Nothing about where water goes, how wide or deep it is, or how fast it moves is prescribed: it
+follows from the terrain, the dams and canals, and the inflows.
 
-### What a player sees
-10. **Thin water drawn as ground.** Cells under 1 cm drew no water and no bed: a stream entering
-    over a steep reach was invisible and appeared to start mid-slope ("a river from nowhere").
-    A real stream always shows: a bed of wet stones or mud and a ribbon of moving water, narrow
-    and fast in riffles, wider and slower in pools.
-11. **No stream bed.** Nothing marks where a channel runs when the flow is low.
+## Terrain
 
-### Ponds, dams, floods
-12. **Pond filling.** A beaver pond of a few hundred cubic metres took weeks; on real inflow it
-    fills in one to three days.
-13. **Spill and wear.** Dam wear compared the crest with any neighbouring surface, dry banks
-    included, and treated a few centimetres of ordinary spill as erosion. Real dams wear from
-    overtopping floods (head over the crest from the weir law), not from their own trickle.
-14. **Leakage.** Dams were watertight. Real beaver dams leak; fine for now (documented).
-15. **Floods.** Overbank flow came from the pipe model spreading water, not from flow exceeding
-    the channel's bankfull capacity.
+The bed is the lidar terrain as measured (no carved channels, no filled hollows), plus dam
+heights. Two map corrections are applied when a map is built:
 
-### Maps
-16. **Scale** (fixed earlier): 20 m cells with a 40-cell river threshold made rivers of 1.6 ha
-    gullies; now 4 m cells and rivers only from real catchments entering across the edge.
-17. **No growth downstream.** A river carried only what entered at the edge. Real streams gain
-    water from the land they drain on the way (lateral inflow), without new streams starting.
+* **Culverts.** Bare-earth lidar keeps road and rail embankments but not the culverts under them.
+  A hollow on a stream's path is cut through when ground lower than its floor lies at most 25 m
+  beyond its rim.
+* **Open-water lakes.** Land cover class 80 (open water) marks lakes the lidar flattened. Each
+  is held at its flattened surface level, on a bed shelving 5% from the shore to at most 3 m (the
+  lidar has no bathymetry, so this depth is an assumption). Lake cells keep their level; water
+  reaching them leaves the books there.
 
-## The model that replaces it
+## Water in and out
 
-At game time scales river flow is in equilibrium, so rivers are computed, not crept:
+* **Inflows** at the map edge, from each stream's catchment beyond the map (area x 0.01 m3/s per
+  km2), and **lateral inflow** along each stream from the land inside the map that drains to it.
+  Spring runs 3x the mean, late summer 0.3x.
+* **Edges** are open: water leaves with the slope of the ground at the edge. The edge cells
+  beside each inflow are closed so a stream cannot leave where it came in.
+* **Rain, evaporation and seepage** on wet cells, by season.
+* **Books:** every source and loss is counted; total stored water always equals what came in
+  minus what left.
 
-* **Routing** over the bed (terrain + dams) with the inflow edges closed: every cell drains to
-  one neighbour (8 directions), depressions are found as basins.
-* **Discharge** (m3/s) at every cell, upstream to downstream: inflows from beyond the map (their
-  catchment x unit runoff x season) plus lateral inflow from the land draining to the river.
-* **Channel geometry** from the cell's bankfull flow: width 3.0 Q^0.5 m, depth 0.35 Q^0.4 m.
-* **Flow depth** by Manning (n = 0.04) on the wetted width (bankfull width x (Q/Qbf)^0.26) and the
-  river's slope, measured on the bed over the next 6 m of the reach and ending at a pond's actual
-  water level when the reach runs into one (one cell of flat lidar is not a flat river); above bankfull the water spreads over the floodplain cells of the cross
-  section until it carries the flow.
-* **Basins** (ponds behind dams, lakes, any hollow on a river) store water: volume rises by inflow
-  minus outflow; outflow is the weir flow over the spill (or the inflow, once full). A breach
-  drains the stored water through the gap as a flood wave.
-* **Depth grid** (what the rest of the game reads): basin water level minus bed, channel flow
-  depth, floodplain depth. Every river cell with flow reports its depth and wetted width; the
-  renderer draws the bed and the water ribbon at their real widths, so a stream is always seen.
-* **Books:** inflows, lateral inflow, outflow at the map edge and storage balance exactly.
+## Start state
 
-## Map conditioning (lidar to rivers)
+A new map starts with fed hollows and lakes full, then runs 2.5 hours of physics so streams
+reach their steady flow before play begins.
 
-* **Culverts.** Bare-earth lidar keeps road and rail embankments but not the culverts under them,
-  so a stream meeting one ponds behind it. A depression on a river's path is cut through when
-  ground lower than its floor lies at most 25 m beyond its rim (a 1 m channel graded from the floor
-  to that ground). Broader rises are left as real lakes.
-* **Open-water lakes.** Land cover class 80 (open water) marks lakes the lidar flattened to one
-  surface. Each becomes a lake at that surface (the most common height, to the centimetre), with a
-  bed shelving 5% from the shore to at most 3 m deep. A lake holds its level (it runs on beyond the
-  map): streams flow into it and leave the books there, ground joined to it below its level fills
-  to it (a canal dug from it becomes an arm), and a dam above the level shuts it out.
+## Known limits
 
-## Sandbox (water engine without beavers)
+* First-order accuracy: sharp fronts (a breach flood, a hydraulic jump) are smeared over a few
+  metres.
+* Cells are 1 m, so a stream narrower than a cell is represented as a thin sheet across the cell.
+* Dams are watertight (real beaver dams leak).
+
+## Tests
+
+`cargo test -p sim water::` checks the solver against physics, not against itself:
+
+* still water in a bowl stays level and still;
+* a closed box keeps its water while it sloshes;
+* a small wave on still water 1 m deep reaches a gauge 120 m away at sqrt(g h);
+* steady flow down a uniform slope settles at Manning's normal depth (q n / sqrt(S))^(3/5);
+* a closed pond's volume rises by exactly inflow x time;
+* the head over a broad-crested sill matches critical flow, 1.5 (q^2 / g)^(1/3), within the
+  discharge coefficient of a real square-edged crest.
+
+## Sandbox
 
 `beaver_colony --sandbox --map ID` opens a map with no colony: only water runs, the dam and canal
-tools build at once (no tech, no cost, no water needed), and Delete breaches the dam under the
-cursor. `--sandbox-script FILE` runs a script first and prints its report:
+tools build at once, and Delete breaches the dam under the cursor. `--sandbox-script FILE` runs a
+script first and prints its report:
 
     map telemark                  # first line; 'fixture' is the small test valley
     dam 1.5 X,Y X,Y ...           # dam this high along the line through the points
@@ -104,11 +89,10 @@ cursor. `--sandbox-script FILE` runs a script first and prints its report:
     canal 2.0 X,Y X,Y             # dig this deep
     breach X,Y X,Y                # breach every dam cell on the line
     run DAYS
-    probe X,Y [label]             # ground, dam, depth, surface, wetted width, flow, next cell
+    probe X,Y [label]             # ground, dam, depth, surface, flow, speed
     check depth X,Y > 0.3         # also surface ground dam width discharge; 'balance' and 'day'
     dump FILE                     # grids for tools/sandbox_overview.py and tools/sandbox_cells.py
 
 `cargo run --release -p sim --example sandbox -- FILE` runs a script headless.
 `tools/sandbox_shot.sh FILE|MAP X,Y[,DIST,YAW,PITCH] OUT.png [notrees]` photographs the result in
-the game; `tools/sandbox_overview.py DUMP OUT.png [X0,Y0,X1,Y1 SCALE]` draws a top-down map with
-coordinates, and `tools/sandbox_cells.py DUMP X0,Y0,X1,Y1` lists the wet cells.
+the game.

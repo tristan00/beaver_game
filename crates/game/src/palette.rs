@@ -20,7 +20,6 @@ pub const FUR_LIGHT: Rgb = rgb(0xC98B52);
 pub const INK: Rgb = rgb(0x4D3321);
 pub const CUT_WOOD: Rgb = rgb(0xF2D9A8);
 pub const WATER_SHALLOW: Rgb = rgb(0x6FD3E0);
-pub const WATER_MID_GLOW: Rgb = rgb(0x8FE0E6);
 pub const WATER_DEEP: Rgb = rgb(0x1F8AB8);
 pub const FOAM: Rgb = rgb(0xF4FBF6);
 pub const LILY: Rgb = rgb(0x4E9A52);

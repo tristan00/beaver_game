@@ -20,9 +20,8 @@ pub struct DemoObject;
 impl Plugin for WaterRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterChunks>()
-            .init_resource::<StreamRibbon>()
             .add_systems(Startup, (demo_world.before(spawn_terrain), setup_water))
-            .add_systems(Update, (update_water_chunks, update_streams, animate_water));
+            .add_systems(Update, (update_water_chunks, animate_water));
     }
 }
 
@@ -102,75 +101,19 @@ fn setup_water(
 const WATER_REBUILD_BUDGET_S: f32 = 0.002;
 pub const WATER_PAD: i32 = SHORE_SEARCH + 1;
 const SHORE_SEARCH: i32 = 3;
-pub const FOAM_W: f32 = 0.2;
 const WATER_GAIN: f32 = crate::entities_render::ENTITY_GAIN;
-const RING_CUTS: [f32; 6] = [0.6, 0.9, 1.2, 1.6, 2.0, 2.5];
-const SHORE_LEVEL: f32 = 0.3;
-const BLUR5: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
-
-pub fn shore_field(s: &SimState, x0: i32, y0: i32, n: usize) -> Vec<f32> {
-    let r = SHORE_SEARCH;
-    let pad = 1;
-    let side = n as i32 + 1 + 2 * pad;
-    let m = side + 2 * r;
-    let (mx0, my0) = (x0 - pad - r, y0 - pad - r);
-    let mut wet = vec![0.0f32; (m * m) as usize];
-    for j in 0..m {
-        for i in 0..m {
-            wet[(j * m + i) as usize] = (pond_depth(s, mx0 + i, my0 + j) > WET_EPS) as u8 as f32;
-        }
-    }
-    let mut hb = vec![0.0f32; (m * m) as usize];
-    for j in 0..m {
-        for i in 2..m - 2 {
-            hb[(j * m + i) as usize] = (0..5).map(|k| BLUR5[k] * wet[(j * m + i + k as i32 - 2) as usize]).sum();
-        }
-    }
-    let mut blur = vec![0.0f32; (side * side) as usize];
-    let mut dist = vec![0.0f32; (side * side) as usize];
-    for j in 0..side {
-        for i in 0..side {
-            let (ci, cj) = (i + r, j + r);
-            blur[(j * side + i) as usize] = (0..5).map(|k| BLUR5[k] * hb[((cj + k as i32 - 2) * m + ci) as usize]).sum();
-            let w = wet[(cj * m + ci) as usize] > 0.5;
-            let mut best = (r * r + 1) as f32;
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let d2 = (dx * dx + dy * dy) as f32;
-                    if d2 < best && (wet[((cj + dy) * m + ci + dx) as usize] > 0.5) != w {
-                        best = d2;
-                    }
-                }
-            }
-            let d = best.sqrt() - 0.5;
-            dist[(j * side + i) as usize] = if w { d } else { -d };
-        }
-    }
-    let mut out = Vec::with_capacity((n + 1) * (n + 1));
-    for j in 0..=n as i32 {
-        for i in 0..=n as i32 {
-            let (ci, cj) = (i + pad, j + pad);
-            let b = |dx: i32, dy: i32| blur[((cj + dy) * side + ci + dx) as usize];
-            let (gx, gy) = ((b(1, 0) - b(-1, 0)) * 0.5, (b(0, 1) - b(0, -1)) * 0.5);
-            let grad = (gx * gx + gy * gy).sqrt().max(0.1);
-            let near = ((b(0, 0) - SHORE_LEVEL) / grad).clamp(-3.0, 3.0);
-            let d = dist[(cj * side + ci) as usize];
-            out.push(near.min(d + 1.0));
-        }
-    }
-    out
-}
 
 #[derive(Clone, Copy)]
 struct WV {
     p: [f32; 3],
     f: f32,
     d: f32,
+    s: f32,
 }
 
 fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
     let l = |x: f32, y: f32| x + (y - x) * t;
-    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], f: l(a.f, b.f), d: l(a.d, b.d) }
+    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], f: l(a.f, b.f), d: l(a.d, b.d), s: l(a.s, b.s) }
 }
 
 fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
@@ -189,29 +132,6 @@ fn clip_poly(poly: &[WV], level: f32, above: bool) -> Vec<WV> {
     out
 }
 
-pub fn water_color(p: &Palette, f: f32, d: f32, in_foam: bool) -> ([f32; 3], f32) {
-    use crate::palette::{FOAM, WATER_MID_GLOW};
-    match crate::terrain_render::map_lens() {
-        1 => return (mix_rgb([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (d / 3.0).clamp(0.0, 1.0).sqrt()), 0.93),
-        2 => return ([0.62, 0.69, 0.75], 0.9),
-        crate::terrain_render::ELEVATION_LENS => return (crate::terrain_render::ELEVATION_WATER, 0.95),
-        _ => {}
-    }
-    let foam = if in_foam { 1.0 } else { 0.0 };
-    let rim = 1.0 - smooth_step(0.6, 1.2, f);
-    let very_deep = smooth_step(2.2, 5.0, d);
-    let deep = rim.max(very_deep);
-    let glow = smooth_step(1.5, 2.5, f) * (1.0 - very_deep);
-    let mut c = mix_rgb(p.water_shallow, WATER_MID_GLOW, glow * 0.85);
-    c = mix_rgb(c, p.water_deep, deep);
-    c = mix_rgb(c, FOAM, foam);
-    let mut a = 0.8 + 0.2 * deep + 0.15 * foam;
-    let ice = if p.winter > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { 0.0 };
-    c = mix_rgb(c, p.ice, ice);
-    a += (0.86 - a) * ice;
-    (c, a.min(0.97))
-}
-
 fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     let st = step as f32;
     let (gx, gy) = ((x / st).floor(), (y / st).floor());
@@ -228,247 +148,101 @@ fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     }
 }
 
-pub fn in_channel(s: &SimState, x: i32, y: i32) -> bool {
-    x >= 0 && y >= 0 && s.water.channel.get(x as usize, y as usize).copied().unwrap_or(false)
-}
+const FULL_WATER_M: f32 = 0.02;
+const SURFACE_LIFT: f32 = 0.01;
+const WHITE_WATER_FROUDE: f32 = 0.9;
 
-pub fn pond_depth(s: &SimState, x: i32, y: i32) -> f32 {
-    if in_channel(s, x, y) { 0.0 } else { at(&s.water.depth, x, y) }
-}
-
-#[derive(Resource, Default)]
-struct StreamRibbon {
-    entity: Option<Entity>,
-    mesh: Handle<Mesh>,
-    hash: u64,
-    since: f32,
-}
-
-const STREAM_MIN_WIDTH: f32 = 0.35;
-const STREAM_LIFT: f32 = 0.015;
-const STREAM_REBUILD_S: f32 = 0.25;
-const STREAM_SCREEN_WIDTH: f32 = 0.004;
-
-pub fn stream_mesh(s: &SimState, p: &Palette, min_width: f32) -> Option<Mesh> {
+fn surface_sample(s: &SimState, x: i32, y: i32, step: i32) -> (f32, f32, f32, f32) {
     let n = s.height.width() as i32;
-    let level = |x: i32, y: i32| at(&s.height, x, y) + at(&s.water.depth, x, y);
-    let wet = |x: i32, y: i32| (0..n).contains(&x) && (0..n).contains(&y) && at(&s.water.depth, x, y) > 0.0;
-    let (mut pos, mut col) = (Vec::new(), Vec::new());
-    let colour = |x: i32, y: i32| {
-        let d = at(&s.water.depth, x, y);
-        let c = mix_rgb(p.water_shallow, p.water_deep, 0.55 + 0.45 * (d / 0.5).min(1.0));
-        let l = crate::palette::display_linear(c).map(|v| v * WATER_GAIN);
-        [l[0], l[1], l[2], 0.92]
-    };
-    let origin = world_pos(s, 0, 0);
-    let lift = |v: Vec3| {
-        let ground = terrain_shown(s, (v.x - origin.0) / CELL_SIZE, (v.z - origin.1) / CELL_SIZE, 1);
-        Vec3::new(v.x, v.y.max(ground) + STREAM_LIFT, v.z)
-    };
-    let centre = |i: i32, j: i32| {
-        let (wx, wz) = world_pos(s, i, j);
-        Vec3::new(wx, level(i, j), wz)
-    };
-    let river = |x: i32, y: i32| x >= 0 && y >= 0 && s.world.river.get(x as usize, y as usize).copied().unwrap_or(false);
-    let lake_arm = |x: i32, y: i32| river(x, y) && s.water.in_lake(x as usize, y as usize);
-    let width = |i: i32, j: i32| {
-        let w = if lake_arm(i, j) { sim::water::bankfull(at(&s.world.river_flow, i, j)).0 } else { at(&s.water.width, i, j) };
-        (w.max(STREAM_MIN_WIDTH) * CELL_SIZE / s.water.cell_m).max(min_width)
-    };
-    for y in 0..n {
-        for x in 0..n {
-            if !(in_channel(s, x, y) || lake_arm(x, y)) || at(&s.water.depth, x, y) <= 0.0 {
-                continue;
-            }
-            let here = level(x, y);
-            let path = s
-                .water
-                .downstream(x as usize, y as usize)
-                .or_else(|| s.world.downstream(x as usize, y as usize).filter(|_| lake_arm(x, y)))
-                .map(|(i, j)| (i as i32, j as i32))
-                .filter(|&(i, j)| wet(i, j));
-            let down = path.or_else(|| {
-                (-1..=1)
-                    .flat_map(|dy| (-1..=1).map(move |dx| (x + dx, y + dy)))
-                    .filter(|&(i, j)| (i, j) != (x, y) && wet(i, j) && level(i, j) < here)
-                    .min_by(|a, b| level(a.0, a.1).total_cmp(&level(b.0, b.1)))
-            });
-            let a = centre(x, y);
-            let (wa, ca) = (width(x, y), colour(x, y));
-            if let Some((i, j)) = down {
-                let b = centre(i, j);
-                let wb = if in_channel(s, i, j) || lake_arm(i, j) { width(i, j) } else { wa };
-                let cb = colour(i, j);
-                let d = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize_or_zero();
-                let side = Vec3::new(-d.z, 0.0, d.x);
-                for k in 0..4 {
-                    let (t0, t1) = (k as f32 / 4.0, (k + 1) as f32 / 4.0);
-                    let (p0, p1) = (a.lerp(b, t0), a.lerp(b, t1));
-                    let (w0, w1) = (wa + (wb - wa) * t0, wa + (wb - wa) * t1);
-                    let (c0, c1) = (if t0 < 0.5 { ca } else { cb }, if t1 <= 0.5 { ca } else { cb });
-                    let quad = [(lift(p0 - side * w0 * 0.5), c0), (lift(p1 - side * w1 * 0.5), c1), (lift(p0 + side * w0 * 0.5), c0), (lift(p0 + side * w0 * 0.5), c0), (lift(p1 - side * w1 * 0.5), c1), (lift(p1 + side * w1 * 0.5), c1)];
-                    for (v, c) in quad {
-                        pos.push(v.to_array());
-                        col.push(c);
-                    }
-                }
-            }
-            let r = wa * 0.5;
-            for k in 0..6 {
-                let (t0, t1) = (k as f32 * std::f32::consts::TAU / 6.0, (k + 1) as f32 * std::f32::consts::TAU / 6.0);
-                for v in [a, a + Vec3::new(t0.cos() * r, 0.0, t0.sin() * r), a + Vec3::new(t1.cos() * r, 0.0, t1.sin() * r)] {
-                    pos.push(lift(v).to_array());
-                    col.push(ca);
-                }
+    let ground = |x: i32, y: i32| at(&s.height, x, y) + at(&s.water.dam_height, x, y);
+    let speed = |x: i32, y: i32| s.water.velocity.get(x.clamp(0, n - 1) as usize, y.clamp(0, n - 1) as usize).map_or(0.0, |v| (v.0 * v.0 + v.1 * v.1).sqrt());
+    let (mut field, mut level, mut depth, mut fast, mut wet) = (-0.5f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for by in 0..step {
+        for bx in 0..step {
+            let (cx, cy) = (x + bx, y + by);
+            let h = at(&s.water.depth, cx, cy);
+            field = field.max((h / FULL_WATER_M).min(1.0) - 0.5);
+            if h > 0.0 {
+                level += ground(cx, cy) + h;
+                depth += h;
+                fast += speed(cx, cy);
+                wet += 1.0;
             }
         }
     }
-    if pos.is_empty() {
-        return None;
+    if wet > 0.0 {
+        return (field, level / wet, depth / wet, fast / wet);
     }
-    let count = pos.len();
-    let uv: Vec<[f32; 2]> = pos.iter().map(|p| [p[0] * 0.045, p[2] * 0.045]).collect();
-    Some(
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; count])
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, -1.0]; count])
-            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-            .with_inserted_indices(Indices::U32((0..count as u32).collect())),
-    )
+    let (mut l, mut k) = (0.0f32, 0.0f32);
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+        let (cx, cy) = (x + dx * step, y + dy * step);
+        let h = at(&s.water.depth, cx, cy);
+        if h > 0.0 {
+            l += ground(cx, cy) + h;
+            k += 1.0;
+        }
+    }
+    (field, if k > 0.0 { l / k } else { ground(x, y) }, 0.0, 0.0)
 }
 
-fn update_streams(
-    mut commands: Commands,
-    sim: Res<Sim>,
-    season: Res<Season>,
-    time: Res<Time>,
-    water: Res<WaterChunks>,
-    orbit: Res<OrbitCamera>,
-    mut st: ResMut<StreamRibbon>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    st.since += time.delta_secs();
-    if st.entity.is_some() && st.since < STREAM_REBUILD_S {
-        return;
+pub fn surface_color(p: &Palette, d: f32, speed: f32) -> ([f32; 3], f32) {
+    use crate::palette::FOAM;
+    match crate::terrain_render::map_lens() {
+        1 => return (mix_rgb([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (d / 3.0).clamp(0.0, 1.0).sqrt()), 0.93),
+        2 => return ([0.62, 0.69, 0.75], 0.9),
+        crate::terrain_render::ELEVATION_LENS => return (crate::terrain_render::ELEVATION_WATER, 0.95),
+        _ => {}
     }
-    st.since = 0.0;
-    let s = &sim.0;
-    let min_width = (orbit.distance * STREAM_SCREEN_WIDTH * 4.0).round() / 4.0;
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ season.bucket() as u64 ^ (min_width.to_bits() as u64).rotate_left(40);
-    for (d, w) in s.water.depth.as_slice().iter().zip(s.water.width.as_slice()) {
-        if *w > 0.0 {
-            hash = (hash ^ ((d * 200.0) as u64) ^ ((w * 20.0) as u64).rotate_left(20)).wrapping_mul(0x100_0000_01b3);
-        }
-    }
-    if hash == st.hash && st.entity.is_some() {
-        return;
-    }
-    st.hash = hash;
-    match (stream_mesh(s, &Palette::at(season.phase), min_width), st.entity) {
-        (Some(m), Some(_)) => {
-            let _ = meshes.insert(&st.mesh, m);
-        }
-        (Some(m), None) => {
-            st.mesh = meshes.add(m);
-            st.entity = Some(commands.spawn((WaterSurface, Mesh3d(st.mesh.clone()), MeshMaterial3d(water.material.clone()), Transform::default())).id());
-        }
-        (None, Some(e)) => {
-            commands.entity(e).despawn();
-            st.entity = None;
-        }
-        (None, None) => {}
-    }
+    let deep = smooth_step(0.02, 1.2, d).sqrt();
+    let mut c = mix_rgb(p.water_shallow, p.water_deep, deep);
+    let froude = if d > 1.0e-4 { speed / (9.81 * d).sqrt() } else { 0.0 };
+    let white = smooth_step(WHITE_WATER_FROUDE, 1.6, froude) * smooth_step(0.15, 0.6, speed);
+    c = mix_rgb(c, FOAM, white * 0.85);
+    let mut a = 0.35 + 0.55 * smooth_step(0.0, 0.3, d) + 0.35 * white;
+    let ice = if p.winter > 0.0 { ((p.winter * 4.5 - d) / 1.2).clamp(0.0, 1.0) } else { 0.0 };
+    c = mix_rgb(c, p.ice, ice);
+    a += (0.86 - a) * ice;
+    (c, a.min(0.95))
 }
 
 pub fn build_water_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
+    let st = step as i32;
+    let side = CHUNK / step + 1;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
-    let depth = |x: i32, y: i32| pond_depth(s, x, y);
-    let full = shore_field(s, x0, y0, CHUNK);
-    if !full.iter().any(|&f| f > 0.0) {
+    let mut verts: Vec<WV> = Vec::with_capacity(side * side);
+    let mut any = false;
+    for j in 0..side as i32 {
+        for i in 0..side as i32 {
+            let (x, y) = (x0 + i * st, y0 + j * st);
+            let (f, level, d, sp) = surface_sample(s, x, y, st);
+            any |= f > 0.0;
+            let (wx, wz) = world_pos(s, x, y);
+            let ground = terrain_shown(s, x as f32, y as f32, step);
+            verts.push(WV { p: [wx, level.max(ground) + SURFACE_LIFT, wz], f, d, s: sp });
+        }
+    }
+    if !any {
         return None;
     }
-    let cs = CHUNK + 1;
-    let mut cell = Vec::with_capacity(cs * cs);
-    for j in 0..cs as i32 {
-        for i in 0..cs as i32 {
-            let (x, y) = (x0 + i, y0 + j);
-            let h = at(&s.height, x, y);
-            let d = depth(x, y);
-            let level = if d > WET_EPS {
-                h + d
-            } else {
-                let (mut sum, mut cnt) = (0.0, 0);
-                for dy in -2..=2 {
-                    for dx in -2..=2 {
-                        let dd = depth(x + dx, y + dy);
-                        if dd > WET_EPS {
-                            sum += at(&s.height, x + dx, y + dy) + dd;
-                            cnt += 1;
-                        }
-                    }
-                }
-                if cnt > 0 { sum / cnt as f32 } else { h }
-            };
-            cell.push([full[j as usize * cs + i as usize], level, d.max(0.0)]);
-        }
-    }
-    let sub = if step == 1 { 2 } else { 1 };
-    let n = CHUNK * sub;
-    let side = n + 1;
-    let mut verts: Vec<WV> = Vec::with_capacity(side * side);
-    for j in 0..=n {
-        for i in 0..=n {
-            let (fx, fy) = (i as f32 / sub as f32, j as f32 / sub as f32);
-            let (ci, cj) = ((i / sub).min(CHUNK - 1), (j / sub).min(CHUNK - 1));
-            let (u, v) = (fx - ci as f32, fy - cj as f32);
-            let g = |di: usize, dj: usize| cell[(cj + dj) * cs + ci + di];
-            let (c00, c10, c01, c11) = (g(0, 0), g(1, 0), g(0, 1), g(1, 1));
-            let bil = |k: usize| (c00[k] * (1.0 - u) + c10[k] * u) * (1.0 - v) + (c01[k] * (1.0 - u) + c11[k] * u) * v;
-            let (x, y) = (x0 as f32 + fx, y0 as f32 + fy);
-            let (wx, wz) = world_pos(s, x0, y0);
-            let ground = terrain_shown(s, x, y, step);
-            verts.push(WV { p: [wx + fx * CELL_SIZE, bil(1).max(ground + 0.05), wz + fy * CELL_SIZE], f: bil(0), d: bil(2) });
-        }
-    }
     let (mut pos, mut col, mut uv) = (vec![], vec![], vec![]);
-    let mut emit = |poly: &[WV], in_foam: bool| {
-        for k in 1..poly.len().saturating_sub(1) {
-            for v in [&poly[0], &poly[k], &poly[k + 1]] {
-                pos.push(v.p);
-                uv.push([v.p[0] * 0.045, v.p[2] * 0.045]);
-                let (c, a) = water_color(p, v.f, v.d, in_foam);
-                let s = crate::palette::display_linear(c).map(|v| v * WATER_GAIN);
-                col.push([s[0], s[1], s[2], a]);
-            }
-        }
-    };
-    for j in 0..n {
-        for i in 0..n {
+    for j in 0..side - 1 {
+        for i in 0..side - 1 {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
             for tri in [[a, c, b], [b, c, e]] {
                 let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
                 if t.iter().all(|v| v.f <= 0.0) {
                     continue;
                 }
-                let mut rest = clip_poly(&t, 0.0, true);
-                for (k, lvl) in std::iter::once(FOAM_W).chain(RING_CUTS).enumerate() {
-                    if rest.len() < 3 {
-                        break;
+                let poly = clip_poly(&t, 0.0, true);
+                for k in 1..poly.len().saturating_sub(1) {
+                    for v in [&poly[0], &poly[k], &poly[k + 1]] {
+                        pos.push(v.p);
+                        uv.push([v.p[0] * 0.045, v.p[2] * 0.045]);
+                        let (c, al) = surface_color(p, v.d, v.s);
+                        let lin = crate::palette::display_linear(c).map(|q| q * WATER_GAIN);
+                        col.push([lin[0], lin[1], lin[2], al]);
                     }
-                    if rest.iter().all(|v| v.f >= lvl) {
-                        continue;
-                    }
-                    if rest.iter().all(|v| v.f <= lvl) {
-                        emit(&rest, k == 0);
-                        rest.clear();
-                        break;
-                    }
-                    emit(&clip_poly(&rest, lvl, false), k == 0);
-                    rest = clip_poly(&rest, lvl, true);
                 }
-                emit(&rest, false);
             }
         }
     }

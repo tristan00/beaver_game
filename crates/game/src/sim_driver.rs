@@ -4,6 +4,7 @@ use bevy::prelude::*;
 pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
 pub const BASE_DAYS_PER_SECOND: f32 = 1.0 / 300.0;
 pub const MAX_STEPS_PER_FRAME: u32 = 8;
+const FRAME_SIM_BUDGET_S: f32 = 0.012;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
@@ -92,11 +93,15 @@ pub(crate) fn step_sim(time: Res<Time>, mut clock: ResMut<SimClock>, mut sim: Re
     if !sim.0.is_running() {
         return;
     }
+    let started = std::time::Instant::now();
     for _ in 0..clock.advance(time.delta_secs()) {
         if let Err(e) = sim.0.step(FIXED_DT_DAYS) {
             error!("sim step failed: {e}");
             clock.paused = true;
             return;
+        }
+        if started.elapsed().as_secs_f32() > FRAME_SIM_BUDGET_S {
+            break;
         }
     }
 }

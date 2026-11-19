@@ -189,7 +189,7 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     let n = CHUNK as i32 + 2 * pad;
     for y in y0..=y0 + n {
         for x in x0..=x0 + n {
-            let dq = (at(&s.water.depth, x, y) * 64.0).round() as i32;
+            let dq = (at(&s.water.depth, x, y) * 500.0).round() as i32;
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             if with_veg {
                 let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
