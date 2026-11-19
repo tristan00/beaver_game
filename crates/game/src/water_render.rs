@@ -354,7 +354,9 @@ fn update_water_chunks(
             budget -= 1;
             rebuilt = true;
             MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let built = std::time::Instant::now();
             let mesh = build_water_mesh(&sim.0, &palette, cx, cy, step);
+            crate::perf::WATER_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
             let material = water.material.clone();
             let slot = &mut water.slots[idx];
             slot.hash = hash.max(1);

@@ -89,6 +89,24 @@ pub enum Command {
     SetPlantRule { building: buildings::BuildingId, rule: forestry::PlantRule },
 }
 
+/// Seconds each part of `SimState::step` has taken since the counters were last cleared.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StepTimings {
+    pub steps: u64,
+    pub water_s: f64,
+    pub ecology_s: f64,
+    pub colony_s: f64,
+    pub buildings_s: f64,
+    pub agents_s: f64,
+    pub other_s: f64,
+}
+
+impl StepTimings {
+    pub fn total_s(&self) -> f64 {
+        self.water_s + self.ecology_s + self.colony_s + self.buildings_s + self.agents_s + self.other_s
+    }
+}
+
 pub struct SimState {
     pub seed: u64,
     pub time_days: f64,
@@ -114,6 +132,7 @@ pub struct SimState {
     pub recorder: Option<Vec<(u64, Command)>>,
     pub forestry: forestry::Forestry,
     pub sandbox: bool,
+    pub step_timings: StepTimings,
 }
 
 impl SimState {
@@ -152,6 +171,7 @@ impl SimState {
             recorder: None,
             forestry: forestry::Forestry::new(seed),
             sandbox: false,
+            step_timings: StepTimings::default(),
         };
         forestry::init(&mut sim);
         sim.colony.abstract_gathering = false;
@@ -224,27 +244,42 @@ impl SimState {
             return Err(SimError::InvalidDt(dt_days));
         }
         if self.sandbox {
+            let clock = std::time::Instant::now();
             self.time_days += dt_days as f64;
             self.steps += 1;
             self.water.step(&self.height, dt_days);
+            self.step_timings.water_s += clock.elapsed().as_secs_f64();
+            self.step_timings.steps += 1;
             return Ok(());
         }
+        let mut clock = std::time::Instant::now();
+        let mut lap = |slot: &mut f64| {
+            let now = std::time::Instant::now();
+            *slot += (now - clock).as_secs_f64();
+            clock = now;
+        };
+        let mut t = self.step_timings;
         self.apply_features();
         self.time_days += dt_days as f64;
         self.steps += 1;
+        lap(&mut t.other_s);
         self.water.step(&self.height, dt_days);
+        lap(&mut t.water_s);
         self.ecology.step(dt_days, &self.water.depth)?;
+        lap(&mut t.ecology_s);
         let mirrored = self.mirror_colony_stores();
         self.derive_colony_jobs();
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         self.settle_colony_stores(mirrored);
         self.step_research();
+        lap(&mut t.colony_s);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         stock::book_crafting(self);
         self.sync_homes();
         self.wear_dry_homes(dt_days);
+        lap(&mut t.buildings_s);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
         }
@@ -255,9 +290,11 @@ impl SimState {
         }
         forestry::step(self, dt_days);
         stock::reconcile(self);
+        lap(&mut t.other_s);
         agents::step(self, dt_days);
         shipping::step(self, dt_days);
         self.explore();
+        lap(&mut t.agents_s);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
         for (b, g, a) in std::mem::take(&mut self.buildings.crafted) {
@@ -266,6 +303,9 @@ impl SimState {
         self.output.step(dt_days);
         stock::reconcile(self);
         self.ledger.record(self.time_days, &self.buildings.stores);
+        lap(&mut t.other_s);
+        t.steps += 1;
+        self.step_timings = t;
         Ok(())
     }
 

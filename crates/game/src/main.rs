@@ -11,6 +11,7 @@ mod input;
 mod menu;
 mod opening;
 mod palette;
+mod perf;
 mod sandbox;
 mod screenshot;
 mod showcase;
@@ -75,6 +76,7 @@ fn main() -> AppExit {
         hud::HudPlugin,
         menu::MenuPlugin,
         sandbox::SandboxPlugin,
+        perf::PerfPlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,

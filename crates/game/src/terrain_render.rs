@@ -353,7 +353,9 @@ fn rebuild_chunk(
         return false;
     }
     MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let built = std::time::Instant::now();
     let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, step);
+    crate::perf::TERRAIN_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     match slot.entity {
         Some(_) => {
             let _ = meshes.insert(&slot.mesh, mesh);

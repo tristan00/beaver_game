@@ -5,6 +5,8 @@ use rand_pcg::Pcg32;
 pub use crate::tuning::ecology::*;
 
 const MAX_SUBSTEP_DAYS: f32 = 1.0;
+/// Game time between the whole-map ecology passes (an hour).
+const GRID_EVERY_DAYS: f32 = 1.0 / 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PredatorKind { Wolf, Lynx, Bear, Eagle }
@@ -54,6 +56,7 @@ pub struct Ecology {
     pub predators: Vec<Predator>,
     pub effects: WetlandEffects,
     rng: Pcg32,
+    pending_days: f32,
 }
 
 fn clamp01(v: f32) -> f32 { v.clamp(0.0, 1.0) }
@@ -74,7 +77,7 @@ impl Ecology {
             vegetation: g(0.0), forest, snags: g(0.0), meadow: g(0.0), wetland: g(0.0), flood_days: g(0.0),
             fish: g(0.0), waterfowl: g(0.0), frogs: g(0.0), herons: g(0.0), mosquitoes: g(0.0),
             otters: g(0.0), food: g(0.0), danger: g(0.0), defence: g(0.0), hideout: g(0.0),
-            lodges: Vec::new(), predators, effects: WetlandEffects::default(), rng,
+            lodges: Vec::new(), predators, effects: WetlandEffects::default(), rng, pending_days: 0.0,
         };
         e.refresh_derived(&g(0.0));
         e
@@ -144,8 +147,16 @@ impl Ecology {
                 "water grid {}x{} does not match ecology size {n}", water.width(), water.height())));
         }
         if dt_days == 0.0 { return Ok(()); }
-        let steps = (dt_days / MAX_SUBSTEP_DAYS).ceil().max(1.0) as usize;
-        let dt = dt_days / steps as f32;
+        // Predators roam every step; the land and wildlife change over days, so their whole-map
+        // passes run once per GRID_EVERY_DAYS of game time.
+        self.move_predators(dt_days, water);
+        self.pending_days += dt_days;
+        if self.pending_days < GRID_EVERY_DAYS {
+            return Ok(());
+        }
+        let due = std::mem::take(&mut self.pending_days);
+        let steps = (due / MAX_SUBSTEP_DAYS).ceil().max(1.0) as usize;
+        let dt = due / steps as f32;
         for _ in 0..steps {
             self.substep(dt, water);
         }
@@ -184,7 +195,6 @@ impl Ecology {
             let m = &mut self.meadow.as_mut_slice()[i];
             *m = (*m - dt / MEADOW_REGROW_DAYS).max(0.0).min(room);
         }
-        self.move_predators(dt, water);
         self.relax_wildlife(dt);
     }
 

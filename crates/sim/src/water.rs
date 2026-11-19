@@ -298,7 +298,7 @@ const POOL_MIN_DEPTH: f32 = 0.03;
 const POOL_MAX_SPEED: f32 = 0.08;
 const POOL_FLAT_FACE: f32 = 1.5e-3;
 const POOL_FLAT_RANGE: f32 = 1.5e-2;
-const POOL_MIN_CELLS: usize = 32;
+const POOL_MIN_CELLS: usize = 6;
 
 impl Water {
     pub fn new(size: usize) -> Self {
@@ -446,6 +446,16 @@ impl Water {
 
     pub fn active_cells(&self) -> usize {
         self.rows.iter().flatten().map(|&(a, b)| (b - a) as usize).sum()
+    }
+
+    /// The deepest cells the solver steps (not lakes, not pools): what sets the time step.
+    pub fn deepest_stepped(&self, k: usize) -> Vec<(usize, usize, f32)> {
+        let n = self.n;
+        let lake = self.lake_level.as_slice();
+        let mut v: Vec<(usize, usize, f32)> = (0..n * n).filter(|&i| self.member[i] == 0.0 && !lake[i].is_finite() && self.h[i] > 0.0).map(|i| (i % n, i / n, self.h[i])).collect();
+        v.sort_by(|a, b| b.2.total_cmp(&a.2));
+        v.truncate(k);
+        v
     }
 
     pub fn pooled_cells(&self) -> usize {
@@ -801,7 +811,7 @@ impl Water {
         let cand: Vec<bool> = (0..n * n)
             .map(|i| {
                 let hh = h[i];
-                if hh <= POOL_MIN_DEPTH || lake[i].is_finite() || self.src[i] > 0.0 {
+                if hh <= POOL_MIN_DEPTH || lake[i].is_finite() {
                     return false;
                 }
                 let (x, y) = (i % n, i / n);
