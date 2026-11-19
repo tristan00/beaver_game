@@ -51,36 +51,86 @@ pub fn face(q_old: f32, q_before: f32, q_after: f32, za: f32, zb: f32, ha: f32, 
     if (hf <= FACE_DRY) | from_dry { 0.0 } else { qn * mask }
 }
 
-/// Faces between cells `a[i]` and `b[i]`; `q_before`/`q_after` are the old discharges of the
-/// faces on either side along the same direction.
+/// Lanes are computed in whole SIMD groups: a run s..e is widened to a multiple of `W` lanes
+/// (shifted back to stay inside 0..len), so the vector loop never leaves lanes to slow scalar
+/// code. Lanes outside s..e get computed too, so every kernel must be a pure function of its
+/// inputs per lane (outputs go to scratch or are idempotent).
+const W: usize = 8;
+
+#[inline(always)]
+fn widen(s: usize, e: usize, len: usize) -> (usize, usize) {
+    if e <= s {
+        return (s, 0);
+    }
+    let count = ((e - s).div_ceil(W) * W).min(len);
+    (s.min(len - count), count)
+}
+
+/// Faces between cells `a[i]` and `b[i]` for lanes s..e of a row of `len` faces;
+/// `q_before`/`q_after` are the old discharges of the faces on either side.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub fn faces(out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], p: Params) {
-    let m = out.len();
+fn faces_impl(out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], s: usize, e: usize, len: usize, p: Params) {
+    let (c, m) = widen(s, e, len);
+    let out = &mut out[c..c + m];
     let (q, q_before, q_after, za, zb, ha, hb, fa, fb, mask, act_a, act_b) =
-        (&q[..m], &q_before[..m], &q_after[..m], &za[..m], &zb[..m], &ha[..m], &hb[..m], &fa[..m], &fb[..m], &mask[..m], &act_a[..m], &act_b[..m]);
+        (&q[c..c + m], &q_before[c..c + m], &q_after[c..c + m], &za[c..c + m], &zb[c..c + m], &ha[c..c + m], &hb[c..c + m], &fa[c..c + m], &fb[c..c + m], &mask[c..c + m], &act_a[c..c + m], &act_b[c..c + m]);
     for i in 0..m {
         out[i] = face(q[i], q_before[i], q_after[i], za[i], zb[i], ha[i], hb[i], fa[i], fb[i], mask[i] * act_a[i] * act_b[i], p);
     }
 }
 
-/// Outflow limiter: the share of each cell's outflow it can actually supply this step.
+/// Outflow limiter: the share of a cell's outflow it can actually supply this step.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub fn limiter(fac: &mut [f32], h: &[f32], src: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], member: &[f32], k: f32, dt: f32) {
-    let m = fac.len();
-    let (h, src, qw, qe, qn, qs, member) = (&h[..m], &src[..m], &qw[..m], &qe[..m], &qn[..m], &qs[..m], &member[..m]);
+fn limit(h: f32, src: f32, qw: f32, qe: f32, qn: f32, qs: f32, member: f32, k: f32, dt: f32) -> f32 {
+    let out = k * (qe.max(0.0) - qw.min(0.0) + qs.max(0.0) - qn.min(0.0));
+    let have = h + src * dt;
+    let f = if out > have { have / out.max(1.0e-30) } else { 1.0 };
+    if member > 0.0 { 1.0 } else { f }
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn limiter_impl(fac: &mut [f32], h: &[f32], src: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], member: &[f32], k: f32, dt: f32, s: usize, e: usize, len: usize) {
+    let (c, m) = widen(s, e, len);
+    let fac = &mut fac[c..c + m];
+    let (h, src, qw, qe, qn, qs, member) = (&h[c..c + m], &src[c..c + m], &qw[c..c + m], &qe[c..c + m], &qn[c..c + m], &qs[c..c + m], &member[c..c + m]);
     for i in 0..m {
-        let out = k * (qe[i].max(0.0) - qw[i].min(0.0) + qs[i].max(0.0) - qn[i].min(0.0));
-        let have = h[i] + src[i] * dt;
-        let f = if out > have { have / out.max(1.0e-30) } else { 1.0 };
-        fac[i] = if member[i] > 0.0 { 1.0 } else { f };
+        fac[i] = limit(h[i], src[i], qw[i], qe[i], qn[i], qs[i], member[i], k, dt);
     }
 }
 
-/// Mass balance of interior cells. Returns the largest new depth of a non-pool, non-lake cell (as
-/// bits, which order like the values for non-negative floats) and how many cells became wet.
+/// One cell's mass balance: (new depth, lake booking, depth counted toward the step size as bits,
+/// became wet).
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub fn continuity(
-    h: &mut [f32],
+fn mass(old: f32, z: f32, src: f32, lake: f32, member: f32, qw: f32, qe: f32, qn: f32, qs: f32, f_c: f32, f_w: f32, f_e: f32, f_n: f32, f_s: f32, k: f32, dt: f32, wet_seed: f32) -> (f32, f32, u32, u32) {
+    let fw = qw * if qw > 0.0 { f_w } else { f_c };
+    let fe = qe * if qe > 0.0 { f_c } else { f_e };
+    let fnn = qn * if qn > 0.0 { f_n } else { f_c };
+    let fs = qs * if qs > 0.0 { f_c } else { f_s };
+    let flowed = (old + k * (fw - fe + fnn - fs)).max(0.0);
+    let hh = (old + k * (fw - fe + fnn - fs) + src * dt).max(0.0);
+    // Lake cells hold their level (NaN elsewhere, so the comparison fails off-lake).
+    let is_lake = lake > -1.0e30;
+    let want = (lake - z).max(0.0);
+    let hh = if is_lake { want } else { hh };
+    let booked = if is_lake { want - flowed } else { 0.0 };
+    let pool = member > 0.0;
+    let hh = if pool { old } else { hh };
+    let counted = if is_lake | pool { 0 } else { hh.to_bits() };
+    (hh, booked, counted, ((old <= wet_seed) & (hh > wet_seed)) as u32)
+}
+
+/// Mass balance of lanes s..e: new depths go to `h_out` (a scratch row: lanes may run twice).
+/// Returns the largest new depth of a non-pool, non-lake cell (as bits, which order like the
+/// values for non-negative floats) and how many cells became wet.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn continuity_impl(
+    h_out: &mut [f32],
+    h: &[f32],
     z: &[f32],
     src: &[f32],
     lake: &[f32],
@@ -98,86 +148,92 @@ pub fn continuity(
     k: f32,
     dt: f32,
     wet_seed: f32,
+    s: usize,
+    e: usize,
+    len: usize,
 ) -> (u32, u32) {
-    let m = h.len();
-    let (z, src, lake, member, qw, qe, qn, qs) = (&z[..m], &src[..m], &lake[..m], &member[..m], &qw[..m], &qe[..m], &qn[..m], &qs[..m]);
-    let (f_c, f_w, f_e, f_n, f_s, lake_delta) = (&f_c[..m], &f_w[..m], &f_e[..m], &f_n[..m], &f_s[..m], &mut lake_delta[..m]);
+    let (c, m) = widen(s, e, len);
+    let (h_out, lake_delta) = (&mut h_out[c..c + m], &mut lake_delta[c..c + m]);
+    let (h, z, src, lake, member) = (&h[c..c + m], &z[c..c + m], &src[c..c + m], &lake[c..c + m], &member[c..c + m]);
+    let (qw, qe, qn, qs) = (&qw[c..c + m], &qe[c..c + m], &qn[c..c + m], &qs[c..c + m]);
+    let (f_c, f_w, f_e, f_n, f_s) = (&f_c[c..c + m], &f_w[c..c + m], &f_e[c..c + m], &f_n[c..c + m], &f_s[c..c + m]);
     let (mut hmax, mut newly) = (0u32, 0u32);
     for i in 0..m {
-        let fw = qw[i] * if qw[i] > 0.0 { f_w[i] } else { f_c[i] };
-        let fe = qe[i] * if qe[i] > 0.0 { f_c[i] } else { f_e[i] };
-        let fnn = qn[i] * if qn[i] > 0.0 { f_n[i] } else { f_c[i] };
-        let fs = qs[i] * if qs[i] > 0.0 { f_c[i] } else { f_s[i] };
-        let old = h[i];
-        let hh = (old + k * (fw - fe + fnn - fs) + src[i] * dt).max(0.0);
-        // Lake cells hold their level (NaN elsewhere, so the comparison fails off-lake).
-        let is_lake = lake[i] > -1.0e30;
-        let want = (lake[i] - z[i]).max(0.0);
-        let hh = if is_lake { want } else { hh };
-        lake_delta[i] = if is_lake { want - (old + k * (fw - fe + fnn - fs)).max(0.0) } else { 0.0 };
-        let pool = member[i] > 0.0;
-        let hh = if pool { old } else { hh };
-        h[i] = hh;
-        let counted = !(is_lake || pool);
-        hmax = hmax.max(if counted { hh.to_bits() } else { 0 });
-        newly += (old <= wet_seed && hh > wet_seed) as u32;
+        let (hh, booked, counted, wet) = mass(h[i], z[i], src[i], lake[i], member[i], qw[i], qe[i], qn[i], qs[i], f_c[i], f_w[i], f_e[i], f_n[i], f_s[i], k, dt, wet_seed);
+        h_out[i] = hh;
+        lake_delta[i] = booked;
+        hmax = hmax.max(counted);
+        newly += wet;
     }
     (hmax, newly)
 }
 
-#[cfg(test)]
-mod bench {
-    use super::*;
-    #[test]
-    #[ignore]
-    fn bench_kernels() {
-        let m = 4096;
-        let mut out = vec![0.0f32; m];
-        let q: Vec<f32> = (0..m + 1).map(|i| (i as f32 * 0.37).sin() * 0.05).collect();
-        let z: Vec<f32> = (0..m + 1).map(|i| 10.0 - i as f32 * 0.01 + (i as f32 * 1.3).sin() * 0.05).collect();
-        let h: Vec<f32> = (0..m + 1).map(|i| 0.1 + (i as f32 * 0.7).cos().abs() * 0.2).collect();
-        let f = vec![1.0f32; m + 1];
-        let mask = vec![1.0f32; m];
-        let p = Params { gdt: 9.81 * 0.3, fric: 9.81 * 0.3 * 0.0016, inv_dx: 1.0 };
-        let reps = 20000;
+/// The kernels compiled twice: for any x86-64 (SSE2) and for CPUs with AVX2, picked at run time.
+/// No FMA, so both give bit-identical results.
+fn avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+macro_rules! dispatch {
+    ($name:ident, $avx:ident, $imp:ident, ($($arg:ident: $ty:ty),*) -> $ret:ty) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx2")]
+        #[allow(clippy::too_many_arguments)]
+        unsafe fn $avx($($arg: $ty),*) -> $ret {
+            $imp($($arg),*)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub fn $name($($arg: $ty),*) -> $ret {
+            #[cfg(target_arch = "x86_64")]
+            if avx2() {
+                return unsafe { $avx($($arg),*) };
+            }
+            $imp($($arg),*)
+        }
+    };
+}
+
+dispatch!(faces, faces_avx2, faces_impl, (out: &mut [f32], q: &[f32], q_before: &[f32], q_after: &[f32], za: &[f32], zb: &[f32], ha: &[f32], hb: &[f32], fa: &[f32], fb: &[f32], mask: &[f32], act_a: &[f32], act_b: &[f32], s: usize, e: usize, len: usize, p: Params) -> ());
+dispatch!(limiter, limiter_avx2, limiter_impl, (fac: &mut [f32], h: &[f32], src: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], member: &[f32], k: f32, dt: f32, s: usize, e: usize, len: usize) -> ());
+dispatch!(continuity, continuity_avx2, continuity_impl, (h_out: &mut [f32], h: &[f32], z: &[f32], src: &[f32], lake: &[f32], member: &[f32], qw: &[f32], qe: &[f32], qn: &[f32], qs: &[f32], f_c: &[f32], f_w: &[f32], f_e: &[f32], f_n: &[f32], f_s: &[f32], lake_delta: &mut [f32], k: f32, dt: f32, wet_seed: f32, s: usize, e: usize, len: usize) -> (u32, u32));
+
+/// Prints the face kernel's cost per face for long runs and for runs of a few lanes.
+pub fn bench_faces() {
+    let m = 4096;
+    let mut out = vec![0.0f32; m + 16];
+    let q: Vec<f32> = (0..m + 16).map(|i| (i as f32 * 0.37).sin() * 0.05).collect();
+    let z: Vec<f32> = (0..m + 16).map(|i| 10.0 - i as f32 * 0.01 + (i as f32 * 1.3).sin() * 0.05).collect();
+    let h: Vec<f32> = (0..m + 16).map(|i| 0.1 + (i as f32 * 0.7).cos().abs() * 0.2).collect();
+    let f = vec![1.0f32; m + 16];
+    let p = Params { gdt: 9.81 * 0.3, fric: 9.81 * 0.3 * 0.0016, inv_dx: 1.0 };
+    let reps = 20000;
+    let t = std::time::Instant::now();
+    for _ in 0..reps {
+        faces(&mut out, &q, &q, &q[1..], &z, &z[1..], &h, &h[1..], &f, &f[1..], &f, &f, &f, 0, m, m, p);
+        std::hint::black_box(&mut out);
+    }
+    println!("faces, long run: {:.2} ns/face", t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64);
+    for seg in [4usize, 11, 32] {
         let t = std::time::Instant::now();
-        for _ in 0..reps {
-            faces(&mut out, &q, &q, &q, &z, &z[1..], &h, &h[1..], &f, &f[1..], &mask, &mask, &mask, p);
+        let mut calls = 0usize;
+        for _ in 0..reps / 4 {
+            let mut a = 0;
+            while a + seg + 1 < m {
+                faces(&mut out, &q, &q, &q[1..], &z, &z[1..], &h, &h[1..], &f, &f[1..], &f, &f, &f, a, a + seg, m, p);
+                a += seg + 3;
+                calls += 1;
+            }
             std::hint::black_box(&mut out);
         }
-        let ns = t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64;
-        println!("faces: {ns:.2} ns/face");
-        let mut fac = vec![0.0f32; m];
-        let t = std::time::Instant::now();
-        for _ in 0..reps {
-            limiter(&mut fac, &h, &h, &q, &q[1..], &q, &q[1..], &mask, 0.3, 0.3);
-            std::hint::black_box(&mut fac);
-        }
-        println!("limiter: {:.2} ns/cell", t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64);
-        let mut hh = h.clone();
-        let mut ld = vec![0.0f32; m];
-        let lake = vec![f32::NAN; m];
-        let zero = vec![0.0f32; m];
-        let t = std::time::Instant::now();
-        for _ in 0..reps {
-            let r = continuity(&mut hh[..m - 1], &z, &zero, &lake, &zero, &q, &q[1..], &q, &q[1..], &f, &f, &f, &f, &f, &mut ld, 0.0, 0.3, 1e-3);
-            std::hint::black_box(r);
-        }
-        println!("continuity: {:.2} ns/cell", t.elapsed().as_secs_f64() * 1e9 / (reps * m) as f64);
-        for seg in [4usize, 8, 11, 16, 32] {
-            let t = std::time::Instant::now();
-            let mut calls = 0usize;
-            for _ in 0..reps / 4 {
-                let mut a = 0;
-                while a + seg + 1 < m {
-                    faces(&mut out[a..a + seg], &q[a..], &q[a..], &q[a + 1..], &z[a..], &z[a + 1..], &h[a..], &h[a + 1..], &f[a..], &f[a + 1..], &mask[a..], &mask[a..], &mask[a..], p);
-                    a += seg + 3;
-                    calls += 1;
-                }
-                std::hint::black_box(&mut out);
-            }
-            let ns = t.elapsed().as_secs_f64() * 1e9;
-            println!("faces in segments of {seg}: {:.1} ns/call, {:.2} ns/face", ns / calls as f64, ns / (calls * seg) as f64);
-        }
+        let ns = t.elapsed().as_secs_f64() * 1e9;
+        println!("faces, runs of {seg}: {:.1} ns/call, {:.2} ns/face", ns / calls as f64, ns / (calls * seg) as f64);
     }
 }

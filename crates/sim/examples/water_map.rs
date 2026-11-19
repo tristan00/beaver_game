@@ -53,6 +53,7 @@ fn main() {
     for (x, y, d) in w.deepest_stepped(6) {
         println!("  deep stepped cell ({x}, {y}) depth {d:.3} src {}", w.sources.iter().any(|s| (s.x, s.y) == (x, y)));
     }
+    println!("  pools (count, rim faces, cells) {:?}", w.pool_stats());
     println!("  active cells now {} in {} row segments", w.active_cells(), w.active_segments());
     let (inn, out_d, stored) = (w.added_volume - a0, w.lost_volume - l0, w.total_volume() - v0);
     let d = w.depth.as_slice();

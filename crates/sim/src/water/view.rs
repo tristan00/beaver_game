@@ -1,7 +1,7 @@
 //! The solver's per-substep passes over a band of rows. Bands run on different threads, so the
 //! passes reach the water's arrays through raw pointers; each pass writes only its own rows.
 
-use super::{edge_bed, kernels, Water, WET_SEED};
+use super::{edge_bed, kernels, Pool, Water, WET_SEED};
 
 #[derive(Clone, Default)]
 pub(super) struct BandOut {
@@ -35,10 +35,13 @@ pub(super) struct View {
     lake: *const f32,
     member: *const f32,
     act: *const f32,
+    h_new: *mut f32,
     lake_delta: *mut f32,
     rows: *const Vec<(u32, u32)>,
     yrows: *const Vec<(u32, u32)>,
     lake_rows: *const bool,
+    pools: *mut Pool,
+    npools: usize,
 }
 
 unsafe impl Sync for View {}
@@ -61,10 +64,13 @@ impl View {
             lake: w.lake_level.as_slice().as_ptr(),
             member: w.member.as_ptr(),
             act: w.act.as_ptr(),
+            h_new: w.h_new.as_mut_ptr(),
             lake_delta: w.lake_delta.as_mut_ptr(),
             rows: w.rows.as_ptr(),
             yrows: w.yrows.as_ptr(),
             lake_rows: w.lake_rows.as_ptr(),
+            pools: w.pools.as_mut_ptr(),
+            npools: w.pools.len(),
         }
     }
 
@@ -94,33 +100,37 @@ impl View {
         unsafe {
             let n = self.n;
             let w1 = n + 1;
+            let z = self.cells(self.z, 0);
+            let (h, fac) = (self.cells(self.h, 0), self.cells(self.fac, 0));
             for y in y0..y1 {
                 let base = y * w1;
                 let r = y * n;
+                // Interior faces 1..n-1 of the row, as lanes 0..n-1 (lane j is face j + 1).
+                let out = self.cells_mut(self.qx_new, base + 1, n - 1);
                 for &(a, b) in self.row(y) {
                     let (a, b) = (a as usize, b as usize);
                     let (lo, hi) = (a.max(1), b.min(n - 1));
                     if lo <= hi {
-                        let m = hi - lo + 1;
                         kernels::faces(
-                            self.cells_mut(self.qx_new, base + lo, m),
-                            self.xf(self.qx, base + lo),
-                            self.xf(self.qx, base + lo - 1),
-                            self.xf(self.qx, base + lo + 1),
-                            self.cells(self.z, r + lo - 1),
-                            self.cells(self.z, r + lo),
-                            self.cells(self.h, r + lo - 1),
-                            self.cells(self.h, r + lo),
-                            self.cells(self.fac, r + lo - 1),
-                            self.cells(self.fac, r + lo),
-                            self.xf(self.ox, base + lo),
-                            self.cells(self.act, r + lo - 1),
-                            self.cells(self.act, r + lo),
+                            out,
+                            self.xf(self.qx, base + 1),
+                            self.xf(self.qx, base),
+                            self.xf(self.qx, base + 2),
+                            self.cells(self.z, r),
+                            self.cells(self.z, r + 1),
+                            self.cells(self.h, r),
+                            self.cells(self.h, r + 1),
+                            self.cells(self.fac, r),
+                            self.cells(self.fac, r + 1),
+                            self.xf(self.ox, base + 1),
+                            self.cells(self.act, r),
+                            self.cells(self.act, r + 1),
+                            lo - 1,
+                            hi,
+                            n - 1,
                             p,
                         );
                     }
-                    let z = self.cells(self.z, 0);
-                    let (h, fac) = (self.cells(self.h, 0), self.cells(self.fac, 0));
                     if a == 0 {
                         let c = r;
                         let zg = edge_bed(z, c, c + 1, dx);
@@ -133,35 +143,41 @@ impl View {
                         let q = *self.qx.add(base + n);
                         *self.qx_new.add(base + n) = kernels::face(q, q, q, z[c], zg, h[c], h[c], fac[c], fac[c], *self.ox.add(base + n), p).max(0.0);
                     }
+                }
+                for &(a, b) in self.row(y) {
+                    let (a, b) = (a as usize, b as usize);
                     std::ptr::copy_nonoverlapping(self.qx_new.add(base + a), self.qx.add(base + a), b - a + 1);
                 }
             }
             let last = if y1 == n { n + 1 } else { y1 };
             for y in y0..last {
                 let base = y * n;
-                for &(a, b) in self.yrow(y) {
-                    let (a, b) = (a as usize, b as usize);
-                    if y > 0 && y < n {
+                if y > 0 && y < n {
+                    let out = self.cells_mut(self.qy_new, base, n);
+                    for &(a, b) in self.yrow(y) {
                         kernels::faces(
-                            self.cells_mut(self.qy_new, base + a, b - a),
-                            self.yf(self.qy, base + a),
-                            self.yf(self.qy, base - n + a),
-                            self.yf(self.qy, base + n + a),
-                            self.cells(self.z, base - n + a),
-                            self.cells(self.z, base + a),
-                            self.cells(self.h, base - n + a),
-                            self.cells(self.h, base + a),
-                            self.cells(self.fac, base - n + a),
-                            self.cells(self.fac, base + a),
-                            self.yf(self.oy, base + a),
-                            self.cells(self.act, base - n + a),
-                            self.cells(self.act, base + a),
+                            out,
+                            self.yf(self.qy, base),
+                            self.yf(self.qy, base - n),
+                            self.yf(self.qy, base + n),
+                            self.cells(self.z, base - n),
+                            self.cells(self.z, base),
+                            self.cells(self.h, base - n),
+                            self.cells(self.h, base),
+                            self.cells(self.fac, base - n),
+                            self.cells(self.fac, base),
+                            self.yf(self.oy, base),
+                            self.cells(self.act, base - n),
+                            self.cells(self.act, base),
+                            a as usize,
+                            b as usize,
+                            n,
                             p,
                         );
-                    } else {
-                        let z = self.cells(self.z, 0);
-                        let (h, fac) = (self.cells(self.h, 0), self.cells(self.fac, 0));
-                        for x in a..b {
+                    }
+                } else {
+                    for &(a, b) in self.yrow(y) {
+                        for x in a as usize..b as usize {
                             let f = base + x;
                             let q = *self.qy.add(f);
                             let o = *self.oy.add(f);
@@ -187,22 +203,65 @@ impl View {
             let w1 = n + 1;
             for y in y0..y1 {
                 let r = y * n;
+                let out = self.cells_mut(self.fac, r, n);
                 for &(a, b) in self.row(y) {
-                    let (a, b) = (a as usize, b as usize);
                     kernels::limiter(
-                        self.cells_mut(self.fac, r + a, b - a),
-                        self.cells(self.h, r + a),
-                        self.cells(self.src, r + a),
-                        self.xf(self.qx, y * w1 + a),
-                        self.xf(self.qx, y * w1 + a + 1),
-                        self.yf(self.qy_new, r + a),
-                        self.yf(self.qy_new, r + n + a),
-                        self.cells(self.member, r + a),
+                        out,
+                        self.cells(self.h, r),
+                        self.cells(self.src, r),
+                        self.xf(self.qx, y * w1),
+                        self.xf(self.qx, y * w1 + 1),
+                        self.yf(self.qy_new, r),
+                        self.yf(self.qy_new, r + n),
+                        self.cells(self.member, r),
                         k,
                         dt,
+                        a as usize,
+                        b as usize,
+                        n,
                     );
                 }
             }
+        }
+    }
+
+    /// One boundary cell's mass balance (its outer faces have no neighbour cell).
+    unsafe fn continuity_cell(&self, i: usize, k: f32, dt: f32) -> (u32, u32) {
+        unsafe {
+            let n = self.n;
+            let w1 = n + 1;
+            let (x, y) = (i % n, i / n);
+            let fc = self.cells(self.fac, i);
+            let fw = if x == 0 { fc } else { self.cells(self.fac, i - 1) };
+            let fe = if x + 1 == n { fc } else { self.cells(self.fac, i + 1) };
+            let fnn = if y == 0 { fc } else { self.cells(self.fac, i - n) };
+            let fs = if y + 1 == n { fc } else { self.cells(self.fac, i + n) };
+            let r = kernels::continuity(
+                self.cells_mut(self.h_new, i, 1),
+                self.cells(self.h, i),
+                self.cells(self.z, i),
+                self.cells(self.src, i),
+                self.cells(self.lake, i),
+                self.cells(self.member, i),
+                self.xf(self.qx, y * w1 + x),
+                self.xf(self.qx, y * w1 + x + 1),
+                self.yf(self.qy_new, i),
+                self.yf(self.qy_new, i + n),
+                fc,
+                fw,
+                fe,
+                fnn,
+                fs,
+                self.cells_mut(self.lake_delta, i, 1),
+                k,
+                dt,
+                WET_SEED,
+                0,
+                1,
+                1,
+            );
+            *self.h.add(i) = *self.h_new.add(i);
+            r
         }
     }
 
@@ -215,50 +274,53 @@ impl View {
             for y in y0..y1 {
                 let r = y * n;
                 let mut row_new = 0u32;
+                let interior_row = y > 0 && y + 1 < n;
                 for &(a, b) in self.row(y) {
                     let (a, b) = (a as usize, b as usize);
-                    // Split off the map-edge columns, whose outer face has no neighbour cell.
-                    let mut parts: [(usize, usize); 3] = [(a, a), (a, b), (b, b)];
-                    if a == 0 {
-                        parts[0] = (0, 1);
-                        parts[1].0 = 1;
-                    }
-                    if b == n && parts[1].1 > parts[1].0 {
-                        parts[2] = (n - 1, n);
-                        parts[1].1 = n - 1;
-                    }
-                    for (pa, pb) in parts {
-                        if pb <= pa {
-                            continue;
+                    if interior_row {
+                        let (lo, hi) = (a.max(1), b.min(n - 1));
+                        if lo < hi {
+                            let (hm, nw) = kernels::continuity(
+                                self.cells_mut(self.h_new, r, n),
+                                self.cells(self.h, r),
+                                self.cells(self.z, r),
+                                self.cells(self.src, r),
+                                self.cells(self.lake, r),
+                                self.cells(self.member, r),
+                                self.xf(self.qx, y * w1),
+                                self.xf(self.qx, y * w1 + 1),
+                                self.yf(self.qy_new, r),
+                                self.yf(self.qy_new, r + n),
+                                self.cells(self.fac, r),
+                                self.cells(self.fac, r - 1),
+                                self.cells(self.fac, r + 1),
+                                self.cells(self.fac, r - n),
+                                self.cells(self.fac, r + n),
+                                self.cells_mut(self.lake_delta, r, n),
+                                k,
+                                dt,
+                                WET_SEED,
+                                lo,
+                                hi,
+                                n,
+                            );
+                            std::ptr::copy_nonoverlapping(self.h_new.add(r + lo), self.h.add(r + lo), hi - lo);
+                            out.hmax = out.hmax.max(hm);
+                            row_new += nw;
                         }
-                        let i0 = r + pa;
-                        let fc = self.cells(self.fac, i0);
-                        let fw = if pa == 0 { fc } else { self.cells(self.fac, i0 - 1) };
-                        let fe = if pb == n { fc } else { self.cells(self.fac, i0 + 1) };
-                        let fnn = if y == 0 { fc } else { self.cells(self.fac, i0 - n) };
-                        let fs = if y + 1 == n { fc } else { self.cells(self.fac, i0 + n) };
-                        let (hm, nw) = kernels::continuity(
-                            self.cells_mut(self.h, i0, pb - pa),
-                            self.cells(self.z, i0),
-                            self.cells(self.src, i0),
-                            self.cells(self.lake, i0),
-                            self.cells(self.member, i0),
-                            self.xf(self.qx, y * w1 + pa),
-                            self.xf(self.qx, y * w1 + pa + 1),
-                            self.yf(self.qy_new, i0),
-                            self.yf(self.qy_new, i0 + n),
-                            fc,
-                            fw,
-                            fe,
-                            fnn,
-                            fs,
-                            self.cells_mut(self.lake_delta, i0, pb - pa),
-                            k,
-                            dt,
-                            WET_SEED,
-                        );
-                        out.hmax = out.hmax.max(hm);
-                        row_new += nw;
+                        for x in [0, n - 1] {
+                            if (a..b).contains(&x) {
+                                let (hm, nw) = self.continuity_cell(r + x, k, dt);
+                                out.hmax = out.hmax.max(hm);
+                                row_new += nw;
+                            }
+                        }
+                    } else {
+                        for x in a..b {
+                            let (hm, nw) = self.continuity_cell(r + x, k, dt);
+                            out.hmax = out.hmax.max(hm);
+                            row_new += nw;
+                        }
                     }
                     if *self.lake_rows.add(y) {
                         out.lake_change += self.cells(self.lake_delta, r + a)[..b - a].iter().map(|&v| v as f64).sum::<f64>();
@@ -289,6 +351,31 @@ impl View {
                 }
             }
             out
+        }
+    }
+
+    /// Pools t, t + tasks, ...: what crossed the rim changes the volume, the level follows, and
+    /// the rim cells show it. Run after `continuity` (faces and limiter are final).
+    pub unsafe fn step_pools(&self, t: usize, tasks: usize, k: f32, dt: f32) {
+        unsafe {
+            let mut pi = t;
+            while pi < self.npools {
+                let pool = &mut *self.pools.add(pi);
+                let mut gain = pool.source as f64 * dt as f64;
+                for rf in &pool.faces {
+                    let q = if rf.is_x { *self.qx.add(rf.face as usize) } else { *self.qy_new.add(rf.face as usize) };
+                    let up = if q > 0.0 { rf.a } else { rf.b };
+                    let eff = q * if up == u32::MAX { 1.0 } else { *self.fac.add(up as usize) };
+                    // Map-edge rim faces are booked as edge losses by the continuity pass.
+                    gain += (rf.sign * eff) as f64 * k as f64;
+                }
+                pool.volume = (pool.volume + gain).max(0.0);
+                pool.level = pool.level_for(pool.volume);
+                for &i in &pool.rim {
+                    *self.h.add(i as usize) = (pool.level - *self.z.add(i as usize)).max(0.0);
+                }
+                pi += tasks;
+            }
         }
     }
 }
