@@ -43,6 +43,8 @@ fn main() {
         w.step(&sim.height, sim::STEP_DAYS);
     }
     let ms_per_day = clock.elapsed().as_secs_f64() * 1000.0 / days as f64;
+    let (fz, act) = w.frozen_tiles();
+    println!("  tiles frozen {fz} active {act}; steps {} mean dt {:.3} s", w.steps_taken, w.physics_seconds / w.steps_taken.max(1) as f64);
     let (inn, out_d, stored) = (w.added_volume - a0, w.lost_volume - l0, w.total_volume() - v0);
     let d = w.depth.as_slice();
     let (river, lake) = (sim.world.river.as_slice(), sim.world.lake.as_slice());

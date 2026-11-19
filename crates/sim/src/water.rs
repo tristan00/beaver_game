@@ -1,4 +1,4 @@
-use crate::SimState;
+﻿use crate::SimState;
 use crate::grid::{Grid, HeightGrid, WaterGrid};
 use crate::worldgen::World;
 use std::cmp::Reverse;
@@ -17,6 +17,50 @@ const EDGE_SLOPE_MIN: f32 = 1.0e-3;
 const TILE: usize = 16;
 const STEP_SPEED_LIMIT: f32 = 1.0;
 const MOVING: f32 = 0.02;
+const SETTLE_S: f32 = 30.0;
+const CALM_H: f32 = 1.0e-7;
+const CALM_Q: f32 = 1.0e-6;
+const DRIFT_M: f64 = 1.0e-4;
+const WAKE_H: f32 = 2.0e-3;
+const WAKE_Q: f32 = 2.0e-3;
+
+#[derive(Clone, Debug)]
+struct Frozen {
+    since: f64,
+    applied: f64,
+    rmax: f32,
+    edge: f64,
+    rain: f64,
+    evap: f64,
+    seep: f64,
+    lake: f64,
+    ring: Vec<(u32, f32, f32, f32)>,
+    border: Vec<Border>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Border {
+    face: u32,
+    horiz: bool,
+    cell: u32,
+    other: u32,
+    sign: f32,
+    f0: f32,
+    acc: f32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TileStats {
+    rain: f64,
+    evap: f64,
+    seep: f64,
+    lake: f64,
+    wave: f32,
+    edge: f64,
+    rh: f32,
+    rq: f32,
+    wet: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Season { Spring, Summer, Autumn, Winter }
@@ -167,6 +211,13 @@ pub struct Water {
     active: Vec<usize>,
     wave_max: f32,
     pending: f64,
+    frozen: Vec<Option<Frozen>>,
+    frozen_mask: Vec<bool>,
+    calm: Vec<f32>,
+    rate: Vec<f32>,
+    src_buf: Vec<f32>,
+    frozen_season: Option<Season>,
+    pub freeze_enabled: bool,
 }
 
 impl Water {
@@ -204,7 +255,192 @@ impl Water {
             active: (0..size.div_ceil(TILE) * size.div_ceil(TILE)).collect(),
             wave_max: 0.0,
             pending: 0.0,
+            frozen: vec![None; size.div_ceil(TILE) * size.div_ceil(TILE)],
+            frozen_mask: vec![false; size.div_ceil(TILE) * size.div_ceil(TILE)],
+            calm: vec![0.0; size.div_ceil(TILE) * size.div_ceil(TILE)],
+            rate: vec![0.0; n],
+            src_buf: vec![0.0; n],
+            frozen_season: None,
+            freeze_enabled: std::env::var_os("WATER_NOFREEZE").is_none(),
         }
+    }
+
+    pub fn frozen_tiles(&self) -> (usize, usize) {
+        (self.frozen.iter().filter(|f| f.is_some()).count(), self.active.len())
+    }
+
+    fn tile_of(&self, i: usize) -> usize {
+        let n = self.depth.width();
+        (i / n / TILE) * self.tiles() + (i % n) / TILE
+    }
+
+    fn sync_tile(&mut self, t: usize) {
+        let now = self.physics_seconds;
+        let (x0, x1, y0, y1) = self.tile_cells(t);
+        let n = self.depth.width();
+        let Some(f) = self.frozen[t].as_mut() else { return };
+        let span = (now - f.applied) as f32;
+        f.applied = now;
+        if span <= 0.0 {
+            return;
+        }
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = y * n + x;
+                self.h[i] = (self.h[i] + self.rate[i] * span).max(0.0);
+            }
+        }
+    }
+
+    fn sync_frozen(&mut self) {
+        for t in 0..self.frozen.len() {
+            self.sync_tile(t);
+        }
+    }
+
+    fn wake(&mut self, t: usize) {
+        if self.frozen[t].is_some() {
+            self.sync_tile(t);
+            self.frozen[t] = None;
+            self.frozen_mask[t] = false;
+        }
+        self.calm[t] = 0.0;
+    }
+
+    fn wake_around(&mut self, i: usize) {
+        let tn = self.tiles();
+        let t = self.tile_of(i);
+        let (tx, ty) = (t % tn, t / tn);
+        for ay in ty.saturating_sub(1)..(ty + 2).min(tn) {
+            for ax in tx.saturating_sub(1)..(tx + 2).min(tn) {
+                self.wake(ay * tn + ax);
+            }
+        }
+    }
+
+    fn freeze(&mut self, t: usize, s: &TileStats, dt: f32) {
+        let n = self.depth.width();
+        let (x0, x1, y0, y1) = self.tile_cells(t);
+        let mut ring = Vec::new();
+        let mut push = |x: usize, y: usize, ring: &mut Vec<(u32, f32, f32, f32)>| {
+            let i = y * n + x;
+            ring.push((i as u32, self.h[i], self.hu[i], self.hv[i]));
+        };
+        for x in x0..x1 {
+            if y0 > 0 {
+                push(x, y0 - 1, &mut ring);
+            }
+            if y1 < n {
+                push(x, y1, &mut ring);
+            }
+        }
+        for y in y0..y1 {
+            if x0 > 0 {
+                push(x0 - 1, y, &mut ring);
+            }
+            if x1 < n {
+                push(x1, y, &mut ring);
+            }
+        }
+        let w1 = n + 1;
+        let mut border = Vec::new();
+        for y in y0..y1 {
+            if x0 > 0 {
+                let f = y * w1 + x0;
+                border.push(Border { face: f as u32, horiz: true, cell: (y * n + x0) as u32, other: (y * n + x0 - 1) as u32, sign: 1.0, f0: self.fx[4 * f], acc: 0.0 });
+            }
+            if x1 < n {
+                let f = y * w1 + x1;
+                border.push(Border { face: f as u32, horiz: true, cell: (y * n + x1 - 1) as u32, other: (y * n + x1) as u32, sign: -1.0, f0: self.fx[4 * f], acc: 0.0 });
+            }
+        }
+        for x in x0..x1 {
+            if y0 > 0 {
+                let f = y0 * n + x;
+                border.push(Border { face: f as u32, horiz: false, cell: f as u32, other: ((y0 - 1) * n + x) as u32, sign: 1.0, f0: self.fy[4 * f], acc: 0.0 });
+            }
+            if y1 < n {
+                let f = y1 * n + x;
+                border.push(Border { face: f as u32, horiz: false, cell: ((y1 - 1) * n + x) as u32, other: f as u32, sign: -1.0, f0: self.fy[4 * f], acc: 0.0 });
+            }
+        }
+        let d = dt as f64;
+        let now = self.physics_seconds;
+        self.frozen[t] = Some(Frozen { since: now, applied: now, rmax: s.rh, edge: s.edge, rain: s.rain / d, evap: s.evap / d, seep: s.seep / d, lake: s.lake / d, ring, border });
+        self.frozen_mask[t] = true;
+        self.fold_borders(t);
+    }
+
+    fn fold_borders(&mut self, t: usize) {
+        let tn = self.tiles();
+        let n = self.depth.width();
+        let dx = self.cell_m;
+        let (tx, ty) = (t % tn, t / tn);
+        let mut around = vec![t];
+        if tx > 0 { around.push(t - 1) }
+        if tx + 1 < tn { around.push(t + 1) }
+        if ty > 0 { around.push(t - tn) }
+        if ty + 1 < tn { around.push(t + tn) }
+        for a in around {
+            let Some(mut f) = self.frozen[a].take() else { continue };
+            self.sync_tile_with(a, &mut f);
+            for b in f.border.iter_mut() {
+                let o = b.other as usize;
+                let ot = (o / n / TILE) * tn + (o % n) / TILE;
+                if !self.frozen_mask[ot] {
+                    continue;
+                }
+                let now = if b.horiz { self.fx[4 * b.face as usize] } else { self.fy[4 * b.face as usize] };
+                let r = &mut self.rate[b.cell as usize];
+                *r += b.sign * (now - b.f0) / dx;
+                f.rmax = f.rmax.max(r.abs());
+                b.f0 = now;
+            }
+            self.frozen[a] = Some(f);
+        }
+    }
+
+    fn sync_tile_with(&mut self, t: usize, f: &mut Frozen) {
+        let now = self.physics_seconds;
+        let (x0, x1, y0, y1) = self.tile_cells(t);
+        let n = self.depth.width();
+        let span = (now - f.applied) as f32;
+        f.applied = now;
+        if span <= 0.0 {
+            return;
+        }
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = y * n + x;
+                self.h[i] = (self.h[i] + self.rate[i] * span).max(0.0);
+            }
+        }
+    }
+
+    fn correct_borders(frozen: &mut [Option<Frozen>], act: &[bool], fx: &[f32], fy: &[f32], h: &mut [f32], n: usize, k: f32) -> f64 {
+        let tn = n.div_ceil(TILE);
+        let mut clipped = 0.0f64;
+        for f in frozen.iter_mut().flatten() {
+            for b in f.border.iter_mut() {
+                let o = b.other as usize;
+                if act[(o / n / TILE) * tn + (o % n) / TILE] {
+                    continue;
+                }
+                let now = if b.horiz { fx[4 * b.face as usize] } else { fy[4 * b.face as usize] };
+                let d = b.sign * k * (now - b.f0);
+                if d == 0.0 {
+                    continue;
+                }
+                let c = b.cell as usize;
+                let hh = h[c] + d;
+                if hh < 0.0 {
+                    clipped -= hh as f64;
+                }
+                h[c] = hh.max(0.0);
+                b.acc += d;
+            }
+        }
+        clipped
     }
 
     pub fn from_world(world: &World) -> Self {
@@ -331,6 +567,7 @@ impl Water {
         self.check(x, y)?;
         Self::check_positive("source rate", rate)?;
         self.sources.push(Source { x, y, rate, seasonality: 1.0 });
+        self.wake_around(y * self.depth.width() + x);
         Ok(())
     }
 
@@ -387,9 +624,22 @@ impl Water {
     fn load_bed(&mut self, height: &HeightGrid) {
         assert_eq!((height.width(), height.height()), (self.depth.width(), self.depth.height()), "terrain size must match water size");
         let dam = self.dam_height.as_slice();
+        let mut changed = Vec::new();
         for (i, (t, d)) in height.as_slice().iter().zip(dam).enumerate() {
             let z = t + d;
+            if self.z[i] != z {
+                changed.push(i);
+            }
             self.z[i] = z;
+        }
+        let tn = self.tiles();
+        let mut seen = vec![false; tn * tn];
+        for i in changed {
+            let t = self.tile_of(i);
+            if !seen[t] {
+                seen[t] = true;
+                self.wake_around(i);
+            }
         }
     }
 
@@ -413,6 +663,7 @@ impl Water {
         while t < seconds {
             t += self.substep((seconds - t) as f32) as f64;
         }
+        self.sync_frozen();
     }
 
     fn advance(&mut self, seconds: f64) {
@@ -420,6 +671,7 @@ impl Water {
         while t < seconds - 1e-6 {
             t += self.substep((seconds - t) as f32) as f64;
         }
+        self.sync_frozen();
     }
 
     fn tiles(&self) -> usize {
@@ -436,12 +688,14 @@ impl Water {
     fn zero_tile_faces(&mut self, t: usize) {
         let n = self.depth.width();
         let (x0, x1, y0, y1) = self.tile_cells(t);
+        let tn = self.tiles();
+        let (west, north) = (x0 > 0 && self.frozen_mask[t - 1], y0 > 0 && self.frozen_mask[t - tn]);
         for y in y0..y1 {
-            for x in x0..x1 + usize::from(x1 == n) {
+            for x in x0 + usize::from(west)..x1 + usize::from(x1 == n) {
                 self.fx[4 * (y * (n + 1) + x)..4 * (y * (n + 1) + x) + 4].fill(0.0);
             }
         }
-        for y in y0..y1 + usize::from(y1 == n) {
+        for y in y0 + usize::from(north)..y1 + usize::from(y1 == n) {
             for x in x0..x1 {
                 self.fy[4 * (y * n + x)..4 * (y * n + x) + 4].fill(0.0);
             }
@@ -457,6 +711,30 @@ impl Water {
     fn refresh_activity(&mut self) {
         let n = self.depth.width();
         let tn = self.tiles();
+        let season = self.season();
+        if self.frozen_season != Some(season) || !self.freeze_enabled {
+            self.frozen_season = Some(season);
+            for t in 0..tn * tn {
+                self.wake(t);
+            }
+        }
+        let now = self.physics_seconds;
+        for t in 0..tn * tn {
+            let wake = match &self.frozen[t] {
+                None => false,
+                Some(f) => {
+                    f.rmax as f64 * (now - f.since) > DRIFT_M
+                        || f.ring.iter().any(|&(i, h0, u0, v0)| {
+                            let i = i as usize;
+                            (self.h[i] - h0).abs() > WAKE_H || (self.hu[i] - u0).abs() + (self.hv[i] - v0).abs() > WAKE_Q
+                        })
+                        || f.border.iter().any(|b| b.acc.abs() > WAKE_H)
+                }
+            };
+            if wake {
+                self.wake(t);
+            }
+        }
         let mut wet = vec![false; tn * tn];
         let lake = self.lake_level.as_slice();
         for &t in &self.active {
@@ -474,20 +752,21 @@ impl Water {
         for s in &self.sources {
             wet[(s.y / TILE) * tn + s.x / TILE] = true;
         }
+        let frozen = &self.frozen_mask;
         let mut on = vec![false; tn * tn];
         for ty in 0..tn {
             for tx in 0..tn {
-                if !wet[ty * tn + tx] {
+                if !wet[ty * tn + tx] || frozen[ty * tn + tx] {
                     continue;
                 }
                 for ay in ty.saturating_sub(1)..(ty + 2).min(tn) {
                     for ax in tx.saturating_sub(1)..(tx + 2).min(tn) {
-                        on[ay * tn + ax] = true;
+                        on[ay * tn + ax] |= !frozen[ay * tn + ax];
                     }
                 }
             }
         }
-        let leaving: Vec<usize> = self.active.iter().copied().filter(|&t| !on[t]).collect();
+        let leaving: Vec<usize> = self.active.iter().copied().filter(|&t| !on[t] && !frozen[t]).collect();
         for t in leaving {
             self.zero_tile_faces(t);
         }
@@ -501,7 +780,7 @@ impl Water {
         let w1 = n + 1;
         let tn = self.tiles();
         let dx = self.cell_m;
-        let dt = (CFL * dx / self.wave_max.max(0.05)).min(DT_MAX_S).min(limit.max(1.0e-4));
+        let dt = if self.active.is_empty() { limit.max(1.0e-4) } else { (CFL * dx / self.wave_max.max(0.05)).min(DT_MAX_S).min(limit.max(1.0e-4)) };
         let nn2 = self.config.manning * self.config.manning;
         let open = self.config.open_edges;
         let bounds = move |t: usize| ((t % tn) * TILE, ((t % tn + 1) * TILE).min(n), (t / tn) * TILE, ((t / tn + 1) * TILE).min(n));
@@ -555,10 +834,12 @@ impl Water {
             if along_x { (z[i], h[i], u, v) } else { (z[i], h[i], v, u) }
         };
         let (pfx, pfy) = (Shared(self.fx.as_mut_ptr()), Shared(self.fy.as_mut_ptr()));
+        let fm = &self.frozen_mask;
         self.active.par_iter().for_each(|&t| {
             let (x0, x1, y0, y1) = bounds(t);
+            let (east, south) = (x1 < n && fm[t + 1], y1 < n && fm[t + tn]);
             for y in y0..y1 {
-                for x in x0..x1 + usize::from(x1 == n) {
+                for x in x0..x1 + usize::from(x1 == n || east) {
                     let k = 4 * (y * w1 + x);
                     let f = if x == 0 {
                         let c = y * n;
@@ -575,7 +856,7 @@ impl Water {
                     }
                 }
             }
-            for y in y0..y1 + usize::from(y1 == n) {
+            for y in y0..y1 + usize::from(y1 == n || south) {
                 for x in x0..x1 {
                     let k = 4 * (y * n + x);
                     let f = if y == 0 {
@@ -593,12 +874,15 @@ impl Water {
                 }
             }
         });
+        let clipped = Self::correct_borders(&mut self.frozen, &self.frozen_mask, &self.fx, &self.fy, &mut self.h, n, dt / dx);
         let season = self.season();
-        let mut sourced = 0.0f64;
+        let mut sourced = clipped;
         for s in &self.sources {
             let rate = s.rate * (1.0 + s.seasonality * (season.inflow_mult() - 1.0));
             let a = rate * dt / DAY_S as f32;
-            self.h[s.y * n + s.x] += a;
+            if !self.frozen_mask[(s.y / TILE) * tn + s.x / TILE] {
+                self.src_buf[s.y * n + s.x] += a;
+            }
             sourced += a as f64;
         }
         let day = dt as f64 / DAY_S;
@@ -607,20 +891,24 @@ impl Water {
         let k = dt / dx;
         let (fx, fy) = (&self.fx, &self.fy);
         let (ph, phu, phv) = (Shared(self.h.as_mut_ptr()), Shared(self.hu.as_mut_ptr()), Shared(self.hv.as_mut_ptr()));
-        let (rain, evap, seep, lake_change, wave, edge_out) = self
+        let prate = Shared(self.rate.as_mut_ptr());
+        let src = &self.src_buf;
+        let stats: Vec<TileStats> = self
             .active
             .par_iter()
             .map(|&t| {
                 let (x0, x1, y0, y1) = bounds(t);
                 let (mut rain, mut evap, mut seep, mut lake_change, mut wave, mut edge) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f32, 0.0f64);
+                let (mut rh, mut rq, mut wet) = (0.0f32, 0.0f32, false);
                 for y in y0..y1 {
                     for x in x0..x1 {
                         let i = y * n + x;
                         let (w, e) = (4 * (y * w1 + x), 4 * (y * w1 + x + 1));
                         let (nf, sf) = (4 * (y * n + x), 4 * ((y + 1) * n + x));
-                        let mut hh = unsafe { ph.read(i) } - k * (fx[e] - fx[w] + fy[sf] - fy[nf]);
-                        let mut mx = unsafe { phu.read(i) } - k * (fx[e + 1] - fx[w + 2] + fy[sf + 3] - fy[nf + 3]);
-                        let mut my = unsafe { phv.read(i) } - k * (fx[e + 3] - fx[w + 3] + fy[sf + 1] - fy[nf + 2]);
+                        let (h0, u0, v0) = unsafe { (ph.read(i), phu.read(i), phv.read(i)) };
+                        let mut hh = h0 + src[i] - k * (fx[e] - fx[w] + fy[sf] - fy[nf]);
+                        let mut mx = u0 - k * (fx[e + 1] - fx[w + 2] + fy[sf + 3] - fy[nf + 3]);
+                        let mut my = v0 - k * (fx[e + 3] - fx[w + 3] + fy[sf + 1] - fy[nf + 2]);
                         if x == 0 {
                             edge -= fx[w].min(0.0) as f64;
                         }
@@ -662,18 +950,56 @@ impl Water {
                                 wave = wave.max(speed + (G * hh).sqrt());
                             }
                         }
+                        let r = (hh - h0) / dt;
+                        rh = rh.max(r.abs());
+                        rq = rq.max(((mx - u0).abs() + (my - v0).abs()) / dt);
+                        wet |= hh > 0.0 && lvl.is_nan();
                         unsafe {
                             ph.write(i, hh);
                             phu.write(i, mx);
                             phv.write(i, my);
+                            prate.write(i, r);
                         }
                     }
                 }
-                (rain, evap, seep, lake_change, wave, edge)
+                TileStats { rain, evap, seep, lake: lake_change, wave, edge, rh, rq, wet }
             })
-            .reduce(|| (0.0, 0.0, 0.0, 0.0, 0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4.max(b.4), a.5 + b.5));
+            .collect();
+        for s in &self.sources {
+            self.src_buf[s.y * n + s.x] = 0.0;
+        }
+        let (mut rain, mut evap, mut seep, mut lake_change, mut wave, mut edge_out) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f32, 0.0f64);
+        for s in &stats {
+            rain += s.rain;
+            evap += s.evap;
+            seep += s.seep;
+            lake_change += s.lake;
+            wave = wave.max(s.wave);
+            edge_out += s.edge;
+        }
+        let span = dt as f64;
+        for f in self.frozen.iter().flatten() {
+            rain += f.rain * span;
+            evap += f.evap * span;
+            seep += f.seep * span;
+            lake_change += f.lake * span;
+            edge_out += f.edge;
+        }
         self.wave_max = wave;
         let edge = edge_out * dt as f64 * dx as f64 / self.area();
+        self.physics_seconds += dt as f64;
+        if self.freeze_enabled {
+            let active = std::mem::take(&mut self.active);
+            for (&t, s) in active.iter().zip(&stats) {
+                let calm = s.rh < CALM_H && s.rq < CALM_Q;
+                self.calm[t] = if calm { self.calm[t] + dt } else { 0.0 };
+                if self.calm[t] >= SETTLE_S && s.wet {
+                    self.freeze(t, s, dt);
+                }
+            }
+            self.active = active;
+        }
+        self.physics_seconds -= dt as f64;
         self.books.sources += sourced + lake_change.max(0.0);
         self.books.edges += edge + (-lake_change).max(0.0);
         self.books.rain += rain;
