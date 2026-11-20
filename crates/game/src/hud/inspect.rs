@@ -73,6 +73,7 @@ pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
 }
 
 pub fn barge_face(b: &sim::buildings::Barge) -> (Icon, Color, &'static str) {
+    if b.state==BargeState::Icebound {return (Icon::Hourglass,WARN,"Waiting for thaw");}
     if b.state == BargeState::Stranded {
         return (Icon::Blocked, BAD, "Stranded");
     }

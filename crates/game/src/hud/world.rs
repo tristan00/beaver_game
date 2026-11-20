@@ -273,7 +273,8 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         }
         if b.is_complete() {
             if s.buildings.stranded(b,&s.water.depth) {icons.push((Icon::Flood,WARN));}
-            if b.condition<0.25 && !s.maintenance.jobs.contains_key(&b.id) {icons.push((Icon::Hammer,BAD));}
+            let used_home=b.kind!=BuildingKind::Burrow || s.work.homes.get(&b.id).is_some_and(|id|s.colony.beavers.iter().any(|a|a.lodge==Some(*id)));
+            if b.condition<0.25 && (selected || used_home) && !s.maintenance.jobs.contains_key(&b.id) {icons.push((Icon::Hammer,BAD));}
             if let Some(rep) = sim::hud::building_report(s, b.id).filter(|_|s.work.place(b.id).is_some_and(|p|!p.paused && p.filled()>0)) {
                 if rep.factors.iter().any(|f| f.ok == Some(false) && f.label.to_lowercase().contains("store for")) {
                     icons.push((Icon::NoStore, WARN));

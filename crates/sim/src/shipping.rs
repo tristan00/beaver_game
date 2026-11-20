@@ -17,6 +17,19 @@ pub const MIN_LOAD: f32 = 6.0;
 pub const MAX_WAIT_DAYS: f32 = 2.0;
 pub const RETRY_DAYS: f32 = 0.5;
 
+#[cfg(test)]
+mod ice_tests {
+    use super::*;
+    #[test]
+    fn frozen_channel_waits_and_resumes_after_thaw() {
+        let mut s=SimState::new(1);s.water.depth.as_mut_slice().fill(0.5);s.water.ice.as_mut_slice().fill(1.0);
+        let mut b=crate::buildings::Barge::new(BargeId(1),(5,5),None);let locks=HashSet::new();
+        sail(&s,&locks,&mut b,&[(8,5)],0.01);assert_eq!(b.state,BargeState::Icebound);assert_eq!(b.cell,(5,5));
+        s.water.ice.as_mut_slice().fill(0.0);sail(&s,&locks,&mut b,&[(8,5)],RETRY_DAYS);
+        assert_eq!(b.state,BargeState::Sailing);assert_eq!(b.cell,(8,5));
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Service {
     pub from: BuildingId,
@@ -274,7 +287,7 @@ fn run(sim: &mut SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Bar
 }
 
 fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge, ends: &[Cell], dt: f32) {
-    if bg.state == BargeState::Stranded {
+    if matches!(bg.state,BargeState::Stranded|BargeState::Icebound) {
         bg.wait += dt;
         if bg.wait < RETRY_DAYS {
             return;
@@ -289,7 +302,8 @@ fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge,
                 bg.wait = 0.0;
             }
             None => {
-                bg.state = BargeState::Stranded;
+                bg.state = if sim.water.ice.get(bg.cell.0,bg.cell.1).is_some_and(|&ice|ice>=ICE_STOPS)
+                    || route(sim,locks,bg.cell,ends,false).is_some() {BargeState::Icebound} else {BargeState::Stranded};
                 bg.wait = 0.0;
                 return;
             }

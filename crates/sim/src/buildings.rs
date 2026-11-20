@@ -372,6 +372,7 @@ pub enum BargeState {
     Idle,
     Sailing,
     Stranded,
+    Icebound,
 }
 
 #[derive(Clone, Debug)]
