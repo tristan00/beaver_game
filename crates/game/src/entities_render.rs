@@ -89,6 +89,7 @@ fn canopy_key(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<crate::hud::Te
 #[derive(Resource)]
 struct Models {
     white: Handle<StandardMaterial>,
+    tree_tints: [Handle<StandardMaterial>; 4],
     old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
     water_mat: Handle<StandardMaterial>,
@@ -193,7 +194,11 @@ pub const ENTITY_GAIN: f32 = 0.55;
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
-    let old_tree = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * 0.62, ENTITY_GAIN * 0.55, ENTITY_GAIN * 0.45), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
+    let tree_tints = [[1.0, 1.0, 1.0], [0.94, 0.98, 0.93], [0.98, 0.95, 0.90], [0.91, 0.94, 0.91]].map(|[r,g,b]| {
+        materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * r, ENTITY_GAIN * g, ENTITY_GAIN * b), perceptual_roughness: 1.0, reflectance: 0.0, ..default() })
+    });
+    // Old living trees keep healthy foliage; dead snags have their own bare mesh.
+    let old_tree = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * 0.86, ENTITY_GAIN * 0.90, ENTITY_GAIN * 0.82), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let blob_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.42, 0.353, 0.541, 0.40),
         alpha_mode: AlphaMode::Blend,
@@ -231,6 +236,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let blob = build(&models::blob_shadow);
     commands.insert_resource(Models {
         white,
+        tree_tints,
         old_tree,
         blob_mat,
         water_mat,

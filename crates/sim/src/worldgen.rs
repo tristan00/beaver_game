@@ -386,14 +386,23 @@ fn main_stream(flow: &[Option<usize>], acc: &[u32], river: &[bool]) -> Vec<bool>
     }
 }
 
-fn classify_tree(moisture: f32, slope: f32) -> Tree {
-    match (moisture, slope) {
-        (m, s) if m > 0.80 && s < 0.3 => Tree::Willow,
-        (m, s) if m > 0.62 && s < 0.5 => Tree::Alder,
-        (m, s) if m > 0.46 && s < 0.7 => Tree::Aspen,
-        (m, s) if m > 0.32 && s < 0.8 => Tree::Birch,
-        _ => Tree::Pine,
+fn choose_tree(moisture: f32, slope: f32, draw: f32) -> Tree {
+    // Habitat changes the mix, rather than drawing single-species contour bands.
+    // Even wet banks and dry hills contain neighbours of several species.
+    let steep = slope.clamp(0.0, 1.0);
+    let wet = ((moisture - 0.15) / 0.70).clamp(0.0, 1.0);
+    let wet = wet * wet * (3.0 - 2.0 * wet) * (1.0 - 0.65 * steep);
+    // Aspen, willow, birch, alder, pine (Tree::ALL order).
+    let dry_mix = [0.22, 0.025, 0.25, 0.10, 0.405];
+    let wet_mix = [0.25, 0.28, 0.18, 0.22, 0.07];
+    let mut weights = std::array::from_fn::<_, 5, _>(|i| dry_mix[i] + (wet_mix[i] - dry_mix[i]) * wet);
+    weights[4] += steep * 0.20;
+    let mut pick = draw * weights.iter().sum::<f32>();
+    for (tree, weight) in Tree::ALL.into_iter().zip(weights) {
+        if pick < weight { return tree; }
+        pick -= weight;
     }
+    Tree::Pine
 }
 
 fn hash01(seed: u64, i: usize) -> f32 {
@@ -515,7 +524,9 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         let class = map.cover.map_or(10, |c| c[i]);
         let per_m2 = TREES_PER_M2.iter().find(|(c, _)| *c == class).map_or(0.0, |t| t.1);
         if hash01(seed, i) < per_m2 * cell_m * cell_m {
-            forest[i] = Some(classify_tree(moisture[i], slope[i]));
+            // Separate from the density draw: conditioning the same random value
+            // on a tree being present would bias sparse forests to one species.
+            forest[i] = Some(choose_tree(moisture[i], slope[i], hash01(seed ^ 0x5452_4545, i)));
         }
     }
     let half = n as f32 / 2.0;

@@ -240,7 +240,11 @@ fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3)
 }
 
 fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<StandardMaterial> {
-    if r.stage() == Some(sim::forestry::TreeStage::Old) { models.old_tree.clone() } else { models.white.clone() }
+    if r.stage() == Some(sim::forestry::TreeStage::Old) { models.old_tree.clone() }
+    else if r.kind == ResourceKind::Tree {
+        let variant = (hash01(r.cell.0, r.cell.1, 17) * 4.0) as usize;
+        models.tree_tints[variant.min(3)].clone()
+    } else { models.white.clone() }
 }
 
 pub fn sync_sim_resources(
