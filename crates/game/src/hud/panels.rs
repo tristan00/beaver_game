@@ -344,7 +344,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
     }
 }
 
-fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
+pub(super) fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
         Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
         Fix::Gather { kind: sim::resources::ResourceKind::Plant, n } => Some((Icon::Food, format!("+{n}"), format!("Send {n} workers to gather food"))),
@@ -763,8 +763,12 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
 }
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
-    if let (Some(mode), Some(cur)) = (c.hud.order_mode, c.cursor) {
-        let label = match mode { OrderMode::Move => "Click a destination", OrderMode::Gather => "Click food, a tree or clay", OrderMode::Work => "Click a workplace" };
+    if let (Some(mode), Some(cur), Some(cell)) = (c.hud.order_mode, c.cursor, c.hover) {
+        let label = match mode {
+            OrderMode::Move => "Click a destination".into(),
+            OrderMode::Gather => c.s.resources.at(cell).find(|r| r.amount > 0.0).map_or("Click food, a tree or clay".into(), |r| format!("Gather {} - click to assign", resource_name(r.kind))),
+            OrderMode::Work => "Click a workplace".into(),
+        };
         return vec![panel_row(abs(Some(cur.x + 18.0), None, Some(cur.y + 18.0), None), 5.0, |u| { u.bold(label, 13.0, INK); })];
     }
     if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {

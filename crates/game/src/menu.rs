@@ -28,6 +28,16 @@ pub struct Menu {
     pub auto_pause: bool,
     seen_urgent: Vec<String>,
     confirm: Option<MenuAction>,
+    loading: bool,
+    load_error: Option<String>,
+}
+
+type LoadedValley = Result<(sim::SimState, Option<sim::starts::DamSite>), String>;
+
+#[derive(Resource)]
+struct PendingValley {
+    map: MapChoice,
+    result: std::sync::Mutex<std::sync::mpsc::Receiver<LoadedValley>>,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -87,10 +97,12 @@ impl Plugin for MenuPlugin {
             auto_pause: !benchmarking,
             seen_urgent: Vec::new(),
             confirm: None,
+            loading: false,
+            load_error: None,
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
-        .add_systems(Update, (menu_keys, menu_actions, hold_still, auto_pause, title_orbit, rebuild_menu).chain().before(hud::HudSet));
+        .add_systems(Update, (menu_keys, menu_actions, finish_loading, hold_still, auto_pause, title_orbit, rebuild_menu).chain().before(hud::HudSet));
     }
 }
 
@@ -121,7 +133,7 @@ fn menu_keys(
     typing: Option<Res<hud::TextCapture>>,
     mut clock: ResMut<SimClock>,
 ) {
-    if !keys.just_pressed(KeyCode::Escape) || typing.is_some_and(|t| t.0) {
+    if menu.loading || !keys.just_pressed(KeyCode::Escape) || typing.is_some_and(|t| t.0) {
         return;
     }
     match menu.screen {
@@ -147,9 +159,9 @@ fn menu_actions(
     mut commands: Commands,
     q: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     mut menu: ResMut<Menu>,
-    mut sim: ResMut<Sim>,
-    mut current: ResMut<CurrentMap>,
-    mut planned: ResMut<PlannedDam>,
+    sim: Res<Sim>,
+    current: Res<CurrentMap>,
+    planned: Res<PlannedDam>,
     mut flow: ResMut<Flow>,
     mut clock: ResMut<SimClock>,
     mut orbit: ResMut<OrbitCamera>,
@@ -157,6 +169,7 @@ fn menu_actions(
     mut scale: ResMut<UiScale>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if menu.loading { return; }
     let mut pressed: Vec<MenuAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| *a).collect();
     for a in pressed.iter_mut() {
         if let MenuAction::Confirm(yes) = *a {
@@ -175,16 +188,19 @@ fn menu_actions(
                 let fresh = current.0 == menu.map && sim.0.time_days == 0.0 && a == MenuAction::NewGame;
                 if !fresh {
                     let map = if a == MenuAction::Restart { current.0.clone() } else { menu.map.clone() };
-                    match crate::startflow::new_game(&map, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel) {
-                        Ok(()) => {
-                            current.0 = map;
-                            commands.queue(hud::reset_for_new_game)
-                        }
-                        Err(e) => {
-                            error!("{e}");
-                            continue;
-                        }
-                    }
+                    let (send, receive) = std::sync::mpsc::channel();
+                    let build_map = map.clone();
+                    let sandbox = sim.0.sandbox;
+                    std::thread::spawn(move || {
+                        let result = if sandbox { build_map.sandbox().map(|s| (s, None)) }
+                            else { build_map.build().map(|(s, d)| (s, Some(d))) };
+                        let _ = send.send(result);
+                    });
+                    commands.insert_resource(PendingValley { map, result: std::sync::Mutex::new(receive) });
+                    menu.loading = true;
+                    menu.load_error = None;
+                    clock.paused = true;
+                    continue;
                 } else if sim.0.sandbox {
                     crate::startflow::begin_sandbox(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
                 } else if sim.0.colony.is_founded() {
@@ -238,7 +254,39 @@ fn menu_actions(
             MenuAction::Ask(_) => menu.confirm = Some(a),
             MenuAction::Confirm(_) => {}
         }
+        if menu.screen.is_none() {
+            commands.queue(|world: &mut World| {
+                if let Some(mut hud) = world.get_resource_mut::<hud::HudState>() { hud.swallow_click(); }
+            });
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_loading(
+    pending: Option<Res<PendingValley>>, mut commands: Commands, mut menu: ResMut<Menu>,
+    mut sim: ResMut<Sim>, mut planned: ResMut<PlannedDam>, mut current: ResMut<CurrentMap>,
+    mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut orbit: ResMut<OrbitCamera>, mut sel: ResMut<Selection>,
+) {
+    let Some(pending) = pending else { return };
+    let result = match pending.result.lock().unwrap().try_recv() {
+        Ok(result) => result,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(_) => Err("The valley could not be prepared. Please try again.".into()),
+    };
+    menu.loading = false;
+    match result {
+        Ok((state, dam)) => {
+            crate::startflow::install_game(state, dam, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel);
+            current.0 = pending.map.clone();
+            menu.seen_urgent.clear();
+            menu.screen = None;
+            clock.paused = true;
+            commands.queue(hud::reset_for_new_game);
+        }
+        Err(error) => menu.load_error = Some(error),
+    }
+    commands.remove_resource::<PendingValley>();
 }
 
 fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<SimClock>) {
@@ -357,10 +405,18 @@ fn rebuild_menu(
     };
     let border = BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
     commands.entity(e).with_children(|r| {
-        r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| match screen {
-            Screen::Start => start_screen(p, &menu, &current.0),
-            Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
-            Screen::Settings => settings_screen(p, &menu, &icons),
+        r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| {
+            if menu.loading {
+                hud::bold(p, "Preparing your valley...", 22.0, INK);
+                hud::text(p, menu.map.label(), 13.0, MUTED);
+                return;
+            }
+            if let Some(error) = &menu.load_error { hud::text(p, error, 13.0, hud::BAD); }
+            match screen {
+                Screen::Start => start_screen(p, &menu, &current.0),
+                Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
+                Screen::Settings => settings_screen(p, &menu, &icons),
+            }
         });
     });
 }

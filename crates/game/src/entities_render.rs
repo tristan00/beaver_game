@@ -587,16 +587,22 @@ fn update_tree_lod(
     sim: Res<crate::state::Sim>,
     hud: Option<Res<crate::hud::HudState>>,
     hover: Option<Res<crate::hud::HoverCell>>,
+    selection: Option<Res<crate::flow::Selection>>,
     mut trees: Query<(&Transform, &mut TreeLod, &mut Mesh3d)>,
 ) {
     let (Some(models), Some(cam)) = (models, cam.iter().next()) else { return };
     let c = cam.translation();
     let (l0, l1) = (TREE_LOD0 * TREE_LOD0, TREE_LOD1 * TREE_LOD1);
-    let mut clear: Vec<Vec2> = sim.0.agents.by_id.values().filter(|a| !a.inside)
-        .map(|a| sim_view::agent_world_pos(&sim.0, a, 0.0).xz()).collect();
+    let mut clear: Vec<Vec3> = sim.0.agents.by_id.values().filter(|a| !a.inside)
+        .map(|a| sim_view::agent_world_pos(&sim.0, a, 0.0) + Vec3::Y * 0.4).collect();
+    if let Some(crate::flow::Selection::Site(id)) = selection.as_deref().copied() {
+        if let Some(b) = sim.0.buildings.building(id) {
+            clear.push(crate::flow::cell_world(&sim.0.height, (b.pos.0 as f32 + 0.5, b.pos.1 as f32 + 0.5)));
+        }
+    }
     if !sim.0.is_running() || hud.as_ref().is_some_and(|h| h.tool != crate::hud::Tool::None || h.order_mode.is_some()) {
         if let Some(cell) = hover.and_then(|h| h.0) {
-            clear.push(crate::flow::cell_world(&sim.0.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)).xz());
+            clear.push(crate::flow::cell_world(&sim.0.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)));
         }
     }
     for (t, mut lod, mut mesh) in &mut trees {
@@ -604,7 +610,14 @@ fn update_tree_lod(
         let want = if d2 < l0 { 0 } else if d2 < l1 { 1 } else { 2 };
         let offset = (t.translation.x * 0.754_877_7 + t.translation.z * 0.569_840_3).rem_euclid(1.0) - 0.5;
         let tree_season = Season::at(season.phase + offset / Season::COUNT as f32);
-        let cutaway = canopy.0 || clear.iter().any(|p| p.distance_squared(t.translation.xz()) < 144.0);
+        let crown = t.translation + Vec3::Y * 3.0 * t.scale.y;
+        let radius = 2.5 * t.scale.x.max(t.scale.z);
+        let cutaway = canopy.0 || c.xz().distance_squared(t.translation.xz()) < radius * radius || clear.iter().any(|p| {
+            if p.xz().distance_squared(t.translation.xz()) < 100.0 { return true; }
+            let ray = c - *p;
+            let along = ((crown - *p).dot(ray) / ray.length_squared().max(0.01)).clamp(0.0, 1.0);
+            crown.distance_squared(*p + ray * along) < radius * radius
+        });
         if want != lod.lod || lod.season != tree_season || lod.cutaway != cutaway {
             lod.lod = want;
             lod.season = tree_season;

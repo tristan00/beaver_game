@@ -144,6 +144,10 @@ pub(super) fn world_input(
         return;
     }
     let now = time.elapsed_secs();
+    if hud.consume_left_release {
+        if mouse.just_released(MouseButton::Left) { hud.consume_left_release = false; return; }
+        if mouse.pressed(MouseButton::Left) { return; }
+    }
     if !sim.0.is_running() {
         if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
             if let Some(cell) = hover.0 {
@@ -177,6 +181,7 @@ pub(super) fn world_input(
         return;
     }
     if over.0 {
+        if mouse.just_released(MouseButton::Left) { hud.box_from = None; }
         return;
     }
     if mouse.just_pressed(MouseButton::Right) {
@@ -212,6 +217,7 @@ pub(super) fn world_input(
                 let who = hud.selected.clone();
                 order(&mut sim.0, &mut hud, &who, t, shift, now);
                 hud.order_mode = None;
+                hud.consume_left_release = true;
             } else {
                 hud.refuse(if mode == OrderMode::Gather { "Choose a food plant, tree or clay deposit" } else { "Choose a building with an open worker slot" }, now);
             }
@@ -239,8 +245,8 @@ pub(super) fn world_input(
             }
             if mouse.just_released(MouseButton::Left) {
                 if flow.settled_at.is_some_and(|t| flow.real_secs - t < 0.3) { return; }
-                let from = hud.box_from.take();
-                if let (Some(a), Some(b)) = (from, cursor.0) {
+                let Some(a) = hud.box_from.take() else { return };
+                if let Some(b) = cursor.0 {
                     if a.distance(b) > 8.0 {
                         hud.box_done = Some((a, b));
                         return;
@@ -319,6 +325,7 @@ pub(super) fn world_input(
 }
 
 fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, one: bool, now: f32) {
+    if who.is_empty() { hud.refuse("Select a beaver first", now); return; }
     match t {
         world::Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return };

@@ -64,20 +64,16 @@ const SANDBOX_DISTANCE: f32 = 100.0;
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;
 
-pub fn new_game(
-    map: &crate::state::MapChoice,
+pub fn install_game(
+    mut s: SimState,
+    dam: Option<sim::starts::DamSite>,
     sim: &mut Sim,
     planned: &mut PlannedDam,
     flow: &mut Flow,
     clock: &mut SimClock,
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
-) -> Result<(), String> {
-    let (mut s, dam) = if sim.0.sandbox {
-        (map.sandbox().map_err(|e| format!("cannot build the sandbox: {e}"))?, None)
-    } else {
-        map.build().map(|(s, d)| (s, Some(d))).map_err(|e| format!("cannot build the new game: {e}"))?
-    };
+) {
     let camp = dam.as_ref().map(|d| d.camp);
     start_recording(&mut s);
     sim.0 = s;
@@ -90,7 +86,6 @@ pub fn new_game(
     } else {
         begin_scouting(&sim.0, flow, clock, orbit, sel, camp);
     }
-    Ok(())
 }
 
 pub struct StartPlugin;

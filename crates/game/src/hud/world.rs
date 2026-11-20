@@ -223,6 +223,7 @@ pub fn world_hover(
     }
     let elevation = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     tips.world = match (t, hud.tool) {
+        _ if hud.order_mode.is_some() => None,
         (Some(Thing::Cell(_)), Tool::None) if elevation => None,
         (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))),
         _ => None,
@@ -463,6 +464,11 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
 pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
     let s = &sim.0;
     let h = &s.height;
+    if hud.order_mode == Some(super::OrderMode::Gather) {
+        if let Some(Thing::Resource(id)) = thing.0 {
+            if let Some(r) = s.resources.get(id) { cell_outline(&mut g, h, r.cell, None, GOOD); }
+        }
+    }
     for id in &hud.selected {
         if let Some(a) = s.agents.get(*id) {
             if let Some(sim::agents::Assignment::Go(to)) = a.assignment {

@@ -93,6 +93,9 @@ pub(super) fn button_actions(
         match a {
             HudAction::Help => hud.help = !hud.help,
             HudAction::Order(mode) => {
+                if hud.selected.is_empty() {
+                    if let Selection::Beaver(id) = *sel { hud.selected.push(id); }
+                }
                 hud.set_tool(Tool::None);
                 hud.order_mode = Some(mode);
             }
@@ -117,8 +120,12 @@ pub(super) fn button_actions(
                     }
                 }
                 f => {
-                    if let Err(e) = sim::hud::apply_fix(s, f) {
-                        hud.refuse(sim_error(&e), now);
+                    match sim::hud::apply_fix(s, f) {
+                        Ok(()) => {
+                            let label = panels::fix_face(&f).map_or("Colony order".into(), |(_, _, label)| label);
+                            hud.say(Some((Icon::Check, GOOD)), None, format!("Ordered: {label}"), now);
+                        }
+                        Err(e) => hud.refuse(sim_error(&e), now),
                     }
                 }
             },

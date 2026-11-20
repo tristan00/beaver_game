@@ -103,6 +103,7 @@ pub struct HudState {
     pub follow: Option<BeaverId>,
     pub order_mode: Option<OrderMode>,
     pub help: bool,
+    consume_left_release: bool,
     pub pop_sort: u8,
     pub pop_page: usize,
     pub area_edit: Option<BuildingId>,
@@ -199,6 +200,7 @@ impl Default for HudState {
             follow: None,
             order_mode: None,
             help: false,
+            consume_left_release: false,
             pop_sort: 5,
             pop_page: 0,
             area_edit: None,
@@ -212,6 +214,7 @@ impl Default for HudState {
 }
 
 impl HudState {
+    pub(crate) fn swallow_click(&mut self) { self.consume_left_release = true; }
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
         self.order_mode = None;
@@ -360,8 +363,8 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, hover_cell, world::world_hover, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
-                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::scroll_panels, ui::tip_logic, ui::tip_draw, world::draw_world_overlay),
+                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver).chain(),
+                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::scroll_panels, ui::tip_logic, ui::tip_draw, world::draw_world_overlay).chain(),
                 )
                     .chain()
                     .in_set(HudSet),

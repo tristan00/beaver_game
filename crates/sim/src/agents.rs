@@ -1157,7 +1157,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
         ResourceKind::Felled => Good::Sticks,
         k => k.yields()[0],
     };
-    let has_store = closest_store(sim, ag.cell, good).is_some();
+    let has_store = closest_store(sim, ag.cell, good).is_some() || sim.work.supplies.is_some();
     if has_store && !room(good) && ag.load.is_none() && site_short_of(sim, ag.cell, good).is_none() {
         sim.agents.unreachable.insert(target, sim.time_days + UNREACHABLE_RETRY_DAYS);
         ag.task = Task::Idle;
@@ -1215,28 +1215,23 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
         ag.task = Task::Carry { dest: site };
         return;
     }
-    if closest_store(sim, ag.cell, load.good).is_some() && sim.buildings.stores.space(load.good) <= EPS {
-        ag.load = None;
+    if sim.buildings.stores.space(load.good) <= EPS {
         ag.path = None;
-        ag.task = Task::Idle;
         note(ag, false);
         return;
     }
-    if load.good == Good::Food && closest_store(sim, ag.cell, Good::Food).is_none() {
-        if let Some(home) = larder_cell(sim, ag.id) {
+    if closest_store(sim, ag.cell, load.good).is_none() {
+        let home = if load.good == Good::Food { larder_cell(sim, ag.id) } else { sim.work.supplies };
+        if let Some(home) = home {
             return carry_home(sim, ag, dt, load, home);
         }
+        note(ag, false);
+        return;
     }
     let dest = if ag.path.is_some() || adjacent_to_store(sim, ag.cell, dest, load.good) {
         dest
     } else {
         let Some((id, path)) = nearest_store(sim, ag.id, ag.cell, load.good) else {
-            if closest_store(sim, ag.cell, load.good).is_none() {
-                ag.load = None;
-                ag.path = None;
-                ag.task = Task::Idle;
-                return;
-            }
             note(ag, false);
             return;
         };
@@ -1296,6 +1291,26 @@ pub const HOME_RANGE: usize = 20;
 #[cfg(test)]
 mod freight_tests {
     use super::*;
+    #[test]
+    fn gathered_materials_reach_camp_and_full_storage_preserves_the_load() {
+        let mut s = SimState::new(1);
+        s.nav = NavGrid::new(16, 16);
+        s.work.supplies = Some((5, 5));
+        let mut agents = Agents::default();
+        agents.spawn(BeaverId(1), (5, 4));
+        let mut a = agents.by_id.remove(&BeaverId(1)).unwrap();
+        a.load = Some(Load { good: Good::Clay, amount: 4.0, booked: false });
+        a.task = Task::Carry { dest: NO_STORE };
+        carry(&mut s, &mut a, 0.01, NO_STORE);
+        assert_eq!(s.buildings.stores.amount(Good::Clay), 4.0);
+        assert!(a.load.is_none());
+        s.buildings.stores.deposit(Good::Clay, 1000.0).unwrap();
+        a.load = Some(Load { good: Good::Clay, amount: 4.0, booked: false });
+        a.task = Task::Carry { dest: NO_STORE };
+        carry(&mut s, &mut a, 0.01, NO_STORE);
+        assert_eq!(a.load.unwrap().amount, 4.0);
+        assert!(matches!(a.task, Task::Carry { .. }));
+    }
     #[test]
     fn direct_move_walks_over_multiple_steps_and_reports_blockage() {
         let mut s = SimState::new(1);
@@ -1391,20 +1406,18 @@ mod freight_tests {
 
 fn carry_home(sim: &mut SimState, ag: &mut Agent, dt: f32, load: Load, home: Cell) {
     let at_home = ag.cell.0.abs_diff(home.0) + ag.cell.1.abs_diff(home.1) <= 1;
-    let near = ag.cell.0.abs_diff(home.0).max(ag.cell.1.abs_diff(home.1)) <= HOME_RANGE;
     if !at_home && ag.path.is_none() {
         ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Beside(home));
-        if ag.path.is_none() && !near {
-            ag.load = None;
-            ag.task = Task::Idle;
+        if ag.path.is_none() {
             note(ag, false);
             return;
         }
     }
-    if at_home || ag.path.is_none() {
+    if at_home {
         ag.path = None;
         let who = producer(sim, ag);
         let taken = if load.booked {sim.buildings.stores.refund(load.good,load.amount)} else {sim.buildings.stores.deposit_by(load.good, load.amount, who)}.unwrap_or(0.0);
+        if sim.work.supplies == Some(home) { sim.work.stock_add(SUPPLIES, load.good, taken); }
         if taken >= load.amount - EPS {
             ag.load = None;
             ag.task = Task::Idle;

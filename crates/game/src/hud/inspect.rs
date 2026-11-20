@@ -634,7 +634,11 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
                 },
             };
             u.text(status, 12.0, if a.move_state == MoveState::Blocked { BAD } else { GOOD });
-            if let Some(load) = a.load { u.text(format!("Carrying {} {}", num(load.amount), good_name(load.good)), 11.5, MUTED); }
+            if let Some(load) = a.load {
+                u.text(format!("Carrying {} {}", num(load.amount), good_name(load.good)), 11.5, MUTED);
+                if s.buildings.stores.space(load.good) < 0.01 { u.text("Storage full - load kept until space opens", 11.5, WARN); }
+                else if a.stuck_ticks > 5 && a.path.is_none() { u.text("Waiting for a route to storage", 11.5, WARN); }
+            }
         }
         u.text("Right-click ground to move. Shift-click names to select a group.", 11.0, MUTED);
         if let Some(f) = s.colony.family(b.family) {
