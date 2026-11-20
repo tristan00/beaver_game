@@ -99,7 +99,7 @@ impl Player {
         if !self.has(BuildingKind::Dam) && !self.tried_lately(s, BuildingKind::Dam) {
             let dam = self.dam.clone().or_else(|| crate::starts::dam_near(s, self.camp, 24));
             if let Some((cells, h)) = dam {
-                match s.order_dam(&cells, h) {
+                match s.apply(Command::OrderDam{cells,height:h}).map(|_|s.buildings.buildings.last().expect("placed dam").id) {
                     Ok(id) => {
                         self.placed.push((s.time_days, BuildingKind::Dam, Ok(id)));
                         self.note(s, "ordered the dam".into());
@@ -174,7 +174,7 @@ impl Player {
                 // hands its own new assignments back to auto staffing; explicit
                 // player/script locks that existed before the fix are retained.
                 let hand_back: Vec<_> = s.colony.beavers.iter().filter(|b| !locked.contains(&b.id)
-                    && s.work.is_locked(b.id) && s.work.slot_of(b.id).is_some()).map(|b| b.id).collect();
+                    && s.work.is_locked(b.id)).map(|b| b.id).collect();
                 for who in hand_back { let _ = s.apply(Command::Unlock { who }); }
             }
         }
@@ -197,7 +197,8 @@ impl Player {
         'dirs: for i in 0..8 {
             let a = (k + i * 3) % 8;
             let (dx, dy) = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)][a];
-            for r in (20..=40).step_by(4) {
+            let reach=(40+(s.time_days/90.0) as isize*20).min(180);
+            for r in (20..reach+1).step_by(8).rev() {
                 let (x, y) = (self.camp.0 as isize + dx * r, self.camp.1 as isize + dy * r);
                 if x < 2 || y < 2 || x >= n - 2 || y >= n - 2 {
                     continue 'dirs;
@@ -210,7 +211,9 @@ impl Player {
             }
         }
         let Some(to) = target else { return };
-        let who = s.colony.beavers.iter().filter(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id).find(|&b| s.work.slot_of(b).is_none());
+        if s.colony.food < crate::hud::food_need_per_day(s)*8.0 {return;}
+        let who = s.colony.beavers.iter().filter(|b| b.stage == crate::colony::Stage::Adult && !s.work.is_locked(b.id) && b.health>0.6)
+            .min_by_key(|b|(s.work.slot_of(b.id).is_some(),b.id)).map(|b|b.id);
         if let Some(who) = who {
             let r = s.apply(Command::Assign { who: vec![who], to: Some(crate::agents::Assignment::Go(to)) });
             self.note(s, format!("sent a scout toward {to:?}: {r:?}"));
@@ -395,7 +398,7 @@ pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell, keep_cl
 
 pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate::resources::ResourceKind, usize)> {
     let role = crate::catalogue::def(kind).slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
-    let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0 };
+    let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let area = crate::catalogue::work_area(&b)?;
     let n = s.resources.items.iter().filter(|r| r.kind == role && area.contains(r.cell)).count();
     Some((role, n))

@@ -67,7 +67,7 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 9] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-research.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png"];
+const FILES: [&str; 13] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-research.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png"];
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -107,7 +107,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         canopy.0 = true;
         hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Research), _ => None };
         hud.pop_page = usize::from(shot == 8);
-        *lens = if shot == 1 { MapLens::Water } else { MapLens::World };
+        *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
         *selection = Selection::None;
         if shot == 6 {
             if let Some(b) = sim.0.colony.beavers.iter().find(|b| b.pregnancy.is_some())
@@ -118,6 +118,10 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
             if let Some(b) = sim.0.buildings.buildings.iter().find(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Lodge) {
                 *selection = Selection::Site(b.id);
             }
+        } else if shot==11 {
+            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.reinforced && b.kind==sim::buildings::BuildingKind::Lodge) {*selection=Selection::Site(b.id);}
+        } else if shot==12 {
+            if let Some(b)=sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)) {*selection=Selection::Barge(b.id);}
         }
         let homes: Vec<_> = sim.0.buildings.buildings.iter().filter(|b| b.is_complete()
             && matches!(b.kind, sim::buildings::BuildingKind::Lodge | sim::buildings::BuildingKind::Burrow)).collect();
@@ -128,6 +132,18 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
             orbit.distance = if shot == 5 { 50.0 } else { 65.0 };
             orbit.pitch = 1.1;
         }
+        if shot==9 {
+            let dams:Vec<_>=sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dam).collect();
+            if !dams.is_empty(){let x=dams.iter().map(|b|b.pos.0 as f32).sum::<f32>()/dams.len()as f32;let y=dams.iter().map(|b|b.pos.1 as f32).sum::<f32>()/dams.len()as f32;
+                orbit.target=crate::flow::cell_world(&sim.0.height,(x,y));orbit.distance=230.0;orbit.pitch=1.35;}
+        }
+        let close=match shot {
+            10=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dock).max_by_key(|b|b.pos.1).map(|b|b.pos),
+            11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Lodge).map(|b|b.pos),
+            12=>sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)).map(|b|b.cell),
+            _=>None,
+        };
+        if let Some((x,y))=close{orbit.target=crate::flow::cell_world(&sim.0.height,(x as f32,y as f32));orbit.distance=if shot==11{28.0}else{55.0};}
     }
     if (*frame - 120) % 60 == 40 {
         // A real map has more chunks than forty frames can recolour. Wait for

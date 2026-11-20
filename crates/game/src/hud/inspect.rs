@@ -277,8 +277,33 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             line.node.border_radius = BorderRadius::all(Val::Px(5.0));
             line.bg = col.with_alpha(0.12);
         }
+        if b.is_complete() && !matches!(b.kind,BuildingKind::Canal|BuildingKind::Barge) {
+            u.rule();
+            bar_row(u,Icon::Hammer,if b.condition<0.55{WARN}else{GOOD},b.condition,format!("{:.0}%",b.condition*100.0),Tip::name("Condition"));
+            u.text(if b.reinforced {"Stone reinforced"} else {"Timber structure"},12.0,INK);
+            if !s.maintenance.jobs.contains_key(&id) {
+                u.row(6.0,|r| {
+                    if b.condition<0.98 {
+                        let mut tip=Tip::name("Repair");
+                        for (g,a) in sim::maintenance::quoted_cost(s,b,sim::maintenance::Refit::Repair).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
+                        r.icon_label_button(Icon::Hammer,"Repair",12.0,HudAction::RepairBuilding(id),ACCENT,false).tip(tip);
+                    }
+                    if !b.reinforced && sim::maintenance::can_reinforce(b.kind) {
+                        if s.tech.is_unlocked(sim::tech::MASONRY) {
+                            let mut tip=Tip::name("Reinforce with stone").line("Durability",if b.kind==BuildingKind::Lodge{"1.75×"}else{"1.5×"});
+                            for (g,a) in sim::maintenance::cost(b,sim::maintenance::Refit::Reinforce).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
+                            r.icon_label_button(good_icon(Good::Stone),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
+                        } else {r.text("Requires Stone reinforcement",11.0,MUTED);}
+                    }
+                });
+            }
+        }
         if let Some(site) = place.and_then(|pl| pl.site.as_ref()) {
             u.rule();
+            if let Some(job)=s.maintenance.jobs.get(&id) {
+                u.text(if job.kind==sim::maintenance::Refit::Reinforce{"Stone reinforcement in progress"}else{"Repairs in progress"},12.0,INK);
+                u.icon_label_button(Icon::Undo,"Cancel maintenance",12.0,HudAction::CancelMaintenance(id),FAINT,false).tip(Tip::name("Return delivered materials; preserve the existing structure"));
+            }
             u.row(10.0, |r| {
                 for a in &site.needed {
                     let got = a.1 - site.missing(a.0);

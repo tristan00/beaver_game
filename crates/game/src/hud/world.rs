@@ -259,26 +259,28 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     for b in s.buildings.buildings.iter() {
         let centre = building_centre(b);
         let mut icons: Vec<(Icon, Color)> = Vec::new();
+        let selected=matches!(sel,Selection::Site(id) if id==b.id);
         if let Some(pl) = s.work.place(b.id) {
             let empty = pl.slots.iter().filter(|x| x.worker.is_none()).count();
-            if pl.site.is_some() {
+            if pl.is_open_site() && selected && !pl.paused {
                 if empty == pl.slots.len() && !pl.slots.is_empty() {
                     icons.push((Icon::RoleBuilder, WARN));
-                    icons.push((Icon::Cross, BAD));
                 }
-            } else if b.is_complete() && !pl.slots.is_empty() && empty == pl.slots.len() && pl.slots[0].role != sim::work::Role::Haul {
-                icons.push((role_icon(pl.slots[0].role), WARN));
-                icons.push((Icon::Cross, BAD));
+            } else if !pl.paused && pl.filled()>0 && pl.slots.iter().filter_map(|s|s.worker).all(|id|s.agents.get(id).is_some_and(|a|a.stuck_ticks>96)) {
+                icons.push((Icon::Blocked,BAD));
             }
         }
         if b.is_complete() {
-            if let Some(rep) = sim::hud::building_report(s, b.id) {
+            if s.buildings.stranded(b,&s.water.depth) {icons.push((Icon::Flood,WARN));}
+            if b.condition<0.25 && !s.maintenance.jobs.contains_key(&b.id) {icons.push((Icon::Hammer,BAD));}
+            if let Some(rep) = sim::hud::building_report(s, b.id).filter(|_|s.work.place(b.id).is_some_and(|p|!p.paused && p.filled()>0)) {
                 if rep.factors.iter().any(|f| f.ok == Some(false) && f.label.to_lowercase().contains("store for")) {
                     icons.push((Icon::NoStore, WARN));
                 }
             }
-            if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) {
-                let full = Good::ALL.iter().any(|g| s.buildings.stores.capacity(*g) > 0.0 && s.buildings.stores.amount(*g) >= s.buildings.stores.capacity(*g) * sim::hud::FULL_SHARE);
+            if selected && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) {
+                let capacity=sim::catalogue::def(b.kind).capacity;
+                let full = Good::ALL.iter().any(|g| capacity>0.0 && s.work.stock_of(b.id,*g)>=capacity*sim::hud::FULL_SHARE);
                 if full {
                     icons.push((Icon::Full, WARN));
                 }
@@ -563,7 +565,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
                 let col = if pv.is_valid() { Color::WHITE } else { BAD };
-                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, recipe: None, output: 0.0 };
+                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = match kind {
                         BuildingKind::LoggingCamp => LOGGER_AREA,

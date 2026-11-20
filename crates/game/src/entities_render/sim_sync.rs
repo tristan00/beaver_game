@@ -346,6 +346,48 @@ pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 
     if b.status == Status::Complete { 1.0 } else { sim.work.progress(b.id).unwrap_or(0.0).clamp(0.0, 0.999) }
 }
 
+#[derive(Default)]
+pub struct StoneSync {
+    generation: Option<(u64,u32)>,
+    drawn: HashMap<BuildingId,(Entity,u64)>,
+    meshes: HashMap<BuildingKind,Handle<Mesh>>,
+}
+
+pub fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::flow::Flow>,models:Option<Res<Models>>,
+    mut meshes:ResMut<Assets<Mesh>>,mut state:Local<StoneSync>) {
+    let Some(models)=models else{return};let s=&sim.0;
+    let generation=(s.seed,flow.generation);
+    if state.generation!=Some(generation) {
+        for (_, (e,_)) in state.drawn.drain(){commands.entity(e).despawn();}
+        state.generation=Some(generation);
+    }
+    let mut live=HashSet::new();
+    for b in s.buildings.buildings.iter().filter(|b|b.reinforced) {
+        live.insert(b.id);
+        let signature=b.dam_profile.iter().fold(0u64,|h,&(c,_)|h.wrapping_mul(31)^s.water.dam_height.get(c.0,c.1).copied().unwrap_or(0.0).to_bits() as u64);
+        if state.drawn.get(&b.id).is_some_and(|v|v.1==signature){continue;}
+        if let Some((e,_))=state.drawn.remove(&b.id){commands.entity(e).despawn();}
+        let (mesh,tr)=if b.kind==BuildingKind::Dam {
+            let mut mb=super::meshgen::Mb::new();
+            for &(c,_) in &b.dam_profile {
+                let height=s.water.dam_height.get(c.0,c.1).copied().unwrap_or(0.0);
+                if height<=0.0 {continue;}
+                let at=cell_xz(s,(c.0 as f32+0.5,c.1 as f32+0.5));
+                let y=s.height.get(c.0,c.1).copied().unwrap_or(0.0)+height-0.10;
+                mb.ellipsoid_g(Vec3::new(at.x,y,at.y),Vec3::new(0.48,0.23,0.48),super::meshgen::hex(0x777C77),super::meshgen::hex(0xBBB9A8),6,3);
+            }
+            (meshes.add(mb.build()),Transform::IDENTITY)
+        } else {
+            let handle=state.meshes.entry(b.kind).or_insert_with(||meshes.add(models::reinforcement_mesh(model_kind(b.kind)))).clone();
+            (handle,building_transform(s,b,None))
+        };
+        let entity=commands.spawn((SimEntity,Mesh3d(mesh),MeshMaterial3d(models.white.clone()),tr)).id();
+        state.drawn.insert(b.id,(entity,signature));
+    }
+    let gone:Vec<_>=state.drawn.keys().copied().filter(|id|!live.contains(id)).collect();
+    for id in gone {if let Some((e,_))=state.drawn.remove(&id){commands.entity(e).despawn();}}
+}
+
 fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor: Option<f32>) -> Transform {
     let (w, h) = b.kind.spec().footprint;
     let c = cell_xz(sim, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0));

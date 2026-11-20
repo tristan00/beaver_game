@@ -105,6 +105,7 @@ const WEAVING: TechId = TechId(5);
 const DOCKS: TechId = TechId(7);
 const FLOW_CONTROL: TechId = TechId(8);
 const FORESTRY: TechId = TechId(16);
+pub const MASONRY: TechId = TechId(19);
 
 pub const FORESTRY_TECH: &str = "Forestry";
 pub const COPPICING_TECH: &str = "Coppicing";
@@ -112,7 +113,7 @@ pub const COPPICING_TECH: &str = "Coppicing";
 pub const TECHS: &[TechDef] = &[
     ach("Foraging", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::ForagerHut)]),
     ach("Felling", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::LoggingCamp), U(BuildingKind::MudPit)]),
-    ach("Winter stores", Branch::Forest, Achievement::FirstWinter, &[U(BuildingKind::FoodCache)]),
+    ach("Winter stores", Branch::Forest, Achievement::FirstBurrow, &[U(BuildingKind::FoodCache)]),
     exp("Lodge building", Branch::Building, 1, 16.0, 5, &[FELLING], &[U(BuildingKind::Lodge)]),
     exp("Stonework", Branch::Forest, 2, 40.0, 6, &[FELLING], &[U(BuildingKind::QuarryCamp)]),
     exp("Weaving", Branch::Forest, 3, 60.0, 8, &[FELLING], &[U(BuildingKind::Workshop)]),
@@ -129,6 +130,7 @@ pub const TECHS: &[TechDef] = &[
     exp(FORESTRY_TECH, Branch::Forest, 1, 20.0, 5, &[FELLING], &[U(BuildingKind::ForesterLodge)]),
     exp(COPPICING_TECH, Branch::Forest, 2, 50.0, 8, &[FORESTRY], &[]),
     exp("Tree nursery", Branch::Forest, 3, 80.0, 10, &[FORESTRY, WEAVING], &[U(BuildingKind::TreeNursery)]),
+    exp("Stone reinforcement", Branch::Building, 3, 90.0, 12, &[STONEWORK, TechId(12)], &[]),
 ];
 
 pub fn unlock_index(kind: BuildingKind) -> Option<usize> {
@@ -201,6 +203,7 @@ impl Tech {
         }
         let mut gaps: Vec<Gap> =
             t.requires.iter().filter(|r| !self.is_unlocked(**r)).map(|r| Gap::Research(TECHS[r.0].name)).collect();
+        if id == MASONRY && !self.has_achieved(Achievement::FirstWinter) { gaps.push(Gap::Achievement(Achievement::FirstWinter)); }
         if colony.population() < t.size {
             gaps.push(Gap::Size { have: colony.population(), need: t.size });
         }

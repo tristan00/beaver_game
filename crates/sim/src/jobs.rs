@@ -76,7 +76,7 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
             .work
             .places
             .iter()
-            .filter(|p| sim.buildings.building(p.building).is_some_and(|b| !b.is_complete()))
+            .filter(|p| is_site(sim,p))
             .filter_map(|p| p.site.as_ref())
             .map(|s| s.missing(g))
             .sum();
@@ -147,7 +147,7 @@ fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplac
     sim.work
         .places
         .iter()
-        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.is_complete() && !sim.buildings.stranded(b, &sim.water.depth)) || is_site(sim, p)))
+        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.stranded(b, &sim.water.depth)) || is_site(sim, p)))
 }
 
 pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {

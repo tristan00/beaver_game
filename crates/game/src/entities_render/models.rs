@@ -536,6 +536,26 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
     mb.build()
 }
 
+pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
+    let mut mb=Mb::new();
+    let (dark,light)=(hex(0x777C77),hex(0xBBB9A8));
+    match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5,1.4)) {
+        structures::Footing::Mound(radius)|structures::Footing::Stone(radius)=>{
+            for k in 0..16 {
+                let angle=k as f32*TAU/16.0;
+                mb.ellipsoid_r(v(angle.cos()*(radius+0.10),0.08,angle.sin()*(radius+0.10)),v(0.55,0.30,0.40),Quat::from_rotation_y(-angle),if k%3==0{dark}else{light});
+            }
+        }
+        structures::Footing::Piles(x,z)=>{
+            for a in [-1.0,1.0] {for b in [-1.0,1.0] {
+                mb.cuboid(v(a*x,-0.30,b*z),v(0.48,0.65,0.48),Quat::IDENTITY,dark,light);
+                mb.cuboid(v(a*x,0.20,b*z),v(0.55,0.13,0.55),Quat::IDENTITY,dark,light);
+            }}
+        }
+    }
+    mb.build()
+}
+
 fn lodge(mb: &mut Mb, stage: u8) {
     let (rad, hgt) = (3.3f32, 2.8f32);
     let f: f32 = [0.4, 0.7, 0.93, 1.0][stage as usize];

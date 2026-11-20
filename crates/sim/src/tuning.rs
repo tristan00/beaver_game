@@ -1,4 +1,5 @@
 pub mod colony {
+    pub const MAX_IMMIGRANTS_PER_YEAR: u32 = 2;
     pub const KIT_DAYS: f32 = crate::calendar::YEAR_DAYS as f32;
     pub const ADULT_DAYS: f32 = 2.0 * crate::calendar::YEAR_DAYS as f32;
     pub const LODGE_CAPACITY: usize = 12;
@@ -48,7 +49,7 @@ pub mod colony {
     pub const FORAGE_SEASON_MIN: f32 = 0.5;
 
     pub const HUNGRY_FOOD_PER_CAPITA: f32 = 4.0;
-    pub const BIRTH_MIN_FOOD_DAYS: f32 = 30.0;
+    pub const BIRTH_MIN_FOOD_DAYS: f32 = 12.0;
     pub const BIRTH_MAX_CROWDING: f32 = 1.0;
     pub const REPAIR_BELOW_CONDITION: f32 = 0.6;
     pub const REPAIR_MIN_WOOD: f32 = 2.0;
@@ -89,10 +90,10 @@ pub mod colony {
     pub const CANAL_MITIGATION_MAX_DUG: f32 = 10.0;
     pub const HAZARD_BASE: f32 = 0.004;
     pub const HAZARD_PER_LAND_CELL: f32 = 0.003;
-    pub const HAZARD_PER_WATER_DIST: f32 = 0.01;
+    pub const HAZARD_PER_WATER_DIST: f32 = 0.002;
     pub const SAFETY_HAZARD_SCALE: f32 = 6.0;
     pub const SAFETY_MIN: f32 = 0.2;
-    pub const INJURY_HEALTH: f32 = 0.15;
+    pub const INJURY_HEALTH: f32 = 0.20;
     pub const INJURY_SAFETY: f32 = 0.3;
 
     pub const GUARD_SAFETY_PER_STRENGTH: f32 = 0.2;
@@ -139,11 +140,11 @@ pub mod colony {
     pub const EXHAUST_BELOW: f32 = 0.05;
     pub const OLD_AGE_RATE: f32 = 0.0004;
     pub const OLD_AGE_YEARS: f32 = 8.0;
-    pub const HEAL_RATE: f32 = 0.01;
+    pub const HEAL_RATE: f32 = 0.004;
     pub const HEAL_ABOVE: f32 = 0.5;
 
     pub const MAX_BIRTH_AGE_YEARS: f32 = 10.0;
-    pub const JOIN_REQUEST_CHANCE_PER_DAY: f32 = 0.02;
+    pub const JOIN_REQUEST_CHANCE_PER_DAY: f32 = 1.0 / 120.0;
     pub const JOIN_MAX_PENDING: usize = 3;
     pub const JOIN_ADULT_SHARE: f32 = 0.8;
     pub const BREED_MIN_HEALTH: f32 = 0.5;

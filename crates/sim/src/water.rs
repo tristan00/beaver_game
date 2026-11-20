@@ -243,6 +243,7 @@ pub struct Water {
     pub ice: Grid<f32>,
     pub dam_height: Grid<f32>,
     pub dam_integrity: Grid<f32>,
+    pub dam_durability: Grid<f32>,
     pub canal: Grid<bool>,
     pub fed: Grid<bool>,
     pub structures: Grid<bool>,
@@ -350,6 +351,7 @@ impl Water {
             ice: Grid::new(size, size, 0.0),
             dam_height: Grid::new(size, size, 0.0),
             dam_integrity: Grid::new(size, size, 0.0),
+            dam_durability: Grid::new(size, size, 1.0),
             canal: Grid::new(size, size, false),
             fed: Grid::new(size, size, false),
             structures: Grid::new(size, size, false),
@@ -1396,7 +1398,7 @@ impl Water {
             }
             let over = (top - crest - self.config.overtop_depth).max(0.0);
             let integ = &mut self.dam_integrity.as_mut_slice()[i];
-            *integ -= (self.config.dam_decay_per_day + self.config.overtop_erosion * over) * dt;
+            *integ -= (self.config.dam_decay_per_day + self.config.overtop_erosion * over) * dt / self.dam_durability.as_slice()[i].max(1.0);
             if *integ <= 0.0 {
                 broken.push(i);
             }

@@ -15,6 +15,7 @@ pub mod hud;
 pub mod jobs;
 pub mod ledger;
 pub mod maps;
+pub mod maintenance;
 pub mod nav;
 pub mod output;
 pub mod region;
@@ -64,6 +65,8 @@ pub enum Command {
     OrderDam { cells: Vec<water::Cell>, height: f32 },
     OrderDamTo { cells: Vec<water::Cell>, crest: f32 },
     RepairDam { cell: water::Cell },
+    RepairBuilding { building: buildings::BuildingId },
+    ReinforceBuilding { building: buildings::BuildingId },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
@@ -129,6 +132,7 @@ pub struct SimState {
     pub resources: resources::ResourceWorld,
     pub agents: agents::Agents,
     pub work: work::Work,
+    pub maintenance: maintenance::Maintenance,
     pub society: society::Society,
     pub ledger: ledger::Ledger,
     pub output: output::Output,
@@ -168,6 +172,7 @@ impl SimState {
             resources,
             agents: agents::Agents::default(),
             work: work::Work::default(),
+            maintenance: Default::default(),
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
             output: output::Output::default(),
@@ -288,7 +293,7 @@ impl SimState {
         self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
         stock::book_crafting(self);
         self.sync_homes();
-        self.wear_dry_homes(dt_days);
+        maintenance::step(self, dt_days);
         lap(&mut t.buildings_s);
         if self.features.enabled(features::System::Rivals) {
             self.region.step(dt_days);
@@ -326,19 +331,6 @@ impl SimState {
         let allowed = fog::open_at(world);
         for a in self.agents.by_id.values().filter(|a| !a.inside) {
             self.fog.reveal((a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5), fog::BEAVER_SIGHT, &allowed);
-        }
-    }
-
-    fn wear_dry_homes(&mut self, dt_days: f32) {
-        let dry: Vec<colony::LodgeId> = self
-            .buildings
-            .buildings
-            .iter()
-            .filter(|b| self.buildings.stranded(b, &self.water.depth))
-            .filter_map(|b| self.work.homes.get(&b.id).copied())
-            .collect();
-        for l in self.colony.lodges.iter_mut().filter(|l| dry.contains(&l.id)) {
-            l.condition = (l.condition - tuning::colony::DRY_HOME_WEAR * dt_days).max(0.0);
         }
     }
 
@@ -597,7 +589,9 @@ impl SimState {
     }
 
     pub fn repair_dam(&mut self, cell: water::Cell) -> Result<buildings::BuildingId, SimError> {
-        let cells = self.water.dam_line_at(cell);
+        let recorded=self.buildings.buildings.iter().find(|b| b.kind==buildings::BuildingKind::Dam && b.dam_profile.iter().any(|v|v.0==cell)).cloned();
+        let mut cells = recorded.as_ref().map(|b|b.dam_profile.iter().map(|v|v.0).collect::<Vec<_>>()).unwrap_or_else(||self.water.dam_line_at(cell));
+        cells.sort();
         if cells.is_empty() {
             return Err(SimError::InvalidCommand("there is no dam here to repair".into()));
         }
@@ -605,14 +599,19 @@ impl SimState {
         if let Some(plan) = self.work.dam_plans.iter().find(|p| p.cells.iter().any(|c| cells.binary_search(c).is_ok())) {
             return Ok(plan.building);
         }
-        let heights: Vec<f32> = cells.iter().map(|&(x, y)| *self.water.dam_height.get(x, y).expect("dam cell")).collect();
-        let (cost, labour) = dam_preview::cost_for(self, &cells, &heights);
+        let heights: Vec<f32> = cells.iter().map(|&(x,y)| recorded.as_ref().and_then(|b|b.dam_profile.iter().find(|v|v.0==(x,y)).map(|v|v.1)).unwrap_or_else(||*self.water.dam_height.get(x,y).expect("dam cell"))).collect();
+        let (mut cost, labour) = dam_preview::cost_for(self, &cells, &heights);
         if labour <= 1e-3 {
             return Err(SimError::InvalidCommand("the dam does not need repairs".into()));
         }
-        let existing = self.buildings.buildings.iter().find(|b| b.kind == buildings::BuildingKind::Dam
-            && b.is_complete() && b.cells().any(|c| cells.binary_search(&c).is_ok())).map(|b| b.id);
+        let existing = recorded.as_ref().map(|b|b.id).or_else(||self.buildings.buildings.iter().find(|b| b.kind == buildings::BuildingKind::Dam
+            && b.is_complete() && b.cells().any(|c| cells.binary_search(&c).is_ok())).map(|b| b.id));
         let Some(id) = existing else { return self.order_dam_heights(&cells, &heights) };
+        if self.maintenance.jobs.contains_key(&id) {return Err(SimError::InvalidCommand("this dam already has maintenance queued".into()));}
+        if self.buildings.building(id).is_some_and(|b|b.reinforced) {
+            let damage=cells.iter().map(|&(x,y)|1.0-self.water.dam_integrity.get(x,y).copied().unwrap_or(0.0)).sum::<f32>();
+            cost.push((buildings::Good::Stone,(damage*1.2).ceil().max(1.0)));
+        }
         // A dam's crown can be dry. Reuse its original work site instead of
         // requiring the water/placement checks for a brand-new dam.
         let old = self.work.places.iter().position(|p| p.building == id).map(|i| self.work.places.remove(i));
@@ -655,6 +654,7 @@ impl SimState {
     }
 
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
+        if self.maintenance.jobs.contains_key(&id) { return maintenance::cancel(self, id); }
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
         if b.is_complete() {
             return Err(SimError::InvalidCommand(format!("{} is finished; only unfinished sites can be cancelled", b.kind.spec().name)));
@@ -725,6 +725,8 @@ impl SimState {
             Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
             Command::OrderDamTo { cells, crest } => self.order_dam_to(&cells, crest).map(|_| ()),
             Command::RepairDam { cell } => self.repair_dam(cell).map(|_| ()),
+            Command::RepairBuilding { building } => maintenance::order(self, building, maintenance::Refit::Repair),
+            Command::ReinforceBuilding { building } => maintenance::order(self, building, maintenance::Refit::Reinforce),
             Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {

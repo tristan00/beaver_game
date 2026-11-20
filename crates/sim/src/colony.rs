@@ -6,6 +6,21 @@ use rand_pcg::Pcg32;
 pub use crate::tuning::colony::*;
 
 pub const DAYS_PER_YEAR: f64 = crate::calendar::YEAR_DAYS;
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    #[test]
+    fn all_arrivals_share_one_annual_allowance() {
+        let mut c=Colony::default();c.found((0.0,3.0),&RiverLand::default()).unwrap();
+        c.add_home((15.0,0.0));c.add_home((30.0,0.0));
+        c.admit_wanderer(true).unwrap();c.admit_wanderer(true).unwrap();
+        assert_eq!(c.migration_remaining(),0);assert!(c.admit_wanderer(true).is_err());assert_eq!(c.add_immigrants(10),0);
+        let before=c.population();let h=Household{pair_years:3.0,pair_joined:true,born_days:Vec::new(),joined:0};
+        assert!(c.seat_household((45.0,0.0),&RiverLand::default(),&h).is_err());assert_eq!(c.population(),before);
+        c.time_days=360.0;assert_eq!(c.migration_remaining(),2);assert_eq!(c.immigration_by_year.get(&0),Some(&2));
+    }
+}
 const SUBSTEP_DAYS: f32 = 0.5;
 const EVENT_LOG_CAP: usize = 2000;
 
@@ -363,6 +378,7 @@ pub struct Colony {
     pub orders: VecDeque<WorkOrder>,
     pub experience: [f32; 8],
     pub stats: Stats,
+    pub immigration_by_year: std::collections::BTreeMap<i64, u32>,
     /// Parent records survive deaths and dispersal, so family changes cannot
     /// make close relatives eligible to mate.
     pub ancestry: HashMap<BeaverId, (Option<BeaverId>, Option<BeaverId>)>,
@@ -434,6 +450,7 @@ impl Colony {
             orders: VecDeque::new(),
             experience: [0.0; 8],
             stats: Stats::default(),
+            immigration_by_year: Default::default(),
             ancestry: HashMap::new(),
             events: VecDeque::new(),
             events_dropped: 0,
@@ -548,6 +565,10 @@ impl Colony {
 
     pub fn seat_household(&mut self, pos: (f32, f32), land: &dyn Landscape, h: &Household) -> Result<FamilyId, ColonyError> {
         check_point("household", pos)?;
+        let arriving = h.joined + if h.pair_joined { 2 } else { 0 };
+        if arriving > self.migration_remaining() {
+            return Err(ColonyError::Invalid("annual migration limit reached (2 per year)".into()));
+        }
         if land.is_water(pos.0, pos.1) {
             return Err(ColonyError::Invalid("household position is in water".into()));
         }
@@ -583,8 +604,7 @@ impl Colony {
             arrived.push(self.spawn(sex, age, fam, Some(lodge), pos, None, None));
         }
         for id in arrived {
-            self.stats.immigrants += 1;
-            self.log(Event::Immigrated { id });
+            self.record_immigrant(id);
         }
         if !self.founded {
             self.food = START_FOOD;
@@ -702,7 +722,7 @@ impl Colony {
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
         self.do_work(dt, &plan, forage_season);
-        if self.slot_jobs.is_some() {
+        if self.slot_jobs.is_some() && !self.homes_from_buildings {
             self.passive_repair(dt);
         }
         self.teach_young(dt);
@@ -789,15 +809,20 @@ impl Colony {
             };
             let home = self.lodge_pos(&b);
             let order = self.orders.iter().find(|o| o.job == job && o.remaining > 0.0).map(|o| (o.id, o.pos));
-            let site = order.map_or_else(
+            let site = if self.slot_jobs.is_some() { b.pos } else { order.map_or_else(
                 || {
                     let k = job.index() as f32;
                     let a = k * std::f32::consts::FRAC_PI_4 + b.family.0 as f32;
                     (home.0 + (WORK_SITE_DISTANCE + k) * a.cos(), home.1 + (WORK_SITE_DISTANCE + k) * a.sin())
                 },
                 |(_, p)| p,
-            );
-            let eval = self.eval_site(home, site, land);
+            ) };
+            let eval = if self.slot_jobs.is_some() {
+                // Physical agents already pay for travel. Exposure follows
+                // their actual position, so travelling in a canal is safer
+                // than a hypothetical straight line from the family lodge.
+                SiteEval { cost: 0.0, land_len: if land.is_water(site.0,site.1){0.0}else{1.0}, water_dist:land.water_distance(site.0,site.1) }
+            } else { self.eval_site(home, site, land) };
             let efficiency = 1.0 / (1.0 + TRAVEL_COST_PENALTY * eval.cost);
             let units = dt
                 * WORK_FRACTION
@@ -1003,6 +1028,7 @@ impl Colony {
     }
 
     fn wear(&mut self, dt: f32, cold: f32) {
+        if self.homes_from_buildings { return; }
         for l in self.lodges.iter_mut() {
             l.condition = (l.condition - LODGE_WEAR * (1.0 + LODGE_COLD_WEAR * cold) * dt).max(0.0);
         }
@@ -1177,8 +1203,9 @@ impl Colony {
             .collect();
         for (id, father, home) in candidates {
             let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == home).count());
+            let daily_food=HUNGER_PER_DAY*(self.beavers.iter().map(|b|b.stage.food_weight()).sum::<f32>()+MIN_LITTER as f32*KIT_FOOD_WEIGHT);
             if room < MIN_LITTER as usize
-                || self.food < (self.population() + MIN_LITTER as usize) as f32 * HUNGER_PER_DAY * BIRTH_MIN_FOOD_DAYS
+                || self.food < daily_food * BIRTH_MIN_FOOD_DAYS
                 || !self.chance(0.2 * dt)
             {
                 continue;
@@ -1254,7 +1281,10 @@ impl Colony {
             } else {
                 None
             };
-            let b = partner.unwrap_or_else(|| self.immigrant(sex.opposite()));
+            let b = match partner {
+                Some(id) => id,
+                None => { let Some(id) = self.immigrant(sex.opposite()) else { continue }; id }
+            };
             let fam = if let Some(id) = reuse {
                 self.lodges.iter().find(|l| l.id == id).unwrap().family
             } else {
@@ -1288,14 +1318,26 @@ impl Colony {
         }
     }
 
-    fn immigrant(&mut self, sex: Sex) -> BeaverId {
+    pub fn migration_remaining(&self) -> u32 {
+        let year = (self.time_days / DAYS_PER_YEAR).floor() as i64;
+        MAX_IMMIGRANTS_PER_YEAR.saturating_sub(self.immigration_by_year.get(&year).copied().unwrap_or(0))
+    }
+
+    fn record_immigrant(&mut self, id: BeaverId) {
+        let year = (self.time_days / DAYS_PER_YEAR).floor() as i64;
+        *self.immigration_by_year.entry(year).or_default() += 1;
+        self.stats.immigrants += 1;
+        self.log(Event::Immigrated { id });
+    }
+
+    fn immigrant(&mut self, sex: Sex) -> Option<BeaverId> {
+        if self.migration_remaining() == 0 { return None; }
         let age = (IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit()) * DAYS_PER_YEAR as f32;
         let fam = self.new_family();
         let id = self.spawn(sex, age, fam, None, (0.0, 0.0), None, None);
-        self.stats.immigrants += 1;
         self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
-        self.log(Event::Immigrated { id });
-        id
+        self.record_immigrant(id);
+        Some(id)
     }
 
     fn find_lodge_site(&mut self, near: (f32, f32), land: &dyn Landscape) -> Option<(f32, f32)> {
@@ -1452,6 +1494,7 @@ impl Colony {
 
     pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
         if !self.founded {return Err(ColonyError::Invalid("colony is not founded".into()));}
+        if self.migration_remaining() == 0 {return Err(ColonyError::Invalid("annual migration limit reached (2 per year)".into()));}
         let waiting=adult.then(||self.beavers.iter().find(|b|b.stage==Stage::Adult && b.mate.is_none()
             && b.lodge.is_some() && self.beavers.iter().filter(|x|x.lodge==b.lodge && x.stage==Stage::Adult).count()==1).cloned()).flatten();
         let empty=self.lodges.iter().find(|l|!self.beavers.iter().any(|b|b.lodge==Some(l.id))).cloned();
@@ -1464,8 +1507,8 @@ impl Colony {
         let years=if adult{IMMIGRANT_MIN_AGE_YEARS+IMMIGRANT_AGE_SPREAD_YEARS*self.unit()}else{1.0+self.unit()};
         let id=self.spawn(sex,years*DAYS_PER_YEAR as f32,family,Some(home),pos,None,None);
         if let Some(partner)=waiting {self.set_mates(partner.id,id);self.log(Event::NewFamily{family,lodge:home,a:partner.id,b:id});}
-        self.stats.immigrants+=1;self.stats.peak_population=self.stats.peak_population.max(self.beavers.len());
-        self.log(Event::Immigrated{id});Ok(id)
+        self.stats.peak_population=self.stats.peak_population.max(self.beavers.len());
+        self.record_immigrant(id);Ok(id)
     }
     pub fn add_immigrants(&mut self, n: u32) -> u32 {
         let mut admitted = 0;

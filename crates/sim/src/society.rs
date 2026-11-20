@@ -66,6 +66,10 @@ impl Society {
 
     pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &Colony) {
         self.requests.retain(|r| sim_time - r.arrived_day < JOIN_EXPIRES_DAYS);
+        if colony.migration_remaining() == 0 {
+            self.requests.clear();
+            return;
+        }
         if !colony.is_founded() || colony.is_collapsed() || self.requests.len() >= JOIN_MAX_PENDING {
             return;
         }

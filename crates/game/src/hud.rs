@@ -311,6 +311,9 @@ pub enum HudAction {
     Priority(BuildingId, sim::work::Priority),
     Paused(BuildingId, bool),
     Unlock(BeaverId),
+    RepairBuilding(BuildingId),
+    ReinforceBuilding(BuildingId),
+    CancelMaintenance(BuildingId),
     AutoStaff(bool),
     SortPop(u8),
     PopPage(i32),
@@ -982,6 +985,9 @@ fn button_actions(
             HudAction::Priority(building, priority) => cmd(s, &mut hud, sim::Command::SetPriority { building, priority }, now),
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
             HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
+            HudAction::RepairBuilding(building) => cmd(s, &mut hud, sim::Command::RepairBuilding { building }, now),
+            HudAction::ReinforceBuilding(building) => cmd(s, &mut hud, sim::Command::ReinforceBuilding { building }, now),
+            HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelSite { building }, now),
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::SortPop(k) => { hud.pop_sort = k; hud.pop_page = 0; }
             HudAction::PopPage(delta) => {
@@ -1570,7 +1576,7 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
     s.tech.unlock_all();
     let n = s.world.size;
     let terrain_ok = |s: &sim::SimState, p: Cell| s.check_site(BuildingKind::Dock, p).is_ok();
-    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, recipe: None, output: 0.0 };
+    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let locks = sim::shipping::lock_cells(s);
     let near = |r: usize| (camp.1.saturating_sub(r)..(camp.1 + r).min(n - 2)).flat_map(move |y| (camp.0.saturating_sub(r)..(camp.0 + r).min(n - 2)).map(move |x| (x, y)));
     let first = near(30)

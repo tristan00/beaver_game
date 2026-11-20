@@ -5,6 +5,18 @@ use crate::work::{Role, Work};
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+    #[test]
+    fn occupied_buildings_keep_a_walkable_setback() {
+        let mut b=Buildings::default();let h=Grid::new(24,24,0.0);let d=Grid::new(24,24,0.5);let t=Terrain{height:&h,depth:&d};
+        b.add_complete(BuildingKind::Warehouse,(5,5),t).unwrap();
+        assert!(b.check_ground(BuildingKind::Warehouse,(8,5),t).is_err());
+        assert!(b.check_ground(BuildingKind::Warehouse,(9,5),t).is_ok());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Good {
     Logs,
@@ -333,9 +345,16 @@ pub struct Building {
     pub status: Status,
     pub recipe: Option<Recipe>,
     pub output: f32,
+    pub condition: f32,
+    pub reinforced: bool,
+    pub dam_profile: Vec<((usize, usize), f32)>,
 }
 
 impl Building {
+    pub fn operational(&self) -> bool { self.is_complete() && self.condition > 0.05 }
+    pub fn durability(&self) -> f32 {
+        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Lodge { 1.75 } else { 1.5 }
+    }
     pub fn is_complete(&self) -> bool {
         self.status == Status::Complete
     }
@@ -503,7 +522,7 @@ impl Buildings {
     }
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
-        Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0 }.cells().collect()
+        Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() }.cells().collect()
     }
 
     fn check_placement(
@@ -533,6 +552,13 @@ impl Buildings {
         // the moment the site is placed, in both placement orders. Walkable
         // waterworks may share it; an interior of another lodge may not.
         let solid = |k| !matches!(k, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge);
+        // Keep a continuous access lane around occupied structures. Reserving
+        // only a lodge door still allowed later buildings to enclose its whole
+        // approach, trapping residents and deliveries in a one-cell pocket.
+        if solid(kind) && self.buildings.iter().filter(|b|solid(b.kind)).any(|b|
+            b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
+            return Err(BuildError::BadTerrain("leave one cell between buildings for access"));
+        }
         if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
             return Err(BuildError::Blocked);
         }
@@ -606,7 +632,7 @@ impl Buildings {
     ) -> Result<BuildingId, BuildError> {
         self.check_placement(kind, pos, tech, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0 });
+        self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -614,7 +640,7 @@ impl Buildings {
     pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Complete, recipe: None, output: 0.0 });
+        self.buildings.push(Building { id, kind, pos, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -635,7 +661,7 @@ impl Buildings {
         let order = colony.queue_order(Job::Builder, centre, work)?;
         self.stores.withdraw_all(spec.cost).expect("affordability checked above");
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), recipe: None, output: 0.0 });
+        self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -757,7 +783,7 @@ impl Buildings {
     fn update_wheels(&mut self, terrain: Terrain) {
         self.power = 0.0;
         for b in self.buildings.iter_mut().filter(|b| b.kind == BuildingKind::WaterWheel) {
-            let flow = if b.is_complete() { b.cells().map(|(x, y)| terrain.flow(x, y)).fold(0.0, f32::max) } else { 0.0 };
+            let flow = if b.operational() { b.cells().map(|(x, y)| terrain.flow(x, y)).fold(0.0, f32::max) } else { 0.0 };
             b.output = if flow >= MIN_FLOW { (flow / FULL_FLOW).min(1.0) } else { 0.0 };
             self.power += b.output;
         }
@@ -767,7 +793,7 @@ impl Buildings {
         let mut pool = colony.beavers.iter().filter(|b| b.current_job == Some(Job::Crafter)).count();
         self.buildings
             .iter()
-            .filter(|b| b.is_complete() && b.recipe.is_some())
+            .filter(|b| b.operational() && b.recipe.is_some())
             .map(|b| {
                 let n = match work.place(b.id) {
                     Some(p) => p.slots.iter().filter(|s| s.role == Role::Craft && s.worker.is_some()).count(),

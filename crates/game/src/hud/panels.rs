@@ -337,6 +337,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
             (vec![(good_icon(g), good_color(g)), (Icon::Full, WARN)], format!("{:.0}%", v), "Store full")
         }
         ProblemKind::WeakDam => (vec![(Icon::Dam, INK)], format!("{:.0}%", v), "Dam weakening"),
+        ProblemKind::Maintenance => (vec![(Icon::Hammer, WARN)], format!("{:.0}%",v), "Building needs repair"),
         ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
         ProblemKind::LoggingAreaRunningOut => (vec![(Icon::LoggingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Logging area running out"),
         ProblemKind::ForestFalling => (vec![(Icon::Tree, INK), (Icon::Down, WARN)], format!("-{:.0}%", v), "Forest falling"),
@@ -368,6 +369,7 @@ fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
         Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
         Fix::RepairDam { .. } => Some((Icon::RoleBuilder, "Repair".into(), "Repair dam with materials and builders".into())),
+        Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and builders".into())),
         Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
         Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
         Fix::Accept(_) => Some((Icon::Check, String::new(), "Welcome".into())),
@@ -1093,6 +1095,19 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     let place = s.work.place(id);
     let empty = place.map_or(0, |pl| pl.slots.iter().filter(|sl| sl.worker.is_none()).count());
     let slots = place.map_or(0, |pl| pl.slots.len());
+    if place.is_some_and(|p|p.paused) {return Some((Some(Icon::Pause),"Paused".into(),vec![],MUTED));}
+    if let Some(site)=place.and_then(|p|p.site.as_ref()) {
+        let waiting:Vec<Good>=site.needed.iter().filter(|a|site.missing(a.0)>0.0).map(|a|a.0).collect();
+        let stage=match s.maintenance.jobs.get(&id).map(|j|j.kind) {
+            Some(sim::maintenance::Refit::Repair)=>"Repairing",
+            Some(sim::maintenance::Refit::Reinforce)=>"Reinforcing",
+            None=>"Building",
+        };
+        return Some(if !waiting.is_empty() && !site.labour_open() {(None,"Waiting for materials".into(),waiting,WARN)}
+            else if slots>0 && empty==slots {(Some(Icon::RoleBuilder),if s.work.auto_organise{"Queued — workforce busy"}else{"Needs builders"}.into(),vec![],MUTED)}
+            else {(Some(Icon::Hammer),stage.into(),vec![],GOOD)});
+    }
+    if b.is_complete() && !b.operational() {return Some((Some(Icon::Hammer),"Ruined — needs repairs".into(),vec![],BAD));}
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
         (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (None, "High and dry".into(), vec![], WARN),
         (Status::Complete, _) if b.kind == BuildingKind::WaterWheel => {
@@ -1102,7 +1117,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
                 (None, "No current".into(), vec![], WARN)
             }
         }
-        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), "No workers".into(), vec![], WARN),
+        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), if s.work.auto_organise{"Idle — automatic staffing"}else{"No workers"}.into(), vec![], if s.work.auto_organise{MUTED}else{WARN}),
         (Status::Complete, _) => (None, "Working".into(), vec![], if empty > 0 { WARN } else { GOOD }),
         (_, Some(site)) => {
             let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();

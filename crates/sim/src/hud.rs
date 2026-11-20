@@ -12,7 +12,7 @@ pub use crate::forestry::{forest_report, ForestReport};
 pub const MAX_PROBLEMS: usize = 4;
 pub const FOOD_WARN_DAYS: f32 = 20.0;
 pub const FULL_SHARE: f32 = 0.98;
-pub const WEAK_DAM: f32 = 0.35;
+pub const WEAK_DAM: f32 = 0.6;
 pub const FIX_WORKERS: usize = 2;
 pub const FOOD_GATHER_RADIUS: usize = 80;
 
@@ -288,6 +288,7 @@ pub enum Fix {
     Place(BuildingKind),
     StaffSites,
     RepairDam { cell: Cell },
+    RepairBuilding { building: BuildingId },
     PutToWork { role: RoleKind, n: usize },
     OpenJobs,
     Accept(RequestId),
@@ -302,6 +303,7 @@ pub enum ProblemKind {
     NoBuilders,
     StoreFull,
     WeakDam,
+    Maintenance,
     DamFailed,
     Stranger,
     LoggingAreaRunningOut,
@@ -437,6 +439,17 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             alt_fix: None,
             focus: Some(worst),
         });
+    }
+
+    if let Some(b)=sim.buildings.buildings.iter().filter(|b|b.is_complete() && b.kind!=BuildingKind::Dam
+        && !matches!(b.kind,BuildingKind::Canal|BuildingKind::Barge)
+        && (b.kind!=BuildingKind::Burrow || sim.work.homes.get(&b.id).is_some_and(|id|sim.colony.beavers.iter().any(|a|a.lodge==Some(*id))))
+        && b.condition<0.55 && !sim.maintenance.jobs.contains_key(&b.id))
+        .min_by(|a,b|a.condition.total_cmp(&b.condition)) {
+        let value=b.condition*100.0;
+        out.push(Problem{kind:ProblemKind::Maintenance,severity:if b.condition<0.25{Severity::Urgent}else{Severity::Warning},value,
+            cause:Breakdown::new(value,vec![row("Condition",value,Source::Building(b.id))]),subject:Some(Subject::Building(b.kind)),
+            fix:Fix::RepairBuilding{building:b.id},alt_fix:None,focus:Some(b.pos)});
     }
 
     let dry: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| sim.buildings.stranded(b, &sim.water.depth)).collect();
@@ -642,6 +655,7 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
         }
         Fix::PutToWork { role, n } => sim.apply(Command::AdjustRole { role, delta: n.max(1) as i32 }).map_err(err),
         Fix::RepairDam { cell } => sim.apply(Command::RepairDam { cell }).map_err(err),
+        Fix::RepairBuilding { building } => sim.apply(Command::RepairBuilding { building }).map_err(err),
         Fix::Accept(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::Accept }).map_err(err),
         Fix::Decline(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::TurnAway }).map_err(err),
         Fix::Place(_) | Fix::OpenJobs | Fix::Focus => Ok(()),

@@ -49,6 +49,7 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_resources,
                     sim_sync::sync_sim_buildings,
                     sim_sync::sync_sim_dams,
+                    sim_sync::sync_reinforcements,
                     sim_sync::sync_sim_barges,
                     sync_stub_beavers,
                     attach_rigs,

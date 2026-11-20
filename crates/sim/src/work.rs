@@ -10,6 +10,24 @@ pub const SITE_SLOTS: usize = 2;
 pub const LABOUR_PER_DAY: f32 = 0.6;
 pub const EPS: f32 = 1e-3;
 
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn finishing_construction_releases_delivery_site() {
+        let mut w=Work::default();let id=BuildingId(1);
+        w.add_site(id,BuildingKind::Warehouse,&[],1.0).unwrap();
+        w.add_labour(id,1.0).unwrap();w.finish_site(id,&[Role::Haul],None).unwrap();
+        assert!(w.place(id).unwrap().site.is_none());
+        assert_eq!(w.place(id).unwrap().slots[0].role,Role::Haul);
+    }
+    #[test]
+    fn completion_uses_the_same_tolerance_as_worker_tasks() {
+        let s=SiteProgress{needed:vec![(Good::Logs,2.3)],delivered:vec![(Good::Logs,2.2999)],labour_done:1.4999,labour_needed:1.5};
+        assert!(s.is_done());assert!(!s.labour_open());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Area {
     pub min: Cell,
@@ -94,7 +112,7 @@ impl SiteProgress {
         (sum(&self.needed) - sum(&self.delivered)).max(0.0)
     }
     pub fn is_done(&self) -> bool {
-        self.needed.iter().all(|a| self.missing(a.0) <= 0.0) && self.labour_done >= self.labour_needed
+        self.needed.iter().all(|a| self.missing(a.0) <= EPS) && self.labour_done >= self.labour_needed-EPS
     }
     pub fn material_fraction(&self) -> f32 {
         let need: f32 = self.needed.iter().map(|a| a.1).sum();
@@ -307,6 +325,7 @@ impl Work {
         let p = self.place_mut(b)?;
         let builders: Vec<BeaverId> = p.slots.iter().filter_map(|s| s.worker).collect();
         p.slots = slots.iter().map(|&role| Slot::empty(role)).collect();
+        p.site = None;
         p.area = area;
         p.max_workers = p.slots.len();
         self.managed.retain(|id, _| !builders.contains(id));
