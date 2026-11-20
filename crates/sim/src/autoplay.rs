@@ -11,6 +11,7 @@ pub enum Style {
     HandsOff,
 }
 
+#[derive(Clone)]
 pub struct Player {
     pub style: Style,
     pub camp: Cell,

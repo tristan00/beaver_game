@@ -116,6 +116,7 @@ impl StepTimings {
     }
 }
 
+#[derive(Clone)]
 pub struct SimState {
     pub seed: u64,
     pub time_days: f64,
