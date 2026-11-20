@@ -515,6 +515,9 @@ impl Water {
 
     /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
+        if !self.detailed {
+            if let Some(volume)=self.routed.total_volume() {return volume;}
+        }
         let mut v: f64 = (0..self.h.len()).filter(|&i| self.member[i] == 0.0).map(|i| self.h[i] as f64).sum();
         v += self.pools.iter().map(|p| p.volume).sum::<f64>();
         v
@@ -923,17 +926,16 @@ impl Water {
             let sync=std::mem::take(&mut self.routed_needs_sync);
             flow.prepare(self,sync);
             flow.advance(self,dt);
-            flow.publish(self);
-            self.timings.faces_s+=started.elapsed().as_secs_f64();
             if losses {
                 self.time_days+=dt/DAY_S;
                 self.since_environment+=dt;
                 if self.since_environment>=POOL_EVERY_S-1.0e-3 {
-                    self.apply_rain_and_losses((self.since_environment/DAY_S) as f32);
-                    self.routed_needs_sync=true;
+                    flow.environment(self,self.since_environment/DAY_S);
                     self.since_environment=0.0;
                 }
             }
+            flow.publish(self);
+            self.timings.faces_s+=started.elapsed().as_secs_f64();
             left-=dt;
         }
         self.routed=flow;

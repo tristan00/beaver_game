@@ -68,6 +68,11 @@ impl Node {
 }
 
 impl Flow {
+    pub(super) fn total_volume(&self) -> Option<f64> {
+        self.version
+            .map(|_| self.wet.iter().map(|&i| self.nodes[i].volume).sum())
+    }
+
     pub(super) fn prepare(&mut self, w: &mut Water, mut sync: bool) {
         let (terrain, dam) = w.bed_version.unwrap();
         let version = (
@@ -78,6 +83,13 @@ impl Flow {
             w.config.open_edges,
         );
         let rebuilt = self.version != Some(version);
+        let correction = if rebuilt {
+            self.total_volume()
+                .map(|volume| volume - w.h.iter().map(|&h| h as f64).sum::<f64>())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         if rebuilt {
             self.rebuild(w);
             self.version = Some(version);
@@ -87,9 +99,20 @@ impl Flow {
             if rebuilt {
                 self.wet = (0..self.nodes.len()).collect();
             }
+            let receiver = if correction != 0.0 {
+                w.h.iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .map(|(i, _)| self.owner[i])
+            } else {
+                None
+            };
             for &i in &self.wet {
                 let node = &mut self.nodes[i];
                 node.volume = node.cells.iter().map(|&i| w.h[i] as f64).sum();
+                if receiver == Some(i) {
+                    node.volume = (node.volume + correction).max(0.0);
+                }
                 if let Some(level) = node.fixed {
                     let target = node.storage(level).0;
                     let change = target - node.volume;
@@ -315,6 +338,10 @@ impl Flow {
                     node.volume -= input;
                 }
                 if node.volume <= 1.0e-10 && node.fixed.is_none() {
+                    // Account for drying a sub-visible trace instead of silently
+                    // losing it when the reach leaves the active set.
+                    w.books.seepage += node.volume;
+                    w.lost_volume += node.volume;
                     node.volume = 0.0;
                     continue;
                 }
@@ -431,6 +458,48 @@ impl Flow {
             w.timings.physics_s += dt;
             w.timings.substeps += 1;
         }
+    }
+
+    pub(super) fn environment(&mut self, w: &mut Water, days: f64) {
+        w.update_riverbed(days as f32);
+        let forcing = w.forcing();
+        let r = forcing.rain as f64 * days;
+        let e = w.config.evaporation as f64 * forcing.evaporation as f64 * days;
+        let s = w.config.seepage as f64 * days;
+        let (mut rain, mut evaporation, mut seepage) = (0.0, 0.0, 0.0);
+        for &id in &self.wet {
+            let node = &mut self.nodes[id];
+            // External lakes are boundary reservoirs. Local rain/losses do not
+            // change their prescribed level; only exchange with the map is booked.
+            if node.fixed.is_some() {
+                continue;
+            }
+            let mut change = 0.0;
+            for &i in &node.cells {
+                let depth = (node.level - w.z[i] as f64).max(0.0);
+                if depth == 0.0 {
+                    continue;
+                }
+                let ev = e.min(depth + r);
+                let infiltration = if w.riverbed.as_slice()[i] < 0.5 && !w.canal.as_slice()[i] {
+                    4.0 * s
+                } else {
+                    s
+                };
+                let sp = infiltration.min((depth + r - ev).max(0.0));
+                change += r - ev - sp;
+                rain += r;
+                evaporation += ev;
+                seepage += sp;
+            }
+            node.volume = (node.volume + change).max(0.0);
+            node.level = node.level_for(node.volume);
+        }
+        w.books.rain += rain;
+        w.books.evaporation += evaporation;
+        w.books.seepage += seepage;
+        w.added_volume += rain;
+        w.lost_volume += evaporation + seepage;
     }
 
     pub(super) fn publish(&mut self, w: &mut Water) {
