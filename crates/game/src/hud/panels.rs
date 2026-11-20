@@ -367,6 +367,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
 fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
         Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
+        Fix::Gather { kind: sim::resources::ResourceKind::Plant, n } => Some((Icon::Food, format!("+{n}"), format!("Send {n} workers to gather food"))),
         Fix::Gather { kind, n } => Some((resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase()))),
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
         Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),

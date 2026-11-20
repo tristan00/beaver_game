@@ -43,6 +43,24 @@ mod repair_alert_tests {
         assert!(matches!(food_fix(&s),Fix::AddWorkers{building:BuildingId(1),..}));
     }
     #[test]
+    fn emergency_food_response_scales_with_workers_and_respects_locked_orders() {
+        let mut s=SimState::new(1);
+        s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
+        s.resources.items.clear();s.resources.add(ResourceKind::Plant,(35,35),4.0);
+        let adult=s.colony.beavers[0].clone();
+        for i in 0..28 {
+            let mut b=adult.clone();b.id=BeaverId(100+i);
+            if i>=12 {b.stage=Stage::Kit;}
+            s.colony.beavers.push(b);
+        }
+        for b in &s.colony.beavers {s.agents.spawn(b.id,(5,5));}
+        assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:4});
+        for b in s.colony.beavers.iter().filter(|b|b.stage!=Stage::Kit).skip(1) {s.work.player_orders.insert(b.id);}
+        assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:1});
+        let id=s.colony.beavers[0].id;s.work.player_orders.insert(id);
+        assert_eq!(food_fix(&s),Fix::Focus);
+    }
+    #[test]
     fn missing_materials_do_not_offer_an_impossible_builder_fix() {
         let mut s=SimState::new(1);s.colony.found((0.0,3.0),&crate::colony::RiverLand::default()).unwrap();let id=BuildingId(1);let c=(5,5);
         s.water.build_dam(&[c],1.0).unwrap();*s.water.dam_integrity.get_mut(c.0,c.1).unwrap()=0.2;
@@ -427,7 +445,10 @@ fn food_fix(sim: &SimState) -> Fix {
     }
     // Extra staff in an exhausted work area cannot resolve a food shortage.
     // Send available workers to food in the wider emergency gathering area.
-    let n = gatherers(sim, FIX_WORKERS).len();
+    // A fixed pair is too small to respond to a mature colony's winter deficit.
+    // The player explicitly moves a quarter of the workforce; locked orders stay put.
+    let workers=sim.colony.beavers.iter().filter(|b|b.stage!=Stage::Kit).count();
+    let n = gatherers(sim, workers.div_ceil(4).max(FIX_WORKERS)).len();
     if let Some(home) = colony_cell(sim).filter(|_|n>0) {
         let r=FOOD_GATHER_RADIUS;
         let area=crate::work::Area{min:(home.0.saturating_sub(r),home.1.saturating_sub(r)),max:(home.0+r,home.1+r)};
