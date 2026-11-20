@@ -84,3 +84,23 @@ and a productive local hut.
 The low-weight staffing experiment did not produce a crisis, and raising its
 weights did not outperform leaving them alone. It is not evidence of successful
 crisis recovery.
+
+## Final validation and remaining failure
+
+With the food-response fixes, the five-year weekly-care Telemark run ended with
+66 beavers, but still had **6 starvation deaths, 38 hunger days and 43 food-stockout
+days**. It fails the winter-balance check. The previous 16 deaths falling to six
+is an improvement in the response, not a passing balance result. There were 29
+easy days, 60 clay-delay days and 212 days with almost no stored clay. Workers
+collected 25.47 river clay; the map regenerated 40.47 across its limited spots.
+
+The final two-year Algonquin economy-first run had no deaths or hunger, 249
+clay-delay days and no easy days. The overbuilding control retained 90 clay-delay
+days. No supplies or yields were increased to rescue these policies. The
+remaining late-winter failure needs investigation across additional management
+policies and maps before calling the economy balanced.
+
+Verification: 21 simulation unit tests pass; the release game builds; native
+captures verify the three-goods display and a harvested river-clay spot with its
+recovery status. The workspace report retains all comparison CSVs, command logs,
+failed runs and screenshots in `tmp/food-clay-balance/report.html`.
