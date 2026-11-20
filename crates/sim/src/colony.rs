@@ -19,6 +19,8 @@ mod migration_tests {
         let before=c.population();let h=Household{pair_years:3.0,pair_joined:true,born_days:Vec::new(),joined:0};
         assert!(c.seat_household((45.0,0.0),&RiverLand::default(),&h).is_err());assert_eq!(c.population(),before);
         c.time_days=360.0;assert_eq!(c.migration_remaining(),2);assert_eq!(c.immigration_by_year.get(&0),Some(&2));
+        c.beavers.clear();c.check_collapse();assert!(c.is_collapsed());
+        c.time_days=720.0;assert_eq!(c.migration_remaining(),0);assert_eq!(c.add_immigrants(2),0);
     }
 }
 const SUBSTEP_DAYS: f32 = 0.5;
@@ -1319,6 +1321,7 @@ impl Colony {
     }
 
     pub fn migration_remaining(&self) -> u32 {
+        if self.is_collapsed() {return 0;}
         let year = (self.time_days / DAYS_PER_YEAR).floor() as i64;
         MAX_IMMIGRANTS_PER_YEAR.saturating_sub(self.immigration_by_year.get(&year).copied().unwrap_or(0))
     }

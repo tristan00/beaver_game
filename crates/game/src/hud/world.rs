@@ -181,6 +181,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
 }
 
 pub fn world_hover(
+    cli: Res<crate::cli::Cli>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     sim: Res<Sim>,
@@ -192,7 +193,7 @@ pub fn world_hover(
     menu: Res<super::MenuOpen>,
 ) {
     let p = (|| {
-        if over.0 || menu.0 {
+        if over.0 || menu.0 || cli.report_dir.is_some() {
             return None;
         }
         let cursor = windows.single().ok()?.cursor_position()?;

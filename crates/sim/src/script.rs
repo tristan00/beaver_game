@@ -494,7 +494,9 @@ impl Runner {
             if self.s.colony.is_collapsed() && self.out.stats.collapsed.is_none() {
                 self.out.stats.collapsed = Some(self.s.time_days);
                 self.note("COLLAPSED".into());
-                return;
+                // Preserve the requested observation horizon even when the
+                // colony fails. Reports retain the actual collapse date.
+                self.player=None;
             }
         }
     }

@@ -54,7 +54,9 @@ impl Player {
     }
 
     pub fn place(&mut self, s: &mut SimState, kind: BuildingKind) -> Option<BuildingId> {
-        let around = self.camp;
+        let around = if kind==BuildingKind::Burrow {self.camp} else {
+            s.buildings.buildings.iter().find(|b|b.kind==BuildingKind::Lodge && b.is_complete()).map_or(self.camp,|b|b.pos)
+        };
         self.place_at(s, kind, around)
     }
 
@@ -82,7 +84,7 @@ impl Player {
         if s.colony.food < food_reserve {
             // Forestry is a long-term investment. Do not leave manually locked
             // foresters consuming the workforce needed for this winter's food.
-            let forestry: Vec<_> = s.work.places.iter().filter(|p|p.kind == BuildingKind::ForesterLodge
+            let forestry: Vec<_> = s.work.places.iter().filter(|p|p.kind == BuildingKind::ForesterLodge && p.site.is_none()
                 && s.buildings.building(p.building).is_some_and(|b| b.is_complete()))
                 .map(|p|(p.building,p.filled())).collect();
             for (building, n) in forestry { for _ in 0..n { let _ = s.apply(Command::RemoveWorker { building }); } }
@@ -343,8 +345,10 @@ impl Player {
                 });
                 if let Some((x, y)) = at {
                     if s.tech.allows(BuildingKind::Lock) && !self.tried_lately(s, BuildingKind::Lock) {
-                        let r = [(x, y), (x.saturating_sub(1), y)]
-                            .into_iter()
+                        let mut positions:Vec<_>=s.water.dam_line_at((x,y)).into_iter().flat_map(|(x,y)|[(x,y),(x.saturating_sub(1),y)]).collect();
+                        positions.sort_by_key(|p|p.0.abs_diff(x)+p.1.abs_diff(y));
+                        positions.dedup();
+                        let r = positions.into_iter()
                             .find_map(|p| s.apply(Command::PlaceSite { kind: BuildingKind::Lock, pos: p }).ok().map(|_| p))
                             .ok_or_else(|| "no lock fits there".to_string())
                             .and_then(|_| s.buildings.buildings.last().map(|b| b.id).ok_or_else(|| "placed nothing".to_string()));
