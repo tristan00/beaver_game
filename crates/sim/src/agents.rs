@@ -248,10 +248,9 @@ impl Job {
         self.kinds.first() == Some(&ResourceKind::Plant)
     }
     fn permits(&self, r: &Resource) -> bool {
+        if self.only.is_some_and(|id|id!=r.id) || self.area.is_some_and(|a|!a.contains(r.cell)) {return false;}
         let wanted = if self.forages() && r.kind == ResourceKind::Felled { r.bark > 0.0 } else { gatherable(r) };
         wanted
-            && self.only.is_none_or(|id| id == r.id)
-            && self.area.is_none_or(|a| a.contains(r.cell))
             && (self.only.is_some() || self.kinds.contains(&r.kind))
             && (r.kind != ResourceKind::Tree || crate::forestry::cuttable(r, self.min_age))
     }
@@ -261,12 +260,15 @@ impl Job {
         let reachable = |r: &Resource| {
             sim.agents.unreachable.get(&r.id).is_none_or(|until| sim.time_days >= *until) && sim.nav.may_reach_beside(from, r.cell)
         };
-        sim.resources
-            .items
-            .iter()
-            .filter(|r| self.permits(r) && reachable(r))
-            .min_by_key(|r| (rank(r), d(r.cell), r.id))
-            .map(|r| r.id)
+        // Connectivity is much more expensive than the deterministic rank.
+        // A resource that cannot improve the current choice needs no route test.
+        let mut best=None;
+        for r in sim.resources.items.iter().filter(|r|self.permits(r)) {
+            let key=(rank(r),d(r.cell),r.id);
+            if best.as_ref().is_some_and(|(current,_)|key>=*current) {continue;}
+            if reachable(r) {best=Some((key,r.id));}
+        }
+        best.map(|(_,id)|id)
     }
 }
 
@@ -1160,6 +1162,23 @@ pub const HOME_RANGE: usize = 20;
 #[cfg(test)]
 mod freight_tests {
     use super::*;
+    #[test]
+    fn resource_choice_matches_exhaustive_reachable_ranking() {
+        let mut s=SimState::new(1);let size=s.world.size;let mut nav=NavGrid::new(size,size);nav.rebuild(&s);s.nav=nav;
+        for r in s.resources.items.iter().step_by(3) {s.agents.unreachable.insert(r.id,1.0);}
+        for kind in [ResourceKind::Tree,ResourceKind::Plant,ResourceKind::MudBank,ResourceKind::StoneOutcrop] {
+            for from in [(5,5),(size/2,size/2),(size-5,size-5)] {
+                for area in [None,Some(Area{min:(0,0),max:(size/2,size/2)})] {
+                    let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0};
+                    let reference=s.resources.items.iter().filter(|r|job.permits(r)
+                        && s.agents.unreachable.get(&r.id).is_none_or(|&until|s.time_days>=until)
+                        && s.nav.may_reach_beside(from,r.cell))
+                        .min_by_key(|r|(job.kinds.iter().position(|&k|k==r.kind).unwrap_or(0),r.cell.0.abs_diff(from.0).pow(2)+r.cell.1.abs_diff(from.1).pow(2),r.id)).map(|r|r.id);
+                    assert_eq!(job.pick(&s,from),reference);
+                }
+            }
+        }
+    }
     #[test]
     fn hauling_removes_transit_stock_and_preserves_production_totals() {
         let mut s=SimState::new(1);
