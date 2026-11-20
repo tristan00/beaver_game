@@ -26,7 +26,6 @@ const SCREENSHOT_CLOCK: f32 = 31.0;
 fn stub_mode(cli: &Cli) -> bool {
     cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
 }
-const DAYS_PER_SEASON: f64 = sim::calendar::SEASON_DAYS;
 
 pub struct EntitiesRenderPlugin;
 
@@ -61,7 +60,7 @@ impl Plugin for EntitiesRenderPlugin {
                     stress_report,
                 )
                     .chain()
-                    .after(crate::sim_driver::step_sim),
+                    .after(crate::terrain_render::update_season),
             );
     }
 }
@@ -72,7 +71,7 @@ struct RenderClock(f32);
 #[derive(Resource)]
 struct CurrentSeason(Season);
 impl Default for CurrentSeason {
-    fn default() -> Self { Self(Season::Summer) }
+    fn default() -> Self { Self(Season::at(0.0)) }
 }
 
 #[derive(Resource)]
@@ -130,7 +129,7 @@ const SPECIES: [Species; 4] = [Species::Aspen, Species::Maple, Species::Pine, Sp
 
 impl Models {
     fn tree(&self, sp: Species, season: Season, lod: u8) -> Handle<Mesh> {
-        self.trees[(species_index(sp) * 4 + season.index()) * 3 + lod as usize].clone()
+        self.trees[(species_index(sp) * Season::COUNT + season.index()) * 3 + lod as usize].clone()
     }
 }
 
@@ -209,7 +208,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     });
     let mut trees = Vec::new();
     for sp in SPECIES {
-        for season in Season::ALL {
+        for season in Season::all() {
             for lod in 0..3u8 {
                 trees.push(meshes.add(models::tree_mesh(sp, season, lod)));
             }
@@ -270,16 +269,13 @@ fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<Prima
     }
 }
 
-fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
+fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::terrain_render::Season>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
     let shot = || std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK);
     let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none();
     clock.0 = if frozen { shot() } else { time.elapsed_secs() };
-    let idx = match std::env::var("BEAVER_SEASON").ok().and_then(|s| s.parse::<usize>().ok()) {
-        Some(i) => i % 4,
-        None => ((sim.0.time_days / DAYS_PER_SEASON).floor() as usize + 1) % 4,
-    };
-    if season.0 != Season::ALL[idx] {
-        season.0 = Season::ALL[idx];
+    let next = Season::at(visual.phase);
+    if season.0 != next {
+        season.0 = next;
     }
 }
 
@@ -731,7 +727,7 @@ fn animate_beavers(
 }
 
 fn update_tree_lod(
-    season: Res<CurrentSeason>,
+    season: Res<crate::terrain_render::Season>,
     canopy: Res<CanopyView>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
@@ -743,12 +739,14 @@ fn update_tree_lod(
     for (t, mut lod, mut mesh) in &mut trees {
         let d2 = t.translation.distance_squared(c);
         let want = if d2 < l0 { 0 } else if d2 < l1 { 1 } else { 2 };
-        if want != lod.lod || lod.season != season.0 || lod.cutaway != canopy.0 {
+        let offset = (t.translation.x * 0.754_877_7 + t.translation.z * 0.569_840_3).rem_euclid(1.0) - 0.5;
+        let tree_season = Season::at(season.phase + offset / Season::COUNT as f32);
+        if want != lod.lod || lod.season != tree_season || lod.cutaway != canopy.0 {
             lod.lod = want;
-            lod.season = season.0;
+            lod.season = tree_season;
             lod.cutaway = canopy.0;
             mesh.0 = if canopy.0 { models.cutaway_trees[species_index(lod.species)].clone() }
-                else { models.tree(lod.species, season.0, want) };
+                else { models.tree(lod.species, tree_season, want) };
         }
     }
 }

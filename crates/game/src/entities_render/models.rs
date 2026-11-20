@@ -178,36 +178,28 @@ pub fn blob_shadow(mb: &mut Mb) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum Season {
-    Spring,
-    Summer,
-    Autumn,
-    Winter,
-}
+pub struct Season(u8);
 
 impl Season {
-    pub const ALL: [Season; 4] = [Season::Spring, Season::Summer, Season::Autumn, Season::Winter];
-    pub fn index(self) -> usize { self as usize }
+    // Shared meshes sampled twice per month; individual trees stagger their changes.
+    pub const COUNT: usize = 24;
+    pub fn all() -> impl Iterator<Item = Self> { (0..Self::COUNT as u8).map(Self) }
+    pub fn at(phase: f32) -> Self { Self(((phase.rem_euclid(1.0) * Self::COUNT as f32).round() as usize % Self::COUNT) as u8) }
+    pub fn index(self) -> usize { self.0 as usize }
+    fn phase(self) -> f32 { self.0 as f32 / Self::COUNT as f32 }
 }
 
 fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
-    let (a, b) = match (sp, s) {
-        (Species::Aspen, Season::Spring) => (0x9ad86a, 0xd0f58f),
-        (Species::Aspen, Season::Summer) => (0x5cb347, 0x9be066),
-        (Species::Aspen, _) => (0xeaa21c, 0xffe055),
-        (Species::Maple, Season::Spring) => (0x78c655, 0xb9ec7c),
-        (Species::Maple, Season::Summer) => (0x5FA85A, 0x8CD070),
-        (Species::Maple, _) => (0xe0602e, 0xffa63d),
-        (Species::Pine, Season::Spring) => (0x5FA85A, 0x8CD070),
-        (Species::Pine, Season::Summer) => (0x5FA85A, 0x8CD070),
-        (Species::Pine, Season::Autumn) => (0x6AA85A, 0x98CC6C),
-        (Species::Pine, Season::Winter) => (0x78B598, 0xA8D4BC),
-        (Species::Willow, Season::Spring) => (0xa5de7c, 0xd6f59d),
-        (Species::Willow, Season::Summer) => (0x7ac55e, 0xb0e47c),
-        (Species::Willow, Season::Autumn) => (0xd6bd3c, 0xf3e776),
-        (Species::Willow, Season::Winter) => (0xc2b060, 0xd8c880),
+    let keys = match sp {
+        Species::Aspen => [(0x8DCB65,0xC1E487),(0x4C984D,0x8CC65B),(0xCA872C,0xEAC65C),(0x917A51,0xB7A377)],
+        Species::Maple => [(0x70B45A,0xABD37C),(0x438B58,0x79B66B),(0xB95432,0xE89147),(0x775D48,0xAC8D67)],
+        Species::Pine => [(0x477D61,0x7DAE77),(0x356D5C,0x699B70),(0x4E795B,0x8CA46E),(0x315F5D,0x70988E)],
+        Species::Willow => [(0x8EC06C,0xC4DF8B),(0x569D62,0x9CC477),(0xB49F3F,0xDDC66D),(0x8E8257,0xB6A976)],
     };
-    (hex(a), hex(b))
+    let dark = keys.map(|(a,_)| crate::palette::rgb(a));
+    let light = keys.map(|(_,b)| crate::palette::rgb(b));
+    let colour = |k: &[_; 4]| crate::palette::display_linear(crate::seasonal::blend(k,s.phase(),crate::palette::mix));
+    (colour(&dark), colour(&light))
 }
 
 fn trunk_color(sp: Species) -> [f32; 3] {
@@ -217,10 +209,6 @@ fn trunk_color(sp: Species) -> [f32; 3] {
         Species::Pine => 0x6b4630,
         Species::Willow => 0x6c5a3e,
     })
-}
-
-fn bare(sp: Species, s: Season) -> bool {
-    s == Season::Winter && sp != Species::Pine
 }
 
 pub fn tree_cutaway_mesh(sp: Species) -> Mesh {
@@ -241,7 +229,11 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
     let trunk = trunk_color(sp);
     // Ground contact comes from the scene shadow map. An opaque horizontal disc
     // attached to the trunk floats over sloping banks and covers the river below.
-    let bare = bare(sp, season);
+    let leaves = crate::seasonal::leaves(season.phase());
+    let leaf_scale = leaves.sqrt();
+    let bare = leaves < 0.035 && sp != Species::Pine;
+    let snow = crate::seasonal::snow(season.phase());
+    let pine_top = mix(light, hex(0xCBDDE0), snow * 0.45);
     let (seg, rings) = match lod { 0 => (9, 6), 1 => (6, 4), _ => (5, 3) };
     let top_h = match sp {
         Species::Aspen => 4.9,
@@ -255,11 +247,12 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 root_flare(&mut mb, 0.19, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 2.9, 0.0), 0.19, 0.1, trunk, trunk, 7);
                 bark_eyes(&mut mb, 2.9, 0.19, 0.1, 9, 11);
-                if bare {
-                    twigs(&mut mb, v(0.0, 2.2, 0.0), 6, 1.3, 1.7, hex(0xa89c88), 1);
-                } else {
-                    crown(&mut mb, v(0.0, 3.45, 0.0), v(0.95, 1.35, 0.95), 11, 0.52, dark, light, 3);
-                    crown(&mut mb, v(0.1, 4.45, 0.0), v(0.45, 0.5, 0.45), 4, 0.36, dark, light, 4);
+                if leaves < 0.85 {
+                    twigs(&mut mb, v(0.0, 2.2, 0.0), 6, 1.3, 1.7, hex(0x9B8469), 1);
+                }
+                if !bare {
+                    crown(&mut mb, v(0.0, 3.45, 0.0), v(0.95, 1.35, 0.95) * leaf_scale, 11, 0.52 * leaf_scale, dark, light, 3);
+                    crown(&mut mb, v(0.1, 4.45, 0.0), v(0.45, 0.5, 0.45) * leaf_scale, 4, 0.36 * leaf_scale, dark, light, 4);
                 }
             }
             Species::Maple => {
@@ -267,17 +260,19 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 mb.cyl(v(0.0, 1.4, 0.0), v(0.7, 2.4, 0.2), 0.14, 0.08, trunk, trunk, 6);
                 mb.cyl(v(0.0, 1.4, 0.0), v(-0.6, 2.3, -0.3), 0.14, 0.08, trunk, trunk, 6);
                 mb.cyl(v(0.0, 1.5, 0.0), v(0.15, 2.5, -0.75), 0.12, 0.07, trunk, trunk, 6);
-                if bare {
+                if leaves < 0.85 {
                     twigs(&mut mb, v(0.0, 1.8, 0.0), 8, 1.5, 1.9, hex(0x6b4a30), 2);
-                } else {
-                    crown(&mut mb, v(0.0, 3.05, 0.0), v(1.5, 1.2, 1.5), 13, 0.72, dark, light, 7);
-                    crown(&mut mb, v(0.0, 3.95, 0.1), v(0.85, 0.7, 0.85), 5, 0.55, dark, light, 8);
-                    if season == Season::Spring {
+                }
+                if !bare {
+                    crown(&mut mb, v(0.0, 3.05, 0.0), v(1.5, 1.2, 1.5) * leaf_scale, 13, 0.72 * leaf_scale, dark, light, 7);
+                    crown(&mut mb, v(0.0, 3.95, 0.1), v(0.85, 0.7, 0.85) * leaf_scale, 5, 0.55 * leaf_scale, dark, light, 8);
+                    let bloom = crate::seasonal::bloom(season.phase());
+                    if bloom > 0.1 {
                         let mut r = Rng(77);
                         for _ in 0..11 {
                             let (a, e) = (r.range(0.0, TAU), r.range(0.1, 1.1));
                             let p = v(a.cos() * e.cos() * 1.7, 3.1 + e.sin() * 1.25, a.sin() * e.cos() * 1.7);
-                            mb.ellipsoid(p, v(0.24, 0.2, 0.24), hex(0xffb3d1));
+                            mb.ellipsoid(p, v(0.16, 0.13, 0.16) * bloom, hex(0xF3C0BC));
                         }
                     }
                 }
@@ -285,7 +280,7 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
             Species::Pine => {
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 1.5, 0.0), 0.24, 0.16, trunk, trunk, 7);
                 root_flare(&mut mb, 0.24, trunk);
-                let top = if season == Season::Winter { hex(0xf4f9ff) } else { light };
+                let top = pine_top;
                 let tiers = [(0.95f32, 1.55f32, 1.35f32), (1.85, 1.28, 1.2), (2.7, 1.0, 1.1), (3.45, 0.74, 1.0), (4.1, 0.46, 0.85)];
                 for (k, (y0, rr, h)) in tiers.into_iter().enumerate() {
                     let prof = [(0.12, y0 + 0.3), (rr * 0.88, y0 - 0.04), (rr, y0 + 0.1), (rr * 0.74, y0 + h * 0.42), (rr * 0.32, y0 + h * 0.82), (0.0, y0 + h)];
@@ -297,21 +292,22 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 root_flare(&mut mb, 0.28, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.12, 1.3, 0.0), 0.28, 0.2, trunk, trunk, 7);
                 mb.cyl(v(0.12, 1.2, 0.0), v(0.0, 2.3, 0.06), 0.2, 0.14, trunk, trunk, 7);
-                if bare {
+                if leaves < 0.85 {
                     twigs(&mut mb, v(0.0, 2.3, 0.0), 9, 1.2, 1.3, hex(0x7d6a44), 2);
                     for i in 0..9 {
                         let a = i as f32 / 9.0 * TAU;
                         let p = v(a.cos() * 1.5, 3.4, a.sin() * 1.5);
                         mb.cyl(p, p + v(0.0, -1.9, 0.0), 0.04, 0.015, light, light, 4);
                     }
-                } else {
-                    crown(&mut mb, v(0.0, 3.1, 0.0), v(1.55, 0.95, 1.55), 10, 0.6, dark, light, 9);
-                    mb.lathe(Mat4::IDENTITY, &[(1.7, 0.6), (2.05, 1.2), (1.95, 2.2), (1.45, 3.0)], 14, mix(dark, light, 0.2), light, true);
+                }
+                if !bare {
+                    crown(&mut mb, v(0.0, 3.1, 0.0), v(1.55, 0.95, 1.55) * leaf_scale, 10, 0.6 * leaf_scale, dark, light, 9);
+                    mb.lathe(Mat4::IDENTITY, &[(1.7 * leaf_scale, 0.6), (2.05 * leaf_scale, 1.2), (1.95 * leaf_scale, 2.2), (1.45 * leaf_scale, 3.0)], 14, mix(dark, light, 0.2), light, true);
                     let mut r = Rng(19);
                     for i in 0..14 {
                         let a = i as f32 / 14.0 * TAU + r.range(-0.1, 0.1);
                         let (rr, y) = (r.range(1.75, 2.0), r.range(0.45, 0.8));
-                        mb.ellipsoid_g(v(a.cos() * rr, y, a.sin() * rr), v(0.13, 0.32, 0.13), mix(dark, light, 0.15), mix(dark, light, 0.5), 5, 3);
+                        mb.ellipsoid_g(v(a.cos() * rr * leaf_scale, y, a.sin() * rr * leaf_scale), v(0.13, 0.32, 0.13) * leaf_scale, mix(dark, light, 0.15), mix(dark, light, 0.5), 5, 3);
                     }
                 }
             }
@@ -320,9 +316,9 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
             let tw = if sp == Species::Aspen { 0.12 } else { 0.2 };
             mb.cyl(v(0.0, -0.1, 0.0), v(0.0, top_h * 0.55, 0.0), tw * 1.3, tw * 0.8, trunk, trunk, 5);
             if bare {
-                mb.ellipsoid(v(0.0, top_h * 0.62, 0.0), v(0.7, 0.9, 0.7), mix(trunk, hex(0x8a7a60), 0.5));
+                twigs(&mut mb, v(0.0, top_h * 0.45, 0.0), 4, 1.1, 1.6, trunk, 2);
             } else if sp == Species::Pine {
-                let top = if season == Season::Winter { hex(0xeef6ff) } else { light };
+                let top = pine_top;
                 for (y0, rr, h) in [(1.0f32, 1.5f32, 1.9f32), (2.4, 1.05, 1.6), (3.6, 0.6, 1.2)] {
                     mb.lathe(Mat4::IDENTITY, &[(0.0, y0 + 0.2), (rr, y0), (rr * 0.6, y0 + h * 0.5), (0.0, y0 + h)], seg, dark, top, true);
                 }
@@ -332,17 +328,17 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                     Species::Maple => (1.9, 1.5, 3.1),
                     _ => (1.9, 1.3, 2.7),
                 };
-                mb.ellipsoid_g(v(0.0, cy, 0.0), v(rx, ry, rx), dark, light, seg, rings);
+                mb.ellipsoid_g(v(0.0, cy, 0.0), v(rx, ry, rx) * leaf_scale, dark, light, seg, rings);
             }
         }
         _ => {
             if bare {
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, top_h * 0.7, 0.0), 0.25, 0.1, trunk, hex(0x8a7a60), 4);
             } else if sp == Species::Pine {
-                let top = if season == Season::Winter { hex(0xeef6ff) } else { light };
+                let top = pine_top;
                 mb.lathe(Mat4::IDENTITY, &[(0.0, 0.8), (1.5, 1.8), (1.1, 3.4), (0.0, 4.9)], 6, dark, top, true);
             } else {
-                mb.lathe(Mat4::IDENTITY, &[(0.0, 1.2), (1.5, 2.6), (1.1, 3.9), (0.0, 4.8)], 5, dark, light, false);
+                mb.lathe(Mat4::IDENTITY, &[(0.0, 1.2), (1.5 * leaf_scale, 2.6), (1.1 * leaf_scale, 3.9), (0.0, 4.8)], 5, dark, light, false);
             }
         }
     }

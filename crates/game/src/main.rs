@@ -15,6 +15,7 @@ mod perf;
 mod report_capture;
 mod sandbox;
 mod screenshot;
+mod seasonal;
 mod showcase;
 mod sim_driver;
 mod startflow;

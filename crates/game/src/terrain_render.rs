@@ -33,27 +33,16 @@ impl Season {
     }
 }
 
-fn season_override() -> Option<f32> {
-    let v = std::env::var("BEAVER_SEASON").ok()?;
-    match v.as_str() {
-        "spring" => Some(0.125),
-        "summer" => Some(0.375),
-        "autumn" => Some(0.625),
-        "winter" => Some(0.875),
-        n => n.parse::<f32>().ok().map(|p| p.rem_euclid(1.0)),
-    }
-}
-
 impl Plugin for TerrainRenderPlugin {
     fn build(&self, app: &mut App) {
-        let start = season_override().unwrap_or(0.0);
+        let start = crate::seasonal::phase(app.world().resource::<Sim>().0.time_days);
         bevy::asset::embedded_asset!(app, "terrain_shadow.wesl");
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default());
         app.insert_resource(Season { phase: start })
             .init_resource::<TerrainChunks>()
             .init_resource::<MeshBacklog>()
             .add_systems(Startup, spawn_terrain)
-            .add_systems(Update, (update_season, update_sky_and_light, update_terrain_chunks).chain())
+            .add_systems(Update, (update_season, update_sky_and_light, update_terrain_chunks).chain().after(crate::sim_driver::step_sim))
             .add_systems(Update, frame_log);
     }
 }
@@ -84,32 +73,25 @@ pub struct Palette {
     pub ambient_lux: f32,
     pub ice: Rgb,
     pub winter: f32,
+    pub autumn: f32,
+    pub bloom: f32,
 }
 
-const GRASS_LIGHT: [Rgb; 4] = [rgb(0xB6E284), pal::MEADOW_LIGHT, rgb(0xE8D890), rgb(0xE2E8E4)];
-const GRASS: [Rgb; 4] = [rgb(0x94CE70), pal::MEADOW, pal::STRAW, rgb(0xCBD8D0)];
-const GRASS_DEEP: [Rgb; 4] = [rgb(0x68B35C), pal::MEADOW_DEEP, rgb(0xB7AE66), rgb(0xA9BAB6)];
-const WETLAND: [Rgb; 4] = [rgb(0x74C48A), rgb(0x6CBE86), rgb(0xBFB574), rgb(0xA8C2BC)];
-const SKY: [Rgb; 4] = [pal::SKY, pal::SKY, rgb(0xB4D0EC), pal::SKY_WINTER];
-const SUN: [Rgb; 4] = [pal::SUN, pal::SUN, pal::SUN_AUTUMN, rgb(0xF0F2FF)];
+const GRASS_LIGHT: [Rgb; 4] = [rgb(0xAFD97A), rgb(0x91C66B), rgb(0xD7BC70), rgb(0xA7B397)];
+const GRASS: [Rgb; 4] = [rgb(0x82BE64), rgb(0x69A65A), rgb(0xB39A59), rgb(0x788F7B)];
+const GRASS_DEEP: [Rgb; 4] = [rgb(0x519B58), rgb(0x408568), rgb(0x827F48), rgb(0x476E69)];
+const WETLAND: [Rgb; 4] = [rgb(0x64AD82), rgb(0x4B997E), rgb(0x9C9D59), rgb(0x527E7F)];
+const SKY: [Rgb; 4] = [rgb(0xA7D9ED), rgb(0x84C6ED), rgb(0xC5D1D9), rgb(0xAAC6DB)];
+const SUN: [Rgb; 4] = [pal::SUN, rgb(0xFFF2CC), pal::SUN_AUTUMN, rgb(0xE5EEFF)];
 const SUN_LUX: [f32; 4] = [1_300.0, 1_400.0, 1_250.0, 1_000.0];
 const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0.93], [0.96, 0.96, 0.98]];
 pub const AMBIENT_LUX: f32 = 4_400.0;
 
-fn cyc<T: Copy>(k: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
-    let p = phase.rem_euclid(1.0) * 4.0 - 0.5;
-    let i0 = p.floor();
-    let f = smooth(0.0, 1.0, p - i0);
-    let a = k[(i0 as i32).rem_euclid(4) as usize];
-    let b = k[(i0 as i32 + 1).rem_euclid(4) as usize];
-    lerp(a, b, f)
-}
+use crate::seasonal::blend as cyc;
 
 impl Palette {
     pub fn at(phase: f32) -> Palette {
         let c = |k: &[Rgb; 4]| cyc(k, phase, mix);
-        let d = (phase.rem_euclid(1.0) - 0.875).abs();
-        let d = d.min(1.0 - d);
         Palette {
             grass: c(&GRASS),
             grass_light: c(&GRASS_LIGHT),
@@ -117,26 +99,22 @@ impl Palette {
             mud: pal::MUD,
             rock: pal::STONE,
             wetland: c(&WETLAND),
-            snow: [0.97, 0.97, 1.0],
+            snow: [0.80, 0.86, 0.89],
             sky: c(&SKY),
             sun: c(&SUN),
             sun_lux: cyc(&SUN_LUX, phase, |a, b, t| a + (b - a) * t),
             ambient: c(&AMBIENT),
             ambient_lux: AMBIENT_LUX,
-            ice: [0.86, 0.94, 0.99],
-            winter: 1.0 - smooth(0.04, 0.2, d),
+            ice: [0.43, 0.68, 0.79],
+            winter: crate::seasonal::snow(phase),
+            autumn: crate::seasonal::autumn(phase),
+            bloom: crate::seasonal::bloom(phase),
         }
     }
 }
 
-fn update_season(sim: Res<Sim>, mut season: ResMut<Season>) {
-    if let Some(p) = season_override() {
-        if season.phase != p {
-            season.phase = p;
-        }
-        return;
-    }
-    let phase = sim::calendar::year_phase(sim.0.time_days);
+pub(crate) fn update_season(sim: Res<Sim>, mut season: ResMut<Season>) {
+    let phase = crate::seasonal::phase(sim.0.time_days);
     let next = Season { phase };
     if next.bucket() != season.bucket() {
         *season = next;
@@ -526,8 +504,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let rock_c = mix(STONE_SHADE_ALBEDO, p.rock, (0.55 + sunny * 0.9 + patch * 0.3).clamp(0.0, 1.0));
     let soil = smooth(0.35, pal::ROCK_SLOPE_MIN, slope) * (1.0 - rock);
     c = mix(c, pal::MUD, soil * 0.55);
-    let autumn = smooth(0.45, 0.58, p.grass[0] - p.grass[2] + 0.2) * (1.0 - p.winter);
-    let litter = smooth(0.15, 0.6, patch_noise(x as f32, y as f32, 5.0, 3) * 0.5 + 0.5) * autumn * veg.max(0.4);
+    let litter = smooth(0.15, 0.6, patch_noise(x as f32, y as f32, 5.0, 3) * 0.5 + 0.5) * p.autumn * veg.max(0.4);
     c = mix(c, pal::AUTUMN_RUST, litter * 0.35 * (1.0 - rock));
     c = mix(c, rock_c, rock);
     let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
@@ -543,8 +520,13 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
         let silt = mix(rgb(0xA88A66), rgb(0xD8C6A2), mottle);
         c = mix(c, silt, dried * 0.9);
     }
-    let cap = smooth(0.8, 0.95, t);
-    let cover = (p.winter * smooth(0.0, 0.2, 1.0 - slope * 0.5) * (1.0 - 0.6 * smooth(0.5, 1.2, slope))).max(cap * 0.0);
+    // Snow collects in irregular drifts instead of bleaching every dry tile.
+    // Exposed rock, wet banks, and sunny slopes retain their underlying colour.
+    let drift = smooth(-0.35, 0.4, patch_noise(x as f32, y as f32, 12.0, 11) * 0.7
+        + patch_noise(x as f32, y as f32, 4.0, 12) * 0.3);
+    let cover = p.winter * 0.72 * drift * (1.0 - rock * 0.7)
+        * (1.0 - wetland * 0.45) * (1.0 - sunny * 0.4)
+        * (1.0 - 0.6 * smooth(0.5, 1.2, slope));
     c = mix(c, p.snow, cover * (1.0 - submerged));
     let lo = mix(p.grass_deep, STONE_SHADE_ALBEDO, rock);
     let f = (1.0 - submerged) * (1.0 - channel) * (1.0 - dried);
@@ -763,7 +745,7 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
             }
             let t = at(&s.height, x, y) / maxh;
             ok &= dried_bed(s, x, y) < 0.35;
-            if !ok || slope_at(s, x, y) > 0.45 || t > 0.62 || p.winter > 0.7 {
+            if !ok || slope_at(s, x, y) > 0.45 || t > 0.62 {
                 continue;
             }
             let hh = |xx: i32, yy: i32| at(&s.height, xx, yy);
@@ -774,13 +756,14 @@ fn scatter_detail(s: &SimState, p: &Palette, maxh: f32, x0: i32, y0: i32, d: &mu
             let c = Vec3::new(wx + fx * CELL_SIZE, ground, wz + fz * CELL_SIZE);
             let kind = r.0 / DETAIL_DENSITY;
             let yaw = r.2 * std::f32::consts::TAU;
-            if kind < 0.5 {
+            if kind < 0.5 || (kind < 0.8 && r.2 > p.bloom) {
+                let height = 1.0 - p.winter * 0.6;
                 for k in 0..2 {
-                    blob(d, c + Vec3::Y * 0.1, Vec3::new(0.04, 0.17, 0.15), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, pal::MEADOW_DEEP, pal::LILY);
+                    blob(d, c + Vec3::Y * (0.1 * height), Vec3::new(0.04, 0.17 * height, 0.15), yaw + k as f32 * 1.1, (k as f32 - 0.5) * 0.5, p.grass_deep, p.grass_light);
                 }
             } else if kind < 0.8 {
                 let petal = if r.1 < 0.34 { pal::FLOWER_WHITE } else if r.1 < 0.67 { pal::FLOWER_PINK } else { pal::FLOWER_YELLOW };
-                blob(d, c + Vec3::Y * 0.09, Vec3::new(0.025, 0.09, 0.025), 0.0, 0.0, pal::MEADOW_DEEP, pal::MEADOW_DEEP);
+                blob(d, c + Vec3::Y * 0.09, Vec3::new(0.025, 0.09, 0.025), 0.0, 0.0, p.grass_deep, p.grass_deep);
                 blob(d, c + Vec3::Y * 0.19, Vec3::new(0.12, 0.08, 0.12), yaw, 0.0, petal, petal);
             } else {
                 blob(d, c + Vec3::Y * 0.07, Vec3::new(0.16, 0.1, 0.11), yaw, 0.0, pal::STONE_SHADE, pal::STONE);

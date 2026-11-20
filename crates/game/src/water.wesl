@@ -163,9 +163,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     col += vec3(glint);
     alpha = min(1.0, alpha + glint);
 
-    // Ice in winter: a pale matte sheet.
+    // Blue translucent ice remains distinct from snow-covered ground. Broad
+    // tonal patches and fine dark seams give the frozen sheet some structure.
     let ice = frozen * smoothstep(0.0, 0.008, depth);
-    col = mix(col, water.ice.rgb, ice);
+    let ice_grain = noise(p * 0.18) * 0.5 + 0.5;
+    let cracks = 1.0 - smoothstep(0.0, 0.055, abs(noise(p * 0.35 + vec2(8.0, 3.0))));
+    var ice_col = water.ice.rgb * (0.82 + ice_grain * 0.18);
+    ice_col = mix(ice_col, water.deep.rgb * 0.75, cracks * 0.22);
+    col = mix(col, ice_col, ice * 0.92);
     alpha = mix(alpha, 0.92, ice);
 
     var out: FragmentOutput;
