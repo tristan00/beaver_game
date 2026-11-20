@@ -74,7 +74,7 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 14] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png", "14-resources.png"];
+const FILES: [&str; 15] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png", "14-resources.png", "15-fog-boundary.png"];
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -115,7 +115,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
     if (*frame - 120) % 60 == 0 {
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
-        canopy.0 = shot != 0;
+        canopy.0 = shot != 0 && shot != 14;
         hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Buildings), 13 => Some(ColonyTab::Goods), _ => None };
         hud.pop_page = usize::from(shot == 8);
         *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
@@ -148,6 +148,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
             if !dams.is_empty(){let x=dams.iter().map(|b|b.pos.0 as f32).sum::<f32>()/dams.len()as f32;let y=dams.iter().map(|b|b.pos.1 as f32).sum::<f32>()/dams.len()as f32;
                 orbit.target=crate::flow::cell_world(&sim.0.height,(x,y));orbit.distance=230.0;orbit.pitch=1.35;}
         }
+        if shot==14 {orbit.distance=300.0;orbit.pitch=1.35;}
         let close=match shot {
             10=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dock).max_by_key(|b|b.pos.1).map(|b|b.pos),
             11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Lodge).map(|b|b.pos),

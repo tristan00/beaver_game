@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 const LIFT: f32 = 25.0;
 const DENSITY: f32 = 0.9;
-const CLOUD: [f32; 3] = [0.20, 0.23, 0.17];
+pub const UNEXPLORED_COLOR: [f32; 3] = [0.20, 0.23, 0.17];
 const REBUILD_SECS: f32 = 0.25;
 
 #[derive(Component)]
@@ -86,7 +86,7 @@ fn fog_mesh(s: &sim::SimState) -> Mesh {
             let a = t * t * (3.0 - 2.0 * t) * DENSITY;
             pos.push([(x as f32 + 0.5) * CELL_SIZE - ox, top + LIFT, (y as f32 + 0.5) * CELL_SIZE - oz]);
             nor.push([0.0, 1.0, 0.0]);
-            col.push([lin(CLOUD[0]), lin(CLOUD[1]), lin(CLOUD[2]), a]);
+            col.push([lin(UNEXPLORED_COLOR[0]), lin(UNEXPLORED_COLOR[1]), lin(UNEXPLORED_COLOR[2]), a]);
         }
     }
     let mut idx = Vec::with_capacity((n - 1) * (n - 1) * 6);

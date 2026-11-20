@@ -1300,7 +1300,8 @@ fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Opt
                 [0.30 + 0.45 * h, 0.40 + 0.38 * h, 0.26 + 0.40 * h]
             };
             let seen = (s.fog.get((x, y)) / crate::flow::EXPLORED).min(1.0);
-            let c = [c[0] * seen + 0.78 * (1.0 - seen), c[1] * seen + 0.8 * (1.0 - seen), c[2] * seen + 0.84 * (1.0 - seen)];
+            let fog = crate::fog_render::UNEXPLORED_COLOR;
+            let c = [c[0] * seen + fog[0] * (1.0 - seen), c[1] * seen + fog[1] * (1.0 - seen), c[2] * seen + fog[2] * (1.0 - seen)];
             buf[i * 4..i * 4 + 4].copy_from_slice(&[(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 255]);
         }
     }

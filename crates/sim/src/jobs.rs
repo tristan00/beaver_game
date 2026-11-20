@@ -70,11 +70,11 @@ pub fn stock_target(sim: &SimState, good: Good) -> f32 {
     let committed: f32 = sim.work.places.iter().filter(|p| is_site(sim,p))
         .filter_map(|p| p.site.as_ref()).map(|s|s.missing(good)).sum();
     let reserve = match good {
-        Good::Sticks => crate::hud::food_need_per_day(sim) * 100.0 + 60.0,
+        Good::Sticks => crate::hud::food_need_per_day(sim) * 125.0 + 60.0,
         Good::Clay => 30.0 + sim.buildings.buildings.len() as f32 * 0.6,
         Good::Pebbles => 24.0 + sim.buildings.buildings.len() as f32 * 0.6,
     };
-    (committed + reserve).min(sim.buildings.stores.capacity(good) * 0.95)
+    (committed + reserve).min(sim.buildings.stores.capacity(good))
 }
 
 pub fn material_short(sim: &SimState, role: RoleKind) -> bool {

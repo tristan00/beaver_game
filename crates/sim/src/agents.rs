@@ -79,6 +79,7 @@ pub const STUCK_TICKS: u32 = 600;
 pub struct Agents {
     pub by_id: BTreeMap<BeaverId, Agent>,
     pub unreachable: BTreeMap<ResourceId, f64>,
+    work_available: BTreeMap<(BuildingId, usize), (f64, bool)>,
 }
 
 pub const UNREACHABLE_RETRY_DAYS: f64 = 10.0;
@@ -587,16 +588,14 @@ pub(crate) fn worker_effort(sim: &SimState, ag: &Agent, job: crate::colony::Job)
     })
 }
 
+fn scout_frontier(sim: &SimState, centre: Cell) -> impl Iterator<Item=Cell> + '_ {
+    (centre.1.saturating_sub(120)..(centre.1 + 120).min(sim.world.size)).step_by(16)
+        .flat_map(move |y|(centre.0.saturating_sub(120)..(centre.0+120).min(sim.world.size)).step_by(16).map(move |x|(x,y)))
+        .filter(|&c|!sim.fog.explored(c) && sim.world.valley_of(c).is_some_and(|v|sim.world.is_open(v)))
+}
+
 fn scout_target(sim: &SimState, ag: &Agent, centre: Cell) -> Option<Cell> {
-    let mut targets = Vec::new();
-    for y in (centre.1.saturating_sub(120)..(centre.1 + 120).min(sim.world.size)).step_by(16) {
-        for x in (centre.0.saturating_sub(120)..(centre.0 + 120).min(sim.world.size)).step_by(16) {
-            let c = (x,y);
-            if !sim.fog.explored(c) && sim.world.valley_of(c).is_some_and(|v| sim.world.is_open(v)) {
-                targets.push(c);
-            }
-        }
-    }
+    let mut targets: Vec<_> = scout_frontier(sim,centre).collect();
     targets.sort_by_key(|c| (ag.cell.0.abs_diff(c.0) + ag.cell.1.abs_diff(c.1), *c));
     targets.into_iter().take(12).find(|&c| sim.nav.find_path(ag.id, ag.cell, Goal::Cell(c)).is_some())
 }
@@ -966,13 +965,32 @@ fn organise(sim: &mut SimState) {
         let prio = std::cmp::Reverse(p.priority);
         let mut runs = run.map_or(0, |_| crate::work::SITE_SLOTS.min(p.max_workers));
         for (i, s) in p.slots.iter().enumerate() {
+            let available = if let Some(&(until, ready)) = sim.agents.work_available.get(&(b.id,i)).filter(|v| v.0 > sim.time_days) {
+                let _ = until;
+                ready
+            } else {
+                let who = s.worker.unwrap_or(BeaverId(0));
+                let from = sim.agents.get(who).map_or(b.pos, |a|a.cell);
+                let ready = match s.role {
+                    Role::Collect(_) => Job::resolve(sim, Assignment::Slot(b.id,i)).is_some_and(|job|sim.resources.items.iter().any(|r|job.permits(r))),
+                    Role::Forester if b.kind==BuildingKind::ForesterLodge => crate::forestry::next_task(sim,b.id,i,who,from).is_some(),
+                    Role::Scout => scout_frontier(sim,b.pos).next().is_some(),
+                    _ => true,
+                };
+                sim.agents.work_available.insert((b.id,i),(sim.time_days+1.0,ready));
+                ready
+            };
+            if !available { continue; }
             let idle = match s.role {
-                Role::Haul => sim.work.hauls.is_empty() && !sim.work.places.iter().any(|p| is_site(sim,p)) && !(sim.work.balanced.contains(&b.id) && crate::stock::balance_move(sim, Some(b.id)).is_some()),
+                Role::Haul => !sim.work.hauls.iter().any(|o|sim.work.stock_of(o.from,o.good)>EPS)
+                    && !sim.work.places.iter().filter(|p|is_site(sim,p)).filter_map(|p|p.site.as_ref()).any(|p|p.needed.iter().any(|&(g,_)|p.missing(g)>EPS&&sim.buildings.stores.amount(g)>EPS))
+                    && !(sim.work.balanced.contains(&b.id) && crate::stock::balance_move(sim, Some(b.id)).is_some()),
                 Role::Collect(kind) => {
                     let good = match kind {ResourceKind::MudBank => Good::Clay, ResourceKind::StoneOutcrop => Good::Pebbles, _ => Good::Sticks};
                     sim.buildings.stores.amount(good) >= crate::jobs::stock_target(sim, good)
                 },
                 Role::Craft => b.output >= 0.95 || !crate::craftsmanship::has_materials(sim, b),
+                Role::Forester if b.kind==BuildingKind::TreeNursery => b.output>=0.95,
                 _ => false,
             };
             if idle {
