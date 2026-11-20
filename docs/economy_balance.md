@@ -1,5 +1,10 @@
 # Food, sticks and clay
 
+Current validation: the prepared Telemark and Algonquin policies both completed
+1,890 days with no deaths or recorded hunger days. Material shortages and labor
+costs remain, and the failed controls are retained. The final comparison below
+supersedes the earlier winter-failure results without erasing them.
+
 The only inventory goods are **Food, Sticks and Clay**. Food comes from wetland
 plants and stripped bark. Felled trunks and branches provide sticks. Clay comes
 from finite deposits and a few slowly replenishing river-bank spots. There is no
@@ -85,7 +90,7 @@ The low-weight staffing experiment did not produce a crisis, and raising its
 weights did not outperform leaving them alone. It is not evidence of successful
 crisis recovery.
 
-## Final validation and remaining failure
+## Previous validation and winter failure
 
 With the food-response fixes, the five-year weekly-care Telemark run ended with
 66 beavers, but still had **6 starvation deaths, 38 hunger days and 43 food-stockout
@@ -169,3 +174,27 @@ without rerunning independent openings or replaying invalid building IDs after
 different construction choices. The diagnostic runners remain outside the
 repository; their baselines reproduced the original failures before comparisons
 were accepted.
+
+## Completed continuation checks
+
+No resource yield, starting stock, harvesting rate or river recovery parameter
+was increased in this continuation. The changes address forecasting and useful
+player actions, and the successful policies pay for their storage and work.
+
+| Full run to day 1890 | Final population | Deaths | Hunger days | Clay-delay days | Clay-stockout days | Food buffer below 10 days | Easy days |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Telemark, weekly care and expansion | 97 | 0 | 0 | 63 | 237 | 99 | 59 |
+| Algonquin, economy-first opening and food-aware growth | 65 | 0 | 0 | 292 | 251 | 187 | 0 |
+
+Both horizons include the spring after the fifth winter. The two-year
+overbuilding control had 105 clay-delay days; neglect still collapsed on day
+590. The rejected initial managed pilot had 216 easy days in only 720 days.
+The final report also retains a broader 60-day food-buffer/low-activity check,
+so a result just below the original 90-day cutoff is not silently accepted.
+
+The release build succeeds and 24 module-level tests pass. A native capture
+confirms that the autumn warning appears while food income is still positive
+and exposes the gathering action. All experimental data, commands and screenshots
+remain in `tmp/food-clay-balance/report.html`; only the fast tests are committed.
+The evidence covers these maps and policies, rather than asserting universal
+balance for every seed or indefinitely growing colony.
