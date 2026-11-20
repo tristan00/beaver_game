@@ -537,6 +537,33 @@ impl Buildings {
                 return Err(BuildError::Blocked);
             }
         }
+        if solid(kind) {
+            let neighbours = |(x, y): (usize, usize)| {
+                [x.checked_sub(1).map(|x| (x, y)), y.checked_sub(1).map(|y| (x, y)),
+                    Some((x + 1, y)), Some((x, y + 1))].into_iter().flatten()
+            };
+            let open = |c: (usize, usize)| terrain.depth.in_bounds(c.0, c.1)
+                && !cells.contains(&c)
+                && !self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|p| p == c));
+            // Reserve an approach to homes as well as the doorway itself.
+            // Otherwise a final building can seal a burrow's only access cell
+            // or surround a lodge entrance while passing footprint checks.
+            for (home, at) in self.buildings.iter().map(|b| (b.kind, b.pos)).chain(std::iter::once((kind, pos))) {
+                let access = match home {
+                    BuildingKind::Burrow => {
+                        if !cells.iter().any(|c| c.0.abs_diff(at.0) + c.1.abs_diff(at.1) <= 2) { continue; }
+                        neighbours(at).any(|door| open(door) && neighbours(door).any(open))
+                    }
+                    BuildingKind::Lodge => {
+                        let door = crate::nav::lodge_entrance(at);
+                        if !cells.iter().any(|c| c.0.abs_diff(door.0) + c.1.abs_diff(door.1) <= 1) { continue; }
+                        open(door) && neighbours(door).any(open)
+                    }
+                    _ => continue,
+                };
+                if !access { return Err(BuildError::BadTerrain("would block access to a home")); }
+            }
+        }
         match spec.site {
             Site::Dry if cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
                 return Err(BuildError::BadTerrain("needs dry ground"));

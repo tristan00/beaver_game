@@ -682,10 +682,50 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
     }
 }
 
+fn clear_finished_footprint(sim: &mut SimState, id: BuildingId) -> bool {
+    let Some(b) = sim.buildings.building(id) else { return false };
+    if matches!(b.kind, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge) {
+        return true;
+    }
+    let cells: Vec<Cell> = b.cells().collect();
+    let mut exits = Vec::new();
+    for &(x, y) in &cells {
+        for c in [x.checked_sub(1).map(|x| (x, y)), y.checked_sub(1).map(|y| (x, y)), Some((x + 1, y)), Some((x, y + 1))].into_iter().flatten() {
+            if !cells.contains(&c) && !exits.contains(&c) { exits.push(c); }
+        }
+    }
+    let occupants: Vec<_> = sim.agents.by_id.values().filter(|a| cells.contains(&a.cell)).map(|a| a.id).collect();
+    if occupants.is_empty() { return true; }
+    // Another site may have finished earlier in this same update.
+    let mut nav = std::mem::replace(&mut sim.nav, NavGrid::new(1, 1));
+    nav.refresh(sim);
+    sim.nav = nav;
+    for who in occupants {
+        let ag = sim.agents.by_id.get_mut(&who).expect("site occupant");
+        // Walk out while the unfinished site is still traversable. If the
+        // perimeter is occupied, leave completion pending until there is room.
+        let Some(path) = sim.nav.find_path_onto_any(who, ag.cell, &exits) else { return false };
+        for (cell, gait) in path.steps {
+            if sim.nav.advance(who, ag.cell, cell).is_err() { return false; }
+            ag.cell = cell;
+            ag.gait = gait;
+            ag.trail.push((cell, gait));
+        }
+        ag.path = None;
+        ag.step_frac = 0.0;
+        ag.inside = sim.nav.surface_at(ag.cell) == Some(Surface::LodgeInside);
+        ag.stuck_ticks = 0;
+    }
+    true
+}
+
 fn finish_sites(sim: &mut SimState) {
     let done: Vec<BuildingId> =
         sim.work.places.iter().filter(|p| p.site.as_ref().is_some_and(|s| s.is_done())).map(|p| p.building).collect();
     for id in done {
+        if sim.buildings.building(id).is_none_or(|b| b.status != crate::buildings::Status::Site) || !clear_finished_footprint(sim, id) {
+            continue;
+        }
         let Some(b) = sim.buildings.buildings.iter_mut().find(|b| b.id == id && b.status == crate::buildings::Status::Site)
         else {
             continue;
