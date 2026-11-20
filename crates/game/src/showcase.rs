@@ -138,7 +138,7 @@ fn agent(sim: &mut SimState, id: u64, cell: (usize, usize), steps: &[((usize, us
 
 fn add_site(sim: &mut SimState, id: u64, kind: BuildingKind, pos: (usize, usize), progress: f32) -> BuildingId {
     let id = BuildingId(id);
-    sim.buildings.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+    sim.buildings.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
     let spec = kind.spec();
     sim.work.add_site(id, kind, spec.cost, spec.work).expect("fresh site");
     for &(g, a) in spec.cost {
@@ -152,7 +152,7 @@ fn add_site(sim: &mut SimState, id: u64, kind: BuildingKind, pos: (usize, usize)
 }
 
 fn add_done(sim: &mut SimState, id: u64, kind: BuildingKind, pos: (usize, usize)) {
-    sim.buildings.buildings.push(Building { id: BuildingId(id), kind, pos, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+    sim.buildings.buildings.push(Building { id: BuildingId(id), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
 }
 
 fn felled(sim: &mut SimState, cell: (usize, usize), logs_left: f32, branches: bool) {
@@ -206,7 +206,7 @@ fn stage_poses(sim: &mut SimState, o: (usize, usize)) {
     pool(sim, b.0 - 1, b.1 - 3, 8, 6, 1.1);
     felled(sim, (b.0 - 3, b.1 - 1), 2.0, true);
     let id = agent(sim, 6, b, &[((b.0 + 1, b.1), Gait::Swim), ((b.0 + 2, b.1), Gait::Swim)], 0.5);
-    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Logs, amount: 3.0, booked: false });
+    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Sticks, amount: 3.0, booked: false });
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Carry { dest: BuildingId(1) };
 
     let b = c(shore);
@@ -247,9 +247,9 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     }
     add_done(sim, 30, BuildingKind::Lodge, at(21, 15));
     let id = agent(sim, 40, at(16, 12), &[(at(17, 12), Gait::Walk)], 0.3);
-    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Stone, amount: 3.0, booked: false });
+    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Pebbles, amount: 3.0, booked: false });
     let id = agent(sim, 41, at(9, 12), &[(at(10, 12), Gait::Walk)], 0.6);
-    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Mud, amount: 3.0, booked: false });
+    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Clay, amount: 3.0, booked: false });
     let id = agent(sim, 42, at(3, 3), &[], 0.0);
     sim.agents.by_id.get_mut(&id).expect("spawned").task = Task::Collect { target: first_tree.expect("a tree"), progress: 0.0 };
     let id = agent(sim, 43, at(26, 5), &[(at(27, 5), Gait::Walk)], 0.2);

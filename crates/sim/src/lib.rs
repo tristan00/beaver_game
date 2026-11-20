@@ -4,6 +4,7 @@ pub mod buildings;
 pub mod calendar;
 pub mod catalogue;
 pub mod colony;
+pub mod craftsmanship;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
@@ -27,7 +28,7 @@ pub mod society;
 pub mod shipping;
 pub mod starts;
 pub mod stock;
-pub mod tech;
+
 pub mod tuning;
 pub mod water;
 pub mod wetland;
@@ -80,6 +81,7 @@ pub enum Command {
     SetPaused { building: buildings::BuildingId, paused: bool },
     AdjustRole { role: jobs::RoleKind, delta: i32 },
     SetRoleOrder { order: Vec<jobs::RoleKind> },
+    SetRoleWeight { role: jobs::RoleKind, weight: f32 },
     SetAutoStaff { on: bool },
     Unlock { who: colony::BeaverId },
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
@@ -88,7 +90,6 @@ pub enum Command {
     SetBargeRoute { barge: buildings::BargeId, from: buildings::BuildingId, to: buildings::BuildingId, goods: Vec<buildings::Good> },
     ClearBargeRoute { barge: buildings::BargeId },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
-    SetRecipe { building: buildings::BuildingId, recipe: Option<buildings::Recipe> },
     OrderCanal { cells: Vec<water::Cell> },
     CancelSite { building: buildings::BuildingId },
     SetCutRule { building: buildings::BuildingId, rule: forestry::CutRule },
@@ -124,7 +125,6 @@ pub struct SimState {
     pub ecology: ecology::Ecology,
     pub colony: colony::Colony,
     pub buildings: buildings::Buildings,
-    pub tech: tech::Tech,
     pub region: region::Region,
     pub events: events::Events,
     pub features: features::Features,
@@ -164,7 +164,6 @@ impl SimState {
             ecology: ecology::Ecology::seeded(size, seed),
             colony: Default::default(),
             buildings: Default::default(),
-            tech: Default::default(),
             region: region::Region::new(seed),
             events: events::Events::new(seed),
             features: features::Features::default(),
@@ -194,7 +193,7 @@ impl SimState {
             return None;
         }
         let s = &self.buildings.stores;
-        let (food, wood) = (s.amount(buildings::Good::Food), s.amount(buildings::Good::Logs));
+        let (food, wood) = (s.amount(buildings::Good::Sticks), s.amount(buildings::Good::Sticks));
         (self.colony.food, self.colony.wood) = (food, wood);
         let c = &self.colony;
         Some(Mirror { food, wood, eaten: c.eaten, spoiled: c.spoiled, repair_wood: c.repair_wood })
@@ -209,7 +208,7 @@ impl SimState {
         food_uses.push((Use::Spoiled, c.spoiled - m.spoiled));
         let wood_uses = vec![(Use::Repairs, c.repair_wood - m.repair_wood)];
         let stores = &mut self.buildings.stores;
-        for (good, was, now, uses) in [(Good::Food, m.food, c.food, food_uses), (Good::Logs, m.wood, c.wood, wood_uses)] {
+        for (good, was, now, uses) in [(Good::Sticks, m.food, c.food, food_uses), (Good::Sticks, m.wood, c.wood, wood_uses)] {
             let d = now - was;
             if d < 0.0 {
                 let take = (-d).min(stores.amount(good));
@@ -230,8 +229,8 @@ impl SimState {
                 stores.deposit(good, d).expect("finite positive amount");
             }
         }
-        self.colony.food = stores.amount(Good::Food);
-        self.colony.wood = stores.amount(Good::Logs);
+        self.colony.food = stores.amount(Good::Sticks);
+        self.colony.wood = stores.amount(Good::Sticks);
     }
 
     pub fn set_features(&mut self, features: features::Features) {
@@ -287,11 +286,9 @@ impl SimState {
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
         self.settle_colony_stores(mirrored);
-        self.step_research();
         lap(&mut t.colony_s);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
-        self.buildings.step(dt_days, &self.tech, terrain, &self.colony, &self.work);
-        stock::book_crafting(self);
+        self.buildings.step(dt_days, terrain, &self.colony, &self.work);
         self.sync_homes();
         maintenance::step(self, dt_days);
         lap(&mut t.buildings_s);
@@ -314,9 +311,7 @@ impl SimState {
         lap(&mut t.fog_s);
         self.society.step(dt_days, self.time_days, &self.colony);
         self.step_events(dt_days);
-        for (b, g, a) in std::mem::take(&mut self.buildings.crafted) {
-            self.output.record(b, g, a);
-        }
+
         self.output.step(dt_days);
         stock::reconcile(self);
         self.ledger.record(self.time_days, &self.buildings.stores);
@@ -366,7 +361,7 @@ impl SimState {
             }
             self.colony.house_homeless();
         }
-        if self.work.supplies.is_some() && self.buildings.buildings.iter().any(|b| b.is_complete() && agents::accepts(b.kind, buildings::Good::Logs)) {
+        if self.work.supplies.is_some() && self.buildings.buildings.iter().any(|b| b.is_complete() && agents::accepts(b.kind, buildings::Good::Sticks)) {
             self.work.supplies = None;
         }
     }
@@ -386,27 +381,9 @@ impl SimState {
         self.colony.slot_jobs = Some(jobs);
     }
 
-    fn step_research(&mut self) {
-        use tech::Achievement::*;
-        let built = |k| self.buildings.buildings.iter().any(|b| b.kind == k && b.is_complete());
-        if built(buildings::BuildingKind::Burrow) {
-            self.tech.record(FirstBurrow);
-        }
-        if built(buildings::BuildingKind::Dam) {
-            self.tech.record(FirstDam);
-        }
-        if self.time_days >= tuning::tech::YEAR_DAYS && self.survived_year() {
-            self.tech.record(FirstWinter);
-        }
-        self.tech.update(&self.colony);
-    }
 
-    fn survived_year(&self) -> bool {
-        let lost = self.colony.events.iter().any(|e| {
-            matches!(e.event, colony::Event::Died { cause: colony::DeathCause::Starvation | colony::DeathCause::Cold, .. })
-        });
-        !lost && self.colony.food >= self.colony.population() as f32
-    }
+
+
 
     fn step_events(&mut self, dt_days: f32) {
         if !self.colony.is_founded() {
@@ -446,10 +423,13 @@ impl SimState {
     }
 
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
+        if !self.can_build(kind) {
+            return Err(SimError::InvalidCommand(format!("requires finished buildings: {:?}", self.missing_prerequisites(kind))));
+        }
         self.check_off_pile(kind, pos)?;
         self.check_explored(kind, pos)?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
-        self.buildings.can_place_site(kind, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
+        self.buildings.can_place_site(kind, pos, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
     }
 
     fn check_explored(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
@@ -475,8 +455,11 @@ impl SimState {
     }
 
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
-        if let Some(need) = self.missing_prerequisites(kind).first() {
+        if let Some(need) = self.missing_prerequisites(kind).first().filter(|_| !self.sandbox) {
             return Err(SimError::InvalidCommand(format!("needs a finished {} first", need.spec().name.to_lowercase())));
+        }
+        if !self.can_build(kind) {
+            return Err(SimError::InvalidCommand(format!("requires finished buildings: {:?}", self.missing_prerequisites(kind))));
         }
         self.check_off_pile(kind, pos)?;
         self.check_explored(kind, pos)?;
@@ -486,13 +469,13 @@ impl SimState {
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
-            .place_site(kind, pos, &self.tech, terrain)
+            .place_site(kind, pos, terrain)
             .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let spec = kind.spec();
         let dam_cells = (kind == buildings::BuildingKind::Dam).then(|| dam_preview::spot_cells(pos));
         let (cost, labour) = match &dam_cells {
-            Some(c) => (dam_preview::dam_cost(c.len()), spec.work * dam_preview::length_factor(c.len()) * self.tech.build_work_factor()),
-            None => (spec.cost.to_vec(), spec.work * self.tech.build_work_factor()),
+            Some(c) => (dam_preview::dam_cost(c.len()), spec.work * dam_preview::length_factor(c.len())),
+            None => (spec.cost.to_vec(), spec.work),
         };
         if let Err(e) = self.work.add_site(id, kind, &cost, labour) {
             self.buildings.buildings.retain(|b| b.id != id);
@@ -514,10 +497,16 @@ impl SimState {
             .collect()
     }
 
-    pub fn build_gaps(&self, kind: buildings::BuildingKind) -> Vec<tech::Gap> {
-        let mut gaps = self.tech.missing(kind, &self.colony);
-        gaps.extend(self.missing_prerequisites(kind).into_iter().map(tech::Gap::Building));
-        gaps
+    pub fn has_building(&self, kind: buildings::BuildingKind) -> bool {
+        self.buildings.buildings.iter().any(|b| b.kind == kind && b.is_complete())
+    }
+
+    pub fn can_build(&self, kind: buildings::BuildingKind) -> bool {
+        self.sandbox || (self.features.allows_building(kind) && self.missing_prerequisites(kind).is_empty())
+    }
+
+    pub fn build_gaps(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
+        self.missing_prerequisites(kind)
     }
 
     pub fn dam_site(&self, cells: &[water::Cell]) -> Result<water::Cell, buildings::BuildError> {
@@ -527,7 +516,7 @@ impl SimState {
         order.sort_by_key(|&i| (i.abs_diff(mid), i));
         let mut first = None;
         for i in order {
-            match self.buildings.can_place_site(buildings::BuildingKind::Dam, cells[i], &self.tech, terrain) {
+            match self.buildings.can_place_site(buildings::BuildingKind::Dam, cells[i], terrain) {
                 Ok(()) => return Ok(cells[i]),
                 Err(e) => {
                     first.get_or_insert(e);
@@ -555,19 +544,19 @@ impl SimState {
         if let Some(c) = cells.iter().find(|c| !self.fog.explored(**c)) {
             return Err(invalid(&format!("Unexplored at {c:?}")));
         }
-        if !self.tech.allows(Canal) {
+        if !self.can_build(Canal) {
             return Err(invalid("Locked: Canal digging"));
         }
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let pos = cells
             .iter()
             .copied()
-            .find(|&c| self.buildings.can_place_site(Canal, c, &self.tech, terrain).is_ok())
+            .find(|&c| self.buildings.can_place_site(Canal, c, terrain).is_ok())
             .ok_or_else(|| invalid("needs water: a canal starts from water"))?;
-        let id = self.buildings.place_site(Canal, pos, &self.tech, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+        let id = self.buildings.place_site(Canal, pos, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let n = cells.len() as f32;
         let cost: Vec<buildings::Amount> = Canal.spec().cost.iter().map(|&(g, a)| (g, a * n)).collect();
-        let labour = Canal.spec().work * n * self.tech.build_work_factor();
+        let labour = Canal.spec().work * n;
         if let Err(e) = self.work.add_site(id, Canal, &cost, labour) {
             self.buildings.buildings.retain(|b| b.id != id);
             return Err(SimError::InvalidCommand(format!("{e:?}")));
@@ -610,12 +599,12 @@ impl SimState {
         if self.maintenance.jobs.contains_key(&id) {return Err(SimError::InvalidCommand("this dam already has maintenance queued".into()));}
         if self.buildings.building(id).is_some_and(|b|b.reinforced) {
             let damage=cells.iter().map(|&(x,y)|1.0-self.water.dam_integrity.get(x,y).copied().unwrap_or(0.0)).sum::<f32>();
-            cost.push((buildings::Good::Stone,(damage*1.2).ceil().max(1.0)));
+            cost.push((buildings::Good::Pebbles,(damage*1.2).ceil().max(1.0)));
         }
         // A dam's crown can be dry. Reuse its original work site instead of
         // requiring the water/placement checks for a brand-new dam.
         let old = self.work.places.iter().position(|p| p.building == id).map(|i| self.work.places.remove(i));
-        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &cost, labour * self.tech.build_work_factor()) {
+        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &cost, labour) {
             if let Some(p) = old { self.work.places.push(p); }
             return Err(SimError::InvalidCommand(format!("{e:?}")));
         }
@@ -640,9 +629,9 @@ impl SimState {
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
-            .place_site(buildings::BuildingKind::Dam, pos, &self.tech, terrain)
+            .place_site(buildings::BuildingKind::Dam, pos, terrain)
             .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
-        let labour = labour * self.tech.build_work_factor();
+        let labour = labour;
         if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &cost, labour) {
             self.buildings.buildings.retain(|b| b.id != id);
             return Err(SimError::InvalidCommand(format!("{e:?}")));
@@ -775,6 +764,13 @@ impl SimState {
             Command::SetPriority { building, priority } => jobs::set_priority(self, building, priority),
             Command::SetPaused { building, paused } => jobs::set_paused(self, building, paused),
             Command::AdjustRole { role, delta } => jobs::adjust_role(self, role, delta),
+            Command::SetRoleWeight { role, weight } => {
+                if !weight.is_finite() || !(0.1..=20.0).contains(&weight) {
+                    return Err(SimError::InvalidCommand("role weight must be 0.1..20".into()));
+                }
+                self.work.role_weights[role as usize] = weight;
+                Ok(())
+            }
             Command::SetRoleOrder { order } => jobs::set_role_order(self, order),
             Command::SetAutoStaff { on } => {
                 self.work.auto_organise = on;
@@ -789,7 +785,6 @@ impl SimState {
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
             Command::SetCutRule { building, rule } => forestry::set_cut_rule(self, building, rule),
             Command::SetPlantRule { building, rule } => forestry::set_plant_rule(self, building, rule),
-            Command::SetRecipe { building, recipe } => self.buildings.set_recipe(building, recipe).map_err(|e| SimError::InvalidCommand(format!("{e:?}"))),
             Command::SetBargeRoute { barge, from, to, goods } => shipping::set_route(self, barge, from, to, goods).map_err(SimError::InvalidCommand),
             Command::ClearBargeRoute { barge } => shipping::clear_route(self, barge).map_err(SimError::InvalidCommand),
             Command::SetBalance { building, on } => {
@@ -882,4 +877,3 @@ impl colony::Landscape for WorldLand<'_> {
 }
 
 fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }
-

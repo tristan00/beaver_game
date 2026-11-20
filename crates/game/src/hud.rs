@@ -63,7 +63,7 @@ pub enum ColonyTab {
     Goods,
     Water,
     Land,
-    Research,
+    Buildings,
     Log,
 }
 
@@ -307,6 +307,7 @@ pub enum HudAction {
     AddWorker(BuildingId),
     RemoveWorker(BuildingId),
     RoleAdjust(RoleKind, i32),
+    RoleWeight(RoleKind, f32),
     RoleUp(RoleKind),
     Priority(BuildingId, sim::work::Priority),
     Paused(BuildingId, bool),
@@ -319,7 +320,6 @@ pub enum HudAction {
     PopPage(i32),
     EditArea(BuildingId),
     Pin(Selection),
-    Recipe(BuildingId, Option<sim::buildings::Recipe>),
     Balance(BuildingId, bool),
     CutRule(BuildingId, sim::forestry::CutRule),
     PlantRule(BuildingId, sim::forestry::PlantRule),
@@ -875,7 +875,7 @@ fn button_actions(
                     BuildingKind::Canal => Tool::Canal,
                     k => Tool::Building(k),
                 };
-                if s.tech.allows(kind) {
+                if s.can_build(kind) {
                     let next = if hud.tool == t { Tool::None } else { t };
                     hud.set_tool(next);
                     hud.search = None;
@@ -975,6 +975,7 @@ fn button_actions(
             HudAction::AddWorker(building) => cmd(s, &mut hud, sim::Command::AddWorker { building }, now),
             HudAction::RemoveWorker(building) => cmd(s, &mut hud, sim::Command::RemoveWorker { building }, now),
             HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
+            HudAction::RoleWeight(role, weight) => cmd(s, &mut hud, sim::Command::SetRoleWeight { role, weight }, now),
             HudAction::RoleUp(role) => {
                 let mut order = s.work.role_order.clone();
                 if let Some(i) = order.iter().position(|r| *r == role).filter(|i| *i > 0) {
@@ -994,7 +995,6 @@ fn button_actions(
                 hud.pop_page = hud.pop_page.saturating_add_signed(delta as isize)
                     .min(sim.0.colony.population().saturating_sub(1) / 18);
             }
-            HudAction::Recipe(building, recipe) => cmd(s, &mut hud, sim::Command::SetRecipe { building, recipe }, now),
             HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
             HudAction::CutRule(building, rule) => cmd(s, &mut hud, sim::Command::SetCutRule { building, rule }, now),
             HudAction::PlantRule(building, rule) => cmd(s, &mut hud, sim::Command::SetPlantRule { building, rule }, now),
@@ -1417,7 +1417,7 @@ fn demo(
             "jobs" => hud.colony = Some(ColonyTab::Jobs),
             "pop" => hud.colony = Some(ColonyTab::Population),
             "goods" => hud.colony = Some(ColonyTab::Goods),
-            "research" => hud.colony = Some(ColonyTab::Research),
+            "research" => hud.colony = Some(ColonyTab::Buildings),
             "log" => hud.colony = Some(ColonyTab::Log),
             "elevation" => *lens = MapLens::Elevation,
             "building" => {
@@ -1471,7 +1471,7 @@ fn demo(
                     return;
                 }
                 *sel = Selection::Barge(barge);
-                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Logs, Good::Stone] });
+                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Sticks, Good::Pebbles] });
                 set_route(s, &mut hud, barge, 0.0);
                 println!("barge demo: route refused: {:?}", hud.route_err);
             }
@@ -1498,7 +1498,7 @@ fn demo(
     for _ in 0..(days / crate::sim_driver::FIXED_DT_DAYS) as usize {
         let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
     }
-    let water_cat = panels::categories(s).iter().position(|g| *g == Group::Branch(sim::tech::Branch::Water));
+    let water_cat = panels::categories(s).iter().position(|g| *g == Group::Water);
     match which.as_str() {
         "dam" | "canal" => {
             if let Some(d) = planned.0.as_ref() {
@@ -1548,7 +1548,7 @@ fn demo(
                 "goods" => *lens = MapLens::Goods,
                 "jobs" => hud.colony = Some(ColonyTab::Jobs),
                 "pop" => hud.colony = Some(ColonyTab::Population),
-                "research" => hud.colony = Some(ColonyTab::Research),
+                "research" => hud.colony = Some(ColonyTab::Buildings),
                 "water" => *lens = MapLens::Water,
                 "forest" => *lens = MapLens::Forest,
                 "elevation" => *lens = MapLens::Elevation,
@@ -1556,7 +1556,7 @@ fn demo(
                 "tip" => {
                     tips.layers.push(ui::Layer {
                         src: ui::TipSrc::World(0),
-                        tip: panels::good_tip(s, sim::buildings::Good::Food),
+                        tip: panels::good_tip(s, sim::buildings::Good::Sticks),
                         pos: Vec2::new(40.0, 52.0),
                         frozen: true,
                         opened: 0.0,
@@ -1573,10 +1573,10 @@ fn demo(
 }
 
 fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, BuildingId, BargeId, Vec<Cell>)> {
-    s.tech.unlock_all();
+    s.sandbox = true;
     let n = s.world.size;
     let terrain_ok = |s: &sim::SimState, p: Cell| s.check_site(BuildingKind::Dock, p).is_ok();
-    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
+    let probe = |p: Cell| sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Dock, pos: p, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let locks = sim::shipping::lock_cells(s);
     let near = |r: usize| (camp.1.saturating_sub(r)..(camp.1 + r).min(n - 2)).flat_map(move |y| (camp.0.saturating_sub(r)..(camp.0 + r).min(n - 2)).map(move |x| (x, y)));
     let first = near(30)
@@ -1612,11 +1612,11 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
     let b = s.buildings.add_complete(BuildingKind::Dock, second, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
     let bg = BargeId(9_000_001);
     s.buildings.barges.push(sim::buildings::Barge::new(bg, start, Some(a)));
-    for (g, amount) in [(Good::Logs, 30.0), (Good::Stone, 20.0)] {
+    for (g, amount) in [(Good::Sticks, 30.0), (Good::Pebbles, 20.0)] {
         let put = s.buildings.stores.deposit(g, amount).unwrap_or(0.0);
         s.work.stock_add(a, g, put);
     }
-    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Logs, Good::Stone] }) {
+    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Sticks, Good::Pebbles] }) {
         println!("barge demo: {e}");
     }
     let ends = sim::shipping::berths(s, &locks, s.buildings.building(b)?);
@@ -1625,9 +1625,6 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
 }
 
 fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Vec<BuildingId> {
-    s.tech.record(sim::tech::Achievement::FirstBurrow);
-    s.tech.record(sim::tech::Achievement::FirstDam);
-    s.tech.update(&s.colony);
     let mut placed = Vec::new();
     let walker = s.colony.beavers.iter().find(|b| b.stage == sim::colony::Stage::Adult).map(|b| b.id);
     let from = walker.and_then(|w| s.agents.get(w)).map(|a| a.cell);
@@ -1673,4 +1670,3 @@ fn stand_up_camp(s: &mut sim::SimState, pending: &mut Pending, camp: Cell) -> Ve
     }
     camps
 }
-

@@ -21,10 +21,10 @@ impl ResourceKind {
     pub fn yields(self) -> &'static [Good] {
         match self {
             ResourceKind::Tree => &[],
-            ResourceKind::Felled => &[Good::Logs, Good::Sticks, Good::Food],
-            ResourceKind::Plant => &[Good::Food],
-            ResourceKind::MudBank => &[Good::Mud],
-            ResourceKind::StoneOutcrop => &[Good::Stone],
+            ResourceKind::Felled => &[Good::Sticks],
+            ResourceKind::Plant => &[Good::Sticks],
+            ResourceKind::MudBank => &[Good::Clay],
+            ResourceKind::StoneOutcrop => &[Good::Pebbles],
         }
     }
     pub fn is_solid(self) -> bool {
@@ -278,7 +278,7 @@ impl ResourceWorld {
         }
         let got = want.min(r.bark);
         r.bark -= got;
-        Ok((Good::Food, got))
+        Ok((Good::Sticks, got))
     }
 
     pub fn take(&mut self, id: ResourceId, want: f32) -> Option<(Good, f32)> {
@@ -288,11 +288,11 @@ impl ResourceWorld {
         let r = self.get_mut(id).ok()?;
         let (good, slot) = match r.kind {
             ResourceKind::Tree => return None,
-            ResourceKind::Felled if r.amount > 0.0 => (Good::Logs, &mut r.amount),
+            ResourceKind::Felled if r.amount > 0.0 => (Good::Sticks, &mut r.amount),
             ResourceKind::Felled => (Good::Sticks, &mut r.branches),
-            ResourceKind::Plant => (Good::Food, &mut r.amount),
-            ResourceKind::MudBank => (Good::Mud, &mut r.amount),
-            ResourceKind::StoneOutcrop => (Good::Stone, &mut r.amount),
+            ResourceKind::Plant => (Good::Sticks, &mut r.amount),
+            ResourceKind::MudBank => (Good::Clay, &mut r.amount),
+            ResourceKind::StoneOutcrop => (Good::Pebbles, &mut r.amount),
         };
         let got = want.min(*slot);
         if got <= 0.0 {

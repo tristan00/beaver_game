@@ -17,14 +17,12 @@ pub enum System {
 }
 
 impl System {
-    pub const OUT_OF_SCOPE: [System; 10] = [
+    pub const OUT_OF_SCOPE: [System; 8] = [
         System::Predators,
         System::Floods,
         System::Droughts,
-        System::Guard,
         System::Rivals,
         System::Trade,
-        System::Scouting,
         System::HardFreeze,
         System::Fire,
         System::Disease,
@@ -53,7 +51,7 @@ impl System {
     pub fn of_building(kind: BuildingKind) -> Option<System> {
         match kind {
             BuildingKind::GuardPost => Some(System::Guard),
-            BuildingKind::ScentMound => Some(System::Predators),
+            BuildingKind::ScentMound => Some(System::Scouting),
             _ => None,
         }
     }
@@ -93,4 +91,3 @@ impl Default for Features {
         Self::scoped()
     }
 }
-

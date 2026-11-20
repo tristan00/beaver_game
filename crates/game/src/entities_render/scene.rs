@@ -638,7 +638,7 @@ impl Route {
                         } else {
                             Pose::Walk
                         };
-                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, load: matches!(leg, Leg::Carry).then_some((sim::buildings::Good::Logs, 3.0)) }
+                        BeaverState { pos, yaw: dir.x.atan2(dir.y), pose, load: matches!(leg, Leg::Carry).then_some((sim::buildings::Good::Sticks, 3.0)) }
                     }
                 };
             }

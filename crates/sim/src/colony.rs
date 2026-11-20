@@ -67,7 +67,7 @@ impl Stage {
             Stage::Adult
         }
     }
-    fn work_weight(self) -> f32 {
+    pub(crate) fn work_weight(self) -> f32 {
         match self {
             Stage::Kit => KIT_WORK_WEIGHT,
             Stage::Yearling => YEARLING_WORK_WEIGHT,
@@ -851,7 +851,7 @@ impl Colony {
             }
         }
         let derived = self.slot_jobs.is_some();
-        self.guard_strength = if derived { 0.0 } else { guard };
+        self.guard_strength = guard;
         let forage_season = forage_season / (1.0 + self.beavers.len() as f32 / FORAGE_CROWDING_POPULATION);
         let boost = 1.0 + (HAUL_BOOST_PER_EFFORT * carry).min(HAUL_BOOST_MAX) + TOOLS_BOOST * self.tools.clamp(0.0, 1.0);
         let scout_bonus = 1.0 + SCOUT_BONUS * (self.scouted / SCOUT_WORK_PER_BONUS).min(SCOUT_BONUS_MAX_STEPS);

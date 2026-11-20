@@ -85,7 +85,7 @@ pub mod colony {
     pub const TOOLS_YIELD: f32 = 0.05;
     pub const REPAIR_WOOD_PER_CONDITION: f32 = 4.0;
 
-    pub const GUARD_MITIGATION: f32 = 0.4;
+    pub const GUARD_MITIGATION: f32 = 0.65;
     pub const CANAL_MITIGATION: f32 = 0.03;
     pub const CANAL_MITIGATION_MAX_DUG: f32 = 10.0;
     pub const HAZARD_BASE: f32 = 0.004;
@@ -125,7 +125,7 @@ pub mod colony {
     pub const MOOD_HEALTH_SCALE: f32 = 0.5;
     pub const MOOD_RATE: f32 = 0.5;
     pub const LOW_MOOD_BELOW: f32 = 0.2;
-    pub const FOOD_SPOILAGE: f32 = 0.003;
+    pub const FOOD_SPOILAGE: f32 = 0.001;
     pub const TOOLS_WEAR: f32 = 0.003;
     pub const LODGE_WEAR: f32 = 0.002;
     pub const DRY_HOME_WEAR: f32 = 0.03;
@@ -243,7 +243,7 @@ pub mod buildings {
     pub const WET_DEPTH: f32 = 0.05;
     pub const MIN_FLOW: f32 = 0.01;
     pub const FULL_FLOW: f32 = 0.2;
-    pub const BASE_CAPACITY: f32 = 100.0;
+    pub const BASE_CAPACITY: f32 = 240.0;
     pub const WAREHOUSE_CAPACITY: f32 = 150.0;
     pub const DOCK_CAPACITY: f32 = 60.0;
     pub const FOOD_CACHE_CAPACITY: f32 = 100.0;
@@ -271,41 +271,36 @@ pub mod buildings {
         }
     }
 
-    use crate::buildings::{Amount, BuildingKind, Good::*, Recipe};
+    use crate::buildings::{Amount, BuildingKind, Good::*};
 
     pub fn cost_and_work(kind: BuildingKind) -> (&'static [Amount], f32) {
+        use BuildingKind::*;
         match kind {
-            BuildingKind::Dam => (&[(Logs, 15.0), (Sticks, 20.0)], 8.0),
-            BuildingKind::Lodge => (&[(Logs, 20.0), (Sticks, 25.0), (Mud, 20.0)], 12.0),
-            BuildingKind::Burrow => (&[], 6.0),
-            BuildingKind::FoodCache => (&[(Logs, 6.0), (Sticks, 10.0), (Mud, 6.0)], 4.0),
-            BuildingKind::ScentMound => (&[(Mud, 6.0), (Sticks, 4.0)], 1.5),
-            BuildingKind::GuardPost => (&[(Logs, 8.0), (Sticks, 8.0), (Stone, 3.0)], 3.0),
-            BuildingKind::Canal => (&[(Mud, 2.0)], 1.0),
-            BuildingKind::Lock => (&[(Logs, 10.0), (Stone, 6.0), (Mud, 8.0), (Tools, 1.0)], 6.0),
-            BuildingKind::WaterWheel => (&[(Logs, 12.0), (Rope, 2.0), (Tools, 1.0)], 7.0),
-            BuildingKind::Workshop => (&[(Logs, 8.0), (Sticks, 6.0), (Mud, 4.0)], 6.0),
-            BuildingKind::Warehouse => (&[(Logs, 25.0), (Sticks, 15.0), (Mud, 10.0), (Rope, 2.0)], 10.0),
-            BuildingKind::Dock => (&[(Logs, 10.0), (Sticks, 6.0)], 4.0),
-            BuildingKind::Barge => (&[(Logs, 12.0), (Sticks, 8.0), (Rope, 2.0)], 5.0),
-            BuildingKind::LoggingCamp => (&[(Logs, 4.0), (Sticks, 6.0)], 2.0),
-            BuildingKind::ForagerHut => (&[(Sticks, 8.0), (Mud, 4.0)], 2.0),
-            BuildingKind::MudPit => (&[(Logs, 3.0), (Sticks, 4.0)], 2.0),
-            BuildingKind::QuarryCamp => (&[(Logs, 5.0), (Sticks, 6.0), (Mud, 3.0)], 3.0),
-            BuildingKind::Mill => (&[(Logs, 30.0), (Stone, 10.0), (Rope, 4.0), (Tools, 3.0)], 14.0),
-            BuildingKind::Storehouse => (&[(Logs, 40.0), (Sticks, 20.0), (Stone, 12.0), (Rope, 4.0)], 16.0),
-            BuildingKind::ForesterLodge => (&[(Logs, 4.0), (Sticks, 8.0), (Mud, 2.0)], 3.0),
-            BuildingKind::TreeNursery => (&[(Logs, 6.0), (Sticks, 6.0), (Mud, 4.0), (Baskets, 1.0)], 4.0),
+            Dam => (&[(Sticks, 30.0), (Clay, 4.0)], 7.0),
+            Lodge => (&[(Sticks, 36.0), (Clay, 16.0)], 10.0),
+            Burrow => (&[], 5.0),
+            FoodCache => (&[(Sticks, 12.0), (Clay, 5.0)], 3.5),
+            ScentMound => (&[(Clay, 5.0), (Sticks, 3.0)], 1.5),
+            GuardPost => (&[(Sticks, 14.0), (Pebbles, 4.0)], 3.0),
+            Canal => (&[(Clay, 1.5)], 0.8),
+            Lock => (&[(Sticks, 18.0), (Pebbles, 8.0), (Clay, 8.0)], 6.0),
+            WaterWheel => (&[(Sticks, 22.0), (Pebbles, 6.0)], 7.0),
+            Workshop => (&[(Sticks, 14.0), (Clay, 6.0), (Pebbles, 4.0)], 5.0),
+            Warehouse => (&[(Sticks, 32.0), (Clay, 10.0)], 8.0),
+            Dock => (&[(Sticks, 16.0), (Clay, 4.0)], 4.0),
+            Barge => (&[(Sticks, 24.0), (Clay, 4.0)], 5.0),
+            LoggingCamp => (&[(Sticks, 8.0)], 2.0),
+            ForagerHut => (&[(Sticks, 6.0), (Clay, 3.0)], 2.0),
+            MudPit => (&[(Sticks, 6.0)], 2.0),
+            QuarryCamp => (&[(Sticks, 10.0), (Clay, 3.0)], 3.0),
+            Mill => (&[(Sticks, 42.0), (Pebbles, 16.0), (Clay, 10.0)], 12.0),
+            Storehouse => (&[(Sticks, 50.0), (Pebbles, 12.0), (Clay, 12.0)], 14.0),
+            ForesterLodge => (&[(Sticks, 10.0), (Clay, 3.0)], 3.0),
+            TreeNursery => (&[(Sticks, 12.0), (Clay, 6.0)], 4.0),
         }
     }
 
-    pub fn recipe_batch(recipe: Recipe) -> (&'static [Amount], Amount) {
-        match recipe {
-            Recipe::Baskets => (&[(Sticks, 2.0)], (Baskets, 1.0)),
-            Recipe::Rope => (&[(Sticks, 1.0), (Mud, 0.5)], (Rope, 1.0)),
-            Recipe::Tools => (&[(Logs, 1.0), (Stone, 1.0)], (Tools, 1.0)),
-        }
-    }
+
 }
 
 pub mod region {
@@ -406,13 +401,4 @@ pub mod events {
     pub const WANDERERS_SPREAD: f32 = 2.0;
     pub const WANDERER_FOOD_COST: f32 = 2.0;
     pub const WETLAND_ARRIVAL_FOOD: (f32, f32) = (3.0, 8.0);
-}
-pub mod tech {
-    pub const YEAR_DAYS: f64 = crate::calendar::YEAR_DAYS;
-    pub const TIER1_XP: f32 = 3.0;
-    pub const TIER2_XP: f32 = 15.0;
-    pub const TIER3_XP: f32 = 40.0;
-    pub const STORAGE_BONUS: f32 = 1.25;
-    pub const BUILD_WORK_BONUS: f32 = 0.75;
-    pub const CRAFT_SPEED_BONUS: f32 = 1.5;
 }

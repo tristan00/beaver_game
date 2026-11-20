@@ -290,11 +290,11 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                         r.icon_label_button(Icon::Hammer,"Repair",12.0,HudAction::RepairBuilding(id),ACCENT,false).tip(tip);
                     }
                     if !b.reinforced && sim::maintenance::can_reinforce(b.kind) {
-                        if s.tech.is_unlocked(sim::tech::MASONRY) {
+                        if s.has_building(BuildingKind::QuarryCamp) {
                             let mut tip=Tip::name("Reinforce with stone").line("Durability",if b.kind==BuildingKind::Lodge{"1.75×"}else{"1.5×"});
                             for (g,a) in sim::maintenance::cost(b,sim::maintenance::Refit::Reinforce).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
-                            r.icon_label_button(good_icon(Good::Stone),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
-                        } else {r.text("Requires Stone reinforcement",11.0,MUTED);}
+                            r.icon_label_button(good_icon(Good::Pebbles),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
+                        } else {r.text("Finish a pebble quarry first",11.0,MUTED);}
                     }
                 });
             }
@@ -383,20 +383,9 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             }
         }
         if matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill) && b.is_complete() {
-            use sim::buildings::Recipe;
             u.rule();
-            u.row(6.0, |r| {
-                r.icon(Icon::Tools, 14.0, MUTED);
-                for (rec, g) in [(Recipe::Rope, Good::Rope), (Recipe::Baskets, Good::Baskets), (Recipe::Tools, Good::Tools)] {
-                    let on = b.recipe == Some(rec);
-                    let (inputs, out) = rec.batch();
-                    let mut tip = Tip::titled(Some((good_icon(g), good_color(g))), good_name(g)).with_value(format!("+{}", num(out.1)));
-                    for (ig, a) in inputs {
-                        tip.push(TipLine::new(good_name(*ig), format!("-{}", num(*a))).icon(good_icon(*ig), good_color(*ig)).color(BAD));
-                    }
-                    r.icon_button(good_icon(g), 16.0, HudAction::Recipe(id, if on { None } else { Some(rec) }), FAINT, on).tip(tip);
-                }
-            });
+            u.text(format!("Workshop support: +{:.0}% nearby work", b.output * 25.0), 12.0, INK);
+            u.text("Crafters maintain equipment using sticks, clay and pebbles.", 11.0, MUTED);
         }
         if b.kind == BuildingKind::LoggingCamp && b.is_complete() {
             u.rule();
@@ -452,13 +441,13 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
 }
 
 fn open_cut_rules(s: &sim::SimState) -> Vec<sim::forestry::CutRule> {
-    use sim::forestry::{knows, CutRule};
+    use sim::forestry::{can_coppice, can_manage_forest, CutRule};
     CutRule::ALL
         .into_iter()
         .filter(|r| match r {
             CutRule::MatureOnly => true,
-            CutRule::Coppice => knows(s, sim::tech::COPPICING_TECH),
-            _ => knows(s, sim::tech::FORESTRY_TECH),
+            CutRule::Coppice => can_coppice(s),
+            _ => can_manage_forest(s),
         })
         .collect()
 }
@@ -502,7 +491,7 @@ fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
         r.spacer();
         let value = rep.logs_ready_in_days.map_or("-".to_string(), days);
         r.row(3.0, |x| {
-            x.icon(Icon::Logs, 14.0, good_color(Good::Logs));
+            x.icon(Icon::Logs, 14.0, good_color(Good::Sticks));
             x.icon(Icon::Hourglass, 13.0, MUTED);
             x.bold(value.clone(), 12.5, INK);
         })
@@ -528,13 +517,7 @@ fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
             x.bold(num(rep.tended_per_day), 12.0, INK);
         })
         .tip(Tip::name("Tended per day"));
-        if s.forestry.saplings >= 1.0 {
-            r.row(3.0, |x| {
-                x.icon(Icon::TreeNursery, 14.0, MUTED);
-                x.bold(format!("{}", s.forestry.saplings.floor() as i64), 12.0, INK);
-            })
-            .tip(Tip::name("Nursery saplings"));
-        }
+
     });
 }
 

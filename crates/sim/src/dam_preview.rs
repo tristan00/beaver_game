@@ -7,7 +7,7 @@ pub const DAM_SPAN_CELLS: f32 = 20.0;
 
 pub const DEFAULT_HEIGHT: f32 = 1.0;
 pub const MAX_DAM_HEIGHT: f32 = 3.0;
-pub const UPPER_PER_UNIT: [Amount; 3] = [(Good::Logs, 1.5), (Good::Sticks, 2.5), (Good::Mud, 3.0)];
+pub const UPPER_PER_UNIT: [Amount; 2] = [(Good::Sticks, 4.0), (Good::Clay, 3.0)];
 
 pub fn build_units(sim: &crate::SimState, cell: Cell, h: f32) -> (f32, f32) {
     let have = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0)

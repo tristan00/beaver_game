@@ -1,6 +1,6 @@
 use crate::agents::Assignment;
 use crate::autoplay::{Player, Style};
-use crate::buildings::{BuildingId, BuildingKind, Good, Recipe};
+use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::colony::{BeaverId, DeathCause, Event, Stage};
 use crate::jobs::RoleKind;
 use crate::resources::{ResourceId, ResourceKind};
@@ -76,6 +76,7 @@ pub fn to_line(c: &Command) -> String {
         Command::SetPriority { building, priority } => format!("priority {} {priority:?}", building.0),
         Command::SetPaused { building, paused } => format!("pause {} {}", building.0, if *paused { "on" } else { "off" }),
         Command::AdjustRole { role, delta } => format!("role {role:?} {delta}"),
+        Command::SetRoleWeight { role, weight } => format!("role-weight {role:?} {weight}"),
         Command::SetRoleOrder { order } => format!("role-order {}", order.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(",")),
         Command::SetAutoStaff { on } => format!("auto {}", if *on { "on" } else { "off" }),
         Command::Unlock { who } => format!("unlock {}", who.0),
@@ -87,7 +88,6 @@ pub fn to_line(c: &Command) -> String {
         }
         Command::ClearBargeRoute { barge } => format!("barge-route {} none", barge.0),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
-        Command::SetRecipe { building, recipe } => format!("recipe {} {}", building.0, recipe.map_or("none".to_string(), |r| format!("{r:?}"))),
         Command::OrderCanal { cells: v } => format!("canal {}", cells(v)),
         Command::CancelSite { building } => format!("cancel {}", building.0),
         Command::SetCutRule { building, rule } => format!("cut-rule {} {rule:?}", building.0),
@@ -162,6 +162,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         },
         "pause" => Command::SetPaused { building: b(1)?, paused: on(2)? },
         "role" => Command::AdjustRole { role: parse_role(t.get(1).ok_or("missing role")?)?, delta: num(t.get(2), "delta")? },
+        "role-weight" => Command::SetRoleWeight {role: parse_role(t.get(1).ok_or("missing role")?)?, weight: num(t.get(2), "weight")? },
         "role-order" => Command::SetRoleOrder { order: t.get(1).ok_or("missing roles")?.split(',').map(parse_role).collect::<Result<_, _>>()? },
         "auto" => Command::SetAutoStaff { on: on(1)? },
         "unlock" => Command::Unlock { who: BeaverId(num(t.get(1), "beaver")?) },
@@ -188,16 +189,6 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 Some("accept") => Answer::Accept,
                 Some("decline") => Answer::TurnAway,
                 other => return Err(format!("want accept/decline, got {other:?}")),
-            },
-        },
-        "recipe" => Command::SetRecipe {
-            building: b(1)?,
-            recipe: match t.get(2).map(|s| s.to_ascii_lowercase()).as_deref() {
-                Some("none") => None,
-                Some("rope") => Some(Recipe::Rope),
-                Some("baskets") => Some(Recipe::Baskets),
-                Some("tools") => Some(Recipe::Tools),
-                other => return Err(format!("unknown recipe {other:?}")),
             },
         },
         "cancel" => Command::CancelSite { building: b(1)? },
@@ -254,7 +245,6 @@ pub struct Stats {
     pub min_food: f32,
     pub completed: Vec<(f64, BuildingKind)>,
     pub stalled: BTreeMap<u64, (BuildingKind, u32)>,
-    pub techs: Vec<(f64, String)>,
     pub top_alerts: Vec<(f64, String)>,
     pub alert_days: BTreeMap<String, u32>,
     pub refused: Vec<(f64, String)>,
@@ -366,7 +356,7 @@ impl Runner {
     fn daily(&mut self) {
         let s = &self.s;
         let st = &mut self.out.stats;
-        let food = s.buildings.stores.amount(Good::Food);
+        let food = s.buildings.stores.amount(Good::Sticks);
         st.min_food = st.min_food.min(food);
         if food < 0.5 {
             st.food_zero_days += 1;
@@ -395,33 +385,26 @@ impl Runner {
                 }
             }
         }
-        for (i, t) in crate::tech::TECHS.iter().enumerate() {
-            if s.tech.is_unlocked(crate::tech::TechId(i)) && !st.techs.iter().any(|(_, n)| n == t.name) {
-                st.techs.push((s.time_days, t.name.to_string()));
-            }
-        }
+
     }
 
     fn report_line(&mut self) {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | logs {:>5.1} sticks {:>5.1} mud {:>4.1} stone {:>4.1} rope {:>3.1} | built {} sites {} dry {} | barges {} carried {:.0} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | sticks {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} pebbles {:>4.1} | built {} sites {} dry {} | barges {} carried {:.0} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),
             s.colony.count_stage(Stage::Kit),
             s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count(),
-            st.amount(Good::Food),
-            s.ledger.in_per_day(Good::Food),
-            s.ledger.out_per_day(Good::Food),
+            st.amount(Good::Sticks),
+            s.ledger.in_per_day(Good::Sticks),
+            s.ledger.out_per_day(Good::Sticks),
             crate::hud::food_need_per_day(s),
             crate::jobs::jobs_board(s).iter().filter(|r| r.filled > 0).map(|r| format!("{:?}{}", r.role, r.filled)).collect::<Vec<_>>().join(","),
-            st.amount(Good::Logs),
-            st.amount(Good::Sticks),
-            st.amount(Good::Mud),
-            st.amount(Good::Stone),
-            st.amount(Good::Rope),
+            st.amount(Good::Clay),
+            st.amount(Good::Pebbles),
             s.buildings.buildings.iter().filter(|b| b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| !b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| s.buildings.stranded(b, &s.water.depth)).map(|b| format!("{:?}", b.kind)).collect::<Vec<_>>().join(","),
@@ -509,12 +492,10 @@ pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
         "starved" => *st.deaths.get(&format!("{:?}", DeathCause::Starvation)).unwrap_or(&0) as f64,
         "deaths" => st.deaths.values().sum::<u32>() as f64,
         "births" => st.births as f64,
-        "food" => g(Good::Food),
-        "logs" => g(Good::Logs),
+        "food" => g(Good::Sticks),
         "sticks" => g(Good::Sticks),
-        "mud" => g(Good::Mud),
-        "stone" => g(Good::Stone),
-        "rope" => g(Good::Rope),
+        "clay" | "mud" => g(Good::Clay),
+        "pebbles" | "stone" => g(Good::Pebbles),
         "buildings" => s.buildings.buildings.iter().filter(|b| b.is_complete()).count() as f64,
         "sites" => s.buildings.buildings.iter().filter(|b| !b.is_complete()).count() as f64,
         "homeless" => s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count() as f64,
@@ -650,4 +631,3 @@ pub fn run_and_record(text: &str, load: &dyn Fn(&str) -> Result<String, String>)
     let out = run_script_with(text, load, &mut |s| log = write_log(s.recorder.as_deref().unwrap_or(&[])))?;
     Ok((out, log))
 }
-

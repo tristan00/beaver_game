@@ -74,7 +74,7 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 13] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-research.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png"];
+const FILES: [&str; 14] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png", "14-resources.png"];
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -116,7 +116,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0;
-        hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Research), _ => None };
+        hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Buildings), 13 => Some(ColonyTab::Goods), _ => None };
         hud.pop_page = usize::from(shot == 8);
         *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
         *selection = Selection::None;

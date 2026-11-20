@@ -7,12 +7,20 @@ use crate::colony::BeaverId;
 use crate::water::Cell;
 
 pub const SITE_SLOTS: usize = 2;
-pub const LABOUR_PER_DAY: f32 = 0.6;
+pub const LABOUR_PER_DAY: f32 = 0.75;
 pub const EPS: f32 = 1e-3;
 
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    #[test]
+    fn combined_material_costs_require_the_full_delivery() {
+        let mut w=Work::default();let id=BuildingId(1);
+        w.add_site(id,BuildingKind::Dam,&[(Good::Sticks,2.0),(Good::Sticks,3.0),(Good::Clay,1.0)],1.0).unwrap();
+        assert_eq!(w.place(id).unwrap().site.as_ref().unwrap().needed.len(),2);
+        w.deliver(id,Good::Sticks,3.0).unwrap();
+        assert_eq!(w.place(id).unwrap().site.as_ref().unwrap().missing(Good::Sticks),2.0);
+    }
     #[test]
     fn finishing_construction_releases_delivery_site() {
         let mut w=Work::default();let id=BuildingId(1);
@@ -23,7 +31,7 @@ mod lifecycle_tests {
     }
     #[test]
     fn completion_uses_the_same_tolerance_as_worker_tasks() {
-        let s=SiteProgress{needed:vec![(Good::Logs,2.3)],delivered:vec![(Good::Logs,2.2999)],labour_done:1.4999,labour_needed:1.5};
+        let s=SiteProgress{needed:vec![(Good::Sticks,2.3)],delivered:vec![(Good::Sticks,2.2999)],labour_done:1.4999,labour_needed:1.5};
         assert!(s.is_done());assert!(!s.labour_open());
     }
 }
@@ -50,6 +58,8 @@ pub enum Role {
     Haul,
     Craft,
     Forester,
+    Guard,
+    Scout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +175,7 @@ pub struct Work {
     pub auto_organise: bool,
     pub managed: BTreeMap<BeaverId, ManagedDuty>,
     pub role_order: Vec<RoleKind>,
+    pub role_weights: [f32; 10],
     pub player_orders: BTreeSet<BeaverId>,
     pub supplies: Option<Cell>,
     pub canal_plans: Vec<CanalPlan>,
@@ -183,6 +194,7 @@ impl Default for Work {
             auto_organise: false,
             managed: BTreeMap::new(),
             role_order: RoleKind::DEFAULT_ORDER.to_vec(),
+            role_weights: [4.0, 2.2, 1.2, 0.8, 2.5, 1.5, 0.6, 1.0, 0.4, 0.3],
             player_orders: BTreeSet::new(),
             supplies: None,
             canal_plans: Vec::new(),
@@ -273,9 +285,13 @@ impl Work {
         if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
             return Err(WorkError::InvalidAmount);
         }
+        let needed: Vec<Amount> = Good::ALL.into_iter().filter_map(|g| {
+            let total: f32 = needed.iter().filter(|a| a.0 == g).map(|a| a.1).sum();
+            (total > 0.0).then_some((g, total))
+        }).collect();
         let site = SiteProgress {
-            needed: needed.to_vec(),
             delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
+            needed,
             labour_done: 0.0,
             labour_needed: labour,
         };
@@ -351,4 +367,3 @@ impl Work {
         Ok(())
     }
 }
-

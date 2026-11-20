@@ -16,7 +16,6 @@ pub struct Def {
     pub tier: Tier,
     pub slots: Vec<Role>,
     pub area: Option<(usize, usize)>,
-    pub unlock: Option<usize>,
     pub system: Option<System>,
     pub capacity: f32,
     pub batches_per_day: f32,
@@ -38,7 +37,9 @@ pub fn def(kind: BuildingKind) -> Def {
     use BuildingKind::*;
     let passive = (Tier::Elementary, vec![], None);
     let (tier, slots, area) = match kind {
-        Dam | Lodge | Burrow | ScentMound | GuardPost | Canal | Lock | WaterWheel | Barge => passive,
+        Dam | Lodge | Burrow | Canal | Lock | WaterWheel | Barge => passive,
+        ScentMound => (Tier::Elementary, vec![Role::Scout], None),
+        GuardPost => (Tier::Elementary, vec![Role::Guard; 2], None),
         FoodCache | Warehouse | Dock => (Tier::Elementary, vec![Role::Haul], None),
         Workshop => (Tier::Elementary, vec![Role::Craft], None),
         LoggingCamp => camp(ResourceKind::Tree),
@@ -55,7 +56,6 @@ pub fn def(kind: BuildingKind) -> Def {
         tier,
         slots,
         area,
-        unlock: crate::tech::unlock_index(kind),
         system: System::of_building(kind),
         capacity: store_capacity(kind),
         batches_per_day: batches_per_day(kind),
@@ -73,15 +73,21 @@ pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
 pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
     use BuildingKind::*;
     match kind {
-        Lodge => &[Burrow],
+        Dam | Burrow | Warehouse => &[],
+        ForagerHut | LoggingCamp | MudPit | ScentMound => &[Burrow],
+        Lodge => &[LoggingCamp, MudPit],
         FoodCache => &[ForagerHut],
-        Workshop | Dock | QuarryCamp | Storehouse => &[Warehouse],
+        QuarryCamp | Dock => &[Warehouse],
+        Workshop => &[LoggingCamp, QuarryCamp],
+        Canal => &[MudPit],
+        Lock => &[Dock, QuarryCamp],
+        Barge => &[Dock, Workshop],
         WaterWheel => &[Workshop],
-        Lock => &[Dock],
+        Storehouse => &[Warehouse, Workshop],
         Mill => &[Workshop, WaterWheel],
+        ForesterLodge => &[LoggingCamp],
         TreeNursery => &[ForesterLodge],
         GuardPost => &[ScentMound],
-        _ => &[],
     }
 }
 
@@ -93,3 +99,19 @@ pub fn available(sim: &crate::SimState) -> Vec<BuildingKind> {
         .collect()
 }
 
+#[cfg(test)]
+mod progression_tests {
+    use super::*;
+    #[test]
+    fn every_building_can_be_reached_from_the_starting_buildings() {
+        let mut built = Vec::new();
+        for _ in 0..BuildingKind::ALL.len() {
+            for k in BuildingKind::ALL {
+                if !built.contains(&k) && prerequisites(k).iter().all(|p| built.contains(p)) { built.push(k); }
+            }
+        }
+        assert_eq!(built.len(), BuildingKind::ALL.len(), "building prerequisites contain a cycle");
+        assert!(prerequisites(BuildingKind::Workshop).contains(&BuildingKind::QuarryCamp));
+        assert!(prerequisites(BuildingKind::Barge).contains(&BuildingKind::Dock));
+    }
+}

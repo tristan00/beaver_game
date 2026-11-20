@@ -11,7 +11,7 @@ use crate::grid::Grid;
 use crate::nav::Goal;
 use crate::resources::{Resource, ResourceId, ResourceKind, ResourceWorld};
 use crate::water::Cell;
-use crate::work::{Area, Role};
+use crate::work::Area;
 use crate::SimState;
 
 pub const YOUNG_AGE: f32 = 360.0;
@@ -22,8 +22,8 @@ pub const MOIST_GROWTH: f32 = 1.4;
 pub const MOIST_RANGE: usize = 15;
 pub const DRY_GROWTH: f32 = 0.7;
 pub const DRY_MOISTURE: f32 = 0.32;
-pub const TENDED_GROWTH: f32 = 1.5;
-pub const TEND_DAYS: f32 = 30.0;
+pub const TENDED_GROWTH: f32 = 1.8;
+pub const TEND_DAYS: f32 = 45.0;
 pub const NURSERY_AGE: f32 = 120.0;
 pub const STUMP_AGE: f32 = 400.0;
 pub const SPREAD_CHANCE: f32 = 5.5e-5;
@@ -34,9 +34,7 @@ pub const MATURE_DROWN_DAYS: f32 = 60.0;
 pub const PLANT_WORK: f32 = 0.5;
 pub const NURSERY_PLANT_WORK: f32 = PLANT_WORK / 4.0;
 pub const TEND_WORK: f32 = 0.25;
-pub const TEND_STICKS: f32 = 0.2;
-pub const NURSERY_PER_DAY: f32 = 1.0;
-pub const NURSERY_MAX_STOCK: f32 = 60.0;
+pub const TEND_STICKS: f32 = 0.3;
 pub const MAX_AREA: usize = 61;
 pub const RUNNING_OUT: usize = 10;
 pub const FALLING_SHARE: f32 = 0.05;
@@ -145,7 +143,6 @@ pub enum DeedKind {
 pub struct Forestry {
     pub cut_rules: BTreeMap<BuildingId, CutRule>,
     pub plant_rules: BTreeMap<BuildingId, PlantRule>,
-    pub saplings: f32,
     pub deeds: VecDeque<Deed>,
     pub history: VecDeque<(f64, usize)>,
     size: usize,
@@ -170,7 +167,6 @@ impl Forestry {
         Forestry {
             cut_rules: BTreeMap::new(),
             plant_rules: BTreeMap::new(),
-            saplings: 0.0,
             deeds: VecDeque::new(),
             history: VecDeque::new(),
             size: 0,
@@ -244,19 +240,22 @@ fn invalid(m: impl Into<String>) -> crate::SimError {
     crate::SimError::InvalidCommand(m.into())
 }
 
-pub fn knows(sim: &SimState, name: &str) -> bool {
-    crate::tech::TECHS.iter().position(|t| t.name == name).is_some_and(|i| sim.tech.is_unlocked(crate::tech::TechId(i)))
+pub fn can_manage_forest(sim: &SimState) -> bool {
+    sim.sandbox || sim.has_building(BuildingKind::ForesterLodge)
+}
+pub fn can_coppice(sim: &SimState) -> bool {
+    sim.sandbox || sim.has_building(BuildingKind::TreeNursery)
 }
 
 pub(crate) fn set_cut_rule(sim: &mut SimState, building: BuildingId, rule: CutRule) -> Result<(), crate::SimError> {
     if sim.buildings.building(building).is_none_or(|b| b.kind != BuildingKind::LoggingCamp) {
         return Err(invalid(format!("building {} is not a logging camp", building.0)));
     }
-    if rule != CutRule::MatureOnly && !knows(sim, crate::tech::FORESTRY_TECH) {
-        return Err(invalid("cutting rules need Forestry (locked)"));
+    if rule != CutRule::MatureOnly && !can_manage_forest(sim) {
+        return Err(invalid("cutting rules require a finished forester lodge"));
     }
-    if rule == CutRule::Coppice && !knows(sim, crate::tech::COPPICING_TECH) {
-        return Err(invalid("coppicing needs Coppicing (locked)"));
+    if rule == CutRule::Coppice && !can_coppice(sim) {
+        return Err(invalid("coppicing requires a finished tree nursery"));
     }
     sim.forestry.cut_rules.insert(building, rule);
     refresh_thinning(sim);
@@ -303,7 +302,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     if sim.forestry.size != sim.world.size {
         init(sim);
     }
-    grow_nursery_stock(sim, dt_days);
+    let _ = dt_days;
     let today = sim.time_days.floor() as i64;
     let last = *sim.forestry.day.get_or_insert(today);
     for d in last + 1..=today {
@@ -312,18 +311,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     sim.forestry.day = Some(today.max(last));
 }
 
-fn grow_nursery_stock(sim: &mut SimState, dt: f32) {
-    let staffed: usize = sim
-        .work
-        .places
-        .iter()
-        .filter(|p| p.kind == BuildingKind::TreeNursery && !p.paused && p.site.is_none())
-        .filter(|p| sim.buildings.building(p.building).is_some_and(|b| b.is_complete()))
-        .map(|p| p.slots.iter().filter(|s| s.role == Role::Forester && s.worker.is_some()).count())
-        .sum();
-    let f = &mut sim.forestry;
-    f.saplings = (f.saplings + staffed as f32 * NURSERY_PER_DAY * dt).min(NURSERY_MAX_STOCK.max(f.saplings));
-}
+
 
 fn chance(rng: &mut Pcg32, p: f32) -> bool {
     ((rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32) < p
@@ -673,7 +661,7 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
     let camp = sim.work.slot_of(who).map(|s| s.0);
     record(sim, cell, DeedKind::Felled, camp);
     if let Some(b) = camp {
-        if sim.forestry.cut_rule(b) == CutRule::Coppice && knows(sim, crate::tech::COPPICING_TECH) {
+        if sim.forestry.cut_rule(b) == CutRule::Coppice && can_coppice(sim) {
             sim.forestry.stumps.push(cell);
         }
     }
@@ -718,18 +706,17 @@ pub(crate) fn work(sim: &mut SimState, ag: &mut Agent, dt: f32, lodge: Option<Bu
     }
     ag.path = None;
     crate::agents::note(ag, true);
-    let done = dt * ag.speed;
+    let done = dt * crate::agents::worker_effort(sim, ag, crate::colony::Job::Logger);
     match task {
         ForestTask::Plant { cell, progress } => {
             let progress = progress + done;
-            let stock = sim.forestry.saplings >= 1.0;
+            let stock = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::TreeNursery && b.operational() && b.output > 0.25 && crate::stock::dist(cell, b) <= 50);
             let need = if stock { NURSERY_PLANT_WORK } else { PLANT_WORK };
             if progress + 1e-4 < need {
                 ag.task = Task::Forest(ForestTask::Plant { cell, progress });
                 return;
             }
             let age = if stock {
-                sim.forestry.saplings -= 1.0;
                 NURSERY_AGE
             } else {
                 0.0
@@ -823,4 +810,3 @@ pub fn days_until_out(sim: &SimState, camp: BuildingId) -> Option<f32> {
     let rate = felled_per_day(sim, camp);
     (rate > 1e-3).then(|| cuttable_in_area(sim, camp) as f32 / rate)
 }
-

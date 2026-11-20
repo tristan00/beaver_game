@@ -79,7 +79,7 @@ pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingI
     let mut moving: Vec<(BuildingId, BuildingId, Good, f32)> = Vec::new();
     for a in sim.agents.by_id.values() {
         match (&a.task, a.load) {
-            (crate::agents::Task::Fetch { from, good, then }, None) if sim.work.balanced.contains(then) => moving.push((*from, *then, *good, crate::agents::LOAD_SIZE)),
+            (crate::agents::Task::Fetch { from, good, then, site_delivery: false }, None) if sim.work.balanced.contains(then) => moving.push((*from, *then, *good, crate::agents::LOAD_SIZE)),
             (crate::agents::Task::Haul { to }, Some(l)) => moving.push((BuildingId(0), *to, l.good, l.amount)),
             _ => {}
         }
@@ -118,20 +118,7 @@ pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingI
     best.map(|b| (b.2, b.3, b.4))
 }
 
-pub fn book_crafting(sim: &mut SimState) {
-    let crafted = sim.buildings.crafted.clone();
-    for (id, out, made) in crafted {
-        let Some(b) = sim.buildings.building(id).cloned() else { continue };
-        if let Some(r) = b.recipe {
-            let (inputs, (_, per)) = r.batch();
-            let batches = made / per;
-            for &(g, a) in inputs {
-                take_near(sim, &b, g, a * batches);
-            }
-        }
-        put_near(sim, &b, out, made);
-    }
-}
+
 
 pub fn reconcile(sim: &mut SimState) {
     for g in Good::ALL {
@@ -154,4 +141,3 @@ pub fn reconcile(sim: &mut SimState) {
         }
     }
 }
-

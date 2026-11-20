@@ -90,7 +90,7 @@ pub fn berths(sim: &SimState, locks: &HashSet<Cell>, dock: &Building) -> Vec<Cel
 }
 
 pub fn berths_at(sim: &SimState, pos: Cell) -> Vec<Cell> {
-    let probe = Building { id: BuildingId(0), kind: BuildingKind::Dock, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
+    let probe = Building { id: BuildingId(0), kind: BuildingKind::Dock, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     berths(sim, &lock_cells(sim), &probe)
 }
 
@@ -326,4 +326,3 @@ fn sail(sim: &SimState, locks: &HashSet<Cell>, bg: &mut crate::buildings::Barge,
         bg.progress = 0.0;
     }
 }
-

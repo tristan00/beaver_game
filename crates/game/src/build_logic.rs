@@ -1,6 +1,6 @@
 use sim::buildings::{Amount, BuildingId, BuildingKind, Site, WET_DEPTH};
 use sim::colony::OrderId;
-use sim::tech::{Branch, Effect, TECHS};
+
 use sim::water::Cell;
 use sim::{Command, SimState};
 
@@ -14,19 +14,19 @@ pub const MAX_CANAL_CELLS: usize = 80;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Group {
     Base,
-    Branch(Branch),
+    Water, Forest, Building, Craft, Transport, Defence,
 }
 
 impl Group {
     pub fn name(self) -> &'static str {
         match self {
             Group::Base => "Basics",
-            Group::Branch(Branch::Water) => "Water",
-            Group::Branch(Branch::Forest) => "Forest",
-            Group::Branch(Branch::Building) => "Building",
-            Group::Branch(Branch::Craft) => "Craft",
-            Group::Branch(Branch::Transport) => "Transport",
-            Group::Branch(Branch::Defence) => "Defence",
+            Group::Water => "Water",
+            Group::Forest => "Forest",
+            Group::Building => "Building",
+            Group::Craft => "Craft",
+            Group::Transport => "Transport",
+            Group::Defence => "Defence",
         }
     }
 }
@@ -40,27 +40,22 @@ pub struct MenuEntry {
 }
 
 pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
-    let mut out = Vec::new();
-    for kind in BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)) {
-        let tech = TECHS.iter().find(|t| t.effects.contains(&Effect::Unlock(kind)));
-        let group = if kind == BuildingKind::Dam { Group::Branch(Branch::Water) } else { tech.map_or(Group::Base, |t| Group::Branch(t.branch)) };
-        let unlocked = sim.tech.allows(kind) && sim.missing_prerequisites(kind).is_empty();
-        let need = match (unlocked, tech) {
-            (false, Some(t)) => Some((t.name, t.xp, t.branch.experience(&sim.colony))),
-            _ => None,
+    use BuildingKind::*;
+    let mut out: Vec<_> = BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)).map(|kind| {
+        let group = match kind {
+            Dam | Canal | Lock | WaterWheel => Group::Water,
+            LoggingCamp | ForagerHut | MudPit | QuarryCamp | ForesterLodge | TreeNursery => Group::Forest,
+            Lodge => Group::Building,
+            Workshop | Mill => Group::Craft,
+            Dock | Barge | Storehouse | FoodCache => Group::Transport,
+            GuardPost | ScentMound => Group::Defence,
+            _ => Group::Base,
         };
-        out.push(MenuEntry { kind, group, unlocked, need });
-    }
-    let rank = |g: Group| match g {
-        Group::Base => 0,
-        Group::Branch(b) => 1 + Branch::ALL.iter().position(|x| *x == b).unwrap_or(0),
-    };
-    out.sort_by_key(|e| rank(e.group));
+        let need = sim.missing_prerequisites(kind).first().map(|k| (k.spec().name, 0.0, 0.0));
+        MenuEntry {kind, group, unlocked: sim.can_build(kind), need}
+    }).collect();
+    out.sort_by_key(|e| e.group as usize);
     out
-}
-
-fn fmt_amount(a: f32) -> String {
-    if (a - a.round()).abs() < 0.05 { format!("{}", a.round() as i32) } else { format!("{a:.1}") }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +76,7 @@ pub enum PlaceError {
 impl std::fmt::Display for PlaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlaceError::Locked(t, need, have) => write!(f, "Locked: {t} needs {} xp (have {})", fmt_amount(*need), fmt_amount(*have)),
+            PlaceError::Locked(t, _, _) => write!(f, "Needs a finished {t}"),
             PlaceError::OutOfBounds => write!(f, "Outside the map"),
             PlaceError::Blocked => write!(f, "Something is already built here"),
             PlaceError::NeedsDry => write!(f, "Needs dry ground"),
@@ -113,12 +108,12 @@ pub fn footprint(kind: BuildingKind, pos: Cell) -> Vec<Cell> {
 }
 
 fn locked(sim: &SimState, kind: BuildingKind) -> Result<(), PlaceError> {
-    if sim.sandbox || sim.tech.allows(kind) {
+    if sim.sandbox || sim.can_build(kind) {
         return Ok(());
     }
     match menu(sim).into_iter().find(|e| e.kind == kind).and_then(|e| e.need) {
         Some((t, need, have)) => Err(PlaceError::Locked(t, need, have)),
-        None => Err(PlaceError::Locked("tech", 0.0, 0.0)),
+        None => Err(PlaceError::Locked("prerequisite building", 0.0, 0.0)),
     }
 }
 

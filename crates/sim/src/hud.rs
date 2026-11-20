@@ -23,12 +23,12 @@ mod repair_alert_tests {
     fn missing_materials_do_not_offer_an_impossible_builder_fix() {
         let mut s=SimState::new(1);s.colony.found((0.0,3.0),&crate::colony::RiverLand::default()).unwrap();let id=BuildingId(1);let c=(5,5);
         s.water.build_dam(&[c],1.0).unwrap();*s.water.dam_integrity.get_mut(c.0,c.1).unwrap()=0.2;
-        s.buildings.buildings.push(crate::buildings::Building{id,kind:BuildingKind::Dam,pos:c,status:crate::buildings::Status::Site,recipe:None,output:0.0,condition:0.2,reinforced:false,dam_profile:vec![(c,1.0)]});
-        s.work.add_site(id,BuildingKind::Dam,&[(Good::Mud,5.0)],1.0).unwrap();
+        s.buildings.buildings.push(crate::buildings::Building{id,kind:BuildingKind::Dam,pos:c,status:crate::buildings::Status::Site,output:0.0,condition:0.2,reinforced:false,dam_profile:vec![(c,1.0)]});
+        s.work.add_site(id,BuildingKind::Dam,&[(Good::Clay,5.0)],1.0).unwrap();
         s.work.dam_plans.push(crate::work::DamPlan{building:id,repair:true,cells:vec![c],height:1.0,heights:vec![1.0],from:vec![1.0]});
         let fix=|s:&SimState|problems(s).into_iter().find(|p|p.kind==ProblemKind::WeakDam).unwrap().fix;
         assert_eq!(fix(&s),Fix::Focus);
-        s.work.supplies=Some((1,1));s.work.stock_add(crate::agents::SUPPLIES,Good::Mud,5.0);s.buildings.stores.deposit(Good::Mud,5.0).unwrap();
+        s.work.supplies=Some((1,1));s.work.stock_add(crate::agents::SUPPLIES,Good::Clay,5.0);s.buildings.stores.deposit(Good::Clay,5.0).unwrap();
         assert_eq!(fix(&s),Fix::StaffSites);
     }
 }
@@ -122,9 +122,9 @@ pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
 }
 
 pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
-    let stock = sim.buildings.stores.amount(Good::Food);
+    let stock = sim.buildings.stores.amount(Good::Sticks);
     let need = food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(Good::Food);
+    let gain = sim.ledger.in_per_day(Good::Sticks);
     let mut rows = vec![row("Stock", stock, Source::None), row("Gathered", gain, Source::None)];
     for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits")] {
         let eat: f32 = sim.colony.beavers.iter().filter(|b| b.stage == st).map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum();
@@ -386,7 +386,7 @@ fn food_fix(sim: &SimState) -> Fix {
         return Fix::AddWorkers { building: p.building, n: free.min(FIX_WORKERS) };
     }
     let building_one = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::ForagerHut && !b.is_complete());
-    if sim.tech.allows(BuildingKind::ForagerHut) && !building_one {
+    if sim.can_build(BuildingKind::ForagerHut) && !building_one {
         return Fix::Place(BuildingKind::ForagerHut);
     }
     match gatherers(sim, FIX_WORKERS).len() {
@@ -403,9 +403,9 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     let idle = idle_beavers(sim);
     let pop = sim.colony.population();
 
-    let food = sim.buildings.stores.amount(Good::Food);
+    let food = sim.buildings.stores.amount(Good::Sticks);
     let need = food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(Good::Food);
+    let gain = sim.ledger.in_per_day(Good::Sticks);
     if pop > 0 && need > gain {
         let days = food / (need - gain);
         if days < FOOD_WARN_DAYS {
@@ -414,7 +414,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 severity: if days < FOOD_WARN_DAYS / 3.0 { Severity::Urgent } else { Severity::Warning },
                 value: days.floor(),
                 cause: food_days_breakdown(sim),
-                subject: Some(Subject::Good(Good::Food)),
+                subject: Some(Subject::Good(Good::Sticks)),
                 fix: food_fix(sim),
                 alt_fix: None,
                 focus: colony_cell(sim),
@@ -559,7 +559,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 value: (have / cap * 100.0).round(),
                 cause: Breakdown::new((have / cap * 100.0).round(), rows),
                 subject: Some(Subject::Good(g)),
-                fix: if sim.tech.allows(BuildingKind::Warehouse) { Fix::Place(BuildingKind::Warehouse) } else { Fix::Focus },
+                fix: if sim.can_build(BuildingKind::Warehouse) { Fix::Place(BuildingKind::Warehouse) } else { Fix::Focus },
                 alt_fix: None,
                 focus: colony_cell(sim),
             });
@@ -590,7 +590,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             subject: Some(Subject::Building(BuildingKind::LoggingCamp)),
             fix: if let Some(p) = sim.work.places.iter().find(|p| p.kind == BuildingKind::ForesterLodge && p.filled() < p.slots.len()) {
                 Fix::AddWorkers { building: p.building, n: 2 }
-            } else if sim.tech.allows(BuildingKind::ForesterLodge) && sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::ForesterLodge).count() < 2 {
+            } else if sim.can_build(BuildingKind::ForesterLodge) && sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::ForesterLodge).count() < 2 {
                 Fix::Place(BuildingKind::ForesterLodge)
             } else { Fix::OpenJobs },
             alt_fix: None,
@@ -728,7 +728,7 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     let collect = def.slots.iter().find_map(|r| if let Role::Collect(k) = r { Some(*k) } else { None });
     if let Some(kind) = collect {
         let kinds: Vec<ResourceKind> = if kind == ResourceKind::Tree { vec![ResourceKind::Tree, ResourceKind::Felled] } else { vec![kind] };
-        let good = if kind == ResourceKind::Tree { Good::Logs } else { kind.yields().first().copied()? };
+        let good = if kind == ResourceKind::Tree { Good::Sticks } else { kind.yields().first().copied()? };
         factors.push(factor("Workers", format!("{filled} of {total}"), Some(filled == total)));
         if let Some(area) = place.and_then(|p| p.area) {
             let left = sim.resources.items.iter().filter(|r| kinds.contains(&r.kind) && area.contains(r.cell) && r.has_yield()).count();
@@ -749,23 +749,12 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
         return Some(Report { measured, steady, ceiling, factors });
     }
     if def.batches_per_day > 0.0 {
-        factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled == total)));
-        let Some(recipe) = b.recipe else {
-            factors.push(factor("Recipe", "none chosen", Some(false)));
-            return Some(Report { measured, steady, ceiling: None, factors });
-        };
-        let (inputs, (out, per)) = recipe.batch();
-        for &(g, a) in inputs {
-            let have = sim.buildings.stores.amount(g);
-            factors.push(factor(format!("{g:?} in store (a batch needs {a})"), format!("{have:.0}"), Some(have >= a)));
+        factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled > 0)));
+        factors.push(factor("Local work support", format!("+{:.0}%", b.output * 25.0), Some(b.output > 0.1)));
+        for &(g, a) in crate::craftsmanship::COST_PER_DAY {
+            factors.push(factor(format!("{g:?} per crafter day"), format!("{a:.2}"), Some(sim.buildings.stores.amount(g) >= a)));
         }
-        let space = sim.buildings.stores.space(out);
-        factors.push(factor(format!("Room for {out:?}"), format!("{space:.0}"), Some(space >= per)));
-        let power = sim.buildings.power.min(1.0);
-        let value = if power > 0.0 { format!("+{:.0}%, shared by workshops", power * 100.0) } else { "none".to_string() };
-        factors.push(factor("Water wheel power", value, (power > 0.0).then_some(true)));
-        let ceiling = Some((out, def.batches_per_day * per * (1.0 + power) * sim.tech.craft_speed_factor()));
-        return Some(Report { measured, steady, ceiling, factors });
+        return Some(Report {measured, steady, ceiling: None, factors});
     }
     None
 }
@@ -900,4 +889,3 @@ pub fn ponds(sim: &SimState) -> Ponds {
     let dammed = w.dam_height.as_slice().iter().any(|h| *h > 0.0);
     Ponds { dammed, cells, volume, summer_loss_per_day: cells as f32 * per_cell }
 }
-

@@ -324,7 +324,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     }
     if let Some(c) = s.work.supplies {
         if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
-            push(p, &[(Icon::Logs, good_color(Good::Logs)), (Icon::Food, good_color(Good::Food))]);
+            push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Sticks))]);
         }
     }
     for id in sim::hud::idle_beavers(s) {
@@ -361,7 +361,7 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
 fn store_takes(kind: BuildingKind, g: Good) -> bool {
     match kind {
         BuildingKind::Warehouse | BuildingKind::Storehouse => true,
-        BuildingKind::FoodCache => g == Good::Food,
+        BuildingKind::FoodCache => g == Good::Sticks,
         _ => false,
     }
 }
@@ -567,7 +567,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
                 let col = if pv.is_valid() { Color::WHITE } else { BAD };
-                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
+                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = match kind {
                         BuildingKind::LoggingCamp => LOGGER_AREA,

@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 const LIFT: f32 = 25.0;
 const DENSITY: f32 = 0.9;
-const CLOUD: [f32; 3] = [0.78, 0.8, 0.84];
+const CLOUD: [f32; 3] = [0.20, 0.23, 0.17];
 const REBUILD_SECS: f32 = 0.25;
 
 #[derive(Component)]
@@ -74,15 +74,16 @@ fn fog_mesh(s: &sim::SimState) -> Mesh {
     for y in 0..n {
         for x in 0..n {
             let (mut top, mut unseen, mut k) = (f32::MIN, 0.0, 0.0);
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
                     let (cx, cy) = ((x as i32 + dx).clamp(0, n as i32 - 1) as usize, (y as i32 + dy).clamp(0, n as i32 - 1) as usize);
                     top = top.max(h.get(cx, cy).copied().unwrap_or(0.0));
                     unseen += 1.0 - (fog.get((cx, cy)) / EXPLORED).min(1.0);
                     k += 1.0;
                 }
             }
-            let a = (unseen / k).clamp(0.0, 1.0) * DENSITY;
+            let t = (unseen / k).clamp(0.0, 1.0);
+            let a = t * t * (3.0 - 2.0 * t) * DENSITY;
             pos.push([(x as f32 + 0.5) * CELL_SIZE - ox, top + LIFT, (y as f32 + 0.5) * CELL_SIZE - oz]);
             nor.push([0.0, 1.0, 0.0]);
             col.push([lin(CLOUD[0]), lin(CLOUD[1]), lin(CLOUD[2]), a]);

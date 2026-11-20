@@ -318,8 +318,8 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
 const SWIM_REACH: usize = 40;
 
 pub const START_LARDER_DAYS: f32 = 45.0;
-pub const START_BUNDLE: [(crate::buildings::Good, f32); 4] =
-    [(crate::buildings::Good::Logs, 60.0), (crate::buildings::Good::Sticks, 60.0), (crate::buildings::Good::Mud, 30.0), (crate::buildings::Good::Rope, 2.0)];
+pub const START_BUNDLE: [(crate::buildings::Good, f32); 3] =
+    [(crate::buildings::Good::Sticks, 120.0), (crate::buildings::Good::Clay, 30.0), (crate::buildings::Good::Pebbles, 6.0)];
 
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);
@@ -358,11 +358,12 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         }
     }
     let larder = crate::hud::food_need_per_day(sim) * START_LARDER_DAYS;
-    sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Food, larder).map_err(|e| invalid(e.to_string()))?;
+    sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Sticks, larder).map_err(|e| invalid(e.to_string()))?;
     for (g, a) in START_BUNDLE {
         sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
     }
-    sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Logs);
+    sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Sticks);
+    sim.colony.food = sim.colony.wood;
     sim.work.supplies = Some(cell);
     {
         let allowed = crate::fog::open_at(&sim.world);
@@ -466,4 +467,3 @@ pub fn new_game(seed: u64) -> Result<SimState, StartError> {
 }
 
 use crate::water::Cell;
-

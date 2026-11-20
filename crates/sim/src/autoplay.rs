@@ -1,4 +1,4 @@
-use crate::buildings::{BuildingId, BuildingKind, Good, Recipe};
+use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::resources::ResourceKind;
 use crate::hud::{self, Fix};
 use crate::water::Cell;
@@ -17,7 +17,7 @@ pub struct Player {
     pub dam: Option<(Vec<Cell>, f32)>,
     pub placed: Vec<(f64, BuildingKind, Result<BuildingId, String>)>,
     pub log: Vec<String>,
-    recipe: Option<(BuildingId, Recipe)>,
+
     next_explore: f64,
     far_dock: Option<BuildingId>,
     home_dock: Option<BuildingId>,
@@ -30,7 +30,7 @@ pub const DEPOSIT_REACH: usize = 200;
 
 impl Player {
     pub fn new(style: Style, camp: Cell, dam: Option<(Vec<Cell>, f32)>) -> Player {
-        Player { style, camp, dam, placed: Vec::new(), log: Vec::new(), recipe: None, next_explore: 0.0, far_dock: None, home_dock: None, routed: false }
+        Player { style, camp, dam, placed: Vec::new(), log: Vec::new(), next_explore: 0.0, far_dock: None, home_dock: None, routed: false }
     }
 
     fn note(&mut self, s: &SimState, line: String) {
@@ -80,22 +80,14 @@ impl Player {
         if self.style == Style::HandsOff || !s.colony.is_founded() {
             return;
         }
-        let food_reserve = crate::hud::food_need_per_day(s) * 120.0;
-        if s.colony.food < food_reserve {
-            // Forestry is a long-term investment. Do not leave manually locked
-            // foresters consuming the workforce needed for this winter's food.
-            let forestry: Vec<_> = s.work.places.iter().filter(|p|p.kind == BuildingKind::ForesterLodge && p.site.is_none()
-                && s.buildings.building(p.building).is_some_and(|b| b.is_complete()))
-                .map(|p|(p.building,p.filled())).collect();
-            for (building, n) in forestry { for _ in 0..n { let _ = s.apply(Command::RemoveWorker { building }); } }
-        }
+
         if self.placed.is_empty() {
             self.place(s, BuildingKind::Burrow);
         }
         let huts = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::ForagerHut).count();
         let hut_building = s.buildings.buildings.iter().any(|b| b.kind == BuildingKind::ForagerHut && !b.is_complete());
         let recent = self.placed.iter().any(|(d, k, _)| *k == BuildingKind::ForagerHut && s.time_days - d < 10.0);
-        if s.tech.allows(BuildingKind::ForagerHut) && huts < 1 + s.colony.population() / 5 && !hut_building && !recent {
+        if s.can_build(BuildingKind::ForagerHut) && huts < 1 + s.colony.population() / 5 && !hut_building && !recent {
             self.place(s, BuildingKind::ForagerHut);
         }
         if !self.has(BuildingKind::Dam) && !self.tried_lately(s, BuildingKind::Dam) {
@@ -116,7 +108,7 @@ impl Player {
             }
         }
         for kind in [BuildingKind::LoggingCamp, BuildingKind::Warehouse, BuildingKind::MudPit, BuildingKind::Workshop, BuildingKind::QuarryCamp] {
-            if s.tech.allows(kind) && s.missing_prerequisites(kind).is_empty() && !self.has(kind) && !self.tried_lately(s, kind) {
+            if s.can_build(kind) && s.missing_prerequisites(kind).is_empty() && !self.has(kind) && !self.tried_lately(s, kind) {
                 self.place(s, kind);
             }
         }
@@ -140,26 +132,18 @@ impl Player {
         let families = s.colony.beavers.iter().map(|b|b.family).collect::<std::collections::HashSet<_>>().len();
         let young_adults = s.colony.beavers.iter().any(|b|b.stage == crate::colony::Stage::Adult && b.mate.is_none());
         let wanted_homes = families + usize::from(young_adults || !s.society.pending().is_empty());
-        if s.tech.allows(BuildingKind::Lodge) && count(s, BuildingKind::Lodge) < wanted_homes && !self.tried_lately(s, BuildingKind::Lodge) {
+        if s.can_build(BuildingKind::Lodge) && count(s, BuildingKind::Lodge) < wanted_homes && !self.tried_lately(s, BuildingKind::Lodge) {
             self.place(s, BuildingKind::Lodge);
         }
-        if s.tech.allows(BuildingKind::LoggingCamp) && count(s, BuildingKind::LoggingCamp) < 1 + pop / 10 && !self.tried_lately(s, BuildingKind::LoggingCamp) {
+        if s.can_build(BuildingKind::LoggingCamp) && count(s, BuildingKind::LoggingCamp) < 1 + pop / 10 && !self.tried_lately(s, BuildingKind::LoggingCamp) {
             self.place(s, BuildingKind::LoggingCamp);
         }
-        if let Some(bench) = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::Workshop && b.is_complete()).map(|b| b.id) {
-            let short = |g: Good| s.work.places.iter().filter_map(|p| p.site.as_ref()).any(|st| st.missing(g) > 0.0) && s.buildings.stores.amount(g) < 1.0;
-            let want = if short(Good::Tools) { Recipe::Tools } else if short(Good::Baskets) { Recipe::Baskets } else { Recipe::Rope };
-            if self.recipe != Some((bench, want)) {
-                let r = s.apply(Command::SetRecipe { building: bench, recipe: Some(want) });
-                self.recipe = Some((bench, want));
-                self.note(s, format!("workshop makes {want:?}: {r:?}"));
-            }
-        }
+
         if self.style == Style::IgnoresAlerts {
             return;
         }
         let Some(p) = hud::problems(s).into_iter().next() else { return };
-        if p.subject == Some(hud::Subject::Building(BuildingKind::ForesterLodge)) && s.colony.food < food_reserve { return; }
+        if p.subject == Some(hud::Subject::Building(BuildingKind::ForesterLodge)) && s.colony.food < crate::hud::food_need_per_day(s) * 12.0 { return; }
         match p.fix {
             Fix::Place(kind) => {
                 if !self.tried_lately(s, kind) {
@@ -273,7 +257,7 @@ impl Player {
     fn ship(&mut self, s: &mut SimState) {
         let home = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::Warehouse && b.is_complete()).cloned();
         let Some(home) = home else { return };
-        if !s.tech.allows(BuildingKind::Dock) {
+        if !s.can_build(BuildingKind::Dock) {
             return;
         }
         let home_spot = match self.home_dock.and_then(|d| s.buildings.building(d)) {
@@ -311,7 +295,7 @@ impl Player {
         }
         let done = |id: Option<BuildingId>| id.and_then(|i| s.buildings.building(i)).is_some_and(|b| b.is_complete());
         let (Some(fd), Some(hd)) = (self.far_dock, self.home_dock) else { return };
-        if !done(Some(fd)) || !done(Some(hd)) || !s.tech.allows(BuildingKind::Barge) {
+        if !done(Some(fd)) || !done(Some(hd)) || !s.can_build(BuildingKind::Barge) {
             return;
         }
         if s.buildings.barges.is_empty() {
@@ -331,7 +315,7 @@ impl Player {
             return;
         }
         let barge = s.buildings.barges[0].id;
-        match s.apply(Command::SetBargeRoute { barge, from: fd, to: hd, goods: vec![Good::Stone, Good::Mud] }) {
+        match s.apply(Command::SetBargeRoute { barge, from: fd, to: hd, goods: vec![Good::Pebbles, Good::Clay] }) {
             Ok(()) => {
                 self.routed = true;
                 self.note(s, "barge route set: far dock to home dock".into());
@@ -344,7 +328,7 @@ impl Player {
                     Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?))
                 });
                 if let Some((x, y)) = at {
-                    if s.tech.allows(BuildingKind::Lock) && !self.tried_lately(s, BuildingKind::Lock) {
+                    if s.can_build(BuildingKind::Lock) && !self.tried_lately(s, BuildingKind::Lock) {
                         let mut positions:Vec<_>=s.water.dam_line_at((x,y)).into_iter().flat_map(|(x,y)|[(x,y),(x.saturating_sub(1),y)]).collect();
                         positions.sort_by_key(|p|p.0.abs_diff(x)+p.1.abs_diff(y));
                         positions.dedup();
@@ -402,7 +386,7 @@ pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell, keep_cl
 
 pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate::resources::ResourceKind, usize)> {
     let role = crate::catalogue::def(kind).slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
-    let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
+    let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let area = crate::catalogue::work_area(&b)?;
     let n = s.resources.items.iter().filter(|r| r.kind == role && area.contains(r.cell)).count();
     Some((role, n))
@@ -479,4 +463,3 @@ fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::op
     }
     Err(last)
 }
-

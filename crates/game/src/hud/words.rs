@@ -8,40 +8,25 @@ use sim::work::Role;
 
 pub fn good_name(g: Good) -> &'static str {
     match g {
-        Good::Logs => "Logs",
         Good::Sticks => "Sticks",
-        Good::Mud => "Mud",
-        Good::Stone => "Stone",
-        Good::Food => "Food",
-        Good::Baskets => "Baskets",
-        Good::Rope => "Rope",
-        Good::Tools => "Tools",
+        Good::Clay => "Clay",
+        Good::Pebbles => "Pebbles",
     }
 }
 
 pub fn good_icon(g: Good) -> Icon {
     match g {
-        Good::Logs => Icon::Logs,
         Good::Sticks => Icon::Sticks,
-        Good::Mud => Icon::Mud,
-        Good::Stone => Icon::Stone,
-        Good::Food => Icon::Food,
-        Good::Baskets => Icon::Baskets,
-        Good::Rope => Icon::Rope,
-        Good::Tools => Icon::Tools,
+        Good::Clay => Icon::Mud,
+        Good::Pebbles => Icon::Stone,
     }
 }
 
 pub fn good_color(g: Good) -> Color {
     match g {
-        Good::Logs => Color::srgb(0.79, 0.54, 0.29),
         Good::Sticks => Color::srgb(0.88, 0.76, 0.52),
-        Good::Mud => Color::srgb(0.66, 0.6, 0.42),
-        Good::Stone => Color::srgb(0.66, 0.68, 0.7),
-        Good::Food => Color::srgb(0.9, 0.42, 0.5),
-        Good::Baskets => Color::srgb(0.8, 0.65, 0.3),
-        Good::Rope => Color::srgb(0.76, 0.67, 0.52),
-        Good::Tools => Color::srgb(0.6, 0.68, 0.76),
+        Good::Clay => Color::srgb(0.66, 0.6, 0.42),
+        Good::Pebbles => Color::srgb(0.66, 0.68, 0.7),
     }
 }
 
@@ -73,15 +58,14 @@ pub fn building_icon(k: BuildingKind) -> Icon {
 }
 
 pub fn group_icon(g: Group) -> Icon {
-    use sim::tech::Branch;
     match g {
         Group::Base => Icon::CatBasics,
-        Group::Branch(Branch::Water) => Icon::CatWater,
-        Group::Branch(Branch::Forest) => Icon::CatForest,
-        Group::Branch(Branch::Building) => Icon::CatBuilding,
-        Group::Branch(Branch::Craft) => Icon::CatCraft,
-        Group::Branch(Branch::Transport) => Icon::CatTransport,
-        Group::Branch(Branch::Defence) => Icon::CatDefence,
+        Group::Water => Icon::CatWater,
+        Group::Forest => Icon::CatForest,
+        Group::Building => Icon::CatBuilding,
+        Group::Craft => Icon::CatCraft,
+        Group::Transport => Icon::CatTransport,
+        Group::Defence => Icon::CatDefence,
     }
 }
 
@@ -97,6 +81,8 @@ pub fn role_icon(r: Role) -> Icon {
         Role::Haul => Icon::RoleHauler,
         Role::Craft => Icon::RoleCrafter,
         Role::Forester => Icon::RoleForester,
+        Role::Guard => Icon::GuardPost,
+        Role::Scout => Icon::Tree,
     }
 }
 
@@ -105,13 +91,15 @@ pub fn role_name(r: Role) -> &'static str {
         Role::Collect(k) => match k {
             ResourceKind::Tree | ResourceKind::Felled => "Logger",
             ResourceKind::Plant => "Forager",
-            ResourceKind::MudBank => "Mud digger",
+            ResourceKind::MudBank => "Clay digger",
             ResourceKind::StoneOutcrop => "Quarrier",
         },
         Role::Build => "Builder",
         Role::Haul => "Hauler",
         Role::Craft => "Crafter",
         Role::Forester => "Forester",
+        Role::Guard => "Guard",
+        Role::Scout => "Scout",
     }
 }
 
@@ -128,7 +116,7 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
     match k {
         ResourceKind::Tree => "Tree",
         ResourceKind::Felled => "Felled tree",
-        ResourceKind::Plant => "Food plant",
+        ResourceKind::Plant => "Edible shoots",
         ResourceKind::MudBank => "Mud bank",
         ResourceKind::StoneOutcrop => "Outcrop",
     }
@@ -261,4 +249,3 @@ pub fn sim_error(m: &str) -> String {
     ];
     table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }
-

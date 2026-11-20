@@ -24,17 +24,17 @@ pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
     let (w,h) = b.kind.spec().footprint;
     let area = (w*h) as f32;
     match kind {
-        Refit::Reinforce if b.kind == K::Lodge => (vec![(Good::Stone,18.0),(Good::Mud,8.0)],8.0),
+        Refit::Reinforce if b.kind == K::Lodge => (vec![(Good::Pebbles,18.0),(Good::Clay,8.0)],8.0),
         Refit::Reinforce if b.kind == K::Dam => {
             let n = b.dam_profile.len().max(1) as f32;
-            (vec![(Good::Stone,2.0*n),(Good::Mud,(n*0.5).ceil())],n*0.25+2.0)
+            (vec![(Good::Pebbles,2.0*n),(Good::Clay,(n*0.5).ceil())],n*0.25+2.0)
         }
-        Refit::Reinforce => (vec![(Good::Stone,2.0*area),(Good::Rope,(area/4.0).ceil())],4.0+area*0.4),
+        Refit::Reinforce => (vec![(Good::Pebbles,2.0*area),(Good::Clay,(area/4.0).ceil())],4.0+area*0.4),
         Refit::Repair => {
             let damage = (1.0-b.condition).clamp(0.0,1.0);
             let mut materials: Vec<_> = b.kind.spec().cost.iter().map(|&(g,a)|(g,(a*damage*0.35).ceil())).filter(|v|v.1>0.0).collect();
-            if materials.is_empty() { materials.push((Good::Logs,1.0)); }
-            if b.reinforced { materials.push((Good::Stone,(area*damage*0.6).ceil().max(1.0))); }
+            if materials.is_empty() { materials.push((Good::Sticks,1.0)); }
+            if b.reinforced { materials.push((Good::Pebbles,(area*damage*0.6).ceil().max(1.0))); }
             (materials, (b.kind.spec().work*damage*0.5).max(1.5))
         }
     }
@@ -46,7 +46,7 @@ pub fn quoted_cost(s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32)
     let (mut materials,labour)=crate::dam_preview::cost_for(s,&cells,&heights);
     if b.reinforced {
         let damage=cells.iter().map(|&(x,y)|1.0-s.water.dam_integrity.get(x,y).copied().unwrap_or(0.0)).sum::<f32>();
-        materials.push((Good::Stone,(damage*1.2).ceil().max(1.0)));
+        materials.push((Good::Pebbles,(damage*1.2).ceil().max(1.0)));
     }
     (materials,labour)
 }
@@ -54,11 +54,11 @@ pub fn quoted_cost(s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Lodge,pos:(25,25),status:crate::buildings::Status::Complete,recipe:None,output:0.0,condition:0.7,reinforced:false,dam_profile:Vec::new()}}
+    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Lodge,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam_profile:Vec::new()}}
     #[test]
-    fn reinforcement_requires_research_materials_and_labour() {
+    fn reinforcement_requires_quarry_materials_and_labour() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
-        assert!(order(&mut s,id,Refit::Reinforce).is_err());s.tech.unlock_all();order(&mut s,id,Refit::Reinforce).unwrap();
+        assert!(order(&mut s,id,Refit::Reinforce).is_err());s.buildings.buildings.push(Building{id:BuildingId(2),kind:K::QuarryCamp,..lodge()});order(&mut s,id,Refit::Reinforce).unwrap();
         assert!(!finish(&mut s,id));
         for (g,a) in s.work.place(id).unwrap().site.as_ref().unwrap().needed.clone(){s.work.deliver(id,g,a).unwrap();}
         assert!(!finish(&mut s,id));s.work.add_labour(id,100.0).unwrap();assert!(finish(&mut s,id));
@@ -67,8 +67,8 @@ mod tests {
     #[test]
     fn cancelling_refit_keeps_structure_and_refunds_deliveries() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
-        order(&mut s,id,Refit::Repair).unwrap();s.work.deliver(id,Good::Logs,1.0).unwrap();let before=s.buildings.stores.amount(Good::Logs);
-        cancel(&mut s,id).unwrap();assert_eq!(s.buildings.stores.amount(Good::Logs),before+1.0);
+        order(&mut s,id,Refit::Repair).unwrap();s.work.deliver(id,Good::Sticks,1.0).unwrap();let before=s.buildings.stores.amount(Good::Sticks);
+        cancel(&mut s,id).unwrap();assert_eq!(s.buildings.stores.amount(Good::Sticks),before+1.0);
         assert_eq!(s.buildings.building(id).unwrap().condition,0.7);assert!(s.work.place(id).unwrap().site.is_none());
     }
 }
@@ -82,7 +82,7 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     if kind == Refit::Reinforce {
         if !can_reinforce(b.kind) {return Err(bad("this structure cannot be stone-reinforced"));}
         if b.reinforced {return Err(bad("already stone-reinforced"));}
-        if !s.tech.is_unlocked(crate::tech::MASONRY) {return Err(bad("research Stone reinforcement first"));}
+        if !s.has_building(K::QuarryCamp) {return Err(bad("finish a quarry camp first"));}
     } else {
         if b.kind == K::Dam {
             let cell = b.dam_profile.first().map(|v|v.0).unwrap_or(b.pos);
@@ -94,7 +94,7 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     let building_kind = b.kind;
     let i = s.work.places.iter().position(|p|p.building==id).ok_or_else(||bad("missing workplace"))?;
     let previous = s.work.places.remove(i);
-    if let Err(e) = s.work.add_site(id,building_kind,&materials,labour*s.tech.build_work_factor()) {
+    if let Err(e) = s.work.add_site(id,building_kind,&materials,labour) {
         s.work.places.push(previous);
         return Err(bad(&format!("{e:?}")));
     }

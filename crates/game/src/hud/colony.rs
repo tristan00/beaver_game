@@ -1,5 +1,5 @@
 use super::inspect::mood_icon;
-use super::panels::{food_days, gap_line, stage_icon, Ctx};
+use super::panels::{food_days, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
 use super::{ColonyTab, HudAction};
@@ -13,7 +13,7 @@ const TABS: [(ColonyTab, Icon, &str); 7] = [
     (ColonyTab::Goods, Icon::Colony, "Goods"),
     (ColonyTab::Water, Icon::Drop, "Water"),
     (ColonyTab::Land, Icon::Tree, "Land"),
-    (ColonyTab::Research, Icon::Journal, "Research"),
+    (ColonyTab::Buildings, Icon::Journal, "Buildings"),
     (ColonyTab::Log, Icon::Log, "Log"),
 ];
 
@@ -50,7 +50,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                 ColonyTab::Goods => goods(c, u),
                 ColonyTab::Water => water(c, u),
                 ColonyTab::Land => land(c, u),
-                ColonyTab::Research => research(c, u),
+                ColonyTab::Buildings => prerequisites(c, u),
                 ColonyTab::Log => log(c, u),
             }
         },
@@ -204,6 +204,7 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
         head(r, None, "Filled", 60.0, None, false);
         r.add(VNode::new(Node { width: Val::Px(64.0), ..default() }));
         head(r, Some(Icon::Up), "Output per day", 120.0, None, false);
+        head(r, None, "Auto share", 100.0, None, false);
     });
     for row in sim::jobs::jobs_board(s) {
         let role = row.role;
@@ -234,6 +235,10 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
                 }
             })
             .style(|n| n.min_width = Val::Px(120.0));
+            let share = s.work.role_weights[role as usize];
+            r.icon_button(Icon::Minus, 9.0, HudAction::RoleWeight(role,(share-0.25).max(0.1)), FAINT, false).tip(Tip::name("Fewer automatic workers"));
+            r.text(format!("{share:.1}"), 11.0, MUTED).style(|n|n.width=Val::Px(24.0));
+            r.icon_button(Icon::Plus, 9.0, HudAction::RoleWeight(role,(share+0.25).min(20.0)), FAINT, false).tip(Tip::name("More automatic workers").line("Relative share of free workers", ""));
         });
     }
 }
@@ -256,7 +261,7 @@ fn goods(c: &Ctx, u: &mut Ui) {
         if have < 0.05 && inn < 0.01 && out < 0.01 {
             continue;
         }
-        let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
+        let lasts = if g == Good::Sticks { food_days(s) } else { s.ledger.days_left(g, have) };
         u.row(6.0, |r| {
             r.node(Node { width: Val::Px(w[0]), ..default() }, |x| {
                 x.icon(good_icon(g), 18.0, good_color(g)).tip(Tip::name(good_name(g)));
@@ -395,40 +400,16 @@ fn land(c: &Ctx, u: &mut Ui) {
     }
 }
 
-fn research(c: &Ctx, u: &mut Ui) {
-    let s = c.s;
-    for (i, t) in sim::tech::TECHS.iter().enumerate() {
-        let id = sim::tech::TechId(i);
-        let known = s.tech.is_unlocked(id);
-        let gaps = s.tech.needs(id, &s.colony);
-        let unlocks: Vec<BuildingKind> = t.effects.iter().filter_map(|e| if let sim::tech::Effect::Unlock(k) = e { Some(*k) } else { None }).collect();
-        let mut tip = Tip::titled(Some((if known { Icon::Check } else { Icon::Padlock }, if known { GOOD } else { MUTED })), t.name);
-        for g in &gaps {
-            tip.push(gap_line(g));
-        }
+fn prerequisites(c: &Ctx, u: &mut Ui) {
+    for kind in sim::catalogue::available(c.s) {
+        let gaps = c.s.build_gaps(kind);
         u.row(8.0, |r| {
-            r.icon(if known { Icon::Check } else { Icon::Padlock }, 14.0, if known { GOOD } else { MUTED });
-            r.text(t.name, 12.0, if known { INK } else { MUTED }).style(|n| n.width = Val::Px(140.0));
-            for k in &unlocks {
-                r.icon(building_icon(*k), 16.0, if known { INK } else { MUTED }).tip(Tip::name(k.spec().name));
-            }
+            r.icon(building_icon(kind), 16.0, INK);
+            r.text(kind.spec().name, 12.0, INK);
             r.spacer();
-            if !known {
-                if let Some(sim::tech::Gap::Experience { have, need, .. }) = gaps.iter().find(|g| matches!(g, sim::tech::Gap::Experience { .. })) {
-                    r.bar(have / need, 80.0, 5.0, INK);
-                }
-                if let Some(first) = gaps.first() {
-                    let l = gap_line(first);
-                    if let Some((i, col)) = l.icon {
-                        r.icon(i, 14.0, col);
-                    }
-                    if !l.value.is_empty() {
-                        r.bold(l.value, 12.0, MUTED);
-                    }
-                }
-            }
-        })
-        .tip(tip);
+            if gaps.is_empty() { r.text("Ready to build", 12.0, GOOD); }
+            else { for need in gaps { r.text(format!("Finish {}", need.spec().name), 12.0, MUTED); } }
+        });
     }
 }
 

@@ -1,7 +1,6 @@
 use crate::colony::{Colony, ColonyError, Job, OrderId};
 use crate::grid::Grid;
-use crate::tech::Tech;
-use crate::work::{Role, Work};
+use crate::work::Work;
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
@@ -18,20 +17,10 @@ mod access_tests {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Good {
-    Logs,
-    Sticks,
-    Mud,
-    Stone,
-    Food,
-    Baskets,
-    Rope,
-    Tools,
-}
+pub enum Good { Sticks, Clay, Pebbles }
 
 impl Good {
-    pub const ALL: [Good; 8] =
-        [Good::Logs, Good::Sticks, Good::Mud, Good::Stone, Good::Food, Good::Baskets, Good::Rope, Good::Tools];
+    pub const ALL: [Good; 3] = [Good::Sticks, Good::Clay, Good::Pebbles];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -137,6 +126,18 @@ impl Default for Stores {
 }
 
 impl Stores {
+    /// Book material actually delivered to a site, including freshly gathered loads.
+    /// Carried materials are outside stored inventory, so no capacity is involved.
+    pub(crate) fn book_site_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>) {
+        if let Some(who) = fresh {
+            self.tick_produced[good.index()] += amount;
+            self.produced_total[good.index()] += amount;
+            *self.produced_by.entry((who,good)).or_insert(0.0) += amount;
+        }
+        self.tick_consumed[good.index()] += amount;
+        self.consumed_total[good.index()] += amount;
+        self.consumed_by[Use::Sites.index()][good.index()] += amount;
+    }
     pub fn amount(&self, g: Good) -> f32 {
         self.amounts[g.index()]
     }
@@ -177,7 +178,9 @@ impl Stores {
     }
 
     pub fn can_afford(&self, costs: &[Amount]) -> Result<(), StoresError> {
-        for &(g, a) in costs {
+        for &(_, a) in costs { check_amount(a)?; }
+        for g in Good::ALL {
+            let a: f32 = costs.iter().filter(|v| v.0 == g).map(|v| v.1).sum();
             let have = self.amount(g);
             if have < a {
                 return Err(StoresError::Insufficient { good: g, needed: a, have });
@@ -300,8 +303,8 @@ impl BuildingKind {
             BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
             BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Pond),
             BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Pond),
-            BuildingKind::MudPit => ("Mud pit", (2, 2), Site::TouchesWater),
-            BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
+            BuildingKind::MudPit => ("Clay pit", (2, 2), Site::TouchesWater),
+            BuildingKind::QuarryCamp => ("Pebble quarry", (2, 2), Site::Dry),
             BuildingKind::Mill => ("Mill", (3, 3), Site::Pond),
             BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Pond),
             BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Pond),
@@ -312,18 +315,9 @@ impl BuildingKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Recipe {
-    Baskets,
-    Rope,
-    Tools,
-}
 
-impl Recipe {
-    pub fn batch(self) -> (&'static [Amount], Amount) {
-        recipe_batch(self)
-    }
-}
+
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BuildingId(pub u64);
@@ -343,7 +337,6 @@ pub struct Building {
     pub kind: BuildingKind,
     pub pos: (usize, usize),
     pub status: Status,
-    pub recipe: Option<Recipe>,
     pub output: f32,
     pub condition: f32,
     pub reinforced: bool,
@@ -483,7 +476,6 @@ pub struct Buildings {
     pub barges: Vec<Barge>,
     pub power: f32,
     pub water_bound: std::collections::BTreeSet<BuildingId>,
-    pub crafted: Vec<(BuildingId, Good, f32)>,
     next_id: u64,
 }
 
@@ -523,19 +515,16 @@ impl Buildings {
     }
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
-        Building { id: BuildingId(0), kind, pos, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() }.cells().collect()
+        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() }.cells().collect()
     }
 
     fn check_placement(
         &self,
         kind: BuildingKind,
         pos: (usize, usize),
-        tech: &Tech,
         terrain: Terrain,
     ) -> Result<(), BuildError> {
-        if !tech.allows(kind) {
-            return Err(BuildError::Locked(kind));
-        }
+
         self.check_ground(kind, pos, terrain)
     }
 
@@ -620,20 +609,19 @@ impl Buildings {
         Ok(())
     }
 
-    pub fn can_place_site(&self, kind: BuildingKind, pos: (usize, usize), tech: &Tech, terrain: Terrain) -> Result<(), BuildError> {
-        self.check_placement(kind, pos, tech, terrain)
+    pub fn can_place_site(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
+        self.check_placement(kind, pos, terrain)
     }
 
     pub fn place_site(
         &mut self,
         kind: BuildingKind,
         pos: (usize, usize),
-        tech: &Tech,
         terrain: Terrain,
     ) -> Result<BuildingId, BuildError> {
-        self.check_placement(kind, pos, tech, terrain)?;
+        self.check_placement(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Site, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -641,7 +629,7 @@ impl Buildings {
     pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Complete, recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -650,19 +638,18 @@ impl Buildings {
         &mut self,
         kind: BuildingKind,
         pos: (usize, usize),
-        tech: &Tech,
         terrain: Terrain,
         colony: &mut Colony,
     ) -> Result<BuildingId, BuildError> {
-        self.check_placement(kind, pos, tech, terrain)?;
+        self.check_placement(kind, pos, terrain)?;
         let spec = kind.spec();
-        let work = spec.work * tech.build_work_factor();
+        let work = spec.work;
         let centre = (pos.0 as f32 + spec.footprint.0 as f32 / 2.0, pos.1 as f32 + spec.footprint.1 as f32 / 2.0);
         self.stores.can_afford(spec.cost)?;
         let order = colony.queue_order(Job::Builder, centre, work)?;
         self.stores.withdraw_all(spec.cost).expect("affordability checked above");
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), recipe: None, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+        self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -684,14 +671,7 @@ impl Buildings {
         Ok(())
     }
 
-    pub fn set_recipe(&mut self, id: BuildingId, recipe: Option<Recipe>) -> Result<(), BuildError> {
-        let b = self.buildings.iter_mut().find(|b| b.id == id).ok_or(BuildError::UnknownBuilding(id))?;
-        if crate::catalogue::def(b.kind).batches_per_day <= 0.0 {
-            return Err(BuildError::WrongKind("only workshops craft"));
-        }
-        b.recipe = recipe;
-        Ok(())
-    }
+
 
     fn docks(&self) -> impl Iterator<Item = &Building> {
         self.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete())
@@ -737,12 +717,11 @@ impl Buildings {
         Ok(())
     }
 
-    pub fn step(&mut self, dt_days: f32, tech: &Tech, terrain: Terrain, colony: &Colony, work: &Work) {
+    pub fn step(&mut self, dt_days: f32, terrain: Terrain, colony: &Colony, _work: &Work) {
         self.complete_finished(colony, terrain);
-        self.update_capacity(tech, terrain);
+        self.update_capacity( terrain);
         self.update_wheels(terrain);
-        let crafters = self.crafters(colony, work);
-        self.run_workshops(dt_days, tech, &crafters, work);
+        for b in self.buildings.iter_mut().filter(|b| matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill | BuildingKind::TreeNursery)) { b.output = (b.output - dt_days * 0.12).max(0.0); }
         self.move_barges(dt_days, terrain);
         self.stores.end_tick(dt_days);
     }
@@ -768,8 +747,8 @@ impl Buildings {
         }
     }
 
-    pub(crate) fn update_capacity(&mut self, tech: &Tech, terrain: Terrain) {
-        let f = tech.storage_factor();
+    pub(crate) fn update_capacity(&mut self, terrain: Terrain) {
+        let f = 1.0;
         for g in Good::ALL {
             let stored: f32 = self
                 .buildings
@@ -790,67 +769,9 @@ impl Buildings {
         }
     }
 
-    fn crafters(&self, colony: &Colony, work: &Work) -> Vec<(BuildingId, usize)> {
-        let mut pool = colony.beavers.iter().filter(|b| b.current_job == Some(Job::Crafter)).count();
-        self.buildings
-            .iter()
-            .filter(|b| b.operational() && b.recipe.is_some())
-            .map(|b| {
-                let n = match work.place(b.id) {
-                    Some(p) => p.slots.iter().filter(|s| s.role == Role::Craft && s.worker.is_some()).count(),
-                    None => {
-                        let slots = crate::catalogue::def(b.kind).slots.iter().filter(|r| **r == Role::Craft).count();
-                        let n = slots.min(pool);
-                        pool -= n;
-                        n
-                    }
-                };
-                (b.id, n)
-            })
-            .collect()
-    }
 
-    fn run_workshops(&mut self, dt: f32, tech: &Tech, crafters: &[(BuildingId, usize)], work: &Work) {
-        if dt <= 0.0 {
-            return;
-        }
-        let recipes: Vec<(BuildingId, Recipe, f32)> = crafters
-            .iter()
-            .filter(|(_, n)| *n > 0)
-            .filter_map(|&(id, n)| {
-                let b = self.building(id)?;
-                Some((id, b.recipe?, crate::catalogue::def(b.kind).batches_per_worker() * n as f32))
-            })
-            .collect();
-        if recipes.is_empty() {
-            return;
-        }
-        let boost = 1.0 + (self.power / recipes.len() as f32).min(WHEEL_MAX_BOOST);
-        for (id, r, rate) in recipes {
-            let (inputs, (out, per)) = r.batch();
-            let mut batches = rate * dt * boost * tech.craft_speed_factor();
-            let me = self.building(id).expect("crafting building exists").clone();
-            for &(g, a) in inputs {
-                let near: f32 = self
-                    .buildings
-                    .iter()
-                    .filter(|b| b.is_complete() && crate::agents::accepts(b.kind, g) && crate::stock::gap(&me, b) <= crate::stock::WORKSHOP_REACH)
-                    .map(|b| work.stock_of(b.id, g))
-                    .sum();
-                let local = if work.stock.is_empty() { self.stores.amount(g) } else { near.min(self.stores.amount(g)) };
-                batches = batches.min(local / a);
-            }
-            batches = batches.min(self.stores.space(out) / per);
-            if batches <= 0.0 {
-                continue;
-            }
-            for &(g, a) in inputs {
-                self.stores.withdraw_for(g, a * batches, Use::Crafting).expect("limited by availability");
-            }
-            let made = self.stores.deposit_by(out, per * batches, Producer::Building(id)).expect("amount is finite and >= 0");
-            self.crafted.push((id, out, made));
-        }
-    }
+
+
 
     fn move_barges(&mut self, dt: f32, terrain: Terrain) {
         for b in self.barges.iter_mut().filter(|b| b.service.is_none()) {

@@ -899,7 +899,6 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
     use sim::buildings::Good;
     let mut mb = Mb::new();
     match good {
-        Good::Logs => beaver_log(&mut mb),
         Good::Sticks => {
             for (i, dy) in [-0.02f32, 0.05, 0.12].iter().enumerate() {
                 let k = i as f32 - 1.0;
@@ -908,22 +907,16 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid(v(0.5, -0.12, 0.62), v(0.1, 0.03, 0.06), hex(0x76c24a));
             mb.ellipsoid(v(-0.5, -0.12, 0.7), v(0.1, 0.03, 0.06), hex(0x5fae3c));
         }
-        Good::Mud => {
+        Good::Clay => {
             mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.26, 0.2, 0.22), hex(0x4d3520), hex(0x80603f), 8, 5);
             mb.ellipsoid(v(0.09, -0.16, 0.74), v(0.1, 0.07, 0.09), hex(0x5d4228));
         }
-        Good::Stone => {
+        Good::Pebbles => {
             mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.24, 0.19, 0.22), hex(0x77777c), hex(0xb2b2b6), 7, 4);
             mb.ellipsoid(v(0.1, -0.2, 0.72), v(0.1, 0.07, 0.09), hex(0xc7c7cb));
         }
-        Good::Food => {
-            mb.ellipsoid_g(v(0.0, -0.28, 0.72), v(0.3, 0.14, 0.2), hex(0x3f8f35), hex(0x7bc653), 8, 4);
-            mb.ellipsoid(v(0.13, -0.18, 0.7), v(0.14, 0.05, 0.1), hex(0x9bd86a));
-            mb.ellipsoid(v(-0.14, -0.2, 0.74), v(0.12, 0.05, 0.09), hex(0x5fae3c));
-        }
-        _ => {
-            mb.ellipsoid_g(v(0.0, -0.28, 0.72), v(0.28, 0.17, 0.22), hex(0xa57c45), hex(0xd2a869), 8, 4);
-        }
+
+
     }
     mb.build()
 }

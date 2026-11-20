@@ -454,4 +454,3 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
     hud::bold(p, "About", 12.0, MUTED);
     hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
 }
-
