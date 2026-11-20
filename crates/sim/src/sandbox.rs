@@ -38,6 +38,11 @@ pub(crate) fn apply(s: &mut SimState, cmd: Command) -> Result<(), SimError> {
             s.water.raise_dam(&pairs).map_err(bad)
         }
         Command::BreachDam { x, y } => s.water.breach(x, y).map_err(bad),
+        Command::RepairDam { cell } => {
+            let cells: Vec<(Cell, f32)> = s.water.dam_line_at(cell).into_iter()
+                .map(|c| (c, *s.water.dam_height.get(c.0, c.1).expect("dam cell"))).collect();
+            s.water.raise_dam(&cells).map_err(bad)
+        }
         Command::DigCanal { cells, depth } => s.water.dig_canal(&mut s.height, &cells, depth).map_err(bad),
         Command::OrderCanal { cells } => s.water.dig_canal(&mut s.height, &cells, SimState::CANAL_DEPTH).map_err(bad),
         other => Err(SimError::InvalidCommand(format!("sandbox has no colony: '{}' is not available", crate::script::to_line(&other)))),

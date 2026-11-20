@@ -61,6 +61,7 @@ pub enum Command {
     BuildDam { cells: Vec<water::Cell>, height: f32 },
     OrderDam { cells: Vec<water::Cell>, height: f32 },
     OrderDamTo { cells: Vec<water::Cell>, crest: f32 },
+    RepairDam { cell: water::Cell },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
@@ -493,7 +494,7 @@ impl SimState {
         if let Some(cells) = dam_cells {
             let heights = vec![dam_preview::DEFAULT_HEIGHT; cells.len()];
             let from = cells.iter().map(|c| self.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0)).collect();
-            self.work.dam_plans.push(work::DamPlan { building: id, cells, height: dam_preview::DEFAULT_HEIGHT, heights, from });
+            self.work.dam_plans.push(work::DamPlan { building: id, repair: false, cells, height: dam_preview::DEFAULT_HEIGHT, heights, from });
         }
         Ok(id)
     }
@@ -580,6 +581,36 @@ impl SimState {
         self.order_dam_heights(&cells, &heights)
     }
 
+    pub fn repair_dam(&mut self, cell: water::Cell) -> Result<buildings::BuildingId, SimError> {
+        let cells = self.water.dam_line_at(cell);
+        if cells.is_empty() {
+            return Err(SimError::InvalidCommand("there is no dam here to repair".into()));
+        }
+        // Repeated clicks must not create competing work orders for the same dam.
+        if let Some(plan) = self.work.dam_plans.iter().find(|p| p.cells.iter().any(|c| cells.binary_search(c).is_ok())) {
+            return Ok(plan.building);
+        }
+        let heights: Vec<f32> = cells.iter().map(|&(x, y)| *self.water.dam_height.get(x, y).expect("dam cell")).collect();
+        let (cost, labour) = dam_preview::cost_for(self, &cells, &heights);
+        if labour <= 1e-3 {
+            return Err(SimError::InvalidCommand("the dam does not need repairs".into()));
+        }
+        let existing = self.buildings.buildings.iter().find(|b| b.kind == buildings::BuildingKind::Dam
+            && b.is_complete() && b.cells().any(|c| cells.binary_search(&c).is_ok())).map(|b| b.id);
+        let Some(id) = existing else { return self.order_dam_heights(&cells, &heights) };
+        // A dam's crown can be dry. Reuse its original work site instead of
+        // requiring the water/placement checks for a brand-new dam.
+        let old = self.work.places.iter().position(|p| p.building == id).map(|i| self.work.places.remove(i));
+        if let Err(e) = self.work.add_site(id, buildings::BuildingKind::Dam, &cost, labour * self.tech.build_work_factor()) {
+            if let Some(p) = old { self.work.places.push(p); }
+            return Err(SimError::InvalidCommand(format!("{e:?}")));
+        }
+        self.buildings.buildings.iter_mut().find(|b| b.id == id).expect("existing dam").status = buildings::Status::Site;
+        let height = heights.iter().copied().fold(0.0, f32::max);
+        self.work.dam_plans.push(work::DamPlan { building: id, repair: true, cells, height, from: heights.clone(), heights });
+        Ok(id)
+    }
+
     pub fn order_dam_heights(&mut self, cells: &[water::Cell], heights: &[f32]) -> Result<buildings::BuildingId, SimError> {
         if dam_preview::preview_heights(self, cells, heights).is_none() {
             return Err(SimError::InvalidCommand("not a valid dam line (cells empty, repeated or off the map, or height not positive)".into()));
@@ -604,7 +635,7 @@ impl SimState {
         }
         let height = heights.iter().copied().fold(0.0, f32::max);
         let from = cells.iter().map(|c| self.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0)).collect();
-        self.work.dam_plans.push(work::DamPlan { building: id, cells: cells.to_vec(), height, heights: heights.to_vec(), from });
+        self.work.dam_plans.push(work::DamPlan { building: id, repair: false, cells: cells.to_vec(), height, heights: heights.to_vec(), from });
         Ok(id)
     }
 
@@ -621,10 +652,11 @@ impl SimState {
         }
         let mut refunded = Vec::new();
         let is_dam = self.work.dam_plans.iter().any(|d| d.building == id);
+        let is_repair = self.work.dam_plans.iter().any(|d| d.building == id && d.repair);
         if let Some(i) = self.work.places.iter().position(|p| p.building == id) {
             let place = self.work.places.remove(i);
             let site = place.site.as_ref();
-            let built = if is_dam { site.map_or(0.0, |s| s.labour_fraction()) } else { 0.0 };
+            let built = if is_dam && !is_repair { site.map_or(0.0, |s| s.labour_fraction()) } else { 0.0 };
             for &(g, a) in site.map(|s| s.delivered.as_slice()).unwrap_or(&[]) {
                 let used: f32 = site.map_or(0.0, |s| s.needed.iter().filter(|n| n.0 == g).map(|n| n.1).sum::<f32>()) * built;
                 let a = (a - used).max(0.0);
@@ -642,7 +674,13 @@ impl SimState {
                 ag.assignment = None;
             }
         }
-        self.buildings.buildings.retain(|b| b.id != id);
+        if is_repair {
+            let b = self.buildings.buildings.iter_mut().find(|b| b.id == id).expect("repair site");
+            b.status = buildings::Status::Complete;
+            self.work.add_complete(b).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
+        } else {
+            self.buildings.buildings.retain(|b| b.id != id);
+        }
         self.output.forget(id);
         Ok(refunded)
     }
@@ -671,6 +709,7 @@ impl SimState {
             Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
             Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
             Command::OrderDamTo { cells, crest } => self.order_dam_to(&cells, crest).map(|_| ()),
+            Command::RepairDam { cell } => self.repair_dam(cell).map(|_| ()),
             Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {

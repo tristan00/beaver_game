@@ -367,6 +367,7 @@ fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
         Fix::Gather { kind, n } => Some((resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase()))),
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
         Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
+        Fix::RepairDam { .. } => Some((Icon::RoleBuilder, "Repair".into(), "Repair dam with materials and builders".into())),
         Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
         Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
         Fix::Accept(_) => Some((Icon::Check, String::new(), "Welcome".into())),

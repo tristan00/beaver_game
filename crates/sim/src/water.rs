@@ -579,6 +579,32 @@ impl Water {
         self.dam_height.get(x, y).is_some_and(|&h| h > 0.0)
     }
 
+    /// All surviving cells of the connected dam, including diagonal sections.
+    pub fn dam_line_at(&self, seed: Cell) -> Vec<Cell> {
+        if !self.has_dam(seed.0, seed.1) {
+            return Vec::new();
+        }
+        let mut out = vec![seed];
+        let mut seen = std::collections::HashSet::from([seed]);
+        let mut i = 0;
+        while i < out.len() {
+            let (x, y) = out[i];
+            for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let c = (nx as usize, ny as usize);
+                if self.has_dam(c.0, c.1) && seen.insert(c) {
+                    out.push(c);
+                }
+            }
+            i += 1;
+        }
+        out.sort();
+        out
+    }
+
     pub(crate) fn check(&self, x: usize, y: usize) -> Result<usize, WaterError> {
         if self.depth.in_bounds(x, y) { Ok(y * self.depth.width() + x) } else { Err(WaterError::OutOfBounds { x, y }) }
     }

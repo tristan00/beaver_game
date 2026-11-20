@@ -287,6 +287,7 @@ pub enum Fix {
     Gather { kind: ResourceKind, n: usize },
     Place(BuildingKind),
     StaffSites,
+    RepairDam { cell: Cell },
     PutToWork { role: RoleKind, n: usize },
     OpenJobs,
     Accept(RequestId),
@@ -432,7 +433,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             value: (integ(&worst) * 100.0).round(),
             cause: dam_wear(sim, worst, Source::Cell(worst)),
             subject: Some(Subject::Building(BuildingKind::Dam)),
-            fix: Fix::Focus,
+            fix: if sim.work.dam_plans.iter().any(|p| p.cells.contains(&worst)) { Fix::StaffSites } else { Fix::RepairDam { cell: worst } },
             alt_fix: None,
             focus: Some(worst),
         });
@@ -636,6 +637,7 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
             if placed == 0 { Err("no beaver is free to build".into()) } else { Ok(()) }
         }
         Fix::PutToWork { role, n } => sim.apply(Command::AdjustRole { role, delta: n.max(1) as i32 }).map_err(err),
+        Fix::RepairDam { cell } => sim.apply(Command::RepairDam { cell }).map_err(err),
         Fix::Accept(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::Accept }).map_err(err),
         Fix::Decline(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::TurnAway }).map_err(err),
         Fix::Place(_) | Fix::OpenJobs | Fix::Focus => Ok(()),

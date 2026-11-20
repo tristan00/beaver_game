@@ -183,6 +183,8 @@ pub struct CanalPlan {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamPlan {
     pub building: BuildingId,
+    /// Reuses a completed dam building; cancelling keeps that building.
+    pub repair: bool,
     pub cells: Vec<Cell>,
     pub height: f32,
     pub heights: Vec<f32>,

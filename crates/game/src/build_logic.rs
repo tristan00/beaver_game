@@ -291,28 +291,7 @@ pub fn extend_line(sim: &SimState, cells: &[Cell], height: f32, crest: Option<f3
 }
 
 pub fn dam_line_at(sim: &SimState, seed: Cell) -> Vec<Cell> {
-    if !sim.water.has_dam(seed.0, seed.1) {
-        return Vec::new();
-    }
-    let mut out = vec![seed];
-    let mut seen = std::collections::HashSet::from([seed]);
-    let mut i = 0;
-    while i < out.len() {
-        let (x, y) = out[i];
-        for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
-            if nx < 0 || ny < 0 {
-                continue;
-            }
-            let c = (nx as usize, ny as usize);
-            if sim.water.has_dam(c.0, c.1) && seen.insert(c) {
-                out.push(c);
-            }
-        }
-        i += 1;
-    }
-    out.sort();
-    out
+    sim.water.dam_line_at(seed)
 }
 
 pub fn dam_cell_of(sim: &SimState, id: BuildingId) -> Option<Cell> {
