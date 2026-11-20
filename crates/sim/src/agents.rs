@@ -639,6 +639,9 @@ fn build(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Buildin
 
 pub(crate) fn grow_dam(sim: &mut SimState, site: BuildingId) {
     let Some(f) = sim.work.place(site).and_then(|p| p.site.as_ref()).map(|s| s.labour_fraction()) else { return };
+    // Build in visible layers. Microscopic height changes every simulation
+    // minute would rebuild the drainage graph for the whole map each time.
+    let f = (f.clamp(0.0, 1.0) * 20.0).floor() / 20.0;
     let Some(plan) = sim.work.dam_plans.iter().find(|p| p.building == site) else { return };
     let cells: Vec<(Cell, f32)> = plan
         .cells
@@ -646,7 +649,7 @@ pub(crate) fn grow_dam(sim: &mut SimState, site: BuildingId) {
         .zip(&plan.heights)
         .zip(&plan.from)
         .map(|((&c, &h), &from)| (c, from + f * (h - from)))
-        .filter(|&(_, h)| h > 0.0)
+        .filter(|&(c, h)| h > sim.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0))
         .collect();
     if !cells.is_empty() {
         if let Err(e) = sim.water.raise_dam(&cells) {

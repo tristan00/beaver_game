@@ -604,13 +604,24 @@ impl Water {
         for &(_, h) in cells {
             Self::check_positive("dam height", h)?;
         }
-        self.revision = self.revision.wrapping_add(1);
-        self.nav_revision = self.nav_revision.wrapping_add(1);
-        self.topology_revision = self.topology_revision.wrapping_add(1);
+        let mut changed = false;
+        let mut repaired = false;
         for (i, &(_, h)) in idx.into_iter().zip(cells) {
-            let cur = &mut self.dam_height.as_mut_slice()[i];
-            *cur = cur.max(h);
-            self.dam_integrity.as_mut_slice()[i] = 1.0;
+            if h > self.dam_height.as_slice()[i] {
+                self.dam_height.as_mut_slice()[i] = h;
+                changed = true;
+            }
+            if self.dam_integrity.as_slice()[i] != 1.0 {
+                self.dam_integrity.as_mut_slice()[i] = 1.0;
+                repaired = true;
+            }
+        }
+        if changed || repaired {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        if changed {
+            self.nav_revision = self.nav_revision.wrapping_add(1);
+            self.topology_revision = self.topology_revision.wrapping_add(1);
         }
         Ok(())
     }
