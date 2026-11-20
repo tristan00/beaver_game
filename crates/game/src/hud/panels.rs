@@ -1,6 +1,6 @@
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, HudAction, HudState, MapLens, Tool, CAT_KEY_LABELS};
+use super::{ColonyTab, HudAction, HudState, MapLens, OrderMode, Tool, CAT_KEY_LABELS};
 use crate::build_logic::{self, Group, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
@@ -186,6 +186,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
             let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
             u.row(4.0, |r| {
                 r.icon(good_icon(g), 18.0, good_color(g));
+                r.text(good_name(g), 12.0, MUTED);
                 r.bold(format!("{}", have.round() as i64), 14.0, if have < 0.5 && lasts.is_some() { BAD } else { INK });
                 if rate.abs() >= 0.05 {
                     r.icon(if rate > 0.0 { Icon::Up } else { Icon::Down }, 9.0, rate_color(rate));
@@ -215,7 +216,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
                 }
             }
             let t = t.key("I").row(TipLine { label: "Jobs".into(), key: Some("J".into()), ..default() });
-            u.icon_label_button(Icon::Idle, format!("{}", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
+            u.icon_label_button(Icon::Idle, format!("{} free", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
         }
     })]
 }
@@ -238,7 +239,7 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
         u.row(6.0, |r| {
             r.row(5.0, |x| {
                 x.icon(season_icon(d.season), 18.0, season_color(d.season));
-                x.bold(format!("{}", d.day), 15.0, INK);
+                x.bold(format!("Day {}", d.day), 13.0, INK);
             })
             .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()).with_value(format!("Year {}", d.year)));
             r.spacer();
@@ -249,6 +250,9 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
                     .tip(Tip::name(format!("{}x speed", sp.multiplier() as u32)).with_value(format!("Target: {day_seconds:.2} seconds / day")).key(key));
             }
         });
+        u.bold(if clock.paused { "PAUSED  -  Space to resume" } else {
+            match clock.speed { Speed::X1 => "Playing  -  normal speed", Speed::X2 => "Fast forward", Speed::X3 => "Fastest forward" }
+        }, 12.0, if clock.paused { WARN } else { INK });
         let phase = calendar::year_phase(t);
         u.node(Node { width: Val::Percent(100.0), height: Val::Px(8.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(2.0), ..default() }, |r| {
             for se in Season::ALL {
@@ -401,8 +405,14 @@ pub fn alerts(c: &Ctx, u: &mut Ui) {
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
     let bottom = if c.placing() { RIGHT_BOTTOM } else { 90.0 };
-    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
+    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::scroll_y(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
+    col.solid = true;
     let mut ui = Ui::default();
+    if c.hud.help {
+        ui.add(guide(c, true));
+        col.children = ui.nodes;
+        return vec![col];
+    }
     match c.hud.tool {
         Tool::Dam | Tool::Canal => {
             ui.add(line_card(c));
@@ -418,6 +428,7 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
                 match c.sel {
                     Selection::None => {
                         if c.hud.pinned.is_empty() {
+                            if c.s.buildings.buildings.len() < 3 { ui.add(guide(c, false)); }
                             alerts(c, &mut ui)
                         }
                     }
@@ -437,6 +448,32 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
+fn guide(c: &Ctx, full: bool) -> VNode {
+    panel_col(Node { width: Val::Px(RIGHT_W), ..default() }, 9.0, |u| {
+        u.bold(if full { "How to play" } else { "Start your colony" }, 16.0, INK);
+        if full { u.text("Scroll for more  |  H closes help", 11.0, MUTED); }
+        if full {
+            for (action, key) in [("Select a beaver / building", "Left click"), ("Add to selection", "Shift + click"),
+                ("Move selected beavers", "Right click"), ("Gather / work at building", "G / R, click"),
+                ("Pause / resume", "Space"), ("Change speed", "1 / 2 / 3"), ("Pan / rotate", "WASD / Q E"),
+                ("Zoom / orbit", "Wheel / middle drag"), ("See through trees", "F8"), ("Cancel / close", "Esc"),
+                ("Repeat building placement", "Shift + click")] {
+                u.row(6.0, |r| { r.text(action, 11.5, INK); r.spacer(); r.text(key, 11.5, MUTED); });
+            }
+            u.rule();
+        }
+        u.text("Build shelter, then secure food and storage. Supplies are limited; expand as your family grows.", 12.0, INK);
+        for (n, k) in [("1  Build a burrow", BuildingKind::Burrow), ("2  Gather food", BuildingKind::ForagerHut), ("3  Store supplies", BuildingKind::Warehouse)] {
+            let entry = build_logic::menu(c.s).into_iter().find(|e| e.kind == k).unwrap();
+            u.icon_label_button(building_icon(k), n, 13.0, HudAction::Pick(k), FAINT, false).tip(item_tip(c.s, &entry));
+        }
+        u.text("New sites recruit available workers automatically. Select a site to see progress and staffing.", 12.0, MUTED);
+        u.icon_label_button(Icon::Beaver, "Select adults", 13.0, HudAction::SelectFamily, FAINT, false);
+        u.text("Direct orders reserve workers. Use Stop / auto when you want them back on colony jobs.", 11.5, MUTED);
+        if full { u.icon_label_button(Icon::Cross, "Close help", 12.0, HudAction::Help, FAINT, false); }
+    })
+}
+
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
         for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4"), (MapLens::Elevation, Icon::ViewElevation, "Elevation", "F5")] {
@@ -451,6 +488,8 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         u.icon_button(Icon::Colony, 18.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), FAINT, open).tip(Tip::name("Colony").key("Tab"));
         let jobs = c.hud.colony == Some(ColonyTab::Jobs);
         u.icon_button(Icon::Jobs, 18.0, HudAction::Colony(if jobs { None } else { Some(ColonyTab::Jobs) }), FAINT, jobs).tip(Tip::name("Jobs").key("J"));
+        u.icon_label_button(Icon::Beaver, "Family", 12.0, HudAction::SelectFamily, FAINT, false);
+        u.icon_label_button(Icon::Log, "Help", 12.0, HudAction::Help, FAINT, c.hud.help).tip(Tip::name("How to play").key("H"));
     })]
 }
 
@@ -550,6 +589,7 @@ fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected
                 r.icon(Icon::Padlock, 13.0, MUTED);
             }
         });
+        t.text(kind.spec().name, 12.0, if e.unlocked { INK } else { MUTED });
         if e.unlocked {
             cost_row(t, &item_cost(kind), 12.0, MUTED);
 
@@ -557,7 +597,7 @@ fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected
     });
     tile.node.padding = UiRect::all(Val::Px(6.0));
     tile.node.align_items = AlignItems::Center;
-    tile.node.min_width = Val::Px(64.0);
+    tile.node.width = Val::Px(112.0);
     tile.node.border = UiRect::all(Val::Px(if selected { 2.0 } else { 1.0 }));
     tile.node.border_radius = BorderRadius::all(Val::Px(5.0));
     tile.bg = if selected { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT };
@@ -588,6 +628,7 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
         };
         out.push(centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)), ..default() }, 10.0, |u| {
             u.icon(icon, 24.0, INK).tip(Tip::name(name));
+            u.bold(name, 14.0, INK);
             key_hints(u, hud.tool);
             u.icon_button(Icon::Cross, 13.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
         })));
@@ -597,7 +638,7 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
     out.push(centred(12.0, panel_row(Node { padding: UiRect::all(Val::Px(6.0)), ..default() }, 6.0, |u| {
         for (i, g) in cats.iter().enumerate() {
             let open = hud.open_cat == Some(i);
-            u.icon_button(group_icon(*g), 22.0, HudAction::OpenCat(i), if open { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, open).tip(Tip::name(g.name()).key(CAT_KEY_LABELS.get(i).copied().unwrap_or("")));
+            u.icon_label_button(group_icon(*g), g.name(), 14.0, HudAction::OpenCat(i), if open { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, open).tip(Tip::name(g.name()).key(CAT_KEY_LABELS.get(i).copied().unwrap_or("")));
         }
         u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(26.0), margin: UiRect::horizontal(Val::Px(2.0)), ..default() })).bg(LINE);
         u.icon_button(Icon::Search, 18.0, HudAction::OpenSearch, FAINT, hud.search.is_some()).tip(Tip::name("Search").key("/"));
@@ -657,7 +698,7 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
     for (g, a) in sim::starts::START_BUNDLE {
         bundle.push((g, num(a)));
     }
-    vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
+    let mut out = vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
         u.row(4.0, |r| {
             r.icon(Icon::Beaver, 22.0, INK);
             r.bold("4", 14.0, INK);
@@ -686,7 +727,13 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
             r.keycap("LMB");
         })
         .tip(Tip::name("Settle here").line("Pick the spot", ""));
-    }))]
+    }))];
+    out.push(centred(64.0, panel_col(Node { width: Val::Px(500.0), ..default() }, 5.0, |u| {
+        u.bold("Choose a home for your family", 17.0, INK);
+        u.text("Click dry ground near the river, trees and food. Green means the site is suitable.", 13.0, INK);
+        u.text("WASD pans  |  Wheel zooms  |  Q / E rotates  |  F8 reveals the ground", 11.5, MUTED);
+    })));
+    out
 }
 
 pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: Vec2) -> Vec<VNode> {
@@ -716,6 +763,10 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
 }
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
+    if let (Some(mode), Some(cur)) = (c.hud.order_mode, c.cursor) {
+        let label = match mode { OrderMode::Move => "Click a destination", OrderMode::Gather => "Click food, a tree or clay", OrderMode::Work => "Click a workplace" };
+        return vec![panel_row(abs(Some(cur.x + 18.0), None, Some(cur.y + 18.0), None), 5.0, |u| { u.bold(label, 13.0, INK); })];
+    }
     if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {
         return elevation_tag(c.s, cell, cur);
     }
@@ -1039,7 +1090,19 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
 }
 
 pub fn lane(c: &Ctx) -> Vec<VNode> {
-    let Some((m, _)) = &c.hud.msg else { return Vec::new() };
+    let alert = c.problems.iter().find(|p| p.severity == Severity::Urgent);
+    let Some((m, _)) = &c.hud.msg else {
+        return alert.map(|p| {
+            let (_, value, title) = alert_face(c.s, p);
+            centred_notice(panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..default() }, 8.0, |u| {
+                u.icon(Icon::Urgent, 16.0, BAD);
+                u.bold(format!("{title}: {value}"), 13.0, INK);
+                if let Some((icon, _, label)) = fix_face(&p.fix) {
+                    u.icon_label_button(icon, label, 12.0, HudAction::Fix(p.fix, p.focus), FAINT, false);
+                }
+            }))
+        }).into_iter().collect();
+    };
     let row = panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..default() }, 6.0, |u| {
         if let Some((i, col)) = m.icon {
             u.icon(i, 16.0, col);
@@ -1051,9 +1114,13 @@ pub fn lane(c: &Ctx) -> Vec<VNode> {
             u.bold(m.text.clone(), 12.5, INK);
         }
     });
+    vec![centred_notice(row)]
+}
+
+fn centred_notice(row: VNode) -> VNode {
     let mut v = VNode::new(Node { justify_content: JustifyContent::Center, ..abs(Some(0.0), Some(0.0), Some(58.0), None) });
     v.children.push(row);
-    vec![v]
+    v
 }
 
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {

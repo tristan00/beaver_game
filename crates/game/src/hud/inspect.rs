@@ -11,7 +11,7 @@ use sim::colony::{BeaverId, Job};
 
 fn shell(f: impl FnOnce(&mut Ui)) -> VNode {
     let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), ..default() }, f);
+    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, flex_shrink: 0.0, row_gap: Val::Px(6.0), ..default() }, f);
     let mut v = ui.nodes.pop().unwrap();
     panel(&mut v);
     v
@@ -260,7 +260,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 u.row(6.0, |r| { r.icon(stage_icon(resident.stage), 12.0, MUTED); r.text(resident.name.clone(), 11.0, INK).action(HudAction::SelectBeaver(resident.id)); });
             }
         }
-        if let Some((icon, words, goods, col)) = status_line(s, id) {
+        if let Some((icon, mut words, goods, col)) = status_line(s, id) {
+            if c.clock.paused && place.is_some_and(|p| p.site.is_some()) { words = "Queued - Space starts construction".into(); }
             let line = u.row(5.0, |r| {
                 r.icon(if col == GOOD { Icon::Dot } else { Icon::Warn }, 9.0, col);
                 if let Some(i) = icon {
@@ -312,7 +313,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     .tip(Tip::name(good_name(a.0)));
                 }
             });
-            bar_row(u, Icon::Hammer, INK, site.fraction(), format!("{:.0}%", site.fraction() * 100.0), Tip::name("Built").line("Labour", format!("{}/{}", num(site.labour_done), num(site.labour_needed))));
+            bar_row(u, Icon::Hammer, INK, site.labour_fraction(), format!("{:.0}%", site.labour_fraction() * 100.0), Tip::name("Construction work").line("Labour", format!("{}/{}", num(site.labour_done), num(site.labour_needed))));
         }
         if let Some(pl) = place.filter(|pl| !pl.slots.is_empty()) {
             u.rule();
@@ -320,6 +321,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             let filled = pl.slots.iter().filter(|sl| sl.worker.is_some()).count();
             u.row(5.0, |r| {
                 r.icon(role_icon(role), 18.0, INK).tip(Tip::name(role_name(role)));
+                r.text(format!("Workers {filled}/{}", pl.slots.len()), 12.0, INK);
                 for sl in &pl.slots {
                     match sl.worker.and_then(|w| s.colony.beaver(w)) {
                         Some(bv) => {
@@ -611,6 +613,30 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         header(c, Selection::Beaver(id), u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
             r.icon_button(Icon::Follow, 12.0, HudAction::Follow(id), FAINT, c.hud.follow == Some(id)).tip(Tip::name("Follow"));
         });
+        let count = c.hud.selected.len().max(1);
+        if count > 1 { u.bold(format!("{count} beavers selected"), 13.0, ACCENT); }
+        u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(4.0), row_gap: Val::Px(4.0), ..default() }, |r| {
+            for (mode, icon, label) in [(super::OrderMode::Move, Icon::Walk, "Move [M]"), (super::OrderMode::Gather, Icon::Food, "Gather [G]"), (super::OrderMode::Work, Icon::Hammer, "Work [R]")] {
+                r.icon_label_button(icon, label, 12.0, HudAction::Order(mode), FAINT, c.hud.order_mode == Some(mode));
+            }
+            r.icon_label_button(Icon::Clear, "Stop / auto", 12.0, HudAction::StopSelected, FAINT, false);
+        });
+        if let Some(a) = s.agents.get(id) {
+            use sim::agents::MoveState;
+            let status = match a.move_state {
+                MoveState::Moving if c.clock.paused => "Move queued - Space to resume".into(),
+                MoveState::Moving => "Moving to destination".into(),
+                MoveState::Blocked => "Route blocked - choose another destination".into(),
+                MoveState::Arrived => "Arrived at destination".into(),
+                MoveState::None => match a.assignment {
+                    Some(sim::agents::Assignment::Resource(_) | sim::agents::Assignment::Area(_, _)) if c.clock.paused => "Gathering queued - Space to resume".into(),
+                    _ => format!("Activity: {}", a.task.label()),
+                },
+            };
+            u.text(status, 12.0, if a.move_state == MoveState::Blocked { BAD } else { GOOD });
+            if let Some(load) = a.load { u.text(format!("Carrying {} {}", num(load.amount), good_name(load.good)), 11.5, MUTED); }
+        }
+        u.text("Right-click ground to move. Shift-click names to select a group.", 11.0, MUTED);
         if let Some(f) = s.colony.family(b.family) {
             u.row(6.0, |r| { r.icon(Icon::Home, 14.0, MUTED); r.text(f.name.clone(), 12.0, INK); });
         }
@@ -738,7 +764,7 @@ pub fn cell_rows(s: &sim::SimState, cell: crate::flow::Cell) -> Vec<(Icon, Color
 
 fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
     shell(|u| {
-        header(c, Selection::Cell(cell), u, Icon::Profile, String::new(), None, |_| {});
+        header(c, Selection::Cell(cell), u, Icon::Profile, "Ground".into(), None, |_| {});
         for (i, col, name, v) in cell_rows(c.s, cell) {
             u.row(6.0, |r| {
                 r.icon(i, 15.0, col);

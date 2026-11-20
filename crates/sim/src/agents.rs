@@ -24,6 +24,15 @@ pub enum Assignment {
     Go(Cell),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MoveState {
+    #[default]
+    None,
+    Moving,
+    Arrived,
+    Blocked,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Task {
     Idle,
@@ -63,6 +72,7 @@ pub struct Agent {
     pub gait: Gait,
     pub task: Task,
     pub assignment: Option<Assignment>,
+    pub move_state: MoveState,
     pub load: Option<Load>,
     pub path: Option<Path>,
     pub inside: bool,
@@ -97,6 +107,7 @@ impl Agents {
                 gait: Gait::Walk,
                 task: Task::Idle,
                 assignment: None,
+                move_state: MoveState::None,
                 load: None,
                 path: None,
                 inside: false,
@@ -114,6 +125,12 @@ impl Agents {
                 ag.next_work_probe=0.0;
                 ag.next_home_probe=0.0;
                 ag.assignment = a;
+                ag.path = None;
+                ag.step_frac = 0.0;
+                ag.trail.clear();
+                ag.stuck_ticks = 0;
+                ag.move_state = if matches!(a, Some(Assignment::Go(_))) { MoveState::Moving } else { MoveState::None };
+                ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
                 true
             }
             None => false,
@@ -122,6 +139,9 @@ impl Agents {
 }
 
 pub const MOVE_COST_PER_DAY: f32 = 43_200.0;
+// Direct orders should be visible at normal play speed (four land cells/second).
+// Production and hauling retain their existing travel budget.
+pub const DIRECT_MOVE_COST_PER_DAY: f32 = 120.0;
 pub const LADEN_PACE: f32 = 0.5;
 pub const FELL_PER_DAY: f32 = 1.3;
 pub const GATHER_PER_DAY: f32 = 4.5;
@@ -490,18 +510,16 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
 }
 
 fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
+    if let Some(Assignment::Go(to)) = ag.assignment {
+        go_to(sim, ag, dt, to);
+        return;
+    }
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.stage != Stage::Kit, b.resting));
     let duty = duty_of(sim, ag, can_work && !tired);
     ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
     if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. }) {
         ag.path = None;
         ag.task = Task::Rest;
-    }
-    if let Some(Assignment::Go(to)) = ag.assignment {
-        if can_work && !tired && ag.load.is_none() {
-            go_to(sim, ag, dt, to);
-            return;
-        }
     }
     if matches!(duty, Duty::None) && can_work && !tired && matches!(ag.assignment, Some(Assignment::Resource(_))) {
         ag.assignment = None;
@@ -625,17 +643,19 @@ fn go_to(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
         ag.task = Task::Idle;
         sim.work.player_orders.remove(&ag.id);
     };
-    if ag.cell.0.abs_diff(to.0).max(ag.cell.1.abs_diff(to.1)) <= 1 {
+    if ag.cell == to {
+        ag.move_state = MoveState::Arrived;
         return done(ag, sim);
     }
     if ag.inside || ag.path.is_none() {
-        ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(to)).or_else(|| sim.nav.find_path(ag.id, ag.cell, Goal::Beside(to)));
+        ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(to));
         if ag.path.is_none() {
+            ag.move_state = MoveState::Blocked;
             return done(ag, sim);
         }
     }
     ag.task = Task::Idle;
-    let moved = follow(&mut sim.nav, ag, dt);
+    let moved = follow(&mut sim.nav, ag, dt * DIRECT_MOVE_COST_PER_DAY / MOVE_COST_PER_DAY);
     note(ag, moved);
 }
 
@@ -1276,6 +1296,27 @@ pub const HOME_RANGE: usize = 20;
 #[cfg(test)]
 mod freight_tests {
     use super::*;
+    #[test]
+    fn direct_move_walks_over_multiple_steps_and_reports_blockage() {
+        let mut s = SimState::new(1);
+        s.nav = NavGrid::new(32, 32);
+        let id = BeaverId(1);
+        let mut agents = Agents::default();
+        agents.spawn(id, (2, 2));
+        s.nav.reserve(id, (2, 2));
+        agents.assign(id, Some(Assignment::Go((12, 2))));
+        let mut a = agents.by_id.remove(&id).unwrap();
+        go_to(&mut s, &mut a, crate::STEP_DAYS, (12, 2));
+        assert!(a.cell.0 > 2 && a.cell.0 < 12);
+        for _ in 0..20 { go_to(&mut s, &mut a, crate::STEP_DAYS, (12, 2)); }
+        assert_eq!(a.cell, (12, 2));
+        assert_eq!(a.move_state, MoveState::Arrived);
+        a.assignment = Some(Assignment::Go((15, 2)));
+        s.nav.set((15, 2), Surface::Solid);
+        go_to(&mut s, &mut a, crate::STEP_DAYS, (15, 2));
+        assert_eq!(a.move_state, MoveState::Blocked);
+        assert_eq!(a.assignment, None);
+    }
     #[test]
     fn haulers_deliver_to_refits_without_creating_or_losing_stock() {
         let mut s=SimState::new(1);

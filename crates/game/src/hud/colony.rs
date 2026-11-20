@@ -23,14 +23,14 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     ui.node(
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(64.0),
+            left: Val::Px(100.0),
             right: Val::Percent(25.0),
             top: Val::Px(58.0),
             bottom: Val::Px(80.0),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(8.0),
             padding: UiRect::all(Val::Px(12.0)),
-            overflow: Overflow::clip(),
+            overflow: Overflow::scroll_y(),
             ..default()
         },
         |u| {

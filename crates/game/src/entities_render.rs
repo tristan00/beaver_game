@@ -584,21 +584,32 @@ fn update_tree_lod(
     canopy: Res<CanopyView>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
+    sim: Res<crate::state::Sim>,
+    hud: Option<Res<crate::hud::HudState>>,
+    hover: Option<Res<crate::hud::HoverCell>>,
     mut trees: Query<(&Transform, &mut TreeLod, &mut Mesh3d)>,
 ) {
     let (Some(models), Some(cam)) = (models, cam.iter().next()) else { return };
     let c = cam.translation();
     let (l0, l1) = (TREE_LOD0 * TREE_LOD0, TREE_LOD1 * TREE_LOD1);
+    let mut clear: Vec<Vec2> = sim.0.agents.by_id.values().filter(|a| !a.inside)
+        .map(|a| sim_view::agent_world_pos(&sim.0, a, 0.0).xz()).collect();
+    if !sim.0.is_running() || hud.as_ref().is_some_and(|h| h.tool != crate::hud::Tool::None || h.order_mode.is_some()) {
+        if let Some(cell) = hover.and_then(|h| h.0) {
+            clear.push(crate::flow::cell_world(&sim.0.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)).xz());
+        }
+    }
     for (t, mut lod, mut mesh) in &mut trees {
         let d2 = t.translation.distance_squared(c);
         let want = if d2 < l0 { 0 } else if d2 < l1 { 1 } else { 2 };
         let offset = (t.translation.x * 0.754_877_7 + t.translation.z * 0.569_840_3).rem_euclid(1.0) - 0.5;
         let tree_season = Season::at(season.phase + offset / Season::COUNT as f32);
-        if want != lod.lod || lod.season != tree_season || lod.cutaway != canopy.0 {
+        let cutaway = canopy.0 || clear.iter().any(|p| p.distance_squared(t.translation.xz()) < 144.0);
+        if want != lod.lod || lod.season != tree_season || lod.cutaway != cutaway {
             lod.lod = want;
             lod.season = tree_season;
-            lod.cutaway = canopy.0;
-            mesh.0 = if canopy.0 { models.cutaway_trees[species_index(lod.species)].clone() }
+            lod.cutaway = cutaway;
+            mesh.0 = if cutaway { models.cutaway_trees[species_index(lod.species)].clone() }
                 else { models.tree(lod.species, tree_season, want) };
         }
     }

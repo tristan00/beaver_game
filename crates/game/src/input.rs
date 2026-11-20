@@ -35,7 +35,7 @@ fn orbit_input(
 ) {
     let mut next = *orbit;
     let keys_free = !typing.0;
-    if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
+    if buttons.pressed(MouseButton::Middle) {
         next.yaw -= motion.delta.x * 0.006;
         next.pitch += motion.delta.y * 0.006;
     }

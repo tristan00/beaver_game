@@ -91,6 +91,23 @@ pub(super) fn button_actions(
     for a in actions {
         let s = &mut sim.0;
         match a {
+            HudAction::Help => hud.help = !hud.help,
+            HudAction::Order(mode) => {
+                hud.set_tool(Tool::None);
+                hud.order_mode = Some(mode);
+            }
+            HudAction::SelectFamily => {
+                hud.selected = s.colony.beavers.iter().filter(|b| b.stage != sim::colony::Stage::Kit).map(|b| b.id).collect();
+                if let Some(&id) = hud.selected.first() {
+                    *sel = Selection::Beaver(id);
+                    flow.focus = world::beaver_world(s, id);
+                }
+            }
+            HudAction::StopSelected => {
+                for id in hud.selected.clone() { free_beaver(s, &mut hud, id, now); }
+                hud.order_mode = None;
+                hud.say(Some((Icon::Check, GOOD)), None, "Orders cancelled; available for colony jobs", now);
+            }
             HudAction::Fix(fix, at) => match fix {
                 Fix::Place(kind) => hud.set_tool(if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) }),
                 Fix::OpenJobs => hud.colony = Some(ColonyTab::Jobs),
@@ -114,7 +131,7 @@ pub(super) fn button_actions(
                 }
             }
             HudAction::Pause => {
-                clock.toggle_pause();
+                if !clock.paused { clock.toggle_pause(); }
                 hud.set_changed();
             }
             HudAction::Speed(sp) => {
@@ -126,6 +143,7 @@ pub(super) fn button_actions(
                 hud.search = None;
             }
             HudAction::Pick(kind) => {
+                hud.help = false;
                 let t = match kind {
                     BuildingKind::Dam => Tool::Dam,
                     BuildingKind::Canal => Tool::Canal,
@@ -136,6 +154,8 @@ pub(super) fn button_actions(
                     hud.set_tool(next);
                     hud.search = None;
                     *sel = Selection::None;
+                } else {
+                    hud.refuse(format!("Build {} first", s.missing_prerequisites(kind).iter().map(|k| k.spec().name).collect::<Vec<_>>().join(", ")), now);
                 }
             }
             HudAction::CancelTool => hud.set_tool(Tool::None),
@@ -214,9 +234,11 @@ pub(super) fn button_actions(
             HudAction::ToggleProfile => hud.profile_collapsed = !hud.profile_collapsed,
             HudAction::SelectBeaver(id) => {
                 *sel = Selection::Beaver(id);
-                hud.selected = vec![id];
-                if let Some(b) = s.colony.beaver(id) {
-                    flow.focus = Some(cell_world(&s.height, b.pos));
+                if shift {
+                    if hud.selected.contains(&id) { hud.selected.retain(|b| *b != id); }
+                    else { hud.selected.push(id); }
+                } else {
+                    hud.selected = vec![id];
                 }
             }
             HudAction::SelectBuilding(id) => {

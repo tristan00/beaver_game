@@ -188,11 +188,11 @@ pub struct Ui {
 }
 
 pub fn row_node(gap: f32) -> Node {
-    Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(gap), ..default() }
+    Node { flex_direction: FlexDirection::Row, flex_shrink: 0.0, align_items: AlignItems::Center, column_gap: Val::Px(gap), ..default() }
 }
 
 pub fn col_node(gap: f32) -> Node {
-    Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(gap), ..default() }
+    Node { flex_direction: FlexDirection::Column, flex_shrink: 0.0, row_gap: Val::Px(gap), ..default() }
 }
 
 impl Ui {
@@ -311,6 +311,7 @@ pub fn button_node(pad: f32, on: bool) -> Node {
 }
 
 pub fn panel(v: &mut VNode) -> &mut VNode {
+    v.node.flex_shrink = 0.0;
     v.bg = PANEL;
     v.border = Some(BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.06)) });
     v.node.border = UiRect { top: Val::Px(2.0), ..UiRect::all(Val::Px(1.0)) };
@@ -364,6 +365,9 @@ enum KindBundle {
 
 fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> MountedNode {
     let mut ec = p.spawn((v.node.clone(), BackgroundColor(v.bg), FocusPolicy::Pass));
+    if v.node.overflow.y == OverflowAxis::Scroll {
+        ec.insert((ScrollPosition::default(), RelativeCursorPosition::default()));
+    }
     if let Some(b) = v.border {
         ec.insert(b);
     }
@@ -490,6 +494,23 @@ pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
         cmd.entity(host).despawn_related::<Children>();
         mounted.tree.clear();
         mounted.ents.clear();
+    }
+}
+
+pub fn scroll_panels(
+    wheel: Res<bevy::input::mouse::AccumulatedMouseScroll>,
+    mut panels: Query<(&RelativeCursorPosition, &ComputedNode, &mut ScrollPosition)>,
+) {
+    if wheel.delta.y == 0.0 { return; }
+    let amount = match wheel.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 36.0,
+        bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
+    };
+    for (cursor, node, mut position) in &mut panels {
+        if cursor.cursor_over() {
+            let max = ((node.content_size().y - node.size().y) * node.inverse_scale_factor()).max(0.0);
+            position.0.y = (position.0.y - amount).clamp(0.0, max);
+        }
     }
 }
 

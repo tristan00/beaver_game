@@ -5,7 +5,7 @@ pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
 pub const BASE_DAYS_PER_SECOND: f32 = 1.0 / 30.0;
 pub const MAX_STEPS_PER_FRAME: u32 = 64;
 const FRAME_SIM_BUDGET_S: f32 = 0.012;
-// At maximum speed, spend more of a frame advancing large river maps. Keep
+// At fast-forward speeds, spend more of a frame advancing large river maps. Keep
 // ordinary play's shorter budget and the bounded catch-up queue unchanged.
 const FAST_FRAME_SIM_BUDGET_S: f32 = 0.030;
 
@@ -20,7 +20,7 @@ impl Speed {
     pub fn multiplier(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
-            Speed::X2 => 30.0,
+            Speed::X2 => 120.0,
             Speed::X3 => 180.0,
         }
     }
@@ -103,11 +103,12 @@ fn time_keys(
 }
 
 pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>) {
+    if sim.0.colony.is_collapsed() { clock.paused = true; return; }
     if !sim.0.is_running() {
         return;
     }
     let started = std::time::Instant::now();
-    let budget = if clock.speed == Speed::X3 { FAST_FRAME_SIM_BUDGET_S } else { FRAME_SIM_BUDGET_S };
+    let budget = if clock.speed != Speed::X1 { FAST_FRAME_SIM_BUDGET_S } else { FRAME_SIM_BUDGET_S };
     // Speed changes the number of fixed steps, not the duration of a step.
     let dt = FIXED_DT_DAYS;
     let count = clock.queue(time.delta_secs_f64(), dt);

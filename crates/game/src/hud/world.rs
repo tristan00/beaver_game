@@ -327,10 +327,19 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Food))]);
         }
     }
-    for id in sim::hud::idle_beavers(s) {
-        if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.3)) {
-            push(p, &[(Icon::Idle, WARN)]);
-        }
+    let mut occupied: Vec<Vec2> = Vec::new();
+    for b in &s.colony.beavers {
+        let Some(mut p) = beaver_world(s, b.id).and_then(|w| project(w, 1.0)) else { continue };
+        let bounds = cam.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)) / scale.max(0.01);
+        if p.x < 0.0 || p.x > bounds.x || p.y < 70.0 || p.y > bounds.y - 60.0 { continue; }
+        while occupied.iter().any(|q| (q.x - p.x).abs() < 112.0 && (q.y - p.y).abs() < 25.0) { p.y -= 25.0; }
+        occupied.push(p);
+        let selected = hud.selected.contains(&b.id);
+        let mut ui = Ui::default();
+        ui.icon_label_button(stage_icon(b.stage), &b.name, 12.0, super::HudAction::SelectBeaver(b.id), if selected { ACCENT } else { PANEL }, selected)
+            .tip(thing_tip(s, Thing::Beaver(b.id)).line("Add to selection", "Shift + click"))
+            .style(|n| { n.position_type = PositionType::Absolute; n.left = Val::Px(p.x - 48.0); n.top = Val::Px(p.y - 30.0); n.min_width = Val::Px(96.0); n.min_height = Val::Px(24.0); });
+        labels.extend(ui.nodes);
     }
     for id in hud.selected.iter() {
         if s.colony.beaver(*id).is_some() {
@@ -371,7 +380,7 @@ fn water_y(s: &sim::SimState, c: Cell) -> f32 {
 }
 
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
-    let (x, z) = (c.0 as f32, c.1 as f32);
+    let (x, z) = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
     let corners = [(x - 0.5, z - 0.5), (x + 0.5, z - 0.5), (x + 0.5, z + 0.5), (x - 0.5, z + 0.5)];
     let pts: Vec<Vec3> = corners
         .iter()
@@ -427,7 +436,7 @@ fn tree_dot(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, st: sim::forestr
 }
 
 fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, colour: Color) {
-    let (x0, y0, x1, y1) = (a.min.0 as f32 - 0.5, a.min.1 as f32 - 0.5, a.max.0 as f32 + 0.5, a.max.1 as f32 + 0.5);
+    let (x0, y0, x1, y1) = (a.min.0 as f32, a.min.1 as f32, a.max.0 as f32 + 1.0, a.max.1 as f32 + 1.0);
     let n = 24;
     let mut edge = |from: (f32, f32), to: (f32, f32)| {
         for i in 0..n {
@@ -454,6 +463,20 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
 pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
     let s = &sim.0;
     let h = &s.height;
+    for id in &hud.selected {
+        if let Some(a) = s.agents.get(*id) {
+            if let Some(sim::agents::Assignment::Go(to)) = a.assignment {
+                cell_outline(&mut g, h, to, Some(water_y(s, to)), GOOD);
+                let mut from = beaver_world(s, *id).unwrap_or(Vec3::ZERO) + Vec3::Y * 0.3;
+                for &(cell, _) in a.path.iter().flat_map(|p| p.steps.iter()) {
+                    let mut p = cell_world(h, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
+                    p.y = p.y.max(water_y(s, cell)) + 0.3;
+                    g.line(from, p, GOOD);
+                    from = p;
+                }
+            }
+        }
+    }
     let lens = crate::terrain_render::map_lens();
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
     if lens == MapLens::Water.code() {
@@ -566,7 +589,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         Tool::Building(kind) => {
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
-                let col = if pv.is_valid() { Color::WHITE } else { BAD };
+                let col = if pv.is_valid() { GOOD } else { BAD };
                 let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = match kind {

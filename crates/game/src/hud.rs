@@ -59,6 +59,9 @@ pub enum Tool {
     Canal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OrderMode { Move, Gather, Work }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColonyTab {
     Population,
@@ -98,6 +101,8 @@ pub struct HudState {
     pub profile_collapsed: bool,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
+    pub order_mode: Option<OrderMode>,
+    pub help: bool,
     pub pop_sort: u8,
     pub pop_page: usize,
     pub area_edit: Option<BuildingId>,
@@ -192,6 +197,8 @@ impl Default for HudState {
             profile_collapsed: false,
             selected: Vec::new(),
             follow: None,
+            order_mode: None,
+            help: false,
             pop_sort: 5,
             pop_page: 0,
             area_edit: None,
@@ -207,6 +214,8 @@ impl Default for HudState {
 impl HudState {
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
+        self.order_mode = None;
+        self.open_cat = None;
         self.drag_from = None;
         self.line.clear();
         self.dam_crest = None;
@@ -228,7 +237,7 @@ impl HudState {
         self.preview.as_ref().and_then(|(_, _, _, p)| p.as_ref())
     }
     pub(crate) fn notify_paused(&mut self, now: f32) {
-        self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "", now);
+        self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "Paused for an urgent alert. Space resumes.", now);
     }
     pub fn undo_is_empty(&self) -> bool {
         self.undo.is_empty()
@@ -269,6 +278,10 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
+    Order(OrderMode),
+    StopSelected,
+    SelectFamily,
+    Help,
     Fix(Fix, Option<Cell>),
     Focus(Cell),
     CycleIdle,
@@ -348,7 +361,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     (pointer_over_ui, track_cursor, hover_cell, world::world_hover, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
-                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, world::draw_world_overlay),
+                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::scroll_panels, ui::tip_logic, ui::tip_draw, world::draw_world_overlay),
                 )
                     .chain()
                     .in_set(HudSet),
@@ -460,7 +473,7 @@ fn refresh_panels(
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
             Panel::Right => panels::right(&ctx),
-            Panel::Rail if !placing => panels::rail(&ctx),
+            Panel::Rail => if placing { Vec::new() } else { panels::rail(&ctx) },
             Panel::Bottom => panels::bottom(&ctx),
             Panel::Profile => panels::profile(&ctx),
             Panel::Minimap => panels::minimap(&ctx),

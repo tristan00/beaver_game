@@ -132,7 +132,7 @@ fn menu_keys(
         Some(Screen::Settings) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.open_cat.is_some() || h.colony.is_some() || h.search.is_some());
+            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.open_cat.is_some() || h.colony.is_some() || h.search.is_some() || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
                 menu.was_paused = clock.paused;
                 clock.paused = true;
@@ -252,6 +252,11 @@ fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<Sim
 }
 
 fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>, hud_state: Option<ResMut<hud::HudState>>) {
+    if sim.0.colony.is_collapsed() && menu.screen.is_none() {
+        clock.paused = true;
+        menu.was_paused = true;
+        menu.screen = Some(Screen::Pause);
+    }
     let now = time.elapsed_secs();
     if now < *next || menu.screen.is_some() {
         return;
@@ -341,6 +346,8 @@ fn rebuild_menu(
     bg.0 = if screen == Screen::Start { Color::srgba(0.05, 0.04, 0.03, 0.25) } else { Color::srgba(0.05, 0.04, 0.03, 0.55) };
     let card = Node {
         width: Val::Px(440.0),
+        max_height: Val::Percent(92.0),
+        overflow: Overflow::scroll_y(),
         flex_direction: FlexDirection::Column,
         row_gap: Val::Px(10.0),
         padding: UiRect::all(Val::Px(22.0)),
@@ -350,7 +357,7 @@ fn rebuild_menu(
     };
     let border = BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
     commands.entity(e).with_children(|r| {
-        r.spawn((card, BackgroundColor(PANEL), border)).with_children(|p| match screen {
+        r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| match screen {
             Screen::Start => start_screen(p, &menu, &current.0),
             Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
             Screen::Settings => settings_screen(p, &menu, &icons),
@@ -401,7 +408,13 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
         });
         return;
     }
-    wide(p, "Resume", MenuAction::Resume, ACCENT);
+    if s.colony.is_collapsed() {
+        hud::bold(p, "The colony has been lost", 22.0, INK);
+        hud::text(p, format!("Survived {:.0} days. {} beavers died.", s.time_days, s.colony.stats.deaths), 13.0, MUTED);
+        hud::text(p, "Start again with shelter and a reliable food supply before expanding.", 13.0, INK);
+    } else {
+        wide(p, "Resume", MenuAction::Resume, ACCENT);
+    }
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Restart", MenuAction::Ask(Ask::Restart), FAINT);
     wide(p, "Menu", MenuAction::Ask(Ask::ToTitle), FAINT);
@@ -426,11 +439,13 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
         button(r, if menu.auto_pause { "On" } else { "Off" }, MenuAction::ToggleAutoPause, if menu.auto_pause { GOOD.with_alpha(0.25) } else { FAINT }, menu.auto_pause);
     });
     hud::bold(p, "Keys", 12.0, MUTED);
+    hud::text(p, "Scroll to see all controls", 11.0, MUTED);
     for (k, v) in [
         ("Select", "LMB"),
-        ("Order", "RMB"),
+        ("Move", "RMB / M then click"),
+        ("Gather / work", "G / R then click"),
         ("Cancel", "RMB / Esc"),
-        ("Orbit", "RMB drag"),
+        ("Orbit", "Middle drag"),
         ("Pan", "WASD"),
         ("Rotate", "Q E"),
         ("Zoom", "Wheel"),
@@ -440,6 +455,7 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
         ("Tree canopies", "F8"),
         ("Colony", "Tab / J / L"),
         ("Idle", "I"),
+        ("Help", "H"),
         ("Search", "/"),
         ("Undo", "Ctrl+Z"),
         ("Pause", "Space"),

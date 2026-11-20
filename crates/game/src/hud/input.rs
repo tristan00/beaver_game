@@ -40,6 +40,12 @@ pub(super) fn hotkeys(
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if keys.just_pressed(KeyCode::KeyH) { hud.help = !hud.help; }
+    if !hud.selected.is_empty() {
+        for (key, mode) in [(KeyCode::KeyM, OrderMode::Move), (KeyCode::KeyG, OrderMode::Gather), (KeyCode::KeyR, OrderMode::Work)] {
+            if hud.tool == Tool::None && keys.just_pressed(key) { hud.order_mode = Some(mode); }
+        }
+    }
     for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest), (KeyCode::F5, MapLens::Elevation)] {
         if keys.just_pressed(k) {
             *lens = l;
@@ -65,7 +71,11 @@ pub(super) fn hotkeys(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        if hud.area_edit.is_some() {
+        if hud.help {
+            hud.help = false;
+        } else if hud.order_mode.is_some() {
+            hud.order_mode = None;
+        } else if hud.area_edit.is_some() {
             hud.area_edit = None;
             hud.area_from = None;
         } else if hud.tool != Tool::None {
@@ -170,7 +180,7 @@ pub(super) fn world_input(
         return;
     }
     if mouse.just_pressed(MouseButton::Right) {
-        if hud.tool != Tool::None || hud.area_edit.is_some() {
+        if hud.tool != Tool::None || hud.area_edit.is_some() || hud.order_mode.is_some() {
             hud.set_tool(Tool::None);
             return;
         }
@@ -183,13 +193,31 @@ pub(super) fn world_input(
             hud.selected.clone()
         };
         if !who.is_empty() {
-            if let Some(t) = thing.0 {
-                order(&mut sim.0, &mut hud, &who, t, shift, now);
+            if let Some(c) = hover.0 {
+                order(&mut sim.0, &mut hud, &who, world::Thing::Cell(c), shift, now);
             }
         }
         return;
     }
     let Some(cell) = hover.0 else { return };
+    if let Some(mode) = hud.order_mode {
+        if mouse.just_pressed(MouseButton::Left) {
+            let target = match (mode, thing.0) {
+                (OrderMode::Move, _) => Some(world::Thing::Cell(cell)),
+                (OrderMode::Gather, Some(t @ world::Thing::Resource(_))) => Some(t),
+                (OrderMode::Work, Some(t @ world::Thing::Building(_))) => Some(t),
+                _ => None,
+            };
+            if let Some(t) = target {
+                let who = hud.selected.clone();
+                order(&mut sim.0, &mut hud, &who, t, shift, now);
+                hud.order_mode = None;
+            } else {
+                hud.refuse(if mode == OrderMode::Gather { "Choose a food plant, tree or clay deposit" } else { "Choose a building with an open worker slot" }, now);
+            }
+        }
+        return;
+    }
     if let Some(b) = hud.area_edit {
         if mouse.just_pressed(MouseButton::Left) {
             hud.area_from = Some(cell);
@@ -210,6 +238,7 @@ pub(super) fn world_input(
                 hud.box_from = cursor.0;
             }
             if mouse.just_released(MouseButton::Left) {
+                if flow.settled_at.is_some_and(|t| flow.real_secs - t < 0.3) { return; }
                 let from = hud.box_from.take();
                 if let (Some(a), Some(b)) = (from, cursor.0) {
                     if a.distance(b) > 8.0 {
@@ -253,7 +282,10 @@ pub(super) fn world_input(
                         if let Some(b) = sim.0.buildings.buildings.last() {
                             hud.undo.push(UndoItem::Site(b.id));
                             hud.frame_req = Some(cell_world(&sim.0.height, (b.pos.0 as f32, b.pos.1 as f32)));
+                            *sel = Selection::Site(b.id);
                         }
+                        hud.say(Some((Icon::Hammer, GOOD)), None, format!("{} queued. Workers build when time runs.", kind.spec().name), now);
+                        if !shift { hud.set_tool(Tool::None); }
                     }
                     Err(e) => {
                         let w = place_error(&e);
@@ -301,13 +333,13 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             };
             let kind = r.kind;
             match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(to) }) {
-                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", who.len()), now),
+                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{} assigned to gather {}", who.len(), resource_name(kind)), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
         world::Thing::Cell(c) => {
             match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(sim::agents::Assignment::Go(c)) }) {
-                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
+                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("Move accepted for {}. Space resumes if paused.", who.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
@@ -320,7 +352,9 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 }
             }
             if placed == 0 {
-                hud.refuse("Full", now);
+                hud.refuse("No open worker slots in this building", now);
+            } else {
+                hud.say(Some((Icon::Hammer, GOOD)), None, format!("{placed} workers assigned"), now);
             }
         }
         _ => {}

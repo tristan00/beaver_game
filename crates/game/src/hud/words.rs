@@ -213,7 +213,8 @@ pub fn sim_error(m: &str) -> String {
         ("disabled", "Locked"),
         ("(locked)", "Locked"),
     ];
-    table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
+    table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string())
+        .unwrap_or_else(|| m.strip_prefix("invalid command: ").unwrap_or(m).to_string())
 }
 
 fn role_presentation(role: RoleKind) -> (Icon, &'static str) {

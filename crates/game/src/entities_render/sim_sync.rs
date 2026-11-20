@@ -87,7 +87,8 @@ pub(super) fn sync_sim_beavers(
         let ground = |xz: Vec2| height_at(&sim.0.height, xz.x, xz.y);
         let mut end = sim.0.time_days;
         if motion.samples.back().is_none_or(|b| b.0 < sim.0.time_days) && !ag.trail.is_empty() {
-            let pace = sim::agents::MOVE_COST_PER_DAY * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
+            let pace = if matches!(ag.assignment, Some(sim::agents::Assignment::Go(_))) { sim::agents::DIRECT_MOVE_COST_PER_DAY } else { sim::agents::MOVE_COST_PER_DAY }
+                * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
             let mut t = sim.0.time_days - sim::STEP_DAYS as f64;
             for &(c, gait) in &ag.trail {
                 t = (t + (super::sim_view::gait_cost(gait) / pace) as f64).min(sim.0.time_days);

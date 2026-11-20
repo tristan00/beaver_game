@@ -98,7 +98,7 @@ pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell,
             }
             let hit = origin + dir * hi;
             let (cx, cy) = world_cell(h, hit);
-            let cell = ((cx.round().max(0.0) as usize).min(h.width() - 1), (cy.round().max(0.0) as usize).min(h.height() - 1));
+            let cell = ((cx.floor().max(0.0) as usize).min(h.width() - 1), (cy.floor().max(0.0) as usize).min(h.height() - 1));
             return Some((cell, hit, hi));
         }
         prev_t = t;
@@ -172,7 +172,9 @@ pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     flow.fire(FlowEvent::Settle);
     flow.settled_at = Some(flow.real_secs);
     flow.lodge_cell = Some(cell);
-    flow.focus = Some(cell_world(&sim.height, pos));
+    let n = sim.colony.beavers.len().max(1) as f32;
+    let centre = sim.colony.beavers.iter().fold((0.0, 0.0), |p, b| (p.0 + b.pos.0 / n, p.1 + b.pos.1 / n));
+    flow.focus = Some(cell_world(&sim.height, if n > 0.0 { centre } else { pos }));
     let name = sim.colony.families.first().map(|f| f.name.clone()).unwrap_or_default();
     flow.push_log(format!("The {name} family settled at ({}, {})", cell.0, cell.1));
     flow.message.clear();
@@ -231,7 +233,8 @@ fn sample_history(sim: Res<Sim>, mut flow: ResMut<Flow>) {
 
 fn ease_camera(time: Res<Time>, mut flow: ResMut<Flow>, mut orbit: ResMut<OrbitCamera>) {
     let Some(f) = flow.focus else { return };
-    let (next, arrived) = ease_step(*orbit, f, (time.delta_secs() * 2.5).min(1.0), flow.settled_at.is_some());
+    let arriving = flow.settled_at.is_some_and(|t| flow.real_secs - t < 3.0);
+    let (next, arrived) = ease_step(*orbit, f, (time.delta_secs() * 2.5).min(1.0), arriving);
     if arrived {
         flow.focus = None;
     }
@@ -242,7 +245,7 @@ pub fn ease_step(orbit: OrbitCamera, focus: Vec3, k: f32, settled: bool) -> (Orb
     let mut next = orbit;
     next.target = orbit.target.lerp(focus, k);
     if settled {
-        next.distance += (70.0 - next.distance) * k;
+        next.distance += (38.0 - next.distance) * k;
     }
     let arrived = next.target.distance(focus) < 0.05;
     if arrived {

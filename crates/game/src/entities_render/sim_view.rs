@@ -44,7 +44,8 @@ pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
     if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
-        frac = (ag.step_frac + pending_days * MOVE_COST_PER_DAY / gait_cost(gait)).clamp(0.0, 0.98);
+        let pace = if matches!(ag.assignment, Some(sim::agents::Assignment::Go(_))) { sim::agents::DIRECT_MOVE_COST_PER_DAY } else { MOVE_COST_PER_DAY };
+        frac = (ag.step_frac + pending_days * pace / gait_cost(gait)).clamp(0.0, 0.98);
         next = n;
     }
     let to = (next.0 as f32 + 0.5, next.1 as f32 + 0.5);
