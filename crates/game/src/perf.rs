@@ -82,18 +82,11 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
         let wt = s.water.timings;
         let d = sim::water::WaterTimings {
             faces_s: wt.faces_s - w.water0.faces_s,
-            faces_x_s: wt.faces_x_s - w.water0.faces_x_s,
-            limiter_s: wt.limiter_s - w.water0.limiter_s,
-            continuity_s: wt.continuity_s - w.water0.continuity_s,
-            pools_s: wt.pools_s - w.water0.pools_s,
-            activity_s: wt.activity_s - w.water0.activity_s,
             publish_s: wt.publish_s - w.water0.publish_s,
             upkeep_s: wt.upkeep_s - w.water0.upkeep_s,
             substeps: wt.substeps - w.water0.substeps,
             cell_updates: wt.cell_updates - w.water0.cell_updates,
             physics_s: wt.physics_s - w.water0.physics_s,
-            pool_cells: wt.pool_cells - w.water0.pool_cells,
-            pool_samples: wt.pool_samples - w.water0.pool_samples,
         };
         info!(
             "perf: {:.0} fps (frame avg {:.1} ms, max {:.1} ms) | speed x{:.1} of x{:.0} wanted | {day_seconds:.2} real seconds/day | {hydraulic_day_seconds:.0} hydraulic seconds/day | per second: sim {:.1} ms = water {:.1} + ecology {:.1} + colony {:.1} + buildings {:.1} + agents {:.1} + shipping {:.1} + fog {:.1} + other {:.1}; meshes water {:.1} terrain {:.1}",

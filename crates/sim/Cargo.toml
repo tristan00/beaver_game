@@ -6,4 +6,3 @@ version.workspace = true
 [dependencies]
 rand_core = "0.10"
 rand_pcg = "0.10"
-rayon = "1"

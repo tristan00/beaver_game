@@ -333,7 +333,7 @@ impl Work {
         if self.place(b.id).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
-        let slots = crate::catalogue::def(b.kind).slots.iter().map(|&role| Slot::empty(role)).collect();
+        let slots = b.kind.spec().slots.iter().map(|&role| Slot::empty(role)).collect();
         self.places.push(Workplace::new(b.id, b.kind, slots, crate::catalogue::work_area(b), None));
         Ok(())
     }

@@ -112,7 +112,7 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
     let dt = FIXED_DT_DAYS;
     let count = clock.queue(time.delta_secs_f64(), dt);
     for _ in 0..count {
-        if let Err(e) = sim.0.step_game(dt) {
+        if let Err(e) = sim.0.step(dt) {
             error!("sim step failed: {e}");
             clock.paused = true;
             return;

@@ -624,9 +624,3 @@ pub fn run_to_state(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -
     run.out.lines.push(summary);
     Ok((run.out, run.s, run.dam))
 }
-
-pub fn run_and_record(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> Result<(Outcome, String), String> {
-    let mut log = String::new();
-    let out = run_script_with(text, load, &mut |s| log = write_log(s.recorder.as_deref().unwrap_or(&[])))?;
-    Ok((out, log))
-}

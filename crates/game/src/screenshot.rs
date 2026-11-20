@@ -170,8 +170,8 @@ impl Default for Progress {
     }
 }
 
-fn scene_pending(cli: &Cli, sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64, meshes_settling: bool) -> Option<String> {
-    if !cli.plain_world() && !sim.is_running() {
+fn scene_pending(sim: &sim::SimState, sprites: usize, rigged: usize, drawn: usize, stable: &mut (usize, u32), wait_days: f64, meshes_settling: bool) -> Option<String> {
+    if !sim.is_running() {
         return Some("the colony is not founded yet".into());
     }
     let agents = sim.agents.by_id.len();
@@ -199,7 +199,6 @@ fn drive_screenshot(
     cli: Res<Cli>,
     shared: Res<SharedReadiness>,
     mut p: Local<Progress>,
-    gate: Option<Res<crate::flow::CaptureGate>>,
     mut sim: ResMut<crate::state::Sim>,
     sprites: Query<(), With<crate::entities_render::BeaverSprite>>,
     rigged: Query<(), With<crate::entities_render::BeaverRig>>,
@@ -252,7 +251,7 @@ fn drive_screenshot(
             }
         }
     }
-    let readiness = match (shared.get(), scene_pending(&cli, &sim.0, sprites.iter().count(), rigged.iter().count(), drawn.iter().count(), &mut stable, wait_days, backlog.is_some_and(|b| b.terrain || b.water))) {
+    let readiness = match (shared.get(), scene_pending(&sim.0, sprites.iter().count(), rigged.iter().count(), drawn.iter().count(), &mut stable, wait_days, backlog.is_some_and(|b| b.terrain || b.water))) {
         (Readiness::Ready, Some(what)) => Readiness::Pending(what),
         (r, _) => r,
     };
@@ -261,8 +260,7 @@ fn drive_screenshot(
             info!("screenshot waiting ({:.0}s): {what}", p.start.elapsed().as_secs_f32());
         }
     }
-    let open = gate.is_none_or(|g| g.0);
-    p.streak = if readiness == Readiness::Ready && open { p.streak + 1 } else { 0 };
+    p.streak = if readiness == Readiness::Ready { p.streak + 1 } else { 0 };
     match decide(p.frame, cli.frames, p.streak, &readiness, p.start.elapsed()) {
         Step::Wait => {}
         Step::Fail(msg) => {

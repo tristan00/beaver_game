@@ -59,17 +59,6 @@ pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -
     amount - left
 }
 
-pub fn put_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -> bool {
-    let best = sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).min_by_key(|b| (gap(near, b), b.id)).map(|b| b.id);
-    match best {
-        Some(id) => {
-            sim.work.stock_add(id, good, amount);
-            true
-        }
-        None => false,
-    }
-}
-
 pub const BALANCE_SLACK: f32 = 3.0;
 
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
@@ -95,7 +84,7 @@ pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingI
         if stores.len() < 2 {
             continue;
         }
-        let cap = |b: &Building| crate::catalogue::def(b.kind).capacity.max(1.0);
+        let cap = |b: &Building| b.kind.spec().capacity.max(1.0);
         let total: f32 = stores.iter().map(|b| sim.work.stock_of(b.id, g)).sum::<f32>()
             + moving.iter().filter(|m| m.2 == g).map(|m| m.3).sum::<f32>();
         let room: f32 = stores.iter().map(|b| cap(b)).sum();

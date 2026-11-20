@@ -7,10 +7,7 @@ pub mod sim_view;
 
 use crate::camera::MainCamera;
 use crate::cli::Cli;
-use crate::state::Sim;
-use bevy::app::AppExit;
 use bevy::prelude::*;
-use bevy::window::{PresentMode, PrimaryWindow, WindowLevel};
 use meshgen::Mb;
 use models::Season;
 use scene::*;
@@ -18,15 +15,10 @@ use std::collections::HashMap;
 
 pub use scene::{height_at, lodge_view};
 
-const BEAVER_SCALE: f32 = 0.9;
 const BEAVER_NEAR: f32 = 85.0;
 const TREE_LOD0: f32 = 220.0;
 const TREE_LOD1: f32 = 480.0;
 const SCREENSHOT_CLOCK: f32 = 31.0;
-fn stub_mode(cli: &Cli) -> bool {
-    cli.stress && std::env::var_os("BC_STRESS_SIM").is_none()
-}
-
 pub struct EntitiesRenderPlugin;
 
 impl Plugin for EntitiesRenderPlugin {
@@ -34,16 +26,12 @@ impl Plugin for EntitiesRenderPlugin {
         app.init_resource::<RenderClock>()
             .init_resource::<CurrentSeason>()
             .init_resource::<CanopyView>()
-            .init_resource::<FrameWork>()
             .init_resource::<sim_sync::PendingDays>()
-            .add_systems(Startup, (init_models, setup_stress_window))
-            .add_systems(First, frame_work_start)
-            .add_systems(Last, frame_work_end)
+            .add_systems(Startup, init_models)
             .add_systems(
                 Update,
                 (
                     update_clock_and_season,
-                    spawn_scene,
                     sim_sync::update_pending,
                     sim_sync::sync_sim_beavers,
                     sim_sync::sync_sim_resources,
@@ -51,14 +39,12 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_dams,
                     sim_sync::sync_reinforcements,
                     sim_sync::sync_sim_barges,
-                    sync_stub_beavers,
                     attach_rigs,
                     animate_beavers,
                     canopy_key,
                     update_tree_lod,
                     sway_trees,
                     spin_wheels,
-                    stress_report,
                 )
                     .chain()
                     .after(crate::terrain_render::update_season),
@@ -93,10 +79,8 @@ struct Models {
     tree_tints: [Handle<StandardMaterial>; 4],
     old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
-    water_mat: Handle<StandardMaterial>,
     trees: Vec<Handle<Mesh>>,
     cutaway_trees: Vec<Handle<Mesh>>,
-    stump: Handle<Mesh>,
     snag: Handle<Mesh>,
     body: Handle<Mesh>,
     head: Handle<Mesh>,
@@ -134,8 +118,6 @@ impl Models {
     }
 }
 
-#[derive(Component)]
-struct SceneEntity;
 
 #[derive(Component)]
 struct TreeLod {
@@ -205,12 +187,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         unlit: true,
         ..default()
     });
-    let water_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.957, 0.984, 0.965, 0.92),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
     let mut trees = Vec::new();
     for sp in SPECIES {
         for season in Season::all() {
@@ -239,10 +215,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         tree_tints,
         old_tree,
         blob_mat,
-        water_mat,
         trees,
         cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
-        stump: meshes.add(models::stump_mesh()),
         snag: meshes.add(models::snag_mesh()),
         body,
         head,
@@ -264,16 +238,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     });
 }
 
-fn setup_stress_window(cli: Res<Cli>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
-    if cli.stress {
-        for mut w in &mut windows {
-            w.present_mode = PresentMode::AutoNoVsync;
-            w.window_level = WindowLevel::AlwaysOnTop;
-            w.focused = true;
-        }
-    }
-}
-
 fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::terrain_render::Season>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
     let shot = || std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK);
     let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none();
@@ -281,122 +245,6 @@ fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::te
     let next = Season::at(visual.phase);
     if season.0 != next {
         season.0 = next;
-    }
-}
-
-fn spawn_scene(
-    mut commands: Commands,
-    cli: Res<Cli>,
-    sim: Res<Sim>,
-    season: Res<CurrentSeason>,
-    clock: Res<RenderClock>,
-    models: Option<ResMut<Models>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    old: Query<Entity, With<SceneEntity>>,
-    mut built_for: Local<Option<u64>>,
-) {
-    let Some(mut models) = models else { return };
-    if !stub_mode(&cli) || *built_for == Some(sim.0.seed) {
-        return;
-    }
-    *built_for = Some(sim.0.seed);
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    let cfg = if cli.stress { SceneConfig::STRESS } else { SceneConfig::NORMAL };
-    let mut scene = scene_from_sim(&sim.0, cfg);
-    let water_dry = sim.0.water.depth.as_slice().iter().all(|&d| d <= 0.0);
-    let white = models.white.clone();
-
-    for t in &scene.trees {
-        let (mesh, lod) = match t.state {
-            TreeState::Alive => (models.tree(t.species, season.0, 0), Some(TreeLod { species: t.species, lod: 0, season: season.0, cutaway: false })),
-            TreeState::Stump => (models.stump.clone(), None),
-            TreeState::Snag => (models.snag.clone(), None),
-        };
-        let mut e = commands.spawn((
-            SceneEntity,
-            Mesh3d(mesh),
-            MeshMaterial3d(white.clone()),
-            Transform::from_translation(t.pos).with_rotation(Quat::from_rotation_y(t.yaw)).with_scale(Vec3::splat(t.scale)),
-        ));
-        if let Some(l) = lod {
-            e.insert((l, Sway(Quat::from_rotation_y(t.yaw))));
-        }
-    }
-
-    for s in &scene.structs {
-        let stage = models::stage_of(s.progress);
-        let key = (s.kind, (s.len * 2.0).round() as u32, stage);
-        let mesh = models.structs.entry(key).or_insert_with(|| meshes.add(models::struct_mesh(s.kind, key.1 as f32 * 0.5, stage))).clone();
-        let mut e = commands.spawn((
-            SceneEntity,
-            Mesh3d(mesh),
-            MeshMaterial3d(white.clone()),
-            Transform::from_translation(s.pos).with_rotation(Quat::from_rotation_y(s.yaw)),
-        ));
-        if s.kind == StructKind::WaterWheel && stage == 3 {
-            e.with_children(|p| {
-                p.spawn((Mesh3d(models.wheel.clone()), MeshMaterial3d(white.clone()), Transform::from_xyz(0.0, 2.0, 0.0), WheelSpin(0.9)));
-            });
-        }
-    }
-
-    if let (Some(pond), true) = (scene.pond, water_dry) {
-        let surface = meshes.add(models::pond_surface(&pond));
-        commands.spawn((SceneEntity, Mesh3d(surface), MeshMaterial3d(models.water_mat.clone()), Transform::from_xyz(pond.center.x, pond.level, pond.center.y)));
-    }
-
-    let pond = scene.pond;
-    for i in 0..scene.beavers.len() {
-        let st = eval_beaver(&scene, i, clock.0, &sim);
-        scene.beavers[i].state = st;
-        let ground = ground_y(&sim, st, pond);
-        commands.spawn((
-            SceneEntity,
-            StubBeaver(i),
-            BeaverSprite { id: i as u64, pose: st.pose, load: st.load, yaw: st.yaw, wet: st.pose == Pose::Swim },
-            Transform::from_xyz(st.pos.x, ground, st.pos.y).with_rotation(Quat::from_rotation_y(st.yaw)).with_scale(Vec3::splat(BEAVER_SCALE)),
-            Visibility::default(),
-        ));
-    }
-    commands.insert_resource(scene);
-}
-
-fn ground_y(sim: &Sim, st: BeaverState, pond: Option<Pond>) -> f32 {
-    let g = height_at(&sim.0.height, st.pos.x, st.pos.y);
-    match (st.pose, pond) {
-        (Pose::Swim, Some(p)) if p.contains(st.pos, 0.5) => p.level.max(g),
-        _ => g,
-    }
-}
-
-fn eval_beaver(scene: &RenderScene, i: usize, t: f32, sim: &Sim) -> BeaverState {
-    let b = &scene.beavers[i];
-    let pond = scene.pond;
-    match &b.route {
-        Some(r) => r.eval(t, |p| pond.is_some_and(|po| po.swimmable(&sim.0.height, p))),
-        None => b.state,
-    }
-}
-
-#[derive(Component)]
-struct StubBeaver(usize);
-
-fn sync_stub_beavers(clock: Res<RenderClock>, sim: Res<Sim>, scene: Option<ResMut<RenderScene>>, mut q: Query<(&StubBeaver, &mut Transform, &mut BeaverSprite)>) {
-    let Some(mut scene) = scene else { return };
-    for i in 0..scene.beavers.len() {
-        let st = eval_beaver(&scene, i, clock.0, &sim);
-        scene.beavers[i].state = st;
-    }
-    for (b, mut tr, mut sprite) in &mut q {
-        let Some(v) = scene.beavers.get(b.0) else { continue };
-        let st = v.state;
-        tr.translation = Vec3::new(st.pos.x, ground_y(&sim, st, scene.pond), st.pos.y);
-        sprite.pose = st.pose;
-        sprite.load = st.load;
-        sprite.yaw = st.yaw;
-        sprite.wet = st.pose == Pose::Swim;
     }
 }
 
@@ -779,76 +627,5 @@ fn spin_wheels(time: Res<Time>, mut q: Query<(&mut Transform, &WheelSpin)>) {
     for (mut t, w) in &mut q {
         t.rotation = Quat::from_rotation_x(time.elapsed_secs() * w.0);
     }
-}
-
-const STRESS_WARMUP: u32 = 240;
-
-#[derive(Resource, Default)]
-struct FrameWork {
-    start: Option<std::time::Instant>,
-    last_ms: f32,
-    last_focused: bool,
-}
-
-fn frame_work_start(mut w: ResMut<FrameWork>) {
-    w.start = Some(std::time::Instant::now());
-}
-
-fn frame_work_end(mut w: ResMut<FrameWork>, win: Query<&Window, With<PrimaryWindow>>) {
-    if let Some(s) = w.start {
-        w.last_ms = s.elapsed().as_secs_f32() * 1000.0;
-    }
-    w.last_focused = win.iter().next().is_some_and(|w| w.focused);
-}
-const STRESS_FRAMES: usize = 900;
-const STRESS_BUDGET_MS: f32 = 16.0;
-
-fn stress_report(cli: Res<Cli>, time: Res<Time<Real>>, drawn_beavers: Query<(), With<BeaverSprite>>, drawn_trees: Query<(), With<TreeLod>>, work: Res<FrameWork>, mut samples: Local<Vec<f32>>, mut works: Local<Vec<(f32, bool)>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    if !cli.stress {
-        return;
-    }
-    *frame += 1;
-    if *frame <= STRESS_WARMUP {
-        return;
-    }
-    samples.push(time.delta_secs() * 1000.0);
-    works.push((work.last_ms, work.last_focused));
-    if samples.len() < STRESS_FRAMES {
-        return;
-    }
-    let mut s = samples.clone();
-    s.sort_by(|a, b| a.total_cmp(b));
-    let avg = s.iter().sum::<f32>() / s.len() as f32;
-    let pct = |p: f32| s[((s.len() as f32 * p) as usize).min(s.len() - 1)];
-    let max = s[s.len() - 1];
-    let over: Vec<String> = samples
-        .iter()
-        .enumerate()
-        .filter(|(_, ms)| **ms >= STRESS_BUDGET_MS)
-        .map(|(i, ms)| format!("#{i}={ms:.2}(cpu {:.2}{})", works[i].0, if works[i].1 { "" } else { ", unfocused" }))
-        .collect();
-    let unfocused = works.iter().filter(|w| !w.1).count();
-    let mut w: Vec<f32> = works.iter().map(|w| w.0).collect();
-    w.sort_by(|a, b| a.total_cmp(b));
-    let (trees, beavers) = (drawn_trees.iter().count(), drawn_beavers.iter().count());
-    let source = if stub_mode(&cli) { "stub itinerary scene" } else { "live sim world" };
-    let line = format!(
-        "stress scene ({source}): {trees} trees, {beavers} beavers | {} frames | frame time ms: avg {avg:.2}, median {:.2}, p95 {:.2}, p99 {:.2}, max {max:.2} | main-world cpu ms: median {:.2}, max {:.2} | unfocused frames: {unfocused} | frames >= {STRESS_BUDGET_MS} ms: {}{} | budget {STRESS_BUDGET_MS} ms: {}",
-        s.len(),
-        pct(0.5),
-        pct(0.95),
-        pct(0.99),
-        w[w.len() / 2],
-        w[w.len() - 1],
-        over.len(),
-        if over.is_empty() { String::new() } else { format!(" [{}]", over.join(" ")) },
-        if over.is_empty() { "PASS (every frame < 16 ms)" } else { "FAIL" },
-    );
-    info!("{line}");
-    let path = std::env::var("BEAVER_STRESS_LOG").unwrap_or_else(|_| "stress_frame_times.log".into());
-    if let Err(e) = std::fs::write(&path, format!("{line}\n")) {
-        error!("cannot write {path}: {e}");
-    }
-    exit.write(if over.is_empty() { AppExit::Success } else { AppExit::error() });
 }
 

@@ -50,18 +50,10 @@ pub(crate) fn apply(s: &mut SimState, cmd: Command) -> Result<(), SimError> {
 }
 
 pub fn run_days(s: &mut SimState, days: f64) {
-    run_days_with_clock(s, days, false);
-}
-
-pub fn run_game_days(s: &mut SimState, days: f64) {
-    run_days_with_clock(s, days, true);
-}
-
-fn run_days_with_clock(s: &mut SimState, days: f64, gameplay: bool) {
     let end = s.time_days + days;
     while s.time_days < end - 1e-9 {
         let dt = STEP_DAYS.min((end - s.time_days) as f32);
-        if gameplay { s.step_game(dt) } else { s.step(dt) }.expect("sandbox step");
+        s.step(dt).expect("sandbox step");
     }
 }
 
@@ -326,7 +318,7 @@ pub fn run_script(text: &str) -> Result<(SimState, Report), String> {
                 let d: f64 = number(w.get(1), "days").map_err(err)? as f64;
                 if !d.is_finite() || d <= 0.0 { return Err(err("days must be finite and positive".into())); }
                 let t = std::time::Instant::now();
-                if w[0] == "run-game" { run_game_days(s, d); } else { run_days(s, d); }
+                run_days(s, d);
                 report.lines.push(say(s, format!("ran {d} days in {:.1} s ({} physics steps so far)", t.elapsed().as_secs_f32(), s.water.steps_taken)));
             }
             "weather" => {

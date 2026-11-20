@@ -15,10 +15,6 @@ fn main() {
             }
             if std::env::var_os("WATER_TIMINGS").is_some() {
                 println!("{}", s.water.timings.report(s.water.timings.total_s()));
-                println!("pooled cells {}, active cells {}", s.water.pooled_cells(), s.water.active_cells());
-                for (x, y, d) in s.water.deepest_stepped(5) {
-                    println!("deep stepped cell ({x}, {y}) depth {d:.3}");
-                }
             }
             let failed = report.checks.iter().filter(|c| !c.1).count();
             println!("{} checks, {} failed", report.checks.len(), failed);

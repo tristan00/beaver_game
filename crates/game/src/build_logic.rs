@@ -35,12 +35,12 @@ pub struct MenuEntry {
     pub kind: BuildingKind,
     pub group: Group,
     pub unlocked: bool,
-    pub need: Option<(&'static str, f32, f32)>,
+    pub need: Option<&'static str>,
 }
 
 pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
     use BuildingKind::*;
-    let mut out: Vec<_> = BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)).map(|kind| {
+    let mut out: Vec<_> = BuildingKind::ALL.into_iter().map(|kind| {
         let group = match kind {
             Dam | Canal | Lock | WaterWheel => Group::Water,
             LoggingCamp | ForagerHut | MudPit | ForesterLodge | TreeNursery => Group::Forest,
@@ -50,7 +50,7 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
             GuardPost | ScentMound => Group::Defence,
             _ => Group::Base,
         };
-        let need = sim.missing_prerequisites(kind).first().map(|k| (k.spec().name, 0.0, 0.0));
+        let need = sim.missing_prerequisites(kind).first().map(|k| k.spec().name);
         MenuEntry {kind, group, unlocked: sim.can_build(kind), need}
     }).collect();
     out.sort_by_key(|e| e.group as usize);
@@ -59,7 +59,7 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceError {
-    Locked(&'static str, f32, f32),
+    Locked(&'static str),
     OutOfBounds,
     Blocked,
     NeedsDry,
@@ -75,7 +75,7 @@ pub enum PlaceError {
 impl std::fmt::Display for PlaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlaceError::Locked(t, _, _) => write!(f, "Needs a finished {t}"),
+            PlaceError::Locked(t) => write!(f, "Needs a finished {t}"),
             PlaceError::OutOfBounds => write!(f, "Outside the map"),
             PlaceError::Blocked => write!(f, "Something is already built here"),
             PlaceError::NeedsDry => write!(f, "Needs dry ground"),
@@ -102,44 +102,31 @@ pub fn anchor(kind: BuildingKind, c: Cell) -> Cell {
 }
 
 pub fn footprint(kind: BuildingKind, pos: Cell) -> Vec<Cell> {
-    let (w, h) = kind.spec().footprint;
-    (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).collect()
+    sim::buildings::Buildings::footprint(kind, pos)
 }
 
 fn locked(sim: &SimState, kind: BuildingKind) -> Result<(), PlaceError> {
-    if sim.sandbox || sim.can_build(kind) {
-        return Ok(());
-    }
-    match menu(sim).into_iter().find(|e| e.kind == kind).and_then(|e| e.need) {
-        Some((t, need, have)) => Err(PlaceError::Locked(t, need, have)),
-        None => Err(PlaceError::Locked("prerequisite building", 0.0, 0.0)),
+    match sim.missing_prerequisites(kind).first().filter(|_| !sim.sandbox) {
+        Some(need) => Err(PlaceError::Locked(need.spec().name)),
+        None => Ok(()),
     }
 }
 
 pub fn check_building(sim: &SimState, kind: BuildingKind, pos: Cell) -> Result<(), PlaceError> {
-    locked(sim, kind)?;
-    sim.check_site(kind, pos).map_err(|e| {
-        let m = e.to_string();
-        if m.contains("OutOfBounds") {
-            PlaceError::OutOfBounds
-        } else if m.contains("Blocked") {
-            PlaceError::Blocked
-        } else if m.contains("NoDock") {
-            PlaceError::NeedsDock
-        } else if m.contains("BadTerrain") {
-            match kind.spec().site {
-                Site::Dry => PlaceError::NeedsDry,
-                Site::Pond => PlaceError::NeedsPond,
-                _ => PlaceError::NeedsWater,
-            }
-        } else {
-            PlaceError::Sim(m)
-        }
-    })?;
-    if kind == BuildingKind::Lock && !footprint(kind, pos).iter().any(|&(x, y)| sim.water.has_dam(x, y)) {
-        return Err(PlaceError::NeedsDam);
-    }
-    Ok(())
+    use sim::buildings::BuildError;
+    sim.check_site(kind, pos).map_err(|e| match e {
+        BuildError::Locked(need) => PlaceError::Locked(need.spec().name),
+        BuildError::OutOfBounds => PlaceError::OutOfBounds,
+        BuildError::Blocked => PlaceError::Blocked,
+        BuildError::NoDock => PlaceError::NeedsDock,
+        BuildError::NeedsDam => PlaceError::NeedsDam,
+        BuildError::BadTerrain(_) => match kind.spec().site {
+            Site::Dry => PlaceError::NeedsDry,
+            Site::Pond => PlaceError::NeedsPond,
+            _ => PlaceError::NeedsWater,
+        },
+        _ => PlaceError::Sim(e.to_string()),
+    })
 }
 
 #[derive(Clone, Debug)]

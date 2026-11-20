@@ -27,7 +27,6 @@ impl SiteScore {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettleError {
     OutOfBounds,
-    Locked,
     Unexplored,
     Water,
     NoRoom,
@@ -119,9 +118,8 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
 }
 
 pub fn can_settle(s: &SimState, cell: Cell) -> Result<(), SettleError> {
-    let valley = s.world.valley_of(cell).ok_or(SettleError::OutOfBounds)?;
-    if !s.world.is_open(valley) {
-        return Err(SettleError::Locked);
+    if !s.height.in_bounds(cell.0, cell.1) {
+        return Err(SettleError::OutOfBounds);
     }
     if !s.fog.explored(cell) {
         return Err(SettleError::Unexplored);

@@ -123,15 +123,10 @@ pub mod ecology {
     pub const DROWN_RATE: f32 = 0.1;
     pub const WETLAND_SEASONS: f32 = 2.0;
     pub const WETLAND_MAX_DEPTH: f32 = 1.5;
-    pub const CUT_COOLDOWN_DAYS: f32 = 90.0;
     pub const SAFE_RANGE: f32 = 40.0;
-    pub const PREDATOR_RANGE: f32 = 30.0;
 
     pub const START_FOREST_MIN: f32 = 0.6;
     pub const START_FOREST_SPREAD: f32 = 0.4;
-    pub const FOREST_GROWTH_BASE: f32 = 0.0005;
-    pub const FOREST_GROWTH_SELF: f32 = 0.01;
-    pub const FOREST_GROWTH_SPREAD: f32 = 0.01;
     pub const SNAG_ROT_DAYS: f32 = 730.0;
     pub const MEADOW_REGROW_DAYS: f32 = 730.0;
     pub const FLOOD_DAYS_DRAIN_RATE: f32 = 2.0;
@@ -153,19 +148,9 @@ pub mod ecology {
     pub const FOOD_FOREST: f32 = 0.5;
     pub const FOOD_MEADOW: f32 = 0.6;
 
-    use crate::ecology::PredatorKind::{self, *};
-    pub const START_PREDATORS: [PredatorKind; 6] = [Wolf, Wolf, Lynx, Bear, Eagle, Eagle];
-    pub const PREDATOR_MAX_WADE_DEPTH: f32 = 0.3;
-    pub fn predator_speed(kind: PredatorKind) -> f32 {
-        match kind { Wolf => 2.5, Lynx => 1.5, Bear => 1.0, Eagle => 4.0 }
-    }
-    pub fn predator_threat(kind: PredatorKind) -> f32 {
-        match kind { Wolf => 1.0, Lynx => 0.7, Bear => 0.9, Eagle => 0.5 }
-    }
     pub const DANGER_BASE: f32 = 0.05;
     pub const DANGER_DISTANCE: f32 = 0.95;
     pub const DANGER_PREDATOR_BASE: f32 = 0.5;
-    pub const DANGER_PREDATOR_SCALE: f32 = 0.5;
     pub const HIDEOUT_PROTECTION: f32 = 0.5;
 }
 
@@ -187,14 +172,8 @@ pub mod water {
     pub const ICE_MELT_PER_DAY: f32 = 0.15;
     pub const RUNOFF_M3S_PER_KM2: f32 = 0.01;
     pub const WATER_PER_CATCHMENT_CELL: f32 = RUNOFF_M3S_PER_KM2 * 1.0e-6 * 86_400.0;
-    pub const BANKFULL_PER_MEAN: f32 = 25.0;
-    pub const BANK_WIDTH: (f32, f32) = (3.0, 0.5);
-    pub const BANK_DEPTH: (f32, f32) = (0.35, 0.4);
-    pub const WETTED_WIDTH_EXP: f32 = 0.26;
     pub const MANNING_CHANNEL: f32 = 0.04;
-    pub const MANNING_OVERLAND: f32 = 0.08;
     pub const WEIR: f32 = 1.7;
-    pub const RELEASE_DAYS: f32 = 0.1;
 }
 
 pub mod buildings {
@@ -202,160 +181,4 @@ pub mod buildings {
     pub const MIN_FLOW: f32 = 0.01;
     pub const FULL_FLOW: f32 = 0.2;
     pub const BASE_CAPACITY: f32 = 100.0;
-    pub const WAREHOUSE_CAPACITY: f32 = 150.0;
-    pub const DOCK_CAPACITY: f32 = 60.0;
-    pub const FOOD_CACHE_CAPACITY: f32 = 100.0;
-    pub const BARGE_CAPACITY: f32 = 20.0;
-    pub const BARGE_SPEED: f32 = 4.0;
-    pub const CRAFT_BATCHES_PER_DAY: f32 = 2.0;
-    pub const WHEEL_MAX_BOOST: f32 = 1.0;
-    pub const MILL_BATCHES_PER_DAY: f32 = 6.0;
-    pub const STOREHOUSE_CAPACITY: f32 = 400.0;
-
-    pub fn batches_per_day(kind: BuildingKind) -> f32 {
-        match kind {
-            BuildingKind::Workshop => CRAFT_BATCHES_PER_DAY,
-            BuildingKind::Mill => MILL_BATCHES_PER_DAY,
-            _ => 0.0,
-        }
-    }
-    pub fn store_capacity(kind: BuildingKind) -> f32 {
-        match kind {
-            BuildingKind::Warehouse => WAREHOUSE_CAPACITY,
-            BuildingKind::Dock => DOCK_CAPACITY,
-            BuildingKind::FoodCache => FOOD_CACHE_CAPACITY,
-            BuildingKind::Storehouse => STOREHOUSE_CAPACITY,
-            _ => 0.0,
-        }
-    }
-
-    use crate::buildings::{Amount, BuildingKind, Good::*};
-
-    pub fn cost_and_work(kind: BuildingKind) -> (&'static [Amount], f32) {
-        use BuildingKind::*;
-        match kind {
-            Dam => (&[(Sticks,30.0),(Clay,4.0)],7.0),
-            Lodge => (&[(Sticks,36.0),(Clay,16.0)],10.0),
-            Burrow => (&[],5.0),
-            FoodCache => (&[(Sticks,12.0),(Clay,5.0)],3.5),
-            ScentMound => (&[(Clay,5.0),(Sticks,3.0)],1.5),
-            GuardPost => (&[(Sticks,16.0),(Clay,3.0)],3.0),
-            Canal => (&[(Clay,1.5)],0.8),
-            Lock => (&[(Sticks,22.0),(Clay,10.0)],6.0),
-            WaterWheel => (&[(Sticks,26.0),(Clay,4.0)],7.0),
-            Workshop => (&[(Sticks,18.0),(Clay,6.0)],5.0),
-            Warehouse => (&[(Sticks,32.0),(Clay,10.0)],8.0),
-            Dock => (&[(Sticks,16.0),(Clay,4.0)],4.0),
-            Barge => (&[(Sticks,24.0),(Clay,4.0)],5.0),
-            LoggingCamp => (&[(Sticks,8.0)],2.0),
-            ForagerHut => (&[(Sticks,6.0),(Clay,3.0)],2.0),
-            MudPit => (&[(Sticks,6.0)],2.0),
-            Mill => (&[(Sticks,50.0),(Clay,14.0)],12.0),
-            Storehouse => (&[(Sticks,58.0),(Clay,16.0)],14.0),
-            ForesterLodge => (&[(Sticks,10.0),(Clay,3.0)],3.0),
-            TreeNursery => (&[(Sticks,12.0),(Clay,6.0)],4.0),
-        }
-    }
-
-
-}
-
-pub mod region {
-    pub const WARY_BELOW: f32 = 0.3;
-    pub const MAX_POPULATION: f32 = 40.0;
-    pub const MAX_STORE: f32 = 500.0;
-    pub const OFFER_LIFETIME_DAYS: f64 = 15.0;
-    pub const MAX_OPEN_OFFERS: usize = 3;
-
-    pub const MIN_NEIGHBOURS: u32 = 3;
-    pub const NEIGHBOUR_SPREAD: u32 = 3;
-    pub const WARY_CHANCE: f32 = 0.2;
-    pub const WARY_FRIENDLINESS_MIN: f32 = 0.05;
-    pub const WARY_FRIENDLINESS_SPREAD: f32 = 0.2;
-    pub const FRIENDLINESS_MIN: f32 = 0.5;
-    pub const FRIENDLINESS_SPREAD: f32 = 0.5;
-    pub const START_POPULATION_MIN: f32 = 6.0;
-    pub const START_POPULATION_SPREAD: f32 = 14.0;
-    pub const REGION_EXTENT: f32 = 100.0;
-    pub const START_FOOD_PER_HEAD_MIN: f32 = 2.0;
-    pub const START_FOOD_PER_HEAD_SPREAD: f32 = 4.0;
-    pub const START_WOOD_PER_HEAD_MIN: f32 = 1.0;
-    pub const START_WOOD_PER_HEAD_SPREAD: f32 = 2.0;
-
-    pub const BASE_FOOD_GAIN: f32 = 0.04;
-    pub const BASE_WOOD_GAIN: f32 = 0.015;
-    pub const FOOD_USE: f32 = 0.05;
-    pub const WOOD_USE: f32 = 0.02;
-    use crate::region::Specialty;
-    pub fn specialty_gain(specialty: Specialty) -> (f32, f32) {
-        match specialty {
-            Specialty::Fishing => (0.06, 0.0),
-            Specialty::Farming => (0.08, 0.0),
-            Specialty::Lumber => (0.0, 0.07),
-            Specialty::Crafts => (0.0, 0.04),
-        }
-    }
-    pub const RESERVE_PER_HEAD: f32 = 3.0;
-    pub const GROWTH_RATE: f32 = 0.01;
-    pub const DECLINE_RATE: f32 = 0.01;
-    pub const MIN_POPULATION: f32 = 2.0;
-
-    pub const CROWDED_SHARE: f32 = 0.8;
-    pub const MIGRATION_CHANCE: f32 = 0.1;
-    pub const MIN_OFFER_SURPLUS: f32 = 4.0;
-    pub const OFFER_CHANCE: f32 = 0.15;
-    pub const OFFER_SHARE_MIN: f32 = 0.2;
-    pub const OFFER_SHARE_SPREAD: f32 = 0.3;
-    pub const MIN_OFFER: f32 = 2.0;
-    pub const PRICE_MIN: f32 = 0.7;
-    pub const PRICE_SPREAD: f32 = 0.6;
-}
-
-pub mod events {
-    pub const DEFAULT_DAYS_PER_SEASON: u32 = crate::calendar::SEASON_DAYS as u32;
-    pub const CHOICE_EXPIRY_DAYS: f64 = 5.0;
-    pub const DROUGHT_INFLOW: f32 = 0.4;
-
-    pub const FLOOD_CHANCE: f32 = 0.02;
-    pub const FLOOD_SPRING_MULT: f32 = 2.0;
-    pub const FLOOD_SUMMER_MULT: f32 = 0.7;
-    pub const FLOOD_WATER_BASE: f32 = 0.5;
-    pub const FLOOD_MIN_WATER_LEVEL: f32 = 0.2;
-    pub const DROUGHT_CHANCE: f32 = 0.012;
-    pub const DROUGHT_WATER_BASE: f32 = 1.5;
-    pub const HARD_FREEZE_CHANCE: f32 = 0.03;
-    pub const FIRE_CHANCE: f32 = 0.012;
-    pub const FIRE_DROUGHT_MULT: f32 = 3.0;
-    pub const FIRE_MIN_FOREST: f32 = 0.2;
-    pub const DISEASE_CHANCE: f32 = 0.01;
-    pub const DISEASE_MOSQUITO_BASE: f32 = 0.5;
-    pub const DISEASE_MOSQUITO_SCALE: f32 = 2.0;
-    pub const DISEASE_CROWD_POPULATION: f32 = 10.0;
-    pub const DISEASE_CROWD_MAX: f32 = 2.0;
-    pub const DISEASE_MIN_POPULATION: u32 = 6;
-    pub const PREDATOR_RAID_CHANCE: f32 = 0.04;
-    pub const WANDERING_BEAVER_CHANCE: f32 = 0.03;
-    pub const WETLAND_ARRIVAL_CHANCE: f32 = 0.03;
-    pub const WETLAND_ARRIVAL_MIN_WETLAND: f32 = 0.1;
-
-    pub const FLOOD_WOOD_LOSS: (f32, f32) = (2.0, 6.0);
-    pub const FLOOD_FOOD_LOSS: (f32, f32) = (1.0, 4.0);
-    pub const DROUGHT_SEASONS: (f32, f32) = (2.0, 4.0);
-    pub const HARD_FREEZE_FOOD_LOSS: (f32, f32) = (2.0, 5.0);
-    pub const HARD_FREEZE_ILLNESS: f32 = 0.1;
-    pub const FIRE_WOOD_LOSS: (f32, f32) = (4.0, 10.0);
-    pub const FIRE_FIGHT_LOSS_SHARE: f32 = 0.3;
-    pub const FIRE_FIGHT_ILLNESS: f32 = 0.05;
-    pub const FIRE_BURN_FOOD_SHARE: f32 = 0.3;
-    pub const DISEASE_ILLNESS: (f32, f32) = (0.1, 0.3);
-    pub const DISEASE_DEATH_SHARE: (f32, f32) = (0.0, 0.08);
-    pub const RAID_DEATH_SHARE: (f32, f32) = (0.03, 0.12);
-    pub const RAID_MIN_DEATHS: u32 = 1;
-    pub const RAID_FIGHT_DEATH_DIVISOR: u32 = 2;
-    pub const RAID_FIGHT_ILLNESS: f32 = 0.05;
-    pub const RAID_HIDE_FOOD_LOSS: (f32, f32) = (2.0, 6.0);
-    pub const WANDERERS_MIN: u32 = 1;
-    pub const WANDERERS_SPREAD: f32 = 2.0;
-    pub const WANDERER_FOOD_COST: f32 = 2.0;
-    pub const WETLAND_ARRIVAL_FOOD: (f32, f32) = (3.0, 8.0);
 }

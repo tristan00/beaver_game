@@ -9,14 +9,12 @@ mod hud;
 mod icons;
 mod input;
 mod menu;
-mod opening;
 mod palette;
 mod perf;
 mod report_capture;
 mod sandbox;
 mod screenshot;
 mod seasonal;
-mod showcase;
 mod sim_driver;
 mod startflow;
 mod state;
@@ -71,7 +69,6 @@ fn main() -> AppExit {
         sim_driver::SimDriverPlugin,
         flow::FlowPlugin,
         camera::CameraPlugin,
-        showcase::ShowcasePlugin,
         input::InputPlugin,
         startflow::StartPlugin,
         icons::IconsPlugin,

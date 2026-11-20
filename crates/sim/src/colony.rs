@@ -419,7 +419,6 @@ pub struct Colony {
     collapse: Option<CollapseReport>,
     founded: bool,
     guard_strength: f32,
-    disabled_jobs: Vec<Job>,
     pub slot_jobs: HashMap<BeaverId, (Job, bool)>,
     pub eaten: [f32; 4],
     pub spoiled: f32,
@@ -477,7 +476,6 @@ impl Colony {
             collapse: None,
             founded: false,
             guard_strength: 0.0,
-            disabled_jobs: Vec::new(),
             slot_jobs: HashMap::new(),
             eaten: [0.0; 4],
             spoiled: 0.0,
@@ -627,22 +625,6 @@ impl Colony {
         }
         self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
         Ok(fam)
-    }
-
-    pub fn set_disabled_jobs(&mut self, jobs: Vec<Job>) {
-        if self.disabled_jobs == jobs {
-            return;
-        }
-        self.disabled_jobs = jobs;
-        let off = self.disabled_jobs.clone();
-        for b in &mut self.beavers {
-            if b.job.is_some_and(|j| off.contains(&j)) {
-                b.job = None;
-            }
-        }
-    }
-    pub fn job_enabled(&self, job: Job) -> bool {
-        !self.disabled_jobs.contains(&job)
     }
 
     pub fn step(&mut self, dt_days: f32) {
@@ -1225,26 +1207,6 @@ impl Colony {
 }
 
 impl Colony {
-    pub fn kill_beavers(&mut self, n: u32) -> u32 {
-        let mut k = 0;
-        for _ in 0..n {
-            let Some(i) = self
-                .beavers
-                .iter()
-                .enumerate()
-                .min_by(|a, b| a.1.health.total_cmp(&b.1.health).then(a.1.id.0.cmp(&b.1.id.0)))
-                .map(|(i, _)| i)
-            else {
-                break;
-            };
-            let b = self.beavers.remove(i);
-            self.stats.deaths += 1;
-            self.log(Event::Died { id: b.id, cause: DeathCause::Injury, at: b.pos });
-            k += 1;
-        }
-        k
-    }
-
     pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
         if !self.founded {return Err(ColonyError::Invalid("colony is not founded".into()));}
         if self.migration_remaining() == 0 {return Err(ColonyError::Invalid("annual migration limit reached (2 per year)".into()));}
@@ -1272,9 +1234,4 @@ impl Colony {
         admitted
     }
 
-    pub fn damage_health(&mut self, amount: f32) {
-        for b in &mut self.beavers {
-            b.health = (b.health - amount).clamp(0.0, 1.0);
-        }
-    }
 }

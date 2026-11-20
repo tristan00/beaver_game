@@ -9,21 +9,6 @@ const MAX_SUBSTEP_DAYS: f32 = 1.0;
 /// and water remain current; whole-map vegetation/danger refresh every six hours.
 const GRID_EVERY_DAYS: f32 = 0.25;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PredatorKind { Wolf, Lynx, Bear, Eagle }
-
-impl PredatorKind {
-    fn speed(self) -> f32 {
-        predator_speed(self)
-    }
-    fn threat(self) -> f32 {
-        predator_threat(self)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Predator { pub kind: PredatorKind, pub x: f32, pub y: f32 }
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WetlandEffects {
     pub food: f32,
@@ -54,9 +39,7 @@ pub struct Ecology {
     pub defence: Grid<f32>,
     pub hideout: Grid<f32>,
     pub lodges: Vec<(usize, usize)>,
-    pub predators: Vec<Predator>,
     pub effects: WetlandEffects,
-    rng: Pcg32,
     pending_days: f32,
 }
 
@@ -70,15 +53,11 @@ impl Ecology {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0xEC01_06E5);
         let mut forest = g(0.0);
         for v in forest.as_mut_slice() { *v = START_FOREST_MIN + START_FOREST_SPREAD * unit(&mut rng); }
-        let mut predators = Vec::new();
-        for kind in START_PREDATORS {
-            predators.push(Predator { kind, x: unit(&mut rng) * size as f32, y: unit(&mut rng) * size as f32 });
-        }
         let mut e = Self {
             vegetation: g(0.0), forest, snags: g(0.0), meadow: g(0.0), wetland: g(0.0), flood_days: g(0.0),
             fish: g(0.0), waterfowl: g(0.0), frogs: g(0.0), herons: g(0.0), mosquitoes: g(0.0),
             otters: g(0.0), food: g(0.0), danger: g(0.0), defence: g(0.0), hideout: g(0.0),
-            lodges: Vec::new(), predators, effects: WetlandEffects::default(), rng, pending_days: 0.0,
+            lodges: Vec::new(), effects: WetlandEffects::default(), pending_days: 0.0,
         };
         e.refresh_derived(&g(0.0));
         e
@@ -148,9 +127,6 @@ impl Ecology {
                 "water grid {}x{} does not match ecology size {n}", water.width(), water.height())));
         }
         if dt_days == 0.0 { return Ok(()); }
-        // Predators roam every step; the land and wildlife change over days, so their whole-map
-        // passes run once per GRID_EVERY_DAYS of game time.
-        self.move_predators(dt_days, water);
         self.pending_days += dt_days;
         if self.pending_days < GRID_EVERY_DAYS {
             return Ok(());
@@ -197,19 +173,6 @@ impl Ecology {
             *m = (*m - dt / MEADOW_REGROW_DAYS).max(0.0).min(room);
         }
         self.relax_wildlife(dt);
-    }
-
-    fn move_predators(&mut self, dt: f32, water: &WaterGrid) {
-        let n = self.size() as f32;
-        for p in &mut self.predators {
-            let ang = unit(&mut self.rng) * std::f32::consts::TAU;
-            let step = p.kind.speed() * dt;
-            let nx = (p.x + ang.cos() * step).clamp(0.0, n - 0.001);
-            let ny = (p.y + ang.sin() * step).clamp(0.0, n - 0.001);
-            let blocked = p.kind != PredatorKind::Eagle
-                && water.get(nx as usize, ny as usize).is_some_and(|d| *d > PREDATOR_MAX_WADE_DEPTH);
-            if !blocked { p.x = nx; p.y = ny; }
-        }
     }
 
     fn relax_wildlife(&mut self, dt: f32) {
@@ -262,21 +225,9 @@ impl Ecology {
         let mut sources: Vec<bool> = water.as_slice().iter().map(|d| *d > FLOOD_DEPTH).collect();
         for &(x, y) in &self.lodges { sources[y * n + x] = true; }
         let dist = distance_field(&sources, n);
-        let mut pred = vec![0.0f32; n * n];
-        for p in &self.predators {
-            let (px, py) = (p.x, p.y);
-            let (x0, x1) = ((px - PREDATOR_RANGE).max(0.0) as usize, ((px + PREDATOR_RANGE) as usize).min(n - 1));
-            let (y0, y1) = ((py - PREDATOR_RANGE).max(0.0) as usize, ((py + PREDATOR_RANGE) as usize).min(n - 1));
-            for y in y0..=y1 {
-                for x in x0..=x1 {
-                    let d = ((x as f32 - px).powi(2) + (y as f32 - py).powi(2)).sqrt();
-                    if d < PREDATOR_RANGE { pred[y * n + x] += p.kind.threat() * (1.0 - d / PREDATOR_RANGE); }
-                }
-            }
-        }
         for i in 0..n * n {
             let base = DANGER_BASE + DANGER_DISTANCE * (dist[i] / SAFE_RANGE).min(1.0);
-            let raw = base * (DANGER_PREDATOR_BASE + DANGER_PREDATOR_SCALE * pred[i].min(1.0))
+            let raw = base * DANGER_PREDATOR_BASE
                 * (1.0 - clamp01(self.defence.as_slice()[i]))
                 * (1.0 - HIDEOUT_PROTECTION * clamp01(self.hideout.as_slice()[i]));
             self.danger.as_mut_slice()[i] = clamp01(raw);

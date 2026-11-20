@@ -145,10 +145,6 @@ impl Stores {
     pub fn space(&self, g: Good) -> f32 {
         (self.capacity[g.index()] - self.amounts[g.index()]).max(0.0)
     }
-    pub fn net_rate(&self, g: Good) -> f32 {
-        self.production_rate[g.index()] - self.consumption_rate[g.index()]
-    }
-
     pub fn deposit(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.deposit_by(g, amount, Producer::Other)
     }
@@ -161,10 +157,6 @@ impl Stores {
             *self.produced_by.entry((who, g)).or_insert(0.0) += taken;
         }
         Ok(taken)
-    }
-
-    pub fn withdraw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
-        self.withdraw_for(g, amount, Use::Other)
     }
 
     pub fn withdraw_for(&mut self, g: Good, amount: f32, use_: Use) -> Result<(), StoresError> {
@@ -183,14 +175,6 @@ impl Stores {
             if have < a {
                 return Err(StoresError::Insufficient { good: g, needed: a, have });
             }
-        }
-        Ok(())
-    }
-
-    pub fn withdraw_all(&mut self, costs: &[Amount]) -> Result<(), StoresError> {
-        self.can_afford(costs)?;
-        for &(g, a) in costs {
-            self.withdraw_for(g, a, Use::Sites)?;
         }
         Ok(())
     }
@@ -260,15 +244,6 @@ pub enum Site {
     WaterByDock,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Spec {
-    pub name: &'static str,
-    pub cost: &'static [Amount],
-    pub footprint: (usize, usize),
-    pub work: f32,
-    pub site: Site,
-}
-
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
         matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
@@ -283,32 +258,6 @@ impl BuildingKind {
         BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
     ];
 
-    pub fn spec(self) -> Spec {
-        let (name, footprint, site) = match self {
-            BuildingKind::Dam => ("Dam", (3, 1), Site::TouchesWater),
-            BuildingKind::Lodge => ("Lodge", (3, 3), Site::Pond),
-            BuildingKind::Burrow => ("Burrow hideout", (1, 1), Site::TouchesWater),
-            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::Pond),
-            BuildingKind::ScentMound => ("Scent mound", (1, 1), Site::TouchesWater),
-            BuildingKind::GuardPost => ("Guard post", (1, 1), Site::Dry),
-            BuildingKind::Canal => ("Canal", (1, 1), Site::TouchesWater),
-            BuildingKind::Lock => ("Lock", (2, 1), Site::TouchesWater),
-            BuildingKind::WaterWheel => ("Water wheel", (2, 2), Site::Pond),
-            BuildingKind::Workshop => ("Workshop", (3, 2), Site::Pond),
-            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Pond),
-            BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
-            BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
-            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Pond),
-            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Pond),
-            BuildingKind::MudPit => ("Clay pit", (2, 2), Site::TouchesWater),
-            BuildingKind::Mill => ("Mill", (3, 3), Site::Pond),
-            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Pond),
-            BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Pond),
-            BuildingKind::TreeNursery => ("Tree nursery", (2, 2), Site::Dry),
-        };
-        let (cost, work) = cost_and_work(self);
-        Spec { name, cost, footprint, work, site }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -363,10 +312,8 @@ pub enum BargeState {
 pub struct Barge {
     pub id: BargeId,
     pub cell: (usize, usize),
-    pub cargo: Option<Amount>,
     pub state: BargeState,
     pub(crate) route: Vec<(usize, usize)>,
-    dest: Option<BuildingId>,
     pub(crate) progress: f32,
     pub at_dock: Option<BuildingId>,
     pub service: Option<crate::shipping::Service>,
@@ -381,10 +328,8 @@ impl Barge {
         Barge {
             id,
             cell,
-            cargo: None,
             state: BargeState::Idle,
             route: vec![],
-            dest: None,
             progress: 0.0,
             at_dock,
             service: None,
@@ -399,23 +344,26 @@ impl Barge {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuildError {
     Locked(BuildingKind),
+    SupplyPile,
+    Unexplored,
+    NeedsDam,
     OutOfBounds,
     Blocked,
     BadTerrain(&'static str),
     NoDock,
     Stores(StoresError),
     UnknownBuilding(BuildingId),
-    UnknownBarge(BargeId),
-    NotComplete,
-    WrongKind(&'static str),
-    NoWaterRoute,
-    BargeBusy,
-    CargoTooLarge { max: f32 },
 }
 
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Locked(need) => write!(f, "needs a finished {} first", need.spec().name.to_lowercase()),
+            Self::SupplyPile => write!(f, "Blocked: the supply pile is there"),
+            Self::Unexplored => write!(f, "Unexplored: the colony has not seen that ground"),
+            Self::NeedsDam => write!(f, "a lock is built on a dam, to let barges through it"),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 impl std::error::Error for BuildError {}
@@ -489,10 +437,6 @@ impl Buildings {
     pub fn barge(&self, id: BargeId) -> Option<&Barge> {
         self.barges.iter().find(|b| b.id == id)
     }
-    pub fn count_complete(&self, kind: BuildingKind) -> usize {
-        self.buildings.iter().filter(|b| b.kind == kind && b.is_complete()).count()
-    }
-
     fn fresh_id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
@@ -500,16 +444,6 @@ impl Buildings {
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
         Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() }.cells().collect()
-    }
-
-    fn check_placement(
-        &self,
-        kind: BuildingKind,
-        pos: (usize, usize),
-        terrain: Terrain,
-    ) -> Result<(), BuildError> {
-
-        self.check_ground(kind, pos, terrain)
     }
 
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
@@ -594,7 +528,7 @@ impl Buildings {
     }
 
     pub fn can_place_site(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
-        self.check_placement(kind, pos, terrain)
+        self.check_ground(kind, pos, terrain)
     }
 
     pub fn place_site(
@@ -603,7 +537,7 @@ impl Buildings {
         pos: (usize, usize),
         terrain: Terrain,
     ) -> Result<BuildingId, BuildError> {
-        self.check_placement(kind, pos, terrain)?;
+        self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
         self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
         self.bind_water(id, kind);
@@ -622,51 +556,10 @@ impl Buildings {
         self.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete())
     }
 
-    pub fn dispatch(
-        &mut self,
-        barge: BargeId,
-        dest: BuildingId,
-        cargo: Option<Amount>,
-        terrain: Terrain,
-    ) -> Result<(), BuildError> {
-        let d = self.building(dest).ok_or(BuildError::UnknownBuilding(dest))?;
-        if d.kind != BuildingKind::Dock {
-            return Err(BuildError::WrongKind("destination must be a dock"));
-        }
-        if !d.is_complete() {
-            return Err(BuildError::NotComplete);
-        }
-        let targets = dock_access(d, terrain);
-        let bi = self.barges.iter().position(|b| b.id == barge).ok_or(BuildError::UnknownBarge(barge))?;
-        let b = &self.barges[bi];
-        if b.state != BargeState::Idle || b.cargo.is_some() {
-            return Err(BuildError::BargeBusy);
-        }
-        if let Some((_, a)) = cargo {
-            check_amount(a)?;
-            if a > BARGE_CAPACITY {
-                return Err(BuildError::CargoTooLarge { max: BARGE_CAPACITY });
-            }
-        }
-        let mut route = water_route(terrain, b.cell, &targets).ok_or(BuildError::NoWaterRoute)?;
-        if let Some((g, a)) = cargo {
-            self.stores.take_raw(g, a)?;
-        }
-        route.reverse();
-        let b = &mut self.barges[bi];
-        b.cargo = cargo.filter(|c| c.1 > 0.0);
-        b.route = route;
-        b.dest = Some(dest);
-        b.state = BargeState::Sailing;
-        b.at_dock = None;
-        Ok(())
-    }
-
     pub fn step(&mut self, dt_days: f32, terrain: Terrain) {
         self.update_capacity( terrain);
         self.update_wheels(terrain);
         for b in self.buildings.iter_mut().filter(|b| matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill | BuildingKind::TreeNursery)) { b.output = (b.output - dt_days * 0.12).max(0.0); }
-        self.move_barges(dt_days, terrain);
         self.stores.end_tick(dt_days);
     }
 
@@ -677,7 +570,7 @@ impl Buildings {
                 .buildings
                 .iter()
                 .filter(|b| b.is_complete() && !self.stranded(b, terrain.depth) && crate::agents::accepts(b.kind, g))
-                .map(|b| crate::catalogue::def(b.kind).capacity)
+                .map(|b| b.kind.spec().capacity)
                 .sum();
             self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;
         }
@@ -692,34 +585,6 @@ impl Buildings {
         }
     }
 
-    fn move_barges(&mut self, dt: f32, terrain: Terrain) {
-        for b in self.barges.iter_mut().filter(|b| b.service.is_none()) {
-            if b.state == BargeState::Sailing {
-                b.progress += BARGE_SPEED * dt;
-                while b.progress >= 1.0 {
-                    let Some(&next) = b.route.last() else { break };
-                    if !terrain.wet(next.0, next.1) {
-                        b.state = BargeState::Stranded;
-                        break;
-                    }
-                    b.route.pop();
-                    b.cell = next;
-                    b.progress -= 1.0;
-                }
-                if b.state == BargeState::Sailing && b.route.is_empty() {
-                    b.state = BargeState::Idle;
-                    b.progress = 0.0;
-                    b.at_dock = b.dest.take();
-                }
-            }
-            if b.state == BargeState::Idle && b.at_dock.is_some() {
-                if let Some((g, a)) = b.cargo {
-                    let put = self.stores.put_raw(g, a).expect("cargo amount is valid");
-                    b.cargo = (a - put > 1e-6).then_some((g, a - put));
-                }
-            }
-        }
-    }
 }
 
 fn dock_access(dock: &Building, terrain: Terrain) -> Vec<(usize, usize)> {
@@ -732,35 +597,4 @@ fn dock_access(dock: &Building, terrain: Terrain) -> Vec<(usize, usize)> {
         }
     }
     out
-}
-
-fn water_route(terrain: Terrain, from: (usize, usize), targets: &[(usize, usize)]) -> Option<Vec<(usize, usize)>> {
-    if !terrain.wet(from.0, from.1) {
-        return None;
-    }
-    let (w, h) = (terrain.depth.width(), terrain.depth.height());
-    let mut prev: Vec<Option<(usize, usize)>> = vec![None; w * h];
-    let mut seen = vec![false; w * h];
-    seen[from.1 * w + from.0] = true;
-    let mut queue = std::collections::VecDeque::from([from]);
-    while let Some(c) = queue.pop_front() {
-        if targets.contains(&c) {
-            let mut path = vec![];
-            let mut cur = c;
-            while cur != from {
-                path.push(cur);
-                cur = prev[cur.1 * w + cur.0].expect("visited cells have predecessors");
-            }
-            path.reverse();
-            return Some(path);
-        }
-        for n in neighbours(c.0, c.1) {
-            if terrain.wet(n.0, n.1) && !seen[n.1 * w + n.0] {
-                seen[n.1 * w + n.0] = true;
-                prev[n.1 * w + n.0] = Some(c);
-                queue.push_back(n);
-            }
-        }
-    }
-    None
 }

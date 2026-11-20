@@ -9,7 +9,7 @@ use crate::calendar::Season;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
 use crate::nav::Goal;
-use crate::resources::{Resource, ResourceId, ResourceKind, ResourceWorld};
+use crate::resources::{Resource, ResourceId, ResourceKind};
 use crate::water::Cell;
 use crate::work::Area;
 use crate::SimState;
@@ -569,15 +569,6 @@ pub fn forest_trend(sim: &SimState) -> Option<(usize, usize)> {
     (last.0 - first.0 >= FALLING_DAYS - 0.5).then_some((first.1, last.1))
 }
 
-impl ResourceWorld {
-    pub fn grow_trees(&mut self, days: f32, growth: impl Fn(Cell) -> f32) {
-        for r in self.items.iter_mut().filter(|r| r.kind == ResourceKind::Tree && !r.snag) {
-            let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
-            r.age_days += days * growth(r.cell) * tend;
-            r.tended_days = (r.tended_days - days).max(0.0);
-        }
-    }
-}
 
 fn plantable(sim: &SimState, cell: Cell, rule: PlantRule, occupied: &HashSet<Cell>, built: &HashSet<Cell>) -> bool {
     let (x, y) = cell;

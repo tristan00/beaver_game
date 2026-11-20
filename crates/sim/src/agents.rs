@@ -73,7 +73,6 @@ pub struct Agent {
     pub next_home_probe: f64,
 }
 
-pub const STUCK_TICKS: u32 = 600;
 
 #[derive(Clone, Debug, Default)]
 pub struct Agents {
@@ -590,7 +589,7 @@ pub(crate) fn worker_effort(sim: &SimState, ag: &Agent, job: crate::colony::Job)
 fn scout_frontier(sim: &SimState, centre: Cell) -> impl Iterator<Item=Cell> + '_ {
     (centre.1.saturating_sub(120)..(centre.1 + 120).min(sim.world.size)).step_by(16)
         .flat_map(move |y|(centre.0.saturating_sub(120)..(centre.0+120).min(sim.world.size)).step_by(16).map(move |x|(x,y)))
-        .filter(|&c|!sim.fog.explored(c) && sim.world.valley_of(c).is_some_and(|v|sim.world.is_open(v)))
+        .filter(|&c|!sim.fog.explored(c) && sim.height.in_bounds(c.0,c.1))
 }
 
 fn scout_target(sim: &SimState, ag: &Agent, centre: Cell) -> Option<Cell> {
@@ -835,7 +834,7 @@ fn finish_sites(sim: &mut SimState) {
             continue;
         }
         let area = crate::catalogue::work_area(b);
-        let def = crate::catalogue::def(b.kind);
+        let def = b.kind.spec();
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
         if let Some(i) = sim.work.dam_plans.iter().position(|p| p.building == id) {
             let plan = sim.work.dam_plans.remove(i);

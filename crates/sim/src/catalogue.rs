@@ -1,101 +1,89 @@
-use crate::buildings::BuildingKind;
-use crate::features::System;
+//! One definition per building: construction, staffing, storage and progression.
+use crate::buildings::{Amount, BuildingKind, Good::*, Site};
 use crate::resources::ResourceKind;
-use crate::tuning::buildings::{batches_per_day, store_capacity};
 use crate::work::Role;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Tier {
-    Elementary,
-    Industrial,
-}
-
-#[derive(Clone, Debug)]
-pub struct Def {
-    pub kind: BuildingKind,
-    pub tier: Tier,
-    pub slots: Vec<Role>,
+#[derive(Clone, Copy, Debug)]
+pub struct Spec {
+    pub name: &'static str,
+    pub footprint: (usize, usize),
+    pub site: Site,
+    pub cost: &'static [Amount],
+    pub work: f32,
+    pub prerequisites: &'static [BuildingKind],
+    pub slots: &'static [Role],
     pub area: Option<(usize, usize)>,
-    pub system: Option<System>,
     pub capacity: f32,
-    pub batches_per_day: f32,
 }
 
-impl Def {
-    pub fn batches_per_worker(&self) -> f32 {
-        if self.slots.is_empty() { 0.0 } else { self.batches_per_day / self.slots.len() as f32 }
+impl Spec {
+    const fn new(name: &'static str, footprint: (usize, usize), site: Site, cost: &'static [Amount], work: f32, prerequisites: &'static [BuildingKind]) -> Self {
+        Self { name, footprint, site, cost, work, prerequisites, slots: &[], area: None, capacity: 0.0 }
+    }
+
+    const fn staffed(mut self, slots: &'static [Role]) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    const fn area(mut self) -> Self {
+        self.area = Some((31, 31));
+        self
+    }
+
+    const fn storage(mut self, capacity: f32) -> Self {
+        self.capacity = capacity;
+        self
     }
 }
 
-const GATHER_AREA: (usize, usize) = (31, 31);
-
-fn camp(kind: ResourceKind) -> (Tier, Vec<Role>, Option<(usize, usize)>) {
-    (Tier::Elementary, vec![Role::Collect(kind); 2], Some(GATHER_AREA))
-}
-
-pub fn def(kind: BuildingKind) -> Def {
-    use BuildingKind::*;
-    let passive = (Tier::Elementary, vec![], None);
-    let (tier, slots, area) = match kind {
-        Dam | Lodge | Burrow | Canal | Lock | WaterWheel | Barge => passive,
-        ScentMound => (Tier::Elementary, vec![Role::Scout], None),
-        GuardPost => (Tier::Elementary, vec![Role::Guard; 2], None),
-        FoodCache | Warehouse | Dock => (Tier::Elementary, vec![Role::Haul], None),
-        Workshop => (Tier::Elementary, vec![Role::Craft], None),
-        LoggingCamp => camp(ResourceKind::Tree),
-        ForagerHut => camp(ResourceKind::Plant),
-        MudPit => camp(ResourceKind::MudBank),
-        ForesterLodge => (Tier::Elementary, vec![Role::Forester; 2], Some(GATHER_AREA)),
-        TreeNursery => (Tier::Elementary, vec![Role::Forester], None),
-        Mill => (Tier::Industrial, vec![Role::Craft; 2], None),
-        Storehouse => (Tier::Industrial, vec![Role::Haul; 2], None),
-    };
-    Def {
-        kind,
-        tier,
-        slots,
-        area,
-        system: System::of_building(kind),
-        capacity: store_capacity(kind),
-        batches_per_day: batches_per_day(kind),
+impl BuildingKind {
+    pub fn spec(self) -> Spec {
+        use BuildingKind::*;
+        match self {
+            Dam => Spec::new("Dam", (3, 1), Site::TouchesWater, &[(Sticks, 30.0), (Clay, 4.0)], 7.0, &[]),
+            Lodge => Spec::new("Lodge", (3, 3), Site::Pond, &[(Sticks, 36.0), (Clay, 16.0)], 10.0, &[LoggingCamp, MudPit]),
+            Burrow => Spec::new("Burrow hideout", (1, 1), Site::TouchesWater, &[], 5.0, &[]),
+            FoodCache => Spec::new("Food cache", (2, 2), Site::Pond, &[(Sticks, 12.0), (Clay, 5.0)], 3.5, &[ForagerHut])
+                .staffed(&[Role::Haul]).storage(100.0),
+            ScentMound => Spec::new("Scent mound", (1, 1), Site::TouchesWater, &[(Clay, 5.0), (Sticks, 3.0)], 1.5, &[Burrow])
+                .staffed(&[Role::Scout]),
+            GuardPost => Spec::new("Guard post", (1, 1), Site::Dry, &[(Sticks, 16.0), (Clay, 3.0)], 3.0, &[ScentMound])
+                .staffed(&[Role::Guard; 2]),
+            Canal => Spec::new("Canal", (1, 1), Site::TouchesWater, &[(Clay, 1.5)], 0.8, &[MudPit]),
+            Lock => Spec::new("Lock", (2, 1), Site::TouchesWater, &[(Sticks, 22.0), (Clay, 10.0)], 6.0, &[Dock, MudPit]),
+            WaterWheel => Spec::new("Water wheel", (2, 2), Site::Pond, &[(Sticks, 26.0), (Clay, 4.0)], 7.0, &[Workshop]),
+            Workshop => Spec::new("Workshop", (3, 2), Site::Pond, &[(Sticks, 18.0), (Clay, 6.0)], 5.0, &[LoggingCamp, MudPit])
+                .staffed(&[Role::Craft]),
+            Warehouse => Spec::new("Warehouse", (3, 3), Site::Pond, &[(Sticks, 32.0), (Clay, 10.0)], 8.0, &[])
+                .staffed(&[Role::Haul]).storage(150.0),
+            Dock => Spec::new("Dock", (2, 1), Site::TouchesWater, &[(Sticks, 16.0), (Clay, 4.0)], 4.0, &[Warehouse])
+                .staffed(&[Role::Haul]).storage(60.0),
+            Barge => Spec::new("Barge", (1, 1), Site::WaterByDock, &[(Sticks, 24.0), (Clay, 4.0)], 5.0, &[Dock, Workshop]),
+            LoggingCamp => Spec::new("Logging camp", (2, 2), Site::Pond, &[(Sticks, 8.0)], 2.0, &[Burrow])
+                .staffed(&[Role::Collect(ResourceKind::Tree); 2]).area(),
+            ForagerHut => Spec::new("Forager hut", (2, 2), Site::Pond, &[(Sticks, 6.0), (Clay, 3.0)], 2.0, &[Burrow])
+                .staffed(&[Role::Collect(ResourceKind::Plant); 2]).area(),
+            MudPit => Spec::new("Clay pit", (2, 2), Site::TouchesWater, &[(Sticks, 6.0)], 2.0, &[Burrow])
+                .staffed(&[Role::Collect(ResourceKind::MudBank); 2]).area(),
+            Mill => Spec::new("Mill", (3, 3), Site::Pond, &[(Sticks, 50.0), (Clay, 14.0)], 12.0, &[Workshop, WaterWheel])
+                .staffed(&[Role::Craft; 2]),
+            Storehouse => Spec::new("Storehouse", (4, 3), Site::Pond, &[(Sticks, 58.0), (Clay, 16.0)], 14.0, &[Warehouse, Workshop])
+                .staffed(&[Role::Haul; 2]).storage(400.0),
+            ForesterLodge => Spec::new("Forester's lodge", (2, 2), Site::Pond, &[(Sticks, 10.0), (Clay, 3.0)], 3.0, &[LoggingCamp])
+                .staffed(&[Role::Forester; 2]).area(),
+            TreeNursery => Spec::new("Tree nursery", (2, 2), Site::Dry, &[(Sticks, 12.0), (Clay, 6.0)], 4.0, &[ForesterLodge])
+                .staffed(&[Role::Forester]),
+        }
     }
 }
 
 pub fn work_area(b: &crate::buildings::Building) -> Option<crate::work::Area> {
     let c = b.cells().next().unwrap_or(b.pos);
-    def(b.kind).area.map(|(w, h)| crate::work::Area {
+    b.kind.spec().area.map(|(w, h)| crate::work::Area {
         min: (c.0.saturating_sub(w / 2), c.1.saturating_sub(h / 2)),
         max: (c.0 + w / 2, c.1 + h / 2),
     })
-}
-
-pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
-    use BuildingKind::*;
-    match kind {
-        Dam | Burrow | Warehouse => &[],
-        ForagerHut | LoggingCamp | MudPit | ScentMound => &[Burrow],
-        Lodge => &[LoggingCamp, MudPit],
-        FoodCache => &[ForagerHut],
-        Dock => &[Warehouse],
-        Workshop => &[LoggingCamp, MudPit],
-        Canal => &[MudPit],
-        Lock => &[Dock, MudPit],
-        Barge => &[Dock, Workshop],
-        WaterWheel => &[Workshop],
-        Storehouse => &[Warehouse, Workshop],
-        Mill => &[Workshop, WaterWheel],
-        ForesterLodge => &[LoggingCamp],
-        TreeNursery => &[ForesterLodge],
-        GuardPost => &[ScentMound],
-    }
-}
-
-pub fn available(sim: &crate::SimState) -> Vec<BuildingKind> {
-    BuildingKind::ALL
-        .iter()
-        .copied()
-        .filter(|k| def(*k).system.is_none_or(|s| sim.features.enabled(s)))
-        .collect()
 }
 
 #[cfg(test)]
@@ -106,11 +94,11 @@ mod progression_tests {
         let mut built = Vec::new();
         for _ in 0..BuildingKind::ALL.len() {
             for k in BuildingKind::ALL {
-                if !built.contains(&k) && prerequisites(k).iter().all(|p| built.contains(p)) { built.push(k); }
+                if !built.contains(&k) && k.spec().prerequisites.iter().all(|p| built.contains(p)) { built.push(k); }
             }
         }
         assert_eq!(built.len(), BuildingKind::ALL.len(), "building prerequisites contain a cycle");
-        assert!(prerequisites(BuildingKind::Workshop).contains(&BuildingKind::MudPit));
-        assert!(prerequisites(BuildingKind::Barge).contains(&BuildingKind::Dock));
+        assert!(BuildingKind::Workshop.spec().prerequisites.contains(&BuildingKind::MudPit));
+        assert!(BuildingKind::Barge.spec().prerequisites.contains(&BuildingKind::Dock));
     }
 }

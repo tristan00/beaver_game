@@ -149,7 +149,7 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
 
     let cfg = &sim.water.config;
     let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
-    let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * season.evap_mult() * (1.0 - ice[i]) + cfg.seepage };
+    let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * crate::tuning::water::EVAP_MULT[season as usize] * (1.0 - ice[i]) + cfg.seepage };
     let in_pond: Vec<bool> = {
         let mut v = vec![false; w * h];
         pond.flooded_cells.iter().chain(cells).for_each(|c| v[idx(c)] = true);

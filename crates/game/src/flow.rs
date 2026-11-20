@@ -114,8 +114,6 @@ pub use sim::site::{can_settle, score as site_hint, SettleError};
 #[derive(Resource)]
 pub struct Flow {
     pub phase: Phase,
-    #[allow(dead_code)]
-    pub mouth: (f32, f32),
     pub focus: Option<Vec3>,
     pub message: String,
     pub log: VecDeque<String>,
@@ -124,15 +122,12 @@ pub struct Flow {
     pub generation: u32,
     pub settled_at: Option<f32>,
     pub lodge_cell: Option<Cell>,
-    next_unlock: f32,
 }
 
 impl Flow {
-    pub fn new(world: &World) -> Flow {
-        let mouth = valley_mouth(world);
+    pub fn new(_world: &World) -> Flow {
         Flow {
             phase: Phase::Scouting,
-            mouth,
             focus: None,
             message: String::new(),
             log: VecDeque::new(),
@@ -141,7 +136,6 @@ impl Flow {
             generation: 0,
             settled_at: None,
             lodge_cell: None,
-            next_unlock: 0.0,
         }
     }
 
@@ -160,24 +154,6 @@ impl Flow {
             }
             None => false,
         }
-    }
-}
-
-pub fn valley_mouth(world: &World) -> (f32, f32) {
-    let mut best: Option<(u32, Cell)> = None;
-    for y in 0..world.size {
-        for x in 0..world.size {
-            if world.valley_of((x, y)) == Some(world.start) && world.river.get(x, y) == Some(&true) {
-                let acc = *world.flow_acc.get(x, y).unwrap();
-                if best.is_none_or(|(b, _)| acc > b) {
-                    best = Some((acc, (x, y)));
-                }
-            }
-        }
-    }
-    match best {
-        Some((_, c)) => (c.0 as f32, c.1 as f32),
-        None => world.valleys[world.start.0 as usize].center,
     }
 }
 
@@ -202,9 +178,6 @@ pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     flow.message.clear();
 }
 
-#[derive(Resource)]
-pub struct CaptureGate(pub bool);
-
 pub struct FlowPlugin;
 
 impl Plugin for FlowPlugin {
@@ -212,10 +185,9 @@ impl Plugin for FlowPlugin {
         let flow = Flow::new(&app.world().resource::<Sim>().0.world);
         app.insert_resource(flow)
             .init_resource::<Selection>()
-            .insert_resource(CaptureGate(true))
             .add_systems(
                 Update,
-                (advance_flow, unlock_valleys, watch_collapse, sample_history, ease_camera)
+                (advance_flow, watch_collapse, sample_history, ease_camera)
                     .chain(),
             );
     }
@@ -230,30 +202,6 @@ fn advance_flow(
     let dt = time.delta_secs().min(0.1);
     flow.real_secs += dt;
     let _ = (&orbit, &sim);
-}
-
-fn unlock_valleys(time: Res<Time>, mut sim: ResMut<Sim>, mut flow: ResMut<Flow>) {
-    if !sim.0.colony.is_founded() || flow.real_secs < flow.next_unlock {
-        return;
-    }
-    flow.next_unlock = flow.real_secs + 0.25;
-    let cells: Vec<Cell> = sim
-        .0
-        .colony
-        .beavers
-        .iter()
-        .map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize))
-        .collect();
-    let _ = &time;
-    let mut opened_all = Vec::new();
-    for c in cells {
-        if let Ok(opened) = sim.0.world.unlock(c) {
-            opened_all.extend(opened);
-        }
-    }
-    for id in opened_all {
-        flow.push_log(format!("The colony reached valley {}", id.0));
-    }
 }
 
 fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>) {

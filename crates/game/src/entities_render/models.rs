@@ -1,6 +1,6 @@
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::structures;
-use super::scene::{Pond, Species, StructKind};
+use super::scene::{Species, StructKind};
 use bevy::prelude::*;
 use std::f32::consts::{PI, TAU};
 
@@ -142,19 +142,6 @@ pub fn beaver_static(mb: &mut Mb) {
         beaver_leg(&mut leg, i < 2);
         mb.append(leg, *p);
     }
-}
-
-pub fn pond_surface(p: &Pond) -> Mesh {
-    let rim: Vec<Vec3> = (0..96)
-        .map(|i| {
-            let a = i as f32 / 96.0 * TAU;
-            let r = p.radius(a) + 0.9;
-            Vec3::new(a.sin() * r, 0.0, a.cos() * r)
-        })
-        .collect();
-    let mut mb = Mb::new();
-    mb.fan(Vec3::ZERO, &rim, [1.0; 3]);
-    mb.build()
 }
 
 pub fn ripple(mb: &mut Mb) {
@@ -386,22 +373,6 @@ fn twigs(mb: &mut Mb, base: Vec3, n: usize, reach: f32, rise: f32, col: [f32; 3]
             mb.cyl(mid, mid + v(a2.cos() * 0.6, 0.55, a2.sin() * 0.6), 0.04, 0.02, col, col, 4);
         }
     }
-}
-
-pub fn stump_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    let bark = hex(0x7a5230);
-    mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.62, -0.1), (0.44, 0.15), (0.38, 0.55)], 10, bark, bark, true);
-    mb.lathe(Mat4::IDENTITY, &[(0.38, 0.55), (0.34, 0.57), (0.0, 0.57)], 10, hex(0xeed3a0), hex(0xf6e2b8), false);
-    mb.lathe(Mat4::IDENTITY, &[(0.2, 0.575), (0.17, 0.575)], 10, hex(0xc9a066), hex(0xc9a066), false);
-    for i in 0..4 {
-        let a = i as f32 * 1.6 + 0.4;
-        mb.ellipsoid_r(v(a.cos() * 0.6, 0.05, a.sin() * 0.6), v(0.3, 0.12, 0.14), Quat::from_rotation_y(-a), bark);
-    }
-    for (i, (x, z)) in [(0.8f32, 0.6f32), (-0.7, 0.8), (0.3, -0.9), (-0.9, -0.3)].iter().enumerate() {
-        mb.ellipsoid_r(v(*x, 0.07, *z), v(0.14, 0.05, 0.08), Quat::from_rotation_y(i as f32), hex(0xe9cf9e));
-    }
-    mb.build()
 }
 
 pub fn snag_mesh() -> Mesh {

@@ -16,7 +16,6 @@ const LAKE_LEVEL_TOL_M: f32 = 0.10;
 const LAKE_SHORE_SLOPE: f32 = 0.05;
 const LAKE_MAX_DEPTH_M: f32 = 3.0;
 const LAKE_AREA_M2: std::ops::RangeInclusive<f32> = 50.0..=20_000.0;
-pub const MAX_STEP: f32 = 0.6;
 const FLOW_EPS: f32 = 1e-3;
 const MIN_SIZE: usize = 64;
 const MOISTURE_REACH_M: f32 = 15.0;
@@ -26,9 +25,6 @@ const RIPARIAN_CLEAR_M: f32 = 6.0;
 const TREES_PER_M2: [(u8, f32); 5] = [(10, 0.06), (20, 0.025), (90, 0.012), (30, 0.002), (100, 0.002)];
 pub const INFLOW_WALL_M: f32 = 12.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ValleyId(pub u16);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tree { Aspen, Willow, Birch, Alder, Pine }
 
@@ -37,18 +33,8 @@ impl Tree {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Valley {
-    pub id: ValleyId,
-    pub center: (f32, f32),
-    pub open: bool,
-    pub cells: usize,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum WorldError {
     InvalidSize(usize),
-    OutOfBounds((usize, usize)),
-    ValleyLocked(ValleyId),
     GenerationFailed { seed: u64, reason: String },
 }
 
@@ -56,8 +42,6 @@ impl fmt::Display for WorldError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WorldError::InvalidSize(s) => write!(f, "invalid world size {s} (minimum {MIN_SIZE})"),
-            WorldError::OutOfBounds(c) => write!(f, "cell {c:?} is outside the map"),
-            WorldError::ValleyLocked(v) => write!(f, "valley {} is locked", v.0),
             WorldError::GenerationFailed { seed, reason } => write!(f, "world generation failed for seed {seed}: {reason}"),
         }
     }
@@ -71,9 +55,6 @@ pub struct World {
     pub cell_m: f32,
     pub height: HeightGrid,
     pub surface: HeightGrid,
-    pub valley: Grid<ValleyId>,
-    pub valleys: Vec<Valley>,
-    pub start: ValleyId,
     pub flow_to: Grid<Option<usize>>,
     pub flow_acc: Grid<u32>,
     pub river: Grid<bool>,
@@ -89,29 +70,10 @@ pub struct World {
 }
 
 impl World {
-    pub fn valley_of(&self, cell: (usize, usize)) -> Option<ValleyId> {
-        self.valley.get(cell.0, cell.1).copied()
-    }
-
-    pub fn is_open(&self, id: ValleyId) -> bool {
-        self.valleys.get(id.0 as usize).is_some_and(|v| v.open)
-    }
-
-    pub fn unlock(&mut self, cell: (usize, usize)) -> Result<Vec<ValleyId>, WorldError> {
-        let own = self.valley_of(cell).ok_or(WorldError::OutOfBounds(cell))?;
-        if !self.is_open(own) {
-            return Err(WorldError::ValleyLocked(own));
-        }
-        Ok(Vec::new())
-    }
-
     pub fn downstream(&self, x: usize, y: usize) -> Option<(usize, usize)> {
         self.flow_to.get(x, y).copied().flatten().map(|i| (i % self.size, i / self.size))
     }
 
-    pub fn reachable_valleys(&self, from: ValleyId) -> Vec<ValleyId> {
-        if self.is_open(from) || (from.0 as usize) < self.valleys.len() { vec![from] } else { Vec::new() }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -529,16 +491,12 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
             forest[i] = Some(choose_tree(moisture[i], slope[i], hash01(seed ^ 0x5452_4545, i)));
         }
     }
-    let half = n as f32 / 2.0;
     Ok(World {
         seed,
         size: n,
         cell_m,
         height: grid_from(n, height),
         surface: grid_from(n, surface),
-        valley: Grid::new(n, n, ValleyId(0)),
-        valleys: vec![Valley { id: ValleyId(0), center: (half, half), open: true, cells: n * n }],
-        start: ValleyId(0),
         flow_to: grid_from(n, flow),
         flow_acc: grid_from(n, acc),
         river: grid_from(n, river),

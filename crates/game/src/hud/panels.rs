@@ -527,8 +527,8 @@ fn item_tip(s: &sim::SimState, e: &build_logic::MenuEntry) -> Tip {
             t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
         }
     } else {
-        let gaps = s.build_gaps(kind);
-        let tech = e.need.map(|n| n.0).unwrap_or("");
+        let gaps = s.missing_prerequisites(kind);
+        let tech = e.need.unwrap_or("");
         t.push(TipLine::new(tech, "").icon(Icon::Padlock, MUTED));
         for g in gaps {
             t.push(gap_line(&g).sub());
@@ -552,8 +552,7 @@ fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected
         });
         if e.unlocked {
             cost_row(t, &item_cost(kind), 12.0, MUTED);
-        } else if let Some((_, need, have)) = e.need.filter(|n| n.1 > 0.0) {
-            t.bar(have / need, 60.0, 4.0, MUTED);
+
         }
     });
     tile.node.padding = UiRect::all(Val::Px(6.0));

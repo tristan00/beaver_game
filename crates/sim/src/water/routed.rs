@@ -531,7 +531,7 @@ impl Flow {
         }
         for row in &mut w.rows {
             row.sort_unstable();
-            super::merge_runs_in_place(row, 0);
+            merge_runs_in_place(row, 0);
         }
         self.published.clone_from(&self.wet);
     }
@@ -552,4 +552,14 @@ fn discharge(link: &Link, level: f64, manning: f64) -> (f64, f64) {
     } else {
         (normal, (5.0 / 3.0) * normal / h)
     }
+}
+
+fn merge_runs_in_place(runs:&mut Vec<(u32,u32)>,gap:u32) {
+    let mut count=0;
+    for read in 0..runs.len() {
+        let (a,b)=runs[read];
+        if count>0 && a<=runs[count-1].1+gap {runs[count-1].1=runs[count-1].1.max(b);}
+        else {runs[count]=(a,b);count+=1;}
+    }
+    runs.truncate(count);
 }

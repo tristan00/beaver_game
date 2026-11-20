@@ -56,7 +56,7 @@ impl Plugin for CameraPlugin {
         let name = app.world().resource::<crate::cli::Cli>().cam.clone();
         let mut orbit = preset(&name).expect("preset validated by Cli::parse");
         if name == "lodge" {
-            let (target, yaw) = crate::entities_render::lodge_view(&app.world().resource::<crate::state::Sim>().0.height);
+            let (target, yaw) = crate::entities_render::lodge_view(&app.world().resource::<crate::state::Sim>().0);
             orbit.target = target;
             orbit.yaw = yaw;
         }

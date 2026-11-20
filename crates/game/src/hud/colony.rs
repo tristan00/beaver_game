@@ -400,8 +400,8 @@ fn land(c: &Ctx, u: &mut Ui) {
 }
 
 fn prerequisites(c: &Ctx, u: &mut Ui) {
-    for kind in sim::catalogue::available(c.s) {
-        let gaps = c.s.build_gaps(kind);
+    for kind in BuildingKind::ALL {
+        let gaps = c.s.missing_prerequisites(kind);
         u.row(8.0, |r| {
             r.icon(building_icon(kind), 16.0, INK);
             r.text(kind.spec().name, 12.0, INK);

@@ -2,8 +2,8 @@
 
 The playable game now uses routed hydrology: streams carry water down a drainage graph, and
 reservoirs retain a finite volume below their outlets. The one-metre terrain, dams, and canals
-remain the source of the drainage geometry. The previous shallow-water solver is available
-only for diagnostics with `BC_WATER_DETAILED=1`.
+remain the source of the drainage geometry. Gameplay and the sandbox share this solver;
+the previous opt-in shallow-water solver has been removed.
 
 ## Storage and flow
 
@@ -99,9 +99,9 @@ entrances continue to constrain their routes.
 Lodges, food caches, logging/foraging camps, workshops, warehouses, forester lodges, mills,
 storehouses, and water wheels require water at least 0.10 m deep beneath a strict majority
 of the footprint. They become stranded if that majority loses water. Burrows, mud pits,
-docks, scent mounds, and waterworks remain shoreline structures. Quarry camps, nurseries,
-and guard posts are dry-land exceptions. Canal research now needs ten Water experience
-and a population of six, after Lodge building, so wet expansion is available earlier.
+docks, scent mounds, and waterworks remain shoreline structures. Nurseries and guard
+posts require dry ground. Canal digging requires a completed clay pit. Building
+requirements are defined together in `crates/sim/src/catalogue.rs`.
 
 Each occupied lodge belongs to one family. Newcomers require an empty home or a compatible
 unpaired adult; regional arrivals follow the same rule. The founding family moves from its

@@ -1,5 +1,5 @@
 //! Synchronizes colony needs and families with physical stores, workers and homes.
-use crate::{Grid, SimState, agents, buildings, colony, events, features, grid, jobs, worldgen};
+use crate::{SimState, agents, buildings, colony, grid, jobs, worldgen};
 
 impl SimState {
     pub(super) fn mirror_colony_stores(&mut self) -> Mirror {
@@ -93,41 +93,14 @@ impl SimState {
     }
 
     pub(super) fn step_events(&mut self, dt_days: f32) {
-        if !self.colony.is_founded() {
-            self.events.step(dt_days);
-            return;
-        }
-        let ctx = self.event_context();
-        let mirrored = self.mirror_colony_stores();
-        let mut host = ColonyHost { colony: &mut self.colony };
-        if self.events.step_with(dt_days, &ctx, &mut host).is_err() {
-            self.events.step(dt_days);
-        }
-        self.settle_colony_stores(mirrored);
-        let arrivals = if self.features.enabled(features::System::Rivals) { self.region.take_arrivals() } else { Vec::new() };
-        for m in arrivals {
-            self.colony.add_immigrants(m.count);
-        }
+        let wetland = self.ecology.wetland.as_slice();
+        let mean = wetland.iter().step_by(7).sum::<f32>()
+            / wetland.iter().step_by(7).count().max(1) as f32;
+        let before = self.mirror_colony_stores();
+        self.events.step(dt_days, &mut self.colony, mean);
+        self.settle_colony_stores(before);
     }
 
-    pub fn event_context(&self) -> events::EventContext {
-        let mean = |g: &Grid<f32>| {
-            let s = g.as_slice();
-            if s.is_empty() { 0.0 } else { s.iter().step_by(7).sum::<f32>() / s.iter().step_by(7).count() as f32 }
-        };
-        let wet = {
-            let s = self.water.depth.as_slice();
-            s.iter().step_by(7).filter(|d| **d > water_wet()).count() as f32 / s.iter().step_by(7).count().max(1) as f32
-        };
-        events::EventContext {
-            population: self.colony.population() as u32,
-            wetland: mean(&self.ecology.wetland),
-            forest: mean(&self.ecology.forest),
-            danger: 0.3,
-            mosquitoes: (mean(&self.ecology.wetland) * 0.7).min(1.0),
-            water_level: (wet * 4.0).min(1.0),
-        }
-    }
 }
 
 pub(super) struct Mirror {
@@ -141,41 +114,6 @@ pub(super) struct Mirror {
 pub struct WorldLand<'a> {
     pub world: &'a worldgen::World,
     pub depth: &'a grid::Grid<f32>,
-}
-
-fn water_wet() -> f32 {
-    buildings::WET_DEPTH
-}
-
-pub struct ColonyHost<'a> {
-    pub colony: &'a mut colony::Colony,
-}
-
-impl events::EventHost for ColonyHost<'_> {
-    fn population(&self) -> u32 {
-        self.colony.population() as u32
-    }
-    fn food(&self) -> f32 {
-        self.colony.food
-    }
-    fn wood(&self) -> f32 {
-        self.colony.wood
-    }
-    fn add_food(&mut self, amount: f32) {
-        self.colony.food = (self.colony.food + amount).max(0.0);
-    }
-    fn add_wood(&mut self, amount: f32) {
-        self.colony.wood = (self.colony.wood + amount).max(0.0);
-    }
-    fn kill_beavers(&mut self, n: u32) -> u32 {
-        self.colony.kill_beavers(n)
-    }
-    fn damage_health(&mut self, amount: f32) {
-        self.colony.damage_health(amount);
-    }
-    fn add_beavers(&mut self, n: u32) -> u32 {
-        self.colony.add_immigrants(n)
-    }
 }
 
 impl colony::Landscape for WorldLand<'_> {

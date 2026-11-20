@@ -78,8 +78,6 @@ impl Plugin for StatePlugin {
                 eprintln!("error: cannot build the sandbox: {e}");
                 std::process::exit(1);
             }), None)
-        } else if cli.plain_world() {
-            (SimState::new(seed), None)
         } else {
             choice.build().map(|(s, d)| (s, Some(d))).unwrap_or_else(|e| {
                 eprintln!("error: cannot build the new game: {e}");

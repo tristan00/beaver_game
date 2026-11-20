@@ -2,7 +2,7 @@ mod colony_bridge;
 mod command;
 mod construction;
 
-pub use colony_bridge::{ColonyHost, WorldLand};
+pub use colony_bridge::WorldLand;
 pub use command::Command;
 
 pub mod agents;
@@ -16,7 +16,6 @@ pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
 pub mod events;
-pub mod features;
 pub mod forestry;
 pub mod grid;
 pub mod hud;
@@ -26,7 +25,6 @@ pub mod maps;
 pub mod maintenance;
 pub mod nav;
 pub mod output;
-pub mod region;
 pub mod resources;
 pub mod sandbox;
 pub mod script;
@@ -95,9 +93,7 @@ pub struct SimState {
     pub ecology: ecology::Ecology,
     pub colony: colony::Colony,
     pub buildings: buildings::Buildings,
-    pub region: region::Region,
     pub events: events::Events,
-    pub features: features::Features,
     pub nav: nav::NavGrid,
     pub resources: resources::ResourceWorld,
     pub agents: agents::Agents,
@@ -134,9 +130,7 @@ impl SimState {
             ecology: ecology::Ecology::seeded(size, seed),
             colony: Default::default(),
             buildings: Default::default(),
-            region: region::Region::new(seed),
             events: events::Events::new(seed),
-            features: features::Features::default(),
             nav: nav::NavGrid::new(size, size),
             resources,
             agents: agents::Agents::default(),
@@ -153,30 +147,10 @@ impl SimState {
             step_timings: StepTimings::default(),
         };
         forestry::init(&mut sim);
-        sim.apply_features();
         sim
     }
 
-    pub fn set_features(&mut self, features: features::Features) {
-        self.features = features;
-        self.apply_features();
-    }
-
-    fn apply_features(&mut self) {
-        use features::System;
-        let f = self.features;
-        self.events.set_muted(events::EventKind::ALL.into_iter().filter(|k| !f.allows_event(*k)).collect());
-        self.colony.set_disabled_jobs(colony::Job::ALL.into_iter().filter(|j| !f.allows_job(*j)).collect());
-        if !f.enabled(System::Predators) && !self.ecology.predators.is_empty() {
-            self.ecology.predators.clear();
-        }
-    }
-
     /// Gameplay, sandbox and scripted playtests share the same physical clock.
-    pub fn step_game(&mut self, dt_days: f32) -> Result<(), SimError> {
-        self.step(dt_days)
-    }
-
     pub fn step(&mut self, dt_days: f32) -> Result<(), SimError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
@@ -197,7 +171,6 @@ impl SimState {
             clock = now;
         };
         let mut t = self.step_timings;
-        self.apply_features();
         self.time_days += dt_days as f64;
         self.steps += 1;
         lap(&mut t.other_s);
@@ -216,9 +189,6 @@ impl SimState {
         self.sync_homes();
         maintenance::step(self, dt_days);
         lap(&mut t.buildings_s);
-        if self.features.enabled(features::System::Rivals) {
-            self.region.step(dt_days);
-        }
         self.resources.step(dt_days, self.time_days).expect("dt validated above");
         let day = self.time_days.floor();
         if day > (self.time_days - dt_days as f64).floor() && self.colony.is_founded() {

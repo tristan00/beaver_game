@@ -47,7 +47,6 @@ pub const PLANT_MAX: f32 = 4.0;
 pub const PLANT_REGROW_PER_DAY: f32 = 0.25;
 pub const WINTER_PLANT_DECAY_PER_DAY: f32 = 0.04;
 pub const WET_MOISTURE: f32 = 0.5;
-pub const MUD_AMOUNT: f32 = 20.0;
 const PLANT_CHANCE: f32 = 0.25;
 pub const RIVER_CLAY_SPOTS: usize = 8;
 pub const RIVER_CLAY_CAPACITY: f32 = 8.0;
@@ -298,14 +297,6 @@ impl ResourceWorld {
         id
     }
 
-    pub fn add_plant(&mut self, world: &World, cell: Cell) -> Result<ResourceId, ResourceError> {
-        if !is_wet(world, cell) {
-            return Err(ResourceError::NotWet);
-        }
-        let id = self.add(ResourceKind::Plant, cell, PLANT_MAX);
-        self.get_mut(id)?.wet = true;
-        Ok(id)
-    }
 }
 
 fn distance(a:Cell,b:Cell)->f32 {

@@ -1,5 +1,5 @@
 use crate::water::Cell;
-use crate::worldgen::{ValleyId, World};
+use crate::worldgen::World;
 
 pub const EXPLORED: f32 = 0.5;
 pub const BEAVER_SIGHT: f32 = 30.0;
@@ -26,9 +26,6 @@ impl Fog {
     pub fn explored(&self, c: Cell) -> bool {
         self.get(c) >= EXPLORED
     }
-    pub fn explored_cells(&self) -> usize {
-        self.seen.iter().filter(|&&v| v >= EXPLORED).count()
-    }
     pub fn reveal(&mut self, centre: (f32, f32), radius: f32, allowed: &dyn Fn(usize, usize) -> bool) -> bool {
         if self.size == 0 {
             return false;
@@ -51,19 +48,9 @@ impl Fog {
         self.dirty |= changed;
         changed
     }
-    pub fn reveal_valley(&mut self, world: &World, id: ValleyId) {
-        for y in 0..self.size {
-            for x in 0..self.size {
-                if world.valley_of((x, y)) == Some(id) {
-                    self.seen[y * self.size + x] = 1.0;
-                }
-            }
-        }
-        self.dirty = true;
-    }
 }
 
 pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
-    move |x, y| world.valley_of((x, y)).is_some_and(|v| world.is_open(v))
+    move |x, y| world.height.in_bounds(x, y)
 }
 

@@ -1,51 +1,58 @@
 //! Building placement, paid construction, repairs and cancellation.
-use crate::{SimError, SimState, agents, buildings, catalogue, dam_preview, maintenance, water, work};
+use crate::{SimError, SimState, agents, buildings, dam_preview, maintenance, water, work};
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use buildings::{BuildError, BuildingKind};
+
+    #[test]
+    fn preview_and_command_reject_the_same_site_without_mutation() {
+        let mut sim = SimState::new(1);
+        sim.work.supplies = Some((5, 5));
+        let before = sim.buildings.buildings.len();
+        let error = sim.check_site(BuildingKind::Warehouse, (5, 5)).unwrap_err();
+        assert_eq!(error, BuildError::SupplyPile);
+        let command = crate::Command::PlaceSite { kind: BuildingKind::Warehouse, pos: (5, 5) };
+        assert_eq!(sim.apply(command), Err(SimError::InvalidCommand(error.to_string())));
+        assert_eq!(sim.buildings.buildings.len(), before);
+        assert!(sim.work.places.is_empty());
+    }
+
+    #[test]
+    fn lock_preview_requires_a_dam_even_when_prerequisites_are_bypassed() {
+        let mut sim = SimState::new(1);
+        sim.sandbox = true;
+        sim.water.depth.as_mut_slice().fill(0.5);
+        assert_eq!(sim.check_site(BuildingKind::Lock, (5, 5)), Err(BuildError::NeedsDam));
+        sim.water.build_dam(&[(5, 5)], 1.0).unwrap();
+        assert!(sim.check_site(BuildingKind::Lock, (5, 5)).is_ok());
+    }
+}
 
 impl SimState {
-    pub fn check_site(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
-        if !self.can_build(kind) {
-            return Err(SimError::InvalidCommand(format!("requires finished buildings: {:?}", self.missing_prerequisites(kind))));
+    /// Shared by command execution, placement previews and the scripted player.
+    pub fn check_site(&self, kind: buildings::BuildingKind, pos: water::Cell) -> Result<(), buildings::BuildError> {
+        use buildings::BuildError;
+        if let Some(&need) = self.missing_prerequisites(kind).first().filter(|_| !self.sandbox) {
+            return Err(BuildError::Locked(need));
         }
-        self.check_off_pile(kind, pos)?;
-        self.check_explored(kind, pos)?;
+        let cells = buildings::Buildings::footprint(kind, pos);
+        if self.work.supplies.is_some_and(|pile| cells.contains(&pile)) {
+            return Err(BuildError::SupplyPile);
+        }
+        if cells.iter().any(|&(x, y)| x < self.fog.size && y < self.fog.size && !self.fog.explored((x, y))) {
+            return Err(BuildError::Unexplored);
+        }
+        if kind == buildings::BuildingKind::Lock && !cells.iter().any(|c| self.water.has_dam(c.0, c.1)) {
+            return Err(BuildError::NeedsDam);
+        }
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
-        self.buildings.can_place_site(kind, pos, terrain).map_err(|e| SimError::InvalidCommand(e.to_string()))
-    }
-
-    fn check_explored(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
-        let (w, d) = kind.spec().footprint;
-        for y in pos.1..pos.1 + d {
-            for x in pos.0..pos.0 + w {
-                if x < self.fog.size && y < self.fog.size && !self.fog.explored((x, y)) {
-                    return Err(SimError::InvalidCommand("Unexplored: the colony has not seen that ground".into()));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn check_off_pile(&self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<(), SimError> {
-        let (w, d) = kind.spec().footprint;
-        if let Some(p) = self.work.supplies {
-            if (pos.0..pos.0 + w).contains(&p.0) && (pos.1..pos.1 + d).contains(&p.1) {
-                return Err(SimError::InvalidCommand("Blocked: the supply pile is there".into()));
-            }
-        }
-        Ok(())
+        self.buildings.can_place_site(kind, pos, terrain)
     }
 
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
-        if let Some(need) = self.missing_prerequisites(kind).first().filter(|_| !self.sandbox) {
-            return Err(SimError::InvalidCommand(format!("needs a finished {} first", need.spec().name.to_lowercase())));
-        }
-        if !self.can_build(kind) {
-            return Err(SimError::InvalidCommand(format!("requires finished buildings: {:?}", self.missing_prerequisites(kind))));
-        }
-        self.check_off_pile(kind, pos)?;
-        self.check_explored(kind, pos)?;
-        if kind == buildings::BuildingKind::Lock && !buildings::Buildings::footprint(kind, pos).iter().any(|c| self.water.has_dam(c.0, c.1)) {
-            return Err(SimError::InvalidCommand("a lock is built on a dam, to let barges through it".into()));
-        }
+        self.check_site(kind, pos).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         let id = self
             .buildings
@@ -70,7 +77,7 @@ impl SimState {
     }
 
     pub fn missing_prerequisites(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
-        catalogue::prerequisites(kind)
+        kind.spec().prerequisites
             .iter()
             .copied()
             .filter(|&p| !self.buildings.buildings.iter().any(|b| b.kind == p && b.is_complete()))
@@ -82,11 +89,7 @@ impl SimState {
     }
 
     pub fn can_build(&self, kind: buildings::BuildingKind) -> bool {
-        self.sandbox || (self.features.allows_building(kind) && self.missing_prerequisites(kind).is_empty())
-    }
-
-    pub fn build_gaps(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
-        self.missing_prerequisites(kind)
+        self.sandbox || self.missing_prerequisites(kind).is_empty()
     }
 
     pub fn dam_site(&self, cells: &[water::Cell]) -> Result<water::Cell, buildings::BuildError> {

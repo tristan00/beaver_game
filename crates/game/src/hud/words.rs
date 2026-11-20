@@ -163,7 +163,7 @@ pub fn days(d: f32) -> String {
 
 pub fn place_error(e: &PlaceError) -> String {
     match e {
-        PlaceError::Locked(t, _, _) => (*t).to_string(),
+        PlaceError::Locked(t) => (*t).to_string(),
         PlaceError::OutOfBounds => "Off map".into(),
         PlaceError::Blocked => "Occupied".into(),
         PlaceError::NeedsDry => "Wet".into(),

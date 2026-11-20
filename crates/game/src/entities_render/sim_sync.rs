@@ -1,7 +1,6 @@
 use super::scene::{height_at, Species, StructKind};
 use super::sim_view::*;
 use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod, WheelSpin};
-use crate::cli::Cli;
 use crate::sim_driver::SimClock;
 use crate::state::Sim;
 use bevy::prelude::*;
@@ -68,16 +67,12 @@ impl Motion {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_sim_beavers(
     mut commands: Commands,
-    cli: Res<Cli>,
     sim: Res<Sim>,
     pending: Res<PendingDays>,
     clock: Option<Res<SimClock>>,
     mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion), With<SimBeaver>>,
     mut seen: Local<HashSet<u64>>,
 ) {
-    if super::stub_mode(&cli) {
-        return;
-    }
     seen.clear();
     let delay = if clock.is_some() { sim::STEP_DAYS as f64 } else { 0.0 };
     let pending = clock.as_ref().map_or(pending.0, |c| c.pending_days());
@@ -247,16 +242,12 @@ fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<Standar
 
 pub(super) fn sync_sim_resources(
     mut commands: Commands,
-    cli: Res<Cli>,
     sim: Res<Sim>,
     season: Res<CurrentSeason>,
     models: Option<Res<Models>>,
     flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>,
 ) {
     let Some(models) = models else { return };
-    if super::stub_mode(&cli) {
-        return;
-    }
     let generation = flow.map_or(0, |f| f.generation);
     let sim = &sim.0;
     if st.seed != Some((sim.seed, generation)) {
@@ -408,11 +399,8 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE))
 }
 
-pub(super) fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
+pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
     let Some(mut models) = models else { return };
-    if super::stub_mode(&cli) {
-        return;
-    }
     let generation = flow.map_or(0, |f| f.generation);
     let sim = &sim.0;
     if st.seed != Some((sim.seed, generation)) {
@@ -535,11 +523,8 @@ pub struct DamSync {
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
 }
 
-pub(super) fn sync_sim_dams(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
+pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
     let Some(mut models) = models else { return };
-    if super::stub_mode(&cli) {
-        return;
-    }
     let generation = flow.map_or(0, |f| f.generation);
     let sim = &sim.0;
     if st.seed != Some((sim.seed, generation)) {
@@ -621,12 +606,11 @@ pub fn retarget(v: &mut BargeVis, cell: (usize, usize), to: Vec3, now: f64) {
 }
 
 fn is_loaded(b: &sim::buildings::Barge) -> bool {
-    b.hold.iter().any(|h| h.1 > 0.05) || b.cargo.is_some_and(|c| c.1 > 0.05)
+    b.hold.iter().any(|h| h.1 > 0.05)
 }
 
 pub(super) fn sync_sim_barges(
     mut commands: Commands,
-    cli: Res<Cli>,
     sim: Res<Sim>,
     pending: Res<PendingDays>,
     models: Option<ResMut<Models>>,
@@ -634,9 +618,6 @@ pub(super) fn sync_sim_barges(
     mut q: Query<(Entity, &mut Transform, &mut BargeVis, &mut Mesh3d)>,
 ) {
     let Some(mut models) = models else { return };
-    if super::stub_mode(&cli) {
-        return;
-    }
     let s = &sim.0;
     let now = s.time_days + pending.0 as f64;
     let white = models.white.clone();

@@ -1,6 +1,5 @@
 #![allow(deprecated)]
 mod actions;
-mod demo;
 mod input;
 mod minimap;
 mod colony;
@@ -16,7 +15,7 @@ pub use actions::drawn_area;
 use input::{pointer_over_ui, track_cursor, hover_cell, hotkeys, next_idle, world_input, box_select, frame_camera, follow_beaver, search_input};
 use minimap::{MinimapImage, setup_minimap, update_minimap, minimap_click};
 
-use crate::build_logic::{self, BuildOrder, Group, DAM_STEP, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
+use crate::build_logic::{self, BuildOrder, DAM_STEP, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
 use crate::camera::MainCamera;
 use crate::flow::{cell_world, Cell, Flow, Selection};
 use crate::icons::{Icon, Icons};
@@ -354,8 +353,7 @@ impl Plugin for HudPlugin {
                     .chain()
                     .in_set(HudSet),
             )
-            .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet))
-            .add_systems(Update, demo::setup.before(pointer_over_ui));
+            .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet));
     }
 }
 
@@ -375,7 +373,6 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
     use crate::flow::SettleError::*;
     match e {
         OutOfBounds => "Off map",
-        Locked => "Closed",
         Unexplored => "Unexplored",
         Water => "Water",
         NoRoom => "No room",

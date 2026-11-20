@@ -1,4 +1,4 @@
-use crate::colony::{BeaverId, Colony};
+use crate::colony::Colony;
 use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUEST_CHANCE_PER_DAY};
 pub const JOIN_EXPIRES_DAYS: f64 = 12.0;
 pub const JOIN_MIN_FOOD_PER_HEAD: f32 = 15.0 * crate::tuning::colony::HUNGER_PER_DAY;
@@ -89,10 +89,6 @@ impl Society {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
     }
-}
-
-pub fn mood_factors(_colony: &crate::colony::Colony, _who: BeaverId) -> Vec<Factor> {
-    Vec::new()
 }
 
 pub fn work_speed(mood: f32) -> f32 {

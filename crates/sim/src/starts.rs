@@ -16,21 +16,6 @@ impl std::fmt::Display for StartError {
 }
 impl std::error::Error for StartError {}
 
-pub(crate) fn strip_disabled(sim: &mut SimState) {
-    use crate::features::System;
-    let f = sim.features;
-    if !f.enabled(System::Rivals) || !f.enabled(System::Trade) {
-        sim.region = crate::region::Region::none(sim.seed);
-    }
-    if !f.enabled(System::Predators) {
-        sim.ecology.predators.clear();
-    }
-    for job in crate::colony::Job::ALL.into_iter().filter(|j| !f.allows_job(*j)) {
-        sim.colony.experience[job.index()] = 0.0;
-    }
-    sim.buildings.buildings.retain(|b| f.allows_building(b.kind));
-}
-
 const DAM_HEIGHTS: [f32; 7] = [0.5, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0];
 const POND_AREA: usize = 1500;
 const POND_AREA_RANGE: std::ops::RangeInclusive<usize> = 300..=6000;
@@ -206,29 +191,6 @@ pub fn dam_effect(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamEffect
     Some(DamEffect { rise: p.rise, flooded: p.flooded.len(), newly_flooded: p.flooded.iter().filter(|c| !wet(c)).count(), drop, fills: p.fills(START_INFLOW_MARGIN) })
 }
 
-pub fn dammable_streams(sim: &SimState) -> Vec<Cell> {
-    const SEPARATE_REACH: usize = 150;
-    let below = |from: Cell, to: Cell| {
-        let mut at = from;
-        for _ in 0..SEPARATE_REACH {
-            match sim.world.downstream(at.0, at.1) {
-                Some(d) if d == to => return true,
-                Some(d) => at = d,
-                None => return false,
-            }
-        }
-        false
-    };
-    let mut picked: Vec<Cell> = Vec::new();
-    for (_, dam, height) in dam_candidates(sim, None, 128) {
-        let (Some(effect), Some(at)) = (dam_effect(sim, &dam, height), dam_river_cell(sim, &dam)) else { continue };
-        if effect.is_visible() && picked.iter().all(|&p| !below(at, p) && !below(p, at) && dist2(p, at) > 900) {
-            picked.push(at);
-        }
-    }
-    picked
-}
-
 fn settle_water(sim: &mut SimState) {
     sim.water.refresh(&sim.height);
     sim.water.time_days = 0.0;
@@ -323,9 +285,8 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     if sim.colony.is_founded() {
         return Err(invalid("the colony is already founded".into()));
     }
-    let valley = sim.world.valley_of(cell).ok_or_else(|| invalid(format!("cell {cell:?} is off the map")))?;
-    if !sim.world.is_open(valley) {
-        return Err(invalid(format!("cell {cell:?} is in a valley that is not open yet")));
+    if !sim.height.in_bounds(cell.0, cell.1) {
+        return Err(invalid(format!("cell {cell:?} is off the map")));
     }
     if !sim.fog.explored(cell) {
         return Err(invalid(format!("cell {cell:?} is unexplored")));
@@ -365,8 +326,6 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         let allowed = crate::fog::open_at(&sim.world);
         sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT, &allowed);
     }
-    sim.world.unlock(cell).map_err(|e| invalid(format!("{e:?}")))?;
-    strip_disabled(sim);
     crate::agents::place_beavers(sim);
     Ok(())
 }
@@ -377,9 +336,6 @@ fn build_river(seed: u64) -> Result<(SimState, DamSite), StartError> {
 
 fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> {
     let mut plan = river_plan(&mut sim).ok_or(StartError::NoSite)?;
-    if let Some(v) = sim.world.valley_of(plan.camp) {
-        sim.world.valleys[v.0 as usize].open = true;
-    }
     if crate::site::can_settle(&sim, plan.camp).is_err() {
         let (cx, cy) = plan.camp;
         let r = 50usize;
@@ -412,37 +368,6 @@ pub struct DamSite {
     pub cells: Vec<Cell>,
     pub height: f32,
     pub camp: Cell,
-}
-
-const FULL_WITHIN: f32 = 0.05;
-const WATCH_RADIUS: usize = 30;
-
-impl DamSite {
-    pub fn is_built(&self, sim: &SimState) -> bool {
-        self.cells.iter().all(|c| sim.water.dam_height.get(c.0, c.1).is_some_and(|h| *h >= self.height - 1e-3))
-    }
-
-    pub fn watch(&self, sim: &SimState) -> Option<PondWatch> {
-        let p = crate::dam_preview::preview(sim, &self.cells, self.height)?;
-        let mid = self.cells[self.cells.len() / 2];
-        Some(PondWatch { level: p.level, near: p.flooded.into_iter().filter(|&c| dist2(c, mid) <= WATCH_RADIUS * WATCH_RADIUS).collect() })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PondWatch {
-    pub level: f32,
-    near: Vec<Cell>,
-}
-
-impl PondWatch {
-    pub fn is_full(&self, sim: &SimState) -> bool {
-        let full = |c: &&Cell| {
-            let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-            depth > crate::buildings::WET_DEPTH && sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + depth >= self.level - FULL_WITHIN
-        };
-        self.near.iter().filter(full).count() >= 3
-    }
 }
 
 pub fn new_game_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {

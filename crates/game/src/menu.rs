@@ -69,7 +69,7 @@ impl Plugin for MenuPlugin {
         let forced = std::env::var("BC_MENU").ok();
         let benchmarking = std::env::var_os("BC_PERF").is_some()
             && (std::env::var_os("BC_SPEED").is_some() || std::env::var_os("BC_REPORT_BENCH").is_some());
-        let scripted = cli.colony_script.is_some() || cli.plain_world() || cli.demo_pond || cli.sandbox
+        let scripted = cli.colony_script.is_some() || cli.sandbox
             || (benchmarking && std::env::var_os("BC_SETTLE").is_some())
             || (cli.screenshot.is_some() && forced.is_none());
         let first = match forced.as_deref() {

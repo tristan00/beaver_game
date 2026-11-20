@@ -289,80 +289,6 @@ pub fn health_breakdown(sim: &SimState, b: BeaverId) -> Breakdown {
     Breakdown::new(bv.health, rows)
 }
 
-pub fn pond_cover_breakdown(sim: &SimState) -> Breakdown {
-    let w = &sim.water;
-    let n = w.depth.width();
-    let per_cell = w.config.evaporation * Season::Summer.evap_mult() + w.config.seepage;
-    let pond = |i: usize| w.depth.as_slice()[i] >= WET_DEPTH && !w.fed.as_slice()[i];
-    let mut seen = vec![false; w.depth.as_slice().len()];
-    let mut rows = Vec::new();
-    for start in 0..seen.len() {
-        if seen[start] || !pond(start) {
-            continue;
-        }
-        let (mut cells, mut volume, mut stack) = (0usize, 0.0f32, vec![start]);
-        seen[start] = true;
-        while let Some(i) = stack.pop() {
-            cells += 1;
-            volume += w.depth.as_slice()[i];
-            let (x, y) = (i % n, i / n);
-            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
-                if nx < n && ny < n {
-                    let j = ny * n + nx;
-                    if !seen[j] && pond(j) {
-                        seen[j] = true;
-                        stack.push(j);
-                    }
-                }
-            }
-        }
-        if cells >= 4 && per_cell > 0.0 {
-            rows.push((volume, row("", volume / (cells as f32 * per_cell), Source::Cell((start % n, start / n)))));
-        }
-    }
-    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let rows = rows.into_iter().enumerate().map(|(k, (_, mut r))| {
-        r.label = format!("Pond {}", k + 1);
-        r
-    });
-    Breakdown::new(ponds(sim).summer_cover_days().unwrap_or(0.0), rows.collect())
-}
-
-fn dam_cells(sim: &SimState, b: BuildingId) -> Vec<Cell> {
-    let Some(bd) = sim.buildings.building(b).filter(|bd| bd.kind == BuildingKind::Dam) else { return Vec::new() };
-    let w = &sim.water;
-    let dam = |c: Cell| w.dam_height.get(c.0, c.1).is_some_and(|h| *h > 0.0);
-    let mut out: Vec<Cell> = bd.cells().filter(|&c| dam(c)).collect();
-    let mut k = 0;
-    while k < out.len() {
-        let (x, y) = out[k];
-        for dy in -1i64..=1 {
-            for dx in -1i64..=1 {
-                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
-                if nx < 0 || ny < 0 {
-                    continue;
-                }
-                let c = (nx as usize, ny as usize);
-                if dam(c) && !out.contains(&c) {
-                    out.push(c);
-                }
-            }
-        }
-        k += 1;
-    }
-    out
-}
-
-pub fn dam_strength_breakdown(sim: &SimState, b: BuildingId) -> Option<Breakdown> {
-    let cells = dam_cells(sim, b);
-    let w = &sim.water;
-    let &weakest = cells.iter().min_by(|a, c| {
-        let i = |c: &Cell| w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
-        i(a).total_cmp(&i(c))
-    })?;
-    Some(dam_wear(sim, weakest, Source::Building(b)))
-}
-
 fn dam_wear(sim: &SimState, c: Cell, source: Source) -> Breakdown {
     let w = &sim.water;
     let integrity = w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
@@ -820,7 +746,7 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     if !b.is_complete() {
         return None;
     }
-    let def = crate::catalogue::def(b.kind);
+    let def = b.kind.spec();
     let place = sim.work.place(id);
     let flow = sim.output.of(id);
     let measured = flow.map(|f| f.rates()).unwrap_or_default();
@@ -863,7 +789,7 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
         let ceiling = Some((good, total as f32 * crate::agents::GATHER_PER_DAY));
         return Some(Report { measured, steady, ceiling, factors });
     }
-    if def.batches_per_day > 0.0 {
+    if def.slots.contains(&Role::Craft) {
         factors.push(factor("Crafters", format!("{filled} of {total}"), Some(filled > 0)));
         factors.push(factor("Local work support", format!("+{:.0}%", b.output * 25.0), Some(b.output > 0.1)));
         for &(g, a) in crate::craftsmanship::COST_PER_DAY {
@@ -880,27 +806,6 @@ pub struct ProfilePoint {
     pub bed: f32,
     pub crest: f32,
     pub surface: f32,
-}
-
-pub fn river_profile(sim: &SimState) -> Vec<ProfilePoint> {
-    let w = &sim.world;
-    let n = w.size;
-    let Some(mut cur) = (0..n * n)
-        .map(|i| (i % n, i / n))
-        .filter(|&(x, y)| w.main_river.get(x, y).copied().unwrap_or(false))
-        .min_by_key(|&(x, y)| w.flow_acc.get(x, y).copied().unwrap_or(u32::MAX))
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for _ in 0..n * 4 {
-        out.push(profile_point(sim, cur));
-        match w.downstream(cur.0, cur.1) {
-            Some(next) if !out.iter().any(|p: &ProfilePoint| p.cell == next) => cur = next,
-            _ => break,
-        }
-    }
-    out
 }
 
 pub fn river_profile_through(sim: &SimState, near: (f32, f32), up: usize, down: usize) -> Option<(Vec<ProfilePoint>, usize)> {
@@ -1000,7 +905,7 @@ pub fn ponds(sim: &SimState) -> Ponds {
             volume += d;
         }
     }
-    let per_cell = w.config.evaporation * Season::Summer.evap_mult() + w.config.seepage;
+    let per_cell = w.config.evaporation * crate::tuning::water::EVAP_MULT[Season::Summer as usize] + w.config.seepage;
     let dammed = w.dam_height.as_slice().iter().any(|h| *h > 0.0);
     Ponds { dammed, cells, volume, summer_loss_per_day: cells as f32 * per_cell }
 }

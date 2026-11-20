@@ -281,7 +281,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
                 }
             }
             if selected && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) {
-                let capacity=sim::catalogue::def(b.kind).capacity;
+                let capacity=b.kind.spec().capacity;
                 let full = Good::ALL.iter().any(|g| capacity>0.0 && s.work.stock_of(b.id,*g)>=capacity*sim::hud::FULL_SHARE);
                 if full {
                     icons.push((Icon::Full, WARN));

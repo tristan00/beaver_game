@@ -65,10 +65,7 @@ pub fn barge_number(s: &sim::SimState, id: BargeId) -> usize {
 }
 
 pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
-    let mut v: Vec<(Good, f32)> = b.hold.iter().copied().filter(|h| h.1 > 0.05).collect();
-    if let Some(c) = b.cargo.filter(|c| c.1 > 0.05) {
-        v.push(c);
-    }
+    let v: Vec<(Good, f32)> = b.hold.iter().copied().filter(|h| h.1 > 0.05).collect();
     v
 }
 

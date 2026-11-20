@@ -410,7 +410,7 @@ pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell, keep_cl
 }
 
 pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate::resources::ResourceKind, usize)> {
-    let role = crate::catalogue::def(kind).slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
+    let role = kind.spec().slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
     let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let area = crate::catalogue::work_area(&b)?;
     let n = s.resources.items.iter().filter(|r| role.gather_sources().contains(&r.kind) && area.contains(r.cell)).count();
@@ -443,10 +443,6 @@ pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear
 
 fn place_near_within(s: &mut SimState, kind: BuildingKind, around: Cell, max_r: usize, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     place_ring(s, kind, around, 0..=max_r, keep_clear)
-}
-
-pub fn place_near(s: &mut SimState, kind: BuildingKind, around: Cell) -> Result<BuildingId, String> {
-    place_ring(s, kind, around, 2..=29, &[])
 }
 
 fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::ops::RangeInclusive<usize>, keep_clear: &[Cell]) -> Result<BuildingId, String> {
