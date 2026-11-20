@@ -50,7 +50,9 @@ pub const STONE_DEPOSIT_AMOUNT: f32 = 40.0;
 const STONE_DEPOSIT_FILL: f32 = 0.45;
 pub const CLAY_BEDS: usize = 4;
 pub const CLAY_BED_RADIUS: f32 = 10.0;
-pub const CLAY_AMOUNT: f32 = 30.0;
+// Clay beds occupy narrow banks, unlike broad stone outcrops. Give a developed
+// settlement enough reserve for repeated paid repairs before another bed is needed.
+pub const CLAY_AMOUNT: f32 = 60.0;
 const CLAY_FILL: f32 = 0.8;
 const STRAY_MUD_CHANCE: f32 = 0.01;
 pub const STRAY_MUD_AMOUNT: f32 = 10.0;
