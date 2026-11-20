@@ -1,5 +1,4 @@
 mod meshgen;
-mod mesh_assets;
 mod models;
 mod scene;
 mod structures;
@@ -12,6 +11,7 @@ use crate::state::Sim;
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowLevel};
+use meshgen::Mb;
 use models::Season;
 use scene::*;
 use std::collections::HashMap;
@@ -219,16 +219,21 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
             }
         }
     }
-    let body = meshes.add(models::asset("body"));
-    let head = meshes.add(models::asset("head"));
-    let tail = meshes.add(models::asset("tail"));
-    let leg_front = meshes.add(models::asset("leg-front"));
-    let leg_hind = meshes.add(models::asset("leg-hind"));
-    let lids = meshes.add(models::asset("lids"));
-    let chips = meshes.add(models::asset("chips"));
-    let far = meshes.add(models::asset("far"));
-    let ripple = meshes.add(models::asset("ripple"));
-    let blob = meshes.add(models::asset("blob"));
+    let mut build = |f: &dyn Fn(&mut Mb)| {
+        let mut mb = Mb::new();
+        f(&mut mb);
+        meshes.add(mb.build())
+    };
+    let body = build(&|m| models::beaver_body(m, Vec3::ZERO));
+    let head = build(&|m| models::beaver_head(m, Vec3::ZERO));
+    let tail = build(&|m| models::beaver_tail(m, Vec3::ZERO));
+    let leg_front = build(&|m| models::beaver_leg(m, true));
+    let leg_hind = build(&|m| models::beaver_leg(m, false));
+    let lids = build(&models::beaver_lids);
+    let chips = build(&models::gnaw_chips);
+    let far = build(&models::beaver_static);
+    let ripple = build(&models::ripple);
+    let blob = build(&models::blob_shadow);
     commands.insert_resource(Models {
         white,
         tree_tints,
@@ -237,8 +242,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         water_mat,
         trees,
         cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
-        stump: meshes.add(models::asset("stump")),
-        snag: meshes.add(models::asset("snag")),
+        stump: meshes.add(models::stump_mesh()),
+        snag: meshes.add(models::snag_mesh()),
         body,
         head,
         tail,
@@ -248,12 +253,12 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         chips,
         loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
-        mud: meshes.add(models::asset("mud")),
-        plant: meshes.add(models::asset("plant")),
+        mud: meshes.add(models::mud_mesh()),
+        plant: meshes.add(models::plant_mesh()),
         far,
         ripple,
         blob,
-        wheel: meshes.add(models::asset("wheel")),
+        wheel: meshes.add(models::wheel_mesh()),
         structs: HashMap::new(),
         dams: HashMap::new(),
     });

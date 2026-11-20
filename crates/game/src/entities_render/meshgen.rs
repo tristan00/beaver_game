@@ -158,6 +158,10 @@ impl Mb {
         );
     }
 
+    pub fn disc(&mut self, c: Vec3, rx: f32, rz: f32, col: [f32; 3], seg: usize) {
+        let m = Mat4::from_translation(c) * Mat4::from_scale(Vec3::new(rx, 1.0, rz));
+        self.lathe(m, &[(1.0, 0.0), (0.0, 0.0)], seg, col, col, false);
+    }
 
     pub fn fan(&mut self, c: Vec3, rim: &[Vec3], col: [f32; 3]) {
         let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
@@ -211,7 +215,21 @@ impl Mb {
         }
     }
 
+    pub fn weather(&mut self, to: [f32; 3], t: f32) {
+        for c in &mut self.col {
+            for k in 0..3 {
+                c[k] += (to[k] - c[k]) * t;
+            }
+        }
+    }
 
+    pub fn append(&mut self, other: Mb, off: Vec3) {
+        let base = self.pos.len() as u32;
+        self.pos.extend(other.pos.iter().map(|p| (Vec3::from(*p) + off).to_array()));
+        self.nor.extend(other.nor);
+        self.col.extend(other.col);
+        self.idx.extend(other.idx.iter().map(|i| i + base));
+    }
 
     pub fn build(self) -> Mesh {
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())

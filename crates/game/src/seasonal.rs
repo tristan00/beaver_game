@@ -44,3 +44,11 @@ pub fn bloom(phase: f32) -> f32 {
     let day = phase.rem_euclid(1.0) * 360.0;
     smooth(0.0, 24.0, day) * (1.0 - smooth(80.0, 195.0, day))
 }
+
+pub fn leaves(phase: f32) -> f32 {
+    let day = phase.rem_euclid(1.0) * 360.0;
+    if day < 30.0 { 0.22 + 0.78 * smooth(0.0, 30.0, day) }
+    else if day < 220.0 { 1.0 }
+    else if day < 285.0 { 1.0 - smooth(220.0, 285.0, day) }
+    else { 0.22 * smooth(340.0, 360.0, day) }
+}
