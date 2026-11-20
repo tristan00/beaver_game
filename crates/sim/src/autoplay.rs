@@ -62,7 +62,7 @@ impl Player {
 
     pub fn place_at(&mut self, s: &mut SimState, kind: BuildingKind, around: Cell) -> Option<BuildingId> {
         let keep_clear: Vec<Cell> = if kind == BuildingKind::Dam { Vec::new() } else { self.dam.iter().flat_map(|(c, _)| c.iter().copied()).collect() };
-        let res = if matches!(kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) { place_deposit(s, kind, around, &keep_clear) } else { place_best(s, kind, around, &keep_clear) };
+        let res = if matches!(kind, BuildingKind::MudPit) { place_deposit(s, kind, around, &keep_clear) } else { place_best(s, kind, around, &keep_clear) };
         self.placed.push((s.time_days, kind, res.clone()));
         match res {
             Ok(id) => {
@@ -107,7 +107,7 @@ impl Player {
                 self.placed.push((s.time_days, BuildingKind::Dam, Err("no dam site in sight".into())));
             }
         }
-        for kind in [BuildingKind::LoggingCamp, BuildingKind::Warehouse, BuildingKind::MudPit, BuildingKind::Workshop, BuildingKind::QuarryCamp] {
+        for kind in [BuildingKind::LoggingCamp, BuildingKind::Warehouse, BuildingKind::MudPit, BuildingKind::Workshop] {
             if s.can_build(kind) && s.missing_prerequisites(kind).is_empty() && !self.has(kind) && !self.tried_lately(s, kind) {
                 self.place(s, kind);
             }
@@ -174,7 +174,7 @@ impl Player {
         }
         self.next_explore = s.time_days + 12.0;
         let seen = |k: ResourceKind| s.resources.items.iter().any(|r| r.kind == k && r.amount >= 20.0 && s.fog.explored(r.cell));
-        if seen(ResourceKind::StoneOutcrop) && seen(ResourceKind::MudBank) {
+        if seen(ResourceKind::RiverClay) || seen(ResourceKind::MudBank) {
             return;
         }
         let n = s.world.size as isize;
@@ -274,7 +274,7 @@ impl Player {
                 .buildings
                 .buildings
                 .iter()
-                .filter(|b| matches!(b.kind, BuildingKind::QuarryCamp | BuildingKind::MudPit) && b.is_complete())
+                .filter(|b| matches!(b.kind, BuildingKind::MudPit) && b.is_complete())
                 .filter(|b| crate::stock::gap(b, &home) > FAR_DEPOSIT)
                 .cloned()
                 .collect();
@@ -315,7 +315,7 @@ impl Player {
             return;
         }
         let barge = s.buildings.barges[0].id;
-        match s.apply(Command::SetBargeRoute { barge, from: fd, to: hd, goods: vec![Good::Pebbles, Good::Clay] }) {
+        match s.apply(Command::SetBargeRoute { barge, from: fd, to: hd, goods: vec![Good::Clay] }) {
             Ok(()) => {
                 self.routed = true;
                 self.note(s, "barge route set: far dock to home dock".into());
@@ -369,7 +369,7 @@ pub fn place_deposit(s: &mut SimState, kind: BuildingKind, around: Cell, keep_cl
                 continue;
             }
             if let Some((_, k)) = area_yield(s, kind, (x, y)) {
-                if k >= 3 {
+                if k >= 1 {
                     cands.push((k, x.abs_diff(around.0) + y.abs_diff(around.1), (x, y)));
                 }
             }
@@ -388,7 +388,7 @@ pub fn area_yield(s: &SimState, kind: BuildingKind, pos: Cell) -> Option<(crate:
     let role = crate::catalogue::def(kind).slots.iter().find_map(|r| if let crate::work::Role::Collect(k) = r { Some(*k) } else { None })?;
     let b = crate::buildings::Building { id: BuildingId(0), kind, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
     let area = crate::catalogue::work_area(&b)?;
-    let n = s.resources.items.iter().filter(|r| r.kind == role && area.contains(r.cell)).count();
+    let n = s.resources.items.iter().filter(|r| role.gather_sources().contains(&r.kind) && area.contains(r.cell)).count();
     Some((role, n))
 }
 

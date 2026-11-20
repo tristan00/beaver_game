@@ -514,7 +514,6 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Warehouse => structures::warehouse(&mut mb, stage),
         StructKind::Storehouse => structures::storehouse(&mut mb, stage),
         StructKind::LoggingCamp => structures::logging_camp(&mut mb, stage),
-        StructKind::QuarryCamp => structures::quarry_camp(&mut mb, stage),
         StructKind::ForesterLodge => structures::forester_lodge(&mut mb, stage),
         StructKind::Mill => structures::mill(&mut mb, stage),
         StructKind::Lock => structures::lock(&mut mb, stage),
@@ -538,7 +537,7 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
 
 pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
     let mut mb=Mb::new();
-    let (dark,light)=(hex(0x777C77),hex(0xBBB9A8));
+    let (dark,light)=(hex(0x68432C),hex(0xB78354));
     match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5,1.4)) {
         structures::Footing::Mound(radius)|structures::Footing::Stone(radius)=>{
             for k in 0..16 {
@@ -911,9 +910,9 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.26, 0.2, 0.22), hex(0x4d3520), hex(0x80603f), 8, 5);
             mb.ellipsoid(v(0.09, -0.16, 0.74), v(0.1, 0.07, 0.09), hex(0x5d4228));
         }
-        Good::Pebbles => {
-            mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.24, 0.19, 0.22), hex(0x77777c), hex(0xb2b2b6), 7, 4);
-            mb.ellipsoid(v(0.1, -0.2, 0.72), v(0.1, 0.07, 0.09), hex(0xc7c7cb));
+        Good::Food => {
+            mb.ellipsoid_g(v(0.0, -0.3, 0.74), v(0.24, 0.19, 0.22), hex(0x3f8f35), hex(0x7bc653), 7, 4);
+            mb.ellipsoid(v(0.1, -0.2, 0.72), v(0.1, 0.07, 0.09), hex(0x9bd86a));
         }
 
 
@@ -957,16 +956,6 @@ pub fn mud_mesh() -> Mesh {
     mb.ellipsoid_g(v(0.2, 0.28, 0.1), v(0.9, 0.3, 0.8), hex(0x5a4129), hex(0x93714b), 10, 5);
     for (x, z, s) in [(1.3, 0.5, 0.35), (-1.2, -0.6, 0.3), (0.4, -1.25, 0.28), (-0.5, 1.2, 0.25)] {
         mb.ellipsoid(v(x, 0.05, z), v(s, s * 0.45, s * 0.8), hex(0x5a4129));
-    }
-    mb.build()
-}
-
-pub fn stone_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    let rocks = [(0.0, 0.0, 0.0, 1.1, 0.9, 0.9, 0.3), (1.2, 0.5, 0.0, 0.7, 0.55, 0.65, 1.1), (-0.9, 0.6, 0.0, 0.6, 0.5, 0.5, 2.0), (0.2, -1.0, 0.0, 0.75, 0.6, 0.6, 0.7)];
-    for (x, z, y, rx, ry, rz, yaw) in rocks {
-        mb.ellipsoid_g(v(x, y + ry * 0.55, z), v(rx, ry, rz), hex(0x6c6c72), hex(0xb7b5b2), 7, 4);
-        mb.ellipsoid_r(v(x + 0.1, y + ry * 1.0, z), v(rx * 0.55, ry * 0.3, rz * 0.55), Quat::from_rotation_y(yaw), hex(0xc9c7c2));
     }
     mb.build()
 }

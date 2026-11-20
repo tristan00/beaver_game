@@ -1181,7 +1181,7 @@ fn refresh_fast(
     }
 }
 
-const SYNONYMS: [(&str, &[BuildingKind]); 18] = [
+const SYNONYMS: [(&str, &[BuildingKind]); 17] = [
     ("food", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
     ("eat", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
     ("wood", &[BuildingKind::LoggingCamp]),
@@ -1189,8 +1189,7 @@ const SYNONYMS: [(&str, &[BuildingKind]); 18] = [
     ("stick", &[BuildingKind::LoggingCamp]),
     ("tree", &[BuildingKind::LoggingCamp]),
     ("mud", &[BuildingKind::MudPit]),
-    ("stone", &[BuildingKind::QuarryCamp]),
-    ("rock", &[BuildingKind::QuarryCamp]),
+    ("clay", &[BuildingKind::MudPit]),
     ("stor", &[BuildingKind::Warehouse, BuildingKind::Storehouse, BuildingKind::FoodCache]),
     ("home", &[BuildingKind::Lodge, BuildingKind::Burrow]),
     ("house", &[BuildingKind::Lodge, BuildingKind::Burrow]),
@@ -1472,7 +1471,7 @@ fn demo(
                     return;
                 }
                 *sel = Selection::Barge(barge);
-                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Sticks, Good::Pebbles] });
+                hud.route_draft = Some(RouteDraft { barge: Some(barge), from: Some(a), to: Some(b), goods: vec![Good::Sticks, Good::Food] });
                 set_route(s, &mut hud, barge, 0.0);
                 println!("barge demo: route refused: {:?}", hud.route_err);
             }
@@ -1613,11 +1612,11 @@ fn barge_demo(s: &mut sim::SimState, camp: Cell) -> Option<(BuildingId, Building
     let b = s.buildings.add_complete(BuildingKind::Dock, second, sim::buildings::Terrain { height: &s.height, depth: &s.water.depth }).ok()?;
     let bg = BargeId(9_000_001);
     s.buildings.barges.push(sim::buildings::Barge::new(bg, start, Some(a)));
-    for (g, amount) in [(Good::Sticks, 30.0), (Good::Pebbles, 20.0)] {
+    for (g, amount) in [(Good::Sticks, 30.0), (Good::Food, 20.0)] {
         let put = s.buildings.stores.deposit(g, amount).unwrap_or(0.0);
         s.work.stock_add(a, g, put);
     }
-    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Sticks, Good::Pebbles] }) {
+    if let Err(e) = s.apply(sim::Command::SetBargeRoute { barge: bg, from: a, to: b, goods: vec![Good::Sticks, Good::Food] }) {
         println!("barge demo: {e}");
     }
     let ends = sim::shipping::berths(s, &locks, s.buildings.building(b)?);

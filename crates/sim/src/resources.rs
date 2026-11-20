@@ -14,21 +14,28 @@ pub enum ResourceKind {
     Felled,
     Plant,
     MudBank,
-    StoneOutcrop,
+    RiverClay,
 }
 
 impl ResourceKind {
+    pub fn gather_sources(self) -> &'static [ResourceKind] {
+        match self {
+            Self::Tree | Self::Felled => &[Self::Felled, Self::Tree],
+            Self::Plant => &[Self::Plant, Self::Felled, Self::Tree],
+            Self::MudBank | Self::RiverClay => &[Self::RiverClay, Self::MudBank],
+        }
+    }
     pub fn yields(self) -> &'static [Good] {
         match self {
             ResourceKind::Tree => &[],
-            ResourceKind::Felled => &[Good::Sticks],
-            ResourceKind::Plant => &[Good::Sticks],
+            ResourceKind::Felled => &[Good::Sticks, Good::Food],
+            ResourceKind::Plant => &[Good::Food],
             ResourceKind::MudBank => &[Good::Clay],
-            ResourceKind::StoneOutcrop => &[Good::Pebbles],
+            ResourceKind::RiverClay => &[Good::Clay],
         }
     }
     pub fn is_solid(self) -> bool {
-        matches!(self, ResourceKind::Tree | ResourceKind::StoneOutcrop)
+        matches!(self, ResourceKind::Tree)
     }
 }
 
@@ -40,19 +47,16 @@ pub const PLANT_MAX: f32 = 4.0;
 pub const PLANT_REGROW_PER_DAY: f32 = 0.25;
 pub const WINTER_PLANT_DECAY_PER_DAY: f32 = 0.04;
 pub const WET_MOISTURE: f32 = 0.5;
-pub const OUTCROP_SLOPE: f32 = 0.6;
 pub const MUD_AMOUNT: f32 = 20.0;
-pub const STONE_AMOUNT: f32 = 30.0;
 const PLANT_CHANCE: f32 = 0.25;
-pub const STONE_DEPOSITS: usize = 3;
-pub const STONE_DEPOSIT_RADIUS: f32 = 8.0;
-pub const STONE_DEPOSIT_AMOUNT: f32 = 40.0;
-const STONE_DEPOSIT_FILL: f32 = 0.45;
+pub const RIVER_CLAY_SPOTS: usize = 8;
+pub const RIVER_CLAY_CAPACITY: f32 = 8.0;
+pub const RIVER_CLAY_INITIAL: f32 = 2.0;
+pub const RIVER_CLAY_PER_DAY: f32 = 0.04;
+pub const RIVER_CLAY_MIN_TAKE: f32 = 0.5;
 pub const CLAY_BEDS: usize = 4;
 pub const CLAY_BED_RADIUS: f32 = 10.0;
-// Clay beds occupy narrow banks, unlike broad stone outcrops. Give a developed
-// settlement enough reserve for repeated paid repairs before another bed is needed.
-pub const CLAY_AMOUNT: f32 = 60.0;
+pub const CLAY_AMOUNT: f32 = 30.0;
 const CLAY_FILL: f32 = 0.8;
 const STRAY_MUD_CHANCE: f32 = 0.01;
 pub const STRAY_MUD_AMOUNT: f32 = 10.0;
@@ -88,6 +92,7 @@ impl Resource {
     }
     pub fn has_yield(&self) -> bool {
         match self.kind {
+            ResourceKind::RiverClay => true,
             ResourceKind::Felled => self.amount > 0.0 || self.branches > 0.0 || self.bark > 0.0,
             _ => self.amount > 0.0,
         }
@@ -97,6 +102,8 @@ impl Resource {
 #[derive(Clone, Debug, Default)]
 pub struct ResourceWorld {
     pub items: Vec<Resource>,
+    pub river_clay_gathered: f32,
+    pub river_clay_recovered: f32,
     next_id: u64,
     nav_revision: u64,
 }
@@ -114,12 +121,7 @@ pub fn is_bank(world: &World, cell: Cell) -> bool {
     near.iter().any(|&(nx, ny)| world.moisture.in_bounds(nx, ny) && is_water(world, (nx, ny)))
 }
 
-pub fn is_outcrop(world: &World, cell: Cell) -> bool {
-    let (x, y) = cell;
-    world.slope.get(x, y).is_some_and(|&s| s >= OUTCROP_SLOPE)
-        && !is_water(world, cell)
-        && world.forest.get(x, y).is_some_and(|t| t.is_none())
-}
+
 
 pub fn is_wet(world: &World, (x, y): Cell) -> bool {
     !is_water(world, (x, y)) && world.moisture.get(x, y).is_some_and(|&m| m >= WET_MOISTURE)
@@ -131,89 +133,41 @@ impl ResourceWorld {
         let mut out = Self::default();
         let mut unit = move || (rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32;
         let n = world.size;
-        let treeless = |x: usize, y: usize| world.forest.get(x, y).is_some_and(|t| t.is_none());
-        let rock_ok = |c: Cell| !is_water(world, c) && treeless(c.0, c.1);
-        let pick = |cands: Vec<(f32, Cell)>, count: usize, apart: &[Cell]| {
-            let mut cands = cands;
-            cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-            let mut chosen: Vec<Cell> = Vec::new();
-            for (_, c) in cands {
-                let far = |o: &Cell| ((c.0 as f32 - o.0 as f32).powi(2) + (c.1 as f32 - o.1 as f32).powi(2)).sqrt() >= DEPOSIT_SPACING;
-                if chosen.iter().chain(apart).all(far) {
-                    chosen.push(c);
-                    if chosen.len() == count {
-                        break;
-                    }
-                }
-            }
-            chosen
-        };
-        let disc = |c: Cell, r: f32| {
-            let ri = r.ceil() as isize;
-            let mut v = Vec::new();
-            for dy in -ri..=ri {
-                for dx in -ri..=ri {
-                    let (x, y) = (c.0 as isize + dx, c.1 as isize + dy);
-                    if x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n && ((dx * dx + dy * dy) as f32) <= r * r {
-                        v.push((x as usize, y as usize));
-                    }
-                }
-            }
-            v
-        };
-        let mut cands = Vec::new();
-        for y in (2..n.saturating_sub(2)).step_by(2) {
-            for x in (2..n.saturating_sub(2)).step_by(2) {
-                if !rock_ok((x, y)) {
-                    continue;
-                }
-                let room = disc((x, y), STONE_DEPOSIT_RADIUS).into_iter().filter(|&c| rock_ok(c)).count();
-                if room < 12 {
-                    continue;
-                }
-                let slope = world.slope.get(x, y).copied().unwrap_or(0.0);
-                let h = world.height.get(x, y).copied().unwrap_or(0.0);
-                cands.push((slope * 2.0 + h * 0.05 + unit() * 0.5, (x, y)));
-            }
+        let treeless = |x: usize,y: usize| world.forest.get(x,y).is_some_and(|t|t.is_none());
+        let mut banks = Vec::new();
+        for y in 0..n {for x in 0..n {
+            if is_bank(world,(x,y)) && treeless(x,y) {banks.push((unit(),(x,y)));}
+        }}
+        banks.sort_by(|a,b|b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut beds: Vec<Cell> = Vec::new();
+        for &(_,c) in &banks {
+            if beds.iter().all(|&b|distance(c,b)>=DEPOSIT_SPACING) {beds.push(c);}
+            if beds.len()>=CLAY_BEDS {break;}
         }
-        let stone_at = pick(cands, STONE_DEPOSITS, &[]);
-        let mut stone = std::collections::BTreeSet::new();
-        for &c in &stone_at {
-            for cell in disc(c, STONE_DEPOSIT_RADIUS) {
-                if rock_ok(cell) && (cell == c || unit() < STONE_DEPOSIT_FILL) {
-                    stone.insert(cell);
-                }
-            }
+        let in_bed=|c:Cell|beds.iter().any(|&b|distance(c,b)<=CLAY_BED_RADIUS);
+        let mut river_spots: Vec<Cell> = Vec::new();
+        for &(_,c) in banks.iter().rev() {
+            let (x,y)=c;
+            let near_river=[(x.wrapping_sub(1),y),(x+1,y),(x,y.wrapping_sub(1)),(x,y+1)]
+                .iter().any(|p|world.river.get(p.0,p.1)==Some(&true));
+            if near_river && !in_bed(c) && river_spots.iter().all(|&b|distance(c,b)>=45.0) {river_spots.push(c);}
+            if river_spots.len()>=RIVER_CLAY_SPOTS {break;}
         }
-        let mut cands = Vec::new();
-        for y in 0..n {
-            for x in 0..n {
-                if is_bank(world, (x, y)) && treeless(x, y) && !stone.contains(&(x, y)) {
-                    cands.push((unit(), (x, y)));
-                }
+        for y in 0..n {for x in 0..n {
+            let cell=(x,y);
+            if world.forest.get(x,y).is_some_and(|t|t.is_some()) {
+                out.add_tree(cell,crate::forestry::start_age(seed,cell));
+            } else if river_spots.contains(&cell) {
+                out.add(ResourceKind::RiverClay,cell,RIVER_CLAY_INITIAL);
+            } else if is_bank(world,cell) && in_bed(cell) {
+                if unit()<CLAY_FILL {out.add(ResourceKind::MudBank,cell,CLAY_AMOUNT);}
+            } else if is_bank(world,cell) && unit()<STRAY_MUD_CHANCE {
+                out.add(ResourceKind::MudBank,cell,STRAY_MUD_AMOUNT);
+            } else if is_wet(world,cell) && unit()<PLANT_CHANCE {
+                let id=out.add(ResourceKind::Plant,cell,PLANT_MAX);
+                out.get_mut(id).unwrap().wet=true;
             }
-        }
-        let beds = pick(cands, CLAY_BEDS, &stone_at);
-        let in_bed = |c: Cell| beds.iter().any(|b| ((c.0 as f32 - b.0 as f32).powi(2) + (c.1 as f32 - b.1 as f32).powi(2)).sqrt() <= CLAY_BED_RADIUS);
-        for y in 0..n {
-            for x in 0..n {
-                let cell = (x, y);
-                if world.forest.get(x, y).is_some_and(|t| t.is_some()) {
-                    out.add_tree(cell, crate::forestry::start_age(seed, cell));
-                } else if stone.contains(&cell) {
-                    out.add(ResourceKind::StoneOutcrop, cell, STONE_DEPOSIT_AMOUNT);
-                } else if is_bank(world, cell) && in_bed(cell) {
-                    if unit() < CLAY_FILL {
-                        out.add(ResourceKind::MudBank, cell, CLAY_AMOUNT);
-                    }
-                } else if is_bank(world, cell) && unit() < STRAY_MUD_CHANCE {
-                    out.add(ResourceKind::MudBank, cell, STRAY_MUD_AMOUNT);
-                } else if is_wet(world, cell) && unit() < PLANT_CHANCE {
-                    let id = out.add(ResourceKind::Plant, cell, PLANT_MAX);
-                    out.items.iter_mut().find(|r| r.id == id).expect("just added").wet = true;
-                }
-            }
-        }
+        }}
         out
     }
 
@@ -280,7 +234,7 @@ impl ResourceWorld {
         }
         let got = want.min(r.bark);
         r.bark -= got;
-        Ok((Good::Sticks, got))
+        Ok((Good::Food, got))
     }
 
     pub fn take(&mut self, id: ResourceId, want: f32) -> Option<(Good, f32)> {
@@ -292,15 +246,16 @@ impl ResourceWorld {
             ResourceKind::Tree => return None,
             ResourceKind::Felled if r.amount > 0.0 => (Good::Sticks, &mut r.amount),
             ResourceKind::Felled => (Good::Sticks, &mut r.branches),
-            ResourceKind::Plant => (Good::Sticks, &mut r.amount),
+            ResourceKind::Plant => (Good::Food, &mut r.amount),
             ResourceKind::MudBank => (Good::Clay, &mut r.amount),
-            ResourceKind::StoneOutcrop => (Good::Pebbles, &mut r.amount),
+            ResourceKind::RiverClay => (Good::Clay, &mut r.amount),
         };
         let got = want.min(*slot);
         if got <= 0.0 {
             return None;
         }
         *slot -= got;
+        if r.kind == ResourceKind::RiverClay { self.river_clay_gathered += got; }
         Some((good, got))
     }
 
@@ -317,7 +272,12 @@ impl ResourceWorld {
                 r.amount*survival + rate/decay*(1.0-survival)
             } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
         }
-        self.items.retain(|r| r.kind == ResourceKind::Plant || r.has_yield());
+        for r in self.items.iter_mut().filter(|r|r.kind==ResourceKind::RiverClay) {
+            let before = r.amount;
+            r.amount=river_clay_amount(r.amount,r.max_amount,r.wet,dt_days);
+            self.river_clay_recovered += r.amount - before;
+        }
+        self.items.retain(|r| matches!(r.kind,ResourceKind::Plant | ResourceKind::RiverClay) || r.has_yield());
         Ok(())
     }
 
@@ -326,7 +286,7 @@ impl ResourceWorld {
         self.nav_revision = self.nav_revision.wrapping_add(1);
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
-        self.items.push(Resource { id, kind, cell, amount, max_amount: amount, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0 });
+        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0 });
         id
     }
 
@@ -345,5 +305,47 @@ impl ResourceWorld {
         let id = self.add(ResourceKind::Plant, cell, PLANT_MAX);
         self.get_mut(id)?.wet = true;
         Ok(id)
+    }
+}
+
+fn distance(a:Cell,b:Cell)->f32 {
+    ((a.0 as f32-b.0 as f32).powi(2)+(a.1 as f32-b.1 as f32).powi(2)).sqrt()
+}
+
+/// Clay arrives gradually with the flowing river; exhausted spots remain on the map.
+pub fn river_clay_amount(amount:f32,capacity:f32,flowing:bool,days:f32)->f32 {
+    (amount + if flowing {RIVER_CLAY_PER_DAY*days.max(0.0)} else {0.0}).min(capacity)
+}
+
+#[cfg(test)]
+mod clay_tests {
+    use super::*;
+    #[test]
+    fn river_clay_is_limited_and_recovers_only_with_flow() {
+        assert_eq!(river_clay_amount(0.0,8.0,false,360.0),0.0);
+        assert!((river_clay_amount(0.0,8.0,true,25.0)-1.0).abs()<1e-5);
+        assert_eq!(river_clay_amount(7.0,8.0,true,360.0),8.0);
+        let mut world=ResourceWorld::default();
+        let river=world.add(ResourceKind::RiverClay,(2,2),0.0);
+        let deposit=world.add(ResourceKind::MudBank,(4,4),0.0);
+        world.step(1.0,1.0).unwrap();
+        assert!(world.get(river).is_some());assert!(world.get(deposit).is_none());
+        world.get_mut(river).unwrap().wet=true;
+        world.step(25.0,26.0).unwrap();assert!((world.get(river).unwrap().amount-1.0).abs()<1e-5);
+        assert_eq!(world.take(river,2.0),Some((Good::Clay,1.0)));
+        assert_eq!(world.take(river,1.0),None);
+        world.step(25.0,51.0).unwrap();
+        assert_eq!(world.take(river,1.0),Some((Good::Clay,1.0)));
+        assert_eq!(world.river_clay_gathered,2.0);
+        assert_eq!(world.river_clay_recovered,2.0);
+    }
+    #[test]
+    fn bark_and_shoots_are_food_and_timber_is_sticks() {
+        let mut w=ResourceWorld::default();let id=w.add(ResourceKind::Felled,(1,1),3.0);
+        w.get_mut(id).unwrap().bark=2.0;
+        assert_eq!(w.strip(id,1.0).unwrap(),(Good::Food,1.0));
+        assert_eq!(w.take(id,1.0).unwrap(),(Good::Sticks,1.0));
+        let plant=w.add(ResourceKind::Plant,(2,2),3.0);
+        assert_eq!(w.take(plant,1.0).unwrap(),(Good::Food,1.0));
     }
 }

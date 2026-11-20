@@ -27,7 +27,7 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
             b.mother.map_or(0,|v|v.0), b.father.map_or(0,|v|v.0), b.mate.map_or(0,|v|v.0), b.lodge.map_or(0,|v|v.0),
             b.pregnancy.as_ref().map_or(-1.0,|p|p.due_day), b.pregnancy.as_ref().map_or(0,|p|p.litter)).unwrap();
     }
-    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,pond_building,stranded,condition,stone,active_site,workers,stuck_workers\n");
+    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,pond_building,stranded,condition,reinforced,active_site,workers,stuck_workers\n");
     let (mut pond, mut wet_pond) = (0, 0);
     for b in &s.buildings.buildings {
         let cells: Vec<_> = b.cells().collect();
@@ -74,7 +74,7 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 15] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-quarry-port.png", "12-stone-lodge.png", "13-barge-service.png", "14-resources.png", "15-fog-boundary.png"];
+const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-clay-port.png", "12-reinforced-lodge.png", "13-barge-service.png", "14-resources.png", "15-fog-boundary.png", "16-river-clay.png"];
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -133,6 +133,8 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
             if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.reinforced && b.kind==sim::buildings::BuildingKind::Lodge) {*selection=Selection::Site(b.id);}
         } else if shot==12 {
             if let Some(b)=sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)) {*selection=Selection::Barge(b.id);}
+        } else if shot==15 {
+            if let Some(r)=sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)) {*selection=Selection::Tree(r.id);}
         }
         let homes: Vec<_> = sim.0.buildings.buildings.iter().filter(|b| b.is_complete()
             && matches!(b.kind, sim::buildings::BuildingKind::Lodge | sim::buildings::BuildingKind::Burrow)).collect();
@@ -153,6 +155,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
             10=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dock).max_by_key(|b|b.pos.1).map(|b|b.pos),
             11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Lodge).map(|b|b.pos),
             12=>sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)).map(|b|b.cell),
+            15=>sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)).map(|r|r.cell),
             _=>None,
         };
         if let Some((x,y))=close{orbit.target=crate::flow::cell_world(&sim.0.height,(x as f32,y as f32));orbit.distance=if shot==11{28.0}else{55.0};}

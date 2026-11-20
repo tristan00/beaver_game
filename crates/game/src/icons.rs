@@ -20,12 +20,12 @@ macro_rules! icons {
 }
 
 icons! {
-    Food, Logs, Sticks, Mud, Stone, Baskets, Rope, Tools,
+    Food, Logs, Sticks, Mud, Baskets, Rope, Tools,
     CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence,
     Dam, Lodge, Burrow, FoodCache, ScentMound, GuardPost, Canal, Lock, WaterWheel, Workshop,
-    Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, QuarryCamp, Mill, Storehouse,
+    Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, Mill, Storehouse,
     ForesterLodge, TreeNursery,
-    RoleForager, RoleLogger, RoleMudDigger, RoleQuarrier, RoleBuilder, RoleHauler, RoleCrafter,
+    RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler, RoleCrafter,
     RoleGuard, RoleForester,
     ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
     ViewElevation,
@@ -35,7 +35,7 @@ icons! {
     Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Balance, Menu, Back, Settings,
     Beaver, Adult, Yearling, Kit, MoodGood, MoodOk, MoodBad, Health,
     Spring, Summer, Autumn, Winter, DrySummer,
-    Hourglass, Walk, Tree, Plant, MudBank, Outcrop, Hammer, Crest, Rise, Flood, Push, Drop, Site,
+    Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Profile, Upstream, North, Gauge, Wheel,
     Sapling, TreeYoung, TreeOld, Coppice,
 }
@@ -504,12 +504,6 @@ fn seedling(c: &mut Canvas) {
     c.add(seg(14.0, 57.0, 50.0, 57.0, 4.5));
 }
 
-fn rock(c: &mut Canvas) {
-    c.add(poly(&[(10.0, 50.0), (14.0, 30.0), (27.0, 15.0), (43.0, 16.0), (54.0, 31.0), (55.0, 51.0), (32.0, 55.0)]).grow(2.5));
-    c.cut(polyline(&[(27.0, 15.0), (31.0, 31.0), (55.0, 33.0)], 3.5));
-    c.cut(seg(31.0, 31.0, 22.0, 46.0, 3.5));
-}
-
 fn mud_pile(c: &mut Canvas) {
     c.add(union(vec![circle(20.0, 44.0, 12.0), circle(44.0, 44.0, 12.0), circle(32.0, 32.0, 14.0), rect_c(8.0, 42.0, 56.0, 56.0, 5.0)]));
     c.cut(circle(25.0, 37.0, 3.2).or(circle(40.0, 46.0, 3.0)).or(circle(18.0, 49.0, 2.3)));
@@ -591,7 +585,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(seg(24.0, 26.0, 40.0, 42.0, 6.5));
         }
         Mud => mud_pile(c),
-        Stone => rock(c),
         Baskets => {
             c.add(poly(&[(12.0, 30.0), (52.0, 30.0), (47.0, 55.0), (17.0, 55.0)]).grow(2.0));
             c.cut(seg(10.0, 39.0, 54.0, 39.0, 3.5).or(seg(10.0, 47.0, 54.0, 47.0, 3.5)));
@@ -759,10 +752,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.part(28.0, 38.0, 0.82, 0.0, 0.0, mud_pile);
             c.part(44.0, 22.0, 0.62, 25.0, 3.0, shovel);
         }
-        QuarryCamp => {
-            c.part(26.0, 40.0, 0.78, 0.0, 0.0, rock);
-            c.part(42.0, 22.0, 0.62, 30.0, 3.0, pickaxe);
-        }
+
         Mill => {
             c.add(poly(&[(25.0, 30.0), (39.0, 30.0), (46.0, 58.0), (18.0, 58.0)]).grow(1.0));
             c.cut(rect_c(28.0, 46.0, 36.0, 62.0, 4.0));
@@ -789,7 +779,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleForager => role(c, 0.0, berries),
         RoleLogger => role(c, 35.0, axe),
         RoleMudDigger => role(c, 30.0, shovel),
-        RoleQuarrier => role(c, 30.0, pickaxe),
         RoleBuilder => role(c, -35.0, hammer),
         RoleHauler => role(c, 0.0, crate_box),
         RoleCrafter => role(c, -30.0, saw),
@@ -1042,11 +1031,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(circle(46.0, 34.0, 3.0).or(circle(52.0, 46.0, 2.5)).or(circle(38.0, 48.0, 2.5)));
             c.knock(wave(4.0, 30.0, 42.0, 2.5, 1.0, 4.5));
             c.knock(wave(4.0, 34.0, 53.0, 2.5, 1.0, 4.5));
-        }
-        Outcrop => {
-            c.add(poly(&[(26.0, 56.0), (30.0, 30.0), (42.0, 12.0), (52.0, 22.0), (58.0, 56.0)]).grow(1.5));
-            c.cut(polyline(&[(42.0, 12.0), (44.0, 30.0), (52.0, 40.0)], 3.0));
-            c.knock(poly(&[(6.0, 56.0), (10.0, 38.0), (20.0, 30.0), (30.0, 40.0), (32.0, 56.0)]).grow(1.5));
         }
         Hammer => c.part(32.0, 32.0, 1.0, -40.0, 0.0, hammer),
         Balance => {

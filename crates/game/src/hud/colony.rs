@@ -261,7 +261,7 @@ fn goods(c: &Ctx, u: &mut Ui) {
         if have < 0.05 && inn < 0.01 && out < 0.01 {
             continue;
         }
-        let lasts = if g == Good::Sticks { food_days(s) } else { s.ledger.days_left(g, have) };
+        let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
         u.row(6.0, |r| {
             r.node(Node { width: Val::Px(w[0]), ..default() }, |x| {
                 x.icon(good_icon(g), 18.0, good_color(g)).tip(Tip::name(good_name(g)));

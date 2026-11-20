@@ -1,7 +1,7 @@
 //! Equipment is maintained locally by working crafters; it is not a stockpiled good.
 use crate::{buildings::{Building, BuildingKind, Good, Use}, stock, SimState};
 
-pub const COST_PER_DAY: &[(Good, f32)] = &[(Good::Sticks, 0.18), (Good::Clay, 0.10), (Good::Pebbles, 0.06)];
+pub const COST_PER_DAY: &[(Good, f32)] = &[(Good::Sticks, 0.18), (Good::Clay, 0.10)];
 pub const REACH: usize = 40;
 
 pub fn has_materials(sim: &SimState, building: &Building) -> bool {

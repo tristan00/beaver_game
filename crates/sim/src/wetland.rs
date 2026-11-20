@@ -30,6 +30,15 @@ fn draw(seed: u64, day: u64, i: usize) -> f32 {
     ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
+fn river_clay_active(water: &crate::water::Water, (x,y): Cell) -> bool {
+    [(x,y),(x.wrapping_sub(1),y),(x+1,y),(x,y.wrapping_sub(1)),(x,y+1)].iter().any(|&(x,y)| {
+        let depth=water.depth.get(x,y).copied().unwrap_or(0.0);
+        let ice=water.ice.get(x,y).copied().unwrap_or(1.0);
+        let velocity=water.velocity.get(x,y).copied().unwrap_or((0.0,0.0));
+        depth>=WET_DEPTH && ice<0.4 && velocity.0.hypot(velocity.1)>0.002
+    })
+}
+
 pub fn step(sim: &mut SimState, day: u64) {
     let n = sim.water.depth.width();
     let moist = |sim: &SimState, c: Cell| sim.world.moisture.get(c.0, c.1).is_some_and(|&m| m >= WET_MOISTURE);
@@ -50,6 +59,9 @@ pub fn step(sim: &mut SimState, day: u64) {
             r.wet = w;
         }
     }
+    let flowing: Vec<_> = sim.resources.items.iter().filter(|r|r.kind==ResourceKind::RiverClay)
+        .map(|r|(r.id,river_clay_active(&sim.water,r.cell))).collect();
+    for (id,wet) in flowing {if let Ok(r)=sim.resources.get_mut(id) {r.wet=wet;}}
     let sprouting = SPROUT_PER_DAY * crate::calendar::vegetation_growth(day as f64 - 0.5);
     if sprouting == 0.0 { return; }
     let taken: HashSet<Cell> = sim.resources.items.iter().map(|r| r.cell).chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
@@ -83,6 +95,25 @@ pub fn step(sim: &mut SimState, day: u64) {
             r.amount = SPROUT_AMOUNT;
             r.wet = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn river_clay_needs_adjacent_unfrozen_flow() {
+        let mut water=crate::water::Water::new(4);
+        let bank=(0,1);
+        *water.velocity.get_mut(1,1).unwrap()=(0.01,0.0);
+        assert!(!river_clay_active(&water,bank));
+        *water.depth.get_mut(1,1).unwrap()=0.1;
+        assert!(river_clay_active(&water,bank));
+        *water.ice.get_mut(1,1).unwrap()=0.5;
+        assert!(!river_clay_active(&water,bank));
+        *water.ice.get_mut(1,1).unwrap()=0.0;
+        *water.velocity.get_mut(1,1).unwrap()=(0.0,0.0);
+        assert!(!river_clay_active(&water,bank));
     }
 }
 

@@ -65,9 +65,9 @@ fn centred(bottom: f32, child: VNode) -> VNode {
 }
 
 pub fn food_days(s: &sim::SimState) -> Option<f32> {
-    let need = sim::hud::food_need_per_day(s).max(s.ledger.out_per_day(Good::Sticks));
-    let gain = s.ledger.in_per_day(Good::Sticks);
-    (need > gain + 1e-3).then(|| s.buildings.stores.amount(Good::Sticks) / (need - gain))
+    let need = sim::hud::food_need_per_day(s).max(s.ledger.out_per_day(Good::Food));
+    let gain = s.ledger.in_per_day(Good::Food);
+    (need > gain + 1e-3).then(|| s.buildings.stores.amount(Good::Food) / (need - gain))
 }
 
 fn rate_color(r: f32) -> Color {
@@ -108,7 +108,7 @@ pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) ->
 pub fn good_tip(s: &sim::SimState, g: Good) -> Tip {
     let st = &s.buildings.stores;
     let mut t = Tip::titled(Some((good_icon(g), good_color(g))), good_name(g)).with_value(format!("{}/{}", st.amount(g).round() as i64, st.capacity(g).round() as i64));
-    if g == Good::Sticks { t.push(TipLine::new("Bark to eat; wood to build", "")); }
+    if g == Good::Food { t.push(TipLine::new("Shoots and bark to eat", "")); }
     if !s.ledger.has_data() {
         t.push(TipLine::new("Per day", "-"));
         return t;
@@ -128,11 +128,11 @@ pub fn good_tip(s: &sim::SimState, g: Good) -> Tip {
         tout.push(l);
     }
     t.push(TipLine::new("Gathered", format!("{}/d", signed(inn.total))).color(GOOD).nested(tin));
-    t.push(TipLine::new(if g == Good::Sticks { "Eaten, used" } else { "Used" }, format!("{}/d", signed(-out.total.abs()))).color(BAD).nested(tout));
-    let left = if g == Good::Sticks { food_days(s) } else { s.ledger.days_left(g, st.amount(g)) };
+    t.push(TipLine::new(if g == Good::Food { "Eaten, used" } else { "Used" }, format!("{}/d", signed(-out.total.abs()))).color(BAD).nested(tout));
+    let left = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, st.amount(g)) };
     if let Some(d) = left {
         t.push(TipLine::new("Empty in", days(d)).icon(Icon::Hourglass, WARN).color(WARN));
-        if g == Good::Sticks {
+        if g == Good::Food {
             let gap = sim::hud::food_need_per_day(s) - inn.total;
             if gap > 0.05 {
                 t.push(TipLine::new("Short", num(gap)).color(WARN));
@@ -184,7 +184,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
         for g in STRIP_GOODS {
             let have = stores.amount(g);
             let rate = s.ledger.net_per_day(g);
-            let lasts = if g == Good::Sticks { food_days(s) } else { s.ledger.days_left(g, have) };
+            let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
             u.row(4.0, |r| {
                 r.icon(good_icon(g), 18.0, good_color(g));
                 r.bold(format!("{}", have.round() as i64), 14.0, if have < 0.5 && lasts.is_some() { BAD } else { INK });
@@ -302,7 +302,6 @@ pub fn role_kind_icon(r: RoleKind) -> Icon {
         RoleKind::Forager => Icon::RoleForager,
         RoleKind::Logger => Icon::RoleLogger,
         RoleKind::MudDigger => Icon::RoleMudDigger,
-        RoleKind::Quarrier => Icon::RoleQuarrier,
         RoleKind::Builder => Icon::RoleBuilder,
         RoleKind::Hauler => Icon::RoleHauler,
         RoleKind::Crafter => Icon::RoleCrafter,
@@ -317,7 +316,6 @@ pub fn role_kind_name(r: RoleKind) -> &'static str {
         RoleKind::Forager => "Forager",
         RoleKind::Logger => "Logger",
         RoleKind::MudDigger => "Clay digger",
-        RoleKind::Quarrier => "Quarrier",
         RoleKind::Builder => "Builder",
         RoleKind::Hauler => "Hauler",
         RoleKind::Crafter => "Crafter",
@@ -330,7 +328,7 @@ pub fn role_kind_name(r: RoleKind) -> &'static str {
 fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
     let v = p.value;
     match p.kind {
-        ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Sticks))], if v < 0.5 { "0".into() } else { days(v) }, "Food runs out"),
+        ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Food))], if v < 0.5 { "0".into() } else { days(v) }, "Food runs out"),
         ProblemKind::Idle => (vec![(Icon::Idle, WARN)], format!("{}", v as i64), "Free beavers"),
         ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (Icon::RoleBuilder, MUTED)], format!("{}", v as i64), "Sites without builders"),
         ProblemKind::StoreFull => {
@@ -675,9 +673,9 @@ fn key_hints(u: &mut Ui, tool: Tool) {
 
 pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
     let larder = (2.0 + 2.0 * sim::tuning::colony::KIT_FOOD_WEIGHT) * sim::tuning::colony::HUNGER_PER_DAY * sim::starts::START_LARDER_DAYS;
-    let mut bundle: Vec<(Good, String)> = Vec::new();
+    let mut bundle: Vec<(Good, String)> = vec![(Good::Food, num(larder))];
     for (g, a) in sim::starts::START_BUNDLE {
-        bundle.push((g, num(a + if g == Good::Sticks { larder } else { 0.0 })));
+        bundle.push((g, num(a)));
     }
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
         u.row(4.0, |r| {

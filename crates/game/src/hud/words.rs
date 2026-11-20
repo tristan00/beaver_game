@@ -10,7 +10,7 @@ pub fn good_name(g: Good) -> &'static str {
     match g {
         Good::Sticks => "Sticks",
         Good::Clay => "Clay",
-        Good::Pebbles => "Pebbles",
+        Good::Food => "Food",
     }
 }
 
@@ -18,7 +18,7 @@ pub fn good_icon(g: Good) -> Icon {
     match g {
         Good::Sticks => Icon::Sticks,
         Good::Clay => Icon::Mud,
-        Good::Pebbles => Icon::Stone,
+        Good::Food => Icon::Food,
     }
 }
 
@@ -26,7 +26,7 @@ pub fn good_color(g: Good) -> Color {
     match g {
         Good::Sticks => Color::srgb(0.88, 0.76, 0.52),
         Good::Clay => Color::srgb(0.66, 0.6, 0.42),
-        Good::Pebbles => Color::srgb(0.66, 0.68, 0.7),
+        Good::Food => Color::srgb(0.9, 0.42, 0.5),
     }
 }
 
@@ -49,7 +49,6 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         LoggingCamp => Icon::LoggingCamp,
         ForagerHut => Icon::ForagerHut,
         MudPit => Icon::MudPit,
-        QuarryCamp => Icon::QuarryCamp,
         Mill => Icon::Mill,
         Storehouse => Icon::Storehouse,
         ForesterLodge => Icon::ForesterLodge,
@@ -75,7 +74,7 @@ pub fn role_icon(r: Role) -> Icon {
             ResourceKind::Tree | ResourceKind::Felled => Icon::RoleLogger,
             ResourceKind::Plant => Icon::RoleForager,
             ResourceKind::MudBank => Icon::RoleMudDigger,
-            ResourceKind::StoneOutcrop => Icon::RoleQuarrier,
+            ResourceKind::RiverClay => Icon::RoleMudDigger,
         },
         Role::Build => Icon::RoleBuilder,
         Role::Haul => Icon::RoleHauler,
@@ -92,7 +91,7 @@ pub fn role_name(r: Role) -> &'static str {
             ResourceKind::Tree | ResourceKind::Felled => "Logger",
             ResourceKind::Plant => "Forager",
             ResourceKind::MudBank => "Clay digger",
-            ResourceKind::StoneOutcrop => "Quarrier",
+            ResourceKind::RiverClay => "Clay digger",
         },
         Role::Build => "Builder",
         Role::Haul => "Hauler",
@@ -108,7 +107,7 @@ pub fn resource_icon(k: ResourceKind) -> Icon {
         ResourceKind::Tree | ResourceKind::Felled => Icon::Tree,
         ResourceKind::Plant => Icon::Plant,
         ResourceKind::MudBank => Icon::MudBank,
-        ResourceKind::StoneOutcrop => Icon::Outcrop,
+        ResourceKind::RiverClay => Icon::MudBank,
     }
 }
 
@@ -117,8 +116,8 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
         ResourceKind::Tree => "Tree",
         ResourceKind::Felled => "Felled tree",
         ResourceKind::Plant => "Edible shoots",
-        ResourceKind::MudBank => "Mud bank",
-        ResourceKind::StoneOutcrop => "Outcrop",
+        ResourceKind::MudBank => "Clay deposit",
+        ResourceKind::RiverClay => "River clay",
     }
 }
 

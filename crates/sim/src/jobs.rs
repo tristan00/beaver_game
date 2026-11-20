@@ -11,7 +11,6 @@ pub enum RoleKind {
     Forager,
     Logger,
     MudDigger,
-    Quarrier,
     Builder,
     Hauler,
     Crafter,
@@ -21,11 +20,10 @@ pub enum RoleKind {
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 10] = [
+    pub const ALL: [RoleKind; 9] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
-        RoleKind::Quarrier,
         RoleKind::Builder,
         RoleKind::Hauler,
         RoleKind::Crafter,
@@ -33,14 +31,13 @@ impl RoleKind {
         RoleKind::Guard,
         RoleKind::Scout,
     ];
-    pub const DEFAULT_ORDER: [RoleKind; 10] = [
+    pub const DEFAULT_ORDER: [RoleKind; 9] = [
         RoleKind::Builder,
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::Forester,
         RoleKind::Hauler,
         RoleKind::MudDigger,
-        RoleKind::Quarrier,
         RoleKind::Crafter,
         RoleKind::Guard,
         RoleKind::Scout,
@@ -51,8 +48,8 @@ pub const FOOD_EMERGENCY_DAYS: f32 = 12.0;
 
 pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     let need = crate::hud::food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(crate::buildings::Good::Sticks);
-    let food = sim.buildings.stores.amount(crate::buildings::Good::Sticks);
+    let gain = sim.ledger.in_per_day(crate::buildings::Good::Food);
+    let food = sim.buildings.stores.amount(crate::buildings::Good::Food);
     let short = need > gain && food < (need - gain) * FOOD_EMERGENCY_DAYS;
     if short && role == RoleKind::Forager {
         return 0;
@@ -70,9 +67,9 @@ pub fn stock_target(sim: &SimState, good: Good) -> f32 {
     let committed: f32 = sim.work.places.iter().filter(|p| is_site(sim,p))
         .filter_map(|p| p.site.as_ref()).map(|s|s.missing(good)).sum();
     let reserve = match good {
-        Good::Sticks => crate::hud::food_need_per_day(sim) * 125.0 + 60.0,
+        Good::Food => crate::hud::food_need_per_day(sim) * 125.0,
+        Good::Sticks => 40.0 + sim.buildings.buildings.len() as f32 * 0.7,
         Good::Clay => 30.0 + sim.buildings.buildings.len() as f32 * 0.6,
-        Good::Pebbles => 24.0 + sim.buildings.buildings.len() as f32 * 0.6,
     };
     (committed + reserve).min(sim.buildings.stores.capacity(good))
 }
@@ -82,7 +79,6 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
     let goods: &[Good] = match role {
         RoleKind::Logger => &[Good::Sticks],
         RoleKind::MudDigger => &[Good::Clay],
-        RoleKind::Quarrier => &[Good::Pebbles],
         _ => return false,
     };
     if role == RoleKind::Logger && sim.buildings.stores.amount(Good::Sticks) < WOOD_RESERVE {
@@ -118,7 +114,7 @@ pub fn gather_role(k: ResourceKind) -> RoleKind {
         ResourceKind::Plant => RoleKind::Forager,
         ResourceKind::Tree | ResourceKind::Felled => RoleKind::Logger,
         ResourceKind::MudBank => RoleKind::MudDigger,
-        ResourceKind::StoneOutcrop => RoleKind::Quarrier,
+        ResourceKind::RiverClay => RoleKind::MudDigger,
     }
 }
 
@@ -126,7 +122,7 @@ pub fn colony_job(r: RoleKind) -> Option<Job> {
     match r {
         RoleKind::Forager => Some(Job::Forager),
         RoleKind::Logger | RoleKind::Forester => Some(Job::Logger),
-        RoleKind::MudDigger | RoleKind::Quarrier => Some(Job::Digger),
+        RoleKind::MudDigger => Some(Job::Digger),
         RoleKind::Builder => Some(Job::Builder),
         RoleKind::Hauler => Some(Job::Hauler),
         RoleKind::Crafter => Some(Job::Crafter),

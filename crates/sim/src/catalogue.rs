@@ -45,7 +45,6 @@ pub fn def(kind: BuildingKind) -> Def {
         LoggingCamp => camp(ResourceKind::Tree),
         ForagerHut => camp(ResourceKind::Plant),
         MudPit => camp(ResourceKind::MudBank),
-        QuarryCamp => camp(ResourceKind::StoneOutcrop),
         ForesterLodge => (Tier::Elementary, vec![Role::Forester; 2], Some(GATHER_AREA)),
         TreeNursery => (Tier::Elementary, vec![Role::Forester], None),
         Mill => (Tier::Industrial, vec![Role::Craft; 2], None),
@@ -77,10 +76,10 @@ pub fn prerequisites(kind: BuildingKind) -> &'static [BuildingKind] {
         ForagerHut | LoggingCamp | MudPit | ScentMound => &[Burrow],
         Lodge => &[LoggingCamp, MudPit],
         FoodCache => &[ForagerHut],
-        QuarryCamp | Dock => &[Warehouse],
-        Workshop => &[LoggingCamp, QuarryCamp],
+        Dock => &[Warehouse],
+        Workshop => &[LoggingCamp, MudPit],
         Canal => &[MudPit],
-        Lock => &[Dock, QuarryCamp],
+        Lock => &[Dock, MudPit],
         Barge => &[Dock, Workshop],
         WaterWheel => &[Workshop],
         Storehouse => &[Warehouse, Workshop],
@@ -111,7 +110,7 @@ mod progression_tests {
             }
         }
         assert_eq!(built.len(), BuildingKind::ALL.len(), "building prerequisites contain a cycle");
-        assert!(prerequisites(BuildingKind::Workshop).contains(&BuildingKind::QuarryCamp));
+        assert!(prerequisites(BuildingKind::Workshop).contains(&BuildingKind::MudPit));
         assert!(prerequisites(BuildingKind::Barge).contains(&BuildingKind::Dock));
     }
 }

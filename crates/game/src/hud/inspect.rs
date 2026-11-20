@@ -281,7 +281,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
         if b.is_complete() && !matches!(b.kind,BuildingKind::Canal|BuildingKind::Barge) {
             u.rule();
             bar_row(u,Icon::Hammer,if b.condition<0.55{WARN}else{GOOD},b.condition,format!("{:.0}%",b.condition*100.0),Tip::name("Condition"));
-            u.text(if b.reinforced {"Stone reinforced"} else {"Timber structure"},12.0,INK);
+            u.text(if b.reinforced {"Clay reinforced"} else {"Timber structure"},12.0,INK);
             if !s.maintenance.jobs.contains_key(&id) {
                 u.row(6.0,|r| {
                     if b.condition<0.98 {
@@ -290,11 +290,11 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                         r.icon_label_button(Icon::Hammer,"Repair",12.0,HudAction::RepairBuilding(id),ACCENT,false).tip(tip);
                     }
                     if !b.reinforced && sim::maintenance::can_reinforce(b.kind) {
-                        if s.has_building(BuildingKind::QuarryCamp) {
-                            let mut tip=Tip::name("Reinforce with stone").line("Durability",if b.kind==BuildingKind::Lodge{"1.75×"}else{"1.5×"});
+                        if s.has_building(BuildingKind::Workshop) {
+                            let mut tip=Tip::name("Reinforce with clay").line("Durability",if b.kind==BuildingKind::Lodge{"1.75×"}else{"1.5×"});
                             for (g,a) in sim::maintenance::cost(b,sim::maintenance::Refit::Reinforce).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
-                            r.icon_label_button(good_icon(Good::Pebbles),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
-                        } else {r.text("Finish a pebble quarry first",11.0,MUTED);}
+                            r.icon_label_button(good_icon(Good::Clay),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
+                        } else {r.text("Finish a workshop first",11.0,MUTED);}
                     }
                 });
             }
@@ -302,7 +302,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
         if let Some(site) = place.and_then(|pl| pl.site.as_ref()) {
             u.rule();
             if let Some(job)=s.maintenance.jobs.get(&id) {
-                u.text(if job.kind==sim::maintenance::Refit::Reinforce{"Stone reinforcement in progress"}else{"Repairs in progress"},12.0,INK);
+                u.text(if job.kind==sim::maintenance::Refit::Reinforce{"Clay reinforcement in progress"}else{"Repairs in progress"},12.0,INK);
                 u.icon_label_button(Icon::Undo,"Cancel maintenance",12.0,HudAction::CancelMaintenance(id),FAINT,false).tip(Tip::name("Return delivered materials; preserve the existing structure"));
             }
             u.row(10.0, |r| {
@@ -385,7 +385,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
         if matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill) && b.is_complete() {
             u.rule();
             u.text(format!("Workshop support: +{:.0}% nearby work", b.output * 25.0), 12.0, INK);
-            u.text("Crafters maintain equipment using sticks, clay and pebbles.", 11.0, MUTED);
+            u.text("Crafters maintain equipment using sticks and clay.", 11.0, MUTED);
         }
         if b.kind == BuildingKind::LoggingCamp && b.is_complete() {
             u.rule();
@@ -527,10 +527,8 @@ fn factor_row(u: &mut Ui, f: &sim::hud::Factor) {
         Icon::Tree
     } else if l.contains("plant") {
         Icon::Plant
-    } else if l.contains("mud") {
+    } else if l.contains("mud") || l.contains("clay") {
         Icon::MudBank
-    } else if l.contains("stone") {
-        Icon::Outcrop
     } else if l.contains("walk") {
         Icon::Walk
     } else if l.contains("store for") {
@@ -701,6 +699,11 @@ fn resource(c: &Ctx, rid: sim::resources::ResourceId) -> VNode {
     };
     shell(|u| {
         header(c, Selection::Tree(rid), u, resource_icon(r.kind), resource_name(r.kind).to_string(), None, |_| {});
+        if r.kind == sim::resources::ResourceKind::RiverClay {
+            u.text(if r.wet {"River sediment: slowly replenishing"} else {"River sediment: recovery paused"},12.0,MUTED);
+            if !r.wet {u.text("Needs flowing, unfrozen water",11.0,MUTED);}
+            u.text(format!("+{:.2} clay/day, up to {:.0}",sim::resources::RIVER_CLAY_PER_DAY,r.max_amount),11.0,MUTED);
+        }
         let frac = if r.max_amount > 0.0 { r.amount / r.max_amount } else { 0.0 };
         bar_row(u, resource_icon(r.kind), GOOD, frac, num(r.amount), Tip::name("Left").with_value(format!("{}/{}", num(r.amount), num(r.max_amount))));
         let areas: Vec<BuildingId> = s.work.places.iter().filter(|p| p.area.is_some_and(|a| a.contains(r.cell))).map(|p| p.building).collect();

@@ -126,7 +126,7 @@ pub const MOVE_COST_PER_DAY: f32 = 43_200.0;
 pub const LADEN_PACE: f32 = 0.5;
 pub const FELL_PER_DAY: f32 = 1.3;
 pub const GATHER_PER_DAY: f32 = 4.5;
-pub const FOOD_GATHER_PER_DAY: f32 = 2.8;
+pub const FOOD_GATHER_PER_DAY: f32 = 1.4;
 pub const LOAD_SIZE: f32 = 4.0;
 const EPS: f32 = 1e-3;
 const SPAWN_RADIUS: usize = 12;
@@ -215,17 +215,13 @@ fn gatherable(r: &Resource) -> bool {
         ResourceKind::Tree => crate::forestry::fellable(r),
         ResourceKind::Felled => r.amount > 0.0 || r.branches > 0.0,
         ResourceKind::Plant => r.amount >= PLANT_MIN_TAKE,
+        ResourceKind::RiverClay => r.amount >= crate::resources::RIVER_CLAY_MIN_TAKE,
         _ => r.amount > 0.0,
     }
 }
 
 fn kinds_for(k: ResourceKind) -> &'static [ResourceKind] {
-    match k {
-        ResourceKind::Tree | ResourceKind::Felled => &[ResourceKind::Felled, ResourceKind::Tree],
-        ResourceKind::Plant => &[ResourceKind::Plant, ResourceKind::Felled, ResourceKind::Tree],
-        ResourceKind::MudBank => &[ResourceKind::MudBank],
-        ResourceKind::StoneOutcrop => &[ResourceKind::StoneOutcrop],
-    }
+    k.gather_sources()
 }
 
 impl Job {
@@ -290,7 +286,7 @@ pub fn is_store(kind: BuildingKind) -> bool {
 pub(crate) fn accepts(kind: BuildingKind, good: Good) -> bool {
     match kind {
         BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::Dock => true,
-        BuildingKind::FoodCache => good == Good::Sticks,
+        BuildingKind::FoodCache => good == Good::Food,
         _ => false,
     }
 }
@@ -441,7 +437,6 @@ fn site_fetch_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task>
             sim.buildings.building(b).is_some_and(|bd| !bd.is_complete()) && s.missing(good) - promised(sim, b, good) > WORK_EPS
         });
         let in_stock: f32 = crate::stock::holders(sim, good).iter().map(|&h| sim.work.stock_of(h, good)).sum();
-        if good == Good::Sticks && in_stock <= crate::hud::food_need_per_day(sim) * 6.0 { continue; }
         if older_wants && in_stock < 2.0 * LOAD_SIZE {
             continue;
         }
@@ -668,8 +663,7 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
     if site {
         let outstanding = sim.work.place(then).and_then(|p| p.site.as_ref()).map_or(0.0, |s| s.missing(good))
             - promised(sim, then, good);
-        let reserve = if good == Good::Sticks { crate::hud::food_need_per_day(sim) * 6.0 } else { 0.0 };
-        let want = LOAD_SIZE.min(outstanding).min(sim.work.stock_of(from, good)).min((sim.buildings.stores.amount(good) - reserve).max(0.0));
+        let want = LOAD_SIZE.min(outstanding).min(sim.work.stock_of(from, good)).min(sim.buildings.stores.amount(good));
         if want <= WORK_EPS || sim.buildings.stores.take_raw(good, want).is_err() {
             return abandon(ag);
         }
@@ -867,7 +861,7 @@ fn source_of(good: Good) -> ResourceKind {
     match good {
         Good::Sticks => ResourceKind::Tree,
         Good::Clay => ResourceKind::MudBank,
-        Good::Pebbles => ResourceKind::StoneOutcrop,
+        Good::Food => ResourceKind::Plant,
     }
 }
 
@@ -888,14 +882,14 @@ pub(crate) fn site_material_run(sim: &SimState, site: BuildingId, pos: Cell) -> 
     let open: Vec<&crate::work::SiteProgress> =
         sim.work.places.iter().filter(|p| is_site(sim, p)).filter_map(|p| p.site.as_ref()).collect();
     let progress = sim.work.place(site)?.site.as_ref()?;
-    let raw = |g: Good| matches!(g, Good::Sticks | Good::Clay | Good::Pebbles);
+    let raw = |g: Good| matches!(g, Good::Sticks | Good::Clay);
     let good = progress.needed.iter().map(|n| n.0).find(|&g| {
         raw(g) && progress.missing(g) > WORK_EPS && open.iter().map(|p| p.missing(g)).sum::<f32>() - sim.buildings.stores.amount(g) > WORK_EPS
     })?;
     let r = GATHER_RADIUS;
     let area = Area { min: (pos.0.saturating_sub(r), pos.1.saturating_sub(r)), max: (pos.0 + r, pos.1 + r) };
     // A missing material is not itself a viable gathering job. Empty areas
-    // otherwise reserve the entire workforce forever (especially stone).
+    // otherwise reserve the entire workforce forever.
     if !sim.resources.items.iter().any(|item|area.contains(item.cell) && kinds_for(source_of(good)).contains(&item.kind) && gatherable(item)) {return None;}
     Some(Assignment::Area(source_of(good), area))
 }
@@ -986,7 +980,7 @@ fn organise(sim: &mut SimState) {
                     && !sim.work.places.iter().filter(|p|is_site(sim,p)).filter_map(|p|p.site.as_ref()).any(|p|p.needed.iter().any(|&(g,_)|p.missing(g)>EPS&&sim.buildings.stores.amount(g)>EPS))
                     && !(sim.work.balanced.contains(&b.id) && crate::stock::balance_move(sim, Some(b.id)).is_some()),
                 Role::Collect(kind) => {
-                    let good = match kind {ResourceKind::MudBank => Good::Clay, ResourceKind::StoneOutcrop => Good::Pebbles, _ => Good::Sticks};
+                    let good = match kind {ResourceKind::MudBank | ResourceKind::RiverClay => Good::Clay, ResourceKind::Plant => Good::Food, _ => Good::Sticks};
                     sim.buildings.stores.amount(good) >= crate::jobs::stock_target(sim, good)
                 },
                 Role::Craft => b.output >= 0.95 || !crate::craftsmanship::has_materials(sim, b),
@@ -1012,7 +1006,7 @@ fn organise(sim: &mut SimState) {
         }
     }
     openings.sort_by_key(|o| o.key);
-    let mut counts = [0usize; 10];
+    let mut counts = [0usize; 9];
     for o in &mut openings {
         let role = crate::jobs::role_kind(o.role);
         let i = role as usize;
@@ -1135,7 +1129,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     let bark = res.kind == ResourceKind::Felled && job.is_some_and(|j| j.forages());
     let room = |g: Good| sim.buildings.stores.space(g) > EPS;
     let good = match res.kind {
-        _ if bark => Good::Sticks,
+        _ if bark => Good::Food,
         ResourceKind::Felled if res.amount > 0.0 => Good::Sticks,
         ResourceKind::Felled => Good::Sticks,
         k => k.yields()[0],
@@ -1177,7 +1171,6 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
 }
 
 fn site_short_of(sim: &SimState, from: Cell, good: Good) -> Option<BuildingId> {
-    if good == Good::Sticks && sim.buildings.stores.amount(good) < crate::hud::food_need_per_day(sim) * 6.0 { return None; }
     let d = |b: &Building| b.cells().map(|c| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2)).min().unwrap_or(0);
     sim.work
         .places
@@ -1206,7 +1199,7 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
         note(ag, false);
         return;
     }
-    if load.good == Good::Sticks && closest_store(sim, ag.cell, Good::Sticks).is_none() {
+    if load.good == Good::Food && closest_store(sim, ag.cell, Good::Food).is_none() {
         if let Some(home) = larder_cell(sim, ag.id) {
             return carry_home(sim, ag, dt, load, home);
         }
@@ -1319,7 +1312,7 @@ mod freight_tests {
     fn resource_choice_matches_exhaustive_reachable_ranking() {
         let mut s=SimState::new(1);let size=s.world.size;let mut nav=NavGrid::new(size,size);nav.rebuild(&s);s.nav=nav;
         for r in s.resources.items.iter().step_by(3) {s.agents.unreachable.insert(r.id,1.0);}
-        for kind in [ResourceKind::Tree,ResourceKind::Plant,ResourceKind::MudBank,ResourceKind::StoneOutcrop] {
+        for kind in [ResourceKind::Tree,ResourceKind::Plant,ResourceKind::MudBank,ResourceKind::RiverClay] {
             for from in [(5,5),(size/2,size/2),(size-5,size-5)] {
                 for area in [None,Some(Area{min:(0,0),max:(size/2,size/2)})] {
                     let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0};

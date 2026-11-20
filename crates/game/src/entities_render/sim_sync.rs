@@ -151,7 +151,6 @@ pub enum ResSig {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResourceKindTag {
     Mud,
-    Stone,
     Plant,
 }
 
@@ -161,7 +160,7 @@ pub fn res_sig(r: &sim::resources::Resource) -> ResSig {
         ResourceKind::Tree => ResSig::Tree(r.stage().map_or(2, |s| s as u8)),
         ResourceKind::Felled => ResSig::Felled(r.amount.ceil().clamp(0.0, 3.0) as u8, r.branches > 0.0),
         ResourceKind::MudBank => ResSig::Stock(ResourceKindTag::Mud, q(8.0)),
-        ResourceKind::StoneOutcrop => ResSig::Stock(ResourceKindTag::Stone, q(8.0)),
+        ResourceKind::RiverClay => ResSig::Stock(ResourceKindTag::Mud, q(8.0).max(1)),
         ResourceKind::Plant => ResSig::Stock(ResourceKindTag::Plant, q(4.0)),
     }
 }
@@ -223,7 +222,6 @@ fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource
             let s = 0.45 + 0.55 * (q as f32 / n);
             let (mesh, base) = match tag {
                 ResourceKindTag::Mud => (models.mud.clone(), 0.62),
-                ResourceKindTag::Stone => (models.stone.clone(), 0.55),
                 ResourceKindTag::Plant => (models.plant.clone(), 0.5),
             };
             (mesh, Vec3::splat(base * s), None)
@@ -335,7 +333,6 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
         BuildingKind::Warehouse => StructKind::Warehouse,
         BuildingKind::Storehouse => StructKind::Storehouse,
         BuildingKind::LoggingCamp => StructKind::LoggingCamp,
-        BuildingKind::QuarryCamp => StructKind::QuarryCamp,
         BuildingKind::ForesterLodge => StructKind::ForesterLodge,
         BuildingKind::Dock => StructKind::Dock,
         BuildingKind::Barge => StructKind::Barge,
@@ -347,14 +344,14 @@ pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 
 }
 
 #[derive(Default)]
-pub struct StoneSync {
+pub struct ReinforcementSync {
     generation: Option<(u64,u32)>,
     drawn: HashMap<BuildingId,(Entity,u64)>,
     meshes: HashMap<BuildingKind,Handle<Mesh>>,
 }
 
 pub fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::flow::Flow>,models:Option<Res<Models>>,
-    mut meshes:ResMut<Assets<Mesh>>,mut state:Local<StoneSync>) {
+    mut meshes:ResMut<Assets<Mesh>>,mut state:Local<ReinforcementSync>) {
     let Some(models)=models else{return};let s=&sim.0;
     let generation=(s.seed,flow.generation);
     if state.generation!=Some(generation) {
@@ -374,7 +371,7 @@ pub fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::fl
                 if height<=0.0 {continue;}
                 let at=cell_xz(s,(c.0 as f32+0.5,c.1 as f32+0.5));
                 let y=s.height.get(c.0,c.1).copied().unwrap_or(0.0)+height-0.10;
-                mb.ellipsoid_g(Vec3::new(at.x,y,at.y),Vec3::new(0.48,0.23,0.48),super::meshgen::hex(0x777C77),super::meshgen::hex(0xBBB9A8),6,3);
+                mb.ellipsoid_g(Vec3::new(at.x,y,at.y),Vec3::new(0.48,0.23,0.48),super::meshgen::hex(0x68432C),super::meshgen::hex(0xB78354),6,3);
             }
             (meshes.add(mb.build()),Transform::IDENTITY)
         } else {

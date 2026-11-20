@@ -88,7 +88,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
     }
-    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0) {
+    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind == sim::resources::ResourceKind::RiverClay) {
         return Thing::Resource(r.id);
     }
     if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 1.6 * 1.6) {
@@ -324,7 +324,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     }
     if let Some(c) = s.work.supplies {
         if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
-            push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Sticks))]);
+            push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Food))]);
         }
     }
     for id in sim::hud::idle_beavers(s) {
@@ -361,7 +361,7 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
 fn store_takes(kind: BuildingKind, g: Good) -> bool {
     match kind {
         BuildingKind::Warehouse | BuildingKind::Storehouse => true,
-        BuildingKind::FoodCache => g == Good::Sticks,
+        BuildingKind::FoodCache => g == Good::Food,
         _ => false,
     }
 }

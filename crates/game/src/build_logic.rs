@@ -44,7 +44,7 @@ pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
     let mut out: Vec<_> = BuildingKind::ALL.into_iter().filter(|k| sim.features.allows_building(*k)).map(|kind| {
         let group = match kind {
             Dam | Canal | Lock | WaterWheel => Group::Water,
-            LoggingCamp | ForagerHut | MudPit | QuarryCamp | ForesterLodge | TreeNursery => Group::Forest,
+            LoggingCamp | ForagerHut | MudPit | ForesterLodge | TreeNursery => Group::Forest,
             Lodge => Group::Building,
             Workshop | Mill => Group::Craft,
             Dock | Barge | Storehouse | FoodCache => Group::Transport,

@@ -125,7 +125,7 @@ pub mod colony {
     pub const MOOD_HEALTH_SCALE: f32 = 0.5;
     pub const MOOD_RATE: f32 = 0.5;
     pub const LOW_MOOD_BELOW: f32 = 0.2;
-    pub const FOOD_SPOILAGE: f32 = 0.001;
+    pub const FOOD_SPOILAGE: f32 = 0.003;
     pub const TOOLS_WEAR: f32 = 0.003;
     pub const LODGE_WEAR: f32 = 0.002;
     pub const DRY_HOME_WEAR: f32 = 0.03;
@@ -243,7 +243,7 @@ pub mod buildings {
     pub const WET_DEPTH: f32 = 0.05;
     pub const MIN_FLOW: f32 = 0.01;
     pub const FULL_FLOW: f32 = 0.2;
-    pub const BASE_CAPACITY: f32 = 240.0;
+    pub const BASE_CAPACITY: f32 = 100.0;
     pub const WAREHOUSE_CAPACITY: f32 = 150.0;
     pub const DOCK_CAPACITY: f32 = 60.0;
     pub const FOOD_CACHE_CAPACITY: f32 = 100.0;
@@ -276,27 +276,26 @@ pub mod buildings {
     pub fn cost_and_work(kind: BuildingKind) -> (&'static [Amount], f32) {
         use BuildingKind::*;
         match kind {
-            Dam => (&[(Sticks, 30.0), (Clay, 4.0)], 7.0),
-            Lodge => (&[(Sticks, 36.0), (Clay, 16.0)], 10.0),
-            Burrow => (&[], 5.0),
-            FoodCache => (&[(Sticks, 12.0), (Clay, 5.0)], 3.5),
-            ScentMound => (&[(Clay, 5.0), (Sticks, 3.0)], 1.5),
-            GuardPost => (&[(Sticks, 14.0), (Pebbles, 4.0)], 3.0),
-            Canal => (&[(Clay, 1.5)], 0.8),
-            Lock => (&[(Sticks, 18.0), (Pebbles, 8.0), (Clay, 8.0)], 6.0),
-            WaterWheel => (&[(Sticks, 22.0), (Pebbles, 6.0)], 7.0),
-            Workshop => (&[(Sticks, 14.0), (Clay, 6.0), (Pebbles, 4.0)], 5.0),
-            Warehouse => (&[(Sticks, 32.0), (Clay, 10.0)], 8.0),
-            Dock => (&[(Sticks, 16.0), (Clay, 4.0)], 4.0),
-            Barge => (&[(Sticks, 24.0), (Clay, 4.0)], 5.0),
-            LoggingCamp => (&[(Sticks, 8.0)], 2.0),
-            ForagerHut => (&[(Sticks, 6.0), (Clay, 3.0)], 2.0),
-            MudPit => (&[(Sticks, 6.0)], 2.0),
-            QuarryCamp => (&[(Sticks, 10.0), (Clay, 3.0)], 3.0),
-            Mill => (&[(Sticks, 42.0), (Pebbles, 16.0), (Clay, 10.0)], 12.0),
-            Storehouse => (&[(Sticks, 50.0), (Pebbles, 12.0), (Clay, 12.0)], 14.0),
-            ForesterLodge => (&[(Sticks, 10.0), (Clay, 3.0)], 3.0),
-            TreeNursery => (&[(Sticks, 12.0), (Clay, 6.0)], 4.0),
+            Dam => (&[(Sticks,30.0),(Clay,4.0)],7.0),
+            Lodge => (&[(Sticks,36.0),(Clay,16.0)],10.0),
+            Burrow => (&[],5.0),
+            FoodCache => (&[(Sticks,12.0),(Clay,5.0)],3.5),
+            ScentMound => (&[(Clay,5.0),(Sticks,3.0)],1.5),
+            GuardPost => (&[(Sticks,16.0),(Clay,3.0)],3.0),
+            Canal => (&[(Clay,1.5)],0.8),
+            Lock => (&[(Sticks,22.0),(Clay,10.0)],6.0),
+            WaterWheel => (&[(Sticks,26.0),(Clay,4.0)],7.0),
+            Workshop => (&[(Sticks,18.0),(Clay,6.0)],5.0),
+            Warehouse => (&[(Sticks,32.0),(Clay,10.0)],8.0),
+            Dock => (&[(Sticks,16.0),(Clay,4.0)],4.0),
+            Barge => (&[(Sticks,24.0),(Clay,4.0)],5.0),
+            LoggingCamp => (&[(Sticks,8.0)],2.0),
+            ForagerHut => (&[(Sticks,6.0),(Clay,3.0)],2.0),
+            MudPit => (&[(Sticks,6.0)],2.0),
+            Mill => (&[(Sticks,50.0),(Clay,14.0)],12.0),
+            Storehouse => (&[(Sticks,58.0),(Clay,16.0)],14.0),
+            ForesterLodge => (&[(Sticks,10.0),(Clay,3.0)],3.0),
+            TreeNursery => (&[(Sticks,12.0),(Clay,6.0)],4.0),
         }
     }
 

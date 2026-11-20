@@ -68,7 +68,6 @@ pub enum StructKind {
     Warehouse,
     Storehouse,
     LoggingCamp,
-    QuarryCamp,
     ForesterLodge,
     Mill,
     Lock,

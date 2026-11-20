@@ -193,7 +193,7 @@ impl SimState {
             return None;
         }
         let s = &self.buildings.stores;
-        let (food, wood) = (s.amount(buildings::Good::Sticks), s.amount(buildings::Good::Sticks));
+        let (food, wood) = (s.amount(buildings::Good::Food), s.amount(buildings::Good::Sticks));
         (self.colony.food, self.colony.wood) = (food, wood);
         let c = &self.colony;
         Some(Mirror { food, wood, eaten: c.eaten, spoiled: c.spoiled, repair_wood: c.repair_wood })
@@ -208,7 +208,7 @@ impl SimState {
         food_uses.push((Use::Spoiled, c.spoiled - m.spoiled));
         let wood_uses = vec![(Use::Repairs, c.repair_wood - m.repair_wood)];
         let stores = &mut self.buildings.stores;
-        for (good, was, now, uses) in [(Good::Sticks, m.food, c.food, food_uses), (Good::Sticks, m.wood, c.wood, wood_uses)] {
+        for (good, was, now, uses) in [(Good::Food, m.food, c.food, food_uses), (Good::Sticks, m.wood, c.wood, wood_uses)] {
             let d = now - was;
             if d < 0.0 {
                 let take = (-d).min(stores.amount(good));
@@ -229,7 +229,7 @@ impl SimState {
                 stores.deposit(good, d).expect("finite positive amount");
             }
         }
-        self.colony.food = stores.amount(Good::Sticks);
+        self.colony.food = stores.amount(Good::Food);
         self.colony.wood = stores.amount(Good::Sticks);
     }
 
@@ -599,7 +599,7 @@ impl SimState {
         if self.maintenance.jobs.contains_key(&id) {return Err(SimError::InvalidCommand("this dam already has maintenance queued".into()));}
         if self.buildings.building(id).is_some_and(|b|b.reinforced) {
             let damage=cells.iter().map(|&(x,y)|1.0-self.water.dam_integrity.get(x,y).copied().unwrap_or(0.0)).sum::<f32>();
-            cost.push((buildings::Good::Pebbles,(damage*1.2).ceil().max(1.0)));
+            cost.push((buildings::Good::Clay,(damage*1.2).ceil().max(1.0)));
         }
         // A dam's crown can be dry. Reuse its original work site instead of
         // requiring the water/placement checks for a brand-new dam.
@@ -877,3 +877,26 @@ impl colony::Landscape for WorldLand<'_> {
 }
 
 fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }
+
+#[cfg(test)]
+mod store_mirror_tests {
+    use super::*;
+    use buildings::Good;
+    #[test]
+    fn meals_and_repairs_charge_separate_resources() {
+        let mut sim=SimState::new(1);
+        for (good,amount) in [(Good::Food,10.0),(Good::Sticks,20.0),(Good::Clay,30.0)] {
+            sim.buildings.stores.deposit(good,amount).unwrap();
+        }
+        let before=sim.mirror_colony_stores();
+        sim.colony.food-=2.0;
+        sim.colony.eaten[colony::Stage::Adult as usize]+=2.0;
+        sim.colony.wood-=3.0;
+        sim.colony.repair_wood+=3.0;
+        sim.settle_colony_stores(before);
+        assert_eq!(sim.buildings.stores.amount(Good::Food),8.0);
+        assert_eq!(sim.buildings.stores.amount(Good::Sticks),17.0);
+        assert_eq!(sim.buildings.stores.amount(Good::Clay),30.0);
+        assert_eq!((sim.colony.food,sim.colony.wood),(8.0,17.0));
+    }
+}

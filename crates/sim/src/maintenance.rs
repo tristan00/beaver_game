@@ -1,4 +1,4 @@
-//! Paid repairs and stone reinforcement use the normal material-delivery and labour system.
+//! Paid repairs and clay reinforcement use the normal material-delivery and labour system.
 use std::collections::BTreeMap;
 use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K, Good}, work::{Priority, Workplace}, SimError, SimState};
 
@@ -24,17 +24,17 @@ pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
     let (w,h) = b.kind.spec().footprint;
     let area = (w*h) as f32;
     match kind {
-        Refit::Reinforce if b.kind == K::Lodge => (vec![(Good::Pebbles,18.0),(Good::Clay,8.0)],8.0),
+        Refit::Reinforce if b.kind == K::Lodge => (vec![(Good::Sticks,18.0),(Good::Clay,8.0)],8.0),
         Refit::Reinforce if b.kind == K::Dam => {
             let n = b.dam_profile.len().max(1) as f32;
-            (vec![(Good::Pebbles,2.0*n),(Good::Clay,(n*0.5).ceil())],n*0.25+2.0)
+            (vec![(Good::Sticks,2.0*n),(Good::Clay,(n*0.5).ceil())],n*0.25+2.0)
         }
-        Refit::Reinforce => (vec![(Good::Pebbles,2.0*area),(Good::Clay,(area/4.0).ceil())],4.0+area*0.4),
+        Refit::Reinforce => (vec![(Good::Sticks,2.0*area),(Good::Clay,(area/4.0).ceil())],4.0+area*0.4),
         Refit::Repair => {
             let damage = (1.0-b.condition).clamp(0.0,1.0);
             let mut materials: Vec<_> = b.kind.spec().cost.iter().map(|&(g,a)|(g,(a*damage*0.35).ceil())).filter(|v|v.1>0.0).collect();
             if materials.is_empty() { materials.push((Good::Sticks,1.0)); }
-            if b.reinforced { materials.push((Good::Pebbles,(area*damage*0.6).ceil().max(1.0))); }
+            if b.reinforced { materials.push((Good::Clay,(area*damage*0.6).ceil().max(1.0))); }
             (materials, (b.kind.spec().work*damage*0.5).max(1.5))
         }
     }
@@ -46,7 +46,7 @@ pub fn quoted_cost(s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32)
     let (mut materials,labour)=crate::dam_preview::cost_for(s,&cells,&heights);
     if b.reinforced {
         let damage=cells.iter().map(|&(x,y)|1.0-s.water.dam_integrity.get(x,y).copied().unwrap_or(0.0)).sum::<f32>();
-        materials.push((Good::Pebbles,(damage*1.2).ceil().max(1.0)));
+        materials.push((Good::Clay,(damage*1.2).ceil().max(1.0)));
     }
     (materials,labour)
 }
@@ -56,9 +56,9 @@ mod tests {
     use super::*;
     fn lodge()->Building {Building{id:BuildingId(1),kind:K::Lodge,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam_profile:Vec::new()}}
     #[test]
-    fn reinforcement_requires_quarry_materials_and_labour() {
+    fn reinforcement_requires_workshop_materials_and_labour() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
-        assert!(order(&mut s,id,Refit::Reinforce).is_err());s.buildings.buildings.push(Building{id:BuildingId(2),kind:K::QuarryCamp,..lodge()});order(&mut s,id,Refit::Reinforce).unwrap();
+        assert!(order(&mut s,id,Refit::Reinforce).is_err());s.buildings.buildings.push(Building{id:BuildingId(2),kind:K::Workshop,..lodge()});order(&mut s,id,Refit::Reinforce).unwrap();
         assert!(!finish(&mut s,id));
         for (g,a) in s.work.place(id).unwrap().site.as_ref().unwrap().needed.clone(){s.work.deliver(id,g,a).unwrap();}
         assert!(!finish(&mut s,id));s.work.add_labour(id,100.0).unwrap();assert!(finish(&mut s,id));
@@ -80,9 +80,9 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     if !b.is_complete() { return Err(bad("finish construction first")); }
     if matches!(b.kind,K::Canal|K::Barge) {return Err(bad("this structure does not use building repairs"));}
     if kind == Refit::Reinforce {
-        if !can_reinforce(b.kind) {return Err(bad("this structure cannot be stone-reinforced"));}
-        if b.reinforced {return Err(bad("already stone-reinforced"));}
-        if !s.has_building(K::QuarryCamp) {return Err(bad("finish a quarry camp first"));}
+        if !can_reinforce(b.kind) {return Err(bad("this structure cannot be clay-reinforced"));}
+        if b.reinforced {return Err(bad("already clay-reinforced"));}
+        if !s.has_building(K::Workshop) {return Err(bad("finish a workshop first"));}
     } else {
         if b.kind == K::Dam {
             let cell = b.dam_profile.first().map(|v|v.0).unwrap_or(b.pos);

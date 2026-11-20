@@ -1,5 +1,9 @@
 # Beaver Colony industries and the forestry plan
 
+Historical design notes. The current inventory and balance policy are described
+in [Food, sticks and clay](economy_balance.md); the older multi-good and research
+chains below no longer describe the playable economy.
+
 *How resources, jobs, buildings and research fit together today, and a plan for a forest planting and upkeep industry. 18 Nov 2026, branch `interface-v2`.*
 
 ## Update: the water network, deposits and growing dams

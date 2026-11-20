@@ -237,8 +237,8 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     felled(sim, at(32, 4), 3.0, false);
     sim.resources.add(ResourceKind::MudBank, at(3, 9), sim::resources::MUD_AMOUNT);
     sim.resources.add(ResourceKind::MudBank, at(8, 9), sim::resources::MUD_AMOUNT * 0.4);
-    sim.resources.add(ResourceKind::StoneOutcrop, at(15, 9), sim::resources::STONE_AMOUNT);
-    sim.resources.add(ResourceKind::StoneOutcrop, at(20, 9), sim::resources::STONE_AMOUNT * 0.35);
+    sim.resources.add(ResourceKind::RiverClay, at(15, 9), sim::resources::RIVER_CLAY_CAPACITY);
+    sim.resources.add(ResourceKind::RiverClay, at(20, 9), sim::resources::RIVER_CLAY_CAPACITY * 0.35);
     for i in 0..3 {
         sim.resources.add(ResourceKind::Plant, at(27 + i * 2, 9 + i % 2), 3.0);
     }
@@ -247,7 +247,7 @@ fn stage_world(sim: &mut SimState, o: (usize, usize)) {
     }
     add_done(sim, 30, BuildingKind::Lodge, at(21, 15));
     let id = agent(sim, 40, at(16, 12), &[(at(17, 12), Gait::Walk)], 0.3);
-    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Pebbles, amount: 3.0, booked: false });
+    sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Food, amount: 3.0, booked: false });
     let id = agent(sim, 41, at(9, 12), &[(at(10, 12), Gait::Walk)], 0.6);
     sim.agents.by_id.get_mut(&id).expect("spawned").load = Some(Load { good: Good::Clay, amount: 3.0, booked: false });
     let id = agent(sim, 42, at(3, 3), &[], 0.0);
@@ -309,7 +309,7 @@ fn stage_buildings(sim: &mut SimState, o: (usize, usize)) {
         add_water_done(sim, 120 + i as u64, k, at(x, 15));
         x += k.spec().footprint.0 + 4;
     }
-    for (i, k) in [BuildingKind::QuarryCamp, BuildingKind::ForesterLodge, BuildingKind::TreeNursery, BuildingKind::GuardPost].into_iter().enumerate() {
+    for (i, k) in [BuildingKind::MudPit, BuildingKind::ForesterLodge, BuildingKind::TreeNursery, BuildingKind::GuardPost].into_iter().enumerate() {
         add_water_done(sim, 130 + i as u64, k, at(4 + i * 6, 3));
     }
     dig_pond(sim, o.0 + 1, o.1 + 24, 34, 6, 0.9, false);

@@ -17,10 +17,10 @@ mod access_tests {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Good { Sticks, Clay, Pebbles }
+pub enum Good { Food, Sticks, Clay }
 
 impl Good {
-    pub const ALL: [Good; 3] = [Good::Sticks, Good::Clay, Good::Pebbles];
+    pub const ALL: [Good; 3] = [Good::Food, Good::Sticks, Good::Clay];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -247,7 +247,6 @@ pub enum BuildingKind {
     LoggingCamp,
     ForagerHut,
     MudPit,
-    QuarryCamp,
     Mill,
     Storehouse,
     ForesterLodge,
@@ -277,12 +276,12 @@ impl BuildingKind {
         matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
     }
 
-    pub const ALL: [BuildingKind; 21] = [
+    pub const ALL: [BuildingKind; 20] = [
         BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
         BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
         BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
         BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
-        BuildingKind::QuarryCamp, BuildingKind::Mill, BuildingKind::Storehouse,
+        BuildingKind::Mill, BuildingKind::Storehouse,
         BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
     ];
 
@@ -304,7 +303,6 @@ impl BuildingKind {
             BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Pond),
             BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Pond),
             BuildingKind::MudPit => ("Clay pit", (2, 2), Site::TouchesWater),
-            BuildingKind::QuarryCamp => ("Pebble quarry", (2, 2), Site::Dry),
             BuildingKind::Mill => ("Mill", (3, 3), Site::Pond),
             BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Pond),
             BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Pond),

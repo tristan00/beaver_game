@@ -122,9 +122,9 @@ pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
 }
 
 pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
-    let stock = sim.buildings.stores.amount(Good::Sticks);
+    let stock = sim.buildings.stores.amount(Good::Food);
     let need = food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(Good::Sticks);
+    let gain = sim.ledger.in_per_day(Good::Food);
     let mut rows = vec![row("Stock", stock, Source::None), row("Gathered", gain, Source::None)];
     for (st, label) in [(Stage::Adult, "Adults"), (Stage::Yearling, "Yearlings"), (Stage::Kit, "Kits")] {
         let eat: f32 = sim.colony.beavers.iter().filter(|b| b.stage == st).map(|b| crate::tuning::colony::HUNGER_PER_DAY * b.stage.food_weight()).sum();
@@ -403,9 +403,9 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     let idle = idle_beavers(sim);
     let pop = sim.colony.population();
 
-    let food = sim.buildings.stores.amount(Good::Sticks);
+    let food = sim.buildings.stores.amount(Good::Food);
     let need = food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(Good::Sticks);
+    let gain = sim.ledger.in_per_day(Good::Food);
     if pop > 0 && need > gain {
         let days = food / (need - gain);
         if days < FOOD_WARN_DAYS {
@@ -414,7 +414,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 severity: if days < FOOD_WARN_DAYS / 3.0 { Severity::Urgent } else { Severity::Warning },
                 value: days.floor(),
                 cause: food_days_breakdown(sim),
-                subject: Some(Subject::Good(Good::Sticks)),
+                subject: Some(Subject::Good(Good::Food)),
                 fix: food_fix(sim),
                 alt_fix: None,
                 focus: colony_cell(sim),
@@ -727,7 +727,7 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
     };
     let collect = def.slots.iter().find_map(|r| if let Role::Collect(k) = r { Some(*k) } else { None });
     if let Some(kind) = collect {
-        let kinds: Vec<ResourceKind> = if kind == ResourceKind::Tree { vec![ResourceKind::Tree, ResourceKind::Felled] } else { vec![kind] };
+        let kinds = kind.gather_sources();
         let good = if kind == ResourceKind::Tree { Good::Sticks } else { kind.yields().first().copied()? };
         factors.push(factor("Workers", format!("{filled} of {total}"), Some(filled == total)));
         if let Some(area) = place.and_then(|p| p.area) {
@@ -735,8 +735,8 @@ pub fn building_report(sim: &SimState, id: BuildingId) -> Option<Report> {
             let what = match kind {
                 ResourceKind::Tree | ResourceKind::Felled => "Trees in its area",
                 ResourceKind::Plant => "Food plants in its area",
-                ResourceKind::MudBank => "Mud banks in its area",
-                ResourceKind::StoneOutcrop => "Stone outcrops in its area",
+                ResourceKind::MudBank => "Clay sources in its area",
+                ResourceKind::RiverClay => "River clay spots in its area",
             };
             let value = if left == 0 { "none left".to_string() } else { left.to_string() };
             factors.push(factor(what, value, Some(left > 0)));

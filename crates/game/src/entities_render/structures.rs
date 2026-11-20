@@ -578,29 +578,6 @@ pub fn logging_camp(mb: &mut Mb, stage: u8) {
     stick_pile(mb, v(-1.6, 0.0, -0.1), 0.9, 5, 812);
 }
 
-pub fn quarry_camp(mb: &mut Mb, stage: u8) {
-    if stage < 3 {
-        site_frame(mb, 1.4, 1.2, stage, 901);
-        return mb.ellipsoid_g(v(0.0, 0.1, 2.0), v(0.5, 0.35, 0.45), hex(0x6c6c72), hex(0xb7b5b2), 7, 4);
-    }
-    lean_to(mb, 0.4, -1.1, 1.2);
-    let rocks = [(-1.2f32, 0.8f32, 0.55f32), (-0.6, 1.3, 0.45), (-1.5, 1.5, 0.4), (-0.9, 0.9, 0.5)];
-    for (i, (x, z, s)) in rocks.into_iter().enumerate() {
-        mb.ellipsoid_g(v(x, s * 0.55, z), v(s, s * 0.8, s * 0.9), hex(0x6c6c72), hex(0xb7b5b2), 7, 4);
-        mb.ellipsoid_r(v(x + 0.1, s * 1.05, z), v(s * 0.5, s * 0.25, s * 0.45), Quat::from_rotation_y(i as f32), hex(0xc9c7c2));
-    }
-    for (i, (x, y, z)) in [(0.7f32, 0.0f32, 0.9f32), (1.35, 0.0, 0.9), (1.0, 0.42, 0.9), (0.75, 0.0, 1.5)].into_iter().enumerate() {
-        mb.cuboid(v(x, y + 0.21, z), v(0.3, 0.2, 0.26), Quat::from_rotation_y(0.08 * i as f32), hex(0x8c8290), hex(0xc4bcb4));
-    }
-    let (cx, cz) = (1.7f32, -0.2f32);
-    mb.cuboid(v(cx, 0.65, cz), v(0.4, 0.22, 0.6), Quat::IDENTITY, hex(0xa97a46), hex(0xd1a266));
-    for s in [-1.0f32, 1.0] {
-        mb.lathe(Mat4::from_translation(v(cx + 0.46 * s, 0.38, cz)) * Mat4::from_rotation_z(FRAC_PI_2), &[(0.0, -0.05), (0.36, -0.05), (0.38, 0.0), (0.36, 0.05), (0.0, 0.05)], 10, hex(0x6a4528), hex(0x8a5a32), false);
-    }
-    mb.cyl(v(cx, 0.6, cz + 0.6), v(cx, 0.35, cz + 1.5), 0.05, 0.05, hex(0x8a5a32), hex(0x8a5a32), 5);
-    mb.ellipsoid_g(v(cx, 0.95, cz), v(0.3, 0.18, 0.4), hex(0x77777c), hex(0xb2b2b6), 7, 4);
-}
-
 pub fn forester_lodge(mb: &mut Mb, stage: u8) {
     let (hx, hz) = (1.45f32, 1.2f32);
     if stage < 3 {

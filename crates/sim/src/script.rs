@@ -32,7 +32,7 @@ fn parse_kind(s: &str) -> Result<BuildingKind, String> {
 }
 
 fn parse_resource_kind(s: &str) -> Result<ResourceKind, String> {
-    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::StoneOutcrop]
+    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::RiverClay]
         .into_iter()
         .find(|k| format!("{k:?}").eq_ignore_ascii_case(s))
         .ok_or_else(|| format!("unknown resource '{s}'"))
@@ -356,7 +356,7 @@ impl Runner {
     fn daily(&mut self) {
         let s = &self.s;
         let st = &mut self.out.stats;
-        let food = s.buildings.stores.amount(Good::Sticks);
+        let food = s.buildings.stores.amount(Good::Food);
         st.min_food = st.min_food.min(food);
         if food < 0.5 {
             st.food_zero_days += 1;
@@ -392,19 +392,19 @@ impl Runner {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | sticks {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} pebbles {:>4.1} | built {} sites {} dry {} | barges {} carried {:.0} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} sticks {:>4.1} | built {} sites {} dry {} | barges {} carried {:.0} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),
             s.colony.count_stage(Stage::Kit),
             s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count(),
-            st.amount(Good::Sticks),
-            s.ledger.in_per_day(Good::Sticks),
-            s.ledger.out_per_day(Good::Sticks),
+            st.amount(Good::Food),
+            s.ledger.in_per_day(Good::Food),
+            s.ledger.out_per_day(Good::Food),
             crate::hud::food_need_per_day(s),
             crate::jobs::jobs_board(s).iter().filter(|r| r.filled > 0).map(|r| format!("{:?}{}", r.role, r.filled)).collect::<Vec<_>>().join(","),
             st.amount(Good::Clay),
-            st.amount(Good::Pebbles),
+            st.amount(Good::Sticks),
             s.buildings.buildings.iter().filter(|b| b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| !b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| s.buildings.stranded(b, &s.water.depth)).map(|b| format!("{:?}", b.kind)).collect::<Vec<_>>().join(","),
@@ -492,10 +492,9 @@ pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
         "starved" => *st.deaths.get(&format!("{:?}", DeathCause::Starvation)).unwrap_or(&0) as f64,
         "deaths" => st.deaths.values().sum::<u32>() as f64,
         "births" => st.births as f64,
-        "food" => g(Good::Sticks),
+        "food" => g(Good::Food),
         "sticks" => g(Good::Sticks),
         "clay" | "mud" => g(Good::Clay),
-        "pebbles" | "stone" => g(Good::Pebbles),
         "buildings" => s.buildings.buildings.iter().filter(|b| b.is_complete()).count() as f64,
         "sites" => s.buildings.buildings.iter().filter(|b| !b.is_complete()).count() as f64,
         "homeless" => s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count() as f64,
