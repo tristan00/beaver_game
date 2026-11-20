@@ -104,3 +104,36 @@ Verification: 21 simulation unit tests pass; the release game builds; native
 captures verify the three-goods display and a harvested river-clay spot with its
 recovery status. The workspace report retains all comparison CSVs, command logs,
 failed runs and screenshots in `tmp/food-clay-balance/report.html`.
+
+## Winter diagnosis and response changes
+
+The remaining deaths were reproduced from the exact day-1350 state, with the
+same future construction orders. At day 1400 the original colony had only 14
+days of food, but 96% of its workers were free. The weekly response sent two
+workers each time, taking weeks to deploy the available workforce.
+
+The matched day-1350 to day-1530 branches produced six starvation deaths under
+the original responses, fifteen when food-area orders were ignored, and none
+with daily responses or larger weekly responses. This demonstrates an avoidable
+response delay, rather than proving that the map needed more food. It does not
+establish full balance: the daily and larger-response branches still had 29 and
+41 hunger days respectively, especially after the next births. The branches
+used normal commands and preserved failed or refused commands in their logs.
+
+Food warnings now offer a quarter of the working population for emergency
+gathering (at least two where available), capped by eligible workers. Kits and
+locked player orders are excluded. This is an explicit player action, and it
+takes workers away from other tasks; it does not create food or raise output.
+The tooltip states how many workers will be sent.
+
+The food forecast also accounts for proportional spoilage. It estimates time
+to exhaustion under current appetite and gathering rates, rather than assuming
+stored food keeps indefinitely. The warning, its breakdown and automatic food
+priority use the same estimate. This remains a current-rate estimate, not a
+prediction of future seasonal harvests or births.
+
+Full validation compares the unchanged expansion policy with a cautious growth
+policy that defers additional household housing and immigration below a 60-day
+food reserve. The first permanent lodge is still allowed. Algonquin also retains
+its economy-first opening. Overbuilding and neglect remain controls; no resource
+parameters are changed in this continuation.
