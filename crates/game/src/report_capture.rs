@@ -37,7 +37,7 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
         let place=s.work.place(b.id);
         let active=place.is_some_and(|p|p.site.is_some());
         if b.is_complete() && active && !s.maintenance.jobs.contains_key(&b.id){violations.push(format!("finished building {} retains construction record",b.id.0));}
-        let stuck=place.map_or(0,|p|p.slots.iter().filter_map(|slot|slot.worker).filter(|id|s.agents.get(*id).is_some_and(|a|a.stuck_ticks>sim::agents::STUCK_TICKS)).count());
+        let stuck=place.map_or(0,|p|p.slots.iter().filter_map(|slot|slot.worker).filter(|id|s.agents.get(*id).is_some_and(|a|a.stuck_ticks>96)).count());
         writeln!(buildings, "{},{:?},{},{},{},{},{},{},{},{:.3},{},{},{},{}", b.id.0, b.kind, b.is_complete(), b.pos.0, b.pos.1,
             wet, cells.len(), in_pond, s.buildings.stranded(b,&s.water.depth),b.condition,b.reinforced,active,place.map_or(0,|p|p.filled()),stuck).unwrap();
     }
@@ -115,7 +115,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
     if (*frame - 120) % 60 == 0 {
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
-        canopy.0 = true;
+        canopy.0 = shot != 0;
         hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Research), _ => None };
         hud.pop_page = usize::from(shot == 8);
         *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
