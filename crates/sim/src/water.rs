@@ -15,6 +15,7 @@ mod gang;
 mod kernels;
 mod view;
 mod climate;
+mod routed;
 pub use climate::{Forcing, Weather};
 use kernels::{FACE_DRY, G};
 use view::{BandOut, SendPtr, View};
@@ -235,6 +236,9 @@ impl Pool {
 
 #[derive(Clone, Debug)]
 pub struct Water {
+    routed: routed::Flow,
+    detailed: bool,
+    routed_needs_sync: bool,
     pub depth: WaterGrid,
     pub ice: Grid<f32>,
     pub dam_height: Grid<f32>,
@@ -339,6 +343,9 @@ impl Water {
     pub fn new(size: usize) -> Self {
         let n = size;
         Self {
+            routed: routed::Flow::default(),
+            detailed: std::env::var_os("BC_WATER_DETAILED").is_some(),
+            routed_needs_sync: true,
             depth: Grid::new(size, size, 0.0),
             ice: Grid::new(size, size, 0.0),
             dam_height: Grid::new(size, size, 0.0),
@@ -842,7 +849,10 @@ impl Water {
     /// Runs the physics for `seconds`, finding pools again (and applying rain and losses) every
     /// `POOL_EVERY_S`.
     fn run_for(&mut self, seconds: f64, losses: bool) {
-
+        if !self.detailed {
+            self.run_routed(seconds, losses);
+            return;
+        }
         let mut t = 0.0;
         while t < seconds - 1e-9 {
             let environment_limit = if losses { POOL_EVERY_S - self.since_environment } else { f64::INFINITY };
@@ -890,6 +900,34 @@ impl Water {
         }
     }
 
+    fn run_routed(&mut self, seconds:f64, losses:bool) {
+        self.dissolve_pools();
+        if self.masks_dirty {self.rebuild_masks();}
+        let mut flow=std::mem::take(&mut self.routed);
+        let mut left=seconds;
+        while left>1.0e-6 {
+            let dt=left.min(if losses {POOL_EVERY_S-self.since_environment} else {seconds}).max(1.0e-6);
+            self.refresh_sources();
+            let started=std::time::Instant::now();
+            let sync=std::mem::take(&mut self.routed_needs_sync);
+            flow.prepare(self,sync);
+            flow.advance(self,dt);
+            flow.publish(self);
+            self.timings.faces_s+=started.elapsed().as_secs_f64();
+            if losses {
+                self.time_days+=dt/DAY_S;
+                self.since_environment+=dt;
+                if self.since_environment>=POOL_EVERY_S-1.0e-3 {
+                    self.apply_rain_and_losses((self.since_environment/DAY_S) as f32);
+                    self.routed_needs_sync=true;
+                    self.since_environment=0.0;
+                }
+            }
+            left-=dt;
+        }
+        self.routed=flow;
+    }
+
     /// Rain on open water, evaporation and seepage from wet ground (millimetres a day).
     fn apply_rain_and_losses(&mut self, dt_days: f32) -> bool {
         // Environment updates need current depths, including pool interiors that
@@ -909,7 +947,7 @@ impl Water {
         let mut grew = false;
         for i in 0..self.h.len() {
             let hh = self.h[i];
-            if lake[i].is_finite() || (hh == 0.0 && r == 0.0) {
+            if lake[i].is_finite() || (hh == 0.0 && (r == 0.0 || !self.detailed)) {
                 continue;
             }
             // Infiltration absorbs light rain on dry ground. Sustained precipitation

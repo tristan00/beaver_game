@@ -41,10 +41,10 @@ fn climate_keys(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<TextCapture>
     }
 }
 
-fn update_panel(sim: Res<Sim>, mut labels: Query<&mut Text, With<SandboxStatus>>) {
+fn update_panel(sim: Res<Sim>, canopy: Res<crate::entities_render::CanopyView>, mut labels: Query<&mut Text, With<SandboxStatus>>) {
     let s = &sim.0;
     let f = s.water.forcing();
-    let value = format!("River sandbox | {}\nWeather: {} | {:.1} mm/day\nCatchment flow: {:.2}x mean\nF6 weather | F7 season | Delete breach\nSpace pause | 1/2/3 speed", sim::calendar::Season::at(s.time_days).name(), s.water.weather.name(), f.rain * 1000.0, f.inflow);
+    let value = format!("River sandbox | {}\nWeather: {} | {:.1} mm/day\nCatchment flow: {:.2}x mean\nF6 weather | F7 season | Delete breach\nF8 canopies: {}\nSpace pause | 1/2/3 speed", sim::calendar::Season::at(s.time_days).name(), s.water.weather.name(), f.rain * 1000.0, f.inflow, if canopy.0 { "hidden" } else { "shown" });
     for mut label in &mut labels {
         if label.0 != value { label.0.clone_from(&value); }
     }

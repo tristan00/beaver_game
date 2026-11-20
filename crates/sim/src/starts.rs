@@ -63,7 +63,7 @@ struct RiverPlan {
 }
 
 pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>, f32)> {
-    dam_candidates(sim)
+    dam_candidates(sim, Some((camp, radius + MAX_DAM_CELLS / 2)), 32)
         .into_iter()
         .filter(|(_, cells, _)| {
             let mid = cells[cells.len() / 2];
@@ -73,15 +73,16 @@ pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>,
         .min_by_key(|(_, h)| (*h > crate::dam_preview::DEFAULT_HEIGHT + 1e-3) as u8)
 }
 
-fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
+fn dam_candidates(sim: &SimState, around: Option<(Cell, usize)>, limit: usize) -> Vec<(f32, Vec<Cell>, f32)> {
     let size = sim.world.size;
     let is_river = |x: usize, y: usize| sim.world.river.get(x, y).copied().unwrap_or(false);
     let up = upstream_map(sim);
     let bed = |c: Cell| sim.height.get(c.0, c.1).copied().unwrap_or(0.0);
     let mut out = Vec::new();
-    for y in EDGE_MARGIN..size - EDGE_MARGIN {
+    'search: for y in EDGE_MARGIN..size - EDGE_MARGIN {
         for x in EDGE_MARGIN..size - EDGE_MARGIN {
-            if !is_river(x, y) || (x + y) % CANDIDATE_STRIDE != 0 {
+            if !is_river(x, y) || (x + y) % CANDIDATE_STRIDE != 0
+                || around.is_some_and(|(camp, radius)| dist2((x,y),camp)>radius*radius) {
                 continue;
             }
             if reach_drop(sim, &up, (x, y), bed) < MIN_DROP {
@@ -108,6 +109,7 @@ fn dam_candidates(sim: &SimState) -> Vec<(f32, Vec<Cell>, f32)> {
                     if p.rise >= START_RISE && POND_AREA_RANGE.contains(&area) && holds(sim, &cells, &p.flooded) {
                         let score = area.abs_diff(POND_AREA) as f32 + cells.len() as f32 * 20.0;
                         out.push((score, cells.clone(), height));
+                        if out.len() >= limit { break 'search; }
                     }
                 }
             }
@@ -219,7 +221,7 @@ pub fn dammable_streams(sim: &SimState) -> Vec<Cell> {
         false
     };
     let mut picked: Vec<Cell> = Vec::new();
-    for (_, dam, height) in dam_candidates(sim) {
+    for (_, dam, height) in dam_candidates(sim, None, 128) {
         let (Some(effect), Some(at)) = (dam_effect(sim, &dam, height), dam_river_cell(sim, &dam)) else { continue };
         if effect.is_visible() && picked.iter().all(|&p| !below(at, p) && !below(p, at) && dist2(p, at) > 900) {
             picked.push(at);
@@ -249,18 +251,20 @@ fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
         (c.1.saturating_sub(r)..=(c.1 + r).min(size - 1)).flat_map(move |y| (c.0.saturating_sub(r)..=(c.0 + r).min(size - 1)).map(move |x| (x, y)))
     };
     let trees: Vec<Cell> = sim.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect();
-    near_cells(mid, 60)
+    let mut camps: Vec<Cell> = near_cells(mid, 60).collect();
+    camps.sort_by_key(|&c| (dist2(c, mid), c.1, c.0));
+    camps.into_iter()
         .filter(|&c| c.0 >= 3 && c.1 >= 3 && c.0 + 3 < size && c.1 + 3 < size)
         .filter(|&c| CAMP_DAM_DIST.contains(&(dist2(c, mid).isqrt())))
         .filter(|&c| near_cells(c, 2).all(|(x, y)| !wet(x, y)))
         .filter(|&c| near_cells(c, BANK_MAX).any(|(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false)))
-        .filter(|&c| trees.iter().filter(|&&t| dist2(c, t) <= TREE_RADIUS * TREE_RADIUS && dist2(c, t) > 9).count() >= TREES_WANTED)
-        .min_by_key(|&c| (dist2(c, mid), c.1, c.0))
+        .filter(|&c| trees.iter().filter(|&&t| dist2(c, t) <= TREE_RADIUS * TREE_RADIUS && dist2(c, t) > 9).take(TREES_WANTED).count() >= TREES_WANTED)
+        .next()
 }
 
 fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
     settle_water(sim);
-    let candidates = dam_candidates(sim);
+    let candidates = dam_candidates(sim, None, 32);
     let mut best: Option<((u8, bool, f32), RiverPlan)> = None;
     for (_, dam, height) in candidates {
         let Some(effect) = dam_effect(sim, &dam, height) else { continue };
@@ -295,7 +299,12 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
         .filter(|&(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false))
         .collect();
     river.sort_by_key(|&c| (dist2(c, landing), c.1, c.0));
-    let linked: Vec<Cell> = river.iter().copied().filter(|&c| nav.find_path(who, c, Goal::Beside(landing)).is_some()).collect();
+    // Find enough nearby landing cells for the family, not a path from every
+    // river cell on the map before the player can start.
+    let linked: Vec<Cell> = river.iter().copied()
+        .filter(|&c| dist2(c, landing) <= SWIM_REACH * SWIM_REACH)
+        .filter(|&c| nav.find_path(who, c, Goal::Beside(landing)).is_some())
+        .take(n).collect();
     let pool = if linked.len() >= n { linked } else { river };
     let Some(&anchor) = pool.first() else { return Vec::new() };
     let mut pack = pool;

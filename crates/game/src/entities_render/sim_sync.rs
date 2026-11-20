@@ -215,7 +215,7 @@ fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource
         ResSig::Tree(_) => {
             let sp = species_at(sim, c);
             let st = r.stage().unwrap_or(sim::forestry::TreeStage::Mature);
-            (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season }))
+            (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season, cutaway: false }))
         }
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), None),
         ResSig::Stock(tag, q) => {

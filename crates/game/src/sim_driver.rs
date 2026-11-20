@@ -5,7 +5,6 @@ pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
 pub const BASE_DAYS_PER_SECOND: f32 = 1.0 / 30.0;
 pub const MAX_STEPS_PER_FRAME: u32 = 64;
 const FRAME_SIM_BUDGET_S: f32 = 0.012;
-const SANDBOX_DT_DAYS: f32 = 120.0 / 86_400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
@@ -40,24 +39,35 @@ impl Default for SimClock {
 impl SimClock {
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
+        self.acc_days = 0.0;
     }
     pub fn set_speed(&mut self, s: Speed) {
+        if self.speed != s || self.paused {
+            self.acc_days = 0.0;
+        }
         self.speed = s;
         self.paused = false;
     }
     pub fn pending_days(&self) -> f32 {
-        self.acc_days as f32
+        self.acc_days.min(FIXED_DT_DAYS as f64) as f32
     }
     fn queue(&mut self, real_dt: f64, step: f32) -> u32 {
         if self.paused || !real_dt.is_finite() || real_dt <= 0.0 {
             return 0;
         }
-        self.acc_days += real_dt * BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
+        self.acc_days += real_dt.min(0.25) * BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
+        self.acc_days = self.acc_days.min(step as f64 * MAX_STEPS_PER_FRAME as f64);
         ((self.acc_days / step as f64) as u32).min(MAX_STEPS_PER_FRAME)
     }
 
     fn complete(&mut self, step: f32) {
         self.acc_days = (self.acc_days - step as f64).max(0.0);
+    }
+
+    fn discard_backlog(&mut self, step: f32) {
+        // Overload slows the entire simulation. It must not schedule days of
+        // catch-up work or let animation interpolate beyond simulated state.
+        self.acc_days %= step as f64;
     }
 
 }
@@ -94,10 +104,8 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
         return;
     }
     let started = std::time::Instant::now();
-    // Short slices keep a rainstorm or breach from monopolizing one render frame.
-    let dt = if sim.0.sandbox {
-        SANDBOX_DT_DAYS * match clock.speed { Speed::X1 => 1.0, Speed::X2 => 2.0, Speed::X3 => 4.0 }
-    } else { FIXED_DT_DAYS };
+    // Speed changes the number of fixed steps, not the duration of a step.
+    let dt = FIXED_DT_DAYS;
     let count = clock.queue(time.delta_secs_f64(), dt);
     for _ in 0..count {
         if let Err(e) = sim.0.step_game(dt) {
@@ -107,6 +115,7 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
         }
         clock.complete(dt);
         if started.elapsed().as_secs_f32() > FRAME_SIM_BUDGET_S {
+            clock.discard_backlog(dt);
             break;
         }
     }

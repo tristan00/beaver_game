@@ -34,6 +34,7 @@ impl Plugin for EntitiesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderClock>()
             .init_resource::<CurrentSeason>()
+            .init_resource::<CanopyView>()
             .init_resource::<FrameWork>()
             .init_resource::<sim_sync::PendingDays>()
             .add_systems(Startup, (init_models, setup_stress_window))
@@ -53,6 +54,7 @@ impl Plugin for EntitiesRenderPlugin {
                     sync_stub_beavers,
                     attach_rigs,
                     animate_beavers,
+                    canopy_key,
                     update_tree_lod,
                     sway_trees,
                     spin_wheels,
@@ -73,6 +75,15 @@ impl Default for CurrentSeason {
     fn default() -> Self { Self(Season::Summer) }
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct CanopyView(pub bool);
+
+fn canopy_key(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<crate::hud::TextCapture>>,
+    menu: Option<Res<crate::hud::MenuOpen>>, mut view: ResMut<CanopyView>) {
+    if typing.is_some_and(|t|t.0) || menu.is_some_and(|m|m.0) { return; }
+    if keys.just_pressed(KeyCode::F8) { view.0 = !view.0; }
+}
+
 #[derive(Resource)]
 struct Models {
     white: Handle<StandardMaterial>,
@@ -80,6 +91,7 @@ struct Models {
     blob_mat: Handle<StandardMaterial>,
     water_mat: Handle<StandardMaterial>,
     trees: Vec<Handle<Mesh>>,
+    cutaway_trees: Vec<Handle<Mesh>>,
     stump: Handle<Mesh>,
     snag: Handle<Mesh>,
     body: Handle<Mesh>,
@@ -127,6 +139,7 @@ struct TreeLod {
     species: Species,
     lod: u8,
     season: Season,
+    cutaway: bool,
 }
 
 #[derive(Component)]
@@ -220,6 +233,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         blob_mat,
         water_mat,
         trees,
+        cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
         stump: meshes.add(models::stump_mesh()),
         snag: meshes.add(models::snag_mesh()),
         body,
@@ -292,7 +306,7 @@ fn spawn_scene(
 
     for t in &scene.trees {
         let (mesh, lod) = match t.state {
-            TreeState::Alive => (models.tree(t.species, season.0, 0), Some(TreeLod { species: t.species, lod: 0, season: season.0 })),
+            TreeState::Alive => (models.tree(t.species, season.0, 0), Some(TreeLod { species: t.species, lod: 0, season: season.0, cutaway: false })),
             TreeState::Stump => (models.stump.clone(), None),
             TreeState::Snag => (models.snag.clone(), None),
         };
@@ -715,6 +729,7 @@ fn animate_beavers(
 
 fn update_tree_lod(
     season: Res<CurrentSeason>,
+    canopy: Res<CanopyView>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
     mut trees: Query<(&Transform, &mut TreeLod, &mut Mesh3d)>,
@@ -725,10 +740,12 @@ fn update_tree_lod(
     for (t, mut lod, mut mesh) in &mut trees {
         let d2 = t.translation.distance_squared(c);
         let want = if d2 < l0 { 0 } else if d2 < l1 { 1 } else { 2 };
-        if want != lod.lod || lod.season != season.0 {
+        if want != lod.lod || lod.season != season.0 || lod.cutaway != canopy.0 {
             lod.lod = want;
             lod.season = season.0;
-            mesh.0 = models.tree(lod.species, season.0, want);
+            lod.cutaway = canopy.0;
+            mesh.0 = if canopy.0 { models.cutaway_trees[species_index(lod.species)].clone() }
+                else { models.tree(lod.species, season.0, want) };
         }
     }
 }

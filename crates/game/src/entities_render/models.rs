@@ -223,6 +223,18 @@ fn bare(sp: Species, s: Season) -> bool {
     s == Season::Winter && sp != Species::Pine
 }
 
+pub fn tree_cutaway_mesh(sp: Species) -> Mesh {
+    let mut mb = Mb::new();
+    let trunk = trunk_color(sp);
+    root_flare(&mut mb, 0.2, trunk);
+    mb.cyl(v(0.0,-0.1,0.0),v(0.0,1.7,0.0),0.2,0.1,trunk,trunk,7);
+    for i in 0..3 {
+        let angle = i as f32 * TAU / 3.0;
+        mb.cyl(v(0.0,1.1,0.0),v(angle.cos()*0.45,1.5,angle.sin()*0.45),0.07,0.025,trunk,trunk,5);
+    }
+    mb.build()
+}
+
 pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
     let mut mb = Mb::new();
     let (dark, light) = foliage(sp, season);
