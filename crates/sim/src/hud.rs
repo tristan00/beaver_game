@@ -20,6 +20,14 @@ pub const FOOD_GATHER_RADIUS: usize = 80;
 mod repair_alert_tests {
     use super::*;
     #[test]
+    fn food_forecast_accounts_for_decay_without_inventing_a_finite_runout_at_equilibrium() {
+        assert_eq!(food_runout_days(100.0,2.0,1.0,0.0),100.0);
+        assert!((food_runout_days(100.0,2.0,1.0,0.01)-69.31472).abs()<1e-4);
+        assert_eq!(food_runout_days(0.0,2.0,1.0,0.01),0.0);
+        assert!(food_runout_days(100.0,1.0,1.0,0.01).is_infinite());
+        assert!(food_runout_days(100.0,1.0,2.0,0.01).is_infinite());
+    }
+    #[test]
     fn food_alert_does_not_staff_an_exhausted_area() {
         let mut s=SimState::new(1);
         s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
@@ -147,8 +155,24 @@ pub fn food_days_breakdown(sim: &SimState) -> Breakdown {
             rows.push(row(label, -eat, Source::None));
         }
     }
-    let total = if need > gain { stock / (need - gain) } else { f32::INFINITY };
+    let spoilage=stock*crate::tuning::colony::FOOD_SPOILAGE;
+    if spoilage>0.0 { rows.push(row("Spoilage now",-spoilage,Source::None)); }
+    let total = food_runout_days(stock,need,gain,crate::tuning::colony::FOOD_SPOILAGE);
     Breakdown::new(total, rows)
+}
+
+/// Constant gathering and appetite, with spoilage proportional to remaining stock.
+pub fn food_runout_days(stock:f32,need:f32,gain:f32,spoilage:f32)->f32 {
+    let deficit=need-gain;
+    if deficit<=0.0 {return f32::INFINITY;}
+    if stock<=0.0 {return 0.0;}
+    if spoilage<=0.0 {return stock/deficit;}
+    (stock*spoilage/deficit).ln_1p()/spoilage
+}
+
+pub fn food_days_left(sim:&SimState)->f32 {
+    food_runout_days(sim.buildings.stores.amount(Good::Food),food_need_per_day(sim),
+        sim.ledger.in_per_day(Good::Food),crate::tuning::colony::FOOD_SPOILAGE)
 }
 
 pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
@@ -426,11 +450,10 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     let idle = idle_beavers(sim);
     let pop = sim.colony.population();
 
-    let food = sim.buildings.stores.amount(Good::Food);
     let need = food_need_per_day(sim);
     let gain = sim.ledger.in_per_day(Good::Food);
     if pop > 0 && need > gain {
-        let days = food / (need - gain);
+        let days = food_days_left(sim);
         if days < FOOD_WARN_DAYS {
             out.push(Problem {
                 kind: ProblemKind::Food,

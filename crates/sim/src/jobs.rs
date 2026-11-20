@@ -47,10 +47,7 @@ impl RoleKind {
 pub const FOOD_EMERGENCY_DAYS: f32 = 12.0;
 
 pub fn rank(sim: &SimState, role: RoleKind) -> usize {
-    let need = crate::hud::food_need_per_day(sim);
-    let gain = sim.ledger.in_per_day(crate::buildings::Good::Food);
-    let food = sim.buildings.stores.amount(crate::buildings::Good::Food);
-    let short = need > gain && food < (need - gain) * FOOD_EMERGENCY_DAYS;
+    let short = crate::hud::food_days_left(sim) < FOOD_EMERGENCY_DAYS;
     if short && role == RoleKind::Forager {
         return 0;
     }
