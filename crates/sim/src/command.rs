@@ -93,8 +93,12 @@ mod tests {
 
 impl SimState {
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
+        let diagnostic = crate::trace::enabled().then(|| format!("{cmd:?}"));
         let logged = self.recorder.is_some().then(|| cmd.clone());
         let res = self.apply_inner(cmd);
+        if let Some(command) = diagnostic {
+            crate::trace::event(format!("COMMAND step={} day={:.4} {command} RESULT={res:?}", self.steps, self.time_days));
+        }
         if let (Ok(()), Some(c)) = (&res, logged) {
             let step = self.steps;
             if let Some(r) = self.recorder.as_mut() {

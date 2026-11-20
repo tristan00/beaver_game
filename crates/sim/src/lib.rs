@@ -33,6 +33,7 @@ pub mod society;
 pub mod shipping;
 pub mod starts;
 pub mod stock;
+pub mod trace;
 
 pub mod tuning;
 pub mod water;

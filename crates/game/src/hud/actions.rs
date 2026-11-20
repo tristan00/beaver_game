@@ -89,6 +89,7 @@ pub(super) fn button_actions(
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let actions: Vec<HudAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| a.clone()).collect();
     for a in actions {
+        if sim::trace::enabled() { sim::trace::event(format!("UI_ACTION {a:?}")); }
         let s = &mut sim.0;
         match a {
             HudAction::Help => hud.help = !hud.help,

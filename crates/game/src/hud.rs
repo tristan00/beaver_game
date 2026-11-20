@@ -231,7 +231,9 @@ impl HudState {
         self.dam_crest = None;
     }
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
-        self.msg = Some((Msg { icon, icon2, text: text.into() }, now));
+        let text = text.into();
+        if sim::trace::enabled() { sim::trace::event(format!("FEEDBACK {text}")); }
+        self.msg = Some((Msg { icon, icon2, text }, now));
     }
     fn refuse(&mut self, why: impl Into<String>, now: f32) {
         self.say(Some((Icon::Cross, BAD)), None, why, now);

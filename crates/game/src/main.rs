@@ -8,6 +8,7 @@ mod fog_render;
 mod hud;
 mod icons;
 mod input;
+mod input_trace;
 mod menu;
 mod palette;
 mod perf;
@@ -48,7 +49,7 @@ fn main() -> AppExit {
         file_path: "assets".to_string(),
         ..default()
     }).set(WindowPlugin {
-        primary_window: Some(Window { title: "Beaver Colony".into(), resolution: window_size().into(), ..default() }),
+        primary_window: Some(Window { title: if sim::trace::enabled() { "Beaver Colony - input recording" } else { "Beaver Colony" }.into(), resolution: window_size().into(), ..default() }),
         ..default()
     }).set(bevy::render::RenderPlugin {
         render_creation: bevy::render::settings::WgpuSettings {
@@ -70,6 +71,7 @@ fn main() -> AppExit {
         flow::FlowPlugin,
         camera::CameraPlugin,
         input::InputPlugin,
+        input_trace::InputTracePlugin,
         startflow::StartPlugin,
         icons::IconsPlugin,
         hud::HudPlugin,

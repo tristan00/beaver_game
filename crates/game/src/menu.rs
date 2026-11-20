@@ -183,6 +183,7 @@ fn menu_actions(
         }
     }
     for a in pressed {
+        if sim::trace::enabled() { sim::trace::event(format!("MENU_ACTION {a:?}")); }
         match a {
             MenuAction::NewGame | MenuAction::Restart => {
                 let fresh = current.0 == menu.map && sim.0.time_days == 0.0 && a == MenuAction::NewGame;
