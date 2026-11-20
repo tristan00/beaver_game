@@ -41,6 +41,10 @@ pub const CANAL_COST: f32 = 0.3;
 const COST_UNIT: f32 = 1000.0;
 const MIN_STEP: u32 = (CANAL_COST * COST_UNIT) as u32;
 
+pub(crate) fn minimum_cost(steps: usize) -> f32 {
+    (steps as u32).saturating_mul(MIN_STEP) as f32 / COST_UNIT
+}
+
 pub fn lodge_entrance(pos: Cell) -> Cell {
     (pos.0 + 1, pos.1 + 3)
 }

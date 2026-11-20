@@ -263,10 +263,16 @@ impl Job {
         // Connectivity is much more expensive than the deterministic rank.
         // A resource that cannot improve the current choice needs no route test.
         let mut best=None;
-        for r in sim.resources.items.iter().filter(|r|self.permits(r)) {
+        let mut consider=|r:&Resource| {
+            if !self.permits(r) {return;}
             let key=(rank(r),d(r.cell),r.id);
-            if best.as_ref().is_some_and(|(current,_)|key>=*current) {continue;}
+            if best.as_ref().is_some_and(|(current,_)|key>=*current) {return;}
             if reachable(r) {best=Some((key,r.id));}
+        };
+        if let Some(id)=self.only {
+            if let Some(r)=sim.resources.get(id) {consider(r);}
+        } else {
+            for r in &sim.resources.items {consider(r);}
         }
         best.map(|(_,id)|id)
     }
@@ -289,19 +295,24 @@ fn adjacent(c: Cell, b: &Building) -> bool {
 }
 
 fn nearest_store(sim: &SimState, who: BeaverId, from: Cell, good: Good) -> Option<(BuildingId, Path)> {
-    sim.buildings
+    let mut stores:Vec<_>=sim.buildings
         .buildings
         .iter()
         .filter(|b| b.is_complete() && accepts(b.kind, good) && !sim.buildings.stranded(b, &sim.water.depth))
-        .filter_map(|b| {
-            if adjacent(from, b) {
-                return Some((b.id, Path { steps: Vec::new(), cost: 0.0 }));
-            }
-            let cells: Vec<Cell> = b.cells().collect();
-            let path = sim.nav.find_path_beside_any(who, from, &cells)?;
-            Some((b.id, path))
-        })
-        .min_by(|a, b| a.1.cost.total_cmp(&b.1.cost).then(a.0.cmp(&b.0)))
+        .map(|b|(crate::nav::minimum_cost(crate::stock::dist(from,b).saturating_sub(1)),b)).collect();
+    stores.sort_by(|a,b|a.0.total_cmp(&b.0).then(a.1.id.cmp(&b.1.id)));
+    let mut best:Option<(BuildingId,Path)>=None;
+    for (bound,b) in stores {
+        // Even an all-canal path to this store cannot beat the known route.
+        // Keep equal bounds: the lower building id still wins exact ties.
+        if best.as_ref().is_some_and(|(_,path)|bound>path.cost) {break;}
+        let path=if adjacent(from,b) {Path{steps:Vec::new(),cost:0.0}} else {
+            let cells:Vec<_>=b.cells().collect();
+            let Some(path)=sim.nav.find_path_beside_any(who,from,&cells) else {continue};path
+        };
+        if best.as_ref().is_none_or(|(id,p)|path.cost.total_cmp(&p.cost).then(b.id.cmp(id)).is_lt()) {best=Some((b.id,path));}
+    }
+    best
 }
 
 fn has_lodge(sim: &SimState) -> bool {
@@ -1162,6 +1173,23 @@ pub const HOME_RANGE: usize = 20;
 #[cfg(test)]
 mod freight_tests {
     use super::*;
+    #[test]
+    fn nearest_store_matches_exhaustive_paths_with_detours_and_canals() {
+        let mut s=SimState::new(1);let n=s.world.size;s.nav=NavGrid::new(n,n);
+        for (i,pos) in [(3,3),(n/2,3),(3,n/2),(n-6,n-6)].into_iter().enumerate() {
+            let b=Building{id:BuildingId(i as u64+1),kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,recipe:None,output:0.0,condition:1.0,reinforced:false,dam_profile:Vec::new()};
+            for c in b.cells(){s.nav.set(c,Surface::Solid);}s.buildings.buildings.push(b);
+        }
+        for y in 0..n-2 {if y!=n/2{s.nav.set((n/3,y),Surface::Solid);}}
+        for x in 0..n {s.nav.set((x,n/2+4),Surface::Canal);}s.nav.label_regions();
+        for from in [(1,1),(n/2,n/2),(n-2,n-2),(2,3)] {
+            let who=BeaverId(1);let reference=s.buildings.buildings.iter().filter_map(|b| {
+                if adjacent(from,b){return Some((b.id,Path{steps:Vec::new(),cost:0.0}));}
+                s.nav.find_path_beside_any(who,from,&b.cells().collect::<Vec<_>>()).map(|p|(b.id,p))
+            }).min_by(|a,b|a.1.cost.total_cmp(&b.1.cost).then(a.0.cmp(&b.0)));
+            assert_eq!(nearest_store(&s,who,from,Good::Logs),reference);
+        }
+    }
     #[test]
     fn resource_choice_matches_exhaustive_reachable_ranking() {
         let mut s=SimState::new(1);let size=s.world.size;let mut nav=NavGrid::new(size,size);nav.rebuild(&s);s.nav=nav;
