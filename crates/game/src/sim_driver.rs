@@ -7,7 +7,7 @@ pub const MAX_STEPS_PER_FRAME: u32 = 64;
 const FRAME_SIM_BUDGET_S: f32 = 0.012;
 // At maximum speed, spend more of a frame advancing large river maps. Keep
 // ordinary play's shorter budget and the bounded catch-up queue unchanged.
-const FAST_FRAME_SIM_BUDGET_S: f32 = 0.020;
+const FAST_FRAME_SIM_BUDGET_S: f32 = 0.030;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
