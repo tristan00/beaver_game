@@ -1,9 +1,9 @@
 # Food, sticks and clay
 
-Current validation: the prepared Telemark and Algonquin policies both completed
-1,890 days with no deaths or recorded hunger days. Material shortages and labor
-costs remain, and the failed controls are retained. The final comparison below
-supersedes the earlier winter-failure results without erasing them.
+The earlier zero-death validations below are survival diagnostics, not balance
+approval. Good planning must still leave meaningful mortality and the need to
+replace workers, recover reserves and sustain families after losses. The current
+pass tests those outcomes alongside scarcity and effortless abundance.
 
 The only inventory goods are **Food, Sticks and Clay**. Food comes from wetland
 plants and stripped bark. Felled trunks and branches provide sticks. Clay comes
@@ -30,6 +30,11 @@ Survival alone is not a passing result. Sustained abundance without consequentia
 resource or labour decisions is a balance failure, just as unavoidable collapse
 under competent play is. Do not give a failed run additional resources merely to
 make it survive.
+
+Even the best planning still involves deaths over sustained play. Preparation
+should reduce exposure and let a colony absorb losses; it must not make a colony
+effectively immortal. Do not impose scripted death quotas. A particular short
+run can be lucky; evaluate exposure, mortality and recovery over longer runs.
 
 - Compare the same map, starting stock and command rules before and after a
   change. Preserve failed runs as evidence.
@@ -198,3 +203,84 @@ and exposes the gathering action. All experimental data, commands and screenshot
 remain in `tmp/food-clay-balance/report.html`; only the fast tests are committed.
 The evidence covers these maps and policies, rather than asserting universal
 balance for every seed or indefinitely growing colony.
+
+## Losses and recovery, 20 November 2026
+
+The previous pass optimized away mortality in prepared colonies. Work accidents
+all caused 0.20 health damage, which a fed, warm worker could heal in 50 days.
+Guard protection also scaled without a floor on remaining exposure. These
+mechanics made good resource management close to immunity during the tested
+five-year horizon, before most natural lifespans ended.
+
+The revised accident distribution retains 0.20 damage for 88% of accidents.
+The remaining 12% range from 0.65 to 1.30 damage: some leave a long recovery,
+and some kill even a healthy worker. This is approximately a 5.5% immediately
+fatal share of accidents at full health, not a 5.5% daily death chance. Accidents
+still depend on time spent working and actual land/water exposure. Their
+probability is integrated over the timestep. Guards provide diminishing returns
+toward 65% protection, while safer water routes reduce exposure further. Neither
+can remove the base risk. Food and warmth help survivors heal; reaching zero
+health can no longer be undone by healing in the same simulation tick.
+
+This changes existing work hazards rather than adding a scheduled disaster or
+a death quota. Kits and idle/resting beavers do not roll work accidents. Food
+yield, starting stocks, clay supply, birth rates and immigration allowances were
+held fixed. The health tooltip explains fatal accidents and protective choices.
+
+The matched comparisons use the same map, starting supplies and policy code.
+Telemark uses weekly care; Algonquin uses the existing economy-first opening
+and food-aware expansion. Commands respond to the changing state. The candidate
+was not given a better caretaker than its baseline.
+
+| Matched day 1080 | Population | Deaths | Hunger days | Material-delay days | Easy days | Longest easy streak |
+|---|---:|---:|---:|---:|---:|---:|
+| Telemark, previous weekly care | 26 | 0 | 0 | 41 | 37 | 14 |
+| Telemark, revised weekly care | 25 | 4 | 0 | 41 | 36 | 21 |
+| Algonquin, previous cautious care | 16 | 0 | 0 | 304 | 18 | 12 |
+| Algonquin, revised cautious care | 12 | 1 | 0 | 305 | 18 | 9 |
+
+The extended prepared runs both include the spring after the fifth winter:
+
+| Revised policy | Days | Population | Deaths | Hunger days | Material-delay days | Easy days |
+|---|---:|---:|---:|---:|---:|---:|
+| Telemark, weekly care | 1890 | 87 | 6 | 0 | 55 | 46 |
+| Algonquin, cautious care | 1890 | 47 | 4 | 0 | 305 | 18 |
+| Telemark, seasonal care | 1080 | 22 | 3 | 0 | 41 | 24 |
+| Telemark, overbuilding | 1080 | 23 | 5 | 0 | 109 | 53 |
+| Telemark, neglect | 1080 | 0 | 14 | 51 | 41 | 10 |
+| Telemark, care resumed after first loss | 1080 | 3 | 13 | 57 | 217 | 10 |
+
+All ten deaths in the two prepared runs were logged as injuries. Both colonies
+replaced lost workers and continued expanding. Seasonal care built 23 structures
+and completed six repairs, versus 25 structures and 23 repairs with weekly care
+at the same day. A lower death count in a single seasonal run does not prove
+that less care is safer; activity, exposure and random histories differ.
+
+Overbuilding orders an extra warehouse every 30 days after day 120. It finished
+with 35 structures versus 25 under weekly care, but material-delay days rose
+from 41 to 109. Larger storage bought a food cushion at the cost of construction
+and repair labor: average daily worker activity was 75.5% versus 71.3%. Its 53
+easy days had a longest streak of 11 days. This is a storage/material tradeoff,
+not proof that every unnecessary building must produce additional deaths.
+
+The neglect and recovery branches are identical until the first losses on day
+561. Neglect collapsed on day 578. Weekly care resumed on day 561 still lost 13
+beavers and fell from 14 to one, then reached three by day 1080 through normal
+immigration and paid work. The last recorded death was on day 695. This is a
+costly, fragile recovery, not evidence that waiting for deaths is a sound policy.
+
+The broader 60-day reserve/low-activity diagnostic is retained in the machine
+readable report. Activity includes travel and hauling; it is not a measure of
+harvest output. Winter downtime and growing population do not, by themselves,
+establish a balance failure or success.
+
+Experimental runners, both executable versions, daily traces, event causes and
+normal command logs are preserved in `tmp/balance-outcomes` in the parent
+workspace. Only fast module tests are committed. The three new checks cover
+protective choices with residual risk, minor/serious/fatal accident outcomes,
+and healing that cannot revive a fatality.
+
+Verification: all 27 simulation unit tests pass, the game test target compiles,
+the release game builds, and a native launch/render smoke check succeeds.
+These deterministic policies on two maps support the reported outcomes, not a
+claim that all maps, seeds or indefinitely growing colonies are fully balanced.

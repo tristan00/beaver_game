@@ -94,6 +94,9 @@ pub mod colony {
     pub const SAFETY_HAZARD_SCALE: f32 = 6.0;
     pub const SAFETY_MIN: f32 = 0.2;
     pub const INJURY_HEALTH: f32 = 0.20;
+    pub const SERIOUS_INJURY_SHARE: f32 = 0.12;
+    pub const SERIOUS_INJURY_MIN: f32 = 0.65;
+    pub const SERIOUS_INJURY_MAX: f32 = 1.30;
     pub const INJURY_SAFETY: f32 = 0.3;
 
     pub const GUARD_SAFETY_PER_STRENGTH: f32 = 0.2;

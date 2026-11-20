@@ -599,7 +599,9 @@ fn health_tip(s: &sim::SimState, b: &sim::colony::Beaver) -> Tip {
     for r in sim::hud::health_breakdown(s, b.id).rows {
         t.push(TipLine::new(r.label, format!("{:+.0}", r.value * 100.0)).color(if r.value < 0.0 { BAD } else { INK }));
     }
-    t
+    t.line("Recovery", "Food and warmth")
+        .line("Work accidents", "Can be fatal even at full health")
+        .line("Lower exposure", "Water routes and staffed guard posts")
 }
 
 fn beaver(c: &Ctx, id: BeaverId) -> VNode {
