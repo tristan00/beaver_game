@@ -394,7 +394,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     let on_water = matches!(b.kind, BuildingKind::Dock | BuildingKind::Barge | BuildingKind::WaterWheel);
     let y = if on_water {
         stand_y(sim, b.cells().next().unwrap_or(b.pos)).max(lowest)
-    } else if models::footing_of(model_kind(b.kind)).is_some() {
+    } else if models::has_footing(model_kind(b.kind)) {
         let mean = grounds.iter().sum::<f32>() / grounds.len().max(1) as f32;
         let surface = b
             .cells()

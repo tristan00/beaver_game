@@ -10,3 +10,4 @@ path = "src/main.rs"
 [dependencies]
 sim = { path = "../sim" }
 bevy = { version = "=0.20.1" }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names"] }
