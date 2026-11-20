@@ -15,10 +15,35 @@ pub const FULL_SHARE: f32 = 0.98;
 pub const WEAK_DAM: f32 = 0.6;
 pub const FIX_WORKERS: usize = 2;
 pub const FOOD_GATHER_RADIUS: usize = 80;
+pub const WINTER_RESERVE_DAYS: f32 = 90.0;
 
 #[cfg(test)]
 mod repair_alert_tests {
     use super::*;
+    #[test]
+    fn winter_planning_exposes_storage_and_gathering_before_an_immediate_shortage() {
+        let mut s=SimState::new(1);
+        s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
+        let adult=s.colony.beavers[0].clone();
+        for i in 0..8 {let mut b=adult.clone();b.id=BeaverId(100+i);s.colony.beavers.push(b);}
+        for b in &s.colony.beavers {s.agents.spawn(b.id,(5,5));}
+        s.resources.items.clear();s.resources.add(ResourceKind::Plant,(35,35),4.0);
+        let hut=crate::buildings::Building{id:BuildingId(1),kind:BuildingKind::ForagerHut,pos:(5,5),status:crate::buildings::Status::Complete,output:0.0,condition:1.0,reinforced:false,dam_profile:Vec::new()};
+        s.buildings.buildings.push(hut);
+        assert!(winter_food_problem(&s).is_none());
+        s.buildings.stores.deposit(Good::Food,100.0).unwrap();
+        s.time_days=190.0;
+        assert!(problems(&s).iter().any(|p|p.kind==ProblemKind::WinterFood));
+        assert!(!problems(&s).iter().any(|p|p.kind==ProblemKind::Food));
+        let p=winter_food_problem(&s).unwrap();
+        assert_eq!(p.fix,Fix::Place(BuildingKind::FoodCache));
+        assert!(matches!(p.alt_fix,Some(Fix::Gather{kind:ResourceKind::Plant,..})));
+        s.buildings.buildings.push(crate::buildings::Building{id:BuildingId(2),kind:BuildingKind::FoodCache,status:crate::buildings::Status::Site,..s.buildings.buildings[0].clone()});
+        assert!(matches!(winter_food_problem(&s).unwrap().fix,Fix::Gather{..}));
+        s.time_days=280.0;assert!(winter_food_problem(&s).is_none());
+        s.time_days=190.0;s.colony.beavers.truncate(4);
+        assert!(winter_food_problem(&s).is_none());
+    }
     #[test]
     fn food_forecast_accounts_for_decay_without_inventing_a_finite_runout_at_equilibrium() {
         assert_eq!(food_runout_days(100.0,2.0,1.0,0.0),100.0);
@@ -373,6 +398,7 @@ pub enum Fix {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProblemKind {
     Food,
+    WinterFood,
     Idle,
     NoBuilders,
     StoreFull,
@@ -463,6 +489,25 @@ fn food_fix(sim: &SimState) -> Fix {
     Fix::Focus
 }
 
+fn winter_food_problem(sim:&SimState)->Option<Problem> {
+    if crate::calendar::Season::at(sim.time_days)!=crate::calendar::Season::Autumn {return None;}
+    let need=food_need_per_day(sim);
+    let stock=sim.buildings.stores.amount(Good::Food);
+    let target=need*WINTER_RESERVE_DAYS;
+    if need<=0.0 || stock>=target {return None;}
+    let capacity=sim.buildings.stores.capacity(Good::Food);
+    let gathering=food_fix(sim);
+    let building_cache=sim.buildings.buildings.iter().any(|b|b.kind==BuildingKind::FoodCache&&!b.is_complete());
+    let add_cache=capacity<target && !building_cache && sim.can_build(BuildingKind::FoodCache);
+    Some(Problem {
+        kind:ProblemKind::WinterFood,severity:Severity::Warning,value:stock/need,
+        cause:Breakdown::new(stock/need,vec![row("Stored food",stock,Source::None),row("Storage capacity",capacity,Source::None),row("Winter reserve goal",target,Source::None),row("Daily appetite",need,Source::None)]),
+        subject:Some(Subject::Good(Good::Food)),
+        fix:if add_cache {Fix::Place(BuildingKind::FoodCache)} else {gathering},
+        alt_fix:if add_cache&&gathering!=Fix::Focus {Some(gathering)} else {None},focus:colony_cell(sim),
+    })
+}
+
 pub fn problems(sim: &SimState) -> Vec<Problem> {
     let mut out = Vec::new();
     if !sim.colony.is_founded() {
@@ -487,6 +532,9 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 focus: colony_cell(sim),
             });
         }
+    }
+    if !out.iter().any(|p|p.kind==ProblemKind::Food) {
+        if let Some(winter)=winter_food_problem(sim) {out.push(winter);}
     }
 
     if let Some((b, _)) = sim.work.dam_failures.last() {

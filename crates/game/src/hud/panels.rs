@@ -329,6 +329,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
     let v = p.value;
     match p.kind {
         ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Food))], if v < 0.5 { "0".into() } else { days(v) }, "Food runs out"),
+        ProblemKind::WinterFood => (vec![(Icon::Winter,MUTED),(Icon::Food,good_color(Good::Food))],format!("{} / 90d",days(v)),"Prepare food for winter"),
         ProblemKind::Idle => (vec![(Icon::Idle, WARN)], format!("{}", v as i64), "Free beavers"),
         ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (Icon::RoleBuilder, MUTED)], format!("{}", v as i64), "Sites without builders"),
         ProblemKind::StoreFull => {
@@ -386,6 +387,10 @@ pub fn alerts(c: &Ctx, u: &mut Ui) {
         let col = if p.severity == Severity::Urgent { BAD } else { WARN };
         let (icons, value, name) = alert_face(c.s, p);
         let mut cause = Tip::titled(icons.first().copied(), name).with_value(value.clone());
+        if p.kind==ProblemKind::WinterFood {
+            cause.push(TipLine::new("Winter","90 days; shoots stop growing"));
+            cause.push(TipLine::new("Reserve goal","Before spoilage and winter foraging"));
+        }
         for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
             cause.push(l);
         }

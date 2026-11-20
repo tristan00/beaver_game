@@ -79,7 +79,9 @@ impl Player {
     }
 
     fn release_food_relief(&mut self, s: &mut SimState) {
-        if s.colony.food >= crate::hud::food_need_per_day(s) * 30.0 {
+        let days=if matches!(crate::calendar::Season::at(s.time_days),crate::calendar::Season::Autumn|crate::calendar::Season::Winter) {crate::hud::WINTER_RESERVE_DAYS} else {30.0};
+        let target=(crate::hud::food_need_per_day(s)*days).min(s.buildings.stores.capacity(Good::Food)*0.9);
+        if s.colony.food >= target {
             for (who, order) in std::mem::take(&mut self.food_relief) {
                 if s.agents.get(who).is_some_and(|a| a.assignment == Some(order)) {
                     let _ = s.apply(Command::Unlock { who });
@@ -97,6 +99,12 @@ impl Player {
                 self.food_relief.push((who,order));
             } else { let _ = s.apply(Command::Unlock { who }); }
         }
+    }
+
+    fn apply_response(&mut self,s:&mut SimState,fix:Fix) {
+        let locked:std::collections::HashSet<_>=s.colony.beavers.iter().filter(|b|s.work.is_locked(b.id)).map(|b|b.id).collect();
+        if let Err(e)=hud::apply_fix(s,fix) {self.note(s,format!("fix {fix:?} refused: {e}"));}
+        self.return_new_workers(s,&locked);
     }
 
     pub fn act(&mut self, s: &mut SimState) {
@@ -173,15 +181,13 @@ impl Player {
                 if !self.tried_lately(s, kind) {
                     self.place(s, kind);
                 }
+                // Storage construction and reserve gathering can proceed together.
+                if p.kind==hud::ProblemKind::WinterFood {
+                    if let Some(fix)=p.alt_fix {self.apply_response(s,fix);}
+                }
             }
             Fix::OpenJobs | Fix::Focus => {}
-            fix => {
-                let locked: std::collections::HashSet<_> = s.colony.beavers.iter().filter(|b| s.work.is_locked(b.id)).map(|b| b.id).collect();
-                if let Err(e) = hud::apply_fix(s, fix) {
-                    self.note(s, format!("fix {fix:?} refused: {e}"));
-                }
-                self.return_new_workers(s,&locked);
-            }
+            fix => self.apply_response(s,fix),
         }
     }
 }
@@ -504,6 +510,10 @@ mod relief_tests {
         s.colony.food=0.0;
         p.release_food_relief(&mut s);
         assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)));
+        s.time_days=190.0;s.colony.food=crate::hud::food_need_per_day(&s)*31.0;
+        p.release_food_relief(&mut s);
+        assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)));
+        s.time_days=0.0;
         // A later player order must survive the caretaker's cleanup.
         let override_order=Assignment::Go((3,3));
         s.agents.assign(ids[2],Some(override_order));
