@@ -166,9 +166,16 @@ impl Player {
             }
             Fix::OpenJobs | Fix::Focus => {}
             fix => {
+                let locked: std::collections::HashSet<_> = s.colony.beavers.iter().filter(|b| s.work.is_locked(b.id)).map(|b| b.id).collect();
                 if let Err(e) = hud::apply_fix(s, fix) {
                     self.note(s, format!("fix {fix:?} refused: {e}"));
                 }
+                // Alert buttons make manual job locks. A scripted caretaker
+                // hands its own new assignments back to auto staffing; explicit
+                // player/script locks that existed before the fix are retained.
+                let hand_back: Vec<_> = s.colony.beavers.iter().filter(|b| !locked.contains(&b.id)
+                    && s.work.is_locked(b.id) && s.work.slot_of(b.id).is_some()).map(|b| b.id).collect();
+                for who in hand_back { let _ = s.apply(Command::Unlock { who }); }
             }
         }
     }
