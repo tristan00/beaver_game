@@ -25,33 +25,21 @@ mod migration_tests {
 }
 
 #[cfg(test)]
-mod accident_tests {
+mod health_tests {
     use super::*;
 
     #[test]
-    fn routes_and_guards_reduce_exposure_without_eliminating_it() {
-        let inland = work_hazard_per_day(1.0, MAX_WATER_SCAN, 0.0, 0.0);
-        let water = work_hazard_per_day(0.0, 0.0, 0.0, 0.0);
-        let guarded = work_hazard_per_day(1.0, MAX_WATER_SCAN, 2.0, 0.0);
-        let protected = work_hazard_per_day(0.0, 0.0, 1000.0, 1000.0);
-        assert!(guarded < inland && water < guarded);
-        assert!(protected > water * 0.25 && protected < water);
-        let first = inland - work_hazard_per_day(1.0, MAX_WATER_SCAN, 1.0, 0.0);
-        let second = work_hazard_per_day(1.0, MAX_WATER_SCAN, 1.0, 0.0) - guarded;
-        assert!(first > second);
-    }
-
-    #[test]
-    fn accident_roll_includes_recoverable_and_fatal_injuries() {
-        assert_eq!(accident_damage(0.0, 0.0), None);
-        assert_eq!(accident_damage(0.2, 0.1), None);
-        assert_eq!(accident_damage(0.05, 0.1), Some(INJURY_HEALTH));
-        assert!(accident_damage(0.01, 0.1).unwrap() < 1.0);
-        assert!(accident_damage(0.001, 0.1).unwrap() > 1.0);
-        // The severity mix is independent of timestep and protective exposure.
-        let full = accident_damage(0.001, 0.1).unwrap();
-        let reduced = accident_damage(0.0001, 0.01).unwrap();
-        assert!((full - reduced).abs() < 1e-6);
+    fn work_safety_never_damages_health() {
+        let mut c = Colony::default();
+        c.found((0.0, 3.0), &RiverLand::default()).unwrap();
+        let work = Work { job: Job::Logger, units: 1.0, order: None,
+            eval: SiteEval { cost: 0.0, land_len: 100.0, water_dist: MAX_WATER_SCAN },
+            site: (100.0, 100.0) };
+        let plan = vec![Some(work); c.beavers.len()];
+        let initial = c.beavers.iter().map(|b| (b.health,b.harm)).collect::<Vec<_>>();
+        for _ in 0..2000 { c.update_work_safety(0.5, &plan); }
+        assert_eq!(initial,c.beavers.iter().map(|b| (b.health,b.harm)).collect::<Vec<_>>());
+        assert!(c.beavers.iter().all(|b| b.needs.safety < 1.0));
     }
 
     #[test]
@@ -60,7 +48,7 @@ mod accident_tests {
         c.found((0.0, 3.0), &RiverLand::default()).unwrap();
         let dead = c.beavers[0].id;
         c.beavers[0].health = 0.0;
-        c.beavers[0].harm[2] = 1.0;
+        c.beavers[0].harm[0] = 1.0;
         c.beavers[1].health = 0.5;
         c.update_needs(0.5, 0.0);
         assert_eq!(c.beavers[0].health, 0.0);
@@ -68,7 +56,7 @@ mod accident_tests {
         c.remove_dead();
         assert!(c.beaver(dead).is_none());
         assert!(c.events.iter().any(|e| matches!(e.event,
-            Event::Died { id, cause: DeathCause::Injury, .. } if id == dead)));
+            Event::Died { id, cause: DeathCause::Starvation, .. } if id == dead)));
     }
 }
 const SUBSTEP_DAYS: f32 = 0.5;
@@ -475,25 +463,6 @@ fn temperature(time_days: f64) -> f32 {
     (std::f64::consts::TAU * (day_of_year(time_days) - MIDSUMMER_DAY) / DAYS_PER_YEAR).cos() as f32
 }
 
-fn work_hazard_per_day(land_len: f32, water_dist: f32, guards: f32, dug: f32) -> f32 {
-    let exposure = HAZARD_BASE + HAZARD_PER_LAND_CELL * land_len
-        + HAZARD_PER_WATER_DIST * water_dist.min(MAX_WATER_SCAN);
-    // More guards have diminishing returns; protected work still carries risk.
-    let protection = GUARD_MITIGATION * guards / (1.0 + guards);
-    exposure * (1.0 - protection) / (1.0 + CANAL_MITIGATION * dug.min(CANAL_MITIGATION_MAX_DUG))
-}
-
-fn accident_damage(roll: f32, probability: f32) -> Option<f32> {
-    if roll >= probability { return None; }
-    // Reuse the conditional accident roll so severity does not consume draws
-    // from the stream used for families and births.
-    let severity = roll / probability;
-    Some(if severity < SERIOUS_INJURY_SHARE {
-        SERIOUS_INJURY_MAX - (SERIOUS_INJURY_MAX - SERIOUS_INJURY_MIN)
-            * severity / SERIOUS_INJURY_SHARE
-    } else { INJURY_HEALTH })
-}
-
 fn check_point(name: &str, p: (f32, f32)) -> Result<(), ColonyError> {
     if p.0.is_finite() && p.1.is_finite() {
         Ok(())
@@ -795,7 +764,7 @@ impl Colony {
             self.passive_repair(dt);
         }
         self.teach_young(dt);
-        self.roll_hazards(dt, &plan);
+        self.update_work_safety(dt, &plan);
         self.update_needs(dt, cold);
         self.wear(dt, cold);
         self.age_and_stage(dt);
@@ -1006,20 +975,16 @@ impl Colony {
         }
     }
 
-    fn roll_hazards(&mut self, dt: f32, plan: &[Option<Work>]) {
+    fn update_work_safety(&mut self, dt: f32, plan: &[Option<Work>]) {
+        let mitigation = (1.0 + GUARD_MITIGATION * self.guard_strength)
+            * (1.0 + CANAL_MITIGATION * self.dug.min(CANAL_MITIGATION_MAX_DUG));
         for i in 0..self.beavers.len() {
             let Some(w) = plan[i] else { continue };
-            let per_day = work_hazard_per_day(w.eval.land_len, w.eval.water_dist, self.guard_strength, self.dug);
-            let probability = -(-per_day * WORK_FRACTION * dt).exp_m1();
-            let damage = accident_damage(self.unit(), probability);
+            let exposure = WORK_EXPOSURE_BASE + WORK_EXPOSURE_PER_LAND_CELL * w.eval.land_len
+                + WORK_EXPOSURE_PER_WATER_DIST * w.eval.water_dist.min(MAX_WATER_SCAN);
             let b = &mut self.beavers[i];
-            let target = (1.0 - SAFETY_HAZARD_SCALE * per_day).clamp(SAFETY_MIN, 1.0);
+            let target = (1.0 - SAFETY_EXPOSURE_SCALE * exposure / mitigation).clamp(SAFETY_MIN, 1.0);
             b.needs.safety += (target - b.needs.safety) * (SAFETY_RATE * dt).min(1.0);
-            if let Some(damage) = damage {
-                b.health -= damage;
-                b.harm[2] += damage;
-                b.needs.safety = (b.needs.safety - INJURY_SAFETY).max(0.0);
-            }
         }
     }
 

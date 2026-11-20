@@ -88,16 +88,11 @@ pub mod colony {
     pub const GUARD_MITIGATION: f32 = 0.65;
     pub const CANAL_MITIGATION: f32 = 0.03;
     pub const CANAL_MITIGATION_MAX_DUG: f32 = 10.0;
-    pub const HAZARD_BASE: f32 = 0.004;
-    pub const HAZARD_PER_LAND_CELL: f32 = 0.003;
-    pub const HAZARD_PER_WATER_DIST: f32 = 0.002;
-    pub const SAFETY_HAZARD_SCALE: f32 = 6.0;
+    pub const WORK_EXPOSURE_BASE: f32 = 0.004;
+    pub const WORK_EXPOSURE_PER_LAND_CELL: f32 = 0.003;
+    pub const WORK_EXPOSURE_PER_WATER_DIST: f32 = 0.002;
+    pub const SAFETY_EXPOSURE_SCALE: f32 = 6.0;
     pub const SAFETY_MIN: f32 = 0.2;
-    pub const INJURY_HEALTH: f32 = 0.20;
-    pub const SERIOUS_INJURY_SHARE: f32 = 0.12;
-    pub const SERIOUS_INJURY_MIN: f32 = 0.65;
-    pub const SERIOUS_INJURY_MAX: f32 = 1.30;
-    pub const INJURY_SAFETY: f32 = 0.3;
 
     pub const GUARD_SAFETY_PER_STRENGTH: f32 = 0.2;
     pub const GUARD_SAFETY_MAX: f32 = 0.2;

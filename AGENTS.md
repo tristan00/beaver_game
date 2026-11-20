@@ -9,8 +9,10 @@ Read `docs/economy_balance.md` before changing economy tuning.
   important balance failures. A surviving run is not automatically balanced.
 - Even the best planning must leave meaningful mortality risk. Judge managed
   colonies by their ability to absorb losses and recover, not by zero deaths.
-  Keep risk connected to exposure and protective choices; never force a death
-  quota or rescue a run with free supplies.
+  Balance through the existing food, storage, labor, shelter and family systems;
+  never force a death quota or rescue a run with free supplies.
+- No work accidents or random work injuries. Do not add mortality mechanics
+  to obtain deaths in balance runs.
 - Do not answer each failed run by increasing supplies. First diagnose the
   player's decisions, work availability, access, hauling, and broken behavior.
 - Compare competent play with overbuilding, infrequent care and neglect using
