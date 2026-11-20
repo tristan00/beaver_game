@@ -70,6 +70,7 @@ pub enum PlaceError {
     Blocked,
     NeedsDry,
     NeedsWater,
+    NeedsPond,
     NeedsDock,
     NeedsDam,
     NoCells,
@@ -85,6 +86,7 @@ impl std::fmt::Display for PlaceError {
             PlaceError::Blocked => write!(f, "Something is already built here"),
             PlaceError::NeedsDry => write!(f, "Needs dry ground"),
             PlaceError::NeedsWater => write!(f, "Must touch water"),
+            PlaceError::NeedsPond => write!(f, "Most of the footprint needs a pond at least 0.10 m deep"),
             PlaceError::NeedsDock => write!(f, "Needs a free water cell next to a finished dock"),
             PlaceError::NeedsDam => write!(f, "A lock is built on a dam"),
             PlaceError::NoCells => write!(f, "Nothing drawn yet"),
@@ -133,6 +135,7 @@ pub fn check_building(sim: &SimState, kind: BuildingKind, pos: Cell) -> Result<(
         } else if m.contains("BadTerrain") {
             match kind.spec().site {
                 Site::Dry => PlaceError::NeedsDry,
+                Site::Pond => PlaceError::NeedsPond,
                 _ => PlaceError::NeedsWater,
             }
         } else {

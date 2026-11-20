@@ -556,7 +556,11 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             value: left,
             cause: Breakdown::new(left, rows),
             subject: Some(Subject::Building(BuildingKind::LoggingCamp)),
-            fix: if sim.tech.allows(BuildingKind::ForesterLodge) { Fix::Place(BuildingKind::ForesterLodge) } else { Fix::Focus },
+            fix: if let Some(p) = sim.work.places.iter().find(|p| p.kind == BuildingKind::ForesterLodge && p.filled() < p.slots.len()) {
+                Fix::AddWorkers { building: p.building, n: 2 }
+            } else if sim.tech.allows(BuildingKind::ForesterLodge) && sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::ForesterLodge).count() < 2 {
+                Fix::Place(BuildingKind::ForesterLodge)
+            } else { Fix::OpenJobs },
             alt_fix: None,
             focus: Some(area.centre()),
         });

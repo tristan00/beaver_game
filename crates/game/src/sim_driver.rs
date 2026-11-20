@@ -17,8 +17,8 @@ impl Speed {
     pub fn multiplier(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
-            Speed::X2 => 6.0,
-            Speed::X3 => 24.0,
+            Speed::X2 => 30.0,
+            Speed::X3 => 180.0,
         }
     }
 }

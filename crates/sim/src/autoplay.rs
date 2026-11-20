@@ -78,6 +78,15 @@ impl Player {
         if self.style == Style::HandsOff || !s.colony.is_founded() {
             return;
         }
+        let food_reserve = crate::hud::food_need_per_day(s) * 120.0;
+        if s.colony.food < food_reserve {
+            // Forestry is a long-term investment. Do not leave manually locked
+            // foresters consuming the workforce needed for this winter's food.
+            let forestry: Vec<_> = s.work.places.iter().filter(|p|p.kind == BuildingKind::ForesterLodge
+                && s.buildings.building(p.building).is_some_and(|b| b.is_complete()))
+                .map(|p|(p.building,p.filled())).collect();
+            for (building, n) in forestry { for _ in 0..n { let _ = s.apply(Command::RemoveWorker { building }); } }
+        }
         if self.placed.is_empty() {
             self.place(s, BuildingKind::Burrow);
         }
@@ -126,7 +135,10 @@ impl Player {
         }
         let pop = s.colony.population();
         let count = |s: &SimState, k: BuildingKind| s.buildings.buildings.iter().filter(|b| b.kind == k).count();
-        if s.tech.allows(BuildingKind::Lodge) && pop >= 6 && count(s, BuildingKind::Lodge) < pop.div_ceil(8) && !self.tried_lately(s, BuildingKind::Lodge) {
+        let families = s.colony.beavers.iter().map(|b|b.family).collect::<std::collections::HashSet<_>>().len();
+        let young_adults = s.colony.beavers.iter().any(|b|b.stage == crate::colony::Stage::Adult && b.mate.is_none());
+        let wanted_homes = families + usize::from(young_adults || !s.society.pending().is_empty());
+        if s.tech.allows(BuildingKind::Lodge) && count(s, BuildingKind::Lodge) < wanted_homes && !self.tried_lately(s, BuildingKind::Lodge) {
             self.place(s, BuildingKind::Lodge);
         }
         if s.tech.allows(BuildingKind::LoggingCamp) && count(s, BuildingKind::LoggingCamp) < 1 + pop / 10 && !self.tried_lately(s, BuildingKind::LoggingCamp) {
@@ -145,6 +157,7 @@ impl Player {
             return;
         }
         let Some(p) = hud::problems(s).into_iter().next() else { return };
+        if p.subject == Some(hud::Subject::Building(BuildingKind::ForesterLodge)) && s.colony.food < food_reserve { return; }
         match p.fix {
             Fix::Place(kind) => {
                 if !self.tried_lately(s, kind) {

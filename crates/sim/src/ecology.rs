@@ -5,8 +5,9 @@ use rand_pcg::Pcg32;
 pub use crate::tuning::ecology::*;
 
 const MAX_SUBSTEP_DAYS: f32 = 1.0;
-/// Game time between the whole-map ecology passes (an hour).
-const GRID_EVERY_DAYS: f32 = 1.0 / 24.0;
+/// Forest succession and wetland populations change over days. Local movement
+/// and water remain current; whole-map vegetation/danger refresh every six hours.
+const GRID_EVERY_DAYS: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PredatorKind { Wolf, Lynx, Bear, Eagle }

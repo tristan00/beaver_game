@@ -96,6 +96,7 @@ pub struct HudState {
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
     pub pop_sort: u8,
+    pub pop_page: usize,
     pub area_edit: Option<BuildingId>,
     pub area_from: Option<Cell>,
     pub pinned: Vec<Selection>,
@@ -192,7 +193,8 @@ impl Default for HudState {
             profile_collapsed: false,
             selected: Vec::new(),
             follow: None,
-            pop_sort: 0,
+            pop_sort: 5,
+            pop_page: 0,
             area_edit: None,
             area_from: None,
             pinned: Vec::new(),
@@ -311,6 +313,7 @@ pub enum HudAction {
     Unlock(BeaverId),
     AutoStaff(bool),
     SortPop(u8),
+    PopPage(i32),
     EditArea(BuildingId),
     Pin(Selection),
     Recipe(BuildingId, Option<sim::buildings::Recipe>),
@@ -980,7 +983,11 @@ fn button_actions(
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
             HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
-            HudAction::SortPop(k) => hud.pop_sort = k,
+            HudAction::SortPop(k) => { hud.pop_sort = k; hud.pop_page = 0; }
+            HudAction::PopPage(delta) => {
+                hud.pop_page = hud.pop_page.saturating_add_signed(delta as isize)
+                    .min(sim.0.colony.population().saturating_sub(1) / 18);
+            }
             HudAction::Recipe(building, recipe) => cmd(s, &mut hud, sim::Command::SetRecipe { building, recipe }, now),
             HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
             HudAction::CutRule(building, rule) => cmd(s, &mut hud, sim::Command::SetCutRule { building, rule }, now),
@@ -1348,6 +1355,7 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
 
 #[allow(clippy::too_many_arguments)]
 fn demo(
+    cli: Res<crate::cli::Cli>,
     mut done: Local<bool>,
     planned: Res<crate::state::PlannedDam>,
     mut sim: ResMut<Sim>,
@@ -1362,7 +1370,7 @@ fn demo(
         return;
     }
     *done = true;
-    let Ok(which) = std::env::var("BC_HUD_DEMO") else { return };
+    let which = if cli.colony_script.is_some() { "script".to_string() } else { let Ok(v) = std::env::var("BC_HUD_DEMO") else { return }; v };
     let days: f32 = std::env::var("BC_HUD_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(12.0);
     let s = &mut sim.0;
     let camp = planned.0.as_ref().map(|d| d.camp);
@@ -1385,11 +1393,11 @@ fn demo(
         o.distance = dist;
         o.pitch = 0.95;
     };
-    if which == "play" {
+    if which == "play" || which == "script" {
         let dam = planned.0.as_ref().map(|d| (d.cells.clone(), d.height));
         let mut p = sim::autoplay::Player::new(sim::autoplay::Style::Attentive, camp.unwrap_or((0, 0)), dam);
         let steps = (1.0 / crate::sim_driver::FIXED_DT_DAYS) as usize;
-        for _ in 0..days as usize {
+        for _ in 0..if which == "script" { 0 } else { days as usize } {
             p.act(s);
             for _ in 0..steps {
                 let _ = s.step(crate::sim_driver::FIXED_DT_DAYS);
@@ -1419,8 +1427,10 @@ fn demo(
             }
             _ => {}
         }
-        if let Some(c) = camp {
-            look(&mut orbit, &s.height, (c.0 as f32, c.1 as f32), if view == "elevation" { 60.0 } else { 42.0 });
+        let focus = std::env::var("BC_HUD_CELL").ok().and_then(|v| v.split_once(',').and_then(|(x,y)| Some((x.parse::<f32>().ok()?,y.parse::<f32>().ok()?))));
+        if let Some(c) = focus.or(camp.map(|c|(c.0 as f32,c.1 as f32))) {
+            let dist = std::env::var("BC_HUD_DIST").ok().and_then(|v|v.parse().ok()).unwrap_or(if view == "elevation" { 60.0 } else { 42.0 });
+            look(&mut orbit, &s.height, c, dist);
         }
         return;
     }

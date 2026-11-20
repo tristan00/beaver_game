@@ -1,5 +1,5 @@
 //! Gameplay hydrology: finite reservoirs and directed, branching stream reaches.
-//! There are no gravity-wave substeps. A minute of inflow is routed once through
+//! There are no gravity-wave substeps. Up to fifteen minutes of inflow are routed through
 //! the drainage graph, retaining channel storage and water below reservoir sills.
 use super::{Water, edge_bed, neighbours4};
 use std::{cmp::Reverse, collections::BinaryHeap};
@@ -311,9 +311,9 @@ impl Flow {
     pub(super) fn advance(&mut self, w: &mut Water, seconds: f64) {
         let mut left = seconds;
         while left > 1.0e-6 {
-            // Public durations are f32 days: a minute arrives as 60.000001 s.
-            // Consume that residual with the minute, not a second graph pass.
-            let dt = if left <= 60.001 { left } else { 60.0 };
+            // The storage/outflow solve is implicit. Use quarter-hour reaches
+            // and absorb the tiny f32 calendar residual in the same pass.
+            let dt = if left <= 900.001 { left } else { 900.0 };
             self.stamp += 1;
             let stamp = self.stamp;
             let mut queue = BinaryHeap::with_capacity(self.wet.len() + self.source_nodes.len());

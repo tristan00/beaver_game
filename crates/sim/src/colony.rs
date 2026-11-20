@@ -191,6 +191,14 @@ impl Needs {
 }
 
 #[derive(Clone, Debug)]
+pub struct Pregnancy {
+    pub father: BeaverId,
+    pub conceived_day: f64,
+    pub due_day: f64,
+    pub litter: u32,
+}
+
+#[derive(Clone, Debug)]
 pub struct Beaver {
     pub id: BeaverId,
     pub name: String,
@@ -213,6 +221,7 @@ pub struct Beaver {
     pub stage: Stage,
     pub resting: bool,
     pub last_birth_year: i64,
+    pub pregnancy: Option<Pregnancy>,
     low_mood_days: f32,
     harm: [f32; 5],
 }
@@ -354,6 +363,9 @@ pub struct Colony {
     pub orders: VecDeque<WorkOrder>,
     pub experience: [f32; 8],
     pub stats: Stats,
+    /// Parent records survive deaths and dispersal, so family changes cannot
+    /// make close relatives eligible to mate.
+    pub ancestry: HashMap<BeaverId, (Option<BeaverId>, Option<BeaverId>)>,
     pub events: VecDeque<LoggedEvent>,
     pub events_dropped: u64,
     collapse: Option<CollapseReport>,
@@ -422,6 +434,7 @@ impl Colony {
             orders: VecDeque::new(),
             experience: [0.0; 8],
             stats: Stats::default(),
+            ancestry: HashMap::new(),
             events: VecDeque::new(),
             events_dropped: 0,
             collapse: None,
@@ -481,6 +494,11 @@ impl Colony {
         let father = self.spawn(Sex::Male, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
         let mother = self.spawn(Sex::Female, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
         self.set_mates(father, mother);
+        // The arriving breeding pair mated in the previous winter.
+        let litter = MIN_LITTER + self.range(LITTER_SPREAD);
+        if let Some(m) = self.beavers.iter_mut().find(|b| b.id == mother) {
+            m.pregnancy = Some(Pregnancy { father, conceived_day: -60.0, due_day: GESTATION_DAYS - 60.0, litter });
+        }
         self.spawn(Sex::Male, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
         self.spawn(Sex::Female, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
         self.food = START_FOOD;
@@ -502,7 +520,7 @@ impl Colony {
     }
 
     pub fn add_home(&mut self, pos: (f32, f32)) -> LodgeId {
-        let family = self.beavers.iter().find(|b| b.lodge.is_none()).map(|b| b.family).or(self.families.first().map(|f| f.id)).unwrap_or(FamilyId(0));
+        let family = self.beavers.iter().find(|b| b.lodge.is_none()).map(|b| b.family).unwrap_or(FamilyId(0));
         let id = self.new_lodge(family, pos, 1.0);
         self.house_homeless();
         id
@@ -515,16 +533,15 @@ impl Colony {
                 *occupancy.entry(l).or_insert(0) += 1;
             }
         }
-        let homes: Vec<(LodgeId, FamilyId)> = self.lodges.iter().map(|l| (l.id, l.family)).collect();
         for b in self.beavers.iter_mut().filter(|b| b.lodge.is_none()) {
-            let pick = homes
-                .iter()
-                .filter(|(l, _)| occupancy.get(l).copied().unwrap_or(0) < LODGE_CAPACITY)
-                .min_by_key(|(_, f)| *f != b.family)
-                .map(|(l, _)| *l);
+            let pick = self.lodges.iter_mut()
+                .filter(|l| (l.family == b.family || occupancy.get(&l.id).copied().unwrap_or(0) == 0)
+                    && occupancy.get(&l.id).copied().unwrap_or(0) < LODGE_CAPACITY)
+                .min_by_key(|l| (l.family != b.family, l.id));
             if let Some(l) = pick {
-                b.lodge = Some(l);
-                *occupancy.entry(l).or_insert(0) += 1;
+                l.family = b.family;
+                b.lodge = Some(l.id);
+                *occupancy.entry(l.id).or_insert(0) += 1;
             }
         }
     }
@@ -695,7 +712,7 @@ impl Colony {
         self.age_and_stage(dt);
         self.remove_dead();
         self.pair_and_disperse(dt, land);
-        self.births();
+        self.births(dt);
         self.depart_unhappy();
         self.families.retain({
             let live: HashSet<FamilyId> = self.beavers.iter().map(|b| b.family).collect();
@@ -1052,145 +1069,222 @@ impl Colony {
     }
 
     fn adopt_orphans(&mut self) {
-        let mut occupancy: HashMap<LodgeId, usize> = HashMap::new();
-        for b in &self.beavers {
-            if let Some(l) = b.lodge {
-                *occupancy.entry(l).or_insert(0) += 1;
+        self.house_homeless();
+        let live: HashSet<_> = self.beavers.iter().map(|b| b.id).collect();
+        let hosts: HashSet<_> = self
+            .beavers
+            .iter()
+            .filter(|b| b.stage == Stage::Adult)
+            .filter_map(|b| b.lodge)
+            .collect();
+        let orphans: Vec<_> = self
+            .beavers
+            .iter()
+            .filter(|b| {
+                b.stage != Stage::Adult
+                    && (b.mother.is_some() || b.father.is_some())
+                    && ![b.mother, b.father].into_iter().flatten().any(|p| live.contains(&p))
+            })
+            .map(|b| b.id)
+            .collect();
+        for id in orphans {
+            let current = self.beaver(id).and_then(|b| b.lodge);
+            if current.is_some_and(|l| hosts.contains(&l)) {
+                continue;
             }
-        }
-        for b in self.beavers.iter_mut().filter(|b| b.lodge.is_none()) {
-            let pick = self
+            let home = self
                 .lodges
                 .iter()
-                .filter(|l| occupancy.get(&l.id).copied().unwrap_or(0) < LODGE_CAPACITY)
-                .max_by(|x, y| ((x.family == b.family), x.condition).partial_cmp(&((y.family == b.family), y.condition)).unwrap());
-            if let Some(l) = pick {
-                b.lodge = Some(l.id);
-                b.pos = l.pos;
-                *occupancy.entry(l.id).or_insert(0) += 1;
+                .filter(|l| hosts.contains(&l.id) && self.beavers.iter().filter(|b| b.lodge == Some(l.id)).count() < LODGE_CAPACITY)
+                .max_by(|a, b| a.condition.total_cmp(&b.condition))
+                .cloned();
+            if let Some(home) = home {
+                let b = self.beavers.iter_mut().find(|b| b.id == id).unwrap();
+                b.family = home.family;
+                b.lodge = Some(home.id);
+                b.pos = home.pos;
             }
         }
     }
 
-    fn births(&mut self) {
-        let doy = day_of_year(self.time_days);
-        if !(BIRTH_FROM_DAY..SPRING_END).contains(&doy) {
-            return;
-        }
-        let per_beaver = BIRTH_MIN_FOOD_DAYS * HUNGER_PER_DAY;
-        let crowd_cap = (BIRTH_MAX_CROWDING * FORAGE_CROWDING_POPULATION) as i64;
-        let n = self.beavers.len() as i64;
-        let mut room = ((self.food / per_beaver) as i64).min(crowd_cap) - n;
-        if self.food >= per_beaver * n as f32 && n < crowd_cap {
-            room = room.max(1);
-        }
-        if room <= 0 {
-            return;
-        }
-        let year = (self.time_days / DAYS_PER_YEAR) as i64;
-        let mothers: Vec<Beaver> = self
+    pub fn close_relatives(&self, a: BeaverId, b: BeaverId) -> bool {
+        let ancestors = |who| {
+            let mut all = HashSet::from([who]);
+            let mut generation = vec![who];
+            for _ in 0..2 {
+                let next: Vec<_> = generation
+                    .iter()
+                    .flat_map(|id| self.ancestry.get(id).into_iter().flat_map(|&(f, m)| [f, m].into_iter().flatten()))
+                    .collect();
+                all.extend(next.iter().copied());
+                generation = next;
+            }
+            all
+        };
+        !ancestors(a).is_disjoint(&ancestors(b))
+    }
+
+    fn births(&mut self, dt: f32) {
+        let due: Vec<_> = self
             .beavers
             .iter()
-            .filter(|b| {
-                b.sex == Sex::Female
-                    && b.stage == Stage::Adult
-                    && b.age_years() < MAX_BIRTH_AGE_YEARS
-                    && b.last_birth_year != year
-                    && b.health >= BREED_MIN_HEALTH
-                    && b.needs.food >= BREED_MIN_FOOD
-                    && b.lodge.is_some()
-                    && b.mate.is_some_and(|m| self.beavers.iter().any(|x| x.id == m && x.family == b.family))
+            .filter_map(|m| {
+                m.pregnancy
+                    .as_ref()
+                    .filter(|p| self.time_days >= p.due_day)
+                    .map(|p| (m.clone(), p.clone()))
             })
-            .cloned()
             .collect();
-        for m in mothers {
-            if room <= 0 {
-                break;
-            }
-            if let Some(b) = self.beavers.iter_mut().find(|b| b.id == m.id) {
-                b.last_birth_year = year;
-            }
-            let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
-            room -= litter as i64;
-            for _ in 0..litter {
+        for (m, p) in due {
+            let mother = self.beavers.iter_mut().find(|b| b.id == m.id).unwrap();
+            mother.pregnancy = None;
+            mother.last_birth_year = (self.time_days / DAYS_PER_YEAR).floor() as i64;
+            for _ in 0..p.litter {
                 let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
-                let id = self.spawn(sex, 0.0, m.family, m.lodge, m.pos, m.mate, Some(m.id));
+                let id = self.spawn(sex, 0.0, m.family, m.lodge, m.pos, Some(p.father), Some(m.id));
                 self.stats.births += 1;
                 self.log(Event::Born { id, family: m.family });
             }
         }
         self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
-    }
-
-    fn pair_and_disperse(&mut self, dt: f32, land: &dyn Landscape) {
         let doy = day_of_year(self.time_days);
-        if !(SPRING_START..SPRING_END).contains(&doy) {
+        if !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) {
             return;
         }
-        let parents: HashSet<BeaverId> =
-            self.beavers.iter().filter(|b| b.stage != Stage::Adult).flat_map(|b| [b.mother, b.father]).flatten().collect();
-        let eligible: Vec<(BeaverId, Sex, FamilyId)> = self
+        let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
+        let candidates: Vec<_> = self
             .beavers
             .iter()
-            .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.health >= PAIR_MIN_HEALTH && !parents.contains(&b.id))
-            .map(|b| (b.id, b.sex, b.family))
+            .filter(|m| {
+                m.sex == Sex::Female
+                    && m.stage == Stage::Adult
+                    && m.age_years() < MAX_BIRTH_AGE_YEARS
+                    && m.pregnancy.is_none()
+                    && m.last_birth_year != birth_year
+                    && m.health >= BREED_MIN_HEALTH
+                    && m.needs.food >= BREED_MIN_FOOD
+                    && self
+                        .lodges
+                        .iter()
+                        .any(|l| Some(l.id) == m.lodge && l.family == m.family && l.condition >= 0.5)
+                    && m.mate.is_some_and(|id| {
+                        self.beaver(id).is_some_and(|f| {
+                            f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult && !self.close_relatives(m.id, f.id)
+                        })
+                    })
+            })
+            .map(|m| (m.id, m.mate.unwrap(), m.lodge))
             .collect();
-        let mut used: HashSet<BeaverId> = HashSet::new();
-        for &(a, sex, family) in &eligible {
-            if used.contains(&a) || (!self.homes_from_buildings && self.wood < LODGE_WOOD_COST) {
+        for (id, father, home) in candidates {
+            let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == home).count());
+            if room < MIN_LITTER as usize
+                || self.food < (self.population() + MIN_LITTER as usize) as f32 * HUNGER_PER_DAY * BIRTH_MIN_FOOD_DAYS
+                || !self.chance(0.2 * dt)
+            {
                 continue;
             }
-            let empty_home = if self.homes_from_buildings {
-                let taken: HashSet<LodgeId> = self.beavers.iter().filter_map(|b| b.lodge).collect();
-                match self.lodges.iter().find(|l| !taken.contains(&l.id)).map(|l| l.id) {
-                    Some(l) => Some(l),
-                    None => continue,
+            let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
+            self.beavers.iter_mut().find(|b| b.id == id).unwrap().pregnancy = Some(Pregnancy {
+                father,
+                conceived_day: self.time_days,
+                due_day: self.time_days + GESTATION_DAYS,
+                litter,
+            });
+        }
+    }
+    fn pair_and_disperse(&mut self, dt: f32, land: &dyn Landscape) {
+        let doy = day_of_year(self.time_days);
+        if !(SPRING_START..SPRING_END).contains(&doy) && !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) {
+            return;
+        }
+        let eligible: Vec<_> = self
+            .beavers
+            .iter()
+            .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.health >= PAIR_MIN_HEALTH)
+            .map(|b| (b.id, b.sex))
+            .collect();
+        let mut used = HashSet::new();
+        for &(a, sex) in &eligible {
+            if used.contains(&a) {
+                continue;
+            }
+            let partner = eligible
+                .iter()
+                .find(|&&(b, s)| b != a && s != sex && !used.contains(&b) && !self.close_relatives(a, b))
+                .map(|p| p.0);
+            let near = self.beaver(a).map_or((0., 0.), |b| self.lodge_pos(b));
+            // A widowed parent keeps its family home and dependent young. An
+            // adult offspring leaves its parents only when a new home is ready.
+            let reuse = [Some(a), partner].into_iter().flatten().find_map(|id| {
+                let own = self.beaver(id)?;
+                let home = own.lodge?;
+                self.lodges
+                    .iter()
+                    .find(|l| {
+                        l.id == home
+                            && l.family == own.family
+                            && self
+                                .beavers
+                                .iter()
+                                .filter(|b| b.lodge == Some(home) && b.stage == Stage::Adult)
+                                .all(|b| b.id == a || Some(b.id) == partner)
+                    })
+                    .map(|l| l.id)
+            });
+            let home = reuse.or_else(|| {
+                self.lodges
+                    .iter()
+                    .find(|l| !self.beavers.iter().any(|b| b.lodge == Some(l.id)))
+                    .map(|l| l.id)
+            });
+            if self.homes_from_buildings && home.is_none() {
+                continue;
+            }
+            if partner.is_none() && (self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA || !self.chance(WANDERER_CHANCE_PER_DAY * dt)) {
+                continue;
+            }
+            let new_site = if home.is_none() {
+                if self.wood < LODGE_WOOD_COST {
+                    continue;
                 }
+                let Some(site) = self.find_lodge_site(near, land) else {
+                    continue;
+                };
+                Some(site)
             } else {
                 None
             };
-            let partner = eligible.iter().find(|(b, s, f)| !used.contains(b) && *s != sex && *f != family).map(|p| p.0);
-            if partner.is_none() && !(self.food_per_capita() >= HUNGRY_FOOD_PER_CAPITA && self.chance(WANDERER_CHANCE_PER_DAY * dt)) {
-                continue;
-            }
-            let near = self.beaver(a).map_or((0.0, 0.0), |b| self.lodge_pos(b));
-            if let Some(home) = empty_home {
-                let b = partner.unwrap_or_else(|| self.immigrant(sex.opposite()));
-                used.insert(a);
-                used.insert(b);
-                let fam = self.new_family();
-                let site = self.lodges.iter().find(|l| l.id == home).map(|l| l.pos).unwrap_or(near);
-                if let Some(l) = self.lodges.iter_mut().find(|l| l.id == home) {
-                    l.family = fam;
-                }
-                for x in self.beavers.iter_mut().filter(|x| x.id == a || x.id == b) {
-                    x.family = fam;
-                    x.lodge = Some(home);
-                    x.pos = site;
-                }
-                self.set_mates(a, b);
-                self.log(Event::NewFamily { family: fam, lodge: home, a, b });
-                continue;
-            }
-            let Some(site) = self.find_lodge_site(near, land) else {
-                if !self.events.iter().rev().take(20).any(|e| matches!(e.event, Event::NoLodgeSite { .. })) {
-                    self.log(Event::NoLodgeSite { near });
-                }
-                continue;
-            };
             let b = partner.unwrap_or_else(|| self.immigrant(sex.opposite()));
-            used.insert(a);
-            used.insert(b);
-            self.wood -= LODGE_WOOD_COST;
-            let fam = self.new_family();
-            let lodge = self.new_lodge(fam, site, NEW_LODGE_CONDITION);
-            for x in self.beavers.iter_mut().filter(|x| x.id == a || x.id == b) {
+            let fam = if let Some(id) = reuse {
+                self.lodges.iter().find(|l| l.id == id).unwrap().family
+            } else {
+                self.new_family()
+            };
+            let home = home.unwrap_or_else(|| {
+                self.wood -= LODGE_WOOD_COST;
+                self.new_lodge(fam, new_site.unwrap(), NEW_LODGE_CONDITION)
+            });
+            let l = self.lodges.iter_mut().find(|l| l.id == home).unwrap();
+            l.family = fam;
+            let site = l.pos;
+            for x in self.beavers.iter_mut().filter(|x| {
+                x.id == a
+                    || x.id == b
+                    || (x.stage != Stage::Adult && [x.mother, x.father].into_iter().flatten().any(|id| id == a || id == b))
+            }) {
                 x.family = fam;
-                x.lodge = Some(lodge);
+                x.lodge = Some(home);
                 x.pos = site;
             }
+            used.insert(a);
+            used.insert(b);
             self.set_mates(a, b);
-            self.log(Event::NewFamily { family: fam, lodge, a, b });
+            self.log(Event::NewFamily {
+                family: fam,
+                lodge: home,
+                a,
+                b,
+            });
         }
     }
 
@@ -1300,9 +1394,11 @@ impl Colony {
             stage: Stage::of_age_days(age_days),
             resting: false,
             last_birth_year: -1,
+            pregnancy: None,
             low_mood_days: 0.0,
             harm: [0.0; 5],
         });
+        self.ancestry.insert(id, (father, mother));
         id
     }
 
@@ -1355,36 +1451,29 @@ impl Colony {
     }
 
     pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
-        if !self.founded {
-            return Err(ColonyError::Invalid("colony is not founded".into()));
-        }
-        let mut occupancy: HashMap<LodgeId, usize> = HashMap::new();
-        for l in self.beavers.iter().filter_map(|b| b.lodge) {
-            *occupancy.entry(l).or_insert(0) += 1;
-        }
-        let lodge = self
-            .lodges
-            .iter()
-            .map(|l| (l, occupancy.get(&l.id).copied().unwrap_or(0)))
-            .filter(|(_, n)| *n < LODGE_CAPACITY)
-            .min_by_key(|(l, n)| (*n, l.id))
-            .map(|(l, _)| (l.id, l.family, l.pos))
-            .ok_or_else(|| ColonyError::Invalid("no lodge has room".into()))?;
-        let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
-        let years = if adult { IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit() } else { 1.0 + self.unit() };
-        let id = self.spawn(sex, years * DAYS_PER_YEAR as f32, lodge.1, Some(lodge.0), lodge.2, None, None);
-        self.stats.immigrants += 1;
-        self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
-        self.log(Event::Immigrated { id });
-        Ok(id)
+        if !self.founded {return Err(ColonyError::Invalid("colony is not founded".into()));}
+        let waiting=adult.then(||self.beavers.iter().find(|b|b.stage==Stage::Adult && b.mate.is_none()
+            && b.lodge.is_some() && self.beavers.iter().filter(|x|x.lodge==b.lodge && x.stage==Stage::Adult).count()==1).cloned()).flatten();
+        let empty=self.lodges.iter().find(|l|!self.beavers.iter().any(|b|b.lodge==Some(l.id))).cloned();
+        let (home,family,pos,sex)=if let Some(b)=waiting.as_ref() {
+            (b.lodge.unwrap(),b.family,b.pos,b.sex.opposite())
+        }else if let Some(l)=empty {
+            let fam=self.new_family();self.lodges.iter_mut().find(|h|h.id==l.id).unwrap().family=fam;
+            (l.id,fam,l.pos,if self.chance(0.5){Sex::Male}else{Sex::Female})
+        }else{return Err(ColonyError::Invalid("a newcomer needs an empty family lodge or an unpaired adult's home".into()));};
+        let years=if adult{IMMIGRANT_MIN_AGE_YEARS+IMMIGRANT_AGE_SPREAD_YEARS*self.unit()}else{1.0+self.unit()};
+        let id=self.spawn(sex,years*DAYS_PER_YEAR as f32,family,Some(home),pos,None,None);
+        if let Some(partner)=waiting {self.set_mates(partner.id,id);self.log(Event::NewFamily{family,lodge:home,a:partner.id,b:id});}
+        self.stats.immigrants+=1;self.stats.peak_population=self.stats.peak_population.max(self.beavers.len());
+        self.log(Event::Immigrated{id});Ok(id)
     }
-
     pub fn add_immigrants(&mut self, n: u32) -> u32 {
-        for i in 0..n {
-            let sex = if (self.beavers.len() as u32 + i) % 2 == 0 { Sex::Female } else { Sex::Male };
-            self.immigrant(sex);
+        let mut admitted = 0;
+        for _ in 0..n {
+            if self.admit_wanderer(true).is_err() { break; }
+            admitted += 1;
         }
-        n
+        admitted
     }
 
     pub fn damage_health(&mut self, amount: f32) {

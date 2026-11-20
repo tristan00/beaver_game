@@ -116,7 +116,7 @@ pub const TECHS: &[TechDef] = &[
     exp("Lodge building", Branch::Building, 1, 16.0, 5, &[FELLING], &[U(BuildingKind::Lodge)]),
     exp("Stonework", Branch::Forest, 2, 40.0, 6, &[FELLING], &[U(BuildingKind::QuarryCamp)]),
     exp("Weaving", Branch::Forest, 3, 60.0, 8, &[FELLING], &[U(BuildingKind::Workshop)]),
-    exp("Canal digging", Branch::Water, 1, 30.0, 8, &[LODGE_BUILDING], &[U(BuildingKind::Canal)]),
+    exp("Canal digging", Branch::Water, 1, 10.0, 6, &[LODGE_BUILDING], &[U(BuildingKind::Canal)]),
     exp("Docks", Branch::Building, 1, 30.0, 8, &[LODGE_BUILDING], &[U(BuildingKind::Dock)]),
     exp("Flow control", Branch::Water, 2, 60.0, 12, &[DOCKS, STONEWORK], &[U(BuildingKind::Lock), U(BuildingKind::WaterWheel)]),
     exp("Barges", Branch::Building, 2, 60.0, 10, &[DOCKS, WEAVING], &[U(BuildingKind::Barge)]),

@@ -10,7 +10,9 @@ pub mod colony {
     pub const DEPARTURE_BAD_MOOD_DAYS: f32 = 30.0;
     pub const SPRING_START: f64 = 0.0;
     pub const SPRING_END: f64 = crate::calendar::SEASON_DAYS;
-    pub const BIRTH_FROM_DAY: f64 = 15.0;
+    pub const MATING_FROM_DAY: f64 = 300.0;
+    pub const MATING_TO_DAY: f64 = 330.0;
+    pub const GESTATION_DAYS: f64 = 107.0;
     pub const MIDSUMMER_DAY: f64 = 1.5 * crate::calendar::SEASON_DAYS;
 
     pub const WATER_DEPTH: f32 = 0.05;
@@ -146,7 +148,7 @@ pub mod colony {
     pub const JOIN_ADULT_SHARE: f32 = 0.8;
     pub const BREED_MIN_HEALTH: f32 = 0.5;
     pub const BREED_MIN_FOOD: f32 = 0.4;
-    pub const MIN_LITTER: u32 = 1;
+    pub const MIN_LITTER: u32 = 2;
     pub const LITTER_SPREAD: u32 = 3;
     pub const PAIR_MIN_HEALTH: f32 = 0.5;
     pub const WANDERER_CHANCE_PER_DAY: f32 = 0.04;

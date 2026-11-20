@@ -20,7 +20,10 @@ pub enum Surface {
 }
 
 pub fn shared(s: Surface) -> bool {
-    matches!(s, Surface::LodgeInside | Surface::LodgeEntrance)
+    // Beavers can pass one another. Treating a resting beaver as a solid,
+    // one-metre roadblock made routes fail and repeatedly search the whole map.
+    // Buildings and terrain still enforce all static traversal rules.
+    s != Surface::Solid
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

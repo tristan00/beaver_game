@@ -50,7 +50,9 @@ const CAMP_DAM_DIST: std::ops::RangeInclusive<usize> = 20..=60;
 const BANK_MAX: usize = 25;
 const TREES_WANTED: usize = 10;
 const TREE_RADIUS: usize = 30;
-const KIT_AGE_DAYS: f32 = 150.0;
+// Spring arrival: these are the previous spring's offspring. They become
+// yearlings around the arrival of this year's litter, then adults next spring.
+const KIT_AGE_DAYS: f32 = 300.0;
 
 pub(crate) fn dist2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)

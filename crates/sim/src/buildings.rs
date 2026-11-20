@@ -241,6 +241,8 @@ pub enum BuildingKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
+    /// Most of the footprint must stand in a pond, not on its dry bank.
+    Pond,
     Dry,
     TouchesWater,
     WaterByDock,
@@ -257,7 +259,7 @@ pub struct Spec {
 
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
-        self.spec().site == Site::TouchesWater && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
+        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
     }
 
     pub const ALL: [BuildingKind; 21] = [
@@ -272,25 +274,25 @@ impl BuildingKind {
     pub fn spec(self) -> Spec {
         let (name, footprint, site) = match self {
             BuildingKind::Dam => ("Dam", (3, 1), Site::TouchesWater),
-            BuildingKind::Lodge => ("Lodge", (3, 3), Site::TouchesWater),
+            BuildingKind::Lodge => ("Lodge", (3, 3), Site::Pond),
             BuildingKind::Burrow => ("Burrow hideout", (1, 1), Site::TouchesWater),
-            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::TouchesWater),
+            BuildingKind::FoodCache => ("Food cache", (2, 2), Site::Pond),
             BuildingKind::ScentMound => ("Scent mound", (1, 1), Site::TouchesWater),
             BuildingKind::GuardPost => ("Guard post", (1, 1), Site::Dry),
             BuildingKind::Canal => ("Canal", (1, 1), Site::TouchesWater),
             BuildingKind::Lock => ("Lock", (2, 1), Site::TouchesWater),
-            BuildingKind::WaterWheel => ("Water wheel", (2, 2), Site::TouchesWater),
-            BuildingKind::Workshop => ("Workshop", (3, 2), Site::TouchesWater),
-            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::TouchesWater),
+            BuildingKind::WaterWheel => ("Water wheel", (2, 2), Site::Pond),
+            BuildingKind::Workshop => ("Workshop", (3, 2), Site::Pond),
+            BuildingKind::Warehouse => ("Warehouse", (3, 3), Site::Pond),
             BuildingKind::Dock => ("Dock", (2, 1), Site::TouchesWater),
             BuildingKind::Barge => ("Barge", (1, 1), Site::WaterByDock),
-            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::TouchesWater),
-            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::TouchesWater),
+            BuildingKind::LoggingCamp => ("Logging camp", (2, 2), Site::Pond),
+            BuildingKind::ForagerHut => ("Forager hut", (2, 2), Site::Pond),
             BuildingKind::MudPit => ("Mud pit", (2, 2), Site::TouchesWater),
             BuildingKind::QuarryCamp => ("Quarry camp", (2, 2), Site::Dry),
-            BuildingKind::Mill => ("Mill", (3, 3), Site::TouchesWater),
-            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::TouchesWater),
-            BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Dry),
+            BuildingKind::Mill => ("Mill", (3, 3), Site::Pond),
+            BuildingKind::Storehouse => ("Storehouse", (4, 3), Site::Pond),
+            BuildingKind::ForesterLodge => ("Forester's lodge", (2, 2), Site::Pond),
             BuildingKind::TreeNursery => ("Tree nursery", (2, 2), Site::Dry),
         };
         let (cost, work) = cost_and_work(self);
@@ -470,6 +472,10 @@ impl Buildings {
         if !b.is_complete() || !self.water_bound.contains(&b.id) {
             return false;
         }
+        if b.kind.spec().site == Site::Pond {
+            let cells: Vec<_> = b.cells().collect();
+            return cells.iter().filter(|&&(x,y)| depth.get(x,y).is_some_and(|&d| d >= KEEP_WET_DEPTH)).count() <= cells.len() / 2;
+        }
         let (w, h) = b.kind.spec().footprint;
         let (x0, y0) = (b.pos.0.saturating_sub(1), b.pos.1.saturating_sub(1));
         !(y0..=b.pos.1 + h).any(|y| (x0..=b.pos.0 + w).any(|x| depth.get(x, y).is_some_and(|&d| d >= KEEP_WET_DEPTH)))
@@ -565,6 +571,9 @@ impl Buildings {
             }
         }
         match spec.site {
+            Site::Pond if cells.iter().filter(|&&(x,y)| terrain.depth.get(x,y).is_some_and(|&d| d >= 0.10)).count() <= cells.len() / 2 => {
+                return Err(BuildError::BadTerrain("needs a pond under most of its footprint (at least 0.10 m deep)"));
+            }
             Site::Dry if cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
                 return Err(BuildError::BadTerrain("needs dry ground"));
             }

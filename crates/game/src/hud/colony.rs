@@ -101,6 +101,20 @@ fn history_bars(u: &mut Ui, icon: Icon, col: Color, values: &[f32], name: &str) 
 
 fn population(c: &Ctx, u: &mut Ui) {
     let s = c.s;
+    let pages = s.colony.population().div_ceil(18).max(1);
+    let page = c.hud.pop_page.min(pages - 1);
+    u.row(10.0, |r| {
+        r.icon(Icon::Home, 15.0, INK);
+        r.bold(format!("{} families", s.colony.families.len()), 12.0, INK);
+        let expecting = s.colony.beavers.iter().filter(|b| b.pregnancy.is_some()).count();
+        if expecting > 0 { r.text(format!("{expecting} litters expected"), 12.0, MUTED); }
+        r.spacer();
+        if pages > 1 {
+            r.icon_button(Icon::Up, 12.0, HudAction::PopPage(-1), FAINT, false).tip(Tip::name("Previous page"));
+            r.text(format!("{} / {pages}", page + 1), 12.0, MUTED);
+            r.icon_button(Icon::Down, 12.0, HudAction::PopPage(1), FAINT, false).tip(Tip::name("Next page"));
+        }
+    });
     if c.history.len() > 1 {
         let pop: Vec<f32> = c.history.iter().map(|h| h.1 as f32).collect();
         history_bars(u, Icon::Beaver, INK, &pop, "Beavers");
@@ -115,6 +129,7 @@ fn population(c: &Ctx, u: &mut Ui) {
                 2 => sim::jobs::role_of(s, x.id).map(|r| s.work.role_order.iter().position(|o| *o == r).unwrap_or(50) as f32).unwrap_or(99.0),
                 3 => x.mood,
                 4 => x.health,
+                5 => -(x.family.0 as f32),
                 _ => 0.0,
             }
         };
@@ -127,9 +142,9 @@ fn population(c: &Ctx, u: &mut Ui) {
         head(r, Some(Icon::Home), "Home", 44.0, None, false);
         head(r, Some(Icon::MoodGood), "Mood", 56.0, Some(3), key == 3);
         head(r, Some(Icon::Health), "Health", 56.0, Some(4), key == 4);
-        head(r, Some(Icon::Hammer), "Best skill", 60.0, None, false);
+        head(r, Some(Icon::Home), "Family", 100.0, Some(5), key == 5);
     });
-    for b in rows.into_iter().take(40) {
+    for b in rows.into_iter().skip(page * 18).take(18) {
         let (mi, mc) = mood_icon(b.mood);
         u.row(8.0, |r| {
             r.row(4.0, |x| {
@@ -154,11 +169,9 @@ fn population(c: &Ctx, u: &mut Ui) {
                 x.bold(format!("{:.0}", b.mood * 100.0), 12.0, INK);
             });
             cell_num(r, format!("{:.0}", b.health * 100.0), 56.0, if b.health < 0.5 { BAD } else { INK });
-            let best = sim::colony::Job::ALL.into_iter().max_by(|x, y| b.skills[x.index()].total_cmp(&b.skills[y.index()]));
-            r.node(Node { width: Val::Px(60.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
-                if let Some(j) = best {
-                    x.text(format!("{:.0}", b.skills[j.index()] * 100.0), 12.0, MUTED).tip(Tip::name(format!("{j:?}")));
-                }
+            r.node(Node { width: Val::Px(100.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
+                let family = s.colony.family(b.family).map_or("—", |f| f.name.as_str());
+                x.text(family, 12.0, MUTED).tip(Tip::name("Family").line("Household", format!("{}", b.family.0)));
             });
         })
         .action(HudAction::SelectBeaver(b.id));

@@ -262,6 +262,7 @@ pub struct Outcome {
     pub lines: Vec<String>,
     pub checks: Vec<(String, bool)>,
     pub stats: Stats,
+    pub events: Vec<crate::colony::LoggedEvent>,
 }
 
 impl Outcome {
@@ -479,6 +480,7 @@ impl Runner {
                 return;
             }
             for e in self.s.colony.take_events() {
+                self.out.events.push(e.clone());
                 match e.event {
                     Event::Died { cause, .. } => *self.out.stats.deaths.entry(format!("{cause:?}")).or_default() += 1,
                     Event::Born { .. } => self.out.stats.births += 1,
@@ -522,6 +524,14 @@ pub fn run_script(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> 
 }
 
 pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>, last: &mut dyn FnMut(&SimState)) -> Result<Outcome, String> {
+    let (out, state, _) = run_to_state(text, load)?;
+    last(&state);
+    Ok(out)
+}
+
+/// The renderer can open the actual result of a colony script for inspection
+/// and screenshots, using the same commands and economy as a normal game.
+pub fn run_to_state(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> Result<(Outcome, SimState, Option<DamSite>), String> {
     let mut r: Option<Runner> = None;
     for (n, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -626,8 +636,7 @@ pub fn run_script_with(text: &str, load: &dyn Fn(&str) -> Result<String, String>
         if st.collapsed.is_some() { "COLLAPSED" } else { "alive" }
     );
     run.out.lines.push(summary);
-    last(&run.s);
-    Ok(run.out)
+    Ok((run.out, run.s, run.dam))
 }
 
 pub fn run_and_record(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -> Result<(Outcome, String), String> {

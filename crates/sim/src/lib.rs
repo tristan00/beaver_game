@@ -53,7 +53,9 @@ impl fmt::Display for SimError {
 }
 impl std::error::Error for SimError {}
 
-pub const STEP_DAYS: f32 = 1.0 / 1440.0;
+// Fifteen-minute colony decisions. The routed water solve is implicit and does
+// not require wave-sized time steps; all game speeds share this same calendar.
+pub const STEP_DAYS: f32 = 1.0 / 96.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -356,6 +358,19 @@ impl SimState {
             for (id, pos) in new {
                 let home = self.colony.add_home(pos);
                 self.work.homes.insert(id, home);
+                if self.buildings.building(id).is_some_and(|b| b.kind == Lodge)
+                    && !self.colony.beavers.iter().any(|b| b.lodge == Some(home)) {
+                    let previous = self.buildings.buildings.iter().filter(|b| b.kind == Burrow)
+                        .filter_map(|b| self.work.homes.get(&b.id).copied())
+                        .find(|old| self.colony.beavers.iter().any(|b| b.lodge == Some(*old)));
+                    if let Some(old) = previous {
+                        let family = self.colony.lodges.iter().find(|l| l.id == old).expect("burrow household").family;
+                        self.colony.lodges.iter_mut().find(|l| l.id == home).unwrap().family = family;
+                        for b in self.colony.beavers.iter_mut().filter(|b| b.lodge == Some(old)) { b.lodge = Some(home); b.pos = pos; }
+                        // The old burrow remains a refuge, not a second family house.
+                        self.colony.lodges.retain(|l| l.id != old);
+                    }
+                }
             }
             self.colony.house_homeless();
         }

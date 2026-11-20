@@ -12,6 +12,7 @@ mod menu;
 mod opening;
 mod palette;
 mod perf;
+mod report_capture;
 mod sandbox;
 mod screenshot;
 mod showcase;
@@ -77,6 +78,7 @@ fn main() -> AppExit {
         menu::MenuPlugin,
         sandbox::SandboxPlugin,
         perf::PerfPlugin,
+        report_capture::ReportCapturePlugin,
     ))
     .add_plugins((
         terrain_render::TerrainRenderPlugin,

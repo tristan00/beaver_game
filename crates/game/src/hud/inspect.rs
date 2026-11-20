@@ -254,6 +254,14 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             }
             r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
         });
+        if let Some(home) = s.work.homes.get(&id).and_then(|h| s.colony.lodges.iter().find(|l| l.id == *h)) {
+            let residents: Vec<_> = s.colony.beavers.iter().filter(|b| b.lodge == Some(home.id)).collect();
+            let name = s.colony.family(home.family).map_or("Empty family home", |f| f.name.as_str());
+            u.row(6.0, |r| { r.icon(Icon::Home, 14.0, INK); r.text(name, 12.0, INK); r.spacer(); r.bold(format!("{}", residents.len()), 12.0, INK); });
+            for resident in residents {
+                u.row(6.0, |r| { r.icon(stage_icon(resident.stage), 12.0, MUTED); r.text(resident.name.clone(), 11.0, INK).action(HudAction::SelectBeaver(resident.id)); });
+            }
+        }
         if let Some((icon, words, goods, col)) = status_line(s, id) {
             let line = u.row(5.0, |r| {
                 r.icon(if col == GOOD { Icon::Dot } else { Icon::Warn }, 9.0, col);
@@ -599,6 +607,22 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         header(c, Selection::Beaver(id), u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
             r.icon_button(Icon::Follow, 12.0, HudAction::Follow(id), FAINT, c.hud.follow == Some(id)).tip(Tip::name("Follow"));
         });
+        if let Some(f) = s.colony.family(b.family) {
+            u.row(6.0, |r| { r.icon(Icon::Home, 14.0, MUTED); r.text(f.name.clone(), 12.0, INK); });
+        }
+        for (label, relative) in [("Mate", b.mate), ("Mother", b.mother), ("Father", b.father)] {
+            if let Some(relative) = relative {
+                u.row(6.0, |r| {
+                    r.text(label, 11.0, MUTED);
+                    if let Some(other) = s.colony.beaver(relative) {
+                        r.text(other.name.clone(), 12.0, INK).action(HudAction::SelectBeaver(relative));
+                    } else { r.text("Deceased / departed", 11.0, MUTED); }
+                });
+            }
+        }
+        if let Some(p) = &b.pregnancy {
+            u.row(6.0, |r| { r.icon(Icon::Kit, 14.0, INK); r.text(format!("{} kits expected in {:.0}d", p.litter, (p.due_day - s.time_days).max(0.0)), 12.0, INK); });
+        }
         u.row(6.0, |r| {
             match s.work.slot_of(id) {
                 Some((bid, _, role)) => {

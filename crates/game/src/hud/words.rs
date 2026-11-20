@@ -214,6 +214,7 @@ pub fn place_error(e: &PlaceError) -> String {
         PlaceError::Blocked => "Occupied".into(),
         PlaceError::NeedsDry => "Wet".into(),
         PlaceError::NeedsWater => "No water".into(),
+        PlaceError::NeedsPond => "Needs a pond".into(),
         PlaceError::NeedsDock => "Needs dock".into(),
         PlaceError::NeedsDam => "Needs dam".into(),
         PlaceError::NoCells => String::new(),

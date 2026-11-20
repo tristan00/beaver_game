@@ -946,7 +946,10 @@ impl Water {
         let mut flow=std::mem::take(&mut self.routed);
         let mut left=seconds;
         while left>1.0e-6 {
-            let dt=left.min(if losses {POOL_EVERY_S-self.since_environment} else {seconds}).max(1.0e-6);
+            let limit=if losses {900.0-self.since_environment} else {seconds};
+            // f32 calendar steps arrive a few microseconds over 900 seconds.
+            // Do not run the entire graph again for that rounding remainder.
+            let dt=if left<=limit+1.0e-3 {left} else {limit};
             self.refresh_sources();
             let started=std::time::Instant::now();
             let sync=std::mem::take(&mut self.routed_needs_sync);
@@ -955,7 +958,7 @@ impl Water {
             if losses {
                 self.time_days+=dt/DAY_S;
                 self.since_environment+=dt;
-                if self.since_environment>=POOL_EVERY_S-1.0e-3 {
+                if self.since_environment>=900.0-1.0e-3 {
                     flow.environment(self,self.since_environment/DAY_S);
                     self.since_environment=0.0;
                 }

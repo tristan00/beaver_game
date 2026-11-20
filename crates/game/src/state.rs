@@ -50,6 +50,20 @@ impl Plugin for StatePlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().resource::<crate::cli::Cli>();
         let seed = cli.seed;
+        if let Some(path) = &cli.colony_script {
+            let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("script {}: {e}", path.display()));
+            let root = path.parent().unwrap_or(std::path::Path::new("."));
+            let (out, sim, dam) = sim::script::run_to_state(&text, &|p| std::fs::read_to_string(root.join(p)).map_err(|e| e.to_string()))
+                .unwrap_or_else(|e| panic!("script {}: {e}", path.display()));
+            for line in &out.lines { println!("script: {line}"); }
+            assert!(out.passed(), "colony script checks failed: {:?}", out.checks);
+            if let Some(dir) = &cli.report_dir {
+                crate::report_capture::write_audit(dir, &sim, &out).expect("write scripted colony audit");
+            }
+            let choice = text.lines().find_map(|l| l.trim().strip_prefix("map ")).map_or(MapChoice::Generated(sim.seed), |s| MapChoice::Real(s.trim().into()));
+            app.insert_resource(Sim(sim)).insert_resource(PlannedDam(dam)).insert_resource(CurrentMap(choice));
+            return;
+        }
         let choice = match cli.map.as_deref() {
             Some("generated") => MapChoice::Generated(seed),
             Some(id) => MapChoice::Real(id.to_string()),

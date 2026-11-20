@@ -186,7 +186,7 @@ fn sync_agents(sim: &mut SimState) {
             })
             .find(|&c| {
                 matches!(sim.nav.surface_at(c), Some(Surface::Land | Surface::Water | Surface::Canal))
-                    && sim.nav.reserved.get(c.0, c.1) == Some(&None)
+                    && !sim.agents.by_id.values().any(|a| a.cell == c)
             });
         if let Some(cell) = free {
             spawn_on(sim, id, cell).expect("cell checked free and beaver checked missing");

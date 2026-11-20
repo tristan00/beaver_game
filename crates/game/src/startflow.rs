@@ -148,7 +148,7 @@ fn begin_new_game(
     }
     let settle = std::env::var_os("BC_SETTLE").is_some();
     let benchmark = settle && std::env::var_os("BC_PERF").is_some();
-    let scripted = benchmark || cli.screenshot.is_some() && (cli.demo_pond || settle || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
+    let scripted = cli.colony_script.is_some() || benchmark || cli.screenshot.is_some() && (cli.demo_pond || settle || std::env::var("BC_HUD_DEMO").is_ok_and(|d| d != "settle"));
     if !scripted {
         let camp = planned.0.as_ref().map(|d| d.camp);
         begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);

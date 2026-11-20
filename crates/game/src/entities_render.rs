@@ -75,8 +75,11 @@ impl Default for CurrentSeason {
     fn default() -> Self { Self(Season::Summer) }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(crate) struct CanopyView(pub bool);
+impl Default for CanopyView {
+    fn default() -> Self { Self(std::env::var_os("BC_CUTAWAY").is_some()) }
+}
 
 fn canopy_key(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<crate::hud::TextCapture>>,
     menu: Option<Res<crate::hud::MenuOpen>>, mut view: ResMut<CanopyView>) {

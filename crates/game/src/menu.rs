@@ -67,7 +67,7 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         let cli = app.world().resource::<Cli>().clone();
         let forced = std::env::var("BC_MENU").ok();
-        let scripted = cli.plain_world() || cli.demo_pond || cli.sandbox || (cli.screenshot.is_some() && forced.is_none());
+        let scripted = cli.colony_script.is_some() || cli.plain_world() || cli.demo_pond || cli.sandbox || (cli.screenshot.is_some() && forced.is_none());
         let first = match forced.as_deref() {
             Some("pause") => Some(Screen::Pause),
             Some("settings") => Some(Screen::Settings),
