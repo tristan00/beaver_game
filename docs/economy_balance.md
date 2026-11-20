@@ -132,8 +132,40 @@ stored food keeps indefinitely. The warning, its breakdown and automatic food
 priority use the same estimate. This remains a current-rate estimate, not a
 prediction of future seasonal harvests or births.
 
-Full validation compares the unchanged expansion policy with a cautious growth
+The first continuation validation compared the unchanged expansion policy with a cautious growth
 policy that defers additional household housing and immigration below a 60-day
 food reserve. The first permanent lodge is still allowed. Algonquin also retains
 its economy-first opening. Overbuilding and neglect remain controls; no resource
 parameters are changed in this continuation.
+
+## Autumn preparation
+
+The scaled response and spoilage forecast resolved the Telemark regression:
+1,800 days, 68 beavers, no deaths or hunger, one food-stockout day, 65 clay-delay
+days and 29 easy days. The slower-growth Telemark policy also survived without
+hunger, but grew to 51 rather than 68. These are different management costs,
+not a reason to increase starting stock.
+
+The longer Algonquin check exposed a separate spring failure: 20 starvation
+deaths after new litters arrived. A second matched experiment copied both the
+colony and caretaker at day 1260 and continued through day 1890. Ordinary care
+reproduced the 20 deaths. Earlier autumn gathering alone reduced that to four.
+Earlier gathering plus three paid food caches produced no deaths or hunger,
+and four easy days in the 630-day comparison window. The extra caches cost 36
+sticks, 15 clay and 10.5 construction work, plus hauling and maintenance. The
+resource supply, harvesting rate and starting stock were identical.
+
+The game now exposes this choice during autumn with **Prepare food for winter**.
+It shows stored food against a 90-day appetite reserve goal, offers a food cache
+when capacity is insufficient, and offers food-gathering assignments alongside
+construction. This goal is before spoilage and winter foraging; it is a planning
+target, not a promise that gathering can stop. Immediate food emergencies take
+priority over the seasonal warning. The test caretaker retains its own autumn
+and winter gathering orders until the seasonal goal or practical storage limit
+is reached, rather than releasing them after only 30 days of food.
+
+Simulation and caretaker snapshots now support matched-state experiments
+without rerunning independent openings or replaying invalid building IDs after
+different construction choices. The diagnostic runners remain outside the
+repository; their baselines reproduced the original failures before comparisons
+were accepted.
