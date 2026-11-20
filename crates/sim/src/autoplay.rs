@@ -22,6 +22,7 @@ pub struct Player {
     far_dock: Option<BuildingId>,
     home_dock: Option<BuildingId>,
     routed: bool,
+    food_relief: Vec<(crate::colony::BeaverId, crate::agents::Assignment)>,
 }
 
 pub const FAR_DOCK_REACH: usize = 30;
@@ -30,7 +31,7 @@ pub const DEPOSIT_REACH: usize = 200;
 
 impl Player {
     pub fn new(style: Style, camp: Cell, dam: Option<(Vec<Cell>, f32)>) -> Player {
-        Player { style, camp, dam, placed: Vec::new(), log: Vec::new(), next_explore: 0.0, far_dock: None, home_dock: None, routed: false }
+        Player { style, camp, dam, placed: Vec::new(), log: Vec::new(), next_explore: 0.0, far_dock: None, home_dock: None, routed: false, food_relief: Vec::new() }
     }
 
     fn note(&mut self, s: &SimState, line: String) {
@@ -76,10 +77,32 @@ impl Player {
         }
     }
 
+    fn release_food_relief(&mut self, s: &mut SimState) {
+        if s.colony.food >= crate::hud::food_need_per_day(s) * 30.0 {
+            for (who, order) in std::mem::take(&mut self.food_relief) {
+                if s.agents.get(who).is_some_and(|a| a.assignment == Some(order)) {
+                    let _ = s.apply(Command::Unlock { who });
+                }
+            }
+        }
+    }
+
+    fn return_new_workers(&mut self, s: &mut SimState, locked: &std::collections::HashSet<crate::colony::BeaverId>) {
+        // Unlocking an area order cancels it before any gathering can happen.
+        let hand_back: Vec<_> = s.colony.beavers.iter().filter(|b| !locked.contains(&b.id)
+            && s.work.is_locked(b.id)).map(|b| b.id).collect();
+        for who in hand_back {
+            if let Some(order @ crate::agents::Assignment::Area(ResourceKind::Plant, _)) = s.agents.get(who).and_then(|a|a.assignment) {
+                self.food_relief.push((who,order));
+            } else { let _ = s.apply(Command::Unlock { who }); }
+        }
+    }
+
     pub fn act(&mut self, s: &mut SimState) {
         if self.style == Style::HandsOff || !s.colony.is_founded() {
             return;
         }
+        self.release_food_relief(s);
 
         if self.placed.is_empty() {
             self.place(s, BuildingKind::Burrow);
@@ -156,12 +179,7 @@ impl Player {
                 if let Err(e) = hud::apply_fix(s, fix) {
                     self.note(s, format!("fix {fix:?} refused: {e}"));
                 }
-                // Alert buttons make manual job locks. A scripted caretaker
-                // hands its own new assignments back to auto staffing; explicit
-                // player/script locks that existed before the fix are retained.
-                let hand_back: Vec<_> = s.colony.beavers.iter().filter(|b| !locked.contains(&b.id)
-                    && s.work.is_locked(b.id)).map(|b| b.id).collect();
-                for who in hand_back { let _ = s.apply(Command::Unlock { who }); }
+                self.return_new_workers(s,&locked);
             }
         }
     }
@@ -462,4 +480,36 @@ fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::op
         }
     }
     Err(last)
+}
+
+#[cfg(test)]
+mod relief_tests {
+    use super::*;
+    use crate::agents::Assignment;
+    #[test]
+    fn emergency_gathering_persists_and_releases_only_its_own_orders() {
+        let mut s=SimState::new(1);
+        s.colony.found((1.0,1.0),&crate::grid::Grid::new(4,4,0.0)).unwrap();
+        let ids:Vec<_>=s.colony.beavers.iter().take(3).map(|b|b.id).collect();
+        let gather=Assignment::Area(ResourceKind::Plant,crate::work::Area{min:(0,0),max:(3,3)});
+        for &who in &ids {
+            s.agents.spawn(who,(1,1));
+            s.agents.assign(who,Some(gather));
+            s.work.player_orders.insert(who);
+        }
+        let mut p=Player::new(Style::Attentive,(1,1),None);
+        p.return_new_workers(&mut s,&[ids[1]].into_iter().collect());
+        assert_eq!(p.food_relief.len(),2);
+        s.colony.food=0.0;
+        p.release_food_relief(&mut s);
+        assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)));
+        // A later player order must survive the caretaker's cleanup.
+        let override_order=Assignment::Go((3,3));
+        s.agents.assign(ids[2],Some(override_order));
+        s.colony.food=crate::hud::food_need_per_day(&s)*31.0;
+        p.release_food_relief(&mut s);
+        assert_eq!(s.agents.get(ids[0]).unwrap().assignment,None);
+        assert_eq!(s.agents.get(ids[1]).unwrap().assignment,Some(gather));
+        assert_eq!(s.agents.get(ids[2]).unwrap().assignment,Some(override_order));
+    }
 }

@@ -58,3 +58,21 @@ to 90 and worker activity to 76.1%; neglect collapsed on day 590. Neither the
 starting supplies nor map yields were increased between those two pilot sets.
 
 These are diagnostic results, not a claim that every map and strategy is balanced.
+
+On Algonquin, the construction-first policy spent 659 of 720 days short of queued
+clay and lost three beavers. An economy-first opening (burrow, forager hut,
+logging camp, clay pit, then larger construction) used identical supplies and
+finished with no deaths or hunger, 252 clay-delay days and no easy days. Build
+order matters; adding clay to the failing run would conceal that decision.
+
+The first five-year Telemark run is also retained as a failed diagnostic: 16
+starvation deaths, despite a surviving colony. Inspection found that the test
+caretaker immediately unlocked its emergency area-gathering assignments, which
+cancelled those orders before workers could act. The caretaker now preserves
+its own emergency food orders until a 30-day food buffer returns. Cleanup leaves
+pre-existing orders and later player overrides intact. This changes decisions,
+not resource supply; compare the corrected run before drawing balance conclusions.
+
+The low-weight staffing experiment did not produce a crisis, and raising its
+weights did not outperform leaving them alone. It is not evidence of successful
+crisis recovery.
