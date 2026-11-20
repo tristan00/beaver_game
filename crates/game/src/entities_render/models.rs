@@ -131,11 +131,7 @@ pub fn beaver_leg(mb: &mut Mb, front: bool) {
     }
 }
 
-pub fn beaver_log(mb: &mut Mb) {
-    mb.log(v(-0.62, -0.22, 0.66), v(0.62, -0.22, 0.66), 0.1, hex(0x7a5230), hex(0xecd2a0), 8);
-    mb.cyl(v(-0.3, -0.2, 0.62), v(-0.15, 0.0, 0.8), 0.025, 0.015, hex(0x7a5230), hex(0x7a5230), 4);
-    mb.ellipsoid(v(-0.14, 0.02, 0.8), v(0.1, 0.03, 0.06), hex(0x76c24a));
-}
+
 
 pub fn beaver_static(mb: &mut Mb) {
     beaver_body_d(mb, Vec3::ZERO, false);

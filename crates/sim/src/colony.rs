@@ -29,12 +29,30 @@ mod health_tests {
     use super::*;
 
     #[test]
+    fn assigned_work_trains_skills_without_creating_resources_or_moving_workers() {
+        let mut c = Colony::default();
+        let land = RiverLand::default();
+        c.found((0.0, 3.0), &land).unwrap();
+        let worker = c.beavers[0].id;
+        c.slot_jobs.insert(worker, (Job::Forager, true));
+        let before = (c.food, c.wood, c.beavers[0].pos);
+        let skill = c.beavers[0].skill(Job::Forager);
+        let plan = c.plan_work(0.5, &land);
+        assert_eq!(plan.iter().flatten().count(), 1);
+        c.do_work(0.5, &plan);
+        assert_eq!((c.food, c.wood, c.beavers[0].pos), before);
+        assert!(c.beavers[0].skill(Job::Forager) > skill);
+        assert_eq!(c.beavers[0].current_job, Some(Job::Forager));
+        c.beavers[0].resting = true;
+        assert!(c.plan_work(0.5, &land)[0].is_none());
+    }
+
+    #[test]
     fn work_safety_never_damages_health() {
         let mut c = Colony::default();
         c.found((0.0, 3.0), &RiverLand::default()).unwrap();
-        let work = Work { job: Job::Logger, units: 1.0, order: None,
-            eval: SiteEval { cost: 0.0, land_len: 100.0, water_dist: MAX_WATER_SCAN },
-            site: (100.0, 100.0) };
+        let work = Work { job: Job::Logger, units: 1.0,
+            eval: SiteEval { land_len: 100.0, water_dist: MAX_WATER_SCAN } };
         let plan = vec![Some(work); c.beavers.len()];
         let initial = c.beavers.iter().map(|b| (b.health,b.harm)).collect::<Vec<_>>();
         for _ in 0..2000 { c.update_work_safety(0.5, &plan); }
@@ -68,8 +86,6 @@ pub struct BeaverId(pub u64);
 pub struct FamilyId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LodgeId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct OrderId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sex {
@@ -156,7 +172,6 @@ pub enum ColonyError {
     InvalidDt(f32),
     UnknownBeaver(BeaverId),
     UnknownFamily(FamilyId),
-    UnknownOrder(OrderId),
     Invalid(String),
     AlreadyFounded,
 }
@@ -167,7 +182,6 @@ impl fmt::Display for ColonyError {
             ColonyError::InvalidDt(d) => write!(f, "invalid dt_days: {d} (must be finite and >= 0)"),
             ColonyError::UnknownBeaver(id) => write!(f, "unknown beaver {}", id.0),
             ColonyError::UnknownFamily(id) => write!(f, "unknown family {}", id.0),
-            ColonyError::UnknownOrder(id) => write!(f, "unknown work order {}", id.0),
             ColonyError::Invalid(m) => write!(f, "invalid argument: {m}"),
             ColonyError::AlreadyFounded => write!(f, "colony already founded"),
         }
@@ -320,7 +334,6 @@ pub struct Household {
 pub struct Family {
     pub id: FamilyId,
     pub name: String,
-    pub priorities: Vec<Job>,
 }
 
 #[derive(Clone, Debug)]
@@ -331,14 +344,6 @@ pub struct Lodge {
     pub condition: f32,
 }
 
-#[derive(Clone, Debug)]
-pub struct WorkOrder {
-    pub id: OrderId,
-    pub job: Job,
-    pub pos: (f32, f32),
-    pub remaining: f32,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Born { id: BeaverId, family: FamilyId },
@@ -347,8 +352,6 @@ pub enum Event {
     Departed { id: BeaverId },
     Immigrated { id: BeaverId },
     NewFamily { family: FamilyId, lodge: LodgeId, a: BeaverId, b: BeaverId },
-    NoLodgeSite { near: (f32, f32) },
-    OrderDone { id: OrderId, job: Job },
     Collapsed(CollapseReport),
 }
 
@@ -384,7 +387,6 @@ pub struct Stats {
 
 #[derive(Clone, Copy, Debug)]
 struct SiteEval {
-    cost: f32,
     land_len: f32,
     water_dist: f32,
 }
@@ -393,12 +395,8 @@ struct SiteEval {
 struct Work {
     job: Job,
     units: f32,
-    order: Option<OrderId>,
     eval: SiteEval,
-    site: (f32, f32),
 }
-
-type Cell = (i32, i32);
 
 #[derive(Clone, Debug)]
 pub struct Colony {
@@ -410,10 +408,6 @@ pub struct Colony {
     pub lodges: Vec<Lodge>,
     pub food: f32,
     pub wood: f32,
-    pub tools: f32,
-    pub dug: f32,
-    pub scouted: f32,
-    pub orders: VecDeque<WorkOrder>,
     pub experience: [f32; 8],
     pub stats: Stats,
     pub immigration_by_year: std::collections::BTreeMap<i64, u32>,
@@ -424,13 +418,9 @@ pub struct Colony {
     pub events_dropped: u64,
     collapse: Option<CollapseReport>,
     founded: bool,
-    site_cache: HashMap<(Cell, Cell), SiteEval>,
-    cache_stamp: f64,
     guard_strength: f32,
     disabled_jobs: Vec<Job>,
-    pub abstract_gathering: bool,
-    pub homes_from_buildings: bool,
-    pub slot_jobs: Option<HashMap<BeaverId, (Job, bool)>>,
+    pub slot_jobs: HashMap<BeaverId, (Job, bool)>,
     pub eaten: [f32; 4],
     pub spoiled: f32,
     pub repair_wood: f32,
@@ -450,10 +440,6 @@ const FAMILY_NAMES: [&str; 12] = [
     "Stillwater", "Mudbank", "Fallowdam", "Rushmere", "Oakhollow", "Brookbend", "Sedgefield", "Ashpool",
     "Cattail", "Lowfen", "Marshgate", "Riverbrook",
 ];
-
-fn cell(p: (f32, f32)) -> Cell {
-    (p.0.round() as i32, p.1.round() as i32)
-}
 
 fn day_of_year(time_days: f64) -> f64 {
     time_days.rem_euclid(DAYS_PER_YEAR)
@@ -482,10 +468,6 @@ impl Colony {
             lodges: Vec::new(),
             food: 0.0,
             wood: 0.0,
-            tools: 0.0,
-            dug: 0.0,
-            scouted: 0.0,
-            orders: VecDeque::new(),
             experience: [0.0; 8],
             stats: Stats::default(),
             immigration_by_year: Default::default(),
@@ -494,13 +476,9 @@ impl Colony {
             events_dropped: 0,
             collapse: None,
             founded: false,
-            site_cache: HashMap::new(),
-            cache_stamp: 0.0,
             guard_strength: 0.0,
             disabled_jobs: Vec::new(),
-            abstract_gathering: true,
-            homes_from_buildings: false,
-            slot_jobs: None,
+            slot_jobs: HashMap::new(),
             eaten: [0.0; 4],
             spoiled: 0.0,
             repair_wood: 0.0,
@@ -565,12 +543,10 @@ impl Colony {
 
     pub fn arrive(&mut self, pos: (f32, f32), land: &dyn Landscape) -> Result<FamilyId, ColonyError> {
         let fam = self.found(pos, land)?;
-        let lodges: Vec<LodgeId> = self.lodges.iter().map(|l| l.id).collect();
-        self.lodges.retain(|l| !lodges.contains(&l.id));
+        self.lodges.clear();
         for b in self.beavers.iter_mut() {
             b.lodge = None;
         }
-        self.homes_from_buildings = true;
         Ok(fam)
     }
 
@@ -659,12 +635,6 @@ impl Colony {
         }
         self.disabled_jobs = jobs;
         let off = self.disabled_jobs.clone();
-        for f in &mut self.families {
-            f.priorities.retain(|j| !off.contains(j));
-            if f.priorities.is_empty() {
-                f.priorities.push(Job::Forager);
-            }
-        }
         for b in &mut self.beavers {
             if b.job.is_some_and(|j| off.contains(&j)) {
                 b.job = None;
@@ -673,56 +643,6 @@ impl Colony {
     }
     pub fn job_enabled(&self, job: Job) -> bool {
         !self.disabled_jobs.contains(&job)
-    }
-    pub fn enabled_jobs(&self) -> Vec<Job> {
-        Job::ALL.iter().copied().filter(|j| self.job_enabled(*j)).collect()
-    }
-    fn check_job_enabled(&self, job: Job) -> Result<(), ColonyError> {
-        if self.job_enabled(job) { Ok(()) } else { Err(ColonyError::Invalid(format!("job {job:?} is disabled"))) }
-    }
-
-    pub fn set_job(&mut self, id: BeaverId, job: Option<Job>) -> Result<(), ColonyError> {
-        if let Some(j) = job {
-            self.check_job_enabled(j)?;
-        }
-        let b = self.beavers.iter_mut().find(|b| b.id == id).ok_or(ColonyError::UnknownBeaver(id))?;
-        b.job = job;
-        Ok(())
-    }
-
-    pub fn set_family_priorities(&mut self, id: FamilyId, jobs: Vec<Job>) -> Result<(), ColonyError> {
-        if jobs.is_empty() {
-            return Err(ColonyError::Invalid("priorities must not be empty".into()));
-        }
-        if jobs.iter().collect::<HashSet<_>>().len() != jobs.len() {
-            return Err(ColonyError::Invalid("priorities must not contain duplicates".into()));
-        }
-        for j in &jobs {
-            self.check_job_enabled(*j)?;
-        }
-        let f = self.families.iter_mut().find(|f| f.id == id).ok_or(ColonyError::UnknownFamily(id))?;
-        f.priorities = jobs;
-        Ok(())
-    }
-
-    pub fn queue_order(&mut self, job: Job, pos: (f32, f32), work: f32) -> Result<OrderId, ColonyError> {
-        check_point("order", pos)?;
-        if !work.is_finite() || work <= 0.0 {
-            return Err(ColonyError::Invalid("order work must be finite and > 0".into()));
-        }
-        let id = OrderId(self.next_id);
-        self.next_id += 1;
-        self.orders.push_back(WorkOrder { id, job, pos, remaining: work });
-        Ok(id)
-    }
-
-    pub fn cancel_order(&mut self, id: OrderId) -> Result<(), ColonyError> {
-        let n = self.orders.len();
-        self.orders.retain(|o| o.id != id);
-        if self.orders.len() == n {
-            return Err(ColonyError::UnknownOrder(id));
-        }
-        Ok(())
     }
 
     pub fn step(&mut self, dt_days: f32) {
@@ -749,27 +669,18 @@ impl Colony {
         if !self.founded {
             return;
         }
-        if self.time_days - self.cache_stamp >= CACHE_LIFETIME_DAYS {
-            self.site_cache.clear();
-            self.cache_stamp = self.time_days;
-        }
         let temp = temperature(self.time_days);
         let cold = ((COLD_BELOW_TEMP - temp) / COLD_RANGE).clamp(0.0, 1.0);
-        let forage_season = (FORAGE_SEASON_BASE + FORAGE_SEASON_TEMP * temp).clamp(FORAGE_SEASON_MIN, 1.0);
 
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
-        self.do_work(dt, &plan, forage_season);
-        if self.slot_jobs.is_some() && !self.homes_from_buildings {
-            self.passive_repair(dt);
-        }
+        self.do_work(dt, &plan);
         self.teach_young(dt);
         self.update_work_safety(dt, &plan);
         self.update_needs(dt, cold);
-        self.wear(dt, cold);
         self.age_and_stage(dt);
         self.remove_dead();
-        self.pair_and_disperse(dt, land);
+        self.pair_and_disperse(dt);
         self.births(dt);
         self.depart_unhappy();
         self.families.retain({
@@ -779,165 +690,33 @@ impl Colony {
         self.check_collapse();
     }
 
-    fn effective_job(&self, b: &Beaver, rank_in_family: usize) -> Option<Job> {
-        if b.stage == Stage::Kit || b.resting {
-            return None;
-        }
-        if let Some(j) = b.job {
-            return Some(j);
-        }
-        if self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA {
-            return Some(Job::Forager);
-        }
-        let failing = self.lodges.iter().any(|l| l.condition < REPAIR_BELOW_CONDITION);
-        if failing && self.wood >= REPAIR_MIN_WOOD && rank_in_family % 2 == 1 {
-            return Some(Job::Builder);
-        }
-        let fam = self.family(b.family)?;
-        Some(fam.priorities[rank_in_family % fam.priorities.len()])
-    }
-
-    fn lodge_pos(&self, b: &Beaver) -> (f32, f32) {
-        b.lodge.and_then(|l| self.lodges.iter().find(|x| x.id == l)).map_or(b.pos, |l| l.pos)
-    }
-
-    fn eval_site(&mut self, from: (f32, f32), to: (f32, f32), land: &dyn Landscape) -> SiteEval {
-        if let Some(e) = self.site_cache.get(&(cell(from), cell(to))) {
-            return *e;
-        }
-        let dist = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
-        let steps = dist.ceil().max(1.0) as usize;
-        let seg = dist / steps as f32;
-        let (mut cost, mut land_len) = (0.0, 0.0);
-        for i in 0..steps {
-            let t = (i as f32 + 0.5) / steps as f32;
-            let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            if land.is_water(x, y) {
-                cost += seg * SWIM_COST;
-            } else {
-                cost += seg;
-                land_len += seg;
-            }
-        }
-        let e = SiteEval { cost, land_len, water_dist: land.water_distance(to.0, to.1) };
-        self.site_cache.insert((cell(from), cell(to)), e);
-        e
-    }
-
-    fn plan_work(&mut self, dt: f32, land: &dyn Landscape) -> Vec<Option<Work>> {
-        let mut ranks: HashMap<FamilyId, usize> = HashMap::new();
-        let mut plan = Vec::with_capacity(self.beavers.len());
-        for i in 0..self.beavers.len() {
-            let b = self.beavers[i].clone();
-            let takes_slot = b.stage != Stage::Kit && !b.resting && b.job.is_none();
-            let rank = if takes_slot {
-                let r = ranks.entry(b.family).or_insert(0);
-                *r += 1;
-                *r - 1
-            } else {
-                0
-            };
-            let job = match &self.slot_jobs {
-                Some(jobs) => jobs.get(&b.id).filter(|(_, working)| *working && b.stage != Stage::Kit && !b.resting).map(|(j, _)| *j),
-                None => self.effective_job(&b, rank),
-            };
-            let Some(job) = job else {
-                plan.push(None);
-                continue;
-            };
-            let home = self.lodge_pos(&b);
-            let order = self.orders.iter().find(|o| o.job == job && o.remaining > 0.0).map(|o| (o.id, o.pos));
-            let site = if self.slot_jobs.is_some() { b.pos } else { order.map_or_else(
-                || {
-                    let k = job.index() as f32;
-                    let a = k * std::f32::consts::FRAC_PI_4 + b.family.0 as f32;
-                    (home.0 + (WORK_SITE_DISTANCE + k) * a.cos(), home.1 + (WORK_SITE_DISTANCE + k) * a.sin())
-                },
-                |(_, p)| p,
-            ) };
-            let eval = if self.slot_jobs.is_some() {
-                // Physical agents already pay for travel. Exposure follows
-                // their actual position, so travelling in a canal is safer
-                // than a hypothetical straight line from the family lodge.
-                SiteEval { cost: 0.0, land_len: if land.is_water(site.0,site.1){0.0}else{1.0}, water_dist:land.water_distance(site.0,site.1) }
-            } else { self.eval_site(home, site, land) };
-            let efficiency = 1.0 / (1.0 + TRAVEL_COST_PENALTY * eval.cost);
-            let units = dt
-                * WORK_FRACTION
-                * b.stage.work_weight()
-                * efficiency
+    fn plan_work(&self, dt: f32, land: &dyn Landscape) -> Vec<Option<Work>> {
+        self.beavers.iter().map(|b| {
+            let job = self.slot_jobs.get(&b.id)
+                .filter(|(_, working)| *working && b.stage != Stage::Kit && !b.resting)?.0;
+            // Travel and production belong to physical agents. The colony tracks
+            // the resulting workload, skills and needs at each worker's position.
+            let eval = SiteEval { land_len: if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 },
+                water_dist: land.water_distance(b.pos.0, b.pos.1) };
+            let units = dt * WORK_FRACTION * b.stage.work_weight()
                 * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
                 * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health)
                 * crate::society::work_speed(b.mood);
-            plan.push(Some(Work { job, units, order: order.map(|o| o.0), eval, site }));
-        }
-        plan
+            Some(Work { job, units, eval })
+        }).collect()
     }
 
-    fn do_work(&mut self, dt: f32, plan: &[Option<Work>], forage_season: f32) {
-        let (mut carry, mut guard) = (0.0, 0.0);
-        for (b, w) in self.beavers.iter().zip(plan) {
-            if let Some(w) = w {
-                let effort = w.units / dt * b.output_factor(w.job);
-                match w.job {
-                    Job::Hauler => carry += effort,
-                    Job::Guard => guard += effort,
-                    _ => {}
-                }
+    fn do_work(&mut self, dt: f32, plan: &[Option<Work>]) {
+        self.guard_strength = self.beavers.iter().zip(plan).filter_map(|(b,w)| {
+            w.filter(|w| w.job == Job::Guard).map(|w| w.units / dt * b.output_factor(w.job))
+        }).sum();
+        for (b, work) in self.beavers.iter_mut().zip(plan) {
+            b.current_job = work.map(|w| w.job);
+            if let Some(w) = work {
+                let skill = &mut b.skills[w.job.index()];
+                *skill = (*skill + w.units * SKILL_GAIN * (1.0 - *skill)).min(1.0);
+                self.experience[w.job.index()] += w.units;
             }
-        }
-        let derived = self.slot_jobs.is_some();
-        self.guard_strength = guard;
-        let forage_season = forage_season / (1.0 + self.beavers.len() as f32 / FORAGE_CROWDING_POPULATION);
-        let boost = 1.0 + (HAUL_BOOST_PER_EFFORT * carry).min(HAUL_BOOST_MAX) + TOOLS_BOOST * self.tools.clamp(0.0, 1.0);
-        let scout_bonus = 1.0 + SCOUT_BONUS * (self.scouted / SCOUT_WORK_PER_BONUS).min(SCOUT_BONUS_MAX_STEPS);
-        let food_cap = FOOD_CAP_BASE + FOOD_CAP_PER_BEAVER * self.beavers.len() as f32;
-        let wood_cap = WOOD_CAP_BASE + WOOD_CAP_PER_BEAVER * self.beavers.len() as f32;
-
-        let mut order_work: HashMap<OrderId, f32> = HashMap::new();
-        for i in 0..self.beavers.len() {
-            let Some(w) = plan[i] else {
-                self.beavers[i].current_job = None;
-                continue;
-            };
-            let power = w.units * self.beavers[i].output_factor(w.job);
-            match w.job {
-                _ if derived => {}
-                Job::Forager if self.abstract_gathering => {
-                    self.food = (self.food + power * FORAGE_YIELD * forage_season * boost * scout_bonus).min(food_cap)
-                }
-                Job::Logger if self.abstract_gathering => self.wood = (self.wood + power * LOG_YIELD * boost).min(wood_cap),
-                Job::Forager | Job::Logger => {}
-                Job::Builder => self.repair(power * REPAIR_YIELD * boost),
-                Job::Digger => self.dug += power,
-                Job::Crafter => self.tools = (self.tools + power * TOOLS_YIELD).min(1.0),
-                Job::Scout => self.scouted += power,
-                Job::Hauler | Job::Guard => {}
-            }
-            let b = &mut self.beavers[i];
-            b.current_job = Some(w.job);
-            if !derived {
-                b.pos = w.site;
-            }
-            let s = &mut b.skills[w.job.index()];
-            *s = (*s + w.units * SKILL_GAIN * (1.0 - *s)).min(1.0);
-            self.experience[w.job.index()] += w.units;
-            if let Some(o) = w.order {
-                *order_work.entry(o).or_insert(0.0) += w.units;
-            }
-        }
-        let mut done = Vec::new();
-        for o in self.orders.iter_mut() {
-            if let Some(u) = order_work.get(&o.id) {
-                o.remaining -= u;
-                if o.remaining <= 0.0 {
-                    done.push((o.id, o.job));
-                }
-            }
-        }
-        self.orders.retain(|o| o.remaining > 0.0);
-        for (id, job) in done {
-            self.log(Event::OrderDone { id, job });
         }
     }
 
@@ -957,27 +736,8 @@ impl Colony {
         }
     }
 
-    fn repair(&mut self, amount: f32) {
-        let Some(l) =
-            self.lodges.iter_mut().filter(|l| l.condition < 1.0).min_by(|a, b| a.condition.total_cmp(&b.condition))
-        else {
-            return;
-        };
-        let gain = amount.min(1.0 - l.condition).min(self.wood / REPAIR_WOOD_PER_CONDITION);
-        l.condition += gain;
-        self.wood -= gain * REPAIR_WOOD_PER_CONDITION;
-        self.repair_wood += gain * REPAIR_WOOD_PER_CONDITION;
-    }
-
-    fn passive_repair(&mut self, dt: f32) {
-        if self.wood >= REPAIR_MIN_WOOD && self.lodges.iter().any(|l| l.condition < REPAIR_BELOW_CONDITION) {
-            self.repair(dt * WORK_FRACTION * REPAIR_YIELD);
-        }
-    }
-
     fn update_work_safety(&mut self, dt: f32, plan: &[Option<Work>]) {
-        let mitigation = (1.0 + GUARD_MITIGATION * self.guard_strength)
-            * (1.0 + CANAL_MITIGATION * self.dug.min(CANAL_MITIGATION_MAX_DUG));
+        let mitigation = 1.0 + GUARD_MITIGATION * self.guard_strength;
         for i in 0..self.beavers.len() {
             let Some(w) = plan[i] else { continue };
             let exposure = WORK_EXPOSURE_BASE + WORK_EXPOSURE_PER_LAND_CELL * w.eval.land_len
@@ -1058,14 +818,6 @@ impl Colony {
         }
         self.spoiled += food * FOOD_SPOILAGE * dt;
         self.food = food * (1.0 - FOOD_SPOILAGE * dt);
-        self.tools = (self.tools - TOOLS_WEAR * dt).max(0.0);
-    }
-
-    fn wear(&mut self, dt: f32, cold: f32) {
-        if self.homes_from_buildings { return; }
-        for l in self.lodges.iter_mut() {
-            l.condition = (l.condition - LODGE_WEAR * (1.0 + LODGE_COLD_WEAR * cold) * dt).max(0.0);
-        }
     }
 
     fn age_and_stage(&mut self, dt: f32) {
@@ -1253,7 +1005,7 @@ impl Colony {
             });
         }
     }
-    fn pair_and_disperse(&mut self, dt: f32, land: &dyn Landscape) {
+    fn pair_and_disperse(&mut self, dt: f32) {
         let doy = day_of_year(self.time_days);
         if !(SPRING_START..SPRING_END).contains(&doy) && !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) {
             return;
@@ -1273,7 +1025,6 @@ impl Colony {
                 .iter()
                 .find(|&&(b, s)| b != a && s != sex && !used.contains(&b) && !self.close_relatives(a, b))
                 .map(|p| p.0);
-            let near = self.beaver(a).map_or((0., 0.), |b| self.lodge_pos(b));
             // A widowed parent keeps its family home and dependent young. An
             // adult offspring leaves its parents only when a new home is ready.
             let reuse = [Some(a), partner].into_iter().flatten().find_map(|id| {
@@ -1298,23 +1049,10 @@ impl Colony {
                     .find(|l| !self.beavers.iter().any(|b| b.lodge == Some(l.id)))
                     .map(|l| l.id)
             });
-            if self.homes_from_buildings && home.is_none() {
-                continue;
-            }
+            let Some(home) = home else { continue };
             if partner.is_none() && (self.food_per_capita() < HUNGRY_FOOD_PER_CAPITA || !self.chance(WANDERER_CHANCE_PER_DAY * dt)) {
                 continue;
             }
-            let new_site = if home.is_none() {
-                if self.wood < LODGE_WOOD_COST {
-                    continue;
-                }
-                let Some(site) = self.find_lodge_site(near, land) else {
-                    continue;
-                };
-                Some(site)
-            } else {
-                None
-            };
             let b = match partner {
                 Some(id) => id,
                 None => { let Some(id) = self.immigrant(sex.opposite()) else { continue }; id }
@@ -1324,10 +1062,6 @@ impl Colony {
             } else {
                 self.new_family()
             };
-            let home = home.unwrap_or_else(|| {
-                self.wood -= LODGE_WOOD_COST;
-                self.new_lodge(fam, new_site.unwrap(), NEW_LODGE_CONDITION)
-            });
             let l = self.lodges.iter_mut().find(|l| l.id == home).unwrap();
             l.family = fam;
             let site = l.pos;
@@ -1375,21 +1109,6 @@ impl Colony {
         Some(id)
     }
 
-    fn find_lodge_site(&mut self, near: (f32, f32), land: &dyn Landscape) -> Option<(f32, f32)> {
-        let start = self.unit() * std::f32::consts::TAU;
-        for r in LODGE_SITE_RADII {
-            for k in 0..12 {
-                let a = start + k as f32 * std::f32::consts::TAU / 12.0;
-                let p = (near.0 + r * a.cos(), near.1 + r * a.sin());
-                let clear = self.lodges.iter().all(|l| (l.pos.0 - p.0).hypot(l.pos.1 - p.1) >= MIN_LODGE_SPACING);
-                if clear && !land.is_water(p.0, p.1) && land.water_distance(p.0, p.1) <= LODGE_SITE_MAX_WATER_DIST {
-                    return Some(p);
-                }
-            }
-        }
-        None
-    }
-
     fn check_collapse(&mut self) {
         if self.collapse.is_some() {
             return;
@@ -1416,8 +1135,7 @@ impl Colony {
         let id = FamilyId(self.next_id);
         self.next_id += 1;
         let name = FAMILY_NAMES[self.range(FAMILY_NAMES.len() as u32) as usize].to_string();
-        let priorities: Vec<Job> = DEFAULT_PRIORITIES.iter().copied().filter(|j| self.job_enabled(*j)).collect();
-        self.families.push(Family { id, name, priorities });
+        self.families.push(Family { id, name });
         id
     }
 

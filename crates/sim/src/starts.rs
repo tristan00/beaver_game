@@ -27,9 +27,6 @@ pub(crate) fn strip_disabled(sim: &mut SimState) {
     }
     for job in crate::colony::Job::ALL.into_iter().filter(|j| !f.allows_job(*j)) {
         sim.colony.experience[job.index()] = 0.0;
-        if job == crate::colony::Job::Scout {
-            sim.colony.scouted = 0.0;
-        }
     }
     sim.buildings.buildings.retain(|b| f.allows_building(b.kind));
 }

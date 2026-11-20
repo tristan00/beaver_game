@@ -1,6 +1,4 @@
-use crate::colony::{Colony, ColonyError, Job, OrderId};
 use crate::grid::Grid;
-use crate::work::Work;
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
@@ -313,10 +311,6 @@ impl BuildingKind {
     }
 }
 
-
-
-
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BuildingId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -324,7 +318,6 @@ pub struct BargeId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Status {
-    UnderConstruction(OrderId),
     Site,
     Complete,
 }
@@ -411,7 +404,6 @@ pub enum BuildError {
     BadTerrain(&'static str),
     NoDock,
     Stores(StoresError),
-    Colony(ColonyError),
     UnknownBuilding(BuildingId),
     UnknownBarge(BargeId),
     NotComplete,
@@ -432,12 +424,6 @@ impl From<StoresError> for BuildError {
         BuildError::Stores(e)
     }
 }
-impl From<ColonyError> for BuildError {
-    fn from(e: ColonyError) -> Self {
-        BuildError::Colony(e)
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Terrain<'a> {
     pub height: &'a Grid<f32>,
@@ -632,45 +618,6 @@ impl Buildings {
         Ok(id)
     }
 
-    pub fn place(
-        &mut self,
-        kind: BuildingKind,
-        pos: (usize, usize),
-        terrain: Terrain,
-        colony: &mut Colony,
-    ) -> Result<BuildingId, BuildError> {
-        self.check_placement(kind, pos, terrain)?;
-        let spec = kind.spec();
-        let work = spec.work;
-        let centre = (pos.0 as f32 + spec.footprint.0 as f32 / 2.0, pos.1 as f32 + spec.footprint.1 as f32 / 2.0);
-        self.stores.can_afford(spec.cost)?;
-        let order = colony.queue_order(Job::Builder, centre, work)?;
-        self.stores.withdraw_all(spec.cost).expect("affordability checked above");
-        let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::UnderConstruction(order), output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
-        self.bind_water(id, kind);
-        Ok(id)
-    }
-
-    pub fn cancel(&mut self, id: BuildingId, colony: &mut Colony) -> Result<(), BuildError> {
-        let i = self.buildings.iter().position(|b| b.id == id).ok_or(BuildError::UnknownBuilding(id))?;
-        let Status::UnderConstruction(order) = self.buildings[i].status else {
-            return Err(BuildError::WrongKind("only unfinished buildings can be cancelled"));
-        };
-        match colony.cancel_order(order) {
-            Ok(()) => {}
-            Err(ColonyError::UnknownOrder(_)) => return Err(BuildError::WrongKind("construction already finished")),
-            Err(e) => return Err(e.into()),
-        }
-        let b = self.buildings.remove(i);
-        for &(g, a) in b.kind.spec().cost {
-            self.stores.put_raw(g, a)?;
-        }
-        Ok(())
-    }
-
-
-
     fn docks(&self) -> impl Iterator<Item = &Building> {
         self.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete())
     }
@@ -715,34 +662,12 @@ impl Buildings {
         Ok(())
     }
 
-    pub fn step(&mut self, dt_days: f32, terrain: Terrain, colony: &Colony, _work: &Work) {
-        self.complete_finished(colony, terrain);
+    pub fn step(&mut self, dt_days: f32, terrain: Terrain) {
         self.update_capacity( terrain);
         self.update_wheels(terrain);
         for b in self.buildings.iter_mut().filter(|b| matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill | BuildingKind::TreeNursery)) { b.output = (b.output - dt_days * 0.12).max(0.0); }
         self.move_barges(dt_days, terrain);
         self.stores.end_tick(dt_days);
-    }
-
-    fn complete_finished(&mut self, colony: &Colony, terrain: Terrain) {
-        let mut spawned = Vec::new();
-        self.buildings.retain_mut(|b| {
-            let Status::UnderConstruction(order) = b.status else { return true };
-            if colony.orders.iter().any(|o| o.id == order) {
-                return true;
-            }
-            if b.kind == BuildingKind::Barge {
-                spawned.push(b.pos);
-                return false;
-            }
-            b.status = Status::Complete;
-            true
-        });
-        for cell in spawned {
-            let at_dock = self.docks().find(|d| dock_access(d, terrain).contains(&cell)).map(|d| d.id);
-            let id = BargeId(self.fresh_id());
-            self.barges.push(Barge::new(id, cell, at_dock));
-        }
     }
 
     pub(crate) fn update_capacity(&mut self, terrain: Terrain) {
@@ -766,10 +691,6 @@ impl Buildings {
             self.power += b.output;
         }
     }
-
-
-
-
 
     fn move_barges(&mut self, dt: f32, terrain: Terrain) {
         for b in self.barges.iter_mut().filter(|b| b.service.is_none()) {

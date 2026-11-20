@@ -5,6 +5,7 @@ use sim::buildings::{BuildingKind, Good};
 use sim::calendar::Season;
 use sim::resources::ResourceKind;
 use sim::work::Role;
+use sim::jobs::{self, RoleKind};
 
 pub fn good_name(g: Good) -> &'static str {
     match g {
@@ -65,40 +66,6 @@ pub fn group_icon(g: Group) -> Icon {
         Group::Craft => Icon::CatCraft,
         Group::Transport => Icon::CatTransport,
         Group::Defence => Icon::CatDefence,
-    }
-}
-
-pub fn role_icon(r: Role) -> Icon {
-    match r {
-        Role::Collect(k) => match k {
-            ResourceKind::Tree | ResourceKind::Felled => Icon::RoleLogger,
-            ResourceKind::Plant => Icon::RoleForager,
-            ResourceKind::MudBank => Icon::RoleMudDigger,
-            ResourceKind::RiverClay => Icon::RoleMudDigger,
-        },
-        Role::Build => Icon::RoleBuilder,
-        Role::Haul => Icon::RoleHauler,
-        Role::Craft => Icon::RoleCrafter,
-        Role::Forester => Icon::RoleForester,
-        Role::Guard => Icon::GuardPost,
-        Role::Scout => Icon::Tree,
-    }
-}
-
-pub fn role_name(r: Role) -> &'static str {
-    match r {
-        Role::Collect(k) => match k {
-            ResourceKind::Tree | ResourceKind::Felled => "Logger",
-            ResourceKind::Plant => "Forager",
-            ResourceKind::MudBank => "Clay digger",
-            ResourceKind::RiverClay => "Clay digger",
-        },
-        Role::Build => "Builder",
-        Role::Haul => "Hauler",
-        Role::Craft => "Crafter",
-        Role::Forester => "Forester",
-        Role::Guard => "Guard",
-        Role::Scout => "Scout",
     }
 }
 
@@ -248,3 +215,22 @@ pub fn sim_error(m: &str) -> String {
     ];
     table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }
+
+fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
+    match role {
+        RoleKind::Forager => (Icon::RoleForager, "Forager"),
+        RoleKind::Logger => (Icon::RoleLogger, "Logger"),
+        RoleKind::MudDigger => (Icon::RoleMudDigger, "Clay digger"),
+        RoleKind::Builder => (Icon::RoleBuilder, "Builder"),
+        RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
+        RoleKind::Crafter => (Icon::RoleCrafter, "Crafter"),
+        RoleKind::Forester => (Icon::RoleForester, "Forester"),
+        RoleKind::Guard => (Icon::GuardPost, "Guard"),
+        RoleKind::Scout => (Icon::Tree, "Scout"),
+    }
+}
+
+pub fn role_kind_icon(role: RoleKind) -> Icon { role_presentation(role).0 }
+pub fn role_kind_name(role: RoleKind) -> &'static str { role_presentation(role).1 }
+pub fn role_icon(role: Role) -> Icon { role_kind_icon(jobs::role_kind(role)) }
+pub fn role_name(role: Role) -> &'static str { role_kind_name(jobs::role_kind(role)) }

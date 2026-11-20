@@ -10,7 +10,6 @@ use sim::buildings::{BuildingId, BuildingKind, Good, Status};
 use sim::calendar::{self, Date, Season};
 use sim::colony::Stage;
 use sim::hud::{Breakdown, Fix, Problem, ProblemKind, Severity, Source, Subject};
-use sim::jobs::RoleKind;
 
 pub struct Ctx<'a> {
     pub s: &'a sim::SimState,
@@ -297,33 +296,9 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-pub fn role_kind_icon(r: RoleKind) -> Icon {
-    match r {
-        RoleKind::Forager => Icon::RoleForager,
-        RoleKind::Logger => Icon::RoleLogger,
-        RoleKind::MudDigger => Icon::RoleMudDigger,
-        RoleKind::Builder => Icon::RoleBuilder,
-        RoleKind::Hauler => Icon::RoleHauler,
-        RoleKind::Crafter => Icon::RoleCrafter,
-        RoleKind::Forester => Icon::RoleForester,
-        RoleKind::Guard => Icon::GuardPost,
-        RoleKind::Scout => Icon::Tree,
-    }
-}
 
-pub fn role_kind_name(r: RoleKind) -> &'static str {
-    match r {
-        RoleKind::Forager => "Forager",
-        RoleKind::Logger => "Logger",
-        RoleKind::MudDigger => "Clay digger",
-        RoleKind::Builder => "Builder",
-        RoleKind::Hauler => "Hauler",
-        RoleKind::Crafter => "Crafter",
-        RoleKind::Forester => "Forester",
-        RoleKind::Guard => "Guard",
-        RoleKind::Scout => "Scout",
-    }
-}
+
+
 
 fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
     let v = p.value;

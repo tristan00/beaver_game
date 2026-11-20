@@ -1,5 +1,4 @@
 use sim::buildings::{Amount, BuildingId, BuildingKind, Site, WET_DEPTH};
-use sim::colony::OrderId;
 
 use sim::water::Cell;
 use sim::{Command, SimState};
@@ -319,20 +318,7 @@ pub enum BuildOrder {
     Canal { cells: Vec<Cell> },
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PendingWork {
-    pub order: OrderId,
-    pub kind: BuildingKind,
-    pub cells: Vec<Cell>,
-    pub command: Command,
-    pub total_work: f32,
-    pub cost: Vec<Amount>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Pending(pub Vec<PendingWork>);
-
-pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Result<String, PlaceError> {
+pub fn emit(sim: &mut SimState, order: &BuildOrder) -> Result<String, PlaceError> {
     match order {
         BuildOrder::Building { kind, pos } => {
             check_building(sim, *kind, *pos)?;
@@ -357,35 +343,8 @@ pub fn emit(sim: &mut SimState, pending: &mut Pending, order: &BuildOrder) -> Re
         }
         BuildOrder::Canal { cells } => {
             check_canal(sim, cells)?;
-            let _ = pending;
             sim.apply(Command::OrderCanal { cells: cells.clone() }).map_err(|e| PlaceError::Sim(e.to_string()))?;
             Ok(format!("Canal of {} cells ordered", cells.len()))
         }
-    }
-}
-
-pub fn poll_pending(sim: &mut SimState, pending: &mut Pending) -> Vec<String> {
-    let mut msgs = Vec::new();
-    let mut i = 0;
-    while i < pending.0.len() {
-        if sim.colony.orders.iter().any(|o| o.id == pending.0[i].order) {
-            i += 1;
-            continue;
-        }
-        let w = pending.0.remove(i);
-        match sim.apply(w.command.clone()) {
-            Ok(()) => msgs.push(format!("{} finished ({} cells)", w.kind.spec().name, w.cells.len())),
-            Err(e) => {
-                refund(sim, &w.cost);
-                msgs.push(format!("{} failed: {e}", w.kind.spec().name));
-            }
-        }
-    }
-    msgs
-}
-
-fn refund(sim: &mut SimState, cost: &[Amount]) {
-    for &(g, a) in cost {
-        let _ = sim.buildings.stores.deposit(g, a);
     }
 }

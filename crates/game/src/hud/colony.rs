@@ -179,7 +179,6 @@ fn population(c: &Ctx, u: &mut Ui) {
 }
 
 pub fn jobs(c: &Ctx, u: &mut Ui) {
-    use super::panels::{role_kind_icon, role_kind_name};
     let s = c.s;
     let h = sim::jobs::headcount(s);
     u.row(14.0, |r| {

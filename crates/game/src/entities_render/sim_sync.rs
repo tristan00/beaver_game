@@ -66,7 +66,7 @@ impl Motion {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn sync_sim_beavers(
+pub(super) fn sync_sim_beavers(
     mut commands: Commands,
     cli: Res<Cli>,
     sim: Res<Sim>,
@@ -245,7 +245,7 @@ fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<Standar
     } else { models.white.clone() }
 }
 
-pub fn sync_sim_resources(
+pub(super) fn sync_sim_resources(
     mut commands: Commands,
     cli: Res<Cli>,
     sim: Res<Sim>,
@@ -350,7 +350,7 @@ pub struct ReinforcementSync {
     meshes: HashMap<BuildingKind,Handle<Mesh>>,
 }
 
-pub fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::flow::Flow>,models:Option<Res<Models>>,
+pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::flow::Flow>,models:Option<Res<Models>>,
     mut meshes:ResMut<Assets<Mesh>>,mut state:Local<ReinforcementSync>) {
     let Some(models)=models else{return};let s=&sim.0;
     let generation=(s.seed,flow.generation);
@@ -408,7 +408,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE))
 }
 
-pub fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
+pub(super) fn sync_sim_buildings(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
     let Some(mut models) = models else { return };
     if super::stub_mode(&cli) {
         return;
@@ -535,7 +535,7 @@ pub struct DamSync {
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
 }
 
-pub fn sync_sim_dams(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
+pub(super) fn sync_sim_dams(mut commands: Commands, cli: Res<Cli>, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
     let Some(mut models) = models else { return };
     if super::stub_mode(&cli) {
         return;
@@ -624,7 +624,7 @@ fn is_loaded(b: &sim::buildings::Barge) -> bool {
     b.hold.iter().any(|h| h.1 > 0.05) || b.cargo.is_some_and(|c| c.1 > 0.05)
 }
 
-pub fn sync_sim_barges(
+pub(super) fn sync_sim_barges(
     mut commands: Commands,
     cli: Res<Cli>,
     sim: Res<Sim>,

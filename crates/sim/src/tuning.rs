@@ -3,11 +3,8 @@ pub mod colony {
     pub const KIT_DAYS: f32 = crate::calendar::YEAR_DAYS as f32;
     pub const ADULT_DAYS: f32 = 2.0 * crate::calendar::YEAR_DAYS as f32;
     pub const LODGE_CAPACITY: usize = 12;
-    pub const LODGE_WOOD_COST: f32 = 8.0;
-    pub const MIN_LODGE_SPACING: f32 = 15.0;
     pub const MAX_WATER_SCAN: f32 = 10.0;
     pub const WORK_FRACTION: f32 = 0.6;
-    pub const CACHE_LIFETIME_DAYS: f64 = 30.0;
     pub const DEPARTURE_BAD_MOOD_DAYS: f32 = 30.0;
     pub const SPRING_START: f64 = 0.0;
     pub const SPRING_END: f64 = crate::calendar::SEASON_DAYS;
@@ -29,7 +26,6 @@ pub mod colony {
     pub const START_FOOD: f32 = 40.0;
     pub const START_WOOD: f32 = 20.0;
     pub const FOUNDING_LODGE_CONDITION: f32 = 1.0;
-    pub const NEW_LODGE_CONDITION: f32 = 0.7;
     pub const START_SOCIAL: f32 = 0.7;
     pub const START_MOOD: f32 = 0.9;
     pub const START_SKILL_MAX: f32 = 0.1;
@@ -37,26 +33,14 @@ pub mod colony {
     pub const LIFESPAN_SPREAD_YEARS: f32 = 4.0;
     pub const IMMIGRANT_MIN_AGE_YEARS: f32 = 2.0;
     pub const IMMIGRANT_AGE_SPREAD_YEARS: f32 = 2.0;
-    pub const DEFAULT_PRIORITIES: [crate::colony::Job; 8] = {
-        use crate::colony::Job::*;
-        [Forager, Forager, Logger, Builder, Hauler, Guard, Crafter, Scout]
-    };
 
     pub const COLD_BELOW_TEMP: f32 = 0.2;
     pub const COLD_RANGE: f32 = 1.2;
-    pub const FORAGE_SEASON_BASE: f32 = 0.75;
-    pub const FORAGE_SEASON_TEMP: f32 = 0.25;
-    pub const FORAGE_SEASON_MIN: f32 = 0.5;
 
     pub const HUNGRY_FOOD_PER_CAPITA: f32 = 4.0;
     pub const BIRTH_MIN_FOOD_DAYS: f32 = 12.0;
-    pub const BIRTH_MAX_CROWDING: f32 = 1.0;
-    pub const REPAIR_BELOW_CONDITION: f32 = 0.6;
-    pub const REPAIR_MIN_WOOD: f32 = 2.0;
 
-    pub const WORK_SITE_DISTANCE: f32 = 3.0;
     pub const SWIM_COST: f32 = 0.5;
-    pub const TRAVEL_COST_PENALTY: f32 = 0.02;
     pub const WORK_REST_BASE: f32 = 0.3;
     pub const WORK_REST_SCALE: f32 = 0.7;
     pub const WORK_HEALTH_BASE: f32 = 0.5;
@@ -68,26 +52,8 @@ pub mod colony {
     pub const SPECIALIST_SKILL: f32 = 0.5;
     pub const SPECIALIST_BONUS: f32 = 1.25;
     pub const YOUNG_LEARN_RATE: f32 = 0.002;
-    pub const FORAGE_CROWDING_POPULATION: f32 = 100.0;
-    pub const HAUL_BOOST_PER_EFFORT: f32 = 0.15;
-    pub const HAUL_BOOST_MAX: f32 = 0.6;
-    pub const TOOLS_BOOST: f32 = 0.3;
-    pub const SCOUT_BONUS: f32 = 0.1;
-    pub const SCOUT_WORK_PER_BONUS: f32 = 20.0;
-    pub const SCOUT_BONUS_MAX_STEPS: f32 = 2.0;
-    pub const FOOD_CAP_BASE: f32 = 10.0;
-    pub const FOOD_CAP_PER_BEAVER: f32 = 25.0;
-    pub const WOOD_CAP_BASE: f32 = 60.0;
-    pub const WOOD_CAP_PER_BEAVER: f32 = 10.0;
-    pub const FORAGE_YIELD: f32 = 4.0;
-    pub const LOG_YIELD: f32 = 1.2;
-    pub const REPAIR_YIELD: f32 = 0.04;
-    pub const TOOLS_YIELD: f32 = 0.05;
-    pub const REPAIR_WOOD_PER_CONDITION: f32 = 4.0;
 
     pub const GUARD_MITIGATION: f32 = 0.65;
-    pub const CANAL_MITIGATION: f32 = 0.03;
-    pub const CANAL_MITIGATION_MAX_DUG: f32 = 10.0;
     pub const WORK_EXPOSURE_BASE: f32 = 0.004;
     pub const WORK_EXPOSURE_PER_LAND_CELL: f32 = 0.003;
     pub const WORK_EXPOSURE_PER_WATER_DIST: f32 = 0.002;
@@ -124,10 +90,6 @@ pub mod colony {
     pub const MOOD_RATE: f32 = 0.5;
     pub const LOW_MOOD_BELOW: f32 = 0.2;
     pub const FOOD_SPOILAGE: f32 = 0.003;
-    pub const TOOLS_WEAR: f32 = 0.003;
-    pub const LODGE_WEAR: f32 = 0.002;
-    pub const DRY_HOME_WEAR: f32 = 0.03;
-    pub const LODGE_COLD_WEAR: f32 = 2.0;
 
     pub const KIT_FRAILTY: f32 = 1.5;
     pub const STARVE_RATE: f32 = 0.02;
@@ -151,8 +113,6 @@ pub mod colony {
     pub const LITTER_SPREAD: u32 = 3;
     pub const PAIR_MIN_HEALTH: f32 = 0.5;
     pub const WANDERER_CHANCE_PER_DAY: f32 = 0.04;
-    pub const LODGE_SITE_RADII: [f32; 6] = [15.0, 20.0, 25.0, 30.0, 40.0, 50.0];
-    pub const LODGE_SITE_MAX_WATER_DIST: f32 = 3.0;
 }
 
 pub mod ecology {

@@ -4,9 +4,6 @@ pub const fn rgb(h: u32) -> Rgb {
     [((h >> 16) & 0xff) as f32 / 255.0, ((h >> 8) & 0xff) as f32 / 255.0, (h & 0xff) as f32 / 255.0]
 }
 
-pub const MEADOW_LIGHT: Rgb = rgb(0xA8D878);
-pub const MEADOW: Rgb = rgb(0x85C468);
-pub const MEADOW_DEEP: Rgb = rgb(0x5FA85A);
 pub const STRAW: Rgb = rgb(0xD9C27A);
 pub const MUD: Rgb = rgb(0xA07F60);
 pub const STONE: Rgb = rgb(0xB9AFA8);
@@ -22,12 +19,9 @@ pub const CUT_WOOD: Rgb = rgb(0xF2D9A8);
 pub const WATER_SHALLOW: Rgb = rgb(0x6FD3E0);
 pub const WATER_DEEP: Rgb = rgb(0x1F8AB8);
 pub const FOAM: Rgb = rgb(0xF4FBF6);
-pub const LILY: Rgb = rgb(0x4E9A52);
 pub const FLOWER_WHITE: Rgb = rgb(0xFFFAEE);
 pub const FLOWER_PINK: Rgb = rgb(0xF59AA6);
 pub const FLOWER_YELLOW: Rgb = rgb(0xF2C94C);
-pub const SKY: Rgb = rgb(0x9ED1F5);
-pub const SKY_WINTER: Rgb = rgb(0xC8D4E8);
 pub const SUN: Rgb = rgb(0xFFF5E0);
 pub const SUN_AUTUMN: Rgb = rgb(0xFFDBB3);
 pub const SHADOW_MIX: f32 = 0.40;

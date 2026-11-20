@@ -413,12 +413,7 @@ fn shovel(c: &mut Canvas) {
     c.add(poly(&[(20.0, 30.0), (44.0, 30.0), (44.0, 45.0), (32.0, 57.0), (20.0, 45.0)]).grow(2.0));
 }
 
-fn pickaxe(c: &mut Canvas) {
-    let mut pts = qbez_pts(v(5.0, 25.0), v(32.0, -6.0), v(59.0, 25.0), 16);
-    pts.extend(qbez_pts(v(59.0, 25.0), v(32.0, 14.0), v(5.0, 25.0), 16).into_iter().skip(1));
-    c.add(poly_v(pts).grow(1.5));
-    c.add(seg(32.0, 14.0, 32.0, 58.0, 7.5));
-}
+
 
 fn saw(c: &mut Canvas) {
     let mut pts = vec![v(8.0, 26.0), v(44.0, 18.0), v(44.0, 42.0)];
