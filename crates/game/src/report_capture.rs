@@ -73,7 +73,8 @@ const FILES: [&str; 9] = ["01-overview.png", "02-water.png", "03-families.png", 
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
     mut orbit: ResMut<OrbitCamera>, mut hud: ResMut<HudState>, mut lens: ResMut<MapLens>,
     mut selection: ResMut<Selection>, mut canopy: ResMut<CanopyView>, mut commands: Commands,
-    mut exit: MessageWriter<AppExit>, time: Res<Time<Real>>, mut bench_started: Local<Option<f64>>) {
+    mut exit: MessageWriter<AppExit>, time: Res<Time<Real>>, mut bench_started: Local<Option<(f64, f64)>>,
+    backlog: Res<crate::terrain_render::MeshBacklog>, mut ready: Local<(u32, u32)>) {
     let dir = cli.report_dir.as_ref().expect("report directory");
     *frame += 1;
     if *frame < 120 { return; }
@@ -82,11 +83,17 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         if FILES.iter().all(|f| std::fs::metadata(dir.join(f)).is_ok_and(|m| m.len() > 0)) {
             if std::env::var_os("BC_REPORT_BENCH").is_some() {
                 if bench_started.is_none() {
-                    *bench_started = Some(time.elapsed_secs_f64());
+                    *bench_started = Some((time.elapsed_secs_f64(), sim.0.time_days));
                     clock.set_speed(crate::sim_driver::Speed::X3);
+                    hud.colony = None;
+                    canopy.0 = false;
                     println!("report: mature-colony benchmark starts at day {:.3}", sim.0.time_days);
                 }
-                if time.elapsed_secs_f64() - bench_started.unwrap() < 15.0 { return; }
+                let (started, day0) = bench_started.unwrap();
+                let seconds = time.elapsed_secs_f64() - started;
+                if seconds < 25.0 { return; }
+                let days = sim.0.time_days - day0;
+                println!("report: benchmark advanced {days:.3} days in {seconds:.3}s; {:.3}s per 30 days", seconds * 30.0 / days.max(f64::MIN_POSITIVE));
             }
             println!("report: saved {} views at day {:.2} in {}", FILES.len(), sim.0.time_days, dir.display());
             exit.write(AppExit::Success);
@@ -95,6 +102,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
     }
     clock.paused = true;
     if (*frame - 120) % 60 == 0 {
+        *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = true;
         hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Research), _ => None };
@@ -122,6 +130,18 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         }
     }
     if (*frame - 120) % 60 == 40 {
+        // A real map has more chunks than forty frames can recolour. Wait for
+        // both mesh queues and several upload frames before capturing a lens.
+        ready.0 = if backlog.terrain || backlog.water { 0 } else { ready.0 + 1 };
+        ready.1 += 1;
+        if ready.0 < 8 {
+            if ready.1 > 1800 {
+                error!("report: scene did not settle for {}", FILES[shot]);
+                exit.write(AppExit::error());
+            }
+            *frame -= 1;
+            return;
+        }
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(dir.join(FILES[shot])));
     }
 }

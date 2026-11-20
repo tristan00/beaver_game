@@ -1,7 +1,8 @@
 //! Where each frame's time goes, logged every few seconds when `BC_PERF=SECONDS` is set.
 //!
 //! `BC_SPEED=1|2|3` starts the clock at that game speed and `BC_PERF_EXIT=SECONDS` quits after
-//! that long, so `BC_PERF=5 BC_SPEED=3 BC_PERF_EXIT=30 beaver_colony --map telemark` is a benchmark.
+//! that long. Set `BC_SETTLE=1` to found the selected map automatically; for example,
+//! `BC_PERF=5 BC_SPEED=3 BC_PERF_EXIT=30 BC_SETTLE=1 beaver_colony --map telemark`.
 
 use crate::sim_driver::{SimClock, Speed, BASE_DAYS_PER_SECOND};
 use crate::state::Sim;
