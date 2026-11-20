@@ -20,6 +20,21 @@ pub const FOOD_GATHER_RADIUS: usize = 80;
 mod repair_alert_tests {
     use super::*;
     #[test]
+    fn food_alert_does_not_staff_an_exhausted_area() {
+        let mut s=SimState::new(1);
+        s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
+        for b in &s.colony.beavers {s.agents.spawn(b.id,(5,5));}
+        s.resources.items.clear();
+        let b=crate::buildings::Building{id:BuildingId(1),kind:BuildingKind::ForagerHut,pos:(5,5),status:crate::buildings::Status::Complete,output:0.0,condition:1.0,reinforced:false,dam_profile:Vec::new()};
+        *s.water.depth.get_mut(5,5).unwrap()=0.2;
+        s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
+        assert_eq!(food_fix(&s),Fix::Focus);
+        s.resources.add(ResourceKind::Plant,(35,35),4.0);
+        assert!(matches!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,..}));
+        s.resources.add(ResourceKind::Plant,(6,6),4.0);
+        assert!(matches!(food_fix(&s),Fix::AddWorkers{building:BuildingId(1),..}));
+    }
+    #[test]
     fn missing_materials_do_not_offer_an_impossible_builder_fix() {
         let mut s=SimState::new(1);s.colony.found((0.0,3.0),&crate::colony::RiverLand::default()).unwrap();let id=BuildingId(1);let c=(5,5);
         s.water.build_dam(&[c],1.0).unwrap();*s.water.dam_integrity.get_mut(c.0,c.1).unwrap()=0.2;
@@ -379,20 +394,28 @@ fn food_fix(sim: &SimState) -> Fix {
         .places
         .iter()
         .filter(|p| p.kind == BuildingKind::ForagerHut && !p.paused && sim.buildings.building(p.building).is_some_and(|b| b.is_complete()))
+        .filter(|p| crate::agents::gathering_available(sim, Assignment::Slot(p.building,0)))
         .filter(|p| crate::jobs::add_worker_preview(sim, p.building).is_some())
         .max_by_key(|p| (p.priority, std::cmp::Reverse(p.building)));
     if let Some(p) = hut {
         let free = p.slots.iter().filter(|s| s.worker.is_none()).count();
         return Fix::AddWorkers { building: p.building, n: free.min(FIX_WORKERS) };
     }
+    // Extra staff in an exhausted work area cannot resolve a food shortage.
+    // Send available workers to food in the wider emergency gathering area.
+    let n = gatherers(sim, FIX_WORKERS).len();
+    if let Some(home) = colony_cell(sim).filter(|_|n>0) {
+        let r=FOOD_GATHER_RADIUS;
+        let area=crate::work::Area{min:(home.0.saturating_sub(r),home.1.saturating_sub(r)),max:(home.0+r,home.1+r)};
+        if crate::agents::gathering_available(sim,Assignment::Area(ResourceKind::Plant,area)) {
+            return Fix::Gather {kind:ResourceKind::Plant,n};
+        }
+    }
     let building_one = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::ForagerHut && !b.is_complete());
     if sim.can_build(BuildingKind::ForagerHut) && !building_one {
         return Fix::Place(BuildingKind::ForagerHut);
     }
-    match gatherers(sim, FIX_WORKERS).len() {
-        0 => Fix::Focus,
-        n => Fix::Gather { kind: ResourceKind::Plant, n },
-    }
+    Fix::Focus
 }
 
 pub fn problems(sim: &SimState) -> Vec<Problem> {

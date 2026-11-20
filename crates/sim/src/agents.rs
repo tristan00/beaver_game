@@ -220,6 +220,10 @@ fn gatherable(r: &Resource) -> bool {
     }
 }
 
+pub(crate) fn gathering_available(sim: &SimState, assignment: Assignment) -> bool {
+    Job::resolve(sim, assignment).is_some_and(|job| sim.resources.items.iter().any(|r| job.permits(r)))
+}
+
 fn kinds_for(k: ResourceKind) -> &'static [ResourceKind] {
     k.gather_sources()
 }
@@ -966,7 +970,7 @@ fn organise(sim: &mut SimState) {
                 let who = s.worker.unwrap_or(BeaverId(0));
                 let from = sim.agents.get(who).map_or(b.pos, |a|a.cell);
                 let ready = match s.role {
-                    Role::Collect(_) => Job::resolve(sim, Assignment::Slot(b.id,i)).is_some_and(|job|sim.resources.items.iter().any(|r|job.permits(r))),
+                    Role::Collect(_) => gathering_available(sim, Assignment::Slot(b.id,i)),
                     Role::Forester if b.kind==BuildingKind::ForesterLodge => crate::forestry::next_task(sim,b.id,i,who,from).is_some(),
                     Role::Scout => scout_frontier(sim,b.pos).next().is_some(),
                     _ => true,

@@ -71,7 +71,15 @@ caretaker immediately unlocked its emergency area-gathering assignments, which
 cancelled those orders before workers could act. The caretaker now preserves
 its own emergency food orders until a 30-day food buffer returns. Cleanup leaves
 pre-existing orders and later player overrides intact. This changes decisions,
-not resource supply; compare the corrected run before drawing balance conclusions.
+not resource supply. Repeating the long run after that correction alone produced
+the same 16 deaths, so it is explicitly not counted as a successful balance fix.
+
+A second issue was in the food alert itself: it could offer workers to a hut
+whose entire work area was exhausted. The alert now checks actual harvestable
+resources, and can recommend emergency gathering in the wider area instead of
+staffing an empty hut. The staffing controller uses the same availability check.
+The regression test covers empty local supply, food outside the hut's area,
+and a productive local hut.
 
 The low-weight staffing experiment did not produce a crisis, and raising its
 weights did not outperform leaving them alone. It is not evidence of successful
