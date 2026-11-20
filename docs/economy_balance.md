@@ -21,8 +21,9 @@ Finite clay cells hold 30 units, reduced from the previous blanket increase to 6
 
 The starting stock is a 45-day food larder, 100 sticks and 30 clay, subject to
 normal storage capacity. Food spoils at 0.3% per day. The base storage capacity is
-100 per good. Foragers collect 1.4 food per working day before worker modifiers;
-this was reduced from 2.8 after the first food/sticks/clay pilots proved too easy.
+100 per good. Foragers now collect 1.0 food per working day before worker
+modifiers. The accident-free comparison at the end of this document evaluates
+1.4, 1.1 and 1.0. Earlier sections retain the historical tuning experiments.
 
 ## Balance acceptance
 
@@ -212,3 +213,91 @@ Its runs remain in the workspace at tmp/balance-outcomes as historical evidence,
 but are not evidence for the current economy. No replacement mortality mechanic
 is authorized: balance uses the existing food, storage, labor, shelter and
 family systems.
+
+## Food and labor rebalance without work accidents
+
+All work injury rolls and damage are removed, including the minor injuries
+that predated the rejected experiment. Work still affects the existing safety
+mood need, but cannot damage health. The old guard effect on that mood need is
+restored; the experimental mortality protection is gone. Health and warmth
+remain necessary for recovery from hunger and cold.
+
+Food collection changes from 1.4 to 1.0 per working day. A unit of food therefore
+requires 40% more gathering time before hauling and worker modifiers. This
+applies to shoots and bark. Starting supplies, food appetite and spoilage, plant
+regrowth, timber and clay yields, construction costs, starvation damage,
+reproduction and lifespans are not changed. The intended tradeoff is feeding
+a growing family versus spending the same workers on construction and repairs.
+
+The comparisons remove accidents in every baseline and trial, so the removal
+does not confound the food-rate comparison. The rate is the only economy lever
+changed between the 1.4, 1.1 and 1.0 executables. Each map uses the same opening
+and management rules at every rate. None receives free supplies or construction.
+
+| Three-year window | Population | Deaths | Days below 10 food-days | Material-delay days | Easy days |
+|---|---:|---:|---:|---:|---:|
+| Telemark, 1.4 | 27 | 0 | 0 | 41 | 25 |
+| Telemark, 1.0 | 28 | 0 | 74 | 64 | 3 |
+| Algonquin, 1.4 | 17 | 0 | 85 | 309 | 9 |
+| Algonquin, 1.0 | 14 | 0 | 79 | 413 | 0 |
+
+| Five winters plus spring | Population | Deaths | Hunger days | Days below 10 food-days | Material-delay days | Easy days |
+|---|---:|---:|---:|---:|---:|---:|
+| Telemark, 1.1 | 93 | 5 | 71 | 142 | 55 | 13 |
+| Algonquin, 1.1 | 46 | 0 | 0 | 421 | 417 | 0 |
+| Telemark, 1.0 | 100 | 0 | 0 | 132 | 85 | 3 |
+| Algonquin, 1.0 | 46 | 14 | 37 | 363 | 413 | 0 |
+
+All losses in these five-year trials were starvation, with no work injuries.
+The 1.1 Telemark trial ends in an unresolved shortage with only 0.2 food-days;
+its five deaths are not evidence of a stable outcome. At 1.0, Algonquin fell from
+35 to 21 during its food crisis, rebuilt a 55-day reserve by day 1710, and grew
+to 46 by day 1890 with no further losses in that interval. This recovery uses
+ordinary gathering, paid buildings and the unchanged immigration allowance.
+
+The lower rate does not produce a monotonic death count. It changes worker
+allocation, building completion and birth timing. Its selection rests on the
+combined labor burden, material delays, reduced easy periods and recovery
+behavior across maps, not on trying to hit a mortality threshold.
+
+Telemark's weekly policy keeps opening new households without a food-reserve
+gate. Algonquin's policy defers additional households and immigration below
+60 food-days. Cross-map results are therefore not a controlled comparison of
+those policies; the rate comparisons within each map are controlled.
+
+The Telemark continuation to day 2250 exposes a failed expansion policy that
+the five-year snapshot missed. It temporarily recovered from 100 to 68 beavers
+with a 26-day food reserve, then suffered another shortage after further births.
+It finishes with 36 beavers, 94 starvation deaths, 132 hunger days and no stored
+food. This is an unresolved crisis for that expansion policy, not a balanced
+or recovered result. It is retained rather than ending the test at the earlier
+zero-death snapshot or the temporary recovery.
+
+The food-aware Algonquin continuation reaches day 2970 (8.25 game years) with
+80 beavers, 15 deaths, 37 hunger days and no easy days. Fourteen deaths were
+from the earlier starvation crisis; the fifteenth was the founder's normal
+old age. There were no work injuries. No further hunger days were recorded
+after that earlier crisis, and the colony finished with 10.2 food-days, 53
+completed structures and 113 paid repairs. This demonstrates sustained recovery
+and generation turnover under that policy, without changing lifespans.
+
+The normal-care and overbuilding controls share the first 120 days. After that,
+overbuilding orders a warehouse every 30 days, seasonal care acts every 90 days,
+and neglect stops issuing orders. At day 1080, overbuilding has 238 material-delay
+days versus 64 under ordinary weekly care, and neither has an extended food
+surplus with idle workers. Neglect collapses on day 601. Resuming weekly
+care only after deaths begins collapses on day 660. Additional responses after
+20 or 30 hunger days also fail: food gathering and deferred housing repairs
+compete for the few remaining workers, and the last survivors can die of cold.
+Those failures are retained as outcomes of these policies, not proof that no
+different rescue is possible.
+
+The integration runners and every comparison remain outside the repository in
+`tmp/survival-balance`, including CSVs, commands, death causes, executable hashes,
+the rejected rate and failed recoveries. Only fast unit tests are committed.
+
+Verification: the 26 simulation unit tests pass, including the regression that
+work exposure cannot damage health. The release game builds and a native
+launch/render smoke check succeeds. The results cover these maps and explicit
+policies; they do not establish a universally optimal rate or make unchecked
+expansion sustainable.
