@@ -16,6 +16,23 @@ pub const WEAK_DAM: f32 = 0.6;
 pub const FIX_WORKERS: usize = 2;
 pub const FOOD_GATHER_RADIUS: usize = 80;
 
+#[cfg(test)]
+mod repair_alert_tests {
+    use super::*;
+    #[test]
+    fn missing_materials_do_not_offer_an_impossible_builder_fix() {
+        let mut s=SimState::new(1);s.colony.found((0.0,3.0),&crate::colony::RiverLand::default()).unwrap();let id=BuildingId(1);let c=(5,5);
+        s.water.build_dam(&[c],1.0).unwrap();*s.water.dam_integrity.get_mut(c.0,c.1).unwrap()=0.2;
+        s.buildings.buildings.push(crate::buildings::Building{id,kind:BuildingKind::Dam,pos:c,status:crate::buildings::Status::Site,recipe:None,output:0.0,condition:0.2,reinforced:false,dam_profile:vec![(c,1.0)]});
+        s.work.add_site(id,BuildingKind::Dam,&[(Good::Mud,5.0)],1.0).unwrap();
+        s.work.dam_plans.push(crate::work::DamPlan{building:id,repair:true,cells:vec![c],height:1.0,heights:vec![1.0],from:vec![1.0]});
+        let fix=|s:&SimState|problems(s).into_iter().find(|p|p.kind==ProblemKind::WeakDam).unwrap().fix;
+        assert_eq!(fix(&s),Fix::Focus);
+        s.work.supplies=Some((1,1));s.work.stock_add(crate::agents::SUPPLIES,Good::Mud,5.0);s.buildings.stores.deposit(Good::Mud,5.0).unwrap();
+        assert_eq!(fix(&s),Fix::StaffSites);
+    }
+}
+
 pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
     sim.colony
         .beavers
@@ -435,7 +452,9 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             value: (integ(&worst) * 100.0).round(),
             cause: dam_wear(sim, worst, Source::Cell(worst)),
             subject: Some(Subject::Building(BuildingKind::Dam)),
-            fix: if sim.work.dam_plans.iter().any(|p| p.cells.contains(&worst)) { Fix::StaffSites } else { Fix::RepairDam { cell: worst } },
+            fix: if let Some(plan)=sim.work.dam_plans.iter().find(|p|p.cells.contains(&worst)) {
+                if sim.work.place(plan.building).is_some_and(|p|crate::agents::site_stalled(sim,p)) {Fix::Focus} else {Fix::StaffSites}
+            } else { Fix::RepairDam { cell: worst } },
             alt_fix: None,
             focus: Some(worst),
         });
