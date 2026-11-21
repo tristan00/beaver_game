@@ -219,95 +219,74 @@ pub fn world_hover(
             return;
         }
     }
-    let elevation = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     tips.world = match (t, hud.tool) {
-        (Some(Thing::Cell(_)), Tool::None) if elevation => None,
         (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))),
         _ => None,
     };
 }
 
-pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection) -> Vec<VNode> {
+/// What is drawn over the map every frame: alert pins where trouble is, small
+/// tokens over buildings that need a look, a dot over free beavers, rings around
+/// the selected ones, and the pops of things that just happened.
+#[allow(clippy::too_many_arguments)]
+pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection, problems: &[sim::hud::Problem], pops: &[super::Pop], now: f32) -> Vec<VNode> {
     let mut out = Vec::new();
     let project = |mut w: Vec3, lift: f32| -> Option<Vec2> {
         w.y += lift;
         cam.world_to_viewport(gt, w).ok().map(|v| v / scale.max(0.01))
     };
     let place = |p: (f32, f32), lift: f32| -> Option<Vec2> { project(cell_world(&s.height, p), lift) };
-    let mut push = |pos: Vec2, icons: &[(Icon, Color)]| {
-        if out.len() >= 80 {
-            return;
-        }
-        let mut v = VNode::new(Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(pos.x - 12.0 * icons.len() as f32),
-            top: Val::Px(pos.y - 26.0),
-            padding: UiRect::all(Val::Px(2.0)),
-            column_gap: Val::Px(1.0),
-            border_radius: BorderRadius::all(Val::Px(5.0)),
-            ..row_node(1.0)
-        });
-        v.bg = Color::srgba(0.08, 0.07, 0.06, 0.8);
+    let pin = |pos: Vec2, icon: Icon, col: Color, skin: Skin, side: f32| -> VNode {
+        let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(pos.x - side / 2.0), top: Val::Px(pos.y - side), width: Val::Px(side), height: Val::Px(side), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() });
         let mut ui = Ui::default();
-        for (i, c) in icons {
-            ui.icon(*i, 16.0, *c);
-        }
+        ui.icon(icon, side * 0.5, col);
         v.children = ui.nodes;
-        out.push(v);
+        v.skin(skin);
+        v
     };
-    for b in s.buildings.buildings.iter() {
-        let centre = building_centre(b);
-        let mut icons: Vec<(Icon, Color)> = Vec::new();
-        let selected=matches!(sel,Selection::Site(id) if id==b.id);
+    for p in problems {
+        let Some(f) = p.focus else { continue };
+        let Some(pos) = place((f.0 as f32 + 0.5, f.1 as f32 + 0.5), 2.4) else { continue };
+        let (icon, col, _, _, skin) = super::panels::alert_token(s, p);
+        let mut v = pin(pos, icon, col, skin, 34.0);
+        let act = match p.fix {
+            sim::hud::Fix::OpenDam { .. } => super::HudAction::Fix(p.fix, p.focus),
+            _ => super::HudAction::Fix(sim::hud::Fix::Focus, p.focus),
+        };
+        v.action(act);
+        out.push(v);
+    }
+    for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
+        let selected = matches!(sel, Selection::Site(id) if id == b.id);
+        let mut icon: Option<(Icon, Color)> = None;
         if let Some(pl) = s.work.place(b.id) {
             let empty = pl.slots.iter().filter(|x| x.worker.is_none()).count();
-            if pl.is_open_site() && selected && !pl.paused {
-                if empty == pl.slots.len() && !pl.slots.is_empty() {
-                    icons.push((Icon::RoleBuilder, WARN));
-                }
-            } else if !pl.paused && pl.filled()>0 && pl.slots.iter().filter_map(|s|s.worker).all(|id|s.agents.get(id).is_some_and(|a|a.stuck_ticks>96)) {
-                icons.push((Icon::Blocked,BAD));
+            if pl.is_open_site() && selected && !pl.paused && empty == pl.slots.len() && !pl.slots.is_empty() {
+                icon = Some((Icon::RoleBuilder, WARN));
+            } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.worker).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
+                icon = Some((Icon::Blocked, BAD));
             }
         }
-        if b.is_complete() {
-            if s.buildings.stranded(b,&s.water.depth) {icons.push((Icon::Flood,WARN));}
-            let used_home=b.kind!=BuildingKind::Dam;
-            if b.condition<0.25 && (selected || used_home) && !s.maintenance.jobs.contains_key(&b.id) {icons.push((Icon::Hammer,BAD));}
-            if let Some(rep) = sim::hud::building_report(s, b.id).filter(|_|s.work.place(b.id).is_some_and(|p|!p.paused && p.filled()>0)) {
-                if rep.factors.iter().any(|f| f.ok == Some(false) && f.label.to_lowercase().contains("store for")) {
-                    icons.push((Icon::NoStore, WARN));
-                }
-            }
-            if selected && b.kind == BuildingKind::Warehouse {
-                let capacity=b.kind.spec().capacity;
-                let full = Good::ALL.iter().any(|g| capacity>0.0 && s.work.stock_of(b.id,*g)>=capacity*sim::hud::FULL_SHARE);
-                if full {
-                    icons.push((Icon::Full, WARN));
-                }
-            }
+        if b.is_complete() && s.buildings.stranded(b, &s.water.depth) {
+            icon = Some((Icon::Flood, WARN));
         }
-        if !icons.is_empty() {
-            if let Some(p) = place(centre, 2.2) {
-                push(p, &icons);
-            }
-        }
-    }
-    let labels = Vec::new();
-    if hud.tool == Tool::Dam {
-        if let Some(c) = hud.dam_preview().and_then(|p| p.spill_at) {
-            if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.4) {
-                push(p, &[(Icon::Flood, BAD), (Icon::Warn, BAD)]);
-            }
+        if let (Some((i, c)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
+            out.push(pin(pos, i, c, Skin::Pebble, 28.0));
         }
     }
     if let Some(c) = s.work.supplies {
-        if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.8) {
-            push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Food))]);
+        if let Some(pos) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.9) {
+            let mut v = pin(pos, Icon::Logs, good_color(Good::Sticks), Skin::Pebble, 26.0);
+            v.solid = false;
+            out.push(v);
         }
     }
     for id in sim::hud::idle_beavers(s) {
-        if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.3)) {
-            push(p, &[(Icon::Idle, WARN)]);
+        if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.2)) {
+            let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 5.0), top: Val::Px(p.y - 10.0), width: Val::Px(10.0), height: Val::Px(10.0), border: UiRect::all(Val::Px(1.5)), border_radius: BorderRadius::all(Val::Px(5.0)), ..default() });
+            v.bg = ACCENT;
+            v.border = Some(BorderColor::all(PANEL));
+            out.push(v);
         }
     }
     for id in hud.selected.iter() {
@@ -319,7 +298,28 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
-    out.extend(labels);
+    for p in pops {
+        let age = (now - p.born).max(0.0);
+        let fade = (1.0 - age / super::POP_SECS).clamp(0.0, 1.0);
+        let at = match p.at {
+            super::PopAt::Screen(v) => Some(v),
+            super::PopAt::Cell(c) => place(c, 2.0),
+        };
+        let Some(at) = at else { continue };
+        let rise = age * 16.0;
+        let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(at.x - 24.0), top: Val::Px(at.y - 20.0 - rise), padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)), column_gap: Val::Px(5.0), ..row_node(5.0) });
+        let mut ui = Ui::default();
+        for (i, c) in &p.icons {
+            ui.icon(*i, 16.0, c.with_alpha(fade));
+        }
+        if !p.text.is_empty() {
+            ui.bold(p.text.clone(), 13.0, INK.with_alpha(fade));
+        }
+        v.children = ui.nodes;
+        v.skin(Skin::Plate);
+        v.skin = Some((Skin::Plate, Color::srgba(1.0, 1.0, 1.0, fade)));
+        out.push(v);
+    }
     out
 }
 
@@ -334,16 +334,6 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
     let (_, hit, _) = crate::flow::ray_heightfield(ray.origin, *ray.direction, &s.height)?;
     let d = target - hit;
     Some(Vec3::new(p.x + d.x, target.y, p.z + d.z))
-}
-
-fn store_takes(kind: BuildingKind, g: Good) -> bool {
-    match kind {
-        BuildingKind::Warehouse => {
-            let _ = g;
-            true
-        }
-        _ => false,
-    }
 }
 
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
@@ -454,31 +444,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 g.line(a, b, Color::WHITE);
                 g.line(b, b - back + side, Color::WHITE);
                 g.line(b, b - back - side, Color::WHITE);
-            }
-        }
-    }
-    if lens == MapLens::Goods.code() {
-        for b in s.buildings.buildings.iter().filter(|b| b.is_complete()) {
-            let Some(rep) = sim::hud::building_report(s, b.id) else { continue };
-            let col = if rep.factors.first().is_some_and(|f| f.value.starts_with("0 of")) {
-                BAD
-            } else if rep.factors.iter().any(|f| f.ok == Some(false)) {
-                WARN
-            } else {
-                GOOD
-            };
-            for c in b.cells() {
-                cell_outline(&mut g, h, c, None, col);
-            }
-            if let Some((good, _)) = rep.ceiling {
-                let (w, d) = b.kind.spec().footprint;
-                let from = (b.pos.0 as f32 + w as f32 / 2.0 - 0.5, b.pos.1 as f32 + d as f32 / 2.0 - 0.5);
-                let store = s.buildings.buildings.iter().filter(|o| o.is_complete() && o.id != b.id && store_takes(o.kind, good)).min_by_key(|o| o.pos.0.abs_diff(b.pos.0) + o.pos.1.abs_diff(b.pos.1));
-                if let Some(o) = store {
-                    let to = (o.pos.0 as f32, o.pos.1 as f32);
-                    let lift = Vec3::Y * 1.2;
-                    g.line(cell_world(h, from) + lift, cell_world(h, to) + lift, good_color(good));
-                }
             }
         }
     }

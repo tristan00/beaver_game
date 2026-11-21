@@ -32,7 +32,7 @@ use sim::jobs::RoleKind;
 use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
 use words::*;
 
-pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WARN};
+pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WARN, WATER};
 
 pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, false), TextColor(color)));
@@ -139,7 +139,6 @@ pub enum MapLens {
     #[default]
     World,
     Water,
-    Goods,
     Forest,
     Elevation,
 }
@@ -149,7 +148,6 @@ impl MapLens {
         match self {
             MapLens::World => 0,
             MapLens::Water => 1,
-            MapLens::Goods => 2,
             MapLens::Forest => 3,
             MapLens::Elevation => 4,
         }
@@ -256,6 +254,79 @@ impl HudState {
 #[derive(Resource, Default)]
 pub struct HoverCell(pub Option<Cell>);
 
+/// Short-lived words and icons on the map where something just happened.
+#[derive(Clone, Debug)]
+pub struct Pop {
+    pub at: PopAt,
+    pub icons: Vec<(Icon, Color)>,
+    pub text: String,
+    pub born: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PopAt {
+    Screen(Vec2),
+    Cell((f32, f32)),
+}
+
+#[derive(Resource, Default)]
+pub struct Pops(pub Vec<Pop>);
+
+pub const POP_SECS: f32 = 2.4;
+
+/// The problems found at the last panel refresh, for the markers drawn every frame.
+#[derive(Resource, Default)]
+pub struct LastProblems(pub Vec<sim::hud::Problem>);
+
+#[derive(Default)]
+pub struct PopWatch {
+    ready: bool,
+    beavers: std::collections::HashSet<u64>,
+    worn: std::collections::HashSet<Cell>,
+}
+
+/// Turns messages and colony events into pops: refusals at the cursor, a kit
+/// over its home, a splash where a dam cell wears through.
+fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState>, sim: Res<Sim>, mut pops: ResMut<Pops>, mut w: Local<PopWatch>) {
+    let now = time.elapsed_secs();
+    pops.0.retain(|p| now - p.born < POP_SECS);
+    if hud.msg.is_some() {
+        if let Some((m, _)) = hud.msg.take() {
+            let at = cursor.0.map(|c| c + Vec2::new(0.0, -28.0)).unwrap_or(Vec2::new(640.0, 300.0));
+            let icons = [m.icon, m.icon2].into_iter().flatten().collect();
+            pops.0.push(Pop { at: PopAt::Screen(at), icons, text: m.text, born: now });
+        }
+    }
+    let s = &sim.0;
+    if !s.is_running() {
+        w.ready = false;
+        return;
+    }
+    let ids: std::collections::HashSet<u64> = s.colony.beavers.iter().map(|b| b.id.0).collect();
+    let worn: std::collections::HashSet<Cell> = s
+        .buildings
+        .buildings
+        .iter()
+        .filter_map(|b| b.dam.as_deref())
+        .flat_map(|d| d.cells.iter().map(|c| c.cell))
+        .filter(|&c| sim::dams::built(s, c) > 0.0 && sim::dams::integrity(s, c) < sim::dams::REPAIR_BELOW)
+        .collect();
+    if w.ready {
+        for b in s.colony.beavers.iter().filter(|b| !w.beavers.contains(&b.id.0)) {
+            let at = s.colony.lodges.iter().find(|l| Some(l.id) == b.lodge).map(|l| (l.pos.0 + 0.5, l.pos.1 + 0.5)).unwrap_or(b.pos);
+            let icon = if b.stage == sim::colony::Stage::Kit { Icon::Kit } else { Icon::Adult };
+            pops.0.push(Pop { at: PopAt::Cell(at), icons: vec![(icon, GOOD)], text: "+1".into(), born: now });
+        }
+        for c in worn.difference(&w.worn) {
+            pops.0.push(Pop { at: PopAt::Cell((c.0 as f32 + 0.5, c.1 as f32 + 0.5)), icons: vec![(Icon::Drop, WATER), (Icon::Warn, BAD)], text: String::new(), born: now });
+        }
+    }
+    w.beavers = ids;
+    w.worn = worn;
+    w.ready = true;
+}
+
+
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
 
@@ -276,7 +347,6 @@ enum Panel {
     Rail,
     Bottom,
     Minimap,
-    Lane,
     Colony,
     Cursor,
     Markers,
@@ -358,6 +428,8 @@ impl Plugin for HudPlugin {
             .init_resource::<TextCapture>()
             .init_resource::<MenuOpen>()
             .init_resource::<Tips>()
+            .init_resource::<Pops>()
+            .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
             .init_resource::<elevation::Contours>()
@@ -367,7 +439,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
-                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay),
+                    (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay),
                 )
                     .chain()
                     .in_set(HudSet),
@@ -377,7 +449,7 @@ impl Plugin for HudPlugin {
 }
 
 fn spawn_hosts(mut commands: Commands) {
-    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right, Panel::Lane, Panel::Cursor].into_iter().enumerate() {
+    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right, Panel::Cursor].into_iter().enumerate() {
         commands.spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), top: Val::Px(0.0), bottom: Val::Px(0.0), ..default() },
             GlobalZIndex(10 + i as i32),
@@ -426,7 +498,7 @@ fn refresh_panels(
     minimap: Option<Res<MinimapImage>>,
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
-    cursor: Res<CursorUi>,
+    (cursor, mut last): (Res<CursorUi>, ResMut<LastProblems>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let due = timer.0.tick(time.delta()).just_finished();
@@ -456,6 +528,7 @@ fn refresh_panels(
         }
     }
     let problems = sim::hud::problems(s);
+    last.0 = problems.clone();
     let hud: &HudState = &hud;
     let ctx = panels::Ctx {
         s,
@@ -473,7 +546,7 @@ fn refresh_panels(
     };
     let founded = s.is_running();
     for (e, p, mut m) in &mut hosts {
-        if !SLOW_PANELS.contains(p) && *p != Panel::Lane {
+        if !SLOW_PANELS.contains(p) {
             continue;
         }
         if menu.0 || (!founded && flow.phase != crate::flow::Phase::Scouting) {
@@ -483,7 +556,6 @@ fn refresh_panels(
         let placing = ctx.placing();
         let tree = match p {
             Panel::Bottom if !founded => panels::settle_chip(&ctx),
-            Panel::Lane if !founded => panels::lane(&ctx),
             _ if !founded => Vec::new(),
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
@@ -491,7 +563,6 @@ fn refresh_panels(
             Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),
             Panel::Minimap => panels::minimap(&ctx),
-            Panel::Lane => panels::lane(&ctx),
             Panel::Colony => colony::screen(&ctx),
             _ => continue,
         };
@@ -514,7 +585,7 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    (windows, pops, problems, time): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let s = &sim.0;
@@ -553,7 +624,7 @@ fn refresh_fast(
                 }
             }
             _ => match cams.single() {
-                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel),
+                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs()),
                 Err(_) => Vec::new(),
             },
         };

@@ -175,48 +175,52 @@ pub fn idle_reason_word(r: sim::jobs::IdleReason) -> &'static str {
     }
 }
 
+/// Days of food in store at what the colony eats now.
+pub fn food_left(s: &sim::SimState) -> f32 {
+    food_days(s).unwrap_or_else(|| s.buildings.stores.amount(Good::Food) / sim::hud::food_need_per_day(s).max(0.01))
+}
+
+/// Top left: is there enough? Sticks and clay as counts, food as days, beavers.
 pub fn strip(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let stores = &s.buildings.stores;
     let idle = sim::jobs::idle_reasons(s);
-    vec![panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 14.0, |u| {
-        for g in STRIP_GOODS {
+    let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
+    vec![panel_row(Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 16.0, |u| {
+        for g in [Good::Sticks, Good::Clay] {
             let have = stores.amount(g);
-            let rate = s.ledger.net_per_day(g);
-            let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
-            u.row(4.0, |r| {
-                r.icon(good_icon(g), 18.0, good_color(g));
-                r.bold(format!("{}", have.round() as i64), 14.0, if have < 0.5 && lasts.is_some() { BAD } else { INK });
-                if rate.abs() >= 0.05 {
-                    r.icon(if rate > 0.0 { Icon::Up } else { Icon::Down }, 9.0, rate_color(rate));
-                    r.text(format!("{:.1}", rate.abs()), 11.0, rate_color(rate));
-                }
-                if let Some(d) = lasts.filter(|d| *d < sim::hud::FOOD_WARN_DAYS) {
-                    let col = if d < 7.0 { BAD } else { WARN };
-                    r.icon(Icon::Hourglass, 11.0, col);
-                    r.bold(days(d), 11.0, col);
-                }
+            let short = have < 0.5 && s.ledger.days_left(g, have).is_some();
+            u.row(6.0, |r| {
+                r.icon(good_icon(g), 20.0, good_color(g));
+                r.bold(format!("{}", have.round() as i64), 16.0, if short { BAD } else { INK });
             })
             .tip(good_tip(s, g));
         }
-        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(18.0), ..default() })).bg(LINE);
-        u.row(4.0, |r| {
-            r.icon(Icon::Beaver, 18.0, INK);
-            r.bold(format!("{}", s.colony.population()), 14.0, INK);
+        u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(20.0), ..default() })).bg(GROOVE);
+        let d = food_left(s);
+        u.row(6.0, |r| {
+            r.icon(good_icon(Good::Food), 20.0, good_color(Good::Food));
+            r.bold(days(d.min(999.0)), 16.0, if d < 7.0 { BAD } else { INK });
         })
-        .tip(headcount_tip(s))
-        .action(HudAction::Colony(Some(ColonyTab::Population)));
-        let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
+        .tip(good_tip(s, Good::Food));
+        let mut tip = headcount_tip(s);
         if !free.is_empty() {
-            let mut t = Tip::titled(Some((Icon::Idle, WARN)), "Free").with_value(format!("{}", free.len()));
-            for (id, why) in free.iter().take(8) {
+            tip.push(TipLine::new("Free now", format!("{}", free.len())).icon(Icon::Idle, ACCENT));
+            for (id, why) in free.iter().take(6) {
                 if let Some(b) = s.colony.beaver(*id) {
-                    t.push(TipLine::new(b.name.clone(), idle_reason_word(*why)).icon(stage_icon(b.stage), INK).color(MUTED));
+                    tip.push(TipLine::new(b.name.clone(), idle_reason_word(*why)).icon(stage_icon(b.stage), MUTED).sub());
                 }
             }
-            let t = t.key("I").row(TipLine { label: "Jobs".into(), key: Some("J".into()), ..default() });
-            u.icon_label_button(Icon::Idle, format!("{}", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
         }
+        u.row(6.0, |r| {
+            r.icon(Icon::Beaver, 20.0, FUR);
+            r.bold(format!("{}", s.colony.population()), 16.0, INK);
+            if !free.is_empty() {
+                r.add(VNode::new(Node { width: Val::Px(8.0), height: Val::Px(8.0), border_radius: BorderRadius::all(Val::Px(4.0)), margin: UiRect::bottom(Val::Px(12.0)), ..default() })).bg(ACCENT);
+            }
+        })
+        .tip(tip)
+        .action(if free.is_empty() { HudAction::Colony(Some(ColonyTab::Population)) } else { HudAction::CycleIdle });
     })]
 }
 
@@ -229,76 +233,75 @@ fn season_color(se: Season) -> Color {
     }
 }
 
+/// How full the dammed ponds are, as a share of their full level.
+fn pond_fill(s: &sim::SimState) -> Option<f32> {
+    let fills: Vec<f32> = s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()).filter_map(|d| d.pond.as_ref()).map(|p| ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0)).collect();
+    (!fills.is_empty()).then(|| fills.iter().sum::<f32>() / fills.len() as f32)
+}
+
+/// Top right: what will the water do next? The year, speed, days to the dry
+/// spell, and a stake showing the ponds now and where summer will leave them.
 pub fn calendar(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let t = s.time_days;
     let d = Date::at(t);
     let clock = c.clock;
-    vec![panel_col(Node { width: Val::Px(270.0), ..abs(None, Some(12.0), Some(10.0), None) }, 6.0, |u| {
-        u.row(6.0, |r| {
-            r.row(5.0, |x| {
-                x.icon(season_icon(d.season), 18.0, season_color(d.season));
-                x.bold(format!("{}", d.day), 15.0, INK);
-            })
-            .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()).with_value(format!("Year {}", d.year)));
-            r.spacer();
-            r.icon_button(Icon::Pause, 14.0, HudAction::Pause, FAINT, clock.paused).tip(Tip::name("Pause").key("Space"));
-            for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
-                let day_seconds = 1.0 / (crate::sim_driver::BASE_DAYS_PER_SECOND * sp.multiplier());
-                r.icon_button(icon, 14.0, HudAction::Speed(sp), FAINT, !clock.paused && clock.speed == sp)
-                    .tip(Tip::name(format!("{}x speed", sp.multiplier() as u32)).with_value(format!("Target: {day_seconds:.2} seconds / day")).key(key));
-            }
-        });
+    vec![panel_row(Node { padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)), ..abs(None, Some(12.0), Some(10.0), None) }, 12.0, |u| {
         let phase = calendar::year_phase(t);
-        u.node(Node { width: Val::Percent(100.0), height: Val::Px(8.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(2.0), ..default() }, |r| {
-            for se in Season::ALL {
-                r.add(VNode::new(Node { flex_grow: 1.0, height: Val::Percent(100.0), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() })).bg(season_color(se).with_alpha(0.75));
-            }
-            r.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Percent(phase * 100.0), top: Val::Px(-3.0), width: Val::Px(2.0), height: Val::Px(14.0), ..default() })).bg(SELECT);
-        });
-        u.row(10.0, |r| {
-            let (icon, col, n, tip) = match d.season {
-                Season::Summer => (Icon::Autumn, WARN, calendar::days_until(t, Season::Autumn), Tip::titled(Some((Icon::DrySummer, WARN)), "Dry summer").line("Autumn in", days(calendar::days_until(t, Season::Autumn).ceil() as f32))),
-                Season::Winter => (Icon::Spring, MUTED, calendar::days_until(t, Season::Spring), Tip::titled(Some((Icon::Winter, INK)), "Winter: low inflow").line("Spring in", days(calendar::days_until(t, Season::Spring).ceil() as f32))),
-                _ => (Icon::DrySummer, WARN, calendar::days_until(t, Season::Summer), Tip::titled(Some((Icon::DrySummer, WARN)), "Dry summer").line("In", days(calendar::days_until(t, Season::Summer).ceil() as f32))),
+        u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |ring| {
+            ring.bold(format!("{}", d.day), 15.0, INK);
+            let ang = phase * std::f32::consts::TAU;
+            let (x, y) = (26.0 + 22.0 * ang.sin() - 5.0, 26.0 - 22.0 * ang.cos() - 5.0);
+            ring.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(x), top: Val::Px(y), width: Val::Px(10.0), height: Val::Px(10.0), border: UiRect::all(Val::Px(2.0)), border_radius: BorderRadius::all(Val::Px(5.0)), ..default() }))
+                .bg(INK)
+                .border(BorderColor::all(PANEL));
+        })
+        .skin(Skin::SeasonRing)
+        .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()).with_value(format!("Year {}", d.year)));
+        u.col(8.0, |x| {
+            x.row(5.0, |r| {
+                r.pebble(Icon::Pause, 13.0, HudAction::Pause, if clock.paused { Peb::On } else { Peb::Idle }).tip(Tip::name("Pause").key("Space"));
+                for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
+                    let on = !clock.paused && clock.speed == sp;
+                    r.pebble(icon, 13.0, HudAction::Speed(sp), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(format!("Speed {key}")).key(key));
+                }
+            });
+            let (icon, col, n, name) = match d.season {
+                Season::Summer => (Icon::Autumn, season_color(Season::Autumn), calendar::days_until(t, Season::Autumn), "Rain returns in"),
+                Season::Winter => (Icon::Spring, season_color(Season::Spring), calendar::days_until(t, Season::Spring), "Spring in"),
+                _ => (Icon::DrySummer, WARN, calendar::days_until(t, Season::Summer), "Dry summer in"),
             };
-            r.row(4.0, |x| {
-                x.icon(icon, 15.0, col);
-                x.bold(days(n.ceil() as f32), 12.0, col);
+            x.row(5.0, |r| {
+                r.icon(icon, 16.0, col);
+                r.bold(days(n.ceil() as f32), 14.0, INK);
             })
-            .tip(tip);
-            r.spacer();
-            let ponds = sim::hud::ponds(s);
-            let season = calendar::SEASON_DAYS as f32;
-            match ponds.summer_cover_days() {
-                Some(cover) => {
-                    let ok = cover >= season;
-                    let tip = Tip::titled(Some((Icon::Gauge, WATER)), "Ponds").with_value(num(ponds.volume)).line("Cover", format!("{} / {}", days(cover.min(999.0)), days(season))).line("Summer loss", format!("{}/d", num(ponds.summer_loss_per_day)));
-                    r.row(4.0, |x| {
-                        x.icon(Icon::Gauge, 15.0, WATER);
-                        x.bar(cover / season, 56.0, 7.0, WATER);
-                        if !ok {
-                            x.icon(Icon::Warn, 10.0, WARN);
-                        }
-                        x.bold(days(cover.min(999.0)), 12.0, if ok { INK } else { WARN });
-                    })
-                    .tip(tip);
-                }
-                None => {
-                    r.row(4.0, |x| {
-                        x.icon(Icon::Gauge, 15.0, MUTED);
-                        x.add(VNode::new(Node { width: Val::Px(56.0), height: Val::Px(7.0), border: UiRect::all(Val::Px(1.0)), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() })).border(BorderColor::all(MUTED));
-                    })
-                    .tip(Tip::titled(Some((Icon::Gauge, MUTED)), "No ponds"));
-                }
-            }
+            .tip(Tip::titled(Some((icon, col)), name).with_value(days(n.ceil() as f32)));
         });
+        let ponds = sim::hud::ponds(s);
+        let season = calendar::SEASON_DAYS as f32;
+        let fill = pond_fill(s);
+        let cover = ponds.summer_cover_days();
+        let mark = match (fill, cover) {
+            (Some(f), Some(cv)) => Some((f * (1.0 - season / cv.max(0.01))).max(0.0)),
+            _ => None,
+        };
+        let mut tip = Tip::titled(Some((Icon::Gauge, WATER)), "Ponds");
+        match (fill, cover) {
+            (Some(f), Some(cv)) => {
+                tip.push(TipLine::new("Full", format!("{:.0}%", f * 100.0)));
+                tip.push(TipLine::new("Lasts a dry summer", format!("{} / {}", days(cv.min(999.0)), days(season))).color(if cv >= season { GOOD } else { BAD }));
+                tip.push(TipLine::new("Red line", "where summer leaves it").sub());
+            }
+            (Some(f), None) => {
+                tip.push(TipLine::new("Full", format!("{:.0}%", f * 100.0)));
+            }
+            _ => {
+                tip.push(TipLine::new("No dammed pond yet", ""));
+            }
+        }
+        u.stake(fill.unwrap_or(0.0), mark, 26.0, 52.0).tip(tip);
     })]
 }
-
-
-
-
 
 fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
     let v = p.value;
@@ -357,74 +360,67 @@ fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     }
 }
 
+/// An alert's look: its icon, the one number it shows, and its name.
+pub fn alert_token(s: &sim::SimState, p: &Problem) -> (Icon, Color, String, &'static str, Skin) {
+    let (icons, value, name) = alert_face(s, p);
+    let (icon, col) = icons.first().copied().unwrap_or((Icon::Warn, WARN));
+    let skin = if p.severity == Severity::Urgent { Skin::TokenBad } else { Skin::TokenWarn };
+    let value = value.split_whitespace().next().unwrap_or("").to_string();
+    (icon, col, value, name, skin)
+}
+
+/// What an alert's tooltip says: why, and the fix as a line you can click.
+pub fn alert_tip(c: &Ctx, p: &Problem) -> Tip {
+    let (icons, value, name) = alert_face(c.s, p);
+    let mut cause = Tip::titled(icons.first().copied(), name).with_value(value);
+    for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
+        cause.push(l);
+    }
+    for f in std::iter::once(&p.fix).chain(p.alt_fix.iter()) {
+        if let Some((icon, _, words)) = fix_face(f) {
+            cause.push(TipLine::new(words, "").icon(icon, INK).act(HudAction::Fix(*f, p.focus)));
+        }
+    }
+    cause
+}
+
+/// What needs the player: one token per problem, an icon and one number. A
+/// click jumps there; the fix is in the tooltip.
 pub fn alerts(c: &Ctx, u: &mut Ui) {
-    for p in c.problems {
-        let col = if p.severity == Severity::Urgent { BAD } else { WARN };
-        let (icons, value, name) = alert_face(c.s, p);
-        let mut cause = Tip::titled(icons.first().copied(), name).with_value(value.clone());
-        if p.kind==ProblemKind::WinterFood {
-            cause.push(TipLine::new("Winter","90 days; shoots stop growing"));
-            cause.push(TipLine::new("Reserve goal","Before spoilage and winter foraging"));
-        }
-        for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
-            cause.push(l);
-        }
-        // A token: the trouble as a ringed badge, its number, and the fix as a peg.
-        let card = u.row(6.0, |r| {
-            for (k, f) in std::iter::once(&p.fix).chain(p.alt_fix.iter()).enumerate() {
-                if let Some((icon, _, tip)) = fix_face(f) {
-                    r.icon_button(icon, 13.0, HudAction::Fix(*f, p.focus), if k == 0 { ACCENT } else { FAINT }, false).tip(Tip::name(tip));
-                }
-            }
-            if !value.is_empty() {
-                r.bold(value.clone(), 13.0, INK);
-            }
-            let badge = r.node(Node { width: Val::Px(34.0), height: Val::Px(34.0), border: UiRect::all(Val::Px(2.0)), border_radius: BorderRadius::all(Val::Percent(50.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, column_gap: Val::Px(1.0), ..default() }, |b| {
-                for (i, ic) in icons.iter().take(2) {
-                    b.icon(*i, if icons.len() > 1 { 13.0 } else { 18.0 }, *ic);
+    if c.problems.is_empty() {
+        return;
+    }
+    u.row(6.0, |r| {
+        for p in c.problems {
+            let (icon, col, value, _, skin) = alert_token(c.s, p);
+            let t = r.node(Node { width: Val::Px(44.0), height: Val::Px(44.0), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, row_gap: Val::Px(0.0), flex_shrink: 0.0, ..default() }, |k| {
+                k.icon(icon, if value.is_empty() { 22.0 } else { 18.0 }, col);
+                if !value.is_empty() {
+                    k.bold(value.clone(), 11.0, INK);
                 }
             });
-            badge.bg = PANEL;
-            badge.border = Some(BorderColor::all(col));
-            if let Some(f) = p.focus {
-                badge.action(HudAction::Focus(f));
-            }
-        });
-        card.node.padding = UiRect::new(Val::Px(8.0), Val::Px(3.0), Val::Px(3.0), Val::Px(3.0));
-        card.node.border_radius = BorderRadius::all(Val::Px(20.0));
-        card.bg = PANEL;
-        card.border = Some(BorderColor::all(col.with_alpha(0.35)));
-        card.node.border = UiRect::all(Val::Px(1.0));
-        card.tip(cause);
-    }
+            t.skin(skin);
+            t.tip(alert_tip(c, p));
+            t.action(match p.focus {
+                Some(f) => HudAction::Fix(Fix::Focus, Some(f)),
+                None => HudAction::Fix(p.fix, None),
+            });
+        }
+    });
 }
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
-    let bottom = if c.placing() { RIGHT_BOTTOM } else { 90.0 };
-    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
+    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(84.0), Some(90.0)) });
     let mut ui = Ui::default();
-    match c.hud.tool {
-        Tool::Dam | Tool::Building(_) => {}
-        Tool::None => {
-            if c.hud.colony.is_none() {
-                for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
-                    if let Some(v) = super::inspect::inspector(c, *p) {
-                        ui.add(v);
-                    }
-                }
-                match c.sel {
-                    Selection::None => {
-                        if c.hud.pinned.is_empty() {
-                            alerts(c, &mut ui)
-                        }
-                    }
-                    sel => {
-                        if let Some(v) = super::inspect::inspector(c, sel) {
-                            ui.add(v);
-                        }
-                    }
-                }
+    alerts(c, &mut ui);
+    if c.hud.tool == Tool::None && c.hud.colony.is_none() {
+        for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
+            if let Some(v) = super::inspect::inspector(c, *p) {
+                ui.add(v);
             }
+        }
+        if let Some(v) = super::inspect::inspector(c, c.sel) {
+            ui.add(v);
         }
     }
     if ui.nodes.is_empty() {
@@ -434,52 +430,17 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
+/// Left: how to read the map. Three lenses; clicking the one that is on returns to the plain view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
-    vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
-        for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4"), (MapLens::Elevation, Icon::ViewElevation, "Elevation", "F5")] {
+    vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
+        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3")] {
             let on = c.lens == l;
-            u.icon_button(icon, 18.0, HudAction::SetLens(l), if on { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, on).tip(Tip::name(name).key(key).row(TipLine { label: "Peek water".into(), key: Some("Alt".into()), ..default() }));
+            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
         }
-        if c.lens == MapLens::Elevation {
-            elevation_legend(c, u);
-        }
-        u.rule().style(|n| n.width = Val::Px(24.0));
+        u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();
-        u.icon_button(Icon::Colony, 18.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), FAINT, open).tip(Tip::name("Colony").key("Tab"));
+        u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony book").key("Tab"));
     })]
-}
-
-fn step_label(v: f32) -> String {
-    let t = format!("{v:.2}");
-    t.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
-fn elevation_legend(c: &Ctx, u: &mut Ui) {
-    use super::elevation::{interval_for, surface_range, MAJOR_EVERY};
-    let (lo, hi) = surface_range(c.s);
-    let step = interval_for(hi - lo);
-    let (tlo, thi) = (crate::terrain_render::min_height(c.s), crate::terrain_render::max_height(c.s));
-    u.rule().style(|n| n.width = Val::Px(24.0));
-    u.col(1.0, |l| {
-        l.text(num(thi), 10.0, MUTED);
-        for i in (0..5).rev() {
-            let k = crate::terrain_render::elevation_ramp(i as f32 / 4.0);
-            l.swatch(Color::srgb(k[0], k[1], k[2]), 16.0, 7.0);
-        }
-        l.text(num(tlo), 10.0, MUTED);
-    })
-    .style(|n| n.align_items = AlignItems::Center)
-    .tip(Tip::titled(Some((Icon::ViewElevation, INK)), "Height").line("Low", num(tlo)).line("High", num(thi)));
-    let w = crate::terrain_render::ELEVATION_WATER;
-    u.swatch(Color::srgb(w[0], w[1], w[2]), 16.0, 7.0).tip(Tip::titled(Some((Icon::Drop, WATER)), "Water"));
-    for (thick, every) in [(1.5, step), (3.0, step * MAJOR_EVERY as f32)] {
-        u.col(2.0, |r| {
-            r.swatch(INK, 16.0, thick);
-            r.bold(step_label(every), 10.0, INK);
-        })
-        .style(|n| n.align_items = AlignItems::Center)
-        .tip(Tip::name("Contour").line("Every", step_label(every)));
-    }
 }
 
 pub fn categories(s: &sim::SimState) -> Vec<Group> {
@@ -687,9 +648,6 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
 }
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
-    if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {
-        return elevation_tag(c.s, cell, cur);
-    }
     let (Tool::Building(kind), Some(cell), Some(cur)) = (c.hud.tool, c.hover, c.cursor) else { return Vec::new() };
     let pv = build_logic::site_preview(c.s, kind, cell);
     let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
@@ -710,26 +668,6 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
                 ui.bold(w, 12.0, INK);
             }
         }
-    }
-    v.children = ui.nodes;
-    vec![v]
-}
-
-pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
-    let get = |g: &sim::Grid<f32>| g.get(cell.0, cell.1).copied().unwrap_or(0.0);
-    let (ground, dam, depth) = (get(&s.height), get(&s.water.dam_height), get(&s.water.depth));
-    let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(5.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
-    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
-    let mut ui = Ui::default();
-    ui.icon(Icon::ViewElevation, 13.0, MUTED);
-    ui.bold(format!("{ground:.1}"), 12.0, INK);
-    if dam > 0.0 {
-        ui.icon(Icon::Dam, 13.0, MUTED);
-        ui.bold(format!("{:.1}", ground + dam), 12.0, INK);
-    }
-    if depth > crate::terrain_render::WET_EPS {
-        ui.icon(Icon::Drop, 13.0, WATER);
-        ui.bold(format!("{:.1}", ground + dam + depth), 12.0, WATER);
     }
     v.children = ui.nodes;
     vec![v]
@@ -817,11 +755,6 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
     }
     let Some(img) = c.minimap else { return Vec::new() };
     const SIZE: f32 = 150.0;
-    if c.hud.minimap_collapsed {
-        return vec![panel_row(Node { padding: UiRect::all(Val::Px(4.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 4.0, |u| {
-            u.icon_button(Icon::North, 16.0, HudAction::ToggleMinimap, FAINT, false).tip(Tip::name("Map"));
-        })];
-    }
     let n = c.s.world.size as f32;
     let (cx, cy) = c.view_cell;
     let mut markers: Vec<(f32, f32, Color)> = Vec::new();
@@ -830,7 +763,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
             markers.push((f.0 as f32, f.1 as f32, if p.severity == Severity::Urgent { BAD } else { WARN }));
         }
     }
-    vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 0.0, |u| {
+    vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 0.0, |u| {
         u.image(img.clone(), Node { width: Val::Px(SIZE), height: Val::Px(SIZE), ..default() })
             .tag(Tag::Minimap)
             .solid()
@@ -848,47 +781,20 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                 }))
                 .border(BorderColor::all(SELECT));
                 for (x, y, col) in &markers {
-                    m.icon(Icon::Warn, 10.0, *col).style(|nn| {
-                        nn.position_type = PositionType::Absolute;
-                        nn.left = Val::Px((x / n * SIZE - 5.0).clamp(0.0, SIZE - 10.0));
-                        nn.top = Val::Px((y / n * SIZE - 5.0).clamp(0.0, SIZE - 10.0));
-                    });
+                    m.add(VNode::new(Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px((x / n * SIZE - 4.0).clamp(0.0, SIZE - 8.0)),
+                        top: Val::Px((y / n * SIZE - 4.0).clamp(0.0, SIZE - 8.0)),
+                        width: Val::Px(8.0),
+                        height: Val::Px(8.0),
+                        border_radius: BorderRadius::all(Val::Px(4.0)),
+                        ..default()
+                    }))
+                    .bg(*col);
                 }
-                m.icon(Icon::North, 14.0, INK).style(|nn| {
-                    nn.position_type = PositionType::Absolute;
-                    nn.right = Val::Px(3.0);
-                    nn.top = Val::Px(3.0);
-                });
                 m.nodes
             });
-        u.row(0.0, |r| {
-            r.spacer();
-            r.icon_button(Icon::Collapse, 10.0, HudAction::ToggleMinimap, Color::NONE, false).tip(Tip::name("Hide map"));
-        })
-        .style(|nn| {
-            nn.position_type = PositionType::Absolute;
-            nn.right = Val::Px(2.0);
-            nn.bottom = Val::Px(2.0);
-        });
     })]
-}
-
-pub fn lane(c: &Ctx) -> Vec<VNode> {
-    let Some((m, _)) = &c.hud.msg else { return Vec::new() };
-    let row = panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..default() }, 6.0, |u| {
-        if let Some((i, col)) = m.icon {
-            u.icon(i, 16.0, col);
-        }
-        if let Some((i, col)) = m.icon2 {
-            u.icon(i, 16.0, col);
-        }
-        if !m.text.is_empty() {
-            u.bold(m.text.clone(), 12.5, INK);
-        }
-    });
-    let mut v = VNode::new(Node { justify_content: JustifyContent::Center, ..abs(Some(0.0), Some(0.0), Some(58.0), None) });
-    v.children.push(row);
-    vec![v]
 }
 
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {

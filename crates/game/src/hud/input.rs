@@ -40,9 +40,9 @@ pub(super) fn hotkeys(
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest), (KeyCode::F5, MapLens::Elevation)] {
+    for (k, l) in [(KeyCode::F1, MapLens::Water), (KeyCode::F2, MapLens::Forest), (KeyCode::F3, MapLens::Elevation)] {
         if keys.just_pressed(k) {
-            *lens = l;
+            *lens = if *lens == l { MapLens::World } else { l };
         }
     }
     if keys.just_pressed(KeyCode::Tab) {
