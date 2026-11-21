@@ -181,56 +181,152 @@ fn settle_water(sim: &mut SimState) {
     sim.water.reset_books();
 }
 
-fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
+/// Where the river network is richest: dry banks with the most separate river branches
+/// within `RIVERS_RADIUS`, such as a junction or two streams running side by side. A branch
+/// counts once however often it meanders in and out; the reach below a junction adds nothing.
+/// Best first, at least a radius apart, with the river cells in reach breaking ties.
+fn river_spots(sim: &SimState) -> Vec<(usize, Cell)> {
+    const STRIDE: usize = 4;
+    const BANK: usize = 10;
+    let (n, r) = (sim.world.size, RIVERS_RADIUS);
+    let is_river = |(x, y): Cell| sim.world.river.get(x, y).copied().unwrap_or(false);
+    let river: Vec<Cell> = (0..n * n).map(|i| (i % n, i / n)).filter(|&c| is_river(c)).collect();
+    let mut fed: std::collections::HashMap<Cell, Vec<Cell>> = std::collections::HashMap::new();
+    for &c in &river {
+        if let Some(d) = sim.world.downstream(c.0, c.1) {
+            fed.entry(d).or_default().push(c);
+        }
+    }
+    let dry = |(x, y): Cell| !is_river((x, y)) && !sim.world.lake.get(x, y).copied().unwrap_or(false)
+        && sim.water.depth.get(x, y).is_none_or(|d| *d <= crate::buildings::WET_DEPTH);
+    let mut scored = Vec::new();
+    for y in (r..n.saturating_sub(r)).step_by(STRIDE) {
+        for x in (r..n.saturating_sub(r)).step_by(STRIDE) {
+            if !dry((x, y)) || !river.iter().any(|&c| dist2(c, (x, y)) <= BANK * BANK) {
+                continue;
+            }
+            let near: std::collections::HashSet<Cell> = river.iter().copied().filter(|&c| dist2(c, (x, y)) <= r * r).collect();
+            let entries: Vec<Cell> = near.iter().copied()
+                .filter(|c| !fed.get(c).is_some_and(|ups| ups.iter().any(|u| near.contains(u))))
+                .collect();
+            let mut below = std::collections::HashSet::new();
+            for &e in &entries {
+                let mut at = sim.world.downstream(e.0, e.1);
+                for _ in 0..6 * r {
+                    let Some(c) = at else { break };
+                    below.insert(c);
+                    at = sim.world.downstream(c.0, c.1);
+                }
+            }
+            let branches = entries.iter().filter(|e| !below.contains(e)).count();
+            scored.push(((branches, near.len()), (x, y)));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.1.cmp(&b.1.1)).then(a.1.0.cmp(&b.1.0)));
+    let mut spots: Vec<(usize, Cell)> = Vec::new();
+    for ((branches, _), c) in scored {
+        if spots.iter().all(|&(_, s)| dist2(s, c) > r * r) {
+            spots.push((branches, c));
+        }
+    }
+    spots
+}
+
+/// A dry camp with a river bank and trees in reach, outside `pond`.
+fn camp_fits(sim: &SimState, c: Cell, pond: &std::collections::HashSet<Cell>, trees: &[Cell]) -> bool {
     let size = sim.world.size;
-    let pond: std::collections::HashSet<Cell> =
-        crate::dam_preview::preview(sim, dam, height)?.flooded.into_iter().collect();
-    let mid = dam[dam.len() / 2];
-    let wet = |x: usize, y: usize| {
+    let wet = |(x, y): Cell| {
         sim.water.depth.get(x, y).is_some_and(|d| *d > crate::buildings::WET_DEPTH)
             || sim.world.river.get(x, y).copied().unwrap_or(false)
             || sim.world.lake.get(x, y).copied().unwrap_or(false)
             || pond.contains(&(x, y))
     };
-    let near_cells = |c: Cell, r: usize| {
-        (c.1.saturating_sub(r)..=(c.1 + r).min(size - 1)).flat_map(move |y| (c.0.saturating_sub(r)..=(c.0 + r).min(size - 1)).map(move |x| (x, y)))
-    };
-    let trees: Vec<Cell> = sim.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect();
-    let mut camps: Vec<Cell> = near_cells(mid, 60).collect();
-    camps.sort_by_key(|&c| (dist2(c, mid), c.1, c.0));
-    camps.into_iter()
-        .filter(|&c| c.0 >= 3 && c.1 >= 3 && c.0 + 3 < size && c.1 + 3 < size)
-        .filter(|&c| CAMP_DAM_DIST.contains(&(dist2(c, mid).isqrt())))
-        .filter(|&c| near_cells(c, 2).all(|(x, y)| !wet(x, y)))
-        .filter(|&c| near_cells(c, BANK_MAX).any(|(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false)))
-        .filter(|&c| trees.iter().filter(|&&t| dist2(c, t) <= TREE_RADIUS * TREE_RADIUS && dist2(c, t) > 9).take(TREES_WANTED).count() >= TREES_WANTED)
-        .next()
+    let near = |r: usize| (c.1.saturating_sub(r)..=(c.1 + r).min(size - 1)).flat_map(move |y| (c.0.saturating_sub(r)..=(c.0 + r).min(size - 1)).map(move |x| (x, y)));
+    c.0 >= 3 && c.1 >= 3 && c.0 + 3 < size && c.1 + 3 < size
+        && near(2).all(|n| !wet(n))
+        && near(BANK_MAX).any(|(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false))
+        && trees.iter().filter(|&&t| dist2(c, t) <= TREE_RADIUS * TREE_RADIUS && dist2(c, t) > 9).take(TREES_WANTED).count() >= TREES_WANTED
 }
 
+fn trees(sim: &SimState) -> Vec<Cell> {
+    sim.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect()
+}
+
+fn cells_by_distance(sim: &SimState, from: Cell, r: usize) -> Vec<Cell> {
+    let size = sim.world.size;
+    let mut cells: Vec<Cell> = (from.1.saturating_sub(r)..=(from.1 + r).min(size - 1))
+        .flat_map(|y| (from.0.saturating_sub(r)..=(from.0 + r).min(size - 1)).map(move |x| (x, y)))
+        .filter(|&c| dist2(c, from) <= r * r)
+        .collect();
+    cells.sort_by_key(|&c| (dist2(c, from), c.1, c.0));
+    cells
+}
+
+fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
+    let pond = crate::dam_preview::preview(sim, dam, height)?.flooded.into_iter().collect();
+    let mid = dam[dam.len() / 2];
+    let trees = trees(sim);
+    cells_by_distance(sim, mid, 60).into_iter()
+        .filter(|&c| CAMP_DAM_DIST.contains(&(dist2(c, mid).isqrt())))
+        .find(|&c| camp_fits(sim, c, &pond, &trees))
+}
+
+/// Start where the rivers are richest: a camp beside the best river spot, and the first dam
+/// suggested as near that camp as one can be found. Only a map with no rich spot that has room
+/// for a camp falls back to the best dam anywhere and a camp beside it.
 fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
     settle_water(sim);
-    let candidates = dam_candidates(sim, None, 32);
-    let mut best: Option<((u8, bool, f32), RiverPlan)> = None;
-    for (_, dam, height) in candidates {
-        let Some(effect) = dam_effect(sim, &dam, height) else { continue };
-        let visible = effect.is_visible();
-        let key = (effect.fills as u8 + visible as u8, effect.drop >= MIN_DROP, effect.closeness());
-        if best.as_ref().is_some_and(|(b, _)| *b >= key) && !(effect.fills && visible) {
-            continue;
+    let reach = RIVERS_RADIUS;
+    let trees = trees(sim);
+    let dry = std::collections::HashSet::new();
+    for (_, spot) in river_spots(sim).into_iter().take(SPOTS_TRIED) {
+        let Some(camp) = cells_by_distance(sim, spot, reach).into_iter().find(|&c| camp_fits(sim, c, &dry, &trees)) else { continue };
+        for radius in [2 * reach, 4 * reach, 8 * reach] {
+            if let Some((dam, height)) = best_dam(sim, dam_candidates(sim, Some((camp, radius)), 32), camp) {
+                return Some(RiverPlan { camp, dam, height });
+            }
         }
-        if crate::dams::check_line(sim, &dam).is_err() {
+    }
+    let mut best: Option<(DamKey, RiverPlan)> = None;
+    for (_, dam, height) in dam_candidates(sim, None, 32) {
+        let Some(key) = dam_key(sim, &dam, height) else { continue };
+        if best.as_ref().is_some_and(|(b, _)| *b >= key) {
             continue;
         }
         let Some(camp) = camp_near(sim, &dam, height) else { continue };
-        let plan = RiverPlan { camp, dam, height };
-        if effect.fills && visible {
-            return Some(plan);
-        }
-        if best.as_ref().is_none_or(|(b, _)| key > *b) {
-            best = Some((key, plan));
-        }
+        best = Some((key, RiverPlan { camp, dam, height }));
     }
     best.map(|(_, plan)| plan)
+}
+
+const SPOTS_TRIED: usize = 6;
+
+/// How good a first dam is: fills and shows, keeps a fall below it, then how close it comes.
+type DamKey = (u8, bool, f32);
+
+fn dam_key(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamKey> {
+    let effect = dam_effect(sim, dam, height)?;
+    crate::dams::check_line(sim, dam).ok()?;
+    Some((effect.fills as u8 + effect.is_visible() as u8, effect.drop >= MIN_DROP, effect.closeness()))
+}
+
+/// The nearest dam that fills and shows a pond and leaves the camp dry; failing that, the
+/// best of the rest.
+fn best_dam(sim: &SimState, candidates: Vec<(f32, Vec<Cell>, f32)>, camp: Cell) -> Option<(Vec<Cell>, f32)> {
+    let trees = trees(sim);
+    let mut fit: Vec<(DamKey, usize, Vec<Cell>, f32)> = candidates.into_iter()
+        .filter_map(|(_, dam, height)| {
+            let away = dist2(dam[dam.len() / 2], camp).isqrt();
+            if away < *CAMP_DAM_DIST.start() {
+                return None;
+            }
+            let key = dam_key(sim, &dam, height)?;
+            let pond = crate::dam_preview::preview(sim, &dam, height)?.flooded.into_iter().collect();
+            camp_fits(sim, camp, &pond, &trees).then_some((key, away, dam, height))
+        })
+        .collect();
+    fit.sort_by(|a, b| (b.0.0, b.0.1).cmp(&(a.0.0, a.0.1)).then(a.1.cmp(&b.1)).then(b.0.2.total_cmp(&a.0.2)));
+    fit.into_iter().next().map(|(_, _, dam, height)| (dam, height))
 }
 
 fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
@@ -381,6 +477,20 @@ pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::Wo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every map starts where several rivers meet or run side by side, not on a lone river.
+    #[test]
+    fn every_map_starts_among_several_rivers() {
+        for id in ["algonquin", "voyageurs", "bavarian", "telemark"] {
+            let (sim, site) = new_game_on_map(id).expect("start");
+            let spots = river_spots(&sim);
+            let reach = RIVERS_RADIUS * RIVERS_RADIUS;
+            assert!(
+                spots.iter().any(|&(branches, c)| branches >= 2 && dist2(c, site.camp) <= reach),
+                "{id}: camp {:?} has fewer than two river branches in reach", site.camp
+            );
+        }
+    }
 
     #[test]
     fn starting_supplies_are_on_a_clear_bank_reachable_from_arrival() {
