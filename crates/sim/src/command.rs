@@ -138,7 +138,8 @@ impl SimState {
                 let plan = match growth {
                     DamGrowth::Raise => dams::plan_raise(self, dam, &cells),
                     DamGrowth::Widen => dams::plan_widen(self, dam),
-                    DamGrowth::Extend => dams::plan_extend(self, dam),
+                    DamGrowth::Extend if cells.is_empty() => dams::plan_extend(self, dam),
+                    DamGrowth::Extend => dams::plan_extend_to(self, dam, &cells),
                 };
                 dams::apply_plan(self, dam, plan.map_err(SimError::InvalidCommand)?)
             }

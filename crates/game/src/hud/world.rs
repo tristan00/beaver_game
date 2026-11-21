@@ -538,38 +538,102 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 }
             }
         }
-        Tool::Dam => {
-            if let Some(pv) = hud.dam_preview() {
-                for c in &pv.flooded {
-                    cell_outline(&mut g, h, *c, Some(pv.level), WATER);
-                }
-                if let Some(c) = pv.spill_at {
-                    let base = cell_world(h, (c.0 as f32, c.1 as f32));
-                    let top = Vec3::new(base.x, pv.crest.max(base.y) + 2.0, base.z);
-                    g.line(base, top, BAD);
-                    for r in [0.45, 0.75] {
-                        let n = 16;
-                        for i in 0..n {
-                            let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
-                            let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
-                            let y = pv.level.max(base.y) + 0.1;
-                            g.line(Vec3::new(base.x + r * a0.cos(), y, base.z + r * a0.sin()), Vec3::new(base.x + r * a1.cos(), y, base.z + r * a1.sin()), BAD);
-                        }
-                    }
-                    cell_outline(&mut g, h, c, None, BAD);
-                }
+        Tool::Dam => draw_line_ghost(&mut g, s, &hud, hover.0),
+    }
+    draw_dam_wear(&mut g, s);
+}
+
+const FOAM: Color = Color::srgb(0.96, 0.98, 0.96);
+const WOOD_LINE: Color = Color::srgb(0.95, 0.85, 0.66);
+
+/// Dashed lines along the outer edges of a set of cells, at a given height.
+fn shoreline(g: &mut Gizmos, h: &sim::grid::HeightGrid, cells: &[Cell], y: f32, col: Color) {
+    let set: std::collections::HashSet<Cell> = cells.iter().copied().collect();
+    for &c in cells {
+        for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+            let n = (c.0 as i64 + dx, c.1 as i64 + dy);
+            if n.0 >= 0 && n.1 >= 0 && set.contains(&(n.0 as usize, n.1 as usize)) {
+                continue;
             }
-            let ok = build_logic::check_dam(s, &hud.line).is_ok();
-            for c in &hud.corners {
-                ring(&mut g, cell_world(h, (c.0 as f32, c.1 as f32)) + Vec3::Y * 0.15, 0.3, ACCENT);
+            let (cx, cz) = (c.0 as f32 + dx as f32 * 0.5, c.1 as f32 + dy as f32 * 0.5);
+            let (ox, oz) = (dy as f32 * 0.5, dx as f32 * 0.5);
+            // Part of each edge only: a dashed line reads as a planned shore.
+            let a = cell_world(h, (cx - ox * 0.6, cz - oz * 0.6)).with_y(y);
+            let b = cell_world(h, (cx + ox * 0.2, cz + oz * 0.2)).with_y(y);
+            g.line(a, b, col);
+        }
+    }
+}
+
+/// While a dam is drawn: its corners, the shore its first stage would make, the
+/// trees that would drown, and where the next click would run to.
+fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>) {
+    let h = &s.height;
+    if let Some(pv) = hud.dam_preview() {
+        shoreline(g, h, &pv.flooded, pv.level + 0.06, FOAM);
+        let flooded: std::collections::HashSet<Cell> = pv.flooded.iter().copied().collect();
+        for t in s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && flooded.contains(&r.cell)) {
+            if build_logic::is_wet(s, t.cell.0, t.cell.1) {
+                continue;
             }
-            for c in &hud.line {
-                cell_outline(&mut g, h, *c, None, if ok { Color::WHITE } else { BAD });
+            let base = cell_world(h, (t.cell.0 as f32, t.cell.1 as f32)).with_y(height_at(h, t.cell.0 as f32, t.cell.1 as f32) + 0.25);
+            ring(g, base, 0.55, WATER);
+            ring(g, base + Vec3::Y * 0.04, 0.5, WATER);
+        }
+        if let Some(c) = pv.spill_at.filter(|c| !hud.line.contains(c)) {
+            let base = cell_world(h, (c.0 as f32, c.1 as f32)).with_y(pv.level.max(height_at(h, c.0 as f32, c.1 as f32)) + 0.1);
+            ring(g, base, 0.6, BAD);
+        }
+    }
+    for c in &hud.corners {
+        let at = cell_world(h, (c.0 as f32, c.1 as f32)).with_y(height_at(h, c.0 as f32, c.1 as f32) + 0.15);
+        ring(g, at, 0.3, ACCENT);
+        ring(g, at, 0.22, ACCENT);
+    }
+    match (hud.corners.last(), hover) {
+        (Some(last), Some(at)) if hud.drag_from.is_none() && *last != at => {
+            let lift = |c: Cell| cell_world(h, (c.0 as f32, c.1 as f32)).with_y(height_at(h, c.0 as f32, c.1 as f32) + 0.3);
+            let (a, b) = (lift(*last), lift(at));
+            let n = ((a - b).length() * 2.0).ceil().max(1.0) as usize;
+            for i in (0..n).step_by(2) {
+                g.line(a.lerp(b, i as f32 / n as f32), a.lerp(b, ((i + 1) as f32 / n as f32).min(1.0)), Color::WHITE.with_alpha(0.45));
             }
-            if hud.line.is_empty() {
-                if let Some(c) = hover.0 {
-                    cell_outline(&mut g, h, c, None, Color::WHITE.with_alpha(0.7));
-                }
+        }
+        (None, Some(at)) => {
+            ring(g, cell_world(h, (at.0 as f32, at.1 as f32)).with_y(height_at(h, at.0 as f32, at.1 as f32) + 0.15), 0.3, Color::WHITE.with_alpha(0.7));
+        }
+        _ => {}
+    }
+}
+
+/// On every dam: string between the stakes of cells not yet started, and water
+/// spraying through cells that have worn.
+fn draw_dam_wear(g: &mut Gizmos, s: &sim::SimState) {
+    let h = &s.height;
+    for d in s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
+        let line: Vec<&sim::dams::DamCell> = d.line().collect();
+        let staked = |c: Cell| sim::dams::built(s, c) <= 1e-3;
+        let top = |c: Cell| cell_world(h, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).with_y(height_at(h, c.0 as f32 + 0.5, c.1 as f32 + 0.5) + 0.95);
+        for w in line.windows(2) {
+            if staked(w[0].cell) || staked(w[1].cell) {
+                g.line(top(w[0].cell), top(w[1].cell), WOOD_LINE);
+            }
+        }
+        for c in d.cells.iter() {
+            let built = sim::dams::built(s, c.cell);
+            if built <= 0.0 || sim::dams::integrity(s, c.cell) >= sim::dams::REPAIR_BELOW {
+                continue;
+            }
+            let p = cell_world(h, (c.cell.0 as f32 + 0.5, c.cell.1 as f32 + 0.5));
+            let y = height_at(h, c.cell.0 as f32 + 0.5, c.cell.1 as f32 + 0.5) + built * 0.7;
+            let dir = Vec3::new(d.downstream.0 as f32, 0.0, d.downstream.1 as f32);
+            let side = Vec3::new(-dir.z, 0.0, dir.x);
+            for k in [-0.25f32, 0.0, 0.25] {
+                let a = p.with_y(y) + dir * 0.3 + side * k * 0.5;
+                let m = a + dir * 0.35 + side * k * 0.6 + Vec3::Y * 0.12;
+                let e = m + dir * 0.3 + side * k * 0.4 - Vec3::Y * (built * 0.7 + 0.1);
+                g.line(a, m, FOAM);
+                g.line(m, e, FOAM);
             }
         }
     }
@@ -584,50 +648,49 @@ fn ring(g: &mut Gizmos, at: Vec3, r: f32, col: Color) {
     }
 }
 
-/// A selected dam: its cells in amber, worn cells ringed, ends with handles,
-/// the pond's shoreline and the suggested growth as a ghost.
+/// A selected dam glows amber along its crest, with a handle at each end to
+/// drag it longer, worn cells ringed, the pond's shore and the suggested growth.
 fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d: &sim::dams::Dam) {
     let h = &s.height;
     let top = |c: Cell| {
         let ground = s.height.get(c.0, c.1).copied().unwrap_or(0.0);
         let built = sim::dams::built(s, c);
         let water = ground + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-        (ground + built).max(water) + 0.08
+        (ground + built).max(water) + 0.12
     };
+    let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
+    for w in line.windows(2) {
+        for k in 0..4 {
+            let lift = Vec3::Y * (k as f32 * 0.04);
+            let off = Vec3::new(0.0, 0.0, (k as f32 - 1.5) * 0.06);
+            let a = cell_world(h, (w[0].0 as f32, w[0].1 as f32)).with_y(top(w[0])) + lift + off;
+            let b = cell_world(h, (w[1].0 as f32, w[1].1 as f32)).with_y(top(w[1])) + lift + off;
+            g.line(a, b, ACCENT.with_alpha(0.85));
+        }
+    }
     for c in &d.cells {
         let built = sim::dams::built(s, c.cell);
-        let worn = built > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW;
-        let col = if worn { BAD } else if built + 1e-3 < c.target { ACCENT.with_alpha(0.55) } else { ACCENT };
-        cell_outline(g, h, c.cell, Some(top(c.cell)), col);
-        if worn {
+        if built > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW {
             ring(g, cell_world(h, (c.cell.0 as f32, c.cell.1 as f32)).with_y(top(c.cell)), 0.62, BAD);
+            ring(g, cell_world(h, (c.cell.0 as f32, c.cell.1 as f32)).with_y(top(c.cell) + 0.04), 0.56, BAD);
         }
         if hud.dam_cells.contains(&c.cell) {
             cell_outline(g, h, c.cell, Some(top(c.cell) + 0.12), SELECT);
         }
     }
-    let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
     for end in [line.first(), line.last()].into_iter().flatten() {
-        let at = cell_world(h, (end.0 as f32, end.1 as f32)).with_y(top(*end) + 0.05);
-        ring(g, at, 0.28, ACCENT);
-        ring(g, at, 0.18, ACCENT);
+        let at = cell_world(h, (end.0 as f32, end.1 as f32)).with_y(top(*end) + 0.08);
+        for r in [0.34, 0.28, 0.12] {
+            ring(g, at, r, ACCENT);
+        }
     }
     if let Some(p) = &d.pond {
-        let flooded: std::collections::HashSet<Cell> = p.flooded.iter().copied().collect();
-        for &c in &p.flooded {
-            let edge = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
-                let n = (c.0 as i64 + dx, c.1 as i64 + dy);
-                n.0 < 0 || n.1 < 0 || !flooded.contains(&(n.0 as usize, n.1 as usize))
-            });
-            if edge {
-                cell_outline(g, h, c, Some(p.full_level + 0.05), WATER.with_alpha(0.7));
-            }
-        }
+        shoreline(g, h, &p.flooded, p.full_level + 0.05, WATER.with_alpha(0.8));
     }
     if let Some((_, _, ghost)) = hud.dam_ghost.as_ref().filter(|gh| gh.0 == id) {
         for c in ghost {
             let y = s.height.get(c.0, c.1).copied().unwrap_or(0.0) + 0.6;
-            cell_outline(g, h, *c, Some(y), Color::srgb(0.95, 0.85, 0.66).with_alpha(0.8));
+            cell_outline(g, h, *c, Some(y), WOOD_LINE.with_alpha(0.8));
         }
     }
 }

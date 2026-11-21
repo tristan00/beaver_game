@@ -202,9 +202,10 @@ fn downstream(sim: &SimState, cells: &[Cell]) -> (i32, i32) {
     [(1, 0), (-1, 0), (0, 1), (0, -1)]
         .into_iter()
         .max_by(|&a, &b| {
-            let score = |d: (i32, i32)| -> f32 {
-                cells.iter().filter_map(|&c| Some(surface(sim, offset(c, d, -1, n)?) - surface(sim, offset(c, d, 1, n)?))).sum()
-            };
+            // Only neighbours off the line count: along the line, dam cells
+            // cancel out and the two banks alone would decide.
+            let off = |c: Cell, d: (i32, i32), k: i32| offset(c, d, k, n).filter(|o| !cells.contains(o));
+            let score = |d: (i32, i32)| -> f32 { cells.iter().filter_map(|&c| Some(surface(sim, off(c, d, -1)?) - surface(sim, off(c, d, 1)?))).sum() };
             score(a).total_cmp(&score(b))
         })
         .unwrap_or((0, 1))
@@ -358,6 +359,35 @@ pub fn plan_extend(sim: &SimState, id: BuildingId) -> Result<Plan, String> {
     Ok(Plan { cells, rows: d.rows })
 }
 
+/// Lengthen the dam along cells the player drew from one of its ends. Each new
+/// cell must touch the dam or a cell added before it; new cells aim for the crest.
+pub fn plan_extend_to(sim: &SimState, id: BuildingId, drawn: &[Cell]) -> Result<Plan, String> {
+    let d = dam(sim, id).ok_or("no such dam")?;
+    let top = crest(sim, d);
+    let mut cells = d.cells.clone();
+    for &at in drawn {
+        if cells.iter().any(|c| c.cell == at) {
+            continue;
+        }
+        let near = cells.iter().any(|c| c.row == 0 && c.cell.0.abs_diff(at.0).max(c.cell.1.abs_diff(at.1)) == 1);
+        if !near {
+            return Err("the new cells must run on from an end".into());
+        }
+        if blocked_by_building(sim, at, Some(id)) {
+            return Err("something is already built there".into());
+        }
+        let h = (top - ground(sim, at)).clamp(0.0, d.cap());
+        cells.push(DamCell { cell: at, target: h, row: 0 });
+    }
+    if cells.len() == d.cells.len() {
+        return Err("draw past an end to extend".into());
+    }
+    if cells.len() > MAX_CELLS {
+        return Err("too long".into());
+    }
+    Ok(Plan { cells, rows: d.rows })
+}
+
 pub fn apply_plan(sim: &mut SimState, id: BuildingId, plan: Plan) -> Result<(), SimError> {
     let d = dam_mut(sim, id)?;
     d.cells = plan.cells;
@@ -505,5 +535,37 @@ mod tests {
         let raised = plan_raise(&s, id, &[]).unwrap();
         assert!(raised.cells.iter().all(|c| (c.target - 1.5).abs() < 1e-5));
         assert!(plan_cost(&s, dam(&s, id).unwrap(), &raised) > 0.0);
+    }
+
+    #[test]
+    fn downstream_crosses_the_line_even_when_one_bank_is_far_lower() {
+        let (mut s, line) = flat_river();
+        // Water stands higher on the upstream side (y < 20) than downstream.
+        for x in 8..17 {
+            for y in 15..20 {
+                *s.water.depth.get_mut(x, y).unwrap() = 0.6;
+            }
+            for y in 21..26 {
+                *s.water.depth.get_mut(x, y).unwrap() = 0.1;
+            }
+        }
+        // One bank sits far below the other: along the line must not win.
+        for y in 15..26 {
+            *s.height.get_mut(9, y).unwrap() = 1.0;
+            *s.height.get_mut(15, y).unwrap() = 9.0;
+        }
+        assert_eq!(downstream(&s, &line), (0, 1));
+    }
+
+    #[test]
+    fn a_dam_extends_along_cells_drawn_from_its_end() {
+        let (mut s, line) = flat_river();
+        let id = place(&mut s, &line).unwrap();
+        let more: Vec<Cell> = vec![(15, 20), (16, 20)];
+        let plan = plan_extend_to(&s, id, &more).unwrap();
+        assert_eq!(plan.added(dam(&s, id).unwrap()), more);
+        assert!(plan_extend_to(&s, id, &[(15, 24)]).is_err(), "new cells must run on from an end");
+        apply_plan(&mut s, id, plan).unwrap();
+        assert_eq!(dam(&s, id).unwrap().line().count(), line.len() + 2);
     }
 }

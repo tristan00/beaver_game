@@ -73,7 +73,60 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-dam-closeup.png", "12-reinforced-lodge.png", "13-dam-panel.png", "14-resources.png", "15-fog-boundary.png", "16-river-clay.png"];
+/// The views a report saves, one per HUD state worth checking by eye.
+const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-book-beavers.png", "04-book-work.png", "05-book-water.png", "06-downstream.png", "07-beaver.png", "08-shelter.png", "09-dam-drawing.png", "10-dam-refused.png", "11-dam-closeup.png", "12-warehouse.png", "13-dam-panel.png", "14-book-stores.png", "15-wide.png", "16-dam-dragging.png"];
+
+/// A line straight across the water a few cells upstream of the first dam,
+/// reaching one dry cell onto each bank, for the drawing views.
+fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
+    let d = s.buildings.buildings.iter().find_map(|b| b.dam.as_deref())?;
+    let line: Vec<(usize, usize)> = d.line().map(|c| c.cell).collect();
+    let mid = *line.get(line.len() / 2)?;
+    let (dx, dy) = d.downstream;
+    let n = s.world.size as i64;
+    let at = |x: i64, y: i64| (x >= 0 && y >= 0 && x < n && y < n).then_some((x as usize, y as usize));
+    let (px, py) = (dy as i64, dx as i64);
+    for k in 4..80i64 {
+        for side in -15..=15i64 {
+            let Some(start) = at(mid.0 as i64 - dx as i64 * k + px * side, mid.1 as i64 - dy as i64 * k + py * side) else { continue };
+            if !crate::build_logic::is_wet(s, start.0, start.1) {
+                continue;
+            }
+            let walk = |sign: i64| {
+                let mut c = start;
+                for _ in 0..20 {
+                    let Some(next) = at(c.0 as i64 + px * sign, c.1 as i64 + py * sign) else { break };
+                    c = next;
+                    if !crate::build_logic::is_wet(s, c.0, c.1) {
+                        break;
+                    }
+                }
+                c
+            };
+            let corners = vec![walk(-1), walk(1)];
+            let line = crate::build_logic::polyline(&corners);
+            if line.len() <= 18 && crate::build_logic::check_dam(s, &line).is_ok() {
+                return Some((corners, start));
+            }
+        }
+    }
+    None
+}
+
+/// A short line on dry ground beside the first shelter: the refused case.
+fn dry_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
+    let home = s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Shelter)?.pos;
+    for r in 6..30usize {
+        for (sx, sy) in [(1i64, 1i64), (-1, 1), (1, -1), (-1, -1)] {
+            let at = |o: usize| ((home.0 as i64 + sx * (r + o) as i64).max(0) as usize, (home.1 as i64 + sy * r as i64).max(0) as usize);
+            let cells: Vec<(usize, usize)> = (0..5).map(at).collect();
+            if cells.iter().all(|c| !crate::build_logic::is_wet(s, c.0, c.1) && s.fog.explored(*c)) {
+                return Some((vec![cells[0], cells[4]], cells[2]));
+            }
+        }
+    }
+    None
+}
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -115,48 +168,70 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0 && shot != 14;
-        hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Water), 13 => Some(ColonyTab::Goods), _ => None };
-        hud.pop_page = usize::from(shot == 8);
-        *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
+        hud.colony = match shot { 2 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Water), 13 => Some(ColonyTab::Goods), _ => None };
+        hud.pop_page = 0;
+        *lens = if shot == 1 { MapLens::Water } else { MapLens::World };
         *selection = Selection::None;
-        if shot == 6 {
-            if let Some(b) = sim.0.colony.beavers.iter().find(|b| b.pregnancy.is_some())
-                .or_else(|| sim.0.colony.beavers.iter().find(|b| b.mother.is_some())) {
-                *selection = Selection::Beaver(b.id);
+        hud.set_tool_for_report(crate::hud::Tool::None);
+        let s = &sim.0;
+        let kind = |k: sim::buildings::BuildingKind| s.buildings.buildings.iter().find(|b| b.kind == k);
+        let homes: Vec<_> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Shelter).collect();
+        let dam = s.buildings.buildings.iter().filter(|b| b.kind == sim::buildings::BuildingKind::Dam).max_by_key(|b| b.pos.1);
+        let mut focus = homes.first().map(|b| b.pos);
+        let mut distance = 65.0;
+        match shot {
+            5 => {
+                focus = dam.map(|b| b.pos);
+                distance = 50.0;
             }
-        } else if shot == 7 {
-            if let Some(b) = sim.0.buildings.buildings.iter().find(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Shelter) {
-                *selection = Selection::Site(b.id);
+            6 => {
+                if let Some(b) = s.colony.beavers.iter().find(|b| b.mate.is_some() && s.work.slot_of(b.id).is_some()).or_else(|| s.colony.beavers.first()) {
+                    *selection = Selection::Beaver(b.id);
+                }
             }
-        } else if shot==11 {
-            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.reinforced && b.kind==sim::buildings::BuildingKind::Shelter) {*selection=Selection::Site(b.id);}
-        } else if shot==12 {
-            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.kind==sim::buildings::BuildingKind::Dam) {*selection=Selection::Site(b.id);}
-        } else if shot==15 {
-            if let Some(r)=sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)) {*selection=Selection::Tree(r.id);}
+            7 => {
+                if let Some(b) = homes.first() {
+                    *selection = Selection::Site(b.id);
+                }
+            }
+            8 | 15 => {
+                if let Some((corners, mid)) = upstream_line(s) {
+                    let dragging = shot == 15;
+                    hud.draw_for_report(corners, dragging);
+                    focus = Some(mid);
+                    distance = 48.0;
+                }
+            }
+            9 => {
+                if let Some((corners, mid)) = dry_line(s) {
+                    hud.draw_for_report(corners, false);
+                    focus = Some(mid);
+                    distance = 40.0;
+                }
+            }
+            10 | 12 => {
+                focus = dam.map(|b| b.pos);
+                distance = 55.0;
+                if shot == 12 {
+                    if let Some(b) = dam {
+                        *selection = Selection::Site(b.id);
+                    }
+                }
+            }
+            11 => {
+                if let Some(b) = kind(sim::buildings::BuildingKind::Warehouse) {
+                    *selection = Selection::Site(b.id);
+                    focus = Some(b.pos);
+                }
+            }
+            14 => distance = 300.0,
+            _ => {}
         }
-        let homes: Vec<_> = sim.0.buildings.buildings.iter().filter(|b| b.is_complete()
-            && b.kind == sim::buildings::BuildingKind::Shelter).collect();
-        let focus = if shot == 5 { sim.0.buildings.buildings.iter().filter(|b| b.kind == sim::buildings::BuildingKind::Dam)
-            .max_by_key(|b| b.pos.1).map(|b| b.pos) } else { homes.first().map(|b| b.pos) };
-        if let Some((x,y)) = focus {
+        if let Some((x, y)) = focus {
             orbit.target = crate::flow::cell_world(&sim.0.height, (x as f32, y as f32));
-            orbit.distance = if shot == 5 { 50.0 } else { 65.0 };
-            orbit.pitch = 1.1;
+            orbit.distance = distance;
+            orbit.pitch = if shot == 14 { 1.35 } else { 1.1 };
         }
-        if shot==9 {
-            let dams:Vec<_>=sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dam).collect();
-            if !dams.is_empty(){let x=dams.iter().map(|b|b.pos.0 as f32).sum::<f32>()/dams.len()as f32;let y=dams.iter().map(|b|b.pos.1 as f32).sum::<f32>()/dams.len()as f32;
-                orbit.target=crate::flow::cell_world(&sim.0.height,(x,y));orbit.distance=230.0;orbit.pitch=1.35;}
-        }
-        if shot==14 {orbit.distance=300.0;orbit.pitch=1.35;}
-        let close=match shot {
-            10|12=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dam).max_by_key(|b|b.pos.1).map(|b|b.pos),
-            11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Shelter).map(|b|b.pos),
-            15=>sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)).map(|r|r.cell),
-            _=>None,
-        };
-        if let Some((x,y))=close{orbit.target=crate::flow::cell_world(&sim.0.height,(x as f32,y as f32));orbit.distance=if shot==11{28.0}else{55.0};}
     }
     if (*frame - 120) % 60 == 40 {
         // A real map has more chunks than forty frames can recolour. Wait for

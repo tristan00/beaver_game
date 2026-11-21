@@ -1,3 +1,4 @@
+use super::structures::{DamStage, DAM_STEP};
 use super::scene::{height_at, Species, StructKind};
 use super::sim_view::*;
 use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod, WheelSpin};
@@ -519,35 +520,40 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
 pub struct DamCellVis {
     pub steps: u8,
     pub dir: u8,
-    pub site: bool,
+    pub stage: DamStage,
 }
 
+/// Every dam cell as it should look: staked, rising beside its pile, or done.
+/// A worn cell is drawn as low as the water now finds it.
 pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
     let (w, h) = (sim.water.dam_height.width(), sim.water.dam_height.height());
-    let mut height: HashMap<(usize, usize), (f32, bool)> = HashMap::new();
+    let mut cells: HashMap<(usize, usize), (f32, DamStage)> = HashMap::new();
+    let integrity = |c: (usize, usize)| sim.water.dam_integrity.get(c.0, c.1).copied().unwrap_or(1.0).clamp(0.0, 1.0);
     for (i, &d) in sim.water.dam_height.as_slice().iter().enumerate() {
         if d > 0.0 {
-            height.insert((i % w, i / w), (d, false));
+            let c = (i % w, i / w);
+            cells.insert(c, (d * integrity(c), DamStage::Done));
         }
     }
-    // Cells still short of their target show as work in progress.
     for d in sim.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
         for c in d.cells.iter().filter(|c| c.target > 0.0) {
-            let now = height.get(&c.cell).map_or(0.0, |v| v.0);
-            if now < c.target - 1e-3 {
-                height.insert(c.cell, (now.max(super::structures::DAM_STEP * 0.5), true));
+            let now = sim.water.dam_height.get(c.cell.0, c.cell.1).copied().unwrap_or(0.0);
+            if now <= 1e-3 {
+                cells.insert(c.cell, (DAM_STEP, DamStage::Staked));
+            } else if now < c.target - 1e-3 {
+                cells.insert(c.cell, (now * integrity(c.cell), DamStage::Rising));
             }
         }
     }
     let is_dam = |c: (usize, usize), dx: i32, dy: i32| {
         let (x, y) = (c.0 as i64 + dx as i64, c.1 as i64 + dy as i64);
-        x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && height.contains_key(&(x as usize, y as usize))
+        x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && cells.contains_key(&(x as usize, y as usize))
     };
-    height
+    cells
         .iter()
-        .map(|(&c, &(d, site))| {
-            let steps = (d / super::structures::DAM_STEP).round().clamp(1.0, 16.0) as u8;
-            (c, DamCellVis { steps, dir: super::structures::dam_dir(|dx, dy| is_dam(c, dx, dy)), site })
+        .map(|(&c, &(d, stage))| {
+            let steps = (d / DAM_STEP).round().clamp(1.0, 16.0) as u8;
+            (c, DamCellVis { steps, dir: super::structures::dam_dir(|dx, dy| is_dam(c, dx, dy)), stage })
         })
         .collect()
 }
@@ -562,6 +568,7 @@ pub struct DamSync {
 pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
     let Some(mut models) = models else { return };
     let generation = flow.map_or(0, |f| f.generation);
+    let changed = sim.is_changed();
     let sim = &sim.0;
     if st.seed != Some((sim.seed, generation)) {
         for (e, _) in st.cells.drain().map(|(_, v)| v) {
@@ -570,7 +577,7 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
         st.seed = Some((sim.seed, generation));
         st.time = f64::NEG_INFINITY;
     }
-    if sim.time_days == st.time {
+    if sim.time_days == st.time && !changed {
         return;
     }
     st.time = sim.time_days;
@@ -590,8 +597,8 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
         let diag = vis.dir % 2 == 1;
         let mesh = models
             .dams
-            .entry((vis.steps, diag, variant, vis.site))
-            .or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(vis.steps, diag, variant, vis.site)))
+            .entry((vis.steps, diag, variant, vis.stage))
+            .or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(vis.steps, diag, variant, vis.stage)))
             .clone();
         let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
         let y = height_at(&sim.height, p.x, p.y);
@@ -600,5 +607,73 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
         let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind == BuildingKind::Dam && b.cells().any(|cell| cell == c)).map(|b| b.id);
         if let Some(id) = owner { commands.entity(e).insert(Target::Building(id)); }
         st.cells.insert(c, (e, vis));
+    }
+}
+
+/// While a dam is being drawn, each cell shows as a see-through wall at the
+/// height its first stage will reach; red when the line cannot be built.
+#[derive(Default)]
+pub struct GhostSync {
+    mats: Option<(Handle<StandardMaterial>, Handle<StandardMaterial>)>,
+    cells: HashMap<(usize, usize), (Entity, (u8, u8, bool))>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sync_dam_ghosts(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    hud: Option<Res<crate::hud::HudState>>,
+    models: Option<ResMut<Models>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut st: Local<GhostSync>,
+) {
+    let Some(mut models) = models else { return };
+    let sim = &sim.0;
+    let mut want: HashMap<(usize, usize), (u8, u8, bool)> = HashMap::new();
+    if let Some(plan) = hud.as_ref().filter(|h| h.tool == crate::hud::Tool::Dam).and_then(|h| h.plan.as_ref().filter(|p| p.line == h.line)) {
+        let bad = plan.refusal.is_some();
+        let set: HashSet<(usize, usize)> = plan.targets.iter().map(|t| t.0).collect();
+        let near = |c: (usize, usize), dx: i32, dy: i32| {
+            let (x, y) = (c.0 as i64 + dx as i64, c.1 as i64 + dy as i64);
+            x >= 0 && y >= 0 && (set.contains(&(x as usize, y as usize)) || sim.water.dam_height.get(x as usize, y as usize).is_some_and(|h| *h > 0.0))
+        };
+        for &(c, t) in &plan.targets {
+            let steps = (t.max(DAM_STEP) / DAM_STEP).round().clamp(1.0, 16.0) as u8;
+            want.insert(c, (steps, super::structures::dam_dir(|dx, dy| near(c, dx, dy)), bad));
+        }
+    }
+    let stale: Vec<(usize, usize)> = st.cells.iter().filter(|(c, (_, k))| want.get(*c) != Some(k)).map(|(c, _)| *c).collect();
+    for c in stale {
+        if let Some((e, _)) = st.cells.remove(&c) {
+            commands.entity(e).despawn();
+        }
+    }
+    if want.is_empty() {
+        return;
+    }
+    let (ok, no) = st
+        .mats
+        .get_or_insert_with(|| {
+            let mut m = |c: Color| materials.add(StandardMaterial { base_color: c, alpha_mode: AlphaMode::Blend, perceptual_roughness: 1.0, ..default() });
+            (m(Color::srgba(1.0, 1.0, 1.0, 0.7)), m(Color::srgba(1.0, 0.42, 0.36, 0.7)))
+        })
+        .clone();
+    for (&c, &(steps, dir, bad)) in &want {
+        if st.cells.contains_key(&c) {
+            continue;
+        }
+        let diag = dir % 2 == 1;
+        let mesh = models.dams.entry((steps, diag, 1, DamStage::Done)).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(steps, diag, 1, DamStage::Done))).clone();
+        let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
+        // A ghost in a deep pond would hide under the water: keep its top showing.
+        let ground = height_at(&sim.height, p.x, p.y);
+        let surface = ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+        let y = ground.max(surface + 0.15 - steps as f32 * DAM_STEP);
+        let yaw = -(dir as f32) * std::f32::consts::FRAC_PI_4;
+        let e = commands
+            .spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(if bad { no.clone() } else { ok.clone() }), Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw))))
+            .id();
+        st.cells.insert(c, (e, (steps, dir, bad)));
     }
 }

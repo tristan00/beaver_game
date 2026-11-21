@@ -614,9 +614,9 @@ fn lodge(mb: &mut Mb, stage: u8) {
 
 fn dam(mb: &mut Mb, len: f32, stage: u8) {
     if stage == 3 {
-        structures::dam_cell(mb, 1.4, len, 0, false);
+        structures::dam_cell(mb, 1.4, len, 0, structures::DamStage::Done);
     } else {
-        structures::dam_cell(mb, [0.25, 0.6, 1.0][stage as usize], len, 1, true);
+        structures::dam_cell(mb, [0.25, 0.6, 1.0][stage as usize], len, 1, structures::DamStage::Rising);
     }
 }
 

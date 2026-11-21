@@ -69,6 +69,10 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
             Gait::Walk => Pose::Walk,
         };
     }
+    // Packing a dam cell is work, even standing in the stream.
+    if matches!(ag.task, Task::DamWork { .. }) {
+        return Pose::Work;
+    }
     if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water)) {
         return Pose::Swim;
     }

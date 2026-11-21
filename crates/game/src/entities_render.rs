@@ -37,6 +37,7 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_resources,
                     sim_sync::sync_sim_buildings,
                     sim_sync::sync_sim_dams,
+                    sim_sync::sync_dam_ghosts,
                     sim_sync::sync_reinforcements,
                     attach_rigs,
                     animate_beavers,
@@ -97,7 +98,7 @@ struct Models {
     blob: Handle<Mesh>,
     wheel: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
-    dams: HashMap<(u8, bool, u32, bool), Handle<Mesh>>,
+    dams: HashMap<(u8, bool, u32, structures::DamStage), Handle<Mesh>>,
 }
 
 fn species_index(s: Species) -> usize {

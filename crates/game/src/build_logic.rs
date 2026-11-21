@@ -1,4 +1,4 @@
-use sim::buildings::{Amount, BuildingKind, Good, Site, WET_DEPTH};
+use sim::buildings::{Amount, BuildingKind, Site, WET_DEPTH};
 
 use sim::water::Cell;
 use sim::{Command, SimState};
@@ -118,26 +118,6 @@ pub fn site_preview(sim: &SimState, kind: BuildingKind, hover: Cell) -> SitePrev
     SitePreview { pos, cells: footprint(kind, pos), verdict: check_building(sim, kind, pos) }
 }
 
-/// What a drawn dam line would do, for the placement ghost.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DamReadout {
-    pub flooded_cells: usize,
-    pub flooded_trees: usize,
-    pub flooded_buildings: usize,
-    pub sticks: f32,
-}
-
-impl DamReadout {
-    pub fn from_preview(d: &sim::dam_preview::DamPreview) -> DamReadout {
-        DamReadout {
-            flooded_cells: d.flooded.len(),
-            flooded_trees: d.flooded_trees,
-            flooded_buildings: d.flooded_buildings.len(),
-            sticks: d.cost.iter().filter(|c| c.0 == Good::Sticks).map(|c| c.1).sum(),
-        }
-    }
-}
-
 pub fn path_cost(kind: BuildingKind, n: usize) -> Vec<Amount> {
     kind.spec().cost.iter().map(|&(g, a)| (g, a * n as f32)).collect()
 }
@@ -199,11 +179,6 @@ pub fn check_dam(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
     sim::dams::check_line(sim, cells).map_err(PlaceError::Sim)
 }
 
-pub fn line_preview(sim: &SimState, cells: &[Cell]) -> Option<sim::dam_preview::DamPreview> {
-    let h = sim::dams::first_targets(sim, cells);
-    sim::dam_preview::preview_heights(sim, cells, &h)
-}
-
 pub fn line_cost(sim: &SimState, cells: &[Cell]) -> f32 {
     let h = sim::dams::first_targets(sim, cells);
     sim::dam_preview::loads_for(sim, cells, &h) as f32 * sim::dams::sticks_per_step()
@@ -228,4 +203,57 @@ pub fn emit(sim: &mut SimState, order: &BuildOrder) -> Result<String, PlaceError
             Ok(format!("Dam of {} cells drawn", cells.len()))
         }
     }
+}
+
+/// A drawn dam line worked out: its targets, the pond it would make, its cost,
+/// and the reason it cannot be built, if any.
+#[derive(Clone, Debug)]
+pub struct LinePlan {
+    pub line: Vec<Cell>,
+    pub targets: Vec<(Cell, f32)>,
+    pub preview: Option<sim::dam_preview::DamPreview>,
+    pub sticks: f32,
+    pub new_wet: usize,
+    pub refusal: Option<(crate::icons::Icon, String)>,
+}
+
+fn sentence(m: &str) -> String {
+    let mut c = m.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
+/// Work out a drawn line: a new dam, or more cells for `extending`.
+pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings::BuildingId>) -> LinePlan {
+    use crate::icons::Icon;
+    let mut out = LinePlan { line: line.to_vec(), targets: Vec::new(), preview: None, sticks: 0.0, new_wet: 0, refusal: None };
+    match extending {
+        Some(id) => match (sim::dams::dam(sim, id), sim::dams::plan_extend_to(sim, id, line)) {
+            (Some(d), Ok(plan)) => {
+                let row: Vec<&sim::dams::DamCell> = plan.cells.iter().filter(|c| c.row == 0).collect();
+                let cells: Vec<Cell> = row.iter().map(|c| c.cell).collect();
+                let heights: Vec<f32> = row.iter().map(|c| c.target.max(sim::dams::built(sim, c.cell))).collect();
+                out.preview = sim::dam_preview::preview_heights(sim, &cells, &heights);
+                out.sticks = sim::dams::plan_cost(sim, d, &plan);
+                let added = plan.added(d);
+                out.targets = plan.cells.iter().filter(|c| added.contains(&c.cell)).map(|c| (c.cell, c.target)).collect();
+            }
+            (_, Err(e)) => out.refusal = Some((Icon::Cross, sentence(&e))),
+            (None, _) => out.refusal = Some((Icon::Cross, "Gone".into())),
+        },
+        None => {
+            let h = sim::dams::first_targets(sim, line);
+            out.targets = line.iter().copied().zip(h.iter().copied()).collect();
+            out.preview = sim::dam_preview::preview_heights(sim, line, &h);
+            out.sticks = line_cost(sim, line);
+            out.refusal = check_dam(sim, line).err().and_then(|e| match e {
+                PlaceError::NoCells => None,
+                PlaceError::NeedsWater => Some((Icon::Drop, "Must cross water".into())),
+                PlaceError::TooLong(_) => Some((Icon::Extend, e.to_string())),
+                PlaceError::Sim(m) => Some((Icon::Cross, sentence(&m))),
+                e => Some((Icon::Cross, e.to_string())),
+            });
+        }
+    }
+    out.new_wet = out.preview.as_ref().map_or(0, |p| p.flooded.iter().filter(|&&(x, y)| !is_wet(sim, x, y)).count());
+    out
 }

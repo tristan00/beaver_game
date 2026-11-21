@@ -57,9 +57,6 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::KeyI) {
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
     }
-    if keys.just_pressed(KeyCode::KeyP) {
-        hud.profile_collapsed = !hud.profile_collapsed;
-    }
     if keys.just_pressed(KeyCode::Slash) {
         hud.search = Some(String::new());
         return;
@@ -150,14 +147,17 @@ pub(super) fn world_input(
         return;
     }
     if keys.just_pressed(KeyCode::Enter) && hud.tool == Tool::Dam && hud.search.is_none() {
-        commit_line(&mut sim.0, &mut hud, now);
+        if let Some(id) = commit_line(&mut sim.0, &mut hud, now) {
+            *sel = Selection::Site(id);
+            hud.selected.clear();
+        }
         return;
     }
     if over.0 {
         return;
     }
     if mouse.just_pressed(MouseButton::Right) {
-        if hud.tool == Tool::Dam && !hud.corners.is_empty() {
+        if hud.tool == Tool::Dam && hud.corners.len() > usize::from(hud.extending.is_some()) {
             hud.corners.pop();
             hud.line = build_logic::polyline(&hud.corners);
             return;
@@ -203,6 +203,14 @@ pub(super) fn world_input(
     match hud.tool {
         Tool::None => {
             if mouse.just_pressed(MouseButton::Left) {
+                if let Some(end) = dam_end_at(&sim.0, *sel, cell) {
+                    let Selection::Site(id) = *sel else { unreachable!() };
+                    hud.set_tool(Tool::Dam);
+                    hud.extending = Some(id);
+                    hud.corners = vec![end];
+                    hud.drag_from = Some(end);
+                    return;
+                }
                 hud.box_from = cursor.0;
             }
             if mouse.just_released(MouseButton::Left) {
@@ -264,19 +272,18 @@ pub(super) fn world_input(
             }
         }
         Tool::Dam => {
-            // Each click adds a corner; a drag adds the corner where it ends.
+            // A click adds a corner; a drag draws a straight run to where it ends.
+            // Moving without a button held changes nothing, so the confirm tag stays put.
             if mouse.just_pressed(MouseButton::Left) {
                 if hud.corners.is_empty() {
                     hud.corners.push(cell);
                 }
                 hud.drag_from = Some(cell);
-            } else if mouse.just_released(MouseButton::Left) && hud.drag_from.take().is_some() {
-                if hud.corners.last() != Some(&cell) {
-                    hud.corners.push(cell);
-                }
+            } else if mouse.just_released(MouseButton::Left) && hud.drag_from.take().is_some() && hud.corners.last() != Some(&cell) {
+                hud.corners.push(cell);
             }
             let mut live = hud.corners.clone();
-            if live.last() != Some(&cell) {
+            if hud.drag_from.is_some() && live.last() != Some(&cell) {
                 live.push(cell);
             }
             let line = build_logic::polyline(&live);
@@ -405,4 +412,12 @@ pub(super) fn search_input(mut keys: MessageReader<KeyboardInput>, sim: Res<Sim>
         }
     }
     typing.0 = hud.search.is_some();
+}
+
+/// The end of the selected dam under the pointer: grabbing it starts an extension.
+fn dam_end_at(s: &sim::SimState, sel: Selection, cell: Cell) -> Option<Cell> {
+    let Selection::Site(id) = sel else { return None };
+    let d = sim::dams::dam(s, id)?;
+    let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
+    [line.first(), line.last()].into_iter().flatten().copied().find(|e| *e == cell)
 }

@@ -85,6 +85,8 @@ pub struct Msg {
     pub text: String,
 }
 
+pub use crate::build_logic::LinePlan;
+
 #[derive(Resource)]
 pub struct HudState {
     pub open_cat: Option<usize>,
@@ -93,7 +95,10 @@ pub struct HudState {
     /// Corners of the dam line being drawn; `line` is the cells through them.
     pub corners: Vec<Cell>,
     pub line: Vec<Cell>,
-    preview: Option<(Vec<Cell>, Option<DamPreview>)>,
+    /// What the drawn line would build, worked out once per change of line.
+    pub plan: Option<LinePlan>,
+    /// Set while a dam is being lengthened from one of its ends.
+    pub extending: Option<BuildingId>,
     /// Cells picked in the dam panel's cross-section; raises apply to them only.
     pub dam_cells: Vec<Cell>,
     pub dam_tab: DamTab,
@@ -106,7 +111,6 @@ pub struct HudState {
     undo: Vec<UndoItem>,
     pub details_open: bool,
     pub minimap_collapsed: bool,
-    pub profile_collapsed: bool,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
     // Compatibility with the current menu, renderer and input recorder. This
@@ -174,7 +178,8 @@ impl Default for HudState {
             drag_from: None,
             corners: Vec::new(),
             line: Vec::new(),
-            preview: None,
+            plan: None,
+            extending: None,
             dam_cells: Vec::new(),
             dam_tab: DamTab::Status,
             dam_ghost: None,
@@ -185,7 +190,6 @@ impl Default for HudState {
             undo: Vec::new(),
             details_open: false,
             minimap_collapsed: false,
-            profile_collapsed: false,
             selected: Vec::new(),
             follow: None,
             order_mode: None,
@@ -210,7 +214,8 @@ impl HudState {
         self.drag_from = None;
         self.line.clear();
         self.corners.clear();
-        self.preview = None;
+        self.plan = None;
+        self.extending = None;
         self.area_edit = None;
     }
     fn finish_placement(&mut self) {
@@ -226,10 +231,22 @@ impl HudState {
         self.say(Some((Icon::Cross, BAD)), None, why, now);
     }
     pub fn dam_preview(&self) -> Option<&DamPreview> {
-        self.preview.as_ref().and_then(|(_, p)| p.as_ref())
+        self.plan.as_ref().and_then(|p| p.preview.as_ref())
     }
     pub(crate) fn notify_paused(&mut self, now: f32) {
         self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "", now);
+    }
+    pub fn set_tool_for_report(&mut self, t: Tool) {
+        if self.tool != t {
+            self.set_tool(t);
+        }
+    }
+    /// Put a drawn dam line on screen for a report: corners, and whether a run is still being dragged.
+    pub fn draw_for_report(&mut self, corners: Vec<Cell>, dragging: bool) {
+        self.set_tool(Tool::Dam);
+        self.line = build_logic::polyline(&corners);
+        self.drag_from = dragging.then(|| corners[0]);
+        self.corners = if dragging { corners[..1].to_vec() } else { corners };
     }
     pub fn undo_is_empty(&self) -> bool {
         self.undo.is_empty()
@@ -258,7 +275,6 @@ enum Panel {
     Right,
     Rail,
     Bottom,
-    Profile,
     Minimap,
     Lane,
     Colony,
@@ -266,7 +282,7 @@ enum Panel {
     Markers,
 }
 
-const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Profile, Panel::Colony, Panel::Right];
+const SLOW_PANELS: [Panel; 8] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right];
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
@@ -283,14 +299,12 @@ pub enum HudAction {
     DamCell(Cell),
     DamTab(DamTab),
     ConfirmLine,
-    ClearLine,
     CloseInspector,
     SetLens(MapLens),
     Undo,
     Colony(Option<ColonyTab>),
     ToggleDetails,
     ToggleMinimap,
-    ToggleProfile,
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
     Follow(BeaverId),
@@ -363,7 +377,7 @@ impl Plugin for HudPlugin {
 }
 
 fn spawn_hosts(mut commands: Commands) {
-    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Profile, Panel::Colony, Panel::Right, Panel::Lane, Panel::Cursor].into_iter().enumerate() {
+    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right, Panel::Lane, Panel::Cursor].into_iter().enumerate() {
         commands.spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), top: Val::Px(0.0), bottom: Val::Px(0.0), ..default() },
             GlobalZIndex(10 + i as i32),
@@ -426,10 +440,9 @@ fn refresh_panels(
     }
     let s = &sim.0;
     if hud.tool == Tool::Dam && !hud.line.is_empty() {
-        let stale = hud.preview.as_ref().is_none_or(|(c, _)| *c != hud.line);
+        let stale = hud.plan.as_ref().is_none_or(|p| p.line != hud.line);
         if stale {
-            let p = build_logic::line_preview(s, &hud.line);
-            hud.preview = Some((hud.line.clone(), p));
+            hud.plan = Some(build_logic::line_plan(s, &hud.line, hud.extending));
         }
     }
     if let Selection::Site(id) = *sel {
@@ -477,7 +490,6 @@ fn refresh_panels(
             Panel::Right => panels::right(&ctx),
             Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),
-            Panel::Profile => panels::profile(&ctx),
             Panel::Minimap => panels::minimap(&ctx),
             Panel::Lane => panels::lane(&ctx),
             Panel::Colony => colony::screen(&ctx),
@@ -502,6 +514,7 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let s = &sim.0;
@@ -521,7 +534,23 @@ fn refresh_fast(
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
                 let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
-                panels::cursor_tag(&ctx)
+                if hud.tool == Tool::Dam {
+                    let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
+                    let dragging = hud.drag_from.is_some();
+                    let corner = hud.corners.last().and_then(|c| {
+                        let (cam, gt) = cams.single().ok()?;
+                        let mut w = cell_world(&s.height, (c.0 as f32, c.1 as f32));
+                        w.y += 0.6;
+                        cam.world_to_viewport(gt, w).ok().map(|v| v / scale.0.max(0.01))
+                    });
+                    match (dragging, cursor.0, corner) {
+                        (true, Some(at), _) => panels::dam_tag(&ctx, at, false, win),
+                        (false, _, Some(at)) => panels::dam_tag(&ctx, at, true, win),
+                        _ => Vec::new(),
+                    }
+                } else {
+                    panels::cursor_tag(&ctx)
+                }
             }
             _ => match cams.single() {
                 Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel),

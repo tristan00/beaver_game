@@ -404,10 +404,7 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
     let mut ui = Ui::default();
     match c.hud.tool {
-        Tool::Dam => {
-            ui.add(line_card(c));
-        }
-        Tool::Building(_) => {}
+        Tool::Dam | Tool::Building(_) => {}
         Tool::None => {
             if c.hud.colony.is_none() {
                 for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
@@ -581,7 +578,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
         };
         out.push(centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)), ..default() }, 10.0, |u| {
             u.icon(icon, 24.0, INK).tip(Tip::name(name));
-            key_hints(u, hud.tool);
             u.icon_button(Icon::Cross, 13.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
         })));
         return out;
@@ -624,21 +620,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
         })));
     }
     out
-}
-
-fn key_hints(u: &mut Ui, tool: Tool) {
-    let pairs: Vec<(Icon, &str)> = match tool {
-        Tool::Dam => vec![(Icon::Plus, "LMB"), (Icon::Undo, "RMB"), (Icon::Check, "Enter")],
-        _ => vec![(Icon::Check, "LMB"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
-    };
-    u.row(8.0, |r| {
-        for (i, k) in pairs {
-            r.row(3.0, |x| {
-                x.icon(i, 12.0, MUTED);
-                x.keycap(k);
-            });
-        }
-    });
 }
 
 pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
@@ -754,145 +735,80 @@ pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
     vec![v]
 }
 
-pub fn line_card(c: &Ctx) -> VNode {
-    let s = c.s;
-    let hud = c.hud;
-    let n = hud.line.len();
-    panel_col(Node { width: Val::Px(RIGHT_W), ..default() }, 8.0, |u| {
-        u.row(6.0, |r| {
-            r.icon(Icon::Dam, 20.0, INK).tip(Tip::name("Dam"));
-            if n > 0 {
-                r.bold(format!("{n}"), 15.0, INK).tip(Tip::name("Cells"));
+/// The dam's cost and confirm, on the map: it follows the cursor while a run is
+/// being dragged, then hangs from the line's last corner with a check and a cross.
+pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
+    let Some(plan) = c.hud.plan.as_ref().filter(|p| p.line == c.hud.line) else { return Vec::new() };
+    let bad = plan.refusal.is_some();
+    let mut ui = Ui::default();
+    let row = ui.row(9.0, |r| {
+        match &plan.refusal {
+            Some((icon, why)) => {
+                r.node(Node { width: Val::Px(22.0), height: Val::Px(22.0), ..default() }, |x| {
+                    x.icon(*icon, 20.0, if *icon == Icon::Drop { WATER } else { BAD });
+                    x.icon(Icon::Cross, 12.0, BAD).style(|n| {
+                        n.position_type = PositionType::Absolute;
+                        n.right = Val::Px(-3.0);
+                        n.bottom = Val::Px(-3.0);
+                    });
+                })
+                .tip(Tip::titled(Some((Icon::Dam, INK)), why.clone()));
             }
-            r.spacer();
-            key_hints(r, Tool::Dam);
-            r.icon_button(Icon::Cross, 11.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
-        });
-        if n == 0 {
-            return;
-        }
-        let check = build_logic::check_dam(s, &hud.line);
-        if let Err(e) = &check {
-            u.row(6.0, |r| {
-                r.icon(Icon::Cross, 13.0, BAD);
-                r.bold(place_error(e), 12.0, INK);
-            });
-        }
-        if let Some(pv) = c.hud.dam_preview() {
-            let r = build_logic::DamReadout::from_preview(pv);
-            let new = pv.flooded.iter().filter(|&&(x, y)| !build_logic::is_wet(s, x, y)).count();
-            u.row(14.0, |x| {
-                x.row(4.0, |y| {
-                    y.icon(Icon::Flood, 15.0, WATER);
-                    y.bold(format!("+{new}"), 13.0, INK);
+            None => {
+                r.row(4.0, |x| {
+                    x.icon(good_icon(Good::Sticks), 18.0, good_color(Good::Sticks));
+                    x.bold(format!("{}", plan.sticks.round() as i64), 15.0, INK);
                 })
-                .tip(Tip::name("Newly flooded").line("Pond", format!("{}", r.flooded_cells)));
-                x.row(4.0, |y| {
-                    y.icon(Icon::Tree, 15.0, if r.flooded_trees > 0 { WARN } else { MUTED });
-                    y.bold(format!("{}", r.flooded_trees), 13.0, if r.flooded_trees > 0 { WARN } else { INK });
+                .tip(Tip::titled(Some((good_icon(Good::Sticks), good_color(Good::Sticks))), "Sticks for the first stage").line("Carried load by load", ""));
+                r.row(4.0, |x| {
+                    x.icon(Icon::Drop, 17.0, WATER);
+                    x.bold(format!("+{}", plan.new_wet), 15.0, INK);
                 })
-                .tip(Tip::name("Trees drowned"));
-                if r.flooded_buildings > 0 {
-                    x.row(4.0, |y| {
-                        y.icon(Icon::Building, 15.0, BAD);
-                        y.bold(format!("{}", r.flooded_buildings), 13.0, BAD);
+                .tip(Tip::titled(Some((Icon::Drop, WATER)), "New pond cells"));
+                let drowned = plan.preview.as_ref().map_or(0, |p| p.flooded_trees);
+                if drowned > 0 {
+                    r.row(4.0, |x| {
+                        x.icon(Icon::Tree, 16.0, WARN);
+                        x.bold(format!("{drowned}"), 15.0, WARN);
                     })
-                    .tip(Tip::name("Buildings flooded"));
+                    .tip(Tip::titled(Some((Icon::Tree, WARN)), "Trees drowned"));
                 }
-                if let Some(at) = pv.spill_at.filter(|at| !hud.line.contains(at)) {
-                    x.icon_button(Icon::Push, 13.0, HudAction::Focus(at), FAINT, false).tip(Tip::name("Water slips past the end").line("Draw further, or extend later", ""));
-                }
-                x.spacer();
-                x.row(4.0, |y| {
-                    y.icon(good_icon(Good::Sticks), 15.0, good_color(Good::Sticks));
-                    y.bold(format!("{}", build_logic::line_cost(s, &hud.line).round() as i64), 13.0, INK);
-                })
-                .tip(Tip::name("Sticks for the first stage").line("Beavers carry them load by load", ""));
-            });
+            }
         }
-        u.row(6.0, |r| {
-            r.spacer();
-            r.icon_button(Icon::Clear, 13.0, HudAction::ClearLine, FAINT, false).tip(Tip::name("Clear"));
-            r.icon_button(Icon::Check, 15.0, HudAction::ConfirmLine, if check.is_ok() { ACCENT } else { FAINT }, false).tip(Tip::name("Build").key("Enter"));
-        });
-    })
-}
-
-pub fn profile(c: &Ctx) -> Vec<VNode> {
-    if c.hud.tool != Tool::Dam {
-        return Vec::new();
+        if pinned {
+            r.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(24.0), ..default() })).bg(GROOVE);
+            if bad {
+                let why = plan.refusal.as_ref().map(|r| r.1.clone()).unwrap_or_default();
+                r.pebble(Icon::Check, 15.0, HudAction::ConfirmLine, Peb::Faded).tip(Tip::name("Build").line(why, ""));
+                if let Some(v) = r.nodes.last_mut() {
+                    v.action = None;
+                }
+            } else {
+                r.pebble(Icon::Check, 16.0, HudAction::ConfirmLine, Peb::Primary).tip(Tip::name("Build").key("Enter"));
+            }
+            r.pebble(Icon::Cross, 12.0, HudAction::CancelTool, Peb::Idle).tip(Tip::name("Drop the line").key("Esc"));
+        }
+    });
+    panel(row);
+    row.node.padding = UiRect::axes(Val::Px(12.0), Val::Px(8.0));
+    if bad {
+        row.skin(Skin::PlateBad);
     }
-    let s = c.s;
-    let hud = c.hud;
-    const H: f32 = 92.0;
-    const UP: usize = 70;
-    const DOWN: usize = 40;
-    const COL_W: f32 = 5.0;
-    let collapsed = hud.profile_collapsed;
-    vec![panel_col(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..abs(Some(12.0), Some(12.0), None, Some(12.0)) }, 4.0, |u| {
-        u.row(10.0, |r| {
-            r.icon_button(if collapsed { Icon::Expand } else { Icon::Collapse }, 11.0, HudAction::ToggleProfile, FAINT, false).tip(Tip::name("Profile").key("P"));
-            r.icon(Icon::Profile, 16.0, MUTED);
-            r.icon(Icon::Upstream, 14.0, MUTED).tip(Tip::name("Upstream"));
-            r.spacer();
-            key_hints(r, Tool::Dam);
-        });
-        if collapsed {
-            return;
-        }
-        let anchor = if hud.line.is_empty() {
-            s.colony.beavers.first().map(|b| b.pos).unwrap_or((0.0, 0.0))
-        } else {
-            let n = hud.line.len() as f32;
-            (hud.line.iter().map(|c| c.0 as f32).sum::<f32>() / n, hud.line.iter().map(|c| c.1 as f32).sum::<f32>() / n)
-        };
-        let Some((win, mid)) = sim::hud::river_profile_through(s, anchor, UP, DOWN) else {
-            u.text("No river", 12.0, MUTED);
-            return;
-        };
-        let near_line = !hud.line.is_empty();
-        let preview = hud.dam_preview();
-        let new_surface = preview.map(|pv| sim::hud::profile_with_preview(&win, pv));
-        let lo = win.iter().map(|q| q.bed).fold(f32::MAX, f32::min) - 0.3;
-        let hi = win.iter().map(|q| q.surface).chain(new_surface.iter().flatten().copied()).fold(f32::MIN, f32::max) + 0.3;
-        let span = (hi - lo).max(0.5);
-        let px = |v: f32| (v / span * H).max(0.0);
-        let pond = Color::srgb(0.68, 0.84, 0.95);
-        let wood = Color::srgb(0.54, 0.35, 0.2);
-        let bed = Color::srgb(0.42, 0.3, 0.2);
-        u.row(8.0, |r| {
-            r.col(0.0, |axis| {
-                axis.text(num(hi), 10.0, MUTED);
-                axis.spacer();
-                axis.text(num(lo), 10.0, MUTED);
-            })
-            .style(|n| {
-                n.height = Val::Px(H);
-                n.align_items = AlignItems::FlexEnd;
-            });
-            r.node(Node { height: Val::Px(H), flex_direction: FlexDirection::Row, align_items: AlignItems::FlexEnd, ..default() }, |cols| {
-                for (i, q) in win.iter().enumerate() {
-                    let ns = new_surface.as_ref().map(|v| v[i]).unwrap_or(q.surface);
-                    let here = near_line && i == mid;
-                    cols.col(0.0, |cc| {
-                        if ns > q.surface + 0.005 {
-                            cc.add(VNode::new(Node { height: Val::Px(px(ns - q.surface)), ..default() })).bg(pond);
-                        }
-                        cc.add(VNode::new(Node { height: Val::Px(px(q.surface - q.crest)), ..default() })).bg(WATER);
-                        cc.add(VNode::new(Node { height: Val::Px(px(q.crest - q.bed)), ..default() })).bg(wood);
-                        cc.add(VNode::new(Node { height: Val::Px(px(q.bed - lo)), ..default() })).bg(if here { SELECT } else { bed });
-                    })
-                    .style(|n| n.width = Val::Px(COL_W));
-                }
-            });
-            r.col(5.0, |legend| {
-                for (col, name) in [(WATER, "Water"), (pond, "New"), (wood, "Dams"), (SELECT, "Line")] {
-                    legend.swatch(col, 12.0, 8.0).tip(Tip::name(name));
-                }
-            });
-        })
-        .style(|n| n.justify_content = JustifyContent::Center);
-    })]
+    let w = if pinned { 230.0 } else { 150.0 };
+    let (left, top) = if pinned {
+        let below = at.y + 86.0 < win.y;
+        ((at.x - 26.0).clamp(8.0, (win.x - w - 8.0).max(8.0)), if below { at.y + 26.0 } else { at.y - 70.0 })
+    } else {
+        ((at.x + 20.0).min((win.x - w - 8.0).max(8.0)), at.y + 18.0)
+    };
+    let mut v = ui.nodes.pop().unwrap();
+    v.node.position_type = PositionType::Absolute;
+    v.node.left = Val::Px(left);
+    v.node.top = Val::Px(top);
+    if !pinned {
+        v.solid = false;
+    }
+    vec![v]
 }
 
 pub fn minimap(c: &Ctx) -> Vec<VNode> {

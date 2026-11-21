@@ -14,7 +14,22 @@ fn peeled() -> [f32; 3] { mix(hex(CUT_WOOD), hex(0xd8c29a), 0.4) }
 
 pub const DAM_STEP: f32 = 0.25;
 
-pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
+/// How far a dam cell has come: a surveyor's stake, a wall going up beside its
+/// stick pile, or a finished wall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DamStage {
+    Staked,
+    Rising,
+    Done,
+}
+
+pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
+    if stage == DamStage::Staked {
+        stake(mb, v(0.0, 0.0, 0.0), 1.1, variant % 2 == 0);
+        mud_lump(mb, v(0.0, 0.0, 0.0), 0.35);
+        return;
+    }
+    let site = stage == DamStage::Rising;
     let hl = len * 0.5;
     let h = h.max(0.1);
     let (wt, wb, bury) = (0.2f32, 0.3 + 0.5 * h, 0.45f32);
@@ -87,17 +102,15 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, site: bool) {
     }
     if site {
         stake(mb, v(0.0, 0.0, wb + 0.3), 1.0 + h, true);
-        stake(mb, v(0.0, 0.0, -wb - 0.3), 1.0 + h, false);
-        if variant % 2 == 0 {
-            stick_pile(mb, v(0.0, 0.0, -wb - 0.9), 0.0, 4, 3 + variant);
-        }
+        // Every cell being worked keeps its pile of sticks beside it.
+        stick_pile(mb, v(0.0, 0.0, -wb - 0.8), 0.0, 4, 3 + variant);
     }
 }
 
-pub fn dam_cell_mesh(steps: u8, diagonal: bool, variant: u32, site: bool) -> Mesh {
+pub fn dam_cell_mesh(steps: u8, diagonal: bool, variant: u32, stage: DamStage) -> Mesh {
     let mut mb = Mb::new();
     let len = if diagonal { std::f32::consts::SQRT_2 } else { 1.0 } + 0.35;
-    dam_cell(&mut mb, steps.max(1) as f32 * DAM_STEP, len, variant, site);
+    dam_cell(&mut mb, steps.max(1) as f32 * DAM_STEP, len, variant, stage);
     mb.build()
 }
 

@@ -1,22 +1,38 @@
 //! Turns HUD actions into simulation commands and user feedback.
 use super::*;
 
-pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32) {
-    if hud.line.is_empty() {
-        return;
+/// Build the drawn line: a new dam, or more cells on the dam being extended.
+/// Returns the dam, so its panel can open.
+pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32) -> Option<BuildingId> {
+    if hud.line.is_empty() || hud.tool != Tool::Dam {
+        return None;
     }
-    let order = match hud.tool {
-        Tool::Dam => BuildOrder::Dam { cells: hud.line.clone() },
-        _ => return,
-    };
-    match build_logic::emit(sim, &order) {
+    if let Some(dam) = hud.extending {
+        let cells: Vec<Cell> = hud.line.clone();
+        return match sim.apply(sim::Command::GrowDam { dam, growth: sim::DamGrowth::Extend, cells }) {
+            Ok(_) => {
+                hud.finish_placement();
+                hud.dam_ghost = None;
+                Some(dam)
+            }
+            Err(e) => {
+                hud.refuse(sim_error(&e.to_string()), now);
+                None
+            }
+        };
+    }
+    match build_logic::emit(sim, &BuildOrder::Dam { cells: hud.line.clone() }) {
         Ok(_) => {
-            let item = sim.buildings.buildings.last().map(|b| UndoItem::Site(b.id));
-            hud.undo.extend(item);
+            let id = sim.buildings.buildings.last().map(|b| b.id);
+            hud.undo.extend(id.map(UndoItem::Site));
             hud.finish_placement();
             hud.dam_cells.clear();
+            id
         }
-        Err(e) => hud.refuse(place_error(&e), now),
+        Err(e) => {
+            hud.refuse(place_error(&e), now);
+            None
+        }
     }
 }
 
@@ -128,11 +144,11 @@ pub(super) fn button_actions(
                 }
             }
             HudAction::DamTab(t) => hud.dam_tab = t,
-            HudAction::ConfirmLine => commit_line(s, &mut hud, now),
-            HudAction::ClearLine => {
-                hud.line.clear();
-                hud.corners.clear();
-                hud.preview = None;
+            HudAction::ConfirmLine => {
+                if let Some(id) = commit_line(s, &mut hud, now) {
+                    *sel = Selection::Site(id);
+                    hud.selected.clear();
+                }
             }
             HudAction::CloseInspector => {
                 *sel = Selection::None;
@@ -147,7 +163,6 @@ pub(super) fn button_actions(
             HudAction::Colony(t) => hud.colony = t,
             HudAction::ToggleDetails => hud.details_open = !hud.details_open,
             HudAction::ToggleMinimap => hud.minimap_collapsed = !hud.minimap_collapsed,
-            HudAction::ToggleProfile => hud.profile_collapsed = !hud.profile_collapsed,
             HudAction::SelectBeaver(id) => {
                 *sel = Selection::Beaver(id);
                 hud.selected = vec![id];
