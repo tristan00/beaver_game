@@ -112,6 +112,8 @@ pub const WATER_PAD: i32 = 3;
 #[derive(Clone, Copy)]
 struct WV {
     p: [f32; 3],
+    /// Where the water is drawn: positive inside, zero on the outline.
+    edge: f32,
     depth: f32,
     white: f32,
     vel: [f32; 2],
@@ -120,24 +122,38 @@ struct WV {
 
 fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
     let l = |x: f32, y: f32| x + (y - x) * t;
-    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], depth: l(a.depth, b.depth), white: l(a.white, b.white), vel: [l(a.vel[0], b.vel[0]), l(a.vel[1], b.vel[1])], ice: l(a.ice, b.ice) }
+    WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], edge: l(a.edge, b.edge), depth: l(a.depth, b.depth), white: l(a.white, b.white), vel: [l(a.vel[0], b.vel[0]), l(a.vel[1], b.vel[1])], ice: l(a.ice, b.ice) }
 }
 
-/// The part of a polygon where the water is at least `level` deep.
-fn clip_poly(poly: &[WV], level: f32) -> Vec<WV> {
+/// The part of a polygon inside the water's outline.
+fn clip_poly(poly: &[WV]) -> Vec<WV> {
     let mut out = Vec::with_capacity(poly.len() + 2);
     for k in 0..poly.len() {
         let (a, b) = (&poly[k], &poly[(k + 1) % poly.len()]);
-        let (ia, ib) = (a.depth >= level, b.depth >= level);
+        let (ia, ib) = (a.edge >= 0.0, b.edge >= 0.0);
         if ia {
             out.push(*a);
         }
         if ia != ib {
-            out.push(lerp_wv(a, b, (level - a.depth) / (b.depth - a.depth)));
+            out.push(lerp_wv(a, b, -a.edge / (b.edge - a.edge)));
         }
     }
     out
 }
+
+/// 1 where a cell's water is drawn at all.
+fn shows_water(s: &SimState, x: i32, y: i32) -> f32 {
+    let h = at(&s.water.depth, x, y);
+    (h > SHOW_MIN_M && !lone_film(s, x, y, h)) as i32 as f32
+}
+
+/// Wet cells softened over their four neighbours (WaterField::wet) and interpolated between
+/// cell centres. The water's outline is where this falls to WET_EDGE, so a stream one cell wide
+/// is a smooth band rather than the staircase of its cells, even where the bank is no higher
+/// than the water.
+const WET_EDGE: f32 = 0.3;
+/// Metres of outline margin per unit of wetness above WET_EDGE.
+const EDGE_M: f32 = 0.4;
 
 fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     terrain_sample(s, x, y, step)
@@ -157,7 +173,7 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
         for bx in 0..step {
             let (cx, cy) = ((x + bx).clamp(0, n - 1), (y + by).clamp(0, n - 1));
             let h = at(&s.water.depth, cx, cy);
-            if h <= SHOW_MIN_M {
+            if h <= SHOW_MIN_M || lone_film(s, cx, cy, h) {
                 continue;
             }
             let (u, v) = s.water.velocity.get(cx as usize, cy as usize).copied().unwrap_or((0.0, 0.0));
@@ -174,15 +190,113 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
     (k > 0.0).then(|| (level / k, [vx / k, vy / k], white, ice / k))
 }
 
-fn water_sample(s: &SimState, x: f32, y: f32, step: usize) -> Option<(f32, [f32; 2], f32, f32)> {
+/// A thin film on a cell with no wet neighbour is damp ground, not a pool: drawing it leaves a
+/// loose chip of water beside the stream.
+const LONE_FILM_M: f32 = 0.02;
+
+fn lone_film(s: &SimState, x: i32, y: i32, h: f32) -> bool {
+    h < LONE_FILM_M && [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|&(dx, dy)| at(&s.water.depth, x + dx, y + dy) <= SHOW_MIN_M)
+}
+
+/// Where the surface drops this much between neighbouring vertices (a dam crest, a weir, a
+/// riffle) the water is drawn white, so a spill reads as a fall instead of a tilted pane.
+const FALL_WHITE_M: [f32; 2] = [0.4, 0.8];
+
+type CellWater = Option<(f32, [f32; 2], f32, f32)>;
+
+/// `vertex_water` at step 1 for one chunk and a margin, read once per mesh build.
+struct WaterField {
+    x0: i32,
+    y0: i32,
+    n: i32,
+    cells: Vec<CellWater>,
+    wet: Field,
+}
+
+impl WaterField {
+    fn new(s: &SimState, cx: usize, cy: usize) -> WaterField {
+        let (x0, y0, n) = ((cx * CHUNK) as i32 - Field::PAD, (cy * CHUNK) as i32 - Field::PAD, CHUNK as i32 + 2 * Field::PAD + 1);
+        let mut cells = Vec::with_capacity((n * n) as usize);
+        for j in 0..n {
+            for i in 0..n {
+                cells.push(vertex_water(s, x0 + i, y0 + j, 1));
+            }
+        }
+        // The drawn current, per cell: the surface slope over a 3x3 block of wet cells, then
+        // averaged with the wet neighbours, so it turns smoothly from vertex to vertex (a field that
+        // jumps shears the moving ripples into triangle seams).
+        let get = |cells: &Vec<CellWater>, i: i32, j: i32| if i < 0 || j < 0 || i >= n || j >= n { None } else { cells[(j * n + i) as usize] };
+        let mut flow = vec![[0.0f32; 2]; (n * n) as usize];
+        for j in 0..n {
+            for i in 0..n {
+                let Some(w) = get(&cells, i, j) else { continue };
+                let (mut gx, mut kx, mut gy, mut ky) = (0.0, 0.0, 0.0, 0.0);
+                for d in -1..=1 {
+                    if let (Some(a), Some(b)) = (get(&cells, i - 1, j + d), get(&cells, i + 1, j + d)) { gx += (b.0 - a.0) / 2.0; kx += 1.0; }
+                    if let (Some(a), Some(b)) = (get(&cells, i + d, j - 1), get(&cells, i + d, j + 1)) { gy += (b.0 - a.0) / 2.0; ky += 1.0; }
+                }
+                if kx == 0.0 {
+                    if let Some(b) = get(&cells, i + 1, j) { gx = b.0 - w.0; kx = 1.0; } else if let Some(a) = get(&cells, i - 1, j) { gx = w.0 - a.0; kx = 1.0; }
+                }
+                if ky == 0.0 {
+                    if let Some(b) = get(&cells, i, j + 1) { gy = b.0 - w.0; ky = 1.0; } else if let Some(a) = get(&cells, i, j - 1) { gy = w.0 - a.0; ky = 1.0; }
+                }
+                let grad = [if kx > 0.0 { gx / kx } else { 0.0 }, if ky > 0.0 { gy / ky } else { 0.0 }];
+                flow[(j * n + i) as usize] = shown_flow(w.1, grad);
+            }
+        }
+        for j in 0..n {
+            for i in 0..n {
+                if get(&cells, i, j).is_none() { continue; }
+                let (mut sum, mut k) = ([0.0f32; 2], 0.0f32);
+                for dj in -1..=1 { for di in -1..=1 {
+                    if get(&cells, i + di, j + dj).is_some() {
+                        let f = flow[((j + dj) * n + i + di) as usize];
+                        sum = [sum[0] + f[0], sum[1] + f[1]];
+                        k += 1.0;
+                    }
+                } }
+                if let Some(c) = cells[(j * n + i) as usize].as_mut() { c.1 = [sum[0] / k, sum[1] / k]; }
+            }
+        }
+        let shown = Field::new(cx, cy, |x, y| shows_water(s, x, y));
+        let wet = Field::new(cx, cy, |x, y| 0.4 * shown.get(x, y) + 0.15 * (shown.get(x - 1, y) + shown.get(x + 1, y) + shown.get(x, y - 1) + shown.get(x, y + 1)));
+        WaterField { x0, y0, n, cells, wet }
+    }
+
+    fn cell(&self, s: &SimState, x: i32, y: i32) -> CellWater {
+        let (i, j) = (x - self.x0, y - self.y0);
+        if i < 0 || j < 0 || i >= self.n || j >= self.n {
+            return vertex_water(s, x, y, 1);
+        }
+        self.cells[(j * self.n + i) as usize]
+    }
+}
+
+/// The current drawn on the surface. Engines report creek speeds of a few cm/s or none (much of
+/// a reach is routed cell to cell without face fluxes), which reads as still water. Where the
+/// surface slopes, the water is drawn running downhill at a speed that grows with the slope;
+/// level lakes and ponds stay still.
+fn shown_flow(vel: [f32; 2], grad: [f32; 2]) -> [f32; 2] {
+    let slope = (grad[0] * grad[0] + grad[1] * grad[1]).sqrt();
+    let speed = smooth_step(FLOW_SLOPE[0], FLOW_SLOPE[1], slope) * (0.3 + 3.0 * slope).min(0.8);
+    let sim = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
+    if sim >= speed || slope <= 0.0 {
+        return vel;
+    }
+    [-grad[0] / slope * speed, -grad[1] / slope * speed]
+}
+const FLOW_SLOPE: [f32; 2] = [0.0008, 0.006];
+
+fn water_sample(s: &SimState, field: &WaterField, x: f32, y: f32, step: usize) -> CellWater {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
     let (u, v) = (x - ix as f32, y - iy as f32);
-    if u == 0.0 && v == 0.0 { return vertex_water(s, ix, iy, step as i32); }
+    if u == 0.0 && v == 0.0 { return if step == 1 { field.cell(s, ix, iy) } else { vertex_water(s, ix, iy, step as i32) }; }
     let (mut level, mut vx, mut vy, mut white, mut ice, mut total) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for dy in 0..=1 { for dx in 0..=1 {
         let weight = (if dx == 0 { 1.0 - u } else { u }) * (if dy == 0 { 1.0 - v } else { v });
         if weight <= 0.0 { continue; }
-        if let Some(w) = vertex_water(s, ix + dx, iy + dy, 1) {
+        if let Some(w) = field.cell(s, ix + dx, iy + dy) {
             level += w.0 * weight;
             vx += w.1[0] * weight;
             vy += w.1[1] * weight;
@@ -201,11 +315,13 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     // Sample one vertex beyond the chunk on every side, so shorelines extrapolate across seams.
     let ext = side + 2;
+    let field = WaterField::new(s, cx, cy);
+    let ground_field = GroundField::new(s, cx, cy);
     let mut own = Vec::with_capacity(ext * ext);
     let mut any = false;
     for j in -1..=side as i32 {
         for i in -1..=side as i32 {
-            let w = water_sample(s, x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, step);
+            let w = water_sample(s, &field, x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, step);
             any |= w.is_some();
             own.push(w);
         }
@@ -214,6 +330,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
         return None;
     }
     let mut verts: Vec<WV> = Vec::with_capacity(side * side);
+    let mut grounds: Vec<f32> = Vec::with_capacity(side * side);
     for j in 0..side {
         for i in 0..side {
             let (x, y) = (x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing);
@@ -221,7 +338,15 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             // A dry vertex takes the level of the water beside it, so the waterline falls where
             // that level meets the ground between them.
             let (level, vel, white, ice) = match at_ext(0, 0) {
-                Some(w) => w,
+                Some(w) => {
+                    let mut drop = 0.0f32;
+                    for (di, dj) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        if let Some(o) = at_ext(di, dj) {
+                            drop = drop.max((w.0 - o.0).abs() / spacing);
+                        }
+                    }
+                    (w.0, w.1, w.2.max(smooth_step(FALL_WHITE_M[0], FALL_WHITE_M[1], drop)), w.3)
+                }
                 None => {
                     let (mut l, mut k, mut vx, mut vy, mut ice) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
                     for (di, dj) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
@@ -236,26 +361,32 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
                     if k > 0.0 { (l / k, [vx / k, vy / k], 0.0, ice / k) } else { (f32::NEG_INFINITY, [0.0, 0.0], 0.0, 0.0) }
                 }
             };
-            let ground = if subdivisions > 1 { canal_ground(s, x, y) } else { terrain_shown(s, x, y, step) };
-            let ground = ground + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
+            let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_shown(s, x, y, step) };
+            let ground = bare + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
             let depth = if level.is_finite() { level - ground } else { -1.0 };
-            let (wx, wz) = ((x - s.height.width() as f32 / 2.0) * CELL_SIZE, (y - s.height.height() as f32 / 2.0) * CELL_SIZE);
+            let edge = depth.min((field.wet.bilinear(x, y) - WET_EDGE) * EDGE_M);
+            let (wx, wz) = ((x + GRID_OFFSET - s.height.width() as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - s.height.height() as f32 / 2.0) * CELL_SIZE);
             // Clip the actual surface against the bank; lifting dry vertices to the bank
             // before clipping bends shore triangles up over the soil.
             let shown = if level.is_finite() { level } else { ground - 1.0 };
-            verts.push(WV { p: [wx, shown + SURFACE_LIFT, wz], depth, white, vel, ice });
+            // Colour depth fades to nothing at the outline, so shallow tint and lace sit on the edge.
+            let depth = depth.min(edge.max(0.0) * 6.0);
+            verts.push(WV { p: [wx, shown + SURFACE_LIFT, wz], edge, depth, white, vel, ice });
+            grounds.push(bare);
         }
     }
     let (mut pos, mut col, mut uv, mut uv1) = (vec![], vec![], vec![], vec![]);
     for j in 0..side - 1 {
         for i in 0..side - 1 {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
-            for tri in [[a, c, b], [b, c, e]] {
+            // Split each square along the same diagonal as the terrain under it.
+            let tris = if split_ae(grounds[a], grounds[b], grounds[c], grounds[e]) { [[a, c, e], [a, e, b]] } else { [[a, c, b], [b, c, e]] };
+            for tri in tris {
                 let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
-                if t.iter().all(|v| v.depth <= 0.0) {
+                if t.iter().all(|v| v.edge <= 0.0) {
                     continue;
                 }
-                let poly = clip_poly(&t, 0.0);
+                let poly = clip_poly(&t);
                 for k in 1..poly.len().saturating_sub(1) {
                     for v in [&poly[0], &poly[k], &poly[k + 1]] {
                         pos.push(v.p);

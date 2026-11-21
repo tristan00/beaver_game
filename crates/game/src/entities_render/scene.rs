@@ -52,8 +52,10 @@ pub enum StructKind {
 
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
     let (w, d) = (h.width(), h.height());
-    let gx = (x / CELL + w as f32 / 2.0).clamp(0.0, w as f32 - 1.001);
-    let gz = (z / CELL + d as f32 / 2.0).clamp(0.0, d as f32 - 1.001);
+    // Grid values sit at cell centres (terrain_render::GRID_OFFSET).
+    let off = crate::terrain_render::GRID_OFFSET;
+    let gx = (x / CELL + w as f32 / 2.0 - off).clamp(0.0, w as f32 - 1.001);
+    let gz = (z / CELL + d as f32 / 2.0 - off).clamp(0.0, d as f32 - 1.001);
     let (x0, z0) = (gx.floor() as usize, gz.floor() as usize);
     let (fx, fz) = (gx - x0 as f32, gz - z0 as f32);
     let at = |x: usize, z: usize| *h.get(x, z).unwrap_or(&0.0);

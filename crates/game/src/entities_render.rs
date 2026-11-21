@@ -44,6 +44,7 @@ impl Plugin for EntitiesRenderPlugin {
                     canopy_key,
                     update_tree_lod,
                     sway_trees,
+                    topple_trees,
                     spin_wheels,
                 )
                     .chain()
@@ -176,7 +177,7 @@ pub const ENTITY_GAIN: f32 = 0.55;
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
-    let tree_tints = [[1.0, 1.0, 1.0], [0.94, 0.98, 0.93], [0.98, 0.95, 0.90], [0.91, 0.94, 0.91]].map(|[r,g,b]| {
+    let tree_tints = [[1.0, 1.0, 1.0], [0.86, 0.96, 0.84], [1.05, 0.95, 0.80], [0.80, 0.88, 0.86]].map(|[r,g,b]| {
         materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * r, ENTITY_GAIN * g, ENTITY_GAIN * b), perceptual_roughness: 1.0, reflectance: 0.0, ..default() })
     });
     // Old living trees keep healthy foliage; dead snags have their own bare mesh.
@@ -613,8 +614,8 @@ fn update_tree_lod(
         let tree_season = Season::at(season.phase + offset / Season::COUNT as f32);
         let crown = t.translation + Vec3::Y * 3.0 * t.scale.y;
         let radius = 2.5 * t.scale.x.max(t.scale.z);
+        // Only trees whose crown stands between the camera and something to keep in view.
         let cutaway = canopy.0 || c.xz().distance_squared(t.translation.xz()) < radius * radius || clear.iter().any(|p| {
-            if p.xz().distance_squared(t.translation.xz()) < 100.0 { return true; }
             let ray = c - *p;
             let along = ((crown - *p).dot(ray) / ray.length_squared().max(0.01)).clamp(0.0, 1.0);
             crown.distance_squared(*p + ray * along) < radius * radius
@@ -629,15 +630,39 @@ fn update_tree_lod(
     }
 }
 
+/// A falling tree (see `sim_sync::spawn_topple`).
+#[derive(Component)]
+struct Topple {
+    start: f32,
+    base: Transform,
+}
+
+const TOPPLE_S: f32 = 1.5;
+
+/// The tree leans slowly, then falls fast (gravity), bounces once and is gone as the logs show.
+fn topple_trees(mut commands: Commands, clock: Res<RenderClock>, mut q: Query<(Entity, &mut Transform, &Topple)>) {
+    for (e, mut tr, t) in &mut q {
+        let u = ((clock.0 - t.start) / TOPPLE_S).max(0.0);
+        if u >= 1.15 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let fall = if u < 1.0 { u * u * u } else { 1.0 - 0.06 * ((u - 1.0) / 0.15 * std::f32::consts::PI).sin() };
+        let axis = t.base.rotation * Vec3::Z;
+        tr.rotation = Quat::from_axis_angle(axis, -fall * std::f32::consts::FRAC_PI_2 * 0.97) * t.base.rotation;
+    }
+}
+
 fn sway_trees(clock: Res<RenderClock>, mut trees: Query<(&mut Transform, &TreeLod, &Sway)>) {
     let t = clock.0;
-    let gust = 1.0 + 0.45 * (t * 0.23).sin();
     for (mut tr, lod, base) in &mut trees {
         let want = if lod.lod == 0 {
             let p = tr.translation;
             let ph = p.x * 0.21 + p.z * 0.13;
-            let a = 0.016 * gust * ((t * 1.1 + ph).sin() + 0.35 * (t * 2.6 + ph * 1.7).sin());
-            let b = 0.008 * gust * (t * 0.9 + ph * 1.3).cos();
+            // Gusts roll across the forest as a slow wave, so neighbouring crowns move together.
+            let gust = 1.0 + 0.7 * (t * 0.45 - p.x * 0.04 - p.z * 0.025).sin().max(-0.6);
+            let a = 0.026 * gust * ((t * 1.1 + ph).sin() + 0.35 * (t * 2.6 + ph * 1.7).sin());
+            let b = 0.013 * gust * (t * 0.9 + ph * 1.3).cos();
             Quat::from_rotation_z(a) * Quat::from_rotation_x(b) * base.0
         } else {
             base.0

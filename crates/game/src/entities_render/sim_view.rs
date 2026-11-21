@@ -19,7 +19,8 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
         Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
         Some(Surface::Water | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
-        _ => 0.0,
+        // A dry river cell is drawn with its channel cut; walk on the drawn bed.
+        _ => -crate::terrain_render::channel_cut(sim, cell.0 as i32, cell.1 as i32),
     }
 }
 

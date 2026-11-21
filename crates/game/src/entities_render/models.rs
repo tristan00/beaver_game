@@ -172,6 +172,8 @@ impl Season {
     fn phase(self) -> f32 { self.0 as f32 / Self::COUNT as f32 }
 }
 
+const FOLIAGE_SATURATION: f32 = 1.22;
+
 fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
     let keys = match sp {
         Species::Aspen => [(0x77A45B,0xB1CC7B),(0x568347,0x9DB96B),(0xA98E49,0xD1B56C),(0x917A51,0xB7A377)],
@@ -181,7 +183,10 @@ fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
     };
     let dark = keys.map(|(a,_)| crate::palette::rgb(a));
     let light = keys.map(|(_,b)| crate::palette::rgb(b));
-    let colour = |k: &[_; 4]| crate::palette::display_linear(crate::seasonal::blend(k,s.phase(),crate::palette::mix));
+    // Foliage a little richer than the palette keys: under the strong ambient light, crowns at
+    // the keys' saturation read as a pale olive haze.
+    let richer = |c: [f32; 3]| { let g = (c[0] + c[1] + c[2]) / 3.0; c.map(|v| (g + (v - g) * FOLIAGE_SATURATION).clamp(0.0, 1.0)) };
+    let colour = |k: &[_; 4]| crate::palette::display_linear(richer(crate::seasonal::blend(k,s.phase(),crate::palette::mix)));
     (colour(&dark), colour(&light))
 }
 
@@ -196,7 +201,8 @@ fn trunk_color(sp: Species) -> [f32; 3] {
 
 pub fn tree_cutaway_mesh(sp: Species) -> Mesh {
     let mut mb = Mb::new();
-    let trunk = trunk_color(sp);
+    // Dark, so a cut-away reads as a stump in shade rather than a pale shape on the grass.
+    let trunk = mix(trunk_color(sp), hex(0x3e3024), 0.8);
     root_flare(&mut mb, 0.2, trunk);
     mb.cyl(v(0.0,-0.1,0.0),v(0.0,0.55,0.0),0.2,0.1,trunk,trunk,7);
     for i in 0..3 {
@@ -230,12 +236,12 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 root_flare(&mut mb, 0.19, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 2.9, 0.0), 0.19, 0.1, trunk, trunk, 7);
                 bark_eyes(&mut mb, 2.9, 0.19, 0.1, 9, 11);
-                if leaves < 0.85 {
-                    twigs(&mut mb, v(0.0, 2.2, 0.0), 6, 1.3, 1.7, hex(0x9B8469), 1);
+                if leaves < TWIG_LEAVES {
+                    twigs(&mut mb, v(0.0, 2.2, 0.0), 6, 1.0, 1.7, hex(0x9B8469), 1);
                 }
                 if !bare {
-                    crown(&mut mb, v(0.0, 3.45, 0.0), v(0.95, 1.35, 0.95) * leaf_scale, 11, 0.52 * leaf_scale, dark, light, 3);
-                    crown(&mut mb, v(0.1, 4.45, 0.0), v(0.45, 0.5, 0.45) * leaf_scale, 4, 0.36 * leaf_scale, dark, light, 4);
+                    crown(&mut mb, v(0.0, 3.45, 0.0), v(0.78, 1.35, 0.78) * leaf_scale, 11, 0.48 * leaf_scale, dark, light, 3);
+                    crown(&mut mb, v(0.1, 4.45, 0.0), v(0.4, 0.5, 0.4) * leaf_scale, 4, 0.33 * leaf_scale, dark, light, 4);
                 }
             }
             Species::Maple => {
@@ -243,8 +249,8 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 mb.cyl(v(0.0, 1.4, 0.0), v(0.7, 2.4, 0.2), 0.14, 0.08, trunk, trunk, 6);
                 mb.cyl(v(0.0, 1.4, 0.0), v(-0.6, 2.3, -0.3), 0.14, 0.08, trunk, trunk, 6);
                 mb.cyl(v(0.0, 1.5, 0.0), v(0.15, 2.5, -0.75), 0.12, 0.07, trunk, trunk, 6);
-                if leaves < 0.85 {
-                    twigs(&mut mb, v(0.0, 1.8, 0.0), 8, 1.5, 1.9, hex(0x6b4a30), 2);
+                if leaves < TWIG_LEAVES {
+                    twigs(&mut mb, v(0.0, 1.8, 0.0), 7, 1.3, 1.9, hex(0x6b4a30), 2);
                 }
                 if !bare {
                     crown(&mut mb, v(0.0, 3.05, 0.0), v(1.5, 1.2, 1.5) * leaf_scale, 13, 0.72 * leaf_scale, dark, light, 7);
@@ -252,10 +258,11 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                     let bloom = crate::seasonal::bloom(season.phase());
                     if bloom > 0.1 {
                         let mut r = Rng(77);
-                        for _ in 0..11 {
-                            let (a, e) = (r.range(0.0, TAU), r.range(0.1, 1.1));
-                            let p = v(a.cos() * e.cos() * 1.7, 3.1 + e.sin() * 1.25, a.sin() * e.cos() * 1.7);
-                            mb.ellipsoid(p, v(0.16, 0.13, 0.16) * bloom, hex(0xF3C0BC));
+                        // Many small flecks of blossom on the crown's surface, not a few balls.
+                        for _ in 0..34 {
+                            let (a, e) = (r.range(0.0, TAU), r.range(0.15, 1.2));
+                            let p = v(a.cos() * e.cos() * 1.62, 3.05 + e.sin() * 1.2, a.sin() * e.cos() * 1.62);
+                            mb.ellipsoid(p, v(0.075, 0.05, 0.075) * bloom, mix(hex(0xF3C0BC), hex(0xFFF0EC), r.range(0.0, 0.5)));
                         }
                     }
                 }
@@ -275,22 +282,23 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
                 root_flare(&mut mb, 0.28, trunk);
                 mb.cyl(v(0.0, -0.1, 0.0), v(0.12, 1.3, 0.0), 0.28, 0.2, trunk, trunk, 7);
                 mb.cyl(v(0.12, 1.2, 0.0), v(0.0, 2.3, 0.06), 0.2, 0.14, trunk, trunk, 7);
-                if leaves < 0.85 {
-                    twigs(&mut mb, v(0.0, 2.3, 0.0), 9, 1.2, 1.3, hex(0x7d6a44), 2);
+                if leaves < TWIG_LEAVES {
+                    twigs(&mut mb, v(0.0, 2.3, 0.0), 8, 1.2, 1.3, hex(0x7d6a44), 2);
                     for i in 0..9 {
                         let a = i as f32 / 9.0 * TAU;
                         let p = v(a.cos() * 1.5, 3.4, a.sin() * 1.5);
-                        mb.cyl(p, p + v(0.0, -1.9, 0.0), 0.04, 0.015, light, light, 4);
+                        mb.cyl(p, p + v(a.cos() * 0.25, -1.1, a.sin() * 0.25), 0.03, 0.01, mix(light, dark, 0.4), mix(light, dark, 0.4), 4);
                     }
                 }
                 if !bare {
                     crown(&mut mb, v(0.0, 3.1, 0.0), v(1.55, 0.95, 1.55) * leaf_scale, 10, 0.6 * leaf_scale, dark, light, 9);
-                    mb.lathe(Mat4::IDENTITY, &[(1.7 * leaf_scale, 0.6), (2.05 * leaf_scale, 1.2), (1.95 * leaf_scale, 2.2), (1.45 * leaf_scale, 3.0)], 14, mix(dark, light, 0.2), light, true);
+                    // A short shoulder of leaves and long separate strands, not a closed bell.
+                    mb.lathe(Mat4::IDENTITY, &[(1.75 * leaf_scale, 1.9), (2.0 * leaf_scale, 2.4), (1.45 * leaf_scale, 3.0)], 14, mix(dark, light, 0.2), light, true);
                     let mut r = Rng(19);
-                    for i in 0..14 {
-                        let a = i as f32 / 14.0 * TAU + r.range(-0.1, 0.1);
-                        let (rr, y) = (r.range(1.75, 2.0), r.range(0.45, 0.8));
-                        mb.ellipsoid_g(v(a.cos() * rr * leaf_scale, y, a.sin() * rr * leaf_scale), v(0.13, 0.32, 0.13) * leaf_scale, mix(dark, light, 0.15), mix(dark, light, 0.5), 5, 3);
+                    for i in 0..22 {
+                        let a = i as f32 / 22.0 * TAU + r.range(-0.1, 0.1);
+                        let (rr, y) = (r.range(1.6, 2.0), r.range(0.8, 1.5));
+                        mb.ellipsoid_g(v(a.cos() * rr * leaf_scale, y, a.sin() * rr * leaf_scale), v(0.11, 0.55, 0.11) * leaf_scale, mix(dark, light, 0.1), mix(dark, light, 0.45), 5, 3);
                     }
                 }
             }
@@ -330,7 +338,7 @@ pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
 
 fn crown(mb: &mut Mb, c: Vec3, r: Vec3, n: usize, clump: f32, dark: [f32; 3], light: [f32; 3], seed: u32) {
     let mut rng = Rng(seed * 7919 + 13);
-    mb.ellipsoid_g(c, r * 0.8, mix(dark, hex(INK), 0.08), mix(dark, light, 0.55), 9, 6);
+    mb.ellipsoid_g(c, r * 0.8, mix(dark, hex(INK), 0.14), mix(dark, light, 0.4), 9, 6);
     for i in 0..n {
         let y = 0.95 - (i as f32 + 0.5) / n as f32 * 1.45;
         let ring = (1.0 - y * y).max(0.0).sqrt();
@@ -339,8 +347,10 @@ fn crown(mb: &mut Mb, c: Vec3, r: Vec3, n: usize, clump: f32, dark: [f32; 3], li
         let s = clump * rng.range(0.82, 1.15) * (1.0 - 0.15 * y.max(0.0));
         let up = (y * 0.5 + 0.5).clamp(0.0, 1.0);
         let j = rng.range(-0.12, 0.12);
-        let lo = mix(dark, light, (0.05 + 0.3 * up + j).clamp(0.0, 1.0));
-        let hi = mix(dark, light, (0.75 + 0.25 * up + j).clamp(0.0, 1.0));
+        // Clumps darken toward their undersides and the crown's base, so a crown has form in
+        // mostly ambient light.
+        let lo = mix(mix(dark, hex(INK), 0.16 * (1.0 - up)), light, (0.02 + 0.3 * up + j).clamp(0.0, 1.0));
+        let hi = mix(dark, light, (0.5 + 0.35 * up + j).clamp(0.0, 1.0));
         mb.ellipsoid_g(p, v(s, s * 0.82, s), lo, hi, 8, 5);
     }
 }
@@ -360,17 +370,26 @@ fn bark_eyes(mb: &mut Mb, h: f32, r0: f32, r1: f32, n: usize, seed: u32) {
     }
 }
 
+/// Leaf cover below which bare branches are drawn; above it they would poke through the crown.
+const TWIG_LEAVES: f32 = 0.4;
+
+/// Bare branches: each limb rises and forks, thinning to fine tips, so a winter crown reads as
+/// a branching tree rather than a bundle of straight sticks.
 fn twigs(mb: &mut Mb, base: Vec3, n: usize, reach: f32, rise: f32, col: [f32; 3], twig_levels: u32) {
     let mut r = Rng(31 + n as u32);
+    let tip_col = mix(col, hex(0xb8a68c), 0.35);
     for i in 0..n {
-        let a = i as f32 / n as f32 * TAU + r.range(-0.2, 0.2);
-        let mid = base + v(a.cos() * reach * 0.45, rise * 0.55, a.sin() * reach * 0.45);
-        let tip = base + v(a.cos() * reach, rise, a.sin() * reach);
-        mb.cyl(base, mid, 0.09, 0.06, col, col, 5);
-        mb.cyl(mid, tip, 0.06, 0.025, col, col, 5);
-        if twig_levels > 1 {
-            let a2 = a + 0.7;
-            mb.cyl(mid, mid + v(a2.cos() * 0.6, 0.55, a2.sin() * 0.6), 0.04, 0.02, col, col, 4);
+        let a = i as f32 / n as f32 * TAU + r.range(-0.25, 0.25);
+        let lift = r.range(0.8, 1.15);
+        let mid = base + v(a.cos() * reach * 0.4, rise * 0.45 * lift, a.sin() * reach * 0.4);
+        let tip = base + v(a.cos() * reach * 0.85, rise * lift, a.sin() * reach * 0.85);
+        mb.cyl(base, mid, 0.07, 0.045, col, col, 5);
+        mb.cyl(mid, tip, 0.045, 0.012, col, tip_col, 4);
+        for k in 0..twig_levels {
+            let a2 = a + if k == 0 { 0.6 } else { -0.55 } + r.range(-0.15, 0.15);
+            let fork = mid.lerp(tip, 0.3 + 0.3 * k as f32);
+            let end = fork + v(a2.cos() * reach * 0.35, rise * 0.35, a2.sin() * reach * 0.35);
+            mb.cyl(fork, end, 0.03, 0.008, col, tip_col, 4);
         }
     }
 }
@@ -918,11 +937,10 @@ fn stump_low() -> Mb {
 }
 
 pub fn mud_mesh() -> Mesh {
+    // A low, lobed spread of wet mud: no single dome (a dome with clods round it reads as a turtle).
     let mut mb = Mb::new();
-    mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(1.5, 0.55, 1.3), hex(0x3f2c1b), hex(0x7a5a3b), 12, 6);
-    mb.ellipsoid_g(v(0.2, 0.28, 0.1), v(0.9, 0.3, 0.8), hex(0x5a4129), hex(0x93714b), 10, 5);
-    for (x, z, s) in [(1.3, 0.5, 0.35), (-1.2, -0.6, 0.3), (0.4, -1.25, 0.28), (-0.5, 1.2, 0.25)] {
-        mb.ellipsoid(v(x, 0.05, z), v(s, s * 0.45, s * 0.8), hex(0x5a4129));
+    for (x, z, rx, rz, hgt) in [(0.0, 0.0, 1.35, 0.85, 0.11), (0.75, 0.45, 0.8, 0.6, 0.09), (-0.8, 0.3, 0.7, 0.75, 0.08), (-0.2, -0.65, 0.9, 0.5, 0.09), (0.9, -0.5, 0.45, 0.4, 0.07)] {
+        mb.ellipsoid_g(v(x, 0.0, z), v(rx, hgt, rz), hex(0x3f2c1b), hex(0x5e4430), 10, 4);
     }
     mb.build()
 }

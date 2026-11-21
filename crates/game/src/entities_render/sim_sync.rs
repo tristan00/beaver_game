@@ -26,7 +26,9 @@ pub struct Motion {
 }
 
 pub const BEAVER_SIZE: f32 = WORLD_SCALE * 0.9;
-pub const TREE_SCALE: f32 = 3.5;
+/// Trees are drawn smaller than life (a real aspen is ~20 beavers tall) so crowns about 4 m
+/// wide leave the ground, streams and beavers visible between them.
+pub const TREE_SCALE: f32 = 2.0;
 pub const BUILDING_SIZE: f32 = WORLD_SCALE * 0.82;
 
 const SPREAD: f32 = 0.28;
@@ -216,6 +218,17 @@ pub enum ResourceKindTag {
     Plant,
 }
 
+/// A felled tree falls before its logs show: the standing tree is drawn again, tipping toward
+/// where the logs lie (+x of the felled mesh), and removed when it lands.
+fn spawn_topple(commands: &mut Commands, models: &Models, sim: &sim::SimState, r: &sim::resources::Resource, season: models::Season, now: f32) {
+    let c = r.cell;
+    let sp = species_at(sim, c);
+    let scale = stage_scale(sim::forestry::TreeStage::Mature) * TREE_SCALE * (0.8 + 0.4 * hash01(c.0, c.1, 5));
+    let tr = res_transform(sim, r, scale);
+    let variant = ((hash01(c.0, c.1, 17) * 4.0) as usize).min(3);
+    commands.spawn((SimEntity, Mesh3d(models.tree(sp, season, 0)), MeshMaterial3d(models.tree_tints[variant].clone()), tr, super::Topple { start: now, base: tr }));
+}
+
 pub fn res_sig(r: &sim::resources::Resource) -> ResSig {
     let q = |n: f32| ((r.amount / r.max_amount.max(1e-3)).clamp(0.0, 1.0) * n).ceil() as u8;
     match r.kind {
@@ -313,6 +326,7 @@ pub(super) fn sync_sim_resources(
     season: Res<CurrentSeason>,
     models: Option<Res<Models>>,
     flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>,
+    clock: Res<super::RenderClock>,
 ) {
     let Some(models) = models else { return };
     let generation = flow.map_or(0, |f| f.generation);
@@ -341,7 +355,10 @@ pub(super) fn sync_sim_resources(
         let sig = res_sig(r);
         match st.res.get(&r.id).copied() {
             Some((_, old)) if old == sig => {}
-            Some((e, _)) => {
+            Some((e, old)) => {
+                if matches!(old, ResSig::Tree(_)) && matches!(sig, ResSig::Felled(..)) && !r.snag {
+                    spawn_topple(&mut commands, &models, sim, r, season.0, clock.0);
+                }
                 let (mesh, scale, lod) = res_visual(&models, sim, r, season.0);
                 let mut ec = commands.entity(e);
                 let tr = res_transform(sim, r, scale);

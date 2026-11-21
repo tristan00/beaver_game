@@ -198,7 +198,7 @@ pub fn hydrology_lod(s: &SimState, cx: usize, cy: usize, cam: Vec3) -> usize {
     for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
         for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
             let i = y * s.height.width() + x;
-            if s.water.depth.as_slice()[i] > 0.003 || s.water.riverbed.as_slice()[i] > 0.1 || s.water.canal.as_slice()[i] {
+            if s.water.depth.as_slice()[i] > 0.003 || s.water.riverbed.as_slice()[i] > 0.1 || s.water.canal.as_slice()[i] || s.world.river.as_slice()[i] {
                 return 1;
             }
         }
@@ -209,17 +209,69 @@ pub fn hydrology_lod(s: &SimState, cx: usize, cy: usize, cam: Vec3) -> usize {
 pub fn chunk_centre(s: &SimState, cx: usize, cy: usize) -> Vec3 {
     let (w, d) = (s.height.width() as f32, s.height.height() as f32);
     Vec3::new(
-        (cx * CHUNK) as f32 + CHUNK as f32 / 2.0 - w / 2.0,
+        (cx * CHUNK) as f32 + CHUNK as f32 / 2.0 + GRID_OFFSET - w / 2.0,
         8.0,
-        (cy * CHUNK) as f32 + CHUNK as f32 / 2.0 - d / 2.0,
+        (cy * CHUNK) as f32 + CHUNK as f32 / 2.0 + GRID_OFFSET - d / 2.0,
     ) * Vec3::new(CELL_SIZE, 1.0, CELL_SIZE)
 }
 
+/// Grid value (x, y) is drawn at the centre of cell (x, y), where that cell's beavers, plants
+/// and buildings stand: world x = (x + GRID_OFFSET - width / 2) * CELL_SIZE.
+pub const GRID_OFFSET: f32 = 0.5;
+
 pub fn world_pos(s: &SimState, x: i32, y: i32) -> (f32, f32) {
     (
-        (x as f32 - s.height.width() as f32 / 2.0) * CELL_SIZE,
-        (y as f32 - s.height.height() as f32 / 2.0) * CELL_SIZE,
+        (x as f32 + GRID_OFFSET - s.height.width() as f32 / 2.0) * CELL_SIZE,
+        (y as f32 + GRID_OFFSET - s.height.height() as f32 / 2.0) * CELL_SIZE,
     )
+}
+
+/// The drawn ground on the map's river cells sits this far below the simulated ground, so a
+/// creek a few centimetres deep reads as water in a channel with banks. Display only: the water
+/// level, volumes and walking heights come from the simulation.
+pub const CHANNEL_CUT_M: f32 = 0.3;
+
+fn river_cell(s: &SimState, x: i32, y: i32) -> f32 {
+    let (w, h) = (s.height.width() as i32, s.height.height() as i32);
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return 0.0;
+    }
+    let i = (y * w + x) as usize;
+    (s.world.river.as_slice()[i] && !s.water.canal.as_slice()[i] && s.water.dam_height.as_slice()[i] <= 0.0) as i32 as f32
+}
+
+/// The river mask softened over each cell's four neighbours, so the channel's outline is a
+/// smooth band along the cells instead of their square staircase.
+fn river_mask(s: &SimState, x: i32, y: i32) -> f32 {
+    0.4 * river_cell(s, x, y) + 0.15 * (river_cell(s, x - 1, y) + river_cell(s, x + 1, y) + river_cell(s, x, y - 1) + river_cell(s, x, y + 1))
+}
+
+fn cut_of_mask(m: f32) -> f32 {
+    CHANNEL_CUT_M * smooth(0.25, 0.7, m)
+}
+
+pub fn channel_cut(s: &SimState, x: i32, y: i32) -> f32 {
+    cut_of_mask(river_mask(s, x, y))
+}
+
+pub fn bilinear(f: impl Fn(i32, i32) -> f32, x: f32, y: f32) -> f32 {
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (u, v) = (x - ix as f32, y - iy as f32);
+    let top = f(ix, iy) + (f(ix + 1, iy) - f(ix, iy)) * u;
+    let bot = f(ix, iy + 1) + (f(ix + 1, iy + 1) - f(ix, iy + 1)) * u;
+    top + (bot - top) * v
+}
+
+/// The drawn ground at grid value (x, y): simulated height less the channel cut.
+pub fn ground_at(s: &SimState, x: i32, y: i32) -> f32 {
+    at(&s.height, x, y) - channel_cut(s, x, y)
+}
+
+/// Which diagonal splits a grid square with corners a (x, y), b (x+1, y), c (x, y+1),
+/// e (x+1, y+1): true joins a-e, false joins b-c. The lower pair is joined so valleys and
+/// creeks run along triangle edges instead of being cut into a chain of diamonds.
+pub fn split_ae(a: f32, b: f32, c: f32, e: f32) -> bool {
+    a + e < b + c - 1e-4
 }
 
 pub fn chunk_dims(s: &SimState) -> (usize, usize) {
@@ -498,7 +550,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
 
     let patch = patch_noise(x as f32, y as f32, 14.0, 1) * 0.55 + patch_noise(x as f32, y as f32, 6.0, 2) * 0.25;
     let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
-    let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.2).clamp(0.0, 1.0);
+    let g = (GRADE_MID + patch * GRADE_PATCH + sunny * GRADE_SUN - veg * 0.12 - wet2 * 0.1).clamp(0.0, 1.0);
     let mut c = if g < 0.5 { mix(p.grass_deep, p.grass, g * 2.0) } else { mix(p.grass, p.grass_light, g * 2.0 - 1.0) };
     let rock = rock_weight(slope);
     let rock_c = mix(STONE_SHADE_ALBEDO, p.rock, (0.55 + sunny * 0.9 + patch * 0.3).clamp(0.0, 1.0));
@@ -507,9 +559,9 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let litter = smooth(0.15, 0.6, patch_noise(x as f32, y as f32, 5.0, 3) * 0.5 + 0.5) * p.autumn * veg.max(0.4);
     c = mix(c, pal::AUTUMN_RUST, litter * 0.35 * (1.0 - rock));
     c = mix(c, rock_c, rock);
-    let wetland = smooth(0.05, 0.3, wet2) * (1.0 - smooth(0.4, 0.6, t));
+    let wetland = smooth(0.12, 0.45, wet2) * 0.7 * (1.0 - smooth(0.4, 0.6, t));
     c = mix(c, p.wetland, wetland * (1.0 - rock));
-    c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.7);
+    c = mix(c, p.mud, smooth(0.4, 1.0, wet1) * 0.4);
     let channel = stream_bed(s, x, y);
     c = mix(c, mix(STREAM_GRAVEL, STREAM_MUD, smooth(0.0, 0.3, depth)), channel);
     let bed = mix(STREAM_GRAVEL, STREAM_MUD, smooth(0.0, 0.35, depth));
@@ -561,13 +613,19 @@ fn terrain_range(s: &SimState) -> (f32, f32) {
     (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, max_height(s))
 }
 
+/// How finely a chunk is drawn: canals 4 vertices per cell, chunks with a mapped river (or
+/// one within two cells) RIVER_SUBDIVISIONS, so banks curve instead of following the cells'
+/// staircase.
+pub const RIVER_SUBDIVISIONS: usize = 2;
 pub fn canal_subdivisions(s: &SimState, cx: usize, cy: usize) -> usize {
-    for y in (cy * CHUNK).saturating_sub(1)..((cy + 1) * CHUNK + 2).min(s.height.height()) {
-        for x in (cx * CHUNK).saturating_sub(1)..((cx + 1) * CHUNK + 2).min(s.height.width()) {
+    let mut fine = 1;
+    for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
+        for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
             if *s.water.canal.get(x, y).unwrap() { return 4; }
+            if *s.world.river.get(x, y).unwrap() { fine = RIVER_SUBDIVISIONS; }
         }
     }
-    1
+    fine
 }
 
 pub fn terrain_sample(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
@@ -575,20 +633,84 @@ pub fn terrain_sample(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     let (gx, gy) = ((x / st).floor(), (y / st).floor());
     let (u, v) = (x / st - gx, y / st - gy);
     let (ix, iy) = (gx as i32 * step as i32, gy as i32 * step as i32);
-    let h = |dx: i32, dy: i32| at(&s.height, ix + dx * step as i32, iy + dy * step as i32);
-    if u + v <= 1.0 {
-        let (a, b, c) = (h(0, 0), h(1, 0), h(0, 1));
+    let h = |dx: i32, dy: i32| ground_at(s, ix + dx * step as i32, iy + dy * step as i32);
+    let (a, b, c, e) = (h(0, 0), h(1, 0), h(0, 1), h(1, 1));
+    if split_ae(a, b, c, e) {
+        if u >= v { a + u * (b - a) + v * (e - b) } else { a + v * (c - a) + u * (e - c) }
+    } else if u + v <= 1.0 {
         a + u * (b - a) + v * (c - a)
     } else {
-        let (b, c, e) = (h(1, 0), h(0, 1), h(1, 1));
         e + (1.0 - u) * (c - e) + (1.0 - v) * (b - e)
+    }
+}
+
+/// Grid values over one chunk and a margin, read once so a finely drawn chunk doesn't
+/// recompute the river mask and heights for every vertex.
+pub struct Field {
+    x0: i32,
+    y0: i32,
+    n: i32,
+    v: Vec<f32>,
+}
+
+impl Field {
+    pub const PAD: i32 = 4;
+
+    pub fn new(cx: usize, cy: usize, f: impl Fn(i32, i32) -> f32) -> Field {
+        let (x0, y0, n) = ((cx * CHUNK) as i32 - Self::PAD, (cy * CHUNK) as i32 - Self::PAD, CHUNK as i32 + 2 * Self::PAD + 1);
+        let mut v = Vec::with_capacity((n * n) as usize);
+        for j in 0..n {
+            for i in 0..n {
+                v.push(f(x0 + i, y0 + j));
+            }
+        }
+        Field { x0, y0, n, v }
+    }
+
+    pub fn get(&self, x: i32, y: i32) -> f32 {
+        let (i, j) = ((x - self.x0).clamp(0, self.n - 1), (y - self.y0).clamp(0, self.n - 1));
+        self.v[(j * self.n + i) as usize]
+    }
+
+    pub fn bilinear(&self, x: f32, y: f32) -> f32 {
+        bilinear(|i, j| self.get(i, j), x, y)
+    }
+}
+
+/// The drawn ground around one chunk: heights and the softened river mask.
+pub struct GroundField {
+    height: Field,
+    mask: Field,
+    canal: bool,
+}
+
+impl GroundField {
+    pub fn new(s: &SimState, cx: usize, cy: usize) -> GroundField {
+        GroundField { height: Field::new(cx, cy, |x, y| at(&s.height, x, y)), mask: Field::new(cx, cy, |x, y| river_mask(s, x, y)), canal: canal_subdivisions(s, cx, cy) == 4 }
+    }
+
+    /// `ground_at` from the cached values.
+    pub fn at(&self, x: i32, y: i32) -> f32 {
+        self.height.get(x, y) - cut_of_mask(self.mask.get(x, y))
+    }
+
+    /// `canal_ground` from the cached values.
+    pub fn fine(&self, s: &SimState, x: f32, y: f32) -> f32 {
+        let base = self.height.bilinear(x, y) - cut_of_mask(self.mask.bilinear(x, y));
+        if self.canal { canal_blend(s, x, y, base) } else { base }
+    }
+
+    fn gradient(&self, x: i32, y: i32, st: i32) -> (f32, f32) {
+        let h = |dx: i32, dy: i32| self.at(x + dx * st, y + dy * st);
+        let gx = (h(1, -1) - h(-1, -1) + 2.0 * (h(1, 0) - h(-1, 0)) + h(1, 1) - h(-1, 1)) / 8.0;
+        let gz = (h(-1, 1) - h(-1, -1) + 2.0 * (h(0, 1) - h(0, -1)) + h(1, 1) - h(1, -1)) / 8.0;
+        (gx / (st as f32 * CELL_SIZE), gz / (st as f32 * CELL_SIZE))
     }
 }
 
 /// Give excavated cells a visible floor instead of a V-shaped point. This is a
 /// local reconstruction of the rendered bed; simulation heights/volumes stay unchanged.
-pub fn canal_ground(s: &SimState, x: f32, y: f32) -> f32 {
-    let base = terrain_sample(s, x, y, 1);
+fn canal_blend(s: &SimState, x: f32, y: f32, base: f32) -> f32 {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
     let (mut sum, mut weight) = (0.0, 0.0);
     for dy in 0..=1 { for dx in 0..=1 {
@@ -618,11 +740,12 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32));
     } }
     let (mut pos, mut nor, mut col, mut uv) = (vec![], vec![], vec![], vec![]);
+    let field = GroundField::new(s, cx, cy);
     let mut vert = |x: f32, y: f32, drop: f32, shade: f32| {
-        let (wx, wz) = ((x - w as f32 / 2.0) * CELL_SIZE, (y - d as f32 / 2.0) * CELL_SIZE);
-        let h = if subdivisions > 1 { canal_ground(s, x, y) } else { at(&s.height, x as i32, y as i32) };
+        let (wx, wz) = ((x + GRID_OFFSET - w as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - d as f32 / 2.0) * CELL_SIZE);
+        let h = if subdivisions > 1 { field.fine(s, x, y) } else { field.at(x as i32, y as i32) };
         pos.push([wx, h - drop, wz]);
-        let (gx, gz) = smooth_gradient(s, x.round() as i32, y.round() as i32, st);
+        let (gx, gz) = field.gradient(x.round() as i32, y.round() as i32, st);
         nor.push(Vec3::new(-gx, 1.0, -gz).normalize().to_array());
         let (fx, fy) = ((x - x0 as f32) / step as f32, (y - y0 as f32) / step as f32);
         let (i, j) = ((fx.floor() as usize).min(base_side - 1), (fy.floor() as usize).min(base_side - 1));
@@ -638,16 +761,6 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         }
     }
     let mut idx: Vec<u32> = Vec::with_capacity(n * n * 6);
-    let cells = |idx: &mut Vec<u32>| {
-        for j in 0..n {
-            for i in 0..n {
-                let a = (j * side + i) as u32;
-                let (b, c, e) = (a + 1, a + side as u32, a + side as u32 + 1);
-                idx.extend_from_slice(&[a, c, b, b, c, e]);
-            }
-        }
-    };
-    cells(&mut idx);
     let skirt = 2.5;
     let edges: [(Box<dyn Fn(usize) -> (usize, usize)>, bool); 4] = [
         (Box::new(|k| (k, 0)), false),
@@ -670,6 +783,18 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
                 idx.extend_from_slice(&[a, b, sa, b, sb, sa]);
             } else {
                 idx.extend_from_slice(&[a, sa, b, b, sa, sb]);
+            }
+        }
+    }
+    for j in 0..n {
+        for i in 0..n {
+            let a = (j * side + i) as u32;
+            let (b, c, e) = (a + 1, a + side as u32, a + side as u32 + 1);
+            let y = |k: u32| pos[k as usize][1];
+            if split_ae(y(a), y(b), y(c), y(e)) {
+                idx.extend_from_slice(&[a, c, e, a, e, b]);
+            } else {
+                idx.extend_from_slice(&[a, c, b, b, c, e]);
             }
         }
     }

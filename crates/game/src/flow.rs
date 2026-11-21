@@ -58,8 +58,9 @@ pub fn world_cell(h: &HeightGrid, p: Vec3) -> (f32, f32) {
 
 pub fn height_at(h: &HeightGrid, x: f32, y: f32) -> f32 {
     let (w, d) = (h.width(), h.height());
-    let x = x.clamp(0.0, (w - 1) as f32);
-    let y = y.clamp(0.0, (d - 1) as f32);
+    // Grid values sit at cell centres (terrain_render::GRID_OFFSET).
+    let x = (x - crate::terrain_render::GRID_OFFSET).clamp(0.0, (w - 1) as f32);
+    let y = (y - crate::terrain_render::GRID_OFFSET).clamp(0.0, (d - 1) as f32);
     let (x0, y0) = (x.floor() as usize, y.floor() as usize);
     let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(d - 1));
     let (fx, fy) = (x - x0 as f32, y - y0 as f32);

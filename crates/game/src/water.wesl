@@ -126,7 +126,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Normal from the ripple slopes; calmer when deep and still, livelier when it runs.
     let amp = (0.06 + 0.18 * smoothstep(0.05, 0.6, speed)) * (1.0 - 0.7 * smoothstep(0.15, 0.8, pix));
-    let displaced = in.world_position.xyz + vec3(0.0, s * amp, 0.0);
+    // Ripples on a level base: the mesh's own tilt (steps between cells on a steep reach) would
+    // otherwise light every triangle differently, like crumpled foil.
+    let displaced = vec3(in.world_position.x, s * amp, in.world_position.z);
     let normal = normalize(cross(dpdy(displaced), dpdx(displaced)));
     let n = select(-normal, normal, normal.y >= 0.0);
     let v = normalize(view_bindings::view.world_position - in.world_position.xyz);
@@ -135,9 +137,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let deep = 1.0 - exp(-depth / water.look.x);
     var col = mix(water.shallow.rgb, water.deep.rgb, deep);
     // Streaks: brighter and darker bands carried by the current.
-    col *= 1.0 + 0.16 * s * (0.4 + smoothstep(0.03, 0.4, speed));
-    let streak = smoothstep(0.14, 0.4, s) * smoothstep(0.04, 0.4, speed);
-    col = mix(col, water.shallow.rgb * 1.3, streak * 0.32);
+    col *= 1.0 + 0.16 * s * (0.4 + 1.2 * smoothstep(0.03, 0.4, speed));
+    let streak = smoothstep(0.1, 0.35, s) * smoothstep(0.04, 0.35, speed);
+    col = mix(col, water.shallow.rgb * 1.35, streak * 0.45);
     var alpha = mix(water.look.y, water.look.z, 1.0 - exp(-depth / 0.25));
 
     // Sky reflection at grazing angles and a glint of the sun.
@@ -153,7 +155,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Foam: a lacy line along the waterline, and white water where it runs fast or falls.
     let lace = noise(p * 2.3 + vec2(t * 0.15, -t * 0.11)) * 0.5 + 0.5;
     let shore = (1.0 - smoothstep(0.0, 0.025, depth)) * smoothstep(0.3, 0.8, lace) * 0.35;
-    let churn = noise((p - vel * t * 0.7) * 3.1) * 0.5 + 0.5;
+    // White water boils: two layers carried downstream at different rates, so a fall or riffle
+    // churns even where the current is slow.
+    let run = select(vec2(0.0), vel / max(speed, 1e-4), speed > 1e-3) * max(speed, 0.6);
+    let churn = 0.5 + 0.3 * noise((p - run * t * 1.1) * 3.1) + 0.2 * noise((p - run * t * 1.9) * 6.3 + vec2(t * 0.4, -t * 0.3));
     let rapids = white * smoothstep(0.35, 0.7, churn + white * 0.3);
     let foam = clamp(max(shore * 0.85, rapids), 0.0, 1.0);
     col = mix(col, water.foam.rgb, foam);
@@ -168,10 +173,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ice = frozen * smoothstep(0.0, 0.008, depth);
     let ice_grain = noise(p * 0.18) * 0.5 + 0.5;
     let cracks = 1.0 - smoothstep(0.0, 0.055, abs(noise(p * 0.35 + vec2(8.0, 3.0))));
-    var ice_col = water.ice.rgb * (0.82 + ice_grain * 0.18);
-    ice_col = mix(ice_col, water.deep.rgb * 0.75, cracks * 0.22);
-    col = mix(col, ice_col, ice * 0.92);
-    alpha = mix(alpha, 0.92, ice);
+    // Frost and blown snow whiten the sheet in drifts, so ice never reads as open water.
+    let frost = smoothstep(-0.2, 0.5, noise(p * 0.11 + vec2(2.0, 5.0)));
+    var ice_col = mix(water.ice.rgb * (0.86 + ice_grain * 0.14), vec3(0.88, 0.93, 0.95), 0.4 + 0.45 * frost);
+    ice_col = mix(ice_col, water.deep.rgb * 0.7, cracks * 0.3);
+    col = mix(col, ice_col, ice * 0.96);
+    alpha = mix(alpha, 0.97, ice);
 
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr_input, vec4(undo_display_transform(col), alpha));

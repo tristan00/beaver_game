@@ -110,7 +110,7 @@ fn spawn_glow(commands: &mut Commands) {
         BackgroundGradient::from(RadialGradient::new(
             UiPosition::TOP_LEFT,
             RadialGradientShape::Circle(Val::Percent(70.0)),
-            vec![ColorStop::new(glow(0.30), Val::Percent(0.0)), ColorStop::new(glow(0.0), Val::Percent(100.0))],
+            vec![ColorStop::new(glow(0.16), Val::Percent(0.0)), ColorStop::new(glow(0.0), Val::Percent(100.0))],
         )),
         GlobalZIndex(-10),
         Pickable::IGNORE,
