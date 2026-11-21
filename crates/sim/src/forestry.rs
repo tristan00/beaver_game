@@ -1,48 +1,18 @@
+include!(concat!(env!("OUT_DIR"), "/forestry_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 
-use crate::agents::{Agent, Task};
-use crate::buildings::{BuildingId, BuildingKind, Good, Producer};
+use crate::buildings::{BuildingId, BuildingKind};
 use crate::calendar::Season;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
-use crate::nav::Goal;
 use crate::resources::{Resource, ResourceId, ResourceKind};
 use crate::water::Cell;
 use crate::work::Area;
 use crate::SimState;
 
-pub const YOUNG_AGE: f32 = 360.0;
-pub const MATURE_AGE: f32 = 1080.0;
-pub const OLD_AGE: f32 = 5400.0;
-pub const DEFAULT_TREE_AGE: f32 = 2000.0;
-pub const MOIST_GROWTH: f32 = 1.4;
-pub const MOIST_RANGE: usize = 15;
-pub const DRY_GROWTH: f32 = 0.7;
-pub const DRY_MOISTURE: f32 = 0.32;
-pub const TENDED_GROWTH: f32 = 1.8;
-pub const TEND_DAYS: f32 = 45.0;
-pub const NURSERY_AGE: f32 = 120.0;
-pub const STUMP_AGE: f32 = 400.0;
-pub const SPREAD_CHANCE: f32 = 5.5e-5;
-pub const OLD_DEATH_CHANCE: f32 = 1.0 / 2000.0;
-pub const SNAG_ROT_DAYS: f32 = 720.0;
-pub const SAPLING_FLOOD_DAYS: f32 = 5.0;
-pub const MATURE_DROWN_DAYS: f32 = 60.0;
-pub const PLANT_WORK: f32 = 0.5;
-pub const NURSERY_PLANT_WORK: f32 = PLANT_WORK / 4.0;
-pub const TEND_WORK: f32 = 0.25;
-pub const TEND_STICKS: f32 = 0.3;
-pub const MAX_AREA: usize = 61;
-pub const RUNNING_OUT: usize = 10;
-pub const FALLING_SHARE: f32 = 0.05;
-pub const FALLING_DAYS: f64 = 90.0;
-pub const WATCH_RADIUS: usize = 120;
-pub const STATS_DAYS: f64 = 30.0;
-const UNREACHABLE_DAYS: f64 = 10.0;
-const CLIFF_SLOPE: f32 = 1.2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TreeStage {
@@ -71,10 +41,10 @@ impl TreeStage {
     pub fn fell_yield(self) -> Option<(f32, f32, f32)> {
         match self {
             TreeStage::Sapling => None,
-            TreeStage::Young => Some((1.0, 2.0, 1.0)),
+            TreeStage::Young => Some((YOUNG_LOGS, YOUNG_BRANCHES, YOUNG_BARK)),
             TreeStage::Mature => Some((crate::resources::TREE_LOGS, crate::resources::TREE_BRANCHES, crate::resources::TREE_BARK)),
-            TreeStage::Old => Some((2.0, 4.0, 1.0)),
-            TreeStage::Snag => Some((0.0, 3.0, 0.0)),
+            TreeStage::Old => Some((OLD_LOGS, OLD_BRANCHES, OLD_BARK)),
+            TreeStage::Snag => Some((0.0, SNAG_BRANCHES, 0.0)),
         }
     }
 
@@ -208,12 +178,12 @@ pub fn start_age(seed: u64, cell: Cell) -> f32 {
         ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
     };
     let (u, v) = (next(), next());
-    if u < 0.15 {
+    if u < START_YOUNG_SHARE {
         YOUNG_AGE + v * (MATURE_AGE - YOUNG_AGE)
-    } else if u < 0.25 {
-        OLD_AGE + v * 8.0 * 360.0
+    } else if u < START_OLD_CUMULATIVE_SHARE {
+        OLD_AGE + v * START_OLD_SPREAD_YEARS * crate::calendar::YEAR_DAYS as f32
     } else {
-        MATURE_AGE + v * (12.0 * 360.0 - MATURE_AGE)
+        MATURE_AGE + v * (START_MATURE_MAX_YEARS * crate::calendar::YEAR_DAYS as f32 - MATURE_AGE)
     }
 }
 
@@ -226,14 +196,8 @@ pub fn cuttable(r: &Resource, min_age: f32) -> bool {
 }
 
 pub fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
-    let Some(b) = camp.filter(|b| sim.work.place(*b).is_some_and(|p| p.kind == BuildingKind::LoggingCamp)) else {
-        return MATURE_AGE;
-    };
-    match sim.forestry.cut_rule(b) {
-        CutRule::MatureOnly | CutRule::Coppice => MATURE_AGE,
-        CutRule::ClearCut => YOUNG_AGE,
-        CutRule::Thin => sim.forestry.thin_age.get(&b).copied().unwrap_or(f32::INFINITY),
-    }
+    let _ = (sim, camp);
+    MATURE_AGE
 }
 
 fn invalid(m: impl Into<String>) -> crate::SimError {
@@ -241,33 +205,10 @@ fn invalid(m: impl Into<String>) -> crate::SimError {
 }
 
 pub fn can_manage_forest(sim: &SimState) -> bool {
-    sim.sandbox || sim.has_building(BuildingKind::ForesterLodge)
+    sim.sandbox
 }
 pub fn can_coppice(sim: &SimState) -> bool {
-    sim.sandbox || sim.has_building(BuildingKind::TreeNursery)
-}
-
-pub(crate) fn set_cut_rule(sim: &mut SimState, building: BuildingId, rule: CutRule) -> Result<(), crate::SimError> {
-    if sim.buildings.building(building).is_none_or(|b| b.kind != BuildingKind::LoggingCamp) {
-        return Err(invalid(format!("building {} is not a logging camp", building.0)));
-    }
-    if rule != CutRule::MatureOnly && !can_manage_forest(sim) {
-        return Err(invalid("cutting rules require a finished forester lodge"));
-    }
-    if rule == CutRule::Coppice && !can_coppice(sim) {
-        return Err(invalid("coppicing requires a finished tree nursery"));
-    }
-    sim.forestry.cut_rules.insert(building, rule);
-    refresh_thinning(sim);
-    Ok(())
-}
-
-pub(crate) fn set_plant_rule(sim: &mut SimState, building: BuildingId, rule: PlantRule) -> Result<(), crate::SimError> {
-    if sim.buildings.building(building).is_none_or(|b| b.kind != BuildingKind::ForesterLodge) {
-        return Err(invalid(format!("building {} is not a forester's lodge", building.0)));
-    }
-    sim.forestry.plant_rules.insert(building, rule);
-    Ok(())
+    sim.sandbox
 }
 
 pub(crate) fn check_area(sim: &SimState, building: BuildingId, area: &Area) -> Result<(), crate::SimError> {
@@ -280,7 +221,8 @@ pub(crate) fn check_area(sim: &SimState, building: BuildingId, area: &Area) -> R
 }
 
 pub fn max_area(kind: BuildingKind) -> Option<usize> {
-    matches!(kind, BuildingKind::LoggingCamp | BuildingKind::ForesterLodge).then_some(MAX_AREA)
+    let _ = kind;
+    None
 }
 
 pub fn init(sim: &mut SimState) {
@@ -467,8 +409,10 @@ fn refresh_growth(sim: &mut SimState) {
 
 fn refresh_flood_plan(sim: &mut SimState) {
     let mut plan = BTreeSet::new();
-    for p in &sim.work.dam_plans {
-        if let Some(pv) = crate::dam_preview::preview(sim, &p.cells, p.height) {
+    for b in sim.buildings.buildings.iter().filter(|b| b.dam.is_some() && crate::dams::has_work(sim, b.id)) {
+        let d = b.dam.as_deref().expect("filtered dams");
+        let (cells, heights): (Vec<_>, Vec<_>) = d.cells.iter().map(|c| (c.cell, c.target)).filter(|c| c.1 > 0.0).unzip();
+        if let Some(pv) = crate::dam_preview::preview_heights(sim, &cells, &heights) {
             plan.extend(pv.flooded);
         }
     }
@@ -587,22 +531,6 @@ fn plantable(sim: &SimState, cell: Cell, rule: PlantRule, occupied: &HashSet<Cel
         && sim.forestry.unreachable.get(&cell).is_none_or(|until| sim.time_days >= *until)
 }
 
-fn claimed(sim: &SimState, me: BeaverId) -> (HashSet<Cell>, HashSet<ResourceId>) {
-    let (mut cells, mut trees) = (HashSet::new(), HashSet::new());
-    for a in sim.agents.by_id.values().filter(|a| a.id != me) {
-        match a.task {
-            Task::Forest(ForestTask::Plant { cell, .. }) => {
-                cells.insert(cell);
-            }
-            Task::Forest(ForestTask::Tend { tree, .. }) => {
-                trees.insert(tree);
-            }
-            _ => {}
-        }
-    }
-    (cells, trees)
-}
-
 fn d2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
 }
@@ -630,19 +558,6 @@ pub fn tend_target(sim: &SimState, area: &Area, from: Cell, taken: &HashSet<Reso
         .map(|r| r.id)
 }
 
-pub(crate) fn next_task(sim: &SimState, lodge: BuildingId, slot: usize, who: BeaverId, from: Cell) -> Option<ForestTask> {
-    let place = sim.work.place(lodge)?;
-    if place.kind != BuildingKind::ForesterLodge || !sim.buildings.building(lodge).is_some_and(|b| b.is_complete()) {
-        return None;
-    }
-    let area = place.area?;
-    let rule = sim.forestry.plant_rule(lodge);
-    let (cells, trees) = claimed(sim, who);
-    let plant = || plant_spot(sim, &area, rule, from, &cells).map(|cell| ForestTask::Plant { cell, progress: 0.0 });
-    let tend = || tend_target(sim, &area, from, &trees).map(|tree| ForestTask::Tend { tree, progress: 0.0 });
-    if slot % 2 == 0 { plant().or_else(tend) } else { tend().or_else(plant) }
-}
-
 fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>) {
     let day = sim.time_days;
     sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
@@ -654,88 +569,6 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
     if let Some(b) = camp {
         if sim.forestry.cut_rule(b) == CutRule::Coppice && can_coppice(sim) {
             sim.forestry.stumps.push(cell);
-        }
-    }
-}
-
-pub(crate) fn work(sim: &mut SimState, ag: &mut Agent, dt: f32, lodge: Option<BuildingId>, task: ForestTask) {
-    let quit = |ag: &mut Agent| {
-        ag.path = None;
-        ag.task = Task::Idle;
-    };
-    let Some(lodge) = lodge else { return quit(ag) };
-    let Some(area) = sim.work.place(lodge).and_then(|p| p.area) else { return quit(ag) };
-    let rule = sim.forestry.plant_rule(lodge);
-    let target = match task {
-        ForestTask::Plant { cell, .. } => {
-            let occupied: HashSet<Cell> = sim.resources.at(cell).map(|r| r.cell).collect();
-            if !area.contains(cell) || !plantable(sim, cell, rule, &occupied, &building_cells(sim)) {
-                return quit(ag);
-            }
-            cell
-        }
-        ForestTask::Tend { tree, .. } => match sim.resources.get(tree) {
-            Some(r) if area.contains(r.cell) && r.tended_days <= 0.0 && matches!(r.stage(), Some(TreeStage::Sapling | TreeStage::Young)) => r.cell,
-            _ => return quit(ag),
-        },
-    };
-    let near = target.0.abs_diff(ag.cell.0) + target.1.abs_diff(ag.cell.1) <= 1;
-    if !near {
-        if ag.path.is_none() {
-            ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Beside(target));
-            if ag.path.is_none() {
-                if let ForestTask::Plant { cell, .. } = task {
-                    sim.forestry.unreachable.insert(cell, sim.time_days + UNREACHABLE_DAYS);
-                }
-                crate::agents::note(ag, false);
-                return quit(ag);
-            }
-        }
-        let moved = crate::agents::follow(&mut sim.nav, ag, dt);
-        crate::agents::note(ag, moved);
-        return;
-    }
-    ag.path = None;
-    crate::agents::note(ag, true);
-    let done = dt * crate::agents::worker_effort(sim, ag, crate::colony::Job::Logger);
-    match task {
-        ForestTask::Plant { cell, progress } => {
-            let progress = progress + done;
-            let stock = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::TreeNursery && b.operational() && b.output > 0.25 && crate::stock::dist(cell, b) <= 50);
-            let need = if stock { NURSERY_PLANT_WORK } else { PLANT_WORK };
-            if progress + 1e-4 < need {
-                ag.task = Task::Forest(ForestTask::Plant { cell, progress });
-                return;
-            }
-            let age = if stock {
-                NURSERY_AGE
-            } else {
-                0.0
-            };
-            sim.resources.add_tree(cell, age);
-            if cell.0 < sim.forestry.size && cell.1 < sim.forestry.size {
-                let n = sim.forestry.size;
-                sim.forestry.had_tree[cell.1 * n + cell.0] = true;
-            }
-            record(sim, cell, DeedKind::Planted, Some(lodge));
-            quit(ag);
-        }
-        ForestTask::Tend { tree, progress } => {
-            let progress = progress + done;
-            if progress + 1e-4 < TEND_WORK {
-                ag.task = Task::Forest(ForestTask::Tend { tree, progress });
-                return;
-            }
-            if let Some(r) = sim.resources.items.iter_mut().find(|r| r.id == tree) {
-                r.tended_days = TEND_DAYS;
-            }
-            if let Ok(got) = sim.buildings.stores.deposit_by(Good::Sticks, TEND_STICKS, Producer::Building(lodge)) {
-                if got > 0.0 {
-                    sim.output.record(lodge, Good::Sticks, got);
-                }
-            }
-            record(sim, target, DeedKind::Tended, Some(lodge));
-            quit(ag);
         }
     }
 }
@@ -758,7 +591,7 @@ fn per_day(sim: &SimState, area: &Area, kind: DeedKind) -> f32 {
 }
 
 fn days_to_mature(sim: &SimState, r: &Resource) -> f32 {
-    let rate = sim.forestry.ground_growth(r.cell) * 0.75;
+    let rate = sim.forestry.ground_growth(r.cell) * FELL_GROWTH_SHARE;
     let tended = r.tended_days.min(TEND_DAYS) * (TENDED_GROWTH - 1.0) * rate;
     ((MATURE_AGE - r.age_days - tended).max(0.0) / rate.max(1e-3)).max(0.0)
 }

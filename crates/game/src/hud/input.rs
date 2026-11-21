@@ -1,7 +1,7 @@
 //! Keyboard, pointer, selection and camera interaction.
 use super::*;
 use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
+use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::window::PrimaryWindow;
 
 pub(super) fn pointer_over_ui(q: Query<&Interaction, With<Blocks>>, mut over: ResMut<PointerOverUi>) {
@@ -40,12 +40,6 @@ pub(super) fn hotkeys(
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if keys.just_pressed(KeyCode::KeyH) { hud.help = !hud.help; }
-    if !hud.selected.is_empty() {
-        for (key, mode) in [(KeyCode::KeyM, OrderMode::Move), (KeyCode::KeyG, OrderMode::Gather), (KeyCode::KeyR, OrderMode::Work)] {
-            if hud.tool == Tool::None && keys.just_pressed(key) { hud.order_mode = Some(mode); }
-        }
-    }
     for (k, l) in [(KeyCode::F1, MapLens::World), (KeyCode::F2, MapLens::Water), (KeyCode::F3, MapLens::Goods), (KeyCode::F4, MapLens::Forest), (KeyCode::F5, MapLens::Elevation)] {
         if keys.just_pressed(k) {
             *lens = l;
@@ -71,11 +65,7 @@ pub(super) fn hotkeys(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        if hud.help {
-            hud.help = false;
-        } else if hud.order_mode.is_some() {
-            hud.order_mode = None;
-        } else if hud.area_edit.is_some() {
+        if hud.area_edit.is_some() {
             hud.area_edit = None;
             hud.area_from = None;
         } else if hud.tool != Tool::None {
@@ -95,16 +85,6 @@ pub(super) fn hotkeys(
         if !ctrl && keys.just_pressed(*k) {
             hud.open_cat = if hud.open_cat == Some(i) { None } else { Some(i) };
             hud.search = None;
-        }
-    }
-    if matches!(hud.tool, Tool::Dam) {
-        for (k, d) in [(KeyCode::BracketRight, 1.0), (KeyCode::BracketLeft, -1.0)] {
-            if keys.just_pressed(k) {
-                hud.step_height(d);
-            }
-        }
-        if keys.just_pressed(KeyCode::KeyG) {
-            extend_dam(&sim.0, &mut hud);
         }
     }
 }
@@ -127,7 +107,7 @@ pub(super) fn next_idle(s: &sim::SimState, hud: &mut HudState, sel: &mut Selecti
 pub(super) fn world_input(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    scroll: Res<AccumulatedMouseScroll>,
+    _scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     hover: Res<HoverCell>,
     over: Res<PointerOverUi>,
@@ -163,29 +143,26 @@ pub(super) fn world_input(
         }
         return;
     }
-    if matches!(hud.tool, Tool::Dam) && keys.pressed(KeyCode::ControlLeft) && scroll.delta.y != 0.0 {
-        let lines = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y,
-            MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
-        };
-        hud.step_height(lines);
-    }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {
         undo_last(&mut sim.0, &mut hud, now);
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.search.is_none() {
+    if keys.just_pressed(KeyCode::Enter) && hud.tool == Tool::Dam && hud.search.is_none() {
         commit_line(&mut sim.0, &mut hud, now);
         return;
     }
     if over.0 {
-        if mouse.just_released(MouseButton::Left) { hud.box_from = None; }
         return;
     }
     if mouse.just_pressed(MouseButton::Right) {
-        if hud.tool != Tool::None || hud.area_edit.is_some() || hud.order_mode.is_some() {
+        if hud.tool == Tool::Dam && !hud.corners.is_empty() {
+            hud.corners.pop();
+            hud.line = build_logic::polyline(&hud.corners);
+            return;
+        }
+        if hud.tool != Tool::None || hud.area_edit.is_some() {
             hud.set_tool(Tool::None);
             return;
         }
@@ -198,32 +175,17 @@ pub(super) fn world_input(
             hud.selected.clone()
         };
         if !who.is_empty() {
-            if let Some(c) = hover.0 {
-                order(&mut sim.0, &mut hud, &who, world::Thing::Cell(c), shift, now);
-            }
-        }
-        return;
-    }
-    let Some(cell) = hover.0 else { return };
-    if let Some(mode) = hud.order_mode {
-        if mouse.just_pressed(MouseButton::Left) {
-            let target = match (mode, thing.0) {
-                (OrderMode::Move, _) => Some(world::Thing::Cell(cell)),
-                (OrderMode::Gather, Some(t @ world::Thing::Resource(_))) => Some(t),
-                (OrderMode::Work, Some(t @ world::Thing::Building(_))) => Some(t),
-                _ => None,
-            };
-            if let Some(t) = target {
-                let who = hud.selected.clone();
+            if let Some(t) = thing.0 {
                 order(&mut sim.0, &mut hud, &who, t, shift, now);
-                hud.order_mode = None;
-                hud.consume_left_release = true;
-            } else {
-                hud.refuse(if mode == OrderMode::Gather { "Choose a food plant, tree or clay deposit" } else { "Choose a building with an open worker slot" }, now);
             }
         }
         return;
     }
+    let Some(cell) = hover.0.or_else(|| match thing.0 {
+        Some(world::Thing::Building(id)) => sim.0.buildings.building(id).map(|b|b.pos),
+        Some(world::Thing::Beaver(id)) => sim.0.agents.get(id).map(|a|a.cell),
+        _ => None,
+    }) else { return };
     if let Some(b) = hud.area_edit {
         if mouse.just_pressed(MouseButton::Left) {
             hud.area_from = Some(cell);
@@ -244,9 +206,8 @@ pub(super) fn world_input(
                 hud.box_from = cursor.0;
             }
             if mouse.just_released(MouseButton::Left) {
-                if flow.settled_at.is_some_and(|t| flow.real_secs - t < 0.3) { return; }
-                let Some(a) = hud.box_from.take() else { return };
-                if let Some(b) = cursor.0 {
+                let from = hud.box_from.take();
+                if let (Some(a), Some(b)) = (from, cursor.0) {
                     if a.distance(b) > 8.0 {
                         hud.box_done = Some((a, b));
                         return;
@@ -277,7 +238,7 @@ pub(super) fn world_input(
                 let _ = point;
             }
         }
-        Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
+        Tool::Building(_) | Tool::Dam if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
             hud.refuse("Unexplored", now);
         }
         Tool::Building(kind) => {
@@ -286,12 +247,14 @@ pub(super) fn world_input(
                 match build_logic::emit(&mut sim.0, &BuildOrder::Building { kind, pos: p.pos }) {
                     Ok(_) => {
                         if let Some(b) = sim.0.buildings.buildings.last() {
-                            hud.undo.push(UndoItem::Site(b.id));
+                            let id = b.id;
+                            hud.undo.push(UndoItem::Site(id));
                             hud.frame_req = Some(cell_world(&sim.0.height, (b.pos.0 as f32, b.pos.1 as f32)));
-                            *sel = Selection::Site(b.id);
+                            hud.selected.clear();
+                            *sel = Selection::Site(id);
                         }
-                        hud.say(Some((Icon::Hammer, GOOD)), None, format!("{} queued. Workers build when time runs.", kind.spec().name), now);
-                        if !shift { hud.set_tool(Tool::None); }
+                        hud.finish_placement();
+                        hud.swallow_click();
                     }
                     Err(e) => {
                         let w = place_error(&e);
@@ -300,32 +263,31 @@ pub(super) fn world_input(
                 }
             }
         }
-        Tool::Dam | Tool::Canal => {
+        Tool::Dam => {
+            // Each click adds a corner; a drag adds the corner where it ends.
             if mouse.just_pressed(MouseButton::Left) {
+                if hud.corners.is_empty() {
+                    hud.corners.push(cell);
+                }
                 hud.drag_from = Some(cell);
-                hud.line = vec![cell];
-                hud.dam_crest = None;
-            } else if mouse.pressed(MouseButton::Left) {
-                if let Some(a) = hud.drag_from {
-                    let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&[a, cell]) } else { build_logic::line_cells(a, cell) };
-                    if line != hud.line {
-                        hud.line = line;
-                    }
+            } else if mouse.just_released(MouseButton::Left) && hud.drag_from.take().is_some() {
+                if hud.corners.last() != Some(&cell) {
+                    hud.corners.push(cell);
                 }
-            } else if mouse.just_released(MouseButton::Left) {
-                hud.drag_from = None;
-                if !hud.line.is_empty() {
-                    let n = hud.line.len() as f32;
-                    let mid = (hud.line.iter().map(|c| c.0 as f32).sum::<f32>() / n, hud.line.iter().map(|c| c.1 as f32).sum::<f32>() / n);
-                    hud.frame_req = Some(cell_world(&sim.0.height, mid));
-                }
+            }
+            let mut live = hud.corners.clone();
+            if live.last() != Some(&cell) {
+                live.push(cell);
+            }
+            let line = build_logic::polyline(&live);
+            if line != hud.line {
+                hud.line = line;
             }
         }
     }
 }
 
 fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, one: bool, now: f32) {
-    if who.is_empty() { hud.refuse("Select a beaver first", now); return; }
     match t {
         world::Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return };
@@ -340,13 +302,13 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             };
             let kind = r.kind;
             match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(to) }) {
-                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{} assigned to gather {}", who.len(), resource_name(kind)), now),
+                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", who.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
         world::Thing::Cell(c) => {
             match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(sim::agents::Assignment::Go(c)) }) {
-                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("Move accepted for {}. Space resumes if paused.", who.len()), now),
+                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
@@ -359,9 +321,7 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 }
             }
             if placed == 0 {
-                hud.refuse("No open worker slots in this building", now);
-            } else {
-                hud.say(Some((Icon::Hammer, GOOD)), None, format!("{placed} workers assigned"), now);
+                hud.refuse("Full", now);
             }
         }
         _ => {}
@@ -426,7 +386,6 @@ pub(super) fn search_input(mut keys: MessageReader<KeyboardInput>, sim: Res<Sim>
                 if let Some(e) = search_matches(&sim.0, &q).into_iter().find(|e| e.unlocked) {
                     let t = match e.kind {
                         BuildingKind::Dam => Tool::Dam,
-                        BuildingKind::Canal => Tool::Canal,
                         k => Tool::Building(k),
                     };
                     hud.set_tool(t);

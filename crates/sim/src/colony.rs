@@ -68,7 +68,7 @@ mod health_tests {
         c.beavers[0].health = 0.0;
         c.beavers[0].harm[0] = 1.0;
         c.beavers[1].health = 0.5;
-        c.update_needs(0.5, 0.0);
+        c.update_needs(0.5, 0.0, &mut crate::buildings::Stores::default());
         assert_eq!(c.beavers[0].health, 0.0);
         assert!(c.beavers[1].health > 0.5);
         c.remove_dead();
@@ -406,6 +406,7 @@ pub struct Colony {
     pub beavers: Vec<Beaver>,
     pub families: Vec<Family>,
     pub lodges: Vec<Lodge>,
+    /// Read-only presentation totals, refreshed from physical stores during a step.
     pub food: f32,
     pub wood: f32,
     pub experience: [f32; 8],
@@ -431,14 +432,6 @@ impl Default for Colony {
     }
 }
 
-const FIRST_NAMES: [&str; 24] = [
-    "Alder", "Birch", "Clover", "Dusk", "Elm", "Fern", "Gorse", "Hazel", "Iris", "Juniper", "Kelp", "Linden",
-    "Moss", "Nettle", "Oak", "Pebble", "Quill", "Reed", "Sedge", "Thistle", "Umber", "Willow", "Yarrow", "Zinnia",
-];
-const FAMILY_NAMES: [&str; 12] = [
-    "Stillwater", "Mudbank", "Fallowdam", "Rushmere", "Oakhollow", "Brookbend", "Sedgefield", "Ashpool",
-    "Cattail", "Lowfen", "Marshgate", "Riverbrook",
-];
 
 fn day_of_year(time_days: f64) -> f64 {
     time_days.rem_euclid(DAYS_PER_YEAR)
@@ -528,7 +521,7 @@ impl Colony {
         // The arriving breeding pair mated in the previous winter.
         let litter = MIN_LITTER + self.range(LITTER_SPREAD);
         if let Some(m) = self.beavers.iter_mut().find(|b| b.id == mother) {
-            m.pregnancy = Some(Pregnancy { father, conceived_day: -60.0, due_day: GESTATION_DAYS - 60.0, litter });
+            m.pregnancy = Some(Pregnancy { father, conceived_day: -FOUNDER_PREGNANCY_DAYS, due_day: GESTATION_DAYS - FOUNDER_PREGNANCY_DAYS, litter });
         }
         self.spawn(Sex::Male, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
         self.spawn(Sex::Female, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
@@ -627,26 +620,28 @@ impl Colony {
         Ok(fam)
     }
 
+    #[cfg(test)]
     pub fn step(&mut self, dt_days: f32) {
-        if let Err(e) = self.step_on(dt_days, &RiverLand::default()) {
-            panic!("Colony::step called with unvalidated dt: {e}");
-        }
+        let mut stores = crate::buildings::Stores::default();
+        stores.deposit(crate::buildings::Good::Food, self.food).unwrap();
+        stores.deposit(crate::buildings::Good::Sticks, self.wood).unwrap();
+        self.step_with_stores(dt_days, &RiverLand::default(), &mut stores).unwrap();
     }
 
-    pub fn step_on(&mut self, dt_days: f32, land: &dyn Landscape) -> Result<(), ColonyError> {
-        if !dt_days.is_finite() || dt_days < 0.0 {
-            return Err(ColonyError::InvalidDt(dt_days));
-        }
+    pub fn step_with_stores(&mut self, dt_days: f32, land: &dyn Landscape, stores: &mut crate::buildings::Stores) -> Result<(), ColonyError> {
+        if !dt_days.is_finite() || dt_days < 0.0 { return Err(ColonyError::InvalidDt(dt_days)); }
+        self.food = stores.amount(crate::buildings::Good::Food);
+        self.wood = stores.amount(crate::buildings::Good::Sticks);
         let mut left = dt_days;
         while left > 0.0 {
             let dt = left.min(SUBSTEP_DAYS);
-            self.tick(dt, land);
+            self.tick(dt, land, stores);
             left -= dt;
         }
         Ok(())
     }
 
-    fn tick(&mut self, dt: f32, land: &dyn Landscape) {
+    fn tick(&mut self, dt: f32, land: &dyn Landscape, stores: &mut crate::buildings::Stores) {
         self.time_days += dt as f64;
         if !self.founded {
             return;
@@ -659,7 +654,7 @@ impl Colony {
         self.do_work(dt, &plan);
         self.teach_young(dt);
         self.update_work_safety(dt, &plan);
-        self.update_needs(dt, cold);
+        self.update_needs(dt, cold, stores);
         self.age_and_stage(dt);
         self.remove_dead();
         self.pair_and_disperse(dt);
@@ -730,7 +725,7 @@ impl Colony {
         }
     }
 
-    fn update_needs(&mut self, dt: f32, cold: f32) {
+    fn update_needs(&mut self, dt: f32, cold: f32, stores: &mut crate::buildings::Stores) {
         let mut occupancy: HashMap<LodgeId, usize> = HashMap::new();
         for b in &self.beavers {
             if let Some(l) = b.lodge {
@@ -738,7 +733,7 @@ impl Colony {
             }
         }
         let guarded = (self.guard_strength * GUARD_SAFETY_PER_STRENGTH).min(GUARD_SAFETY_MAX);
-        let mut food = self.food;
+        use crate::buildings::{Good, Use};
         let eaten = &mut self.eaten;
         for b in self.beavers.iter_mut() {
             let condition = b.lodge.and_then(|l| self.lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
@@ -748,8 +743,8 @@ impl Colony {
             n.food = (n.food - HUNGER_PER_DAY * dt).max(0.0);
             if n.food < EAT_BELOW {
                 let w = b.stage.food_weight();
-                let take = ((1.0 - n.food) * w).min(food);
-                food -= take;
+                let take = ((1.0 - n.food) * w).min(stores.amount(Good::Food));
+                stores.withdraw_for(Good::Food, take, Use::eaten_by(b.stage)).expect("limited to stock");
                 eaten[b.stage as usize] += take;
                 n.food += take / w;
             }
@@ -798,8 +793,10 @@ impl Colony {
             b.mood += (n.mood() * (MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health) - b.mood) * (MOOD_RATE * dt).min(1.0);
             b.low_mood_days = if b.mood < LOW_MOOD_BELOW { b.low_mood_days + dt } else { 0.0 };
         }
-        self.spoiled += food * FOOD_SPOILAGE * dt;
-        self.food = food * (1.0 - FOOD_SPOILAGE * dt);
+        let spoiled = (stores.amount(Good::Food) * FOOD_SPOILAGE * dt).min(stores.amount(Good::Food));
+        stores.withdraw_for(Good::Food, spoiled, Use::Spoiled).expect("limited to stock");
+        self.spoiled += spoiled;
+        self.food = stores.amount(Good::Food);
     }
 
     fn age_and_stage(&mut self, dt: f32) {
@@ -934,7 +931,7 @@ impl Colony {
             mother.pregnancy = None;
             mother.last_birth_year = (self.time_days / DAYS_PER_YEAR).floor() as i64;
             for _ in 0..p.litter {
-                let sex = if self.chance(0.5) { Sex::Male } else { Sex::Female };
+                let sex = if self.chance(MALE_SHARE) { Sex::Male } else { Sex::Female };
                 let id = self.spawn(sex, 0.0, m.family, m.lodge, m.pos, Some(p.father), Some(m.id));
                 self.stats.births += 1;
                 self.log(Event::Born { id, family: m.family });
@@ -960,7 +957,7 @@ impl Colony {
                     && self
                         .lodges
                         .iter()
-                        .any(|l| Some(l.id) == m.lodge && l.family == m.family && l.condition >= 0.5)
+                        .any(|l| Some(l.id) == m.lodge && l.family == m.family && l.condition >= BREED_MIN_HOME_CONDITION)
                     && m.mate.is_some_and(|id| {
                         self.beaver(id).is_some_and(|f| {
                             f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult && !self.close_relatives(m.id, f.id)
@@ -974,7 +971,7 @@ impl Colony {
             let daily_food=HUNGER_PER_DAY*(self.beavers.iter().map(|b|b.stage.food_weight()).sum::<f32>()+MIN_LITTER as f32*KIT_FOOD_WEIGHT);
             if room < MIN_LITTER as usize
                 || self.food < daily_food * BIRTH_MIN_FOOD_DAYS
-                || !self.chance(0.2 * dt)
+                || !self.chance(CONCEPTION_CHANCE_PER_DAY * dt)
             {
                 continue;
             }
@@ -1217,7 +1214,7 @@ impl Colony {
             (b.lodge.unwrap(),b.family,b.pos,b.sex.opposite())
         }else if let Some(l)=empty {
             let fam=self.new_family();self.lodges.iter_mut().find(|h|h.id==l.id).unwrap().family=fam;
-            (l.id,fam,l.pos,if self.chance(0.5){Sex::Male}else{Sex::Female})
+            (l.id,fam,l.pos,if self.chance(MALE_SHARE){Sex::Male}else{Sex::Female})
         }else{return Err(ColonyError::Invalid("a newcomer needs an empty family lodge or an unpaired adult's home".into()));};
         let years=if adult{IMMIGRANT_MIN_AGE_YEARS+IMMIGRANT_AGE_SPREAD_YEARS*self.unit()}else{1.0+self.unit()};
         let id=self.spawn(sex,years*DAYS_PER_YEAR as f32,family,Some(home),pos,None,None);

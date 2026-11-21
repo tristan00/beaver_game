@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/work_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::jobs::RoleKind;
@@ -6,8 +7,6 @@ use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
 use crate::water::Cell;
 
-pub const SITE_SLOTS: usize = 2;
-pub const LABOUR_PER_DAY: f32 = 0.75;
 pub const EPS: f32 = 1e-3;
 
 #[cfg(test)]
@@ -169,7 +168,7 @@ pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
     pub balanced: BTreeSet<BuildingId>,
-    pub stock: BTreeMap<(BuildingId, Good), f32>,
+    pub(crate) inventory: crate::inventory::Inventory,
     pub dam_plans: Vec<DamPlan>,
     pub dam_failures: Vec<(BuildingId, String)>,
     pub auto_organise: bool,
@@ -188,13 +187,13 @@ impl Default for Work {
             places: Vec::new(),
             hauls: Vec::new(),
             balanced: BTreeSet::new(),
-            stock: BTreeMap::new(),
+            inventory: Default::default(),
             dam_plans: Vec::new(),
             dam_failures: Vec::new(),
             auto_organise: false,
             managed: BTreeMap::new(),
             role_order: RoleKind::DEFAULT_ORDER.to_vec(),
-            role_weights: [4.0, 2.2, 1.2, 2.5, 1.5, 0.6, 1.0, 0.4, 0.3],
+            role_weights: DEFAULT_ROLE_WEIGHTS,
             player_orders: BTreeSet::new(),
             supplies: None,
             canal_plans: Vec::new(),
@@ -348,16 +347,11 @@ impl Work {
         Ok(())
     }
     pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
-        self.stock.get(&(b, good)).copied().unwrap_or(0.0)
+        self.inventory.at(b, good)
     }
+    #[cfg(test)]
     pub fn stock_add(&mut self, b: BuildingId, good: Good, amount: f32) {
-        *self.stock.entry((b, good)).or_insert(0.0) += amount;
-    }
-    pub fn stock_take(&mut self, b: BuildingId, good: Good, amount: f32) -> f32 {
-        let have = self.stock_of(b, good);
-        let take = amount.min(have).max(0.0);
-        self.stock.insert((b, good), have - take);
-        take
+        self.inventory.put(b, good, amount);
     }
     pub fn set_area(&mut self, b: BuildingId, area: Area) -> Result<(), WorkError> {
         if area.min.0 > area.max.0 || area.min.1 > area.max.1 {

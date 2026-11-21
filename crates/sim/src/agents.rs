@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/agents_constants.rs"));
 use std::collections::BTreeMap;
 
 use crate::buildings::{Building, BuildingId, BuildingKind, Good};
@@ -42,8 +43,8 @@ pub enum Task {
     Build { site: BuildingId },
     Haul { to: BuildingId },
     Rest,
-    Forest(crate::forestry::ForestTask),
-    Support { building: BuildingId, role: Role, target: Cell },
+    /// Carry a load to one dam cell and pack it there.
+    DamWork { dam: BuildingId, cell: Cell, progress: f32 },
 }
 
 impl Task {
@@ -56,10 +57,7 @@ impl Task {
             Task::Build { .. } => "building",
             Task::Haul { .. } => "hauling",
             Task::Rest => "resting",
-            Task::Forest(_) => "foresting",
-            Task::Support {role: Role::Craft, ..} => "maintaining equipment",
-            Task::Support {role: Role::Scout, ..} => "scouting",
-            Task::Support {..} => "guarding",
+            Task::DamWork { .. } => "building the dam",
         }
     }
 }
@@ -91,7 +89,6 @@ pub struct Agents {
     work_available: BTreeMap<(BuildingId, usize), (f64, bool)>,
 }
 
-pub const UNREACHABLE_RETRY_DAYS: f64 = 10.0;
 
 impl Agents {
     pub fn get(&self, id: BeaverId) -> Option<&Agent> {
@@ -138,17 +135,7 @@ impl Agents {
     }
 }
 
-pub const MOVE_COST_PER_DAY: f32 = 43_200.0;
-// Direct orders should be visible at normal play speed (four land cells/second).
-// Production and hauling retain their existing travel budget.
-pub const DIRECT_MOVE_COST_PER_DAY: f32 = 120.0;
-pub const LADEN_PACE: f32 = 0.5;
-pub const FELL_PER_DAY: f32 = 1.3;
-pub const GATHER_PER_DAY: f32 = 4.5;
-pub const FOOD_GATHER_PER_DAY: f32 = 1.0;
-pub const LOAD_SIZE: f32 = 4.0;
 const EPS: f32 = 1e-3;
-const SPAWN_RADIUS: usize = 12;
 const NO_STORE: BuildingId = BuildingId(0);
 pub const SUPPLIES: BuildingId = BuildingId(u64::MAX);
 
@@ -227,7 +214,6 @@ struct Job {
     min_age: f32,
 }
 
-pub const PLANT_MIN_TAKE: f32 = 0.5;
 
 fn gatherable(r: &Resource) -> bool {
     match r.kind {
@@ -308,8 +294,10 @@ pub fn is_store(kind: BuildingKind) -> bool {
 
 pub(crate) fn accepts(kind: BuildingKind, good: Good) -> bool {
     match kind {
-        BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::Dock => true,
-        BuildingKind::FoodCache => good == Good::Food,
+        BuildingKind::Warehouse => {
+            let _ = good;
+            true
+        }
         _ => false,
     }
 }
@@ -340,7 +328,7 @@ fn nearest_store(sim: &SimState, who: BeaverId, from: Cell, good: Good) -> Optio
 }
 
 fn has_lodge(sim: &SimState) -> bool {
-    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && b.is_complete())
+    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Shelter && b.is_complete())
 }
 
 fn home_of(sim: &SimState, who: BeaverId) -> Option<&Building> {
@@ -352,13 +340,13 @@ fn home_of(sim: &SimState, who: BeaverId) -> Option<&Building> {
 fn route_home(sim: &SimState, who: BeaverId, from: Cell) -> Option<Path> {
     let cells = |b: &Building| b.cells().collect::<Vec<_>>();
     match home_of(sim, who) {
-        Some(b) if b.kind == BuildingKind::Lodge => sim.nav.find_path_onto_any(who, from, &cells(b)),
+        Some(b) if b.kind == BuildingKind::Shelter => sim.nav.find_path_onto_any(who, from, &cells(b)),
         Some(b) => sim.nav.find_path_beside_any(who, from, &cells(b)),
         None => sim
             .buildings
             .buildings
             .iter()
-            .filter(|b| b.kind == BuildingKind::Lodge && b.is_complete())
+            .filter(|b| b.kind == BuildingKind::Shelter && b.is_complete())
             .filter_map(|b| sim.nav.find_path_onto_any(who, from, &cells(b)))
             .min_by(|a, b| a.cost.total_cmp(&b.cost)),
     }
@@ -405,8 +393,6 @@ enum Duty {
     Collect(Job),
     Build(BuildingId),
     Haul,
-    Forest(BuildingId, usize),
-    Support(BuildingId, Role),
 }
 
 fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
@@ -414,11 +400,9 @@ fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
         return Duty::None;
     }
     match sim.work.slot_of(ag.id) {
-        Some((b, _, Role::Build)) if sim.work.place(b).is_some_and(|p| p.site.is_some()) => Duty::Build(b),
+        Some((b, _, Role::Build)) if sim.work.place(b).is_some_and(|p| p.site.is_some() || (!p.paused && crate::dams::has_work(sim, b))) => Duty::Build(b),
         Some((_, _, Role::Haul)) => Duty::Haul,
         Some((b, i, Role::Collect(_))) => Job::resolve(sim, Assignment::Slot(b, i)).map_or(Duty::None, Duty::Collect),
-        Some((b, i, Role::Forester)) if sim.work.place(b).is_some_and(|p| p.kind == BuildingKind::ForesterLodge) => Duty::Forest(b, i),
-        Some((b, _, r @ (Role::Craft | Role::Guard | Role::Scout | Role::Forester))) => Duty::Support(b, r),
         Some(_) => Duty::None,
         None => ag.assignment.and_then(|a| Job::resolve(sim, a)).map_or(Duty::None, Duty::Collect),
     }
@@ -441,7 +425,26 @@ fn closest_store(sim: &SimState, from: Cell, good: Good) -> Option<BuildingId> {
     sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good) && !sim.buildings.stranded(b, &sim.water.depth)).min_by_key(|b| (d(b), b.id)).map(|b| b.id)
 }
 
+fn is_dam(sim: &SimState, id: BuildingId) -> bool {
+    sim.buildings.building(id).is_some_and(|b| b.dam.is_some())
+}
+
+/// A dam builder carries one load to the lowest unfinished cell.
+fn dam_task(sim: &SimState, dam: BuildingId, ag: &Agent) -> Option<Task> {
+    let taken = crate::dams::claimed(sim, dam, ag.id);
+    let cell = crate::dams::next_cell(sim, dam, ag.cell, &taken)?;
+    if ag.load.is_some_and(|l| l.good == Good::Sticks) {
+        return Some(Task::DamWork { dam, cell, progress: 0.0 });
+    }
+    let want = crate::dams::sticks_per_step().min(LOAD_SIZE);
+    let from = crate::stock::nearest_holding(sim, cell, Good::Sticks, want).or_else(|| crate::stock::nearest_holding(sim, cell, Good::Sticks, WORK_EPS))?;
+    Some(Task::Fetch { from, good: Good::Sticks, then: dam, site_delivery: true })
+}
+
 fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
+    if is_dam(sim, site) {
+        return dam_task(sim, site, ag);
+    }
     if sim.buildings.building(site).is_none_or(|b| b.is_complete() && !sim.maintenance.jobs.contains_key(&site)) {
         return None;
     }
@@ -460,7 +463,7 @@ fn site_fetch_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task>
             sim.buildings.building(b).is_some_and(|bd| !bd.is_complete()) && s.missing(good) - promised(sim, b, good) > WORK_EPS
         });
         let in_stock: f32 = crate::stock::holders(sim, good).iter().map(|&h| sim.work.stock_of(h, good)).sum();
-        if older_wants && in_stock < 2.0 * LOAD_SIZE {
+        if older_wants && in_stock < SITE_RESERVE_LOADS * LOAD_SIZE {
             continue;
         }
         if outstanding > WORK_EPS {
@@ -492,11 +495,6 @@ fn haul_task(sim: &SimState) -> Option<Task> {
 
 fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
     match duty {
-        Duty::Support(building, role) => {
-            let b = sim.buildings.building(*building)?;
-            let target = if *role == Role::Scout { scout_target(sim, ag, b.pos)? } else { b.pos };
-            Some(Task::Support {building: *building, role: *role, target})
-        },
         Duty::None => None,
         Duty::Collect(j) => j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 }),
         Duty::Build(site) => build_task(sim, *site, ag),
@@ -505,11 +503,12 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
             let (from, then, good) = crate::stock::balance_move(sim, Some(own))?;
             Some(Task::Fetch { from, good, then, site_delivery: false })
         }),
-        Duty::Forest(b, i) => crate::forestry::next_task(sim, *b, *i, ag.id, ag.cell).map(Task::Forest),
     }
 }
 
 fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
+    // A trail belongs to this step, including steps spent working or resting.
+    ag.trail.clear();
     if let Some(Assignment::Go(to)) = ag.assignment {
         go_to(sim, ag, dt, to);
         return;
@@ -527,7 +526,11 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     match ag.task.clone() {
         Task::Idle => {
             ag.path = None;
-            if ag.load.is_some() {
+            let dam_load = matches!(duty, Duty::Build(b) if is_dam(sim, b)) && ag.load.is_some_and(|l| l.good == Good::Sticks);
+            let dam_next = if dam_load { next_task(sim, &duty, ag) } else { None };
+            if let Some(t) = dam_next {
+                ag.task = t;
+            } else if ag.load.is_some() {
                 ag.task = Task::Carry { dest: NO_STORE };
             } else if let Some(t) = next_task(sim, &duty, ag) {
                 ag.task = t;
@@ -537,7 +540,7 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         }
         Task::Rest => {
             let work = if sim.time_days >= ag.next_work_probe {
-                ag.next_work_probe=sim.time_days+1.0/96.0;
+                ag.next_work_probe=sim.time_days+crate::STEP_DAYS as f64;
                 next_task(sim, &duty, ag).is_some()
             } else {false};
             if ag.load.is_some() || work {
@@ -552,23 +555,87 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
             if ag.path.is_none() {
                 if sim.time_days < ag.next_home_probe { return; }
                 ag.path = route_home(sim, ag.id, ag.cell);
-                if ag.path.is_none() { ag.next_home_probe=sim.time_days+1.0/96.0; }
+                if ag.path.is_none() { ag.next_home_probe=sim.time_days+crate::STEP_DAYS as f64; }
             }
             let moved = follow(&mut sim.nav, ag, dt);
             note(ag, moved);
         }
-        Task::Support {building, role, target} => support_task(sim, ag, dt, &duty, building, role, target),
+        Task::DamWork { dam, cell, progress } => dam_work(sim, ag, dt, &duty, dam, cell, progress),
         Task::Collect { target, .. } => collect(sim, ag, dt, duty, target),
         Task::Carry { dest } if ag.load.is_some_and(|l| sim.work.place(dest).and_then(|p|p.site.as_ref()).is_some_and(|p|p.missing(l.good)>WORK_EPS)) => deliver(sim, ag, dt, dest),
         Task::Carry { dest } => carry(sim, ag, dt, dest),
+        Task::Fetch { from, good, then, .. } if is_dam(sim, then) => dam_fetch(sim, ag, dt, &duty, from, good, then),
         Task::Fetch { from, good, then, site_delivery } => fetch(sim, ag, dt, &duty, from, good, then, site_delivery),
         Task::Build { site } => build(sim, ag, dt, &duty, site),
         Task::Haul { to } => haul(sim, ag, dt, to),
-        Task::Forest(t) => {
-            let lodge = if let Duty::Forest(b, _) = duty { Some(b) } else { None };
-            crate::forestry::work(sim, ag, dt, lodge, t)
-        }
     }
+}
+
+fn dam_fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: BuildingId, good: Good, dam: BuildingId) {
+    let from_ok = if from == SUPPLIES { sim.work.supplies.is_some() } else { sim.buildings.building(from).is_some_and(|b| b.is_complete()) };
+    if !matches!(duty, Duty::Build(b) if *b == dam) || !from_ok || !crate::dams::has_work(sim, dam) {
+        return abandon(ag);
+    }
+    if !approach(sim, ag, dt, from) {
+        return;
+    }
+    note(ag, true);
+    let want = crate::dams::sticks_per_step().min(LOAD_SIZE).min(sim.work.stock_of(from, good));
+    let got = if want > WORK_EPS { sim.buildings.stores.take_from(from, good, want) } else { 0.0 };
+    if got <= WORK_EPS {
+        return abandon(ag);
+    }
+    ag.load = Some(Load { good, amount: got, booked: true });
+    let taken = crate::dams::claimed(sim, dam, ag.id);
+    ag.task = match crate::dams::next_cell(sim, dam, ag.cell, &taken) {
+        Some(cell) => Task::DamWork { dam, cell, progress: 0.0 },
+        None => Task::Carry { dest: NO_STORE },
+    };
+}
+
+fn dam_work(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, dam: BuildingId, cell: Cell, progress: f32) {
+    let Some(load) = ag.load.filter(|l| l.good == Good::Sticks) else {
+        ag.path = None;
+        ag.task = Task::Idle;
+        return;
+    };
+    if !matches!(duty, Duty::Build(b) if *b == dam) {
+        return abandon(ag);
+    }
+    if !crate::dams::cell_needs_work(sim, dam, cell) {
+        let taken = crate::dams::claimed(sim, dam, ag.id);
+        ag.path = None;
+        ag.task = match crate::dams::next_cell(sim, dam, ag.cell, &taken) {
+            Some(cell) => Task::DamWork { dam, cell, progress: 0.0 },
+            None => Task::Carry { dest: NO_STORE },
+        };
+        return;
+    }
+    let here = cell.0.abs_diff(ag.cell.0) + cell.1.abs_diff(ag.cell.1) <= 1;
+    if !here {
+        if ag.path.is_none() {
+            ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Beside(cell));
+            if ag.path.is_none() {
+                note(ag, false);
+                ag.task = Task::Carry { dest: NO_STORE };
+                return;
+            }
+        }
+        let moved = follow(&mut sim.nav, ag, dt);
+        note(ag, moved);
+        return;
+    }
+    ag.path = None;
+    note(ag, true);
+    let progress = progress + dt * LABOUR_PER_DAY * worker_effort(sim, ag, crate::colony::Job::Builder);
+    if progress + WORK_EPS < crate::dams::pack_labour() {
+        ag.task = Task::DamWork { dam, cell, progress };
+        return;
+    }
+    let used = crate::dams::pack(sim, dam, cell, load.amount);
+    let rest = load.amount - used;
+    ag.load = (rest > WORK_EPS).then_some(Load { amount: rest, ..load });
+    ag.task = Task::Idle;
 }
 
 fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> bool {
@@ -598,42 +665,9 @@ fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> 
 pub(crate) fn worker_effort(sim: &SimState, ag: &Agent, job: crate::colony::Job) -> f32 {
     sim.colony.beaver(ag.id).map_or(0.0, |b| {
         b.stage.work_weight() * crate::society::work_speed(b.mood)
-            * (0.7 + 0.3 * b.health) * (0.7 + 0.3 * b.needs.rest)
-            * (0.85 + 0.35 * b.skills[job.index()])
-            * (1.0 + crate::craftsmanship::support(sim, ag.cell))
+            * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health) * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
+            * (WORK_SKILL_BASE + WORK_SKILL_SCALE * b.skills[job.index()])
     })
-}
-
-fn scout_frontier(sim: &SimState, centre: Cell) -> impl Iterator<Item=Cell> + '_ {
-    (centre.1.saturating_sub(120)..(centre.1 + 120).min(sim.world.size)).step_by(16)
-        .flat_map(move |y|(centre.0.saturating_sub(120)..(centre.0+120).min(sim.world.size)).step_by(16).map(move |x|(x,y)))
-        .filter(|&c|!sim.fog.explored(c) && sim.height.in_bounds(c.0,c.1))
-}
-
-fn scout_target(sim: &SimState, ag: &Agent, centre: Cell) -> Option<Cell> {
-    let mut targets: Vec<_> = scout_frontier(sim,centre).collect();
-    targets.sort_by_key(|c| (ag.cell.0.abs_diff(c.0) + ag.cell.1.abs_diff(c.1), *c));
-    targets.into_iter().take(12).find(|&c| sim.nav.find_path(ag.id, ag.cell, Goal::Cell(c)).is_some())
-}
-
-fn support_task(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, building: BuildingId, role: Role, target: Cell) {
-    if !matches!(duty, Duty::Support(b,r) if *b==building && *r==role) { return abandon(ag); }
-    if role == Role::Scout {
-        if sim.fog.explored(target) { return abandon(ag); }
-        if ag.path.is_none() { ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(target)); }
-        let moved = follow(&mut sim.nav, ag, dt);
-        note(ag, moved);
-        if !moved && ag.path.is_none() { abandon(ag); }
-    } else if approach(sim, ag, dt, building) {
-        let productive = if role == Role::Craft {
-            crate::craftsmanship::work(sim, building, dt * worker_effort(sim, ag, crate::colony::Job::Crafter))
-        } else if role == Role::Forester {
-            let effort = worker_effort(sim, ag, crate::colony::Job::Logger);
-            if let Some(b) = sim.buildings.buildings.iter_mut().find(|b|b.id==building) { b.output=(b.output+dt*effort*0.5).min(1.0); }
-            true
-        } else { true };
-        note(ag, productive);
-    }
 }
 
 fn go_to(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
@@ -655,7 +689,7 @@ fn go_to(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
         }
     }
     ag.task = Task::Idle;
-    let moved = follow(&mut sim.nav, ag, dt * DIRECT_MOVE_COST_PER_DAY / MOVE_COST_PER_DAY);
+    let moved = follow(&mut sim.nav, ag, dt);
     note(ag, moved);
 }
 
@@ -687,18 +721,17 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
         let outstanding = sim.work.place(then).and_then(|p| p.site.as_ref()).map_or(0.0, |s| s.missing(good))
             - promised(sim, then, good);
         let want = LOAD_SIZE.min(outstanding).min(sim.work.stock_of(from, good)).min(sim.buildings.stores.amount(good));
-        if want <= WORK_EPS || sim.buildings.stores.take_raw(good, want).is_err() {
+        if want <= WORK_EPS {
             return abandon(ag);
         }
-        sim.work.stock_take(from, good, want);
+        let want = sim.buildings.stores.take_from(from, good, want);
         ag.load = Some(Load { good, amount: want, booked:true });
         ag.task = Task::Carry { dest: then };
     } else {
-        let got = sim.work.stock_take(from, good, LOAD_SIZE.min(sim.buildings.stores.amount(good)));
+        let got = sim.buildings.stores.take_from(from, good, LOAD_SIZE);
         if got <= WORK_EPS {
             return abandon(ag);
         }
-        sim.buildings.stores.take_raw(good,got).expect("limited to available stock");
         ag.load = Some(Load { good, amount: got, booked:true });
         ag.task = Task::Haul { to: then };
     }
@@ -736,29 +769,7 @@ fn build(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Buildin
     }
     if approach(sim, ag, dt, site) {
         sim.work.add_labour(site, dt * LABOUR_PER_DAY * worker_effort(sim, ag, crate::colony::Job::Builder)).expect("duty checked the site");
-        grow_dam(sim, site);
         note(ag, true);
-    }
-}
-
-pub(crate) fn grow_dam(sim: &mut SimState, site: BuildingId) {
-    let Some(f) = sim.work.place(site).and_then(|p| p.site.as_ref()).map(|s| s.labour_fraction()) else { return };
-    // Build in visible layers. Microscopic height changes every simulation
-    // minute would rebuild the drainage graph for the whole map each time.
-    let f = (f.clamp(0.0, 1.0) * 20.0).floor() / 20.0;
-    let Some(plan) = sim.work.dam_plans.iter().find(|p| p.building == site) else { return };
-    let cells: Vec<(Cell, f32)> = plan
-        .cells
-        .iter()
-        .zip(&plan.heights)
-        .zip(&plan.from)
-        .map(|((&c, &h), &from)| (c, from + f * (h - from)))
-        .filter(|&(c, h)| h > sim.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0))
-        .collect();
-    if !cells.is_empty() {
-        if let Err(e) = sim.water.raise_dam(&cells) {
-            sim.work.dam_failures.push((site, e.to_string()));
-        }
     }
 }
 
@@ -779,8 +790,7 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
         other
     };
     if approach(sim, ag, dt, to) {
-        let put=sim.buildings.stores.put_raw(load.good,load.amount).unwrap_or(0.0);
-        sim.work.stock_add(to,load.good,put);
+        let put=sim.buildings.stores.put_at(to,load.good,load.amount).unwrap_or(0.0);
         if put >= load.amount-WORK_EPS { ag.load=None; ag.task=Task::Idle; }
         else {ag.load=Some(Load{amount:load.amount-put,..load});}
         note(ag, put>0.0);
@@ -789,7 +799,7 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
 
 fn clear_finished_footprint(sim: &mut SimState, id: BuildingId) -> bool {
     let Some(b) = sim.buildings.building(id) else { return false };
-    if matches!(b.kind, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge) {
+    if b.kind == BuildingKind::Dam {
         return true;
     }
     let cells: Vec<Cell> = b.cells().collect();
@@ -837,48 +847,12 @@ fn finish_sites(sim: &mut SimState) {
             continue;
         };
         b.status = crate::buildings::Status::Complete;
-        if b.kind == BuildingKind::Barge {
-            let cell = b.pos;
-            sim.buildings.buildings.retain(|x| x.id != id);
-            sim.work.places.retain(|p| p.building != id);
-            let locks = crate::shipping::lock_cells(sim);
-            let at_dock = sim
-                .buildings
-                .buildings
-                .iter()
-                .filter(|d| d.kind == BuildingKind::Dock && d.is_complete())
-                .find(|d| crate::shipping::berths(sim, &locks, d).contains(&cell))
-                .map(|d| d.id);
-            let bid = crate::buildings::BargeId(id.0);
-            sim.buildings.barges.push(crate::buildings::Barge::new(bid, cell, at_dock));
-            continue;
-        }
         let area = crate::catalogue::work_area(b);
         let def = b.kind.spec();
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
-        if let Some(i) = sim.work.dam_plans.iter().position(|p| p.building == id) {
-            let plan = sim.work.dam_plans.remove(i);
-            let cells: Vec<(Cell, f32)> = plan.cells.iter().copied().zip(plan.heights.iter().copied()).collect();
-            if let Err(e) = sim.water.raise_dam(&cells) {
-                sim.work.dam_failures.push((id, e.to_string()));
-            }
-            if let Some(b)=sim.buildings.buildings.iter_mut().find(|b|b.id==id) {
-                b.dam_profile=cells;
-                b.condition=1.0;
-                for &(c,_) in &b.dam_profile {if let Some(v)=sim.water.dam_durability.get_mut(c.0,c.1) {*v=b.durability();}}
-            }
-            if plan.repair {sim.maintenance.repairs_completed+=1;}
-        }
-        if let Some(i) = sim.work.canal_plans.iter().position(|p| p.building == id) {
-            let plan = sim.work.canal_plans.remove(i);
-            if let Err(e) = sim.water.dig_canal(&mut sim.height, &plan.cells, plan.depth) {
-                sim.work.dam_failures.push((id, e.to_string()));
-            }
-        }
     }
 }
 
-const GATHER_RADIUS: usize = 80;
 
 fn source_of(good: Good) -> ResourceKind {
     match good {
@@ -915,6 +889,50 @@ pub(crate) fn site_material_run(sim: &SimState, site: BuildingId, pos: Cell) -> 
     // otherwise reserve the entire workforce forever.
     if !sim.resources.items.iter().any(|item|area.contains(item.cell) && kinds_for(source_of(good)).contains(&item.kind) && gatherable(item)) {return None;}
     Some(Assignment::Area(source_of(good), area))
+}
+
+/// Goods beavers have taken out of stores and are still carrying.
+pub fn in_hands(sim: &SimState, good: Good) -> f32 {
+    sim.agents.by_id.values().filter_map(|a| a.load).filter(|l| l.booked && l.good == good).map(|l| l.amount).sum()
+}
+
+/// Gather sticks for a dam when the stores cannot cover the loads still to carry.
+fn dam_material_run(sim: &SimState, dam: BuildingId, pos: Cell) -> Option<Assignment> {
+    let need = crate::dams::loads_left(sim, dam) as f32 * crate::dams::sticks_per_step();
+    if crate::jobs::on_hand(sim, Good::Sticks) >= need.min(LOAD_SIZE * 4.0) {
+        return None;
+    }
+    let r = GATHER_RADIUS / 2;
+    let area = Area { min: (pos.0.saturating_sub(r), pos.1.saturating_sub(r)), max: (pos.0 + r, pos.1 + r) };
+    sim.resources.items.iter().any(|i| area.contains(i.cell) && kinds_for(ResourceKind::Tree).contains(&i.kind) && gatherable(i))
+        .then_some(Assignment::Area(ResourceKind::Tree, area))
+}
+
+/// Where the colony keeps its goods: its first shelter, store or the supply pile.
+pub fn colony_home(sim: &SimState) -> Option<Cell> {
+    let built = |k: BuildingKind| sim.buildings.buildings.iter().find(|b| b.kind == k && b.is_complete()).map(|b| (b.pos.0 + 1, b.pos.1 + 1));
+    built(BuildingKind::Warehouse).or_else(|| built(BuildingKind::Shelter)).or(sim.work.supplies)
+}
+
+/// Without gathering huts, the colony sends beavers out from home for whatever it is short of.
+fn colony_runs(sim: &SimState) -> Vec<(Role, Assignment, Cell)> {
+    let Some(home) = colony_home(sim) else { return Vec::new() };
+    let workers = sim.colony.beavers.iter().filter(|b| b.stage != Stage::Kit).count();
+    let r = GATHER_RADIUS / 2;
+    let area = Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) };
+    let mut out = Vec::new();
+    for (good, kind, share) in [(Good::Food, ResourceKind::Plant, 0.5), (Good::Sticks, ResourceKind::Tree, 0.34), (Good::Clay, ResourceKind::MudBank, 0.2)] {
+        if crate::jobs::on_hand(sim, good) >= crate::jobs::stock_target(sim, good) {
+            continue;
+        }
+        let kinds = kinds_for(kind);
+        if !sim.resources.items.iter().any(|i| area.contains(i.cell) && kinds.contains(&i.kind) && gatherable(i)) {
+            continue;
+        }
+        let n = ((workers as f32 * share).ceil() as usize).max(1);
+        out.extend(std::iter::repeat_n((Role::Collect(kind), Assignment::Area(kind, area), home), n));
+    }
+    out
 }
 
 pub(crate) fn can_fill(stage: Stage, role: Role) -> bool {
@@ -978,7 +996,8 @@ fn organise(sim: &mut SimState) {
         let ours = |i: usize, w: Option<BeaverId>| w.is_none() || w.is_some_and(|w| sim.work.managed.get(&w) == Some(&ManagedDuty::Slot(p.building, i)));
         let fixed = p.slots.iter().enumerate().filter(|(i, s)| !ours(*i, s.worker)).count();
         let mut budget = p.max_workers.saturating_sub(fixed);
-        let run = if site { site_material_run(sim, p.building, b.pos) } else { None };
+        let dam_work = !site && crate::dams::has_work(sim, p.building);
+        let run = if site { site_material_run(sim, p.building, b.pos) } else if dam_work { dam_material_run(sim, p.building, b.pos) } else { None };
         let prio = std::cmp::Reverse(p.priority);
         let mut runs = run.map_or(0, |_| crate::work::SITE_SLOTS.min(p.max_workers));
         for (i, s) in p.slots.iter().enumerate() {
@@ -987,14 +1006,13 @@ fn organise(sim: &mut SimState) {
                 ready
             } else {
                 let who = s.worker.unwrap_or(BeaverId(0));
-                let from = sim.agents.get(who).map_or(b.pos, |a|a.cell);
+                let _ = who;
                 let ready = match s.role {
                     Role::Collect(_) => gathering_available(sim, Assignment::Slot(b.id,i)),
-                    Role::Forester if b.kind==BuildingKind::ForesterLodge => crate::forestry::next_task(sim,b.id,i,who,from).is_some(),
-                    Role::Scout => scout_frontier(sim,b.pos).next().is_some(),
+
                     _ => true,
                 };
-                sim.agents.work_available.insert((b.id,i),(sim.time_days+1.0,ready));
+                sim.agents.work_available.insert((b.id,i),(sim.time_days+WORK_AVAILABLE_DAYS,ready));
                 ready
             };
             if !available { continue; }
@@ -1006,8 +1024,7 @@ fn organise(sim: &mut SimState) {
                     let good = match kind {ResourceKind::MudBank | ResourceKind::RiverClay => Good::Clay, ResourceKind::Plant => Good::Food, _ => Good::Sticks};
                     sim.buildings.stores.amount(good) >= crate::jobs::stock_target(sim, good)
                 },
-                Role::Craft => b.output >= 0.95 || !crate::craftsmanship::has_materials(sim, b),
-                Role::Forester if b.kind==BuildingKind::TreeNursery => b.output>=0.95,
+
                 _ => false,
             };
             if idle {
@@ -1022,11 +1039,18 @@ fn organise(sim: &mut SimState) {
             if site && s.role == Role::Build && site_stalled(sim, p) {
                 continue;
             }
+            if !site && s.role == Role::Build && !dam_work {
+                continue;
+            }
             if ours(i, s.worker) && budget > 0 {
                 budget -= 1;
                 openings.push(Opening { duty: ManagedDuty::Slot(p.building, i), key: (rank, prio, 2 * i + 1, p.building), at: b.pos, role: s.role });
             }
         }
+    }
+    for (i, (role, a, at)) in colony_runs(sim).into_iter().enumerate() {
+        let rank = crate::jobs::rank(sim, crate::jobs::role_kind(role));
+        openings.push(Opening { duty: ManagedDuty::Gather(a), key: (rank, std::cmp::Reverse(crate::work::Priority::Normal), 2 * i + 1, BuildingId(0)), at, role });
     }
     openings.sort_by_key(|o| o.key);
     let mut counts = [0usize; 9];
@@ -1034,8 +1058,8 @@ fn organise(sim: &mut SimState) {
         let role = crate::jobs::role_kind(o.role);
         let i = role as usize;
         counts[i] += 1;
-        let urgency = if crate::jobs::rank(sim, role) == 0 { 3.0 }
-            else if crate::jobs::material_short(sim, role) { 1.8 } else { 1.0 };
+        let urgency = if crate::jobs::rank(sim, role) == 0 { FOOD_URGENCY_WEIGHT }
+            else if crate::jobs::material_short(sim, role) { MATERIAL_URGENCY_WEIGHT } else { 1.0 };
         let weight = sim.work.role_weights[i] * urgency;
         o.key.0 = ((counts[i] as f32 * 100.0 / weight) as usize) + sim.work.role_rank(role) * 3;
     }
@@ -1247,10 +1271,7 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
     };
     if adjacent(ag.cell, store) {
         let who = producer(sim, ag);
-        let booked = if load.booked {sim.buildings.stores.refund(load.good,load.amount)} else {sim.buildings.stores.deposit_by(load.good, load.amount, who)};
-        if let Ok(taken) = booked {
-            sim.work.stock_add(dest, load.good, taken);
-        }
+        let booked = if load.booked {sim.buildings.stores.put_at(dest,load.good,load.amount)} else {sim.buildings.stores.produce_at(dest,load.good,load.amount,who)};
         match booked {
             Ok(taken) if taken >= load.amount => {
                 ag.load = None;
@@ -1286,7 +1307,6 @@ fn larder_cell(sim: &SimState, who: BeaverId) -> Option<Cell> {
     }
 }
 
-pub const HOME_RANGE: usize = 20;
 
 #[cfg(test)]
 mod freight_tests {
@@ -1333,14 +1353,30 @@ mod freight_tests {
         assert_eq!(a.assignment, None);
     }
     #[test]
+    fn builders_walk_to_the_site_over_multiple_steps() {
+        let mut s = SimState::new(1);
+        s.nav = NavGrid::new(32,32);
+        let id = BeaverId(1);
+        s.agents.spawn(id,(2,2));
+        let mut agent = s.agents.get(id).unwrap().clone();
+        let site = BuildingId(1);
+        s.buildings.buildings.push(Building { id:site,kind:BuildingKind::Warehouse,pos:(12,2),status:crate::buildings::Status::Site,output:0.0,condition:1.0,reinforced:false,dam: None });
+        s.nav.reserve(id,agent.cell);
+        assert!(!approach(&mut s,&mut agent,crate::STEP_DAYS,site));
+        assert!(agent.cell.0 > 2 && agent.cell.0 < 12);
+        assert!(agent.trail.len() <= 2,"builder crossed the entire route in one step");
+        for _ in 0..20 { approach(&mut s,&mut agent,crate::STEP_DAYS,site); }
+        assert!(approach(&mut s,&mut agent,crate::STEP_DAYS,site));
+    }
+    #[test]
     fn haulers_deliver_to_refits_without_creating_or_losing_stock() {
         let mut s=SimState::new(1);
         for (id,pos) in [(BuildingId(1),(10,10)),(BuildingId(2),(20,10))] {
-            let b=Building{id,kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:0.5,reinforced:false,dam_profile:vec![]};
+            let b=Building{id,kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:0.5,reinforced:false,dam: None};
             s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
         }
         crate::maintenance::order(&mut s,BuildingId(2),crate::maintenance::Refit::Repair).unwrap();
-        s.buildings.stores.deposit(Good::Clay,10.0).unwrap();s.work.stock_add(BuildingId(1),Good::Clay,10.0);
+        s.buildings.stores.produce_at(BuildingId(1),Good::Clay,10.0,crate::buildings::Producer::Other).unwrap();
         let mut agents=Agents::default();agents.spawn(BeaverId(1),(9,10));let mut a=agents.by_id.remove(&BeaverId(1)).unwrap();
         fetch(&mut s,&mut a,0.01,&Duty::Haul,BuildingId(1),Good::Clay,BuildingId(2),true);
         let load=a.load.unwrap().amount;
@@ -1354,7 +1390,7 @@ mod freight_tests {
     fn nearest_store_matches_exhaustive_paths_with_detours_and_canals() {
         let mut s=SimState::new(1);let n=s.world.size;s.nav=NavGrid::new(n,n);
         for (i,pos) in [(3,3),(n/2,3),(3,n/2),(n-6,n-6)].into_iter().enumerate() {
-            let b=Building{id:BuildingId(i as u64+1),kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:1.0,reinforced:false,dam_profile:Vec::new()};
+            let b=Building{id:BuildingId(i as u64+1),kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:1.0,reinforced:false,dam: None};
             for c in b.cells(){s.nav.set(c,Surface::Solid);}s.buildings.buildings.push(b);
         }
         for y in 0..n-2 {if y!=n/2{s.nav.set((n/3,y),Surface::Solid);}}
@@ -1388,16 +1424,16 @@ mod freight_tests {
     fn hauling_removes_transit_stock_and_preserves_production_totals() {
         let mut s=SimState::new(1);
         for (id,pos) in [(BuildingId(1),(10,10)),(BuildingId(2),(20,10))] {
-            let b=Building{id,kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:0.5,reinforced:false,dam_profile:Vec::new()};
+            let b=Building{id,kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:0.5,reinforced:false,dam: None};
             s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
         }
-        s.work.stock_add(BuildingId(1),Good::Sticks,20.0);s.buildings.stores.deposit(Good::Sticks,20.0).unwrap();
+        s.buildings.stores.produce_at(BuildingId(1),Good::Sticks,20.0,crate::buildings::Producer::Other).unwrap();
         s.work.hauls.push(crate::work::HaulOrder{from:BuildingId(1),to:BuildingId(2),good:Good::Sticks});
         crate::maintenance::order(&mut s,BuildingId(2),crate::maintenance::Refit::Repair).unwrap();
         let mut agents=Agents::default();agents.spawn(BeaverId(1),(9,10));let mut a=agents.by_id.remove(&BeaverId(1)).unwrap();
         fetch(&mut s,&mut a,0.01,&Duty::Haul,BuildingId(1),Good::Sticks,BuildingId(2),false);
         assert_eq!(s.buildings.stores.amount(Good::Sticks),20.0-LOAD_SIZE);assert_eq!(a.load.unwrap().amount,LOAD_SIZE);
-        crate::stock::reconcile(&mut s);assert_eq!(s.work.stock_of(BuildingId(1),Good::Sticks),20.0-LOAD_SIZE);
+        assert_eq!(s.work.stock_of(BuildingId(1),Good::Sticks),20.0-LOAD_SIZE);
         a.cell=(19,10);haul(&mut s,&mut a,0.01,BuildingId(2));
         assert_eq!(s.work.stock_of(BuildingId(2),Good::Sticks),LOAD_SIZE);assert_eq!(s.buildings.stores.amount(Good::Sticks),20.0);
         assert_eq!(s.buildings.stores.produced_total[Good::Sticks.index()],20.0);assert!(a.load.is_none());
@@ -1416,8 +1452,9 @@ fn carry_home(sim: &mut SimState, ag: &mut Agent, dt: f32, load: Load, home: Cel
     if at_home {
         ag.path = None;
         let who = producer(sim, ag);
-        let taken = if load.booked {sim.buildings.stores.refund(load.good,load.amount)} else {sim.buildings.stores.deposit_by(load.good, load.amount, who)}.unwrap_or(0.0);
-        if sim.work.supplies == Some(home) { sim.work.stock_add(SUPPLIES, load.good, taken); }
+        // Only food is kept in a shelter; materials go back on the supply pile where builders look.
+        let owner = sim.buildings.buildings.iter().find(|b| load.good == Good::Food && b.kind == BuildingKind::Shelter && adjacent(home,b)).map_or(SUPPLIES, |b| b.id);
+        let taken = if load.booked {sim.buildings.stores.put_at(owner,load.good,load.amount)} else {sim.buildings.stores.produce_at(owner,load.good,load.amount,who)}.unwrap_or(0.0);
         if taken >= load.amount - EPS {
             ag.load = None;
             ag.task = Task::Idle;
@@ -1457,6 +1494,6 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
 }
 
 fn at_resting_place(ag: &Agent, home: Option<&Building>) -> bool {
-    ag.inside || home.is_some_and(|b| b.kind == BuildingKind::Burrow
-        && b.pos.0.abs_diff(ag.cell.0)+b.pos.1.abs_diff(ag.cell.1)<=1)
+    let _ = home;
+    ag.inside
 }

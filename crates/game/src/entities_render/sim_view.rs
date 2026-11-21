@@ -1,7 +1,7 @@
 use super::scene::{height_at, Pose};
 use crate::terrain_render::CELL_SIZE as CELL;
 use bevy::prelude::*;
-use sim::agents::{Agent, Task, MOVE_COST_PER_DAY};
+use sim::agents::{Agent, Task, MOVE_COST_PER_DAY, LADEN_PACE};
 use sim::buildings::Good;
 use sim::nav::{Gait, Surface, CLIMB_COST, SWIM_COST, WALK_COST};
 use sim::resources::ResourceKind;
@@ -44,8 +44,10 @@ pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
     if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
-        let pace = if matches!(ag.assignment, Some(sim::agents::Assignment::Go(_))) { sim::agents::DIRECT_MOVE_COST_PER_DAY } else { MOVE_COST_PER_DAY };
-        frac = (ag.step_frac + pending_days * pace / gait_cost(gait)).clamp(0.0, 0.98);
+        let pace = MOVE_COST_PER_DAY * if ag.load.is_some() { LADEN_PACE } else { 1.0 };
+        let cost = sim.nav.surface_at(n).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0);
+        // step_frac is remaining movement cost, not a normalized cell fraction.
+        frac = ((ag.step_frac + pending_days * pace) / cost).clamp(0.0, 1.0);
         next = n;
     }
     let to = (next.0 as f32 + 0.5, next.1 as f32 + 0.5);
@@ -111,5 +113,22 @@ pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
             toward((b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0))
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cell_fraction_uses_the_same_surface_cost_as_movement() {
+        let mut sim = SimState::new(1);
+        let id = sim::colony::BeaverId(1);
+        sim.agents.spawn(id, (2,2));
+        let mut agent = sim.agents.get(id).unwrap().clone();
+        agent.path = Some(sim::nav::Path { steps: vec![((3,2), Gait::Walk)], cost: sim::nav::THICKET_COST });
+        agent.step_frac = sim::nav::THICKET_COST * 0.5;
+        sim.nav.set((3,2), Surface::Thicket);
+        let actual = agent_world_pos(&sim, &agent, 0.0).xz();
+        assert!(actual.distance(cell_xz(&sim, (3.0,2.5))) < 1e-5);
     }
 }

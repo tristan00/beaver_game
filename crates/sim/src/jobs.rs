@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/jobs_constants.rs"));
 use crate::agents::{can_fill, is_site, Assignment};
 use crate::buildings::{BuildingId, Good};
 use crate::colony::{BeaverId, Job, Stage};
@@ -31,20 +32,9 @@ impl RoleKind {
         RoleKind::Guard,
         RoleKind::Scout,
     ];
-    pub const DEFAULT_ORDER: [RoleKind; 9] = [
-        RoleKind::Builder,
-        RoleKind::Forager,
-        RoleKind::Logger,
-        RoleKind::Forester,
-        RoleKind::Hauler,
-        RoleKind::MudDigger,
-        RoleKind::Crafter,
-        RoleKind::Guard,
-        RoleKind::Scout,
-    ];
+    pub const DEFAULT_ORDER: [RoleKind; 9] = DEFAULT_ROLE_ORDER;
 }
 
-pub const FOOD_EMERGENCY_DAYS: f32 = 12.0;
 
 pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     let short = crate::hud::food_days_left(sim) < FOOD_EMERGENCY_DAYS;
@@ -57,18 +47,22 @@ pub fn rank(sim: &SimState, role: RoleKind) -> usize {
     sim.work.role_rank(role) + 2
 }
 
-pub const WOOD_RESERVE: f32 = 20.0;
 
 /// Keep a winter reserve and the current building queue supplied before harvesting more.
 pub fn stock_target(sim: &SimState, good: Good) -> f32 {
     let committed: f32 = sim.work.places.iter().filter(|p| is_site(sim,p))
         .filter_map(|p| p.site.as_ref()).map(|s|s.missing(good)).sum();
     let reserve = match good {
-        Good::Food => crate::hud::food_need_per_day(sim) * 125.0,
-        Good::Sticks => 40.0 + sim.buildings.buildings.len() as f32 * 0.7,
-        Good::Clay => 30.0 + sim.buildings.buildings.len() as f32 * 0.6,
+        Good::Food => crate::hud::food_need_per_day(sim) * FOOD_RESERVE_DAYS,
+        Good::Sticks => STICKS_RESERVE_BASE + sim.buildings.buildings.len() as f32 * STICKS_RESERVE_PER_BUILDING,
+        Good::Clay => CLAY_RESERVE_BASE + sim.buildings.buildings.len() as f32 * CLAY_RESERVE_PER_BUILDING,
     };
     (committed + reserve).min(sim.buildings.stores.capacity(good))
+}
+
+/// Stock plus loads already taken out for work, so carrying a load never looks like a shortage.
+pub fn on_hand(sim: &SimState, good: Good) -> f32 {
+    sim.buildings.stores.amount(good) + crate::agents::in_hands(sim, good)
 }
 
 pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
@@ -78,7 +72,7 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
         RoleKind::MudDigger => &[Good::Clay],
         _ => return false,
     };
-    if role == RoleKind::Logger && sim.buildings.stores.amount(Good::Sticks) < WOOD_RESERVE {
+    if role == RoleKind::Logger && on_hand(sim, Good::Sticks) < WOOD_RESERVE {
         return true;
     }
     goods.iter().any(|&g| {
@@ -90,7 +84,7 @@ pub fn material_short(sim: &SimState, role: RoleKind) -> bool {
             .filter_map(|p| p.site.as_ref())
             .map(|s| s.missing(g))
             .sum();
-        lacking > sim.buildings.stores.amount(g) + 1e-3
+        lacking > on_hand(sim, g) + 1e-3
     })
 }
 

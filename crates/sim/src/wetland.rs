@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/wetland_constants.rs"));
 use std::collections::HashSet;
 
 use crate::buildings::WET_DEPTH;
@@ -5,11 +6,6 @@ use crate::resources::{ResourceKind, PLANT_MAX, WET_MOISTURE};
 use crate::water::Cell;
 use crate::SimState;
 
-pub const SHALLOW: f32 = 0.5;
-pub const DROWN: f32 = 0.8;
-pub const SPROUT_PER_DAY: f32 = 0.015;
-pub const CROWDED: usize = 5;
-pub const SPROUT_AMOUNT: f32 = 1.0;
 
 pub fn is_shore(sim: &SimState, c: Cell) -> bool {
     let d = &sim.water.depth;
@@ -35,7 +31,7 @@ fn river_clay_active(water: &crate::water::Water, (x,y): Cell) -> bool {
         let depth=water.depth.get(x,y).copied().unwrap_or(0.0);
         let ice=water.ice.get(x,y).copied().unwrap_or(1.0);
         let velocity=water.velocity.get(x,y).copied().unwrap_or((0.0,0.0));
-        depth>=WET_DEPTH && ice<0.4 && velocity.0.hypot(velocity.1)>0.002
+        depth>=WET_DEPTH && ice<CLAY_MAX_ICE && velocity.0.hypot(velocity.1)>CLAY_MIN_VELOCITY
     })
 }
 
@@ -71,8 +67,8 @@ pub fn step(sim: &mut SimState, day: u64) {
     }
     let crowd = |plants: &[u8], c: Cell| {
         let mut k = 0;
-        for y in c.1.saturating_sub(2)..(c.1 + 3).min(n) {
-            for x in c.0.saturating_sub(2)..(c.0 + 3).min(n) {
+        for y in c.1.saturating_sub(SPROUT_CROWD_RADIUS)..(c.1 + SPROUT_CROWD_RADIUS + 1).min(n) {
+            for x in c.0.saturating_sub(SPROUT_CROWD_RADIUS)..(c.0 + SPROUT_CROWD_RADIUS + 1).min(n) {
                 k += plants[y * n + x] as usize;
             }
         }

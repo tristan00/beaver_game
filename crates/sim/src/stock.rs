@@ -1,9 +1,9 @@
+include!(concat!(env!("OUT_DIR"), "/stock_constants.rs"));
 use crate::agents::{accepts, SUPPLIES};
 use crate::buildings::{Building, BuildingId, Good};
 use crate::water::Cell;
 use crate::SimState;
 
-pub const WORKSHOP_REACH: usize = 40;
 const EPS: f32 = 1e-4;
 
 pub fn gap(a: &Building, b: &Building) -> usize {
@@ -36,14 +36,6 @@ pub fn nearest_holding(sim: &SimState, from: Cell, good: Good, min: f32) -> Opti
         .min_by_key(|&id| (cell_dist(sim, from, id), id))
 }
 
-pub fn within_reach(sim: &SimState, workshop: &Building, good: Good) -> f32 {
-    sim.buildings
-        .buildings
-        .iter()
-        .filter(|b| b.is_complete() && accepts(b.kind, good) && gap(workshop, b) <= WORKSHOP_REACH)
-        .map(|b| sim.work.stock_of(b.id, good))
-        .sum()
-}
 
 pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -> f32 {
     let mut ids: Vec<(usize, BuildingId)> =
@@ -54,12 +46,11 @@ pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -
         if left <= EPS {
             break;
         }
-        left -= sim.work.stock_take(id, good, left);
+        left -= sim.buildings.stores.consume_from(id, good, left, crate::buildings::Use::Crafting);
     }
     amount - left
 }
 
-pub const BALANCE_SLACK: f32 = 3.0;
 
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
     if sim.work.balanced.len() < 2 {
@@ -105,28 +96,4 @@ pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingI
         }
     }
     best.map(|b| (b.2, b.3, b.4))
-}
-
-
-
-pub fn reconcile(sim: &mut SimState) {
-    for g in Good::ALL {
-        let holders = holders(sim, g);
-        sim.work.stock.retain(|&(b, good), a| good != g || (holders.contains(&b) && *a > EPS));
-        let total: f32 = holders.iter().map(|&b| sim.work.stock_of(b, g)).sum();
-        let ledger = sim.buildings.stores.amount(g);
-        let diff = ledger - total;
-        if diff > EPS {
-            if let Some(&first) = holders.iter().min() {
-                sim.work.stock_add(first, g, diff);
-            }
-        } else if diff < -EPS && total > 0.0 {
-            let keep = (ledger / total).max(0.0);
-            for &b in &holders {
-                if let Some(a) = sim.work.stock.get_mut(&(b, g)) {
-                    *a *= keep;
-                }
-            }
-        }
-    }
 }

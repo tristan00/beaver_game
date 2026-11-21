@@ -35,37 +35,15 @@ pub fn building_icon(k: BuildingKind) -> Icon {
     use BuildingKind::*;
     match k {
         Dam => Icon::Dam,
-        Lodge => Icon::Lodge,
-        Burrow => Icon::Burrow,
-        FoodCache => Icon::FoodCache,
-        ScentMound => Icon::ScentMound,
-        GuardPost => Icon::GuardPost,
-        Canal => Icon::Canal,
-        Lock => Icon::Lock,
-        WaterWheel => Icon::WaterWheel,
-        Workshop => Icon::Workshop,
+        Shelter => Icon::Lodge,
         Warehouse => Icon::Warehouse,
-        Dock => Icon::Dock,
-        Barge => Icon::Barge,
-        LoggingCamp => Icon::LoggingCamp,
-        ForagerHut => Icon::ForagerHut,
-        MudPit => Icon::MudPit,
-        Mill => Icon::Mill,
-        Storehouse => Icon::Storehouse,
-        ForesterLodge => Icon::ForesterLodge,
-        TreeNursery => Icon::TreeNursery,
     }
 }
 
 pub fn group_icon(g: Group) -> Icon {
     match g {
-        Group::Base => Icon::CatBasics,
         Group::Water => Icon::CatWater,
-        Group::Forest => Icon::CatForest,
-        Group::Building => Icon::CatBuilding,
-        Group::Craft => Icon::CatCraft,
-        Group::Transport => Icon::CatTransport,
-        Group::Defence => Icon::CatDefence,
+        Group::Home => Icon::CatBuilding,
     }
 }
 
@@ -85,47 +63,6 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
         ResourceKind::Plant => "Edible shoots",
         ResourceKind::MudBank => "Clay deposit",
         ResourceKind::RiverClay => "River clay",
-    }
-}
-
-pub fn tree_stage_icon(st: sim::forestry::TreeStage) -> Icon {
-    use sim::forestry::TreeStage::*;
-    match st {
-        Sapling => Icon::Sapling,
-        Young => Icon::TreeYoung,
-        Mature => Icon::Tree,
-        Old => Icon::TreeOld,
-        Snag => Icon::Coppice,
-    }
-}
-
-pub fn tree_stage_name(st: sim::forestry::TreeStage) -> &'static str {
-    use sim::forestry::TreeStage::*;
-    match st {
-        Sapling => "Saplings",
-        Young => "Young",
-        Mature => "Mature",
-        Old => "Old",
-        Snag => "Snags",
-    }
-}
-
-pub fn cut_rule_face(r: sim::forestry::CutRule) -> (Icon, &'static str) {
-    use sim::forestry::CutRule::*;
-    match r {
-        MatureOnly => (Icon::Tree, "Mature only"),
-        ClearCut => (Icon::Clear, "Clear-cut"),
-        Thin => (Icon::TreeOld, "Thin"),
-        Coppice => (Icon::Coppice, "Coppice"),
-    }
-}
-
-pub fn plant_rule_face(r: sim::forestry::PlantRule) -> (Icon, &'static str) {
-    use sim::forestry::PlantRule::*;
-    match r {
-        FillGaps => (Icon::Sapling, "Fill gaps"),
-        PlantAll => (Icon::ViewForest, "Plant all"),
-        TendOnly => (Icon::Health, "Tend only"),
     }
 }
 
@@ -169,19 +106,10 @@ pub fn place_error(e: &PlaceError) -> String {
         PlaceError::NeedsDry => "Wet".into(),
         PlaceError::NeedsWater => "No water".into(),
         PlaceError::NeedsPond => "Needs a pond".into(),
-        PlaceError::NeedsDock => "Needs dock".into(),
-        PlaceError::NeedsDam => "Needs dam".into(),
         PlaceError::NoCells => String::new(),
         PlaceError::TooLong(max) => format!("Max {max}"),
         PlaceError::Sim(m) => sim_error(m),
     }
-}
-
-pub fn blocking_dam(m: &str) -> Option<(usize, usize)> {
-    let rest = m.split("a dam at ").nth(1)?;
-    let xy = rest.split_whitespace().next()?;
-    let (x, y) = xy.split_once(',')?;
-    Some((x.parse().ok()?, y.trim_end_matches([',', ':']).parse().ok()?))
 }
 
 pub fn sim_error(m: &str) -> String {
@@ -213,8 +141,7 @@ pub fn sim_error(m: &str) -> String {
         ("disabled", "Locked"),
         ("(locked)", "Locked"),
     ];
-    table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string())
-        .unwrap_or_else(|| m.strip_prefix("invalid command: ").unwrap_or(m).to_string())
+    table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }
 
 fn role_presentation(role: RoleKind) -> (Icon, &'static str) {

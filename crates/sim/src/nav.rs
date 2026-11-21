@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/nav_constants.rs"));
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -33,11 +34,6 @@ pub enum Gait {
     Climb,
 }
 
-pub const CLIMB_COST: f32 = 3.0;
-pub const THICKET_COST: f32 = 2.5;
-pub const WALK_COST: f32 = 1.0;
-pub const SWIM_COST: f32 = 0.6;
-pub const CANAL_COST: f32 = 0.3;
 const COST_UNIT: f32 = 1000.0;
 const MIN_STEP: u32 = (CANAL_COST * COST_UNIT) as u32;
 
@@ -287,11 +283,8 @@ impl NavGrid {
         }
         for b in &sim.buildings.buildings {
             match b.kind {
-                BuildingKind::Canal if b.is_complete()=>{
-                    for (x,y) in b.cells() {if self.wet_surface[y*w+x]==Surface::Water {self.wet_surface[y*w+x]=Surface::Canal;}}
-                }
-                BuildingKind::Dam|BuildingKind::Canal|BuildingKind::Lock|BuildingKind::Dock|BuildingKind::Barge=>{}
-                BuildingKind::Lodge if b.is_complete()=>{
+                BuildingKind::Dam=>{}
+                BuildingKind::Shelter if b.is_complete()=>{
                     self.add_lodge(b.pos);
                     for (x,y) in b.cells().chain(std::iter::once(lodge_entrance(b.pos))) {
                         let i=y*w+x;

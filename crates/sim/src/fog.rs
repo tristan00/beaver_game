@@ -1,10 +1,8 @@
+include!(concat!(env!("OUT_DIR"), "/fog_constants.rs"));
 use crate::water::Cell;
 use crate::worldgen::World;
 
 pub const EXPLORED: f32 = 0.5;
-pub const BEAVER_SIGHT: f32 = 30.0;
-pub const ARRIVAL_SIGHT: f32 = 80.0;
-pub const SETTLE_SIGHT: f32 = 40.0;
 
 #[derive(Clone, Debug)]
 pub struct Fog {

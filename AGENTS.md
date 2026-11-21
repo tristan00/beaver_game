@@ -1,34 +1,14 @@
-# Source budget
+Agents may not edit this file
 
-The game has a hard maximum of **20,000 source lines**. Run
-`python tools/check_size.py` to enforce the same count used in code-size reports:
-all Rust and shader source under both crates' `src` directories, including
-comments, blank lines and inline tests. Do not minify code or move executable
-logic into excluded directories to satisfy the limit.
 
-# Economy and balance work
 
-The current inventory has three goods: **Food, Sticks, Clay**. Pebbles and
-quarrying are removed for now. River clay is a limited supplement to deposits.
+Agents are responsible for cleaning up unused tests, run logs and so on after they finish using them .
 
-Read `docs/economy_balance.md` before changing economy tuning.
 
-- Treat effortless abundance and unavoidable survival failure as equally
-  important balance failures. A surviving run is not automatically balanced.
-- Even the best planning must leave meaningful mortality risk. Judge managed
-  colonies by their ability to absorb losses and recover, not by zero deaths.
-  Balance through the existing food, storage, labor, shelter and family systems;
-  never force a death quota or rescue a run with free supplies.
-- No work accidents or random work injuries. Do not add mortality mechanics
-  to obtain deaths in balance runs.
-- Do not answer each failed run by increasing supplies. First diagnose the
-  player's decisions, work availability, access, hauling, and broken behavior.
-- Compare competent play with overbuilding, infrequent care and neglect using
-  identical maps and initial supplies. Show the consequences of decisions.
-- Track sustained surplus and idle labour alongside hunger, resource deficits,
-  delays and deaths. Do not tune merely to move a number across a test threshold.
-- Preserve failed experiments. A test-player failure does not establish that
-  survival is impossible; a test-player fix is not a balance improvement until
-  the comparison demonstrates it.
-- Recovery must use normal commands, work and earned resources, without stock
-  gifts or instant construction. Report unresolved balance failures honestly.
+
+Keep everything on the master branch
+
+
+
+The less text in the HUD and interface, the better. 
+

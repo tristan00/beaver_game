@@ -3,7 +3,7 @@ mod command;
 mod construction;
 
 pub use colony_bridge::WorldLand;
-pub use command::Command;
+pub use command::{Command, DamGrowth};
 
 pub mod agents;
 pub mod autoplay;
@@ -11,7 +11,7 @@ pub mod buildings;
 pub mod calendar;
 pub mod catalogue;
 pub mod colony;
-pub mod craftsmanship;
+pub mod dams;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
@@ -20,17 +20,18 @@ pub mod forestry;
 pub mod grid;
 pub mod hud;
 pub mod jobs;
+pub mod inventory;
 pub mod ledger;
 pub mod maps;
 pub mod maintenance;
 pub mod nav;
 pub mod output;
 pub mod resources;
+pub mod runtime;
 pub mod sandbox;
 pub mod script;
 pub mod site;
 pub mod society;
-pub mod shipping;
 pub mod starts;
 pub mod stock;
 pub mod trace;
@@ -84,9 +85,10 @@ impl StepTimings {
     }
 }
 
-#[derive(Clone)]
 pub struct SimState {
     pub seed: u64,
+    pub instance: u64,
+    pub client_commands: Option<Vec<Command>>,
     pub time_days: f64,
     pub height: grid::HeightGrid,
     pub world: worldgen::World,
@@ -124,6 +126,8 @@ impl SimState {
         let resources = resources::ResourceWorld::seeded(seed, &world);
         let mut sim = Self {
             seed,
+            instance: { static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) },
+            client_commands: None,
             time_days: 0.0,
             height,
             world,
@@ -147,6 +151,7 @@ impl SimState {
             sandbox: false,
             step_timings: StepTimings::default(),
         };
+        sim.work.inventory = sim.buildings.stores.inventory.view();
         forestry::init(&mut sim);
         sim
     }
@@ -179,11 +184,9 @@ impl SimState {
         lap(&mut t.water_s);
         self.ecology.step(dt_days, &self.water.depth)?;
         lap(&mut t.ecology_s);
-        let mirrored = self.mirror_colony_stores();
         self.derive_colony_jobs();
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
-        self.colony.step_on(dt_days, &land).map_err(|_| SimError::InvalidDt(dt_days))?;
-        self.settle_colony_stores(mirrored);
+        self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?;
         lap(&mut t.colony_s);
         let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
         self.buildings.step(dt_days, terrain);
@@ -196,11 +199,11 @@ impl SimState {
             wetland::step(self, day as u64);
         }
         forestry::step(self, dt_days);
-        stock::reconcile(self);
+        self.refresh_store_view();
         lap(&mut t.other_s);
         agents::step(self, dt_days);
         lap(&mut t.agents_s);
-        shipping::step(self, dt_days);
+        dams::step(self);
         lap(&mut t.shipping_s);
         self.explore();
         lap(&mut t.fog_s);
@@ -208,7 +211,7 @@ impl SimState {
         self.step_events(dt_days);
 
         self.output.step(dt_days);
-        stock::reconcile(self);
+        self.refresh_store_view();
         self.ledger.record(self.time_days, &self.buildings.stores);
         lap(&mut t.other_s);
         t.steps += 1;
@@ -228,25 +231,36 @@ impl SimState {
 
 fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }
 
-#[cfg(test)]
-mod store_mirror_tests {
-    use super::*;
-    use buildings::Good;
-    #[test]
-    fn meals_and_repairs_charge_separate_resources() {
-        let mut sim=SimState::new(1);
-        for (good,amount) in [(Good::Food,10.0),(Good::Sticks,20.0),(Good::Clay,30.0)] {
-            sim.buildings.stores.deposit(good,amount).unwrap();
-        }
-        let before=sim.mirror_colony_stores();
-        sim.colony.food-=2.0;
-        sim.colony.eaten[colony::Stage::Adult as usize]+=2.0;
-        sim.colony.wood-=3.0;
-        sim.colony.repair_wood+=3.0;
-        sim.settle_colony_stores(before);
-        assert_eq!(sim.buildings.stores.amount(Good::Food),8.0);
-        assert_eq!(sim.buildings.stores.amount(Good::Sticks),17.0);
-        assert_eq!(sim.buildings.stores.amount(Good::Clay),30.0);
-        assert_eq!((sim.colony.food,sim.colony.wood),(8.0,17.0));
+impl Clone for SimState {
+    fn clone(&self) -> Self {
+        let mut copy = Self {
+            seed: self.seed,
+            instance: self.instance,
+            client_commands: self.client_commands.clone(),
+            time_days: self.time_days.clone(),
+            height: self.height.clone(),
+            world: self.world.clone(),
+            water: self.water.clone(),
+            ecology: self.ecology.clone(),
+            colony: self.colony.clone(),
+            buildings: self.buildings.clone(),
+            events: self.events.clone(),
+            nav: self.nav.clone(),
+            resources: self.resources.clone(),
+            agents: self.agents.clone(),
+            work: self.work.clone(),
+            maintenance: self.maintenance.clone(),
+            society: self.society.clone(),
+            ledger: self.ledger.clone(),
+            output: self.output.clone(),
+            fog: self.fog.clone(),
+            steps: self.steps.clone(),
+            recorder: self.recorder.clone(),
+            forestry: self.forestry.clone(),
+            sandbox: self.sandbox.clone(),
+            step_timings: self.step_timings.clone(),
+        };
+        copy.work.inventory = copy.buildings.stores.inventory.view();
+        copy
     }
 }

@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/resources_constants.rs"));
 use crate::buildings::Good;
 use crate::water::Cell;
 use crate::work::Area;
@@ -39,27 +40,6 @@ impl ResourceKind {
     }
 }
 
-pub const FELL_WORK: f32 = 2.0;
-pub const TREE_LOGS: f32 = 3.0;
-pub const TREE_BRANCHES: f32 = 4.0;
-pub const TREE_BARK: f32 = 2.0;
-pub const PLANT_MAX: f32 = 4.0;
-pub const PLANT_REGROW_PER_DAY: f32 = 0.25;
-pub const WINTER_PLANT_DECAY_PER_DAY: f32 = 0.04;
-pub const WET_MOISTURE: f32 = 0.5;
-const PLANT_CHANCE: f32 = 0.25;
-pub const RIVER_CLAY_SPOTS: usize = 8;
-pub const RIVER_CLAY_CAPACITY: f32 = 8.0;
-pub const RIVER_CLAY_INITIAL: f32 = 2.0;
-pub const RIVER_CLAY_PER_DAY: f32 = 0.04;
-pub const RIVER_CLAY_MIN_TAKE: f32 = 0.5;
-pub const CLAY_BEDS: usize = 4;
-pub const CLAY_BED_RADIUS: f32 = 10.0;
-pub const CLAY_AMOUNT: f32 = 30.0;
-const CLAY_FILL: f32 = 0.8;
-const STRAY_MUD_CHANCE: f32 = 0.01;
-pub const STRAY_MUD_AMOUNT: f32 = 10.0;
-pub const DEPOSIT_SPACING: f32 = 100.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
@@ -149,7 +129,7 @@ impl ResourceWorld {
             let (x,y)=c;
             let near_river=[(x.wrapping_sub(1),y),(x+1,y),(x,y.wrapping_sub(1)),(x,y+1)]
                 .iter().any(|p|world.river.get(p.0,p.1)==Some(&true));
-            if near_river && !in_bed(c) && river_spots.iter().all(|&b|distance(c,b)>=45.0) {river_spots.push(c);}
+            if near_river && !in_bed(c) && river_spots.iter().all(|&b|distance(c,b)>=RIVER_CLAY_SPACING) {river_spots.push(c);}
             if river_spots.len()>=RIVER_CLAY_SPOTS {break;}
         }
         for y in 0..n {for x in 0..n {

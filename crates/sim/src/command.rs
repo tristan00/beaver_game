@@ -1,14 +1,24 @@
 //! Player commands and their validation/dispatch boundary.
-use crate::{SimError, SimState, agents, buildings, colony, forestry, invalid, jobs, maintenance, sandbox, shipping, society, starts, water, work};
+use crate::{SimError, SimState, agents, buildings, colony, dams, forestry, invalid, jobs, maintenance, sandbox, society, starts, water, work};
+
+/// How a dam grows when the player asks for more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamGrowth {
+    Raise,
+    Widen,
+    Extend,
+}
 
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Regenerate { seed: u64 },
     BuildDam { cells: Vec<water::Cell>, height: f32 },
-    OrderDam { cells: Vec<water::Cell>, height: f32 },
-    OrderDamTo { cells: Vec<water::Cell>, crest: f32 },
-    RepairDam { cell: water::Cell },
+    /// Draw a new dam along these cells; beavers then build every cell.
+    PlaceDam { cells: Vec<water::Cell> },
+    /// Grow a dam; `cells` narrows a raise to those cells.
+    GrowDam { dam: buildings::BuildingId, growth: DamGrowth, cells: Vec<water::Cell> },
+    SetDamMaintain { dam: buildings::BuildingId, on: bool },
     RepairBuilding { building: buildings::BuildingId },
     ReinforceBuilding { building: buildings::BuildingId },
     Settle { cell: water::Cell },
@@ -30,13 +40,8 @@ pub enum Command {
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     SetHaul { order: work::HaulOrder },
     SetBalance { building: buildings::BuildingId, on: bool },
-    SetBargeRoute { barge: buildings::BargeId, from: buildings::BuildingId, to: buildings::BuildingId, goods: Vec<buildings::Good> },
-    ClearBargeRoute { barge: buildings::BargeId },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
-    OrderCanal { cells: Vec<water::Cell> },
     CancelSite { building: buildings::BuildingId },
-    SetCutRule { building: buildings::BuildingId, rule: forestry::CutRule },
-    SetPlantRule { building: buildings::BuildingId, rule: forestry::PlantRule },
 }
 
 #[cfg(test)]
@@ -93,6 +98,12 @@ mod tests {
 
 impl SimState {
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
+        // Preserve synchronous input feedback on a presentation snapshot. Only
+        // the worker advances time; successful local commands are replayed there
+        // in order and acknowledged before their predictions are retired.
+        let predicted = self.client_commands.is_some().then(|| cmd.clone());
+        let events = predicted.as_ref().map(|_| self.colony.events.clone());
+
         let diagnostic = crate::trace::enabled().then(|| format!("{cmd:?}"));
         let logged = self.recorder.is_some().then(|| cmd.clone());
         let res = self.apply_inner(cmd);
@@ -104,6 +115,10 @@ impl SimState {
             if let Some(r) = self.recorder.as_mut() {
                 r.push((step, c));
             }
+        }
+        if let Some(events) = events { self.colony.events = events; }
+        if let (Ok(()), Some(command)) = (&res, predicted) {
+            self.client_commands.get_or_insert_with(Vec::new).push(command);
         }
         res
     }
@@ -118,9 +133,16 @@ impl SimState {
                 Ok(())
             }
             Command::BuildDam { cells, height } => self.water.build_dam(&cells, height).map_err(invalid),
-            Command::OrderDam { cells, height } => self.order_dam(&cells, height).map(|_| ()),
-            Command::OrderDamTo { cells, crest } => self.order_dam_to(&cells, crest).map(|_| ()),
-            Command::RepairDam { cell } => self.repair_dam(cell).map(|_| ()),
+            Command::PlaceDam { cells } => dams::place(self, &cells).map(|_| ()),
+            Command::GrowDam { dam, growth, cells } => {
+                let plan = match growth {
+                    DamGrowth::Raise => dams::plan_raise(self, dam, &cells),
+                    DamGrowth::Widen => dams::plan_widen(self, dam),
+                    DamGrowth::Extend => dams::plan_extend(self, dam),
+                };
+                dams::apply_plan(self, dam, plan.map_err(SimError::InvalidCommand)?)
+            }
+            Command::SetDamMaintain { dam, on } => dams::set_maintain(self, dam, on),
             Command::RepairBuilding { building } => maintenance::order(self, building, maintenance::Refit::Repair),
             Command::ReinforceBuilding { building } => maintenance::order(self, building, maintenance::Refit::Reinforce),
             Command::Settle { cell } => starts::settle(self, cell),
@@ -148,7 +170,10 @@ impl SimState {
                             .flat_map(|y| (target.0.saturating_sub(radius)..=target.0 + radius).map(move |x| (x, y)))
                             .filter(|c| !destinations.contains(c)).collect();
                         cells.sort_by_key(|c| (c.0.abs_diff(target.0).pow(2) + c.1.abs_diff(target.1).pow(2), *c));
-                        let Some(cell) = cells.into_iter().find(|&c| self.nav.find_path(id, from, crate::nav::Goal::Cell(c)).is_some()) else {
+                        let Some(cell) = cells.into_iter().find(|&c| {
+                            self.nav.surface_at(c).is_some_and(|s| s != crate::nav::Surface::Solid)
+                                && self.nav.may_reach(from, [c])
+                        }) else {
                             return Err(SimError::InvalidCommand(format!("No reachable destination for beaver {}", id.0)));
                         };
                         destinations.insert(cell);
@@ -209,12 +234,7 @@ impl SimState {
                 forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
-            Command::OrderCanal { cells } => self.order_canal(&cells).map(|_| ()),
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
-            Command::SetCutRule { building, rule } => forestry::set_cut_rule(self, building, rule),
-            Command::SetPlantRule { building, rule } => forestry::set_plant_rule(self, building, rule),
-            Command::SetBargeRoute { barge, from, to, goods } => shipping::set_route(self, barge, from, to, goods).map_err(SimError::InvalidCommand),
-            Command::ClearBargeRoute { barge } => shipping::clear_route(self, barge).map_err(SimError::InvalidCommand),
             Command::SetBalance { building, on } => {
                 let store = self.buildings.building(building).is_some_and(|b| b.is_complete() && agents::is_store(b.kind));
                 if !store {

@@ -28,23 +28,17 @@ pub fn on_map(id: &str) -> Result<SimState, String> {
 pub(crate) fn apply(s: &mut SimState, cmd: Command) -> Result<(), SimError> {
     let bad = |e: WaterError| SimError::InvalidCommand(e.to_string());
     match cmd {
-        Command::BuildDam { cells, height } | Command::OrderDam { cells, height } => s.water.build_dam(&cells, height).map_err(bad),
-        Command::OrderDamTo { cells, crest } => {
-            let (cells, heights) = crate::dam_preview::heights_to(s, &cells, crest);
-            if cells.is_empty() {
+        Command::BuildDam { cells, height } => s.water.build_dam(&cells, height).map_err(bad),
+        Command::PlaceDam { cells } => {
+            let heights = crate::dams::first_targets(s, &cells);
+            let pairs: Vec<(Cell, f32)> = cells.into_iter().zip(heights).filter(|p| p.1 > 0.0).collect();
+            if pairs.is_empty() {
                 return Err(SimError::InvalidCommand("the ground is already that high".into()));
             }
-            let pairs: Vec<(Cell, f32)> = cells.into_iter().zip(heights).collect();
             s.water.raise_dam(&pairs).map_err(bad)
         }
         Command::BreachDam { x, y } => s.water.breach(x, y).map_err(bad),
-        Command::RepairDam { cell } => {
-            let cells: Vec<(Cell, f32)> = s.water.dam_line_at(cell).into_iter()
-                .map(|c| (c, *s.water.dam_height.get(c.0, c.1).expect("dam cell"))).collect();
-            s.water.raise_dam(&cells).map_err(bad)
-        }
         Command::DigCanal { cells, depth } => s.water.dig_canal(&mut s.height, &cells, depth).map_err(bad),
-        Command::OrderCanal { cells } => s.water.dig_canal(&mut s.height, &cells, SimState::CANAL_DEPTH).map_err(bad),
         other => Err(SimError::InvalidCommand(format!("sandbox has no colony: '{}' is not available", crate::script::to_line(&other)))),
     }
 }
@@ -297,7 +291,13 @@ pub fn run_script(text: &str) -> Result<(SimState, Report), String> {
                 }
                 let cmd = match w[0] {
                     "dam" => Command::BuildDam { cells: cells.clone(), height: v },
-                    "dam-to" => Command::OrderDamTo { cells: cells.clone(), crest: v },
+                    "dam-to" => {
+                        let (c, h) = crate::dam_preview::heights_to(s, &cells, v);
+                        let pairs: Vec<(Cell, f32)> = c.into_iter().zip(h).collect();
+                        s.water.raise_dam(&pairs).map_err(|e| err(e.to_string()))?;
+                        report.lines.push(say(s, format!("dam-to of {} cells ({v} m)", cells.len())));
+                        continue;
+                    }
                     _ => Command::DigCanal { cells: cells.clone(), depth: v },
                 };
                 s.apply(cmd).map_err(|e| err(e.to_string()))?;

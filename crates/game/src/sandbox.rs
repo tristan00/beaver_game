@@ -51,7 +51,7 @@ fn update_panel(sim: Res<Sim>, canopy: Res<crate::entities_render::CanopyView>, 
 }
 
 pub fn breach_line(s: &mut sim::SimState, at: (usize, usize)) -> usize {
-    let cells = crate::build_logic::dam_line_at(s, at);
+    let cells = s.water.dam_line_at(at);
     cells.iter().filter(|&&(x, y)| s.apply(sim::Command::BreachDam { x, y }).is_ok()).count()
 }
 

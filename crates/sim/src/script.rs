@@ -50,9 +50,9 @@ pub fn to_line(c: &Command) -> String {
     match c {
         Command::Regenerate { seed } => format!("regenerate {seed}"),
         Command::BuildDam { cells: v, height } => format!("build-dam {height} {}", cells(v)),
-        Command::OrderDam { cells: v, height } => format!("dam {height} {}", cells(v)),
-        Command::OrderDamTo { cells: v, crest } => format!("dam-to {crest} {}", cells(v)),
-        Command::RepairDam { cell: c } => format!("repair-dam {} {}", c.0, c.1),
+        Command::PlaceDam { cells: v } => format!("dam {}", cells(v)),
+        Command::GrowDam { dam, growth, cells: v } => format!("grow-dam {} {growth:?} {}", dam.0, cells(v)),
+        Command::SetDamMaintain { dam, on } => format!("dam-maintain {} {}", dam.0, if *on { "on" } else { "off" }),
         Command::RepairBuilding { building } => format!("repair {}",building.0),
         Command::ReinforceBuilding { building } => format!("reinforce {}",building.0),
         Command::Settle { cell: c } => format!("settle {} {}", c.0, c.1),
@@ -83,15 +83,8 @@ pub fn to_line(c: &Command) -> String {
         Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
         Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
         Command::SetBalance { building, on } => format!("balance {} {}", building.0, if *on { "on" } else { "off" }),
-        Command::SetBargeRoute { barge, from, to, goods } => {
-            format!("barge-route {} {} {} {}", barge.0, from.0, to.0, goods.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>().join(","))
-        }
-        Command::ClearBargeRoute { barge } => format!("barge-route {} none", barge.0),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
-        Command::OrderCanal { cells: v } => format!("canal {}", cells(v)),
         Command::CancelSite { building } => format!("cancel {}", building.0),
-        Command::SetCutRule { building, rule } => format!("cut-rule {} {rule:?}", building.0),
-        Command::SetPlantRule { building, rule } => format!("plant-rule {} {rule:?}", building.0),
     }
 }
 
@@ -122,15 +115,22 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
     Ok(match head {
         "regenerate" => Command::Regenerate { seed: num(t.get(1), "seed")? },
         "build-dam" => Command::BuildDam { height: num(t.get(1), "height")?, cells: parse_cells(&t[2..])? },
-        "dam" => Command::OrderDam { height: num(t.get(1), "height")?, cells: parse_cells(&t[2..])? },
-        "dam-to" => Command::OrderDamTo { crest: num(t.get(1), "crest")?, cells: parse_cells(&t[2..])? },
-        "repair-dam" => Command::RepairDam { cell: (num(t.get(1), "x")?, num(t.get(2), "y")?) },
+        "dam" => Command::PlaceDam { cells: parse_cells(&t[1..])? },
+        "grow-dam" => Command::GrowDam {
+            dam: b(1)?,
+            growth: [crate::DamGrowth::Raise, crate::DamGrowth::Widen, crate::DamGrowth::Extend]
+                .into_iter()
+                .find(|g| t.get(2).is_some_and(|x| format!("{g:?}").eq_ignore_ascii_case(x)))
+                .ok_or("grow-dam takes raise, widen or extend")?,
+            cells: parse_cells(&t[3..])?,
+        },
+        "dam-maintain" => Command::SetDamMaintain { dam: b(1)?, on: on(2)? },
         "repair" => Command::RepairBuilding { building: b(1)? },
         "reinforce" => Command::ReinforceBuilding { building: b(1)? },
         "settle" => Command::Settle { cell: (num(t.get(1), "x")?, num(t.get(2), "y")?) },
         "breach" => Command::BreachDam { x: num(t.get(1), "x")?, y: num(t.get(2), "y")? },
         "dig-canal" => Command::DigCanal { depth: num(t.get(1), "depth")?, cells: parse_cells(&t[2..])? },
-        "canal" => Command::OrderCanal { cells: parse_cells(&t[1..])? },
+
         "assign" => {
             let who = t.get(1).ok_or("missing beavers")?.split(',').map(|s| s.parse().map(BeaverId).map_err(|_| format!("bad beaver '{s}'"))).collect::<Result<Vec<_>, _>>()?;
             let to = match t.get(2).copied() {
@@ -167,13 +167,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "auto" => Command::SetAutoStaff { on: on(1)? },
         "unlock" => Command::Unlock { who: BeaverId(num(t.get(1), "beaver")?) },
         "work-area" => Command::SetWorkArea { building: b(1)?, area: Area { min: (num(t.get(2), "x0")?, num(t.get(3), "y0")?), max: (num(t.get(4), "x1")?, num(t.get(5), "y1")?) } },
-        "barge-route" if t.get(2) == Some(&"none") => Command::ClearBargeRoute { barge: crate::buildings::BargeId(num(t.get(1), "barge")?) },
-        "barge-route" => Command::SetBargeRoute {
-            barge: crate::buildings::BargeId(num(t.get(1), "barge")?),
-            from: b(2)?,
-            to: b(3)?,
-            goods: t.get(4).ok_or("missing goods")?.split(',').map(parse_good).collect::<Result<_, _>>()?,
-        },
+
         "balance" => Command::SetBalance {
             building: b(1)?,
             on: match t.get(2).copied() {
@@ -192,20 +186,6 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             },
         },
         "cancel" => Command::CancelSite { building: b(1)? },
-        "cut-rule" => Command::SetCutRule {
-            building: b(1)?,
-            rule: [crate::forestry::CutRule::MatureOnly, crate::forestry::CutRule::ClearCut, crate::forestry::CutRule::Thin, crate::forestry::CutRule::Coppice]
-                .into_iter()
-                .find(|r| t.get(2).is_some_and(|x| format!("{r:?}").eq_ignore_ascii_case(x)))
-                .ok_or("unknown cut rule")?,
-        },
-        "plant-rule" => Command::SetPlantRule {
-            building: b(1)?,
-            rule: [crate::forestry::PlantRule::FillGaps, crate::forestry::PlantRule::PlantAll, crate::forestry::PlantRule::TendOnly]
-                .into_iter()
-                .find(|r| t.get(2).is_some_and(|x| format!("{r:?}").eq_ignore_ascii_case(x)))
-                .ok_or("unknown plant rule")?,
-        },
         other => return Err(format!("unknown command '{other}'")),
     })
 }
@@ -329,7 +309,7 @@ impl Runner {
                 crate::autoplay::place_best(&mut self.s, *k, around, &[]).map(|id| format!("placed {k:?} #{}", id.0))
             }
             Stmt::DesignedDam => match self.dam.clone() {
-                Some(d) => self.s.apply(Command::OrderDam { cells: d.cells, height: d.height }).map(|_| "ordered the designed dam".into()).map_err(|e| e.to_string()),
+                Some(d) => self.s.apply(Command::PlaceDam { cells: d.cells }).map(|_| "drew the designed dam".into()).map_err(|e| e.to_string()),
                 None => Err("no designed dam".into()),
             },
             Stmt::FixTop => match crate::hud::problems(&self.s).into_iter().next() {
@@ -408,8 +388,8 @@ impl Runner {
             s.buildings.buildings.iter().filter(|b| b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| !b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| s.buildings.stranded(b, &s.water.depth)).map(|b| format!("{:?}", b.kind)).collect::<Vec<_>>().join(","),
-            s.buildings.barges.len(),
-            s.buildings.barges.iter().map(|b| b.carried).sum::<f32>(),
+            0usize,
+            0.0f32,
             metric(s, &self.out.stats, "mature").unwrap_or(0.0),
             crate::hud::problems(s).iter().map(|p| format!("{:?}", p.kind)).collect::<Vec<_>>().join(",")
         );

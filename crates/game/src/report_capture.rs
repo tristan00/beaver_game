@@ -54,12 +54,11 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
     }
     for (key,(days,n)) in &litters { if days.len()!=1 || !(2..=4).contains(n) { violations.push(format!("invalid annual litter {key:?}")); } }
     for (&year,&n) in &s.colony.immigration_by_year {if n>2 {violations.push(format!("migration allowance exceeded in year {}",year+1));}}
-    let mut barges=String::from("id,from,to,delivered,state\n");for b in &s.buildings.barges{writeln!(barges,"{},{},{},{:.3},{:?}",b.id.0,b.service.as_ref().map_or(0,|v|v.from.0),b.service.as_ref().map_or(0,|v|v.to.0),b.carried,b.state).unwrap();}
-    let summary = format!("day={:.3}\npopulation={}\nfamilies={}\nbirths={}\ndeaths={}\nfood={:.3}\nfood_zero_days={}\nhomeless_days={}\npond_buildings={}\nwet_pond_buildings={}\nannual_litters={:?}\nviolations={:?}\ntimings={:?}\nimmigrants={}\nmigration_by_year={:?}\nrepairs={}\nreinforcements={}\ncanal_cells={}\nbarges={}\ndelivered={:.3}\n",
+    let summary = format!("day={:.3}\npopulation={}\nfamilies={}\nbirths={}\ndeaths={}\nfood={:.3}\nfood_zero_days={}\nhomeless_days={}\npond_buildings={}\nwet_pond_buildings={}\nannual_litters={:?}\nviolations={:?}\ntimings={:?}\nimmigrants={}\nmigration_by_year={:?}\nrepairs={}\nreinforcements={}\ncanal_cells={}\n",
         s.time_days, s.colony.population(), s.colony.families.len(), s.colony.stats.births, s.colony.stats.deaths, s.colony.food,
         out.stats.food_zero_days, out.stats.homeless_days, pond, wet_pond, litters, violations, s.step_timings,s.colony.stats.immigrants,s.colony.immigration_by_year,
-        s.maintenance.repairs_completed,s.maintenance.reinforcements_completed,s.water.canal.as_slice().iter().filter(|&&v|v).count(),s.buildings.barges.len(),s.buildings.barges.iter().map(|b|b.carried).sum::<f32>());
-    for (name, data) in [("summary.txt",summary),("homes.csv",homes),("beavers.csv",beavers),("buildings.csv",buildings),("events.txt",events),("run.txt",out.lines.join("\n")),("barges.csv",barges)] {
+        s.maintenance.repairs_completed,s.maintenance.reinforcements_completed,s.water.canal.as_slice().iter().filter(|&&v|v).count());
+    for (name, data) in [("summary.txt",summary),("homes.csv",homes),("beavers.csv",beavers),("buildings.csv",buildings),("events.txt",events),("run.txt",out.lines.join("\n"))] {
         fs::write(dir.join(name),data)?;
     }
     Ok(())
@@ -74,7 +73,7 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-clay-port.png", "12-reinforced-lodge.png", "13-barge-service.png", "14-resources.png", "15-fog-boundary.png", "16-river-clay.png"];
+const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-families.png", "04-jobs.png", "05-buildings.png", "06-downstream.png", "07-parentage.png", "08-household.png", "09-families-page-two.png", "10-network.png", "11-dam-closeup.png", "12-reinforced-lodge.png", "13-dam-panel.png", "14-resources.png", "15-fog-boundary.png", "16-river-clay.png"];
 
 #[allow(clippy::too_many_arguments)]
 fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMut<SimClock>,
@@ -94,7 +93,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                     clock.set_speed(crate::sim_driver::Speed::X3);
                     hud.colony = None;
                     canopy.0 = false;
-                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind==sim::buildings::BuildingKind::Lodge) {
+                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind==sim::buildings::BuildingKind::Shelter) {
                         orbit.target=crate::flow::cell_world(&sim.0.height,(home.pos.0 as f32,home.pos.1 as f32));
                         orbit.distance=90.0;
                     }
@@ -116,7 +115,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0 && shot != 14;
-        hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Buildings), 13 => Some(ColonyTab::Goods), _ => None };
+        hud.colony = match shot { 2 | 8 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Water), 13 => Some(ColonyTab::Goods), _ => None };
         hud.pop_page = usize::from(shot == 8);
         *lens = if shot == 1 || shot == 9 { MapLens::Water } else if shot==12 {MapLens::Goods} else { MapLens::World };
         *selection = Selection::None;
@@ -126,18 +125,18 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                 *selection = Selection::Beaver(b.id);
             }
         } else if shot == 7 {
-            if let Some(b) = sim.0.buildings.buildings.iter().find(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Lodge) {
+            if let Some(b) = sim.0.buildings.buildings.iter().find(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Shelter) {
                 *selection = Selection::Site(b.id);
             }
         } else if shot==11 {
-            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.reinforced && b.kind==sim::buildings::BuildingKind::Lodge) {*selection=Selection::Site(b.id);}
+            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.reinforced && b.kind==sim::buildings::BuildingKind::Shelter) {*selection=Selection::Site(b.id);}
         } else if shot==12 {
-            if let Some(b)=sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)) {*selection=Selection::Barge(b.id);}
+            if let Some(b)=sim.0.buildings.buildings.iter().find(|b|b.kind==sim::buildings::BuildingKind::Dam) {*selection=Selection::Site(b.id);}
         } else if shot==15 {
             if let Some(r)=sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)) {*selection=Selection::Tree(r.id);}
         }
         let homes: Vec<_> = sim.0.buildings.buildings.iter().filter(|b| b.is_complete()
-            && matches!(b.kind, sim::buildings::BuildingKind::Lodge | sim::buildings::BuildingKind::Burrow)).collect();
+            && b.kind == sim::buildings::BuildingKind::Shelter).collect();
         let focus = if shot == 5 { sim.0.buildings.buildings.iter().filter(|b| b.kind == sim::buildings::BuildingKind::Dam)
             .max_by_key(|b| b.pos.1).map(|b| b.pos) } else { homes.first().map(|b| b.pos) };
         if let Some((x,y)) = focus {
@@ -152,9 +151,8 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         }
         if shot==14 {orbit.distance=300.0;orbit.pitch=1.35;}
         let close=match shot {
-            10=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dock).max_by_key(|b|b.pos.1).map(|b|b.pos),
-            11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Lodge).map(|b|b.pos),
-            12=>sim.0.buildings.barges.iter().max_by(|a,b|a.carried.total_cmp(&b.carried)).map(|b|b.cell),
+            10|12=>sim.0.buildings.buildings.iter().filter(|b|b.kind==sim::buildings::BuildingKind::Dam).max_by_key(|b|b.pos.1).map(|b|b.pos),
+            11=>sim.0.buildings.buildings.iter().find(|b|b.reinforced&&b.kind==sim::buildings::BuildingKind::Shelter).map(|b|b.pos),
             15=>sim.0.resources.items.iter().find(|r|r.kind==sim::resources::ResourceKind::RiverClay && sim.0.fog.explored(r.cell)).map(|r|r.cell),
             _=>None,
         };

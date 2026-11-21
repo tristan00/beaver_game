@@ -3,6 +3,7 @@ mod actions;
 mod input;
 mod minimap;
 mod colony;
+mod dam_panel;
 mod elevation;
 mod inspect;
 mod panels;
@@ -10,12 +11,12 @@ mod ui;
 mod words;
 mod world;
 
-use actions::{button_actions, commit_line, extend_dam, forest_kind, undo_last};
+use actions::{button_actions, commit_line, undo_last};
 pub use actions::drawn_area;
 use input::{pointer_over_ui, track_cursor, hover_cell, hotkeys, next_idle, world_input, box_select, frame_camera, follow_beaver, search_input};
 use minimap::{MinimapImage, setup_minimap, update_minimap, minimap_click};
 
-use crate::build_logic::{self, BuildOrder, DAM_STEP, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
+use crate::build_logic::{self, BuildOrder};
 use crate::camera::MainCamera;
 use crate::flow::{cell_world, Cell, Flow, Selection};
 use crate::icons::{Icon, Icons};
@@ -23,7 +24,7 @@ use crate::sim_driver::{SimClock, Speed};
 use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
-use sim::buildings::{BargeId, BuildingId, BuildingKind, Good};
+use sim::buildings::{BuildingId, BuildingKind};
 use sim::colony::BeaverId;
 use sim::dam_preview::DamPreview;
 use sim::hud::Fix;
@@ -56,11 +57,15 @@ pub enum Tool {
     None,
     Building(BuildingKind),
     Dam,
-    Canal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum OrderMode { Move, Gather, Work }
+/// The dam panel's two pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DamTab {
+    #[default]
+    Status,
+    History,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColonyTab {
@@ -85,12 +90,15 @@ pub struct HudState {
     pub open_cat: Option<usize>,
     pub tool: Tool,
     pub drag_from: Option<Cell>,
+    /// Corners of the dam line being drawn; `line` is the cells through them.
+    pub corners: Vec<Cell>,
     pub line: Vec<Cell>,
-    pub dam_height: f32,
-    pub dam_crest: Option<f32>,
-    preview: Option<(Vec<Cell>, f32, Option<f32>, Option<DamPreview>)>,
-    pub route_draft: Option<RouteDraft>,
-    pub route_err: Option<(BargeId, String)>,
+    preview: Option<(Vec<Cell>, Option<DamPreview>)>,
+    /// Cells picked in the dam panel's cross-section; raises apply to them only.
+    pub dam_cells: Vec<Cell>,
+    pub dam_tab: DamTab,
+    /// The selected dam's suggested growth, ghosted on the map: (dam, day, cells).
+    pub dam_ghost: Option<(BuildingId, f64, Vec<Cell>)>,
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
     pub colony: Option<ColonyTab>,
@@ -101,7 +109,9 @@ pub struct HudState {
     pub profile_collapsed: bool,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
-    pub order_mode: Option<OrderMode>,
+    // Compatibility with the current menu, renderer and input recorder. This
+    // HUD uses contextual orders and has no separate order or help screen.
+    pub order_mode: Option<()>,
     pub help: bool,
     consume_left_release: bool,
     pub pop_sort: u8,
@@ -114,26 +124,6 @@ pub struct HudState {
     frame_req: Option<Vec3>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct RouteDraft {
-    pub barge: Option<BargeId>,
-    pub from: Option<BuildingId>,
-    pub to: Option<BuildingId>,
-    pub goods: Vec<Good>,
-}
-
-impl RouteDraft {
-    pub fn of(s: &sim::SimState, hud: &HudState, barge: BargeId) -> RouteDraft {
-        if let Some(d) = hud.route_draft.as_ref().filter(|d| d.barge == Some(barge)) {
-            return d.clone();
-        }
-        let svc = s.buildings.barge(barge).and_then(|b| b.service.clone());
-        RouteDraft { barge: Some(barge), from: svc.as_ref().map(|v| v.from), to: svc.as_ref().map(|v| v.to), goods: svc.map(|v| v.goods).unwrap_or_default() }
-    }
-    pub fn ready(&self) -> bool {
-        self.from.is_some() && self.to.is_some() && self.from != self.to && !self.goods.is_empty()
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UndoItem {
@@ -182,12 +172,12 @@ impl Default for HudState {
             open_cat: None,
             tool: Tool::None,
             drag_from: None,
+            corners: Vec::new(),
             line: Vec::new(),
-            dam_height: build_logic::DEFAULT_DAM_HEIGHT,
-            dam_crest: None,
             preview: None,
-            route_draft: None,
-            route_err: None,
+            dam_cells: Vec::new(),
+            dam_tab: DamTab::Status,
+            dam_ghost: None,
             msg: None,
             idle_cursor: 0,
             colony: None,
@@ -217,32 +207,29 @@ impl HudState {
     pub(crate) fn swallow_click(&mut self) { self.consume_left_release = true; }
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
-        self.order_mode = None;
-        self.open_cat = None;
         self.drag_from = None;
         self.line.clear();
-        self.dam_crest = None;
+        self.corners.clear();
         self.preview = None;
         self.area_edit = None;
     }
-    fn step_height(&mut self, dir: f32) {
-        let h = (self.dam_height / DAM_STEP).round() * DAM_STEP + DAM_STEP * dir.signum();
-        self.dam_height = h.clamp(MIN_DAM_HEIGHT, MAX_DAM_HEIGHT);
-        self.dam_crest = None;
+    fn finish_placement(&mut self) {
+        self.set_tool(Tool::None);
+        self.open_cat = None;
+        self.search = None;
     }
+
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
-        let text = text.into();
-        if sim::trace::enabled() { sim::trace::event(format!("FEEDBACK {text}")); }
-        self.msg = Some((Msg { icon, icon2, text }, now));
+        self.msg = Some((Msg { icon, icon2, text: text.into() }, now));
     }
     fn refuse(&mut self, why: impl Into<String>, now: f32) {
         self.say(Some((Icon::Cross, BAD)), None, why, now);
     }
     pub fn dam_preview(&self) -> Option<&DamPreview> {
-        self.preview.as_ref().and_then(|(_, _, _, p)| p.as_ref())
+        self.preview.as_ref().and_then(|(_, p)| p.as_ref())
     }
     pub(crate) fn notify_paused(&mut self, now: f32) {
-        self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "Paused for an urgent alert. Space resumes.", now);
+        self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "", now);
     }
     pub fn undo_is_empty(&self) -> bool {
         self.undo.is_empty()
@@ -283,10 +270,6 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
-    Order(OrderMode),
-    StopSelected,
-    SelectFamily,
-    Help,
     Fix(Fix, Option<Cell>),
     Focus(Cell),
     CycleIdle,
@@ -295,27 +278,21 @@ pub enum HudAction {
     OpenCat(usize),
     Pick(BuildingKind),
     CancelTool,
-    DamHeight(f32),
-    ExtendDam,
-    RaiseDam(Cell),
+    GrowDam(BuildingId, sim::DamGrowth),
+    DamMaintain(BuildingId, bool),
+    DamCell(Cell),
+    DamTab(DamTab),
     ConfirmLine,
     ClearLine,
     CloseInspector,
     SetLens(MapLens),
     Undo,
-    OpenSearch,
     Colony(Option<ColonyTab>),
     ToggleDetails,
     ToggleMinimap,
     ToggleProfile,
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
-    SelectBarge(BargeId),
-    RouteFrom(BargeId, BuildingId),
-    RouteTo(BargeId, BuildingId),
-    RouteGood(BargeId, Good),
-    SetRoute(BargeId),
-    ClearRoute(BargeId),
     Follow(BeaverId),
     FreeBeaver(BeaverId),
     AddWorker(BuildingId),
@@ -335,8 +312,6 @@ pub enum HudAction {
     EditArea(BuildingId),
     Pin(Selection),
     Balance(BuildingId, bool),
-    CutRule(BuildingId, sim::forestry::CutRule),
-    PlantRule(BuildingId, sim::forestry::PlantRule),
 }
 
 pub struct HudPlugin;
@@ -344,8 +319,20 @@ pub struct HudPlugin;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HudSet;
 
+/// Swap Bevy's monospace default for a proportional face, when the system has one.
+fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
+    let candidates = ["C:/Windows/Fonts/bahnschrift.ttf", "/System/Library/Fonts/Supplemental/Futura.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            let _ = fonts.insert(Handle::<Font>::default().id(), Font::from_bytes(bytes));
+            return;
+        }
+    }
+}
+
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Startup, load_ui_font);
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
             return;
         }
@@ -365,8 +352,8 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver).chain(),
-                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::scroll_panels, ui::tip_logic, ui::tip_draw, world::draw_world_overlay).chain(),
+                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
+                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, world::draw_world_overlay),
                 )
                     .chain()
                     .in_set(HudSet),
@@ -439,10 +426,20 @@ fn refresh_panels(
     }
     let s = &sim.0;
     if hud.tool == Tool::Dam && !hud.line.is_empty() {
-        let stale = hud.preview.as_ref().is_none_or(|(c, h, k, _)| *c != hud.line || *h != hud.dam_height || *k != hud.dam_crest);
+        let stale = hud.preview.as_ref().is_none_or(|(c, _)| *c != hud.line);
         if stale {
-            let p = build_logic::line_preview(s, &hud.line, hud.dam_height, hud.dam_crest);
-            hud.preview = Some((hud.line.clone(), hud.dam_height, hud.dam_crest, p));
+            let p = build_logic::line_preview(s, &hud.line);
+            hud.preview = Some((hud.line.clone(), p));
+        }
+    }
+    if let Selection::Site(id) = *sel {
+        if let Some(d) = sim::dams::dam(s, id) {
+            let day = s.time_days.floor();
+            if hud.dam_ghost.as_ref().is_none_or(|g| g.0 != id || g.1 != day) {
+                let around = d.pond.as_ref().is_some_and(|p| matches!(p.spill, sim::dams::Spill::Around(_)));
+                let cells = if around { sim::dams::plan_extend(s, id).map(|p| p.added(d)).unwrap_or_default() } else { Vec::new() };
+                hud.dam_ghost = Some((id, day, cells));
+            }
         }
     }
     let problems = sim::hud::problems(s);
@@ -478,7 +475,7 @@ fn refresh_panels(
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
             Panel::Right => panels::right(&ctx),
-            Panel::Rail => if placing { Vec::new() } else { panels::rail(&ctx) },
+            Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),
             Panel::Profile => panels::profile(&ctx),
             Panel::Minimap => panels::minimap(&ctx),
@@ -535,24 +532,13 @@ fn refresh_fast(
     }
 }
 
-const SYNONYMS: [(&str, &[BuildingKind]); 17] = [
-    ("food", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
-    ("eat", &[BuildingKind::ForagerHut, BuildingKind::FoodCache]),
-    ("wood", &[BuildingKind::LoggingCamp]),
-    ("log", &[BuildingKind::LoggingCamp]),
-    ("stick", &[BuildingKind::LoggingCamp]),
-    ("tree", &[BuildingKind::LoggingCamp]),
-    ("mud", &[BuildingKind::MudPit]),
-    ("clay", &[BuildingKind::MudPit]),
-    ("stor", &[BuildingKind::Warehouse, BuildingKind::Storehouse, BuildingKind::FoodCache]),
-    ("home", &[BuildingKind::Lodge, BuildingKind::Burrow]),
-    ("house", &[BuildingKind::Lodge, BuildingKind::Burrow]),
-    ("water", &[BuildingKind::Dam, BuildingKind::Canal, BuildingKind::WaterWheel, BuildingKind::Lock, BuildingKind::Dock]),
-    ("power", &[BuildingKind::WaterWheel]),
-    ("craft", &[BuildingKind::Workshop, BuildingKind::Mill]),
-    ("rope", &[BuildingKind::Workshop]),
-    ("tool", &[BuildingKind::Workshop, BuildingKind::Mill]),
-    ("boat", &[BuildingKind::Dock, BuildingKind::Barge]),
+const SYNONYMS: [(&str, &[BuildingKind]); 6] = [
+    ("food", &[BuildingKind::Warehouse]),
+    ("stor", &[BuildingKind::Warehouse]),
+    ("home", &[BuildingKind::Shelter]),
+    ("house", &[BuildingKind::Shelter]),
+    ("lodge", &[BuildingKind::Shelter]),
+    ("water", &[BuildingKind::Dam]),
 ];
 
 pub(crate) fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::MenuEntry> {
@@ -579,14 +565,7 @@ pub(crate) fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::Men
 
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    let forest_tool = matches!(hud.tool, Tool::Building(k) if forest_kind(k))
-        || hud.area_edit.and_then(|b| sim.0.buildings.building(b)).is_some_and(|b| forest_kind(b.kind));
-    let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) {
-        MapLens::Water
-    } else if forest_tool {
-        MapLens::Forest
-    } else {
-        *lens
-    };
+    let _ = &sim;
+    let shown = if alt || hud.tool == Tool::Dam { MapLens::Water } else { *lens };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

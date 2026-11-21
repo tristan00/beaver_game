@@ -3,6 +3,7 @@ use super::sim_view::*;
 use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod, WheelSpin};
 use crate::sim_driver::SimClock;
 use crate::state::Sim;
+use crate::picking::Target;
 use bevy::prelude::*;
 use sim::buildings::{BuildingId, BuildingKind, Status};
 use sim::resources::{ResourceId, ResourceKind};
@@ -19,6 +20,8 @@ pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) 
 #[derive(Component, Default)]
 pub struct Motion {
     samples: std::collections::VecDeque<(f64, Vec2, f32)>,
+    instance: u64,
+    observed_time: Option<f64>,
 }
 
 pub const BEAVER_SIZE: f32 = WORLD_SCALE * 0.9;
@@ -35,21 +38,48 @@ fn spread(id: u64, game: bool) -> Vec3 {
     Vec3::new(a.cos(), 0.0, a.sin()) * SPREAD
 }
 
-const SNAP_DISTANCE: f32 = 4.0;
-
 impl Motion {
     fn record(&mut self, t: f64, xz: Vec2, lift: f32) {
         match self.samples.back_mut() {
             Some(b) if b.0 == t => *b = (t, xz, lift),
-            Some(b) if b.1.distance(xz) > SNAP_DISTANCE => {
-                self.samples.clear();
-                self.samples.push_back((t, xz, lift));
-            }
+            Some(b) if b.0 > t => return,
             _ => self.samples.push_back((t, xz, lift)),
         }
         while self.samples.len() > 256 {
             self.samples.pop_front();
         }
+    }
+
+    fn observe(&mut self, sim: &sim::SimState, ag: &sim::agents::Agent, game: bool) {
+        let offset = spread(ag.id.0, game);
+        let p = agent_world_pos(sim, ag, 0.0) + offset;
+        let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
+        if self.instance != sim.instance {
+            self.samples.clear();
+            self.observed_time = None;
+            self.instance = sim.instance;
+        }
+        if self.observed_time.is_some_and(|t| t >= sim.time_days) { return; }
+        if let (Some(previous), Some(&(_, mut point, _))) = (self.observed_time, self.samples.back()) {
+            // Trails describe only the last simulation step. A skipped snapshot
+            // interpolates between the known endpoints instead of inventing or
+            // replaying intermediate trips.
+            if sim.time_days - previous <= sim::STEP_DAYS as f64 + 1e-8 {
+                let pace = sim::agents::MOVE_COST_PER_DAY
+                    * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
+                let mut t = previous;
+                for &(cell, gait) in &ag.trail {
+                    let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset.xz();
+                    let cost = sim.nav.surface_at(cell).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0);
+                    let cells = point.distance(next) / crate::terrain_render::CELL_SIZE;
+                    t = (t + (cells * cost / pace) as f64).min(sim.time_days);
+                    self.record(t, next, stand_y(sim, cell) - ground(next));
+                    point = next;
+                }
+            }
+        }
+        self.record(sim.time_days, p.xz(), p.y - ground(p.xz()));
+        self.observed_time = Some(sim.time_days);
     }
 
     fn at(&mut self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
@@ -60,7 +90,47 @@ impl Motion {
         let Some(&b) = self.samples.get(1) else { return Some((a.1, a.2, None)) };
         let k = (((t - a.0) / (b.0 - a.0).max(1e-9)) as f32).clamp(0.0, 1.0);
         let d = b.1 - a.1;
-        Some((a.1.lerp(b.1, k), a.2 + (b.2 - a.2) * k, (d.length() > 1e-3).then_some(d)))
+        Some((a.1.lerp(b.1, k), a.2 + (b.2 - a.2) * k, (t < b.0 && d.length() > 1e-3).then_some(d)))
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_snapshots_interpolate_instead_of_snapping_across_distance() {
+        let mut motion = Motion::default();
+        motion.record(0.0, Vec2::ZERO, 0.0);
+        motion.record(1.0, Vec2::new(10.0, 0.0), 2.0);
+        let (point, height, direction) = motion.at(0.5).unwrap();
+        assert_eq!(point, Vec2::new(5.0, 0.0));
+        assert_eq!(height, 1.0);
+        assert!(direction.is_some());
+    }
+
+    #[test]
+    fn a_completed_trail_is_recorded_once_with_an_authoritative_endpoint() {
+        let mut sim = sim::SimState::new(1);
+        let id = sim::colony::BeaverId(1);
+        sim.agents.spawn(id, (2, 2));
+        let mut agent = sim.agents.get(id).unwrap().clone();
+        sim.nav.set((3, 2), sim::nav::Surface::Water);
+        sim.nav.set((3, 3), sim::nav::Surface::Water);
+        let mut motion = Motion::default();
+        motion.observe(&sim, &agent, false);
+        agent.cell = (3, 3);
+        agent.trail = vec![((3, 2), sim::nav::Gait::Swim), ((3, 3), sim::nav::Gait::Swim)];
+        sim.time_days = sim::STEP_DAYS as f64;
+        motion.observe(&sim, &agent, false);
+        let original = motion.samples.clone();
+        for _ in 0..60 { motion.observe(&sim, &agent, false); }
+        assert_eq!(motion.samples, original);
+        assert_eq!(motion.samples.back().unwrap().0, sim.time_days);
+        assert!(motion.samples.iter().zip(motion.samples.iter().skip(1)).all(|(a,b)|a.0 < b.0));
+        let corner_time = sim::nav::SWIM_COST as f64 / sim::agents::MOVE_COST_PER_DAY as f64;
+        let corner = motion.at(corner_time).unwrap().0;
+        assert!(corner.distance(cell_xz(&sim, (3.5, 2.5))) < 1e-4);
     }
 }
 
@@ -74,9 +144,7 @@ pub(super) fn sync_sim_beavers(
     mut seen: Local<HashSet<u64>>,
 ) {
     seen.clear();
-    let delay = if clock.is_some() { sim::STEP_DAYS as f64 } else { 0.0 };
-    let pending = clock.as_ref().map_or(pending.0, |c| c.pending_days());
-    let now = sim.0.time_days + pending as f64 - delay;
+    let now = clock.as_ref().map_or(sim.0.time_days + pending.0 as f64, |c| c.render_days(sim.0.time_days));
     for (e, mut tr, mut sprite, mut vis, mut motion) in &mut q {
         let Some(ag) = sim.0.agents.get(sim::colony::BeaverId(sprite.id)) else {
             commands.entity(e).despawn();
@@ -85,20 +153,7 @@ pub(super) fn sync_sim_beavers(
         seen.insert(sprite.id);
         let p = agent_world_pos(&sim.0, ag, 0.0) + spread(sprite.id, clock.is_some());
         let ground = |xz: Vec2| height_at(&sim.0.height, xz.x, xz.y);
-        let mut end = sim.0.time_days;
-        if motion.samples.back().is_none_or(|b| b.0 < sim.0.time_days) && !ag.trail.is_empty() {
-            let pace = if matches!(ag.assignment, Some(sim::agents::Assignment::Go(_))) { sim::agents::DIRECT_MOVE_COST_PER_DAY } else { sim::agents::MOVE_COST_PER_DAY }
-                * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
-            let mut t = sim.0.time_days - sim::STEP_DAYS as f64;
-            for &(c, gait) in &ag.trail {
-                t = (t + (super::sim_view::gait_cost(gait) / pace) as f64).min(sim.0.time_days);
-                let q = super::sim_view::cell_xz(&sim.0, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + spread(sprite.id, clock.is_some()).xz();
-                motion.record(t, q, super::sim_view::stand_y(&sim.0, c) - ground(q));
-            }
-            end = t;
-        }
-        let last = motion.samples.back().map_or(end, |b| b.0);
-        motion.record(end.max(last), p.xz(), p.y - ground(p.xz()));
+        motion.observe(&sim.0, ag, clock.is_some());
         let heading = match motion.at(now) {
             Some((xz, lift, dir)) => {
                 tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
@@ -109,7 +164,15 @@ pub(super) fn sync_sim_beavers(
                 None
             }
         };
-        sprite.pose = pose_of(&sim.0, ag);
+        sprite.pose = if heading.is_some() {
+            use super::scene::Pose;
+            match ag.gait {
+                sim::nav::Gait::Swim => Pose::Swim,
+                sim::nav::Gait::Climb => Pose::Climb,
+                sim::nav::Gait::Walk if ag.load.is_some() => Pose::Carry,
+                sim::nav::Gait::Walk => Pose::Walk,
+            }
+        } else { pose_of(&sim.0, ag) };
         sprite.load = load_of(ag);
         sprite.wet = is_wet(&sim.0, ag);
         if let Some(d) = heading {
@@ -127,9 +190,11 @@ pub(super) fn sync_sim_beavers(
             continue;
         }
         let yaw = facing_of(&sim.0, ag).unwrap_or(0.0);
+        let mut motion = Motion::default();
+        motion.observe(&sim.0, ag, clock.is_some());
         commands.spawn((
             SimBeaver,
-            Motion::default(),
+            motion,
             BeaverSprite { id: id.0, pose: pose_of(&sim.0, ag), load: load_of(ag), yaw, wet: is_wet(&sim.0, ag) },
             Transform::from_translation(agent_world_pos(&sim.0, ag, 0.0) + spread(id.0, clock.is_some())).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE)),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
@@ -309,25 +374,8 @@ pub(super) fn sync_sim_resources(
 pub fn model_kind(k: BuildingKind) -> StructKind {
     match k {
         BuildingKind::Dam => StructKind::Dam,
-        BuildingKind::Lock => StructKind::Lock,
-        BuildingKind::Lodge => StructKind::Lodge,
-        BuildingKind::Burrow => StructKind::Burrow,
-        BuildingKind::FoodCache => StructKind::FoodCache,
-        BuildingKind::ScentMound => StructKind::ScentMound,
-        BuildingKind::GuardPost => StructKind::GuardPost,
-        BuildingKind::ForagerHut => StructKind::ForagerHut,
-        BuildingKind::MudPit => StructKind::MudPit,
-        BuildingKind::TreeNursery => StructKind::TreeNursery,
-        BuildingKind::Canal => StructKind::Canal,
-        BuildingKind::WaterWheel => StructKind::WaterWheel,
-        BuildingKind::Mill => StructKind::Mill,
-        BuildingKind::Workshop => StructKind::Workshop,
+        BuildingKind::Shelter => StructKind::Lodge,
         BuildingKind::Warehouse => StructKind::Warehouse,
-        BuildingKind::Storehouse => StructKind::Storehouse,
-        BuildingKind::LoggingCamp => StructKind::LoggingCamp,
-        BuildingKind::ForesterLodge => StructKind::ForesterLodge,
-        BuildingKind::Dock => StructKind::Dock,
-        BuildingKind::Barge => StructKind::Barge,
     }
 }
 
@@ -353,24 +401,12 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
     let mut live=HashSet::new();
     for b in s.buildings.buildings.iter().filter(|b|b.reinforced) {
         live.insert(b.id);
-        let signature=b.dam_profile.iter().fold(0u64,|h,&(c,_)|h.wrapping_mul(31)^s.water.dam_height.get(c.0,c.1).copied().unwrap_or(0.0).to_bits() as u64);
+        let signature=0u64;
         if state.drawn.get(&b.id).is_some_and(|v|v.1==signature){continue;}
         if let Some((e,_))=state.drawn.remove(&b.id){commands.entity(e).despawn();}
-        let (mesh,tr)=if b.kind==BuildingKind::Dam {
-            let mut mb=super::meshgen::Mb::new();
-            for &(c,_) in &b.dam_profile {
-                let height=s.water.dam_height.get(c.0,c.1).copied().unwrap_or(0.0);
-                if height<=0.0 {continue;}
-                let at=cell_xz(s,(c.0 as f32+0.5,c.1 as f32+0.5));
-                let y=s.height.get(c.0,c.1).copied().unwrap_or(0.0)+height-0.10;
-                mb.ellipsoid_g(Vec3::new(at.x,y,at.y),Vec3::new(0.48,0.23,0.48),super::meshgen::hex(0x68432C),super::meshgen::hex(0xB78354),6,3);
-            }
-            (meshes.add(mb.build()),Transform::IDENTITY)
-        } else {
-            let handle=state.meshes.entry(b.kind).or_insert_with(||meshes.add(models::reinforcement_mesh(model_kind(b.kind)))).clone();
-            (handle,building_transform(s,b,None))
-        };
-        let entity=commands.spawn((SimEntity,Mesh3d(mesh),MeshMaterial3d(models.white.clone()),tr)).id();
+        let handle=state.meshes.entry(b.kind).or_insert_with(||meshes.add(models::reinforcement_mesh(model_kind(b.kind)))).clone();
+        let (mesh,tr)=(handle,building_transform(s,b,None));
+        let entity=commands.spawn((Target::Building(b.id),SimEntity,Mesh3d(mesh),MeshMaterial3d(models.white.clone()),tr)).id();
         state.drawn.insert(b.id,(entity,signature));
     }
     let gone:Vec<_>=state.drawn.keys().copied().filter(|id|!live.contains(id)).collect();
@@ -383,7 +419,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     let ground = |p: Vec2| height_at(&sim.height, p.x, p.y);
     let grounds: Vec<f32> = b.cells().map(|c| ground(cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)))).collect();
     let lowest = grounds.iter().copied().fold(f32::MAX, f32::min);
-    let on_water = matches!(b.kind, BuildingKind::Dock | BuildingKind::Barge | BuildingKind::WaterWheel);
+    let on_water = false;
     let y = if on_water {
         stand_y(sim, b.cells().next().unwrap_or(b.pos)).max(lowest)
     } else if models::footing_of(model_kind(b.kind)).is_some() {
@@ -402,6 +438,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
 
 pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
     let Some(mut models) = models else { return };
+    let changed = sim.is_changed();
     let generation = flow.map_or(0, |f| f.generation);
     let sim = &sim.0;
     if st.seed != Some((sim.seed, generation)) {
@@ -415,20 +452,20 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         st.seed = Some((sim.seed, generation));
         st.time = f64::NEG_INFINITY;
     }
-    if sim.time_days == st.time && !(st.bld.is_empty() && st.lodges.is_empty()) {
+    if sim.time_days == st.time && !changed && !(st.bld.is_empty() && st.lodges.is_empty()) {
         return;
     }
     st.time = sim.time_days;
     let white = models.white.clone();
     let mut live = HashSet::new();
-    let mut spawn = |commands: &mut Commands, models: &mut Models, kind: StructKind, len2: u32, stage: u8, tr: Transform| -> Entity {
+    let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: StructKind, len2: u32, stage: u8, tr: Transform| -> Entity {
         let mesh = models.structs.entry((kind, len2, stage)).or_insert_with(|| meshes.add(models::struct_mesh(kind, len2 as f32 * 0.5, stage))).clone();
         let wheel = (kind == StructKind::WaterWheel && stage == 3).then(|| models.wheel.clone());
-        let mut e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr));
+        let mut e = commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr));
         if let Some(w) = wheel {
             let w2 = white.clone();
             e.with_children(|p| {
-                p.spawn((Mesh3d(w), MeshMaterial3d(w2), Transform::from_xyz(0.0, 2.0, 0.0), WheelSpin(0.9)));
+                p.spawn((target, Mesh3d(w), MeshMaterial3d(w2), Transform::from_xyz(0.0, 2.0, 0.0), WheelSpin(0.9)));
             });
         }
         e.id()
@@ -449,7 +486,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         let (w, _) = b.kind.spec().footprint;
         let tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
         st.anchors.insert(b.id, tr.translation.y);
-        let e = spawn(&mut commands, &mut models, model_kind(b.kind), (w as u32 * 2).max(2), stage, tr);
+        let e = spawn(&mut commands, &mut models, Target::Building(b.id), model_kind(b.kind), (w as u32 * 2).max(2), stage, tr);
         st.bld.insert(b.id, (e, sig));
     }
     let gone: Vec<BuildingId> = st.bld.keys().copied().filter(|id| !live.contains(id)).collect();
@@ -465,14 +502,15 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
             commands.entity(e).despawn();
         }
     }
-    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Lodge).map(|b| b.pos).collect();
+    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Shelter).map(|b| b.pos).collect();
     for l in &sim.colony.lodges {
         if st.lodges.contains_key(&l.id.0) || lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
             continue;
         }
         let c = cell_xz(sim, l.pos);
         let y = (0..9).map(|i| height_at(&sim.height, c.x + (i % 3) as f32 - 1.0, c.y + (i / 3) as f32 - 1.0)).fold(f32::MAX, f32::min);
-        let e = spawn(&mut commands, &mut models, StructKind::Lodge, 6, 3, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
+        let target = Target::home(sim, l.id);
+        let e = spawn(&mut commands, &mut models, target, StructKind::Lodge, 6, 3, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
         st.lodges.insert(l.id.0, e);
     }
 }
@@ -492,16 +530,13 @@ pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
             height.insert((i % w, i / w), (d, false));
         }
     }
-    for plan in &sim.work.dam_plans {
-        let Some(b) = sim.buildings.building(plan.building) else { continue };
-        if b.is_complete() {
-            continue;
-        }
-        let frac = [0.0, 0.35, 0.7, 1.0][models::stage_of(build_progress(sim, b)) as usize];
-        for (&c, &target) in plan.cells.iter().zip(&plan.heights) {
-            let now = height.get(&c).map_or(0.0, |v| v.0);
-            let shown = (now + (target - now).max(0.0) * frac).max(super::structures::DAM_STEP * 0.5);
-            height.insert(c, (shown, true));
+    // Cells still short of their target show as work in progress.
+    for d in sim.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
+        for c in d.cells.iter().filter(|c| c.target > 0.0) {
+            let now = height.get(&c.cell).map_or(0.0, |v| v.0);
+            if now < c.target - 1e-3 {
+                height.insert(c.cell, (now.max(super::structures::DAM_STEP * 0.5), true));
+            }
         }
     }
     let is_dam = |c: (usize, usize), dx: i32, dy: i32| {
@@ -562,96 +597,8 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
         let y = height_at(&sim.height, p.x, p.y);
         let yaw = -(vis.dir as f32) * std::f32::consts::FRAC_PI_4;
         let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw)))).id();
+        let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind == BuildingKind::Dam && b.cells().any(|cell| cell == c)).map(|b| b.id);
+        if let Some(id) = owner { commands.entity(e).insert(Target::Building(id)); }
         st.cells.insert(c, (e, vis));
     }
 }
-
-const BARGE_LEN2: u32 = 6;
-const BARGE_SCALE: f32 = WORLD_SCALE * 1.4;
-
-#[derive(Component, Clone, Debug)]
-pub struct BargeVis {
-    pub id: u64,
-    pub cell: (usize, usize),
-    pub from: Vec3,
-    pub to: Vec3,
-    pub t0: f64,
-    pub dur: f32,
-    pub yaw: f32,
-    pub loaded: bool,
-}
-
-pub fn barge_point(sim: &sim::SimState, c: (usize, usize)) -> Vec3 {
-    let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
-    let ground = height_at(&sim.height, p.x, p.y);
-    let water = sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-    Vec3::new(p.x, ground.max(water), p.y)
-}
-
-pub fn glide(v: &BargeVis, now: f64) -> Vec3 {
-    let t = if v.dur <= 0.0 { 1.0 } else { (((now - v.t0) as f32) / v.dur).clamp(0.0, 1.0) };
-    v.from.lerp(v.to, t)
-}
-
-pub fn retarget(v: &mut BargeVis, cell: (usize, usize), to: Vec3, now: f64) {
-    let here = glide(v, now);
-    v.dur = ((now - v.t0) as f32).clamp(1.0 / sim::shipping::BARGE_SPEED, 0.6);
-    v.from = here;
-    v.to = to;
-    v.t0 = now;
-    v.cell = cell;
-    let d = to - here;
-    if d.x.abs() + d.z.abs() > 1e-3 {
-        v.yaw = d.x.atan2(d.z);
-    }
-}
-
-fn is_loaded(b: &sim::buildings::Barge) -> bool {
-    b.hold.iter().any(|h| h.1 > 0.05)
-}
-
-pub(super) fn sync_sim_barges(
-    mut commands: Commands,
-    sim: Res<Sim>,
-    pending: Res<PendingDays>,
-    models: Option<ResMut<Models>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<(Entity, &mut Transform, &mut BargeVis, &mut Mesh3d)>,
-) {
-    let Some(mut models) = models else { return };
-    let s = &sim.0;
-    let now = s.time_days + pending.0 as f64;
-    let white = models.white.clone();
-    let mut mesh_for = |loaded: bool| {
-        let kind = if loaded { StructKind::Barge } else { StructKind::BargeEmpty };
-        models.structs.entry((kind, BARGE_LEN2, 3)).or_insert_with(|| meshes.add(models::struct_mesh(kind, BARGE_LEN2 as f32 * 0.5, 3))).clone()
-    };
-    let mut seen = HashSet::new();
-    for (e, mut tr, mut v, mut mesh) in &mut q {
-        let Some(b) = s.buildings.barge(sim::buildings::BargeId(v.id)) else {
-            commands.entity(e).despawn();
-            continue;
-        };
-        seen.insert(v.id);
-        if b.cell != v.cell {
-            retarget(&mut v, b.cell, barge_point(s, b.cell), now);
-        }
-        let loaded = is_loaded(b);
-        if loaded != v.loaded {
-            v.loaded = loaded;
-            mesh.0 = mesh_for(loaded);
-        }
-        tr.translation = glide(&v, now);
-        tr.rotation = tr.rotation.slerp(Quat::from_rotation_y(v.yaw), 0.15);
-    }
-    for b in &s.buildings.barges {
-        if seen.contains(&b.id.0) {
-            continue;
-        }
-        let p = barge_point(s, b.cell);
-        let loaded = is_loaded(b);
-        let v = BargeVis { id: b.id.0, cell: b.cell, from: p, to: p, t0: now, dur: 0.0, yaw: 0.0, loaded };
-        commands.spawn((SimEntity, Mesh3d(mesh_for(loaded)), MeshMaterial3d(white.clone()), Transform::from_translation(p).with_scale(Vec3::splat(BARGE_SCALE)), v));
-    }
-}
-

@@ -1,7 +1,7 @@
+include!(concat!(env!("OUT_DIR"), "/output_constants.rs"));
 use crate::buildings::{BuildingId, Good};
 use std::collections::BTreeMap;
 
-pub const SMOOTH_DAYS: f32 = 5.0;
 
 const N: usize = Good::ALL.len();
 

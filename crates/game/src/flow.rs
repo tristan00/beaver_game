@@ -44,7 +44,6 @@ pub enum Selection {
     Lodge(LodgeId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
-    Barge(sim::buildings::BargeId),
 }
 
 pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {

@@ -31,11 +31,12 @@ pub struct SimClock {
     pub paused: bool,
     pub speed: Speed,
     acc_days: f64,
+    presentation_days: Option<f64>,
 }
 
 impl Default for SimClock {
     fn default() -> Self {
-        SimClock { paused: false, speed: Speed::X1, acc_days: 0.0 }
+        SimClock { paused: false, speed: Speed::X1, acc_days: 0.0, presentation_days: None }
     }
 }
 
@@ -53,6 +54,19 @@ impl SimClock {
     }
     pub fn pending_days(&self) -> f32 {
         self.acc_days.min(FIXED_DT_DAYS as f64) as f32
+    }
+    pub fn render_days(&self, latest: f64) -> f64 {
+        self.presentation_days.unwrap_or(latest + self.pending_days() as f64 - FIXED_DT_DAYS as f64)
+    }
+    fn advance_presentation(&mut self, real_dt: f64, latest: f64) {
+        let shown = self.presentation_days.get_or_insert(latest);
+        if !self.paused && real_dt.is_finite() && real_dt > 0.0 {
+            let rate = BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
+            // Play the received movement history at display frequency. Never
+            // predict past the latest completed simulation step.
+            *shown = (*shown + real_dt.min(0.25) * rate).min(latest);
+        }
+        self.acc_days = (*shown - latest + FIXED_DT_DAYS as f64).clamp(0.0, FIXED_DT_DAYS as f64);
     }
     fn queue(&mut self, real_dt: f64, step: f32) -> u32 {
         if self.paused || !real_dt.is_finite() || real_dt <= 0.0 {
@@ -79,7 +93,10 @@ pub struct SimDriverPlugin;
 
 impl Plugin for SimDriverPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SimClock>().add_systems(Update, (time_keys, step_sim).chain());
+        app.init_resource::<SimClock>().init_resource::<SimulationWorker>()
+            .add_systems(First, receive_sim)
+            .add_systems(Update, (time_keys, step_sim).chain())
+            .add_systems(Last, send_commands);
     }
 }
 
@@ -102,7 +119,77 @@ fn time_keys(
     }
 }
 
-pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>) {
+#[derive(Resource, Default)]
+pub(crate) struct SimulationWorker {
+    worker: Option<sim::runtime::Worker>,
+    instance: u64,
+    next_sequence: u64,
+    pending: Vec<(u64, sim::Command)>,
+    clock: Option<(bool, Speed)>,
+}
+
+fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+    if worker.instance != sim.0.instance { return; }
+    let Some(snapshot) = worker.worker.as_ref().and_then(|w| w.poll()) else { return; };
+    worker.pending.retain(|(sequence, _)| *sequence > snapshot.acknowledged);
+    for result in snapshot.results {
+        if let Err(error) = result.result {
+            error!("command {} failed on simulation owner: {}", result.sequence, error);
+        }
+    }
+    let events = std::mem::take(&mut sim.0.colony.events);
+    sim.0 = snapshot.state;
+    for event in events.into_iter().rev() { sim.0.colony.events.push_front(event); }
+    // Reapply only commands newer than the received snapshot. They remain in
+    // the worker's queue and are not transmitted twice.
+    for (_, command) in &worker.pending {
+        let events = sim.0.colony.events.clone();
+        let _ = sim.0.apply(command.clone());
+        sim.0.colony.events = events;
+    }
+    sim.0.client_commands = Some(Vec::new());
+    if sim.0.colony.is_collapsed() { clock.paused = true; }
+}
+
+fn send_commands(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+    if worker.instance != sim.0.instance { return; }
+    let commands = sim.0.client_commands.as_mut().map(std::mem::take).unwrap_or_default();
+    for command in commands {
+        worker.next_sequence += 1;
+        let sequence = worker.next_sequence;
+        if let Some(owner) = &worker.worker {
+            if let Err(error) = owner.command(sequence, command.clone()) { error!("{error}"); clock.paused = true; }
+        }
+        worker.pending.push((sequence, command));
+    }
+}
+
+pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>, mut worker: ResMut<SimulationWorker>) {
+    // Keep the existing standalone water sandbox and deterministic screenshot
+    // runner on their original scheduling path.
+    if sim.0.sandbox || cli.screenshot.is_some() {
+        synchronous_step(&time, &mut clock, &mut sim);
+        return;
+    }
+    if worker.instance != sim.0.instance || worker.worker.is_none() {
+        worker.worker = Some(sim::runtime::Worker::spawn(sim.0.clone()));
+        worker.instance = sim.0.instance;
+        worker.next_sequence = 0;
+        worker.pending.clear();
+        worker.clock = None;
+        clock.presentation_days = Some(sim.0.time_days);
+        sim.0.client_commands = Some(Vec::new());
+    }
+    let setting = (clock.paused, clock.speed);
+    if worker.clock != Some(setting) {
+        let rate = BASE_DAYS_PER_SECOND as f64 * clock.speed.multiplier() as f64;
+        if let Err(error) = worker.worker.as_ref().unwrap().clock(clock.paused, rate) { error!("{error}"); clock.paused = true; }
+        worker.clock = Some(setting);
+    }
+    clock.advance_presentation(time.delta_secs_f64(), sim.0.time_days);
+}
+
+fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
     if sim.0.colony.is_collapsed() { clock.paused = true; return; }
     if !sim.0.is_running() {
         return;
@@ -123,5 +210,34 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, mut clock: ResMut<SimClock>, mut s
             clock.discard_backlog(dt);
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presentation_advances_each_frame_between_three_hertz_snapshots() {
+        let mut clock = SimClock::default();
+        clock.presentation_days = Some(0.0);
+        let mut previous = 0.0;
+        let mut moving_frames = 0;
+        for frame in 0..180 {
+            let elapsed = frame as f64 / 60.0;
+            let latest = (elapsed * BASE_DAYS_PER_SECOND as f64 / FIXED_DT_DAYS as f64).floor() * FIXED_DT_DAYS as f64;
+            clock.advance_presentation(1.0 / 60.0, latest);
+            let shown = clock.render_days(latest);
+            assert!(shown >= previous && shown <= latest);
+            if frame >= 60 && shown > previous { moving_frames += 1; }
+            previous = shown;
+        }
+        assert!(moving_frames >= 115, "only {moving_frames}/120 frames advanced");
+        clock.toggle_pause();
+        for _ in 0..60 { clock.advance_presentation(1.0 / 60.0, previous + 1.0); }
+        assert_eq!(clock.render_days(previous + 1.0), previous);
+        clock.set_speed(Speed::X2);
+        clock.advance_presentation(1.0 / 60.0, previous + 1.0);
+        assert!(clock.render_days(previous + 1.0) > previous);
     }
 }

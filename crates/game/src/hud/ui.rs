@@ -19,6 +19,11 @@ pub const WATER: Color = Color::srgb(0.29, 0.64, 0.87);
 pub const ACCENT: Color = Color::srgb(0.91, 0.52, 0.23);
 pub const ON_ACCENT: Color = Color::srgb(0.13, 0.09, 0.05);
 pub const SELECT: Color = Color::srgb(0.97, 0.95, 0.9);
+/// A wooden peg: the resting face of every button.
+pub const PEG: Color = Color::srgba(0.36, 0.27, 0.19, 0.6);
+pub const PEG_EDGE: Color = Color::srgba(0.59, 0.41, 0.24, 0.45);
+/// The dark groove a gauge is cut into.
+pub const GROOVE: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
 
 pub fn font(size: f32, bold: bool) -> TextFont {
     TextFont { font_size: FontSize::Px(size), weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL }, ..default() }
@@ -188,11 +193,11 @@ pub struct Ui {
 }
 
 pub fn row_node(gap: f32) -> Node {
-    Node { flex_direction: FlexDirection::Row, flex_shrink: 0.0, align_items: AlignItems::Center, column_gap: Val::Px(gap), ..default() }
+    Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(gap), ..default() }
 }
 
 pub fn col_node(gap: f32) -> Node {
-    Node { flex_direction: FlexDirection::Column, flex_shrink: 0.0, row_gap: Val::Px(gap), ..default() }
+    Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(gap), ..default() }
 }
 
 impl Ui {
@@ -226,15 +231,6 @@ impl Ui {
         v.kind = Kind::Text { s: s.into(), size, color, bold: true };
         self.add(v)
     }
-    pub fn num(&mut self, s: impl Into<String>, size: f32, color: Color, w: f32) -> &mut VNode {
-        if w <= 0.0 {
-            return self.bold(s, size, color);
-        }
-        let s = s.into();
-        self.node(Node { width: Val::Px(w), justify_content: JustifyContent::FlexEnd, ..default() }, |u| {
-            u.bold(s, size, color);
-        })
-    }
     pub fn icon(&mut self, icon: Icon, px: f32, color: Color) -> &mut VNode {
         let mut v = VNode::new(Node { width: Val::Px(px), height: Val::Px(px), flex_shrink: 0.0, ..default() });
         v.kind = Kind::Icon { icon, px, color };
@@ -256,8 +252,7 @@ impl Ui {
         let v = self.node(button_node(pad, on), |u| {
             u.icon(icon, px, tint);
         });
-        v.bg = fill;
-        v.border = Some(BorderColor::all(if on { SELECT } else { LINE }));
+        peg_face(v, fill, on);
         v.action(action)
     }
     pub fn icon_label_button(&mut self, icon: Icon, label: impl Into<String>, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
@@ -267,8 +262,7 @@ impl Ui {
             u.icon(icon, px, tint);
             u.bold(label, 12.0, tint);
         });
-        v.bg = fill;
-        v.border = Some(BorderColor::all(if on { SELECT } else { LINE }));
+        peg_face(v, fill, on);
         v.action(action)
     }
     pub fn keycap(&mut self, k: impl Into<String>) -> &mut VNode {
@@ -279,29 +273,52 @@ impl Ui {
                 u.bold(k, 10.5, INK);
             },
         );
-        v.border = Some(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.35)));
-        v.bg = Color::srgba(1.0, 1.0, 1.0, 0.05);
+        v.border = Some(BorderColor::all(PEG_EDGE));
+        v.bg = PEG;
         v
     }
     pub fn rule(&mut self) -> &mut VNode {
         let v = self.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), margin: UiRect::vertical(Val::Px(2.0)), ..default() }));
-        v.bg = LINE;
+        v.bg = TIMBER.with_alpha(0.35);
         v
     }
     pub fn bar(&mut self, frac: f32, w: f32, h: f32, fill: Color) -> &mut VNode {
         let f = frac.clamp(0.0, 1.0);
-        let v = self.node(Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(2.0)), overflow: Overflow::clip(), ..default() }, |u| {
+        let v = self.node(Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(h.min(6.0) / 2.0)), overflow: Overflow::clip(), ..default() }, |u| {
             u.add(VNode::new(Node { width: Val::Percent(f * 100.0), height: Val::Percent(100.0), ..default() })).bg(fill);
+            // Notches make every gauge read like a marked stick.
+            if w >= 40.0 {
+                for q in [0.25, 0.5, 0.75] {
+                    u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Percent(q * 100.0), top: Val::Px(0.0), width: Val::Px(1.0), height: Val::Percent(100.0), ..default() })).bg(GROOVE);
+                }
+            }
         });
-        v.bg = Color::srgba(1.0, 1.0, 1.0, 0.1);
+        v.bg = GROOVE;
         v
     }
+}
+
+/// Buttons are wooden pegs: timber at rest, amber when on, solid amber for the main action.
+fn peg_face(v: &mut VNode, fill: Color, on: bool) {
+    let (bg, edge) = if fill == ACCENT {
+        (ACCENT, ACCENT)
+    } else if fill == Color::NONE {
+        (Color::NONE, Color::NONE)
+    } else if on {
+        (ACCENT.with_alpha(0.3), ACCENT)
+    } else if fill == FAINT {
+        (PEG, PEG_EDGE)
+    } else {
+        (fill, PEG_EDGE)
+    };
+    v.bg = bg;
+    v.border = Some(BorderColor::all(edge));
 }
 
 pub fn button_node(pad: f32, on: bool) -> Node {
     Node {
         padding: UiRect::all(Val::Px(pad)),
-        border: UiRect::all(Val::Px(if on { 2.0 } else { 1.0 })),
+        border: UiRect::all(Val::Px(if on { 1.5 } else { 1.0 })),
         border_radius: BorderRadius::all(Val::Px(5.0)),
         justify_content: JustifyContent::Center,
         align_items: AlignItems::Center,
@@ -311,10 +328,9 @@ pub fn button_node(pad: f32, on: bool) -> Node {
 }
 
 pub fn panel(v: &mut VNode) -> &mut VNode {
-    v.node.flex_shrink = 0.0;
     v.bg = PANEL;
-    v.border = Some(BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.06)) });
-    v.node.border = UiRect { top: Val::Px(2.0), ..UiRect::all(Val::Px(1.0)) };
+    v.border = Some(BorderColor { top: TIMBER, bottom: Color::srgba(0.0, 0.0, 0.0, 0.35), ..BorderColor::all(TIMBER.with_alpha(0.22)) });
+    v.node.border = UiRect { top: Val::Px(3.0), ..UiRect::all(Val::Px(1.0)) };
     v.node.border_radius = BorderRadius::all(Val::Px(7.0));
     if v.node.padding == UiRect::default() {
         v.node.padding = UiRect::all(Val::Px(8.0));
@@ -365,9 +381,6 @@ enum KindBundle {
 
 fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> MountedNode {
     let mut ec = p.spawn((v.node.clone(), BackgroundColor(v.bg), FocusPolicy::Pass));
-    if v.node.overflow.y == OverflowAxis::Scroll {
-        ec.insert((ScrollPosition::default(), RelativeCursorPosition::default()));
-    }
     if let Some(b) = v.border {
         ec.insert(b);
     }
@@ -494,23 +507,6 @@ pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
         cmd.entity(host).despawn_related::<Children>();
         mounted.tree.clear();
         mounted.ents.clear();
-    }
-}
-
-pub fn scroll_panels(
-    wheel: Res<bevy::input::mouse::AccumulatedMouseScroll>,
-    mut panels: Query<(&RelativeCursorPosition, &ComputedNode, &mut ScrollPosition)>,
-) {
-    if wheel.delta.y == 0.0 { return; }
-    let amount = match wheel.unit {
-        bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 36.0,
-        bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
-    };
-    for (cursor, node, mut position) in &mut panels {
-        if cursor.cursor_over() {
-            let max = ((node.content_size().y - node.size().y) * node.inverse_scale_factor()).max(0.0);
-            position.0.y = (position.0.y - amount).clamp(0.0, max);
-        }
     }
 }
 

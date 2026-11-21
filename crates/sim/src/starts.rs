@@ -1,3 +1,4 @@
+include!(concat!(env!("OUT_DIR"), "/starts_constants.rs"));
 use crate::SimState;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,25 +17,8 @@ impl std::fmt::Display for StartError {
 }
 impl std::error::Error for StartError {}
 
-const DAM_HEIGHTS: [f32; 7] = [0.5, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0];
-const POND_AREA: usize = 1500;
-const POND_AREA_RANGE: std::ops::RangeInclusive<usize> = 300..=6000;
-const MAX_DAM_CELLS: usize = 50;
-const CANDIDATE_STRIDE: usize = 3;
-const SPILL_FLOW_MARGIN: f32 = 1.5;
-pub const START_RISE: f32 = 0.6;
-pub const START_NEW: usize = 100;
-pub const MIN_DROP: f32 = 0.1;
-pub const REACH: usize = 24;
-pub const START_INFLOW_MARGIN: f32 = 1.25;
-const EDGE_MARGIN: usize = 16;
-const CAMP_DAM_DIST: std::ops::RangeInclusive<usize> = 20..=60;
-const BANK_MAX: usize = 25;
-const TREES_WANTED: usize = 10;
-const TREE_RADIUS: usize = 30;
 // Spring arrival: these are the previous spring's offspring. They become
 // yearlings around the arrival of this year's litter, then adults next spring.
-const KIT_AGE_DAYS: f32 = 300.0;
 
 pub(crate) fn dist2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
@@ -234,7 +218,7 @@ fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
         if best.as_ref().is_some_and(|(b, _)| *b >= key) && !(effect.fills && visible) {
             continue;
         }
-        if sim.dam_site(&dam).is_err() {
+        if crate::dams::check_line(sim, &dam).is_err() {
             continue;
         }
         let Some(camp) = camp_near(sim, &dam, height) else { continue };
@@ -274,11 +258,20 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
     pack
 }
 
-const SWIM_REACH: usize = 40;
-
-pub const START_LARDER_DAYS: f32 = 45.0;
-pub const START_BUNDLE: [(crate::buildings::Good, f32); 2] =
-    [(crate::buildings::Good::Sticks, 100.0), (crate::buildings::Good::Clay, 30.0)];
+fn supplies_bank(sim: &SimState, camp: Cell) -> Option<Cell> {
+    let occupied: std::collections::HashSet<Cell> = sim.resources.items.iter()
+        .filter(|r| r.is_solid()).map(|r| r.cell)
+        .chain(sim.buildings.buildings.iter().flat_map(|b| b.cells()))
+        .collect();
+    (0..sim.world.size * sim.world.size)
+        .map(|i| (i % sim.world.size, i / sim.world.size))
+        .filter(|&c| sim.fog.explored(c) && !occupied.contains(&c))
+        .filter(|&c| crate::resources::is_bank(&sim.world, c))
+        .filter(|&(x, y)| [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)]
+            .into_iter().any(|(nx, ny)| sim.world.river.get(nx, ny) == Some(&true)))
+        .filter(|&(x, y)| sim.water.depth.get(x, y).is_some_and(|d| *d <= crate::buildings::WET_DEPTH))
+        .min_by_key(|&c| (dist2(c, camp), c.1, c.0))
+}
 
 pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimError> {
     let invalid = |m: String| crate::SimError::InvalidCommand(m);
@@ -302,14 +295,16 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     {
         return Err(invalid(format!("cell {cell:?} is water: beavers cannot settle there")));
     }
+    let supplies = supplies_bank(sim, cell)
+        .ok_or_else(|| invalid("no clear, dry riverbank for starting supplies".into()))?;
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
     sim.colony.arrive((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
     for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
         b.age_days = KIT_AGE_DAYS;
         b.stage = crate::colony::Stage::Kit;
     }
-    let swim = swim_cells(sim, cell, sim.colony.beavers.len());
-    let near = swim.first().is_some_and(|&c| dist2(c, cell) <= SWIM_REACH * SWIM_REACH);
+    let swim = swim_cells(sim, supplies, sim.colony.beavers.len());
+    let near = swim.first().is_some_and(|&c| dist2(c, supplies) <= SWIM_REACH * SWIM_REACH);
     if near && swim.len() == sim.colony.beavers.len() {
         for (b, c) in sim.colony.beavers.iter_mut().zip(swim) {
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
@@ -321,7 +316,7 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
     }
     sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Sticks);
-    sim.work.supplies = Some(cell);
+    sim.work.supplies = Some(supplies);
     {
         let allowed = crate::fog::open_at(&sim.world);
         sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT, &allowed);
@@ -385,6 +380,36 @@ pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::Wo
 
 pub fn new_game(seed: u64) -> Result<SimState, StartError> {
     build_river(seed).map(|(sim, _)| sim)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starting_supplies_are_on_a_clear_bank_reachable_from_arrival() {
+        for seed in [1, 2, 3] {
+            let mut sim = SimState::new(seed);
+            let camp = crate::site::best_site(&sim).expect("valid founding site");
+            settle(&mut sim, camp).expect("settle beside the river");
+            let pile = sim.work.supplies.expect("starting supplies");
+            assert!(sim.fog.explored(pile));
+            assert!(!sim.resources.blocks(pile));
+            assert!(sim.water.depth.get(pile.0, pile.1).unwrap() <= &crate::buildings::WET_DEPTH);
+            assert!(sim.world.river.as_slice().iter().enumerate().any(|(i, &river)| {
+                river && (i % sim.world.size).abs_diff(pile.0) + (i / sim.world.size).abs_diff(pile.1) == 1
+            }), "supplies must touch the river, seed {seed}");
+            let mut nav = sim.nav.clone();
+            nav.rebuild(&sim);
+            for beaver in &sim.colony.beavers {
+                let from = sim.agents.get(beaver.id).expect("arriving beaver").cell;
+                assert!(nav.find_path(beaver.id, from, crate::nav::Goal::Beside(pile)).is_some());
+            }
+            for (good, amount) in START_BUNDLE {
+                assert_eq!(sim.work.stock_of(crate::agents::SUPPLIES, good), amount);
+            }
+        }
+    }
 }
 
 use crate::water::Cell;

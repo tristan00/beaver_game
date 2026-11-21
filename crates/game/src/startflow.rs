@@ -29,6 +29,21 @@ pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut 
     *sel = Selection::None;
 }
 
+pub fn begin_play(sim: &mut SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection, camp: Option<(usize, usize)>) -> Result<(), String> {
+    if sim.sandbox {
+        begin_sandbox(sim, flow, clock, orbit, sel);
+    } else {
+        if !sim.colony.is_founded() {
+            let cell = camp.filter(|&c| sim::site::can_settle(sim, c).is_ok())
+                .or_else(|| sim::site::best_site(sim))
+                .ok_or_else(|| "No suitable starting spot was found in this valley.".to_string())?;
+            crate::flow::settle(sim, flow, cell)?;
+        }
+        begin(sim, flow, clock, orbit, sel);
+    }
+    Ok(())
+}
+
 pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection, around: Option<(usize, usize)>) {
     flow.phase = Phase::Scouting;
     flow.settled_at = None;
@@ -73,19 +88,16 @@ pub fn install_game(
     clock: &mut SimClock,
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
-) {
+) -> Result<(), String> {
     let camp = dam.as_ref().map(|d| d.camp);
     start_recording(&mut s);
+    let mut next_flow = Flow::new(&s.world);
+    next_flow.generation = flow.generation + 1;
+    begin_play(&mut s, &mut next_flow, clock, orbit, sel, camp)?;
     sim.0 = s;
     planned.0 = dam;
-    let generation = flow.generation + 1;
-    *flow = Flow::new(&sim.0.world);
-    flow.generation = generation;
-    if sim.0.sandbox {
-        begin_sandbox(&sim.0, flow, clock, orbit, sel);
-    } else {
-        begin_scouting(&sim.0, flow, clock, orbit, sel, camp);
-    }
+    *flow = next_flow;
+    Ok(())
 }
 
 pub struct StartPlugin;

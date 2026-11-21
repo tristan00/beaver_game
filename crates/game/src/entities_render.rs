@@ -38,7 +38,6 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_buildings,
                     sim_sync::sync_sim_dams,
                     sim_sync::sync_reinforcements,
-                    sim_sync::sync_sim_barges,
                     attach_rigs,
                     animate_beavers,
                     canopy_key,
@@ -252,18 +251,19 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
     let Some(m) = models else { return };
     let w = &m.white;
     for (root, sprite) in &q {
+        let target = crate::picking::Target::Beaver(sim::colony::BeaverId(sprite.id));
         let mut body = Entity::PLACEHOLDER;
         commands.entity(root).with_children(|p| {
-            body = p.spawn((Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
+            body = p.spawn((target, Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
         });
         let mut parts = [Entity::PLACEHOLDER; 6];
         let (mut log, mut far, mut ripple, mut blob) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(body).with_children(|p| {
-            parts[0] = p.spawn((Mesh3d(m.head.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::HEAD_PIVOT))).id();
-            parts[1] = p.spawn((Mesh3d(m.tail.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::TAIL_PIVOT))).id();
+            parts[0] = p.spawn((target, Mesh3d(m.head.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::HEAD_PIVOT))).id();
+            parts[1] = p.spawn((target, Mesh3d(m.tail.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::TAIL_PIVOT))).id();
             for k in 0..4 {
                 let mesh = if k < 2 { m.leg_front.clone() } else { m.leg_hind.clone() };
-                parts[2 + k] = p.spawn((Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
+                parts[2 + k] = p.spawn((target, Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
             }
         });
         let (mut lids, mut chips) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER);
@@ -273,7 +273,7 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
             chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
         commands.entity(root).with_children(|p| {
-            far = p.spawn((Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            far = p.spawn((target, Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             ripple = p.spawn((Mesh3d(m.ripple.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.06, 0.2), Visibility::Hidden)).id();
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });

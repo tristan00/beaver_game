@@ -1,3 +1,5 @@
+//! The colony drawer: a side panel beside the map, never covering the pond.
+//! Every row is icons, gauges and numbers; names and units live in tooltips.
 use super::inspect::mood_icon;
 use super::panels::{food_days, stage_icon, Ctx};
 use super::ui::*;
@@ -7,50 +9,49 @@ use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingKind, Good};
 
-const TABS: [(ColonyTab, Icon, &str); 7] = [
-    (ColonyTab::Population, Icon::Beaver, "Population"),
-    (ColonyTab::Jobs, Icon::Jobs, "Jobs"),
-    (ColonyTab::Goods, Icon::Colony, "Goods"),
+pub const DRAWER_W: f32 = 430.0;
+
+const TABS: [(ColonyTab, Icon, &str); 6] = [
+    (ColonyTab::Population, Icon::Beaver, "Families"),
+    (ColonyTab::Jobs, Icon::Jobs, "Work"),
+    (ColonyTab::Goods, Icon::Colony, "Stores"),
     (ColonyTab::Water, Icon::Drop, "Water"),
     (ColonyTab::Land, Icon::Tree, "Land"),
-    (ColonyTab::Buildings, Icon::Journal, "Buildings"),
-    (ColonyTab::Log, Icon::Log, "Log"),
+    (ColonyTab::Log, Icon::Log, "Journal"),
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.colony else { return Vec::new() };
+    let tab = if tab == ColonyTab::Buildings { ColonyTab::Population } else { tab };
     let mut ui = Ui::default();
     ui.node(
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(100.0),
-            right: Val::Percent(25.0),
+            left: Val::Px(64.0),
+            width: Val::Px(DRAWER_W),
             top: Val::Px(58.0),
-            bottom: Val::Px(80.0),
+            max_height: Val::Percent(88.0),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(8.0),
-            padding: UiRect::all(Val::Px(12.0)),
-            overflow: Overflow::scroll_y(),
+            overflow: Overflow::clip(),
             ..default()
         },
         |u| {
             u.row(6.0, |r| {
                 for (t, icon, name) in TABS {
                     let on = t == tab;
-                    r.icon_button(icon, 18.0, HudAction::Colony(Some(t)), if on { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, on).tip(Tip::name(name).key(if t == ColonyTab::Jobs { "J" } else { "" }));
+                    r.icon_button(icon, 18.0, HudAction::Colony(Some(t)), FAINT, on).tip(Tip::name(name).key(if t == ColonyTab::Jobs { "J" } else { "" }));
                 }
                 r.spacer();
-                r.bold(TABS.iter().find(|x| x.0 == tab).map(|x| x.2).unwrap_or(""), 14.0, INK);
                 r.icon_button(Icon::Cross, 11.0, HudAction::Colony(None), FAINT, false).tip(Tip::name("Close").key("Tab"));
             });
             u.rule();
             match tab {
-                ColonyTab::Population => population(c, u),
+                ColonyTab::Population | ColonyTab::Buildings => population(c, u),
                 ColonyTab::Jobs => jobs(c, u),
                 ColonyTab::Goods => goods(c, u),
                 ColonyTab::Water => water(c, u),
                 ColonyTab::Land => land(c, u),
-                ColonyTab::Buildings => prerequisites(c, u),
                 ColonyTab::Log => log(c, u),
             }
         },
@@ -61,18 +62,11 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     vec![v]
 }
 
-fn head(u: &mut Ui, icon: Option<Icon>, name: &str, w: f32, sort: Option<u8>, active: bool) {
-    let v = u.node(Node { width: Val::Px(w), justify_content: JustifyContent::FlexEnd, column_gap: Val::Px(2.0), ..row_node(2.0) }, |x| {
-        match icon {
-            Some(i) => {
-                x.icon(i, 14.0, if active { INK } else { MUTED });
-            }
-            None => {
-                x.bold(name, 11.0, if active { INK } else { MUTED });
-            }
-        }
+fn head(u: &mut Ui, icon: Icon, name: &str, w: f32, sort: Option<u8>, active: bool) {
+    let v = u.node(Node { width: Val::Px(w), justify_content: JustifyContent::Center, ..row_node(2.0) }, |x| {
+        x.icon(icon, 13.0, if active { INK } else { MUTED });
         if active {
-            x.icon(Icon::Down, 7.0, INK);
+            x.icon(Icon::Down, 7.0, ACCENT);
         }
     });
     v.tip(Tip::name(name));
@@ -81,20 +75,21 @@ fn head(u: &mut Ui, icon: Option<Icon>, name: &str, w: f32, sort: Option<u8>, ac
     }
 }
 
-fn cell_num(u: &mut Ui, s: impl Into<String>, w: f32, col: Color) {
-    u.num(s, 12.0, col, w);
+fn gauge(u: &mut Ui, v: f32, w: f32) {
+    let col = if v < 0.35 { BAD } else if v < 0.6 { WARN } else { GOOD };
+    u.bar(v, w, 6.0, col);
 }
 
 fn history_bars(u: &mut Ui, icon: Icon, col: Color, values: &[f32], name: &str) {
     let top = values.iter().copied().fold(1.0f32, f32::max);
     u.row(8.0, |r| {
         r.icon(icon, 16.0, col);
-        r.node(Node { height: Val::Px(28.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), ..row_node(1.0) }, |b| {
+        r.node(Node { height: Val::Px(26.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), ..row_node(1.0) }, |b| {
             for v in values.iter().rev().take(72).rev() {
-                b.add(VNode::new(Node { width: Val::Px(4.0), height: Val::Px((v / top * 28.0).max(1.0)), ..default() })).bg(col);
+                b.add(VNode::new(Node { width: Val::Px(4.0), height: Val::Px((v / top * 26.0).max(1.0)), border_radius: BorderRadius::top(Val::Px(1.0)), ..default() })).bg(col);
             }
         });
-        r.text(num(top), 11.0, MUTED);
+        r.bold(num(top), 11.0, MUTED);
     })
     .tip(Tip::name(name).line("Every", "5d"));
 }
@@ -103,23 +98,32 @@ fn population(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let pages = s.colony.population().div_ceil(18).max(1);
     let page = c.hud.pop_page.min(pages - 1);
-    u.row(10.0, |r| {
-        r.icon(Icon::Home, 15.0, INK);
-        r.bold(format!("{} families", s.colony.families.len()), 12.0, INK);
+    u.row(12.0, |r| {
+        r.row(4.0, |x| {
+            x.icon(Icon::Home, 15.0, INK);
+            x.bold(format!("{}", s.colony.families.len()), 13.0, INK);
+        })
+        .tip(Tip::name("Families"));
         let expecting = s.colony.beavers.iter().filter(|b| b.pregnancy.is_some()).count();
-        if expecting > 0 { r.text(format!("{expecting} litters expected"), 12.0, MUTED); }
+        if expecting > 0 {
+            r.row(4.0, |x| {
+                x.icon(Icon::Kit, 14.0, GOOD);
+                x.bold(format!("{expecting}"), 13.0, GOOD);
+            })
+            .tip(Tip::name("Litters on the way"));
+        }
         r.spacer();
         if pages > 1 {
             r.icon_button(Icon::Up, 12.0, HudAction::PopPage(-1), FAINT, false).tip(Tip::name("Previous page"));
-            r.text(format!("{} / {pages}", page + 1), 12.0, MUTED);
+            r.bold(format!("{}/{pages}", page + 1), 12.0, MUTED);
             r.icon_button(Icon::Down, 12.0, HudAction::PopPage(1), FAINT, false).tip(Tip::name("Next page"));
         }
     });
     if c.history.len() > 1 {
         let pop: Vec<f32> = c.history.iter().map(|h| h.1 as f32).collect();
         history_bars(u, Icon::Beaver, INK, &pop, "Beavers");
-        u.rule();
     }
+    u.rule();
     let mut rows: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().collect();
     let key = c.hud.pop_sort;
     rows.sort_by(|a, b| {
@@ -136,46 +140,62 @@ fn population(c: &Ctx, u: &mut Ui) {
         if key == 0 { a.name.cmp(&b.name) } else { v(b).total_cmp(&v(a)) }
     });
     u.row(8.0, |r| {
-        head(r, None, "Name", 130.0, Some(0), key == 0);
-        head(r, Some(Icon::Beaver), "Age", 56.0, Some(1), key == 1);
-        head(r, Some(Icon::Jobs), "Job", 64.0, Some(2), key == 2);
-        head(r, Some(Icon::Home), "Home", 44.0, None, false);
-        head(r, Some(Icon::MoodGood), "Mood", 56.0, Some(3), key == 3);
-        head(r, Some(Icon::Health), "Health", 56.0, Some(4), key == 4);
-        head(r, Some(Icon::Home), "Family", 100.0, Some(5), key == 5);
+        head(r, Icon::Beaver, "Name", 132.0, Some(0), key == 0);
+        head(r, Icon::Hourglass, "Age", 34.0, Some(1), key == 1);
+        head(r, Icon::Jobs, "Work", 28.0, Some(2), key == 2);
+        head(r, Icon::Home, "Family", 28.0, Some(5), key == 5);
+        head(r, Icon::MoodGood, "Mood", 76.0, Some(3), key == 3);
+        head(r, Icon::Health, "Health", 76.0, Some(4), key == 4);
     });
     for b in rows.into_iter().skip(page * 18).take(18) {
         let (mi, mc) = mood_icon(b.mood);
+        let family = s.colony.family(b.family).map_or("-".to_string(), |f| f.name.clone());
         u.row(8.0, |r| {
-            r.row(4.0, |x| {
+            r.row(5.0, |x| {
                 x.icon(stage_icon(b.stage), 14.0, MUTED);
-                x.text(b.name.clone(), 12.0, INK);
+                x.text(b.name.clone(), 12.5, INK);
             })
-            .style(|n| n.width = Val::Px(130.0));
-            cell_num(r, format!("{:.1}", b.age_years()), 56.0, INK);
-            r.node(Node { width: Val::Px(64.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| match s.work.slot_of(b.id) {
-                Some((_, _, role)) => {
-                    x.icon(role_icon(role), 15.0, INK).tip(Tip::name(role_name(role)));
+            .style(|n| n.width = Val::Px(132.0));
+            r.node(Node { width: Val::Px(34.0), justify_content: JustifyContent::Center, ..default() }, |x| {
+                x.bold(format!("{:.0}", b.age_years().floor()), 12.0, MUTED);
+            });
+            r.node(Node { width: Val::Px(28.0), justify_content: JustifyContent::Center, ..default() }, |x| match sim::jobs::role_of(s, b.id) {
+                Some(role) => {
+                    x.icon(role_kind_icon(role), 15.0, INK).tip(Tip::name(role_kind_name(role)));
                 }
                 None => {
-                    x.icon(Icon::Idle, 15.0, WARN).tip(Tip::name("Free"));
+                    x.icon(Icon::Idle, 15.0, if b.stage == sim::colony::Stage::Kit { MUTED } else { WARN }).tip(Tip::name("Free"));
                 }
             });
-            r.node(Node { width: Val::Px(44.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
+            r.node(Node { width: Val::Px(28.0), justify_content: JustifyContent::Center, ..default() }, |x| {
                 x.icon(if b.lodge.is_some() { Icon::Home } else { Icon::Cross }, 14.0, if b.lodge.is_some() { MUTED } else { WARN });
             });
-            r.node(Node { width: Val::Px(56.0), justify_content: JustifyContent::FlexEnd, column_gap: Val::Px(3.0), ..row_node(3.0) }, |x| {
-                x.icon(mi, 13.0, mc);
-                x.bold(format!("{:.0}", b.mood * 100.0), 12.0, INK);
-            });
-            cell_num(r, format!("{:.0}", b.health * 100.0), 56.0, if b.health < 0.5 { BAD } else { INK });
-            r.node(Node { width: Val::Px(100.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
-                let family = s.colony.family(b.family).map_or("—", |f| f.name.as_str());
-                x.text(family, 12.0, MUTED).tip(Tip::name("Family").line("Household", format!("{}", b.family.0)));
-            });
+            r.row(4.0, |x| {
+                x.icon(mi, 12.0, mc);
+                gauge(x, b.mood, 56.0);
+            })
+            .style(|n| n.width = Val::Px(76.0));
+            r.row(4.0, |x| {
+                x.icon(Icon::Health, 12.0, MUTED);
+                gauge(x, b.health, 56.0);
+            })
+            .style(|n| n.width = Val::Px(76.0));
         })
-        .action(HudAction::SelectBeaver(b.id));
+        .action(HudAction::SelectBeaver(b.id))
+        .tip(Tip::name(b.name.clone()).line("Family", family).line("Age", format!("{:.1}", b.age_years())).line("Mood", format!("{:.0}%", b.mood * 100.0)).line("Health", format!("{:.0}%", b.health * 100.0)));
     }
+}
+
+fn pegs(u: &mut Ui, filled: usize, slots: usize) {
+    u.row(3.0, |r| {
+        for i in 0..slots.min(10) {
+            r.add(VNode::new(Node { width: Val::Px(8.0), height: Val::Px(12.0), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() }))
+                .bg(if i < filled { GOOD } else { Color::srgba(1.0, 1.0, 1.0, 0.1) });
+        }
+        if slots > 10 {
+            r.bold(format!("+{}", slots - 10), 11.0, MUTED);
+        }
+    });
 }
 
 pub fn jobs(c: &Ctx, u: &mut Ui) {
@@ -195,25 +215,27 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
         }
         r.spacer();
         let auto = s.work.auto_organise;
-        r.icon_label_button(Icon::Jobs, if auto { "Auto" } else { "Manual" }, 14.0, HudAction::AutoStaff(!auto), if auto { GOOD.with_alpha(0.25) } else { FAINT }, auto).tip(Tip::name("Auto-staffing").line("Free beavers fill jobs", ""));
+        r.icon_button(Icon::Jobs, 16.0, HudAction::AutoStaff(!auto), if auto { GOOD.with_alpha(0.25) } else { FAINT }, auto)
+            .tip(Tip::name("Auto-staffing").line(if auto { "On" } else { "Off" }, "").line("Free beavers fill jobs", ""));
     });
     u.rule();
-    u.row(8.0, |r| {
-        r.add(VNode::new(Node { width: Val::Px(52.0), ..default() }));
-        head(r, None, "Filled", 60.0, None, false);
-        r.add(VNode::new(Node { width: Val::Px(64.0), ..default() }));
-        head(r, Some(Icon::Up), "Output per day", 120.0, None, false);
-        head(r, None, "Auto share", 100.0, None, false);
-    });
     for row in sim::jobs::jobs_board(s) {
         let role = row.role;
+        let share = s.work.role_weights[role as usize];
         u.row(8.0, |r| {
             r.icon_button(Icon::PriorityUp, 9.0, HudAction::RoleUp(role), Color::NONE, false).tip(Tip::name("Higher priority"));
             r.icon(role_kind_icon(role), 20.0, INK).tip(Tip::name(role_kind_name(role)).line("Priority", format!("{}", row.rank + 1)));
-            r.node(Node { width: Val::Px(60.0), justify_content: JustifyContent::FlexEnd, ..default() }, |x| {
-                x.bold(format!("{}/{}", row.filled, row.slots), 13.0, if row.filled < row.slots { WARN } else { INK });
-            });
-            r.icon_button(Icon::Minus, 11.0, HudAction::RoleAdjust(role, -1), FAINT, false).tip(Tip::name("Free one"));
+            pegs(r, row.filled, row.slots);
+            r.spacer();
+            r.row(6.0, |x| {
+                for (g, v) in &row.output_per_day {
+                    x.row(2.0, |y| {
+                        y.icon(good_icon(*g), 13.0, good_color(*g));
+                        y.bold(num(*v), 11.5, GOOD);
+                    });
+                }
+            })
+            .tip(Tip::name("Made per day"));
             let tip = match sim::jobs::role_add_preview(s, role) {
                 Some(p) => {
                     let who = s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default();
@@ -224,105 +246,74 @@ pub fn jobs(c: &Ctx, u: &mut Ui) {
                 }
                 None => Tip::name("No one to add"),
             };
-            r.icon_button(Icon::Plus, 11.0, HudAction::RoleAdjust(role, 1), FAINT, false).tip(tip);
-            r.row(6.0, |x| {
-                for (g, v) in &row.output_per_day {
-                    x.row(2.0, |y| {
-                        y.icon(good_icon(*g), 14.0, good_color(*g));
-                        y.bold(num(*v), 12.0, GOOD);
-                    });
-                }
+            r.icon_button(Icon::Minus, 10.0, HudAction::RoleAdjust(role, -1), FAINT, false).tip(Tip::name("Free one"));
+            r.icon_button(Icon::Plus, 10.0, HudAction::RoleAdjust(role, 1), FAINT, false).tip(tip);
+            r.row(2.0, |x| {
+                x.icon_button(Icon::Minus, 8.0, HudAction::RoleWeight(role, (share - 0.25).max(0.1)), Color::NONE, false).tip(Tip::name("Fewer automatic workers"));
+                x.bar(share / 6.0, 30.0, 5.0, ACCENT);
+                x.icon_button(Icon::Plus, 8.0, HudAction::RoleWeight(role, (share + 0.25).min(20.0)), Color::NONE, false).tip(Tip::name("More automatic workers"));
             })
-            .style(|n| n.min_width = Val::Px(120.0));
-            let share = s.work.role_weights[role as usize];
-            r.icon_button(Icon::Minus, 9.0, HudAction::RoleWeight(role,(share-0.25).max(0.1)), FAINT, false).tip(Tip::name("Fewer automatic workers"));
-            r.text(format!("{share:.1}"), 11.0, MUTED).style(|n|n.width=Val::Px(24.0));
-            r.icon_button(Icon::Plus, 9.0, HudAction::RoleWeight(role,(share+0.25).min(20.0)), FAINT, false).tip(Tip::name("More automatic workers").line("Relative share of free workers", ""));
+            .tip(Tip::name("Automatic share").with_value(format!("{share:.1}")));
         });
     }
 }
 
 fn goods(c: &Ctx, u: &mut Ui) {
     let s = c.s;
-    let w = [40.0, 58.0, 58.0, 58.0, 58.0, 58.0];
-    u.row(6.0, |r| {
-        r.add(VNode::new(Node { width: Val::Px(w[0]), ..default() }));
-        head(r, None, "Stock", w[1], None, false);
-        head(r, None, "In", w[2], None, false);
-        head(r, None, "Out", w[3], None, false);
-        head(r, None, "Net", w[4], None, false);
-        head(r, Some(Icon::Hourglass), "Lasts", w[5], None, false);
-        head(r, None, "60d", 130.0, None, false);
-    });
     let st = &s.buildings.stores;
     for g in Good::ALL {
-        let (have, inn, out) = (st.amount(g), s.ledger.in_per_day(g), s.ledger.out_per_day(g));
-        if have < 0.05 && inn < 0.01 && out < 0.01 {
-            continue;
-        }
+        let (have, cap, inn, out) = (st.amount(g), st.capacity(g), s.ledger.in_per_day(g), s.ledger.out_per_day(g));
         let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
-        u.row(6.0, |r| {
-            r.node(Node { width: Val::Px(w[0]), ..default() }, |x| {
-                x.icon(good_icon(g), 18.0, good_color(g)).tip(Tip::name(good_name(g)));
-            });
-            cell_num(r, format!("{}", have.round() as i64), w[1], INK);
-            cell_num(r, num(inn), w[2], if inn > 0.0 { GOOD } else { MUTED });
-            cell_num(r, num(out), w[3], if out > 0.0 { BAD } else { MUTED });
-            let net = inn - out;
-            cell_num(r, signed(net), w[4], if net > 0.05 { GOOD } else if net < -0.05 { BAD } else { MUTED });
-            cell_num(r, lasts.map_or("-".to_string(), days), w[5], if lasts.is_some_and(|d| d < 20.0) { WARN } else { MUTED });
-            let hist: Vec<f32> = s.ledger.days.iter().map(|d| d.stock[g.index()]).collect();
-            let top = hist.iter().copied().fold(1.0f32, f32::max);
-            r.node(Node { height: Val::Px(18.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), margin: UiRect::left(Val::Px(8.0)), ..row_node(1.0) }, |sp| {
-                for v in &hist {
-                    sp.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px((v / top * 18.0).max(1.0)), ..default() })).bg(good_color(g));
-                }
-            });
+        u.row(8.0, |r| {
+            r.icon(good_icon(g), 22.0, good_color(g));
+            r.col(3.0, |x| {
+                x.row(6.0, |y| {
+                    y.bold(format!("{}", have.round() as i64), 14.0, INK);
+                    y.text(format!("/ {}", cap.round() as i64), 11.0, MUTED);
+                    y.spacer();
+                    if inn > 0.01 {
+                        y.icon(Icon::Up, 9.0, GOOD);
+                        y.bold(num(inn), 11.5, GOOD);
+                    }
+                    if out > 0.01 {
+                        y.icon(Icon::Down, 9.0, BAD);
+                        y.bold(num(out), 11.5, BAD);
+                    }
+                    if let Some(d) = lasts {
+                        y.icon(Icon::Hourglass, 11.0, if d < 20.0 { WARN } else { MUTED });
+                        y.bold(days(d), 11.5, if d < 20.0 { WARN } else { MUTED });
+                    }
+                });
+                x.bar(if cap > 0.0 { have / cap } else { 0.0 }, DRAWER_W - 70.0, 7.0, good_color(g));
+                let hist: Vec<f32> = s.ledger.days.iter().map(|d| d.stock[g.index()]).collect();
+                let top = hist.iter().copied().fold(1.0f32, f32::max);
+                x.node(Node { height: Val::Px(16.0), align_items: AlignItems::FlexEnd, column_gap: Val::Px(1.0), ..row_node(1.0) }, |sp| {
+                    for v in &hist {
+                        sp.add(VNode::new(Node { width: Val::Px(4.0), height: Val::Px((v / top * 16.0).max(1.0)), ..default() })).bg(good_color(g).with_alpha(0.6));
+                    }
+                });
+            })
+            .style(|n| n.flex_grow = 1.0);
         })
         .tip(super::panels::good_tip(s, g));
+        u.rule();
     }
-    u.rule();
-    let mut makers: Vec<(sim::buildings::BuildingId, sim::output::Flow)> = s.output.by.iter().map(|(b, f)| (*b, *f)).filter(|(_, f)| f.sum_per_day() > 0.01).collect();
-    makers.sort_by(|a, b| b.1.sum_per_day().total_cmp(&a.1.sum_per_day()));
-    u.row(6.0, |r| {
-        r.bold("Sources", 12.0, MUTED);
-        if makers.is_empty() {
-            r.text("-", 12.0, MUTED);
-        }
-    });
-    for (id, f) in makers.into_iter().take(10) {
-        let Some(b) = s.buildings.building(id) else { continue };
+    let stores: Vec<&sim::buildings::Building> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind == BuildingKind::Warehouse).collect();
+    for b in stores {
         u.row(8.0, |r| {
             r.icon(building_icon(b.kind), 18.0, INK).tip(Tip::name(b.kind.spec().name));
-            for (g, v) in f.rates() {
-                r.row(2.0, |x| {
-                    x.icon(good_icon(g), 14.0, good_color(g));
-                    x.bold(num(v), 12.0, GOOD);
-                });
+            for g in Good::ALL {
+                let have = s.work.stock_of(b.id, g);
+                if have > 0.05 {
+                    r.row(2.0, |x| {
+                        x.icon(good_icon(g), 14.0, good_color(g));
+                        x.bold(format!("{}", have.round() as i64), 12.0, INK);
+                    });
+                }
             }
             r.spacer();
-            r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
+            r.icon_button(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), FAINT, false).tip(Tip::name("Open"));
         });
-    }
-    let stores: Vec<&sim::buildings::Building> = s.buildings.buildings.iter().filter(|b| b.is_complete() && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache)).collect();
-    if !stores.is_empty() {
-        u.rule();
-        for b in stores {
-            u.row(8.0, |r| {
-                r.icon(building_icon(b.kind), 18.0, INK).tip(Tip::name(b.kind.spec().name));
-                for g in Good::ALL {
-                    let have = s.work.stock_of(b.id, g);
-                    if have > 0.05 {
-                        r.row(2.0, |x| {
-                            x.icon(good_icon(g), 14.0, good_color(g));
-                            x.bold(format!("{}", have.round() as i64), 12.0, INK);
-                        });
-                    }
-                }
-                r.spacer();
-                r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.pos), FAINT, false).tip(Tip::name("Show"));
-            });
-        }
     }
 }
 
@@ -333,10 +324,10 @@ fn water(c: &Ctx, u: &mut Ui) {
     u.row(16.0, |r| {
         let cover = ponds.summer_cover_days();
         for (icon, v, name) in [
-            (Icon::Gauge, if ponds.dammed { num(ponds.volume) } else { "-".into() }, "Stored"),
-            (Icon::Flood, format!("{}", ponds.cells), "Pond cells"),
+            (Icon::Gauge, if ponds.dammed { num(ponds.volume) } else { "-".into() }, "Stored water"),
+            (Icon::Area, format!("{}", ponds.cells), "Pond cells"),
             (Icon::Summer, format!("{}/d", num(ponds.summer_loss_per_day)), "Summer loss"),
-            (Icon::Hourglass, cover.map_or("-".to_string(), |d| format!("{} / {}", days(d.min(999.0)), days(season))), "Cover"),
+            (Icon::Hourglass, cover.map_or("-".to_string(), |d| format!("{} / {}", days(d.min(999.0)), days(season))), "Lasts through summer"),
         ] {
             r.row(4.0, |x| {
                 x.icon(icon, 16.0, WATER);
@@ -346,32 +337,32 @@ fn water(c: &Ctx, u: &mut Ui) {
         }
     });
     u.rule();
-    let dams: Vec<&sim::buildings::Building> = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam).collect();
-    if dams.is_empty() {
-        u.text("-", 12.0, MUTED);
-    }
-    for d in dams {
-        let crest = d.cells().filter_map(|(x, y)| s.water.dam_height.get(x, y).copied()).fold(0.0f32, f32::max);
-        let up = d.cells().filter_map(|(x, y)| s.water.depth.get(x, y).copied()).fold(0.0f32, f32::max);
+    for b in s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam) {
+        let Some(d) = b.dam.as_deref() else { continue };
+        let health = sim::dams::health(s, d);
+        let fill = d.pond.as_ref().map_or(0.0, |p| ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0));
         u.row(10.0, |r| {
             r.icon(Icon::Dam, 18.0, INK);
             r.row(3.0, |x| {
-                x.icon(Icon::Crest, 14.0, MUTED);
-                x.bold(num(crest), 12.0, INK);
+                x.icon(Icon::Hammer, 12.0, MUTED);
+                gauge(x, health, 60.0);
             })
-            .tip(Tip::name("Crest"));
+            .tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)));
             r.row(3.0, |x| {
-                x.icon(Icon::Drop, 14.0, WATER);
-                x.bold(format!("{:.2}", up), 12.0, INK);
+                x.icon(Icon::Gauge, 13.0, WATER);
+                x.bar(fill, 80.0, 6.0, WATER);
             })
-            .tip(Tip::name("Depth at dam"));
-            r.row(3.0, |x| {
-                x.icon(Icon::Hammer, 14.0, MUTED);
-                x.bar(if d.is_complete() { 1.0 } else { 0.5 }, 40.0, 5.0, if d.is_complete() { GOOD } else { WARN });
-            })
-            .tip(Tip::name(if d.is_complete() { "Built" } else { "Building" }));
+            .tip(Tip::name("Pond").with_value(format!("{:.0}%", fill * 100.0)));
+            let left = sim::dams::loads_left(s, b.id);
+            if left > 0 {
+                r.row(3.0, |x| {
+                    x.icon(Icon::Site, 12.0, MUTED);
+                    x.bold(format!("{left}"), 12.0, MUTED);
+                })
+                .tip(Tip::name("Loads still to carry"));
+            }
             r.spacer();
-            r.icon_button(Icon::Focus, 11.0, HudAction::Focus(d.pos), FAINT, false).tip(Tip::name("Show"));
+            r.icon_button(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), FAINT, false).tip(Tip::name("Open"));
         });
     }
 }
@@ -381,40 +372,31 @@ fn land(c: &Ctx, u: &mut Ui) {
     let sum = |g: &sim::grid::Grid<f32>| g.as_slice().iter().sum::<f32>();
     let trees = c.s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree).count();
     let plants = c.s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Plant).count();
-    for (icon, col, v, name) in [
+    let items = [
         (Icon::Tree, GOOD, format!("{trees}"), "Trees"),
         (Icon::Plant, GOOD, format!("{plants}"), "Food plants"),
         (Icon::ViewForest, GOOD, num(sum(&e.forest)), "Forest cover"),
         (Icon::ViewVegetation, GOOD, num(sum(&e.meadow)), "Meadow"),
         (Icon::Flood, WATER, num(sum(&e.wetland)), "Wetland"),
         (Icon::Drop, WATER, num(sum(&e.fish)), "Fish"),
-    ] {
-        u.row(8.0, |r| {
-            r.icon(icon, 18.0, col);
-            r.text(name, 12.0, MUTED);
-            r.spacer();
-            r.bold(v, 13.0, INK);
-        })
-        .style(|n| n.max_width = Val::Px(320.0));
-    }
-}
-
-fn prerequisites(c: &Ctx, u: &mut Ui) {
-    for kind in BuildingKind::ALL {
-        let gaps = c.s.missing_prerequisites(kind);
-        u.row(8.0, |r| {
-            r.icon(building_icon(kind), 16.0, INK);
-            r.text(kind.spec().name, 12.0, INK);
-            r.spacer();
-            if gaps.is_empty() { r.text("Ready to build", 12.0, GOOD); }
-            else { for need in gaps { r.text(format!("Finish {}", need.spec().name), 12.0, MUTED); } }
+    ];
+    for pair in items.chunks(3) {
+        u.row(18.0, |r| {
+            for (icon, col, v, name) in pair {
+                r.row(5.0, |x| {
+                    x.icon(*icon, 18.0, *col);
+                    x.bold(v.clone(), 13.0, INK);
+                })
+                .style(|n| n.width = Val::Px(120.0))
+                .tip(Tip::name(*name));
+            }
         });
     }
 }
 
 fn log(c: &Ctx, u: &mut Ui) {
     if c.log.is_empty() {
-        u.text("-", 12.0, MUTED);
+        u.icon(Icon::Log, 14.0, MUTED);
     }
     for line in c.log.iter().rev().take(24) {
         u.text(line.clone(), 12.0, INK);

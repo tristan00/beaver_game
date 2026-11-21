@@ -159,7 +159,7 @@ fn menu_actions(
     mut commands: Commands,
     q: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     mut menu: ResMut<Menu>,
-    sim: Res<Sim>,
+    mut sim: ResMut<Sim>,
     current: Res<CurrentMap>,
     planned: Res<PlannedDam>,
     mut flow: ResMut<Flow>,
@@ -202,15 +202,15 @@ fn menu_actions(
                     menu.load_error = None;
                     clock.paused = true;
                     continue;
-                } else if sim.0.sandbox {
-                    crate::startflow::begin_sandbox(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
-                } else if sim.0.colony.is_founded() {
-                    crate::startflow::begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
                 } else {
                     let camp = planned.0.as_ref().map(|d| d.camp);
-                    crate::startflow::begin_scouting(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp);
+                    if let Err(error) = crate::startflow::begin_play(&mut sim.0, &mut flow, &mut clock, &mut orbit, &mut sel, camp) {
+                        menu.load_error = Some(error);
+                        continue;
+                    }
                 }
                 clock.paused = true;
+                menu.load_error = None;
                 menu.seen_urgent.clear();
                 menu.screen = None;
             }
@@ -276,9 +276,10 @@ fn finish_loading(
         Err(_) => Err("The valley could not be prepared. Please try again.".into()),
     };
     menu.loading = false;
-    match result {
-        Ok((state, dam)) => {
-            crate::startflow::install_game(state, dam, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel);
+    match result.and_then(|(state, dam)| {
+        crate::startflow::install_game(state, dam, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel)
+    }) {
+        Ok(()) => {
             current.0 = pending.map.clone();
             menu.seen_urgent.clear();
             menu.screen = None;

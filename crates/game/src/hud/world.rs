@@ -10,7 +10,7 @@ use crate::icons::Icon;
 use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use sim::buildings::{BargeId, BuildingId, BuildingKind, Good};
+use sim::buildings::{BuildingId, BuildingKind, Good};
 use sim::colony::{BeaverId, LodgeId};
 use sim::resources::ResourceId;
 
@@ -20,7 +20,6 @@ pub enum Thing {
     Building(BuildingId),
     Resource(ResourceId),
     Lodge(LodgeId),
-    Barge(BargeId),
     Cell(Cell),
 }
 
@@ -32,7 +31,6 @@ impl Thing {
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
             Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
-            Thing::Barge(b) => 6 << 60 | b.0,
         }
     }
     pub fn selection(self) -> Selection {
@@ -41,8 +39,18 @@ impl Thing {
             Thing::Building(b) => Selection::Site(b),
             Thing::Resource(r) => Selection::Tree(r),
             Thing::Lodge(l) => Selection::Lodge(l),
-            Thing::Barge(b) => Selection::Barge(b),
             Thing::Cell(c) => Selection::Cell(c),
+        }
+    }
+}
+
+impl From<crate::picking::Target> for Thing {
+    fn from(target: crate::picking::Target) -> Self {
+        use crate::picking::Target;
+        match target {
+            Target::Building(id) => Self::Building(id),
+            Target::Beaver(id) => Self::Beaver(id),
+            Target::Lodge(id) => Self::Lodge(id),
         }
     }
 }
@@ -81,10 +89,6 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
     }
-    let barge = s.buildings.barges.iter().map(|b| (b.id, d2((b.cell.0 as f32 + 0.5, b.cell.1 as f32 + 0.5)))).filter(|x| x.1 < 1.1 * 1.1).min_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((id, _)) = barge {
-        return Thing::Barge(id);
-    }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
     }
@@ -92,7 +96,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
         return Thing::Resource(r.id);
     }
     if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 1.6 * 1.6) {
-        return Thing::Lodge(l.id);
+        return crate::picking::Target::home(s, l.id).into();
     }
     Thing::Cell(cell)
 }
@@ -156,16 +160,6 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             tip
         }
-        Thing::Barge(id) => {
-            let Some(b) = s.buildings.barge(id) else { return Tip::default() };
-            let (icon, col, name) = super::inspect::barge_face(b);
-            let mut tip = Tip::titled(Some((Icon::Barge, INK)), "Barge").with_value(super::inspect::barge_number(s, id).to_string());
-            tip.push(TipLine::new(name, "").icon(icon, col));
-            for (g, a) in super::inspect::aboard(b) {
-                tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
-            }
-            tip
-        }
         Thing::Lodge(id) => {
             let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
             Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
@@ -191,7 +185,9 @@ pub fn world_hover(
     mut thing: ResMut<HoverThing>,
     mut tips: ResMut<Tips>,
     menu: Res<super::MenuOpen>,
+    picker: crate::picking::Picker,
 ) {
+    let mut model = None;
     let p = (|| {
         if over.0 || menu.0 || cli.report_dir.is_some() {
             return None;
@@ -199,17 +195,19 @@ pub fn world_hover(
         let cursor = windows.single().ok()?.cursor_position()?;
         let (cam, gt) = cams.single().ok()?;
         let ray = cam.viewport_to_world(gt, cursor).ok()?;
-        crate::flow::ray_heightfield(ray.origin, *ray.direction, &sim.0.height).map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
+        let ground = crate::flow::ray_heightfield(ray.origin, *ray.direction, &sim.0.height);
+        model = picker.cast(ray, ground.as_ref().map(|g|g.2)).map(Thing::from);
+        ground.map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
     })();
     if point.0 != p {
         point.0 = p;
     }
-    let t = p.map(|(c, p)| pick(&sim.0, c, p));
+    let t = model.or_else(|| p.map(|(c, p)| pick(&sim.0, c, p)));
     if thing.0 != t {
         thing.0 = t;
     }
     if let (Some((c, _)), Some(pile)) = (p, sim.0.work.supplies) {
-        if c == pile && hud.tool == Tool::None {
+        if c == pile && hud.tool == Tool::None && matches!(t, Some(Thing::Cell(_))) {
             let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
             for g in Good::ALL {
                 let a = sim.0.buildings.stores.amount(g);
@@ -223,7 +221,6 @@ pub fn world_hover(
     }
     let elevation = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     tips.world = match (t, hud.tool) {
-        _ if hud.order_mode.is_some() => None,
         (Some(Thing::Cell(_)), Tool::None) if elevation => None,
         (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))),
         _ => None,
@@ -274,14 +271,14 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         }
         if b.is_complete() {
             if s.buildings.stranded(b,&s.water.depth) {icons.push((Icon::Flood,WARN));}
-            let used_home=b.kind!=BuildingKind::Burrow || s.work.homes.get(&b.id).is_some_and(|id|s.colony.beavers.iter().any(|a|a.lodge==Some(*id)));
+            let used_home=b.kind!=BuildingKind::Dam;
             if b.condition<0.25 && (selected || used_home) && !s.maintenance.jobs.contains_key(&b.id) {icons.push((Icon::Hammer,BAD));}
             if let Some(rep) = sim::hud::building_report(s, b.id).filter(|_|s.work.place(b.id).is_some_and(|p|!p.paused && p.filled()>0)) {
                 if rep.factors.iter().any(|f| f.ok == Some(false) && f.label.to_lowercase().contains("store for")) {
                     icons.push((Icon::NoStore, WARN));
                 }
             }
-            if selected && matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache) {
+            if selected && b.kind == BuildingKind::Warehouse {
                 let capacity=b.kind.spec().capacity;
                 let full = Good::ALL.iter().any(|g| capacity>0.0 && s.work.stock_of(b.id,*g)>=capacity*sim::hud::FULL_SHARE);
                 if full {
@@ -295,27 +292,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
-    let mut labels = Vec::new();
-    if let Selection::Barge(bid) = sel {
-        for (i, d) in super::inspect::docks(s).iter().enumerate() {
-            if let Some(b) = s.buildings.building(*d) {
-                if let Some(p) = place(building_centre(b), 1.6) {
-                    let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 22.0), top: Val::Px(p.y - 26.0), padding: UiRect::axes(Val::Px(4.0), Val::Px(2.0)), column_gap: Val::Px(3.0), border_radius: BorderRadius::all(Val::Px(5.0)), ..row_node(3.0) });
-                    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.85);
-                    let mut ui = Ui::default();
-                    ui.icon(Icon::Dock, 16.0, INK);
-                    ui.bold(format!("{}", i + 1), 13.0, INK);
-                    v.children = ui.nodes;
-                    labels.push(v);
-                }
-            }
-        }
-        if let Some(c) = hud.route_err.as_ref().filter(|e| e.0 == bid).and_then(|e| blocking_dam(&e.1)) {
-            if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.2) {
-                push(p, &[(Icon::Lock, BAD), (Icon::Cross, BAD)]);
-            }
-        }
-    }
+    let labels = Vec::new();
     if hud.tool == Tool::Dam {
         if let Some(c) = hud.dam_preview().and_then(|p| p.spill_at) {
             if let Some(p) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 1.4) {
@@ -328,19 +305,10 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             push(p, &[(Icon::Logs, good_color(Good::Sticks)), (Icon::Food, good_color(Good::Food))]);
         }
     }
-    let mut occupied: Vec<Vec2> = Vec::new();
-    for b in &s.colony.beavers {
-        let Some(mut p) = beaver_world(s, b.id).and_then(|w| project(w, 1.0)) else { continue };
-        let bounds = cam.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)) / scale.max(0.01);
-        if p.x < 0.0 || p.x > bounds.x || p.y < 70.0 || p.y > bounds.y - 60.0 { continue; }
-        while occupied.iter().any(|q| (q.x - p.x).abs() < 112.0 && (q.y - p.y).abs() < 25.0) { p.y -= 25.0; }
-        occupied.push(p);
-        let selected = hud.selected.contains(&b.id);
-        let mut ui = Ui::default();
-        ui.icon_label_button(stage_icon(b.stage), &b.name, 12.0, super::HudAction::SelectBeaver(b.id), if selected { ACCENT } else { PANEL }, selected)
-            .tip(thing_tip(s, Thing::Beaver(b.id)).line("Add to selection", "Shift + click"))
-            .style(|n| { n.position_type = PositionType::Absolute; n.left = Val::Px(p.x - 48.0); n.top = Val::Px(p.y - 30.0); n.min_width = Val::Px(96.0); n.min_height = Val::Px(24.0); });
-        labels.extend(ui.nodes);
+    for id in sim::hud::idle_beavers(s) {
+        if let Some(p) = beaver_world(s, id).and_then(|w| project(w, 1.3)) {
+            push(p, &[(Icon::Idle, WARN)]);
+        }
     }
     for id in hud.selected.iter() {
         if s.colony.beaver(*id).is_some() {
@@ -370,18 +338,16 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
 
 fn store_takes(kind: BuildingKind, g: Good) -> bool {
     match kind {
-        BuildingKind::Warehouse | BuildingKind::Storehouse => true,
-        BuildingKind::FoodCache => g == Good::Food,
+        BuildingKind::Warehouse => {
+            let _ = g;
+            true
+        }
         _ => false,
     }
 }
 
-fn water_y(s: &sim::SimState, c: Cell) -> f32 {
-    s.height.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0)
-}
-
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
-    let (x, z) = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+    let (x, z) = (c.0 as f32, c.1 as f32);
     let corners = [(x - 0.5, z - 0.5), (x + 0.5, z - 0.5), (x + 0.5, z + 0.5), (x - 0.5, z + 0.5)];
     let pts: Vec<Vec3> = corners
         .iter()
@@ -407,8 +373,6 @@ pub fn stage_color(st: sim::forestry::TreeStage) -> Color {
     }
 }
 
-pub const LOGGER_AREA: Color = Color::srgb(0.91, 0.52, 0.23);
-pub const FORESTER_AREA: Color = Color::srgb(0.55, 0.88, 0.45);
 
 const FOREST_DOT_LIFT: f32 = 2.6;
 
@@ -437,7 +401,7 @@ fn tree_dot(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, st: sim::forestr
 }
 
 fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, colour: Color) {
-    let (x0, y0, x1, y1) = (a.min.0 as f32, a.min.1 as f32, a.max.0 as f32 + 1.0, a.max.1 as f32 + 1.0);
+    let (x0, y0, x1, y1) = (a.min.0 as f32 - 0.5, a.min.1 as f32 - 0.5, a.max.0 as f32 + 0.5, a.max.1 as f32 + 0.5);
     let n = 24;
     let mut edge = |from: (f32, f32), to: (f32, f32)| {
         for i in 0..n {
@@ -464,25 +428,6 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
 pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
     let s = &sim.0;
     let h = &s.height;
-    if hud.order_mode == Some(super::OrderMode::Gather) {
-        if let Some(Thing::Resource(id)) = thing.0 {
-            if let Some(r) = s.resources.get(id) { cell_outline(&mut g, h, r.cell, None, GOOD); }
-        }
-    }
-    for id in &hud.selected {
-        if let Some(a) = s.agents.get(*id) {
-            if let Some(sim::agents::Assignment::Go(to)) = a.assignment {
-                cell_outline(&mut g, h, to, Some(water_y(s, to)), GOOD);
-                let mut from = beaver_world(s, *id).unwrap_or(Vec3::ZERO) + Vec3::Y * 0.3;
-                for &(cell, _) in a.path.iter().flat_map(|p| p.steps.iter()) {
-                    let mut p = cell_world(h, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
-                    p.y = p.y.max(water_y(s, cell)) + 0.3;
-                    g.line(from, p, GOOD);
-                    from = p;
-                }
-            }
-        }
-    }
     let lens = crate::terrain_render::map_lens();
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
     if lens == MapLens::Water.code() {
@@ -544,37 +489,16 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 tree_dot(&mut g, h, t.cell, st);
             }
         }
-        for p in &s.work.places {
-            let col = match p.kind {
-                BuildingKind::LoggingCamp => LOGGER_AREA,
-                BuildingKind::ForesterLodge => FORESTER_AREA,
-                _ => continue,
-            };
-            if let Some(a) = p.area {
-                area_outline(&mut g, h, a, col);
-            }
-        }
     }
-    if let Selection::Site(id) = *sel {
+    if let Some((b, d)) = match *sel { Selection::Site(id) => s.buildings.building(id).and_then(|b| b.dam.as_deref().map(|d| (b, d))), _ => None } {
+        draw_dam(&mut g, s, &hud, b.id, d);
+    } else if let Selection::Site(id) = *sel {
         if let Some(b) = s.buildings.building(id) {
             for c in b.cells() {
                 cell_outline(&mut g, h, c, None, SELECT);
             }
             if let Some(a) = s.work.place(id).and_then(|p| p.area) {
                 area_outline(&mut g, h, a, SELECT);
-            }
-        }
-    }
-    if let Selection::Barge(id) = *sel {
-        if let Some(b) = s.buildings.barge(id) {
-            cell_outline(&mut g, h, b.cell, Some(water_y(s, b.cell)), SELECT);
-            let d = super::RouteDraft::of(s, &hud, id);
-            for (dock, col) in [(d.from, GOOD), (d.to, ACCENT)] {
-                if let Some(db) = dock.and_then(|x| s.buildings.building(x)) {
-                    for c in db.cells() {
-                        cell_outline(&mut g, h, c, None, col);
-                    }
-                }
             }
         }
     }
@@ -595,14 +519,10 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         Tool::Building(kind) => {
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
-                let col = if pv.is_valid() { GOOD } else { BAD };
-                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() };
+                let col = if pv.is_valid() { Color::WHITE } else { BAD };
+                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
-                    let area_col = match kind {
-                        BuildingKind::LoggingCamp => LOGGER_AREA,
-                        BuildingKind::ForesterLodge => FORESTER_AREA,
-                        _ => Color::WHITE.with_alpha(0.6),
-                    };
+                    let area_col = Color::WHITE.with_alpha(0.6);
                     area_outline(&mut g, h, a, area_col);
                 }
                 for c in &pv.cells {
@@ -618,8 +538,8 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 }
             }
         }
-        Tool::Dam | Tool::Canal => {
-            if let Some(pv) = hud.dam_preview().filter(|_| hud.tool == Tool::Dam) {
+        Tool::Dam => {
+            if let Some(pv) = hud.dam_preview() {
                 for c in &pv.flooded {
                     cell_outline(&mut g, h, *c, Some(pv.level), WATER);
                 }
@@ -639,10 +559,10 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                     cell_outline(&mut g, h, c, None, BAD);
                 }
             }
-            let ok = match hud.tool {
-                Tool::Dam => build_logic::check_dam(s, &hud.line, hud.dam_height).is_ok(),
-                _ => build_logic::check_canal(s, &hud.line).is_ok(),
-            };
+            let ok = build_logic::check_dam(s, &hud.line).is_ok();
+            for c in &hud.corners {
+                ring(&mut g, cell_world(h, (c.0 as f32, c.1 as f32)) + Vec3::Y * 0.15, 0.3, ACCENT);
+            }
             for c in &hud.line {
                 cell_outline(&mut g, h, *c, None, if ok { Color::WHITE } else { BAD });
             }
@@ -651,6 +571,63 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                     cell_outline(&mut g, h, c, None, Color::WHITE.with_alpha(0.7));
                 }
             }
+        }
+    }
+}
+
+fn ring(g: &mut Gizmos, at: Vec3, r: f32, col: Color) {
+    let n = 18;
+    for i in 0..n {
+        let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
+        g.line(at + Vec3::new(r * a0.cos(), 0.0, r * a0.sin()), at + Vec3::new(r * a1.cos(), 0.0, r * a1.sin()), col);
+    }
+}
+
+/// A selected dam: its cells in amber, worn cells ringed, ends with handles,
+/// the pond's shoreline and the suggested growth as a ghost.
+fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d: &sim::dams::Dam) {
+    let h = &s.height;
+    let top = |c: Cell| {
+        let ground = s.height.get(c.0, c.1).copied().unwrap_or(0.0);
+        let built = sim::dams::built(s, c);
+        let water = ground + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+        (ground + built).max(water) + 0.08
+    };
+    for c in &d.cells {
+        let built = sim::dams::built(s, c.cell);
+        let worn = built > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW;
+        let col = if worn { BAD } else if built + 1e-3 < c.target { ACCENT.with_alpha(0.55) } else { ACCENT };
+        cell_outline(g, h, c.cell, Some(top(c.cell)), col);
+        if worn {
+            ring(g, cell_world(h, (c.cell.0 as f32, c.cell.1 as f32)).with_y(top(c.cell)), 0.62, BAD);
+        }
+        if hud.dam_cells.contains(&c.cell) {
+            cell_outline(g, h, c.cell, Some(top(c.cell) + 0.12), SELECT);
+        }
+    }
+    let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
+    for end in [line.first(), line.last()].into_iter().flatten() {
+        let at = cell_world(h, (end.0 as f32, end.1 as f32)).with_y(top(*end) + 0.05);
+        ring(g, at, 0.28, ACCENT);
+        ring(g, at, 0.18, ACCENT);
+    }
+    if let Some(p) = &d.pond {
+        let flooded: std::collections::HashSet<Cell> = p.flooded.iter().copied().collect();
+        for &c in &p.flooded {
+            let edge = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
+                let n = (c.0 as i64 + dx, c.1 as i64 + dy);
+                n.0 < 0 || n.1 < 0 || !flooded.contains(&(n.0 as usize, n.1 as usize))
+            });
+            if edge {
+                cell_outline(g, h, c, Some(p.full_level + 0.05), WATER.with_alpha(0.7));
+            }
+        }
+    }
+    if let Some((_, _, ghost)) = hud.dam_ghost.as_ref().filter(|gh| gh.0 == id) {
+        for c in ghost {
+            let y = s.height.get(c.0, c.1).copied().unwrap_or(0.0) + 0.6;
+            cell_outline(g, h, *c, Some(y), Color::srgb(0.95, 0.85, 0.66).with_alpha(0.8));
         }
     }
 }

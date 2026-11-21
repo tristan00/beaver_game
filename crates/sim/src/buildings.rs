@@ -94,7 +94,7 @@ impl Use {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stores {
-    amounts: [f32; N],
+    pub(crate) inventory: crate::inventory::Inventory,
     capacity: [f32; N],
     pub produced_total: [f32; N],
     pub consumed_total: [f32; N],
@@ -109,7 +109,7 @@ pub struct Stores {
 impl Default for Stores {
     fn default() -> Self {
         Self {
-            amounts: [0.0; N],
+            inventory: Default::default(),
             capacity: [BASE_CAPACITY; N],
             produced_total: [0.0; N],
             consumed_total: [0.0; N],
@@ -137,13 +137,13 @@ impl Stores {
         self.consumed_by[Use::Sites.index()][good.index()] += amount;
     }
     pub fn amount(&self, g: Good) -> f32 {
-        self.amounts[g.index()]
+        self.inventory.total(g)
     }
     pub fn capacity(&self, g: Good) -> f32 {
         self.capacity[g.index()]
     }
     pub fn space(&self, g: Good) -> f32 {
-        (self.capacity[g.index()] - self.amounts[g.index()]).max(0.0)
+        (self.capacity[g.index()] - self.amount(g)).max(0.0)
     }
     pub fn deposit(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.deposit_by(g, amount, Producer::Other)
@@ -186,7 +186,7 @@ impl Stores {
     pub(crate) fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(g));
-        self.amounts[g.index()] += taken;
+        self.inventory.put(crate::agents::SUPPLIES, g, taken);
         Ok(taken)
     }
     pub(crate) fn take_raw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
@@ -195,9 +195,37 @@ impl Stores {
         if have < amount {
             return Err(StoresError::Insufficient { good: g, needed: amount, have });
         }
-        self.amounts[g.index()] -= amount;
+        self.inventory.consume(g, amount);
         Ok(())
     }
+
+    /// Transfer from a physical store into a carried load. This is not consumption.
+    pub fn take_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> f32 {
+        self.inventory.take(owner, good, amount)
+    }
+    /// Return existing cargo, without recording new production.
+    pub fn put_at(&mut self, owner: BuildingId, good: Good, amount: f32) -> Result<f32, StoresError> {
+        check_amount(amount)?;
+        let taken = amount.min(self.space(good));
+        self.inventory.put(owner, good, taken);
+        Ok(taken)
+    }
+    pub fn produce_at(&mut self, owner: BuildingId, good: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
+        let taken = self.put_at(owner, good, amount)?;
+        self.tick_produced[good.index()] += taken;
+        self.produced_total[good.index()] += taken;
+        *self.produced_by.entry((who, good)).or_default() += taken;
+        Ok(taken)
+    }
+    pub fn consume_from(&mut self, owner: BuildingId, good: Good, amount: f32, use_: Use) -> f32 {
+        let taken = self.take_from(owner, good, amount);
+        self.tick_consumed[good.index()] += taken;
+        self.consumed_total[good.index()] += taken;
+        self.consumed_by[use_.index()][good.index()] += taken;
+        taken
+    }
+    pub fn stored_at(&self, owner: BuildingId, good: Good) -> f32 { self.inventory.at(owner, good) }
+    pub fn physical_stock(&self) -> Vec<(BuildingId, Good, f32)> { self.inventory.entries() }
 
     fn end_tick(&mut self, dt: f32) {
         if dt > 0.0 {
@@ -214,25 +242,8 @@ impl Stores {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BuildingKind {
     Dam,
-    Lodge,
-    Burrow,
-    FoodCache,
-    ScentMound,
-    GuardPost,
-    Canal,
-    Lock,
-    WaterWheel,
-    Workshop,
+    Shelter,
     Warehouse,
-    Dock,
-    Barge,
-    LoggingCamp,
-    ForagerHut,
-    MudPit,
-    Mill,
-    Storehouse,
-    ForesterLodge,
-    TreeNursery,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,29 +252,18 @@ pub enum Site {
     Pond,
     Dry,
     TouchesWater,
-    WaterByDock,
 }
 
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
-        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !matches!(self, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock)
+        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && self != BuildingKind::Dam
     }
 
-    pub const ALL: [BuildingKind; 20] = [
-        BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::Burrow, BuildingKind::FoodCache,
-        BuildingKind::ScentMound, BuildingKind::GuardPost, BuildingKind::Canal, BuildingKind::Lock,
-        BuildingKind::WaterWheel, BuildingKind::Workshop, BuildingKind::Warehouse, BuildingKind::Dock,
-        BuildingKind::Barge, BuildingKind::LoggingCamp, BuildingKind::ForagerHut, BuildingKind::MudPit,
-        BuildingKind::Mill, BuildingKind::Storehouse,
-        BuildingKind::ForesterLodge, BuildingKind::TreeNursery,
-    ];
-
+    pub const ALL: [BuildingKind; 3] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BuildingId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct BargeId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Status {
@@ -280,64 +280,23 @@ pub struct Building {
     pub output: f32,
     pub condition: f32,
     pub reinforced: bool,
-    pub dam_profile: Vec<((usize, usize), f32)>,
+    /// A dam owns its cells; every other building is its footprint.
+    pub dam: Option<Box<crate::dams::Dam>>,
 }
 
 impl Building {
-    pub fn operational(&self) -> bool { self.is_complete() && self.condition > 0.05 }
+    pub fn operational(&self) -> bool { self.is_complete() && self.condition > MIN_OPERATIONAL_CONDITION }
     pub fn durability(&self) -> f32 {
-        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Lodge { 1.75 } else { 1.5 }
+        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Shelter { LODGE_REINFORCEMENT_FACTOR } else { REINFORCEMENT_FACTOR }
     }
     pub fn is_complete(&self) -> bool {
         self.status == Status::Complete
     }
     pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + use<> {
-        let (w, h) = self.kind.spec().footprint;
+        let dam: Vec<(usize, usize)> = self.dam.as_ref().map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
+        let (w, h) = if self.dam.is_some() { (0, 0) } else { self.kind.spec().footprint };
         let (x, y) = self.pos;
-        (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy)))
-    }
-}
-
-pub const KEEP_WET_DEPTH: f32 = 0.02;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BargeState {
-    Idle,
-    Sailing,
-    Stranded,
-    Icebound,
-}
-
-#[derive(Clone, Debug)]
-pub struct Barge {
-    pub id: BargeId,
-    pub cell: (usize, usize),
-    pub state: BargeState,
-    pub(crate) route: Vec<(usize, usize)>,
-    pub(crate) progress: f32,
-    pub at_dock: Option<BuildingId>,
-    pub service: Option<crate::shipping::Service>,
-    pub leg: crate::shipping::Leg,
-    pub wait: f32,
-    pub hold: Vec<Amount>,
-    pub carried: f32,
-}
-
-impl Barge {
-    pub fn new(id: BargeId, cell: (usize, usize), at_dock: Option<BuildingId>) -> Self {
-        Barge {
-            id,
-            cell,
-            state: BargeState::Idle,
-            route: vec![],
-            progress: 0.0,
-            at_dock,
-            service: None,
-            leg: Default::default(),
-            wait: 0.0,
-            hold: Vec::new(),
-            carried: 0.0,
-        }
+        (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy))).chain(dam)
     }
 }
 
@@ -346,11 +305,9 @@ pub enum BuildError {
     Locked(BuildingKind),
     SupplyPile,
     Unexplored,
-    NeedsDam,
     OutOfBounds,
     Blocked,
     BadTerrain(&'static str),
-    NoDock,
     Stores(StoresError),
     UnknownBuilding(BuildingId),
 }
@@ -361,7 +318,6 @@ impl fmt::Display for BuildError {
             Self::Locked(need) => write!(f, "needs a finished {} first", need.spec().name.to_lowercase()),
             Self::SupplyPile => write!(f, "Blocked: the supply pile is there"),
             Self::Unexplored => write!(f, "Unexplored: the colony has not seen that ground"),
-            Self::NeedsDam => write!(f, "a lock is built on a dam, to let barges through it"),
             _ => write!(f, "{self:?}"),
         }
     }
@@ -405,8 +361,6 @@ fn neighbours(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)> {
 pub struct Buildings {
     pub stores: Stores,
     pub buildings: Vec<Building>,
-    pub barges: Vec<Barge>,
-    pub power: f32,
     pub water_bound: std::collections::BTreeSet<BuildingId>,
     next_id: u64,
 }
@@ -434,16 +388,13 @@ impl Buildings {
     pub fn building(&self, id: BuildingId) -> Option<&Building> {
         self.buildings.iter().find(|b| b.id == id)
     }
-    pub fn barge(&self, id: BargeId) -> Option<&Barge> {
-        self.barges.iter().find(|b| b.id == id)
-    }
-    fn fresh_id(&mut self) -> u64 {
+    pub(crate) fn fresh_id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
     }
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
-        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() }.cells().collect()
+        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None }.cells().collect()
     }
 
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
@@ -452,14 +403,13 @@ impl Buildings {
         if cells.iter().any(|&(x, y)| !terrain.depth.in_bounds(x, y)) {
             return Err(BuildError::OutOfBounds);
         }
-        let on_dam = |b: &Building| matches!(kind, BuildingKind::Dam | BuildingKind::Lock) && b.kind == BuildingKind::Dam && b.is_complete();
-        if self.buildings.iter().any(|b| !on_dam(b) && b.cells().any(|c| cells.contains(&c))) {
+        if self.buildings.iter().any(|b| b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
         }
-        // A lodge's door is one cell outside its 3x3 footprint. Reserve it from
-        // the moment the site is placed, in both placement orders. Walkable
-        // waterworks may share it; an interior of another lodge may not.
-        let solid = |k| !matches!(k, BuildingKind::Dam | BuildingKind::Canal | BuildingKind::Lock | BuildingKind::Dock | BuildingKind::Barge);
+        // A shelter's door is one cell outside its 3x3 footprint. Reserve it from
+        // the moment the site is placed, in both placement orders. Dams may
+        // share it; an interior of another shelter may not.
+        let solid = |k| k != BuildingKind::Dam;
         // Keep a continuous access lane around occupied structures. Reserving
         // only a lodge door still allowed later buildings to enclose its whole
         // approach, trapping residents and deliveries in a one-cell pocket.
@@ -467,10 +417,10 @@ impl Buildings {
             b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
             return Err(BuildError::BadTerrain("leave one cell between buildings for access"));
         }
-        if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
+        if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Shelter && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
             return Err(BuildError::Blocked);
         }
-        if kind == BuildingKind::Lodge {
+        if kind == BuildingKind::Shelter {
             let door = crate::nav::lodge_entrance(pos);
             if !terrain.depth.in_bounds(door.0, door.1) { return Err(BuildError::OutOfBounds); }
             if self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|c| c == door)) {
@@ -490,11 +440,7 @@ impl Buildings {
             // or surround a lodge entrance while passing footprint checks.
             for (home, at) in self.buildings.iter().map(|b| (b.kind, b.pos)).chain(std::iter::once((kind, pos))) {
                 let access = match home {
-                    BuildingKind::Burrow => {
-                        if !cells.iter().any(|c| c.0.abs_diff(at.0) + c.1.abs_diff(at.1) <= 2) { continue; }
-                        neighbours(at).any(|door| open(door) && neighbours(door).any(open))
-                    }
-                    BuildingKind::Lodge => {
+                    BuildingKind::Shelter => {
                         let door = crate::nav::lodge_entrance(at);
                         if !cells.iter().any(|c| c.0.abs_diff(door.0) + c.1.abs_diff(door.1) <= 1) { continue; }
                         open(door) && neighbours(door).any(open)
@@ -505,7 +451,7 @@ impl Buildings {
             }
         }
         match spec.site {
-            Site::Pond if cells.iter().filter(|&&(x,y)| terrain.depth.get(x,y).is_some_and(|&d| d >= 0.10)).count() <= cells.len() / 2 => {
+            Site::Pond if cells.iter().filter(|&&(x,y)| terrain.depth.get(x,y).is_some_and(|&d| d >= POND_PLACEMENT_DEPTH)).count() <= cells.len() / 2 => {
                 return Err(BuildError::BadTerrain("needs a pond under most of its footprint (at least 0.10 m deep)"));
             }
             Site::Dry if cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
@@ -513,14 +459,6 @@ impl Buildings {
             }
             Site::TouchesWater if !cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
                 return Err(BuildError::BadTerrain("needs water"));
-            }
-            Site::WaterByDock => {
-                if !terrain.wet(pos.0, pos.1) {
-                    return Err(BuildError::BadTerrain("needs water"));
-                }
-                if !self.docks().any(|d| dock_access(d, terrain).contains(&pos)) {
-                    return Err(BuildError::NoDock);
-                }
             }
             _ => {}
         }
@@ -539,7 +477,7 @@ impl Buildings {
     ) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None });
         self.bind_water(id, kind);
         Ok(id)
     }
@@ -547,19 +485,13 @@ impl Buildings {
     pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam_profile: Vec::new() });
+        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None });
         self.bind_water(id, kind);
         Ok(id)
     }
 
-    fn docks(&self) -> impl Iterator<Item = &Building> {
-        self.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete())
-    }
-
     pub fn step(&mut self, dt_days: f32, terrain: Terrain) {
-        self.update_capacity( terrain);
-        self.update_wheels(terrain);
-        for b in self.buildings.iter_mut().filter(|b| matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill | BuildingKind::TreeNursery)) { b.output = (b.output - dt_days * 0.12).max(0.0); }
+        self.update_capacity(terrain);
         self.stores.end_tick(dt_days);
     }
 
@@ -576,25 +508,4 @@ impl Buildings {
         }
     }
 
-    fn update_wheels(&mut self, terrain: Terrain) {
-        self.power = 0.0;
-        for b in self.buildings.iter_mut().filter(|b| b.kind == BuildingKind::WaterWheel) {
-            let flow = if b.operational() { b.cells().map(|(x, y)| terrain.flow(x, y)).fold(0.0, f32::max) } else { 0.0 };
-            b.output = if flow >= MIN_FLOW { (flow / FULL_FLOW).min(1.0) } else { 0.0 };
-            self.power += b.output;
-        }
-    }
-
-}
-
-fn dock_access(dock: &Building, terrain: Terrain) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    for (x, y) in dock.cells() {
-        for c in std::iter::once((x, y)).chain(neighbours(x, y)) {
-            if terrain.wet(c.0, c.1) && !out.contains(&c) {
-                out.push(c);
-            }
-        }
-    }
-    out
 }

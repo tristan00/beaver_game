@@ -1,6 +1,5 @@
-pub const SEASON_DAYS: f64 = 90.0;
-pub const YEAR_DAYS: f64 = 4.0 * SEASON_DAYS;
 
+include!(concat!(env!("OUT_DIR"), "/calendar_constants.rs"));
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Season {
     Spring,
@@ -59,9 +58,9 @@ pub fn year_phase(time_days: f64) -> f32 {
 pub fn vegetation_growth(time_days: f64) -> f32 {
     let day = day_of_year(time_days);
     let smooth = |t: f64| { let t=t.clamp(0.0,1.0); (t*t*(3.0-2.0*t)) as f32 };
-    if day < 15.0 { smooth(day / 15.0) }
-    else if day < 225.0 { 1.0 }
-    else if day < 270.0 { 1.0-smooth((day-225.0)/45.0) }
+    if day < SPRING_GROWTH_DAYS { smooth(day / SPRING_GROWTH_DAYS) }
+    else if day < AUTUMN_GROWTH_START { 1.0 }
+    else if day < WINTER_GROWTH_START { 1.0-smooth((day-AUTUMN_GROWTH_START)/(WINTER_GROWTH_START-AUTUMN_GROWTH_START)) }
     else { 0.0 }
 }
 

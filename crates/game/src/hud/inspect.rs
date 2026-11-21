@@ -5,13 +5,12 @@ use super::HudAction;
 use crate::flow::Selection;
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::{BargeId, BargeState, BuildingId, BuildingKind, Good};
-use sim::shipping::Leg;
+use sim::buildings::{BuildingId, BuildingKind, Good};
 use sim::colony::{BeaverId, Job};
 
 fn shell(f: impl FnOnce(&mut Ui)) -> VNode {
     let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, flex_shrink: 0.0, row_gap: Val::Px(6.0), ..default() }, f);
+    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), ..default() }, f);
     let mut v = ui.nodes.pop().unwrap();
     panel(&mut v);
     v
@@ -40,184 +39,16 @@ fn header(c: &Ctx, sel: Selection, u: &mut Ui, icon: Icon, name: String, tip: Op
 
 pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
     match sel {
-        Selection::Site(id) => Some(building(c, id)),
+        Selection::Site(id) => Some(match c.s.buildings.building(id).and_then(|b| b.dam.as_deref()) {
+            Some(d) => super::dam_panel::dam_panel(c, id, d),
+            None => building(c, id),
+        }),
         Selection::Beaver(id) => Some(beaver(c, id)),
         Selection::Tree(rid) => Some(resource(c, rid)),
         Selection::Cell(cell) => Some(cell_panel(c, cell)),
         Selection::Lodge(id) => Some(lodge(c, id)),
-        Selection::Barge(id) => Some(barge(c, id)),
         Selection::None => None,
     }
-}
-
-pub fn docks(s: &sim::SimState) -> Vec<BuildingId> {
-    let mut v: Vec<BuildingId> = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dock && b.is_complete()).map(|b| b.id).collect();
-    v.sort_by_key(|b| b.0);
-    v
-}
-
-pub fn dock_number(s: &sim::SimState, id: BuildingId) -> usize {
-    docks(s).iter().position(|d| *d == id).map_or(0, |i| i + 1)
-}
-
-pub fn barge_number(s: &sim::SimState, id: BargeId) -> usize {
-    s.buildings.barges.iter().position(|b| b.id == id).map_or(0, |i| i + 1)
-}
-
-pub fn aboard(b: &sim::buildings::Barge) -> Vec<(Good, f32)> {
-    let v: Vec<(Good, f32)> = b.hold.iter().copied().filter(|h| h.1 > 0.05).collect();
-    v
-}
-
-pub fn barge_face(b: &sim::buildings::Barge) -> (Icon, Color, &'static str) {
-    if b.state==BargeState::Icebound {return (Icon::Hourglass,WARN,"Waiting for thaw");}
-    if b.state == BargeState::Stranded {
-        return (Icon::Blocked, BAD, "Stranded");
-    }
-    if b.service.is_none() {
-        return if b.state == BargeState::Sailing { (Icon::Play, INK, "Sailing") } else { (Icon::Idle, MUTED, "No route") };
-    }
-    match (b.leg, b.state) {
-        (Leg::Loading, _) => (Icon::Up, GOOD, "Loading"),
-        (Leg::Unloading, _) => (Icon::Down, GOOD, "Unloading"),
-        (Leg::ToLoad, BargeState::Sailing) => (Icon::Play, INK, "Sailing to load"),
-        (Leg::ToUnload, BargeState::Sailing) => (Icon::Play, GOOD, "Sailing to unload"),
-        _ => (Icon::Hourglass, WARN, "Waiting"),
-    }
-}
-
-fn dock_chip(u: &mut Ui, s: &sim::SimState, dock: BuildingId, action: HudAction, on: bool, tip: Tip) {
-    u.icon_label_button(Icon::Dock, format!("{}", dock_number(s, dock)), 13.0, action, FAINT, on).tip(tip);
-}
-
-fn barge(c: &Ctx, id: BargeId) -> VNode {
-    let s = c.s;
-    let Some(b) = s.buildings.barge(id) else {
-        return shell(|u| {
-            u.text("-", 12.0, MUTED);
-        });
-    };
-    shell(|u| {
-        header(c, Selection::Barge(id), u, Icon::Barge, format!("Barge {}", barge_number(s, id)), None, |r| {
-            r.icon_button(Icon::Focus, 11.0, HudAction::Focus(b.cell), FAINT, false).tip(Tip::name("Show"));
-        });
-        let held = aboard(b);
-        let total: f32 = held.iter().map(|h| h.1).sum();
-        u.row(8.0, |r| {
-            let (icon, col, name) = barge_face(b);
-            r.icon(icon, 16.0, col).tip(Tip::name(name));
-            for (g, a) in &held {
-                r.row(2.0, |x| {
-                    x.icon(good_icon(*g), 15.0, good_color(*g));
-                    x.bold(num(*a), 12.5, INK);
-                })
-                .tip(Tip::name(good_name(*g)));
-            }
-            r.spacer();
-            r.row(3.0, |x| {
-                x.icon(Icon::Haul, 14.0, MUTED);
-                x.bold(format!("{}/{}", total.round() as i64, sim::shipping::BARGE_CAPACITY.round() as i64), 12.0, INK);
-            })
-            .tip(Tip::name("Aboard"));
-            r.row(3.0, |x| {
-                x.icon(Icon::Check, 12.0, GOOD);
-                x.bold(num(b.carried), 12.0, INK);
-            })
-            .tip(Tip::name("Delivered"));
-        });
-        u.row(5.0, |r| match &b.service {
-            Some(svc) => {
-                r.icon(Icon::Up, 11.0, GOOD);
-                dock_chip(r, s, svc.from, HudAction::SelectBuilding(svc.from), b.leg == Leg::Loading || b.leg == Leg::ToLoad, Tip::name("Loads here"));
-                r.icon(Icon::Play, 12.0, MUTED);
-                r.icon(Icon::Down, 11.0, GOOD);
-                dock_chip(r, s, svc.to, HudAction::SelectBuilding(svc.to), b.leg == Leg::Unloading || b.leg == Leg::ToUnload, Tip::name("Unloads here"));
-                r.spacer();
-                for g in &svc.goods {
-                    r.icon(good_icon(*g), 15.0, good_color(*g)).tip(Tip::name(good_name(*g)));
-                }
-            }
-            None => {
-                r.icon(Icon::Idle, 14.0, MUTED);
-                r.bold("-", 12.0, MUTED);
-            }
-        })
-        .tip(Tip::name("Route"));
-        u.rule();
-        let d = super::RouteDraft::of(s, c.hud, id);
-        let all = docks(s);
-        for (icon, pick, act, name) in [
-            (Icon::Up, d.from, HudAction::RouteFrom as fn(BargeId, BuildingId) -> HudAction, "Load at"),
-            (Icon::Down, d.to, HudAction::RouteTo as fn(BargeId, BuildingId) -> HudAction, "Unload at"),
-        ] {
-            u.row(4.0, |r| {
-                r.icon(icon, 11.0, GOOD).tip(Tip::name(name));
-                if all.is_empty() {
-                    r.icon(Icon::Dock, 14.0, MUTED);
-                    r.icon(Icon::Cross, 11.0, BAD);
-                }
-                for dock in &all {
-                    dock_chip(r, s, *dock, act(id, *dock), pick == Some(*dock), Tip::name(name).with_value(format!("{}", dock_number(s, *dock))));
-                }
-            });
-        }
-        u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(3.0), row_gap: Val::Px(3.0), ..default() }, |r| {
-            for g in Good::ALL {
-                let on = d.goods.contains(&g);
-                r.icon_button(good_icon(g), 15.0, HudAction::RouteGood(id, g), FAINT, on).tip(Tip::name(good_name(g)));
-            }
-        });
-        u.row(6.0, |r| {
-            if let Some((_, m)) = c.hud.route_err.as_ref().filter(|e| e.0 == id) {
-                r.icon(Icon::Cross, 12.0, BAD);
-                match blocking_dam(m) {
-                    Some(cell) => {
-                        r.icon(Icon::Lock, 15.0, INK);
-                        r.bold(format!("{},{}", cell.0, cell.1), 12.0, INK);
-                        r.icon_button(Icon::Focus, 11.0, HudAction::Focus(cell), FAINT, false).tip(Tip::name("Dam in the way").line("Build a lock", ""));
-                    }
-                    None => {
-                        r.bold(sim_error(m), 12.0, INK);
-                    }
-                }
-            }
-            r.spacer();
-            if b.service.is_some() {
-                r.icon_button(Icon::Clear, 13.0, HudAction::ClearRoute(id), FAINT, false).tip(Tip::name("Clear route"));
-            }
-            let changed = d.from != b.service.as_ref().map(|v| v.from) || d.to != b.service.as_ref().map(|v| v.to) || Some(&d.goods) != b.service.as_ref().map(|v| &v.goods);
-            let fill = if d.ready() && changed { ACCENT } else if d.ready() { FAINT } else { Color::NONE };
-            r.icon_button(Icon::Check, 15.0, HudAction::SetRoute(id), fill, false).tip(Tip::name("Set route"));
-        });
-    })
-}
-
-fn dam_row(s: &sim::SimState, u: &mut Ui, cell: crate::flow::Cell) {
-    let line = crate::build_logic::dam_line_at(s, cell);
-    if line.is_empty() {
-        return;
-    }
-    let now = crate::build_logic::dam_line_height(s, &line);
-    let ground = line.iter().filter_map(|&(x, y)| s.height.get(x, y).copied()).fold(f32::MAX, f32::min);
-    let crest = line.iter().filter_map(|&(x, y)| Some(s.height.get(x, y)? + s.water.dam_height.get(x, y)?)).fold(f32::MAX, f32::min);
-    let _ = ground;
-    u.row(6.0, |r| {
-        r.icon(Icon::Crest, 15.0, MUTED);
-        r.bold(num(now), 13.0, INK).tip(Tip::name("Height").line("Crest", num(crest)).line("Cells", format!("{}", line.len())));
-        r.spacer();
-        match crate::build_logic::raise_order(s, cell) {
-            Some(crate::build_logic::BuildOrder::Dam { cells, height }) => {
-                let mut tip = Tip::name("Raise").with_value(format!("+{}", num(height - now)));
-                for (g, a) in sim::dam_preview::cost_for(s, &cells, &vec![height; cells.len()]).0 {
-                    tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
-                }
-                r.icon_label_button(Icon::Plus, num(height), 12.0, HudAction::RaiseDam(cell), ACCENT, false).tip(tip);
-            }
-            _ => {
-                r.bold(format!("Max {}", num(sim::dam_preview::MAX_DAM_HEIGHT)), 11.5, MUTED);
-            }
-        }
-    });
 }
 
 fn bar_row(u: &mut Ui, icon: Icon, col: Color, frac: f32, value: String, tip: Tip) {
@@ -260,8 +91,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 u.row(6.0, |r| { r.icon(stage_icon(resident.stage), 12.0, MUTED); r.text(resident.name.clone(), 11.0, INK).action(HudAction::SelectBeaver(resident.id)); });
             }
         }
-        if let Some((icon, mut words, goods, col)) = status_line(s, id) {
-            if c.clock.paused && place.is_some_and(|p| p.site.is_some()) { words = "Queued - Space starts construction".into(); }
+        if let Some((icon, words, goods, col)) = status_line(s, id) {
             let line = u.row(5.0, |r| {
                 r.icon(if col == GOOD { Icon::Dot } else { Icon::Warn }, 9.0, col);
                 if let Some(i) = icon {
@@ -276,23 +106,20 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             line.node.border_radius = BorderRadius::all(Val::Px(5.0));
             line.bg = col.with_alpha(0.12);
         }
-        if b.is_complete() && !matches!(b.kind,BuildingKind::Canal|BuildingKind::Barge) {
+        if b.is_complete() {
             u.rule();
-            bar_row(u,Icon::Hammer,if b.condition<0.55{WARN}else{GOOD},b.condition,format!("{:.0}%",b.condition*100.0),Tip::name("Condition"));
-            u.text(if b.reinforced {"Clay reinforced"} else {"Timber structure"},12.0,INK);
+            bar_row(u,if b.reinforced {Icon::Mud} else {Icon::Hammer},if b.condition<0.55{WARN}else{GOOD},b.condition,format!("{:.0}%",b.condition*100.0),Tip::name("Condition").line(if b.reinforced {"Clay reinforced"} else {"Timber"},""));
             if !s.maintenance.jobs.contains_key(&id) {
                 u.row(6.0,|r| {
                     if b.condition<0.98 {
                         let mut tip=Tip::name("Repair");
                         for (g,a) in sim::maintenance::quoted_cost(s,b,sim::maintenance::Refit::Repair).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
-                        r.icon_label_button(Icon::Hammer,"Repair",12.0,HudAction::RepairBuilding(id),ACCENT,false).tip(tip);
+                        r.icon_button(Icon::Hammer,14.0,HudAction::RepairBuilding(id),ACCENT,false).tip(tip);
                     }
                     if !b.reinforced && sim::maintenance::can_reinforce(b.kind) {
-                        if s.has_building(BuildingKind::Workshop) {
-                            let mut tip=Tip::name("Reinforce with clay").line("Durability",if b.kind==BuildingKind::Lodge{"1.75×"}else{"1.5×"});
-                            for (g,a) in sim::maintenance::cost(b,sim::maintenance::Refit::Reinforce).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
-                            r.icon_label_button(good_icon(Good::Clay),"Reinforce",12.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
-                        } else {r.text("Finish a workshop first",11.0,MUTED);}
+                        let mut tip=Tip::name("Reinforce with clay").line("Durability",if b.kind==BuildingKind::Shelter{"1.75×"}else{"1.5×"});
+                        for (g,a) in sim::maintenance::cost(b,sim::maintenance::Refit::Reinforce).0 {tip.push(TipLine::new(good_name(g),num(a)).icon(good_icon(g),good_color(g)));}
+                        r.icon_button(good_icon(Good::Clay),14.0,HudAction::ReinforceBuilding(id),ACCENT,false).tip(tip);
                     }
                 });
             }
@@ -313,7 +140,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     .tip(Tip::name(good_name(a.0)));
                 }
             });
-            bar_row(u, Icon::Hammer, INK, site.labour_fraction(), format!("{:.0}%", site.labour_fraction() * 100.0), Tip::name("Construction work").line("Labour", format!("{}/{}", num(site.labour_done), num(site.labour_needed))));
+            bar_row(u, Icon::Hammer, INK, site.fraction(), format!("{:.0}%", site.fraction() * 100.0), Tip::name("Built").line("Labour", format!("{}/{}", num(site.labour_done), num(site.labour_needed))));
         }
         if let Some(pl) = place.filter(|pl| !pl.slots.is_empty()) {
             u.rule();
@@ -321,7 +148,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             let filled = pl.slots.iter().filter(|sl| sl.worker.is_some()).count();
             u.row(5.0, |r| {
                 r.icon(role_icon(role), 18.0, INK).tip(Tip::name(role_name(role)));
-                r.text(format!("Workers {filled}/{}", pl.slots.len()), 12.0, INK);
                 for sl in &pl.slots {
                     match sl.worker.and_then(|w| s.colony.beaver(w)) {
                         Some(bv) => {
@@ -381,37 +207,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             }
         }
-        if matches!(b.kind, BuildingKind::Workshop | BuildingKind::Mill) && b.is_complete() {
-            u.rule();
-            u.text(format!("Workshop support: +{:.0}% nearby work", b.output * 25.0), 12.0, INK);
-            u.text("Crafters maintain equipment using sticks and clay.", 11.0, MUTED);
-        }
-        if b.kind == BuildingKind::LoggingCamp && b.is_complete() {
-            u.rule();
-            forestry_camp(s, id, u);
-        }
-        if b.kind == BuildingKind::ForesterLodge && b.is_complete() {
-            u.rule();
-            forestry_lodge(s, id, u);
-        }
-        if let Some(cell) = crate::build_logic::dam_cell_of(s, id) {
-            u.rule();
-            dam_row(s, u, cell);
-        }
-        if b.kind == BuildingKind::Dock && b.is_complete() {
-            u.rule();
-            u.row(6.0, |r| {
-                r.icon(Icon::Dock, 14.0, MUTED);
-                r.bold(format!("{}", dock_number(s, id)), 13.0, INK);
-                r.spacer();
-                for bg in s.buildings.barges.iter().filter(|bg| bg.at_dock == Some(id) || bg.service.as_ref().is_some_and(|v| v.from == id || v.to == id)) {
-                    let (icon, col, name) = barge_face(bg);
-                    r.icon_label_button(Icon::Barge, format!("{}", barge_number(s, bg.id)), 13.0, HudAction::SelectBarge(bg.id), FAINT, false).tip(Tip::name("Barge").with_value(format!("{}", barge_number(s, bg.id))).row(TipLine::new(name, "").icon(icon, col)));
-                }
-            })
-            .tip(Tip::name("Barges"));
-        }
-        if matches!(b.kind, BuildingKind::Warehouse | BuildingKind::Storehouse | BuildingKind::FoodCache | BuildingKind::Dock) && b.is_complete() {
+        if b.kind == BuildingKind::Warehouse && b.is_complete() {
             u.rule();
             u.row(10.0, |r| {
                 for g in Good::ALL {
@@ -437,87 +233,6 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             });
         }
     })
-}
-
-fn open_cut_rules(s: &sim::SimState) -> Vec<sim::forestry::CutRule> {
-    use sim::forestry::{can_coppice, can_manage_forest, CutRule};
-    CutRule::ALL
-        .into_iter()
-        .filter(|r| match r {
-            CutRule::MatureOnly => true,
-            CutRule::Coppice => can_coppice(s),
-            _ => can_manage_forest(s),
-        })
-        .collect()
-}
-
-fn forestry_camp(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
-    let rules = open_cut_rules(s);
-    let now = s.forestry.cut_rule(id);
-    let left = sim::forestry::cuttable_in_area(s, id);
-    u.row(6.0, |r| {
-        if rules.len() > 1 {
-            for rule in rules {
-                let (icon, name) = cut_rule_face(rule);
-                r.icon_button(icon, 16.0, HudAction::CutRule(id, rule), FAINT, rule == now).tip(Tip::name(name));
-            }
-        }
-        r.spacer();
-        let (value, col) = match sim::forestry::days_until_out(s, id) {
-            Some(d) => (days(d), if d < 30.0 { WARN } else { INK }),
-            None => ("-".to_string(), MUTED),
-        };
-        r.row(3.0, |x| {
-            x.icon(Icon::Tree, 14.0, GOOD);
-            x.bold(format!("{left}"), 12.5, INK);
-            x.icon(Icon::Hourglass, 13.0, MUTED);
-            x.bold(value.clone(), 12.5, col);
-        })
-        .tip(Tip::name("Area runs out").line("Trees left", format!("{left}")).line("Felled per day", num(sim::forestry::felled_per_day(s, id))).with_value(value));
-    });
-}
-
-fn forestry_lodge(s: &sim::SimState, id: BuildingId, u: &mut Ui) {
-    use sim::forestry::{PlantRule, TreeStage};
-    let now = s.forestry.plant_rule(id);
-    let Some(area) = s.work.place(id).and_then(|p| p.area) else { return };
-    let rep = sim::hud::forest_report(s, &area);
-    u.row(6.0, |r| {
-        for rule in PlantRule::ALL {
-            let (icon, name) = plant_rule_face(rule);
-            r.icon_button(icon, 16.0, HudAction::PlantRule(id, rule), FAINT, rule == now).tip(Tip::name(name));
-        }
-        r.spacer();
-        let value = rep.logs_ready_in_days.map_or("-".to_string(), days);
-        r.row(3.0, |x| {
-            x.icon(Icon::Logs, 14.0, good_color(Good::Sticks));
-            x.icon(Icon::Hourglass, 13.0, MUTED);
-            x.bold(value.clone(), 12.5, INK);
-        })
-        .tip(Tip::name("Logs ready").with_value(value));
-    });
-    u.row(10.0, |r| {
-        for (st, n) in [(TreeStage::Sapling, rep.saplings), (TreeStage::Young, rep.young), (TreeStage::Mature, rep.mature), (TreeStage::Old, rep.old)] {
-            r.row(3.0, |x| {
-                x.icon(tree_stage_icon(st), 15.0, super::world::stage_color(st));
-                x.bold(format!("{n}"), 12.0, INK);
-            })
-            .tip(Tip::name(tree_stage_name(st)));
-        }
-    });
-    u.row(10.0, |r| {
-        r.row(3.0, |x| {
-            x.icon(Icon::Sapling, 14.0, MUTED);
-            x.bold(format!("+{}", num(rep.planted_per_day)), 12.0, INK);
-        })
-        .tip(Tip::name("Planted per day"));
-        r.row(3.0, |x| {
-            x.icon(Icon::Health, 14.0, MUTED);
-            x.bold(num(rep.tended_per_day), 12.0, INK);
-        })
-        .tip(Tip::name("Tended per day"));
-
-    });
 }
 
 fn factor_row(u: &mut Ui, f: &sim::hud::Factor) {
@@ -613,34 +328,6 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         header(c, Selection::Beaver(id), u, stage_icon(b.stage), b.name.clone(), Some(tip), |r| {
             r.icon_button(Icon::Follow, 12.0, HudAction::Follow(id), FAINT, c.hud.follow == Some(id)).tip(Tip::name("Follow"));
         });
-        let count = c.hud.selected.len().max(1);
-        if count > 1 { u.bold(format!("{count} beavers selected"), 13.0, ACCENT); }
-        u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(4.0), row_gap: Val::Px(4.0), ..default() }, |r| {
-            for (mode, icon, label) in [(super::OrderMode::Move, Icon::Walk, "Move [M]"), (super::OrderMode::Gather, Icon::Food, "Gather [G]"), (super::OrderMode::Work, Icon::Hammer, "Work [R]")] {
-                r.icon_label_button(icon, label, 12.0, HudAction::Order(mode), FAINT, c.hud.order_mode == Some(mode));
-            }
-            r.icon_label_button(Icon::Clear, "Stop / auto", 12.0, HudAction::StopSelected, FAINT, false);
-        });
-        if let Some(a) = s.agents.get(id) {
-            use sim::agents::MoveState;
-            let status = match a.move_state {
-                MoveState::Moving if c.clock.paused => "Move queued - Space to resume".into(),
-                MoveState::Moving => "Moving to destination".into(),
-                MoveState::Blocked => "Route blocked - choose another destination".into(),
-                MoveState::Arrived => "Arrived at destination".into(),
-                MoveState::None => match a.assignment {
-                    Some(sim::agents::Assignment::Resource(_) | sim::agents::Assignment::Area(_, _)) if c.clock.paused => "Gathering queued - Space to resume".into(),
-                    _ => format!("Activity: {}", a.task.label()),
-                },
-            };
-            u.text(status, 12.0, if a.move_state == MoveState::Blocked { BAD } else { GOOD });
-            if let Some(load) = a.load {
-                u.text(format!("Carrying {} {}", num(load.amount), good_name(load.good)), 11.5, MUTED);
-                if s.buildings.stores.space(load.good) < 0.01 { u.text("Storage full - load kept until space opens", 11.5, WARN); }
-                else if a.stuck_ticks > 5 && a.path.is_none() { u.text("Waiting for a route to storage", 11.5, WARN); }
-            }
-        }
-        u.text("Right-click ground to move. Shift-click names to select a group.", 11.0, MUTED);
         if let Some(f) = s.colony.family(b.family) {
             u.row(6.0, |r| { r.icon(Icon::Home, 14.0, MUTED); r.text(f.name.clone(), 12.0, INK); });
         }
@@ -768,7 +455,7 @@ pub fn cell_rows(s: &sim::SimState, cell: crate::flow::Cell) -> Vec<(Icon, Color
 
 fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
     shell(|u| {
-        header(c, Selection::Cell(cell), u, Icon::Profile, "Ground".into(), None, |_| {});
+        header(c, Selection::Cell(cell), u, Icon::Profile, String::new(), None, |_| {});
         for (i, col, name, v) in cell_rows(c.s, cell) {
             u.row(6.0, |r| {
                 r.icon(i, 15.0, col);
@@ -777,9 +464,12 @@ fn cell_panel(c: &Ctx, cell: crate::flow::Cell) -> VNode {
             })
             .tip(Tip::name(name));
         }
-        if c.s.water.has_dam(cell.0, cell.1) {
+        if let Some(b) = c.s.buildings.buildings.iter().find(|b| b.dam.is_some() && b.cells().any(|x| x == cell)) {
             u.rule();
-            dam_row(c.s, u, cell);
+            u.row(6.0, |r| {
+                r.spacer();
+                r.icon_button(Icon::Dam, 15.0, HudAction::SelectBuilding(b.id), ACCENT, false).tip(Tip::name("Open the dam"));
+            });
         }
     })
 }

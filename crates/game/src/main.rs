@@ -11,6 +11,7 @@ mod input;
 mod input_trace;
 mod menu;
 mod palette;
+mod picking;
 mod perf;
 mod report_capture;
 mod sandbox;

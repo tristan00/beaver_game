@@ -1,7 +1,6 @@
+include!(concat!(env!("OUT_DIR"), "/society_constants.rs"));
 use crate::colony::Colony;
 use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUEST_CHANCE_PER_DAY};
-pub const JOIN_EXPIRES_DAYS: f64 = 12.0;
-pub const JOIN_MIN_FOOD_PER_HEAD: f32 = 15.0 * crate::tuning::colony::HUNGER_PER_DAY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u64);

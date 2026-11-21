@@ -37,7 +37,7 @@ icons! {
     Spring, Summer, Autumn, Winter, DrySummer,
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Profile, Upstream, North, Gauge, Wheel,
-    Sapling, TreeYoung, TreeOld, Coppice,
+    Sapling, TreeYoung, TreeOld, Coppice, Widen, Extend,
 }
 
 #[derive(Resource, Clone)]
@@ -1107,6 +1107,16 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(qbez((32.0, 39.0), (32.0, 24.0), (32.0, 9.0), 4.0));
             c.add(qbez((39.0, 40.0), (42.0, 28.0), (52.0, 18.0), 4.0));
             c.add(leaf((12.0, 18.0), (9.0, 6.0), 6.0).or(leaf((32.0, 12.0), (24.0, 4.0), 6.0)).or(leaf((52.0, 18.0), (56.0, 6.0), 6.0)));
+        }
+        Widen => {
+            c.add(rect_c(10.0, 14.0, 54.0, 27.0, 3.0));
+            c.add(rect_c(10.0, 37.0, 54.0, 50.0, 3.0));
+            c.add(tri_rounded(&[(32.0, 64.0), (24.0, 54.0), (40.0, 54.0)]));
+        }
+        Extend => {
+            c.add(seg(14.0, 32.0, 50.0, 32.0, 6.0));
+            c.add(tri_rounded(&[(4.0, 32.0), (18.0, 20.0), (18.0, 44.0)]));
+            c.add(tri_rounded(&[(60.0, 32.0), (46.0, 20.0), (46.0, 44.0)]));
         }
     }
 }

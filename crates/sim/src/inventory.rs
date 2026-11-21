@@ -1,0 +1,98 @@
+//! Physical stored goods. Handles share a store within one world; clones own
+//! independent data, so simulation snapshots never expose mutable live stock.
+use std::{collections::BTreeMap, sync::{Arc, RwLock}};
+use crate::buildings::{BuildingId, Good};
+
+#[derive(Debug, Default)]
+pub struct Inventory(Arc<RwLock<BTreeMap<(BuildingId, Good), f32>>>);
+
+impl Clone for Inventory {
+    fn clone(&self) -> Self { Self(Arc::new(RwLock::new(self.0.read().unwrap().clone()))) }
+}
+impl PartialEq for Inventory {
+    fn eq(&self, other: &Self) -> bool { *self.0.read().unwrap() == *other.0.read().unwrap() }
+}
+impl Inventory {
+    pub(crate) fn view(&self) -> Self { Self(Arc::clone(&self.0)) }
+    pub fn at(&self, owner: BuildingId, good: Good) -> f32 {
+        self.0.read().unwrap().get(&(owner, good)).copied().unwrap_or(0.0)
+    }
+    pub fn total(&self, good: Good) -> f32 {
+        self.0.read().unwrap().iter().filter(|((_, g), _)| *g == good).map(|(_, a)| a).sum()
+    }
+    pub(crate) fn put(&self, owner: BuildingId, good: Good, amount: f32) {
+        assert!(amount.is_finite() && amount >= 0.0);
+        if amount > 0.0 { *self.0.write().unwrap().entry((owner, good)).or_default() += amount; }
+    }
+    pub(crate) fn take(&self, owner: BuildingId, good: Good, amount: f32) -> f32 {
+        assert!(amount.is_finite() && amount >= 0.0);
+        let mut stock = self.0.write().unwrap();
+        let have = stock.entry((owner, good)).or_default();
+        let taken = amount.min(*have);
+        *have -= taken;
+        if *have == 0.0 { stock.remove(&(owner, good)); }
+        taken
+    }
+    pub(crate) fn consume(&self, good: Good, amount: f32) {
+        let mut stock = self.0.write().unwrap();
+        let mut left = amount;
+        for (_, have) in stock.iter_mut().filter(|((_, g), _)| *g == good) {
+            let take = left.min(*have);
+            *have -= take;
+            left -= take;
+            if left <= 0.0 { break; }
+        }
+        stock.retain(|_, a| *a > 0.0);
+    }
+    pub fn entries(&self) -> Vec<(BuildingId, Good, f32)> {
+        self.0.read().unwrap().iter().map(|(&(id, g), &a)| (id, g, a)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SimState, buildings::{Producer, Use}};
+
+    #[test]
+    fn local_transfer_and_consumption_have_one_balance() {
+        let mut sim = SimState::new(1);
+        let (source, destination) = (BuildingId(1), BuildingId(2));
+        sim.buildings.stores.produce_at(source, Good::Food, 10.0, Producer::Other).unwrap();
+        let load = sim.buildings.stores.take_from(source, Good::Food, 4.0);
+        assert_eq!(sim.work.stock_of(source, Good::Food), 6.0);
+        assert_eq!(sim.buildings.stores.amount(Good::Food) + load, 10.0);
+        sim.buildings.stores.put_at(destination, Good::Food, load).unwrap();
+        sim.buildings.stores.consume_from(destination, Good::Food, 2.0, Use::EatenAdults);
+        assert_eq!(sim.work.stock_of(destination, Good::Food), 2.0);
+        assert_eq!(sim.buildings.stores.amount(Good::Food), 8.0);
+        assert_eq!(sim.buildings.stores.produced_total[Good::Food.index()], 10.0);
+        assert_eq!(sim.buildings.stores.consumed_total[Good::Food.index()], 2.0);
+    }
+
+    #[test]
+    fn snapshot_inventory_is_independent_and_its_views_stay_linked() {
+        let mut owner = crate::SimState::new(1);
+        owner.buildings.stores.produce_at(BuildingId(1), Good::Clay, 10.0, Producer::Other).unwrap();
+        let mut snapshot = owner.clone();
+        owner.buildings.stores.take_from(BuildingId(1), Good::Clay, 3.0);
+        snapshot.buildings.stores.take_from(BuildingId(1), Good::Clay, 1.0);
+        assert_eq!(owner.work.stock_of(BuildingId(1), Good::Clay), 7.0);
+        assert_eq!(snapshot.work.stock_of(BuildingId(1), Good::Clay), 9.0);
+    }
+
+    #[test]
+    fn meals_debit_physical_food_once_and_do_not_consume_clay() {
+        let mut sim = SimState::new(1);
+        sim.colony.found((0.0, 3.0), &crate::colony::RiverLand::default()).unwrap();
+        sim.buildings.stores.produce_at(BuildingId(1), Good::Food, 10.0, Producer::Other).unwrap();
+        sim.buildings.stores.produce_at(BuildingId(2), Good::Clay, 7.0, Producer::Other).unwrap();
+        for beaver in &mut sim.colony.beavers { beaver.needs.food = 0.2; }
+        sim.colony.step_with_stores(0.5, &crate::colony::RiverLand::default(), &mut sim.buildings.stores).unwrap();
+        let food = sim.buildings.stores.amount(Good::Food);
+        assert!(food < 10.0);
+        assert!((food + sim.colony.eaten.iter().sum::<f32>() + sim.colony.spoiled - 10.0).abs() < 1e-5);
+        assert_eq!(food, sim.work.stock_of(BuildingId(1), Good::Food));
+        assert_eq!(sim.work.stock_of(BuildingId(2), Good::Clay), 7.0);
+    }
+}

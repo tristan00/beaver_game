@@ -1,9 +1,8 @@
+include!(concat!(env!("OUT_DIR"), "/ledger_constants.rs"));
 use crate::buildings::{Good, Producer, Stores, Use};
 use std::collections::{BTreeMap, VecDeque};
 
 const N: usize = Good::ALL.len();
-pub const HISTORY_DAYS: usize = 60;
-pub const RATE_DAYS: usize = 7;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DaySample {

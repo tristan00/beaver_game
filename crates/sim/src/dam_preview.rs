@@ -1,38 +1,24 @@
-use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
+include!(concat!(env!("OUT_DIR"), "/dam_preview_constants.rs"));
+use crate::buildings::{Amount, BuildingId, BuildingKind};
 use crate::resources::ResourceKind;
 use crate::water::{preview_dam_heights, Cell};
 use std::collections::HashSet;
 
-pub const DAM_SPAN_CELLS: f32 = 20.0;
 
-pub const DEFAULT_HEIGHT: f32 = 1.0;
-pub const MAX_DAM_HEIGHT: f32 = 3.0;
-pub const UPPER_PER_UNIT: [Amount; 2] = [(Good::Sticks, 4.0), (Good::Clay, 3.0)];
 
-pub fn build_units(sim: &crate::SimState, cell: Cell, h: f32) -> (f32, f32) {
-    let have = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0)
-        * sim.water.dam_integrity.get(cell.0, cell.1).copied().unwrap_or(0.0);
-    let base = (h.min(1.0) - have.min(1.0)).max(0.0);
-    let upper = ((h.max(1.0) - 1.0) - (have.max(1.0) - 1.0)).max(0.0);
-    (base, upper)
+/// Loads needed to bring these cells to these heights, one load per step per cell.
+pub fn loads_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> usize {
+    cells.iter().zip(heights).map(|(&c, &h)| {
+        let have = sim.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0);
+        ((h - have).max(0.0) / crate::dams::STEP_HEIGHT - 1e-3).ceil().max(0.0) as usize
+    }).sum()
 }
 
+/// Materials and packing labour to build these heights.
 pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<Amount>, f32) {
-    let (mut base, mut upper) = (0.0, 0.0);
-    for (&c, &h) in cells.iter().zip(heights) {
-        let (b, u) = build_units(sim, c, h);
-        base += b;
-        upper += u;
-    }
-    let mut cost: Vec<Amount> = BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * base / DAM_SPAN_CELLS)).collect();
-    for (g, a) in UPPER_PER_UNIT {
-        match cost.iter_mut().find(|c| c.0 == g) {
-            Some(c) => c.1 += a * upper,
-            None => cost.push((g, a * upper)),
-        }
-    }
-    cost.retain(|c| c.1 > 1e-3);
-    (cost, BuildingKind::Dam.spec().work * (base + upper) / DAM_SPAN_CELLS)
+    let loads = loads_for(sim, cells, heights) as f32;
+    let cost = BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * loads)).filter(|c| c.1 > 1e-3).collect();
+    (cost, BuildingKind::Dam.spec().work * loads)
 }
 
 pub fn extend_to_hold(sim: &crate::SimState, cells: &[Cell], heights: &[f32], max_cells: usize) -> Option<(Vec<Cell>, Vec<f32>, DamPreview)> {
@@ -62,11 +48,6 @@ pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cel
         .unzip()
 }
 
-pub fn spot_cells(pos: Cell) -> Vec<Cell> {
-    let (w, h) = BuildingKind::Dam.spec().footprint;
-    (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).collect()
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamPreview {
     pub level: f32,
@@ -89,13 +70,6 @@ impl DamPreview {
     }
 }
 
-pub fn length_factor(n: usize) -> f32 {
-    n as f32 / DAM_SPAN_CELLS
-}
-
-pub fn dam_cost(n: usize) -> Vec<Amount> {
-    BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * length_factor(n))).collect()
-}
 
 pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<DamPreview> {
     preview_heights(sim, cells, &vec![height; cells.len()])

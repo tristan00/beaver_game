@@ -1,4 +1,5 @@
 //! Ambient arrivals. Player-facing immigration requests live in `society`.
+include!(concat!(env!("OUT_DIR"), "/events_constants.rs"));
 use crate::{colony::Colony, water::Season};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
@@ -19,7 +20,7 @@ impl Events {
         }
     }
 
-    pub fn step(&mut self, dt_days: f32, colony: &mut Colony, wetland: f32) {
+    pub fn step(&mut self, dt_days: f32, colony: &mut Colony, stores: &mut crate::buildings::Stores, wetland: f32) {
         if !colony.is_founded() {
             self.time_days += dt_days as f64;
             return;
@@ -31,22 +32,23 @@ impl Events {
             left -= sub;
             self.time_days += sub;
             self.wanderers.retain(|&(day, count)| {
-                if self.time_days - day < 5.0 {
+                if self.time_days - day < WANDERER_TRAVEL_DAYS {
                     return true;
                 }
                 colony.add_immigrants(count);
-                colony.food = (colony.food - 2.0 * count as f32).max(0.0);
+                let amount = (ARRIVAL_FOOD_COST * count as f32).min(stores.amount(crate::buildings::Good::Food));
+                stores.withdraw_for(crate::buildings::Good::Food, amount, crate::buildings::Use::Other).unwrap();
                 false
             });
             let season = Season::at(self.time_days);
-            if season != Season::Winter && self.unit() < 0.03 * sub as f32 {
-                let count = 1 + (self.unit() * 2.0) as u32;
+            if season != Season::Winter && self.unit() < WANDERER_CHANCE_PER_DAY * sub as f32 {
+                let count = 1 + (self.unit() * WANDERER_COUNT_SPREAD) as u32;
                 self.wanderers.push((self.time_days, count));
             }
-            if wetland > 0.1 && matches!(season, Season::Spring | Season::Summer)
-                && self.unit() < 0.03 * wetland * sub as f32
+            if wetland > FOOD_EVENT_WETLAND_MIN && matches!(season, Season::Spring | Season::Summer)
+                && self.unit() < FOOD_EVENT_CHANCE_PER_DAY * wetland * sub as f32
             {
-                colony.food += (3.0 + 5.0 * self.unit()) * (1.0 + wetland);
+                stores.deposit(crate::buildings::Good::Food, (FOOD_EVENT_BASE + FOOD_EVENT_SPREAD * self.unit()) * (1.0 + wetland)).unwrap();
             }
         }
     }

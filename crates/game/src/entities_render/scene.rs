@@ -23,6 +23,8 @@ pub enum Pose {
     Rest,
 }
 
+// Models for retired buildings stay available for when the building list grows again.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum StructKind {
     Lodge,
@@ -62,7 +64,7 @@ pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
 
 pub fn lodge_view(sim: &SimState) -> (Vec3, f32) {
     let cell = sim.buildings.buildings.iter()
-        .find(|b| matches!(b.kind, sim::buildings::BuildingKind::Lodge | sim::buildings::BuildingKind::Burrow))
+        .find(|b| b.kind == sim::buildings::BuildingKind::Shelter)
         .map(|b| b.pos)
         .unwrap_or((sim.world.size / 2, sim.world.size / 2));
     let xz = super::sim_view::cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));

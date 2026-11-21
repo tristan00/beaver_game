@@ -1,7 +1,7 @@
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, HudAction, HudState, MapLens, OrderMode, Tool, CAT_KEY_LABELS};
-use crate::build_logic::{self, Group, MAX_DAM_HEIGHT, MIN_DAM_HEIGHT};
+use super::{ColonyTab, HudAction, HudState, MapLens, Tool, CAT_KEY_LABELS};
+use crate::build_logic::{self, Group};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use crate::sim_driver::{SimClock, Speed};
@@ -186,7 +186,6 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
             let lasts = if g == Good::Food { food_days(s) } else { s.ledger.days_left(g, have) };
             u.row(4.0, |r| {
                 r.icon(good_icon(g), 18.0, good_color(g));
-                r.text(good_name(g), 12.0, MUTED);
                 r.bold(format!("{}", have.round() as i64), 14.0, if have < 0.5 && lasts.is_some() { BAD } else { INK });
                 if rate.abs() >= 0.05 {
                     r.icon(if rate > 0.0 { Icon::Up } else { Icon::Down }, 9.0, rate_color(rate));
@@ -216,7 +215,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
                 }
             }
             let t = t.key("I").row(TipLine { label: "Jobs".into(), key: Some("J".into()), ..default() });
-            u.icon_label_button(Icon::Idle, format!("{} free", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
+            u.icon_label_button(Icon::Idle, format!("{}", free.len()), 14.0, HudAction::CycleIdle, Color::srgba(0.94, 0.75, 0.29, 0.22), false).tip(t);
         }
     })]
 }
@@ -239,7 +238,7 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
         u.row(6.0, |r| {
             r.row(5.0, |x| {
                 x.icon(season_icon(d.season), 18.0, season_color(d.season));
-                x.bold(format!("Day {}", d.day), 13.0, INK);
+                x.bold(format!("{}", d.day), 15.0, INK);
             })
             .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()).with_value(format!("Year {}", d.year)));
             r.spacer();
@@ -250,9 +249,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
                     .tip(Tip::name(format!("{}x speed", sp.multiplier() as u32)).with_value(format!("Target: {day_seconds:.2} seconds / day")).key(key));
             }
         });
-        u.bold(if clock.paused { "PAUSED  -  Space to resume" } else {
-            match clock.speed { Speed::X1 => "Playing  -  normal speed", Speed::X2 => "Fast forward", Speed::X3 => "Fastest forward" }
-        }, 12.0, if clock.paused { WARN } else { INK });
         let phase = calendar::year_phase(t);
         u.node(Node { width: Val::Percent(100.0), height: Val::Px(8.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(2.0), ..default() }, |r| {
             for se in Season::ALL {
@@ -326,7 +322,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::HighAndDry => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
-                _ => sim::buildings::BuildingKind::Lodge,
+                _ => sim::buildings::BuildingKind::Shelter,
             };
             (vec![(super::words::building_icon(k), INK), (Icon::Down, WARN)], format!("{}", v as i64), "High and dry")
         }
@@ -344,14 +340,14 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
     }
 }
 
-pub(super) fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
+fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
         Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
         Fix::Gather { kind: sim::resources::ResourceKind::Plant, n } => Some((Icon::Food, format!("+{n}"), format!("Send {n} workers to gather food"))),
         Fix::Gather { kind, n } => Some((resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase()))),
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
         Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
-        Fix::RepairDam { .. } => Some((Icon::RoleBuilder, "Repair".into(), "Repair dam with materials and builders".into())),
+        Fix::OpenDam { .. } => Some((Icon::Dam, String::new(), "Open the dam".into())),
         Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and builders".into())),
         Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
         Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
@@ -373,48 +369,42 @@ pub fn alerts(c: &Ctx, u: &mut Ui) {
         for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
             cause.push(l);
         }
+        // A token: the trouble as a ringed badge, its number, and the fix as a peg.
         let card = u.row(6.0, |r| {
-            r.icon(if p.severity == Severity::Urgent { Icon::Urgent } else { Icon::Warn }, 10.0, col);
-            for (i, ic) in &icons {
-                r.icon(*i, 18.0, *ic);
-            }
-            if !value.is_empty() {
-                r.bold(value.clone(), 14.0, INK);
-            }
-            r.spacer();
             for (k, f) in std::iter::once(&p.fix).chain(p.alt_fix.iter()).enumerate() {
-                if let Some((icon, label, tip)) = fix_face(f) {
-                    let fill = if k == 0 { ACCENT } else { FAINT };
-                    let b = if label.is_empty() { r.icon_button(icon, 14.0, HudAction::Fix(*f, p.focus), fill, false) } else { r.icon_label_button(icon, label, 14.0, HudAction::Fix(*f, p.focus), fill, false) };
-                    b.tip(Tip::name(tip));
+                if let Some((icon, _, tip)) = fix_face(f) {
+                    r.icon_button(icon, 13.0, HudAction::Fix(*f, p.focus), if k == 0 { ACCENT } else { FAINT }, false).tip(Tip::name(tip));
                 }
             }
+            if !value.is_empty() {
+                r.bold(value.clone(), 13.0, INK);
+            }
+            let badge = r.node(Node { width: Val::Px(34.0), height: Val::Px(34.0), border: UiRect::all(Val::Px(2.0)), border_radius: BorderRadius::all(Val::Percent(50.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, column_gap: Val::Px(1.0), ..default() }, |b| {
+                for (i, ic) in icons.iter().take(2) {
+                    b.icon(*i, if icons.len() > 1 { 13.0 } else { 18.0 }, *ic);
+                }
+            });
+            badge.bg = PANEL;
+            badge.border = Some(BorderColor::all(col));
             if let Some(f) = p.focus {
-                r.icon_button(Icon::Focus, 14.0, HudAction::Focus(f), FAINT, false).tip(Tip::name("Show"));
+                badge.action(HudAction::Focus(f));
             }
         });
-        card.node.padding = UiRect::axes(Val::Px(8.0), Val::Px(6.0));
-        card.node.border = UiRect::left(Val::Px(3.0));
-        card.node.border_radius = BorderRadius::all(Val::Px(6.0));
-        card.node.min_width = Val::Px(180.0);
+        card.node.padding = UiRect::new(Val::Px(8.0), Val::Px(3.0), Val::Px(3.0), Val::Px(3.0));
+        card.node.border_radius = BorderRadius::all(Val::Px(20.0));
         card.bg = PANEL;
-        card.border = Some(BorderColor::all(col));
+        card.border = Some(BorderColor::all(col.with_alpha(0.35)));
+        card.node.border = UiRect::all(Val::Px(1.0));
         card.tip(cause);
     }
 }
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
     let bottom = if c.placing() { RIGHT_BOTTOM } else { 90.0 };
-    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::scroll_y(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
-    col.solid = true;
+    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(6.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(112.0), Some(bottom)) });
     let mut ui = Ui::default();
-    if c.hud.help {
-        ui.add(guide(c, true));
-        col.children = ui.nodes;
-        return vec![col];
-    }
     match c.hud.tool {
-        Tool::Dam | Tool::Canal => {
+        Tool::Dam => {
             ui.add(line_card(c));
         }
         Tool::Building(_) => {}
@@ -428,7 +418,6 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
                 match c.sel {
                     Selection::None => {
                         if c.hud.pinned.is_empty() {
-                            if c.s.buildings.buildings.len() < 3 { ui.add(guide(c, false)); }
                             alerts(c, &mut ui)
                         }
                     }
@@ -448,32 +437,6 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-fn guide(c: &Ctx, full: bool) -> VNode {
-    panel_col(Node { width: Val::Px(RIGHT_W), ..default() }, 9.0, |u| {
-        u.bold(if full { "How to play" } else { "Start your colony" }, 16.0, INK);
-        if full { u.text("Scroll for more  |  H closes help", 11.0, MUTED); }
-        if full {
-            for (action, key) in [("Select a beaver / building", "Left click"), ("Add to selection", "Shift + click"),
-                ("Move selected beavers", "Right click"), ("Gather / work at building", "G / R, click"),
-                ("Pause / resume", "Space"), ("Change speed", "1 / 2 / 3"), ("Pan / rotate", "WASD / Q E"),
-                ("Zoom / orbit", "Wheel / middle drag"), ("See through trees", "F8"), ("Cancel / close", "Esc"),
-                ("Repeat building placement", "Shift + click")] {
-                u.row(6.0, |r| { r.text(action, 11.5, INK); r.spacer(); r.text(key, 11.5, MUTED); });
-            }
-            u.rule();
-        }
-        u.text("Build shelter, then secure food and storage. Supplies are limited; expand as your family grows.", 12.0, INK);
-        for (n, k) in [("1  Build a burrow", BuildingKind::Burrow), ("2  Gather food", BuildingKind::ForagerHut), ("3  Store supplies", BuildingKind::Warehouse)] {
-            let entry = build_logic::menu(c.s).into_iter().find(|e| e.kind == k).unwrap();
-            u.icon_label_button(building_icon(k), n, 13.0, HudAction::Pick(k), FAINT, false).tip(item_tip(c.s, &entry));
-        }
-        u.text("New sites recruit available workers automatically. Select a site to see progress and staffing.", 12.0, MUTED);
-        u.icon_label_button(Icon::Beaver, "Select adults", 13.0, HudAction::SelectFamily, FAINT, false);
-        u.text("Direct orders reserve workers. Use Stop / auto when you want them back on colony jobs.", 11.5, MUTED);
-        if full { u.icon_label_button(Icon::Cross, "Close help", 12.0, HudAction::Help, FAINT, false); }
-    })
-}
-
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(5.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(64.0), None) }, 4.0, |u| {
         for (l, icon, name, key) in [(MapLens::World, Icon::ViewWorld, "World", "F1"), (MapLens::Water, Icon::ViewWater, "Water", "F2"), (MapLens::Goods, Icon::ViewGoods, "Goods", "F3"), (MapLens::Forest, Icon::ViewForest, "Forest", "F4"), (MapLens::Elevation, Icon::ViewElevation, "Elevation", "F5")] {
@@ -486,10 +449,6 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         u.rule().style(|n| n.width = Val::Px(24.0));
         let open = c.hud.colony.is_some();
         u.icon_button(Icon::Colony, 18.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), FAINT, open).tip(Tip::name("Colony").key("Tab"));
-        let jobs = c.hud.colony == Some(ColonyTab::Jobs);
-        u.icon_button(Icon::Jobs, 18.0, HudAction::Colony(if jobs { None } else { Some(ColonyTab::Jobs) }), FAINT, jobs).tip(Tip::name("Jobs").key("J"));
-        u.icon_label_button(Icon::Beaver, "Family", 12.0, HudAction::SelectFamily, FAINT, false);
-        u.icon_label_button(Icon::Log, "Help", 12.0, HudAction::Help, FAINT, c.hud.help).tip(Tip::name("How to play").key("H"));
     })]
 }
 
@@ -549,7 +508,7 @@ fn cost_row(u: &mut Ui, cost: &[(Good, f32)], size: f32, col: Color) {
 
 fn item_cost(kind: BuildingKind) -> Vec<(Good, f32)> {
     match kind {
-        BuildingKind::Dam | BuildingKind::Canal => build_logic::path_cost(kind, 1),
+        BuildingKind::Dam => build_logic::path_cost(kind, 1),
         k => k.spec().cost.to_vec(),
     }
 }
@@ -559,8 +518,8 @@ fn item_tip(s: &sim::SimState, e: &build_logic::MenuEntry) -> Tip {
     let mut t = Tip::titled(Some((building_icon(kind), INK)), kind.spec().name);
     if e.unlocked {
         let cost = item_cost(kind);
-        if matches!(kind, BuildingKind::Dam | BuildingKind::Canal) {
-            t.push(TipLine::new("Per cell", ""));
+        if kind == BuildingKind::Dam {
+            t.push(TipLine::new("Per load", "raises one cell"));
         }
         for (g, a) in cost {
             t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
@@ -589,7 +548,6 @@ fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected
                 r.icon(Icon::Padlock, 13.0, MUTED);
             }
         });
-        t.text(kind.spec().name, 12.0, if e.unlocked { INK } else { MUTED });
         if e.unlocked {
             cost_row(t, &item_cost(kind), 12.0, MUTED);
 
@@ -597,7 +555,7 @@ fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected
     });
     tile.node.padding = UiRect::all(Val::Px(6.0));
     tile.node.align_items = AlignItems::Center;
-    tile.node.width = Val::Px(112.0);
+    tile.node.min_width = Val::Px(64.0);
     tile.node.border = UiRect::all(Val::Px(if selected { 2.0 } else { 1.0 }));
     tile.node.border_radius = BorderRadius::all(Val::Px(5.0));
     tile.bg = if selected { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT };
@@ -617,18 +575,12 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
         if hud.tool == Tool::Dam {
             return out;
         }
-        let icon = match hud.tool {
-            Tool::Building(k) => building_icon(k),
-            Tool::Canal => Icon::Canal,
-            _ => Icon::Dam,
-        };
-        let name = match hud.tool {
-            Tool::Building(k) => k.spec().name,
-            _ => "Canal",
+        let (icon, name) = match hud.tool {
+            Tool::Building(k) => (building_icon(k), k.spec().name),
+            _ => (Icon::Dam, "Dam"),
         };
         out.push(centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)), ..default() }, 10.0, |u| {
             u.icon(icon, 24.0, INK).tip(Tip::name(name));
-            u.bold(name, 14.0, INK);
             key_hints(u, hud.tool);
             u.icon_button(Icon::Cross, 13.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
         })));
@@ -638,10 +590,9 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
     out.push(centred(12.0, panel_row(Node { padding: UiRect::all(Val::Px(6.0)), ..default() }, 6.0, |u| {
         for (i, g) in cats.iter().enumerate() {
             let open = hud.open_cat == Some(i);
-            u.icon_label_button(group_icon(*g), g.name(), 14.0, HudAction::OpenCat(i), if open { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, open).tip(Tip::name(g.name()).key(CAT_KEY_LABELS.get(i).copied().unwrap_or("")));
+            u.icon_button(group_icon(*g), 22.0, HudAction::OpenCat(i), if open { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, open).tip(Tip::name(g.name()).key(CAT_KEY_LABELS.get(i).copied().unwrap_or("")));
         }
-        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(26.0), margin: UiRect::horizontal(Val::Px(2.0)), ..default() })).bg(LINE);
-        u.icon_button(Icon::Search, 18.0, HudAction::OpenSearch, FAINT, hud.search.is_some()).tip(Tip::name("Search").key("/"));
+        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(26.0), margin: UiRect::horizontal(Val::Px(2.0)), ..default() })).bg(TIMBER.with_alpha(0.35));
         let can_undo = !hud.undo_is_empty();
         u.icon_button(Icon::Undo, 18.0, HudAction::Undo, FAINT, false).tip(Tip::name("Undo").key("Ctrl+Z")).style(|_| {}).bg = if can_undo { FAINT } else { Color::NONE };
     })));
@@ -666,7 +617,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
                 let selected = match hud.tool {
                     Tool::Building(k) => k == e.kind,
                     Tool::Dam => e.kind == BuildingKind::Dam,
-                    Tool::Canal => e.kind == BuildingKind::Canal,
                     Tool::None => false,
                 };
                 item_tile(u, s, e, selected);
@@ -678,8 +628,7 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
 
 fn key_hints(u: &mut Ui, tool: Tool) {
     let pairs: Vec<(Icon, &str)> = match tool {
-        Tool::Dam => vec![(Icon::Check, "Enter"), (Icon::Crest, "[ ]"), (Icon::Flood, "G"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
-        Tool::Canal => vec![(Icon::Check, "Enter"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
+        Tool::Dam => vec![(Icon::Plus, "LMB"), (Icon::Undo, "RMB"), (Icon::Check, "Enter")],
         _ => vec![(Icon::Check, "LMB"), (Icon::Cross, "RMB"), (Icon::Undo, "Ctrl+Z")],
     };
     u.row(8.0, |r| {
@@ -698,7 +647,7 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
     for (g, a) in sim::starts::START_BUNDLE {
         bundle.push((g, num(a)));
     }
-    let mut out = vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
+    vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
         u.row(4.0, |r| {
             r.icon(Icon::Beaver, 22.0, INK);
             r.bold("4", 14.0, INK);
@@ -717,7 +666,7 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
         .tip({
             let mut t = Tip::titled(Some((Icon::Haul, INK)), "What they carry");
             t.push(TipLine::new("Dam", "").icon(Icon::Dam, INK));
-            t.push(TipLine::new("Shelter", "").icon(Icon::Burrow, INK));
+            t.push(TipLine::new("Shelter", "").icon(Icon::Lodge, INK));
             t.push(TipLine::new("Store", "").icon(Icon::Warehouse, INK));
             t
         });
@@ -727,13 +676,7 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
             r.keycap("LMB");
         })
         .tip(Tip::name("Settle here").line("Pick the spot", ""));
-    }))];
-    out.push(centred(64.0, panel_col(Node { width: Val::Px(500.0), ..default() }, 5.0, |u| {
-        u.bold("Choose a home for your family", 17.0, INK);
-        u.text("Click dry ground near the river, trees and food. Green means the site is suitable.", 13.0, INK);
-        u.text("WASD pans  |  Wheel zooms  |  Q / E rotates  |  F8 reveals the ground", 11.5, MUTED);
-    })));
-    out
+    }))]
 }
 
 pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: Vec2) -> Vec<VNode> {
@@ -763,14 +706,6 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
 }
 
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
-    if let (Some(mode), Some(cur), Some(cell)) = (c.hud.order_mode, c.cursor, c.hover) {
-        let label = match mode {
-            OrderMode::Move => "Click a destination".into(),
-            OrderMode::Gather => c.s.resources.at(cell).find(|r| r.amount > 0.0).map_or("Click food, a tree or clay".into(), |r| format!("Gather {} - click to assign", resource_name(r.kind))),
-            OrderMode::Work => "Click a workplace".into(),
-        };
-        return vec![panel_row(abs(Some(cur.x + 18.0), None, Some(cur.y + 18.0), None), 5.0, |u| { u.bold(label, 13.0, INK); })];
-    }
     if let (Tool::None, MapLens::Elevation, Some(cell), Some(cur)) = (c.hud.tool, c.lens, c.hover, c.cursor) {
         return elevation_tag(c.s, cell, cur);
     }
@@ -819,137 +754,66 @@ pub fn elevation_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
     vec![v]
 }
 
-fn card_row(u: &mut Ui, label: &str, value: String, col: Color, tip: Tip) {
-    u.row(8.0, |r| {
-        r.text(label, 12.0, MUTED);
-        r.spacer();
-        r.bold(value, 13.0, col);
-    })
-    .tip(tip);
-}
-
 pub fn line_card(c: &Ctx) -> VNode {
     let s = c.s;
     let hud = c.hud;
     let n = hud.line.len();
-    panel_col(Node { width: Val::Px(RIGHT_W), ..default() }, 6.0, |u| {
-        let is_dam = hud.tool == Tool::Dam;
+    panel_col(Node { width: Val::Px(RIGHT_W), ..default() }, 8.0, |u| {
         u.row(6.0, |r| {
-            r.icon(if is_dam { Icon::Dam } else { Icon::Canal }, 20.0, INK).tip(Tip::name(if is_dam { "Dam" } else { "Canal" }));
+            r.icon(Icon::Dam, 20.0, INK).tip(Tip::name("Dam"));
             if n > 0 {
-                r.bold(format!("{n}"), 15.0, INK).tip(Tip::name(format!("{n} cells")));
+                r.bold(format!("{n}"), 15.0, INK).tip(Tip::name("Cells"));
             }
             r.spacer();
-            r.icon_button(Icon::Cross, 12.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
+            key_hints(r, Tool::Dam);
+            r.icon_button(Icon::Cross, 11.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
         });
-        if is_dam {
-            let on_dam = hud.line.iter().filter(|&&(x, y)| s.water.has_dam(x, y)).count();
-            u.row(6.0, |r| {
-                r.icon(Icon::Crest, 16.0, MUTED);
-                let low = hud.dam_height <= MIN_DAM_HEIGHT + 1e-3 && hud.dam_crest.is_none();
-                let high = hud.dam_height >= MAX_DAM_HEIGHT - 1e-3 && hud.dam_crest.is_none();
-                r.icon_button(Icon::Minus, 11.0, HudAction::DamHeight(-build_logic::DAM_STEP), if low { Color::NONE } else { FAINT }, false).tip(Tip::name("Lower").key("["));
-                match hud.dam_crest {
-                    Some(crest) => {
-                        r.bold(num(crest), 14.0, ACCENT).style(|nn| nn.min_width = Val::Px(30.0)).tip(Tip::name("Crest").with_value(num(crest)));
-                    }
-                    None => {
-                        r.bold(num(hud.dam_height), 14.0, INK).style(|nn| nn.min_width = Val::Px(30.0));
-                    }
-                }
-                r.icon_button(Icon::Plus, 11.0, HudAction::DamHeight(build_logic::DAM_STEP), if high { Color::NONE } else { FAINT }, false).tip(Tip::name("Raise").key("]"));
-                if on_dam > 0 {
-                    r.spacer();
-                    r.row(2.0, |x| {
-                        x.icon(Icon::Dam, 14.0, MUTED);
-                        x.bold(format!("{on_dam}"), 12.0, MUTED);
-                    })
-                    .tip(Tip::name("Raises existing dam").line("Cells", format!("{on_dam}")));
-                }
-            })
-            .tip(Tip::name(format!("Height {}-{}", num(MIN_DAM_HEIGHT), num(MAX_DAM_HEIGHT))).line("Step", num(build_logic::DAM_STEP)).key("Ctrl+wheel"));
-        }
         if n == 0 {
             return;
         }
-        let check = if is_dam { build_logic::check_dam(s, &hud.line, hud.dam_height) } else { build_logic::check_canal(s, &hud.line) };
+        let check = build_logic::check_dam(s, &hud.line);
         if let Err(e) = &check {
-            let w = place_error(e);
             u.row(6.0, |r| {
                 r.icon(Icon::Cross, 13.0, BAD);
-                if !w.is_empty() {
-                    r.bold(w, 12.0, INK);
-                }
+                r.bold(place_error(e), 12.0, INK);
             });
         }
-        if is_dam {
-            match c.hud.dam_preview() {
-                Some(pv) => {
-                    let r = build_logic::DamReadout::from_preview(pv);
-                    let new = pv.flooded.iter().filter(|&&(x, y)| !build_logic::is_wet(s, x, y)).count();
-                    card_row(u, "Rise", format!("+{}", num(r.rise)), WATER, Tip::name("Water rises").line("Level", num(r.level)));
-                    card_row(u, "Flood", format!("{new}"), INK, Tip::name("Newly flooded").line("Under water", format!("{}", r.flooded_cells)));
-                    card_row(u, "Trees", format!("{}", r.flooded_trees), if r.flooded_trees > 0 { WARN } else { INK }, Tip::name("Trees drowned"));
-                    let cost = build_logic::line_cost(s, &hud.line, hud.dam_height, hud.dam_crest);
-                    u.row(8.0, |x| {
-                        x.spacer();
-                        if cost.is_empty() {
-                            x.icon(Icon::Check, 13.0, MUTED);
-                        }
-                        for (g, a) in &cost {
-                            x.row(2.0, |y| {
-                                y.icon(good_icon(*g), 14.0, good_color(*g));
-                                y.bold(format!("{}", a.round() as i64), 13.0, INK);
-                            });
-                        }
+        if let Some(pv) = c.hud.dam_preview() {
+            let r = build_logic::DamReadout::from_preview(pv);
+            let new = pv.flooded.iter().filter(|&&(x, y)| !build_logic::is_wet(s, x, y)).count();
+            u.row(14.0, |x| {
+                x.row(4.0, |y| {
+                    y.icon(Icon::Flood, 15.0, WATER);
+                    y.bold(format!("+{new}"), 13.0, INK);
+                })
+                .tip(Tip::name("Newly flooded").line("Pond", format!("{}", r.flooded_cells)));
+                x.row(4.0, |y| {
+                    y.icon(Icon::Tree, 15.0, if r.flooded_trees > 0 { WARN } else { MUTED });
+                    y.bold(format!("{}", r.flooded_trees), 13.0, if r.flooded_trees > 0 { WARN } else { INK });
+                })
+                .tip(Tip::name("Trees drowned"));
+                if r.flooded_buildings > 0 {
+                    x.row(4.0, |y| {
+                        y.icon(Icon::Building, 15.0, BAD);
+                        y.bold(format!("{}", r.flooded_buildings), 13.0, BAD);
                     })
-                    .tip(Tip::name("Materials").line("Added height only", ""));
-                    if let Some(at) = pv.spill_at {
-                        u.row(6.0, |x| {
-                            x.icon(Icon::Flood, 15.0, BAD);
-                            x.text("Spill", 12.0, MUTED);
-                            x.bold(format!("{},{}", at.0, at.1), 12.0, BAD);
-                            x.spacer();
-                            x.icon_button(Icon::Focus, 11.0, HudAction::Focus(at), FAINT, false).tip(Tip::name("Show"));
-                            x.icon_label_button(Icon::Dam, "+", 13.0, HudAction::ExtendDam, ACCENT, false).tip(Tip::name("Extend to hold").key("G"));
-                        })
-                        .tip(Tip::name("Water escapes here").line("Pond stops at", num(pv.level)));
-                    }
-                    card_row(u, "Push", num(r.pressure), INK, Tip::name("River push on the dam").line("Per day", num(r.pressure)));
-                    let fill = if r.fill_days.is_finite() { days(r.fill_days.ceil()) } else { "-".into() };
-                    card_row(u, "Fill", fill, INK, Tip::name("Days to fill").line("No inflow", if r.fill_days.is_finite() { "" } else { "-" }));
-                    if r.flooded_buildings > 0 {
-                        u.row(6.0, |x| {
-                            x.icon(Icon::Urgent, 10.0, BAD);
-                            x.icon(Icon::Building, 16.0, INK);
-                            x.bold(format!("{}", r.flooded_buildings), 13.0, BAD);
-                        })
-                        .tip(Tip::name("Floods buildings"));
-                    }
+                    .tip(Tip::name("Buildings flooded"));
                 }
-                None => {
-                    u.row(6.0, |r| {
-                        r.icon(Icon::Cross, 13.0, BAD);
-                        r.bold("No pond", 12.0, INK);
-                    });
+                if let Some(at) = pv.spill_at.filter(|at| !hud.line.contains(at)) {
+                    x.icon_button(Icon::Push, 13.0, HudAction::Focus(at), FAINT, false).tip(Tip::name("Water slips past the end").line("Draw further, or extend later", ""));
                 }
-            }
-        } else {
-            u.row(8.0, |x| {
                 x.spacer();
-                for (g, a) in build_logic::path_cost(sim::buildings::BuildingKind::Canal, n) {
-                    x.row(2.0, |y| {
-                        y.icon(good_icon(g), 14.0, good_color(g));
-                        y.bold(format!("{}", a.round() as i64), 13.0, INK);
-                    });
-                }
+                x.row(4.0, |y| {
+                    y.icon(good_icon(Good::Sticks), 15.0, good_color(Good::Sticks));
+                    y.bold(format!("{}", build_logic::line_cost(s, &hud.line).round() as i64), 13.0, INK);
+                })
+                .tip(Tip::name("Sticks for the first stage").line("Beavers carry them load by load", ""));
             });
         }
         u.row(6.0, |r| {
             r.spacer();
-            let ok = check.is_ok();
             r.icon_button(Icon::Clear, 13.0, HudAction::ClearLine, FAINT, false).tip(Tip::name("Clear"));
-            r.icon_button(Icon::Check, 15.0, HudAction::ConfirmLine, if ok { ACCENT } else { FAINT }, false).tip(Tip::name(if is_dam { "Build" } else { "Dig" }).key("Enter"));
+            r.icon_button(Icon::Check, 15.0, HudAction::ConfirmLine, if check.is_ok() { ACCENT } else { FAINT }, false).tip(Tip::name("Build").key("Enter"));
         });
     })
 }
@@ -1032,7 +896,7 @@ pub fn profile(c: &Ctx) -> Vec<VNode> {
 }
 
 pub fn minimap(c: &Ctx) -> Vec<VNode> {
-    if c.placing() {
+    if c.placing() || c.hud.colony.is_some() {
         return Vec::new();
     }
     let Some(img) = c.minimap else { return Vec::new() };
@@ -1094,19 +958,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
 }
 
 pub fn lane(c: &Ctx) -> Vec<VNode> {
-    let alert = c.problems.iter().find(|p| p.severity == Severity::Urgent);
-    let Some((m, _)) = &c.hud.msg else {
-        return alert.map(|p| {
-            let (_, value, title) = alert_face(c.s, p);
-            centred_notice(panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..default() }, 8.0, |u| {
-                u.icon(Icon::Urgent, 16.0, BAD);
-                u.bold(format!("{title}: {value}"), 13.0, INK);
-                if let Some((icon, _, label)) = fix_face(&p.fix) {
-                    u.icon_label_button(icon, label, 12.0, HudAction::Fix(p.fix, p.focus), FAINT, false);
-                }
-            }))
-        }).into_iter().collect();
-    };
+    let Some((m, _)) = &c.hud.msg else { return Vec::new() };
     let row = panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..default() }, 6.0, |u| {
         if let Some((i, col)) = m.icon {
             u.icon(i, 16.0, col);
@@ -1118,13 +970,9 @@ pub fn lane(c: &Ctx) -> Vec<VNode> {
             u.bold(m.text.clone(), 12.5, INK);
         }
     });
-    vec![centred_notice(row)]
-}
-
-fn centred_notice(row: VNode) -> VNode {
     let mut v = VNode::new(Node { justify_content: JustifyContent::Center, ..abs(Some(0.0), Some(0.0), Some(58.0), None) });
     v.children.push(row);
-    v
+    vec![v]
 }
 
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {
@@ -1140,21 +988,14 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
             Some(sim::maintenance::Refit::Reinforce)=>"Reinforcing",
             None=>"Building",
         };
-        return Some(if !waiting.is_empty() && !site.labour_open() {(None,"Waiting for materials".into(),waiting,WARN)}
-            else if slots>0 && empty==slots {(Some(Icon::RoleBuilder),if s.work.auto_organise{"Queued — workforce busy"}else{"Needs builders"}.into(),vec![],MUTED)}
+        return Some(if !waiting.is_empty() && !site.labour_open() {(None,"Waiting".into(),waiting,WARN)}
+            else if slots>0 && empty==slots {(Some(Icon::RoleBuilder),if s.work.auto_organise{"Queued"}else{"No builders"}.into(),vec![],MUTED)}
             else {(Some(Icon::Hammer),stage.into(),vec![],GOOD)});
     }
-    if b.is_complete() && !b.operational() {return Some((Some(Icon::Hammer),"Ruined — needs repairs".into(),vec![],BAD));}
+    if b.is_complete() && !b.operational() {return Some((Some(Icon::Hammer),"Ruined".into(),vec![],BAD));}
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
-        (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (None, "High and dry".into(), vec![], WARN),
-        (Status::Complete, _) if b.kind == BuildingKind::WaterWheel => {
-            if b.output > 0.0 {
-                (Some(Icon::Wheel), format!("{:.0}%", b.output * 100.0), vec![], GOOD)
-            } else {
-                (None, "No current".into(), vec![], WARN)
-            }
-        }
-        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), if s.work.auto_organise{"Idle — automatic staffing"}else{"No workers"}.into(), vec![], if s.work.auto_organise{MUTED}else{WARN}),
+        (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (Some(Icon::Flood), "Dry".into(), vec![], WARN),
+        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), "Idle".into(), vec![], if s.work.auto_organise{MUTED}else{WARN}),
         (Status::Complete, _) => (None, "Working".into(), vec![], if empty > 0 { WARN } else { GOOD }),
         (_, Some(site)) => {
             let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();

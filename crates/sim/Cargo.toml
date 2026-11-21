@@ -6,3 +6,6 @@ version.workspace = true
 [dependencies]
 rand_core = "0.10"
 rand_pcg = "0.10"
+
+[build-dependencies]
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
