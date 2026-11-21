@@ -144,7 +144,7 @@ fn menu_keys(
         Some(Screen::Settings) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.open_cat.is_some() || h.colony.is_some() || h.search.is_some() || h.order_mode.is_some() || h.help);
+            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
                 menu.was_paused = clock.paused;
                 clock.paused = true;
@@ -497,27 +497,25 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
         button(r, if menu.auto_pause { "On" } else { "Off" }, MenuAction::ToggleAutoPause, if menu.auto_pause { GOOD.with_alpha(0.25) } else { FAINT }, menu.auto_pause);
     });
     hud::bold(p, "Keys", 12.0, MUTED);
-    hud::text(p, "Scroll to see all controls", 11.0, MUTED);
     for (k, v) in [
         ("Select", "LMB"),
-        ("Move", "RMB / M then click"),
-        ("Gather / work", "G / R then click"),
-        ("Cancel", "RMB / Esc"),
-        ("Orbit", "Middle drag"),
-        ("Pan", "WASD"),
-        ("Rotate", "Q E"),
+        ("Order selected beavers", "RMB"),
+        ("Step back", "RMB / Esc"),
+        ("Pan", "WASD / arrows"),
+        ("Rotate", "Q E / middle drag"),
         ("Zoom", "Wheel"),
-        ("Build", "Z X C V B N"),
-        ("Crest", "[ ]"),
-        ("Views", "F1–F5 / Alt"),
-        ("Tree canopies", "F8"),
-        ("Colony", "Tab / J / L"),
-        ("Idle", "I"),
-        ("Help", "H"),
-        ("Search", "/"),
+        ("Dam, shelter, warehouse", "Z X C"),
+        ("Gather, cut trees", "G T"),
+        ("Build the dam", "Enter"),
         ("Undo", "Ctrl+Z"),
-        ("Pause", "Space"),
-        ("Speed", "1 2 3"),
+        ("Water, forest, height", "F1 F2 F3"),
+        ("Peek water", "Alt"),
+        ("Tree canopies", "F8"),
+        ("Colony book", "Tab"),
+        ("Next free beaver", "I"),
+        ("Pause, speed", "Space, 1 2 3"),
+        ("Volume", "- =  [ ]  ; '  , ."),
+        ("Mute", "M"),
         ("Menu", "Esc"),
     ] {
         p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {

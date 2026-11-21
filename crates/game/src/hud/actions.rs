@@ -111,9 +111,10 @@ pub(super) fn button_actions(
                 clock.set_speed(sp);
                 hud.set_changed();
             }
-            HudAction::OpenCat(i) => {
-                hud.open_cat = if hud.open_cat == Some(i) { None } else { Some(i) };
-                hud.search = None;
+            HudAction::Harvest(h) => {
+                let t = Tool::Harvest(h);
+                let next = if hud.tool == t { Tool::None } else { t };
+                hud.set_tool(next);
             }
             HudAction::Pick(kind) => {
                 let t = match kind {
@@ -123,7 +124,6 @@ pub(super) fn button_actions(
                 if s.can_build(kind) {
                     let next = if hud.tool == t { Tool::None } else { t };
                     hud.set_tool(next);
-                    hud.search = None;
                     *sel = Selection::None;
                 }
             }
@@ -162,7 +162,6 @@ pub(super) fn button_actions(
             HudAction::Undo => undo_last(s, &mut hud, now),
             HudAction::Colony(t) => hud.colony = t,
             HudAction::ToggleDetails => hud.details_open = !hud.details_open,
-            HudAction::ToggleMinimap => hud.minimap_collapsed = !hud.minimap_collapsed,
             HudAction::SelectBeaver(id) => {
                 *sel = Selection::Beaver(id);
                 hud.selected = vec![id];

@@ -262,11 +262,6 @@ impl Ui {
         v.kind = Kind::Image(h);
         self.add(v)
     }
-    pub fn swatch(&mut self, c: Color, w: f32, h: f32) -> &mut VNode {
-        let mut v = VNode::new(Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(2.0)), flex_shrink: 0.0, ..default() });
-        v.bg = c;
-        self.add(v)
-    }
     /// A pebble button: an eight-sided stone around one icon.
     pub fn pebble(&mut self, icon: Icon, px: f32, action: HudAction, look: Peb) -> &mut VNode {
         let side = (px * 1.9).round().max(22.0);

@@ -1,4 +1,4 @@
-use crate::build_logic::{Group, PlaceError};
+use crate::build_logic::PlaceError;
 use crate::icons::Icon;
 use bevy::prelude::Color;
 use sim::buildings::{BuildingKind, Good};
@@ -37,13 +37,6 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         Dam => Icon::Dam,
         Shelter => Icon::Lodge,
         Warehouse => Icon::Warehouse,
-    }
-}
-
-pub fn group_icon(g: Group) -> Icon {
-    match g {
-        Group::Water => Icon::CatWater,
-        Group::Home => Icon::CatBuilding,
     }
 }
 

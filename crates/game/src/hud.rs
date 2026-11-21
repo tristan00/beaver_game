@@ -13,7 +13,7 @@ mod world;
 
 use actions::{button_actions, commit_line, undo_last};
 pub use actions::drawn_area;
-use input::{pointer_over_ui, track_cursor, hover_cell, hotkeys, next_idle, world_input, box_select, frame_camera, follow_beaver, search_input};
+use input::{pointer_over_ui, track_cursor, hover_cell, hotkeys, next_idle, world_input, box_select, frame_camera, follow_beaver};
 use minimap::{MinimapImage, setup_minimap, update_minimap, minimap_click};
 
 use crate::build_logic::{self, BuildOrder};
@@ -46,8 +46,6 @@ pub(crate) fn row(gap: f32) -> Node {
     ui::row_node(gap)
 }
 
-const CAT_KEYS: [KeyCode; 6] = [KeyCode::KeyZ, KeyCode::KeyX, KeyCode::KeyC, KeyCode::KeyV, KeyCode::KeyB, KeyCode::KeyN];
-pub(crate) const CAT_KEY_LABELS: [&str; 6] = ["Z", "X", "C", "V", "B", "N"];
 const REFRESH_SECS: f32 = 0.1;
 const MSG_SECS: f32 = 3.0;
 
@@ -57,6 +55,14 @@ pub enum Tool {
     None,
     Building(BuildingKind),
     Dam,
+    /// Send beavers to gather (food or clay) or cut trees: click a spot or drag an area.
+    Harvest(Harvest),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Harvest {
+    Gather,
+    Cut,
 }
 
 /// The dam panel's two pages.
@@ -89,7 +95,6 @@ pub use crate::build_logic::LinePlan;
 
 #[derive(Resource)]
 pub struct HudState {
-    pub open_cat: Option<usize>,
     pub tool: Tool,
     pub drag_from: Option<Cell>,
     /// Corners of the dam line being drawn; `line` is the cells through them.
@@ -107,10 +112,8 @@ pub struct HudState {
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
     pub colony: Option<ColonyTab>,
-    pub search: Option<String>,
     undo: Vec<UndoItem>,
     pub details_open: bool,
-    pub minimap_collapsed: bool,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
     // Compatibility with the current menu, renderer and input recorder. This
@@ -171,7 +174,6 @@ pub fn reset_for_new_game(world: &mut World) {
 impl Default for HudState {
     fn default() -> Self {
         HudState {
-            open_cat: None,
             tool: Tool::None,
             drag_from: None,
             corners: Vec::new(),
@@ -184,10 +186,8 @@ impl Default for HudState {
             msg: None,
             idle_cursor: 0,
             colony: None,
-            search: None,
             undo: Vec::new(),
             details_open: false,
-            minimap_collapsed: false,
             selected: Vec::new(),
             follow: None,
             order_mode: None,
@@ -218,8 +218,6 @@ impl HudState {
     }
     fn finish_placement(&mut self) {
         self.set_tool(Tool::None);
-        self.open_cat = None;
-        self.search = None;
     }
 
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
@@ -361,7 +359,7 @@ pub enum HudAction {
     CycleIdle,
     Pause,
     Speed(Speed),
-    OpenCat(usize),
+    Harvest(Harvest),
     Pick(BuildingKind),
     CancelTool,
     GrowDam(BuildingId, sim::DamGrowth),
@@ -374,7 +372,6 @@ pub enum HudAction {
     Undo,
     Colony(Option<ColonyTab>),
     ToggleDetails,
-    ToggleMinimap,
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
     Follow(BeaverId),
@@ -438,7 +435,7 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
+                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver),
                     (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay),
                 )
                     .chain()
@@ -630,37 +627,6 @@ fn refresh_fast(
         };
         ui::reconcile(&mut commands, &icons, e, &mut m, tree, 0);
     }
-}
-
-const SYNONYMS: [(&str, &[BuildingKind]); 6] = [
-    ("food", &[BuildingKind::Warehouse]),
-    ("stor", &[BuildingKind::Warehouse]),
-    ("home", &[BuildingKind::Shelter]),
-    ("house", &[BuildingKind::Shelter]),
-    ("lodge", &[BuildingKind::Shelter]),
-    ("water", &[BuildingKind::Dam]),
-];
-
-pub(crate) fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::MenuEntry> {
-    let q = q.trim().to_lowercase();
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let menu = build_logic::menu(s);
-    let mut out: Vec<build_logic::MenuEntry> = menu.iter().filter(|e| e.kind.spec().name.to_lowercase().contains(&q)).cloned().collect();
-    for (word, kinds) in SYNONYMS {
-        if word.starts_with(&q) || q.starts_with(word) {
-            for k in kinds {
-                if !out.iter().any(|e| e.kind == *k) {
-                    if let Some(e) = menu.iter().find(|e| e.kind == *k) {
-                        out.push(e.clone());
-                    }
-                }
-            }
-        }
-    }
-    out.sort_by_key(|e| !e.unlocked);
-    out
 }
 
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {

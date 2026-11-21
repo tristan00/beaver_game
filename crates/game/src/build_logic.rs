@@ -5,40 +5,21 @@ use sim::{Command, SimState};
 
 pub const MAX_DAM_CELLS: usize = sim::dams::MAX_CELLS;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Group {
-    Water,
-    Home,
-}
-
-impl Group {
-    pub fn name(self) -> &'static str {
-        match self {
-            Group::Water => "Water",
-            Group::Home => "Lodging",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuEntry {
     pub kind: BuildingKind,
-    pub group: Group,
     pub unlocked: bool,
     pub need: Option<&'static str>,
 }
 
 pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
-    let mut out: Vec<_> = BuildingKind::ALL
+    BuildingKind::ALL
         .into_iter()
         .map(|kind| {
-            let group = if kind == BuildingKind::Dam { Group::Water } else { Group::Home };
             let need = sim.missing_prerequisites(kind).first().map(|k| k.spec().name);
-            MenuEntry { kind, group, unlocked: sim.can_build(kind), need }
+            MenuEntry { kind, unlocked: sim.can_build(kind), need }
         })
-        .collect();
-    out.sort_by_key(|e| e.group as usize);
-    out
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]

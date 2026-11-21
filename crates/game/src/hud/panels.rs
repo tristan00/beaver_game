@@ -1,7 +1,7 @@
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, HudAction, HudState, MapLens, Tool, CAT_KEY_LABELS};
-use crate::build_logic::{self, Group};
+use super::{ColonyTab, Harvest, HudAction, HudState, MapLens, Tool};
+use crate::build_logic;
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use crate::sim_driver::{SimClock, Speed};
@@ -32,9 +32,7 @@ impl Ctx<'_> {
     }
 }
 
-pub const STRIP_GOODS: [Good; 3] = Good::ALL;
 pub const RIGHT_W: f32 = 320.0;
-pub const RIGHT_BOTTOM: f32 = 150.0;
 
 fn abs(left: Option<f32>, right: Option<f32>, top: Option<f32>, bottom: Option<f32>) -> Node {
     let v = |x: Option<f32>| x.map_or(Val::Auto, Val::Px);
@@ -67,16 +65,6 @@ pub fn food_days(s: &sim::SimState) -> Option<f32> {
     let need = sim::hud::food_need_per_day(s).max(s.ledger.out_per_day(Good::Food));
     let gain = s.ledger.in_per_day(Good::Food);
     (need > gain + 1e-3).then(|| s.buildings.stores.amount(Good::Food) / (need - gain))
-}
-
-fn rate_color(r: f32) -> Color {
-    if r > 0.05 {
-        GOOD
-    } else if r < -0.05 {
-        BAD
-    } else {
-        MUTED
-    }
 }
 
 pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) -> Vec<TipLine> {
@@ -443,16 +431,6 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
-pub fn categories(s: &sim::SimState) -> Vec<Group> {
-    let mut out: Vec<Group> = Vec::new();
-    for e in build_logic::menu(s) {
-        if !out.contains(&e.group) {
-            out.push(e.group);
-        }
-    }
-    out
-}
-
 fn cost_row(u: &mut Ui, cost: &[(Good, f32)], size: f32, col: Color) {
     u.row(6.0, |r| {
         for (g, a) in cost {
@@ -497,90 +475,33 @@ pub fn gap_line(k: &BuildingKind) -> TipLine {
     TipLine::new(k.spec().name, "Finish first").icon(building_icon(*k), INK)
 }
 
-fn item_tile(u: &mut Ui, s: &sim::SimState, e: &build_logic::MenuEntry, selected: bool) {
-    let kind = e.kind;
-    let tile = u.col(3.0, |t| {
-        t.row(4.0, |r| {
-            r.icon(building_icon(kind), 30.0, if e.unlocked { INK } else { MUTED });
-            if !e.unlocked {
-                r.icon(Icon::Padlock, 13.0, MUTED);
-            }
-        });
-        if e.unlocked {
-            cost_row(t, &item_cost(kind), 12.0, MUTED);
-
-        }
-    });
-    tile.node.padding = UiRect::all(Val::Px(6.0));
-    tile.node.align_items = AlignItems::Center;
-    tile.node.min_width = Val::Px(64.0);
-    tile.node.border = UiRect::all(Val::Px(if selected { 2.0 } else { 1.0 }));
-    tile.node.border_radius = BorderRadius::all(Val::Px(5.0));
-    tile.bg = if selected { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT };
-    tile.border = Some(BorderColor::all(if selected { SELECT } else { Color::NONE }));
-    tile.action(HudAction::Pick(kind)).tip(item_tip(s, e));
-}
-
-pub fn search_matches(s: &sim::SimState, q: &str) -> Vec<build_logic::MenuEntry> {
-    super::search_matches(s, q)
-}
-
+/// Bottom: what can I make or order? Three buildings, two orders and undo, in one row.
 pub fn bottom(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let hud = c.hud;
-    let mut out = Vec::new();
-    if c.placing() {
-        if hud.tool == Tool::Dam {
-            return out;
+    let menu = build_logic::menu(s);
+    vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)), ..default() }, 7.0, |u| {
+        for (kind, key) in [(BuildingKind::Dam, "Z"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C")] {
+            let tool = if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) };
+            let on = hud.tool == tool;
+            let unlocked = menu.iter().any(|e| e.kind == kind && e.unlocked);
+            let look = if on { Peb::On } else if unlocked { Peb::Idle } else { Peb::Faded };
+            let mut tip = menu.iter().find(|e| e.kind == kind).map(|e| item_tip(s, e)).unwrap_or_else(|| Tip::name(kind.spec().name));
+            tip = tip.key(key);
+            u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(tip);
         }
-        let (icon, name) = match hud.tool {
-            Tool::Building(k) => (building_icon(k), k.spec().name),
-            _ => (Icon::Dam, "Dam"),
-        };
-        out.push(centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)), ..default() }, 10.0, |u| {
-            u.icon(icon, 24.0, INK).tip(Tip::name(name));
-            u.icon_button(Icon::Cross, 13.0, HudAction::CancelTool, FAINT, false).tip(Tip::name("Done").key("Esc"));
-        })));
-        return out;
-    }
-    let cats = categories(s);
-    out.push(centred(12.0, panel_row(Node { padding: UiRect::all(Val::Px(6.0)), ..default() }, 6.0, |u| {
-        for (i, g) in cats.iter().enumerate() {
-            let open = hud.open_cat == Some(i);
-            u.icon_button(group_icon(*g), 22.0, HudAction::OpenCat(i), if open { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { FAINT }, open).tip(Tip::name(g.name()).key(CAT_KEY_LABELS.get(i).copied().unwrap_or("")));
+        u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
+        for (h, icon, name, line, key) in [
+            (Harvest::Gather, Icon::Plant, "Gather", "Click food or clay, or drag an area", "G"),
+            (Harvest::Cut, Icon::Tree, "Cut trees", "Click a tree, or drag an area", "T"),
+        ] {
+            let on = hud.tool == Tool::Harvest(h);
+            u.pebble(icon, 20.0, HudAction::Harvest(h), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).line(line, "").line("Selected beavers, or free ones", "").key(key));
         }
-        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(26.0), margin: UiRect::horizontal(Val::Px(2.0)), ..default() })).bg(TIMBER.with_alpha(0.35));
+        u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
         let can_undo = !hud.undo_is_empty();
-        u.icon_button(Icon::Undo, 18.0, HudAction::Undo, FAINT, false).tip(Tip::name("Undo").key("Ctrl+Z")).style(|_| {}).bg = if can_undo { FAINT } else { Color::NONE };
-    })));
-    let entries: Option<(Option<String>, Vec<build_logic::MenuEntry>)> = if let Some(q) = &hud.search {
-        Some((Some(q.clone()), search_matches(s, q)))
-    } else {
-        hud.open_cat.and_then(|i| cats.get(i).copied()).map(|g| (None, build_logic::menu(s).into_iter().filter(|e| e.group == g).collect()))
-    };
-    if let Some((query, entries)) = entries {
-        out.push(centred(72.0, panel_row(Node { padding: UiRect::all(Val::Px(6.0)), ..default() }, 6.0, |u| {
-            if let Some(q) = &query {
-                u.row(4.0, |r| {
-                    r.icon(Icon::Search, 16.0, MUTED);
-                    r.bold(format!("{q}_"), 13.0, INK);
-                })
-                .style(|n| n.min_width = Val::Px(90.0));
-                if entries.is_empty() {
-                    u.text("None", 12.0, MUTED);
-                }
-            }
-            for e in &entries {
-                let selected = match hud.tool {
-                    Tool::Building(k) => k == e.kind,
-                    Tool::Dam => e.kind == BuildingKind::Dam,
-                    Tool::None => false,
-                };
-                item_tile(u, s, e, selected);
-            }
-        })));
-    }
-    out
+        u.pebble(Icon::Undo, 17.0, HudAction::Undo, if can_undo { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Undo").key("Ctrl+Z"));
+    }))]
 }
 
 pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
@@ -647,11 +568,30 @@ pub fn settle_tag(s: &sim::SimState, flow: &crate::flow::Flow, cell: Cell, cur: 
     vec![v]
 }
 
+/// The beavers an order would send: the selection, or every free one.
+pub fn order_crew(s: &sim::SimState, hud: &HudState) -> Vec<sim::colony::BeaverId> {
+    if !hud.selected.is_empty() {
+        return hud.selected.clone();
+    }
+    sim::hud::idle_beavers(s)
+}
+
 pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
+    if let (Tool::Harvest(h), Some(cur)) = (c.hud.tool, c.cursor) {
+        let n = order_crew(c.s, c.hud).len();
+        let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, ..abs(Some(cur.x + 20.0), None, Some(cur.y + 16.0), None) });
+        let mut ui = Ui::default();
+        ui.icon(if h == Harvest::Cut { Icon::Tree } else { Icon::Plant }, 16.0, if h == Harvest::Cut { GOOD } else { GOOD });
+        ui.icon(Icon::Beaver, 16.0, if n == 0 { BAD } else { FUR });
+        ui.bold(format!("{n}"), 14.0, if n == 0 { BAD } else { INK });
+        v.children = ui.nodes;
+        v.skin(if n == 0 { Skin::PlateBad } else { Skin::Plate });
+        return vec![v];
+    }
     let (Tool::Building(kind), Some(cell), Some(cur)) = (c.hud.tool, c.hover, c.cursor) else { return Vec::new() };
     let pv = build_logic::site_preview(c.s, kind, cell);
-    let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
-    v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
+    let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, ..abs(Some(cur.x + 20.0), None, Some(cur.y + 16.0), None) });
+    v.skin(if pv.verdict.is_ok() { Skin::Plate } else { Skin::PlateBad });
     let mut ui = Ui::default();
     match &pv.verdict {
         Ok(()) => {

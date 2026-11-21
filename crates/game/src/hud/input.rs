@@ -1,6 +1,5 @@
 //! Keyboard, pointer, selection and camera interaction.
 use super::*;
-use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::window::PrimaryWindow;
 
@@ -57,9 +56,28 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::KeyI) {
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
     }
-    if keys.just_pressed(KeyCode::Slash) {
-        hud.search = Some(String::new());
-        return;
+    if !ctrl {
+        let tools = [
+            (KeyCode::KeyZ, Tool::Dam),
+            (KeyCode::KeyX, Tool::Building(BuildingKind::Shelter)),
+            (KeyCode::KeyC, Tool::Building(BuildingKind::Warehouse)),
+            (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
+            (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
+        ];
+        for (k, t) in tools {
+            if keys.just_pressed(k) {
+                let allowed = match t {
+                    Tool::Dam => sim.0.can_build(BuildingKind::Dam),
+                    Tool::Building(kind) => sim.0.can_build(kind),
+                    _ => true,
+                };
+                if allowed {
+                    let next = if hud.tool == t { Tool::None } else { t };
+                    hud.set_tool(next);
+                    *sel = Selection::None;
+                }
+            }
+        }
     }
     if keys.just_pressed(KeyCode::Escape) {
         if hud.area_edit.is_some() {
@@ -69,19 +87,10 @@ pub(super) fn hotkeys(
             hud.set_tool(Tool::None);
         } else if hud.colony.is_some() {
             hud.colony = None;
-        } else if hud.open_cat.is_some() {
-            hud.open_cat = None;
         } else if *sel != Selection::None || !hud.selected.is_empty() {
             *sel = Selection::None;
             hud.selected.clear();
             hud.follow = None;
-        }
-    }
-    let n = panels::categories(&sim.0).len();
-    for (i, k) in CAT_KEYS.iter().enumerate().take(n) {
-        if !ctrl && keys.just_pressed(*k) {
-            hud.open_cat = if hud.open_cat == Some(i) { None } else { Some(i) };
-            hud.search = None;
         }
     }
 }
@@ -146,7 +155,7 @@ pub(super) fn world_input(
         undo_last(&mut sim.0, &mut hud, now);
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) && hud.tool == Tool::Dam && hud.search.is_none() {
+    if keys.just_pressed(KeyCode::Enter) && hud.tool == Tool::Dam {
         if let Some(id) = commit_line(&mut sim.0, &mut hud, now) {
             *sel = Selection::Site(id);
             hud.selected.clear();
@@ -244,6 +253,15 @@ pub(super) fn world_input(
                     hud.follow = None;
                 }
                 let _ = point;
+            }
+        }
+        Tool::Harvest(h) => {
+            if mouse.just_pressed(MouseButton::Left) {
+                hud.drag_from = Some(cell);
+            } else if mouse.just_released(MouseButton::Left) {
+                if let Some(from) = hud.drag_from.take() {
+                    harvest(&mut sim.0, &mut hud, h, from, cell, now);
+                }
             }
         }
         Tool::Building(_) | Tool::Dam if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
@@ -368,51 +386,6 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
     }
 }
 
-pub(super) fn search_input(mut keys: MessageReader<KeyboardInput>, sim: Res<Sim>, mut hud: ResMut<HudState>, mut typing: ResMut<TextCapture>) {
-    let open = hud.search.is_some();
-    if typing.0 != open {
-        typing.0 = open;
-    }
-    if !open {
-        keys.clear();
-        return;
-    }
-    for ev in keys.read() {
-        if !ev.state.is_pressed() {
-            continue;
-        }
-        match &ev.logical_key {
-            Key::Escape => hud.search = None,
-            Key::Backspace => {
-                if let Some(q) = hud.search.as_mut() {
-                    q.pop();
-                }
-            }
-            Key::Enter => {
-                let q = hud.search.clone().unwrap_or_default();
-                if let Some(e) = search_matches(&sim.0, &q).into_iter().find(|e| e.unlocked) {
-                    let t = match e.kind {
-                        BuildingKind::Dam => Tool::Dam,
-                        k => Tool::Building(k),
-                    };
-                    hud.set_tool(t);
-                }
-                hud.search = None;
-            }
-            _ => {
-                if let Some(t) = &ev.text {
-                    let add: String = t.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
-                    if !add.is_empty() {
-                        if let Some(q) = hud.search.as_mut() {
-                            q.push_str(&add);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    typing.0 = hud.search.is_some();
-}
 
 /// The end of the selected dam under the pointer: grabbing it starts an extension.
 fn dam_end_at(s: &sim::SimState, sel: Selection, cell: Cell) -> Option<Cell> {
@@ -420,4 +393,38 @@ fn dam_end_at(s: &sim::SimState, sel: Selection, cell: Cell) -> Option<Cell> {
     let d = sim::dams::dam(s, id)?;
     let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
     [line.first(), line.last()].into_iter().flatten().copied().find(|e| *e == cell)
+}
+
+/// Send beavers to gather or cut: one spot gathers around it, a drag covers the area.
+fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Cell, now: f32) {
+    use sim::resources::ResourceKind as R;
+    let who = panels::order_crew(s, hud);
+    if who.is_empty() {
+        hud.say(Some((Icon::Beaver, BAD)), Some((Icon::Cross, BAD)), "0", now);
+        return;
+    }
+    let max = s.world.size - 1;
+    let area = if a == b {
+        let r = 6;
+        sim::work::Area { min: (a.0.saturating_sub(r), a.1.saturating_sub(r)), max: ((a.0 + r).min(max), (a.1 + r).min(max)) }
+    } else {
+        sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
+    };
+    let wanted: &[R] = match h {
+        Harvest::Cut => &[R::Tree],
+        Harvest::Gather => &[R::Plant, R::MudBank, R::RiverClay],
+    };
+    let here = |k: R| s.resources.items.iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverClay));
+    let at_click = s.resources.at(a).find(|r| wanted.contains(&r.kind)).map(|r| r.kind);
+    let Some(kind) = at_click.or_else(|| wanted.iter().copied().find(|k| here(*k))) else {
+        hud.say(Some((if h == Harvest::Cut { Icon::Tree } else { Icon::Plant }, BAD)), Some((Icon::Cross, BAD)), "", now);
+        return;
+    };
+    match s.apply(sim::Command::Assign { who: who.clone(), to: Some(sim::agents::Assignment::Area(kind, area)) }) {
+        Ok(_) => {
+            hud.say(Some((resource_icon(kind), GOOD)), Some((Icon::Beaver, ui::FUR)), format!("{}", who.len()), now);
+            hud.set_tool(Tool::None);
+        }
+        Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+    }
 }

@@ -504,6 +504,14 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
         Tool::Dam => draw_line_ghost(&mut g, s, &hud, hover.0),
+        Tool::Harvest(_) => {
+            if let (Some(a), Some(b)) = (hud.drag_from, hover.0) {
+                let area = sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) };
+                area_outline(&mut g, h, area, ACCENT);
+            } else if let Some(c) = hover.0 {
+                ring(&mut g, cell_world(h, (c.0 as f32, c.1 as f32)).with_y(height_at(h, c.0 as f32, c.1 as f32) + 0.2), 0.45, ACCENT);
+            }
+        }
     }
     draw_dam_wear(&mut g, s);
 }
