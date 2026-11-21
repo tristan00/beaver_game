@@ -174,7 +174,7 @@ fn cross_section(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
                 if built > 0.0 {
                     tip = tip.line("Condition", format!("{:.0}%", sim::dams::integrity(s, cell.cell) * 100.0));
                 }
-                col.action(HudAction::DamCell(cell.cell)).tip(tip.line("Click", "pick for Raise").line("Shift", "add"));
+                col.action(HudAction::DamCell(cell.cell)).tip(tip.line("Click", "pick for Raise or Gate").line("Shift", "add"));
             }
         });
     })
@@ -204,6 +204,66 @@ fn grow_button(u: &mut Ui, icon: Icon, name: &str, id: BuildingId, growth: DamGr
     }
 }
 
+/// Turn the picked dam cell into a gate (suggested when the pond runs over the crest).
+fn gate_button(u: &mut Ui, id: BuildingId, plan: Result<f32, String>, suggested: bool) {
+    let ok = plan.is_ok();
+    let v = u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(3.0), ..default() }, |b| {
+        b.icon(Icon::Lock, 16.0, if ok { INK } else { FAINT.with_alpha(0.5) });
+        b.row(3.0, |x| {
+            x.icon(good_icon(Good::Sticks), 12.0, if ok { WOOD } else { MUTED });
+            x.bold(plan.as_ref().map(|c| format!("{}", c.round() as i64)).unwrap_or_else(|_| "-".into()), 11.5, if ok { INK } else { MUTED });
+        });
+    });
+    v.skin(if suggested && ok { Skin::PebbleOn } else { Skin::Pebble });
+    if !ok {
+        v.faded();
+    }
+    v.tip(match &plan {
+        Ok(c) => Tip::name("Gate").line("Let water through here", "").line("Sticks", num(*c)),
+        Err(e) => Tip::name("Gate").line(e.clone(), ""),
+    });
+    if ok {
+        v.action(HudAction::AddDamGate(id));
+    }
+}
+
+/// One row per gate on the dam: Shut, Level (with the sill nudged in 5 cm steps) or Open.
+fn gate_rows(u: &mut Ui, id: BuildingId, d: &Dam) {
+    use sim::GateSetting;
+    for g in &d.gates {
+        let wanted = g.wanted();
+        // Level starts at the pond's own level: hold it where it stands.
+        let level_at = match wanted { GateSetting::Level(e) => e, _ => d.pond.as_ref().map_or(g.sill(), |p| p.level) };
+        u.row(5.0, |r| {
+            r.icon(Icon::Lock, 15.0, if g.built { WOOD } else { MUTED }).tip(if g.built {
+                Tip::name("Gate").line("Sill", num(g.sill()))
+            } else {
+                Tip::name("Gate").line("A builder brings its sticks", "")
+            });
+            for (setting, icon, name) in [(GateSetting::Shut, Icon::Lock, "Shut"), (GateSetting::Level(level_at), Icon::Crest, "Level"), (GateSetting::Open, Icon::Flood, "Open")] {
+                let on = std::mem::discriminant(&wanted) == std::mem::discriminant(&setting);
+                let mut tip = Tip::name(name);
+                tip = match setting {
+                    GateSetting::Shut => tip.line("Stands at the crest", ""),
+                    GateSetting::Level(_) => tip.line("Holds the pond at the sill", "").line("Sill", num(g.sill_of(setting))),
+                    GateSetting::Open => tip.line("Lets the pond down to the ground", ""),
+                };
+                if g.pending.is_some() && on {
+                    tip = tip.line("A builder will set it", "");
+                }
+                r.pebble(icon, 13.0, HudAction::SetGate(id, g.cell, setting), if on { Peb::On } else { Peb::Idle }).tip(tip);
+            }
+            r.spacer();
+            if matches!(wanted, GateSetting::Level(_)) {
+                r.pebble(Icon::Minus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at - sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Lower the sill").line("Step", "5 cm"));
+                let frac = ((g.sill_of(GateSetting::Level(level_at)) - g.floor) / (g.top - g.floor).max(0.05)).clamp(0.0, 1.0);
+                r.notches(frac, 6, 70.0, 10.0, WOOD);
+                r.pebble(Icon::Plus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at + sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Raise the sill").line("Step", "5 cm"));
+            }
+        });
+    }
+}
+
 fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
     let s = c.s;
     let cost = |plan: Result<sim::dams::Plan, String>| plan.map(|p| sim::dams::plan_cost(s, d, &p));
@@ -216,6 +276,12 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
         grow_button(r, Icon::Rise, if c.hud.dam_cells.is_empty() { "Raise" } else { "Raise picked cells" }, id, DamGrowth::Raise, raise.clone(), matches!(spill, Spill::Over(_)) && raise.is_ok());
         grow_button(r, Icon::Widen, "Widen", id, DamGrowth::Widen, widen, matches!(spill, Spill::Over(_)) && raise.is_err());
         grow_button(r, Icon::Extend, "Extend", id, DamGrowth::Extend, extend.clone(), extend.is_ok());
+        let gate = match c.hud.dam_cells.as_slice() {
+            [cell] => sim::dams::plan_gate(s, id, *cell),
+            [] => Err("pick a dam cell first".into()),
+            _ => Err("pick one cell".into()),
+        };
+        gate_button(r, id, gate, matches!(spill, Spill::Over(_)));
         r.spacer();
         let on = d.maintain;
         r.pebble(Icon::Hammer, 15.0, HudAction::DamMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Builders repair worn cells", ""));
@@ -295,6 +361,7 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
             DamTab::Status => {
                 pond_rows(c, u, d);
                 cross_section(c, u, id, d);
+                gate_rows(u, id, d);
                 actions(c, u, id, d);
             }
             DamTab::History => history(u, d),

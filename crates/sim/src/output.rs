@@ -20,9 +20,6 @@ impl Flow {
         v
     }
 
-    pub fn sum_per_day(&self) -> f32 {
-        self.per_day.iter().sum()
-    }
 }
 
 #[derive(Clone, Debug, Default)]

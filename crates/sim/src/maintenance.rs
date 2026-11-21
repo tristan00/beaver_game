@@ -44,7 +44,7 @@ pub fn quoted_cost(_s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Shelter,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam: None}}
+    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Shelter,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam: None, canal: None}}
     #[test]
     fn reinforcement_requires_materials_and_labour() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);

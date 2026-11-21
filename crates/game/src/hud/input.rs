@@ -53,6 +53,7 @@ pub(super) fn hotkeys(
     if !ctrl {
         let tools = [
             (KeyCode::KeyZ, Tool::Dam),
+            (KeyCode::KeyV, Tool::Canal),
             (KeyCode::KeyX, Tool::Building(BuildingKind::Shelter)),
             (KeyCode::KeyC, Tool::Building(BuildingKind::Warehouse)),
             (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
@@ -60,16 +61,9 @@ pub(super) fn hotkeys(
         ];
         for (k, t) in tools {
             if keys.just_pressed(k) {
-                let allowed = match t {
-                    Tool::Dam => sim.0.can_build(BuildingKind::Dam),
-                    Tool::Building(kind) => sim.0.can_build(kind),
-                    _ => true,
-                };
-                if allowed {
-                    let next = if hud.tool == t { Tool::None } else { t };
-                    hud.set_tool(next);
-                    *sel = Selection::None;
-                }
+                let next = if hud.tool == t { Tool::None } else { t };
+                hud.set_tool(next);
+                *sel = Selection::None;
             }
         }
     }
@@ -146,7 +140,7 @@ pub(super) fn world_input(
         undo_last(&mut sim.0, &mut hud, now);
         return;
     }
-    if keys.just_pressed(KeyCode::Enter) && hud.tool == Tool::Dam {
+    if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) {
         if let Some(id) = commit_line(&mut sim.0, &mut hud, now) {
             *sel = Selection::Site(id);
             hud.selected.clear();
@@ -157,9 +151,9 @@ pub(super) fn world_input(
         return;
     }
     if mouse.just_pressed(MouseButton::Right) {
-        if hud.tool == Tool::Dam && hud.corners.len() > usize::from(hud.extending.is_some()) {
+        if matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.corners.len() > usize::from(hud.extending.is_some()) {
             hud.corners.pop();
-            hud.line = build_logic::polyline(&hud.corners);
+            hud.line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&hud.corners) } else { build_logic::polyline(&hud.corners) };
             return;
         }
         if hud.tool != Tool::None {
@@ -241,7 +235,7 @@ pub(super) fn world_input(
                 }
             }
         }
-        Tool::Building(_) | Tool::Dam if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
+        Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
             hud.refuse("Unexplored", now);
         }
         Tool::Building(kind) => {
@@ -266,7 +260,7 @@ pub(super) fn world_input(
                 }
             }
         }
-        Tool::Dam => {
+        Tool::Dam | Tool::Canal => {
             // A click adds a corner; a drag draws a straight run to where it ends.
             // Moving without a button held changes nothing, so the confirm tag stays put.
             if mouse.just_pressed(MouseButton::Left) {
@@ -281,7 +275,8 @@ pub(super) fn world_input(
             if hud.drag_from.is_some() && live.last() != Some(&cell) {
                 live.push(cell);
             }
-            let line = build_logic::polyline(&live);
+            // A canal runs cell to cell across faces, never on a corner.
+            let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&live) } else { build_logic::polyline(&live) };
             if line != hud.line {
                 hud.line = line;
             }

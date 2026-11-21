@@ -1,5 +1,5 @@
 //! Player commands and their validation/dispatch boundary.
-use crate::{SimError, SimState, agents, buildings, colony, dams, forestry, invalid, jobs, maintenance, sandbox, society, starts, water, work};
+use crate::{SimError, SimState, agents, buildings, canals, colony, dams, forestry, gates, invalid, jobs, maintenance, sandbox, society, starts, water, work};
 
 /// How a dam grows when the player asks for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +24,15 @@ pub enum Command {
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
+    /// Draw a new canal from water along these cells; diggers then dig every cell.
+    PlaceCanal { cells: Vec<water::Cell> },
+    /// Grow a canal; `cells` narrows Deepen and Widen to those cells, or is the route Extend adds.
+    GrowCanal { canal: buildings::BuildingId, growth: canals::CanalGrowth, cells: Vec<water::Cell> },
+    SetCanalMaintain { canal: buildings::BuildingId, on: bool },
+    /// Make a dam cell a gate.
+    AddDamGate { dam: buildings::BuildingId, cell: water::Cell },
+    /// Ask for a gate setting on a dam or canal; a builder makes the change.
+    SetGate { building: buildings::BuildingId, cell: water::Cell, setting: gates::GateSetting },
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
@@ -94,8 +103,6 @@ mod tests {
     }
 }
 
-/// Seconds each part of `SimState::step` has taken since the counters were last cleared.
-
 impl SimState {
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         // Preserve synchronous input feedback on a presentation snapshot. Only
@@ -150,6 +157,20 @@ impl SimState {
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
                 self.water.dig_canal(&mut self.height, &cells, depth).map_err(invalid)
+            }
+            Command::PlaceCanal { cells } => canals::place(self, &cells).map(|_| ()),
+            Command::GrowCanal { canal, growth, cells } => canals::grow(self, canal, growth, &cells),
+            Command::SetCanalMaintain { canal, on } => canals::set_maintain(self, canal, on),
+            Command::AddDamGate { dam, cell } => dams::add_gate(self, dam, cell),
+            Command::SetGate { building, cell, setting } => {
+                if canals::canal(self, building).is_some() {
+                    if canals::canal(self, building).is_some_and(|k| k.gate.cell != cell) {
+                        return Err(SimError::InvalidCommand("no gate there".into()));
+                    }
+                    canals::set_gate(self, building, setting)
+                } else {
+                    dams::set_gate(self, building, cell, setting)
+                }
             }
             Command::Assign { who, to } => {
                 if let Some(kit) = who.iter().find(|id| to.is_some() && !matches!(to, Some(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| b.stage == colony::Stage::Kit)) {

@@ -3,6 +3,7 @@ mod actions;
 mod input;
 mod minimap;
 mod colony;
+mod canal_panel;
 mod dam_panel;
 mod elevation;
 mod inspect;
@@ -54,6 +55,8 @@ pub enum Tool {
     None,
     Building(BuildingKind),
     Dam,
+    /// Draw a canal: from water, over land.
+    Canal,
     /// Send beavers to gather (food or clay) or cut trees: click a spot or drag an area.
     Harvest(Harvest),
 }
@@ -98,6 +101,8 @@ pub struct HudState {
     pub line: Vec<Cell>,
     /// What the drawn line would build, worked out once per change of line.
     pub plan: Option<LinePlan>,
+    /// What the drawn canal would dig, worked out once per change of line.
+    pub canal_plan: Option<(Vec<Cell>, Result<sim::canals::Plan, String>)>,
     /// Set while a dam is being lengthened from one of its ends.
     pub extending: Option<BuildingId>,
     /// Cells picked in the dam panel's cross-section; raises apply to them only.
@@ -170,6 +175,7 @@ impl Default for HudState {
             corners: Vec::new(),
             line: Vec::new(),
             plan: None,
+            canal_plan: None,
             extending: None,
             dam_cells: Vec::new(),
             dam_tab: DamTab::Status,
@@ -199,6 +205,7 @@ impl HudState {
         self.line.clear();
         self.corners.clear();
         self.plan = None;
+        self.canal_plan = None;
         self.extending = None;
     }
     fn finish_placement(&mut self) {
@@ -348,6 +355,11 @@ pub enum HudAction {
     CancelTool,
     GrowDam(BuildingId, sim::DamGrowth),
     DamMaintain(BuildingId, bool),
+    /// Make the picked dam cell a gate.
+    AddDamGate(BuildingId),
+    SetGate(BuildingId, Cell, sim::GateSetting),
+    GrowCanal(BuildingId, sim::CanalGrowth),
+    CanalMaintain(BuildingId, bool),
     DamCell(Cell),
     DamTab(DamTab),
     ConfirmLine,
@@ -490,6 +502,13 @@ fn refresh_panels(
             hud.plan = Some(build_logic::line_plan(s, &hud.line, hud.extending));
         }
     }
+    if hud.tool == Tool::Canal && hud.line.len() > 1 && hud.extending.is_none() {
+        let stale = hud.canal_plan.as_ref().is_none_or(|p| p.0 != hud.line);
+        if stale {
+            let line = hud.line.clone();
+            hud.canal_plan = Some((line.clone(), sim::canals::plan(s, &line)));
+        }
+    }
     if let Selection::Site(id) = *sel {
         if let Some(d) = sim::dams::dam(s, id) {
             let day = s.time_days.floor();
@@ -576,7 +595,20 @@ fn refresh_fast(
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
                 let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0 };
-                if hud.tool == Tool::Dam {
+                if hud.tool == Tool::Canal {
+                    let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
+                    let corner = hud.corners.last().and_then(|c| {
+                        let (cam, gt) = cams.single().ok()?;
+                        let mut w = cell_world(&s.height, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
+                        w.y += 0.6;
+                        cam.world_to_viewport(gt, w).ok().map(|v| v / scale.0.max(0.01))
+                    });
+                    match (hud.drag_from.is_some(), cursor.0, corner) {
+                        (true, Some(at), _) => panels::canal_tag(&ctx, at, false, win),
+                        (false, _, Some(at)) => panels::canal_tag(&ctx, at, true, win),
+                        _ => Vec::new(),
+                    }
+                } else if hud.tool == Tool::Dam {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let dragging = hud.drag_from.is_some();
                     let corner = hud.corners.last().and_then(|c| {
@@ -606,6 +638,6 @@ fn refresh_fast(
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
-    let shown = if alt || hud.tool == Tool::Dam { MapLens::Water } else { *lens };
+    let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

@@ -1,6 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/society_constants.rs"));
 use crate::colony::Colony;
-use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUEST_CHANCE_PER_DAY};
+use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUESTS_PER_YEAR};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
@@ -24,12 +24,6 @@ pub enum Answer {
 pub enum SocietyError {
     NoSuchRequest,
     Colony(String),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Factor {
-    pub label: &'static str,
-    pub value: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -75,7 +69,7 @@ impl Society {
         if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
             return;
         }
-        if self.unit() < JOIN_REQUEST_CHANCE_PER_DAY * dt_days {
+        if self.unit() < JOIN_REQUESTS_PER_YEAR / crate::calendar::YEAR_DAYS as f32 * dt_days {
             let adult = self.unit() < JOIN_ADULT_SHARE;
             let _ = self.raise(colony, adult, sim_time);
         }

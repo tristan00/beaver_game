@@ -14,25 +14,17 @@ pub enum RoleKind {
     MudDigger,
     Builder,
     Hauler,
-    Crafter,
-    Forester,
-    Guard,
-    Scout,
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 9] = [
+    pub const ALL: [RoleKind; 5] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
         RoleKind::Builder,
         RoleKind::Hauler,
-        RoleKind::Crafter,
-        RoleKind::Forester,
-        RoleKind::Guard,
-        RoleKind::Scout,
     ];
-    pub const DEFAULT_ORDER: [RoleKind; 9] = DEFAULT_ROLE_ORDER;
+    pub const DEFAULT_ORDER: [RoleKind; 5] = DEFAULT_ROLE_ORDER;
 }
 
 
@@ -93,10 +85,6 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Collect(k) => gather_role(k),
         Role::Build => RoleKind::Builder,
         Role::Haul => RoleKind::Hauler,
-        Role::Craft => RoleKind::Crafter,
-        Role::Forester => RoleKind::Forester,
-        Role::Guard => RoleKind::Guard,
-        Role::Scout => RoleKind::Scout,
     }
 }
 
@@ -112,13 +100,10 @@ pub fn gather_role(k: ResourceKind) -> RoleKind {
 pub fn colony_job(r: RoleKind) -> Option<Job> {
     match r {
         RoleKind::Forager => Some(Job::Forager),
-        RoleKind::Logger | RoleKind::Forester => Some(Job::Logger),
+        RoleKind::Logger => Some(Job::Logger),
         RoleKind::MudDigger => Some(Job::Digger),
         RoleKind::Builder => Some(Job::Builder),
         RoleKind::Hauler => Some(Job::Hauler),
-        RoleKind::Crafter => Some(Job::Crafter),
-        RoleKind::Guard => Some(Job::Guard),
-        RoleKind::Scout => Some(Job::Scout),
     }
 }
 

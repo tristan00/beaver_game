@@ -148,11 +148,6 @@ pub struct Budget {
     pub seepage: f64,
 }
 
-impl Budget {
-    pub fn added(&self) -> f64 { self.sources + self.rain }
-    pub fn lost(&self) -> f64 { self.edges + self.evaporation + self.seepage }
-}
-
 pub fn sources_for(world: &World) -> Vec<Source> {
     world.water_inputs.iter().map(|inp| Source { x: inp.cell.0, y: inp.cell.1, rate: inp.rate, seasonality: 1.0 }).collect()
 }
@@ -232,6 +227,8 @@ pub struct Water {
     pub dam_integrity: Grid<f32>,
     pub dam_durability: Grid<f32>,
     pub canal: Grid<bool>,
+    /// Gate cells: a dam cell whose height the player sets (a sill). Gates don't erode.
+    pub gate: Grid<bool>,
     pub fed: Grid<bool>,
     pub structures: Grid<bool>,
     pub closed_edge: Grid<bool>,
@@ -292,6 +289,7 @@ impl Water {
             dam_integrity: Grid::new(size, size, 0.0),
             dam_durability: Grid::new(size, size, 1.0),
             canal: Grid::new(size, size, false),
+            gate: Grid::new(size, size, false),
             fed: Grid::new(size, size, false),
             structures: Grid::new(size, size, false),
             closed_edge: Grid::new(size, size, false),
@@ -417,10 +415,6 @@ impl Water {
         self.timings = WaterTimings::default();
     }
 
-    pub fn budget(&self) -> Budget {
-        self.books
-    }
-
     pub fn season(&self) -> Season { Season::at(self.time_days) }
 
     pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, self.config.rain) }
@@ -430,6 +424,7 @@ impl Water {
         each_engine!(&self.engine, e => e.total_volume()).unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
     }
 
+    #[cfg(test)]
     pub fn engine(&self) -> EngineKind {
         self.engine.kind()
     }
@@ -580,6 +575,42 @@ impl Water {
         }
         self.dam_height.as_mut_slice()[i] = 0.0;
         self.dam_integrity.as_mut_slice()[i] = 0.0;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Set a gate's sill: `height` above this cell's ground, 0 for wide open. The cell is
+    /// marked as a gate so overtopping never wears it away.
+    pub fn set_gate(&mut self, cell: Cell, height: f32) -> Result<(), WaterError> {
+        let i = self.check(cell.0, cell.1)?;
+        if !height.is_finite() || height < 0.0 {
+            return Err(WaterError::InvalidValue { what: "gate height", value: height });
+        }
+        let was = (self.dam_height.as_slice()[i], self.gate.as_slice()[i]);
+        if was == (height, true) {
+            return Ok(());
+        }
+        self.dam_height.as_mut_slice()[i] = height;
+        self.dam_integrity.as_mut_slice()[i] = if height > 0.0 { 1.0 } else { 0.0 };
+        self.gate.as_mut_slice()[i] = true;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
+        self.topology_dirty = true;
+        Ok(())
+    }
+
+    /// Silt settles back into a dug canal cell; it stops being a canal once filled to `ground`.
+    pub fn silt_canal(&mut self, height: &mut HeightGrid, cell: Cell, amount: f32, ground: f32) -> Result<(), WaterError> {
+        let i = self.check(cell.0, cell.1)?;
+        Self::check_positive("silt", amount)?;
+        let h = &mut height.as_mut_slice()[i];
+        *h = (*h + amount).min(ground);
+        if *h >= ground - 0.05 {
+            self.canal.as_mut_slice()[i] = false;
+        }
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
@@ -817,7 +848,8 @@ impl Water {
         let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), &self.h);
         let surface = |i: usize| if depth[i] > WET_EPS { terrain[i] + dam[i] + depth[i] } else { f32::NEG_INFINITY };
         let mut broken = Vec::new();
-        for i in self.dam_cells.iter().map(|&i| i as usize).filter(|&i| dam[i] > 0.0) {
+        let gate = self.gate.as_slice();
+        for i in self.dam_cells.iter().map(|&i| i as usize).filter(|&i| dam[i] > 0.0 && !gate[i]) {
             let (x, y) = (i % w, i / w);
             let crest = terrain[i] + dam[i];
             let mut top = surface(i);

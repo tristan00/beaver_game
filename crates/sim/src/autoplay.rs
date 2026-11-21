@@ -1,4 +1,3 @@
-include!(concat!(env!("OUT_DIR"), "/autoplay_constants.rs"));
 use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::resources::ResourceKind;
 use crate::hud::{self, Fix};

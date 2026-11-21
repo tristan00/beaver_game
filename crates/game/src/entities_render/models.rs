@@ -164,7 +164,7 @@ pub fn blob_shadow(mb: &mut Mb) {
 pub struct Season(u8);
 
 impl Season {
-    // Shared meshes sampled twice per month; individual trees stagger their changes.
+    // Shared meshes sampled 24 times a year; individual trees stagger their changes.
     pub const COUNT: usize = 24;
     pub fn all() -> impl Iterator<Item = Self> { (0..Self::COUNT as u8).map(Self) }
     pub fn at(phase: f32) -> Self { Self(((phase.rem_euclid(1.0) * Self::COUNT as f32).round() as usize % Self::COUNT) as u8) }
@@ -463,16 +463,7 @@ pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
     use structures::Footing::*;
     Some(match kind {
         StructKind::Lodge => Mound(3.3),
-        StructKind::Burrow => Mound(2.1),
-        StructKind::FoodCache => Mound(1.65),
-        StructKind::ScentMound => Mound(1.0),
-        StructKind::MudPit => Mound(1.75),
-        StructKind::ForagerHut => Piles(1.7, 1.7),
-        StructKind::LoggingCamp => Piles(1.9, 1.9),
-        StructKind::Workshop => Piles(2.1, 1.7),
         StructKind::Warehouse => Piles(2.9, 2.5),
-        StructKind::Storehouse => Piles(3.8, 2.7),
-        StructKind::Mill => Stone(1.9),
         _ => return None,
     })
 }
@@ -485,29 +476,12 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Lodge => lodge(&mut mb, stage),
         StructKind::Dam => dam(&mut mb, len, stage),
         StructKind::Canal => canal(&mut mb, len, stage),
-        StructKind::Burrow => burrow(&mut mb, stage),
-        StructKind::Workshop => workshop(&mut mb, stage),
-        StructKind::WaterWheel => wheel_frame(&mut mb, stage),
-        StructKind::Dock => dock(&mut mb, len, stage),
-        StructKind::Barge => barge(&mut mb, len, stage, true),
-        StructKind::BargeEmpty => barge(&mut mb, len, 3, false),
-        StructKind::FoodCache => structures::food_cache(&mut mb, stage),
-        StructKind::ScentMound => structures::scent_mound(&mut mb, stage),
-        StructKind::GuardPost => structures::guard_post(&mut mb, stage),
-        StructKind::ForagerHut => structures::forager_hut(&mut mb, stage),
-        StructKind::MudPit => structures::mud_pit(&mut mb, stage),
-        StructKind::TreeNursery => structures::tree_nursery(&mut mb, stage),
         StructKind::Warehouse => structures::warehouse(&mut mb, stage),
-        StructKind::Storehouse => structures::storehouse(&mut mb, stage),
-        StructKind::LoggingCamp => structures::logging_camp(&mut mb, stage),
-        StructKind::ForesterLodge => structures::forester_lodge(&mut mb, stage),
-        StructKind::Mill => structures::mill(&mut mb, stage),
-        StructKind::Lock => structures::lock(&mut mb, stage),
     }
     if let Some(f) = footing_of(kind) {
         if dry {
             let (hx, hz) = match f {
-                structures::Footing::Mound(r) | structures::Footing::Stone(r) => (r, r),
+                structures::Footing::Mound(r) => (r, r),
                 structures::Footing::Piles(x, z) => (x, z),
             };
             structures::abandoned_dressing(&mut mb, hx, hz);
@@ -525,7 +499,7 @@ pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
     let mut mb=Mb::new();
     let (dark,light)=(hex(0x68432C),hex(0xB78354));
     match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5,1.4)) {
-        structures::Footing::Mound(radius)|structures::Footing::Stone(radius)=>{
+        structures::Footing::Mound(radius)=>{
             for k in 0..16 {
                 let angle=k as f32*TAU/16.0;
                 mb.ellipsoid_r(v(angle.cos()*(radius+0.10),0.08,angle.sin()*(radius+0.10)),v(0.55,0.30,0.40),Quat::from_rotation_y(-angle),if k%3==0{dark}else{light});
@@ -663,89 +637,6 @@ fn canal(mb: &mut Mb, len: f32, stage: u8) {
     }
 }
 
-fn burrow(mb: &mut Mb, stage: u8) {
-    let _ = stage;
-    mb.lathe(
-        Mat4::IDENTITY,
-        &[(2.1, -0.9), (2.05, 0.1), (1.7, 0.6), (1.1, 0.98), (0.0, 1.15)],
-        14,
-        hex(0x6a4a2e),
-        hex(0x7cba58),
-        true,
-    );
-    mb.ellipsoid_g(v(0.0, 0.5, 1.62), v(0.85, 0.75, 0.5), hex(0x4d3520), hex(0x6f5033), 10, 6);
-    mb.ellipsoid(v(0.0, 0.42, 1.95), v(0.58, 0.6, 0.25), hex(0x140c09));
-    mb.ellipsoid_g(v(0.0, 0.06, 2.35), v(0.9, 0.2, 0.7), hex(0x5d4228), hex(0x866640), 8, 4);
-    stick(mb, v(1.0, 0.1, 1.9), v(2.0, 0.2, 2.5), 0.07, 0.4);
-    stick(mb, v(1.1, 0.1, 2.1), v(2.1, 0.3, 1.5), 0.07, 0.7);
-    for (x, z, s) in [(-1.6, 1.0, 0.3), (1.4, -1.2, 0.25), (-0.9, -1.6, 0.2)] {
-        mb.ellipsoid_g(v(x, 0.1, z), v(s, s * 0.7, s), hex(0x6f6c68), hex(0xa7a39c), 7, 4);
-    }
-    for (x, z, c) in [(-0.7, 0.6, 0xffe066), (0.5, -0.5, 0xff9ec4), (0.9, 0.4, 0xffffff)] {
-        mb.ellipsoid(v(x, 1.05, z), v(0.09, 0.07, 0.09), hex(c));
-    }
-}
-
-fn workshop(mb: &mut Mb, stage: u8) {
-    let (hx, hz) = (1.9f32, 1.55f32);
-    mb.cuboid(v(0.0, 0.0, 0.0), v(hx + 0.12, 0.3, hz + 0.12), Quat::IDENTITY, hex(0x6f6b66), hex(0x9a968f));
-    let wall_h = [0.0, 0.9, 1.75, 1.75][stage as usize];
-    let post = |mb: &mut Mb, x: f32, z: f32, h: f32| mb.cyl(v(x, 0.2, z), v(x, h, z), 0.12, 0.1, hex(0x8a5a32), hex(0xb07840), 6);
-    if stage >= 1 {
-        mb.cuboid(v(0.0, 0.3 + wall_h * 0.5, 0.0), v(hx, wall_h * 0.5, hz), Quat::IDENTITY, hex(0xb9814a), hex(0xd49a5c));
-        for i in 1..6 {
-            let x = -hx + i as f32 * hx * 2.0 / 6.0;
-            mb.cuboid(v(x, 0.3 + wall_h * 0.5, hz + 0.01), v(0.02, wall_h * 0.5, 0.01), Quat::IDENTITY, hex(0x7d5430), hex(0x8f6038));
-        }
-    }
-    for (x, z) in [(-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz)] {
-        post(mb, x, z, if stage == 0 { 1.4 } else { wall_h + 0.4 });
-    }
-    if stage == 3 {
-        let eaves = 2.05;
-        hex_roof(mb, hx + 0.35, hz + 0.4, eaves);
-        mb.cuboid(v(1.2, 2.9, -0.7), v(0.26, 0.55, 0.26), Quat::IDENTITY, hex(0x7b7670), hex(0xa09a92));
-        mb.ellipsoid(v(1.25, 3.7, -0.7), v(0.32, 0.26, 0.32), hex(0xe9edf0));
-        mb.ellipsoid(v(1.45, 4.1, -0.6), v(0.26, 0.22, 0.26), hex(0xf4f7f9));
-        mb.cuboid(v(0.0, 0.3 + 0.65, hz + 0.02), v(0.46, 0.65, 0.07), Quat::IDENTITY, hex(0x6a4020), hex(0x8a5a30));
-        mb.ellipsoid(v(0.3, 0.95, hz + 0.1), v(0.05, 0.05, 0.04), hex(0xf4d35e));
-        for s in [-1.0, 1.0] {
-            mb.cuboid(v(1.15 * s, 1.35, hz + 0.02), v(0.34, 0.3, 0.06), Quat::IDENTITY, hex(0x6a4020), hex(0x8a5a30));
-            mb.cuboid(v(1.15 * s, 1.35, hz + 0.05), v(0.26, 0.22, 0.05), Quat::IDENTITY, hex(0xa8dcf0), hex(0xd6f2ff));
-        }
-        mb.cuboid(v(-2.6, 0.45, 0.3), v(0.5, 0.06, 0.9), Quat::IDENTITY, hex(0xb98a52), hex(0xd1a468));
-        for z in [-0.4, 1.0] {
-            mb.cuboid(v(-2.6, 0.22, z), v(0.38, 0.22, 0.06), Quat::IDENTITY, hex(0x7d5430), hex(0x8f6038));
-        }
-        stick(mb, v(-2.6, 0.62, -0.4), v(-2.6, 0.62, 1.0), 0.14, 0.3);
-    } else if stage == 2 {
-        for i in 0..5 {
-            let x = -hx + i as f32 * hx * 0.5;
-            mb.cyl(v(x, 2.0, -hz), v(x, 2.9, 0.0), 0.06, 0.05, hex(0xd7b27a), hex(0xd7b27a), 4);
-            mb.cyl(v(x, 2.0, hz), v(x, 2.9, 0.0), 0.06, 0.05, hex(0xd7b27a), hex(0xd7b27a), 4);
-        }
-        mb.cyl(v(-hx, 2.9, 0.0), v(hx, 2.9, 0.0), 0.07, 0.07, hex(0xd7b27a), hex(0xd7b27a), 5);
-    }
-    let mut k = 0;
-    for (layer, cnt) in [(0usize, 4usize), (1, 3), (2, 2)] {
-        for i in 0..cnt {
-            let x = 2.45 + layer as f32 * 0.15 + i as f32 * 0.0;
-            let z = -1.0 + i as f32 * 0.33 + layer as f32 * 0.17;
-            let y = 0.14 + layer as f32 * 0.24;
-            k += 1;
-            mb.log(v(x - 0.65, y, z), v(x + 0.65, y, z), 0.15, mix(hex(0x7a5230), hex(0x9a6e3e), (k % 3) as f32 * 0.4), hex(0xecd2a0), 7);
-        }
-    }
-    if stage < 3 {
-        site_markers(mb, hx + 1.8, hz + 1.4, 0.0);
-        for i in 0..4 {
-            mb.cuboid(v(-2.8, 0.12 + i as f32 * 0.09, 1.9), v(1.0, 0.045, 0.2), Quat::from_rotation_y(0.15 * i as f32), hex(0xcda56a), hex(0xe2bb7c));
-        }
-    }
-}
-
-fn hex_roof(mb: &mut Mb, hx: f32, hz: f32, eaves: f32) { hex_roof_c(mb, hx, hz, eaves, hex(0xa63f28), hex(0xd75c38), hex(0x8f3320)) }
-
 pub(super) fn hex_roof_c(mb: &mut Mb, hx: f32, hz: f32, eaves: f32, c0: [f32; 3], c1: [f32; 3], cap: [f32; 3]) {
     let ridge = eaves + 0.95;
     mb.hex(
@@ -765,119 +656,6 @@ pub(super) fn hex_roof_c(mb: &mut Mb, hx: f32, hz: f32, eaves: f32, c0: [f32; 3]
         }
     }
     mb.cuboid(v(0.0, eaves - 0.04, 0.0), v(hx - 0.1, 0.05, hz - 0.1), Quat::IDENTITY, hex(0x5a3a20), hex(0x6a4528));
-}
-
-fn wheel_frame(mb: &mut Mb, stage: u8) {
-    let wood = (hex(0x8a5a32), hex(0xb07840));
-    mb.cuboid(v(0.0, -0.1, 0.4), v(1.7, 0.3, 2.2), Quat::IDENTITY, hex(0x6f6b66), hex(0x9a968f));
-    for s in [-1.0f32, 1.0] {
-        mb.cyl(v(1.15 * s, -0.1, -1.1), v(1.15 * s, 2.05, 0.0), 0.12, 0.1, wood.0, wood.1, 6);
-        mb.cyl(v(1.15 * s, -0.1, 1.1), v(1.15 * s, 2.05, 0.0), 0.12, 0.1, wood.0, wood.1, 6);
-        mb.ellipsoid(v(1.15 * s, 2.05, 0.0), v(0.18, 0.18, 0.18), hex(0x555a60));
-    }
-    mb.cuboid(v(0.0, 2.75, -1.9), v(0.55, 0.14, 1.5), Quat::IDENTITY, hex(0x8a5a32), hex(0xb07840));
-    if stage == 3 {
-        mb.cuboid(v(0.0, 2.9, -1.9), v(0.42, 0.05, 1.5), Quat::IDENTITY, hex(0x3f8fc2), hex(0x6cc7f0));
-    }
-    for z in [-2.9, -1.0] {
-        mb.cyl(v(0.0, -0.2, z), v(0.0, 2.6, z), 0.1, 0.1, wood.0, wood.1, 6);
-    }
-    if stage < 3 {
-        site_markers(mb, 2.2, 2.3, 0.0);
-        stick_pile(mb, v(2.4, 0.0, 0.6), 1.2, 6, 41);
-    }
-}
-
-pub fn wheel_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    let r = 1.75;
-    let wood = (hex(0x93603a), hex(0xbd8450));
-    mb.cyl(v(-1.15, 0.0, 0.0), v(1.15, 0.0, 0.0), 0.16, 0.16, hex(0x6a4528), hex(0x8a5a32), 8);
-    mb.ellipsoid(v(0.0, 0.0, 0.0), v(0.4, 0.34, 0.34), hex(0x555a60));
-    let n = 10;
-    for i in 0..n {
-        let t = i as f32 / n as f32 * TAU;
-        let q = Quat::from_rotation_x(t);
-        for s in [-0.8f32, 0.8] {
-            mb.cuboid(q * v(s, r * 0.5, 0.0), v(0.07, r * 0.5, 0.07), q, wood.0, wood.1);
-        }
-        mb.cuboid(q * v(0.0, r + 0.02, 0.0), v(0.85, 0.33, 0.07), q, hex(0xa0703f), hex(0xc99a5e));
-        let t2 = t + TAU / n as f32 * 0.5;
-        let q2 = Quat::from_rotation_x(t2);
-        for s in [-0.8f32, 0.8] {
-            mb.cuboid(q2 * v(s, r - 0.1, 0.0), v(0.09, 0.09, TAU * r / n as f32 * 0.55), q2, hex(0x7a4f2c), hex(0x9b6a3c));
-        }
-    }
-    mb.build()
-}
-
-fn dock(mb: &mut Mb, len: f32, stage: u8) {
-    let (w, y) = (1.15f32, 0.5f32);
-    let planks = (len / 0.5) as i32;
-    let shown = if stage == 3 { planks } else { (planks * (stage as i32 + 1)) / 4 };
-    for i in 0..shown {
-        let z = 0.25 + i as f32 * 0.5;
-        let (a, b) = if i % 2 == 0 { (hex(0xb98650), hex(0xd1a266)) } else { (hex(0xa97a46), hex(0xc4965c)) };
-        mb.cuboid(v(0.0, y, z), v(w, 0.07, 0.23), Quat::IDENTITY, a, b);
-    }
-    for s in [-0.7f32, 0.7] {
-        mb.cuboid(v(s, y - 0.13, len * 0.5), v(0.1, 0.07, len * 0.5), Quat::IDENTITY, hex(0x6a4528), hex(0x7d5430));
-    }
-    let mut z = 0.5;
-    while z <= len + 0.01 {
-        for s in [-1.0f32, 1.0] {
-            mb.cyl(v((w + 0.1) * s, -1.3, z), v((w + 0.1) * s, y + 0.55, z), 0.13, 0.13, hex(0x5a3a22), hex(0x7d5430), 7);
-            mb.ellipsoid(v((w + 0.1) * s, y + 0.56, z), v(0.14, 0.09, 0.14), hex(0x8f6038));
-        }
-        z += (len - 0.5).max(1.0);
-    }
-    if stage == 3 {
-        mb.cyl(v(w + 0.1, y + 0.4, 0.5), v(w + 0.1, y + 0.4, len), 0.025, 0.025, hex(0xe9d9aa), hex(0xe9d9aa), 4);
-        mb.cyl(v(-w - 0.1, y + 0.4, len), v(-w - 0.1, y + 0.9, len), 0.03, 0.03, hex(0x333333), hex(0x333333), 4);
-        mb.ellipsoid(v(-w - 0.1, y + 1.05, len), v(0.13, 0.17, 0.13), hex(0xffe08a));
-        mb.cuboid(v(-0.45, y + 0.35, len * 0.5), v(0.32, 0.28, 0.32), Quat::from_rotation_y(0.3), hex(0xa97a46), hex(0xd1a266));
-        mb.lathe(Mat4::from_translation(v(0.55, y + 0.07, len * 0.38)), &[(0.0, 0.0), (0.28, 0.0), (0.34, 0.3), (0.3, 0.6), (0.0, 0.6)], 10, hex(0x7d5430), hex(0xa97a46), true);
-    } else {
-        stake(mb, v(w + 0.1, y, len), 1.1, true);
-        stake(mb, v(-w - 0.1, y, len), 1.1, true);
-        for i in 0..3 {
-            mb.cuboid(v(-1.9, 0.12 + i as f32 * 0.09, 1.2), v(0.2, 0.045, 0.8), Quat::from_rotation_y(0.1 * i as f32), hex(0xcda56a), hex(0xe2bb7c));
-        }
-    }
-}
-
-fn barge(mb: &mut Mb, len: f32, stage: u8, cargo: bool) {
-    let hl = len * 0.5;
-    let top = if stage == 3 { 0.7 } else { 0.35 };
-    mb.hex(
-        [
-            v(-0.95, -0.3, -hl), v(0.95, -0.3, -hl), v(0.5, -0.3, hl + 0.55), v(-0.5, -0.3, hl + 0.55),
-            v(-1.3, top, -hl), v(1.3, top, -hl), v(0.78, top + 0.12, hl + 0.8), v(-0.78, top + 0.12, hl + 0.8),
-        ],
-        hex(0x6a4528),
-        hex(0xb98650),
-    );
-    for s in [-1.0f32, 1.0] {
-        mb.cyl(v(1.3 * s, top, -hl), v(0.78 * s, top + 0.12, hl + 0.8), 0.07, 0.07, hex(0x6a4528), hex(0x6a4528), 5);
-    }
-    mb.ellipsoid(v(0.0, 0.1, hl + 0.78), v(0.25, 0.22, 0.2), hex(0x2c2a28));
-    if stage == 3 {
-        for (row, cnt, y) in [(0, 3, 0.95), (1, 2, 1.32), (2, 1, 1.68)].into_iter().filter(|_| cargo) {
-            for i in 0..cnt {
-                let x = (i as f32 - (cnt as f32 - 1.0) * 0.5) * 0.62;
-                let _ = row;
-                mb.log(v(x, y, -hl + 0.7), v(x, y, hl - 0.4), 0.28, mix(hex(0x7a5230), hex(0x9a6e3e), 0.3 * i as f32), hex(0xecd2a0), 8);
-            }
-        }
-        mb.cyl(v(0.0, 0.7, hl - 0.2), v(0.0, 2.6, hl - 0.2), 0.07, 0.05, hex(0x6a4528), hex(0x8f6038), 6);
-        mb.cuboid(v(0.34, 2.35, hl - 0.2), v(0.34, 0.2, 0.02), Quat::from_rotation_z(-0.1), hex(0xd94a3a), hex(0xff7860));
-    } else {
-        for i in 0..5 {
-            let z = -hl + 0.8 + i as f32 * (len - 1.5) / 4.0;
-            mb.cyl(v(-1.1, top, z), v(-0.9, top + 1.2, z), 0.05, 0.04, hex(0xd7b27a), hex(0xd7b27a), 4);
-            mb.cyl(v(1.1, top, z), v(0.9, top + 1.2, z), 0.05, 0.04, hex(0xd7b27a), hex(0xd7b27a), 4);
-        }
-    }
 }
 
 pub fn load_mesh(good: sim::buildings::Good) -> Mesh {

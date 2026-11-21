@@ -4,7 +4,6 @@ pub const fn rgb(h: u32) -> Rgb {
     [((h >> 16) & 0xff) as f32 / 255.0, ((h >> 8) & 0xff) as f32 / 255.0, (h & 0xff) as f32 / 255.0]
 }
 
-pub const STRAW: Rgb = rgb(0xD9C27A);
 pub const MUD: Rgb = rgb(0xA07F60);
 pub const STONE: Rgb = rgb(0xB9AFA8);
 pub const STONE_SHADE: Rgb = rgb(0x8C8290);

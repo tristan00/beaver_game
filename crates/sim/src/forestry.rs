@@ -67,31 +67,8 @@ impl Resource {
 pub enum CutRule {
     #[default]
     MatureOnly,
-    ClearCut,
     Thin,
     Coppice,
-}
-
-impl CutRule {
-    pub const ALL: [CutRule; 4] = [CutRule::MatureOnly, CutRule::ClearCut, CutRule::Thin, CutRule::Coppice];
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum PlantRule {
-    #[default]
-    FillGaps,
-    PlantAll,
-    TendOnly,
-}
-
-impl PlantRule {
-    pub const ALL: [PlantRule; 3] = [PlantRule::FillGaps, PlantRule::PlantAll, PlantRule::TendOnly];
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ForestTask {
-    Plant { cell: Cell, progress: f32 },
-    Tend { tree: ResourceId, progress: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -104,15 +81,12 @@ pub struct Deed {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeedKind {
-    Planted,
-    Tended,
     Felled,
 }
 
 #[derive(Clone, Debug)]
 pub struct Forestry {
     pub cut_rules: BTreeMap<BuildingId, CutRule>,
-    pub plant_rules: BTreeMap<BuildingId, PlantRule>,
     pub deeds: VecDeque<Deed>,
     pub history: VecDeque<(f64, usize)>,
     size: usize,
@@ -136,7 +110,6 @@ impl Forestry {
     pub fn new(seed: u64) -> Self {
         Forestry {
             cut_rules: BTreeMap::new(),
-            plant_rules: BTreeMap::new(),
             deeds: VecDeque::new(),
             history: VecDeque::new(),
             size: 0,
@@ -155,17 +128,6 @@ impl Forestry {
         self.cut_rules.get(&b).copied().unwrap_or_default()
     }
 
-    pub fn plant_rule(&self, b: BuildingId) -> PlantRule {
-        self.plant_rules.get(&b).copied().unwrap_or_default()
-    }
-
-    pub fn had_tree(&self, cell: Cell) -> bool {
-        cell.0 < self.size && cell.1 < self.size && self.had_tree[cell.1 * self.size + cell.0]
-    }
-
-    pub fn ground_growth(&self, cell: Cell) -> f32 {
-        if cell.0 < self.size && cell.1 < self.size { self.growth[cell.1 * self.size + cell.0] } else { 1.0 }
-    }
 }
 
 pub fn start_age(seed: u64, cell: Cell) -> f32 {
@@ -204,9 +166,6 @@ fn invalid(m: impl Into<String>) -> crate::SimError {
     crate::SimError::InvalidCommand(m.into())
 }
 
-pub fn can_manage_forest(sim: &SimState) -> bool {
-    sim.sandbox
-}
 pub fn can_coppice(sim: &SimState) -> bool {
     sim.sandbox
 }
@@ -514,50 +473,6 @@ pub fn forest_trend(sim: &SimState) -> Option<(usize, usize)> {
 }
 
 
-fn plantable(sim: &SimState, cell: Cell, rule: PlantRule, occupied: &HashSet<Cell>, built: &HashSet<Cell>) -> bool {
-    let (x, y) = cell;
-    let ground = match rule {
-        PlantRule::TendOnly => false,
-        PlantRule::FillGaps => sim.forestry.had_tree(cell),
-        PlantRule::PlantAll => sim.world.slope.get(x, y).is_some_and(|s| *s < CLIFF_SLOPE),
-    };
-    ground
-        && is_dry(sim, cell)
-        && sim.ecology.flood_days.get(x, y).is_none_or(|d| *d <= 0.0)
-        && !occupied.contains(&cell)
-        && !built.contains(&cell)
-        && sim.work.supplies != Some(cell)
-        && !sim.forestry.flood_plan.contains(&cell)
-        && sim.forestry.unreachable.get(&cell).is_none_or(|until| sim.time_days >= *until)
-}
-
-fn d2(a: Cell, b: Cell) -> usize {
-    a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
-}
-
-pub fn plant_spot(sim: &SimState, area: &Area, rule: PlantRule, from: Cell, taken: &HashSet<Cell>) -> Option<Cell> {
-    if rule == PlantRule::TendOnly {
-        return None;
-    }
-    let n = sim.world.size;
-    let occupied: HashSet<Cell> = sim.resources.items.iter().filter(|r| area.contains(r.cell)).map(|r| r.cell).collect();
-    let built = building_cells(sim);
-    (area.min.1..=area.max.1.min(n.saturating_sub(1)))
-        .flat_map(|y| (area.min.0..=area.max.0.min(n.saturating_sub(1))).map(move |x| (x, y)))
-        .filter(|c| !taken.contains(c) && plantable(sim, *c, rule, &occupied, &built))
-        .min_by_key(|&c| (d2(c, from), c.1, c.0))
-}
-
-pub fn tend_target(sim: &SimState, area: &Area, from: Cell, taken: &HashSet<ResourceId>) -> Option<ResourceId> {
-    sim.resources
-        .items
-        .iter()
-        .filter(|r| area.contains(r.cell) && !taken.contains(&r.id) && r.tended_days <= 0.0)
-        .filter(|r| matches!(r.stage(), Some(TreeStage::Sapling | TreeStage::Young)))
-        .min_by(|a, b| a.age_days.total_cmp(&b.age_days).then(d2(a.cell, from).cmp(&d2(b.cell, from))).then(a.id.cmp(&b.id)))
-        .map(|r| r.id)
-}
-
 fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>) {
     let day = sim.time_days;
     sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
@@ -571,66 +486,4 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
             sim.forestry.stumps.push(cell);
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ForestReport {
-    pub saplings: usize,
-    pub young: usize,
-    pub mature: usize,
-    pub old: usize,
-    pub planted_per_day: f32,
-    pub tended_per_day: f32,
-    pub logs_ready_in_days: Option<f32>,
-}
-
-fn per_day(sim: &SimState, area: &Area, kind: DeedKind) -> f32 {
-    let window = STATS_DAYS.min(sim.time_days.max(1.0));
-    let n = sim.forestry.deeds.iter().filter(|d| d.kind == kind && area.contains(d.cell) && d.day >= sim.time_days - STATS_DAYS).count();
-    n as f32 / window as f32
-}
-
-fn days_to_mature(sim: &SimState, r: &Resource) -> f32 {
-    let rate = sim.forestry.ground_growth(r.cell) * FELL_GROWTH_SHARE;
-    let tended = r.tended_days.min(TEND_DAYS) * (TENDED_GROWTH - 1.0) * rate;
-    ((MATURE_AGE - r.age_days - tended).max(0.0) / rate.max(1e-3)).max(0.0)
-}
-
-pub fn forest_report(sim: &SimState, area: &Area) -> ForestReport {
-    let mut rep = ForestReport::default();
-    let mut soonest: Option<f32> = None;
-    for r in sim.resources.items.iter().filter(|r| area.contains(r.cell)) {
-        match r.stage() {
-            Some(TreeStage::Sapling) => rep.saplings += 1,
-            Some(TreeStage::Young) => rep.young += 1,
-            Some(TreeStage::Mature) => rep.mature += 1,
-            Some(TreeStage::Old) => rep.old += 1,
-            _ => continue,
-        }
-        if matches!(r.stage(), Some(TreeStage::Sapling | TreeStage::Young)) {
-            let d = days_to_mature(sim, r);
-            soonest = Some(soonest.map_or(d, |s: f32| s.min(d)));
-        }
-    }
-    rep.planted_per_day = per_day(sim, area, DeedKind::Planted);
-    rep.tended_per_day = per_day(sim, area, DeedKind::Tended);
-    rep.logs_ready_in_days = soonest;
-    rep
-}
-
-pub fn cuttable_in_area(sim: &SimState, camp: BuildingId) -> usize {
-    let Some(area) = sim.work.place(camp).and_then(|p| p.area) else { return 0 };
-    let min_age = cut_min_age(sim, Some(camp));
-    sim.resources.items.iter().filter(|r| area.contains(r.cell) && cuttable(r, min_age)).count()
-}
-
-pub fn felled_per_day(sim: &SimState, camp: BuildingId) -> f32 {
-    let window = STATS_DAYS.min(sim.time_days.max(1.0));
-    let n = sim.forestry.deeds.iter().filter(|d| d.kind == DeedKind::Felled && d.by == Some(camp) && d.day >= sim.time_days - STATS_DAYS).count();
-    n as f32 / window as f32
-}
-
-pub fn days_until_out(sim: &SimState, camp: BuildingId) -> Option<f32> {
-    let rate = felled_per_day(sim, camp);
-    (rate > 1e-3).then(|| cuttable_in_area(sim, camp) as f32 / rate)
 }

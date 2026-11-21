@@ -56,9 +56,10 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
     match sel {
         Selection::Site(id) => {
             let b = c.s.buildings.building(id)?;
-            Some(match b.dam.as_deref() {
-                Some(d) => super::dam_panel::dam_panel(c, id, d),
-                None => building(c, id),
+            Some(match (b.dam.as_deref(), b.canal.as_deref()) {
+                (Some(d), _) => super::dam_panel::dam_panel(c, id, d),
+                (_, Some(k)) => super::canal_panel::canal_panel(c, id, k),
+                _ => building(c, id),
             })
         }
         Selection::Beaver(id) => Some(beaver(c, id)),

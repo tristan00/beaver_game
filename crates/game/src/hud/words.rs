@@ -37,6 +37,7 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         Dam => Icon::Dam,
         Shelter => Icon::Lodge,
         Warehouse => Icon::Warehouse,
+        Canal => Icon::Canal,
     }
 }
 
@@ -93,7 +94,6 @@ pub fn days(d: f32) -> String {
 
 pub fn place_error(e: &PlaceError) -> String {
     match e {
-        PlaceError::Locked(t) => (*t).to_string(),
         PlaceError::OutOfBounds => "Off map".into(),
         PlaceError::Blocked => "Occupied".into(),
         PlaceError::NeedsDry => "Wet".into(),
@@ -144,10 +144,6 @@ fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
         RoleKind::MudDigger => (Icon::RoleMudDigger, "Clay digger"),
         RoleKind::Builder => (Icon::RoleBuilder, "Builder"),
         RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
-        RoleKind::Crafter => (Icon::RoleCrafter, "Crafter"),
-        RoleKind::Forester => (Icon::RoleForester, "Forester"),
-        RoleKind::Guard => (Icon::GuardPost, "Guard"),
-        RoleKind::Scout => (Icon::Tree, "Scout"),
     }
 }
 

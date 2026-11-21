@@ -55,10 +55,6 @@ pub enum Role {
     Collect(crate::resources::ResourceKind),
     Build,
     Haul,
-    Craft,
-    Forester,
-    Guard,
-    Scout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,9 +124,6 @@ impl SiteProgress {
         let got: f32 = self.delivered.iter().map(|a| a.1).sum();
         if need > 0.0 { (got / need).min(1.0) } else { 1.0 }
     }
-    pub fn labour_fraction(&self) -> f32 {
-        if self.labour_needed > 0.0 { (self.labour_done / self.labour_needed).min(1.0) } else { 1.0 }
-    }
     pub fn labour_open(&self) -> bool {
         self.labour_done < self.labour_needed * self.material_fraction() - EPS
     }
@@ -174,7 +167,7 @@ pub struct Work {
     pub auto_organise: bool,
     pub managed: BTreeMap<BeaverId, ManagedDuty>,
     pub role_order: Vec<RoleKind>,
-    pub role_weights: [f32; 9],
+    pub role_weights: [f32; RoleKind::ALL.len()],
     pub player_orders: BTreeSet<BeaverId>,
     pub supplies: Option<Cell>,
     pub canal_plans: Vec<CanalPlan>,

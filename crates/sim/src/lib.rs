@@ -4,6 +4,8 @@ mod construction;
 
 pub use colony_bridge::WorldLand;
 pub use command::{Command, DamGrowth};
+pub use canals::CanalGrowth;
+pub use gates::GateSetting;
 
 pub mod agents;
 pub mod autoplay;
@@ -11,7 +13,9 @@ pub mod buildings;
 pub mod calendar;
 pub mod catalogue;
 pub mod colony;
+pub mod canals;
 pub mod dams;
+pub mod gates;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
@@ -188,7 +192,7 @@ impl SimState {
         let land = WorldLand { world: &self.world, depth: &self.water.depth };
         self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?;
         lap(&mut t.colony_s);
-        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let terrain = buildings::Terrain { depth: &self.water.depth };
         self.buildings.step(dt_days, terrain);
         self.sync_homes();
         maintenance::step(self, dt_days);
@@ -204,6 +208,7 @@ impl SimState {
         agents::step(self, dt_days);
         lap(&mut t.agents_s);
         dams::step(self);
+        canals::step(self, dt_days);
         lap(&mut t.shipping_s);
         self.explore();
         lap(&mut t.fog_s);

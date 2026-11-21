@@ -47,7 +47,7 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
         writeln!(events, "day {:.4}: {:?}", e.day, e.event).unwrap();
         if let sim::colony::Event::Born { id, .. } = e.event {
             if let Some(mother) = s.colony.ancestry.get(&id).and_then(|v|v.1) {
-                let entry = litters.entry((mother.0,(e.day/360.0).floor() as i64)).or_default();
+                let entry = litters.entry((mother.0,(e.day/sim::calendar::YEAR_DAYS).floor() as i64)).or_default();
                 entry.0.insert((e.day*96.0).round() as i64); entry.1 += 1;
             }
         }

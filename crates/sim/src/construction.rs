@@ -25,9 +25,6 @@ impl SimState {
     /// Shared by command execution, placement previews and the scripted player.
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: water::Cell) -> Result<(), buildings::BuildError> {
         use buildings::BuildError;
-        if let Some(&need) = self.missing_prerequisites(kind).first().filter(|_| !self.sandbox) {
-            return Err(BuildError::Locked(need));
-        }
         let cells = buildings::Buildings::footprint(kind, pos);
         if self.work.supplies.is_some_and(|pile| cells.contains(&pile)) {
             return Err(BuildError::SupplyPile);
@@ -35,7 +32,7 @@ impl SimState {
         if cells.iter().any(|&(x, y)| x < self.fog.size && y < self.fog.size && !self.fog.explored((x, y))) {
             return Err(BuildError::Unexplored);
         }
-        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let terrain = buildings::Terrain { depth: &self.water.depth };
         self.buildings.can_place_site(kind, pos, terrain)
     }
 
@@ -43,8 +40,11 @@ impl SimState {
         if kind == buildings::BuildingKind::Dam {
             return crate::dams::place(self, &[pos]);
         }
+        if kind == buildings::BuildingKind::Canal {
+            return Err(SimError::InvalidCommand("draw a canal from water onto land".into()));
+        }
         self.check_site(kind, pos).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
-        let terrain = buildings::Terrain { height: &self.height, depth: &self.water.depth };
+        let terrain = buildings::Terrain { depth: &self.water.depth };
         let id = self
             .buildings
             .place_site(kind, pos, terrain)
@@ -57,20 +57,8 @@ impl SimState {
         Ok(id)
     }
 
-    pub fn missing_prerequisites(&self, kind: buildings::BuildingKind) -> Vec<buildings::BuildingKind> {
-        kind.spec().prerequisites
-            .iter()
-            .copied()
-            .filter(|&p| !self.buildings.buildings.iter().any(|b| b.kind == p && b.is_complete()))
-            .collect()
-    }
-
     pub fn has_building(&self, kind: buildings::BuildingKind) -> bool {
         self.buildings.buildings.iter().any(|b| b.kind == kind && b.is_complete())
-    }
-
-    pub fn can_build(&self, kind: buildings::BuildingKind) -> bool {
-        self.sandbox || self.missing_prerequisites(kind).is_empty()
     }
 
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
@@ -78,6 +66,14 @@ impl SimState {
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
         if b.dam.is_some() {
             return self.remove_dam(id);
+        }
+        if b.canal.is_some() {
+            crate::canals::remove(self, id)?;
+            self.work.places.retain(|p| p.building != id);
+            self.release_workers(id);
+            self.buildings.buildings.retain(|b| b.id != id);
+            self.output.forget(id);
+            return Ok(Vec::new());
         }
         if b.is_complete() {
             return Err(SimError::InvalidCommand(format!("{} is finished; only unfinished sites can be cancelled", b.kind.spec().name)));

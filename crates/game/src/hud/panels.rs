@@ -263,7 +263,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
     let v = p.value;
     match p.kind {
         ProblemKind::Food => (vec![(Icon::Food, good_color(Good::Food))], if v < 0.5 { "0".into() } else { days(v) }, "Food runs out"),
-        ProblemKind::WinterFood => (vec![(Icon::Winter,MUTED),(Icon::Food,good_color(Good::Food))],format!("{} / 90d",days(v)),"Prepare food for winter"),
+        ProblemKind::WinterFood => (vec![(Icon::Winter,MUTED),(Icon::Food,good_color(Good::Food))],format!("{} / {}d",days(v),sim::calendar::SEASON_DAYS as i64),"Prepare food for winter"),
         ProblemKind::Idle => (vec![(Icon::Idle, WARN)], format!("{}", v as i64), "Free beavers"),
         ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (Icon::RoleBuilder, MUTED)], format!("{}", v as i64), "Sites without builders"),
         ProblemKind::StoreFull => {
@@ -278,6 +278,9 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
         ProblemKind::LoggingAreaRunningOut => (vec![(Icon::LoggingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Logging area running out"),
         ProblemKind::ForestFalling => (vec![(Icon::Tree, INK), (Icon::Down, WARN)], format!("-{:.0}%", v), "Forest falling"),
+        ProblemKind::CanalDry => (vec![(Icon::Canal, INK), (Icon::Drop, WARN)], String::new(), "Canal dry"),
+        ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
+        ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
         ProblemKind::HighAndDry => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
@@ -417,46 +420,30 @@ fn item_cost(kind: BuildingKind) -> Vec<(Good, f32)> {
     }
 }
 
-fn item_tip(s: &sim::SimState, e: &build_logic::MenuEntry) -> Tip {
-    let kind = e.kind;
+fn item_tip(kind: BuildingKind) -> Tip {
     let mut t = Tip::titled(Some((building_icon(kind), INK)), kind.spec().name);
-    if e.unlocked {
-        let cost = item_cost(kind);
-        if kind == BuildingKind::Dam {
-            t.push(TipLine::new("Per load", "raises one cell"));
-        }
-        for (g, a) in cost {
-            t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
-        }
-    } else {
-        let gaps = s.missing_prerequisites(kind);
-        let tech = e.need.unwrap_or("");
-        t.push(TipLine::new(tech, "").icon(Icon::Padlock, MUTED));
-        for g in gaps {
-            t.push(gap_line(&g).sub());
-        }
+    if kind == BuildingKind::Dam {
+        t.push(TipLine::new("Per load", "raises one cell"));
+    }
+    for (g, a) in item_cost(kind) {
+        t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
     }
     t
 }
 
-pub fn gap_line(k: &BuildingKind) -> TipLine {
-    TipLine::new(k.spec().name, "Finish first").icon(building_icon(*k), INK)
-}
-
 /// Bottom: what can I make or order? Three buildings, two orders and undo, in one row.
 pub fn bottom(c: &Ctx) -> Vec<VNode> {
-    let s = c.s;
     let hud = c.hud;
-    let menu = build_logic::menu(s);
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)), ..default() }, 7.0, |u| {
-        for (kind, key) in [(BuildingKind::Dam, "Z"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C")] {
-            let tool = if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) };
+        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C")].into_iter().enumerate() {
+            if i == 2 {
+                // Waterworks first, as a pair; the drop-down buildings after a groove.
+                u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
+            }
+            let tool = match kind { BuildingKind::Dam => Tool::Dam, BuildingKind::Canal => Tool::Canal, k => Tool::Building(k) };
             let on = hud.tool == tool;
-            let unlocked = menu.iter().any(|e| e.kind == kind && e.unlocked);
-            let look = if on { Peb::On } else if unlocked { Peb::Idle } else { Peb::Faded };
-            let mut tip = menu.iter().find(|e| e.kind == kind).map(|e| item_tip(s, e)).unwrap_or_else(|| Tip::name(kind.spec().name));
-            tip = tip.key(key);
-            u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(tip);
+            let look = if on { Peb::On } else { Peb::Idle };
+            u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(item_tip(kind).key(key));
         }
         u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
         for (h, icon, name, line, key) in [
@@ -569,9 +556,6 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
         Err(e) => {
             ui.icon(Icon::Cross, 14.0, BAD);
             let w = place_error(e);
-            if matches!(e, build_logic::PlaceError::Locked(..)) {
-                ui.icon(Icon::Padlock, 13.0, MUTED);
-            }
             if !w.is_empty() {
                 ui.bold(w, 12.0, INK);
             }
@@ -583,6 +567,90 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
 
 /// The dam's cost and confirm, on the map: it follows the cursor while a run is
 /// being dragged, then hangs from the line's last corner with a check and a cross.
+/// While a canal is drawn: labour, clay from the spoil, the share that floats a load, and
+/// (once the line is set) build and drop.
+pub fn canal_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
+    let extending = c.hud.extending.is_some();
+    let plan = c.hud.canal_plan.as_ref().filter(|p| p.0 == c.hud.line).map(|p| &p.1);
+    if plan.is_none() && !extending {
+        return Vec::new();
+    }
+    let refusal: Option<String> = match plan {
+        Some(Err(e)) => Some(e.clone()),
+        Some(Ok(p)) => sim::canals::check(p).err(),
+        None => None,
+    };
+    let bad = refusal.is_some();
+    let mut ui = Ui::default();
+    let row = ui.row(9.0, |r| {
+        match (&refusal, plan) {
+            (Some(why), _) => {
+                r.node(Node { width: Val::Px(22.0), height: Val::Px(22.0), ..default() }, |x| {
+                    x.icon(Icon::Canal, 20.0, BAD);
+                    x.icon(Icon::Cross, 12.0, BAD).style(|n| {
+                        n.position_type = PositionType::Absolute;
+                        n.right = Val::Px(-3.0);
+                        n.bottom = Val::Px(-3.0);
+                    });
+                })
+                .tip(Tip::titled(Some((Icon::Canal, INK)), why.clone()));
+            }
+            (None, Some(Ok(p))) => {
+                r.row(4.0, |x| {
+                    x.icon(Icon::Beaver, 17.0, Color::srgb(0.73, 0.47, 0.25));
+                    x.bold(format!("{}d", p.labour_days().ceil().max(1.0) as i64), 15.0, INK);
+                })
+                .tip(Tip::titled(Some((Icon::Beaver, INK)), "Digging").line("Beaver-days", num(p.labour_days())));
+                r.row(4.0, |x| {
+                    x.icon(good_icon(Good::Clay), 17.0, good_color(Good::Clay));
+                    x.bold(format!("+{}", p.clay().round() as i64), 15.0, INK);
+                })
+                .tip(Tip::titled(Some((good_icon(Good::Clay), good_color(Good::Clay))), "Clay from the spoil"));
+                r.row(4.0, |x| {
+                    x.icon(Icon::Logs, 17.0, WATER);
+                    x.bold(format!("{:.0}%", p.floatable_share() * 100.0), 15.0, INK);
+                })
+                .tip(Tip::titled(Some((Icon::Logs, WATER)), "Floats a load").line(if p.through { "Runs into other water" } else { "Ends on land" }, ""));
+            }
+            _ => {
+                r.icon(Icon::Extend, 18.0, INK).tip(Tip::name("Extend"));
+            }
+        }
+        if pinned {
+            r.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(24.0), ..default() })).bg(GROOVE);
+            if bad {
+                r.pebble(Icon::Check, 15.0, HudAction::ConfirmLine, Peb::Faded).tip(Tip::name("Dig").line(refusal.clone().unwrap_or_default(), ""));
+                if let Some(v) = r.nodes.last_mut() {
+                    v.action = None;
+                }
+            } else {
+                r.pebble(Icon::Check, 16.0, HudAction::ConfirmLine, Peb::Primary).tip(Tip::name("Dig").key("Enter"));
+            }
+            r.pebble(Icon::Cross, 12.0, HudAction::CancelTool, Peb::Idle).tip(Tip::name("Drop the line").key("Esc"));
+        }
+    });
+    panel(row);
+    row.node.padding = UiRect::axes(Val::Px(12.0), Val::Px(8.0));
+    if bad {
+        row.skin(Skin::PlateBad);
+    }
+    let w = if pinned { 250.0 } else { 170.0 };
+    let (left, top) = if pinned {
+        let below = at.y + 86.0 < win.y;
+        ((at.x - 26.0).clamp(8.0, (win.x - w - 8.0).max(8.0)), if below { at.y + 26.0 } else { at.y - 70.0 })
+    } else {
+        ((at.x + 20.0).min((win.x - w - 8.0).max(8.0)), at.y + 18.0)
+    };
+    let mut v = ui.nodes.pop().unwrap();
+    v.node.position_type = PositionType::Absolute;
+    v.node.left = Val::Px(left);
+    v.node.top = Val::Px(top);
+    if !pinned {
+        v.solid = false;
+    }
+    vec![v]
+}
+
 pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
     let Some(plan) = c.hud.plan.as_ref().filter(|p| p.line == c.hud.line) else { return Vec::new() };
     let bad = plan.refusal.is_some();

@@ -7,7 +7,7 @@ mod access_tests {
     use super::*;
     #[test]
     fn occupied_buildings_keep_a_walkable_setback() {
-        let mut b=Buildings::default();let h=Grid::new(24,24,0.0);let d=Grid::new(24,24,0.5);let t=Terrain{height:&h,depth:&d};
+        let mut b=Buildings::default();let d=Grid::new(24,24,0.5);let t=Terrain{depth:&d};
         b.add_complete(BuildingKind::Warehouse,(5,5),t).unwrap();
         assert!(b.check_ground(BuildingKind::Warehouse,(8,5),t).is_err());
         assert!(b.check_ground(BuildingKind::Warehouse,(9,5),t).is_ok());
@@ -167,18 +167,6 @@ impl Stores {
         Ok(())
     }
 
-    pub fn can_afford(&self, costs: &[Amount]) -> Result<(), StoresError> {
-        for &(_, a) in costs { check_amount(a)?; }
-        for g in Good::ALL {
-            let a: f32 = costs.iter().filter(|v| v.0 == g).map(|v| v.1).sum();
-            let have = self.amount(g);
-            if have < a {
-                return Err(StoresError::Insufficient { good: g, needed: a, have });
-            }
-        }
-        Ok(())
-    }
-
     pub fn refund(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.put_raw(g, amount)
     }
@@ -224,8 +212,6 @@ impl Stores {
         self.consumed_by[use_.index()][good.index()] += taken;
         taken
     }
-    pub fn stored_at(&self, owner: BuildingId, good: Good) -> f32 { self.inventory.at(owner, good) }
-    pub fn physical_stock(&self) -> Vec<(BuildingId, Good, f32)> { self.inventory.entries() }
 
     fn end_tick(&mut self, dt: f32) {
         if dt > 0.0 {
@@ -244,6 +230,7 @@ pub enum BuildingKind {
     Dam,
     Shelter,
     Warehouse,
+    Canal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,10 +243,15 @@ pub enum Site {
 
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
-        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && self != BuildingKind::Dam
+        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !self.is_waterworks()
     }
 
-    pub const ALL: [BuildingKind; 3] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse];
+    /// Dams and canals: drawn on the map and built a cell at a time, not dropped as a site.
+    pub fn is_waterworks(self) -> bool {
+        matches!(self, BuildingKind::Dam | BuildingKind::Canal)
+    }
+
+    pub const ALL: [BuildingKind; 4] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -282,6 +274,8 @@ pub struct Building {
     pub reinforced: bool,
     /// A dam owns its cells; every other building is its footprint.
     pub dam: Option<Box<crate::dams::Dam>>,
+    /// A canal owns its cells, like a dam.
+    pub canal: Option<Box<crate::canals::Canal>>,
 }
 
 impl Building {
@@ -293,8 +287,9 @@ impl Building {
         self.status == Status::Complete
     }
     pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + use<> {
-        let dam: Vec<(usize, usize)> = self.dam.as_ref().map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
-        let (w, h) = if self.dam.is_some() { (0, 0) } else { self.kind.spec().footprint };
+        let mut dam: Vec<(usize, usize)> = self.dam.as_ref().map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
+        dam.extend(self.canal.as_ref().map(|k| k.cells.iter().map(|c| c.cell).collect::<Vec<_>>()).unwrap_or_default());
+        let (w, h) = if self.dam.is_some() || self.canal.is_some() { (0, 0) } else { self.kind.spec().footprint };
         let (x, y) = self.pos;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy))).chain(dam)
     }
@@ -302,7 +297,6 @@ impl Building {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuildError {
-    Locked(BuildingKind),
     SupplyPile,
     Unexplored,
     OutOfBounds,
@@ -315,7 +309,6 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Locked(need) => write!(f, "needs a finished {} first", need.spec().name.to_lowercase()),
             Self::SupplyPile => write!(f, "Blocked: the supply pile is there"),
             Self::Unexplored => write!(f, "Unexplored: the colony has not seen that ground"),
             _ => write!(f, "{self:?}"),
@@ -330,7 +323,6 @@ impl From<StoresError> for BuildError {
 }
 #[derive(Clone, Copy)]
 pub struct Terrain<'a> {
-    pub height: &'a Grid<f32>,
     pub depth: &'a Grid<f32>,
 }
 
@@ -338,23 +330,6 @@ impl Terrain<'_> {
     fn wet(&self, x: usize, y: usize) -> bool {
         self.depth.get(x, y).is_some_and(|&d| d >= WET_DEPTH)
     }
-    fn surface(&self, x: usize, y: usize) -> f32 {
-        self.height.get(x, y).copied().unwrap_or(0.0) + self.depth.get(x, y).copied().unwrap_or(0.0)
-    }
-    pub fn flow(&self, x: usize, y: usize) -> f32 {
-        if !self.wet(x, y) {
-            return 0.0;
-        }
-        let s = self.surface(x, y);
-        neighbours(x, y)
-            .filter(|&(nx, ny)| self.wet(nx, ny))
-            .map(|(nx, ny)| s - self.surface(nx, ny))
-            .fold(0.0, f32::max)
-    }
-}
-
-fn neighbours(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)> {
-    [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)].into_iter()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -394,7 +369,7 @@ impl Buildings {
     }
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
-        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None }.cells().collect()
+        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None }.cells().collect()
     }
 
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
@@ -409,7 +384,7 @@ impl Buildings {
         // A shelter's door is one cell outside its 3x3 footprint. Reserve it from
         // the moment the site is placed, in both placement orders. Dams may
         // share it; an interior of another shelter may not.
-        let solid = |k| k != BuildingKind::Dam;
+        let solid = |k: BuildingKind| !k.is_waterworks();
         // Keep a continuous access lane around occupied structures. Reserving
         // only a lodge door still allowed later buildings to enclose its whole
         // approach, trapping residents and deliveries in a one-cell pocket.
@@ -477,15 +452,16 @@ impl Buildings {
     ) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None });
+        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         self.bind_water(id, kind);
         Ok(id)
     }
 
-    pub fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
+    #[cfg(test)]
+    fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None });
+        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         self.bind_water(id, kind);
         Ok(id)
     }

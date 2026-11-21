@@ -6,25 +6,7 @@ use sim::{Command, SimState};
 pub const MAX_DAM_CELLS: usize = sim::dams::MAX_CELLS;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct MenuEntry {
-    pub kind: BuildingKind,
-    pub unlocked: bool,
-    pub need: Option<&'static str>,
-}
-
-pub fn menu(sim: &SimState) -> Vec<MenuEntry> {
-    BuildingKind::ALL
-        .into_iter()
-        .map(|kind| {
-            let need = sim.missing_prerequisites(kind).first().map(|k| k.spec().name);
-            MenuEntry { kind, unlocked: sim.can_build(kind), need }
-        })
-        .collect()
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum PlaceError {
-    Locked(&'static str),
     OutOfBounds,
     Blocked,
     NeedsDry,
@@ -38,7 +20,6 @@ pub enum PlaceError {
 impl std::fmt::Display for PlaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlaceError::Locked(t) => write!(f, "Needs a finished {t}"),
             PlaceError::OutOfBounds => write!(f, "Outside the map"),
             PlaceError::Blocked => write!(f, "Something is already built here"),
             PlaceError::NeedsDry => write!(f, "Needs dry ground"),
@@ -69,7 +50,6 @@ pub fn footprint(kind: BuildingKind, pos: Cell) -> Vec<Cell> {
 pub fn check_building(sim: &SimState, kind: BuildingKind, pos: Cell) -> Result<(), PlaceError> {
     use sim::buildings::BuildError;
     sim.check_site(kind, pos).map_err(|e| match e {
-        BuildError::Locked(need) => PlaceError::Locked(need.spec().name),
         BuildError::OutOfBounds => PlaceError::OutOfBounds,
         BuildError::Blocked => PlaceError::Blocked,
         BuildError::BadTerrain(_) => match kind.spec().site {

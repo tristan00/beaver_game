@@ -1,7 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/resources_constants.rs"));
 use crate::buildings::Good;
 use crate::water::Cell;
-use crate::work::Area;
 use crate::worldgen::World;
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
@@ -46,7 +45,6 @@ pub enum ResourceError {
     NoSuchResource,
     WrongKind,
     InvalidAmount,
-    NotWet,
     TooYoung,
 }
 
@@ -168,15 +166,6 @@ impl ResourceWorld {
     }
     pub fn blocks(&self, cell: Cell) -> bool {
         self.at(cell).any(|r| r.is_solid() && r.has_yield())
-    }
-
-    pub fn nearest(&self, kind: ResourceKind, from: Cell, area: Option<&Area>) -> Option<ResourceId> {
-        let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
-        self.items
-            .iter()
-            .filter(|r| r.kind == kind && r.has_yield() && area.is_none_or(|a| a.contains(r.cell)))
-            .min_by_key(|r| (d(r.cell), r.id))
-            .map(|r| r.id)
     }
 
     pub fn fell(&mut self, id: ResourceId, work: f32) -> Result<bool, ResourceError> {

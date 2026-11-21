@@ -1,7 +1,7 @@
 use super::structures::{DamStage, DAM_STEP};
 use super::scene::{height_at, Species, StructKind};
 use super::sim_view::*;
-use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod, WheelSpin};
+use super::{models, BeaverSprite, CurrentSeason, Models, SimBeaver, SimEntity, Sway, TreeLod};
 use crate::sim_driver::SimClock;
 use crate::state::Sim;
 use crate::picking::Target;
@@ -394,6 +394,7 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
         BuildingKind::Dam => StructKind::Dam,
         BuildingKind::Shelter => StructKind::Lodge,
         BuildingKind::Warehouse => StructKind::Warehouse,
+        BuildingKind::Canal => StructKind::Canal,
     }
 }
 
@@ -478,18 +479,14 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
     let mut live = HashSet::new();
     let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: StructKind, len2: u32, stage: u8, tr: Transform| -> Entity {
         let mesh = models.structs.entry((kind, len2, stage)).or_insert_with(|| meshes.add(models::struct_mesh(kind, len2 as f32 * 0.5, stage))).clone();
-        let wheel = (kind == StructKind::WaterWheel && stage == 3).then(|| models.wheel.clone());
-        let mut e = commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr));
-        if let Some(w) = wheel {
-            let w2 = white.clone();
-            e.with_children(|p| {
-                p.spawn((target, Mesh3d(w), MeshMaterial3d(w2), Transform::from_xyz(0.0, 2.0, 0.0), WheelSpin(0.9)));
-            });
-        }
-        e.id()
+        commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id()
     };
     for b in &sim.buildings.buildings {
         if b.kind == BuildingKind::Dam && (b.is_complete() || sim.work.dam_plans.iter().any(|p| p.building == b.id)) {
+            continue;
+        }
+        // A canal is the ground it digs; its gate shows as a dam cell.
+        if b.kind == BuildingKind::Canal {
             continue;
         }
         live.insert(b.id);

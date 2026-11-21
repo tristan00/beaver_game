@@ -16,8 +16,6 @@ mod migration_tests {
         c.add_home((15.0,0.0));c.add_home((30.0,0.0));
         c.admit_wanderer(true).unwrap();c.admit_wanderer(true).unwrap();
         assert_eq!(c.migration_remaining(),0);assert!(c.admit_wanderer(true).is_err());assert_eq!(c.add_immigrants(10),0);
-        let before=c.population();let h=Household{pair_years:3.0,pair_joined:true,born_days:Vec::new(),joined:0};
-        assert!(c.seat_household((45.0,0.0),&RiverLand::default(),&h).is_err());assert_eq!(c.population(),before);
         c.time_days=360.0;assert_eq!(c.migration_remaining(),2);assert_eq!(c.immigration_by_year.get(&0),Some(&2));
         c.beavers.clear();c.check_collapse();assert!(c.is_collapsed());
         c.time_days=720.0;assert_eq!(c.migration_remaining(),0);assert_eq!(c.add_immigrants(2),0);
@@ -39,7 +37,7 @@ mod health_tests {
         let skill = c.beavers[0].skill(Job::Forager);
         let plan = c.plan_work(0.5, &land);
         assert_eq!(plan.iter().flatten().count(), 1);
-        c.do_work(0.5, &plan);
+        c.do_work(&plan);
         assert_eq!((c.food, c.wood, c.beavers[0].pos), before);
         assert!(c.beavers[0].skill(Job::Forager) > skill);
         assert_eq!(c.beavers[0].current_job, Some(Job::Forager));
@@ -142,14 +140,10 @@ pub enum Job {
     Builder,
     Digger,
     Hauler,
-    Guard,
-    Crafter,
-    Scout,
 }
 
 impl Job {
-    pub const ALL: [Job; 8] =
-        [Job::Forager, Job::Logger, Job::Builder, Job::Digger, Job::Hauler, Job::Guard, Job::Crafter, Job::Scout];
+    pub const ALL: [Job; 5] = [Job::Forager, Job::Logger, Job::Builder, Job::Digger, Job::Hauler];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -170,8 +164,6 @@ const HARM_CAUSES: [DeathCause; 5] =
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColonyError {
     InvalidDt(f32),
-    UnknownBeaver(BeaverId),
-    UnknownFamily(FamilyId),
     Invalid(String),
     AlreadyFounded,
 }
@@ -180,8 +172,6 @@ impl fmt::Display for ColonyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ColonyError::InvalidDt(d) => write!(f, "invalid dt_days: {d} (must be finite and >= 0)"),
-            ColonyError::UnknownBeaver(id) => write!(f, "unknown beaver {}", id.0),
-            ColonyError::UnknownFamily(id) => write!(f, "unknown family {}", id.0),
             ColonyError::Invalid(m) => write!(f, "invalid argument: {m}"),
             ColonyError::AlreadyFounded => write!(f, "colony already founded"),
         }
@@ -219,16 +209,20 @@ impl Landscape for crate::grid::Grid<f32> {
     }
 }
 
+/// A straight river along y = 0, for tests that need water without a map.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub struct RiverLand {
     pub y: f32,
     pub half_width: f32,
 }
+#[cfg(test)]
 impl Default for RiverLand {
     fn default() -> Self {
-        Self { y: 0.0, half_width: DEFAULT_RIVER_HALF_WIDTH }
+        Self { y: 0.0, half_width: 2.0 }
     }
 }
+#[cfg(test)]
 impl Landscape for RiverLand {
     fn is_water(&self, _x: f32, y: f32) -> bool {
         (y - self.y).abs() <= self.half_width
@@ -276,7 +270,7 @@ pub struct Beaver {
     pub mother: Option<BeaverId>,
     pub father: Option<BeaverId>,
     pub mate: Option<BeaverId>,
-    pub skills: [f32; 8],
+    pub skills: [f32; Job::ALL.len()],
     pub needs: Needs,
     pub mood: f32,
     pub health: f32,
@@ -297,37 +291,13 @@ impl Beaver {
     pub fn age_years(&self) -> f32 {
         self.age_days / DAYS_PER_YEAR as f32
     }
+    #[cfg(test)]
     pub fn skill(&self, job: Job) -> f32 {
         self.skills[job.index()]
-    }
-    pub fn specialty(&self) -> Option<Job> {
-        Job::ALL
-            .iter()
-            .copied()
-            .filter(|&j| self.skill(j) >= SPECIALIST_SKILL)
-            .max_by(|&a, &b| self.skill(a).total_cmp(&self.skill(b)))
-    }
-    pub fn title(&self) -> Option<String> {
-        self.specialty().map(|j| format!("{j:?} specialist"))
     }
     pub fn is_young(&self) -> bool {
         matches!(self.stage, Stage::Kit | Stage::Yearling)
     }
-    pub fn harm(&self) -> [(DeathCause, f32); 5] {
-        std::array::from_fn(|i| (HARM_CAUSES[i], self.harm[i]))
-    }
-    pub fn output_factor(&self, job: Job) -> f32 {
-        let s = self.skill(job);
-        (SKILL_BASE + s) * if s >= SPECIALIST_SKILL { SPECIALIST_BONUS } else { 1.0 }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Household {
-    pub pair_years: f32,
-    pub pair_joined: bool,
-    pub born_days: Vec<f32>,
-    pub joined: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -409,7 +379,7 @@ pub struct Colony {
     /// Read-only presentation totals, refreshed from physical stores during a step.
     pub food: f32,
     pub wood: f32,
-    pub experience: [f32; 8],
+    pub experience: [f32; Job::ALL.len()],
     pub stats: Stats,
     pub immigration_by_year: std::collections::BTreeMap<i64, u32>,
     /// Parent records survive deaths and dispersal, so family changes cannot
@@ -419,7 +389,6 @@ pub struct Colony {
     pub events_dropped: u64,
     collapse: Option<CollapseReport>,
     founded: bool,
-    guard_strength: f32,
     pub slot_jobs: HashMap<BeaverId, (Job, bool)>,
     pub eaten: [f32; 4],
     pub spoiled: f32,
@@ -460,7 +429,7 @@ impl Colony {
             lodges: Vec::new(),
             food: 0.0,
             wood: 0.0,
-            experience: [0.0; 8],
+            experience: [0.0; Job::ALL.len()],
             stats: Stats::default(),
             immigration_by_year: Default::default(),
             ancestry: HashMap::new(),
@@ -468,7 +437,6 @@ impl Colony {
             events_dropped: 0,
             collapse: None,
             founded: false,
-            guard_strength: 0.0,
             slot_jobs: HashMap::new(),
             eaten: [0.0; 4],
             spoiled: 0.0,
@@ -493,9 +461,6 @@ impl Colony {
     }
     pub fn is_collapsed(&self) -> bool {
         self.collapse.is_some()
-    }
-    pub fn collapse(&self) -> Option<&CollapseReport> {
-        self.collapse.as_ref()
     }
     pub fn take_events(&mut self) -> Vec<LoggedEvent> {
         self.events.drain(..).collect()
@@ -568,58 +533,6 @@ impl Colony {
         }
     }
 
-    pub fn seat_household(&mut self, pos: (f32, f32), land: &dyn Landscape, h: &Household) -> Result<FamilyId, ColonyError> {
-        check_point("household", pos)?;
-        let arriving = h.joined + if h.pair_joined { 2 } else { 0 };
-        if arriving > self.migration_remaining() {
-            return Err(ColonyError::Invalid("annual migration limit reached (2 per year)".into()));
-        }
-        if land.is_water(pos.0, pos.1) {
-            return Err(ColonyError::Invalid("household position is in water".into()));
-        }
-        if h.pair_years < ADULT_DAYS / DAYS_PER_YEAR as f32 {
-            return Err(ColonyError::Invalid(format!("pair must be adults, got {} years", h.pair_years)));
-        }
-        let members = 2 + h.born_days.len() + h.joined as usize;
-        if members > LODGE_CAPACITY {
-            return Err(ColonyError::Invalid(format!("{members} beavers do not fit in one lodge (room for {LODGE_CAPACITY})")));
-        }
-        if let Some(a) = h.born_days.iter().find(|a| !a.is_finite() || **a < 0.0) {
-            return Err(ColonyError::Invalid(format!("bad kit age {a}")));
-        }
-        let year = DAYS_PER_YEAR as f32;
-        let fam = self.new_family();
-        let lodge = self.new_lodge(fam, pos, FOUNDING_LODGE_CONDITION);
-        let father = self.spawn(Sex::Male, h.pair_years * year, fam, Some(lodge), pos, None, None);
-        let mother = self.spawn(Sex::Female, h.pair_years * year, fam, Some(lodge), pos, None, None);
-        self.set_mates(father, mother);
-        let mut arrived = Vec::new();
-        if h.pair_joined {
-            arrived.extend([father, mother]);
-        }
-        for (i, &age) in h.born_days.iter().enumerate() {
-            let sex = if i % 2 == 0 { Sex::Male } else { Sex::Female };
-            let kit = self.spawn(sex, age, fam, Some(lodge), pos, Some(father), Some(mother));
-            self.stats.births += 1;
-            self.log(Event::Born { id: kit, family: fam });
-        }
-        for i in 0..h.joined {
-            let sex = if i % 2 == 0 { Sex::Female } else { Sex::Male };
-            let age = (IMMIGRANT_MIN_AGE_YEARS + IMMIGRANT_AGE_SPREAD_YEARS * self.unit()) * year;
-            arrived.push(self.spawn(sex, age, fam, Some(lodge), pos, None, None));
-        }
-        for id in arrived {
-            self.record_immigrant(id);
-        }
-        if !self.founded {
-            self.food = START_FOOD;
-            self.wood = START_WOOD;
-            self.founded = true;
-        }
-        self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
-        Ok(fam)
-    }
-
     #[cfg(test)]
     pub fn step(&mut self, dt_days: f32) {
         let mut stores = crate::buildings::Stores::default();
@@ -651,7 +564,7 @@ impl Colony {
 
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
-        self.do_work(dt, &plan);
+        self.do_work(&plan);
         self.teach_young(dt);
         self.update_work_safety(dt, &plan);
         self.update_needs(dt, cold, stores);
@@ -683,10 +596,7 @@ impl Colony {
         }).collect()
     }
 
-    fn do_work(&mut self, dt: f32, plan: &[Option<Work>]) {
-        self.guard_strength = self.beavers.iter().zip(plan).filter_map(|(b,w)| {
-            w.filter(|w| w.job == Job::Guard).map(|w| w.units / dt * b.output_factor(w.job))
-        }).sum();
+    fn do_work(&mut self, plan: &[Option<Work>]) {
         for (b, work) in self.beavers.iter_mut().zip(plan) {
             b.current_job = work.map(|w| w.job);
             if let Some(w) = work {
@@ -714,13 +624,12 @@ impl Colony {
     }
 
     fn update_work_safety(&mut self, dt: f32, plan: &[Option<Work>]) {
-        let mitigation = 1.0 + GUARD_MITIGATION * self.guard_strength;
         for i in 0..self.beavers.len() {
             let Some(w) = plan[i] else { continue };
             let exposure = WORK_EXPOSURE_BASE + WORK_EXPOSURE_PER_LAND_CELL * w.eval.land_len
                 + WORK_EXPOSURE_PER_WATER_DIST * w.eval.water_dist.min(MAX_WATER_SCAN);
             let b = &mut self.beavers[i];
-            let target = (1.0 - SAFETY_EXPOSURE_SCALE * exposure / mitigation).clamp(SAFETY_MIN, 1.0);
+            let target = (1.0 - SAFETY_EXPOSURE_SCALE * exposure).clamp(SAFETY_MIN, 1.0);
             b.needs.safety += (target - b.needs.safety) * (SAFETY_RATE * dt).min(1.0);
         }
     }
@@ -732,7 +641,6 @@ impl Colony {
                 *occupancy.entry(l).or_insert(0) += 1;
             }
         }
-        let guarded = (self.guard_strength * GUARD_SAFETY_PER_STRENGTH).min(GUARD_SAFETY_MAX);
         use crate::buildings::{Good, Use};
         let eaten = &mut self.eaten;
         for b in self.beavers.iter_mut() {
@@ -759,7 +667,7 @@ impl Colony {
             }
             n.warmth += (1.0 - cold * (1.0 - insulation) - n.warmth) * (WARMTH_RATE * dt).min(1.0);
             if b.current_job.is_none() {
-                n.safety += ((IDLE_SAFETY + guarded).min(1.0) - n.safety) * (SAFETY_RATE * dt).min(1.0);
+                n.safety += (IDLE_SAFETY.min(1.0) - n.safety) * (SAFETY_RATE * dt).min(1.0);
             }
             let mates = b.lodge.map_or(0, |l| occupancy.get(&l).copied().unwrap_or(1) - 1).min(SOCIAL_MAX_MATES);
             n.social += ((SOCIAL_BASE + SOCIAL_PER_MATE * mates as f32).min(1.0) - n.social) * (SOCIAL_RATE * dt).min(1.0);
@@ -1140,7 +1048,7 @@ impl Colony {
         self.next_id += 1;
         let name = FIRST_NAMES[self.range(FIRST_NAMES.len() as u32) as usize].to_string();
         let lifespan_days = (LIFESPAN_MIN_YEARS + LIFESPAN_SPREAD_YEARS * self.unit()) * DAYS_PER_YEAR as f32;
-        let mut skills = [0.0; 8];
+        let mut skills = [0.0; Job::ALL.len()];
         if age_days >= ADULT_DAYS {
             for s in skills.iter_mut() {
                 *s = START_SKILL_MAX * self.unit();

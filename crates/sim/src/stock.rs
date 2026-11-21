@@ -6,10 +6,6 @@ use crate::SimState;
 
 const EPS: f32 = 1e-4;
 
-pub fn gap(a: &Building, b: &Building) -> usize {
-    a.cells().flat_map(|p| b.cells().map(move |q| p.0.abs_diff(q.0) + p.1.abs_diff(q.1))).min().unwrap_or(usize::MAX)
-}
-
 pub fn dist(c: Cell, b: &Building) -> usize {
     b.cells().map(|q| c.0.abs_diff(q.0) + c.1.abs_diff(q.1)).min().unwrap_or(usize::MAX)
 }
@@ -36,20 +32,6 @@ pub fn nearest_holding(sim: &SimState, from: Cell, good: Good, min: f32) -> Opti
         .min_by_key(|&id| (cell_dist(sim, from, id), id))
 }
 
-
-pub fn take_near(sim: &mut SimState, near: &Building, good: Good, amount: f32) -> f32 {
-    let mut ids: Vec<(usize, BuildingId)> =
-        sim.buildings.buildings.iter().filter(|b| b.is_complete() && accepts(b.kind, good)).map(|b| (gap(near, b), b.id)).collect();
-    ids.sort();
-    let mut left = amount;
-    for (_, id) in ids {
-        if left <= EPS {
-            break;
-        }
-        left -= sim.buildings.stores.consume_from(id, good, left, crate::buildings::Use::Crafting);
-    }
-    amount - left
-}
 
 
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {

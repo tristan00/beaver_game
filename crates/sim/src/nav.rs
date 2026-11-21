@@ -55,7 +55,6 @@ pub struct Path {
 pub enum Goal {
     Cell(Cell),
     Beside(Cell),
-    Inside(Cell),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +80,8 @@ pub struct NavGrid {
     refresh_key: Option<(u64,u64,u64,u64,usize,u64)>,
     dry_surface: Vec<Surface>,
     wet_surface: Vec<Surface>,
+    /// Canal cells deep enough to float a load (refreshed with the daily rebuild).
+    floating: Vec<bool>,
 }
 
 #[derive(Default)]
@@ -149,6 +150,7 @@ impl NavGrid {
             refresh_key: None,
             dry_surface: vec![Surface::Land;width*height],
             wet_surface: vec![Surface::Water;width*height],
+            floating: vec![false;width*height],
         }
     }
 
@@ -236,6 +238,11 @@ impl NavGrid {
         ends.into_iter().any(|e| self.surface_at(e).is_some() && self.region_of(e) != 0 && starts.contains(&self.region_of(e)))
     }
 
+    pub fn floats(&self, c: Cell) -> bool {
+        let w=self.surface.width();
+        self.floating.get(c.1*w+c.0).copied().unwrap_or(false)
+    }
+
     pub fn may_reach_beside(&self, from: Cell, target: Cell) -> bool {
         self.may_reach(from, self.neighbours(target).into_iter().flatten())
     }
@@ -280,10 +287,11 @@ impl NavGrid {
             self.dry_surface[i]=if dam[i]>0.0 {Surface::Dam} else {Surface::Land};
             self.wet_surface[i]=if dam[i]>0.0 {Surface::Dam} else if canal[i] {Surface::Canal} else {Surface::Water};
             self.surface.as_mut_slice()[i]=if depth[i]>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};
+            self.floating[i]=canal[i] && depth[i]>=crate::canals::FLOAT_DEPTH;
         }
         for b in &sim.buildings.buildings {
             match b.kind {
-                BuildingKind::Dam=>{}
+                BuildingKind::Dam | BuildingKind::Canal=>{}
                 BuildingKind::Shelter if b.is_complete()=>{
                     self.add_lodge(b.pos);
                     for (x,y) in b.cells().chain(std::iter::once(lodge_entrance(b.pos))) {
@@ -365,12 +373,11 @@ impl NavGrid {
     pub fn find_path(&self, who: BeaverId, from: Cell, goal: Goal) -> Option<Path> {
         self.surface_at(from)?;
         let (target, beside) = match goal {
-            Goal::Cell(c) | Goal::Inside(c) => (c, false),
+            Goal::Cell(c) => (c, false),
             Goal::Beside(c) => (c, true),
         };
         match (goal, self.surface_at(target)?) {
             (Goal::Cell(_), Surface::Solid) => return None,
-            (Goal::Inside(_), s) if s != Surface::LodgeInside => return None,
             _ => {}
         }
         let connected = if beside { self.may_reach_beside(from, target) } else { from == target || self.may_reach(from, [target]) };

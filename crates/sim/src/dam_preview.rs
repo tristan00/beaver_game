@@ -21,22 +21,6 @@ pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<
     (cost, BuildingKind::Dam.spec().work * loads)
 }
 
-pub fn extend_to_hold(sim: &crate::SimState, cells: &[Cell], heights: &[f32], max_cells: usize) -> Option<(Vec<Cell>, Vec<f32>, DamPreview)> {
-    let (mut cells, mut heights) = (cells.to_vec(), heights.to_vec());
-    let mut crest = None;
-    loop {
-        let p = preview_heights(sim, &cells, &heights)?;
-        let crest = *crest.get_or_insert(p.crest);
-        let Some(at) = p.spill_at else { return Some((cells, heights, p)) };
-        let h = crest - sim.height.get(at.0, at.1).copied()?;
-        if cells.len() >= max_cells || cells.contains(&at) || h <= 0.0 || h > MAX_DAM_HEIGHT {
-            return None;
-        }
-        cells.push(at);
-        heights.push(h);
-    }
-}
-
 pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cell>, Vec<f32>) {
     cells
         .iter()

@@ -58,6 +58,14 @@ pub fn to_line(c: &Command) -> String {
         Command::Settle { cell: c } => format!("settle {} {}", c.0, c.1),
         Command::BreachDam { x, y } => format!("breach {x} {y}"),
         Command::DigCanal { cells: v, depth } => format!("dig-canal {depth} {}", cells(v)),
+        Command::PlaceCanal { cells: v } => format!("canal {}", cells(v)),
+        Command::GrowCanal { canal, growth, cells: v } => format!("grow-canal {} {growth:?} {}", canal.0, cells(v)),
+        Command::SetCanalMaintain { canal, on } => format!("canal-maintain {} {}", canal.0, if *on { "on" } else { "off" }),
+        Command::AddDamGate { dam, cell } => format!("dam-gate {} {},{}", dam.0, cell.0, cell.1),
+        Command::SetGate { building, cell, setting } => match setting {
+            crate::gates::GateSetting::Level(e) => format!("gate {} {},{} level {e}", building.0, cell.0, cell.1),
+            s => format!("gate {} {},{} {}", building.0, cell.0, cell.1, s.name()),
+        },
         Command::Assign { who, to } => {
             let to = match to {
                 None => "none".to_string(),
@@ -130,6 +138,27 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "settle" => Command::Settle { cell: (num(t.get(1), "x")?, num(t.get(2), "y")?) },
         "breach" => Command::BreachDam { x: num(t.get(1), "x")?, y: num(t.get(2), "y")? },
         "dig-canal" => Command::DigCanal { depth: num(t.get(1), "depth")?, cells: parse_cells(&t[2..])? },
+        "canal" => Command::PlaceCanal { cells: parse_cells(&t[1..])? },
+        "grow-canal" => Command::GrowCanal {
+            canal: b(1)?,
+            growth: [crate::canals::CanalGrowth::Deepen, crate::canals::CanalGrowth::Widen, crate::canals::CanalGrowth::Extend]
+                .into_iter()
+                .find(|g| t.get(2).is_some_and(|x| format!("{g:?}").eq_ignore_ascii_case(x)))
+                .ok_or("grow-canal takes deepen, widen or extend")?,
+            cells: parse_cells(&t[3..])?,
+        },
+        "canal-maintain" => Command::SetCanalMaintain { canal: b(1)?, on: on(2)? },
+        "dam-gate" => Command::AddDamGate { dam: b(1)?, cell: parse_cells(&t[2..3])?.first().copied().ok_or("missing cell")? },
+        "gate" => Command::SetGate {
+            building: b(1)?,
+            cell: parse_cells(&t[2..3.min(t.len())])?.first().copied().ok_or("missing cell")?,
+            setting: match t.get(3).copied() {
+                Some("shut") => crate::gates::GateSetting::Shut,
+                Some("open") => crate::gates::GateSetting::Open,
+                Some("level") => crate::gates::GateSetting::Level(num(t.get(4), "level")?),
+                other => return Err(format!("gate takes shut, open or level N, got {other:?}")),
+            },
+        },
 
         "assign" => {
             let who = t.get(1).ok_or("missing beavers")?.split(',').map(|s| s.parse().map(BeaverId).map_err(|_| format!("bad beaver '{s}'"))).collect::<Result<Vec<_>, _>>()?;

@@ -37,6 +37,8 @@ pub enum Spill {
     Over(Cell),
     /// Water goes around the dam at this cell.
     Around(Cell),
+    /// Water leaves the pond through a gate or a canal at this cell: by design, not a leak.
+    Gate(Cell),
 }
 
 /// The pond a dam holds, refreshed once a day and after every change.
@@ -60,6 +62,8 @@ pub struct Dam {
     pub cells: Vec<DamCell>,
     pub rows: u8,
     pub maintain: bool,
+    /// Cells turned into gates (see `gates`); packing leaves them alone.
+    pub gates: Vec<crate::gates::Gate>,
     pub downstream: (i32, i32),
     pub history: VecDeque<DamDay>,
     pub pond: Option<Pond>,
@@ -108,8 +112,16 @@ fn dam_mut(sim: &mut SimState, id: BuildingId) -> Result<&mut Dam, SimError> {
     sim.buildings.buildings.iter_mut().find(|b| b.id == id).and_then(|b| b.dam.as_deref_mut()).ok_or_else(|| invalid("no such dam"))
 }
 
-/// What a cell still needs: raising towards its target, or a repair.
+fn is_gate(d: &Dam, c: Cell) -> bool {
+    d.gates.iter().any(|g| g.cell == c && g.built)
+}
+
+/// What a cell still needs: raising towards its target, or a repair. A built gate's height
+/// is the gate's to set.
 fn cell_work(sim: &SimState, d: &Dam, c: &DamCell) -> bool {
+    if is_gate(d, c.cell) {
+        return false;
+    }
     let h = built(sim, c.cell);
     h < c.target - EPS || (d.maintain && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW)
 }
@@ -119,7 +131,7 @@ pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell) -> bool {
 }
 
 pub fn has_work(sim: &SimState, id: BuildingId) -> bool {
-    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_work(sim, d, c)))
+    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_work(sim, d, c)) || d.gates.iter().any(|g| !g.built || g.pending.is_some()))
 }
 
 fn loads_for(sim: &SimState, c: Cell, target: f32) -> usize {
@@ -131,6 +143,7 @@ pub fn loads_left(sim: &SimState, id: BuildingId) -> usize {
     let Some(d) = dam(sim, id) else { return 0 };
     d.cells
         .iter()
+        .filter(|c| !is_gate(d, c.cell))
         .map(|c| {
             let raise = loads_for(sim, c.cell, c.target);
             if raise == 0 && d.maintain && built(sim, c.cell) > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW { 1 } else { raise }
@@ -265,12 +278,13 @@ pub fn place(sim: &mut SimState, cells: &[Cell]) -> Result<BuildingId, SimError>
         cells: cells.iter().zip(&targets).map(|(&cell, &target)| DamCell { cell, target, row: 0 }).collect(),
         rows: 1,
         maintain: true,
+        gates: Vec::new(),
         downstream: downstream(sim, cells),
         history: VecDeque::new(),
         pond: None,
         pond_day: f64::NEG_INFINITY,
     };
-    let b = Building { id, kind: BuildingKind::Dam, pos: cells[0], status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: Some(Box::new(dam)) };
+    let b = Building { id, kind: BuildingKind::Dam, pos: cells[0], status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: Some(Box::new(dam)), canal: None };
     sim.work.add_complete(&b).map_err(|e| invalid(format!("{e:?}")))?;
     sim.buildings.buildings.push(b);
     Ok(id)
@@ -407,33 +421,110 @@ pub fn set_maintain(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), 
     Ok(())
 }
 
+/// The water standing against the dam's upstream face, read from the live water: wet cells
+/// reached from the line's upstream side, staying within 0.3 m of the face's level so the
+/// river below (which only meets the pond round an end) is never counted.
+fn live_pond(sim: &SimState, d: &Dam) -> Option<(f32, Vec<Cell>)> {
+    let n = sim.height.width();
+    let depth = |c: Cell| sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    let surface = |c: Cell| ground(sim, c) + depth(c);
+    let on_dam: std::collections::HashSet<Cell> = d.cells.iter().map(|c| c.cell).collect();
+    let (ux, uy) = (-d.downstream.0, -d.downstream.1);
+    let starts: Vec<Cell> = d.line().filter_map(|c| {
+        let (x, y) = (c.cell.0 as i32 + ux, c.cell.1 as i32 + uy);
+        (x >= 0 && y >= 0 && (x as usize) < n && (y as usize) < n).then_some((x as usize, y as usize))
+    }).filter(|c| !on_dam.contains(c) && depth(*c) > crate::buildings::WET_DEPTH).collect();
+    let face = starts.iter().map(|&c| surface(c)).fold(f32::NEG_INFINITY, f32::max);
+    if !face.is_finite() {
+        return None;
+    }
+    let mut seen: std::collections::HashSet<Cell> = starts.iter().copied().collect();
+    let mut stack = starts.clone();
+    let mut cells = Vec::new();
+    while let Some(c) = stack.pop() {
+        cells.push(c);
+        if cells.len() > 40_000 {
+            break;
+        }
+        for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let (x, y) = (c.0 as i32 + dx, c.1 as i32 + dy);
+            if x < 0 || y < 0 || x as usize >= n || y as usize >= n {
+                continue;
+            }
+            let m = (x as usize, y as usize);
+            if on_dam.contains(&m) || seen.contains(&m) || depth(m) <= crate::buildings::WET_DEPTH || surface(m) < face - 0.3 {
+                continue;
+            }
+            seen.insert(m);
+            stack.push(m);
+        }
+    }
+    let level = cells.iter().map(|&c| surface(c)).sum::<f32>() / cells.len() as f32;
+    Some((level, cells))
+}
+
+/// The dam's pond: the still-pond estimate for where it will fill to and how fast, and the
+/// live water for what it holds now and where water is leaving. Over and Gate come from the
+/// live water; Around comes from the estimate only when it agrees with the live level.
 fn measure(sim: &SimState, d: &Dam) -> Option<Pond> {
-    let (cells, heights): (Vec<Cell>, Vec<f32>) = d.cells.iter().map(|c| (c.cell, built(sim, c.cell))).filter(|c| c.1 > 0.0).unzip();
+    let (cells, heights): (Vec<Cell>, Vec<f32>) = d.cells.iter().map(|c| (c.cell, built(sim, c.cell))).filter(|c| c.1 > 0.0 || is_gate(d, c.0)).map(|c| (c.0, c.1.max(0.01))).unzip();
     if cells.is_empty() {
         return None;
     }
     let p = crate::dam_preview::preview_heights(sim, &cells, &heights)?;
-    let wet: Vec<(Cell, f32)> = p.flooded.iter().filter_map(|&c| {
-        let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-        (depth > crate::buildings::WET_DEPTH).then_some((c, depth))
-    }).collect();
-    let bottom = p.flooded.iter().map(|&c| ground(sim, c)).fold(f32::INFINITY, f32::min);
-    let level = if wet.is_empty() { bottom } else { wet.iter().map(|&(c, dep)| ground(sim, c) + dep).sum::<f32>() / wet.len() as f32 };
-    let full = level >= p.level - 0.02;
-    let spill = match p.spill_at {
-        None => Spill::None,
-        Some(c) if cells.contains(&c) => Spill::Over(c),
-        Some(c) => Spill::Around(c),
+    let live = live_pond(sim, d);
+    let depth_at = |c: Cell| sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    let wet: Vec<(Cell, f32)> = match &live {
+        Some((_, cs)) => cs.iter().map(|&c| (c, depth_at(c))).collect(),
+        None => p.flooded.iter().filter_map(|&c| (depth_at(c) > crate::buildings::WET_DEPTH).then_some((c, depth_at(c)))).collect(),
+    };
+    let bottom = wet.iter().map(|w| ground(sim, w.0)).chain(p.flooded.iter().map(|&c| ground(sim, c))).fold(f32::INFINITY, f32::min);
+    let level = match &live { Some((l, _)) => *l, None if wet.is_empty() => bottom, None => wet.iter().map(|&(c, dep)| ground(sim, c) + dep).sum::<f32>() / wet.len() as f32 };
+    // Where it will fill to: the estimate, unless the live pond already stands higher.
+    let full_level = if p.level.is_finite() && p.level >= level - 0.05 { p.level } else { level.max(p.level.min(crest(sim, d))) };
+    let full = level >= full_level - 0.02;
+
+    // Water let out on purpose: a gate (this dam's or a canal's) or a canal reached by the pond.
+    let pond_cells: std::collections::HashSet<Cell> = wet.iter().map(|w| w.0).collect();
+    let touches = |c: Cell| [(0i32, 0i32), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+        let (x, y) = (c.0 as i32 + dx, c.1 as i32 + dy);
+        x >= 0 && y >= 0 && pond_cells.contains(&(x as usize, y as usize))
+    });
+    let mut outlet = None;
+    for b in &sim.buildings.buildings {
+        for g in b.dam.iter().flat_map(|x| x.gates.iter()).filter(|g| g.built && g.sill() < level - 0.01) {
+            if touches(g.cell) {
+                outlet = Some(g.cell);
+            }
+        }
+        // A through-canal whose gate stands below the pond: its cells at the pond carry water off.
+        if let Some(k) = b.canal.as_deref().filter(|k| k.through && k.gate.built && k.gate.sill() < level - 0.01 && k.cells.iter().any(|c| touches(c.cell))) {
+            outlet = Some(k.gate.cell);
+        }
+    }
+    let lowest = d.line().filter(|c| !is_gate(d, c.cell) && built(sim, c.cell) > 0.0).min_by(|a, b| (ground(sim, a.cell) + built(sim, a.cell)).total_cmp(&(ground(sim, b.cell) + built(sim, b.cell))));
+    let over = lowest.filter(|c| level >= ground(sim, c.cell) + built(sim, c.cell) - 0.03).map(|c| c.cell);
+    let estimate_agrees = (p.level - level).abs() < 0.15 || live.is_none();
+    let spill = if let Some(c) = outlet {
+        Spill::Gate(c)
+    } else if let Some(c) = over {
+        Spill::Over(c)
+    } else {
+        match p.spill_at {
+            Some(c) if estimate_agrees && !cells.contains(&c) => Spill::Around(c),
+            Some(c) if estimate_agrees => Spill::Over(c),
+            _ => Spill::None,
+        }
     };
     Some(Pond {
         level,
-        full_level: p.level,
+        full_level,
         bottom: if bottom.is_finite() { bottom } else { level },
         area: wet.len(),
         volume: wet.iter().map(|w| w.1).sum(),
         max_depth: wet.iter().map(|w| w.1).fold(0.0, f32::max),
         inflow: p.inflow,
-        outflow: if full { p.inflow.max(p.pond_loss) } else { p.pond_loss },
+        outflow: (if full { p.inflow.max(p.pond_loss) } else { p.pond_loss }).max(0.0),
         days_to_full: if full { 0.0 } else { p.fill_days },
         spill,
         flooded: p.flooded,
@@ -464,10 +555,71 @@ pub fn step(sim: &mut SimState) {
     }
 }
 
-/// Mean condition of the built part, 1 when nothing is built yet.
+/// Mean condition of the built part, 1 when nothing is built yet. Gates don't wear.
 pub fn health(sim: &SimState, d: &Dam) -> f32 {
-    let built: Vec<f32> = d.cells.iter().filter(|c| built(sim, c.cell) > 0.0).map(|c| integrity(sim, c.cell)).collect();
+    let built: Vec<f32> = d.cells.iter().filter(|c| built(sim, c.cell) > 0.0 && !is_gate(d, c.cell)).map(|c| integrity(sim, c.cell)).collect();
     if built.is_empty() { 1.0 } else { built.iter().sum::<f32>() / built.len() as f32 }
+}
+
+/// Make a dam cell a gate. A builder brings its sticks; it is Shut once built.
+pub fn add_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
+    plan_gate(sim, id, cell).map_err(invalid)?;
+    let g = ground(sim, cell);
+    let target = dam(sim, id).and_then(|d| d.line().find(|c| c.cell == cell)).map_or(0.0, |c| c.target);
+    dam_mut(sim, id)?.gates.push(crate::gates::Gate::new(cell, g, g + target));
+    Ok(())
+}
+
+/// Why a cell can't become a gate, or the sticks it costs.
+pub fn plan_gate(sim: &SimState, id: BuildingId, cell: Cell) -> Result<f32, String> {
+    let d = dam(sim, id).ok_or("no such dam")?;
+    if !d.line().any(|c| c.cell == cell) {
+        return Err("pick a cell on the dam's line".into());
+    }
+    if d.gates.iter().any(|g| g.cell == cell) {
+        return Err("already a gate".into());
+    }
+    if built(sim, cell) <= 0.0 {
+        return Err("build this cell first".into());
+    }
+    Ok(crate::canals::GATE_STICKS)
+}
+
+pub fn set_gate(sim: &mut SimState, id: BuildingId, cell: Cell, setting: crate::gates::GateSetting) -> Result<(), SimError> {
+    let d = dam_mut(sim, id)?;
+    let g = d.gates.iter_mut().find(|g| g.cell == cell).ok_or_else(|| invalid("no gate there"))?;
+    crate::gates::request(g, setting)?;
+    d.pond_day = f64::NEG_INFINITY;
+    Ok(())
+}
+
+/// A gate waiting to be built or turned, not already claimed.
+pub fn gate_job(sim: &SimState, id: BuildingId, taken: &[Cell]) -> Option<Cell> {
+    dam(sim, id)?.gates.iter().find(|g| (!g.built || g.pending.is_some()) && !taken.contains(&g.cell)).map(|g| g.cell)
+}
+
+pub fn gates_claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> {
+    sim.agents.by_id.values().filter(|a| a.id != except).filter_map(|a| match a.task {
+        crate::agents::Task::Gate { site, cell, .. } if site == id => Some(cell),
+        _ => None,
+    }).collect()
+}
+
+/// One builder visit to a gate: build it (using its sticks) or make the asked-for change.
+pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
+    let g = *dam(sim, id).and_then(|d| d.gates.iter().find(|g| g.cell == cell)).ok_or_else(|| invalid("no gate there"))?;
+    if !g.built && !crate::gates::take_sticks(sim, cell, crate::canals::GATE_STICKS) {
+        return Err(invalid("the gate needs sticks"));
+    }
+    let d = dam_mut(sim, id)?;
+    let gate = d.gates.iter_mut().find(|g| g.cell == cell).expect("found above");
+    gate.built = true;
+    if let Some(s) = gate.pending.take() {
+        gate.setting = s;
+    }
+    let gate = *gate;
+    d.pond_day = f64::NEG_INFINITY;
+    crate::gates::apply(sim, &gate)
 }
 
 /// Beavers working on this dam and loads on their way to it.

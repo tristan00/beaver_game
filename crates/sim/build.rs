@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         starting.push(format!("(crate::buildings::Good::{good},{})",number(amount)));
     }
     constants.entry("starts".into()).or_default().push_str(&format!("pub const START_BUNDLE: [(crate::buildings::Good,f32); {}] = [{}];\n",starting.len(),starting.join(",")));
-    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Crafter","Forester","Guard","Scout"];
+    let roles = ["Forager","Logger","MudDigger","Builder","Hauler"];
     let mut order = Vec::new();
     let mut weights = BTreeMap::new();
     for row in db.prepare("SELECT role,priority,weight FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,f64>(2)?)))? {
@@ -105,7 +105,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read_to_string("src/buildings.rs")?;
     let kinds: Vec<_> = source.split("pub enum BuildingKind {").nth(1).unwrap().split('}').next().unwrap().split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     assert_eq!(kinds.len(), rows.len(), "content must define every supported building");
-    let mut graph = BTreeMap::<u32, Vec<u32>>::new();
     let mut specs = String::from("const SPECS: &[Spec] = &[\n");
     for (index, (id, kind, name, width, depth, site, labour, capacity, area)) in rows.iter().enumerate() {
         assert_eq!(*id, index as u32, "building IDs must follow BuildingKind order");
@@ -113,26 +112,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(*width > 0 && *depth > 0 && *width <= 64 && *depth <= 64);
         assert!(matches!(site.as_str(), "Pond" | "Dry" | "TouchesWater" | "WaterByDock"));
         let costs = amounts(&db, "SELECT good,amount FROM cost WHERE building=? ORDER BY position", *id)?;
-        let mut prereqs = Vec::new();
-        for req in db.prepare("SELECT requires FROM prerequisite WHERE building=? ORDER BY requires")?.query_map([id], |r| r.get::<_,u32>(0))? {
-            let req = req?;
-            graph.entry(*id).or_default().push(req);
-            prereqs.push(format!("BuildingKind::{}", rows[req as usize].1));
-        }
         let mut slots = Vec::new();
         for role in db.prepare("SELECT role FROM slot WHERE building=? ORDER BY position")?.query_map([id], |r| r.get::<_,String>(0))? {
             let role = role?;
-            assert!(matches!(role.as_str(), "Build" | "Haul" | "Craft" | "Forester" | "Guard" | "Scout" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)"), "invalid role {role}");
+            assert!(matches!(role.as_str(), "Build" | "Haul" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)"), "invalid role {role}");
             slots.push(format!("Role::{role}"));
         }
         let area = area.map_or("None".into(), |a| { assert!(a > 0 && a <= 1024); format!("Some(({a},{a}))") });
-        specs.push_str(&format!("Spec {{ name: {name:?}, footprint: ({width},{depth}), site: Site::{site}, cost: &[{costs}], work: {}, prerequisites: &[{}], slots: &[{}], area: {area}, capacity: {} }},\n",number(*labour),prereqs.join(","),slots.join(","),number(*capacity)));
+        specs.push_str(&format!("Spec {{ name: {name:?}, footprint: ({width},{depth}), site: Site::{site}, cost: &[{costs}], work: {}, slots: &[{}], area: {area}, capacity: {} }},\n",number(*labour),slots.join(","),number(*capacity)));
     }
-    let mut reachable = BTreeSet::new();
-    for _ in 0..rows.len() {
-        for (id, ..) in &rows { if graph.get(id).is_none_or(|p|p.iter().all(|r|reachable.contains(r))) { reachable.insert(*id); } }
-    }
-    assert_eq!(reachable.len(), rows.len(), "building prerequisites contain a cycle");
     specs.push_str("];\n");
     fs::write(out.join("catalogue.rs"), specs)?;
     Ok(())

@@ -4,8 +4,33 @@ use super::*;
 /// Build the drawn line: a new dam, or more cells on the dam being extended.
 /// Returns the dam, so its panel can open.
 pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32) -> Option<BuildingId> {
-    if hud.line.is_empty() || hud.tool != Tool::Dam {
+    if hud.line.is_empty() || !matches!(hud.tool, Tool::Dam | Tool::Canal) {
         return None;
+    }
+    if hud.tool == Tool::Canal {
+        let cmd = match hud.extending {
+            Some(canal) => {
+                let end = sim::canals::canal(sim, canal).map(|k| k.end());
+                sim::Command::GrowCanal { canal, growth: sim::CanalGrowth::Extend, cells: hud.line.iter().copied().filter(|c| Some(*c) != end).collect() }
+            }
+            None => sim::Command::PlaceCanal { cells: hud.line.clone() },
+        };
+        let extending = hud.extending;
+        return match sim.apply(cmd) {
+            Ok(_) => {
+                let id = extending.or_else(|| sim.buildings.buildings.last().map(|b| b.id));
+                if extending.is_none() {
+                    hud.undo.extend(id.map(UndoItem::Site));
+                }
+                hud.finish_placement();
+                hud.dam_cells.clear();
+                id
+            }
+            Err(e) => {
+                hud.refuse(sim_error(&e.to_string()), now);
+                None
+            }
+        };
     }
     if let Some(dam) = hud.extending {
         let cells: Vec<Cell> = hud.line.clone();
@@ -75,7 +100,7 @@ pub(super) fn button_actions(
         let s = &mut sim.0;
         match a {
             HudAction::Fix(fix, at) => match fix {
-                Fix::Place(kind) => hud.set_tool(if kind == BuildingKind::Dam { Tool::Dam } else { Tool::Building(kind) }),
+                Fix::Place(kind) => hud.set_tool(match kind { BuildingKind::Dam => Tool::Dam, BuildingKind::Canal => Tool::Canal, k => Tool::Building(k) }),
                 Fix::OpenJobs => hud.colony = Some(ColonyTab::Jobs),
                 Fix::OpenDam { dam } => {
                     *sel = Selection::Site(dam);
@@ -118,13 +143,12 @@ pub(super) fn button_actions(
             HudAction::Pick(kind) => {
                 let t = match kind {
                     BuildingKind::Dam => Tool::Dam,
+                    BuildingKind::Canal => Tool::Canal,
                     k => Tool::Building(k),
                 };
-                if s.can_build(kind) {
-                    let next = if hud.tool == t { Tool::None } else { t };
-                    hud.set_tool(next);
-                    *sel = Selection::None;
-                }
+                let next = if hud.tool == t { Tool::None } else { t };
+                hud.set_tool(next);
+                *sel = Selection::None;
             }
             HudAction::CancelTool => hud.set_tool(Tool::None),
             HudAction::GrowDam(dam, growth) => {
@@ -133,6 +157,28 @@ pub(super) fn button_actions(
                 hud.dam_ghost = None;
             }
             HudAction::DamMaintain(dam, on) => cmd(s, &mut hud, sim::Command::SetDamMaintain { dam, on }, now),
+            HudAction::AddDamGate(dam) => {
+                if let Some(&cell) = hud.dam_cells.first() {
+                    cmd(s, &mut hud, sim::Command::AddDamGate { dam, cell }, now);
+                    hud.dam_cells.clear();
+                }
+            }
+            HudAction::SetGate(building, cell, setting) => cmd(s, &mut hud, sim::Command::SetGate { building, cell, setting }, now),
+            HudAction::CanalMaintain(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalMaintain { canal, on }, now),
+            HudAction::GrowCanal(canal, growth) => {
+                if growth == sim::CanalGrowth::Extend {
+                    if let Some(end) = sim::canals::canal(s, canal).map(|k| k.end()) {
+                        hud.set_tool(Tool::Canal);
+                        hud.extending = Some(canal);
+                        hud.corners = vec![end];
+                        hud.drag_from = Some(end);
+                    }
+                } else {
+                    let cells = hud.dam_cells.clone();
+                    cmd(s, &mut hud, sim::Command::GrowCanal { canal, growth, cells }, now);
+                    hud.dam_cells.clear();
+                }
+            }
             HudAction::DamCell(c) => {
                 match hud.dam_cells.iter().position(|x| *x == c) {
                     Some(i) => {

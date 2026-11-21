@@ -482,7 +482,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             if let Some(c) = hover.0 {
                 let pv = build_logic::site_preview(s, kind, c);
                 let col = if pv.is_valid() { Color::WHITE } else { BAD };
-                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None };
+                let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = Color::WHITE.with_alpha(0.6);
                     area_outline(&mut g, h, a, area_col);
@@ -501,6 +501,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
         Tool::Dam => draw_line_ghost(&mut g, s, &hud, hover.0),
+        Tool::Canal => draw_canal_ghost(&mut g, s, &hud, hover.0),
         Tool::Harvest(_) => {
             if let (Some(a), Some(b)) = (hud.drag_from, hover.0) {
                 let area = sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) };
@@ -572,6 +573,60 @@ fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Opt
         (None, Some(at)) => {
             ring(g, cell_world(h, (at.0 as f32, at.1 as f32)).with_y(height_at(h, at.0 as f32, at.1 as f32) + 0.15), 0.3, Color::WHITE.with_alpha(0.7));
         }
+        _ => {}
+    }
+}
+
+/// While a canal is drawn: every cell coloured by what it will hold once dug (floats a load,
+/// only wet, dry, or a cut too deep), the gate, the corners, and where the next click runs.
+fn draw_canal_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>) {
+    let h = &s.height;
+    let at = |c: Cell, lift: f32| cell_world(h, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).with_y(height_at(h, c.0 as f32 + 0.5, c.1 as f32 + 0.5) + lift);
+    let square = |g: &mut Gizmos, c: Cell, r: f32, col: Color| {
+        let p = at(c, 0.12);
+        let (a, b, cc, d) = (p + Vec3::new(-r, 0.0, -r), p + Vec3::new(r, 0.0, -r), p + Vec3::new(r, 0.0, r), p + Vec3::new(-r, 0.0, r));
+        g.line(a, b, col);
+        g.line(b, cc, col);
+        g.line(cc, d, col);
+        g.line(d, a, col);
+    };
+    match hud.canal_plan.as_ref().filter(|p| p.0 == hud.line).map(|p| &p.1) {
+        Some(Ok(p)) => {
+            for (i, c) in p.cells.iter().enumerate() {
+                let d = p.expected.get(i).copied().unwrap_or(0.0);
+                let col = if p.too_deep.contains(&c.cell) {
+                    BAD
+                } else if d >= sim::canals::FLOAT_DEPTH {
+                    WATER
+                } else if d >= sim::canals::WET_DEPTH {
+                    Color::srgb(0.6, 0.88, 0.92)
+                } else {
+                    Color::srgb(0.85, 0.72, 0.52)
+                };
+                square(g, c.cell, 0.36, col);
+                square(g, c.cell, 0.3, col);
+            }
+            ring(g, at(p.gate, 0.2), 0.45, WOOD_LINE);
+            ring(g, at(p.gate, 0.24), 0.38, WOOD_LINE);
+        }
+        _ => {
+            for &c in &hud.line {
+                square(g, c, 0.34, Color::WHITE.with_alpha(0.6));
+            }
+        }
+    }
+    for c in &hud.corners {
+        ring(g, at(*c, 0.15), 0.3, ACCENT);
+    }
+    match (hud.corners.last(), hover) {
+        (Some(last), Some(h2)) if hud.drag_from.is_none() && *last != h2 => {
+            let (a, b) = (at(*last, 0.3), at(h2, 0.3));
+            let n = ((a - b).length() * 2.0).ceil().max(1.0) as usize;
+            for i in (0..n).step_by(2) {
+                g.line(a.lerp(b, i as f32 / n as f32), a.lerp(b, ((i + 1) as f32 / n as f32).min(1.0)), Color::WHITE.with_alpha(0.45));
+            }
+        }
+        (None, Some(h2)) => ring(g, at(h2, 0.15), 0.3, Color::WHITE.with_alpha(0.7)),
         _ => {}
     }
 }

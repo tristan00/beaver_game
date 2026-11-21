@@ -45,7 +45,6 @@ impl Plugin for EntitiesRenderPlugin {
                     update_tree_lod,
                     sway_trees,
                     topple_trees,
-                    spin_wheels,
                 )
                     .chain()
                     .after(crate::terrain_render::update_season),
@@ -97,7 +96,6 @@ struct Models {
     far: Handle<Mesh>,
     ripple: Handle<Mesh>,
     blob: Handle<Mesh>,
-    wheel: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
     dams: HashMap<(u8, bool, u32, structures::DamStage), Handle<Mesh>>,
 }
@@ -130,9 +128,6 @@ struct TreeLod {
 
 #[derive(Component)]
 struct Sway(Quat);
-
-#[derive(Component)]
-struct WheelSpin(f32);
 
 #[derive(Component)]
 struct SimEntity;
@@ -233,7 +228,6 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         far,
         ripple,
         blob,
-        wheel: meshes.add(models::wheel_mesh()),
         structs: HashMap::new(),
         dams: HashMap::new(),
     });
@@ -673,9 +667,4 @@ fn sway_trees(clock: Res<RenderClock>, mut trees: Query<(&mut Transform, &TreeLo
     }
 }
 
-fn spin_wheels(time: Res<Time>, mut q: Query<(&mut Transform, &WheelSpin)>) {
-    for (mut t, w) in &mut q {
-        t.rotation = Quat::from_rotation_x(time.elapsed_secs() * w.0);
-    }
-}
 

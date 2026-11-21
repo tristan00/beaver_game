@@ -378,10 +378,6 @@ pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::Wo
     build_river_on(SimState::from_world(info.seed(), world))
 }
 
-pub fn new_game(seed: u64) -> Result<SimState, StartError> {
-    build_river(seed).map(|(sim, _)| sim)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

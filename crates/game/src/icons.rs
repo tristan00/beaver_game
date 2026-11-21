@@ -2,7 +2,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 pub const CELL: u32 = 64;
 pub const COLUMNS: u32 = 16;
@@ -20,24 +20,21 @@ macro_rules! icons {
 }
 
 icons! {
-    Food, Logs, Sticks, Mud, Baskets, Rope, Tools,
-    CatBasics, CatWater, CatForest, CatBuilding, CatCraft, CatTransport, CatDefence,
-    Dam, Lodge, Burrow, FoodCache, ScentMound, GuardPost, Canal, Lock, WaterWheel, Workshop,
-    Warehouse, Dock, Barge, LoggingCamp, ForagerHut, MudPit, Mill, Storehouse,
-    ForesterLodge, TreeNursery,
-    RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler, RoleCrafter,
-    RoleGuard, RoleForester,
-    ViewWorld, ViewWater, ViewGoods, ViewVegetation, ViewForest, ViewWorkAreas, ViewHousing,
+    Food, Logs, Sticks, Mud,
+    Dam, Lodge, Canal, Lock,
+    Warehouse, LoggingCamp,
+    RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler,
+    ViewWater, ViewForest,
     ViewElevation,
-    Idle, Unstaffed, Blocked, Full, NoStore, NoPower, Padlock, HandLock, Warn, Urgent, Up, Down,
-    Dot, DotEmpty, Check, Cross,
-    Pause, Play, Fast2, Fast3, Undo, Search, Pin, PriorityUp, PriorityDown, Plus, Minus, Focus,
-    Clear, Expand, Collapse, Colony, Jobs, Journal, Log, Follow, Area, Haul, Balance, Menu, Back, Settings,
+    Idle, Unstaffed, Blocked, Full, HandLock, Warn, Urgent, Up, Down,
+    Check, Cross,
+    Pause, Play, Fast2, Fast3, Undo, Pin, Plus, Minus, Focus,
+    Expand, Colony, Jobs, Follow, Area, Haul, Back,
     Beaver, Adult, Yearling, Kit, MoodGood, MoodOk, MoodBad, Health,
     Spring, Summer, Autumn, Winter, DrySummer,
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
-    Building, Home, Profile, Upstream, North, Gauge, Wheel,
-    Sapling, TreeYoung, TreeOld, Coppice, Widen, Extend,
+    Building, Home, Upstream, Gauge,
+    Widen, Extend,
 }
 
 #[derive(Resource, Clone)]
@@ -426,26 +423,6 @@ fn shovel(c: &mut Canvas) {
 
 
 
-fn saw(c: &mut Canvas) {
-    let mut pts = vec![v(8.0, 26.0), v(44.0, 18.0), v(44.0, 42.0)];
-    for i in 0..5 {
-        let x = 44.0 - i as f32 * 7.2;
-        pts.push(v(x - 3.6, 46.0 + 0.0 * x));
-        pts.push(v(x - 7.2, 42.0));
-    }
-    pts.push(v(8.0, 36.0));
-    c.add(poly_v(pts).grow(0.8));
-    c.add(rect_c(42.0, 14.0, 58.0, 46.0, 6.0));
-    c.cut(rect_c(47.0, 21.0, 53.0, 37.0, 3.0));
-}
-
-fn shield(c: &mut Canvas) {
-    let mut pts = vec![v(10.0, 12.0), v(32.0, 5.0), v(54.0, 12.0)];
-    pts.extend(qbez_pts(v(54.0, 12.0), v(55.0, 46.0), v(32.0, 59.0), 14).into_iter().skip(1));
-    pts.extend(qbez_pts(v(32.0, 59.0), v(9.0, 46.0), v(10.0, 12.0), 14).into_iter().skip(1));
-    c.add(poly_v(pts).grow(0.5));
-}
-
 fn berries(c: &mut Canvas) {
     c.add(circle(21.0, 44.0, 12.0));
     c.knock(circle(43.0, 41.0, 12.0));
@@ -503,13 +480,6 @@ fn round_tree(c: &mut Canvas) {
     c.knock(circle(32.0, 22.0, 15.0).or(circle(19.0, 31.0, 11.5)).or(circle(45.0, 31.0, 11.5)).or(rect_c(19.0, 28.0, 45.0, 42.5, 8.0)));
 }
 
-fn seedling(c: &mut Canvas) {
-    c.add(qbez((32.0, 56.0), (31.0, 42.0), (33.0, 26.0), 5.0));
-    c.add(leaf((32.0, 36.0), (8.0, 20.0), 9.0));
-    c.add(leaf((33.0, 28.0), (56.0, 9.0), 10.0));
-    c.add(seg(14.0, 57.0, 50.0, 57.0, 4.5));
-}
-
 fn mud_pile(c: &mut Canvas) {
     c.add(union(vec![circle(20.0, 44.0, 12.0), circle(44.0, 44.0, 12.0), circle(32.0, 32.0, 14.0), rect_c(8.0, 42.0, 56.0, 56.0, 5.0)]));
     c.cut(circle(25.0, 37.0, 3.2).or(circle(40.0, 46.0, 3.0)).or(circle(18.0, 49.0, 2.3)));
@@ -523,13 +493,6 @@ fn lodge_dome(c: &mut Canvas) {
     c.cut(seg(34.0, 40.0, 58.0, 45.0, 3.0));
     c.cut(seg(14.0, 33.0, 31.0, 30.0, 3.0));
     c.cut(seg(33.0, 30.0, 50.0, 33.0, 3.0));
-}
-
-fn wheel(c: &mut Canvas) {
-    c.add(ring(32.0, 32.0, 18.0, 5.0));
-    c.add(radial(4, 32.0, 32.0, || seg(32.0, 14.0, 32.0, 50.0, 4.0)).rot(32.0, 32.0, 22.5));
-    c.add(circle(32.0, 32.0, 5.5));
-    c.add(radial(8, 32.0, 32.0, || rect(32.0, 7.5, 4.5, 6.0, 1.5)));
 }
 
 fn drop_shape() -> S {
@@ -591,69 +554,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(seg(24.0, 26.0, 40.0, 42.0, 6.5));
         }
         Mud => mud_pile(c),
-        Baskets => {
-            c.add(poly(&[(12.0, 30.0), (52.0, 30.0), (47.0, 55.0), (17.0, 55.0)]).grow(2.0));
-            c.cut(seg(10.0, 39.0, 54.0, 39.0, 3.5).or(seg(10.0, 47.0, 54.0, 47.0, 3.5)));
-            c.cut(seg(32.0, 31.0, 32.0, 58.0, 3.5));
-            c.knock(rect_c(7.0, 24.0, 57.0, 31.0, 3.0));
-            c.add(arc(32.0, 26.0, 15.0, 180.0, 360.0, 5.0));
-        }
-        Rope => {
-            let pts: Vec<Vec2> = (0..=160)
-                .map(|i| {
-                    let t = i as f32 / 160.0 * 2.25 * TAU;
-                    let r = 4.0 + t * 9.3 / TAU;
-                    v(30.0, 31.0) + Vec2::from_angle(t + PI) * r
-                })
-                .collect();
-            let end = *pts.last().unwrap();
-            c.add(polyline_v(pts, 5.2));
-            c.add(qbez((end.x, end.y), (52.0, 56.0), (60.0, 52.0), 5.2));
-        }
-        Tools => {
-            c.part(32.0, 32.0, 0.86, -42.0, 0.0, hammer);
-            c.part(32.0, 32.0, 0.86, 42.0, 3.0, |c| {
-                c.add(seg(32.0, 24.0, 32.0, 58.0, 8.0));
-                c.add(circle(32.0, 17.0, 13.0));
-                c.cut(rect_c(27.5, -4.0, 36.5, 15.0, 1.5));
-            });
-        }
-        CatBasics => lodge_dome(c),
-        CatWater => {
-            c.add(wave(8.0, 56.0, 24.0, 4.5, 1.5, 6.0));
-            c.add(wave(8.0, 56.0, 40.0, 4.5, 1.5, 6.0));
-        }
-        CatForest => pine(c),
-        CatBuilding => {
-            c.add(poly(&[(32.0, 10.0), (55.0, 30.0), (50.0, 30.0), (50.0, 54.0), (14.0, 54.0), (14.0, 30.0), (9.0, 30.0)]).outline(W));
-            c.add(rect_c(26.0, 38.0, 38.0, 54.0, 2.0));
-        }
-        CatCraft => {
-            c.add(
-                poly(&[
-                    (5.0, 17.0),
-                    (56.0, 16.0),
-                    (56.0, 28.0),
-                    (43.0, 31.0),
-                    (40.0, 40.0),
-                    (48.0, 45.0),
-                    (49.0, 52.0),
-                    (15.0, 52.0),
-                    (16.0, 45.0),
-                    (24.0, 40.0),
-                    (22.0, 31.0),
-                    (15.0, 28.0),
-                ])
-                .grow(1.5),
-            );
-        }
-        CatTransport => {
-            c.add(poly(&[(5.0, 40.0), (59.0, 40.0), (50.0, 54.0), (14.0, 54.0)]).grow(1.5));
-            c.add(seg(32.0, 7.0, 32.0, 40.0, 4.5));
-            c.knock(poly(&[(36.0, 9.0), (36.0, 34.0), (54.0, 34.0)]).grow(1.0));
-            c.knock(poly(&[(28.0, 15.0), (28.0, 34.0), (14.0, 34.0)]).grow(1.0));
-        }
-        CatDefence => shield(c),
         Dam => {
             for y in [17.0, 29.0, 41.0, 53.0] {
                 c.add(wave(5.0, 23.0, y, 2.8, 1.0, 5.0));
@@ -670,35 +570,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(seg(0.0, 49.0, 64.0, 49.0, 4.0));
             c.add(wave(6.0, 58.0, 55.0, 3.0, 2.0, 5.0));
         }
-        Burrow => {
-            c.add(ellipse(32.0, 48.0, 25.0, 24.0).above(48.0));
-            c.add(rect_c(4.0, 44.0, 60.0, 52.0, 3.0));
-            c.cut(rect_c(22.0, 30.0, 42.0, 62.0, 10.0));
-            c.add(seg(24.0, 58.0, 40.0, 58.0, 4.5));
-        }
-        FoodCache => {
-            c.part(32.0, 42.0, 0.74, 0.0, 0.0, crate_box);
-            c.part(33.0, 17.0, 0.52, 0.0, 3.0, berries);
-        }
-        ScentMound => {
-            c.add(ellipse(32.0, 58.0, 24.0, 15.0).above(57.0));
-            for x in [18.0, 32.0, 46.0] {
-                let pts = (0..=24)
-                    .map(|i| {
-                        let t = i as f32 / 24.0;
-                        v(x + 3.5 * (t * 1.5 * TAU).sin(), 37.0 - t * 30.0)
-                    })
-                    .collect();
-                c.add(polyline_v(pts, 4.5));
-            }
-        }
-        GuardPost => {
-            c.add(poly(&[(32.0, 4.0), (53.0, 18.0), (11.0, 18.0)]).grow(1.5));
-            c.add(rect_c(16.0, 20.0, 48.0, 33.0, 2.0));
-            c.cut(rect_c(26.0, 23.0, 38.0, 30.0, 1.5));
-            c.add(seg(21.0, 33.0, 13.0, 58.0, 5.5).or(seg(43.0, 33.0, 51.0, 58.0, 5.5)));
-            c.add(seg(18.0, 46.0, 46.0, 46.0, 4.5));
-        }
         Canal => {
             c.add(seg(10.0, 10.0, 10.0, 34.0, W).or(seg(54.0, 10.0, 54.0, 34.0, W)));
             c.add(arc(32.0, 34.0, 22.0, 0.0, 180.0, W));
@@ -714,17 +585,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(40.0, 59.0, 44.0, 3.0, 1.0, 5.0));
             c.add(seg(4.0, 56.0, 60.0, 56.0, 4.5));
         }
-        WaterWheel => {
-            c.part(32.0, 27.0, 0.8, 0.0, 0.0, wheel);
-            c.knock(wave(4.0, 60.0, 54.0, 3.0, 2.0, W));
-        }
-        Workshop => {
-            c.add(rect_c(5.0, 36.0, 59.0, 43.0, 2.0));
-            c.add(seg(12.0, 42.0, 12.0, 58.0, W).or(seg(52.0, 42.0, 52.0, 58.0, W)));
-            c.add(seg(12.0, 51.0, 52.0, 51.0, 4.0));
-            c.part(30.0, 18.0, 0.52, -45.0, 2.5, hammer);
-            c.part(50.0, 24.0, 0.42, 0.0, 2.5, |c| c.add(rect_c(14.0, 14.0, 50.0, 50.0, 3.0)));
-        }
         Warehouse => {
             c.add(poly(&[(4.0, 26.0), (32.0, 8.0), (60.0, 26.0), (56.0, 26.0), (56.0, 58.0), (8.0, 58.0), (8.0, 26.0)]).grow(1.0));
             c.cut(rect_c(18.0, 32.0, 46.0, 62.0, 2.0));
@@ -733,95 +593,24 @@ fn draw(icon: Icon, c: &mut Canvas) {
                     .and(rect_c(18.0, 32.0, 46.0, 58.0, 0.0)),
             );
         }
-        Dock => {
-            c.add(rect_c(5.0, 22.0, 59.0, 30.0, 2.0));
-            c.add(seg(14.0, 30.0, 14.0, 52.0, W).or(seg(32.0, 30.0, 32.0, 52.0, W)).or(seg(50.0, 30.0, 50.0, 52.0, W)));
-            c.knock(wave(4.0, 60.0, 44.0, 2.5, 2.5, 4.5));
-            c.add(wave(4.0, 60.0, 56.0, 2.5, 2.5, 4.5));
-        }
-        Barge => {
-            c.add(poly(&[(4.0, 34.0), (60.0, 34.0), (53.0, 47.0), (11.0, 47.0)]).grow(1.5));
-            c.knock(rect_c(12.0, 14.0, 29.0, 31.0, 2.0));
-            c.knock(rect_c(33.0, 20.0, 50.0, 31.0, 2.0));
-            c.add(wave(4.0, 60.0, 56.0, 2.5, 2.0, 4.5));
-        }
         LoggingCamp => {
             c.add(poly(&[(17.0, 34.0), (47.0, 34.0), (49.0, 50.0), (58.0, 57.0), (6.0, 57.0), (15.0, 50.0)]).grow(1.0));
             c.knock(ellipse(32.0, 33.0, 16.0, 5.5));
             c.part(37.0, 22.0, 0.6, 35.0, 3.0, axe);
         }
-        ForagerHut => {
-            c.part(26.0, 37.0, 0.8, 0.0, 0.0, house_door);
-            c.part(45.0, 21.0, 0.58, 0.0, 3.0, berries);
-        }
-        MudPit => {
-            c.part(28.0, 38.0, 0.82, 0.0, 0.0, mud_pile);
-            c.part(44.0, 22.0, 0.62, 25.0, 3.0, shovel);
-        }
 
-        Mill => {
-            c.add(poly(&[(25.0, 30.0), (39.0, 30.0), (46.0, 58.0), (18.0, 58.0)]).grow(1.0));
-            c.cut(rect_c(28.0, 46.0, 36.0, 62.0, 4.0));
-            c.knock(radial(4, 32.0, 26.0, || rect_c(33.0, 3.0, 42.0, 23.0, 1.5)).rot(32.0, 26.0, 45.0));
-            c.knock(circle(32.0, 26.0, 4.5));
-        }
-        Storehouse => {
-            for (x0, y0) in [(7.0, 34.0), (35.0, 34.0), (21.0, 9.0)] {
-                c.add(rect_c(x0, y0, x0 + 22.0, y0 + 22.0, 3.0));
-                c.cut(seg(x0, y0 + 11.0, x0 + 22.0, y0 + 11.0, 3.0));
-            }
-        }
-        ForesterLodge => {
-            c.part(26.0, 37.0, 0.8, 0.0, 0.0, house_door);
-            c.part(46.0, 21.0, 0.6, 0.0, 3.0, seedling);
-        }
-        TreeNursery => {
-            c.add(poly(&[(8.0, 40.0), (56.0, 40.0), (50.0, 56.0), (14.0, 56.0)]).grow(1.5));
-            c.cut(seg(10.0, 47.0, 54.0, 47.0, 3.0));
-            for x in [18.0, 32.0, 46.0] {
-                c.part(x, 22.0, 0.42, 0.0, 2.5, seedling);
-            }
-        }
         RoleForager => role(c, 0.0, berries),
         RoleLogger => role(c, 35.0, axe),
         RoleMudDigger => role(c, 30.0, shovel),
         RoleBuilder => role(c, -35.0, hammer),
         RoleHauler => role(c, 0.0, crate_box),
-        RoleCrafter => role(c, -30.0, saw),
-        RoleGuard => role(c, 0.0, shield),
-        RoleForester => role(c, 0.0, seedling),
-        ViewWorld => {
-            c.add(poly(&[(6.0, 14.0), (21.0, 8.0), (21.0, 50.0), (6.0, 56.0)]).grow(1.0));
-            c.add(poly(&[(26.0, 8.0), (38.0, 14.0), (38.0, 56.0), (26.0, 50.0)]).grow(1.0));
-            c.add(poly(&[(43.0, 14.0), (58.0, 8.0), (58.0, 50.0), (43.0, 56.0)]).grow(1.0));
-        }
         ViewWater => {
             c.add(drop_shape().grow(1.5));
             c.cut(wave(12.0, 52.0, 40.0, 3.0, 1.0, 4.0));
         }
-        ViewGoods => {
-            c.add(poly(&[(32.0, 7.0), (55.0, 19.0), (55.0, 45.0), (32.0, 57.0), (9.0, 45.0), (9.0, 19.0)]).grow(1.0));
-            c.cut(polyline(&[(9.0, 19.0), (32.0, 31.0), (55.0, 19.0)], 3.5).or(seg(32.0, 31.0, 32.0, 60.0, 3.5)));
-        }
-        ViewVegetation => {
-            c.add(seg(8.0, 56.0, 56.0, 56.0, 4.5));
-            c.add(leaf((32.0, 56.0), (31.0, 8.0), 8.0));
-            c.add(leaf((26.0, 56.0), (10.0, 20.0), 7.0));
-            c.add(leaf((38.0, 56.0), (54.0, 20.0), 7.0));
-            c.add(leaf((20.0, 56.0), (6.0, 40.0), 5.0));
-            c.add(leaf((44.0, 56.0), (58.0, 40.0), 5.0));
-        }
         ViewForest => {
             c.part(22.0, 36.0, 0.7, 0.0, 0.0, pine);
             c.part(42.0, 31.0, 0.8, 0.0, 3.0, pine);
-        }
-        ViewWorkAreas => {
-            c.add(radial(8, 32.0, 32.0, || arc(32.0, 32.0, 25.0, -14.0, 14.0, W)));
-            c.part(32.0, 32.0, 0.55, -40.0, 0.0, hammer);
-        }
-        ViewHousing => {
-            c.part(21.0, 38.0, 0.62, 0.0, 0.0, house_door);
-            c.part(42.0, 30.0, 0.7, 0.0, 3.0, house_door);
         }
         ViewElevation => {
             c.add(ellipse(33.0, 37.0, 26.0, 19.0).outline(W - 1.0));
@@ -846,15 +635,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
                 c.add(rect_c(21.0, y, 43.0, y + 10.0, 2.0));
             }
         }
-        NoStore => {
-            c.part(32.0, 32.0, 0.82, 0.0, 0.0, crate_box);
-            slash(c);
-        }
-        NoPower => {
-            c.add(poly(&[(37.0, 4.0), (14.0, 36.0), (29.0, 36.0), (25.0, 60.0), (50.0, 26.0), (35.0, 26.0), (42.0, 4.0)]).grow(1.0));
-            slash(c);
-        }
-        Padlock => padlock(c),
         HandLock => {
             c.part(25.0, 25.0, 0.72, 0.0, 0.0, paw);
             c.part(44.0, 42.0, 0.6, 0.0, 3.5, padlock);
@@ -863,8 +643,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         Urgent => c.add(rect(32.0, 32.0, 21.0, 21.0, 3.0)),
         Up => c.add(tri_rounded(&[(32.0, 12.0), (53.0, 49.0), (11.0, 49.0)])),
         Down => c.add(tri_rounded(&[(32.0, 52.0), (11.0, 15.0), (53.0, 15.0)])),
-        Dot => c.add(circle(32.0, 32.0, 19.0)),
-        DotEmpty => c.add(ring(32.0, 32.0, 17.0, 6.5)),
         Check => c.add(polyline(&[(11.0, 33.0), (25.0, 47.0), (53.0, 17.0)], 8.0)),
         Cross => c.add(seg(14.0, 14.0, 50.0, 50.0, 8.0).or(seg(50.0, 14.0, 14.0, 50.0, 8.0))),
         Pause => c.add(rect_c(14.0, 10.0, 27.0, 54.0, 3.0).or(rect_c(37.0, 10.0, 50.0, 54.0, 3.0))),
@@ -882,24 +660,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(arc(35.0, 36.0, 18.0, 180.0, 400.0, W + 0.5));
             c.add(tri_rounded(&[(7.0, 31.0), (27.0, 31.0), (17.0, 44.0)]));
         }
-        Search => {
-            c.add(ring(27.0, 27.0, 15.0, W + 0.5));
-            c.add(seg(39.0, 39.0, 54.0, 54.0, 8.0));
-        }
         Pin => c.part(32.0, 32.0, 1.0, 35.0, 0.0, |c| {
             c.add(rect_c(20.0, 6.0, 44.0, 14.0, 3.0));
             c.add(poly(&[(25.0, 13.0), (39.0, 13.0), (42.0, 34.0), (22.0, 34.0)]));
             c.add(rect_c(14.0, 33.0, 50.0, 40.0, 3.0));
             c.add(seg(32.0, 40.0, 32.0, 59.0, 4.0));
         }),
-        PriorityUp => {
-            c.add(polyline(&[(13.0, 34.0), (32.0, 15.0), (51.0, 34.0)], 6.5));
-            c.add(polyline(&[(13.0, 51.0), (32.0, 32.0), (51.0, 51.0)], 6.5));
-        }
-        PriorityDown => {
-            c.add(polyline(&[(13.0, 30.0), (32.0, 49.0), (51.0, 30.0)], 6.5));
-            c.add(polyline(&[(13.0, 13.0), (32.0, 32.0), (51.0, 13.0)], 6.5));
-        }
         Plus => c.add(seg(32.0, 11.0, 32.0, 53.0, 7.5).or(seg(11.0, 32.0, 53.0, 32.0, 7.5))),
         Minus => c.add(seg(11.0, 32.0, 53.0, 32.0, 7.5)),
         Focus => {
@@ -908,16 +674,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(5.0, 32.0, 18.0, 32.0, W).or(seg(46.0, 32.0, 59.0, 32.0, W)));
             c.add(circle(32.0, 32.0, 4.5));
         }
-        Clear => {
-            c.part(33.0, 28.0, 1.0, -40.0, 0.0, |c| {
-                c.add(rect_c(8.0, 20.0, 56.0, 42.0, 5.0));
-                c.cut(seg(28.0, 16.0, 28.0, 46.0, 3.5));
-                c.cut(rect_c(32.5, 25.0, 51.0, 37.0, 2.0));
-            });
-            c.add(seg(10.0, 57.0, 54.0, 57.0, 4.5));
-        }
         Expand => c.add(tri_rounded(&[(24.0, 17.0), (45.0, 32.0), (24.0, 47.0)])),
-        Collapse => c.add(tri_rounded(&[(17.0, 24.0), (47.0, 24.0), (32.0, 45.0)])),
         Colony => {
             c.add(rect_c(12.0, 12.0, 52.0, 58.0, 4.0));
             c.knock(rect_c(23.0, 6.0, 41.0, 17.0, 3.0));
@@ -930,18 +687,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(rect_c(5.0, 40.0, 21.0, 56.0, 3.0));
             c.add(rect_c(24.0, 40.0, 40.0, 56.0, 3.0));
             c.add(rect_c(43.0, 40.0, 59.0, 56.0, 3.0));
-        }
-        Journal => {
-            c.add(poly(&[(5.0, 14.0), (29.0, 17.0), (29.0, 55.0), (5.0, 51.0)]).grow(1.5));
-            c.add(poly(&[(35.0, 17.0), (59.0, 14.0), (59.0, 51.0), (35.0, 55.0)]).grow(1.5));
-            c.cut(seg(10.0, 27.0, 24.0, 29.0, 3.0).or(seg(10.0, 36.0, 24.0, 38.0, 3.0)).or(seg(10.0, 45.0, 24.0, 47.0, 3.0)));
-            c.cut(seg(40.0, 29.0, 54.0, 27.0, 3.0).or(seg(40.0, 38.0, 54.0, 36.0, 3.0)).or(seg(40.0, 47.0, 54.0, 45.0, 3.0)));
-        }
-        Log => {
-            c.add(rect_c(16.0, 12.0, 48.0, 52.0, 1.0));
-            c.cut(seg(22.0, 26.0, 42.0, 26.0, 3.5).or(seg(22.0, 34.0, 42.0, 34.0, 3.5)).or(seg(22.0, 42.0, 36.0, 42.0, 3.5)));
-            c.knock(seg(11.0, 12.0, 49.0, 12.0, 9.0));
-            c.knock(seg(15.0, 52.0, 53.0, 52.0, 9.0));
         }
         Follow => {
             c.add(circle(32.0, 52.0, 32.0).and(circle(32.0, 12.0, 32.0)).grow(1.0));
@@ -960,19 +705,9 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(44.0, 22.0, 57.0, 10.0, W));
             c.knock(circle(18.0, 47.0, 7.0).or(circle(36.0, 47.0, 7.0)));
         }
-        Menu => {
-            for y in [16.0, 32.0, 48.0] {
-                c.add(seg(12.0, y, 52.0, y, 7.0));
-            }
-        }
         Back => {
             c.add(seg(13.0, 32.0, 53.0, 32.0, 7.0));
             c.add(polyline(&[(30.0, 14.0), (12.0, 32.0), (30.0, 50.0)], 7.0));
-        }
-        Settings => {
-            c.add(circle(32.0, 32.0, 19.0));
-            c.add(radial(8, 32.0, 32.0, || rect(32.0, 10.0, 5.0, 6.0, 1.5)));
-            c.cut(circle(32.0, 32.0, 8.0));
         }
         Beaver => head(c),
         Adult => c.part(32.0, 33.0, 0.98, 0.0, 0.0, head),
@@ -1039,14 +774,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.knock(wave(4.0, 34.0, 53.0, 2.5, 1.0, 4.5));
         }
         Hammer => c.part(32.0, 32.0, 1.0, -40.0, 0.0, hammer),
-        Balance => {
-            c.add(seg(32.0, 12.0, 32.0, 52.0, 5.0));
-            c.add(seg(18.0, 54.0, 46.0, 54.0, 5.0));
-            c.add(seg(10.0, 18.0, 54.0, 18.0, 5.0));
-            c.add(seg(14.0, 18.0, 8.0, 36.0, 3.0).or(seg(14.0, 18.0, 20.0, 36.0, 3.0)));
-            c.add(seg(50.0, 18.0, 44.0, 36.0, 3.0).or(seg(50.0, 18.0, 56.0, 36.0, 3.0)));
-            c.add(ellipse(14.0, 38.0, 8.0, 4.0).or(ellipse(50.0, 38.0, 8.0, 4.0)));
-        }
         Crest => {
             c.add(seg(10.0, 8.0, 54.0, 8.0, W));
             c.add(seg(32.0, 22.0, 32.0, 48.0, W));
@@ -1080,44 +807,14 @@ fn draw(icon: Icon, c: &mut Canvas) {
             house(c);
             c.cut_part(32.0, 41.0, 0.42, 0.0, 0.0, |c| c.add(heart()));
         }
-        Profile => {
-            c.add(poly(&[(4.0, 58.0), (4.0, 24.0), (20.0, 24.0), (27.0, 38.0), (38.0, 38.0), (45.0, 48.0), (60.0, 48.0), (60.0, 58.0)]).grow(0.5));
-            c.knock(wave(4.0, 22.0, 15.0, 2.0, 1.0, 4.5));
-            c.knock(wave(28.0, 42.0, 30.0, 2.0, 1.0, 4.5));
-        }
         Upstream => {
             c.add(wave(17.0, 57.0, 32.0, 4.5, 1.0, W + 0.5));
             c.add(polyline(&[(27.0, 15.0), (10.0, 32.0), (27.0, 49.0)], W + 0.5));
-        }
-        North => {
-            c.add(tri_rounded(&[(32.0, 6.0), (44.0, 20.0), (20.0, 20.0)]));
-            c.add(polyline(&[(19.0, 57.0), (19.0, 29.0), (45.0, 57.0), (45.0, 29.0)], W));
         }
         Gauge => {
             c.add(rect_c(12.0, 7.0, 40.0, 57.0, 8.0).outline(W));
             c.add(wave_fill(18.5, 33.5, 30.0, 51.0, 2.0, 1.0).and(rect_c(18.5, 13.0, 33.5, 50.5, 3.0)));
             c.add(seg(48.0, 16.0, 56.0, 16.0, 4.5).or(seg(48.0, 32.0, 54.0, 32.0, 4.5)).or(seg(48.0, 48.0, 56.0, 48.0, 4.5)));
-        }
-        Wheel => wheel(c),
-        Sapling => seedling(c),
-        TreeYoung => {
-            c.add(seg(32.0, 38.0, 32.0, 58.0, 5.0));
-            c.knock(circle(32.0, 27.0, 13.0).or(circle(23.0, 34.0, 8.0)).or(circle(41.0, 34.0, 8.0)));
-            c.add(seg(20.0, 58.0, 44.0, 58.0, 4.0));
-        }
-        TreeOld => {
-            c.add(poly(&[(25.0, 58.0), (28.0, 36.0), (36.0, 36.0), (40.0, 58.0)]).grow(1.0));
-            c.add(seg(34.0, 40.0, 54.0, 22.0, 4.0));
-            c.knock(circle(24.0, 22.0, 13.0).or(circle(12.0, 32.0, 8.0)).or(circle(37.0, 16.0, 9.0)));
-            c.cut(circle(22.0, 21.0, 3.5).or(circle(31.0, 26.0, 2.8)).or(circle(13.0, 32.0, 2.5)));
-        }
-        Coppice => {
-            c.add(rect_c(19.0, 40.0, 45.0, 57.0, 3.0));
-            c.cut(ellipse(32.0, 40.0, 9.0, 3.0));
-            c.add(qbez((25.0, 40.0), (22.0, 28.0), (12.0, 18.0), 4.0));
-            c.add(qbez((32.0, 39.0), (32.0, 24.0), (32.0, 9.0), 4.0));
-            c.add(qbez((39.0, 40.0), (42.0, 28.0), (52.0, 18.0), 4.0));
-            c.add(leaf((12.0, 18.0), (9.0, 6.0), 6.0).or(leaf((32.0, 12.0), (24.0, 4.0), 6.0)).or(leaf((52.0, 18.0), (56.0, 6.0), 6.0)));
         }
         Widen => {
             c.add(rect_c(10.0, 14.0, 54.0, 27.0, 3.0));

@@ -44,9 +44,6 @@ impl Inventory {
         }
         stock.retain(|_, a| *a > 0.0);
     }
-    pub fn entries(&self) -> Vec<(BuildingId, Good, f32)> {
-        self.0.read().unwrap().iter().map(|(&(id, g), &a)| (id, g, a)).collect()
-    }
 }
 
 #[cfg(test)]
