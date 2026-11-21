@@ -302,22 +302,6 @@ impl Ui {
             }
         })
     }
-    /// A gauge post in water: `fill` of it under water, an optional red line where a level will fall to.
-    pub fn stake(&mut self, fill: f32, mark: Option<f32>, w: f32, h: f32) -> &mut VNode {
-        let f = fill.clamp(0.0, 1.0);
-        self.node(Node { width: Val::Px(w), height: Val::Px(h), flex_shrink: 0.0, ..default() }, |u| {
-            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(0.0), height: Val::Percent(100.0), ..default() })).bg(WATER.with_alpha(0.18));
-            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(0.0), height: Val::Percent(f * 100.0), ..default() })).bg(WATER);
-            let post = (w * 0.22).round().max(4.0);
-            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px((w - post) / 2.0), top: Val::Px(-3.0), width: Val::Px(post), height: Val::Px(h + 6.0), ..default() })).bg(STAKE);
-            for q in [0.2, 0.4, 0.6, 0.8] {
-                u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px((w - post) / 2.0), bottom: Val::Percent(q * 100.0), width: Val::Px(post * 0.55), height: Val::Px(1.5), ..default() })).bg(MUD);
-            }
-            if let Some(m) = mark {
-                u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(-4.0), right: Val::Px(-4.0), bottom: Val::Percent(m.clamp(0.0, 1.0) * 100.0), height: Val::Px(2.5), ..default() })).bg(BAD);
-            }
-        })
-    }
     /// A beaver as a token; `pip` is a small status dot under it.
     pub fn token(&mut self, icon: Icon, px: f32, pip: Option<Color>) -> &mut VNode {
         self.node(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(3.0), flex_shrink: 0.0, ..default() }, |t| {
@@ -344,7 +328,6 @@ impl Ui {
 }
 
 pub const FUR: Color = Color::srgb(0.73, 0.47, 0.25);
-pub const STAKE: Color = Color::srgb(0.79, 0.66, 0.47);
 pub const MUD: Color = Color::srgb(0.56, 0.43, 0.32);
 pub const REST: Color = Color::srgb(0.56, 0.72, 0.88);
 

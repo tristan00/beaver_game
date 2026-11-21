@@ -219,14 +219,7 @@ fn season_color(se: Season) -> Color {
     }
 }
 
-/// How full the dammed ponds are, as a share of their full level.
-fn pond_fill(s: &sim::SimState) -> Option<f32> {
-    let fills: Vec<f32> = s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()).filter_map(|d| d.pond.as_ref()).map(|p| ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0)).collect();
-    (!fills.is_empty()).then(|| fills.iter().sum::<f32>() / fills.len() as f32)
-}
-
-/// Top right: what will the water do next? The year, speed, days to the dry
-/// spell, and a stake showing the ponds now and where summer will leave them.
+/// Top right: what will the water do next? The year, speed and days to the dry spell.
 pub fn calendar(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let t = s.time_days;
@@ -263,29 +256,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             })
             .tip(Tip::titled(Some((icon, col)), name).with_value(days(n.ceil() as f32)));
         });
-        let ponds = sim::hud::ponds(s);
-        let season = calendar::SEASON_DAYS as f32;
-        let fill = pond_fill(s);
-        let cover = ponds.summer_cover_days();
-        let mark = match (fill, cover) {
-            (Some(f), Some(cv)) => Some((f * (1.0 - season / cv.max(0.01))).max(0.0)),
-            _ => None,
-        };
-        let mut tip = Tip::titled(Some((Icon::Gauge, WATER)), "Ponds");
-        match (fill, cover) {
-            (Some(f), Some(cv)) => {
-                tip.push(TipLine::new("Full", format!("{:.0}%", f * 100.0)));
-                tip.push(TipLine::new("Lasts a dry summer", format!("{} / {}", days(cv.min(999.0)), days(season))).color(if cv >= season { GOOD } else { BAD }));
-                tip.push(TipLine::new("Red line", "where summer leaves it").sub());
-            }
-            (Some(f), None) => {
-                tip.push(TipLine::new("Full", format!("{:.0}%", f * 100.0)));
-            }
-            _ => {
-                tip.push(TipLine::new("No dammed pond yet", ""));
-            }
-        }
-        u.stake(fill.unwrap_or(0.0), mark, 26.0, 52.0).tip(tip);
     })]
 }
 
