@@ -121,7 +121,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                     tip.push(TipLine::new("Carrying", "").icon(Icon::Haul, MUTED));
                 }
             }
-            let (mi, mc) = super::inspect::mood_icon(b.mood);
+            let (mi, mc) = mood_icon(b.mood);
             tip.push(TipLine::new("Mood", format!("{:.0}", b.mood * 100.0)).icon(mi, mc));
             tip.push(TipLine::new("Health", format!("{:.0}", b.health * 100.0)).icon(Icon::Health, if b.health < 0.5 { BAD } else { GOOD }));
             tip
@@ -166,7 +166,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         }
         Thing::Cell(c) => {
             let mut tip = Tip::default();
-            for (i, col, name, v) in super::inspect::cell_rows(s, c) {
+            for (i, col, name, v) in cell_rows(s, c) {
                 tip.push(TipLine::new(name, v).icon(i, col));
             }
             tip
@@ -467,9 +467,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
-    if let (Some(id), Some(a), Some(b)) = (hud.area_edit, hud.area_from, hover.0) {
-        area_outline(&mut g, h, super::drawn_area(s, id, a, b), ACCENT);
-    }
     if hud.tool == Tool::None {
         if let Some(Thing::Building(id)) = thing.0 {
             if let Some(b) = s.buildings.building(id) {
@@ -666,4 +663,26 @@ fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d
             cell_outline(g, h, *c, Some(y), WOOD_LINE.with_alpha(0.8));
         }
     }
+}
+
+pub fn mood_icon(m: f32) -> (Icon, Color) {
+    if m >= 0.66 {
+        (Icon::MoodGood, GOOD)
+    } else if m >= 0.4 {
+        (Icon::MoodOk, WARN)
+    } else {
+        (Icon::MoodBad, BAD)
+    }
+}
+
+/// What the hover tip says about a plain cell of ground or water.
+pub fn cell_rows(s: &sim::SimState, cell: Cell) -> Vec<(Icon, Color, &'static str, String)> {
+    let (x, y) = cell;
+    let h = s.height.get(x, y).copied().unwrap_or(0.0);
+    let d = s.water.depth.get(x, y).copied().unwrap_or(0.0);
+    let mut rows = vec![(Icon::ViewElevation, MUTED, "Height", num(h))];
+    if d > 0.01 {
+        rows.push((Icon::Drop, WATER, "Depth", format!("{d:.2} m")));
+    }
+    rows
 }

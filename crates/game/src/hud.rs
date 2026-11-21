@@ -12,7 +12,6 @@ mod words;
 mod world;
 
 use actions::{button_actions, commit_line, undo_last};
-pub use actions::drawn_area;
 use input::{pointer_over_ui, track_cursor, hover_cell, hotkeys, next_idle, world_input, box_select, frame_camera, follow_beaver};
 use minimap::{MinimapImage, setup_minimap, update_minimap, minimap_click};
 
@@ -113,7 +112,6 @@ pub struct HudState {
     idle_cursor: usize,
     pub colony: Option<ColonyTab>,
     undo: Vec<UndoItem>,
-    pub details_open: bool,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
     // Compatibility with the current menu, renderer and input recorder. This
@@ -123,8 +121,6 @@ pub struct HudState {
     consume_left_release: bool,
     pub pop_sort: u8,
     pub pop_page: usize,
-    pub area_edit: Option<BuildingId>,
-    pub area_from: Option<Cell>,
     pub pinned: Vec<Selection>,
     box_from: Option<Vec2>,
     box_done: Option<(Vec2, Vec2)>,
@@ -187,7 +183,6 @@ impl Default for HudState {
             idle_cursor: 0,
             colony: None,
             undo: Vec::new(),
-            details_open: false,
             selected: Vec::new(),
             follow: None,
             order_mode: None,
@@ -195,8 +190,6 @@ impl Default for HudState {
             consume_left_release: false,
             pop_sort: 5,
             pop_page: 0,
-            area_edit: None,
-            area_from: None,
             pinned: Vec::new(),
             box_from: None,
             box_done: None,
@@ -214,7 +207,6 @@ impl HudState {
         self.corners.clear();
         self.plan = None;
         self.extending = None;
-        self.area_edit = None;
     }
     fn finish_placement(&mut self) {
         self.set_tool(Tool::None);
@@ -355,7 +347,6 @@ const SLOW_PANELS: [Panel; 8] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
     Fix(Fix, Option<Cell>),
-    Focus(Cell),
     CycleIdle,
     Pause,
     Speed(Speed),
@@ -371,7 +362,6 @@ pub enum HudAction {
     SetLens(MapLens),
     Undo,
     Colony(Option<ColonyTab>),
-    ToggleDetails,
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
     Follow(BeaverId),
@@ -381,7 +371,6 @@ pub enum HudAction {
     RoleAdjust(RoleKind, i32),
     RoleWeight(RoleKind, f32),
     RoleUp(RoleKind),
-    Priority(BuildingId, sim::work::Priority),
     Paused(BuildingId, bool),
     Unlock(BeaverId),
     RepairBuilding(BuildingId),
@@ -390,9 +379,7 @@ pub enum HudAction {
     AutoStaff(bool),
     SortPop(u8),
     PopPage(i32),
-    EditArea(BuildingId),
     Pin(Selection),
-    Balance(BuildingId, bool),
 }
 
 pub struct HudPlugin;

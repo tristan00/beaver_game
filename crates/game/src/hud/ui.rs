@@ -277,19 +277,6 @@ impl Ui {
         let look = if fill == ACCENT { Peb::Primary } else if fill == Color::NONE { Peb::Bare } else if on { Peb::On } else { Peb::Idle };
         self.pebble(icon, px, action, look)
     }
-    pub fn icon_label_button(&mut self, icon: Icon, label: impl Into<String>, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
-        let look = if fill == ACCENT { Peb::Primary } else if fill == Color::NONE { Peb::Bare } else if on { Peb::On } else { Peb::Idle };
-        let tint = if look == Peb::Primary { ON_ACCENT } else { INK };
-        let label = label.into();
-        let v = self.node(Node { column_gap: Val::Px(5.0), padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)), min_height: Val::Px(28.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |u| {
-            u.icon(icon, px, tint);
-            if !label.is_empty() {
-                u.bold(label, 12.5, tint);
-            }
-        });
-        look.apply(v);
-        v.action(action)
-    }
     pub fn keycap(&mut self, k: impl Into<String>) -> &mut VNode {
         self.bold(k, 11.0, MUTED)
     }

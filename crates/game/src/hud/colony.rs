@@ -1,6 +1,6 @@
 //! The colony drawer: a side panel beside the map, never covering the pond.
 //! Every row is icons, gauges and numbers; names and units live in tooltips.
-use super::inspect::mood_icon;
+use super::world::mood_icon;
 use super::panels::{food_days, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;

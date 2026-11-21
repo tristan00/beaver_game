@@ -80,10 +80,7 @@ pub(super) fn hotkeys(
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
-        if hud.area_edit.is_some() {
-            hud.area_edit = None;
-            hud.area_from = None;
-        } else if hud.tool != Tool::None {
+        if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
         } else if hud.colony.is_some() {
             hud.colony = None;
@@ -171,7 +168,7 @@ pub(super) fn world_input(
             hud.line = build_logic::polyline(&hud.corners);
             return;
         }
-        if hud.tool != Tool::None || hud.area_edit.is_some() {
+        if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
             return;
         }
@@ -195,20 +192,6 @@ pub(super) fn world_input(
         Some(world::Thing::Beaver(id)) => sim.0.agents.get(id).map(|a|a.cell),
         _ => None,
     }) else { return };
-    if let Some(b) = hud.area_edit {
-        if mouse.just_pressed(MouseButton::Left) {
-            hud.area_from = Some(cell);
-        } else if mouse.just_released(MouseButton::Left) {
-            if let Some(a) = hud.area_from.take() {
-                let area = drawn_area(&sim.0, b, a, cell);
-                if let Err(e) = sim.0.apply(sim::Command::SetWorkArea { building: b, area }) {
-                    hud.refuse(sim_error(&e.to_string()), now);
-                }
-                hud.area_edit = None;
-            }
-        }
-        return;
-    }
     match hud.tool {
         Tool::None => {
             if mouse.just_pressed(MouseButton::Left) {

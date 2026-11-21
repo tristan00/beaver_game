@@ -95,7 +95,6 @@ pub(super) fn button_actions(
                     }
                 }
             },
-            HudAction::Focus(c) => flow.focus = Some(cell_world(&s.height, (c.0 as f32, c.1 as f32))),
             HudAction::CycleIdle => {
                 if shift {
                     hud.colony = Some(ColonyTab::Jobs);
@@ -161,7 +160,6 @@ pub(super) fn button_actions(
             }
             HudAction::Undo => undo_last(s, &mut hud, now),
             HudAction::Colony(t) => hud.colony = t,
-            HudAction::ToggleDetails => hud.details_open = !hud.details_open,
             HudAction::SelectBeaver(id) => {
                 *sel = Selection::Beaver(id);
                 hud.selected = vec![id];
@@ -190,7 +188,6 @@ pub(super) fn button_actions(
                     cmd(s, &mut hud, sim::Command::SetRoleOrder { order }, now);
                 }
             }
-            HudAction::Priority(building, priority) => cmd(s, &mut hud, sim::Command::SetPriority { building, priority }, now),
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
             HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
             HudAction::RepairBuilding(building) => cmd(s, &mut hud, sim::Command::RepairBuilding { building }, now),
@@ -202,7 +199,6 @@ pub(super) fn button_actions(
                 hud.pop_page = hud.pop_page.saturating_add_signed(delta as isize)
                     .min(sim.0.colony.population().saturating_sub(1) / 18);
             }
-            HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);
@@ -212,10 +208,6 @@ pub(super) fn button_actions(
                         hud.pinned.remove(0);
                     }
                 }
-            }
-            HudAction::EditArea(b) => {
-                hud.area_edit = if hud.area_edit == Some(b) { None } else { Some(b) };
-                hud.area_from = None;
             }
         }
     }
@@ -235,11 +227,4 @@ fn free_beaver(s: &mut sim::SimState, hud: &mut HudState, id: BeaverId, now: f32
     if let Err(e) = res {
         hud.refuse(sim_error(&e.to_string()), now);
     }
-}
-
-pub fn drawn_area(s: &sim::SimState, id: BuildingId, a: Cell, b: Cell) -> sim::work::Area {
-    let max = s.buildings.building(id).and_then(|bd| sim::forestry::max_area(bd.kind)).unwrap_or(usize::MAX);
-    let clamp = |from: usize, to: usize| if to >= from { from + (to - from).min(max - 1) } else { from - (from - to).min(max - 1) };
-    let b = (clamp(a.0, b.0), clamp(a.1, b.1));
-    sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
 }
