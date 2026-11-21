@@ -1,6 +1,9 @@
 #![allow(deprecated)]
 use super::{Blocks, HudAction};
 use crate::icons::{icon_node, Icon, Icons};
+pub use crate::skins::Skin;
+use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
+use bevy::ui::widget::NodeImageMode;
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontWeight};
 use bevy::ui::{FocusPolicy, RelativeCursorPosition};
@@ -19,9 +22,6 @@ pub const WATER: Color = Color::srgb(0.29, 0.64, 0.87);
 pub const ACCENT: Color = Color::srgb(0.91, 0.52, 0.23);
 pub const ON_ACCENT: Color = Color::srgb(0.13, 0.09, 0.05);
 pub const SELECT: Color = Color::srgb(0.97, 0.95, 0.9);
-/// A wooden peg: the resting face of every button.
-pub const PEG: Color = Color::srgba(0.36, 0.27, 0.19, 0.6);
-pub const PEG_EDGE: Color = Color::srgba(0.59, 0.41, 0.24, 0.45);
 /// The dark groove a gauge is cut into.
 pub const GROOVE: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
 
@@ -38,6 +38,8 @@ pub struct TipLine {
     pub indent: bool,
     pub nested: Option<Box<Tip>>,
     pub key: Option<String>,
+    /// A line that does something when clicked: the fix for an alert.
+    pub action: Option<HudAction>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -97,6 +99,10 @@ impl TipLine {
         self.nested = Some(Box::new(t));
         self
     }
+    pub fn act(mut self, a: HudAction) -> TipLine {
+        self.action = Some(a);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +133,8 @@ pub struct VNode {
     pub bg: Color,
     pub border: Option<BorderColor>,
     pub kind: Kind,
+    /// A carved texture drawn behind the node's children, stretched as a nine-slice.
+    pub skin: Option<(Skin, Color)>,
     pub action: Option<HudAction>,
     pub tip: Option<Tip>,
     pub solid: bool,
@@ -137,7 +145,19 @@ pub struct VNode {
 
 impl VNode {
     pub fn new(node: Node) -> VNode {
-        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, children: Vec::new() }
+        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, children: Vec::new() }
+    }
+    pub fn skin(&mut self, s: Skin) -> &mut Self {
+        self.skin = Some((s, Color::WHITE));
+        self.bg = Color::NONE;
+        self.border = None;
+        self
+    }
+    pub fn faded(&mut self) -> &mut Self {
+        if let Some((s, _)) = self.skin {
+            self.skin = Some((s, Color::srgba(1.0, 1.0, 1.0, 0.4)));
+        }
+        self
     }
     pub fn bg(&mut self, c: Color) -> &mut Self {
         self.bg = c;
@@ -174,6 +194,7 @@ impl VNode {
     }
     fn same_shape(&self, o: &VNode) -> bool {
         self.kind.same_shape(&o.kind)
+            && self.skin.is_some() == o.skin.is_some()
             && self.interactive() == o.interactive()
             && self.tag == o.tag
             && self.children.len() == o.children.len()
@@ -246,94 +267,157 @@ impl Ui {
         v.bg = c;
         self.add(v)
     }
-    pub fn icon_button(&mut self, icon: Icon, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
-        let tint = if fill == ACCENT { ON_ACCENT } else { INK };
-        let pad = (px * 0.3).round();
-        let v = self.node(button_node(pad, on), |u| {
+    /// A pebble button: an eight-sided stone around one icon.
+    pub fn pebble(&mut self, icon: Icon, px: f32, action: HudAction, look: Peb) -> &mut VNode {
+        let side = (px * 1.9).round().max(22.0);
+        let tint = if look == Peb::Primary { ON_ACCENT } else if look == Peb::Good { GOOD } else { INK };
+        let v = self.node(Node { width: Val::Px(side), height: Val::Px(side), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |u| {
             u.icon(icon, px, tint);
         });
-        peg_face(v, fill, on);
+        look.apply(v);
         v.action(action)
     }
+    /// Kept for the screens that pass a fill colour: amber is the main action, `on` is a ring.
+    pub fn icon_button(&mut self, icon: Icon, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
+        let look = if fill == ACCENT { Peb::Primary } else if fill == Color::NONE { Peb::Bare } else if on { Peb::On } else { Peb::Idle };
+        self.pebble(icon, px, action, look)
+    }
     pub fn icon_label_button(&mut self, icon: Icon, label: impl Into<String>, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
-        let tint = if fill == ACCENT { ON_ACCENT } else { INK };
+        let look = if fill == ACCENT { Peb::Primary } else if fill == Color::NONE { Peb::Bare } else if on { Peb::On } else { Peb::Idle };
+        let tint = if look == Peb::Primary { ON_ACCENT } else { INK };
         let label = label.into();
-        let v = self.node(Node { column_gap: Val::Px(4.0), ..button_node(4.0, on) }, |u| {
+        let v = self.node(Node { column_gap: Val::Px(5.0), padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)), min_height: Val::Px(28.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |u| {
             u.icon(icon, px, tint);
-            u.bold(label, 12.0, tint);
+            if !label.is_empty() {
+                u.bold(label, 12.5, tint);
+            }
         });
-        peg_face(v, fill, on);
+        look.apply(v);
         v.action(action)
     }
     pub fn keycap(&mut self, k: impl Into<String>) -> &mut VNode {
-        let k = k.into();
-        let v = self.node(
-            Node { padding: UiRect::axes(Val::Px(4.0), Val::Px(1.0)), border: UiRect::all(Val::Px(1.0)), border_radius: BorderRadius::all(Val::Px(3.0)), min_width: Val::Px(16.0), justify_content: JustifyContent::Center, ..default() },
-            |u| {
-                u.bold(k, 10.5, INK);
-            },
-        );
-        v.border = Some(BorderColor::all(PEG_EDGE));
-        v.bg = PEG;
-        v
+        self.bold(k, 11.0, MUTED)
     }
+    /// A line carved across a plate: a dark groove with a faint highlight under it.
     pub fn rule(&mut self) -> &mut VNode {
-        let v = self.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), margin: UiRect::vertical(Val::Px(2.0)), ..default() }));
-        v.bg = TIMBER.with_alpha(0.35);
-        v
+        self.node(Node { flex_direction: FlexDirection::Column, width: Val::Percent(100.0), margin: UiRect::vertical(Val::Px(3.0)), flex_shrink: 0.0, ..default() }, |u| {
+            u.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), ..default() })).bg(GROOVE);
+            u.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), ..default() })).bg(Color::srgba(1.0, 1.0, 1.0, 0.06));
+        })
     }
+    /// Any amount out of a whole, counted in notches rather than drawn as a thin bar.
     pub fn bar(&mut self, frac: f32, w: f32, h: f32, fill: Color) -> &mut VNode {
-        let f = frac.clamp(0.0, 1.0);
-        let v = self.node(Node { width: Val::Px(w), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(h.min(6.0) / 2.0)), overflow: Overflow::clip(), ..default() }, |u| {
-            u.add(VNode::new(Node { width: Val::Percent(f * 100.0), height: Val::Percent(100.0), ..default() })).bg(fill);
-            // Notches make every gauge read like a marked stick.
-            if w >= 40.0 {
-                for q in [0.25, 0.5, 0.75] {
-                    u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Percent(q * 100.0), top: Val::Px(0.0), width: Val::Px(1.0), height: Val::Percent(100.0), ..default() })).bg(GROOVE);
-                }
+        let n = ((w / 14.0).round() as usize).clamp(3, 12);
+        self.notches(frac, n, w, h.max(6.0), fill)
+    }
+    pub fn notches(&mut self, frac: f32, n: usize, w: f32, h: f32, fill: Color) -> &mut VNode {
+        let on = (frac.clamp(0.0, 1.0) * n as f32).round() as usize;
+        let gap = if w / n as f32 > 10.0 { 3.0 } else { 2.0 };
+        let each = ((w - gap * (n as f32 - 1.0)) / n as f32).max(2.0);
+        self.row(gap, |r| {
+            for i in 0..n {
+                r.add(VNode::new(Node { width: Val::Px(each), height: Val::Px(h), border_radius: BorderRadius::all(Val::Px(1.5)), flex_shrink: 0.0, ..default() })).bg(if i < on { fill } else { Color::srgba(1.0, 1.0, 1.0, 0.1) });
             }
+        })
+    }
+    /// Condition as a row of five pips.
+    pub fn pips(&mut self, frac: f32, col: Color) -> &mut VNode {
+        let on = (frac.clamp(0.0, 1.0) * 5.0).round() as usize;
+        self.row(4.0, |r| {
+            for i in 0..5 {
+                r.add(VNode::new(Node { width: Val::Px(12.0), height: Val::Px(8.0), border_radius: BorderRadius::all(Val::Px(1.5)), flex_shrink: 0.0, ..default() })).bg(if i < on { col } else { Color::srgba(1.0, 1.0, 1.0, 0.12) });
+            }
+        })
+    }
+    /// A gauge post in water: `fill` of it under water, an optional red line where a level will fall to.
+    pub fn stake(&mut self, fill: f32, mark: Option<f32>, w: f32, h: f32) -> &mut VNode {
+        let f = fill.clamp(0.0, 1.0);
+        self.node(Node { width: Val::Px(w), height: Val::Px(h), flex_shrink: 0.0, ..default() }, |u| {
+            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(0.0), height: Val::Percent(100.0), ..default() })).bg(WATER.with_alpha(0.18));
+            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(0.0), height: Val::Percent(f * 100.0), ..default() })).bg(WATER);
+            let post = (w * 0.22).round().max(4.0);
+            u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px((w - post) / 2.0), top: Val::Px(-3.0), width: Val::Px(post), height: Val::Px(h + 6.0), ..default() })).bg(STAKE);
+            for q in [0.2, 0.4, 0.6, 0.8] {
+                u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px((w - post) / 2.0), bottom: Val::Percent(q * 100.0), width: Val::Px(post * 0.55), height: Val::Px(1.5), ..default() })).bg(MUD);
+            }
+            if let Some(m) = mark {
+                u.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(-4.0), right: Val::Px(-4.0), bottom: Val::Percent(m.clamp(0.0, 1.0) * 100.0), height: Val::Px(2.5), ..default() })).bg(BAD);
+            }
+        })
+    }
+    /// A beaver as a token; `pip` is a small status dot under it.
+    pub fn token(&mut self, icon: Icon, px: f32, pip: Option<Color>) -> &mut VNode {
+        self.node(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(3.0), flex_shrink: 0.0, ..default() }, |t| {
+            t.icon(icon, px, FUR);
+            if let Some(c) = pip {
+                t.add(VNode::new(Node { width: Val::Px(6.0), height: Val::Px(6.0), border_radius: BorderRadius::all(Val::Px(3.0)), ..default() })).bg(c);
+            }
+        })
+    }
+    /// An open place a beaver could fill.
+    pub fn empty_token(&mut self, px: f32) -> &mut VNode {
+        let v = self.add(VNode::new(Node { width: Val::Px(px), height: Val::Px(px), border: UiRect::all(Val::Px(1.5)), border_radius: BorderRadius::all(Val::Px(px / 2.0)), flex_shrink: 0.0, ..default() }));
+        v.border = Some(BorderColor::all(MUTED.with_alpha(0.55)));
+        v
+    }
+    /// A portrait: one large icon in a dark cut-corner frame.
+    pub fn portrait(&mut self, icon: Icon, col: Color) -> &mut VNode {
+        let v = self.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |p| {
+            p.icon(icon, 32.0, col);
         });
-        v.bg = GROOVE;
+        v.skin(Skin::Portrait);
         v
     }
 }
 
-/// Buttons are wooden pegs: timber at rest, amber when on, solid amber for the main action.
-fn peg_face(v: &mut VNode, fill: Color, on: bool) {
-    let (bg, edge) = if fill == ACCENT {
-        (ACCENT, ACCENT)
-    } else if fill == Color::NONE {
-        (Color::NONE, Color::NONE)
-    } else if on {
-        (ACCENT.with_alpha(0.3), ACCENT)
-    } else if fill == FAINT {
-        (PEG, PEG_EDGE)
-    } else {
-        (fill, PEG_EDGE)
-    };
-    v.bg = bg;
-    v.border = Some(BorderColor::all(edge));
+pub const FUR: Color = Color::srgb(0.73, 0.47, 0.25);
+pub const STAKE: Color = Color::srgb(0.79, 0.66, 0.47);
+pub const MUD: Color = Color::srgb(0.56, 0.43, 0.32);
+pub const REST: Color = Color::srgb(0.56, 0.72, 0.88);
+
+/// The looks a pebble button can take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Peb {
+    Idle,
+    On,
+    Primary,
+    Good,
+    /// Shown but not usable.
+    Faded,
+    /// No stone, just the icon.
+    Bare,
 }
 
-pub fn button_node(pad: f32, on: bool) -> Node {
-    Node {
-        padding: UiRect::all(Val::Px(pad)),
-        border: UiRect::all(Val::Px(if on { 1.5 } else { 1.0 })),
-        border_radius: BorderRadius::all(Val::Px(5.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        flex_shrink: 0.0,
-        ..default()
+impl Peb {
+    fn apply(self, v: &mut VNode) {
+        match self {
+            Peb::Idle => {
+                v.skin(Skin::Pebble);
+            }
+            Peb::On => {
+                v.skin(Skin::PebbleOn);
+            }
+            Peb::Primary => {
+                v.skin(Skin::PebblePrimary);
+            }
+            Peb::Good => {
+                v.skin(Skin::PebbleGood);
+            }
+            Peb::Faded => {
+                v.skin(Skin::Pebble).faded();
+            }
+            Peb::Bare => {}
+        }
     }
 }
 
+/// Every panel is a carved plate.
 pub fn panel(v: &mut VNode) -> &mut VNode {
-    v.bg = PANEL;
-    v.border = Some(BorderColor { top: TIMBER, bottom: Color::srgba(0.0, 0.0, 0.0, 0.35), ..BorderColor::all(TIMBER.with_alpha(0.22)) });
-    v.node.border = UiRect { top: Val::Px(3.0), ..UiRect::all(Val::Px(1.0)) };
-    v.node.border_radius = BorderRadius::all(Val::Px(7.0));
+    v.skin(Skin::Plate);
+    v.node.border = UiRect::ZERO;
+    v.node.border_radius = BorderRadius::ZERO;
     if v.node.padding == UiRect::default() {
-        v.node.padding = UiRect::all(Val::Px(8.0));
+        v.node.padding = UiRect::all(Val::Px(10.0));
     }
     v.solid = true;
     v
@@ -379,10 +463,40 @@ enum KindBundle {
     Image(ImageNode),
 }
 
+/// A skinned button brightens while the pointer is over it.
+#[derive(Component, Clone, Copy)]
+pub struct Lift(pub Color);
+
+fn skin_image(icons: &Icons, s: Skin, tint: Color) -> ImageNode {
+    let b = s.slice();
+    let mode = if b > 0.0 {
+        NodeImageMode::Sliced(TextureSlicer { border: BorderRect::all(b), center_scale_mode: SliceScaleMode::Stretch, sides_scale_mode: SliceScaleMode::Stretch, max_corner_scale: 1.0 })
+    } else {
+        NodeImageMode::Stretch
+    };
+    ImageNode::new(icons.skin(s)).with_mode(mode).with_color(tint).with_visual_box(bevy::ui::VisualBox::BorderBox)
+}
+
+pub fn lift_hover(mut q: Query<(&Interaction, &Lift, &mut ImageNode), Or<(Changed<Interaction>, Changed<Lift>)>>) {
+    for (i, lift, mut img) in &mut q {
+        let base = lift.0.to_srgba();
+        img.color = match i {
+            Interaction::None => lift.0,
+            _ => Color::srgba((base.red * 1.3).min(1.0), (base.green * 1.3).min(1.0), (base.blue * 1.3).min(1.0), base.alpha),
+        };
+    }
+}
+
 fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> MountedNode {
     let mut ec = p.spawn((v.node.clone(), BackgroundColor(v.bg), FocusPolicy::Pass));
     if let Some(b) = v.border {
         ec.insert(b);
+    }
+    if let (Some((s, tint)), Kind::Box) = (v.skin, &v.kind) {
+        ec.insert(skin_image(icons, s, tint));
+        if v.action.is_some() {
+            ec.insert(Lift(tint));
+        }
     }
     match kind_components(icons, &v.kind, &v.node) {
         KindBundle::None => {}
@@ -430,6 +544,16 @@ fn update_tree(cmd: &mut Commands, icons: &Icons, old: &VNode, new: &VNode, m: &
     }
     if old.bg != new.bg {
         ec.insert(BackgroundColor(new.bg));
+    }
+    if old.skin != new.skin && matches!(new.kind, Kind::Box) {
+        match new.skin {
+            Some((s, tint)) => {
+                ec.insert((skin_image(icons, s, tint), Lift(tint)));
+            }
+            None => {
+                ec.remove::<(ImageNode, Lift)>();
+            }
+        }
     }
     if old.border != new.border {
         match new.border {
@@ -510,7 +634,7 @@ pub fn clear(cmd: &mut Commands, host: Entity, mounted: &mut Mounted) {
     }
 }
 
-pub const TIP_LAYERS: usize = 3;
+pub const TIP_LAYERS: usize = 2;
 const OPEN_SECS: f32 = 0.3;
 const FREEZE_SECS: f32 = 1.5;
 const GRACE_SECS: f32 = 0.25;
@@ -723,10 +847,11 @@ pub fn tip_tree(t: &Tip, frozen: bool, layer: u8) -> VNode {
                     r.add(VNode::new(Node { width: Val::Px(10.0), ..default() }));
                 }
                 if let Some((i, c)) = l.icon {
-                    r.icon(i, 14.0, c);
+                    r.icon(i, 14.0, if l.action.is_some() { ON_ACCENT } else { c });
                 }
                 if !l.label.is_empty() {
-                    r.text(l.label.clone(), 12.0, if l.indent { MUTED } else { INK });
+                    let col = if l.action.is_some() { ON_ACCENT } else if l.indent { MUTED } else { INK };
+                    if l.action.is_some() { r.bold(l.label.clone(), 12.0, col); } else { r.text(l.label.clone(), 12.0, col); }
                 }
                 r.spacer();
                 if !l.value.is_empty() {
@@ -744,6 +869,12 @@ pub fn tip_tree(t: &Tip, frozen: bool, layer: u8) -> VNode {
                 v.tip(*n.clone());
                 v.bg = Color::srgba(1.0, 1.0, 1.0, 0.03);
             }
+            if let Some(a) = &l.action {
+                v.skin(Skin::PebblePrimary);
+                v.node.padding = UiRect::axes(Val::Px(8.0), Val::Px(5.0));
+                v.node.margin = UiRect::top(Val::Px(3.0));
+                v.action(a.clone());
+            }
         }
         if t.title.is_none() && t.lines.is_empty() {
             u.text("-", 12.0, MUTED);
@@ -752,7 +883,7 @@ pub fn tip_tree(t: &Tip, frozen: bool, layer: u8) -> VNode {
     let mut root = ui.nodes.pop().unwrap();
     root.node.max_width = Val::Px(340.0);
     panel(&mut root);
-    root.node.padding = UiRect::axes(Val::Px(9.0), Val::Px(7.0));
+    root.node.padding = UiRect::axes(Val::Px(12.0), Val::Px(10.0));
     root.tag = Tag::TipLayer(layer);
     root
 }

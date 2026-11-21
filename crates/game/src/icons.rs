@@ -44,6 +44,13 @@ icons! {
 pub struct Icons {
     pub image: Handle<Image>,
     pub layout: Handle<TextureAtlasLayout>,
+    pub skins: Vec<Handle<Image>>,
+}
+
+impl Icons {
+    pub fn skin(&self, s: crate::skins::Skin) -> Handle<Image> {
+        self.skins.get(s as usize).cloned().unwrap_or_default()
+    }
 }
 
 pub struct IconsPlugin;
@@ -53,15 +60,19 @@ impl Plugin for IconsPlugin {
 
     fn finish(&self, app: &mut App) {
         let world = app.world_mut();
-        let image = match world.get_resource_mut::<Assets<Image>>() {
-            Some(mut images) => images.add(atlas_image()),
-            None => Handle::default(),
+        let (image, skins) = match world.get_resource_mut::<Assets<Image>>() {
+            Some(mut images) => {
+                let atlas = images.add(atlas_image());
+                let skins = crate::skins::Skin::ALL.iter().map(|s| images.add(crate::skins::image(*s))).collect();
+                (atlas, skins)
+            }
+            None => (Handle::default(), Vec::new()),
         };
         let layout = match world.get_resource_mut::<Assets<TextureAtlasLayout>>() {
             Some(mut layouts) => layouts.add(atlas_layout()),
             None => Handle::default(),
         };
-        world.insert_resource(Icons { image, layout });
+        world.insert_resource(Icons { image, layout, skins });
     }
 }
 

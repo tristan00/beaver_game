@@ -18,6 +18,7 @@ mod sandbox;
 mod screenshot;
 mod seasonal;
 mod sim_driver;
+mod skins;
 mod startflow;
 mod state;
 mod terrain_render;

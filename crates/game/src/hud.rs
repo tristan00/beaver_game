@@ -353,7 +353,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, search_input, world_input, box_select, frame_camera, follow_beaver),
-                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, world::draw_world_overlay),
+                    (button_actions, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay),
                 )
                     .chain()
                     .in_set(HudSet),
