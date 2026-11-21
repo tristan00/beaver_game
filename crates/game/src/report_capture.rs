@@ -169,7 +169,6 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0 && shot != 14;
         hud.colony = match shot { 2 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Water), 13 => Some(ColonyTab::Goods), _ => None };
-        hud.pop_page = 0;
         *lens = if shot == 1 { MapLens::Water } else { MapLens::World };
         *selection = Selection::None;
         hud.set_tool_for_report(crate::hud::Tool::None);

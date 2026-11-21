@@ -78,9 +78,6 @@ pub enum ColonyTab {
     Jobs,
     Goods,
     Water,
-    Land,
-    Buildings,
-    Log,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -119,8 +116,6 @@ pub struct HudState {
     pub order_mode: Option<()>,
     pub help: bool,
     consume_left_release: bool,
-    pub pop_sort: u8,
-    pub pop_page: usize,
     pub pinned: Vec<Selection>,
     box_from: Option<Vec2>,
     box_done: Option<(Vec2, Vec2)>,
@@ -188,8 +183,6 @@ impl Default for HudState {
             order_mode: None,
             help: false,
             consume_left_release: false,
-            pop_sort: 5,
-            pop_page: 0,
             pinned: Vec::new(),
             box_from: None,
             box_done: None,
@@ -369,16 +362,12 @@ pub enum HudAction {
     AddWorker(BuildingId),
     RemoveWorker(BuildingId),
     RoleAdjust(RoleKind, i32),
-    RoleWeight(RoleKind, f32),
-    RoleUp(RoleKind),
     Paused(BuildingId, bool),
     Unlock(BeaverId),
     RepairBuilding(BuildingId),
     ReinforceBuilding(BuildingId),
     CancelMaintenance(BuildingId),
     AutoStaff(bool),
-    SortPop(u8),
-    PopPage(i32),
     Pin(Selection),
 }
 
@@ -524,8 +513,6 @@ fn refresh_panels(
         problems: &problems,
         minimap: minimap.as_ref().map(|m| &m.0),
         view_cell: crate::flow::world_cell(&s.height, orbit.target),
-        log: &flow.log,
-        history: &flow.history,
         cursor: cursor.0,
     };
     let founded = s.is_running();
@@ -588,7 +575,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), log: &flow.log, history: &flow.history, cursor: cursor.0 };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0 };
                 if hud.tool == Tool::Dam {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let dragging = hud.drag_from.is_some();

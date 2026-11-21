@@ -47,12 +47,6 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Tab) {
         hud.colony = if hud.colony.is_some() { None } else { Some(ColonyTab::Population) };
     }
-    if keys.just_pressed(KeyCode::KeyJ) {
-        hud.colony = if hud.colony == Some(ColonyTab::Jobs) { None } else { Some(ColonyTab::Jobs) };
-    }
-    if keys.just_pressed(KeyCode::KeyL) {
-        hud.colony = if hud.colony == Some(ColonyTab::Goods) { None } else { Some(ColonyTab::Goods) };
-    }
     if keys.just_pressed(KeyCode::KeyI) {
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
     }

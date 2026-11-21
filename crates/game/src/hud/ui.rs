@@ -73,10 +73,6 @@ impl Tip {
         self.lines.push(l);
         self
     }
-    pub fn row(mut self, l: TipLine) -> Tip {
-        self.lines.push(l);
-        self
-    }
 }
 
 impl TipLine {
@@ -271,11 +267,6 @@ impl Ui {
         });
         look.apply(v);
         v.action(action)
-    }
-    /// Kept for the screens that pass a fill colour: amber is the main action, `on` is a ring.
-    pub fn icon_button(&mut self, icon: Icon, px: f32, action: HudAction, fill: Color, on: bool) -> &mut VNode {
-        let look = if fill == ACCENT { Peb::Primary } else if fill == Color::NONE { Peb::Bare } else if on { Peb::On } else { Peb::Idle };
-        self.pebble(icon, px, action, look)
     }
     pub fn keycap(&mut self, k: impl Into<String>) -> &mut VNode {
         self.bold(k, 11.0, MUTED)

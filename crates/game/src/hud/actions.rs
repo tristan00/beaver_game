@@ -180,25 +180,12 @@ pub(super) fn button_actions(
             HudAction::AddWorker(building) => cmd(s, &mut hud, sim::Command::AddWorker { building }, now),
             HudAction::RemoveWorker(building) => cmd(s, &mut hud, sim::Command::RemoveWorker { building }, now),
             HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
-            HudAction::RoleWeight(role, weight) => cmd(s, &mut hud, sim::Command::SetRoleWeight { role, weight }, now),
-            HudAction::RoleUp(role) => {
-                let mut order = s.work.role_order.clone();
-                if let Some(i) = order.iter().position(|r| *r == role).filter(|i| *i > 0) {
-                    order.swap(i, i - 1);
-                    cmd(s, &mut hud, sim::Command::SetRoleOrder { order }, now);
-                }
-            }
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
             HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
             HudAction::RepairBuilding(building) => cmd(s, &mut hud, sim::Command::RepairBuilding { building }, now),
             HudAction::ReinforceBuilding(building) => cmd(s, &mut hud, sim::Command::ReinforceBuilding { building }, now),
             HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelSite { building }, now),
             HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
-            HudAction::SortPop(k) => { hud.pop_sort = k; hud.pop_page = 0; }
-            HudAction::PopPage(delta) => {
-                hud.pop_page = hud.pop_page.saturating_add_signed(delta as isize)
-                    .min(sim.0.colony.population().saturating_sub(1) / 18);
-            }
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);

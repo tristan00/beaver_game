@@ -21,8 +21,6 @@ pub struct Ctx<'a> {
     pub problems: &'a [Problem],
     pub minimap: Option<&'a Handle<Image>>,
     pub view_cell: (f32, f32),
-    pub log: &'a std::collections::VecDeque<String>,
-    pub history: &'a [(f64, usize, f32)],
     pub cursor: Option<Vec2>,
 }
 
