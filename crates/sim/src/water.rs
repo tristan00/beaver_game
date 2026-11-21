@@ -12,6 +12,88 @@ const DAY_S: f64 = 86_400.0;
 /// A game day advances the same water and environmental day on every device.
 mod climate;
 mod routed;
+mod subgrid;
+mod automaton;
+mod equilibrium;
+
+/// Which water engine moves the water. Chosen once per world with `BC_WATER_ENGINE`
+/// (routed, subgrid, automaton, equilibrium); the player's Settings choice otherwise, equilibrium by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineKind {
+    Routed,
+    Subgrid,
+    Automaton,
+    Equilibrium,
+}
+
+/// The engine new worlds start with unless the player picks another.
+pub const DEFAULT_ENGINE: EngineKind = EngineKind::Equilibrium;
+static CHOSEN_ENGINE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(u8::MAX);
+
+/// The player's setting: new worlds use this engine.
+pub fn set_default_engine(kind: EngineKind) {
+    CHOSEN_ENGINE.store(kind as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl EngineKind {
+    pub const ALL: [EngineKind; 4] = [EngineKind::Routed, EngineKind::Subgrid, EngineKind::Automaton, EngineKind::Equilibrium];
+    /// `BC_WATER_ENGINE` (tools and tests) wins, then the player's setting, then the default.
+    pub fn from_env() -> Self {
+        if let Some(k) = std::env::var("BC_WATER_ENGINE").ok().and_then(|v| Self::parse(&v)) {
+            return k;
+        }
+        Self::ALL.get(CHOSEN_ENGINE.load(std::sync::atomic::Ordering::Relaxed) as usize).copied().unwrap_or(DEFAULT_ENGINE)
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.name() == s)
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            EngineKind::Routed => "routed",
+            EngineKind::Subgrid => "subgrid",
+            EngineKind::Automaton => "automaton",
+            EngineKind::Equilibrium => "equilibrium",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Engine {
+    Routed(routed::Flow),
+    Subgrid(subgrid::Subgrid),
+    Automaton(automaton::Automaton),
+    Equilibrium(equilibrium::Equilibrium),
+}
+
+impl Engine {
+    fn new(kind: EngineKind) -> Self {
+        match kind {
+            EngineKind::Routed => Engine::Routed(Default::default()),
+            EngineKind::Subgrid => Engine::Subgrid(Default::default()),
+            EngineKind::Automaton => Engine::Automaton(Default::default()),
+            EngineKind::Equilibrium => Engine::Equilibrium(Default::default()),
+        }
+    }
+    fn kind(&self) -> EngineKind {
+        match self {
+            Engine::Routed(_) => EngineKind::Routed,
+            Engine::Subgrid(_) => EngineKind::Subgrid,
+            Engine::Automaton(_) => EngineKind::Automaton,
+            Engine::Equilibrium(_) => EngineKind::Equilibrium,
+        }
+    }
+}
+
+macro_rules! each_engine {
+    ($engine:expr, $e:ident => $body:expr) => {
+        match $engine {
+            Engine::Routed($e) => $body,
+            Engine::Subgrid($e) => $body,
+            Engine::Automaton($e) => $body,
+            Engine::Equilibrium($e) => $body,
+        }
+    };
+}
 pub use climate::{Forcing, Weather};
 pub use crate::calendar::Season;
 const FACE_DRY: f32 = 1.0e-4;
@@ -142,7 +224,7 @@ impl WaterTimings {
 
 #[derive(Clone, Debug)]
 pub struct Water {
-    routed: routed::Flow,
+    engine: Engine,
     routed_needs_sync: bool,
     pub depth: WaterGrid,
     pub ice: Grid<f32>,
@@ -202,7 +284,7 @@ impl Water {
     pub fn new(size: usize) -> Self {
         let n = size;
         Self {
-            routed: routed::Flow::default(),
+            engine: Engine::new(EngineKind::from_env()),
             routed_needs_sync: true,
             depth: Grid::new(size, size, 0.0),
             ice: Grid::new(size, size, 0.0),
@@ -283,7 +365,7 @@ impl Water {
         }
         w.fill_fed_hollows(world);
         w.load_bed(&world.height);
-        w.run_routed(SPIN_UP_S, false);
+        w.run_engine(SPIN_UP_S, false);
         for i in 0..n * n {
             if w.h[i] > 0.005 || world.river.as_slice()[i] || world.lake.as_slice()[i] {
                 w.riverbed.as_mut_slice()[i] = 1.0;
@@ -345,7 +427,35 @@ impl Water {
 
     /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
-        self.routed.total_volume().unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
+        each_engine!(&self.engine, e => e.total_volume()).unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
+    }
+
+    pub fn engine(&self) -> EngineKind {
+        self.engine.kind()
+    }
+
+    /// Hand the water to another engine mid-game. The new engine starts from the current
+    /// depths, so no water is gained or lost by switching.
+    pub fn set_engine(&mut self, kind: EngineKind) {
+        if kind == self.engine.kind() {
+            return;
+        }
+        // The new engine starts from the water on screen. Engines may store a little more or
+        // less than they draw (thin reaches, banked inflow), so book the difference here and
+        // the water budget stays exact across the switch.
+        let stored = self.total_volume();
+        let shown: f64 = self.h.iter().map(|&h| h as f64).sum();
+        let change = shown - stored;
+        if change >= 0.0 {
+            self.books.sources += change;
+            self.added_volume += change;
+        } else {
+            self.books.edges -= change;
+            self.lost_volume -= change;
+        }
+        self.engine = Engine::new(kind);
+        self.routed_needs_sync = true;
+        self.full_publish = true;
     }
 
     pub fn active_segments(&self) -> usize {
@@ -562,7 +672,7 @@ impl Water {
             self.publish();
             return;
         }
-        self.run_routed(dt_days as f64 * DAY_S, true);
+        self.run_engine(dt_days as f64 * DAY_S, true);
         let t0 = std::time::Instant::now();
         self.update_dams(height, dt_days);
         self.update_ice(dt_days);
@@ -570,14 +680,36 @@ impl Water {
         self.publish();
     }
 
-    /// Route inflow and apply weather on the same fifteen-minute clock.
-    fn run_routed(&mut self, seconds:f64, losses:bool) {
+    /// Move water and apply weather on the same fifteen-minute clock, whichever engine runs.
+    fn run_engine(&mut self, seconds:f64, losses:bool) {
         if self.topology_dirty {
             self.dam_cells = (0..self.n * self.n).filter(|&i| self.dam_height.as_slice()[i] > 0.0).map(|i| i as u32).collect();
             self.topology_dirty = false;
             self.full_publish = true;
         }
-        let mut flow=std::mem::take(&mut self.routed);
+        let kind = self.engine.kind();
+        let mut engine = std::mem::replace(&mut self.engine, Engine::new(kind));
+        each_engine!(&mut engine, flow => self.run_with(flow, seconds, losses));
+        self.engine = engine;
+    }
+}
+
+/// What every water engine provides. Engines read the bed (`z`, terrain plus dams), the
+/// source rates (`src`, metres per second on `source_cells`), the fixed edge-lake levels
+/// (`lake_level`), the edges (`closed_edge`, `config.open_edges`) and the weather, and
+/// publish depth (`h`), face fluxes (`qx`, `qy` in m²/s) and the active row spans (`rows`).
+/// Every volume entering or leaving is booked in `books` and `added_volume`/`lost_volume`.
+pub(crate) trait WaterEngine {
+    fn prepare(&mut self, w: &mut Water, sync: bool);
+    fn advance(&mut self, w: &mut Water, seconds: f64);
+    fn environment(&mut self, w: &mut Water, days: f64);
+    fn publish(&mut self, w: &mut Water);
+    /// Stored water in cubic metres per square metre of cell, if the engine keeps its own.
+    fn total_volume(&self) -> Option<f64>;
+}
+
+impl Water {
+    fn run_with<E: WaterEngine>(&mut self, flow: &mut E, seconds: f64, losses: bool) {
         let mut left=seconds;
         while left>1.0e-6 {
             let limit=if losses {900.0-self.since_environment} else {seconds};
@@ -601,7 +733,6 @@ impl Water {
             self.timings.faces_s+=started.elapsed().as_secs_f64();
             left-=dt;
         }
-        self.routed=flow;
     }
 
     /// Remember bare sediment after floodwater recedes.
@@ -824,4 +955,56 @@ pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) ->
         crest,
         spill_at,
     })
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    /// The engine setting is process-wide; tests building worlds take turns.
+    static SETTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn world_on(kind: EngineKind) -> SimState {
+        let _turn = SETTING.lock().unwrap_or_else(|e| e.into_inner());
+        set_default_engine(kind);
+        let s = SimState::sandbox(1, crate::worldgen::fixture(1));
+        set_default_engine(DEFAULT_ENGINE);
+        s
+    }
+
+    fn balance(w: &Water, start: f64) -> f64 {
+        (w.total_volume() - (start + w.added_volume - w.lost_volume)).abs() / w.added_volume.max(1.0)
+    }
+
+    #[test]
+    fn every_engine_keeps_its_books_and_publishes_finite_water() {
+        for kind in EngineKind::ALL {
+            let mut s = world_on(kind);
+            assert_eq!(s.water.engine(), kind);
+            let start = s.water.total_volume() - (s.water.added_volume - s.water.lost_volume);
+            crate::sandbox::run_days(&mut s, 2.0);
+            assert!(balance(&s.water, start) < 1e-6, "{} loses track of water", kind.name());
+            assert!(s.water.depth.as_slice().iter().all(|d| d.is_finite() && *d >= 0.0), "{} publishes bad depth", kind.name());
+            assert!(s.water.velocity.as_slice().iter().all(|v| v.0.is_finite() && v.1.is_finite()), "{} publishes bad velocity", kind.name());
+        }
+    }
+
+    #[test]
+    fn switching_engine_mid_game_keeps_the_water() {
+        for from in EngineKind::ALL {
+            for to in EngineKind::ALL.into_iter().filter(|&k| k != from) {
+                let mut s = world_on(from);
+                crate::sandbox::run_days(&mut s, 1.0);
+                let before = s.water.depth.as_slice().iter().map(|&d| d as f64).sum::<f64>();
+                let start = s.water.total_volume() - (s.water.added_volume - s.water.lost_volume);
+                s.water.set_engine(to);
+                crate::sandbox::run_days(&mut s, 1.0 / 96.0);
+                assert_eq!(s.water.engine(), to);
+                let b = balance(&s.water, start);
+                assert!(b < 1e-6, "{} -> {} loses track of water ({b:.2e})", from.name(), to.name());
+                let after = s.water.depth.as_slice().iter().map(|&d| d as f64).sum::<f64>();
+                assert!(after > 0.0 && before > 0.0, "{} -> {} dried the map", from.name(), to.name());
+            }
+        }
+    }
 }

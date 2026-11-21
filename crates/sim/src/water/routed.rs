@@ -5,6 +5,8 @@ use super::{Water, edge_bed, neighbours4};
 use std::{cmp::Reverse, collections::BinaryHeap};
 
 const NONE: usize = usize::MAX;
+/// Tuning: stream reaches drain by their steepest link only.
+const SINGLE_PATH_REACHES: bool = true;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Flow {
@@ -300,6 +302,22 @@ impl Flow {
                 }
             }
         }
+        // A stream reach keeps only its steepest way down, so a thin creek stays one
+        // channel instead of splitting into films over every lower neighbour.
+        if SINGLE_PATH_REACHES {
+            for node in self.nodes.iter_mut().filter(|n| !n.reservoir && n.fixed.is_none()) {
+                let inner: Vec<usize> = (0..node.links.len()).filter(|&k| node.links[k].to != NONE).collect();
+                if inner.len() > 1 {
+                    let best = *inner.iter().max_by(|&&a, &&b| node.links[a].slope.total_cmp(&node.links[b].slope).then(b.cmp(&a))).unwrap();
+                    let mut k = 0;
+                    node.links.retain(|l| {
+                        let keep = l.to == NONE || k == best;
+                        k += 1;
+                        keep
+                    });
+                }
+            }
+        }
         self.source_key = None;
         self.source_nodes.clear();
         self.queued = vec![0; self.nodes.len()];
@@ -413,6 +431,12 @@ impl Flow {
                 let mut vector = (0.0, 0.0);
                 for li in 0..self.nodes[id].links.len() {
                     let link = &self.nodes[id].links[li];
+                    // An external lake held at a fixed level is in balance with the water
+                    // beyond the map edge: it neither drains into it nor through another
+                    // fixed lake. Only real outflow into the map moves (and shows as current).
+                    if fixed && (link.to == NONE || self.nodes[link.to].fixed.is_some()) {
+                        continue;
+                    }
                     let rate = self.nodes[id].rates[li] * scale;
                     let amount = rate * dt;
                     let (to, direction) = (link.to, link.direction);
@@ -562,4 +586,12 @@ fn merge_runs_in_place(runs:&mut Vec<(u32,u32)>,gap:u32) {
         else {runs[count]=(a,b);count+=1;}
     }
     runs.truncate(count);
+}
+
+impl super::WaterEngine for Flow {
+    fn prepare(&mut self, w: &mut Water, sync: bool) { Flow::prepare(self, w, sync) }
+    fn advance(&mut self, w: &mut Water, seconds: f64) { Flow::advance(self, w, seconds) }
+    fn environment(&mut self, w: &mut Water, days: f64) { Flow::environment(self, w, days) }
+    fn publish(&mut self, w: &mut Water) { Flow::publish(self, w) }
+    fn total_volume(&self) -> Option<f64> { Flow::total_volume(self) }
 }

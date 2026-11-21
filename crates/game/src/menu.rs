@@ -26,6 +26,7 @@ pub struct Menu {
     pub map: MapChoice,
     pub ui_scale: f32,
     pub auto_pause: bool,
+    pub water: sim::water::EngineKind,
     seen_urgent: Vec<String>,
     confirm: Option<MenuAction>,
     loading: bool,
@@ -55,6 +56,7 @@ enum MenuAction {
     Quit,
     Scale(f32),
     ToggleAutoPause,
+    Water(sim::water::EngineKind),
     Ask(Ask),
     Confirm(bool),
 }
@@ -95,6 +97,7 @@ impl Plugin for MenuPlugin {
             map: app.world().resource::<CurrentMap>().0.clone(),
             ui_scale: 1.0,
             auto_pause: !benchmarking,
+            water: sim::water::EngineKind::from_env(),
             seen_urgent: Vec::new(),
             confirm: None,
             loading: false,
@@ -252,6 +255,11 @@ fn menu_actions(
                 scale.0 = s;
             }
             MenuAction::ToggleAutoPause => menu.auto_pause = !menu.auto_pause,
+            MenuAction::Water(kind) => {
+                menu.water = kind;
+                sim::water::set_default_engine(kind);
+                sim.0.water.set_engine(kind);
+            }
             MenuAction::Ask(_) => menu.confirm = Some(a),
             MenuAction::Confirm(_) => {}
         }
@@ -496,6 +504,12 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
         hud::text(r, "Auto-pause", 13.0, INK);
         button(r, if menu.auto_pause { "On" } else { "Off" }, MenuAction::ToggleAutoPause, if menu.auto_pause { GOOD.with_alpha(0.25) } else { FAINT }, menu.auto_pause);
     });
+    hud::bold(p, "Water", 12.0, MUTED);
+    p.spawn(hud::row(6.0)).with_children(|r| {
+        for kind in sim::water::EngineKind::ALL {
+            button(r, water_label(kind), MenuAction::Water(kind), FAINT, menu.water == kind);
+        }
+    });
     hud::bold(p, "Keys", 12.0, MUTED);
     for (k, v) in [
         ("Select", "LMB"),
@@ -525,4 +539,14 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
     }
     hud::bold(p, "About", 12.0, MUTED);
     hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
+}
+
+/// Short names for the water engines in Settings.
+fn water_label(kind: sim::water::EngineKind) -> &'static str {
+    match kind {
+        sim::water::EngineKind::Routed => "Classic",
+        sim::water::EngineKind::Subgrid => "Detailed",
+        sim::water::EngineKind::Automaton => "Cellular",
+        sim::water::EngineKind::Equilibrium => "Steady",
+    }
 }
