@@ -478,6 +478,18 @@ pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::Wo
 mod tests {
     use super::*;
 
+    /// The family's two pups are past six months on arrival, so all four can work.
+    #[test]
+    fn the_founding_family_arrives_with_four_workers() {
+        let mut sim = SimState::new(1);
+        let camp = crate::site::best_site(&sim).expect("valid founding site");
+        settle(&mut sim, camp).expect("settle");
+        assert_eq!(sim.colony.beavers.len(), 4);
+        assert!(sim.colony.beavers.iter().all(|b| b.can_work()), "{:?}", sim.colony.beavers.iter().map(|b| (b.stage, b.age_days)).collect::<Vec<_>>());
+        let h = crate::jobs::headcount(&sim);
+        assert_eq!((h.working + h.free, h.kits), (4, 0), "the colony panel counts all four as workers");
+    }
+
     /// Every map starts where several rivers meet or run side by side, not on a lone river.
     #[test]
     fn every_map_starts_among_several_rivers() {

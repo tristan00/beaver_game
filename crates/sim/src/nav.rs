@@ -129,6 +129,17 @@ impl Scratch {
     }
 }
 
+/// Lower bound on the cost of a route `dx` by `dy` cells when diagonal steps cost √2.
+fn octile(dx: usize, dy: usize) -> u32 {
+    let (a, b) = (dx.max(dy) as f32, dx.min(dy) as f32);
+    ((a + (std::f32::consts::SQRT_2 - 1.0) * b) * MIN_STEP as f32) as u32
+}
+
+/// Cost factor of a step: √2 for a diagonal one.
+pub fn step_length(from: Cell, to: Cell) -> f32 {
+    if from.0 != to.0 && from.1 != to.1 { std::f32::consts::SQRT_2 } else { 1.0 }
+}
+
 fn pack(f: u32, i: usize) -> u64 {
     (f as u64) << 32 | i as u64
 }
@@ -389,10 +400,7 @@ impl NavGrid {
         let is_goal = |c: Cell| {
             if beside { c.0.abs_diff(target.0) + c.1.abs_diff(target.1) == 1 } else { c == target }
         };
-        let heur = |c: Cell| {
-            let d = (c.0.abs_diff(target.0) + c.1.abs_diff(target.1)) as u32;
-            d.saturating_sub(beside as u32) * MIN_STEP
-        };
+        let heur = |c: Cell| octile(c.0.abs_diff(target.0), c.1.abs_diff(target.1)).saturating_sub(beside as u32 * MIN_STEP);
         self.search(who, from, is_goal, heur)
     }
 
@@ -411,7 +419,7 @@ impl NavGrid {
         let heur = |c: Cell| {
             let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
             let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
-            ((dx + dy) as u32).saturating_sub(1) * MIN_STEP
+            octile(dx, dy).saturating_sub(MIN_STEP)
         };
         self.search(who, from, is_goal, heur)
     }
@@ -431,7 +439,7 @@ impl NavGrid {
         let heur = |c: Cell| {
             let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
             let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
-            (dx + dy) as u32 * MIN_STEP
+            octile(dx, dy)
         };
         self.search(who, from, |c| ends.contains(&c), heur)
     }
@@ -467,13 +475,25 @@ impl NavGrid {
                     (x > 0).then(|| i - 1),
                     (x + 1 < w).then(|| i + 1),
                     (y + 1 < h).then(|| i + w),
+                    (y > 0 && x > 0).then(|| i - w - 1),
+                    (y > 0 && x + 1 < w).then(|| i - w + 1),
+                    (y + 1 < h && x > 0).then(|| i + w - 1),
+                    (y + 1 < h && x + 1 < w).then(|| i + w + 1),
                 ];
+                // A diagonal step needs both cells beside it open (no cutting a corner past
+                // a wall, a building or a lodge), and never leads into or out of a lodge.
+                let open = |k: usize| Self::step_cost(surf[k]).is_some() && !blocked(k) && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
                 for j in nbrs.into_iter().flatten() {
                     let Some((c, _)) = Self::step_cost(surf[j]) else { continue };
-                    if !self.can_step_surf(surf[i], surf[j], cur, (j % w, j / w)) || blocked(j) {
+                    let to = (j % w, j / w);
+                    if !self.can_step_surf(surf[i], surf[j], cur, to) || blocked(j) {
                         continue;
                     }
-                    let ng = g + (c * COST_UNIT).round() as u32;
+                    let diagonal = to.0 != x && to.1 != y;
+                    if diagonal && !(open(i) && open(j) && open(y * w + to.0) && open(to.1 * w + x)) {
+                        continue;
+                    }
+                    let ng = g + (c * step_length(cur, to) * COST_UNIT).round() as u32;
                     if sc.best(j).is_none_or(|old| ng < old) {
                         sc.set(j, ng, i as u32);
                         sc.heap.push(Reverse(pack(ng + heur((j % w, j / w)), j)));
@@ -489,7 +509,7 @@ impl NavGrid {
         if !from_shared && self.reserved.get(from.0, from.1).copied().flatten() != Some(who) {
             return Err(NavError::NotHolder(from));
         }
-        if from.0.abs_diff(to.0) + from.1.abs_diff(to.1) != 1 {
+        if from == to || from.0.abs_diff(to.0) > 1 || from.1.abs_diff(to.1) > 1 {
             return Err(NavError::NotAdjacent);
         }
         let (Some(a), Some(b)) = (self.surface_at(from), self.surface_at(to)) else {
@@ -526,5 +546,23 @@ impl NavGrid {
     }
     pub fn surface_at(&self, cell: Cell) -> Option<Surface> {
         self.surface.get(cell.0, cell.1).copied()
+    }
+}
+
+#[cfg(test)]
+mod diagonal_tests {
+    use super::*;
+
+    #[test]
+    fn open_ground_is_crossed_diagonally_but_corners_are_not_cut() {
+        let mut nav = NavGrid::new(12, 12);
+        for y in 0..12 { for x in 0..12 { nav.set((x, y), Surface::Land); } }
+        let who = crate::colony::BeaverId(1);
+        let p = nav.find_path(who, (1, 1), Goal::Cell((7, 7))).unwrap();
+        assert_eq!(p.steps.len(), 6, "six diagonal steps, not twelve: {:?}", p.steps);
+        // A wall cell beside the diagonal blocks the corner cut.
+        nav.set((2, 1), Surface::Solid);
+        let q = nav.find_path(who, (1, 1), Goal::Cell((2, 2))).unwrap();
+        assert!(q.steps.iter().all(|&(c, _)| c != (2, 2)) || q.steps.len() > 1, "{:?}", q.steps);
     }
 }

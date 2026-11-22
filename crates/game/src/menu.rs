@@ -2,14 +2,13 @@
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
 use crate::flow::{Flow, Selection};
-use crate::hud::{self, MenuOpen, ACCENT, FAINT, GOOD, INK, MUTED, PANEL, TIMBER};
+use crate::hud::{self, MenuOpen, ACCENT, FAINT, INK, MUTED, PANEL, TIMBER};
 use crate::icons::{icon_node, Icon, Icons};
 use crate::sim_driver::SimClock;
 use crate::state::{CurrentMap, MapChoice, PlannedDam, Sim};
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
-use sim::hud::Severity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -25,9 +24,7 @@ pub struct Menu {
     was_paused: bool,
     pub map: MapChoice,
     pub ui_scale: f32,
-    pub auto_pause: bool,
     pub water: sim::water::EngineKind,
-    seen_urgent: Vec<String>,
     confirm: Option<MenuAction>,
     loading: bool,
     load_error: Option<String>,
@@ -55,7 +52,6 @@ enum MenuAction {
     ToTitle,
     Quit,
     Scale(f32),
-    ToggleAutoPause,
     Water(sim::water::EngineKind),
     Ask(Ask),
     Confirm(bool),
@@ -96,16 +92,14 @@ impl Plugin for MenuPlugin {
             was_paused: true,
             map: app.world().resource::<CurrentMap>().0.clone(),
             ui_scale: 1.0,
-            auto_pause: !benchmarking,
             water: sim::water::EngineKind::from_env(),
-            seen_urgent: Vec::new(),
             confirm: None,
             loading: false,
             load_error: None,
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
-        .add_systems(Update, (menu_keys, menu_actions, finish_loading, hold_still, auto_pause, title_orbit, rebuild_menu).chain().before(hud::HudSet));
+        .add_systems(Update, (menu_keys, menu_actions, finish_loading, hold_still, pause_on_collapse, title_orbit, rebuild_menu).chain().before(hud::HudSet));
     }
 }
 
@@ -214,7 +208,6 @@ fn menu_actions(
                 }
                 clock.paused = true;
                 menu.load_error = None;
-                menu.seen_urgent.clear();
                 menu.screen = None;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
@@ -254,7 +247,6 @@ fn menu_actions(
                 menu.ui_scale = s;
                 scale.0 = s;
             }
-            MenuAction::ToggleAutoPause => menu.auto_pause = !menu.auto_pause,
             MenuAction::Water(kind) => {
                 menu.water = kind;
                 sim::water::set_default_engine(kind);
@@ -289,7 +281,6 @@ fn finish_loading(
     }) {
         Ok(()) => {
             current.0 = pending.map.clone();
-            menu.seen_urgent.clear();
             menu.screen = None;
             clock.paused = true;
             commands.queue(hud::reset_for_new_game);
@@ -309,28 +300,12 @@ fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<Sim
     }
 }
 
-fn auto_pause(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>, hud_state: Option<ResMut<hud::HudState>>) {
+/// A collapsed colony stops the clock and opens the pause screen.
+fn pause_on_collapse(sim: Res<Sim>, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>) {
     if sim.0.colony.is_collapsed() && menu.screen.is_none() {
         clock.paused = true;
         menu.was_paused = true;
         menu.screen = Some(Screen::Pause);
-    }
-    let now = time.elapsed_secs();
-    if now < *next || menu.screen.is_some() {
-        return;
-    }
-    *next = now + 1.0;
-    let urgent: Vec<String> = sim::hud::problems(&sim.0).into_iter().filter(|p| p.severity == Severity::Urgent).map(|p| format!("{:?}{:?}", p.kind, p.subject)).collect();
-    let new: Vec<String> = urgent.iter().filter(|t| !menu.seen_urgent.contains(t)).cloned().collect();
-    menu.seen_urgent = urgent;
-    if menu.auto_pause && !clock.paused {
-        if let Some(t) = new.first() {
-            clock.paused = true;
-            if let Some(mut h) = hud_state {
-                let _ = &t;
-                h.notify_paused(now);
-            }
-        }
     }
 }
 
@@ -498,11 +473,6 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
             let label = format!("{:.0}%", s * 100.0);
             button(r, &label, MenuAction::Scale(s), FAINT, (menu.ui_scale - s).abs() < 0.01);
         }
-    });
-    hud::bold(p, "Alerts", 12.0, MUTED);
-    p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-        hud::text(r, "Auto-pause", 13.0, INK);
-        button(r, if menu.auto_pause { "On" } else { "Off" }, MenuAction::ToggleAutoPause, if menu.auto_pause { GOOD.with_alpha(0.25) } else { FAINT }, menu.auto_pause);
     });
     hud::bold(p, "Water", 12.0, MUTED);
     p.spawn(hud::row(6.0)).with_children(|r| {

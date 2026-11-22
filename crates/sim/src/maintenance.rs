@@ -133,11 +133,8 @@ pub fn step(s: &mut SimState, dt: f32) {
     for b in &mut s.buildings.buildings {
         if !b.is_complete() {continue;}
         if b.kind!=K::Dam {
-            let wet=b.cells().filter(|&(x,y)|s.water.depth.get(x,y).is_some_and(|&d|d>=crate::buildings::KEEP_WET_DEPTH)).count();
-            let (w,h)=b.kind.spec().footprint;
-            let dry=b.kind.spec().site==crate::buildings::Site::Pond && wet<=w*h/2;
             let wear=if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY};
-            let loss=wear*(1.0+COLD_WEAR_SCALE*cold)+if dry{DRY_WEAR_PER_DAY}else{0.0};
+            let loss=wear*(1.0+COLD_WEAR_SCALE*cold);
             b.condition=(b.condition-loss*dt/b.durability()).max(0.0);
         }
         if let Some(home)=s.work.homes.get(&b.id).copied() {

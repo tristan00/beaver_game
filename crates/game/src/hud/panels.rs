@@ -19,7 +19,7 @@ pub struct Ctx<'a> {
     pub lens: MapLens,
     pub hover: Option<Cell>,
     pub problems: &'a [Problem],
-    pub minimap: Option<&'a Handle<Image>>,
+    pub minimap: Option<&'a super::minimap::MinimapImage>,
     pub view_cell: (f32, f32),
     pub cursor: Option<Vec2>,
 }
@@ -161,19 +161,14 @@ pub fn idle_reason_word(r: sim::jobs::IdleReason) -> &'static str {
     }
 }
 
-/// Days of food in store at what the colony eats now.
-pub fn food_left(s: &sim::SimState) -> f32 {
-    food_days(s).unwrap_or_else(|| s.buildings.stores.amount(Good::Food) / sim::hud::food_need_per_day(s).max(0.01))
-}
-
-/// Top left: is there enough? Sticks and clay as counts, food as days, beavers.
+/// Top left: is there enough? Sticks, clay and food as counts, then beavers.
 pub fn strip(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let stores = &s.buildings.stores;
     let idle = sim::jobs::idle_reasons(s);
     let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
     vec![panel_row(Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 16.0, |u| {
-        for g in [Good::Sticks, Good::Clay] {
+        for g in [Good::Sticks, Good::Clay, Good::Food] {
             let have = stores.amount(g);
             let short = have < 0.5 && s.ledger.days_left(g, have).is_some();
             u.row(6.0, |r| {
@@ -183,12 +178,6 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
             .tip(good_tip(s, g));
         }
         u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(20.0), ..default() })).bg(GROOVE);
-        let d = food_left(s);
-        u.row(6.0, |r| {
-            r.icon(good_icon(Good::Food), 20.0, good_color(Good::Food));
-            r.bold(days(d.min(999.0)), 16.0, if d < 7.0 { BAD } else { INK });
-        })
-        .tip(good_tip(s, Good::Food));
         let mut tip = headcount_tip(s);
         if !free.is_empty() {
             tip.push(TipLine::new("Free now", format!("{}", free.len())).icon(Icon::Idle, ACCENT));
@@ -210,6 +199,11 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
+/// A water rise for the dam badge: tenths of a metre, "+0" for none.
+fn rise_text(m: f32) -> String {
+    if m < 0.05 { "+0".into() } else { format!("+{:.1} m", m) }
+}
+
 fn season_color(se: Season) -> Color {
     match se {
         Season::Spring => Color::srgb(0.5, 0.74, 0.42),
@@ -219,7 +213,7 @@ fn season_color(se: Season) -> Color {
     }
 }
 
-/// Top right: what will the water do next? The year, speed and days to the dry spell.
+/// Top right: the year and the speed.
 pub fn calendar(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let t = s.time_days;
@@ -245,16 +239,6 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
                     r.pebble(icon, 13.0, HudAction::Speed(sp), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(format!("Speed {key}")).key(key));
                 }
             });
-            let (icon, col, n, name) = match d.season {
-                Season::Summer => (Icon::Autumn, season_color(Season::Autumn), calendar::days_until(t, Season::Autumn), "Rain returns in"),
-                Season::Winter => (Icon::Spring, season_color(Season::Spring), calendar::days_until(t, Season::Spring), "Spring in"),
-                _ => (Icon::DrySummer, WARN, calendar::days_until(t, Season::Summer), "Dry summer in"),
-            };
-            x.row(5.0, |r| {
-                r.icon(icon, 16.0, col);
-                r.bold(days(n.ceil() as f32), 14.0, INK);
-            })
-            .tip(Tip::titled(Some((icon, col)), name).with_value(days(n.ceil() as f32)));
         });
     })]
 }
@@ -674,11 +658,17 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     x.bold(format!("{}", plan.sticks.round() as i64), 15.0, INK);
                 })
                 .tip(Tip::titled(Some((good_icon(Good::Sticks), good_color(Good::Sticks))), "Sticks for the first stage").line("Carried load by load", ""));
+                // The engine's own answer once its background run is in; the quick estimate till then.
+                let rise = c.hud.dam_settled().map(|r| r.rise).or(plan.preview.as_ref().map(|p| p.flow_rise)).unwrap_or(0.0);
+                let mut tip = Tip::titled(Some((Icon::Drop, WATER)), "Water rises").with_value(rise_text(rise)).line("New pond cells", format!("{}", plan.new_wet));
+                if plan.preview.as_ref().is_some_and(|p| p.spill_at.is_some()) {
+                    tip = tip.line("Runs around the dam", "");
+                }
                 r.row(4.0, |x| {
                     x.icon(Icon::Drop, 17.0, WATER);
-                    x.bold(format!("+{}", plan.new_wet), 15.0, INK);
+                    x.bold(rise_text(rise), 15.0, INK);
                 })
-                .tip(Tip::titled(Some((Icon::Drop, WATER)), "New pond cells"));
+                .tip(tip);
                 let drowned = plan.preview.as_ref().map_or(0, |p| p.flooded_trees);
                 if drowned > 0 {
                     r.row(4.0, |x| {
@@ -726,21 +716,25 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
 }
 
 pub fn minimap(c: &Ctx) -> Vec<VNode> {
-    if c.placing() || c.hud.colony.is_some() {
-        return Vec::new();
-    }
-    let Some(img) = c.minimap else { return Vec::new() };
+    let Some(map) = c.minimap else { return Vec::new() };
     const SIZE: f32 = 150.0;
-    let n = c.s.world.size as f32;
-    let (cx, cy) = c.view_cell;
-    let mut markers: Vec<(f32, f32, Color)> = Vec::new();
+    let at = |p: (f32, f32)| {
+        let (u, v) = map.to_map(p);
+        (u * SIZE, v * SIZE)
+    };
+    let inside = |(x, y): (f32, f32)| (0.0..=SIZE).contains(&x) && (0.0..=SIZE).contains(&y);
+    let (cx, cy) = at(c.view_cell);
+    let mut markers: Vec<((f32, f32), Color)> = Vec::new();
     for p in c.problems {
         if let Some(f) = p.focus {
-            markers.push((f.0 as f32, f.1 as f32, if p.severity == Severity::Urgent { BAD } else { WARN }));
+            let m = at((f.0 as f32 + 0.5, f.1 as f32 + 0.5));
+            if inside(m) {
+                markers.push((m, if p.severity == Severity::Urgent { BAD } else { WARN }));
+            }
         }
     }
     vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 0.0, |u| {
-        u.image(img.clone(), Node { width: Val::Px(SIZE), height: Val::Px(SIZE), ..default() })
+        u.image(map.image.clone(), Node { width: Val::Px(SIZE), height: Val::Px(SIZE), ..default() })
             .tag(Tag::Minimap)
             .solid()
             .children
@@ -748,19 +742,19 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                 let mut m = Ui::default();
                 m.add(VNode::new(Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px((cx / n * SIZE - 7.0).clamp(0.0, SIZE - 14.0)),
-                    top: Val::Px((cy / n * SIZE - 7.0).clamp(0.0, SIZE - 14.0)),
+                    left: Val::Px((cx - 7.0).clamp(0.0, SIZE - 14.0)),
+                    top: Val::Px((cy - 7.0).clamp(0.0, SIZE - 14.0)),
                     width: Val::Px(14.0),
                     height: Val::Px(14.0),
                     border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 }))
                 .border(BorderColor::all(SELECT));
-                for (x, y, col) in &markers {
+                for ((x, y), col) in &markers {
                     m.add(VNode::new(Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px((x / n * SIZE - 4.0).clamp(0.0, SIZE - 8.0)),
-                        top: Val::Px((y / n * SIZE - 4.0).clamp(0.0, SIZE - 8.0)),
+                        left: Val::Px((x - 4.0).clamp(0.0, SIZE - 8.0)),
+                        top: Val::Px((y - 4.0).clamp(0.0, SIZE - 8.0)),
                         width: Val::Px(8.0),
                         height: Val::Px(8.0),
                         border_radius: BorderRadius::all(Val::Px(4.0)),

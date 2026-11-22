@@ -235,15 +235,13 @@ pub enum BuildingKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
-    /// Most of the footprint must stand in a pond, not on its dry bank.
-    Pond,
-    Dry,
+    /// Part of the footprint stands in water at least `WET_DEPTH` deep.
     TouchesWater,
 }
 
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
-        matches!(self.spec().site, Site::Pond | Site::TouchesWater) && !self.is_waterworks()
+        self.spec().site == Site::TouchesWater && !self.is_waterworks()
     }
 
     /// Dams and canals: drawn on the map and built a cell at a time, not dropped as a site.
@@ -345,10 +343,6 @@ impl Buildings {
         if !b.is_complete() || !self.water_bound.contains(&b.id) {
             return false;
         }
-        if b.kind.spec().site == Site::Pond {
-            let cells: Vec<_> = b.cells().collect();
-            return cells.iter().filter(|&&(x,y)| depth.get(x,y).is_some_and(|&d| d >= KEEP_WET_DEPTH)).count() <= cells.len() / 2;
-        }
         let (w, h) = b.kind.spec().footprint;
         let (x0, y0) = (b.pos.0.saturating_sub(1), b.pos.1.saturating_sub(1));
         !(y0..=b.pos.1 + h).any(|y| (x0..=b.pos.0 + w).any(|x| depth.get(x, y).is_some_and(|&d| d >= KEEP_WET_DEPTH)))
@@ -426,12 +420,6 @@ impl Buildings {
             }
         }
         match spec.site {
-            Site::Pond if cells.iter().filter(|&&(x,y)| terrain.depth.get(x,y).is_some_and(|&d| d >= POND_PLACEMENT_DEPTH)).count() <= cells.len() / 2 => {
-                return Err(BuildError::BadTerrain("needs a pond under most of its footprint (at least 0.10 m deep)"));
-            }
-            Site::Dry if cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
-                return Err(BuildError::BadTerrain("needs dry ground"));
-            }
             Site::TouchesWater if !cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
                 return Err(BuildError::BadTerrain("needs water"));
             }

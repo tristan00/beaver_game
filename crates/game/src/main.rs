@@ -26,11 +26,11 @@ mod water_render;
 
 use bevy::prelude::*;
 
-fn window_size() -> (u32, u32) {
-    std::env::var("BEAVER_WINDOW")
-        .ok()
-        .and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))))
-        .unwrap_or((1280, 720))
+/// Fullscreen by default; `BEAVER_WINDOW=WxH` asks for a fixed-size window instead (screenshot tools).
+fn primary_window() -> Window {
+    let size = std::env::var("BEAVER_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))));
+    let mode = if size.is_some() { bevy::window::WindowMode::Windowed } else { bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary) };
+    Window { title: "Beaver Colony".into(), resolution: size.unwrap_or((1280, 720)).into(), mode, ..default() }
 }
 
 fn main() -> AppExit {
@@ -51,7 +51,7 @@ fn main() -> AppExit {
         file_path: "assets".to_string(),
         ..default()
     }).set(WindowPlugin {
-        primary_window: Some(Window { title: if sim::trace::enabled() { "Beaver Colony - input recording" } else { "Beaver Colony" }.into(), resolution: window_size().into(), ..default() }),
+        primary_window: Some(primary_window()),
         ..default()
     }).set(bevy::render::RenderPlugin {
         render_creation: bevy::render::settings::WgpuSettings {

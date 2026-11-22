@@ -169,7 +169,7 @@ pub(super) fn world_input(
             hud.selected.clone()
         };
         if !who.is_empty() {
-            if let Some(t) = thing.0 {
+            if let Some(t) = thing.1 {
                 order(&mut sim.0, &mut hud, &who, t, shift, now);
             }
         }
@@ -183,17 +183,26 @@ pub(super) fn world_input(
     match hud.tool {
         Tool::None => {
             if mouse.just_pressed(MouseButton::Left) {
-                if let Some(end) = dam_end_at(&sim.0, *sel, cell) {
-                    let Selection::Site(id) = *sel else { unreachable!() };
+                hud.grab = dam_end_near(&sim.0, *sel, thing.0, cell);
+                hud.box_from = cursor.0;
+            }
+            // Dragging away from a dam's end extends it from that end; a plain click selects it.
+            if let Some((id, end)) = hud.grab {
+                let moved = matches!((hud.box_from, cursor.0), (Some(a), Some(b)) if a.distance(b) > 8.0);
+                if mouse.pressed(MouseButton::Left) && moved {
+                    hud.grab = None;
+                    hud.box_from = None;
                     hud.set_tool(Tool::Dam);
                     hud.extending = Some(id);
                     hud.corners = vec![end];
                     hud.drag_from = Some(end);
+                    hud.selected.clear();
+                    *sel = Selection::Site(id);
                     return;
                 }
-                hud.box_from = cursor.0;
             }
             if mouse.just_released(MouseButton::Left) {
+                hud.grab = None;
                 let from = hud.box_from.take();
                 if let (Some(a), Some(b)) = (from, cursor.0) {
                     if a.distance(b) > 8.0 {
@@ -334,7 +343,7 @@ pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(
         .colony
         .beavers
         .iter()
-        .filter(|bv| bv.stage != sim::colony::Stage::Kit)
+        .filter(|bv| bv.can_work())
         .filter(|bv| world::beaver_world(s, bv.id).and_then(|w| cam.world_to_viewport(gt, w).ok()).map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
         .map(|bv| bv.id)
         .collect();
@@ -360,11 +369,24 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
 
 
 /// The end of the selected dam under the pointer: grabbing it starts an extension.
-fn dam_end_at(s: &sim::SimState, sel: Selection, cell: Cell) -> Option<Cell> {
-    let Selection::Site(id) = sel else { return None };
-    let d = sim::dams::dam(s, id)?;
-    let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
-    [line.first(), line.last()].into_iter().flatten().copied().find(|e| *e == cell)
+/// The dam end at or next to `cell`, on the dam under the pointer or else the selected one.
+fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Option<world::Thing>, cell: Cell) -> Option<(BuildingId, Cell)> {
+    let under = match thing {
+        Some(world::Thing::Building(id)) => Some(id),
+        _ => None,
+    };
+    let selected = match sel {
+        Selection::Site(id) => Some(id),
+        _ => None,
+    };
+    [under, selected].into_iter().flatten().find_map(|id| {
+        let d = sim::dams::dam(s, id)?;
+        let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
+        [line.first(), line.last()].into_iter().flatten().copied()
+            .filter(|e| e.0.abs_diff(cell.0).max(e.1.abs_diff(cell.1)) <= 1)
+            .min_by_key(|e| e.0.abs_diff(cell.0) + e.1.abs_diff(cell.1))
+            .map(|e| (id, e))
+    })
 }
 
 /// Send beavers to gather or cut: one spot gathers around it, a drag covers the area.
@@ -398,5 +420,28 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
             hud.set_tool(Tool::None);
         }
         Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dam_end_is_grabbed_from_the_cell_beside_it_without_selecting_the_dam_first() {
+        let (mut s, site) = sim::starts::new_game_with_dam(1).expect("start");
+        s.fog = sim::fog::Fog::clear(s.world.size);
+        let id = sim::dams::place(&mut s, &site.cells).expect("dam");
+        let line: Vec<Cell> = sim::dams::dam(&s, id).unwrap().line().map(|c| c.cell).collect();
+        let (first, last) = (line[0], *line.last().unwrap());
+        let beside = (first.0 + 1, first.1);
+        let on = Some(world::Thing::Building(id));
+        assert_eq!(dam_end_near(&s, Selection::None, on, first), Some((id, first)));
+        assert_eq!(dam_end_near(&s, Selection::None, on, beside).map(|g| g.0), Some(id));
+        assert_eq!(dam_end_near(&s, Selection::Site(id), None, last), Some((id, last)));
+        let far = (first.0 + 5, first.1 + 5);
+        if line.iter().all(|c| c.0.abs_diff(far.0).max(c.1.abs_diff(far.1)) > 1) {
+            assert_eq!(dam_end_near(&s, Selection::None, None, far), None);
+        }
     }
 }

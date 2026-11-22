@@ -134,18 +134,85 @@ pub fn has_work(sim: &SimState, id: BuildingId) -> bool {
     dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_work(sim, d, c)) || d.gates.iter().any(|g| !g.built || g.pending.is_some()))
 }
 
-fn loads_for(sim: &SimState, c: Cell, target: f32) -> usize {
-    ((target - built(sim, c)).max(0.0) / STEP_HEIGHT - EPS).ceil().max(0.0) as usize
+/// Loads to raise a cell to its target. A cell standing for more than a metre of wall (a
+/// diagonal step) takes proportionally more, so a dam costs by its length, not its cells.
+fn loads_for(sim: &SimState, c: Cell, target: f32, span: f32) -> usize {
+    ((target - built(sim, c)).max(0.0) / STEP_HEIGHT * span - EPS).ceil().max(0.0) as usize
+}
+
+/// The order cells run in along a line, as indices into `cells`: from an end, preferring
+/// side-by-side neighbours to corner ones. Cells can be stored in any order (extensions are
+/// added at the back whichever end they grow from).
+pub fn chain(cells: &[Cell]) -> Vec<usize> {
+    let n = cells.len();
+    let touch = |a: Cell, b: Cell| a != b && a.0.abs_diff(b.0) <= 1 && a.1.abs_diff(b.1) <= 1;
+    let degree = |i: usize| cells.iter().filter(|&&c| touch(c, cells[i])).count();
+    let mut left: Vec<usize> = (0..n).collect();
+    let mut out = Vec::with_capacity(n);
+    while !left.is_empty() {
+        let (k, _) = left.iter().enumerate().min_by_key(|&(_, &i)| (degree(i), i)).unwrap();
+        let mut at = left.remove(k);
+        out.push(at);
+        loop {
+            let next = left.iter().enumerate()
+                .filter(|&(_, &j)| touch(cells[at], cells[j]))
+                .min_by_key(|&(_, &j)| (cells[at].0.abs_diff(cells[j].0) + cells[at].1.abs_diff(cells[j].1), j));
+            let Some((k, _)) = next else { break };
+            at = left.remove(k);
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// Metres of wall each cell stands for: half the distance to each neighbour along the line
+/// (1 along a straight run, about 1.4 on a diagonal), in the order given.
+pub fn spans(cells: &[Cell]) -> Vec<f32> {
+    let order = chain(cells);
+    let mut out = vec![1.0; cells.len()];
+    let dist = |a: Cell, b: Cell| ((a.0 as f32 - b.0 as f32).powi(2) + (a.1 as f32 - b.1 as f32).powi(2)).sqrt();
+    let near = |a: Cell, b: Cell| a.0.abs_diff(b.0) <= 1 && a.1.abs_diff(b.1) <= 1;
+    for (k, &i) in order.iter().enumerate() {
+        let c = cells[i];
+        let sides: Vec<f32> = [k.checked_sub(1), (k + 1 < order.len()).then_some(k + 1)]
+            .into_iter().flatten().map(|j| cells[order[j]]).filter(|&o| near(c, o)).map(|o| dist(c, o)).collect();
+        if !sides.is_empty() {
+            out[i] = sides.iter().sum::<f32>() / sides.len() as f32;
+        }
+    }
+    out
+}
+
+/// The span of one cell of a dam, measured along its own row.
+fn span_in(cells: &[DamCell], cell: Cell) -> f32 {
+    let Some(row) = cells.iter().find(|c| c.cell == cell).map(|c| c.row) else { return 1.0 };
+    let line: Vec<Cell> = cells.iter().filter(|c| c.row == row).map(|c| c.cell).collect();
+    line.iter().position(|&c| c == cell).map_or(1.0, |i| spans(&line)[i])
+}
+
+fn row_spans(cells: &[DamCell]) -> Vec<f32> {
+    let mut out = vec![1.0; cells.len()];
+    let rows: std::collections::BTreeSet<u8> = cells.iter().map(|c| c.row).collect();
+    for row in rows {
+        let idx: Vec<usize> = (0..cells.len()).filter(|&i| cells[i].row == row).collect();
+        let line: Vec<Cell> = idx.iter().map(|&i| cells[i].cell).collect();
+        for (k, w) in spans(&line).into_iter().enumerate() {
+            out[idx[k]] = w;
+        }
+    }
+    out
 }
 
 /// Loads still to carry, including one per worn cell being maintained.
 pub fn loads_left(sim: &SimState, id: BuildingId) -> usize {
     let Some(d) = dam(sim, id) else { return 0 };
+    let spans = row_spans(&d.cells);
     d.cells
         .iter()
-        .filter(|c| !is_gate(d, c.cell))
-        .map(|c| {
-            let raise = loads_for(sim, c.cell, c.target);
+        .zip(spans)
+        .filter(|(c, _)| !is_gate(d, c.cell))
+        .map(|(c, span)| {
+            let raise = loads_for(sim, c.cell, c.target, span);
             if raise == 0 && d.maintain && built(sim, c.cell) > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW { 1 } else { raise }
         })
         .sum()
@@ -180,10 +247,11 @@ pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell]) -> 
 
 /// Pack one carried load into a cell. Returns the sticks used.
 pub(crate) fn pack(sim: &mut SimState, id: BuildingId, cell: Cell, sticks: f32) -> f32 {
-    let Some((target, rows)) = dam(sim, id).and_then(|d| d.cells.iter().find(|c| c.cell == cell).map(|c| (c.target, d.rows))) else { return 0.0 };
+    let Some((target, rows, span)) = dam(sim, id).and_then(|d| d.cells.iter().find(|c| c.cell == cell).map(|c| (c.target, d.rows, span_in(&d.cells, cell)))) else { return 0.0 };
     let h = built(sim, cell);
     let share = (sticks / sticks_per_step()).clamp(0.0, 1.0);
-    let next = if h < target - EPS { (h + STEP_HEIGHT * share).min(target) } else { h };
+    // A load packs a step of wall a metre long: a longer (diagonal) cell rises less per load.
+    let next = if h < target - EPS { (h + STEP_HEIGHT * share / span.max(1.0)).min(target) } else { h };
     if next <= 0.0 {
         return 0.0;
     }
@@ -238,7 +306,7 @@ pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
         return Err("draw a line across water".into());
     }
     if cells.len() > MAX_CELLS {
-        return Err(format!("at most {MAX_CELLS} cells"));
+        return Err("too long".into());
     }
     let mut seen = std::collections::HashSet::new();
     if !cells.iter().all(|c| seen.insert(*c)) || !connected(cells) {
@@ -304,7 +372,7 @@ impl Plan {
 
 /// Sticks a plan costs beyond what the dam already needs.
 pub fn plan_cost(sim: &SimState, d: &Dam, plan: &Plan) -> f32 {
-    let loads = |cells: &[DamCell]| cells.iter().map(|c| loads_for(sim, c.cell, c.target)).sum::<usize>();
+    let loads = |cells: &[DamCell]| cells.iter().zip(row_spans(cells)).map(|(c, w)| loads_for(sim, c.cell, c.target, w)).sum::<usize>();
     (loads(&plan.cells).saturating_sub(loads(&d.cells))) as f32 * sticks_per_step()
 }
 
@@ -707,6 +775,26 @@ mod tests {
             *s.height.get_mut(15, y).unwrap() = 9.0;
         }
         assert_eq!(downstream(&s, &line), (0, 1));
+    }
+
+    #[test]
+    fn a_diagonal_dam_costs_about_the_same_per_metre_as_a_straight_one() {
+        let (s, straight) = flat_river();
+        let diagonal: Vec<Cell> = (0..4).map(|k| (10 + k, 18 + k)).collect();
+        let per_metre = |cells: &[Cell], metres: f32| crate::dam_preview::loads_for(&s, cells, &vec![1.0; cells.len()]) as f32 / metres;
+        let (a, b) = (per_metre(&straight, 5.0), per_metre(&diagonal, 4.0 * std::f32::consts::SQRT_2));
+        assert!((a - b).abs() / a < 0.1, "straight {a} vs diagonal {b} loads per metre");
+    }
+
+    #[test]
+    fn a_line_stored_out_of_order_is_walked_end_to_end() {
+        // An extension added at the front end is stored at the back.
+        let cells: Vec<Cell> = vec![(5, 5), (6, 5), (7, 6), (4, 5), (3, 4)];
+        let order: Vec<Cell> = chain(&cells).into_iter().map(|i| cells[i]).collect();
+        assert!(order == vec![(3, 4), (4, 5), (5, 5), (6, 5), (7, 6)] || order == vec![(7, 6), (6, 5), (5, 5), (4, 5), (3, 4)], "{order:?}");
+        let w = spans(&cells);
+        assert!((w[1] - (1.0 + std::f32::consts::SQRT_2) / 2.0).abs() < 1e-4);
+        assert!((w[0] - 1.0).abs() < 1e-4);
     }
 
     #[test]

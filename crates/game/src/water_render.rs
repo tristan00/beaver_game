@@ -173,7 +173,7 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
         for bx in 0..step {
             let (cx, cy) = ((x + bx).clamp(0, n - 1), (y + by).clamp(0, n - 1));
             let h = at(&s.water.depth, cx, cy);
-            if h <= SHOW_MIN_M || lone_film(s, cx, cy, h) {
+            if h <= SHOW_MIN_M || lone_film(s, cx, cy, h) || dam_film(s, cx, cy, h) {
                 continue;
             }
             let (u, v) = s.water.velocity.get(cx as usize, cy as usize).copied().unwrap_or((0.0, 0.0));
@@ -190,9 +190,27 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
     (k > 0.0).then(|| (level / k, [vx / k, vy / k], white, ice / k))
 }
 
+/// Cells either side of a wet cell whose levels are averaged into its drawn surface.
+const SMOOTH_CELLS: i32 = 2;
+/// A level difference to a neighbour beyond this is a fall, left out of the smoothing.
+const FALL_KEEP_M: f32 = 0.25;
+/// Simulated water is drawn at least this far above the drawn ground, so a creek a few
+/// centimetres deep is never hidden where the drawn ground, smoothed or coarser at a distance,
+/// stands a little higher than the simulated bed.
+const SHOWN_ABOVE_GROUND_M: f32 = 0.03;
+
 /// A thin film on a cell with no wet neighbour is damp ground, not a pool: drawing it leaves a
 /// loose chip of water beside the stream.
 const LONE_FILM_M: f32 = 0.02;
+
+/// Water standing on a dam cell shallower than this (rain on the crest, the last of a spill)
+/// is not drawn: the wall's narrow top leaves most of the cell open, and a sheet at crest
+/// height shows through the dam. A gate's water is always drawn, and so is a real overtopping.
+const DAM_FILM_M: f32 = 0.12;
+
+fn dam_film(s: &SimState, x: i32, y: i32, h: f32) -> bool {
+    h < DAM_FILM_M && at(&s.water.dam_height, x, y) > 0.0 && !s.water.gate.get(x as usize, y as usize).copied().unwrap_or(false)
+}
 
 fn lone_film(s: &SimState, x: i32, y: i32, h: f32) -> bool {
     h < LONE_FILM_M && [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|&(dx, dy)| at(&s.water.depth, x + dx, y + dy) <= SHOW_MIN_M)
@@ -220,6 +238,28 @@ impl WaterField {
         for j in 0..n {
             for i in 0..n {
                 cells.push(vertex_water(s, x0 + i, y0 + j, 1));
+            }
+        }
+        // A stream's surface, smoothed over the wet cells around each: the simulated level follows
+        // every bump of the bed a few centimetres up, which draws as tilted plates at odd heights.
+        // A neighbour more than FALL_KEEP_M away is a real fall (a crest, a weir) and stays sharp.
+        let raw: Vec<Option<f32>> = cells.iter().map(|c| c.map(|w| w.0)).collect();
+        for j in 0..n {
+            for i in 0..n {
+                let Some(l0) = raw[(j * n + i) as usize] else { continue };
+                let (mut sum, mut k) = (0.0f32, 0.0f32);
+                for dj in -SMOOTH_CELLS..=SMOOTH_CELLS {
+                    for di in -SMOOTH_CELLS..=SMOOTH_CELLS {
+                        let (a, b) = (i + di, j + dj);
+                        if a < 0 || b < 0 || a >= n || b >= n { continue; }
+                        if let Some(l) = raw[(b * n + a) as usize].filter(|l| (l - l0).abs() < FALL_KEEP_M) {
+                            let w = 1.0 / (1.0 + (di * di + dj * dj) as f32);
+                            sum += l * w;
+                            k += w;
+                        }
+                    }
+                }
+                if let Some(c) = cells[(j * n + i) as usize].as_mut() { c.0 = sum / k; }
             }
         }
         // The drawn current, per cell: the surface slope over a 3x3 block of wet cells, then
@@ -363,6 +403,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             };
             let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_shown(s, x, y, step) };
             let ground = bare + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
+            let level = if at_ext(0, 0).is_some() { level.max(ground + SHOWN_ABOVE_GROUND_M) } else { level };
             let depth = if level.is_finite() { level - ground } else { -1.0 };
             let edge = depth.min((field.wet.bilinear(x, y) - WET_EDGE) * EDGE_M);
             let (wx, wz) = ((x + GRID_OFFSET - s.height.width() as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - s.height.height() as f32 / 2.0) * CELL_SIZE);

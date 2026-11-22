@@ -98,6 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(order.len(),roles.len());
     constants.entry("jobs".into()).or_default().push_str(&format!("const DEFAULT_ROLE_ORDER: [RoleKind; {}] = [{}];\n",order.len(),order.join(",")));
     constants.entry("work".into()).or_default().push_str(&format!("const DEFAULT_ROLE_WEIGHTS: [f32; {}] = [{}];\n",roles.len(),roles.iter().map(|r|number(weights[*r])).collect::<Vec<_>>().join(",")));
+    trees(&db, constants.entry("trees".into()).or_default())?;
     for (module, text) in constants { fs::write(out.join(format!("{module}_constants.rs")), text)?; }
 
     let mut stmt = db.prepare("SELECT id,kind,name,width,depth,site,labour,capacity,area FROM building ORDER BY id")?;
@@ -110,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(*id, index as u32, "building IDs must follow BuildingKind order");
         assert_eq!(kind, kinds[index]);
         assert!(*width > 0 && *depth > 0 && *width <= 64 && *depth <= 64);
-        assert!(matches!(site.as_str(), "Pond" | "Dry" | "TouchesWater" | "WaterByDock"));
+        assert!(matches!(site.as_str(), "TouchesWater"));
         let costs = amounts(&db, "SELECT good,amount FROM cost WHERE building=? ORDER BY position", *id)?;
         let mut slots = Vec::new();
         for role in db.prepare("SELECT role FROM slot WHERE building=? ORDER BY position")?.query_map([id], |r| r.get::<_,String>(0))? {
@@ -123,6 +124,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     specs.push_str("];\n");
     fs::write(out.join("catalogue.rs"), specs)?;
+    Ok(())
+}
+
+/// Species stats follow the `Tree` enum order; every shipped map and `default` need a flora.
+fn trees(db: &Connection, out: &mut String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=src/trees.rs");
+    println!("cargo:rerun-if-changed=maps");
+    let source = fs::read_to_string("src/trees.rs")?;
+    let kinds: Vec<String> = source.split("pub enum Tree {").nth(1).unwrap().split('}').next().unwrap().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let rows = db.prepare("SELECT position,species,growth,logs,branches,bark,fell_work,flood,max_depth FROM tree_species ORDER BY position")?
+        .query_map([], |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,[r.get::<_,f64>(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?])))?.collect::<Result<Vec<_>,_>>()?;
+    assert_eq!(rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), kinds, "tree_species must follow the Tree enum");
+    let mut specs = Vec::new();
+    for (position, species, v) in &rows {
+        assert_eq!(*position as usize, specs.len());
+        assert!(v[0] > 0.0 && v[4] > 0.0 && v[5] > 0.0 && v[6] > 0.0, "{species} needs positive growth, felling work, flood tolerance and water depth");
+        specs.push(format!("TreeSpec {{ growth: {}, logs: {}, branches: {}, bark: {}, fell_work: {}, flood: {}, max_depth: {} }}", number(v[0]), number(v[1]), number(v[2]), number(v[3]), number(v[4]), number(v[5]), number(v[6])));
+    }
+    out.push_str(&format!("pub const SPECIES: [TreeSpec; {}] = [{}];\n", specs.len(), specs.join(",")));
+    let mut flora: BTreeMap<String, Vec<[f64; 4]>> = BTreeMap::new();
+    for row in db.prepare("SELECT map,species,dry,wet,upland,open FROM tree_flora")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,[r.get::<_,f64>(2)?,r.get(3)?,r.get(4)?,r.get(5)?])))? {
+        let (map, species, w) = row?;
+        assert!(identifier(&map));
+        let i = kinds.iter().position(|k| *k == species).expect("flora names a known species");
+        flora.entry(map).or_insert_with(|| vec![[0.0; 4]; kinds.len()])[i] = w;
+    }
+    let mut maps: Vec<String> = fs::read_dir("maps")?.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".map").map(str::to_string)).collect();
+    maps.push("default".into());
+    for m in &maps { assert!(flora.contains_key(m), "map {m} needs a tree_flora"); }
+    let mut entries = Vec::new();
+    for (map, mix) in flora {
+        assert!(maps.contains(&map), "tree_flora for unknown map {map}");
+        assert!(mix.iter().map(|w| w[0]).sum::<f64>() > 0.0 && mix.iter().map(|w| w[1]).sum::<f64>() > 0.0, "{map} needs dry and wet trees");
+        let mix: Vec<String> = mix.iter().map(|w| format!("Mix {{ dry: {}, wet: {}, upland: {}, open: {} }}", number(w[0]), number(w[1]), number(w[2]), number(w[3]))).collect();
+        entries.push(format!("({map:?}, [{}])", mix.join(",")));
+    }
+    out.push_str(&format!("pub const FLORA: [(&str, [Mix; {}]); {}] = [{}];\n", kinds.len(), entries.len(), entries.join(",")));
     Ok(())
 }
 

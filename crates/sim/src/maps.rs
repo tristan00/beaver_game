@@ -111,7 +111,7 @@ pub fn all() -> Vec<MapInfo> {
 
 pub fn world_from(data: MapData) -> Result<World, MapError> {
     let MapData { info, heights, cover } = data;
-    let real = worldgen::RealMap { cell_m: info.cell_m, inflows: &info.inflows, cover: cover.as_deref() };
+    let real = worldgen::RealMap { cell_m: info.cell_m, inflows: &info.inflows, cover: cover.as_deref(), flora: &info.id };
     worldgen::from_heights(info.seed(), info.size, heights, &real).map_err(|e| MapError::World(e.to_string()))
 }
 

@@ -687,7 +687,8 @@ pub fn tip_logic(
             tips.layers[k].last_held = now;
         }
         deeper_held = held || deeper_held;
-        if src_on && !tips.layers[k].frozen && now - tips.layers[k].opened > FREEZE_SECS {
+        let world = matches!(tips.layers[k].src, TipSrc::World(_));
+        if src_on && !world && !tips.layers[k].frozen && now - tips.layers[k].opened > FREEZE_SECS {
             tips.layers[k].frozen = true;
         }
     }
@@ -706,8 +707,22 @@ pub fn tip_logic(
         Some((src, depth, tip)) => {
             let d = depth as usize;
             let already = tips.layers.get(d).is_some_and(|l| l.src == src);
-            if already {
-                tips.layers[d].tip = tip;
+            // A map tip rides with the pointer and changes as soon as the pointer reaches
+            // something else, so it always describes what is under the pointer now.
+            let world = matches!(src, TipSrc::World(_));
+            let swap = world && d == 0 && tips.layers.first().is_some_and(|l| matches!(l.src, TipSrc::World(_)) && !l.frozen);
+            if already || swap {
+                if swap && !already {
+                    tips.layers.truncate(1);
+                    tips.layers[0].src = src;
+                    tips.layers[0].opened = now;
+                }
+                let l = &mut tips.layers[d];
+                if world && !l.frozen {
+                    l.pos = cursor + Vec2::new(16.0, 20.0);
+                    l.last_held = now;
+                }
+                l.tip = tip;
                 tips.pending = None;
             } else if d <= tips.layers.len() && d < TIP_LAYERS {
                 let since = match &tips.pending {

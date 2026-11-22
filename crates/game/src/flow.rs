@@ -71,6 +71,29 @@ pub fn height_at(h: &HeightGrid, x: f32, y: f32) -> f32 {
 }
 
 pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell, Vec3, f32)> {
+    ray_level(origin, dir, h, |x, y| height_at(h, x, y))
+}
+
+/// Where the ray meets the ground or, over water, the water's surface: the place the pointer is
+/// seen to touch. Testing the ground alone lands a deep pond's cells away from the pointer.
+pub fn ray_surface(origin: Vec3, dir: Vec3, h: &HeightGrid, depth: &sim::grid::Grid<f32>) -> Option<(Cell, Vec3, f32)> {
+    ray_level(origin, dir, h, |x, y| height_at(h, x, y) + bilinear_at(depth, x, y))
+}
+
+fn bilinear_at(g: &sim::grid::Grid<f32>, x: f32, y: f32) -> f32 {
+    let (w, d) = (g.width(), g.height());
+    let x = (x - crate::terrain_render::GRID_OFFSET).clamp(0.0, (w - 1) as f32);
+    let y = (y - crate::terrain_render::GRID_OFFSET).clamp(0.0, (d - 1) as f32);
+    let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(d - 1));
+    let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+    let v = |x, y| g.get(x, y).copied().unwrap_or(0.0);
+    let top = v(x0, y0) * (1.0 - fx) + v(x1, y0) * fx;
+    let bot = v(x0, y1) * (1.0 - fx) + v(x1, y1) * fx;
+    top * (1.0 - fy) + bot * fy
+}
+
+fn ray_level(origin: Vec3, dir: Vec3, h: &HeightGrid, level: impl Fn(f32, f32) -> f32) -> Option<(Cell, Vec3, f32)> {
     let dir = dir.try_normalize()?;
     let (w, d) = (h.width() as f32, h.height() as f32);
     let max_t = 4000.0;
@@ -81,7 +104,7 @@ pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell,
     };
     let below = |p: Vec3| {
         let (cx, cy) = world_cell(h, p);
-        p.y <= height_at(h, cx, cy)
+        p.y <= level(cx, cy)
     };
     let mut t = 0.0;
     let mut prev_t = 0.0;

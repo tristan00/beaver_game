@@ -1,7 +1,7 @@
 use super::scene::{height_at, Pose};
 use crate::terrain_render::CELL_SIZE as CELL;
 use bevy::prelude::*;
-use sim::agents::{Agent, Task, MOVE_COST_PER_DAY, LADEN_PACE};
+use sim::agents::{Agent, Task, MOVE_COST_PER_DAY};
 use sim::buildings::Good;
 use sim::nav::{Gait, Surface, CLIMB_COST, SWIM_COST, WALK_COST};
 use sim::resources::ResourceKind;
@@ -45,8 +45,8 @@ pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
     if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
-        let pace = MOVE_COST_PER_DAY * if ag.load.is_some() { LADEN_PACE } else { 1.0 };
-        let cost = sim.nav.surface_at(n).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0);
+        let pace = MOVE_COST_PER_DAY * sim::agents::pace(&sim.nav, ag);
+        let cost = sim.nav.surface_at(n).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0) * sim::nav::step_length(ag.cell, n);
         // step_frac is remaining movement cost, not a normalized cell fraction.
         frac = ((ag.step_frac + pending_days * pace) / cost).clamp(0.0, 1.0);
         next = n;
@@ -79,8 +79,10 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     }
     match &ag.task {
         Task::Collect { target, .. } => match sim.resources.get(*target).map(|r| r.kind) {
-            Some(ResourceKind::Tree) => Pose::Gnaw,
-            _ => Pose::Work,
+            Some(ResourceKind::Tree | ResourceKind::Felled) => Pose::Gnaw,
+            Some(ResourceKind::MudBank | ResourceKind::RiverClay) => Pose::Dig,
+            Some(ResourceKind::Plant) => Pose::Forage,
+            None => Pose::Work,
         },
         Task::Build { .. } => Pose::Work,
         Task::Rest => Pose::Rest,

@@ -51,12 +51,15 @@ impl From<crate::picking::Target> for Thing {
             Target::Building(id) => Self::Building(id),
             Target::Beaver(id) => Self::Beaver(id),
             Target::Lodge(id) => Self::Lodge(id),
+            Target::Resource(id) => Self::Resource(id),
         }
     }
 }
 
 #[derive(Resource, Default)]
-pub struct HoverThing(pub Option<Thing>);
+/// What is under the pointer, and what a right-click order goes to: the same, except that a
+/// tree picked by its crown gives way to the ground behind it, so crowns never swallow moves.
+pub struct HoverThing(pub Option<Thing>, pub Option<Thing>);
 
 #[derive(Resource, Default)]
 pub struct HoverPoint(pub Option<(Cell, (f32, f32))>);
@@ -152,7 +155,28 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         }
         Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return Tip::default() };
-            let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), resource_name(r.kind)).with_value(num(r.amount));
+            use sim::resources::ResourceKind;
+            let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), r.species.map_or(resource_name(r.kind), |t| t.name()));
+            // Trees: age, chewing left, and what felling gives; trunks: what is left to haul.
+            let yields = match r.kind {
+                ResourceKind::Tree => {
+                    tip.push(TipLine::new("Age", days(r.age_days)).icon(Icon::Hourglass, MUTED));
+                    tip.push(TipLine::new("Fell work", num(r.amount)).icon(Icon::Hammer, MUTED));
+                    r.species.and_then(|sp| r.stage()?.fell_yield(sp))
+                }
+                ResourceKind::Felled => Some((r.amount, r.branches, r.bark)),
+                _ => {
+                    tip = tip.with_value(num(r.amount));
+                    None
+                }
+            };
+            if let Some((logs, branches, bark)) = yields {
+                for (name, icon, col, v) in [("Sticks", Icon::Sticks, good_color(Good::Sticks), logs + branches), ("Bark", Icon::Food, good_color(Good::Food), bark)] {
+                    if v > 0.0 {
+                        tip.push(TipLine::new(name, num(v)).icon(icon, col));
+                    }
+                }
+            }
             if let Some(p) = s.work.places.iter().find(|p| p.area.is_some_and(|a| a.contains(r.cell))) {
                 if let Some(b) = s.buildings.building(p.building) {
                     tip.push(TipLine::new(b.kind.spec().name, "").icon(Icon::Area, MUTED));
@@ -195,16 +219,33 @@ pub fn world_hover(
         let cursor = windows.single().ok()?.cursor_position()?;
         let (cam, gt) = cams.single().ok()?;
         let ray = cam.viewport_to_world(gt, cursor).ok()?;
-        let ground = crate::flow::ray_heightfield(ray.origin, *ray.direction, &sim.0.height);
-        model = picker.cast(ray, ground.as_ref().map(|g|g.2)).map(Thing::from);
-        ground.map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
+        let ground = crate::flow::ray_surface(ray.origin, *ray.direction, &sim.0.height, &sim.0.water.depth);
+        let hit = picker.cast_at(ray, ground.as_ref().map(|g|g.2));
+        model = hit.map(|(t, _)| Thing::from(t));
+        // On a dam or canal the cell is the one the pointer touches on the structure, not the
+        // ground the ray would reach behind it, so its ends can be grabbed.
+        let on_works = hit.and_then(|(t, d)| match t {
+            crate::picking::Target::Building(id) => sim.0.buildings.building(id).filter(|b| b.kind.is_waterworks()).map(|_| d),
+            _ => None,
+        });
+        if let Some(d) = on_works {
+            let p = ray.origin + *ray.direction * d;
+            let (x, y) = crate::flow::world_cell(&sim.0.height, p);
+            let n = sim.0.world.size as f32;
+            (x >= 0.0 && y >= 0.0 && x < n && y < n).then_some(((x as usize, y as usize), (x, y)))
+        } else {
+            ground.map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
+        }
     })();
     if point.0 != p {
         point.0 = p;
     }
-    let t = model.or_else(|| p.map(|(c, p)| pick(&sim.0, c, p)));
-    if thing.0 != t {
+    let ground = p.map(|(c, p)| pick(&sim.0, c, p));
+    let t = model.or(ground);
+    let order = if matches!(model, Some(Thing::Resource(_))) { ground } else { t };
+    if thing.0 != t || thing.1 != order {
         thing.0 = t;
+        thing.1 = order;
     }
     if let (Some((c, _)), Some(pile)) = (p, sim.0.work.supplies) {
         if c == pile && hud.tool == Tool::None && matches!(t, Some(Thing::Cell(_))) {
@@ -298,29 +339,42 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             }
         }
     }
+    // Pops at a cell float in the world; pops at the cursor (refusals) are drawn above every
+    // panel by `screen_pops`, or a refusal over a panel would hide behind it.
     for p in pops {
-        let age = (now - p.born).max(0.0);
-        let fade = (1.0 - age / super::POP_SECS).clamp(0.0, 1.0);
-        let at = match p.at {
-            super::PopAt::Screen(v) => Some(v),
-            super::PopAt::Cell(c) => place(c, 2.0),
-        };
-        let Some(at) = at else { continue };
-        let rise = age * 16.0;
-        let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(at.x - 24.0), top: Val::Px(at.y - 20.0 - rise), padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)), column_gap: Val::Px(5.0), ..row_node(5.0) });
-        let mut ui = Ui::default();
-        for (i, c) in &p.icons {
-            ui.icon(*i, 16.0, c.with_alpha(fade));
+        if let super::PopAt::Cell(c) = p.at {
+            if let Some(at) = place(c, 2.0) {
+                out.push(pop_node(p, at, now));
+            }
         }
-        if !p.text.is_empty() {
-            ui.bold(p.text.clone(), 13.0, INK.with_alpha(fade));
-        }
-        v.children = ui.nodes;
-        v.skin(Skin::Plate);
-        v.skin = Some((Skin::Plate, Color::srgba(1.0, 1.0, 1.0, fade)));
-        out.push(v);
     }
     out
+}
+
+/// Pops at a screen point (refusals by the cursor), for the topmost layer.
+pub fn screen_pops(pops: &[super::Pop], now: f32) -> Vec<VNode> {
+    pops.iter().filter_map(|p| match p.at {
+        super::PopAt::Screen(at) => Some(pop_node(p, at, now)),
+        _ => None,
+    }).collect()
+}
+
+fn pop_node(p: &super::Pop, at: Vec2, now: f32) -> VNode {
+    let age = (now - p.born).max(0.0);
+    let fade = (1.0 - age / super::POP_SECS).clamp(0.0, 1.0);
+    let rise = age * 16.0;
+    let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(at.x - 24.0), top: Val::Px(at.y - 20.0 - rise), padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)), column_gap: Val::Px(5.0), ..row_node(5.0) });
+    let mut ui = Ui::default();
+    for (i, c) in &p.icons {
+        ui.icon(*i, 16.0, c.with_alpha(fade));
+    }
+    if !p.text.is_empty() {
+        ui.bold(p.text.clone(), 13.0, INK.with_alpha(fade));
+    }
+    v.children = ui.nodes;
+    v.skin(Skin::Plate);
+    v.skin = Some((Skin::Plate, Color::srgba(1.0, 1.0, 1.0, fade)));
+    v
 }
 
 pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimState, target: Vec3, p: Vec3) -> Option<Vec3> {
@@ -467,7 +521,34 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
+    if let Selection::Tree(id) = *sel {
+        if let Some(r) = s.resources.get(id) {
+            let (x, y) = (r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5);
+            let at = cell_world(h, (x, y)).with_y(height_at(h, x, y) + 0.15);
+            ring(&mut g, at, 0.55, SELECT);
+            ring(&mut g, at, 0.48, SELECT);
+        }
+    }
     if hud.tool == Tool::None {
+        // With beavers picked: where a right-click would send them, and where they are going.
+        let picked: Vec<sim::colony::BeaverId> = match (*sel, hud.selected.is_empty()) {
+            (_, false) => hud.selected.clone(),
+            (Selection::Beaver(b), true) => vec![b],
+            _ => Vec::new(),
+        };
+        if !picked.is_empty() {
+            if let (Some(c), Some(Thing::Cell(_))) = (hover.0, thing.1) {
+                let at = cell_world(h, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).with_y(height_at(h, c.0 as f32 + 0.5, c.1 as f32 + 0.5) + 0.15);
+                ring(&mut g, at, 0.4, Color::WHITE.with_alpha(0.8));
+            }
+            for id in &picked {
+                if let Some(sim::agents::Assignment::Go(to)) = s.agents.get(*id).and_then(|a| a.assignment) {
+                    let at = cell_world(h, (to.0 as f32 + 0.5, to.1 as f32 + 0.5)).with_y(height_at(h, to.0 as f32 + 0.5, to.1 as f32 + 0.5) + 0.15);
+                    ring(&mut g, at, 0.4, ACCENT);
+                    ring(&mut g, at, 0.3, ACCENT);
+                }
+            }
+        }
         if let Some(Thing::Building(id)) = thing.0 {
             if let Some(b) = s.buildings.building(id) {
                 for c in b.cells() {
@@ -541,8 +622,12 @@ fn shoreline(g: &mut Gizmos, h: &sim::grid::HeightGrid, cells: &[Cell], y: f32, 
 fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>) {
     let h = &s.height;
     if let Some(pv) = hud.dam_preview() {
-        shoreline(g, h, &pv.flooded, pv.level + 0.06, FOAM);
-        let flooded: std::collections::HashSet<Cell> = pv.flooded.iter().copied().collect();
+        let (cells, level) = match hud.dam_settled() {
+            Some(r) if !r.flooded.is_empty() => (&r.flooded, r.level),
+            _ => (&pv.flow_flooded, pv.flow_level),
+        };
+        shoreline(g, h, cells, level + 0.06, FOAM);
+        let flooded: std::collections::HashSet<Cell> = cells.iter().copied().collect();
         for t in s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && flooded.contains(&r.cell)) {
             if build_logic::is_wet(s, t.cell.0, t.cell.1) {
                 continue;

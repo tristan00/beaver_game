@@ -2,7 +2,7 @@ include!(concat!(env!("OUT_DIR"), "/agents_constants.rs"));
 use std::collections::BTreeMap;
 
 use crate::buildings::{Building, BuildingId, BuildingKind, Good};
-use crate::colony::{BeaverId, Stage};
+use crate::colony::BeaverId;
 use crate::nav::{Gait, Goal, NavGrid, Path, Surface};
 use crate::resources::{Resource, ResourceId, ResourceKind};
 use crate::water::Cell;
@@ -344,10 +344,21 @@ fn route_home(sim: &SimState, who: BeaverId, from: Cell) -> Option<Path> {
     }
 }
 
+/// How fast a beaver moves for what it carries and where it is: full pace unladen, slower with a
+/// load, slowest dragging wood over dry ground. A load floating in a canal deep enough to swim
+/// costs nothing.
+pub fn pace(nav: &NavGrid, ag: &Agent) -> f32 {
+    let Some(load) = ag.load.as_ref() else { return 1.0 };
+    let surface = nav.surface_at(ag.cell);
+    if surface == Some(Surface::Canal) && nav.floats(ag.cell) {
+        return 1.0;
+    }
+    let dry = !matches!(surface, Some(Surface::Water | Surface::LodgeEntrance | Surface::Canal));
+    if load.good == Good::Sticks && dry { STICKS_LAND_PACE } else { LADEN_PACE }
+}
+
 pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
-    // A load floats in a canal deep enough to swim it: the beaver keeps its full pace there.
-    let floats = ag.load.is_some() && nav.surface_at(ag.cell) == Some(Surface::Canal) && nav.floats(ag.cell);
-    let pace = if ag.load.is_some() && !floats { LADEN_PACE } else { 1.0 };
+    let pace = pace(nav, ag);
     let mut budget = ag.step_frac + dt_days * MOVE_COST_PER_DAY * pace;
     let mut moved = false;
     ag.trail.clear();
@@ -357,7 +368,7 @@ pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
             ag.path = None;
             break;
         };
-        let cost = nav.surface_at(next).and_then(NavGrid::step_cost).map_or(1.0, |c| c.0);
+        let cost = nav.surface_at(next).and_then(NavGrid::step_cost).map_or(1.0, |c| c.0) * crate::nav::step_length(ag.cell, next);
         ag.gait = gait;
         if budget < cost {
             ag.step_frac = budget;
@@ -525,7 +536,7 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         go_to(sim, ag, dt, to);
         return;
     }
-    let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.stage != Stage::Kit, b.resting));
+    let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
     let duty = duty_of(sim, ag, can_work && !tired);
     ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
     if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. }) {
@@ -725,7 +736,7 @@ fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> 
 
 pub(crate) fn worker_effort(sim: &SimState, ag: &Agent, job: crate::colony::Job) -> f32 {
     sim.colony.beaver(ag.id).map_or(0.0, |b| {
-        b.stage.work_weight() * crate::society::work_speed(b.mood)
+        b.work_weight() * crate::society::work_speed(b.mood)
             * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health) * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
             * (WORK_SKILL_BASE + WORK_SKILL_SCALE * b.skills[job.index()])
     })
@@ -975,10 +986,17 @@ pub fn colony_home(sim: &SimState) -> Option<Cell> {
     built(BuildingKind::Warehouse).or_else(|| built(BuildingKind::Shelter)).or(sim.work.supplies)
 }
 
-/// Without gathering huts, the colony sends beavers out from home for whatever it is short of.
+/// The ground round home that beavers are sent out over to gather.
+pub(crate) fn home_area(sim: &SimState) -> Option<(Cell, Area)> {
+    let home = colony_home(sim)?;
+    let r = GATHER_RADIUS / 2;
+    Some((home, Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) }))
+}
+
+/// The colony sends beavers out from home for whatever it is short of.
 fn colony_runs(sim: &SimState) -> Vec<(Role, Assignment, Cell)> {
     let Some(home) = colony_home(sim) else { return Vec::new() };
-    let workers = sim.colony.beavers.iter().filter(|b| b.stage != Stage::Kit).count();
+    let workers = sim.colony.beavers.iter().filter(|b| b.can_work()).count();
     let r = GATHER_RADIUS / 2;
     let area = Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) };
     let mut out = Vec::new();
@@ -994,12 +1012,6 @@ fn colony_runs(sim: &SimState) -> Vec<(Role, Assignment, Cell)> {
         out.extend(std::iter::repeat_n((Role::Collect(kind), Assignment::Area(kind, area), home), n));
     }
     out
-}
-
-pub(crate) fn can_fill(stage: Stage, role: Role) -> bool {
-    match role {
-        _ => matches!(stage, Stage::Adult | Stage::Yearling),
-    }
 }
 
 struct Opening {
@@ -1126,14 +1138,14 @@ fn organise(sim: &mut SimState) {
         o.key.0 = ((counts[i] as f32 * 100.0 / weight) as usize) + sim.work.role_rank(role) * 3;
     }
     openings.sort_by_key(|o| o.key);
-    let pool: Vec<(BeaverId, Stage, Cell)> = sim
+    let pool: Vec<(BeaverId, Cell)> = sim
         .colony
         .beavers
         .iter()
-        .filter(|b| b.stage != Stage::Kit && !sim.work.player_orders.contains(&b.id))
+        .filter(|b| b.can_work() && !sim.work.player_orders.contains(&b.id))
         .filter_map(|b| sim.agents.get(b.id).map(|a| (b, a)))
         .filter(|(b, a)| sim.work.managed.contains_key(&b.id) || (sim.work.slot_of(b.id).is_none() && a.assignment.is_none()))
-        .map(|(b, a)| (b.id, b.stage, a.cell))
+        .map(|(b, a)| (b.id, a.cell))
         .collect();
     let mut holder: Vec<Option<usize>> = vec![None; openings.len()];
     let mut used = vec![false; pool.len()];
@@ -1149,8 +1161,8 @@ fn organise(sim: &mut SimState) {
             continue;
         }
         let pick = (0..pool.len())
-            .filter(|&k| !used[k] && can_fill(pool[k].1, opening.role))
-            .min_by_key(|&k| (d2(pool[k].2, opening.at), pool[k].0));
+            .filter(|&k| !used[k])
+            .min_by_key(|&k| (d2(pool[k].1, opening.at), pool[k].0));
         if let Some(k) = pick {
             used[k] = true;
             holder[o] = Some(k);
@@ -1163,7 +1175,7 @@ fn organise(sim: &mut SimState) {
         let rank = (openings[o].key.0, openings[o].key.1);
         let from = (o + 1..openings.len())
             .rev()
-            .find(|&l| (openings[l].key.0, openings[l].key.1) > rank && holder[l].is_some_and(|k| can_fill(pool[k].1, openings[o].role)));
+            .find(|&l| (openings[l].key.0, openings[l].key.1) > rank && holder[l].is_some());
         if let Some(l) = from {
             holder[o] = holder[l].take();
         }
@@ -1231,7 +1243,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     if res.kind == ResourceKind::Tree {
         if sim.resources.fell(target, dt * worker_effort(sim, ag, crate::colony::Job::Logger) * FELL_PER_DAY).expect("kind checked above") {
             sim.nav.set(res.cell, Surface::Land);
-            crate::forestry::felled(sim, ag.id, res.cell);
+            crate::forestry::felled(sim, ag.id, res.cell, res.species.unwrap_or(crate::trees::Tree::Aspen));
         }
         return;
     }

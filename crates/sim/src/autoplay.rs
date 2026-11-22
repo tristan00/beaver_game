@@ -43,7 +43,7 @@ impl Player {
     }
 
     fn has_hands(&self, s: &SimState) -> bool {
-        let workers = s.colony.beavers.iter().filter(|b| b.stage != crate::colony::Stage::Kit).count();
+        let workers = s.colony.beavers.iter().filter(|b| b.can_work()).count();
         let open = s.buildings.buildings.iter().filter(|b| !b.is_complete()).count();
         open < (workers / 2).max(1)
     }

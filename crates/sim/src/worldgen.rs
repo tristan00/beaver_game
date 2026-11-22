@@ -25,12 +25,7 @@ const RIPARIAN_CLEAR_M: f32 = 6.0;
 const TREES_PER_M2: [(u8, f32); 5] = [(10, 0.06), (20, 0.025), (90, 0.012), (30, 0.002), (100, 0.002)];
 pub const INFLOW_WALL_M: f32 = 12.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Tree { Aspen, Willow, Birch, Alder, Pine }
-
-impl Tree {
-    pub const ALL: [Tree; 5] = [Tree::Aspen, Tree::Willow, Tree::Birch, Tree::Alder, Tree::Pine];
-}
+pub use crate::trees::Tree;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldError {
@@ -95,6 +90,8 @@ pub struct RealMap<'a> {
     pub cell_m: f32,
     pub inflows: &'a [(usize, usize, f32)],
     pub cover: Option<&'a [u8]>,
+    /// Map id selecting the species mix (`tree_flora`).
+    pub flora: &'a str,
 }
 
 struct Lattice { cells: usize, vals: Vec<f32> }
@@ -348,25 +345,6 @@ fn main_stream(flow: &[Option<usize>], acc: &[u32], river: &[bool]) -> Vec<bool>
     }
 }
 
-fn choose_tree(moisture: f32, slope: f32, draw: f32) -> Tree {
-    // Habitat changes the mix, rather than drawing single-species contour bands.
-    // Even wet banks and dry hills contain neighbours of several species.
-    let steep = slope.clamp(0.0, 1.0);
-    let wet = ((moisture - 0.15) / 0.70).clamp(0.0, 1.0);
-    let wet = wet * wet * (3.0 - 2.0 * wet) * (1.0 - 0.65 * steep);
-    // Aspen, willow, birch, alder, pine (Tree::ALL order).
-    let dry_mix = [0.22, 0.025, 0.25, 0.10, 0.405];
-    let wet_mix = [0.25, 0.28, 0.18, 0.22, 0.07];
-    let mut weights = std::array::from_fn::<_, 5, _>(|i| dry_mix[i] + (wet_mix[i] - dry_mix[i]) * wet);
-    weights[4] += steep * 0.20;
-    let mut pick = draw * weights.iter().sum::<f32>();
-    for (tree, weight) in Tree::ALL.into_iter().zip(weights) {
-        if pick < weight { return tree; }
-        pick -= weight;
-    }
-    Tree::Pine
-}
-
 fn hash01(seed: u64, i: usize) -> f32 {
     let mut h = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     h ^= h >> 33;
@@ -475,6 +453,9 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     }
     let wet = Fbm::new(seed ^ 0x3E7, 5, 4);
     let amplitude = surface.iter().copied().fold(1.0f32, f32::max);
+    let low = (0..n * n).filter(|&i| !lake[i] && !river[i]).map(|i| surface[i]).fold(f32::INFINITY, f32::min);
+    let high = (0..n * n).filter(|&i| !lake[i] && !river[i]).map(|i| surface[i]).fold(f32::NEG_INFINITY, f32::max);
+    let mix = crate::trees::flora(map.flora);
     let (mut moisture, mut forest) = (vec![0f32; n * n], vec![None; n * n]);
     for i in 0..n * n {
         let (u, v) = ((i % n) as f32 / n as f32, (i / n) as f32 / n as f32);
@@ -488,7 +469,8 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         if hash01(seed, i) < per_m2 * cell_m * cell_m {
             // Separate from the density draw: conditioning the same random value
             // on a tree being present would bias sparse forests to one species.
-            forest[i] = Some(choose_tree(moisture[i], slope[i], hash01(seed ^ 0x5452_4545, i)));
+            let habitat = crate::trees::Habitat { moisture: moisture[i], slope: slope[i], height: (surface[i] - low) / (high - low).max(1.0), cover: class };
+            forest[i] = Some(crate::trees::choose(mix, habitat, hash01(seed ^ 0x5452_4545, i)));
         }
     }
     Ok(World {
@@ -522,7 +504,7 @@ pub fn fixture(seed: u64) -> World {
         })
         .collect();
     let cover: Vec<u8> = (0..n * n).map(|i| if (i / n + i % n + seed as usize) % 7 == 0 { 30 } else { 10 }).collect();
-    let real = RealMap { cell_m: 1.0, inflows: &[(0, 64, 0.5)], cover: Some(&cover) };
+    let real = RealMap { cell_m: 1.0, inflows: &[(0, 64, 0.5)], cover: Some(&cover), flora: "default" };
     from_heights(seed, n, raw, &real).expect("the fixture valley is a valid world")
 }
 

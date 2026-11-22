@@ -92,6 +92,7 @@ mod tests {
     fn group_move_accepts_kits_and_chooses_distinct_destinations() {
         let (mut s, ids) = family();
         s.colony.beavers[0].stage = colony::Stage::Kit;
+        s.colony.beavers[0].age_days = 30.0;
         s.apply(Command::Assign { who: ids.clone(), to: Some(agents::Assignment::Go((12, 12))) }).unwrap();
         let cells: std::collections::BTreeSet<_> = ids.iter().map(|id| match s.agents.get(*id).unwrap().assignment {
             Some(agents::Assignment::Go(c)) => c, _ => panic!("missing order"),
@@ -173,8 +174,8 @@ impl SimState {
                 }
             }
             Command::Assign { who, to } => {
-                if let Some(kit) = who.iter().find(|id| to.is_some() && !matches!(to, Some(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| b.stage == colony::Stage::Kit)) {
-                    return Err(SimError::InvalidCommand(format!("beaver {} is a kit and cannot work", kit.0)));
+                if let Some(kit) = who.iter().find(|id| to.is_some() && !matches!(to, Some(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| !b.can_work())) {
+                    return Err(SimError::InvalidCommand(format!("beaver {} is too young to work", kit.0)));
                 }
                 if let Some(id) = who.iter().find(|id| !self.agents.by_id.contains_key(id)) {
                     return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
@@ -211,9 +212,9 @@ impl SimState {
             }
             Command::PlaceSite { kind, pos } => self.place_site(kind, pos).map(|_| ()),
             Command::FillSlot { building, slot, who } => {
-                let stage = self.colony.beaver(who).map(|b| b.stage).ok_or(work::WorkError::NoSuchBeaver);
-                stage
-                    .and_then(|st| if st == colony::Stage::Kit { Err(work::WorkError::NotAdult) } else { Ok(()) })
+                let able = self.colony.beaver(who).map(|b| b.can_work()).ok_or(work::WorkError::NoSuchBeaver);
+                able
+                    .and_then(|ok| if ok { Ok(()) } else { Err(work::WorkError::NotAdult) })
                     .and_then(|()| self.work.place(building).ok_or(work::WorkError::NoSuchWorkplace))
                     .and_then(|p| match p.slots.get(slot) {
                         None => Err(work::WorkError::SlotOutOfRange),

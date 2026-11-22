@@ -27,6 +27,17 @@ pub const SHADOW_MIX: f32 = 0.40;
 
 pub const AUTUMN_RUST: Rgb = rgb(0xD9814E);
 pub const DAM_MUD: Rgb = rgb(0x8F6E52);
+// Beaver building materials: every structure is sticks, peeled wood, mud, leaves and stones.
+pub const BARK: Rgb = rgb(0x7A5230);
+pub const BARK_LIGHT: Rgb = rgb(0x9A6E3E);
+pub const BARK_DARK: Rgb = rgb(0x5D3A20);
+pub const PEELED: Rgb = rgb(0xE2C894);
+pub const MUD_DARK: Rgb = rgb(0x4D3520);
+pub const MUD_WET: Rgb = rgb(0x3A2818);
+pub const LEAF: Rgb = rgb(0x5E9E45);
+pub const LEAF_LIGHT: Rgb = rgb(0x8CC063);
+pub const MARKER_LEAF: Rgb = rgb(0xE8752A);
+pub const DECAY: Rgb = rgb(0x6E665C);
 
 pub const fn pack(c: Rgb) -> u32 {
     (((c[0] * 255.0 + 0.5) as u32) << 16) | (((c[1] * 255.0 + 0.5) as u32) << 8) | ((c[2] * 255.0 + 0.5) as u32)

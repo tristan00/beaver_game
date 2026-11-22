@@ -295,6 +295,13 @@ impl Beaver {
     pub fn skill(&self, job: Job) -> f32 {
         self.skills[job.index()]
     }
+    /// Kits join the work from six months old, at the yearlings' pace.
+    pub fn can_work(&self) -> bool {
+        self.age_days >= WORK_AGE_DAYS
+    }
+    pub fn work_weight(&self) -> f32 {
+        if self.can_work() { self.stage.work_weight() } else { 0.0 }
+    }
     pub fn is_young(&self) -> bool {
         matches!(self.stage, Stage::Kit | Stage::Yearling)
     }
@@ -583,12 +590,12 @@ impl Colony {
     fn plan_work(&self, dt: f32, land: &dyn Landscape) -> Vec<Option<Work>> {
         self.beavers.iter().map(|b| {
             let job = self.slot_jobs.get(&b.id)
-                .filter(|(_, working)| *working && b.stage != Stage::Kit && !b.resting)?.0;
+                .filter(|(_, working)| *working && b.can_work() && !b.resting)?.0;
             // Travel and production belong to physical agents. The colony tracks
             // the resulting workload, skills and needs at each worker's position.
             let eval = SiteEval { land_len: if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 },
                 water_dist: land.water_distance(b.pos.0, b.pos.1) };
-            let units = dt * WORK_FRACTION * b.stage.work_weight()
+            let units = dt * WORK_FRACTION * b.work_weight()
                 * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
                 * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health)
                 * crate::society::work_speed(b.mood);

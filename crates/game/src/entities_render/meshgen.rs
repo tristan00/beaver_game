@@ -163,19 +163,6 @@ impl Mb {
         self.lathe(m, &[(1.0, 0.0), (0.0, 0.0)], seg, col, col, false);
     }
 
-    pub fn fan(&mut self, c: Vec3, rim: &[Vec3], col: [f32; 3]) {
-        let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
-        let ci = self.push(&m, &nm, c, Vec3::Y, col);
-        let first = self.pos.len() as u32;
-        for p in rim {
-            self.push(&m, &nm, *p, Vec3::Y, col);
-        }
-        let n = rim.len() as u32;
-        for i in 0..n {
-            self.idx.extend([ci, first + i, first + (i + 1) % n]);
-        }
-    }
-
     pub fn extrude_x(&mut self, prof: &[(f32, f32)], x0: f32, x1: f32, ca: [f32; 3], cb: [f32; 3]) {
         let n = prof.len();
         if n < 3 {
@@ -213,6 +200,34 @@ impl Mb {
                 }
             }
         }
+    }
+
+    pub fn len(&self) -> usize { self.pos.len() }
+
+    /// Recolours vertices `from..` by position, normal and old colour.
+    pub fn paint(&mut self, from: usize, f: impl Fn(Vec3, Vec3, [f32; 3]) -> [f32; 3]) {
+        for i in from..self.pos.len() {
+            let c = self.col[i];
+            let n = f(Vec3::from(self.pos[i]), Vec3::from(self.nor[i]), [c[0], c[1], c[2]]);
+            self.col[i] = [n[0], n[1], n[2], c[3]];
+        }
+    }
+
+    /// Moves vertices `from..` (normals are left as they were: for small, organic wobbles).
+    pub fn displace(&mut self, from: usize, f: impl Fn(Vec3) -> Vec3) {
+        for p in &mut self.pos[from..] {
+            *p = f(Vec3::from(*p)).to_array();
+        }
+    }
+
+    /// A flat strip quad, visible from both sides.
+    pub fn quad2(&mut self, q: [Vec3; 4], col: [f32; 3]) {
+        let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
+        let base = self.pos.len() as u32;
+        for p in q {
+            self.push(&m, &nm, p, Vec3::Y, col);
+        }
+        self.idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3, base, base + 2, base + 1, base, base + 3, base + 2]);
     }
 
     pub fn weather(&mut self, to: [f32; 3], t: f32) {

@@ -97,6 +97,7 @@ pub(super) fn button_actions(
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let actions: Vec<HudAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| a.clone()).collect();
     for a in actions {
+        sim::trace::event(format!("HUD_ACTION {a:?}"));
         let s = &mut sim.0;
         match a {
             HudAction::Fix(fix, at) => match fix {

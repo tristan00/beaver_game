@@ -64,7 +64,10 @@ impl SimClock {
             let rate = BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
             // Play the received movement history at display frequency. Never
             // predict past the latest completed simulation step.
-            *shown = (*shown + real_dt.min(0.25) * rate).min(latest);
+            // Anything more than a step behind (a long frame, a late snapshot) is made up
+            // over a fraction of a second, so what is drawn never drifts behind the colony.
+            let behind = (latest - *shown - FIXED_DT_DAYS as f64).max(0.0);
+            *shown = (*shown + real_dt.min(0.25) * rate + behind * (real_dt * 4.0).min(1.0)).min(latest);
         }
         self.acc_days = (*shown - latest + FIXED_DT_DAYS as f64).clamp(0.0, FIXED_DT_DAYS as f64);
     }

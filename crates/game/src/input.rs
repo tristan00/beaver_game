@@ -14,6 +14,16 @@ impl Plugin for InputPlugin {
 }
 
 const PAN_PER_DISTANCE: f32 = 0.9;
+/// Cursor within this many pixels of a window edge pans the camera that way.
+const EDGE_PX: f32 = 8.0;
+
+/// Pan direction (forward, right) from the cursor touching a window edge.
+fn edge_pan(window: &Window) -> (f32, f32) {
+    let Some(p) = window.cursor_position().filter(|_| window.focused) else { return (0.0, 0.0) };
+    let (w, h) = (window.width(), window.height());
+    let axis = |v: f32, max: f32| if v <= EDGE_PX { -1.0 } else if v >= max - EDGE_PX { 1.0 } else { 0.0 };
+    (-axis(p.y, h), axis(p.x, w))
+}
 
 pub fn pan_vector(yaw: f32, forward: f32, right: f32) -> Vec2 {
     let fwd = Vec2::new(-yaw.sin(), -yaw.cos());
@@ -31,6 +41,8 @@ fn orbit_input(
     over_ui: Res<PointerOverUi>,
     typing: Res<crate::hud::TextCapture>,
     sim: Res<Sim>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    menu: Option<Res<crate::hud::MenuOpen>>,
     mut orbit: ResMut<OrbitCamera>,
 ) {
     let mut next = *orbit;
@@ -43,8 +55,12 @@ fn orbit_input(
     if keys_free && keys.pressed(KeyCode::KeyQ) { next.yaw -= spin; }
     if keys_free && keys.pressed(KeyCode::KeyE) { next.yaw += spin; }
     let held = |a: KeyCode, b: KeyCode| (keys_free && (keys.pressed(a) || keys.pressed(b))) as i32 as f32;
-    let forward = held(KeyCode::KeyW, KeyCode::ArrowUp) - held(KeyCode::KeyS, KeyCode::ArrowDown);
-    let right = held(KeyCode::KeyD, KeyCode::ArrowRight) - held(KeyCode::KeyA, KeyCode::ArrowLeft);
+    let (edge_fwd, edge_right) = match windows.single() {
+        Ok(w) if !menu.is_some_and(|m| m.0) && !buttons.pressed(MouseButton::Middle) => edge_pan(w),
+        _ => (0.0, 0.0),
+    };
+    let forward = (held(KeyCode::KeyW, KeyCode::ArrowUp) - held(KeyCode::KeyS, KeyCode::ArrowDown) + edge_fwd).clamp(-1.0, 1.0);
+    let right = (held(KeyCode::KeyD, KeyCode::ArrowRight) - held(KeyCode::KeyA, KeyCode::ArrowLeft) + edge_right).clamp(-1.0, 1.0);
     let pan = pan_vector(next.yaw, forward, right) * PAN_PER_DISTANCE * next.distance * time.delta_secs();
     if pan != Vec2::ZERO {
         let h = &sim.0.height;

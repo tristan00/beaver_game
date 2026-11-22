@@ -35,12 +35,12 @@ mod repair_alert_tests {
         let adult=s.colony.beavers[0].clone();
         for i in 0..28 {
             let mut b=adult.clone();b.id=BeaverId(100+i);
-            if i>=12 {b.stage=Stage::Kit;}
+            if i>=12 {b.stage=Stage::Kit;b.age_days=30.0;}
             s.colony.beavers.push(b);
         }
         for b in &s.colony.beavers {s.agents.spawn(b.id,(5,5));}
         assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:4});
-        for b in s.colony.beavers.iter().filter(|b|b.stage!=Stage::Kit).skip(1) {s.work.player_orders.insert(b.id);}
+        for b in s.colony.beavers.iter().filter(|b|b.can_work()).skip(1) {s.work.player_orders.insert(b.id);}
         assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:1});
         let id=s.colony.beavers[0].id;s.work.player_orders.insert(id);
         assert_eq!(food_fix(&s),Fix::Focus);
@@ -51,7 +51,7 @@ pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
     sim.colony
         .beavers
         .iter()
-        .filter(|b| matches!(b.stage, Stage::Yearling | Stage::Adult))
+        .filter(|b| b.can_work())
         .filter(|b| sim.work.slot_of(b.id).is_none())
         .filter(|b| sim.agents.get(b.id).is_none_or(|a| a.assignment.is_none() && matches!(a.task, Task::Idle | Task::Rest)))
         .map(|b| b.id)
@@ -285,7 +285,7 @@ fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
         .colony
         .beavers
         .iter()
-        .filter(|b| matches!(b.stage, Stage::Adult | Stage::Yearling) && !sim.work.is_locked(b.id))
+        .filter(|b| b.can_work() && !sim.work.is_locked(b.id))
         .filter_map(|b| sim.agents.get(b.id).map(|a| (crate::jobs::is_busy(sim, b.id), a.cell.0.abs_diff(home.0) + a.cell.1.abs_diff(home.1), b.id)))
         .collect();
     v.sort();
@@ -297,7 +297,7 @@ fn food_fix(sim: &SimState) -> Fix {
     // Send available workers to food in the wider emergency gathering area.
     // A fixed pair is too small to respond to a mature colony's winter deficit.
     // The player explicitly moves a quarter of the workforce; locked orders stay put.
-    let workers=sim.colony.beavers.iter().filter(|b|b.stage!=Stage::Kit).count();
+    let workers=sim.colony.beavers.iter().filter(|b|b.can_work()).count();
     let n = gatherers(sim, workers.div_ceil(4).max(FIX_WORKERS)).len();
     if let Some(home) = colony_cell(sim).filter(|_|n>0) {
         let r=FOOD_GATHER_RADIUS;

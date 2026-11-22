@@ -61,6 +61,8 @@ pub struct Resource {
     pub age_days: f32,
     pub snag: bool,
     pub tended_days: f32,
+    /// Trees and felled trees only.
+    pub species: Option<crate::trees::Tree>,
 }
 
 impl Resource {
@@ -132,8 +134,8 @@ impl ResourceWorld {
         }
         for y in 0..n {for x in 0..n {
             let cell=(x,y);
-            if world.forest.get(x,y).is_some_and(|t|t.is_some()) {
-                out.add_tree(cell,crate::forestry::start_age(seed,cell));
+            if let Some(Some(sp)) = world.forest.get(x,y).copied() {
+                out.add_tree(cell,crate::forestry::start_age(seed,cell),sp);
             } else if river_spots.contains(&cell) {
                 out.add(ResourceKind::RiverClay,cell,RIVER_CLAY_INITIAL);
             } else if is_bank(world,cell) && in_bed(cell) {
@@ -176,7 +178,7 @@ impl ResourceWorld {
         if r.kind != ResourceKind::Tree {
             return Err(ResourceError::WrongKind);
         }
-        let Some((logs, branches, bark)) = r.stage().and_then(crate::forestry::TreeStage::fell_yield) else {
+        let Some((logs, branches, bark)) = r.stage().and_then(|s| s.fell_yield(r.species.unwrap_or(crate::trees::Tree::Aspen))) else {
             return Err(ResourceError::TooYoung);
         };
         r.amount -= work;
@@ -254,15 +256,18 @@ impl ResourceWorld {
         self.nav_revision = self.nav_revision.wrapping_add(1);
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
-        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0 });
+        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0, species: None });
         id
     }
 
     pub(crate) fn nav_revision(&self) -> u64 { self.nav_revision }
 
-    pub fn add_tree(&mut self, cell: Cell, age_days: f32) -> ResourceId {
-        let id = self.add(ResourceKind::Tree, cell, FELL_WORK);
-        self.items.last_mut().expect("just added").age_days = age_days.max(0.0);
+    pub fn add_tree(&mut self, cell: Cell, age_days: f32, species: crate::trees::Tree) -> ResourceId {
+        let work = FELL_WORK * species.spec().fell_work;
+        let id = self.add(ResourceKind::Tree, cell, work);
+        let r = self.items.last_mut().expect("just added");
+        r.age_days = age_days.max(0.0);
+        r.species = Some(species);
         id
     }
 

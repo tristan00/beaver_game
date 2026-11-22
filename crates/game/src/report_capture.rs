@@ -6,7 +6,7 @@ use crate::{camera::OrbitCamera, cli::Cli, entities_render::CanopyView, flow::Se
 
 pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::Outcome) -> std::io::Result<()> {
     use std::{fmt::Write, fs};
-    use sim::{buildings::Site, colony::Stage};
+    use sim::colony::Stage;
     fs::create_dir_all(dir)?;
     let mut homes = String::from("home,family,members,adults,yearlings,kits,condition\n");
     let mut violations = Vec::new();
@@ -27,19 +27,16 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
             b.mother.map_or(0,|v|v.0), b.father.map_or(0,|v|v.0), b.mate.map_or(0,|v|v.0), b.lodge.map_or(0,|v|v.0),
             b.pregnancy.as_ref().map_or(-1.0,|p|p.due_day), b.pregnancy.as_ref().map_or(0,|p|p.litter)).unwrap();
     }
-    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,pond_building,stranded,condition,reinforced,active_site,workers,stuck_workers\n");
-    let (mut pond, mut wet_pond) = (0, 0);
+    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,stranded,condition,reinforced,active_site,workers,stuck_workers\n");
     for b in &s.buildings.buildings {
         let cells: Vec<_> = b.cells().collect();
         let wet = cells.iter().filter(|&&(x,y)| s.water.depth.get(x,y).is_some_and(|&d|d >= 0.02)).count();
-        let in_pond = b.kind.spec().site == Site::Pond;
-        if b.is_complete() && in_pond { pond += 1; if wet > cells.len()/2 { wet_pond += 1; } }
         let place=s.work.place(b.id);
         let active=place.is_some_and(|p|p.site.is_some());
         if b.is_complete() && active && !s.maintenance.jobs.contains_key(&b.id){violations.push(format!("finished building {} retains construction record",b.id.0));}
         let stuck=place.map_or(0,|p|p.slots.iter().filter_map(|slot|slot.worker).filter(|id|s.agents.get(*id).is_some_and(|a|a.stuck_ticks>96)).count());
-        writeln!(buildings, "{},{:?},{},{},{},{},{},{},{},{:.3},{},{},{},{}", b.id.0, b.kind, b.is_complete(), b.pos.0, b.pos.1,
-            wet, cells.len(), in_pond, s.buildings.stranded(b,&s.water.depth),b.condition,b.reinforced,active,place.map_or(0,|p|p.filled()),stuck).unwrap();
+        writeln!(buildings, "{},{:?},{},{},{},{},{},{},{:.3},{},{},{},{}", b.id.0, b.kind, b.is_complete(), b.pos.0, b.pos.1,
+            wet, cells.len(), s.buildings.stranded(b,&s.water.depth),b.condition,b.reinforced,active,place.map_or(0,|p|p.filled()),stuck).unwrap();
     }
     let mut events = String::new();
     let mut litters: std::collections::BTreeMap<(u64,i64), (std::collections::BTreeSet<i64>,usize)> = Default::default();
@@ -54,9 +51,9 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
     }
     for (key,(days,n)) in &litters { if days.len()!=1 || !(2..=4).contains(n) { violations.push(format!("invalid annual litter {key:?}")); } }
     for (&year,&n) in &s.colony.immigration_by_year {if n>2 {violations.push(format!("migration allowance exceeded in year {}",year+1));}}
-    let summary = format!("day={:.3}\npopulation={}\nfamilies={}\nbirths={}\ndeaths={}\nfood={:.3}\nfood_zero_days={}\nhomeless_days={}\npond_buildings={}\nwet_pond_buildings={}\nannual_litters={:?}\nviolations={:?}\ntimings={:?}\nimmigrants={}\nmigration_by_year={:?}\nrepairs={}\nreinforcements={}\ncanal_cells={}\n",
+    let summary = format!("day={:.3}\npopulation={}\nfamilies={}\nbirths={}\ndeaths={}\nfood={:.3}\nfood_zero_days={}\nhomeless_days={}\nannual_litters={:?}\nviolations={:?}\ntimings={:?}\nimmigrants={}\nmigration_by_year={:?}\nrepairs={}\nreinforcements={}\ncanal_cells={}\n",
         s.time_days, s.colony.population(), s.colony.families.len(), s.colony.stats.births, s.colony.stats.deaths, s.colony.food,
-        out.stats.food_zero_days, out.stats.homeless_days, pond, wet_pond, litters, violations, s.step_timings,s.colony.stats.immigrants,s.colony.immigration_by_year,
+        out.stats.food_zero_days, out.stats.homeless_days, litters, violations, s.step_timings,s.colony.stats.immigrants,s.colony.immigration_by_year,
         s.maintenance.repairs_completed,s.maintenance.reinforcements_completed,s.water.canal.as_slice().iter().filter(|&&v|v).count());
     for (name, data) in [("summary.txt",summary),("homes.csv",homes),("beavers.csv",beavers),("buildings.csv",buildings),("events.txt",events),("run.txt",out.lines.join("\n"))] {
         fs::write(dir.join(name),data)?;

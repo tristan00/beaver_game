@@ -19,7 +19,12 @@ pub enum Pose {
     Gnaw,
     Carry,
     Climb,
+    /// Building: pressing mud into place.
     Work,
+    /// Scooping mud or clay out of a bank.
+    Dig,
+    /// Sitting up, eating a plant.
+    Forage,
     Rest,
 }
 

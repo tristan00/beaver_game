@@ -1,3 +1,4 @@
+mod gallery;
 mod meshgen;
 mod models;
 mod scene;
@@ -15,7 +16,8 @@ use std::collections::HashMap;
 
 pub use scene::{height_at, lodge_view};
 
-const BEAVER_NEAR: f32 = 85.0;
+/// Beavers nearer the camera than this are fully rigged; the default camera sits ~150 away.
+const BEAVER_NEAR: f32 = 260.0;
 const TREE_LOD0: f32 = 220.0;
 const TREE_LOD1: f32 = 480.0;
 const SCREENSHOT_CLOCK: f32 = 31.0;
@@ -39,6 +41,9 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_dams,
                     sim_sync::sync_dam_ghosts,
                     sim_sync::sync_reinforcements,
+                    gallery::spawn_gallery,
+                    gallery::shuffle_gallery,
+                    gallery::select_home,
                     attach_rigs,
                     animate_beavers,
                     canopy_key,
@@ -79,6 +84,7 @@ struct Models {
     tree_tints: [Handle<StandardMaterial>; 4],
     old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
+    wake_mat: Handle<StandardMaterial>,
     trees: Vec<Handle<Mesh>>,
     cutaway_trees: Vec<Handle<Mesh>>,
     snag: Handle<Mesh>,
@@ -90,14 +96,15 @@ struct Models {
     lids: Handle<Mesh>,
     chips: Handle<Mesh>,
     loads: Vec<Handle<Mesh>>,
+    paw_loads: Vec<Handle<Mesh>>,
     felled: Vec<Handle<Mesh>>,
     mud: Handle<Mesh>,
     plant: Handle<Mesh>,
     far: Handle<Mesh>,
-    ripple: Handle<Mesh>,
+    wake: Handle<Mesh>,
     blob: Handle<Mesh>,
     structs: HashMap<(StructKind, u32, u8), Handle<Mesh>>,
-    dams: HashMap<(u8, bool, u32, structures::DamStage), Handle<Mesh>>,
+    dams: HashMap<(u8, u32, u32, structures::DamStage), Handle<Mesh>>,
 }
 
 fn species_index(s: Species) -> usize {
@@ -144,31 +151,56 @@ pub struct BeaverSprite {
     pub wet: bool,
 }
 
+/// A beaver is a pivot (the body's motion) with the body mesh, head, tail and legs under it.
+/// Squash and stretch go on the body mesh alone, so the limbs never shear.
 #[derive(Component)]
 pub(crate) struct BeaverRig {
     body: Entity,
+    body_mesh: Entity,
     far: Entity,
     parts: [Entity; 6],
-    log: Entity,
+    mouth: Entity,
+    paws: Entity,
     lids: Entity,
     chips: Entity,
-    ripple: Entity,
+    wake: Entity,
     blob: Entity,
     prev: Pose,
     cur: Pose,
     blend: f32,
     near: bool,
     init: bool,
-    load: Option<sim::buildings::Good>,
+    /// What the mouth and the paws are showing.
+    shown: (Option<sim::buildings::Good>, Option<sim::buildings::Good>),
     stride: f32,
+    speed: f32,
     last_pos: Option<Vec3>,
 }
 
 const SNAP_JUMP: f32 = 3.0;
-const STRIDE: f32 = 0.66;
-const MAX_STRIDE_HZ: f32 = 4.5;
+/// World distance covered by one walking stride of a full-grown beaver; the leg swing in
+/// `pose_rig` sweeps about this far, so planted feet barely slide.
+const STRIDE: f32 = 0.42;
+/// Above this speed (world units a second, full-grown) the walk turns into a bound.
+const BOUND_FROM: f32 = 1.3;
+const BOUND_FULL: f32 = 2.8;
+const MAX_STRIDE_HZ: f32 = 5.5;
 
 pub const ENTITY_GAIN: f32 = 0.55;
+
+/// Kits and yearlings are drawn smaller than adults.
+pub fn age_scale(stage: sim::colony::Stage) -> f32 {
+    match stage {
+        sim::colony::Stage::Kit => 0.68,
+        sim::colony::Stage::Yearling => 0.8,
+        sim::colony::Stage::Adult => 1.0,
+    }
+}
+
+/// Clay and food are hugged to the chest; sticks are carried in the teeth.
+fn held_in_paws(good: sim::buildings::Good) -> bool {
+    good != sim::buildings::Good::Sticks
+}
 
 fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let white = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
@@ -179,6 +211,12 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let old_tree = materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * 0.86, ENTITY_GAIN * 0.90, ENTITY_GAIN * 0.82), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
     let blob_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.42, 0.353, 0.541, 0.40),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    let wake_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 1.0, 0.98, 0.55),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
@@ -204,13 +242,14 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let lids = build(&models::beaver_lids);
     let chips = build(&models::gnaw_chips);
     let far = build(&models::beaver_static);
-    let ripple = build(&models::ripple);
+    let wake = build(&models::wake);
     let blob = build(&models::blob_shadow);
     commands.insert_resource(Models {
         white,
         tree_tints,
         old_tree,
         blob_mat,
+        wake_mat,
         trees,
         cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
         snag: meshes.add(models::snag_mesh()),
@@ -222,11 +261,12 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         lids,
         chips,
         loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
+        paw_loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::paw_load_mesh(*g))).collect(),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
         mud: meshes.add(models::mud_mesh()),
         plant: meshes.add(models::plant_mesh()),
         far,
-        ripple,
+        wake,
         blob,
         structs: HashMap::new(),
         dams: HashMap::new(),
@@ -235,7 +275,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
 
 fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::terrain_render::Season>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
     let shot = || std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK);
-    let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none();
+    let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none() && std::env::var_os("BC_GALLERY").is_none();
     clock.0 = if frozen { shot() } else { time.elapsed_secs() };
     let next = Season::at(visual.phase);
     if season.0 != next {
@@ -250,37 +290,45 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
         let target = crate::picking::Target::Beaver(sim::colony::BeaverId(sprite.id));
         let mut body = Entity::PLACEHOLDER;
         commands.entity(root).with_children(|p| {
-            body = p.spawn((target, Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
+            body = p.spawn((Transform::default(), Visibility::Inherited)).id();
         });
         let mut parts = [Entity::PLACEHOLDER; 6];
-        let (mut log, mut far, mut ripple, mut blob) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
+        let (mut body_mesh, mut paws, mut far, mut wake, mut blob) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(body).with_children(|p| {
+            body_mesh = p.spawn((target, Mesh3d(m.body.clone()), MeshMaterial3d(w.clone()), Transform::default())).id();
             parts[0] = p.spawn((target, Mesh3d(m.head.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::HEAD_PIVOT))).id();
             parts[1] = p.spawn((target, Mesh3d(m.tail.clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::TAIL_PIVOT))).id();
             for k in 0..4 {
                 let mesh = if k < 2 { m.leg_front.clone() } else { m.leg_hind.clone() };
                 parts[2 + k] = p.spawn((target, Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
             }
+            paws = p.spawn((Mesh3d(m.paw_loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::CHEST_HOLD), Visibility::Hidden)).id();
         });
-        let (mut lids, mut chips) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER);
+        let (mut mouth, mut lids, mut chips) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(parts[0]).with_children(|p| {
-            log = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            mouth = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::MOUTH), Visibility::Hidden)).id();
             lids = p.spawn((Mesh3d(m.lids.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
         commands.entity(root).with_children(|p| {
             far = p.spawn((target, Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
-            ripple = p.spawn((Mesh3d(m.ripple.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.06, 0.2), Visibility::Hidden)).id();
+            wake = p.spawn((Mesh3d(m.wake.clone()), MeshMaterial3d(m.wake_mat.clone()), Transform::from_xyz(0.0, 0.04, 1.15), Visibility::Hidden)).id();
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });
-        commands.entity(root).insert(BeaverRig { body, far, parts, log, lids, chips, ripple, blob, prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, load: None, stride: sprite.id as f32 * 1.7, last_pos: None });
+        commands.entity(root).insert(BeaverRig {
+            body, body_mesh, far, parts, mouth, paws, lids, chips, wake, blob,
+            prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, shown: (None, None),
+            stride: sprite.id as f32 * 1.7, speed: 0.0, last_pos: None,
+        });
     }
 }
 
+/// Body, head, tail, four legs; the squash of the body mesh; where the paws hold things.
 #[derive(Clone, Copy)]
 struct Rig {
     parts: [(Vec3, Quat); 7],
     squash: Vec3,
+    hold: Vec3,
 }
 
 impl Rig {
@@ -289,13 +337,14 @@ impl Rig {
             parts: [
                 (Vec3::ZERO, Quat::IDENTITY),
                 (models::HEAD_PIVOT, Quat::IDENTITY),
-                (models::TAIL_PIVOT, Quat::IDENTITY),
+                (models::TAIL_PIVOT, Quat::from_rotation_x(TAIL_DOWN)),
                 (models::LEG_PIVOTS[0], Quat::IDENTITY),
                 (models::LEG_PIVOTS[1], Quat::IDENTITY),
                 (models::LEG_PIVOTS[2], Quat::IDENTITY),
                 (models::LEG_PIVOTS[3], Quat::IDENTITY),
             ],
             squash: Vec3::ONE,
+            hold: models::CHEST_HOLD,
         }
     }
 
@@ -305,13 +354,24 @@ impl Rig {
             r.parts[k] = (self.parts[k].0.lerp(o.parts[k].0, w), self.parts[k].1.slerp(o.parts[k].1, w));
         }
         r.squash = self.squash.lerp(o.squash, w);
+        r.hold = self.hold.lerp(o.hold, w);
         r
     }
 
     fn pivot_body(&mut self, pivot: Vec3, rot: Quat) {
         self.parts[0] = (self.parts[0].0 + pivot - rot * pivot, rot * self.parts[0].1);
     }
+
+    /// Where a front paw's tip is, in body space, with the leg turned `a` about x.
+    fn paw_tip(a: f32) -> Vec3 {
+        let p = models::LEG_PIVOTS[1];
+        Vec3::new(0.0, p.y, p.z) + Quat::from_rotation_x(a) * Vec3::new(0.0, -0.3, 0.1)
+    }
 }
+
+/// A tail at rest lies on the ground behind (its pivot is above the ground).
+const TAIL_DOWN: f32 = -0.26;
+const HIPS: Vec3 = Vec3::new(0.0, 0.12, -0.42);
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -324,6 +384,19 @@ const IDLE_LOOP: f32 = 14.0;
 
 pub(crate) fn blinking(t: f32, id: f32) -> bool { (t * 0.29 + id * 0.37).rem_euclid(1.0) < 0.04 }
 
+/// Sitting up on the haunches, tail flat behind; front paws free.
+fn sit_rig(lean: f32, br: f32) -> Rig {
+    let rx = Quat::from_rotation_x;
+    let mut s = Rig::rest();
+    s.pivot_body(HIPS, rx(lean));
+    s.parts[0].0.y += 0.04 + 0.01 * br;
+    s.parts[2].1 = rx(-lean + TAIL_DOWN + 0.1);
+    s.parts[5].1 = rx(-lean - 0.35);
+    s.parts[6].1 = rx(-lean - 0.35);
+    s.squash = Vec3::new(0.98, 1.03, 0.98);
+    s
+}
+
 fn idle_rig(t: f32, id: f32) -> Rig {
     let (rx, ry) = (Quat::from_rotation_x, Quat::from_rotation_y);
     let mut r = Rig::rest();
@@ -335,7 +408,7 @@ fn idle_rig(t: f32, id: f32) -> Rig {
     let dir = |n: f32| ((n * 12.9898 + id).sin() * 43758.547).fract() * 2.0 - 1.0;
     let look = dir(i) + (dir(i + 1.0) - dir(i)) * smooth(0.7, 1.0, f);
     r.parts[1].1 = ry(0.55 * look) * rx(0.05 * (t * 1.8).sin() - 0.05);
-    r.parts[2].1 = rx(0.1) * ry(0.15 * (t * 0.9 + id).sin());
+    r.parts[2].1 = rx(TAIL_DOWN) * ry(0.15 * (t * 0.9 + id).sin());
     let c = (t + id * 3.1).rem_euclid(IDLE_LOOP);
     let sniff = window(c, 3.0, 5.2, 0.35);
     if sniff > 0.0 {
@@ -346,86 +419,150 @@ fn idle_rig(t: f32, id: f32) -> Rig {
     }
     let sit = window(c, 7.0, 11.8, 0.5);
     if sit > 0.0 {
-        let mut s = Rig::rest();
-        let lean = -0.8;
-        s.pivot_body(Vec3::new(0.0, 0.12, -0.42), rx(lean));
-        s.parts[0].0.y += 0.04 + 0.01 * br;
+        let mut s = sit_rig(-0.8, br);
         let g = (t * 11.0 + id).sin();
         s.parts[1].1 = rx(0.55 + 0.08 * g) * ry(0.12 * (t * 3.0).sin());
-        s.parts[2].1 = rx(-lean - 0.12);
         s.parts[3].1 = rx(-1.95 + 0.25 * g);
         s.parts[4].1 = rx(-1.95 - 0.25 * g);
-        s.parts[5].1 = rx(-lean - 0.35);
-        s.parts[6].1 = rx(-lean - 0.35);
-        s.squash = Vec3::new(0.98, 1.03, 0.98);
         r = r.lerp(&s, sit);
     }
     r
 }
 
-fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
+/// How a beaver moves this frame: stride phase, how far into a bound (0 walk, 1 bound),
+/// and whether what it carries is hugged in its paws.
+#[derive(Clone, Copy)]
+struct Gait {
+    phase: f32,
+    run: f32,
+    hug: bool,
+}
+
+/// Walking is a diagonal trot; fast travel is a bound, front feet together then hind feet,
+/// the back flexing. `run` blends the two.
+fn travel_rig(g: Gait, lift_head: f32) -> Rig {
+    let (rx, ry, rz) = (Quat::from_rotation_x, Quat::from_rotation_y, Quat::from_rotation_z);
+    let mut r = Rig::rest();
+    let ph = g.phase;
+    let run = g.run;
+    let (s, c2) = (ph.sin(), (2.0 * ph).cos());
+    let hs = (ph - 0.3).sin();
+    let bound_f = (ph + 0.4).sin();
+    let bound_h = (ph - 2.3).sin();
+    let amp = 0.75 + 0.3 * run;
+    let fl = amp * (s + (bound_f - s) * run);
+    let fr = amp * (-s + (bound_f + s) * run);
+    let hl = amp * 1.05 * (-hs + (bound_h + hs) * run);
+    let hr = amp * 1.05 * (hs + (bound_h - hs) * run);
+    let trot_bob = 0.05 * (2.0 * ph).sin().abs();
+    let bound_bob = 0.14 * (ph + 0.9).sin().max(0.0);
+    r.parts[0].0.y = trot_bob + (bound_bob - trot_bob) * run;
+    let flex = 0.16 * (ph - 0.6).sin() * run;
+    r.parts[0].1 = rz(0.08 * s * (1.0 - run)) * rx(0.03 * (2.0 * ph).sin() + flex);
+    r.squash = Vec3::new(1.0 + 0.025 * c2, 1.0 - 0.04 * c2, 1.0 + 0.015 * c2 + 0.06 * run * (ph - 0.6).sin());
+    r.parts[1].1 = rx(-lift_head + 0.07 * (2.0 * ph + 1.0).sin() - flex) * rz(-0.06 * s * (1.0 - run));
+    r.parts[2].1 = rx(TAIL_DOWN + 0.2 * run + 0.05 * (2.0 * ph + 0.8).sin() - flex) * ry(0.12 * s * (1.0 - run));
+    r.parts[3].1 = rx(fl);
+    r.parts[4].1 = rx(fr);
+    r.parts[5].1 = rx(hl);
+    r.parts[6].1 = rx(hr);
+    r
+}
+
+/// Upright on the hind legs with a load hugged to the chest: short waddling steps.
+fn hug_walk_rig(ph: f32) -> Rig {
+    let (rx, ry, rz) = (Quat::from_rotation_x, Quat::from_rotation_y, Quat::from_rotation_z);
+    let lean = -0.75;
+    let s = ph.sin();
+    let mut r = sit_rig(lean, 0.0);
+    r.parts[0].0.y += 0.035 * (2.0 * ph).sin().abs();
+    r.parts[0].1 = rz(0.1 * s) * r.parts[0].1;
+    r.parts[1].1 = rx(0.45 + 0.05 * (2.0 * ph).sin()) * rz(-0.08 * s);
+    r.parts[2].1 = rx(-lean + TAIL_DOWN + 0.1) * ry(0.18 * s);
+    let hug = -0.85;
+    r.parts[3].1 = rx(hug + 0.05 * s);
+    r.parts[4].1 = rx(hug - 0.05 * s);
+    r.parts[5].1 = rx(-lean - 0.15 + 0.55 * s);
+    r.parts[6].1 = rx(-lean - 0.15 - 0.55 * s);
+    r.hold = Rig::paw_tip(hug) + Vec3::new(0.0, 0.08, 0.0);
+    r
+}
+
+fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
     let rx = Quat::from_rotation_x;
     let ry = Quat::from_rotation_y;
     let rz = Quat::from_rotation_z;
     let mut r = Rig::rest();
-    let ph = gait;
     match pose {
         Pose::Idle => r = idle_rig(t, id),
-        Pose::Walk | Pose::Carry => {
-            let (s, c2) = (ph.sin(), (2.0 * ph).cos());
-            r.parts[0].0.y = 0.06 * (2.0 * ph).sin().abs();
-            r.parts[0].1 = rz(0.08 * s) * rx(0.03 * (2.0 * ph).sin());
-            r.squash = Vec3::new(1.0 + 0.025 * c2, 1.0 - 0.04 * c2, 1.0 + 0.015 * c2);
-            r.parts[1].1 = rx(0.07 * (2.0 * ph + 1.0).sin()) * rz(-0.06 * s);
-            r.parts[2].1 = rx(0.12 + 0.06 * (2.0 * ph + 0.8).sin()) * ry(0.35 * (ph * 0.5).sin() + 0.15 * s);
-            r.parts[3].1 = rx(0.75 * s);
-            r.parts[4].1 = rx(-0.75 * s);
-            r.parts[5].1 = rx(-0.8 * (ph - 0.3).sin());
-            r.parts[6].1 = rx(0.8 * (ph - 0.3).sin());
-            if pose == Pose::Carry {
-                r.parts[1].1 = rx(-0.3 + 0.05 * (2.0 * ph).sin());
-                r.parts[3].1 = rx(-1.0 + 0.1 * s);
-                r.parts[4].1 = rx(-1.0 - 0.1 * s);
-                r.parts[0].1 = rz(0.05 * s) * rx(-0.06);
-                r.squash = Vec3::new(1.0 + 0.035 * c2, 1.0 - 0.05 * c2, 1.0);
-            }
-        }
+        Pose::Walk => r = travel_rig(g, 0.0),
+        Pose::Carry if g.hug => r = hug_walk_rig(g.phase),
+        Pose::Carry => r = travel_rig(Gait { run: g.run * 0.5, ..g }, 0.25),
         Pose::Gnaw => {
             let chew = (t * 15.0 + id).sin();
-            r.parts[0].1 = rx(-0.5) * rz(0.05 * (t * 7.5).sin());
-            r.parts[0].0.y = 0.1 + 0.015 * chew;
+            r.pivot_body(HIPS, rx(-0.5) * rz(0.05 * (t * 7.5).sin()));
+            r.parts[0].0.y += 0.02 + 0.015 * chew;
             r.squash = Vec3::new(1.0, 1.0 + 0.02 * chew, 1.0);
             r.parts[1].1 = rx(0.45 + 0.17 * chew) * rz(0.12 * (t * 7.5 + id).sin()) * ry(0.06 * (t * 7.0).sin());
-            r.parts[2].1 = rx(0.55) * ry(0.08 * (t * 2.0 + id).sin());
+            r.parts[2].1 = rx(0.5 + TAIL_DOWN) * ry(0.08 * (t * 2.0 + id).sin());
             r.parts[3].1 = rx(-1.25 + 0.08 * (t * 15.0).sin());
             r.parts[4].1 = rx(-1.25 - 0.08 * (t * 15.0).sin());
-            r.parts[5].1 = rx(-0.55);
-            r.parts[6].1 = rx(-0.55);
+            r.parts[5].1 = rx(0.35);
+            r.parts[6].1 = rx(0.35);
         }
         Pose::Climb => {
-            let s = gait.sin();
-            let c2 = (2.0 * gait).cos();
-            r.parts[0].0.y = 0.1 + 0.04 * (2.0 * gait).sin().abs();
-            r.parts[0].1 = rx(-0.38) * rz(0.06 * s);
+            let s = g.phase.sin();
+            let c2 = (2.0 * g.phase).cos();
+            r.pivot_body(HIPS, rx(-0.38) * rz(0.06 * s));
+            r.parts[0].0.y += 0.04 * (2.0 * g.phase).sin().abs();
             r.squash = Vec3::new(1.0, 1.0 - 0.03 * c2, 1.0 + 0.03 * c2);
-            r.parts[1].1 = rx(-0.1 + 0.08 * s);
-            r.parts[2].1 = rx(0.45) * ry(0.2 * s);
-            r.parts[3].1 = rx(-1.45 + 0.5 * s);
-            r.parts[4].1 = rx(-1.45 - 0.5 * s);
-            r.parts[5].1 = rx(0.5 - 0.6 * s);
-            r.parts[6].1 = rx(0.5 + 0.6 * s);
+            r.parts[1].1 = rx(0.2 + 0.08 * s);
+            r.parts[2].1 = rx(0.38 + TAIL_DOWN) * ry(0.2 * s);
+            r.parts[3].1 = rx(-1.0 + 0.6 * s);
+            r.parts[4].1 = rx(-1.0 - 0.6 * s);
+            r.parts[5].1 = rx(0.38 - 0.6 * s);
+            r.parts[6].1 = rx(0.38 + 0.6 * s);
         }
+        // Building: both forepaws press a lump of mud into place, again and again.
         Pose::Work => {
-            let s = (t * 8.0 + id).sin();
-            r.parts[0].0.y = 0.025 * s.abs();
-            r.parts[0].1 = rx(0.1) * rz(0.04 * s);
-            r.squash = Vec3::new(1.0 + 0.02 * s.abs(), 1.0 - 0.03 * s.abs(), 1.0);
-            r.parts[1].1 = rx(0.35 + 0.08 * (t * 4.0 + id).sin()) * ry(0.1 * (t * 2.0).sin());
-            r.parts[2].1 = rx(0.35) * ry(0.1 * (t * 1.3 + id).sin());
-            r.parts[3].1 = rx(-0.9 + 0.5 * s);
-            r.parts[4].1 = rx(-0.9 - 0.5 * s);
-            r.parts[5].1 = rx(-0.2);
-            r.parts[6].1 = rx(-0.2);
+            let k = (t * 3.2 + id).rem_euclid(1.0);
+            let press = smooth(0.0, 0.35, k) * (1.0 - smooth(0.55, 1.0, k));
+            r.pivot_body(HIPS, rx(0.08 + 0.1 * press));
+            r.parts[0].0.y += 0.02 * (1.0 - press);
+            r.squash = Vec3::new(1.0 + 0.03 * press, 1.0 - 0.04 * press, 1.0);
+            r.parts[1].1 = rx(0.4 + 0.12 * press) * ry(0.1 * (t * 1.7 + id).sin());
+            r.parts[2].1 = rx(TAIL_DOWN - 0.1) * ry(0.1 * (t * 1.3 + id).sin());
+            let a = -1.2 + 0.55 * press;
+            r.parts[3].1 = rx(a);
+            r.parts[4].1 = rx(a);
+            r.parts[5].1 = rx(-0.15);
+            r.parts[6].1 = rx(-0.15);
+            r.hold = Rig::paw_tip(a) + Vec3::new(0.0, 0.02, 0.06);
+        }
+        // Digging: nose down, forepaws scooping in turn, mud gathering between them.
+        Pose::Dig => {
+            let w = t * 7.0 + id;
+            let (sl, sr) = (w.sin(), (w + std::f32::consts::PI).sin());
+            r.pivot_body(Vec3::new(0.0, 0.1, 0.45), rx(0.22));
+            r.parts[0].0.y += 0.01 * sl.abs();
+            r.squash = Vec3::new(1.0, 1.0 - 0.02 * sl.abs(), 1.0);
+            r.parts[1].1 = rx(0.3 + 0.06 * sl) * ry(0.12 * (t * 1.1 + id).sin());
+            r.parts[2].1 = rx(TAIL_DOWN - 0.15) * ry(0.25 * (t * 2.2 + id).sin());
+            r.parts[3].1 = rx(-0.35 + 0.75 * sl);
+            r.parts[4].1 = rx(-0.35 + 0.75 * sr);
+            r.parts[5].1 = rx(-0.25);
+            r.parts[6].1 = rx(-0.25);
+            r.hold = Vec3::new(0.0, 0.08, 0.9);
+        }
+        // Foraging: sitting up, turning a sprig in the forepaws and chewing it.
+        Pose::Forage => {
+            let br = (t * 1.8 + id).sin();
+            r = sit_rig(-0.8, br);
+            let chew = (t * 13.0 + id).sin();
+            r.parts[1].1 = rx(0.6 + 0.05 * chew) * ry(0.1 * (t * 0.8 + id).sin());
+            let a = -2.25 + 0.12 * (t * 2.6 + id).sin();
+            r.parts[3].1 = rx(a);
+            r.parts[4].1 = rx(a - 0.05);
         }
         Pose::Rest => {
             let b = (t * 1.5 + id).sin();
@@ -434,19 +571,21 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
             r.squash = Vec3::new(1.0 + 0.025 * b, 1.0 + 0.035 * b, 1.0);
             r.parts[1].0.y -= 0.08;
             r.parts[1].1 = rx(0.6) * ry(0.5 + 0.05 * b);
-            r.parts[2].1 = rx(0.2) * ry(1.1);
+            r.parts[2].1 = rx(0.2 + TAIL_DOWN) * ry(1.1);
             r.parts[3].1 = rx(-0.5);
             r.parts[4].1 = rx(-0.5);
             r.parts[5].1 = rx(-0.5);
             r.parts[6].1 = rx(-0.5);
         }
+        // Swimming low: only the head, a strip of back and the tail at the surface.
         Pose::Swim => {
-            let p2 = gait + t * 3.0;
-            r.parts[0].0.y = -0.34 + 0.02 * (t * 2.5 + id).sin();
-            r.parts[0].1 = rx(-0.06 + 0.025 * (2.0 * p2).sin());
+            let p2 = g.phase + t * 3.0;
+            r.parts[0].0.y = SWIM_DEPTH + 0.02 * (t * 2.5 + id).sin();
+            r.parts[0].1 = rx(-0.1 + 0.025 * (2.0 * p2).sin());
             r.squash = Vec3::new(1.0, 1.0, 1.0 + 0.025 * (2.0 * p2).sin());
-            r.parts[1].1 = rx(-0.16 + 0.04 * (2.0 * p2 + 0.6).sin());
-            r.parts[2].1 = rx(0.05 + 0.2 * (p2 - 1.2).sin()) * ry(0.3 * (t * 1.4 + id).sin());
+            r.parts[1].0 += Vec3::new(0.0, 0.18, -0.06);
+            r.parts[1].1 = rx(-0.3 + 0.04 * (2.0 * p2 + 0.6).sin());
+            r.parts[2].1 = rx(0.12 + 0.2 * (p2 - 1.2).sin()) * ry(0.3 * (t * 1.4 + id).sin());
             r.parts[3].1 = rx(0.9);
             r.parts[4].1 = rx(0.9);
             r.parts[5].1 = rx(1.0 * p2.sin());
@@ -455,6 +594,9 @@ fn pose_rig(pose: Pose, t: f32, id: f32, gait: f32) -> Rig {
     }
     r
 }
+
+/// How far a swimming beaver's body sinks below the surface (model units).
+const SWIM_DEPTH: f32 = -0.68;
 
 fn chip_flight(t: f32, id: f32) -> Transform {
     let k = t * 2.3 + id;
@@ -465,10 +607,11 @@ fn chip_flight(t: f32, id: f32) -> Transform {
         .with_scale(Vec3::splat((1.0 - u * u).max(0.05)))
 }
 
-pub(crate) fn shows_ripple(pose: Pose, wet: bool) -> bool {
+pub(crate) fn shows_wake(pose: Pose, wet: bool) -> bool {
     pose == Pose::Swim && wet
 }
 
+#[allow(clippy::too_many_arguments)]
 fn animate_beavers(
     time: Res<Time>,
     clock: Res<RenderClock>,
@@ -483,25 +626,42 @@ fn animate_beavers(
     let cam_pos = cam.iter().next().map(|c| c.translation());
     let dt = time.delta_secs();
     let turn = 1.0 - (-dt * 8.0).exp();
+    let ease = 1.0 - (-dt * 6.0).exp();
+    let show = |v: &mut Query<&mut Visibility, Without<BeaverRig>>, e: Entity, on: bool| {
+        if let Ok(mut v) = v.get_mut(e) {
+            v.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
+        }
+    };
     for (mut tr, mut rig, sprite) in &mut roots {
         let target_rot = Quat::from_rotation_y(sprite.yaw);
         tr.rotation = if rig.init { tr.rotation.slerp(target_rot, turn) } else { target_rot };
+        let size = (tr.scale.x / sim_sync::BEAVER_SIZE).max(0.1);
+        let id = sprite.id as f32 * 1.7;
+
+        let moved = rig.last_pos.map_or(0.0, |p| (tr.translation - p).xz().length());
+        rig.last_pos = Some(tr.translation);
+        let moved = if moved < SNAP_JUMP { moved } else { 0.0 };
+        let v = if dt > 1e-4 { moved / dt } else { 0.0 };
+        rig.speed += (v - rig.speed) * ease;
+        // Gait normalised to a full-grown beaver, so kits take quicker, shorter steps.
+        let vn = rig.speed / size;
+        let run = smooth(BOUND_FROM, BOUND_FULL, vn);
+        let stride = STRIDE * size * (1.0 + 1.2 * run);
+        rig.stride += (moved / stride * std::f32::consts::TAU).min(MAX_STRIDE_HZ * std::f32::consts::TAU * dt.max(1e-4));
 
         let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
         let swimming = sprite.pose == Pose::Swim;
-        let wet = shows_ripple(sprite.pose, sprite.wet);
+        let wet = shows_wake(sprite.pose, sprite.wet);
         if near != rig.near || !rig.init {
             rig.near = near;
-            if let Ok(mut v) = vis.get_mut(rig.body) {
-                *v = if near { Visibility::Inherited } else { Visibility::Hidden };
-            }
-            if let Ok(mut v) = vis.get_mut(rig.far) {
-                *v = if near { Visibility::Hidden } else { Visibility::Inherited };
-            }
+            show(&mut vis, rig.body, near);
+            show(&mut vis, rig.far, !near);
         }
         if !near {
             if let Ok(mut t) = parts.get_mut(rig.far) {
-                t.translation.y = if swimming { -0.34 } else { 0.0 };
+                // Far away there is no rig, but a moving beaver still hops along.
+                let hop = if rig.speed > 0.2 { 0.08 * (rig.stride).sin().abs() } else { 0.0 };
+                t.translation.y = if swimming { SWIM_DEPTH } else { hop };
             }
         }
         if sprite.pose != rig.cur {
@@ -510,63 +670,64 @@ fn animate_beavers(
             rig.blend = if rig.init { 0.0 } else { 1.0 };
         }
         rig.blend = (rig.blend + dt * 5.0).min(1.0);
-        if let Ok(mut v) = vis.get_mut(rig.ripple) {
-            *v = if wet { Visibility::Inherited } else { Visibility::Hidden };
-        }
-        if let Ok(mut v) = vis.get_mut(rig.blob) {
-            *v = if wet { Visibility::Hidden } else { Visibility::Inherited };
+        show(&mut vis, rig.wake, wet);
+        show(&mut vis, rig.blob, !wet);
+        if wet {
+            if let Ok(mut t) = parts.get_mut(rig.wake) {
+                // The V opens out behind a beaver under way and shrinks to a bow ripple at rest.
+                let len = 0.3 + 0.7 * (rig.speed / (2.5 * size)).clamp(0.0, 1.0);
+                let pulse = 1.0 + 0.06 * (clock.0 * 3.0 + id).sin();
+                t.scale = Vec3::new(pulse, 1.0, len * pulse);
+            }
         }
         let good = sprite.load.map(|l| l.0);
-        if good != rig.load || !rig.init {
-            rig.load = good;
-            if let Ok(mut v) = vis.get_mut(rig.log) {
-                *v = if good.is_some() { Visibility::Inherited } else { Visibility::Hidden };
-            }
-            if let (Some(g), Ok(mut m)) = (good, meshes.get_mut(rig.log)) {
-                m.0 = models.loads[g.index()].clone();
-            }
-        }
-        if let (Some((_, amount)), Ok(mut t)) = (sprite.load, parts.get_mut(rig.log)) {
-            let s = 0.6 + 0.4 * (amount / sim::agents::LOAD_SIZE).clamp(0.0, 1.0);
-            t.scale = Vec3::splat(s);
-        }
-        if wet {
-            if let Ok(mut t) = parts.get_mut(rig.ripple) {
-                let s = 1.0 + 0.12 * (clock.0 * 3.0 + sprite.id as f32).sin();
-                t.scale = Vec3::new(s, 1.0, s);
-            }
-        }
+        let hug = good.is_some_and(held_in_paws);
+        let load_scale = sprite.load.map_or(1.0, |(_, amount)| 0.6 + 0.4 * (amount / sim::agents::LOAD_SIZE).clamp(0.0, 1.0));
         rig.init = true;
         if !near {
             continue;
         }
-        let id = sprite.id as f32 * 1.7;
-        let moved = rig.last_pos.map_or(0.0, |p| (tr.translation - p).xz().length());
-        rig.last_pos = Some(tr.translation);
-        if moved < SNAP_JUMP {
-            rig.stride += (moved / STRIDE * std::f32::consts::TAU).min(MAX_STRIDE_HZ * std::f32::consts::TAU * dt.max(1e-4));
-        }
-        let a = pose_rig(rig.cur, clock.0, id, rig.stride);
+        let g = Gait { phase: rig.stride, run, hug };
+        let a = pose_rig(rig.cur, clock.0, id, g);
         let blend = rig.blend * rig.blend * (3.0 - 2.0 * rig.blend);
-        let r = if blend < 1.0 { pose_rig(rig.prev, clock.0, id, rig.stride).lerp(&a, blend) } else { a };
+        let r = if blend < 1.0 { pose_rig(rig.prev, clock.0, id, g).lerp(&a, blend) } else { a };
         let ents = [rig.body, rig.parts[0], rig.parts[1], rig.parts[2], rig.parts[3], rig.parts[4], rig.parts[5]];
-        for (k, (e, (pos, rot))) in ents.iter().zip(r.parts.iter()).enumerate() {
+        for (e, (pos, rot)) in ents.iter().zip(r.parts.iter()) {
             if let Ok(mut t) = parts.get_mut(*e) {
                 t.translation = *pos;
                 t.rotation = *rot;
-                if k == 0 {
-                    t.scale = r.squash;
+            }
+        }
+        if let Ok(mut t) = parts.get_mut(rig.body_mesh) {
+            t.scale = r.squash;
+        }
+        // What shows in the mouth and in the paws.
+        use sim::buildings::Good;
+        let working_mud = matches!(rig.cur, Pose::Work | Pose::Dig);
+        let foraging = rig.cur == Pose::Forage;
+        let mouth_good = if foraging { Some(Good::Food) } else { good.filter(|_| !hug) };
+        let paws_good = if hug { good } else if working_mud { Some(Good::Clay) } else { None };
+        if rig.shown != (mouth_good, paws_good) {
+            rig.shown = (mouth_good, paws_good);
+            for (e, g, set) in [(rig.mouth, mouth_good, &models.loads), (rig.paws, paws_good, &models.paw_loads)] {
+                show(&mut vis, e, g.is_some());
+                if let (Some(g), Ok(mut m)) = (g, meshes.get_mut(e)) {
+                    m.0 = set[g.index()].clone();
                 }
             }
         }
+        if let Ok(mut t) = parts.get_mut(rig.mouth) {
+            t.scale = Vec3::splat(if foraging { 0.45 } else { load_scale });
+        }
+        if let Ok(mut t) = parts.get_mut(rig.paws) {
+            t.translation = r.hold;
+            let gather = if rig.cur == Pose::Dig { 0.45 + 0.35 * (clock.0 * 0.4 + id).rem_euclid(1.0) } else if working_mud { 0.7 } else { load_scale };
+            t.scale = Vec3::splat(gather);
+        }
         let shut = rig.cur == Pose::Rest || blinking(clock.0, id);
-        if let Ok(mut v) = vis.get_mut(rig.lids) {
-            v.set_if_neq(if shut { Visibility::Inherited } else { Visibility::Hidden });
-        }
+        show(&mut vis, rig.lids, shut);
         let gnawing = rig.cur == Pose::Gnaw;
-        if let Ok(mut v) = vis.get_mut(rig.chips) {
-            v.set_if_neq(if gnawing { Visibility::Inherited } else { Visibility::Hidden });
-        }
+        show(&mut vis, rig.chips, gnawing);
         if gnawing {
             if let Ok(mut t) = parts.get_mut(rig.chips) {
                 *t = chip_flight(clock.0, id);

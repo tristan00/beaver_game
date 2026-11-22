@@ -32,7 +32,7 @@ use sim::jobs::RoleKind;
 use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
 use words::*;
 
-pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WARN, WATER};
+pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WATER};
 
 pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, false), TextColor(color)));
@@ -91,16 +91,21 @@ pub struct Msg {
 }
 
 pub use crate::build_logic::LinePlan;
+pub(crate) use world::{HoverPoint, HoverThing};
 
 #[derive(Resource)]
 pub struct HudState {
     pub tool: Tool,
     pub drag_from: Option<Cell>,
+    /// A dam end pressed on: dragging from it extends that dam.
+    pub grab: Option<(BuildingId, Cell)>,
     /// Corners of the dam line being drawn; `line` is the cells through them.
     pub corners: Vec<Cell>,
     pub line: Vec<Cell>,
     /// What the drawn line would build, worked out once per change of line.
     pub plan: Option<LinePlan>,
+    /// What the water engine itself makes of the drawn line, once its background run finishes.
+    pub settled: Option<(Vec<Cell>, sim::dam_preview::Settled)>,
     /// What the drawn canal would dig, worked out once per change of line.
     pub canal_plan: Option<(Vec<Cell>, Result<sim::canals::Plan, String>)>,
     /// Set while a dam is being lengthened from one of its ends.
@@ -172,9 +177,11 @@ impl Default for HudState {
         HudState {
             tool: Tool::None,
             drag_from: None,
+            grab: None,
             corners: Vec::new(),
             line: Vec::new(),
             plan: None,
+            settled: None,
             canal_plan: None,
             extending: None,
             dam_cells: Vec::new(),
@@ -221,8 +228,10 @@ impl HudState {
     pub fn dam_preview(&self) -> Option<&DamPreview> {
         self.plan.as_ref().and_then(|p| p.preview.as_ref())
     }
-    pub(crate) fn notify_paused(&mut self, now: f32) {
-        self.say(Some((Icon::Pause, WARN)), Some((Icon::Urgent, BAD)), "", now);
+    /// The water engine's answer for the line being drawn, once it is in.
+    pub fn dam_settled(&self) -> Option<&sim::dam_preview::Settled> {
+        let plan = self.plan.as_ref()?;
+        self.settled.as_ref().filter(|(line, _)| *line == plan.line).map(|(_, s)| s)
     }
     pub fn set_tool_for_report(&mut self, t: Tool) {
         if self.tool != t {
@@ -418,6 +427,7 @@ impl Plugin for HudPlugin {
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
             .init_resource::<elevation::Contours>()
+            .init_resource::<DamSettle>()
             .insert_resource(RefreshTimer(Timer::from_seconds(REFRESH_SECS, TimerMode::Repeating)))
             .add_systems(Startup, (spawn_hosts, ui::spawn_tip_hosts, setup_minimap))
             .add_systems(
@@ -429,8 +439,57 @@ impl Plugin for HudPlugin {
                     .chain()
                     .in_set(HudSet),
             )
-            .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet));
+            .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet))
+            .add_systems(Update, settle_dam_line.after(refresh_panels).in_set(HudSet));
     }
+}
+
+/// The background run of the water engine for the dam line being drawn (see
+/// `sim::dam_preview::settle`): one at a time, restarted whenever the line changes.
+#[derive(Resource, Default)]
+struct DamSettle(Option<(Vec<Cell>, bevy::tasks::Task<Option<sim::dam_preview::Settled>>)>, Option<(Vec<Cell>, f32)>);
+
+/// How long a drawn line must hold still before the water engine is asked about it (copying
+/// the water takes a few milliseconds, too many to do on every cell of a drag).
+const SETTLE_AFTER_S: f32 = 0.2;
+
+fn settle_dam_line(time: Res<Time>, sim: Res<crate::state::Sim>, mut hud: ResMut<HudState>, mut job: ResMut<DamSettle>) {
+    let want = (hud.tool == Tool::Dam).then(|| hud.plan.as_ref()).flatten().filter(|p| p.refusal.is_none() && !p.settle_cells.is_empty());
+    let Some(plan) = want else {
+        job.0 = None;
+        return;
+    };
+    if let Some((line, task)) = job.0.as_mut() {
+        if *line != plan.line {
+            job.0 = None;
+        } else if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+            let line = std::mem::take(line);
+            job.0 = None;
+            hud.settled = result.map(|r| (line, r));
+            return;
+        } else {
+            return;
+        }
+    }
+    if hud.settled.as_ref().is_some_and(|(line, _)| *line == plan.line) {
+        return;
+    }
+    let now = time.elapsed_secs();
+    match &job.1 {
+        Some((line, since)) if *line == plan.line => {
+            if now - since < SETTLE_AFTER_S {
+                return;
+            }
+        }
+        _ => {
+            job.1 = Some((plan.line.clone(), now));
+            return;
+        }
+    }
+    let (water, height) = (sim.0.water.clone(), sim.0.height.clone());
+    let (cells, heights) = (plan.settle_cells.clone(), plan.settle_heights.clone());
+    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move { sim::dam_preview::settle(water, &height, &cells, &heights) });
+    job.0 = Some((plan.line.clone(), task));
 }
 
 fn spawn_hosts(mut commands: Commands) {
@@ -530,7 +589,7 @@ fn refresh_panels(
         lens: *lens,
         hover: hover.0,
         problems: &problems,
-        minimap: minimap.as_ref().map(|m| &m.0),
+        minimap: minimap.as_deref(),
         view_cell: crate::flow::world_cell(&s.height, orbit.target),
         cursor: cursor.0,
     };
@@ -595,7 +654,7 @@ fn refresh_fast(
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
                 let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0 };
-                if hud.tool == Tool::Canal {
+                let tree = if hud.tool == Tool::Canal {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
                         let (cam, gt) = cams.single().ok()?;
@@ -624,7 +683,10 @@ fn refresh_fast(
                     }
                 } else {
                     panels::cursor_tag(&ctx)
-                }
+                };
+                let mut tree = tree;
+                tree.extend(world::screen_pops(&pops.0, time.elapsed_secs()));
+                tree
             }
             _ => match cams.single() {
                 Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs()),
@@ -639,5 +701,7 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
     let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
+    // `BC_LENS=height` holds the height lens, for screenshots.
+    let shown = if std::env::var("BC_LENS").is_ok_and(|v| v == "height") { MapLens::Elevation } else { shown };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

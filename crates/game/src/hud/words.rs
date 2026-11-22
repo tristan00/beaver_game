@@ -96,9 +96,9 @@ pub fn place_error(e: &PlaceError) -> String {
     match e {
         PlaceError::OutOfBounds => "Off map".into(),
         PlaceError::Blocked => "Occupied".into(),
-        PlaceError::NeedsDry => "Wet".into(),
         PlaceError::NeedsWater => "No water".into(),
-        PlaceError::NeedsPond => "Needs a pond".into(),
+        PlaceError::TooClose => "Too close".into(),
+        PlaceError::BlocksDoor => "Blocks door".into(),
         PlaceError::NoCells => String::new(),
         PlaceError::TooLong(max) => format!("Max {max}"),
         PlaceError::Sim(m) => sim_error(m),

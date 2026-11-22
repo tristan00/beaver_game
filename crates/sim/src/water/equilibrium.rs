@@ -38,7 +38,7 @@ const ROUGHNESS: f64 = 1.75;
 /// Rim cells within this of the spill level form the weir crest (m).
 const RIM_TOL: f32 = 0.02;
 /// Widest weir a spill concentrates into (m); overflow finds the low notch.
-const WEIR_MAX_M: usize = 2;
+pub(crate) const WEIR_MAX_M: usize = 2;
 /// Depth above which stranded water is held as a draining pool after a rebuild (m).
 const POOL_MIN: f32 = 0.08;
 /// Breach width of a stranded pool's outlet weir (m).

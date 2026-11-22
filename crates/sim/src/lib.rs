@@ -39,6 +39,7 @@ pub mod society;
 pub mod starts;
 pub mod stock;
 pub mod trace;
+pub mod trees;
 
 pub mod tuning;
 pub mod water;
@@ -156,6 +157,7 @@ impl SimState {
             step_timings: StepTimings::default(),
         };
         sim.work.inventory = sim.buildings.stores.inventory.view();
+        forestry::clear_drowned(&mut sim);
         forestry::init(&mut sim);
         sim
     }

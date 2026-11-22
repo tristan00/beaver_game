@@ -1,6 +1,6 @@
 //! The colony book: a drawer beside the map that never covers the pond.
 //! Beavers are tokens, amounts are notches, and words live in tooltips.
-use super::panels::{food_left, good_tip, stage_icon, Ctx};
+use super::panels::{good_tip, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
 use super::{ColonyTab, HudAction};
@@ -48,7 +48,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
 
 /// The pip under a beaver token: green working, amber free, blue resting or too young.
 fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
-    if b.stage == sim::colony::Stage::Kit || b.resting {
+    if !b.can_work() || b.resting {
         REST
     } else if s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) {
         GOOD
@@ -182,7 +182,7 @@ fn stores(c: &Ctx, u: &mut Ui) {
         u.row(10.0, |r| {
             r.icon(good_icon(g), 20.0, good_color(g));
             r.notches(if cap > 0.0 { have / cap } else { 0.0 }, 10, 150.0, 12.0, ACCENT);
-            r.bold(if g == Good::Food { days(food_left(s).min(999.0)) } else { format!("{}", have.round() as i64) }, 14.0, INK);
+            r.bold(format!("{}", have.round() as i64), 14.0, INK);
             r.spacer();
             let hist: Vec<f32> = s.ledger.days.iter().rev().take(60).rev().map(|d| d.stock[g.index()]).collect();
             let top = hist.iter().copied().fold(1.0f32, f32::max);

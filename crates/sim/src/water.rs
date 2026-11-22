@@ -14,7 +14,7 @@ mod climate;
 mod routed;
 mod subgrid;
 mod automaton;
-mod equilibrium;
+pub(crate) mod equilibrium;
 
 /// Which water engine moves the water. Chosen once per world with `BC_WATER_ENGINE`
 /// (routed, subgrid, automaton, equilibrium); the player's Settings choice otherwise, equilibrium by default.
@@ -187,6 +187,10 @@ pub struct DamPreview {
     pub reaches_map_edge: bool,
     pub crest: f32,
     pub spill_at: Option<Cell>,
+    /// The level with `head` of flowing water on top, and the cells it covers: the still pond
+    /// plus the shallow fringe the extra depth reaches on its side of the dam.
+    pub flow_level: f32,
+    pub flow_cells: Vec<Cell>,
 }
 
 /// Where the water engine spends its time, accumulated since the last `reset_timings`.
@@ -906,7 +910,9 @@ pub fn corner(bed: &[f32], dammed: impl Fn(usize) -> bool, n: usize, i: usize, j
     if i % n == j % n || i / n == j / n || !(dammed(a) || dammed(b)) { f32::NEG_INFINITY } else { bed[a].min(bed[b]) }
 }
 
-pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) -> Result<DamPreview, WaterError> {
+/// The still pond these dam heights would hold, and (with `head` > 0) how far the extra depth
+/// of water flowing over its spill would spread.
+pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32], head: f32) -> Result<DamPreview, WaterError> {
     let water = &state.water;
     let idx = water.check_cells(cells)?;
     if heights.len() != cells.len() {
@@ -973,7 +979,32 @@ pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) ->
             }
         }
     }
+    let flow_level = level + head.max(0.0);
+    let mut flow = flooded.clone();
+    if head > 0.0 {
+        // The water reaching the dam stands `head` deep even where no still pond forms (it
+        // runs straight round an end): start from the cells draining into the dam too.
+        for &m in &seeds {
+            if !seen[m] && bed[m] < flow_level {
+                seen[m] = true;
+                flow.push(m);
+            }
+        }
+        // Only up into the shallow fringe: cells below the still level that the still pond
+        // did not reach lie past a saddle, where the water runs away instead.
+        let mut stack = flow.clone();
+        while let Some(i) = stack.pop() {
+            for m in neighbours8(n, i) {
+                if !seen[m] && !is_new[m] && bed[m] >= level && pass(i, m) < flow_level {
+                    seen[m] = true;
+                    flow.push(m);
+                    stack.push(m);
+                }
+            }
+        }
+    }
     flooded.sort_unstable();
+    flow.sort_unstable();
     let veg = state.ecology.vegetation.as_slice();
     let occ = water.structures.as_slice();
     Ok(DamPreview {
@@ -986,6 +1017,8 @@ pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32]) ->
         flooded_cells: flooded.iter().map(|&i| (i % n, i / n)).collect(),
         crest,
         spill_at,
+        flow_level,
+        flow_cells: flow.iter().map(|&i| (i % n, i / n)).collect(),
     })
 }
 

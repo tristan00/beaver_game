@@ -21,6 +21,8 @@ pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) 
 #[derive(Component, Default)]
 pub struct Motion {
     samples: std::collections::VecDeque<(f64, Vec2, f32)>,
+    /// The next few cells of the beaver's planned path, after the latest sample.
+    ahead: Vec<Vec2>,
     instance: u64,
     observed_time: Option<f64>,
 }
@@ -68,8 +70,7 @@ impl Motion {
             // interpolates between the known endpoints instead of inventing or
             // replaying intermediate trips.
             if sim.time_days - previous <= sim::STEP_DAYS as f64 + 1e-8 {
-                let pace = sim::agents::MOVE_COST_PER_DAY
-                    * if ag.load.is_some() { sim::agents::LADEN_PACE } else { 1.0 };
+                let pace = sim::agents::MOVE_COST_PER_DAY * sim::agents::pace(&sim.nav, ag);
                 let mut t = previous;
                 for &(cell, gait) in &ag.trail {
                     let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset.xz();
@@ -83,19 +84,87 @@ impl Motion {
         }
         self.record(sim.time_days, p.xz(), p.y - ground(p.xz()));
         self.observed_time = Some(sim.time_days);
+        self.ahead = ag.path.as_ref().map_or(Vec::new(), |path| {
+            path.steps.iter().take(4).map(|&(c, _)| cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + offset.xz()).collect()
+        });
     }
 
+    /// Where the record puts the beaver at `t` (straight lines between cell centres), its
+    /// height, and whether it is moving.
+    fn raw_at(&self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
+        let first = *self.samples.front()?;
+        let Some(k) = self.samples.iter().position(|s| s.0 > t) else {
+            let last = *self.samples.back()?;
+            return Some((last.1, last.2, None));
+        };
+        if k == 0 {
+            return Some((first.1, first.2, None));
+        }
+        let (a, b) = (self.samples[k - 1], self.samples[k]);
+        let u = (((t - a.0) / (b.0 - a.0).max(1e-9)) as f32).clamp(0.0, 1.0);
+        let chord = b.1 - a.1;
+        Some((a.1.lerp(b.1, u), a.2 + (b.2 - a.2) * u, (chord.length() > 1e-3).then_some(chord)))
+    }
+
+    /// Where the beaver is drawn at `t`. Paths run cell to cell in four directions, so a
+    /// diagonal route is a staircase; the drawn beaver takes the average of the route over a
+    /// cell either side of where it is (by distance travelled, using the planned path ahead),
+    /// which straightens staircases and rounds corners. The window narrows to nothing at the
+    /// route's ends, so a beaver still stops exactly where it works.
     fn at(&mut self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
-        while self.samples.len() > 2 && self.samples[1].0 <= t {
+        // Keep a few cells of history behind for the window.
+        while self.samples.len() > 8 && self.samples[6].0 <= t {
             self.samples.pop_front();
         }
-        let a = *self.samples.front()?;
-        let Some(&b) = self.samples.get(1) else { return Some((a.1, a.2, None)) };
-        let k = (((t - a.0) / (b.0 - a.0).max(1e-9)) as f32).clamp(0.0, 1.0);
-        let d = b.1 - a.1;
-        Some((a.1.lerp(b.1, k), a.2 + (b.2 - a.2) * k, (t < b.0 && d.length() > 1e-3).then_some(d)))
+        let (raw, lift, moving) = self.raw_at(t)?;
+        // Caught up with the latest step but still under way: keep to the smoothed route.
+        let last = *self.samples.back()?;
+        let moving = moving.or_else(|| {
+            let next = self.ahead.first().copied()?;
+            (t >= last.0 && next.distance(last.1) > 1e-3).then_some(next - last.1)
+        });
+        let Some(heading) = moving else { return Some((raw, lift, None)) };
+        // The route as a polyline: recorded points, then the plan ahead.
+        let pts: Vec<Vec2> = self.samples.iter().map(|s| s.1).chain(self.ahead.iter().copied()).collect();
+        let mut cum = Vec::with_capacity(pts.len());
+        let mut d = 0.0;
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 {
+                d += p.distance(pts[i - 1]);
+            }
+            cum.push(d);
+        }
+        // Distance travelled at `t`: along the recorded segment it is on.
+        let k = self.samples.iter().position(|s| s.0 > t).unwrap_or(self.samples.len() - 1).max(1);
+        let s_t = cum[k - 1] + pts[k - 1].distance(raw);
+        let end = *cum.last()?;
+        let h = SMOOTH_CELLS.min(s_t).min(end - s_t).max(0.0);
+        if h < 1e-3 {
+            return Some((raw, lift, Some(heading)));
+        }
+        let point_at = |s: f32| {
+            let i = cum.partition_point(|&c| c < s).clamp(1, pts.len() - 1);
+            let seg = (cum[i] - cum[i - 1]).max(1e-6);
+            pts[i - 1].lerp(pts[i], ((s - cum[i - 1]) / seg).clamp(0.0, 1.0))
+        };
+        // The mean of the polyline over [s_t - h, s_t + h]: each piece contributes its length
+        // times its midpoint.
+        let (lo, hi) = (s_t - h, s_t + h);
+        let mut sum = Vec2::ZERO;
+        for i in 1..pts.len() {
+            let (a, b) = (cum[i - 1].max(lo), cum[i].min(hi));
+            if b > a {
+                sum += (point_at(a) + point_at(b)) * 0.5 * (b - a);
+            }
+        }
+        let pos = sum / (hi - lo);
+        let dir = point_at(hi) - point_at(lo);
+        Some((pos, lift, Some(if dir.length() > 1e-4 { dir } else { heading })))
     }
 }
+
+/// Half-width, in cells of travel, of the window a drawn beaver's route is averaged over.
+const SMOOTH_CELLS: f32 = 1.0;
 
 #[cfg(test)]
 mod motion_tests {
@@ -110,6 +179,54 @@ mod motion_tests {
         assert_eq!(point, Vec2::new(5.0, 0.0));
         assert_eq!(height, 1.0);
         assert!(direction.is_some());
+    }
+
+    #[test]
+    fn a_staircase_is_drawn_as_a_straight_diagonal() {
+        let mut motion = Motion::default();
+        for i in 0..9 {
+            let p = Vec2::new(((i + 1) / 2) as f32, (i / 2) as f32);
+            motion.record(i as f64, p, 0.0);
+        }
+        for k in 0..12 {
+            let t = 2.0 + k as f64 * 0.35;
+            let (p, _, dir) = motion.at(t).unwrap();
+            // On the diagonal (x - y = 0.5 between the steps), heading diagonally.
+            assert!((p.x - p.y - 0.5).abs() < 0.02, "t {t}: {p}");
+            let d = dir.unwrap().normalize();
+            assert!((d.x - d.y).abs() < 0.05, "t {t}: {d}");
+        }
+    }
+
+    #[test]
+    fn corners_are_cut_and_the_route_ends_exactly_where_it_stops() {
+        let mut motion = Motion::default();
+        motion.record(0.0, Vec2::ZERO, 0.0);
+        motion.record(1.0, Vec2::new(1.0, 0.0), 0.0);
+        motion.record(2.0, Vec2::new(1.0, 1.0), 0.0);
+        let (corner, _, dir) = motion.at(1.0).unwrap();
+        assert!(corner.x < 1.0 - 0.1 && corner.y > 0.1, "{corner}");
+        let d = dir.unwrap().normalize();
+        assert!(d.x > 0.3 && d.y > 0.3, "{d}");
+        let (end, _, _) = motion.at(1.999).unwrap();
+        assert!(end.distance(Vec2::new(1.0, 1.0)) < 0.01, "{end}");
+        let (end, _, dir) = motion.at(2.5).unwrap();
+        assert_eq!(end, Vec2::new(1.0, 1.0));
+        assert!(dir.is_none());
+    }
+
+    #[test]
+    fn a_pause_stays_still() {
+        let mut motion = Motion::default();
+        motion.record(0.0, Vec2::ZERO, 0.0);
+        motion.record(1.0, Vec2::new(1.0, 0.0), 0.0);
+        motion.record(2.0, Vec2::new(1.0, 0.0), 0.0);
+        motion.record(3.0, Vec2::new(2.0, 0.0), 0.0);
+        let (p, _, dir) = motion.at(1.5).unwrap();
+        assert_eq!(p, Vec2::new(1.0, 0.0));
+        assert!(dir.is_none());
+        let (p, _, _) = motion.at(2.5).unwrap();
+        assert!(p.y.abs() < 1e-5 && p.x > 1.0 && p.x < 2.0);
     }
 
     #[test]
@@ -132,7 +249,7 @@ mod motion_tests {
         assert_eq!(motion.samples.back().unwrap().0, sim.time_days);
         assert!(motion.samples.iter().zip(motion.samples.iter().skip(1)).all(|(a,b)|a.0 < b.0));
         let corner_time = sim::nav::SWIM_COST as f64 / sim::agents::MOVE_COST_PER_DAY as f64;
-        let corner = motion.at(corner_time).unwrap().0;
+        let corner = motion.raw_at(corner_time).unwrap().0;
         assert!(corner.distance(cell_xz(&sim, (3.5, 2.5))) < 1e-4);
     }
 }
@@ -183,6 +300,7 @@ pub(super) fn sync_sim_beavers(
         } else if let Some(y) = facing_of(&sim.0, ag) {
             sprite.yaw = y;
         }
+        tr.scale = Vec3::splat(beaver_scale(&sim.0, sprite.id));
         let want = if ag.inside { Visibility::Hidden } else { Visibility::Inherited };
         if *vis != want {
             *vis = want;
@@ -199,10 +317,16 @@ pub(super) fn sync_sim_beavers(
             SimBeaver,
             motion,
             BeaverSprite { id: id.0, pose: pose_of(&sim.0, ag), load: load_of(ag), yaw, wet: is_wet(&sim.0, ag) },
-            Transform::from_translation(agent_world_pos(&sim.0, ag, 0.0) + spread(id.0, clock.is_some())).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE)),
+            Transform::from_translation(agent_world_pos(&sim.0, ag, 0.0) + spread(id.0, clock.is_some())).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(beaver_scale(&sim.0, id.0))),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
         ));
     }
+}
+
+/// A beaver's drawn size: kits and yearlings are smaller than adults.
+fn beaver_scale(sim: &sim::SimState, id: u64) -> f32 {
+    let stage = sim.colony.beaver(sim::colony::BeaverId(id)).map_or(sim::colony::Stage::Adult, |b| sim::colony::Stage::of_age_days(b.age_days));
+    BEAVER_SIZE * super::age_scale(stage)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -222,7 +346,7 @@ pub enum ResourceKindTag {
 /// where the logs lie (+x of the felled mesh), and removed when it lands.
 fn spawn_topple(commands: &mut Commands, models: &Models, sim: &sim::SimState, r: &sim::resources::Resource, season: models::Season, now: f32) {
     let c = r.cell;
-    let sp = species_at(sim, c);
+    let sp = species_of(r);
     let scale = stage_scale(sim::forestry::TreeStage::Mature) * TREE_SCALE * (0.8 + 0.4 * hash01(c.0, c.1, 5));
     let tr = res_transform(sim, r, scale);
     let variant = ((hash01(c.0, c.1, 17) * 4.0) as usize).min(3);
@@ -248,13 +372,12 @@ fn hash01(x: usize, y: usize, salt: u32) -> f32 {
     (h & 0xffff) as f32 / 65535.0
 }
 
-fn species_at(sim: &sim::SimState, c: (usize, usize)) -> Species {
-    match sim.world.forest.get(c.0, c.1).copied().flatten() {
+fn species_of(r: &sim::resources::Resource) -> Species {
+    match r.species {
         Some(Tree::Aspen | Tree::Birch) => Species::Aspen,
         Some(Tree::Willow) => Species::Willow,
-        Some(Tree::Alder) => Species::Maple,
-        Some(Tree::Pine) => Species::Pine,
-        None => Species::Maple,
+        Some(Tree::Pine | Tree::Spruce) => Species::Pine,
+        Some(Tree::Alder | Tree::Maple | Tree::Beech) | None => Species::Maple,
     }
 }
 
@@ -265,7 +388,7 @@ pub struct WorldSync {
     res: HashMap<ResourceId, (Entity, ResSig)>,
     bld: HashMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
     anchors: HashMap<BuildingId, f32>,
-    lodges: HashMap<u64, Entity>,
+    lodges: HashMap<u64, (Entity, f32)>,
 }
 
 pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
@@ -278,7 +401,7 @@ pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
     }
 }
 
-fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource, season: models::Season) -> (Handle<Mesh>, Vec3, Option<TreeLod>) {
+fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Season) -> (Handle<Mesh>, Vec3, Option<TreeLod>) {
     let sig = res_sig(r);
     let c = r.cell;
     let hash_scale = 0.8 + 0.4 * hash01(c.0, c.1, 5);
@@ -287,7 +410,7 @@ fn res_visual(models: &Models, sim: &sim::SimState, r: &sim::resources::Resource
     match sig {
         ResSig::Tree(_) if r.snag => (models.snag.clone(), Vec3::splat(tree * hash_scale), None),
         ResSig::Tree(_) => {
-            let sp = species_at(sim, c);
+            let sp = species_of(r);
             let st = r.stage().unwrap_or(sim::forestry::TreeStage::Mature);
             (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season, cutaway: false }))
         }
@@ -359,10 +482,11 @@ pub(super) fn sync_sim_resources(
                 if matches!(old, ResSig::Tree(_)) && matches!(sig, ResSig::Felled(..)) && !r.snag {
                     spawn_topple(&mut commands, &models, sim, r, season.0, clock.0);
                 }
-                let (mesh, scale, lod) = res_visual(&models, sim, r, season.0);
+                let (mesh, scale, lod) = res_visual(&models, r, season.0);
                 let mut ec = commands.entity(e);
                 let tr = res_transform(sim, r, scale);
-                ec.insert((Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), tr));
+                // A new model needs new bounds for picking and culling.
+                ec.insert((Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), tr)).remove::<bevy::camera::primitives::Aabb>();
                 match lod {
                     Some(l) => ec.insert((l, Sway(tr.rotation))),
                     None => ec.remove::<(TreeLod, Sway)>(),
@@ -370,11 +494,14 @@ pub(super) fn sync_sim_resources(
                 st.res.insert(r.id, (e, sig));
             }
             None => {
-                let (mesh, scale, lod) = res_visual(&models, sim, r, season.0);
+                let (mesh, scale, lod) = res_visual(&models, r, season.0);
                 let tr = res_transform(sim, r, scale);
                 let mut ec = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), tr));
                 if let Some(l) = lod {
                     ec.insert((l, Sway(tr.rotation)));
+                }
+                if matches!(r.kind, ResourceKind::Tree | ResourceKind::Felled) {
+                    ec.insert(Target::Resource(r.id));
                 }
                 let e = ec.id();
                 st.res.insert(r.id, (e, sig));
@@ -405,7 +532,7 @@ pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 
 #[derive(Default)]
 pub struct ReinforcementSync {
     generation: Option<(u64,u32)>,
-    drawn: HashMap<BuildingId,(Entity,u64)>,
+    drawn: HashMap<BuildingId,(Entity,f32)>,
     meshes: HashMap<BuildingKind,Handle<Mesh>>,
 }
 
@@ -420,13 +547,19 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
     let mut live=HashSet::new();
     for b in s.buildings.buildings.iter().filter(|b|b.reinforced) {
         live.insert(b.id);
-        let signature=0u64;
-        if state.drawn.get(&b.id).is_some_and(|v|v.1==signature){continue;}
-        if let Some((e,_))=state.drawn.remove(&b.id){commands.entity(e).despawn();}
+        // Rises with the building when the pond does, never down.
+        let was=state.drawn.get(&b.id).map(|v|v.1);
+        let tr=building_transform(s,b,was);
+        if let Some(&(e,y))=state.drawn.get(&b.id) {
+            if tr.translation.y>y+0.01 {
+                commands.entity(e).insert(tr);
+                state.drawn.insert(b.id,(e,tr.translation.y));
+            }
+            continue;
+        }
         let handle=state.meshes.entry(b.kind).or_insert_with(||meshes.add(models::reinforcement_mesh(model_kind(b.kind)))).clone();
-        let (mesh,tr)=(handle,building_transform(s,b,None));
-        let entity=commands.spawn((Target::Building(b.id),SimEntity,Mesh3d(mesh),MeshMaterial3d(models.white.clone()),tr)).id();
-        state.drawn.insert(b.id,(entity,signature));
+        let entity=commands.spawn((Target::Building(b.id),SimEntity,Mesh3d(handle),MeshMaterial3d(models.white.clone()),tr)).id();
+        state.drawn.insert(b.id,(entity,tr.translation.y));
     }
     let gone:Vec<_>=state.drawn.keys().copied().filter(|id|!live.contains(id)).collect();
     for id in gone {if let Some((e,_))=state.drawn.remove(&id){commands.entity(e).despawn();}}
@@ -455,6 +588,30 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE))
 }
 
+#[cfg(test)]
+mod building_height_tests {
+    use super::*;
+
+    #[test]
+    fn a_rising_pond_lifts_a_building_and_a_falling_one_leaves_it() {
+        let mut s = sim::SimState::new(1);
+        let b = sim::buildings::Building { id: BuildingId(1), kind: BuildingKind::Warehouse, pos: (10, 10), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+        let set_depth = |s: &mut sim::SimState, d: f32| {
+            for c in b.cells().collect::<Vec<_>>() {
+                *s.water.depth.get_mut(c.0, c.1).unwrap() = d;
+            }
+        };
+        set_depth(&mut s, 0.3);
+        let low = building_transform(&s, &b, None).translation.y;
+        set_depth(&mut s, 1.5);
+        let high = building_transform(&s, &b, Some(low)).translation.y;
+        assert!(high > low + 1.0, "{low} -> {high}");
+        set_depth(&mut s, 0.3);
+        let after = building_transform(&s, &b, Some(high)).translation.y;
+        assert_eq!(after, high);
+    }
+}
+
 pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
     let Some(mut models) = models else { return };
     let changed = sim.is_changed();
@@ -464,7 +621,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         for (e, _) in st.bld.drain().map(|(_, v)| v) {
             commands.entity(e).despawn();
         }
-        for (_, e) in st.lodges.drain() {
+        for (_, (e, _)) in st.lodges.drain() {
             commands.entity(e).despawn();
         }
         st.anchors.clear();
@@ -492,7 +649,14 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         live.insert(b.id);
         let stage = if sim.buildings.stranded(b, &sim.water.depth) { models::DRY_STAGE } else { models::stage_of(build_progress(sim, b)) };
         let sig = (b.kind, b.pos, stage);
-        if st.bld.get(&b.id).is_some_and(|(_, s)| *s == sig) {
+        if let Some(&(e, _)) = st.bld.get(&b.id).filter(|(_, s)| *s == sig) {
+            // A pond rising after the building went up lifts it with the water (never down).
+            let anchor = st.anchors.get(&b.id).copied().unwrap_or(f32::MIN);
+            let tr = building_transform(sim, b, Some(anchor));
+            if tr.translation.y > anchor + 0.01 {
+                commands.entity(e).insert(tr);
+                st.anchors.insert(b.id, tr.translation.y);
+            }
             continue;
         }
         if let Some((old, _)) = st.bld.remove(&b.id) {
@@ -513,34 +677,167 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
     let homes: HashSet<u64> = sim.colony.lodges.iter().map(|l| l.id.0).collect();
     let stale: Vec<u64> = st.lodges.keys().copied().filter(|id| !homes.contains(id)).collect();
     for id in stale {
-        if let Some(e) = st.lodges.remove(&id) {
+        if let Some((e, _)) = st.lodges.remove(&id) {
             commands.entity(e).despawn();
         }
     }
     let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Shelter).map(|b| b.pos).collect();
     for l in &sim.colony.lodges {
-        if st.lodges.contains_key(&l.id.0) || lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
+        if lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
             continue;
         }
         let c = cell_xz(sim, l.pos);
-        let y = (0..9).map(|i| height_at(&sim.height, c.x + (i % 3) as f32 - 1.0, c.y + (i / 3) as f32 - 1.0)).fold(f32::MAX, f32::min);
-        let target = Target::home(sim, l.id);
-        let e = spawn(&mut commands, &mut models, target, StructKind::Lodge, 6, 3, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
-        st.lodges.insert(l.id.0, e);
+        let ground = (0..9).map(|i| height_at(&sim.height, c.x + (i % 3) as f32 - 1.0, c.y + (i / 3) as f32 - 1.0)).fold(f32::MAX, f32::min);
+        // Kept above the pond around it, as that rises.
+        let (lx, ly) = (l.pos.0.floor() as i64, l.pos.1.floor() as i64);
+        let surface = (0..9)
+            .filter_map(|i| {
+                let (x, y) = (lx + i % 3 - 1, ly + i / 3 - 1);
+                if x < 0 || y < 0 { return None; }
+                let (x, y) = (x as usize, y as usize);
+                Some(sim.height.get(x, y)? + sim.water.depth.get(x, y).copied().filter(|d| *d > 0.02)?)
+            })
+            .fold(f32::MIN, f32::max);
+        let y = ground.max(surface + 0.08);
+        match st.lodges.get(&l.id.0).copied() {
+            Some((e, was)) => {
+                if y > was + 0.01 {
+                    commands.entity(e).insert(Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
+                    st.lodges.insert(l.id.0, (e, y));
+                }
+            }
+            None => {
+                let target = Target::home(sim, l.id);
+                let e = spawn(&mut commands, &mut models, target, StructKind::Lodge, 6, models::STAGES, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
+                st.lodges.insert(l.id.0, (e, y));
+            }
+        }
     }
+}
+
+/// One cell's stretch of a continuous dam wall: its centre (grid coordinates, hundredths),
+/// direction (hundredths of a radian) and length (tenths of a cell), all rounded so a wall
+/// that has not moved compares equal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct Piece {
+    pub cx: i32,
+    pub cz: i32,
+    pub yaw: i32,
+    pub len: u32,
+}
+
+impl Piece {
+    fn new(centre: Vec2, along: Vec2) -> Piece {
+        let l = along.length().max(0.2);
+        // The mesh runs along its x axis: turned by yaw about y, x goes to (cos yaw, -sin yaw).
+        let yaw = (-along.y).atan2(along.x);
+        Piece { cx: (centre.x * 100.0).round() as i32, cz: (centre.y * 100.0).round() as i32, yaw: (yaw * 100.0).round() as i32, len: ((l + 0.25) * 10.0).round() as u32 }
+    }
+    pub fn centre(&self) -> (f32, f32) { (self.cx as f32 / 100.0, self.cz as f32 / 100.0) }
+    pub fn yaw(&self) -> f32 { self.yaw as f32 / 100.0 }
+    /// Which way the mesh's mud face (+z) points, in grid coordinates.
+    fn face(&self) -> Vec2 { Vec2::new(self.yaw().sin(), self.yaw().cos()) }
+}
+
+/// A line of points averaged over a stretch either side (by distance along it), narrowing to
+/// nothing at its ends: a staircase of cells comes out as the straight line it stands for,
+/// and corners round off, while the ends stay put.
+pub fn smooth_line(pts: &[Vec2], half: f32) -> Vec<Vec2> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut cum = vec![0.0f32; pts.len()];
+    for i in 1..pts.len() {
+        cum[i] = cum[i - 1] + pts[i].distance(pts[i - 1]);
+    }
+    let end = cum[pts.len() - 1];
+    let at = |s: f32| {
+        let i = cum.partition_point(|&c| c < s).clamp(1, pts.len() - 1);
+        let seg = (cum[i] - cum[i - 1]).max(1e-6);
+        pts[i - 1].lerp(pts[i], ((s - cum[i - 1]) / seg).clamp(0.0, 1.0))
+    };
+    (0..pts.len())
+        .map(|k| {
+            let s = cum[k];
+            let h = half.min(s).min(end - s);
+            if h < 1e-3 {
+                return pts[k];
+            }
+            let (lo, hi) = (s - h, s + h);
+            let mut sum = Vec2::ZERO;
+            for i in 1..pts.len() {
+                let (a, b) = (cum[i - 1].max(lo), cum[i].min(hi));
+                if b > a {
+                    sum += (at(a) + at(b)) * 0.5 * (b - a);
+                }
+            }
+            sum / (hi - lo)
+        })
+        .collect()
+}
+
+/// The wall pieces for a set of dam cells (any order): each run of touching cells is walked
+/// end to end and smoothed, and every cell owns the stretch of the smoothed line between the
+/// midpoints to its neighbours, so the pieces join into one wall at any angle.
+pub fn wall_pieces(cells: &[(usize, usize)]) -> HashMap<(usize, usize), Piece> {
+    let mut out = HashMap::new();
+    let order = sim::dams::chain(cells);
+    let touch = |a: (usize, usize), b: (usize, usize)| a.0.abs_diff(b.0) <= 1 && a.1.abs_diff(b.1) <= 1;
+    let mut runs: Vec<Vec<(usize, usize)>> = Vec::new();
+    for &i in &order {
+        match runs.last_mut() {
+            Some(r) if touch(*r.last().unwrap(), cells[i]) => r.push(cells[i]),
+            _ => runs.push(vec![cells[i]]),
+        }
+    }
+    for run in runs {
+        let raw: Vec<Vec2> = run.iter().map(|c| Vec2::new(c.0 as f32 + 0.5, c.1 as f32 + 0.5)).collect();
+        if run.len() == 1 {
+            out.insert(run[0], Piece::new(raw[0], Vec2::X));
+            continue;
+        }
+        let p = smooth_line(&raw, 1.5);
+        let n = p.len();
+        for k in 0..n {
+            let a = if k > 0 { (p[k - 1] + p[k]) * 0.5 } else { p[0] - (p[1] - p[0]).normalize_or_zero() * 0.5 };
+            let b = if k + 1 < n { (p[k] + p[k + 1]) * 0.5 } else { p[n - 1] + (p[n - 1] - p[n - 2]).normalize_or_zero() * 0.5 };
+            out.insert(run[k], Piece::new((a + b) * 0.5, b - a));
+        }
+    }
+    out
+}
+
+/// Whether a piece's mud face (+z) should turn round: toward the dam's downstream side, or
+/// (for cells no dam owns) toward the lower water.
+fn faces_downstream(sim: &sim::SimState, c: (usize, usize), piece: &Piece, downstream: Option<(i32, i32)>) -> bool {
+    let f = piece.face();
+    if let Some(d) = downstream {
+        return f.dot(Vec2::new(d.0 as f32, d.1 as f32)) > 0.0;
+    }
+    let surface = |side: f32| {
+        (1..=2).filter_map(|k| {
+            let (x, y) = ((c.0 as f32 + 0.5 + f.x * side * k as f32).floor(), (c.1 as f32 + 0.5 + f.y * side * k as f32).floor());
+            if x < 0.0 || y < 0.0 { return None; }
+            let (x, y) = (x as usize, y as usize);
+            Some(sim.height.get(x, y)? + sim.water.depth.get(x, y).copied().unwrap_or(0.0))
+        }).fold(f32::MIN, f32::max)
+    };
+    surface(-1.0) > surface(1.0) + 0.01
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DamCellVis {
     pub steps: u8,
-    pub dir: u8,
     pub stage: DamStage,
+    pub piece: Piece,
+    /// Turned half round, so the mud-faced side meets the higher water.
+    pub flip: bool,
 }
 
-/// Every dam cell as it should look: staked, rising beside its pile, or done.
-/// A worn cell is drawn as low as the water now finds it.
+/// Every dam cell as it should look: staked, rising beside its pile, or done, as its stretch
+/// of a continuous wall. A worn cell is drawn as low as the water now finds it.
 pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
-    let (w, h) = (sim.water.dam_height.width(), sim.water.dam_height.height());
+    let w = sim.water.dam_height.width();
     let mut cells: HashMap<(usize, usize), (f32, DamStage)> = HashMap::new();
     let integrity = |c: (usize, usize)| sim.water.dam_integrity.get(c.0, c.1).copied().unwrap_or(1.0).clamp(0.0, 1.0);
     for (i, &d) in sim.water.dam_height.as_slice().iter().enumerate() {
@@ -559,15 +856,26 @@ pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
             }
         }
     }
-    let is_dam = |c: (usize, usize), dx: i32, dy: i32| {
-        let (x, y) = (c.0 as i64 + dx as i64, c.1 as i64 + dy as i64);
-        x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && cells.contains_key(&(x as usize, y as usize))
-    };
+    // Each dam's rows are walls of their own; cells no dam owns (gates, leftovers) form theirs.
+    let mut pieces: HashMap<(usize, usize), (Piece, Option<(i32, i32)>)> = HashMap::new();
+    for d in sim.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
+        for row in 0..d.rows.max(1) {
+            let line: Vec<(usize, usize)> = d.cells.iter().filter(|c| c.row == row && cells.contains_key(&c.cell)).map(|c| c.cell).collect();
+            for (c, p) in wall_pieces(&line) {
+                pieces.insert(c, (p, Some(d.downstream)));
+            }
+        }
+    }
+    let loose: Vec<(usize, usize)> = cells.keys().copied().filter(|c| !pieces.contains_key(c)).collect();
+    for (c, p) in wall_pieces(&loose) {
+        pieces.insert(c, (p, None));
+    }
     cells
         .iter()
-        .map(|(&c, &(d, stage))| {
+        .filter_map(|(&c, &(d, stage))| {
+            let (piece, down) = *pieces.get(&c)?;
             let steps = (d / DAM_STEP).round().clamp(1.0, 16.0) as u8;
-            (c, DamCellVis { steps, dir: super::structures::dam_dir(|dx, dy| is_dam(c, dx, dy)), stage })
+            Some((c, DamCellVis { steps, stage, piece, flip: faces_downstream(sim, c, &piece, down) }))
         })
         .collect()
 }
@@ -577,6 +885,14 @@ pub struct DamSync {
     seed: Option<(u64, u32)>,
     time: f64,
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
+}
+
+/// Where a piece of wall stands in the world, turned to its line (and round, if flipped).
+fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn(f32) -> f32) -> Transform {
+    let p = cell_xz(sim, piece.centre());
+    let y = lift(height_at(&sim.height, p.x, p.y));
+    let yaw = piece.yaw() + if flip { std::f32::consts::PI } else { 0.0 };
+    Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw))
 }
 
 pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
@@ -608,28 +924,26 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
             continue;
         }
         let variant = (hash01(c.0, c.1, 21) * 3.0) as u32 % 3;
-        let diag = vis.dir % 2 == 1;
+        let len = vis.piece.len;
         let mesh = models
             .dams
-            .entry((vis.steps, diag, variant, vis.stage))
-            .or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(vis.steps, diag, variant, vis.stage)))
+            .entry((vis.steps, len, variant, vis.stage))
+            .or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(vis.steps, len as f32 / 10.0, variant, vis.stage)))
             .clone();
-        let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
-        let y = height_at(&sim.height, p.x, p.y);
-        let yaw = -(vis.dir as f32) * std::f32::consts::FRAC_PI_4;
-        let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw)))).id();
+        let tr = piece_transform(sim, &vis.piece, vis.flip, |g| g);
+        let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id();
         let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind == BuildingKind::Dam && b.cells().any(|cell| cell == c)).map(|b| b.id);
         if let Some(id) = owner { commands.entity(e).insert(Target::Building(id)); }
         st.cells.insert(c, (e, vis));
     }
 }
 
-/// While a dam is being drawn, each cell shows as a see-through wall at the
-/// height its first stage will reach; red when the line cannot be built.
+/// While a dam is being drawn, it shows as a see-through wall along the line at the height
+/// its first stage will reach; red when the line cannot be built.
 #[derive(Default)]
 pub struct GhostSync {
     mats: Option<(Handle<StandardMaterial>, Handle<StandardMaterial>)>,
-    cells: HashMap<(usize, usize), (Entity, (u8, u8, bool))>,
+    cells: HashMap<(usize, usize), (Entity, (u8, Piece, bool, bool))>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -644,17 +958,15 @@ pub(super) fn sync_dam_ghosts(
 ) {
     let Some(mut models) = models else { return };
     let sim = &sim.0;
-    let mut want: HashMap<(usize, usize), (u8, u8, bool)> = HashMap::new();
+    let mut want: HashMap<(usize, usize), (u8, Piece, bool, bool)> = HashMap::new();
     if let Some(plan) = hud.as_ref().filter(|h| h.tool == crate::hud::Tool::Dam).and_then(|h| h.plan.as_ref().filter(|p| p.line == h.line)) {
         let bad = plan.refusal.is_some();
-        let set: HashSet<(usize, usize)> = plan.targets.iter().map(|t| t.0).collect();
-        let near = |c: (usize, usize), dx: i32, dy: i32| {
-            let (x, y) = (c.0 as i64 + dx as i64, c.1 as i64 + dy as i64);
-            x >= 0 && y >= 0 && (set.contains(&(x as usize, y as usize)) || sim.water.dam_height.get(x as usize, y as usize).is_some_and(|h| *h > 0.0))
-        };
+        let line: Vec<(usize, usize)> = plan.targets.iter().map(|t| t.0).collect();
+        let pieces = wall_pieces(&line);
         for &(c, t) in &plan.targets {
+            let Some(&piece) = pieces.get(&c) else { continue };
             let steps = (t.max(DAM_STEP) / DAM_STEP).round().clamp(1.0, 16.0) as u8;
-            want.insert(c, (steps, super::structures::dam_dir(|dx, dy| near(c, dx, dy)), bad));
+            want.insert(c, (steps, piece, faces_downstream(sim, c, &piece, None), bad));
         }
     }
     let stale: Vec<(usize, usize)> = st.cells.iter().filter(|(c, (_, k))| want.get(*c) != Some(k)).map(|(c, _)| *c).collect();
@@ -673,21 +985,33 @@ pub(super) fn sync_dam_ghosts(
             (m(Color::srgba(1.0, 1.0, 1.0, 0.7)), m(Color::srgba(1.0, 0.42, 0.36, 0.7)))
         })
         .clone();
-    for (&c, &(steps, dir, bad)) in &want {
+    for (&c, &(steps, piece, flip, bad)) in &want {
         if st.cells.contains_key(&c) {
             continue;
         }
-        let diag = dir % 2 == 1;
-        let mesh = models.dams.entry((steps, diag, 1, DamStage::Done)).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(steps, diag, 1, DamStage::Done))).clone();
-        let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
+        let len = piece.len;
+        let mesh = models.dams.entry((steps, len, 1, DamStage::Done)).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(steps, len as f32 / 10.0, 1, DamStage::Done))).clone();
         // A ghost in a deep pond would hide under the water: keep its top showing.
-        let ground = height_at(&sim.height, p.x, p.y);
-        let surface = ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-        let y = ground.max(surface + 0.15 - steps as f32 * DAM_STEP);
-        let yaw = -(dir as f32) * std::f32::consts::FRAC_PI_4;
-        let e = commands
-            .spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(if bad { no.clone() } else { ok.clone() }), Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw))))
-            .id();
-        st.cells.insert(c, (e, (steps, dir, bad)));
+        let surface = sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+        let tr = piece_transform(sim, &piece, flip, |ground| ground.max(surface + 0.15 - steps as f32 * DAM_STEP));
+        let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(if bad { no.clone() } else { ok.clone() }), tr)).id();
+        st.cells.insert(c, (e, (steps, piece, flip, bad)));
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    #[test]
+    fn a_shallow_staircase_of_cells_is_drawn_as_one_straight_wall() {
+        // 18 cells along, 6 down: runs of three with a step between them.
+        let cells: Vec<(usize, usize)> = (0..19).map(|x| (10 + x, 20 + x / 3)).collect();
+        let pieces = wall_pieces(&cells);
+        let yaws: Vec<f32> = cells[3..16].iter().map(|c| pieces[c].yaw()).collect();
+        let want = (-1.0f32 / 3.0).atan();
+        for y in &yaws {
+            assert!((y - want).abs() < 0.12, "piece turned {y}, line runs at {want}");
+        }
     }
 }

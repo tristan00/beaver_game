@@ -9,6 +9,7 @@ use crate::calendar::Season;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
 use crate::resources::{Resource, ResourceId, ResourceKind};
+use crate::trees::Tree;
 use crate::water::Cell;
 use crate::work::Area;
 use crate::SimState;
@@ -38,14 +39,17 @@ impl TreeStage {
         }
     }
 
-    pub fn fell_yield(self) -> Option<(f32, f32, f32)> {
-        match self {
-            TreeStage::Sapling => None,
-            TreeStage::Young => Some((YOUNG_LOGS, YOUNG_BRANCHES, YOUNG_BARK)),
-            TreeStage::Mature => Some((crate::resources::TREE_LOGS, crate::resources::TREE_BRANCHES, crate::resources::TREE_BARK)),
-            TreeStage::Old => Some((OLD_LOGS, OLD_BRANCHES, OLD_BARK)),
-            TreeStage::Snag => Some((0.0, SNAG_BRANCHES, 0.0)),
-        }
+    /// Logs, branches and bark (food) from felling a tree of this stage and species.
+    pub fn fell_yield(self, species: Tree) -> Option<(f32, f32, f32)> {
+        let (logs, branches, bark) = match self {
+            TreeStage::Sapling => return None,
+            TreeStage::Young => (YOUNG_LOGS, YOUNG_BRANCHES, YOUNG_BARK),
+            TreeStage::Mature => (crate::resources::TREE_LOGS, crate::resources::TREE_BRANCHES, crate::resources::TREE_BARK),
+            TreeStage::Old => (OLD_LOGS, OLD_BRANCHES, OLD_BARK),
+            TreeStage::Snag => (0.0, SNAG_BRANCHES, 0.0),
+        };
+        let sp = species.spec();
+        Some((logs * sp.logs, branches * sp.branches, bark * sp.bark))
     }
 
     pub fn is_grown(self) -> bool {
@@ -93,7 +97,7 @@ pub struct Forestry {
     had_tree: Vec<bool>,
     growth: Vec<f32>,
     flood_plan: BTreeSet<Cell>,
-    stumps: Vec<Cell>,
+    stumps: Vec<(Cell, Tree)>,
     thin_age: BTreeMap<BuildingId, f32>,
     unreachable: BTreeMap<Cell, f64>,
     day: Option<i64>,
@@ -147,6 +151,56 @@ pub fn start_age(seed: u64, cell: Cell) -> f32 {
     } else {
         MATURE_AGE + v * (START_MATURE_MAX_YEARS * crate::calendar::YEAR_DAYS as f32 - MATURE_AGE)
     }
+}
+
+/// Days in floodwater deeper than the species stands before a tree of this stage drowns.
+pub fn drown_days(stage: TreeStage, species: Tree) -> f32 {
+    let base = match stage {
+        TreeStage::Sapling => SAPLING_FLOOD_DAYS,
+        TreeStage::Young => crate::tuning::ecology::DROWN_FLOOD_DAYS,
+        TreeStage::Mature | TreeStage::Old | TreeStage::Snag => MATURE_DROWN_DAYS,
+    };
+    base * species.spec().flood
+}
+
+/// How far a standing tree is towards drowning, 0 to 1, while the water over it is too deep.
+pub fn drowning(sim: &SimState, r: &Resource) -> Option<f32> {
+    let sp = r.species?;
+    let stage = r.stage().filter(|s| *s != TreeStage::Snag)?;
+    let dp = sim.water.depth.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0);
+    if dp <= sp.spec().max_depth {
+        return None;
+    }
+    let fd = sim.ecology.flood_days.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0);
+    Some((fd / drown_days(stage, sp)).clamp(0.0, 1.0))
+}
+
+/// The ground's growth multiplier at a cell: faster near water, slower on dry ground.
+pub fn ground_growth(sim: &SimState, cell: Cell) -> f32 {
+    let n = sim.forestry.size;
+    if cell.0 < n && cell.1 < n { sim.forestry.growth.get(cell.1 * n + cell.0).copied().unwrap_or(1.0) } else { 1.0 }
+}
+
+/// Days of growing season until a tree reaches its next stage, at today's growth rate.
+pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f32)> {
+    let sp = r.species?;
+    let (next, at) = match r.stage()? {
+        TreeStage::Sapling => (TreeStage::Young, YOUNG_AGE),
+        TreeStage::Young => (TreeStage::Mature, MATURE_AGE),
+        TreeStage::Mature => (TreeStage::Old, OLD_AGE),
+        TreeStage::Old | TreeStage::Snag => return None,
+    };
+    let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
+    let rate = ground_growth(sim, r.cell) * tend * sp.spec().growth;
+    Some((next, (at - r.age_days).max(0.0) / rate.max(1e-3)))
+}
+
+/// Trees the world generator placed where the river already runs too deep for them.
+pub fn clear_drowned(sim: &mut SimState) {
+    let depth = &sim.water.depth;
+    sim.resources.items.retain(|r| {
+        r.kind != ResourceKind::Tree || r.species.is_none_or(|sp| depth.get(r.cell.0, r.cell.1).is_none_or(|d| *d <= sp.spec().max_depth))
+    });
 }
 
 pub fn fellable(r: &Resource) -> bool {
@@ -244,42 +298,39 @@ fn daily(sim: &mut SimState, day: i64) {
     let built = building_cells(sim);
     let mut occupied = occupied;
     let mut gone: HashSet<ResourceId> = HashSet::new();
-    let mut seeds: Vec<Cell> = Vec::new();
+    let mut seeds: Vec<(Cell, Tree)> = Vec::new();
     let flood_days = &sim.ecology.flood_days;
     let depth = &sim.water.depth;
     {
         let f = &mut sim.forestry;
         for r in sim.resources.items.iter_mut().filter(|r| r.kind == ResourceKind::Tree) {
             let (x, y) = r.cell;
+            let sp = r.species.unwrap_or(Tree::Aspen);
             let fd = flood_days.get(x, y).copied().unwrap_or(0.0);
             let dp = depth.get(x, y).copied().unwrap_or(0.0);
             if r.snag {
+                // A dead tree standing in water soon falls; on dry ground it stands for years.
                 r.age_days += 1.0;
-                if r.age_days >= SNAG_ROT_DAYS {
+                let rot = if dp > crate::tuning::ecology::FLOOD_DEPTH { SNAG_WATER_ROT_DAYS } else { SNAG_ROT_DAYS };
+                if r.age_days >= rot {
                     gone.insert(r.id);
                 }
                 continue;
             }
-            match TreeStage::of_age(r.age_days) {
-                TreeStage::Sapling if fd >= SAPLING_FLOOD_DAYS && dp > crate::tuning::ecology::FLOOD_DEPTH => {
+            let stage = TreeStage::of_age(r.age_days);
+            if dp > sp.spec().max_depth && fd >= drown_days(stage, sp) {
+                if matches!(stage, TreeStage::Sapling | TreeStage::Young) {
                     gone.insert(r.id);
-                    continue;
-                }
-                TreeStage::Young if fd >= crate::tuning::ecology::DROWN_FLOOD_DAYS && dp >= crate::tuning::ecology::DROWN_DEPTH => {
-                    gone.insert(r.id);
-                    continue;
-                }
-                TreeStage::Mature | TreeStage::Old if fd >= MATURE_DROWN_DAYS && dp >= crate::tuning::ecology::DROWN_DEPTH => {
+                } else {
                     r.snag = true;
                     r.age_days = 0.0;
-                    continue;
                 }
-                _ => {}
+                continue;
             }
             if !winter {
                 let ground = if x < n && y < n { f.growth[y * n + x] } else { 1.0 };
                 let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
-                r.age_days += ground * tend;
+                r.age_days += ground * tend * sp.spec().growth;
             }
             r.tended_days = (r.tended_days - 1.0).max(0.0);
             let stage = TreeStage::of_age(r.age_days);
@@ -293,17 +344,17 @@ fn daily(sim: &mut SimState, day: i64) {
                 let (dx, dy) = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)][k];
                 let (nx, ny) = (x as i64 + dx, y as i64 + dy);
                 if nx >= 0 && ny >= 0 && (nx as usize) < n && (ny as usize) < n {
-                    seeds.push((nx as usize, ny as usize));
+                    seeds.push(((nx as usize, ny as usize), sp));
                 }
             }
         }
     }
     sim.resources.items.retain(|r| !gone.contains(&r.id));
-    for c in seeds {
+    for (c, sp) in seeds {
         let free = !occupied.contains(&c) && !built.contains(&c) && sim.work.supplies != Some(c);
         let flooded = sim.ecology.flood_days.get(c.0, c.1).is_some_and(|d| *d > 0.0);
         if free && !flooded && can_hold_tree(sim, c) && is_dry(sim, c) && !sim.forestry.flood_plan.contains(&c) {
-            sim.resources.add_tree(c, 0.0);
+            sim.resources.add_tree(c, 0.0, sp);
             occupied.insert(c);
         }
     }
@@ -326,14 +377,14 @@ fn daily(sim: &mut SimState, day: i64) {
 
 fn regrow_stumps(sim: &mut SimState, built: &HashSet<Cell>) {
     let stumps = std::mem::take(&mut sim.forestry.stumps);
-    for c in stumps {
+    for (c, sp) in stumps {
         if built.contains(&c) {
             continue;
         }
         if sim.resources.at(c).next().is_some() {
-            sim.forestry.stumps.push(c);
+            sim.forestry.stumps.push((c, sp));
         } else {
-            sim.resources.add_tree(c, STUMP_AGE);
+            sim.resources.add_tree(c, STUMP_AGE, sp);
         }
     }
 }
@@ -478,12 +529,39 @@ fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>
     sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
 }
 
-pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell) {
+pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell, species: Tree) {
     let camp = sim.work.slot_of(who).map(|s| s.0);
     record(sim, cell, DeedKind::Felled, camp);
     if let Some(b) = camp {
         if sim.forestry.cut_rule(b) == CutRule::Coppice && can_coppice(sim) {
-            sim.forestry.stumps.push(cell);
+            sim.forestry.stumps.push((cell, species));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_water_drowns_intolerant_trees_and_dead_trees_in_water_fall() {
+        let mut s = SimState::new(1);
+        let n = s.world.size;
+        let dry: Vec<Cell> = (0..n * n).map(|i| (i % n, i / n)).filter(|&c| is_dry(&s, c) && s.resources.at(c).next().is_none()).take(2).collect();
+        let (wc, pc) = (dry[0], dry[1]);
+        let willow = s.resources.add_tree(wc, MATURE_AGE, Tree::Willow);
+        let pine = s.resources.add_tree(pc, MATURE_AGE, Tree::Pine);
+        for c in [wc, pc] {
+            *s.water.depth.get_mut(c.0, c.1).unwrap() = 0.4;
+            *s.ecology.flood_days.get_mut(c.0, c.1).unwrap() = 100.0;
+        }
+        daily(&mut s, 1);
+        assert!(!s.resources.get(willow).unwrap().snag, "willow stands in 0.4 m");
+        assert!(s.resources.get(pine).unwrap().snag, "pine drowns in 0.4 m");
+        for d in 2..2 + SNAG_WATER_ROT_DAYS as i64 {
+            *s.water.depth.get_mut(pc.0, pc.1).unwrap() = 0.4;
+            daily(&mut s, d);
+        }
+        assert!(s.resources.get(pine).is_none(), "a dead tree in water falls within days");
     }
 }
