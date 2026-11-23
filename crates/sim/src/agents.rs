@@ -797,7 +797,7 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
     let duty = duty_of(sim, ag, can_work && !tired);
     ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
-    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. }) {
+    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. } | Task::Eat { .. }) {
         ag.path = None;
         ag.task = Task::Rest;
     }
@@ -1727,6 +1727,39 @@ mod ground_tests {
         let left = s.work.piles.items.first().map_or(0.0, |p| p.amount);
         assert!(left < 3.0, "it ate from the pile ({left} left)");
         assert!(s.colony.beaver(who).unwrap().needs.food > 0.5, "and is fed");
+    }
+
+    #[test]
+    fn a_starving_beaver_eats_before_it_rests_even_what_it_just_put_down() {
+        let (mut s, who, at) = open_valley();
+        s.work.piles.drop_at((at.0 + 4, at.1), Good::Food, 3.0, 0.0);
+        {
+            let b = s.colony.beavers.iter_mut().find(|b| b.id == who).unwrap();
+            b.needs.food = 0.0;
+            b.needs.rest = 0.0;
+            b.resting = true;
+        }
+        for _ in 0..(1.0 / crate::STEP_DAYS) as u32 {
+            step(&mut s, crate::STEP_DAYS);
+        }
+        assert!(s.colony.beaver(who).unwrap().needs.food > 0.5, "tired as it is, it walked to the food and ate");
+
+        // A forager with no store puts its load down, and only then eats from it.
+        let (mut s, who, _) = open_valley();
+        {
+            let b = s.colony.beavers.iter_mut().find(|b| b.id == who).unwrap();
+            b.needs.food = 0.0;
+            b.needs.rest = 0.0;
+            b.resting = true;
+        }
+        let ag = s.agents.by_id.get_mut(&who).unwrap();
+        ag.load = Some(Load::new(Good::Food, 2.0, false));
+        ag.task = Task::Carry { dest: NO_STORE };
+        for _ in 0..(1.0 / crate::STEP_DAYS) as u32 {
+            step(&mut s, crate::STEP_DAYS);
+        }
+        assert!(s.agents.get(who).unwrap().load.is_none(), "the load went down on the ground");
+        assert!(s.colony.beaver(who).unwrap().needs.food > 0.5, "and it ate from it");
     }
 
     #[test]

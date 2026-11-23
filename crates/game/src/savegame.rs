@@ -118,12 +118,15 @@ fn autosave(time: Res<Time<Real>>, clock: Res<SimClock>, sim: Res<Sim>, current:
     }
 }
 
-fn start_saves(mut req: ResMut<SaveRequest>, mut job: ResMut<SaveJob>, sim: Res<Sim>, current: Res<CurrentMap>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>) {
+fn start_saves(mut req: ResMut<SaveRequest>, mut job: ResMut<SaveJob>, sim: Res<Sim>, current: Res<CurrentMap>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>, menu: Option<ResMut<crate::menu::Menu>>) {
     if !std::mem::take(&mut req.0) {
         return;
     }
     if !playing(&sim) {
         notices.push(vec![(Icon::Cross, BAD)], "Nothing to save yet", time.elapsed_secs());
+        if let Some(mut m) = menu.filter(|m| m.saved.is_some()) {
+            m.saved = Some(crate::menu::SaveNote::Failed("Nothing to save yet".into()));
+        }
         return;
     }
     if job.running.is_some() {
@@ -143,7 +146,7 @@ fn begin(job: &mut SaveJob, sim: &Sim, map: &MapChoice, path: PathBuf) {
     job.running = Some(Mutex::new(receive));
 }
 
-fn finish_saves(mut job: ResMut<SaveJob>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>) {
+fn finish_saves(mut job: ResMut<SaveJob>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>, mut menu: Option<ResMut<crate::menu::Menu>>) {
     let Some(rx) = &job.running else { return };
     let result = match rx.lock().unwrap().try_recv() {
         Ok(r) => r,
@@ -156,11 +159,18 @@ fn finish_saves(mut job: ResMut<SaveJob>, mut notices: ResMut<crate::hud::Notice
             sim::trace::event(format!("SAVED path={} day={:.2} map={} population={}", path.display(), h.day, h.map, h.population));
             if path == quick_path() {
                 notices.push(vec![(Icon::Check, GOOD)], "Saved", time.elapsed_secs());
+                // The pause menu covers the journal: say so on its Save button too.
+                if let Some(m) = menu.as_mut().filter(|m| m.saved.is_some()) {
+                    m.saved = Some(crate::menu::SaveNote::Saved);
+                }
             }
         }
         Err(e) => {
             sim::trace::event(format!("SAVE_FAILED {e}"));
             notices.push(vec![(Icon::Cross, BAD)], format!("Not saved: {e}"), time.elapsed_secs());
+            if let Some(m) = menu.as_mut().filter(|m| m.saved.is_some()) {
+                m.saved = Some(crate::menu::SaveNote::Failed(format!("Not saved: {e}")));
+            }
         }
     }
 }

@@ -31,6 +31,15 @@ pub struct Menu {
     load_error: Option<String>,
     /// The saves the load screen lists, newest first.
     saves: Vec<std::path::PathBuf>,
+    /// How the last save asked for from this menu went, shown on its Save button.
+    pub saved: Option<SaveNote>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SaveNote {
+    Saving,
+    Saved,
+    Failed(String),
 }
 
 type LoadedValley = Result<(sim::SimState, Option<sim::starts::DamSite>), String>;
@@ -105,6 +114,7 @@ impl Plugin for MenuPlugin {
             loading: false,
             load_error: None,
             saves: Vec::new(),
+            saved: None,
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
@@ -152,6 +162,7 @@ fn menu_keys(
         None => {
             let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
+                menu.saved = None;
                 menu.was_paused = clock.paused;
                 clock.paused = true;
                 menu.screen = Some(Screen::Pause);
@@ -234,6 +245,7 @@ fn menu_actions(
             }
             MenuAction::Save => {
                 save.0 = true;
+                menu.saved = Some(SaveNote::Saving);
                 continue;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
@@ -582,7 +594,15 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
         hud::text(p, format!("Survived {:.0} days. {} beavers died.", s.time_days, s.colony.stats.deaths), 13.0, MUTED);
     } else {
         wide(p, "Resume", MenuAction::Resume, ACCENT);
-        wide(p, "Save", MenuAction::Save, FAINT);
+        let label = match &menu.saved {
+            Some(SaveNote::Saving) => "Saving…",
+            Some(SaveNote::Saved) => "Saved",
+            _ => "Save",
+        };
+        wide(p, label, MenuAction::Save, if menu.saved == Some(SaveNote::Saved) { hud::GOOD.with_alpha(0.35) } else { FAINT });
+        if let Some(SaveNote::Failed(e)) = &menu.saved {
+            hud::text(p, e.clone(), 12.0, hud::BAD);
+        }
     }
     if crate::savegame::latest_save().is_some() {
         wide(p, "Load", MenuAction::OpenLoad, FAINT);
