@@ -3,9 +3,9 @@
 //! A canal starts at water (its intake) and runs over land. The game sets each cell's target
 //! bed from the intake's water level: 0.4 m below it, then falling 1 cm a metre, or following
 //! the land down where it drops faster, and never rising downstream. Diggers lower one cell a
-//! step per visit and leave the spoil as clay on the bank. The intake carries a gate, so a
-//! canal never drains its source unless the player opens it. Dug cells silt back in; with
-//! Maintain on, diggers clear them again.
+//! step per visit and leave the spoil as clay on the bank. A canal runs free from its source:
+//! a gate at the intake is advanced work, built only on the player's order once a Logistics
+//! building stands. Dug cells silt back in; with Maintain on, diggers clear them again.
 include!(concat!(env!("OUT_DIR"), "/canals_constants.rs"));
 use std::collections::VecDeque;
 
@@ -111,8 +111,9 @@ fn depth(sim: &SimState, c: Cell) -> f32 {
 }
 
 /// Open water a canal may start from or end in.
+/// Water a canal can draw from or run into: any cell shown as water, or the river or a lake.
 pub fn is_water(sim: &SimState, c: Cell) -> bool {
-    depth(sim, c) >= WET_DEPTH || sim.world.river.get(c.0, c.1).copied().unwrap_or(false) || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
+    sim.water.shown(c.0 as i32, c.1 as i32) || sim.world.river.get(c.0, c.1).copied().unwrap_or(false) || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
 }
 
 pub fn canal(sim: &SimState, id: BuildingId) -> Option<&Canal> {
@@ -339,22 +340,22 @@ pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell, upkeep: bool)
 
 /// Work for this canal's builders (digging, gate changes) or maintainers (silt).
 pub fn has_work_for(sim: &SimState, id: BuildingId, upkeep: bool) -> bool {
-    canal(sim, id).is_some_and(|k| (!upkeep && k.gate.built && k.gate.pending.is_some()) || k.cells.iter().any(|c| cell_task(sim, k, c, upkeep)))
+    canal(sim, id).is_some_and(|k| (!upkeep && (k.gate.pending.is_some() || crate::locks::pending(sim, k.gate.cell))) || k.cells.iter().any(|c| cell_task(sim, k, c, upkeep)))
 }
 
 pub fn gate_needs_visit(sim: &SimState, id: BuildingId) -> bool {
-    canal(sim, id).is_some_and(|k| k.gate.built && k.gate.pending.is_some())
+    canal(sim, id).is_some_and(|k| k.gate.pending.is_some() || crate::locks::pending(sim, k.gate.cell))
 }
 
 pub fn has_work(sim: &SimState, id: BuildingId) -> bool {
-    canal(sim, id).is_some_and(|k| k.gate.built && k.gate.pending.is_some() || k.cells.iter().any(|c| cell_work(sim, k, c)))
+    canal(sim, id).is_some_and(|k| k.gate.pending.is_some() || crate::locks::pending(sim, k.gate.cell) || k.cells.iter().any(|c| cell_work(sim, k, c)))
 }
 
 /// Visits still to make: digging, silt clearing and a pending gate change.
 pub fn visits_left(sim: &SimState, id: BuildingId) -> usize {
     let Some(k) = canal(sim, id) else { return 0 };
     let dig: usize = k.cells.iter().filter(|c| cell_work(sim, k, c)).map(|c| visits_for(ground(sim, c.cell), c.target).max(1)).sum();
-    dig + usize::from(k.gate.built && k.gate.pending.is_some())
+    dig + usize::from(k.gate.pending.is_some())
 }
 
 /// Cells other diggers are already heading for.
@@ -375,7 +376,7 @@ pub fn claimed(sim: &SimState, id: BuildingId, except: crate::colony::BeaverId) 
 /// comes last), then silt clearing.
 pub fn next_job(sim: &SimState, id: BuildingId, taken: &[Cell], upkeep: bool) -> Option<(Cell, bool)> {
     let k = canal(sim, id)?;
-    if !upkeep && k.gate.built && k.gate.pending.is_some() && !taken.contains(&k.gate.cell) {
+    if !upkeep && k.gate.pending.is_some() && !taken.contains(&k.gate.cell) {
         return Some((k.gate.cell, true));
     }
     let gate = k.gate.cell;
@@ -385,30 +386,21 @@ pub fn next_job(sim: &SimState, id: BuildingId, taken: &[Cell], upkeep: bool) ->
     pick.map(|c| (c.cell, false))
 }
 
-/// One digging visit at `cell`: lower it a step, leave the spoil on the bank. The first
-/// visit to the gate cell builds the gate (its sticks are used then), so water stays out.
+/// One digging visit at `cell`: lower it a step, leave the spoil on the bank.
 pub fn dig(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
     let k = canal(sim, id).ok_or_else(|| invalid("no such canal"))?;
     let c = *k.cells.iter().find(|c| c.cell == cell).ok_or_else(|| invalid("not a cell of this canal"))?;
-    let gate = k.gate;
     let h = ground(sim, cell);
     let step = (h - c.target).min(DIG_STEP);
     if step <= EPS {
         mark_done(sim, id, cell);
         return Ok(());
     }
-    if cell == gate.cell && !gate.built {
-        if !crate::gates::take_sticks(sim, cell, GATE_STICKS) {
-            return Err(invalid("the gate needs sticks"));
-        }
-        canal_mut(sim, id)?.gate.built = true;
-    }
     fell_trees_at(sim, cell);
     sim.water.dig_canal(&mut sim.height, &[cell], step).map_err(|e| invalid(e.to_string()))?;
     spoil(sim, cell, CLAY_PER_STEP * step / DIG_STEP);
-    if cell == gate.cell {
-        let g = canal(sim, id).expect("canal").gate;
-        crate::gates::apply(sim, &g)?;
+    if canal(sim, id).is_some_and(|k| gate_cells(k).contains(&cell)) {
+        apply_gate(sim, id)?;
     }
     if ground(sim, cell) <= c.target + EPS {
         mark_done(sim, id, cell);
@@ -425,14 +417,40 @@ fn mark_done(sim: &mut SimState, id: BuildingId, cell: Cell) {
     }
 }
 
-/// Make a pending gate change: one beaver visit.
+/// Make a pending gate change: one beaver visit. The first one builds the gate with sticks.
 pub fn turn_gate(sim: &mut SimState, id: BuildingId) -> Result<(), SimError> {
+    let gate = canal(sim, id).ok_or_else(|| invalid("no such canal"))?.gate;
+    if !gate.built && gate.pending.is_some() {
+        if !crate::gates::take_sticks(sim, gate.cell, GATE_STICKS) {
+            return Err(invalid("the gate needs sticks"));
+        }
+        canal_mut(sim, id)?.gate.built = true;
+    }
     let k = canal_mut(sim, id)?;
     if let Some(s) = k.gate.pending.take() {
         k.gate.setting = s;
     }
+    let cell = k.gate.cell;
+    apply_gate(sim, id)?;
+    crate::locks::build(sim, cell)
+}
+
+/// The cells the gate closes: its own and the widened cell beside it, so a wide canal
+/// has no way round a shut gate.
+pub fn gate_cells(k: &Canal) -> Vec<Cell> {
+    let g = k.gate.cell;
+    let beside = |c: Cell| c.0.abs_diff(g.0) + c.1.abs_diff(g.1) == 1;
+    std::iter::once(g).chain(k.cells.iter().filter(|c| c.row > 0 && beside(c.cell)).map(|c| c.cell)).collect()
+}
+
+/// Set the gate's sill on every cell it closes.
+fn apply_gate(sim: &mut SimState, id: BuildingId) -> Result<(), SimError> {
+    let k = canal(sim, id).ok_or_else(|| invalid("no such canal"))?;
     let g = k.gate;
-    crate::gates::apply(sim, &g)
+    for cell in gate_cells(k) {
+        crate::gates::apply(sim, &crate::gates::Gate { cell, ..g })?;
+    }
+    Ok(())
 }
 
 fn fell_trees_at(sim: &mut SimState, cell: Cell) {
@@ -569,7 +587,15 @@ pub fn set_maintain(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), 
     Ok(())
 }
 
+/// Whether canal gates can be built: they need a finished Logistics building.
+pub fn gates_unlocked(sim: &SimState) -> bool {
+    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Logistics && sim.finished(b))
+}
+
 pub fn set_gate(sim: &mut SimState, id: BuildingId, setting: GateSetting) -> Result<(), SimError> {
+    if canal(sim, id).is_some_and(|k| !k.gate.built) && !gates_unlocked(sim) {
+        return Err(invalid("gates need a finished Logistics building"));
+    }
     let k = canal_mut(sim, id)?;
     crate::gates::request(&mut k.gate, setting)
 }
@@ -629,18 +655,20 @@ fn silt(sim: &mut SimState, id: BuildingId, dt: f32) {
         silts.push(s);
     }
     let gate = k.gate;
+    let across = gate_cells(k);
+    // A gate set before its canal was widened must close the new cell once it is dug.
+    let mut regate = gate.built && k.cells.iter().any(|c| across.contains(&c.cell) && sim.water.gate.get(c.cell.0, c.cell.1) == Some(&false) && ground(sim, c.cell) < c.ground - EPS);
     if let Ok(k) = canal_mut(sim, id) {
         for (c, s) in k.cells.iter_mut().zip(silts) {
             c.silt = s;
         }
     }
-    let mut regate = false;
     for (cell, amount, g) in fills {
         let _ = sim.water.silt_canal(&mut sim.height, cell, amount, g);
-        regate |= cell == gate.cell;
+        regate |= across.contains(&cell);
     }
     if regate {
-        let _ = crate::gates::apply(sim, &gate);
+        let _ = apply_gate(sim, id);
     }
 }
 

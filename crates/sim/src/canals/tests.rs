@@ -119,17 +119,35 @@ fn a_visit_digs_one_step_and_leaves_clay_on_the_bank() {
     assert!(c.done && (ground(&s, c.cell) - c.target).abs() < 1e-3, "digging stops at the target");
 }
 
+/// A finished Logistics building: canal gates can be built.
+fn logistics(s: &mut SimState) {
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(901), kind: BuildingKind::Logistics, pos: (2, 40), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+}
+
+/// Build the gate with an order and one visit, shut.
+fn build_gate(s: &mut SimState, id: BuildingId) {
+    let gate = canal(s, id).unwrap().gate.cell;
+    s.apply(Command::SetGate { building: id, cell: gate, setting: GateSetting::Shut }).unwrap();
+    turn_gate(s, id).unwrap();
+}
+
 #[test]
-fn the_gate_is_built_shut_on_the_first_visit_and_needs_sticks() {
+fn a_canal_has_no_gate_until_logistics_stands_and_one_is_ordered() {
     let mut s = pond_and_bank();
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
     let gate = canal(&s, id).unwrap().gate.cell;
-    assert!(dig(&mut s, id, gate).is_err(), "no sticks, no gate, no digging");
-    assert!((ground(&s, gate) - 5.4).abs() < 1e-4);
-    stock_sticks(&mut s, 20.0);
     dig(&mut s, id, gate).unwrap();
+    assert!(!canal(&s, id).unwrap().gate.built, "digging the intake builds no gate");
+    assert!(!*s.water.gate.get(gate.0, gate.1).unwrap(), "the canal runs free");
+    assert!(s.apply(Command::SetGate { building: id, cell: gate, setting: GateSetting::Shut }).is_err(), "gates need Logistics");
+    logistics(&mut s);
+    s.apply(Command::SetGate { building: id, cell: gate, setting: GateSetting::Shut }).unwrap();
+    assert_eq!(next_job(&s, id, &[], false), Some((gate, true)), "a builder goes to build it");
+    assert!(turn_gate(&mut s, id).is_err(), "no sticks, no gate");
+    stock_sticks(&mut s, 20.0);
+    turn_gate(&mut s, id).unwrap();
     let k = canal(&s, id).unwrap();
-    assert!(k.gate.built && k.gate.setting == GateSetting::Shut);
+    assert!(k.gate.built && k.gate.setting == GateSetting::Shut && k.gate.pending.is_none());
     let sill = ground(&s, gate) + s.water.dam_height.get(gate.0, gate.1).unwrap();
     assert!((sill - k.gate.top).abs() < 1e-4, "a shut gate stands at its top");
     assert!(k.gate.top >= 5.3 + GATE_FREEBOARD - 1e-4);
@@ -140,9 +158,11 @@ fn the_gate_is_built_shut_on_the_first_visit_and_needs_sticks() {
 fn a_gate_change_waits_for_a_visit() {
     let mut s = pond_and_bank();
     stock_sticks(&mut s, 20.0);
+    logistics(&mut s);
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
     let gate = canal(&s, id).unwrap().gate.cell;
     dig(&mut s, id, gate).unwrap();
+    build_gate(&mut s, id);
     s.apply(Command::SetGate { building: id, cell: gate, setting: GateSetting::Open }).unwrap();
     assert_eq!(canal(&s, id).unwrap().gate.setting, GateSetting::Shut, "nothing changes until a beaver visits");
     assert!(has_work(&s, id));
@@ -363,4 +383,73 @@ fn a_bypass_canal_round_a_dam_rejoins_the_river_and_its_gate_controls_the_reserv
 
 fn canals_water(s: &SimState, c: Cell) -> bool {
     depth(s, c) >= WET_DEPTH
+}
+
+#[test]
+fn a_canal_may_start_on_any_water_that_is_shown() {
+    let mut s = pond_and_bank();
+    // A thin sheet beside the pond is drawn as water, so a canal may start from it.
+    let edge = (20, 20);
+    *s.water.depth.get_mut(edge.0, edge.1).unwrap() = 0.01;
+    *s.water.depth.get_mut(edge.0 - 1, edge.1).unwrap() = 0.01;
+    assert!(s.water.shown(edge.0 as i32, edge.1 as i32));
+    assert!(is_water(&s, edge));
+    assert!(plan(&s, &route(edge, (30, 20))).is_ok());
+    // A damp film on its own is not drawn, and is not water to start from.
+    let lone = (40, 40);
+    *s.water.depth.get_mut(lone.0, lone.1).unwrap() = 0.01;
+    assert!(!s.water.shown(lone.0 as i32, lone.1 as i32));
+    assert_eq!(plan(&s, &route(lone, (48, 40))).unwrap_err(), "Must start at water");
+}
+
+#[test]
+fn a_shut_gate_closes_the_whole_width_of_a_widened_canal() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 20.0);
+    logistics(&mut s);
+    let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
+    build_gate(&mut s, id);
+    let gate = canal(&s, id).unwrap().gate.cell;
+    while cell_needs_work(&s, id, gate, false) {
+        dig(&mut s, id, gate).unwrap();
+    }
+    grow(&mut s, id, CanalGrowth::Widen, &[]).unwrap();
+    let across = gate_cells(canal(&s, id).unwrap());
+    assert_eq!(across.len(), 2, "the gate and the widened cell beside it: {across:?}");
+    let beside = across[1];
+    while cell_needs_work(&s, id, beside, false) {
+        dig(&mut s, id, beside).unwrap();
+    }
+    let top = canal(&s, id).unwrap().gate.top;
+    for c in across {
+        assert!(*s.water.gate.get(c.0, c.1).unwrap(), "{c:?} is gated");
+        let sill = ground(&s, c) + s.water.dam_height.get(c.0, c.1).unwrap();
+        assert!((sill - top).abs() < 1e-4, "{c:?} stands shut at the top");
+    }
+}
+
+#[test]
+fn a_gate_is_upgraded_into_a_lock_by_a_visit_once_a_harbor_stands() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 40.0);
+    s.buildings.stores.deposit(crate::buildings::Good::Clay, 20.0).unwrap();
+    let line: Vec<Cell> = (15..26).map(|y| (12, y)).collect();
+    let dam = crate::dams::place(&mut s, &line).unwrap();
+    s.water.build_dam(&line, 1.0).unwrap();
+    s.apply(Command::AddDamGate { dam, cell: (12, 20) }).unwrap();
+    let lock = Command::UpgradeLock { building: dam, cell: (12, 20) };
+    assert!(s.apply(lock.clone()).is_err(), "no harbor yet");
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 44), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    assert!(s.apply(lock.clone()).is_err(), "the gate is not built yet");
+    crate::dams::work_gate(&mut s, dam, (12, 20)).unwrap();
+    s.apply(lock.clone()).unwrap();
+    assert!(crate::locks::pending(&s, (12, 20)) && !crate::locks::is_lock(&s, (12, 20)));
+    assert_eq!(crate::dams::gate_job(&s, dam, &[]), Some((12, 20)), "a builder goes to build the lock");
+    let sill = *s.water.dam_height.get(12, 20).unwrap();
+    crate::dams::work_gate(&mut s, dam, (12, 20)).unwrap();
+    assert!(crate::locks::is_lock(&s, (12, 20)));
+    assert_eq!(*s.water.dam_height.get(12, 20).unwrap(), sill, "the lock holds the water as the gate did");
+    assert_eq!(crate::dams::gate_job(&s, dam, &[]), None);
+    assert!(s.apply(lock).is_err(), "already a lock");
+    assert_eq!(crate::script::parse_command(&crate::script::to_line(&Command::UpgradeLock { building: dam, cell: (12, 20) })).unwrap(), Command::UpgradeLock { building: dam, cell: (12, 20) });
 }

@@ -26,6 +26,22 @@ pub enum Pose {
     /// Sitting up, eating a plant.
     Forage,
     Rest,
+    /// Running from a wolf: a flat-out bound, head low, tail up.
+    Run,
+    /// Taking up or putting down a load at a store, pile or site.
+    Handle,
+    /// Mending: patting fresh mud on, tamping it with the tail.
+    Mend,
+    /// A guard on watch: sitting up tall, looking about.
+    Watch,
+    /// A new pair meeting at their lodge: nose to nose.
+    Court,
+    /// Grooming a family member beside it.
+    Groom,
+    /// Pinned under the wolf, struggling.
+    Caught,
+    /// Dead: fallen on its side, or curled up.
+    Dead,
 }
 
 // Models for retired buildings stay available for when the building list grows again.
@@ -40,6 +56,8 @@ pub enum StructKind {
     Toolshed,
     Forester,
     Logistics,
+    Lookout,
+    Harbor,
 }
 
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {

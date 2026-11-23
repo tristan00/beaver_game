@@ -625,7 +625,7 @@ pub fn tend_target(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opt
     let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
     let mut best: Option<((u8, usize, ResourceId), ResourceId)> = None;
     for r in sim.resources.items() {
-        if !area.contains(r.cell) || !wants_tending(r) || claimed.contains(&r.id) {
+        if !area.reaches(r.cell) || !wants_tending(r) || claimed.contains(&r.id) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Forester, r.cell) {
             continue;
         }
         let key = (class(r), d(r.cell), r.id);
@@ -691,7 +691,7 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
     for y in area.min.1..=area.max.1.min(n.saturating_sub(1)) {
         for x in area.min.0..=area.max.0.min(n.saturating_sub(1)) {
             let c = (x, y);
-            if claimed.contains(&c) {
+            if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Forester, c) {
                 continue;
             }
             let key = (-((ground_growth(sim, c) * 10.0).round() as i32), d(c), c);

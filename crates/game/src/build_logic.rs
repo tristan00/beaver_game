@@ -3,7 +3,6 @@ use sim::buildings::{Amount, BuildingKind, WET_DEPTH};
 use sim::water::Cell;
 use sim::{Command, SimState};
 
-pub const MAX_DAM_CELLS: usize = sim::dams::MAX_CELLS;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceError {
@@ -13,7 +12,6 @@ pub enum PlaceError {
     TooClose,
     BlocksDoor,
     NoCells,
-    TooLong(usize),
     Sim(String),
 }
 
@@ -26,7 +24,6 @@ impl std::fmt::Display for PlaceError {
             PlaceError::TooClose => write!(f, "Leave a cell between buildings"),
             PlaceError::BlocksDoor => write!(f, "Would block a home's door"),
             PlaceError::NoCells => write!(f, "Nothing drawn yet"),
-            PlaceError::TooLong(_) => write!(f, "Too long"),
             PlaceError::Sim(m) => write!(f, "{m}"),
         }
     }
@@ -126,13 +123,10 @@ pub fn check_dam(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
     if cells.is_empty() {
         return Err(PlaceError::NoCells);
     }
-    if cells.len() > MAX_DAM_CELLS {
-        return Err(PlaceError::TooLong(MAX_DAM_CELLS));
-    }
     if cells.iter().any(|&(x, y)| !sim.water.depth.in_bounds(x, y)) {
         return Err(PlaceError::OutOfBounds);
     }
-    if !sim.sandbox && !cells.iter().any(|&(x, y)| is_wet(sim, x, y)) {
+    if !sim.sandbox && !cells.iter().any(|&c| sim::dams::water_for_dam(sim, c)) {
         return Err(PlaceError::NeedsWater);
     }
     sim::dams::check_line(sim, cells).map_err(PlaceError::Sim)
@@ -191,7 +185,7 @@ pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings
     match extending {
         Some(id) => match (sim::dams::dam(sim, id), sim::dams::plan_extend_to(sim, id, line)) {
             (Some(d), Ok(plan)) => {
-                let row: Vec<&sim::dams::DamCell> = plan.cells.iter().filter(|c| c.row == 0).collect();
+                let row: Vec<&sim::dams::DamCell> = sim::dams::in_order(plan.cells.iter().filter(|c| c.row == 0)).collect();
                 let cells: Vec<Cell> = row.iter().map(|c| c.cell).collect();
                 let heights: Vec<f32> = row.iter().map(|c| c.target.max(sim::dams::built(sim, c.cell))).collect();
                 out.preview = sim::dam_preview::preview_heights(sim, &cells, &heights);
@@ -212,7 +206,6 @@ pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings
             out.refusal = check_dam(sim, line).err().and_then(|e| match e {
                 PlaceError::NoCells => None,
                 PlaceError::NeedsWater => Some((Icon::Drop, "Must cross water".into())),
-                PlaceError::TooLong(_) => Some((Icon::Extend, e.to_string())),
                 PlaceError::Sim(m) => Some((Icon::Cross, sentence(&m))),
                 e => Some((Icon::Cross, e.to_string())),
             });

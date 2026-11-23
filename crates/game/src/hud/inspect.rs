@@ -69,7 +69,8 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
             Some(super::dam_panel::dam_panel(c, b.id, b.dam.as_deref()?))
         }
         Selection::Tree(id) => resource(c, id),
-        Selection::None => None,
+        // The wolf has no panel: selecting it shows its sight range.
+        Selection::None | Selection::Wolf => None,
     }
 }
 
@@ -107,12 +108,16 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
         Some(Task::Carry { .. } | Task::Fetch { .. } | Task::Haul { .. } | Task::Pick { .. }) => (Icon::Haul, GOOD, "Hauling"),
         Some(Task::Eat { .. }) => (Icon::Food, GOOD, "Eating"),
         Some(Task::Build { .. }) => (Icon::RoleBuilder, GOOD, "Building"),
+        Some(Task::Mend { .. }) => (Icon::RoleMaintainer, GOOD, "Repairing"),
         Some(Task::DamWork { .. }) => (Icon::Dam, GOOD, "Building the dam"),
         Some(Task::Dig { .. }) => (Icon::Canal, GOOD, "Digging a canal"),
         Some(Task::Gate { .. }) => (Icon::Dam, GOOD, "Setting a gate"),
         Some(Task::Tend { .. }) => (Icon::Tend, GOOD, "Tending"),
+        Some(Task::Seed { .. }) => (Icon::Sapling, GOOD, "Collecting seedlings"),
         Some(Task::Plant { .. }) => (Icon::Sapling, GOOD, "Planting"),
         Some(Task::Rest) => (Icon::Idle, REST, "Resting"),
+        Some(Task::Watch { .. }) => (Icon::RoleGuard, GOOD, "On watch"),
+        Some(Task::Barge { .. }) => (Icon::Barge, GOOD, "Barging"),
         Some(Task::Idle) | None => match s.work.slot_of(b.id) {
             Some((_, _, role)) => (role_icon(role), GOOD, role_name(role)),
             None if s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) => (Icon::Walk, GOOD, "On an order"),
@@ -260,10 +265,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 fill_row(s, u, id);
                 if let Some(pl) = s.work.place(id) {
                     for (i, sl) in pl.slots.iter().enumerate() {
-                        let (name, does) = match sl.role {
-                            sim::work::Role::Tend => ("Forest care", "Plants nearby grow faster"),
-                            _ => ("Planting", "Saplings into trees nearby"),
-                        };
+                        let (name, does) = ("Forester", "Collects seedlings, plants them, tends trees");
                         u.row(8.0, |r| {
                             r.icon(role_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name).line(does, ""));
                             match sl.worker.and_then(|w| s.colony.beaver(w)) {

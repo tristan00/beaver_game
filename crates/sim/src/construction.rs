@@ -20,14 +20,14 @@ mod placement_tests {
         assert!(sim.work.places.is_empty());
     }
 
-    /// A shelter and a dam can be built from day 1; the rest wait for what unlocks them.
+    /// A shelter, a dam and a canal can be built from day 1; the rest wait for what unlocks them.
     #[test]
     fn buildings_unlock_once_their_prerequisite_is_finished() {
         let mut sim = SimState::new(1);
-        for k in [BuildingKind::Shelter, BuildingKind::Dam] {
+        for k in [BuildingKind::Shelter, BuildingKind::Dam, BuildingKind::Canal] {
             assert_eq!(sim.unlocked(k), Ok(()), "{k:?} is open from the start");
         }
-        for k in [BuildingKind::Warehouse, BuildingKind::Larder, BuildingKind::Canal, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics] {
+        for k in [BuildingKind::Warehouse, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics, BuildingKind::Lookout] {
             assert!(matches!(sim.unlocked(k), Err(BuildError::Locked(_))), "{k:?} is locked at the start");
         }
         let shelter = |status| buildings::Building { id: buildings::BuildingId(1), kind: BuildingKind::Shelter, pos: (5, 5), status, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
@@ -40,12 +40,20 @@ mod placement_tests {
 }
 
 impl SimState {
-    /// A building is unlocked once the one it needs has been finished.
+    /// A building is unlocked once the one it needs has been finished; a placed site is not enough.
     pub fn unlocked(&self, kind: buildings::BuildingKind) -> Result<(), buildings::BuildError> {
         match kind.spec().requires {
-            Some(need) if !self.buildings.buildings.iter().any(|b| b.kind == need && b.is_complete()) => Err(buildings::BuildError::Locked(need)),
+            Some(need) if !self.buildings.buildings.iter().any(|b| b.kind == need && self.finished(b)) => Err(buildings::BuildError::Locked(need)),
             _ => Ok(()),
         }
+    }
+
+    /// Built in full. Dams and canals stand as soon as they are drawn and are raised or dug
+    /// cell by cell, so they are finished only once no cell is left to build.
+    pub fn finished(&self, b: &buildings::Building) -> bool {
+        b.is_complete()
+            && (b.dam.is_none() || !crate::dams::has_work_for(self, b.id, false))
+            && b.canal.as_deref().is_none_or(|k| k.cells.iter().all(|c| c.done))
     }
 
     /// Shared by command execution, placement previews and the scripted player.

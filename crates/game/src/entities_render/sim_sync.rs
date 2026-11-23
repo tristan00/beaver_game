@@ -70,13 +70,16 @@ impl Motion {
             // interpolates between the known endpoints instead of inventing or
             // replaying intermediate trips.
             if sim.time_days - previous <= sim::STEP_DAYS as f64 + 1e-8 {
-                let pace = sim::agents::MOVE_COST_PER_DAY * sim::agents::pace(&sim.nav, ag);
+                let pace = sim::agents::travel_pace(&sim.nav, ag);
+                let rate = sim::agents::MOVE_COST_PER_DAY * pace;
                 let mut t = previous;
                 for &(cell, gait) in &ag.trail {
                     let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset.xz();
-                    let cost = sim.nav.surface_at(cell).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0);
+                    // Timed as the simulation moved it: with or against the current there.
+                    let dir = (next - point).normalize_or_zero();
+                    let cost = sim.nav.cost_toward(cell, (dir.x, dir.y), pace).unwrap_or(gait_cost(gait));
                     let cells = point.distance(next) / crate::terrain_render::CELL_SIZE;
-                    t = (t + (cells * cost / pace) as f64).min(sim.time_days);
+                    t = (t + (cells * cost / rate) as f64).min(sim.time_days);
                     self.record(t, next, stand_y(sim, cell) - ground(next));
                     point = next;
                 }
@@ -252,6 +255,88 @@ mod motion_tests {
         let corner = motion.raw_at(corner_time).unwrap().0;
         assert!(corner.distance(cell_xz(&sim, (3.5, 2.5))) < 1e-4);
     }
+
+    #[test]
+    fn a_swimmer_is_drawn_at_the_speed_the_current_gives_it() {
+        let move_cost = sim::agents::MOVE_COST_PER_DAY as f64;
+        for (drift, from, cells) in [(0.5, (2, 2), [(3, 2), (4, 2)]), (-0.5, (2, 2), [(3, 2), (4, 2)])] {
+            let mut sim = sim::SimState::new(1);
+            let id = sim::colony::BeaverId(1);
+            sim.agents.spawn(id, from);
+            let mut agent = sim.agents.get(id).unwrap().clone();
+            for c in cells {
+                sim.nav.set(c, sim::nav::Surface::Water);
+                sim.nav.set_current(c, (drift * sim::nav::SWIM_SPEED_M_S, 0.0));
+            }
+            let step = sim.nav.move_cost(from, cells[0], 1.0).unwrap();
+            let want = sim::nav::SWIM_COST / (1.0 + drift);
+            assert!((step - want).abs() < 1e-5, "{step} vs {want}");
+            // Halfway through the step's budget, it is drawn halfway there.
+            agent.path = Some(sim::nav::Path { steps: cells.iter().map(|&c| (c, sim::nav::Gait::Swim)).collect(), cost: 0.0 });
+            agent.step_frac = step / 2.0;
+            let half = agent_world_pos(&sim, &agent, 0.0);
+            assert!(Vec2::new(half.x, half.z).distance(cell_xz(&sim, (3.0, 2.5))) < 1e-4);
+            // And the trail reaches the first cell when the simulation did.
+            agent.step_frac = 0.0;
+            let mut motion = Motion::default();
+            motion.observe(&sim, &agent, false);
+            agent.cell = cells[1];
+            agent.path = None;
+            agent.trail = cells.iter().map(|&c| (c, sim::nav::Gait::Swim)).collect();
+            sim.time_days = sim::STEP_DAYS as f64;
+            motion.observe(&sim, &agent, false);
+            let arrived = motion.samples[1].0;
+            assert!((arrived - step as f64 / move_cost).abs() < 1e-7, "{arrived}");
+        }
+    }
+}
+
+/// A beaver diving into its lodge or coming up out of it: when it went in or out, and where it
+/// was last seen outside.
+#[derive(Component)]
+pub struct LodgeDive {
+    inside: bool,
+    since: f32,
+    at: Vec3,
+}
+
+/// A newborn's first appearance: it grows from small to its size in a moment.
+#[derive(Component)]
+pub struct Newborn(f32);
+
+/// Seconds a dive into or out of a lodge takes.
+const DIVE_S: f32 = 0.7;
+const POP_S: f32 = 0.8;
+
+/// The agent for a beaver: one of the colony's, or one walking off the map, with its age.
+fn find_agent(sim: &sim::SimState, id: sim::colony::BeaverId) -> Option<(&sim::agents::Agent, f32)> {
+    if let Some(ag) = sim.agents.get(id) {
+        let age = sim.colony.beaver(id).map_or(sim::colony::ADULT_DAYS, |b| b.age_days);
+        return Some((ag, age));
+    }
+    sim.agents.remains.leaving.iter().find(|(a, _)| a.id == id).map(|(a, age)| (a, *age))
+}
+
+fn ramp(a: f32, b: f32, x: f32) -> f32 {
+    ((x - a) / (b - a)).clamp(0.0, 1.0)
+}
+
+/// How a beaver's needs, health, age and mood show.
+pub fn look_of(sim: &sim::SimState, id: sim::colony::BeaverId) -> super::Look {
+    use sim::tuning::colony::{EAT_BELOW, OLD_AGE_YEARS};
+    let mut look = super::Look::default();
+    let Some(b) = sim.colony.beaver(id) else { return look };
+    let harm = b.harm();
+    look.thin = ramp(EAT_BELOW, 0.1, b.needs.food).max(ramp(0.1, 0.6, harm[0]));
+    look.cold = ramp(0.6, 0.15, b.needs.warmth).max(ramp(0.1, 0.6, harm[1]));
+    look.hurt = ramp(0.05, 0.5, harm[2]);
+    look.tired = ramp(0.4, 0.05, b.needs.rest).max(ramp(0.1, 0.6, harm[3]));
+    look.old = ramp(OLD_AGE_YEARS * 0.8, OLD_AGE_YEARS + 1.5, b.age_years());
+    look.sad = ramp(0.4, 0.12, b.mood);
+    if let Some(p) = &b.pregnancy {
+        look.belly = (((sim.time_days - p.conceived_day) / (p.due_day - p.conceived_day).max(1e-6)) as f32).clamp(0.0, 1.0);
+    }
+    look
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,21 +345,39 @@ pub(super) fn sync_sim_beavers(
     sim: Res<Sim>,
     pending: Res<PendingDays>,
     clock: Option<Res<SimClock>>,
-    mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion), With<SimBeaver>>,
+    render: Res<super::RenderClock>,
+    slaps: Res<super::TailSlapTimes>,
+    mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion, &mut LodgeDive, Option<&Newborn>), With<SimBeaver>>,
     mut seen: Local<HashSet<u64>>,
 ) {
+    use super::scene::Pose;
     let _p = ::sim::prof::scope("game/sync sim beavers");
     seen.clear();
-    let now = clock.as_ref().map_or(sim.0.time_days + pending.0 as f64, |c| c.render_days(sim.0.time_days));
-    for (e, mut tr, mut sprite, mut vis, mut motion) in &mut q {
-        let Some(ag) = sim.0.agents.get(sim::colony::BeaverId(sprite.id)) else {
+    let s = &sim.0;
+    let t = render.0;
+    let now = clock.as_ref().map_or(s.time_days + pending.0 as f64, |c| c.render_days(s.time_days));
+    // Who is idle where, by family, for grooming.
+    let idle: Vec<(sim::colony::BeaverId, sim::colony::FamilyId, (usize, usize))> = s
+        .agents
+        .by_id
+        .values()
+        .filter(|a| !a.inside && a.path.is_none() && matches!(a.task, sim::agents::Task::Idle | sim::agents::Task::Rest) && a.assignment.is_none() && s.work.slot_of(a.id).is_none())
+        .filter_map(|a| s.colony.beaver(a.id).map(|b| (a.id, b.family, a.cell)))
+        .collect();
+    let groom_partner = |id: sim::colony::BeaverId| -> Option<(usize, usize)> {
+        let &(_, fam, at) = idle.iter().find(|x| x.0 == id)?;
+        idle.iter().filter(|x| x.0 != id && x.1 == fam && x.2.0.abs_diff(at.0).max(x.2.1.abs_diff(at.1)) <= 1).map(|x| x.2).next()
+    };
+    for (e, mut tr, mut sprite, mut vis, mut motion, mut dive, newborn) in &mut q {
+        let id = sim::colony::BeaverId(sprite.id);
+        let Some((ag, age)) = find_agent(s, id) else {
             commands.entity(e).despawn();
             continue;
         };
         seen.insert(sprite.id);
-        let p = agent_world_pos(&sim.0, ag, 0.0) + spread(sprite.id, clock.is_some());
-        let ground = |xz: Vec2| height_at(&sim.0.height, xz.x, xz.y);
-        motion.observe(&sim.0, ag, clock.is_some());
+        let p = agent_world_pos(s, ag, 0.0) + spread(sprite.id, clock.is_some());
+        let ground = |xz: Vec2| height_at(&s.height, xz.x, xz.y);
+        motion.observe(s, ag, clock.is_some());
         let heading = match motion.at(now) {
             Some((xz, lift, dir)) => {
                 tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
@@ -285,49 +388,162 @@ pub(super) fn sync_sim_beavers(
                 None
             }
         };
+        let fleeing = s.agents.fleeing.contains(&id);
         sprite.pose = if heading.is_some() {
-            use super::scene::Pose;
             match ag.gait {
                 sim::nav::Gait::Swim => Pose::Swim,
                 sim::nav::Gait::Climb => Pose::Climb,
+                sim::nav::Gait::Walk if fleeing => Pose::Run,
                 sim::nav::Gait::Walk if ag.load.is_some() => Pose::Carry,
                 sim::nav::Gait::Walk => Pose::Walk,
             }
-        } else { pose_of(&sim.0, ag) };
-        sprite.load = load_of(ag);
-        sprite.wet = is_wet(&sim.0, ag);
+        } else { pose_of(s, ag) };
+        sprite.load = if matches!(ag.task, sim::agents::Task::Barge { .. }) { None } else { load_of(ag) };
+        sprite.wet = is_wet(s, ag);
         if let Some(d) = heading {
             sprite.yaw = d.x.atan2(d.y);
-        } else if let Some(y) = facing_of(&sim.0, ag) {
+        } else if let Some(y) = facing_of(s, ag) {
             sprite.yaw = y;
         }
-        tr.scale = Vec3::splat(beaver_scale(&sim.0, sprite.id));
-        let want = if ag.inside { Visibility::Hidden } else { Visibility::Inherited };
+        let face = |at: Vec3, to: (f32, f32)| {
+            let w = cell_xz(s, to);
+            (w.x - at.x).atan2(w.y - at.z)
+        };
+        // Pinned under the wolf, facing it.
+        if let Some(w) = s.predators.wolf.as_ref().filter(|w| matches!(w.state, sim::predators::WolfState::Kill { target, .. } if target == id)) {
+            sprite.pose = Pose::Caught;
+            sprite.yaw = face(tr.translation, w.pos);
+        }
+        // A new pair together at their lodge, facing each other.
+        if heading.is_none() {
+            if let Some(c) = s.agents.courting.get(&id).filter(|c| c.met.is_some()) {
+                if let Some(m) = s.agents.get(c.partner) {
+                    sprite.pose = Pose::Court;
+                    sprite.yaw = face(tr.translation, (m.cell.0 as f32 + 0.5, m.cell.1 as f32 + 0.5));
+                }
+            } else if sprite.pose == Pose::Idle {
+                // Grooming a family member idling beside it, now and then.
+                if let Some(m) = groom_partner(id) {
+                    let turn = (t * 0.07 + (sprite.id % 7) as f32 * 0.13).rem_euclid(1.0) < 0.45;
+                    if turn {
+                        sprite.pose = Pose::Groom;
+                        sprite.yaw = face(tr.translation, (m.0 as f32 + 0.5, m.1 as f32 + 0.5));
+                    }
+                }
+            }
+        }
+        let mut look = look_of(s, id);
+        look.slap = slaps.0.get(&sprite.id).copied().unwrap_or(-100.0);
+        // Into the lodge: it dives where it was last seen outside, then is gone; out of it: it
+        // comes up from under the water.
+        if ag.inside != dive.inside {
+            dive.inside = ag.inside;
+            dive.since = t;
+        }
+        let dt = t - dive.since;
+        let shown = if ag.inside {
+            if dt < DIVE_S {
+                tr.translation = dive.at;
+                look.sink = ramp(0.0, DIVE_S, dt);
+                sprite.pose = Pose::Swim;
+                true
+            } else {
+                false
+            }
+        } else {
+            dive.at = tr.translation;
+            if dt < DIVE_S {
+                look.sink = 1.0 - ramp(0.0, DIVE_S, dt);
+            }
+            true
+        };
+        sprite.look = look;
+        let mut size = BEAVER_SIZE * super::age_scale_days(age);
+        if let Some(n) = newborn {
+            let k = ramp(0.0, POP_S, t - n.0);
+            size *= 0.2 + 0.8 * (1.0 - (1.0 - k) * (1.0 - k));
+            if k >= 1.0 {
+                commands.entity(e).remove::<Newborn>();
+            }
+        }
+        tr.scale = Vec3::splat(size);
+        let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
     }
-    for (&id, ag) in &sim.0.agents.by_id {
+    let agents = s.agents.by_id.values().map(|a| (a, s.colony.beaver(a.id).map_or(sim::colony::ADULT_DAYS, |b| b.age_days)))
+        .chain(s.agents.remains.leaving.iter().map(|(a, age)| (a, *age)));
+    for (ag, age) in agents {
+        let id = ag.id;
         if seen.contains(&id.0) {
             continue;
         }
-        let yaw = facing_of(&sim.0, ag).unwrap_or(0.0);
+        let yaw = facing_of(s, ag).unwrap_or(0.0);
         let mut motion = Motion::default();
-        motion.observe(&sim.0, ag, clock.is_some());
-        commands.spawn((
+        motion.observe(s, ag, clock.is_some());
+        let at = agent_world_pos(s, ag, 0.0) + spread(id.0, clock.is_some());
+        let mut e = commands.spawn((
             SimBeaver,
             motion,
-            BeaverSprite { id: id.0, pose: pose_of(&sim.0, ag), load: load_of(ag), yaw, wet: is_wet(&sim.0, ag) },
-            Transform::from_translation(agent_world_pos(&sim.0, ag, 0.0) + spread(id.0, clock.is_some())).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(beaver_scale(&sim.0, id.0))),
+            BeaverSprite { id: id.0, pose: pose_of(s, ag), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, id) },
+            LodgeDive { inside: ag.inside, since: -100.0, at },
+            Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(age))),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
         ));
+        // A beaver a day or two old is just born: it pops into view.
+        if age < 2.0 {
+            e.insert(Newborn(t));
+        }
     }
 }
 
-/// A beaver's drawn size: kits and yearlings are smaller than adults.
-fn beaver_scale(sim: &sim::SimState, id: u64) -> f32 {
-    let stage = sim.colony.beaver(sim::colony::BeaverId(id)).map_or(sim::colony::Stage::Adult, |b| sim::colony::Stage::of_age_days(b.age_days));
-    BEAVER_SIZE * super::age_scale(stage)
+/// A body on the ground (see `sim::agents::Remains`).
+#[derive(Component)]
+pub struct BodySprite(u64);
+
+/// Bodies: each falls where the beaver died and lies there, sinking away at the end.
+pub(super) fn sync_bodies(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    render: Res<super::RenderClock>,
+    mut q: Query<(Entity, &BodySprite, &mut BeaverSprite)>,
+) {
+    use super::scene::Pose;
+    let s = &sim.0;
+    let bodies = &s.agents.remains.bodies;
+    let mut have = HashSet::new();
+    for (e, b, mut sprite) in &mut q {
+        match bodies.iter().find(|x| x.id.0 == b.0) {
+            Some(body) => {
+                let k = ((s.time_days - body.died) / sim::agents::REMAINS_DAYS) as f32;
+                sprite.look.fade = ramp(0.8, 1.0, k);
+                have.insert(b.0);
+            }
+            None => commands.entity(e).despawn(),
+        }
+    }
+    for body in bodies.iter().filter(|b| !have.contains(&b.id.0)) {
+        use sim::colony::DeathCause as C;
+        // Cold, old age and exhaustion leave it curled up; the rest on its side.
+        let curled = matches!(body.cause, C::Cold | C::OldAge | C::Exhaustion);
+        // One seen falling now; one already lying there (after a load) has long fallen.
+        let fresh = s.time_days - body.died < 0.05;
+        let mut look = super::Look { dead: Some((if fresh { render.0 } else { render.0 - 10.0 }, curled)), ..Default::default() };
+        if body.cause == C::Starvation {
+            look.thin = 1.0;
+        }
+        let c = (body.cell.0 as f32 + 0.5, body.cell.1 as f32 + 0.5);
+        let xz = cell_xz(s, c);
+        let y = stand_y(s, body.cell);
+        let yaw = (body.id.0 as f32 * 2.399).rem_euclid(std::f32::consts::TAU);
+        commands.spawn((
+            BodySprite(body.id.0),
+            BeaverSprite { id: body.id.0, pose: Pose::Dead, load: None, yaw, wet: false, look },
+            Transform::from_xyz(xz.x, y, xz.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(body.age_days))),
+            Visibility::Inherited,
+        ));
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -362,7 +578,7 @@ fn spawn_topple(commands: &mut Commands, models: &Models, sim: &sim::SimState, r
 pub fn res_sig(r: &sim::resources::Resource, depth: f32) -> ResSig {
     use sim::resources::Look;
     match r.look() {
-        Look::Tree(stage) => ResSig::Tree(stage as u8),
+        Look::Tree(stage, step) => ResSig::Tree(stage as u8 * 16 + step),
         Look::Felled(logs, branches) => ResSig::Felled(logs, branches),
         Look::Clay(q) => ResSig::Stock(ResourceKindTag::Mud, q),
         Look::Plant(q) => ResSig::Stock(ResourceKindTag::Plant, q),
@@ -412,6 +628,8 @@ pub struct WorldSync {
     plants: Plants,
     bld: HashMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
     anchors: HashMap<BuildingId, f32>,
+    /// Each building's wear band and condition as last drawn, and when it last puffed dust.
+    wear: HashMap<BuildingId, (u8, f32, f32)>,
     lodges: HashMap<u64, (Entity, f32)>,
 }
 
@@ -425,6 +643,17 @@ pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
     }
 }
 
+/// A growing tree's size: from its stage's towards the next's as it grows through the stage.
+pub fn growing_scale(st: sim::forestry::TreeStage, growth: f32) -> Vec3 {
+    use sim::forestry::TreeStage::*;
+    let next = match st {
+        Sapling => Young,
+        Young => Mature,
+        s => s,
+    };
+    stage_scale(st).lerp(stage_scale(next), growth)
+}
+
 fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Season) -> (Handle<Mesh>, Vec3, Option<TreeLod>) {
     let sig = res_sig(r, 0.0);
     let c = r.cell;
@@ -436,7 +665,7 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
         ResSig::Tree(_) => {
             let sp = species_of(r);
             let st = r.stage().unwrap_or(sim::forestry::TreeStage::Mature);
-            (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season, cutaway: false }))
+            (models.tree(sp, season, 0), growing_scale(st, r.growth()) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season, cutaway: false }))
         }
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), None),
         ResSig::Floating(q, _) => (models.water_plant.clone(), Vec3::splat(0.75 * (0.45 + 0.55 * q as f32 / 4.0)), None),
@@ -638,6 +867,8 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
         BuildingKind::Toolshed => StructKind::Toolshed,
         BuildingKind::Forester => StructKind::Forester,
         BuildingKind::Logistics => StructKind::Logistics,
+        BuildingKind::Lookout => StructKind::Lookout,
+        BuildingKind::Harbor => StructKind::Harbor,
         BuildingKind::Canal => StructKind::Canal,
     }
 }
@@ -733,7 +964,13 @@ mod building_height_tests {
     }
 }
 
-pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
+/// How worn a building looks: 0 sound, then worn, more worn, falling apart.
+fn wear_band(condition: f32) -> u8 {
+    if condition >= 0.75 { 0 } else if condition >= 0.5 { 1 } else if condition >= 0.25 { 2 } else { 3 }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>, clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
     let _p = ::sim::prof::scope("game/sync sim buildings");
     let Some(mut models) = models else { return };
     let changed = sim.is_changed();
@@ -756,6 +993,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
     st.time = sim.time_days;
     let white = models.white.clone();
     let mut live = HashSet::new();
+    let mut puffs: Vec<(Vec3, f32)> = Vec::new();
     let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: StructKind, len2: u32, stage: u8, tr: Transform| -> Entity {
         let mesh = models.structs.entry((kind, len2, stage)).or_insert_with(|| meshes.add(models::struct_mesh(kind, len2 as f32 * 0.5, stage))).clone();
         commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id()
@@ -771,7 +1009,28 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         live.insert(b.id);
         let stage = if sim.buildings.stranded(b, &sim.water.depth) { models::DRY_STAGE } else { models::stage_of(build_progress(sim, b)) };
         let sig = (b.kind, b.pos, stage);
+        // Wear: a finished building darkens and sags as it wears; mending it puffs dust.
+        let band = if b.is_complete() { wear_band(b.condition) } else { 0 };
+        let (was_band, was_cond, last_puff) = st.wear.get(&b.id).copied().unwrap_or((band, b.condition, -100.0));
+        let centre = {
+            let (w, d) = b.kind.spec().footprint;
+            let c = cell_xz(sim, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0));
+            Vec3::new(c.x, height_at(&sim.height, c.x, c.y), c.y)
+        };
+        let mut puffed = last_puff;
+        if b.condition > was_cond + 0.002 && clock.0 - last_puff > 1.2 {
+            puffs.push((centre + Vec3::new(0.0, 0.6, 0.0), 1.4));
+            puffed = clock.0;
+        }
+        st.wear.insert(b.id, (band, b.condition, puffed));
         if let Some(&(e, _)) = st.bld.get(&b.id).filter(|(_, s)| *s == sig) {
+            if band != was_band {
+                let mat = if band == 0 { white.clone() } else { models.wear[(band - 1) as usize].clone() };
+                commands.entity(e).insert(MeshMaterial3d(mat));
+                let tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
+                let sag = 1.0 - 0.04 * band as f32;
+                commands.entity(e).insert(super::effects::Grow { base: tr.scale * Vec3::new(1.0, sag, 1.0), from: Vec3::new(1.0, (1.0 - 0.04 * was_band as f32) / sag, 1.0), since: clock.0, secs: 1.5 });
+            }
             // A pond rising after the building went up lifts it with the water (never down).
             let anchor = st.anchors.get(&b.id).copied().unwrap_or(f32::MIN);
             let tr = building_transform(sim, b, Some(anchor));
@@ -781,13 +1040,20 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
             }
             continue;
         }
-        if let Some((old, _)) = st.bld.remove(&b.id) {
-            commands.entity(old).despawn();
-        }
+        let replaced = st.bld.remove(&b.id).map(|(old, _)| commands.entity(old).despawn()).is_some();
         let (w, _) = b.kind.spec().footprint;
         let tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
         st.anchors.insert(b.id, tr.translation.y);
         let e = spawn(&mut commands, &mut models, Target::Building(b.id), model_kind(b.kind), (w as u32 * 2).max(2), stage, tr);
+        if band > 0 {
+            commands.entity(e).insert(MeshMaterial3d(models.wear[(band - 1) as usize].clone()));
+        }
+        // A new stage (or the change to high and dry, or back) rises into place in a puff of
+        // dust; so does a new site.
+        if replaced || (!b.is_complete() && stage == 0) {
+            commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::new(1.02, 0.8, 1.02), since: clock.0, secs: 0.6 });
+            puffs.push((tr.translation + Vec3::new(0.0, 0.3, 0.0), 1.8));
+        }
         st.bld.insert(b.id, (e, sig));
     }
     let gone: Vec<BuildingId> = st.bld.keys().copied().filter(|id| !live.contains(id)).collect();
@@ -834,6 +1100,10 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
                 st.lodges.insert(l.id.0, (e, y));
             }
         }
+    }
+    drop(spawn);
+    for (at, size) in puffs {
+        super::effects::puff(&mut commands, &mut meshes, &mut materials, &mut puff_mesh, at, size);
     }
 }
 
@@ -1029,7 +1299,7 @@ pub struct DamSync {
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
     /// The walls as last worked out, and the `dams_key` they were worked out for.
     walls: HashMap<(usize, usize), (DamCellVis, bool)>,
-    key: Option<((u64, u64), (u64, u64), u64)>,
+    key: Option<(((u64, u64), (u64, u64), u64), usize)>,
 }
 
 /// Where a piece of wall stands in the world, turned to its line (and round, if flipped).
@@ -1040,7 +1310,7 @@ fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn
     Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw))
 }
 
-pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
+pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
     let _p = ::sim::prof::scope("game/sync sim dams");
     let Some(mut models) = models else { return };
     let generation = flow.map_or(0, |f| f.generation);
@@ -1058,9 +1328,11 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
     }
     st.time = sim.time_days;
     let st = &mut *st;
-    let key = dams_key(sim);
+    // A lock stands in place of its gate's wall.
+    let key = (dams_key(sim), sim.locks.at.values().filter(|l| l.built).count());
     if st.key != Some(key) {
         st.walls = dam_walls(sim);
+        st.walls.retain(|c, _| !sim::locks::is_lock(sim, *c));
         st.key = Some(key);
     } else {
         // No dam changed: only the cells that turn to face the lower water can have.
@@ -1076,9 +1348,11 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
     }
     let want: HashMap<(usize, usize), DamCellVis> = st.walls.iter().map(|(c, (vis, _))| (*c, *vis)).collect();
     let gone: Vec<(usize, usize)> = st.cells.iter().filter(|(c, (_, v))| want.get(*c) != Some(v)).map(|(c, _)| *c).collect();
+    let mut was_steps: HashMap<(usize, usize), u8> = HashMap::new();
     for c in gone {
-        if let Some((e, _)) = st.cells.remove(&c) {
+        if let Some((e, v)) = st.cells.remove(&c) {
             commands.entity(e).despawn();
+            was_steps.insert(c, v.steps);
         }
     }
     let white = models.white.clone();
@@ -1095,6 +1369,11 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
             .clone();
         let tr = piece_transform(sim, &vis.piece, vis.flip, |g| g);
         let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id();
+        // A gate going up or down, or a cell built up or worn down, eases to its new height.
+        if let Some(&old) = was_steps.get(&c).filter(|&&o| o != vis.steps && vis.steps > 0) {
+            let from = (old as f32 / vis.steps as f32).clamp(0.05, 4.0);
+            commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::new(1.0, from, 1.0), since: clock.0, secs: 1.0 });
+        }
         let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind == BuildingKind::Dam && b.cells().any(|cell| cell == c)).map(|b| b.id);
         if let Some(id) = owner { commands.entity(e).insert(Target::Building(id)); }
         st.cells.insert(c, (e, vis));
@@ -1189,14 +1468,14 @@ enum GroundKey {
 #[derive(Default)]
 pub struct GroundSync {
     generation: Option<(u64, u32)>,
-    drawn: HashMap<GroundKey, (Entity, ((usize, usize), u8))>,
+    drawn: HashMap<GroundKey, (Entity, ((usize, usize), (u8, u8)))>,
     meshes: HashMap<Option<sim::buildings::Good>, Handle<Mesh>>,
 }
 
 /// Goods lying on the ground and the family's starting supplies, each a heap sized by how
 /// much is left; an emptied heap is gone.
 pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
-    mut meshes: ResMut<Assets<Mesh>>, mut st: Local<GroundSync>) {
+    mut meshes: ResMut<Assets<Mesh>>, clock: Res<super::RenderClock>, mut st: Local<GroundSync>) {
     let _p = ::sim::prof::scope("game/sync ground goods");
     let Some(models) = models else { return };
     let s = &sim.0;
@@ -1213,8 +1492,19 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
         .piles
         .items
         .iter()
-        .map(|p| (GroundKey::Pile(p.id), p.cell, Some(p.good), (p.amount / load).cbrt().clamp(0.5, 1.8)))
+        .map(|p| {
+            // Rotting goods slump as they go.
+            let rot = (1.0 - p.days_left(s.time_days) / sim::piles::SPOIL_DAYS) as f32;
+            (GroundKey::Pile(p.id), p.cell, Some(p.good), (p.amount / load).cbrt().clamp(0.5, 1.8) * (1.0 - 0.25 * rot.clamp(0.0, 1.0)))
+        })
         .collect();
+    // How far each pile has rotted, by band: fresh, going off, rotten.
+    let rot_band = |key: GroundKey| -> u8 {
+        let GroundKey::Pile(id) = key else { return 0 };
+        let Some(p) = s.work.piles.get(id) else { return 0 };
+        let k = 1.0 - p.days_left(s.time_days) / sim::piles::SPOIL_DAYS;
+        if k < 0.45 { 0 } else if k < 0.8 { 1 } else { 2 }
+    };
     if let Some(c) = s.work.supplies {
         let start: f32 = sim::starts::START_BUNDLE.iter().map(|g| g.1).sum();
         let left: f32 = sim::buildings::Good::ALL.iter().map(|&g| s.work.stock_of(sim::agents::SUPPLIES, g)).sum();
@@ -1225,21 +1515,25 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
     let mut live = HashSet::new();
     for (key, cell, good, scale) in want {
         live.insert(key);
-        let sig = (cell, (scale * 20.0).round() as u8);
+        let band = rot_band(key);
+        let sig = (cell, ((scale * 20.0).round() as u8, band));
         if st.drawn.get(&key).is_some_and(|d| d.1 == sig) {
             continue;
         }
+        let mat = if band == 0 { models.white.clone() } else { models.rot[(band - 1) as usize].clone() };
         let p = cell_xz(s, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
         let yaw = hash01(cell.0, cell.1, 23) * std::f32::consts::TAU;
         let tr = Transform::from_xyz(p.x, height_at(&s.height, p.x, p.y), p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(scale));
         let mesh = st.meshes.entry(good).or_insert_with(|| meshes.add(match good { Some(g) => models::heap_mesh(g), None => models::supplies_mesh() })).clone();
         match st.drawn.get(&key) {
-            Some(&(e, _)) => {
-                commands.entity(e).insert(tr);
+            Some(&(e, (_, (old_scale, _)))) => {
+                // Shrinks smoothly to its new size.
+                let from = (old_scale as f32 / 20.0 / scale.max(0.01)).clamp(0.2, 5.0);
+                commands.entity(e).insert((tr, MeshMaterial3d(mat), super::effects::Grow { base: tr.scale, from: Vec3::splat(from), since: clock.0, secs: 0.8 }));
                 st.drawn.insert(key, (e, sig));
             }
             None => {
-                let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(models.white.clone()), tr)).id();
+                let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(mat), tr)).id();
                 st.drawn.insert(key, (e, sig));
             }
         }

@@ -1,8 +1,11 @@
+mod effects;
 mod gallery;
+mod harbor;
 mod meshgen;
 mod models;
 mod scene;
 mod structures;
+mod wildlife;
 pub mod sim_sync;
 pub mod sim_view;
 mod wolf;
@@ -16,21 +19,27 @@ use scene::*;
 use std::collections::HashMap;
 
 pub use scene::{height_at, lodge_view};
+pub use wolf::{AlarmSlaps, WolfDrawn};
 
 /// Beavers nearer the camera than this are fully rigged; the default camera sits ~150 away.
 const BEAVER_NEAR: f32 = 260.0;
 const TREE_LOD0: f32 = 220.0;
 const TREE_LOD1: f32 = 480.0;
 const SCREENSHOT_CLOCK: f32 = 31.0;
+/// How much bigger than its share of the load a carried good is drawn.
+const LOAD_LOOK: f32 = 1.5;
 pub struct EntitiesRenderPlugin;
 
 impl Plugin for EntitiesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderClock>()
+            .init_resource::<TailSlapTimes>()
+            .init_resource::<effects::PuffMesh>()
             .init_resource::<CurrentSeason>()
             .init_resource::<CanopyView>()
             .init_resource::<sim_sync::PendingDays>()
             .add_plugins(wolf::WolfPlugin)
+            .add_plugins(wildlife::WildlifePlugin)
             .add_systems(Startup, init_models)
             .add_systems(
                 Update,
@@ -38,6 +47,7 @@ impl Plugin for EntitiesRenderPlugin {
                     update_clock_and_season,
                     sim_sync::update_pending,
                     sim_sync::sync_sim_beavers,
+                    sim_sync::sync_bodies,
                     sim_sync::sync_sim_resources,
                     sim_sync::sync_sim_buildings,
                     sim_sync::sync_sim_dams,
@@ -56,12 +66,19 @@ impl Plugin for EntitiesRenderPlugin {
                 )
                     .chain()
                     .after(crate::terrain_render::update_season),
-            );
+            )
+            .add_systems(Update, (effects::grow, effects::puffs).chain().after(topple_trees))
+            .add_systems(Startup, harbor::init_harbor_meshes)
+            .add_systems(Update, (harbor::sync_locks, harbor::sync_barges, harbor::animate_locks).chain().after(sim_sync::sync_sim_dams));
     }
 }
 
 #[derive(Resource, Default)]
 struct RenderClock(f32);
+
+/// When each beaver last slapped its tail (render clock), by beaver id.
+#[derive(Resource, Default)]
+pub(crate) struct TailSlapTimes(pub HashMap<u64, f32>);
 
 #[derive(Resource)]
 struct CurrentSeason(Season);
@@ -88,6 +105,10 @@ struct Models {
     old_tree: Handle<StandardMaterial>,
     blob_mat: Handle<StandardMaterial>,
     wake_mat: Handle<StandardMaterial>,
+    /// A building's surface as it wears: worn, more worn, falling apart.
+    wear: [Handle<StandardMaterial>; 3],
+    /// Goods on the ground as they rot: going off, rotten.
+    rot: [Handle<StandardMaterial>; 2],
     trees: Vec<Handle<Mesh>>,
     cutaway_trees: Vec<Handle<Mesh>>,
     snag: Handle<Mesh>,
@@ -98,6 +119,7 @@ struct Models {
     leg_hind: Handle<Mesh>,
     lids: Handle<Mesh>,
     chips: Handle<Mesh>,
+    grey: Handle<Mesh>,
     loads: Vec<Handle<Mesh>>,
     paw_loads: Vec<Handle<Mesh>>,
     felled: Vec<Handle<Mesh>>,
@@ -154,6 +176,34 @@ pub struct BeaverSprite {
     pub load: Option<(sim::buildings::Good, f32)>,
     pub yaw: f32,
     pub wet: bool,
+    pub look: Look,
+}
+
+/// How a beaver's state shows on whatever it is doing, each 0 (not at all) to 1 (badly).
+#[derive(Clone, Copy, Debug)]
+pub struct Look {
+    pub thin: f32,
+    pub cold: f32,
+    pub hurt: f32,
+    pub tired: f32,
+    pub old: f32,
+    pub sad: f32,
+    /// Pregnancy, 0 at conception to 1 at birth.
+    pub belly: f32,
+    /// Render-clock time of its last tail slap.
+    pub slap: f32,
+    /// For a body: render-clock time it fell, and whether it lies curled up.
+    pub dead: Option<(f32, bool)>,
+    /// How far a body has sunk away, 0 to 1.
+    pub fade: f32,
+    /// How far under the water it is, diving into or out of its lodge, 0 to 1.
+    pub sink: f32,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { thin: 0.0, cold: 0.0, hurt: 0.0, tired: 0.0, old: 0.0, sad: 0.0, belly: 0.0, slap: -100.0, dead: None, fade: 0.0, sink: 0.0 }
+    }
 }
 
 /// A beaver is a pivot (the body's motion) with the body mesh, head, tail and legs under it.
@@ -168,6 +218,7 @@ pub(crate) struct BeaverRig {
     paws: Entity,
     lids: Entity,
     chips: Entity,
+    grey: Entity,
     wake: Entity,
     blob: Entity,
     prev: Pose,
@@ -202,6 +253,17 @@ pub fn age_scale(stage: sim::colony::Stage) -> f32 {
     }
 }
 
+/// A beaver's size by its age: growing steadily from a newborn to full size, with no jump
+/// when it moves up a stage.
+pub fn age_scale_days(age_days: f32) -> f32 {
+    use sim::colony::{ADULT_DAYS, KIT_DAYS};
+    if age_days < KIT_DAYS {
+        0.55 + (0.74 - 0.55) * (age_days / KIT_DAYS).clamp(0.0, 1.0)
+    } else {
+        0.74 + (1.0 - 0.74) * ((age_days - KIT_DAYS) / (ADULT_DAYS - KIT_DAYS)).clamp(0.0, 1.0)
+    }
+}
+
 /// Clay and food are hugged to the chest; sticks are carried in the teeth.
 fn held_in_paws(good: sim::buildings::Good) -> bool {
     good != sim::buildings::Good::Sticks
@@ -226,6 +288,9 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         unlit: true,
         ..default()
     });
+    let tint = |m: &mut Assets<StandardMaterial>, r: f32, g: f32, b: f32| m.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN * r, ENTITY_GAIN * g, ENTITY_GAIN * b), perceptual_roughness: 1.0, reflectance: 0.0, ..default() });
+    let wear = [tint(&mut materials, 0.86, 0.84, 0.8), tint(&mut materials, 0.72, 0.7, 0.66), tint(&mut materials, 0.58, 0.56, 0.54)];
+    let rot = [tint(&mut materials, 0.84, 0.86, 0.66), tint(&mut materials, 0.56, 0.6, 0.42)];
     let mut trees = Vec::new();
     for sp in SPECIES {
         for season in Season::all() {
@@ -245,6 +310,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let leg_front = build(&|m| models::beaver_leg(m, true));
     let leg_hind = build(&|m| models::beaver_leg(m, false));
     let lids = build(&models::beaver_lids);
+    let grey = build(&models::beaver_grey);
     let chips = build(&models::gnaw_chips);
     let far = build(&models::beaver_static);
     let wake = build(&models::wake);
@@ -255,6 +321,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         old_tree,
         blob_mat,
         wake_mat,
+        wear,
+        rot,
         trees,
         cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
         snag: meshes.add(models::snag_mesh()),
@@ -265,6 +333,7 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         leg_hind,
         lids,
         chips,
+        grey,
         loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
         paw_loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::paw_load_mesh(*g))).collect(),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
@@ -311,11 +380,12 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
             }
             paws = p.spawn((Mesh3d(m.paw_loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::CHEST_HOLD), Visibility::Hidden)).id();
         });
-        let (mut mouth, mut lids, mut chips) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
+        let (mut mouth, mut lids, mut chips, mut grey) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(parts[0]).with_children(|p| {
             mouth = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::MOUTH), Visibility::Hidden)).id();
             lids = p.spawn((Mesh3d(m.lids.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            grey = p.spawn((Mesh3d(m.grey.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
         commands.entity(root).with_children(|p| {
             far = p.spawn((target, Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
@@ -323,7 +393,7 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });
         commands.entity(root).insert(BeaverRig {
-            body, body_mesh, far, parts, mouth, paws, lids, chips, wake, blob,
+            body, body_mesh, far, parts, mouth, paws, lids, chips, grey, wake, blob,
             prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, shown: (None, None),
             stride: sprite.id as f32 * 1.7, speed: 0.0, last_pos: None,
         });
@@ -495,7 +565,7 @@ fn hug_walk_rig(ph: f32) -> Rig {
     r
 }
 
-fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
+fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait, look: &Look) -> Rig {
     let rx = Quat::from_rotation_x;
     let ry = Quat::from_rotation_y;
     let rz = Quat::from_rotation_z;
@@ -594,6 +664,113 @@ fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
             r.parts[5].1 = rx(-0.5);
             r.parts[6].1 = rx(-0.5);
         }
+        // Flat out from a wolf: a full bound, head stretched low, tail up behind.
+        Pose::Run => {
+            r = travel_rig(Gait { run: 1.0, ..g }, -0.15);
+            r.parts[2].1 = rx(TAIL_DOWN + 0.55 + 0.1 * (g.phase - 0.6).sin());
+        }
+        // Taking up or setting down a load: a bow to the ground, forepaws gathering, and up.
+        Pose::Handle => {
+            let k = (t * 1.1 + id).rem_euclid(1.0);
+            let bow = smooth(0.0, 0.35, k) * (1.0 - smooth(0.6, 1.0, k));
+            r.pivot_body(HIPS, rx(0.32 * bow));
+            r.parts[1].1 = rx(0.35 * bow) * ry(0.08 * (t * 1.3 + id).sin());
+            let a = -0.2 - 1.0 * bow;
+            r.parts[3].1 = rx(a + 0.1 * (t * 9.0).sin() * bow);
+            r.parts[4].1 = rx(a - 0.1 * (t * 9.0).sin() * bow);
+            r.parts[2].1 = rx(TAIL_DOWN - 0.05) * ry(0.1 * (t * 1.7 + id).sin());
+            r.hold = Rig::paw_tip(a) + Vec3::new(0.0, 0.04, 0.05);
+        }
+        // Mending: patting mud onto the wall in quick dabs, then a slap of the tail to tamp it.
+        Pose::Mend => {
+            let k = (t * 0.55 + id).rem_euclid(1.0);
+            let dab = (t * 6.0 + id).sin().max(0.0);
+            let tamp = smooth(0.72, 0.8, k) * (1.0 - smooth(0.82, 0.92, k));
+            r.pivot_body(HIPS, rx(0.06 + 0.06 * dab));
+            r.parts[1].1 = rx(0.32 + 0.08 * dab) * ry(0.12 * (t * 0.9 + id).sin());
+            r.parts[3].1 = rx(-1.25 + 0.5 * dab);
+            r.parts[4].1 = rx(-1.25 + 0.5 * (t * 6.0 + id + 1.6).sin().max(0.0));
+            r.parts[5].1 = rx(-0.15);
+            r.parts[6].1 = rx(-0.15);
+            // The tail swings up, then smacks flat.
+            r.parts[2].1 = rx(TAIL_DOWN + 1.1 * tamp - 0.15 * smooth(0.8, 0.84, k) * (1.0 - smooth(0.86, 0.95, k)));
+            r.hold = Rig::paw_tip(-1.25 + 0.5 * dab) + Vec3::new(0.0, 0.02, 0.06);
+        }
+        // On watch: sitting up tall, turning slowly to scan, now and then lifting the nose.
+        Pose::Watch => {
+            let br = (t * 1.6 + id).sin();
+            r = sit_rig(-1.05, br);
+            let scan = (t * 0.45 + id).sin();
+            let sniff = window((t * 0.13 + id).rem_euclid(1.0), 0.6, 0.75, 0.04);
+            r.parts[1].1 = ry(0.85 * scan) * rx(0.85 - 0.35 * sniff + 0.05 * (t * 14.0).sin() * sniff);
+            r.parts[3].1 = rx(-1.7);
+            r.parts[4].1 = rx(-1.7);
+        }
+        // Courting: nose to nose with its mate, nuzzling, and sitting up together now and then.
+        Pose::Court => {
+            let br = (t * 1.6 + id).sin();
+            let c = (t * 0.25).rem_euclid(1.0);
+            let up = window(c, 0.45, 0.85, 0.08);
+            let nuzzle = (t * 2.4).sin();
+            r.pivot_body(HIPS, rx(0.12 * (1.0 - up)));
+            r.parts[0].0.y += 0.01 * br;
+            r.parts[1].1 = rx(0.2 + 0.12 * nuzzle) * rz(0.18 * (t * 1.2 + id).sin());
+            r.parts[2].1 = rx(TAIL_DOWN) * ry(0.35 * (t * 2.0 + id).sin());
+            if up > 0.0 {
+                let mut s = sit_rig(-0.9, br);
+                s.parts[1].1 = rx(0.4 + 0.08 * nuzzle);
+                s.parts[3].1 = rx(-1.8 + 0.12 * nuzzle);
+                s.parts[4].1 = rx(-1.8 - 0.12 * nuzzle);
+                r = r.lerp(&s, up);
+            }
+        }
+        // Grooming: sitting, turned to the other, combing its fur with the forepaws.
+        Pose::Groom => {
+            let br = (t * 1.6 + id).sin();
+            r = sit_rig(-0.6, br);
+            let comb = (t * 5.5 + id).sin();
+            r.parts[1].1 = rx(0.55 + 0.1 * comb) * ry(0.1 * (t * 0.7).sin());
+            r.parts[3].1 = rx(-1.6 + 0.35 * comb);
+            r.parts[4].1 = rx(-1.6 - 0.35 * comb);
+        }
+        // Pinned: thrown on its side, legs paddling, head thrashing.
+        Pose::Caught => {
+            let w = t * 24.0 + id;
+            r.parts[0].0.y = -0.12 + 0.03 * (t * 13.0).sin();
+            r.parts[0].1 = rz(1.25 + 0.12 * (t * 9.0).sin());
+            r.parts[1].1 = rx(-0.2 + 0.35 * (t * 11.0).sin()) * ry(0.4 * (t * 7.0).sin());
+            r.parts[2].1 = rx(TAIL_DOWN + 0.6 * (t * 10.0).sin());
+            for (k, ph) in [(3usize, 0.0f32), (4, 1.6), (5, 3.1), (6, 4.7)] {
+                r.parts[k].1 = rx(0.9 * (w + ph).sin());
+            }
+        }
+        // Dead: it falls over in a moment and lies still, on its side or curled up.
+        Pose::Dead => {
+            let (since, curled) = look.dead.unwrap_or((t - 10.0, false));
+            let k = smooth(0.0, 0.8, t - since);
+            let bounce = 0.04 * (smooth(0.55, 0.7, t - since) * (1.0 - smooth(0.7, 0.95, t - since)));
+            let mut d = Rig::rest();
+            d.parts[0].0.y = if curled { -0.16 } else { -0.02 } + bounce;
+            if curled {
+                d.parts[0].1 = rz(0.5) * ry(0.25);
+                d.parts[1].1 = ry(-0.9) * rx(0.5);
+                d.parts[2].1 = rx(TAIL_DOWN) * ry(1.2);
+                for leg in 3..7 {
+                    d.parts[leg].1 = rx(-1.0);
+                }
+            } else {
+                d.parts[0].1 = rz(1.4);
+                d.parts[1].1 = rx(0.3) * rz(0.2);
+                d.parts[2].1 = rx(TAIL_DOWN) * ry(0.3);
+                for (leg, a) in [(3usize, 0.5f32), (4, 0.2), (5, -0.4), (6, -0.1)] {
+                    d.parts[leg].1 = rx(a);
+                }
+            }
+            d.squash = Vec3::new(1.03, 0.94, 1.0);
+            r = Rig::rest().lerp(&d, k);
+            // Sinking away at the end.
+            r.parts[0].0.y -= 0.5 * look.fade;
+        }
         // Swimming low: only the head, a strip of back and the tail at the surface.
         Pose::Swim => {
             let p2 = g.phase + t * 3.0;
@@ -614,6 +791,58 @@ fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
 
 /// How far a swimming beaver's body sinks below the surface (model units).
 const SWIM_DEPTH: f32 = -0.68;
+
+/// How long a tail slap takes, in seconds.
+const SLAP_S: f32 = 0.6;
+
+/// A beaver's state shown over what it is doing: thin and head down when hungry, hunched and
+/// shivering when cold, limping when hurt, drooping when worn out, stooped when old, head and
+/// tail low when unhappy, a round belly late in pregnancy; and a tail slap, and sinking under
+/// the water at a lodge.
+fn apply_look(r: &mut Rig, look: &Look, pose: Pose, t: f32, id: f32, g: Gait) {
+    let (rx, ry, rz) = (Quat::from_rotation_x, Quat::from_rotation_y, Quat::from_rotation_z);
+    if pose == Pose::Dead {
+        return;
+    }
+    let travel = matches!(pose, Pose::Walk | Pose::Carry | Pose::Run | Pose::Climb);
+    let droop = 0.18 * look.thin + 0.22 * look.tired + 0.25 * look.sad + 0.1 * look.old;
+    r.parts[1].1 = rx(droop) * r.parts[1].1;
+    r.parts[2].1 = rx(-0.15 * look.sad - 0.08 * look.tired) * r.parts[2].1;
+    // Hunger shows as a lean, narrow body: a hungry beaver looks it from any side.
+    r.squash.x *= 1.0 - 0.2 * look.thin + 0.16 * look.belly;
+    r.squash.y *= 1.0 - 0.13 * look.thin - 0.05 * look.cold + 0.08 * look.belly;
+    r.squash.z *= 1.0 - 0.06 * look.thin;
+    if look.cold > 0.0 {
+        // Hunched, shivering in quick small shakes.
+        let shiver = 0.035 * look.cold * (t * 42.0 + id).sin();
+        r.parts[0].1 = rz(shiver) * rx(0.06 * look.cold) * r.parts[0].1;
+        r.parts[1].0.z -= 0.06 * look.cold;
+        r.parts[1].0.y -= 0.04 * look.cold;
+    }
+    if look.old > 0.0 {
+        r.parts[0].1 = rx(0.07 * look.old) * r.parts[0].1;
+    }
+    if look.hurt > 0.0 {
+        // Holding up the hurt hind leg; a hobbling roll on the move.
+        let held = rx(-0.75);
+        r.parts[6].1 = r.parts[6].1.slerp(held, (if travel { 0.85 } else { 0.5 }) * look.hurt);
+        if travel {
+            r.parts[0].1 = rz(0.09 * look.hurt * g.phase.sin()) * r.parts[0].1;
+            r.parts[0].0.y += 0.03 * look.hurt * g.phase.sin().abs();
+        }
+    }
+    let since = t - look.slap;
+    if (0.0..SLAP_S).contains(&since) {
+        // Up high, then down flat on the water with a jolt of the body.
+        let up = smooth(0.0, 0.18, since) * (1.0 - smooth(0.22, 0.3, since));
+        let hit = smooth(0.24, 0.3, since) * (1.0 - smooth(0.4, SLAP_S, since));
+        r.parts[2].1 = rx(TAIL_DOWN + 1.5 * up - 0.35 * hit) * ry(0.0);
+        r.parts[0].0.y += 0.06 * up - 0.05 * hit;
+        r.parts[0].1 = rx(0.12 * up) * r.parts[0].1;
+    }
+    r.parts[0].0.y -= 1.3 * look.sink;
+    let _ = ry;
+}
 
 fn chip_flight(t: f32, id: f32) -> Transform {
     let k = t * 2.3 + id;
@@ -702,15 +931,18 @@ fn animate_beavers(
         // Swimming and climbing need the forepaws, so then everything is carried in the teeth.
         let paws_free = !matches!(sprite.pose, Pose::Swim | Pose::Climb);
         let hug = paws_free && good.is_some_and(held_in_paws);
-        let load_scale = sprite.load.map_or(1.0, |(g, amount)| 0.75 + 0.5 * (amount / sim::agents::load_size(g)).clamp(0.0, 1.0));
+        // Loads are drawn larger than life so what a beaver carries reads from the usual camera.
+        let load_scale = sprite.load.map_or(1.0, |(g, amount)| LOAD_LOOK * (0.75 + 0.5 * (amount / sim::agents::load_size(g)).clamp(0.0, 1.0)));
         rig.init = true;
         if !near {
             continue;
         }
         let g = Gait { phase: rig.stride, run, hug };
-        let a = pose_rig(rig.cur, clock.0, id, g);
+        let look = &sprite.look;
+        let a = pose_rig(rig.cur, clock.0, id, g, look);
         let blend = rig.blend * rig.blend * (3.0 - 2.0 * rig.blend);
-        let r = if blend < 1.0 { pose_rig(rig.prev, clock.0, id, g).lerp(&a, blend) } else { a };
+        let mut r = if blend < 1.0 { pose_rig(rig.prev, clock.0, id, g, look).lerp(&a, blend) } else { a };
+        apply_look(&mut r, look, rig.cur, clock.0, id, g);
         let ents = [rig.body, rig.parts[0], rig.parts[1], rig.parts[2], rig.parts[3], rig.parts[4], rig.parts[5]];
         for (e, (pos, rot)) in ents.iter().zip(r.parts.iter()) {
             if let Ok(mut t) = parts.get_mut(*e) {
@@ -740,12 +972,15 @@ fn animate_beavers(
             t.scale = Vec3::splat(if foraging { 0.45 } else { load_scale });
         }
         if let Ok(mut t) = parts.get_mut(rig.paws) {
-            t.translation = r.hold;
             let gather = if rig.cur == Pose::Dig { 0.45 + 0.35 * (clock.0 * 0.4 + id).rem_euclid(1.0) } else if working_mud { 0.7 } else { load_scale };
+            // A big armful sits lower, under the chin rather than over it.
+            t.translation = r.hold - Vec3::Y * 0.2 * (gather - 1.0).max(0.0);
             t.scale = Vec3::splat(gather);
         }
-        let shut = rig.cur == Pose::Rest || blinking(clock.0, id);
+        let heavy = sprite.look.tired > 0.6 && (clock.0 * 0.4 + id).rem_euclid(1.0) < 0.35;
+        let shut = matches!(rig.cur, Pose::Rest | Pose::Dead) || blinking(clock.0, id) || heavy;
         show(&mut vis, rig.lids, shut);
+        show(&mut vis, rig.grey, sprite.look.old > 0.4);
         let gnawing = rig.cur == Pose::Gnaw;
         show(&mut vis, rig.chips, gnawing);
         if gnawing {

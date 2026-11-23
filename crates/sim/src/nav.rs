@@ -18,6 +18,8 @@ pub enum Surface {
     Thicket,
     LodgeEntrance,
     LodgeInside,
+    /// A gate upgraded into a lock: swum through, one passage at a time (see `locks`).
+    Lock,
 }
 
 pub fn shared(s: Surface) -> bool {
@@ -35,10 +37,26 @@ pub enum Gait {
 }
 
 const COST_UNIT: f32 = 1000.0;
-const MIN_STEP: u32 = (CANAL_COST * COST_UNIT) as u32;
 
-pub(crate) fn minimum_cost(steps: usize) -> f32 {
-    (steps as u32).saturating_mul(MIN_STEP) as f32 / COST_UNIT
+/// Where a beaver swims (and the current carries it): along a canal (0) or other water (1).
+fn lane(s: Surface) -> Option<usize> {
+    match NavGrid::step_cost(s) {
+        Some((_, Gait::Swim)) => Some((s != Surface::Canal) as usize),
+        _ => None,
+    }
+}
+
+/// What a swimmer at `pace` spends on each cell of a step onto a cell costing `base` in still
+/// water, with the current `drift` (in swim speeds, `SWIM_SPEED_M_S`) along the step: its own
+/// speed there plus the current's, never under `MIN_SWIM_SHARE` of its own, so it can still
+/// work its way up a current faster than it swims. Movement is budgeted at `pace` (see
+/// `agents::follow`), so the cost is that budget over the speed.
+fn swim_cost(base: f32, drift: f32, pace: f32) -> f32 {
+    if drift == 0.0 {
+        return base;
+    }
+    let own = pace / base;
+    pace / (own + drift / SWIM_COST).max(MIN_SWIM_SHARE * own)
 }
 
 pub fn lodge_entrance(pos: Cell) -> Cell {
@@ -82,9 +100,17 @@ pub struct NavGrid {
     wet_surface: Vec<Surface>,
     /// Canal cells deep enough to float a load (refreshed with the daily rebuild).
     floating: Vec<bool>,
+    /// Each cell's water current along x and y, in swim speeds (m/s over `SWIM_SPEED_M_S`).
+    /// Taken from the water at every refresh, so not saved; none until the first.
+    #[serde(skip)]
+    current: Vec<(f32, f32)>,
+    /// No current swum along a canal (0) or other water (1) is faster than this, in swim
+    /// speeds: bounds how cheap a step can be.
+    #[serde(skip)]
+    fastest: [f32; 2],
 }
 
-crate::grid::clone_fields!(NavGrid { surface, reserved, lodge, region, regions_ok, labelled, labelled_lodge, refresh_key, dry_surface, wet_surface, floating });
+crate::grid::clone_fields!(NavGrid { surface, reserved, lodge, region, regions_ok, labelled, labelled_lodge, refresh_key, dry_surface, wet_surface, floating, current, fastest });
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Scratch {
@@ -131,10 +157,11 @@ impl Scratch {
     }
 }
 
-/// Lower bound on the cost of a route `dx` by `dy` cells when diagonal steps cost √2.
-fn octile(dx: usize, dy: usize) -> u32 {
+/// Lower bound on the cost of a route `dx` by `dy` cells when a step costs at least `min` a
+/// cell and diagonal steps are √2 long.
+fn octile(dx: usize, dy: usize, min: u32) -> u32 {
     let (a, b) = (dx.max(dy) as f32, dx.min(dy) as f32);
-    ((a + (std::f32::consts::SQRT_2 - 1.0) * b) * MIN_STEP as f32) as u32
+    ((a + (std::f32::consts::SQRT_2 - 1.0) * b) * min as f32) as u32
 }
 
 /// Cost factor of a step: √2 for a diagonal one.
@@ -164,7 +191,73 @@ impl NavGrid {
             dry_surface: vec![Surface::Land;width*height],
             wet_surface: vec![Surface::Water;width*height],
             floating: vec![false;width*height],
+            current: Vec::new(),
+            fastest: [0.0; 2],
         }
+    }
+
+    /// The least a step can cost a cell (in `COST_UNIT`s, rounded down): swimming a canal or
+    /// other water with the fastest current there behind it. Bounds the cost of a route,
+    /// keeping the search exact.
+    fn min_step(&self) -> u32 {
+        let cheapest = swim_cost(CANAL_COST, self.fastest[0], 1.0).min(swim_cost(SWIM_COST, self.fastest[1], 1.0));
+        ((cheapest * COST_UNIT) as u32).saturating_sub(1).max(1)
+    }
+
+    /// Least cost of a route of `steps` steps.
+    pub(crate) fn minimum_cost(&self, steps: usize) -> f32 {
+        (steps as u32).saturating_mul(self.min_step()) as f32 / COST_UNIT
+    }
+
+    /// The water's current at a cell, in swim speeds along x and y.
+    fn current_of(&self, i: usize) -> (f32, f32) {
+        self.current.get(i).copied().unwrap_or((0.0, 0.0))
+    }
+
+    /// Sets a cell's current (m/s along x and y), as a refresh takes it from the water.
+    pub fn set_current(&mut self, cell: Cell, (vx, vy): (f32, f32)) {
+        let (w, n) = (self.surface.width(), self.surface.as_slice().len());
+        if self.current.len() != n {
+            self.current = vec![(0.0, 0.0); n];
+        }
+        let c = (vx / SWIM_SPEED_M_S, vy / SWIM_SPEED_M_S);
+        self.current[cell.1 * w + cell.0] = c;
+        if let Some(k) = self.surface_at(cell).and_then(lane) {
+            self.fastest[k] = self.fastest[k].max(c.0.hypot(c.1));
+        }
+    }
+
+    /// Takes the water's currents: every cell's (`all`), or those changed since last taken.
+    /// `fastest` is kept above the current of every cell swum (a thin sheet of water running
+    /// over dry ground can be far faster, but is walked).
+    fn take_currents(&mut self, water: &crate::water::Water, all: bool) {
+        let v = water.velocity.as_slice();
+        let scale = 1.0 / SWIM_SPEED_M_S;
+        let speed2 = |c: (f32, f32)| c.0 * c.0 + c.1 * c.1;
+        let surf = self.surface.as_slice();
+        let mut top = [0.0f32; 2];
+        if all || self.current.len() != v.len() || surf.len() != v.len() {
+            self.current.clear();
+            self.current.extend(v.iter().map(|&(x, y)| (x * scale, y * scale)));
+            for (&c, &s) in self.current.iter().zip(surf) {
+                if let Some(k) = lane(s) {
+                    top[k] = top[k].max(speed2(c));
+                }
+            }
+        } else {
+            top = self.fastest.map(|f| f * f);
+            for &i in water.current_changes() {
+                let (x, y) = v[i as usize];
+                self.current[i as usize] = (x * scale, y * scale);
+            }
+            // Cells whose current changed, or newly under water.
+            for i in water.current_changes().iter().map(|&i| i as usize).chain(water.nav_cells.iter().copied()) {
+                if let Some(k) = lane(surf[i]) {
+                    top[k] = top[k].max(speed2(self.current[i]));
+                }
+            }
+        }
+        self.fastest = top.map(f32::sqrt);
     }
 
     pub fn label_regions(&mut self) {
@@ -267,6 +360,9 @@ impl NavGrid {
                 buildings=(buildings^value).wrapping_mul(0x100000001b3);
             }
         }
+        for l in sim.locks.at.values().filter(|l|l.built) {
+            buildings=(buildings^((l.cell.0 as u64)<<32|l.cell.1 as u64)).wrapping_mul(0x100000001b3);
+        }
         (sim.water.nav_revision,sim.water.topology_revision,buildings,sim.resources.nav_revision(),sim.resources.items().len(),sim.time_days.floor() as u64)
     }
 
@@ -288,6 +384,7 @@ impl NavGrid {
                 if connectivity {self.label_regions();}
             }
             self.refresh_key=Some(key);
+            self.take_currents(&sim.water,false);
         } else {self.rebuild(sim);}
         sim.water.clear_navigation_changes();
     }
@@ -316,12 +413,18 @@ impl NavGrid {
                 _=>for (x,y) in b.cells() {self.dry_surface[y*w+x]=Surface::Solid;self.wet_surface[y*w+x]=Surface::Solid;},
             }
         }
+        // A lock is swum through, whatever the water there.
+        for l in sim.locks.at.values().filter(|l|l.built) {
+            let i=l.cell.1*w+l.cell.0;
+            if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Lock;self.wet_surface[i]=Surface::Lock;}
+        }
         for r in sim.resources.items().iter().filter(|r|r.is_solid()) {
             let i=r.cell.1*w+r.cell.0;
             if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind==crate::resources::ResourceKind::Tree {Surface::Thicket} else {Surface::Solid};}
         }
         for (i,&d) in depth.iter().enumerate() {self.surface.as_mut_slice()[i]=if d>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};}
         self.label_regions();self.refresh_key=Some(Self::key(sim));
+        self.take_currents(&sim.water,true);
     }
 
     pub fn set(&mut self, cell: Cell, s: Surface) {
@@ -331,6 +434,9 @@ impl NavGrid {
                 self.regions_ok = false;
             }
             *slot = s;
+            if let (Some(k), Some(c)) = (lane(s), self.current.get(cell.1 * self.surface.width() + cell.0)) {
+                self.fastest[k] = self.fastest[k].max(c.0.hypot(c.1));
+            }
         }
     }
 
@@ -352,12 +458,33 @@ impl NavGrid {
         }
     }
 
+    /// What a step from `from` onto the neighbouring cell `to` costs a beaver moving at `pace`
+    /// (`agents::pace`), in the movement budget it spends: the surface's cost (`step_cost`), a
+    /// swimmer's sped up or slowed by the current along the step. `None` for a solid cell.
+    pub fn move_cost(&self, from: Cell, to: Cell, pace: f32) -> Option<f32> {
+        let (dx, dy) = (to.0 as f32 - from.0 as f32, to.1 as f32 - from.1 as f32);
+        let len = step_length(from, to);
+        Some(len * self.cost_toward(to, (dx / len, dy / len), pace)?)
+    }
+
+    /// As `move_cost`, for each cell of a move onto `to` heading `dir` (a unit vector in cells).
+    pub fn cost_toward(&self, to: Cell, dir: (f32, f32), pace: f32) -> Option<f32> {
+        let (base, gait) = Self::step_cost(self.surface_at(to)?)?;
+        if gait != Gait::Swim {
+            return Some(base);
+        }
+        let c = self.current_of(to.1 * self.surface.width() + to.0);
+        Some(swim_cost(base, c.0 * dir.0 + c.1 * dir.1, pace))
+    }
+
     pub fn step_cost(to: Surface) -> Option<(f32, Gait)> {
         match to {
             Surface::Land | Surface::LodgeInside => Some((WALK_COST, Gait::Walk)),
             Surface::Water | Surface::LodgeEntrance => Some((SWIM_COST, Gait::Swim)),
             Surface::Canal => Some((CANAL_COST, Gait::Swim)),
             Surface::Dam => Some((CLIMB_COST, Gait::Climb)),
+            // Waiting out the gates and the chamber filling or draining.
+            Surface::Lock => Some((crate::locks::LOCK_PASS_DAYS * crate::agents::MOVE_COST_PER_DAY, Gait::Swim)),
             Surface::Thicket => Some((THICKET_COST, Gait::Walk)),
             Surface::Solid => None,
         }
@@ -402,7 +529,8 @@ impl NavGrid {
         let is_goal = |c: Cell| {
             if beside { c.0.abs_diff(target.0) + c.1.abs_diff(target.1) == 1 } else { c == target }
         };
-        let heur = |c: Cell| octile(c.0.abs_diff(target.0), c.1.abs_diff(target.1)).saturating_sub(beside as u32 * MIN_STEP);
+        let min = self.min_step();
+        let heur = |c: Cell| octile(c.0.abs_diff(target.0), c.1.abs_diff(target.1), min).saturating_sub(beside as u32 * min);
         self.search(who, from, is_goal, heur)
     }
 
@@ -418,10 +546,11 @@ impl NavGrid {
         let (x0, x1) = (targets.iter().map(|t| t.0).min()?, targets.iter().map(|t| t.0).max()?);
         let (y0, y1) = (targets.iter().map(|t| t.1).min()?, targets.iter().map(|t| t.1).max()?);
         let is_goal = |c: Cell| targets.iter().any(|t| c.0.abs_diff(t.0) + c.1.abs_diff(t.1) == 1);
+        let min = self.min_step();
         let heur = |c: Cell| {
             let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
             let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
-            octile(dx, dy).saturating_sub(MIN_STEP)
+            octile(dx, dy, min).saturating_sub(min)
         };
         self.search(who, from, is_goal, heur)
     }
@@ -438,10 +567,11 @@ impl NavGrid {
         }
         let (x0, x1) = (ends.iter().map(|t| t.0).min()?, ends.iter().map(|t| t.0).max()?);
         let (y0, y1) = (ends.iter().map(|t| t.1).min()?, ends.iter().map(|t| t.1).max()?);
+        let min = self.min_step();
         let heur = |c: Cell| {
             let dx = if c.0 < x0 { x0 - c.0 } else { c.0.saturating_sub(x1) };
             let dy = if c.1 < y0 { y0 - c.1 } else { c.1.saturating_sub(y1) };
-            octile(dx, dy)
+            octile(dx, dy, min)
         };
         self.search(who, from, |c| ends.contains(&c), heur)
     }
@@ -487,7 +617,7 @@ impl NavGrid {
                 // a wall, a building or a lodge), and never leads into or out of a lodge.
                 let open = |k: usize| Self::step_cost(surf[k]).is_some() && !blocked(k) && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
                 for j in nbrs.into_iter().flatten() {
-                    let Some((c, _)) = Self::step_cost(surf[j]) else { continue };
+                    let Some((c, gait)) = Self::step_cost(surf[j]) else { continue };
                     let to = (j % w, j / w);
                     if !self.can_step_surf(surf[i], surf[j], cur, to) || blocked(j) {
                         continue;
@@ -496,7 +626,16 @@ impl NavGrid {
                     if diagonal && !(open(i) && open(j) && open(y * w + to.0) && open(to.1 * w + x)) {
                         continue;
                     }
-                    let ng = g + (c * step_length(cur, to) * COST_UNIT).round() as u32;
+                    // Routes are timed: a swimmer goes faster with the current than against it
+                    // (as `cost_toward`, at full pace).
+                    let len = if diagonal { std::f32::consts::SQRT_2 } else { 1.0 };
+                    let c = if gait == Gait::Swim {
+                        let v = self.current_of(j);
+                        swim_cost(c, (v.0 * (to.0 as f32 - x as f32) + v.1 * (to.1 as f32 - y as f32)) / len, 1.0)
+                    } else {
+                        c
+                    };
+                    let ng = g + (c * len * COST_UNIT).round() as u32;
                     if sc.best(j).is_none_or(|old| ng < old) {
                         sc.set(j, ng, i as u32);
                         sc.heap.push(Reverse(pack(ng + heur((j % w, j / w)), j)));
@@ -567,5 +706,34 @@ mod diagonal_tests {
         nav.set((2, 1), Surface::Solid);
         let q = nav.find_path(who, (1, 1), Goal::Cell((2, 2))).unwrap();
         assert!(q.steps.iter().all(|&(c, _)| c != (2, 2)) || q.steps.len() > 1, "{:?}", q.steps);
+    }
+}
+
+#[cfg(test)]
+mod current_tests {
+    use super::*;
+
+    #[test]
+    fn the_nav_keeps_the_water_current() {
+        let mut s = crate::SimState::new(1);
+        let n = s.world.size;
+        let mut nav = NavGrid::new(n, n);
+        nav.rebuild(&s);
+        let mut moving = 0;
+        for _ in 0..24 {
+            s.step(crate::STEP_DAYS).unwrap();
+            nav.refresh(&mut s);
+            for (c, v) in nav.current.iter().zip(s.water.velocity.as_slice()) {
+                let scale = 1.0 / SWIM_SPEED_M_S;
+                assert_eq!(*c, (v.0 * scale, v.1 * scale));
+            }
+            for (c, &s) in nav.current.iter().zip(nav.surface.as_slice()) {
+                if let Some(k) = lane(s) {
+                    assert!(c.0.hypot(c.1) <= nav.fastest[k] + 1e-6, "{c:?} over {:?}", nav.fastest);
+                }
+            }
+            moving = moving.max(nav.current.iter().filter(|c| c.0 != 0.0 || c.1 != 0.0).count());
+        }
+        assert!(moving > 0, "no water moved");
     }
 }

@@ -67,6 +67,7 @@ pub fn to_line(c: &Command) -> String {
             crate::gates::GateSetting::Level(e) => format!("gate {} {},{} level {e}", building.0, cell.0, cell.1),
             s => format!("gate {} {},{} {}", building.0, cell.0, cell.1, s.name()),
         },
+        Command::UpgradeLock { building, cell } => format!("lock {} {},{}", building.0, cell.0, cell.1),
         Command::Assign { who, to } => {
             let to = match to {
                 None => "none".to_string(),
@@ -74,6 +75,7 @@ pub fn to_line(c: &Command) -> String {
                 Some(Assignment::Area(k, a)) => format!("area {k:?} {} {} {} {}", a.min.0, a.min.1, a.max.0, a.max.1),
                 Some(Assignment::Slot(b, s)) => format!("slot {} {s}", b.0),
                 Some(Assignment::Go(c)) => format!("go {} {}", c.0, c.1),
+                Some(Assignment::Maintain) => "maintain".to_string(),
             };
             format!("assign {} {to}", ids(who))
         }
@@ -85,6 +87,7 @@ pub fn to_line(c: &Command) -> String {
         Command::SetPriority { building, priority } => format!("priority {} {priority:?}", building.0),
         Command::SetPaused { building, paused } => format!("pause {} {}", building.0, if *paused { "on" } else { "off" }),
         Command::AdjustRole { role, delta } => format!("role {role:?} {delta}"),
+        Command::SetShoreLimit { role, cells } => format!("shore {role:?} {}", cells.map_or("none".to_string(), |n| n.to_string())),
         Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
         Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
         Command::SetBalance { building, on } => format!("balance {} {}", building.0, if *on { "on" } else { "off" }),
@@ -149,6 +152,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         },
         "canal-maintain" => Command::SetCanalMaintain { canal: b(1)?, on: on(2)? },
         "dam-gate" => Command::AddDamGate { dam: b(1)?, cell: parse_cells(&t[2..3])?.first().copied().ok_or("missing cell")? },
+        "lock" => Command::UpgradeLock { building: b(1)?, cell: parse_cells(&t[2..3.min(t.len())])?.first().copied().ok_or("missing cell")? },
         "gate" => Command::SetGate {
             building: b(1)?,
             cell: parse_cells(&t[2..3.min(t.len())])?.first().copied().ok_or("missing cell")?,
@@ -171,6 +175,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 )),
                 Some("slot") => Some(Assignment::Slot(b(3)?, num(t.get(4), "slot")?)),
                 Some("go") => Some(Assignment::Go((num(t.get(3), "x")?, num(t.get(4), "y")?))),
+                Some("maintain") => Some(Assignment::Maintain),
                 other => return Err(format!("unknown assignment {other:?}")),
             };
             Command::Assign { who, to }
@@ -190,6 +195,13 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             },
         },
         "pause" => Command::SetPaused { building: b(1)?, paused: on(2)? },
+        "shore" => Command::SetShoreLimit {
+            role: parse_role(t.get(1).ok_or("missing role")?)?,
+            cells: match t.get(2).copied() {
+                Some("none") => None,
+                _ => Some(num(t.get(2), "cells")?),
+            },
+        },
         "role" => Command::AdjustRole { role: parse_role(t.get(1).ok_or("missing role")?)?, delta: num(t.get(2), "delta")? },
         "work-area" => Command::SetWorkArea { building: b(1)?, area: Area { min: (num(t.get(2), "x0")?, num(t.get(3), "y0")?), max: (num(t.get(4), "x1")?, num(t.get(5), "y1")?) } },
 

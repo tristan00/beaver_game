@@ -44,6 +44,7 @@ pub enum Selection {
     Lodge(LodgeId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
+    Wolf,
 }
 
 pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {
@@ -261,6 +262,7 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
             E::Matured { id, stage: sim::colony::Stage::Adult } => notices.push_at(vec![(Icon::Adult, INK)], format!("{} grown", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
             E::Departed { id } => notices.push_at(vec![(Icon::Beaver, MUTED), (Icon::Back, MUTED)], format!("{} left", name_of(&names, s, *id)), now, None),
             E::Immigrated { id } => notices.push_at(vec![(Icon::Beaver, GOOD), (Icon::Plus, GOOD)], format!("{} joined", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
+            E::LeftHome { id, .. } => notices.push_at(vec![(Icon::Adult, INK), (Icon::Home, INK)], format!("{} moved out", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
             E::NewFamily { family, a, .. } => {
                 let name = s.colony.family(*family).map(|f| f.name.clone()).unwrap_or_default();
                 notices.push_at(vec![(Icon::Home, GOOD)], format!("{name} family"), now, Some(NoticeAt::Beaver(*a)));

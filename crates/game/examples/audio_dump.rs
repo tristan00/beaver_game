@@ -46,7 +46,7 @@ fn main() -> std::io::Result<()> {
         };
         let snap = mix::snapshot(&world, 6.0, 2.0, distance);
         let layers = mix::layer_volumes(&snap);
-        let mix = Mix { layers, settings: VolumeSettings::default() };
+        let mix = Mix { layers, settings: VolumeSettings::default(), ..Mix::default() };
         let mut synth = Synth::new(7);
         let mut out = vec![0.0f32; SECONDS * SAMPLE_RATE as usize * 2];
         for chunk in out.chunks_mut(2048) {

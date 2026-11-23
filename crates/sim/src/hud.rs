@@ -534,8 +534,9 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
+    // First, so the cap on alerts never hides it.
     if let Some(w) = sim.predators.wolf.as_ref().filter(|_| sim.predators.spotted) {
-        out.push(Problem {
+        out.insert(0, Problem {
             kind: ProblemKind::Wolf,
             severity: Severity::Urgent,
             value: 1.0,

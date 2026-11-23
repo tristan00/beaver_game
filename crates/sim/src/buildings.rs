@@ -294,6 +294,8 @@ pub enum BuildingKind {
     Toolshed,
     Forester,
     Logistics,
+    Lookout,
+    Harbor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -312,7 +314,7 @@ impl BuildingKind {
         matches!(self, BuildingKind::Dam | BuildingKind::Canal)
     }
 
-    pub const ALL: [BuildingKind; 8] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics];
+    pub const ALL: [BuildingKind; 10] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics, BuildingKind::Lookout, BuildingKind::Harbor];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]

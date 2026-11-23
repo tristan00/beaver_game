@@ -44,6 +44,13 @@ impl Area {
     pub fn contains(&self, c: Cell) -> bool {
         c.0 >= self.min.0 && c.0 <= self.max.0 && c.1 >= self.min.1 && c.1 <= self.max.1
     }
+    /// Inside the circle that fits the area: a forester's reach.
+    pub fn reaches(&self, c: Cell) -> bool {
+        let (rx, ry) = ((self.max.0 - self.min.0) as f32 / 2.0 + 0.5, (self.max.1 - self.min.1) as f32 / 2.0 + 0.5);
+        let (cx, cy) = ((self.min.0 + self.max.0) as f32 / 2.0, (self.min.1 + self.max.1) as f32 / 2.0);
+        let (dx, dy) = ((c.0 as f32 - cx) / rx, (c.1 as f32 - cy) / ry);
+        dx * dx + dy * dy <= 1.0
+    }
     pub fn centre(&self) -> Cell {
         ((self.min.0 + self.max.0) / 2, (self.min.1 + self.max.1) / 2)
     }
@@ -54,12 +61,18 @@ pub enum Role {
     Collect(crate::resources::ResourceKind),
     Build,
     Haul,
-    /// Clear round food plants and young trees in the area so they grow faster.
+    /// Only in saves from before the forester's two seats became one; merged into `Forest` on load.
     Tend,
-    /// Plant the store's saplings in the area.
+    /// Only in saves from before the forester's two seats became one; merged into `Forest` on load.
     Plant,
-    /// Keep it standing: repairs, refits, re-packing a dam's worn cells, clearing canal silt.
+    /// Only in saves from before maintainers worked without seats; such seats are removed on
+    /// load and whoever sat in them keeps the Maintainer role.
     Maintain,
+    /// The forester: collects seedlings from grown trees in the area for its store, plants the
+    /// stored saplings there, and tends young trees and food plants when there is nothing else.
+    Forest,
+    /// The guard: keeps watch at its lookout and warns of wolves.
+    Guard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -106,6 +119,21 @@ impl Workplace {
     }
     pub fn is_open_site(&self) -> bool {
         self.site.as_ref().is_some_and(|s| !s.is_done())
+    }
+    /// Builder seats have no limit: a place that takes builders always has another seat.
+    pub fn open_ended(&self) -> bool {
+        self.slots.iter().any(|s| s.role == Role::Build)
+    }
+    /// The first empty seat `want` takes, or for a builder the next new one past the last.
+    pub fn open_seat(&self, want: impl Fn(Role) -> bool) -> Option<(usize, Role)> {
+        if let Some(i) = self.slots.iter().position(|s| s.worker.is_none() && !s.off && want(s.role)) {
+            return Some((i, self.slots[i].role));
+        }
+        (self.open_ended() && want(Role::Build)).then_some((self.slots.len(), Role::Build))
+    }
+    /// Builders working here, and seats for others: one more than are filled, without limit.
+    pub fn builders(&self) -> usize {
+        self.slots.iter().filter(|s| s.role == Role::Build && s.worker.is_some()).count()
     }
 }
 
@@ -177,6 +205,10 @@ pub struct Work {
     pub piles: crate::piles::Piles,
     pub canal_plans: Vec<CanalPlan>,
     pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
+    /// How far from water, in cells, each role's workers are sent to work. Kept in the save's
+    /// trailer (`save::Extras`) so saves from before it still load.
+    #[serde(skip)]
+    pub shore_limits: BTreeMap<crate::jobs::RoleKind, u16>,
 }
 
 impl Default for Work {
@@ -193,6 +225,7 @@ impl Default for Work {
             piles: Default::default(),
             canal_plans: Vec::new(),
             homes: BTreeMap::new(),
+            shore_limits: BTreeMap::new(),
         }
     }
 }
@@ -228,6 +261,10 @@ impl Work {
         })
     }
     pub fn assign(&mut self, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), WorkError> {
+        let p = self.place_mut(b)?;
+        if slot == p.slots.len() && p.open_ended() {
+            p.slots.push(Slot::empty(Role::Build));
+        }
         let s = self.place_mut(b)?.slots.get(slot).ok_or(WorkError::SlotOutOfRange)?;
         if s.worker.is_some() {
             return Err(WorkError::SlotTaken);
@@ -249,10 +286,12 @@ impl Work {
         }
     }
     pub fn add_site(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
-        self.add_site_for(b, kind, needed, labour, Role::Build)
+        self.add_site_for(b, kind, needed, labour, Some(Role::Build))
     }
     /// A site whose slots are `role`: builders for new work, maintainers for repairs and refits.
-    pub fn add_site_for(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32, role: Role) -> Result<(), WorkError> {
+    /// A site needing `needed` and `labour`; `role` is who takes its seats, or None for a site
+    /// with no seats (a refit, worked by maintainers).
+    pub fn add_site_for(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32, role: Option<Role>) -> Result<(), WorkError> {
         if self.place(b).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
@@ -270,7 +309,8 @@ impl Work {
             labour_done: 0.0,
             labour_needed: labour,
         };
-        self.places.push(Workplace::new(b, kind, vec![Slot::empty(role); SITE_SLOTS], None, Some(site)));
+        let slots = role.map_or_else(Vec::new, |r| vec![Slot::empty(r); SITE_SLOTS]);
+        self.places.push(Workplace::new(b, kind, slots, None, Some(site)));
         Ok(())
     }
     fn site_mut(&mut self, b: BuildingId) -> Result<&mut SiteProgress, WorkError> {
@@ -313,12 +353,28 @@ impl Work {
         Ok(())
     }
     pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
+        let crew = self.crew(b);
         let p = self.place_mut(b)?;
         p.slots = slots.iter().map(|&role| Slot::empty(role)).collect();
         p.site = None;
         p.area = area;
         p.max_workers = p.slots.len();
+        self.keep_crew(b, crew);
         Ok(())
+    }
+    /// The builders and maintainers seated at a place.
+    pub fn crew(&self, b: BuildingId) -> Vec<Slot> {
+        self.place(b).map_or_else(Vec::new, |p| p.slots.iter().filter(|s| s.worker.is_some() && s.role == Role::Build).copied().collect())
+    }
+    /// A place whose work is done keeps its builders and maintainers seated: they are still
+    /// builders, waiting there until the next job for them (see `agents::retarget`).
+    pub fn keep_crew(&mut self, b: BuildingId, crew: Vec<Slot>) {
+        let Ok(p) = self.place_mut(b) else { return };
+        for s in crew {
+            if !p.slots.iter().any(|x| x.worker == s.worker) {
+                p.slots.push(s);
+            }
+        }
     }
     pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
         self.inventory.at(b, good)

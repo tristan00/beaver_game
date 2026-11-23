@@ -25,7 +25,9 @@ impl ResourceKind {
     pub fn gather_sources(self) -> &'static [ResourceKind] {
         match self {
             Self::Tree | Self::Felled => &[Self::Felled, Self::Tree],
-            Self::Plant | Self::WaterPlant => &[Self::Plant, Self::WaterPlant, Self::Felled, Self::Tree],
+            // What lies on the ground comes first: bark on fallen trees, then plants.
+            // Foragers never fell a tree.
+            Self::Plant | Self::WaterPlant => &[Self::Felled, Self::Plant, Self::WaterPlant],
             Self::MudBank | Self::RiverClay => &[Self::RiverClay, Self::MudBank],
             Self::Pebbles => &[Self::Pebbles],
         }
@@ -80,7 +82,9 @@ pub struct Resource {
 /// redrawing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
-    Tree(crate::forestry::TreeStage),
+    /// A tree's stage, and for a sapling or young tree how far it has grown towards the next
+    /// (in `GROWTH_STEPS`), so it is redrawn a little bigger as it grows.
+    Tree(crate::forestry::TreeStage, u8),
     /// Logs left (0 to 3), and whether there are branches.
     Felled(u8, bool),
     /// Eighths of the clay left; a river's clay bed never shows less than one.
@@ -91,6 +95,9 @@ pub enum Look {
     WaterPlant(u8),
 }
 
+/// Steps a growing tree is redrawn in through each stage.
+pub const GROWTH_STEPS: u8 = 12;
+
 /// How full, in `steps` steps, rounded up.
 fn fill(amount: f32, max_amount: f32, steps: f32) -> u8 {
     let full = (amount / max_amount.max(1e-3)).clamp(0.0, 1.0) * steps;
@@ -99,10 +106,28 @@ fn fill(amount: f32, max_amount: f32, steps: f32) -> u8 {
 }
 
 impl Resource {
+    /// How far a sapling or young tree has grown through its stage, 0 to 1; 0 for any other.
+    pub fn growth(&self) -> f32 {
+        use crate::forestry::{MATURE_AGE, YOUNG_AGE};
+        if self.kind != ResourceKind::Tree || self.snag {
+            return 0.0;
+        }
+        let a = self.age_days;
+        if a < YOUNG_AGE {
+            (a / YOUNG_AGE).clamp(0.0, 0.999)
+        } else if a < MATURE_AGE {
+            ((a - YOUNG_AGE) / (MATURE_AGE - YOUNG_AGE)).clamp(0.0, 0.999)
+        } else {
+            0.0
+        }
+    }
     pub fn look(&self) -> Look {
         let q = |steps: f32| fill(self.amount, self.max_amount, steps);
         match self.kind {
-            ResourceKind::Tree => Look::Tree(self.stage().unwrap_or(crate::forestry::TreeStage::Mature)),
+            ResourceKind::Tree => {
+                let stage = self.stage().unwrap_or(crate::forestry::TreeStage::Mature);
+                Look::Tree(stage, (self.growth() * GROWTH_STEPS as f32) as u8)
+            }
             ResourceKind::Felled => Look::Felled(self.amount.ceil().clamp(0.0, 3.0) as u8, self.branches > 0.0),
             ResourceKind::MudBank => Look::Clay(q(8.0)),
             ResourceKind::RiverClay => Look::Clay(q(8.0).max(1)),

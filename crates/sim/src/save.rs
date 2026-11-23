@@ -37,9 +37,50 @@ fn header_for(sim: &SimState, map: &str) -> Header {
 }
 
 /// The bytes of a save.
+/// Settings added after the save format was fixed, written after the world. A save that ends
+/// at the world is from before them and loads with their defaults.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras {
+    shore_limits: std::collections::BTreeMap<crate::jobs::RoleKind, u16>,
+}
+
+/// Added after `Extras`, written after it: bodies and beavers walking off the map.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras2 {
+    remains: crate::agents::Remains,
+}
+
+/// Added after `Extras2`, written after it: gates upgraded into locks.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras3 {
+    locks: crate::locks::Locks,
+}
+
+/// Added after `Extras3`, written after it: the harbors' barges.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras4 {
+    fleet: crate::harbor::Fleet,
+}
+
+/// Added after `Extras4`, written after it: wild animals.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Extras5 {
+    wildlife: crate::wildlife::Wildlife,
+}
+
 pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
     let head = postcard::to_stdvec(&header_for(sim, map)).map_err(|e| format!("could not write the header: {e}"))?;
-    let body = postcard::to_stdvec(sim).map_err(|e| format!("could not write the world: {e}"))?;
+    let mut body = postcard::to_stdvec(sim).map_err(|e| format!("could not write the world: {e}"))?;
+    let extras = Extras { shore_limits: sim.work.shore_limits.clone() };
+    body.extend(postcard::to_stdvec(&extras).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras2 = Extras2 { remains: sim.agents.remains.clone() };
+    body.extend(postcard::to_stdvec(&extras2).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras3 = Extras3 { locks: sim.locks.clone() };
+    body.extend(postcard::to_stdvec(&extras3).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras4 = Extras4 { fleet: sim.fleet.clone() };
+    body.extend(postcard::to_stdvec(&extras4).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras5 = Extras5 { wildlife: sim.wildlife.clone() };
+    body.extend(postcard::to_stdvec(&extras5).map_err(|e| format!("could not write the settings: {e}"))?);
     let mut out = Vec::with_capacity(8 + 4 + head.len() + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&(head.len() as u32).to_le_bytes());
@@ -66,9 +107,24 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     let (header, body) = split(bytes)?;
     let (mut sim, rest): (SimState, &[u8]) = postcard::take_from_bytes(body)
         .map_err(|e| format!("this save was made by a different build ({}) and cannot be read: {e}", header.version))?;
-    if !rest.is_empty() {
-        return Err(format!("this save was made by a different build ({}) and cannot be read", header.version));
-    }
+    let bad = || format!("this save was made by a different build ({}) and cannot be read", header.version);
+    let (extras, rest) = if rest.is_empty() { (Extras::default(), rest) } else { postcard::take_from_bytes::<Extras>(rest).map_err(|_| bad())? };
+    let (extras2, rest) = if rest.is_empty() { (Extras2::default(), rest) } else { postcard::take_from_bytes::<Extras2>(rest).map_err(|_| bad())? };
+    let (extras3, rest) = if rest.is_empty() { (Extras3::default(), rest) } else { postcard::take_from_bytes::<Extras3>(rest).map_err(|_| bad())? };
+    let (extras4, rest) = if rest.is_empty() { (Extras4::default(), rest) } else { postcard::take_from_bytes::<Extras4>(rest).map_err(|_| bad())? };
+    // A save from before the wild animals starts with none; they wander in.
+    let wildlife = match rest {
+        [] => crate::wildlife::Wildlife::new(sim.seed),
+        _ => match postcard::take_from_bytes::<Extras5>(rest) {
+            Ok((e, [])) => e.wildlife,
+            _ => return Err(bad()),
+        },
+    };
+    sim.work.shore_limits = extras.shore_limits;
+    sim.agents.remains = extras2.remains;
+    sim.locks = extras3.locks;
+    sim.fleet = extras4.fleet;
+    sim.wildlife = wildlife;
     sim.work.inventory = sim.buildings.stores.inventory.view();
     sim.instance = crate::next_instance();
     Ok((header, sim))
@@ -169,5 +225,33 @@ mod tests {
         let mut extra = bytes.clone();
         extra.push(0);
         assert!(decode(&extra).is_err(), "trailing bytes mean a different layout");
+    }
+
+    #[test]
+    fn settings_ride_after_the_world_and_older_saves_load_without_them() {
+        let (mut a, _) = crate::starts::new_game_on_map("telemark").unwrap();
+        let plain = encode(&a, "telemark").unwrap();
+        a.apply(crate::Command::SetShoreLimit { role: crate::jobs::RoleKind::Logger, cells: Some(10) }).unwrap();
+        let (_, b) = decode(&encode(&a, "telemark").unwrap()).unwrap();
+        assert_eq!(b.work.shore_limits.get(&crate::jobs::RoleKind::Logger), Some(&10));
+        // Older saves end before the locks (one empty map), before the bodies (two empty
+        // lists), or before the settings too.
+        // The wild animals come last; then the barges (an empty list and a counter, two bytes).
+        let wild = postcard::to_stdvec(&Extras5 { wildlife: a.wildlife.clone() }).unwrap().len();
+        let plain = &plain[..plain.len() - wild];
+        assert!(decode(plain).unwrap().1.wildlife.animals.is_empty(), "a save from before the wild animals loads");
+        let newer = &plain[..plain.len() - 2];
+        assert!(decode(newer).unwrap().1.fleet.barges.is_empty(), "a save from before the barges loads");
+        let old = &plain[..plain.len() - 3];
+        assert!(decode(old).unwrap().1.locks.at.is_empty(), "a save from before the locks loads");
+        let older = &plain[..plain.len() - 5];
+        assert!(decode(older).unwrap().1.agents.remains.bodies.is_empty(), "a save from before the bodies loads");
+        let oldest = &plain[..plain.len() - 6];
+        assert!(decode(oldest).unwrap().1.work.shore_limits.is_empty(), "a save from before the settings loads");
+        // Bodies ride along.
+        let mut c = b.clone();
+        c.agents.remains.bodies.push(crate::agents::Body { id: crate::colony::BeaverId(9), cell: (3, 4), cause: crate::colony::DeathCause::Cold, age_days: 400.0, died: c.time_days });
+        let (_, d) = decode(&encode(&c, "telemark").unwrap()).unwrap();
+        assert_eq!(d.agents.remains.bodies.len(), 1);
     }
 }

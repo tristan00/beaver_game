@@ -96,7 +96,7 @@ fn water_rows(u: &mut Ui, k: &Canal) {
             r.spacer();
             r.icon(Icon::Hourglass, 13.0, MUTED);
         })
-        .tip(Tip::name("No water yet").line("Dug cells fill once the gate opens", ""));
+        .tip(Tip::name("No water yet").line("Fills once the intake is dug", ""));
         return;
     };
     let n = st.cells.max(1) as f32;
@@ -200,17 +200,23 @@ fn gate_row(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
     let g = k.gate;
     let s = c.s;
     let wanted = g.wanted();
+    let unlocked = g.built || sim::canals::gates_unlocked(s);
     u.row(5.0, |r| {
         r.icon(Icon::Lock, 15.0, if g.built { WOOD } else { MUTED }).tip(if g.built {
             Tip::name("Gate").line("Sill", num(g.sill())).line("Pond", k.status.as_ref().map_or(String::new(), |st| num(st.source_level)))
+        } else if unlocked {
+            Tip::name("No gate").line("Pick a setting to build one", "").line("Sticks", num(sim::canals::GATE_STICKS))
         } else {
-            Tip::name("Gate").line("Built with the first cut at the intake", "").line("Sticks", num(sim::canals::GATE_STICKS))
+            Tip::name("No gate").line("Needs", "Logistics")
         });
+        if !unlocked {
+            return;
+        }
         // Level starts at the pond's own level: hold it where it stands.
         let level_at = match wanted { GateSetting::Level(e) => e, _ => k.status.as_ref().map_or(g.sill(), |st| st.source_level) };
         let drop = k.status.as_ref().map_or(0.0, |st| (st.source_level - g.floor).max(0.0));
         for (setting, icon, name) in [(GateSetting::Shut, Icon::Lock, "Shut"), (GateSetting::Level(level_at), Icon::Crest, "Level"), (GateSetting::Open, Icon::Flood, "Open")] {
-            let on = std::mem::discriminant(&wanted) == std::mem::discriminant(&setting);
+            let on = (g.built || g.pending.is_some()) && std::mem::discriminant(&wanted) == std::mem::discriminant(&setting);
             let mut tip = Tip::name(name);
             tip = match setting {
                 GateSetting::Shut => tip.line("No water passes", ""),
@@ -223,14 +229,16 @@ fn gate_row(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
             r.pebble(icon, 13.0, HudAction::SetGate(id, g.cell, setting), if on { Peb::On } else { Peb::Idle }).tip(tip);
         }
         r.spacer();
-        if matches!(wanted, GateSetting::Level(_)) {
+        if (g.built || g.pending.is_some()) && matches!(wanted, GateSetting::Level(_)) {
             r.pebble(Icon::Minus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at - sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Lower the sill").line("Step", "5 cm"));
             let span = (g.top - g.floor).max(0.05);
             let frac = ((g.sill_of(GateSetting::Level(level_at)) - g.floor) / span).clamp(0.0, 1.0);
             r.notches(frac, 6, 70.0, 10.0, WOOD);
             r.pebble(Icon::Plus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at + sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Raise the sill").line("Step", "5 cm"));
         }
-        let _ = s;
+        if g.built {
+            super::dam_panel::lock_pebble(r, s, id, g.cell);
+        }
     });
 }
 
@@ -269,7 +277,7 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
         grow_button(r, Icon::Extend, "Extend", id, CanalGrowth::Extend, Ok(0.0), false);
         r.spacer();
         let on = k.maintain;
-        r.pebble(Icon::Hammer, 15.0, HudAction::CanalMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Diggers clear silt", ""));
+        r.pebble(Icon::Hammer, 15.0, HudAction::CanalMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Maintainers clear silt", ""));
         r.pebble(if paused { Icon::Play } else { Icon::Pause }, 14.0, HudAction::Paused(id, !paused), if paused { Peb::On } else { Peb::Idle }).tip(Tip::name(if paused { "Resume" } else { "Pause" }));
     });
 }

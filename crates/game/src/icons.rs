@@ -36,7 +36,7 @@ icons! {
     Building, Home, Upstream, Gauge,
     Widen, Extend,
     Pebbles, Sapling, Larder, Tend, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
-    Wolf, Ledger, Journal,
+    Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Barge,
 }
 
 #[derive(Resource, Clone)]
@@ -450,6 +450,13 @@ fn house_door(c: &mut Canvas) {
     c.cut(rect_c(26.0, 39.0, 38.0, 62.0, 5.0));
 }
 
+/// A watchful eye.
+fn eye(c: &mut Canvas) {
+    c.add(ellipse(32.0, 32.0, 28.0, 16.0));
+    c.cut(circle(32.0, 32.0, 10.5));
+    c.add(circle(32.0, 32.0, 5.5));
+}
+
 fn crate_box(c: &mut Canvas) {
     c.add(rect_c(10.0, 12.0, 54.0, 54.0, 4.0));
     c.cut(seg(10.0, 26.0, 54.0, 26.0, 3.5));
@@ -618,6 +625,36 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut_part(32.0, 47.0, 0.42, 0.0, 0.0, crate_box);
         }
         RoleHauler => role(c, 0.0, crate_box),
+        RoleGuard => role(c, 0.0, eye),
+        Harbor => {
+            // A pier on piles over waves, a crane pole with its boom.
+            c.add(rect_c(6.0, 30.0, 46.0, 36.0, 2.0));
+            c.add(seg(12.0, 36.0, 12.0, 50.0, 4.0).or(seg(28.0, 36.0, 28.0, 50.0, 4.0)).or(seg(42.0, 36.0, 42.0, 50.0, 4.0)));
+            c.add(seg(50.0, 30.0, 50.0, 6.0, 4.0).or(seg(50.0, 8.0, 30.0, 14.0, 3.5)));
+            c.add(seg(31.0, 14.0, 31.0, 24.0, 2.0));
+            c.add(wave(4.0, 60.0, 56.0, 2.5, 1.0, 4.5));
+        }
+        LockGates => {
+            // Two pairs of mitre gates between walls, water between.
+            c.add(seg(10.0, 6.0, 10.0, 58.0, 5.0).or(seg(54.0, 6.0, 54.0, 58.0, 5.0)));
+            c.add(seg(12.0, 14.0, 32.0, 22.0, 4.0).or(seg(52.0, 14.0, 32.0, 22.0, 4.0)));
+            c.add(seg(12.0, 42.0, 32.0, 50.0, 4.0).or(seg(52.0, 42.0, 32.0, 50.0, 4.0)));
+            c.add(wave(14.0, 50.0, 33.0, 2.5, 1.0, 4.0));
+        }
+        Barge => {
+            // A flat raft with a load heaped on it.
+            c.add(poly(&[(4.0, 38.0), (60.0, 38.0), (54.0, 48.0), (10.0, 48.0)]).grow(1.0));
+            c.add(rect_c(16.0, 24.0, 34.0, 38.0, 3.0));
+            c.add(circle(43.0, 32.0, 7.0));
+            c.add(wave(4.0, 60.0, 56.0, 2.5, 1.0, 4.5));
+        }
+        Lookout => {
+            // A watch platform under a roof, up on splayed legs.
+            c.add(poly(&[(12.0, 20.0), (32.0, 5.0), (52.0, 20.0)]).grow(1.5));
+            c.add(rect_c(16.0, 22.0, 48.0, 33.0, 2.0));
+            c.add(seg(21.0, 33.0, 13.0, 58.0, 4.5).or(seg(43.0, 33.0, 51.0, 58.0, 4.5)));
+            c.add(seg(17.0, 46.0, 47.0, 46.0, 3.5));
+        }
         ViewWater => {
             c.add(drop_shape().grow(1.5));
             c.cut(wave(12.0, 52.0, 40.0, 3.0, 1.0, 4.0));

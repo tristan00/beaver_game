@@ -134,7 +134,7 @@ fn events(sim: &SimState, j: &mut Journal, phase: &str) {
     for i in j.seen.saturating_sub(pushed_out)..len {
         let Some(e) = sim.colony.events.get(i) else { continue };
         let who = match &e.event {
-            Event::Born { id, .. } | Event::Matured { id, .. } | Event::Died { id, .. } | Event::Departed { id } | Event::Immigrated { id } => Some(*id),
+            Event::Born { id, .. } | Event::Matured { id, .. } | Event::Died { id, .. } | Event::Departed { id } | Event::Immigrated { id } | Event::LeftHome { id, .. } => Some(*id),
             _ => None,
         };
         let mut line = format!("EVENT {} at_day={:.4} phase={phase} {:?}", stamp(sim), e.day, e.event);

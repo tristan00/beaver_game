@@ -48,6 +48,8 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         Toolshed => Icon::Toolshed,
         Forester => Icon::Forester,
         Logistics => Icon::Logistics,
+        Lookout => Icon::Lookout,
+        Harbor => Icon::Harbor,
     }
 }
 
@@ -114,7 +116,6 @@ pub fn place_error(e: &PlaceError) -> String {
         PlaceError::TooClose => "Too close".into(),
         PlaceError::BlocksDoor => "Blocks door".into(),
         PlaceError::NoCells => String::new(),
-        PlaceError::TooLong(max) => format!("Max {max}"),
         PlaceError::Sim(m) => sim_error(m),
     }
 }
@@ -162,6 +163,7 @@ fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
         RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
         RoleKind::Forester => (Icon::RoleForester, "Forester"),
         RoleKind::Maintainer => (Icon::RoleMaintainer, "Maintainer"),
+        RoleKind::Guard => (Icon::RoleGuard, "Guard"),
     }
 }
 
@@ -169,16 +171,12 @@ pub fn role_kind_icon(role: RoleKind) -> Icon { role_presentation(role).0 }
 pub fn role_kind_name(role: RoleKind) -> &'static str { role_presentation(role).1 }
 pub fn role_icon(role: Role) -> Icon {
     match role {
-        Role::Tend => Icon::Tend,
-        Role::Plant => Icon::Sapling,
         Role::Collect(ResourceKind::Pebbles) => Icon::Pebbles,
         r => role_kind_icon(jobs::role_kind(r)),
     }
 }
 pub fn role_name(role: Role) -> &'static str {
     match role {
-        Role::Tend => "Tending",
-        Role::Plant => "Planting",
         Role::Collect(ResourceKind::Pebbles) => "Pebble collector",
         r => role_kind_name(jobs::role_kind(r)),
     }

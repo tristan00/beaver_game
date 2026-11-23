@@ -7,6 +7,7 @@ use super::{ColonyTab, HudAction};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingKind, Good};
+use sim::jobs::RoleKind;
 
 pub const DRAWER_W: f32 = 380.0;
 
@@ -101,6 +102,9 @@ fn beavers(c: &Ctx, u: &mut Ui) {
     }
 }
 
+/// Shore limits a role steps through, widest first, in cells from water.
+const SHORE_STEPS: [u16; 4] = [40, 20, 10, 5];
+
 /// Who does what: one row per kind of work, its beavers as tokens and open places as rings.
 fn work(c: &Ctx, u: &mut Ui) {
     let s = c.s;
@@ -124,6 +128,19 @@ fn work(c: &Ctx, u: &mut Ui) {
                 }
             });
             r.spacer();
+            if matches!(role, RoleKind::Forager | RoleKind::Logger | RoleKind::MudDigger | RoleKind::Forester) {
+                // Each click tightens the limit a step, then lifts it.
+                let now = s.work.shore_limits.get(&role).copied();
+                let next = match now {
+                    None => Some(SHORE_STEPS[0]),
+                    Some(n) => SHORE_STEPS.iter().copied().find(|&k| k < n),
+                };
+                r.pebble(Icon::Drop, 11.0, HudAction::ShoreLimit(role, next), if now.is_some() { Peb::On } else { Peb::Idle })
+                    .tip(Tip::name("Distance from water").with_value(now.map_or("Any".into(), |n| format!("{n}"))));
+                if let Some(n) = now {
+                    r.bold(format!("{n}"), 12.0, INK);
+                }
+            }
             let add = match sim::jobs::role_add_preview(s, role) {
                 Some(p) => Tip::name("Add one").line(s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default(), "free"),
                 None => Tip::name("No one to add"),

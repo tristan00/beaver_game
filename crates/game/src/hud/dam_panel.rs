@@ -227,8 +227,31 @@ fn gate_button(u: &mut Ui, id: BuildingId, plan: Result<f32, String>, suggested:
     }
 }
 
+/// The lock pebble at the end of a built gate's row: upgrade it into a lock (with a Harbor),
+/// waiting for its builder, or a lock already.
+pub(super) fn lock_pebble(r: &mut Ui, s: &sim::SimState, id: BuildingId, cell: sim::water::Cell) {
+    use sim::locks;
+    let cost = |t: Tip| t.line("Sticks", num(locks::LOCK_STICKS)).line("Clay", num(locks::LOCK_CLAY));
+    // Only the upgrade itself is a button; the other states just show.
+    let shown = |r: &mut Ui, look: Peb, tip: Tip| {
+        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), look).tip(tip);
+        if let Some(v) = r.nodes.last_mut() {
+            v.action = None;
+        }
+    };
+    if locks::is_lock(s, cell) {
+        shown(r, Peb::On, Tip::name("Lock").line("Beavers and barges get past", ""));
+    } else if locks::pending(s, cell) {
+        shown(r, Peb::On, cost(Tip::name("Lock").line("A builder will build it", "")));
+    } else if locks::unlocked(s) {
+        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), Peb::Idle).tip(cost(Tip::name("Make a lock").line("Beavers and barges get past", "")));
+    } else {
+        shown(r, Peb::Faded, Tip::name("Lock").line("Needs", "Harbor"));
+    }
+}
+
 /// One row per gate on the dam: Shut, Level (with the sill nudged in 5 cm steps) or Open.
-fn gate_rows(u: &mut Ui, id: BuildingId, d: &Dam) {
+fn gate_rows(u: &mut Ui, s: &sim::SimState, id: BuildingId, d: &Dam) {
     use sim::GateSetting;
     for g in &d.gates {
         let wanted = g.wanted();
@@ -260,6 +283,9 @@ fn gate_rows(u: &mut Ui, id: BuildingId, d: &Dam) {
                 r.notches(frac, 6, 70.0, 10.0, WOOD);
                 r.pebble(Icon::Plus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at + sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Raise the sill").line("Step", "5 cm"));
             }
+            if g.built {
+                lock_pebble(r, s, id, g.cell);
+            }
         });
     }
 }
@@ -285,7 +311,7 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
         r.spacer();
         pebble_button(s, r, id);
         let on = d.maintain;
-        r.pebble(Icon::Hammer, 15.0, HudAction::DamMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Builders repair worn cells", ""));
+        r.pebble(Icon::Hammer, 15.0, HudAction::DamMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Maintainers repair worn cells", ""));
         r.pebble(if paused { Icon::Play } else { Icon::Pause }, 14.0, HudAction::Paused(id, !paused), if paused { Peb::On } else { Peb::Idle }).tip(Tip::name(if paused { "Resume" } else { "Pause" }));
     });
 }
@@ -379,7 +405,7 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
             DamTab::Status => {
                 pond_rows(c, u, d);
                 cross_section(c, u, id, d);
-                gate_rows(u, id, d);
+                gate_rows(u, c.s, id, d);
                 actions(c, u, id, d);
             }
             DamTab::History => history(u, d),

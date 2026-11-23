@@ -105,6 +105,15 @@ pub fn beaver_lids(mb: &mut Mb) {
     }
 }
 
+/// Grizzled grey fur on an old beaver's muzzle and brows, laid over the head.
+pub fn beaver_grey(mb: &mut Mb) {
+    let g = hex(0xb8b3ab);
+    mb.ellipsoid(v(0.0, -0.14, 0.66), v(0.2, 0.1, 0.12), g);
+    for s in [-1.0, 1.0] {
+        mb.ellipsoid(v(0.17 * s, 0.22, 0.5), v(0.09, 0.03, 0.06), g);
+    }
+}
+
 pub fn gnaw_chips(mb: &mut Mb) {
     let cut = hex(0xf2d9a8);
     for (p, r) in [(v(0.0, 0.0, 0.0), 0.0f32), (v(0.12, 0.1, -0.05), 0.9), (v(-0.06, 0.16, 0.06), 1.8), (v(0.18, -0.04, 0.08), 2.6)] {
@@ -589,6 +598,8 @@ pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
         StructKind::Lodge => Mound(3.3),
         StructKind::Warehouse | StructKind::Larder => Piles(2.9, 2.5),
         StructKind::Toolshed | StructKind::Forester | StructKind::Logistics => Piles(1.9, 1.6),
+        StructKind::Lookout => Piles(1.5, 1.5),
+        StructKind::Harbor => Piles(2.9, 2.5),
         _ => return None,
     })
 }
@@ -606,6 +617,8 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Toolshed => structures::toolshed(&mut mb, f),
         StructKind::Forester => structures::forester(&mut mb, f),
         StructKind::Logistics => structures::logistics(&mut mb, f),
+        StructKind::Lookout => structures::lookout(&mut mb, f),
+        StructKind::Harbor => structures::harbor(&mut mb, f),
     }
     if let Some(fo) = footing_of(kind) {
         let (hx, hz) = match fo {

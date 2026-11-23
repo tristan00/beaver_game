@@ -395,6 +395,127 @@ pub fn logistics(mb: &mut Mb, f: f32) {
     }
 }
 
+/// A lookout: four tall poles leaning in, braced, carrying a stick platform with a rail and a
+/// brush roof, and a ladder up one side. The poles go up first, then the deck, then the roof.
+pub fn lookout(mb: &mut Mb, f: f32) {
+    let (hx, hz) = (1.2f32, 1.2f32);
+    let done = f >= 1.0;
+    let mut r = Rng(7171);
+    let deck = 3.2;
+    let rise = (f / 0.5).min(1.0);
+    let top = 0.5 + (deck + 1.5 - 0.5) * rise;
+    let at = |x: f32, z: f32, y: f32| {
+        // Poles lean in towards the top.
+        let k = 1.0 - 0.22 * (y / (deck + 1.5));
+        v(x * k, y, z * k)
+    };
+    for (x, z) in [(-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz)] {
+        stick_c(mb, at(x, z, 0.0), at(x, z, top), 0.1, peeled());
+    }
+    if f > 0.3 {
+        // Cross bracing on each side.
+        for (a, b) in [((-hx, -hz), (hx, -hz)), ((hx, -hz), (hx, hz)), ((hx, hz), (-hx, hz)), ((-hx, hz), (-hx, -hz))] {
+            stick(mb, at(a.0, a.1, 0.4), at(b.0, b.1, deck - 0.3), 0.06, r.next());
+            stick(mb, at(b.0, b.1, 0.4), at(a.0, a.1, deck - 0.3), 0.06, r.next());
+        }
+    }
+    if f > 0.5 {
+        // The deck, sticks laid side by side, and a rail round it.
+        let n = 9;
+        for k in 0..n {
+            let z = -hz + 2.0 * hz * k as f32 / (n - 1) as f32;
+            stick(mb, at(-hx - 0.15, z, deck), at(hx + 0.15, z, deck) + v(0.0, r.range(-0.03, 0.03), 0.0), 0.08, r.next());
+        }
+        for (a, b) in [((-hx, -hz), (hx, -hz)), ((hx, -hz), (hx, hz)), ((-hx, hz), (-hx, -hz))] {
+            stick(mb, at(a.0, a.1, deck + 0.6), at(b.0, b.1, deck + 0.6), 0.05, r.next());
+        }
+        // A ladder up the open side.
+        for x in [-0.35f32, 0.35] {
+            stick_c(mb, v(x, 0.0, hz + 0.9), at(x, hz, deck), 0.05, peeled());
+        }
+        for k in 1..6 {
+            let t = k as f32 / 6.0;
+            let y = deck * t;
+            let z = hz + 0.9 * (1.0 - t) + at(0.0, hz, y).z * t - hz * t;
+            stick(mb, v(-0.38, y, z), v(0.38, y, z), 0.04, r.next());
+        }
+    }
+    if f > 0.8 || done {
+        // A brush roof: sticks leaning from the pole tops to a peak.
+        let peak = v(0.0, deck + 2.3, 0.0);
+        for k in 0..14 {
+            let a = k as f32 / 14.0 * TAU;
+            let foot = v(a.cos() * (hx + 0.3), deck + 1.35, a.sin() * (hz + 0.3));
+            stick(mb, foot, peak + v(r.range(-0.08, 0.08), 0.0, r.range(-0.08, 0.08)), 0.07, r.next());
+        }
+    }
+    if !done {
+        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
+    }
+}
+
+/// A harbor: a plank pier on piles out over the water with mooring posts, a pole crane with a
+/// bundle swinging from its boom, and loads stacked waiting on the deck. Piles go in first,
+/// then the deck, then the crane and the loads.
+pub fn harbor(mb: &mut Mb, f: f32) {
+    let (hx, hz) = (2.4f32, 2.2f32);
+    let done = f >= 1.0;
+    let mut r = Rng(8181);
+    let deck = 0.55;
+    let piles = (f / 0.35).min(1.0);
+    for i in 0..4 {
+        for j in 0..3 {
+            let (x, z) = (-hx + 0.2 + i as f32 * (2.0 * hx - 0.4) / 3.0, -hz + 0.3 + j as f32 * (2.0 * hz - 0.6) / 2.0);
+            stick_c(mb, v(x, -0.6, z), v(x, -0.6 + (deck + 0.65) * piles, z), 0.1, peeled());
+        }
+    }
+    if f > 0.35 {
+        // The deck: planks across, as far as it has got.
+        let n = 16;
+        let laid = ((f - 0.35) / 0.35 * n as f32).min(n as f32) as usize;
+        for k in 0..laid {
+            let z = -hz + (k as f32 + 0.5) * 2.0 * hz / n as f32;
+            stick(mb, v(-hx, deck, z), v(hx, deck + r.range(-0.02, 0.02), z), 0.13, r.next());
+        }
+        // Stringers under it.
+        for x in [-hx + 0.3, 0.0, hx - 0.3] {
+            stick(mb, v(x, deck - 0.12, -hz), v(x, deck - 0.12, hz), 0.08, r.next());
+        }
+    }
+    if f > 0.7 {
+        // Mooring posts along the waterfront (+z) and a rail on the far side.
+        for x in [-hx + 0.4, 0.0, hx - 0.4] {
+            stick_c(mb, v(x, deck - 0.2, hz + 0.05), v(x, deck + 0.55, hz + 0.05), 0.1, peeled());
+            mb.ellipsoid(v(x, deck + 0.58, hz + 0.05), v(0.13, 0.05, 0.13), col(palette::BARK));
+        }
+        stick(mb, v(-hx, deck + 0.5, -hz), v(hx, deck + 0.5, -hz), 0.05, r.next());
+        for x in [-hx, -hx / 2.0, 0.0, hx / 2.0, hx] {
+            stick_c(mb, v(x, deck, -hz), v(x, deck + 0.55, -hz), 0.05, peeled());
+        }
+    }
+    if f > 0.85 || done {
+        // The crane: a tall pole, a boom out over the water, a line with a bundle of sticks.
+        let foot = v(hx - 0.6, deck, hz - 0.8);
+        let head = foot + v(0.0, 2.6, 0.0);
+        stick(mb, foot, head, 0.11, r.next());
+        stick(mb, foot + v(-0.5, 0.0, -0.5), foot + v(0.0, 1.2, 0.0), 0.06, r.next());
+        let tip = head + v(-1.6, 0.25, 0.9);
+        stick(mb, head + v(0.3, -0.1, -0.2), tip, 0.07, r.next());
+        stick_c(mb, tip, tip + v(0.0, -1.3, 0.0), 0.015, hex(0xd9c79a));
+        for k in 0..4 {
+            let o = (k as f32 - 1.5) * 0.09;
+            stick(mb, tip + v(-0.35, -1.45 + o * 0.3, o), tip + v(0.35, -1.45 - o * 0.3, o), 0.06, r.next());
+        }
+        // Loads waiting on the deck.
+        stick_crib(mb, v(-1.2, deck, -0.9), 0.55, &mut r);
+        mud_mound(mb, v(0.3, deck, -1.2), 0.5, &mut r);
+        food_heap(mb, v(-1.6, deck, 0.5), 0.45, &mut r);
+    }
+    if !done {
+        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
+    }
+}
+
 /// Collected pebbles heaped in a low cairn.
 fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let n = (3.0 + 9.0 * grow) as usize;

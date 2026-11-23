@@ -87,10 +87,19 @@ pub fn request(g: &mut Gate, setting: GateSetting) -> Result<(), SimError> {
 
 /// Use sticks from the colony's nearest stores; nothing is taken unless all are there.
 pub fn take_sticks(sim: &mut SimState, near: Cell, amount: f32) -> bool {
-    use crate::buildings::{Good, Use};
-    let mut holders = crate::stock::holders(sim, Good::Sticks);
-    let have: f32 = holders.iter().map(|&id| sim.work.stock_of(id, Good::Sticks)).sum();
-    if have + 1e-4 < amount {
+    take_goods(sim, near, crate::buildings::Good::Sticks, amount)
+}
+
+/// Whether the colony's stores hold this much of a good.
+pub fn has_goods(sim: &SimState, good: crate::buildings::Good, amount: f32) -> bool {
+    crate::stock::holders(sim, good).iter().map(|&id| sim.work.stock_of(id, good)).sum::<f32>() + 1e-4 >= amount
+}
+
+/// Use a good from the colony's nearest stores; nothing is taken unless all of it is there.
+pub fn take_goods(sim: &mut SimState, near: Cell, good: crate::buildings::Good, amount: f32) -> bool {
+    use crate::buildings::Use;
+    let mut holders = crate::stock::holders(sim, good);
+    if !has_goods(sim, good, amount) {
         return false;
     }
     let dist = |sim: &SimState, id| {
@@ -106,9 +115,9 @@ pub fn take_sticks(sim: &mut SimState, near: Cell, amount: f32) -> bool {
         if left <= 1e-4 {
             break;
         }
-        let here = sim.work.stock_of(id, Good::Sticks).min(left);
+        let here = sim.work.stock_of(id, good).min(left);
         if here > 0.0 {
-            left -= sim.buildings.stores.consume_from(id, Good::Sticks, here, Use::Sites);
+            left -= sim.buildings.stores.consume_from(id, good, here, Use::Sites);
         }
     }
     left <= 1e-3

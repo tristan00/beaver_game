@@ -155,10 +155,11 @@ fn clip_poly(poly: &[WV]) -> Vec<WV> {
     out
 }
 
-/// 1 where a cell's water is drawn at all.
+/// 1 where a cell's water is drawn at all (lone films left out; dam crests are drawn by
+/// `vertex_water`, which leaves out their films too).
 fn shows_water(s: &SimState, x: i32, y: i32) -> f32 {
     let h = at(&s.water.depth, x, y);
-    (h > SHOW_MIN_M && !lone_film(s, x, y, h)) as i32 as f32
+    (h > SHOW_MIN_M && !s.water.lone_film(x, y)) as i32 as f32
 }
 
 /// Wet cells softened over their four neighbours (WaterField::wet) and interpolated between
@@ -173,8 +174,7 @@ fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     terrain_sample(s, x, y, step)
 }
 
-/// Water thinner than this is not drawn (a damp film reads as wet ground, not water).
-const SHOW_MIN_M: f32 = 0.003;
+use sim::water::SHOW_MIN_M;
 const SURFACE_LIFT: f32 = 0.01;
 
 /// Water at one mesh vertex: the surface level, velocity and white water of the visibly wet
@@ -187,7 +187,7 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
         for bx in 0..step {
             let (cx, cy) = ((x + bx).clamp(0, n - 1), (y + by).clamp(0, n - 1));
             let h = at(&s.water.depth, cx, cy);
-            if h <= SHOW_MIN_M || lone_film(s, cx, cy, h) || dam_film(s, cx, cy, h) {
+            if !s.water.shown(cx, cy) {
                 continue;
             }
             let (u, v) = s.water.velocity.get(cx as usize, cy as usize).copied().unwrap_or((0.0, 0.0));
@@ -213,22 +213,6 @@ const FALL_KEEP_M: f32 = 0.25;
 /// stands a little higher than the simulated bed.
 const SHOWN_ABOVE_GROUND_M: f32 = 0.03;
 
-/// A thin film on a cell with no wet neighbour is damp ground, not a pool: drawing it leaves a
-/// loose chip of water beside the stream.
-const LONE_FILM_M: f32 = 0.02;
-
-/// Water standing on a dam cell shallower than this (rain on the crest, the last of a spill)
-/// is not drawn: the wall's narrow top leaves most of the cell open, and a sheet at crest
-/// height shows through the dam. A gate's water is always drawn, and so is a real overtopping.
-const DAM_FILM_M: f32 = 0.12;
-
-fn dam_film(s: &SimState, x: i32, y: i32, h: f32) -> bool {
-    h < DAM_FILM_M && at(&s.water.dam_height, x, y) > 0.0 && !s.water.gate.get(x as usize, y as usize).copied().unwrap_or(false)
-}
-
-fn lone_film(s: &SimState, x: i32, y: i32, h: f32) -> bool {
-    h < LONE_FILM_M && [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|&(dx, dy)| at(&s.water.depth, x + dx, y + dy) <= SHOW_MIN_M)
-}
 
 /// Where the surface drops this much between neighbouring vertices (a dam crest, a weir, a
 /// riffle) the water is drawn white, so a spill reads as a fall instead of a tilted pane.

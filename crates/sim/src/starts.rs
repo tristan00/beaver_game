@@ -406,11 +406,10 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
-    let larder = crate::hud::food_need_per_day(sim) * START_LARDER_DAYS;
-    sim.colony.food = sim.buildings.stores.deposit(crate::buildings::Good::Food, larder).map_err(|e| invalid(e.to_string()))?;
     for (g, a) in START_BUNDLE {
         sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
     }
+    sim.colony.food = sim.buildings.stores.amount(crate::buildings::Good::Food);
     sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Sticks);
     sim.work.supplies = Some(supplies);
     {

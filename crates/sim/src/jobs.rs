@@ -18,10 +18,12 @@ pub enum RoleKind {
     Forester,
     /// Repairs and refits buildings and keeps dams and canals in order.
     Maintainer,
+    /// Keeps watch at a lookout.
+    Guard,
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 7] = [
+    pub const ALL: [RoleKind; 8] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
@@ -29,8 +31,9 @@ impl RoleKind {
         RoleKind::Hauler,
         RoleKind::Forester,
         RoleKind::Maintainer,
+        RoleKind::Guard,
     ];
-    pub const DEFAULT_ORDER: [RoleKind; 7] = DEFAULT_ROLE_ORDER;
+    pub const DEFAULT_ORDER: [RoleKind; 8] = DEFAULT_ROLE_ORDER;
 }
 
 
@@ -58,8 +61,9 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Collect(k) => gather_role(k),
         Role::Build => RoleKind::Builder,
         Role::Haul => RoleKind::Hauler,
-        Role::Tend | Role::Plant => RoleKind::Forester,
+        Role::Tend | Role::Plant | Role::Forest => RoleKind::Forester,
         Role::Maintain => RoleKind::Maintainer,
+        Role::Guard => RoleKind::Guard,
     }
 }
 
@@ -81,6 +85,7 @@ pub fn colony_job(r: RoleKind) -> Option<Job> {
         RoleKind::Hauler => Some(Job::Hauler),
         RoleKind::Forester => Some(Job::Forager),
         RoleKind::Maintainer => Some(Job::Builder),
+        RoleKind::Guard => None,
     }
 }
 
@@ -90,6 +95,7 @@ fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
         Assignment::Area(k, _) => Some(gather_role(k)),
         Assignment::Slot(b, i) => sim.work.place(b)?.slots.get(i).map(|s| role_kind(s.role)),
         Assignment::Go(_) => None,
+        Assignment::Maintain => Some(RoleKind::Maintainer),
     }
 }
 
@@ -130,9 +136,13 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
             let mut workers: Vec<BeaverId> = Vec::new();
             for p in working_places(sim).filter(|p| !p.paused) {
                 let mine = p.slots.iter().filter(|s| role_kind(s.role) == role && !s.off);
-                let n = mine.clone().count();
+                let mut n = mine.clone().count();
                 if n == 0 {
                     continue;
+                }
+                // Builder seats are open-ended: those filled, and one more.
+                if role == RoleKind::Builder && p.open_ended() {
+                    n = p.builders() + usize::from(crate::agents::takes_builders(sim, p));
                 }
                 slots += n;
                 filled += mine.clone().filter(|s| s.worker.is_some()).count();
@@ -158,7 +168,7 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
             RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out, workers }
         })
         // Gathering needs no building: its rows are always there, so the first beaver can be sent.
-        .filter(|r| r.slots > 0 || r.filled > 0 || gather_kind(r.role).is_some())
+        .filter(|r| r.slots > 0 || r.filled > 0 || gather_kind(r.role).is_some() || r.role == RoleKind::Maintainer)
         .collect()
 }
 
@@ -197,9 +207,10 @@ pub enum IdleReason {
 
 fn open_slots(sim: &SimState, b: &crate::colony::Beaver) -> Vec<(BuildingId, usize)> {
     working_places(sim)
-        .filter(|p| !p.paused && p.filled() < p.max_workers)
-        .flat_map(|p| {
-            p.slots.iter().enumerate().filter(|(_, s)| s.worker.is_none() && !s.off && b.can_work()).map(|(i, _)| (p.building, i))
+        .filter(|p| !p.paused && (p.filled() < p.max_workers || p.open_ended()) && b.can_work())
+        .filter_map(|p| {
+            let builders_here = crate::agents::takes_builders(sim, p);
+            p.open_seat(|r| builders_here || r != Role::Build).map(|(i, _)| (p.building, i))
         })
         .collect()
 }
@@ -264,8 +275,9 @@ fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(
     if p.paused || !(bd.is_complete() || is_site(sim, p)) || sim.buildings.unusable(bd, &sim.water.depth) {
         return None;
     }
-    let i = p.slots.iter().position(|s| s.worker.is_none() && !s.off && role.is_none_or(|r| role_kind(s.role) == r))?;
-    Some((i, p.slots[i].role, bd.pos))
+    let builders_here = crate::agents::takes_builders(sim, p);
+    let (i, r) = p.open_seat(|r| role.is_none_or(|want| role_kind(r) == want) && (builders_here || r != Role::Build))?;
+    Some((i, r, bd.pos))
 }
 
 pub fn add_worker_preview(sim: &SimState, b: BuildingId) -> Option<AddPreview> {
@@ -424,13 +436,17 @@ fn call_in(sim: &mut SimState, role: RoleKind) -> Result<(), SimError> {
 
 /// Who would be sent out for one more on a gathering role, and where: the nearest free beaver.
 fn send_out_who(sim: &SimState, role: RoleKind) -> Option<(BeaverId, Assignment)> {
-    let kind = gather_kind(role)?;
-    let (home, area) = crate::agents::home_area(sim)?;
+    let (home, assignment) = if role == RoleKind::Maintainer {
+        (crate::agents::home_area(sim).map_or((0, 0), |h| h.0), Assignment::Maintain)
+    } else {
+        let kind = gather_kind(role)?;
+        let (home, area) = crate::agents::home_area(sim)?;
+        (home, Assignment::Area(kind, area))
+    };
     let near = |id: BeaverId| agent_cell(sim, id).map_or(usize::MAX, |c| d2(c, home));
-    let able: Vec<BeaverId> = sim.colony.beavers.iter().filter(|b| b.can_work() && sim.work.slot_of(b.id).is_none()).map(|b| b.id).collect();
-    let doing = |id: BeaverId| sim.agents.get(id).and_then(|a| a.assignment).and_then(|a| assignment_role(sim, a));
-    let free = able.into_iter().filter(|&id| doing(id).is_none()).min_by_key(|&id| (near(id), id))?;
-    Some((free, Assignment::Area(kind, area)))
+    // Free: no seat, no job and no move order of the player's.
+    let free = sim.colony.beavers.iter().filter(|b| b.can_work() && !is_busy(sim, b.id)).map(|b| b.id).min_by_key(|&id| (near(id), id))?;
+    Some((free, assignment))
 }
 
 /// One more on a gathering role: the beaver `send_out_who` picks is sent out from home for
@@ -487,5 +503,20 @@ mod home_run_tests {
         assert_eq!(count(&s), 1);
         adjust_role(&mut s, RoleKind::Forager, 1).unwrap();
         assert_eq!(count(&s), 2);
+    }
+
+    /// A beaver on its way somewhere by the player's order is not free: one more forager is
+    /// someone else, even when the beaver on the move is the nearest.
+    #[test]
+    fn a_beaver_on_a_move_order_is_not_sent_out() {
+        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
+        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
+        let free = |s: &SimState| s.colony.beavers.iter().filter(|b| b.can_work() && !is_busy(s, b.id)).map(|b| b.id).collect::<Vec<_>>();
+        let (going, _) = send_out_who(&s, RoleKind::Forager).unwrap();
+        let at = s.agents.get(going).unwrap().cell;
+        s.apply(crate::Command::Assign { who: vec![going], to: Some(Assignment::Go(at)) }).unwrap();
+        let (picked, _) = send_out_who(&s, RoleKind::Forager).unwrap();
+        assert_ne!(picked, going, "the beaver on a move order was sent out");
+        assert!(free(&s).contains(&picked));
     }
 }

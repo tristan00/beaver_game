@@ -75,8 +75,9 @@ impl Dam {
     pub fn cap(&self) -> f32 {
         (self.rows as f32 * HEIGHT_PER_ROW).min(crate::dam_preview::MAX_DAM_HEIGHT)
     }
+    /// The front row from one end to the other, whatever order its cells were added in.
     pub fn line(&self) -> impl Iterator<Item = &DamCell> {
-        self.cells.iter().filter(|c| c.row == 0)
+        in_order(self.cells.iter().filter(|c| c.row == 0))
     }
 }
 
@@ -145,11 +146,11 @@ pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell, upkeep: bool)
 
 /// Work for this dam's builders (`upkeep` false: raising, gates) or maintainers (re-packing).
 pub fn has_work_for(sim: &SimState, id: BuildingId, upkeep: bool) -> bool {
-    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_task(sim, d, c, upkeep)) || (!upkeep && d.gates.iter().any(|g| !g.built || g.pending.is_some())))
+    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_task(sim, d, c, upkeep)) || (!upkeep && d.gates.iter().any(|g| !g.built || g.pending.is_some() || crate::locks::pending(sim, g.cell))))
 }
 
 pub fn has_work(sim: &SimState, id: BuildingId) -> bool {
-    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_work(sim, d, c)) || d.gates.iter().any(|g| !g.built || g.pending.is_some()))
+    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_work(sim, d, c)) || d.gates.iter().any(|g| !g.built || g.pending.is_some() || crate::locks::pending(sim, g.cell)))
 }
 
 /// Loads to raise a cell to its target. A cell standing for more than a metre of wall (a
@@ -181,6 +182,13 @@ pub fn chain(cells: &[Cell]) -> Vec<usize> {
         }
     }
     out
+}
+
+/// Dam cells walked from one end of their line to the other.
+pub fn in_order<'a>(cells: impl Iterator<Item = &'a DamCell>) -> impl Iterator<Item = &'a DamCell> {
+    let cells: Vec<&DamCell> = cells.collect();
+    let at: Vec<Cell> = cells.iter().map(|c| c.cell).collect();
+    chain(&at).into_iter().map(move |i| cells[i])
 }
 
 /// Metres of wall each cell stands for: half the distance to each neighbour along the line
@@ -257,6 +265,11 @@ pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell], upk
         .iter()
         .filter(|c| cell_task(sim, d, c, upkeep) && !taken.contains(&c.cell))
         .min_by(|a, b| {
+            // Upkeep mends the weakest cells first.
+            if upkeep {
+                let w = |c: &DamCell| (integrity(sim, c.cell) * 20.0) as i32;
+                return (w(a), dist(a.cell), a.cell).cmp(&(w(b), dist(b.cell), b.cell));
+            }
             let (ha, hb) = (built(sim, a.cell) * integrity(sim, a.cell).max(0.01), built(sim, b.cell) * integrity(sim, b.cell).max(0.01));
             ((ha / STEP_HEIGHT).floor() as i32, dist(a.cell), a.cell).cmp(&((hb / STEP_HEIGHT).floor() as i32, dist(b.cell), b.cell))
         })
@@ -320,12 +333,17 @@ fn blocked_by_building(sim: &SimState, c: Cell, except: Option<BuildingId>) -> b
 }
 
 /// Check a drawn line before it becomes a dam.
+/// Water a dam line may cross: any water the game draws (however shallow a creek), or a river
+/// or lake channel.
+pub fn water_for_dam(sim: &SimState, c: Cell) -> bool {
+    sim.water.shown(c.0 as i32, c.1 as i32)
+        || sim.world.river.get(c.0, c.1).copied().unwrap_or(false)
+        || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
+}
+
 pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
     if cells.is_empty() {
         return Err("draw a line across water".into());
-    }
-    if cells.len() > MAX_CELLS {
-        return Err("too long".into());
     }
     let mut seen = std::collections::HashSet::new();
     if !cells.iter().all(|c| seen.insert(*c)) || !connected(cells) {
@@ -343,8 +361,7 @@ pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
     if cells.iter().any(|&c| blocked_by_building(sim, c, None)) {
         return Err("something is already built there".into());
     }
-    let wet = |c: &Cell| sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= crate::buildings::WET_DEPTH);
-    if !sim.sandbox && !cells.iter().any(wet) {
+    if !sim.sandbox && !cells.iter().any(|&c| water_for_dam(sim, c)) {
         return Err("a dam must cross water".into());
     }
     Ok(())
@@ -445,8 +462,9 @@ pub fn plan_extend(sim: &SimState, id: BuildingId) -> Result<Plan, String> {
     let top = crest(sim, d);
     let mut cells = d.cells.clone();
     for _ in 0..EXTEND_CELLS {
-        let line: Vec<Cell> = cells.iter().map(|c| c.cell).collect();
-        let heights: Vec<f32> = cells.iter().map(|c| c.target.max(built(sim, c.cell))).collect();
+        let row: Vec<&DamCell> = in_order(cells.iter()).collect();
+        let line: Vec<Cell> = row.iter().map(|c| c.cell).collect();
+        let heights: Vec<f32> = row.iter().map(|c| c.target.max(built(sim, c.cell))).collect();
         let Some(at) = crate::dam_preview::preview_heights(sim, &line, &heights).and_then(|p| p.spill_at) else { break };
         let near = line.iter().any(|c| c.0.abs_diff(at.0).max(c.1.abs_diff(at.1)) == 1);
         let h = (top - ground(sim, at)).clamp(0.0, d.cap());
@@ -483,9 +501,6 @@ pub fn plan_extend_to(sim: &SimState, id: BuildingId, drawn: &[Cell]) -> Result<
     }
     if cells.len() == d.cells.len() {
         return Err("draw past an end to extend".into());
-    }
-    if cells.len() > MAX_CELLS {
-        return Err("too long".into());
     }
     Ok(Plan { cells, rows: d.rows })
 }
@@ -696,7 +711,7 @@ pub fn set_gate(sim: &mut SimState, id: BuildingId, cell: Cell, setting: crate::
 
 /// A gate waiting to be built or turned, not already claimed.
 pub fn gate_job(sim: &SimState, id: BuildingId, taken: &[Cell]) -> Option<Cell> {
-    dam(sim, id)?.gates.iter().find(|g| (!g.built || g.pending.is_some()) && !taken.contains(&g.cell)).map(|g| g.cell)
+    dam(sim, id)?.gates.iter().find(|g| (!g.built || g.pending.is_some() || crate::locks::pending(sim, g.cell)) && !taken.contains(&g.cell)).map(|g| g.cell)
 }
 
 pub fn gates_claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> {
@@ -720,7 +735,8 @@ pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), S
     }
     let gate = *gate;
     d.pond_day = f64::NEG_INFINITY;
-    crate::gates::apply(sim, &gate)
+    crate::gates::apply(sim, &gate)?;
+    crate::locks::build(sim, cell)
 }
 
 /// Beavers working on this dam and loads on their way to it.
@@ -761,6 +777,24 @@ mod tests {
     }
 
     #[test]
+    fn a_dam_may_cross_any_water_the_game_draws() {
+        let mut s = SimState::new(1);
+        s.sandbox = false;
+        s.fog = crate::fog::Fog::clear(s.world.size);
+        s.water.depth.as_mut_slice().fill(0.0);
+        s.world.river.as_mut_slice().fill(false);
+        s.world.lake.as_mut_slice().fill(false);
+        let line: Vec<Cell> = (10..15).map(|x| (x, 20)).collect();
+        assert!(check_line(&s, &line).is_err(), "a line over dry ground");
+        // A creek a few centimetres deep, one cell wide, running across the line.
+        for y in 15..26 {
+            *s.water.depth.get_mut(12, y).unwrap() = 0.03;
+        }
+        assert!(s.water.shown(12, 20), "the creek is drawn");
+        assert_eq!(check_line(&s, &line), Ok(()), "a dam across a shallow creek");
+    }
+
+    #[test]
     fn a_drawn_dam_is_one_building_built_a_load_at_a_time() {
         let (mut s, line) = flat_river();
         let id = place(&mut s, &line).unwrap();
@@ -791,7 +825,7 @@ mod tests {
         pack(&mut s, id, line[2], sticks_per_step());
         assert!(!has_work_for(&s, id, true), "re-packing restores the cell");
         let slots = &s.work.place(id).unwrap().slots;
-        assert!(slots.iter().any(|sl| sl.role == crate::work::Role::Build) && slots.iter().any(|sl| sl.role == crate::work::Role::Maintain));
+        assert!(slots.iter().any(|sl| sl.role == crate::work::Role::Build) && slots.iter().all(|sl| sl.role != crate::work::Role::Maintain), "maintainers need no seat");
     }
 
     #[test]
@@ -858,5 +892,11 @@ mod tests {
         assert!(plan_extend_to(&s, id, &[(15, 24)]).is_err(), "new cells must run on from an end");
         apply_plan(&mut s, id, plan).unwrap();
         assert_eq!(dam(&s, id).unwrap().line().count(), line.len() + 2);
+        // Growing from the other end too: the line still runs end to end.
+        let plan = plan_extend_to(&s, id, &[(9, 20), (8, 20)]).unwrap();
+        apply_plan(&mut s, id, plan).unwrap();
+        let ends: Vec<Cell> = dam(&s, id).unwrap().line().map(|c| c.cell).collect();
+        let ends = (ends[0], ends[ends.len() - 1]);
+        assert!(ends == ((8, 20), (16, 20)) || ends == ((16, 20), (8, 20)), "both ends stay ends: {ends:?}");
     }
 }

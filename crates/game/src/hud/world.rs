@@ -21,6 +21,7 @@ pub enum Thing {
     Resource(ResourceId),
     Lodge(LodgeId),
     Cell(Cell),
+    Wolf,
 }
 
 impl Thing {
@@ -31,6 +32,7 @@ impl Thing {
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
             Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
+            Thing::Wolf => 6 << 60,
         }
     }
     pub fn selection(self) -> Selection {
@@ -40,6 +42,7 @@ impl Thing {
             Thing::Resource(r) => Selection::Tree(r),
             Thing::Lodge(l) => Selection::Lodge(l),
             Thing::Cell(c) => Selection::Cell(c),
+            Thing::Wolf => Selection::Wolf,
         }
     }
 }
@@ -91,6 +94,9 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     let near = s.colony.beavers.iter().filter_map(|b| beaver_at(s, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.9 * 0.9).min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
+    }
+    if s.predators.wolf.as_ref().is_some_and(|w| d2(w.pos) < 1.2 * 1.2 && s.fog.explored(cell)) {
+        return Thing::Wolf;
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
@@ -144,7 +150,8 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty()) {
                 let filled = pl.slots.iter().filter(|x| x.worker.is_some()).count();
-                tip.push(TipLine::new("Workers", format!("{filled}/{}", pl.slots.len())).icon(role_icon(pl.slots[0].role), INK));
+                let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
+                tip.push(TipLine::new("Workers", format!("{filled}{seats}")).icon(role_icon(pl.slots[0].role), INK));
             }
             if let Some(f) = s.output.of(id) {
                 for (g, r) in f.rates() {
@@ -188,6 +195,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
             Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
         }
+        Thing::Wolf => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
         Thing::Cell(c) => {
             let mut tip = Tip::default();
             for (i, col, name, v) in cell_rows(s, c) {
@@ -284,7 +292,7 @@ pub fn world_hover(
 /// tokens over buildings that need a look, a dot over free beavers, rings around
 /// the selected ones, and the pops of things that just happened.
 #[allow(clippy::too_many_arguments)]
-pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection, problems: &[sim::hud::Problem], pops: &[super::Pop], now: f32) -> Vec<VNode> {
+pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hud: &HudState, sel: Selection, problems: &[sim::hud::Problem], pops: &[super::Pop], now: f32, wolf_at: Option<Vec3>) -> Vec<VNode> {
     let mut out = Vec::new();
     let project = |mut w: Vec3, lift: f32| -> Option<Vec2> {
         w.y += lift;
@@ -301,7 +309,12 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     };
     for p in problems {
         let Some(f) = p.focus else { continue };
-        let Some(pos) = place((f.0 as f32 + 0.5, f.1 as f32 + 0.5), 2.4) else { continue };
+        // The wolf's pin rides over the wolf as drawn, not its cell, so it doesn't hop.
+        let at = match (p.kind, wolf_at) {
+            (sim::hud::ProblemKind::Wolf, Some(w)) => project(w, 2.4),
+            _ => place((f.0 as f32 + 0.5, f.1 as f32 + 0.5), 2.4),
+        };
+        let Some(pos) = at else { continue };
         let (icon, col, _, _, skin) = super::panels::alert_token(s, p);
         let mut v = pin(pos, icon, col, skin, 34.0);
         let act = match p.fix {
@@ -552,6 +565,74 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
     edge((x0, y1), (x0, y0));
 }
 
+/// A forester's reach: the dashed circle that fits its area (see `Area::reaches`).
+fn round_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, colour: Color) {
+    let (rx, ry) = ((a.max.0 - a.min.0) as f32 / 2.0 + 0.5, (a.max.1 - a.min.1) as f32 / 2.0 + 0.5);
+    let (cx, cy) = ((a.min.0 + a.max.0) as f32 / 2.0, (a.min.1 + a.max.1) as f32 / 2.0);
+    let n = 96;
+    let p = |i: usize| {
+        let t = i as f32 / n as f32 * std::f32::consts::TAU;
+        let q = (cx + rx * t.cos(), cy + ry * t.sin());
+        let mut v = cell_world(h, q);
+        v.y = height_at(h, q.0, q.1) + 0.15;
+        v
+    };
+    for i in (0..n).step_by(2) {
+        g.line(p(i), p(i + 1), colour);
+    }
+}
+
+/// A sight range: a dashed circle of radius `r` cells round `at` (cell coordinates), laid on
+/// the ground.
+fn sight_circle(g: &mut Gizmos, h: &sim::grid::HeightGrid, at: (f32, f32), r: f32, colour: Color) {
+    let n = ((r * 4.0) as usize).clamp(48, 400) & !1;
+    let p = |i: usize| {
+        let t = i as f32 / n as f32 * std::f32::consts::TAU;
+        let q = (at.0 + r * t.cos(), at.1 + r * t.sin());
+        cell_world(h, q).with_y(height_at(h, q.0, q.1) + 0.2)
+    };
+    for i in (0..n).step_by(2) {
+        g.line(p(i), p(i + 1), colour);
+    }
+}
+
+/// Sight ranges to show: of a hovered or selected beaver, the wolf, and of a lookout hovered,
+/// selected or being placed.
+fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) {
+    let h = &s.height;
+    let wolf_col = Color::srgb(0.92, 0.36, 0.3);
+    let mut beavers: Vec<BeaverId> = Vec::new();
+    if let Selection::Beaver(b) = sel {
+        beavers.push(b);
+    }
+    if let Some(Thing::Beaver(b)) = thing {
+        beavers.push(b);
+    }
+    beavers.dedup();
+    for b in beavers {
+        if let Some(at) = beaver_at(s, b) {
+            sight_circle(g, h, at, sim::fog::BEAVER_SIGHT, Color::WHITE.with_alpha(0.75));
+        }
+    }
+    if sel == Selection::Wolf || thing == Some(Thing::Wolf) {
+        if let Some(w) = s.predators.wolf.as_ref() {
+            sight_circle(g, h, w.pos, sim::predators::WOLF_SIGHT, wolf_col);
+        }
+    }
+    let mut lookouts: Vec<sim::buildings::Building> = Vec::new();
+    for id in [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }].into_iter().flatten() {
+        if let Some(b) = s.buildings.building(id).filter(|b| b.kind == BuildingKind::Lookout) {
+            lookouts.push(b.clone());
+        }
+    }
+    if let (Tool::Building(BuildingKind::Lookout), Some(c)) = (hud.tool, hover) {
+        lookouts.push(sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Lookout, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    }
+    for b in &lookouts {
+        sight_circle(g, h, sim::predators::lookout_centre(b), sim::predators::LOOKOUT_SIGHT, ACCENT);
+    }
+}
+
 /// The water lens: short flow lines traced along the current from seeds across the view,
 /// down to a centimetre of water, each ending in an arrowhead and coloured by speed (pale
 /// blue for slow water, white for a steady current, orange for fast water). The water engine
@@ -690,7 +771,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 cell_outline(&mut g, h, c, None, SELECT);
             }
             if let Some(a) = s.work.place(id).and_then(|p| p.area) {
-                area_outline(&mut g, h, a, SELECT);
+                if b.kind == sim::buildings::BuildingKind::Forester { round_outline(&mut g, h, a, SELECT) } else { area_outline(&mut g, h, a, SELECT) }
             }
         }
     }
@@ -739,7 +820,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = Color::WHITE.with_alpha(0.6);
-                    area_outline(&mut g, h, a, area_col);
+                    if kind == sim::buildings::BuildingKind::Forester { round_outline(&mut g, h, a, area_col) } else { area_outline(&mut g, h, a, area_col) }
                 }
                 for c in &pv.cells {
                     cell_outline(&mut g, h, *c, None, col);
@@ -765,6 +846,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
+    draw_sight(&mut g, s, &hud, hover.0, *sel, thing.0);
     draw_dam_wear(&mut g, s);
 }
 

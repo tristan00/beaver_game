@@ -618,7 +618,8 @@ fn buildings(c: &Ctx, u: &mut Ui) {
                 r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
                     if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
                         x.icon(Icon::Beaver, 13.0, MUTED);
-                        x.text(format!("{}/{}", pl.filled(), pl.slots.len()), 11.0, if pl.filled() == 0 { WARN } else { INK });
+                        let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
+                        x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
                     }
                 });
             });

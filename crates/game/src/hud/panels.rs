@@ -237,8 +237,9 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
                 .border(BorderColor::all(PANEL));
         })
         .skin(Skin::SeasonRing)
-        .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()).with_value(format!("Year {}", d.year)));
+        .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()));
         u.col(8.0, |x| {
+            x.bold(format!("Year {}", d.year), 13.0, INK);
             x.row(5.0, |r| {
                 r.pebble(Icon::Pause, 13.0, HudAction::Pause, if clock.paused { Peb::On } else { Peb::Idle }).tip(Tip::name("Pause").key("Space"));
                 for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
@@ -309,7 +310,7 @@ fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
         Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
         Fix::OpenDam { .. } => Some((Icon::Dam, String::new(), "Open the dam".into())),
-        Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and builders".into())),
+        Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and maintainers".into())),
         Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
         Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
         Fix::Accept(_) => Some((Icon::Check, String::new(), "Welcome".into())),
@@ -486,7 +487,7 @@ fn item_tip(kind: BuildingKind) -> Tip {
 pub fn bottom(c: &Ctx) -> Vec<VNode> {
     let hud = c.hud;
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)), ..default() }, 7.0, |u| {
-        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C"), (BuildingKind::Larder, "B"), (BuildingKind::Toolshed, "N"), (BuildingKind::Forester, "F"), (BuildingKind::Logistics, "H")].into_iter().enumerate() {
+        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C"), (BuildingKind::Larder, "B"), (BuildingKind::Toolshed, "N"), (BuildingKind::Forester, "F"), (BuildingKind::Logistics, "H"), (BuildingKind::Lookout, "O"), (BuildingKind::Harbor, "P")].into_iter().enumerate() {
             if i == 2 {
                 // Waterworks first, as a pair; the drop-down buildings after a groove.
                 u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
@@ -516,34 +517,12 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
 }
 
 pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
-    let larder = (2.0 + 2.0 * sim::tuning::colony::KIT_FOOD_WEIGHT) * sim::tuning::colony::HUNGER_PER_DAY * sim::starts::START_LARDER_DAYS;
-    let mut bundle: Vec<(Good, String)> = vec![(Good::Food, num(larder))];
-    for (g, a) in sim::starts::START_BUNDLE {
-        bundle.push((g, num(a)));
-    }
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)), ..default() }, 12.0, |u| {
         u.row(4.0, |r| {
             r.icon(Icon::Beaver, 22.0, INK);
             r.bold("4", 14.0, INK);
         })
         .tip(Tip::titled(Some((Icon::Beaver, INK)), "The family").line("Adults", "2").line("Young", "2"));
-        u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(22.0), ..default() })).bg(LINE);
-        u.row(8.0, |r| {
-            for (g, a) in &bundle {
-                r.row(2.0, |x| {
-                    x.icon(good_icon(*g), 16.0, good_color(*g));
-                    x.bold(a.clone(), 12.0, INK);
-                })
-                .tip(Tip::name(good_name(*g)));
-            }
-        })
-        .tip({
-            let mut t = Tip::titled(Some((Icon::Haul, INK)), "What they carry");
-            t.push(TipLine::new("Dam", "").icon(Icon::Dam, INK));
-            t.push(TipLine::new("Shelter", "").icon(Icon::Lodge, INK));
-            t.push(TipLine::new("Store", "").icon(Icon::Warehouse, INK));
-            t
-        });
         u.add(VNode::new(Node { width: Val::Px(1.0), height: Val::Px(22.0), ..default() })).bg(LINE);
         u.row(4.0, |r| {
             r.icon(Icon::Home, 18.0, ACCENT);

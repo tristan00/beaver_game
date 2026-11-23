@@ -73,6 +73,8 @@ pub(super) fn hotkeys(
             (KeyCode::KeyN, Tool::Building(BuildingKind::Toolshed)),
             (KeyCode::KeyF, Tool::Building(BuildingKind::Forester)),
             (KeyCode::KeyH, Tool::Building(BuildingKind::Logistics)),
+            (KeyCode::KeyO, Tool::Building(BuildingKind::Lookout)),
+            (KeyCode::KeyP, Tool::Building(BuildingKind::Harbor)),
             (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
             (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
         ];
@@ -345,7 +347,7 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
         world::Thing::Building(b) => {
             let mut placed = 0;
             for &w in who {
-                let Some(slot) = s.work.place(b).and_then(|p| p.slots.iter().position(|x| x.worker.is_none())) else { break };
+                let Some(slot) = s.work.place(b).and_then(|p| p.open_seat(|_| true)).map(|x| x.0) else { break };
                 if s.apply(sim::Command::FillSlot { building: b, slot, who: w }).is_ok() {
                     placed += 1;
                 }

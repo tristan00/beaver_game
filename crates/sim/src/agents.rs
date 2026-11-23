@@ -41,6 +41,8 @@ pub enum Assignment {
     Area(ResourceKind, Area),
     Slot(BuildingId, usize),
     Go(Cell),
+    /// Works as a maintainer: goes wherever repair is most needed, without a seat.
+    Maintain,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -75,6 +77,15 @@ pub enum Task {
     Pick { pile: u64, then: BuildingId },
     /// Walk to food lying on the ground and eat there.
     Eat { pile: u64 },
+    /// Mend a worn building in place, drawing the materials from the stores.
+    Mend { building: BuildingId },
+    /// Collect seedlings from a grown tree, to carry to a forester's store.
+    Seed { tree: ResourceId, progress: f32 },
+    /// Keep watch beside a lookout; a guard leaves its post only to eat.
+    Watch { lookout: BuildingId },
+    /// A hauler's barge trip (see `harbor`): to the barge (leg 0), push it to `from` (1), load
+    /// (2), push it to `to` (3), unload (4), take it back to its harbor (5), let it go (6).
+    Barge { barge: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8 },
 }
 
 impl Task {
@@ -103,10 +114,68 @@ pub struct Agent {
 }
 
 
+/// A new pair's visit to their lodge: each goes to it, and once both are there they court for
+/// `COURT_DAYS`, then go back to work.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Courtship {
+    pub partner: BeaverId,
+    pub started: f64,
+    /// When they met at the lodge.
+    pub met: Option<f64>,
+}
+
+/// A beaver's body, lying where it died for `REMAINS_DAYS`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Body {
+    pub id: BeaverId,
+    pub cell: Cell,
+    pub cause: crate::colony::DeathCause,
+    /// Its age when it died, for its size.
+    pub age_days: f32,
+    pub died: f64,
+}
+
+/// What outlasts a beaver that is gone from the colony: its body, or the beaver itself walking
+/// off the map when it leaves.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Remains {
+    pub bodies: Vec<Body>,
+    /// Beavers leaving the colony, each on its way to the map's edge, with its age.
+    pub leaving: Vec<(Agent, f32)>,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Agents {
     pub by_id: BTreeMap<BeaverId, Agent>,
     pub unreachable: BTreeMap<ResourceId, f64>,
+    /// The kind each one-resource order was for, so the beaver can go on to the next of that
+    /// kind once it is used up. Worked out again every step while the resource stands, so it
+    /// is not saved.
+    #[serde(skip)]
+    pub order_kinds: BTreeMap<BeaverId, ResourceKind>,
+    /// Where each maintainer is working now. Chosen again every few steps, so it is not saved.
+    #[serde(skip)]
+    pub maint_targets: BTreeMap<BeaverId, BuildingId>,
+    /// Cells from each cell to the nearest water, and the day it was measured (see `shore`).
+    #[serde(skip)]
+    pub(crate) shore: (f64, Vec<u16>),
+    /// Bodies and leavers (saved after the world; see `save`).
+    #[serde(skip)]
+    pub remains: Remains,
+    /// Every beaver's age as last seen, so a body is drawn the size the beaver was.
+    #[serde(skip)]
+    ages: BTreeMap<BeaverId, f32>,
+    /// Newly paired beavers on their way to meet at their lodge, or courting there (see
+    /// `court`). Not saved: after a reload they just go back to work.
+    #[serde(skip)]
+    pub courting: BTreeMap<BeaverId, Courtship>,
+    /// The day of the last pairing taken up into `courting`.
+    #[serde(skip)]
+    paired_upto: f64,
+    /// Beavers running from a wolf in sight, so they start their work afresh once it is gone.
+    /// A load and a fresh start are all a reload loses, so it is not saved.
+    #[serde(skip)]
+    pub fleeing: std::collections::BTreeSet<BeaverId>,
 }
 
 
@@ -195,12 +264,87 @@ pub fn place_beavers(sim: &mut SimState) {
     sync_agents(sim);
 }
 
+/// Why a beaver is no longer in the colony, or how it came, from the colony's latest events.
+fn latest_event(sim: &SimState, id: BeaverId) -> Option<&crate::colony::Event> {
+    use crate::colony::Event;
+    sim.colony.events.iter().rev().take(256).map(|e| &e.event).find(|e| match e {
+        Event::Died { id: x, .. } | Event::Departed { id: x } | Event::Immigrated { id: x } => *x == id,
+        _ => false,
+    })
+}
+
+/// A cell near `from` a body can lie on or a beaver can stand on outside: land first, then water.
+fn outside_near(sim: &SimState, from: Cell) -> Cell {
+    let ring = |r: usize| {
+        (from.1.saturating_sub(r)..=from.1 + r).flat_map(move |y| (from.0.saturating_sub(r)..=from.0 + r).map(move |x| (x, y)))
+    };
+    for want in [&[Surface::Land][..], &[Surface::Water, Surface::Canal][..]] {
+        for r in 0..=4usize {
+            if let Some(c) = ring(r).find(|&c| sim.nav.surface_at(c).is_some_and(|s| want.contains(&s))) {
+                return c;
+            }
+        }
+    }
+    from
+}
+
+/// Map-edge cells a beaver can stand on, nearest `from` first.
+fn edge_cells(sim: &SimState, from: Cell) -> Vec<Cell> {
+    let n = sim.nav.surface.width().min(sim.nav.surface.height());
+    let last = n - 1;
+    let mut out: Vec<Cell> = (0..n)
+        .flat_map(|i| [(i, 0), (i, last), (0, i), (last, i)])
+        .filter(|&c| matches!(sim.nav.surface_at(c), Some(Surface::Land | Surface::Water | Surface::Canal)))
+        .collect();
+    out.sort_by_key(|c| (c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2), *c));
+    out.dedup();
+    out
+}
+
 fn sync_agents(sim: &mut SimState) {
+    use crate::colony::Event;
+    for b in &sim.colony.beavers {
+        sim.agents.ages.insert(b.id, b.age_days);
+    }
+    let since = sim.agents.paired_upto;
+    let pairs: Vec<(f64, BeaverId, BeaverId)> = sim.colony.events.iter().rev().take(256).filter_map(|e| match e.event {
+        Event::NewFamily { a, b, .. } if e.day > since => Some((e.day, a, b)),
+        _ => None,
+    }).collect();
+    for (day, a, b) in pairs {
+        sim.agents.paired_upto = sim.agents.paired_upto.max(day);
+        for (who, partner) in [(a, b), (b, a)] {
+            sim.agents.courting.insert(who, Courtship { partner, started: sim.time_days, met: None });
+        }
+    }
     let gone: Vec<BeaverId> =
         sim.agents.by_id.keys().copied().filter(|&id| sim.colony.beaver(id).is_none()).collect();
     for id in gone {
-        if let Some(ag) = sim.agents.by_id.remove(&id) {
-            sim.nav.release(id, ag.cell);
+        let Some(mut ag) = sim.agents.by_id.remove(&id) else { continue };
+        let age = sim.agents.ages.remove(&id).unwrap_or(crate::colony::ADULT_DAYS);
+        match latest_event(sim, id).cloned() {
+            // A body lies where the beaver fell; one that died in its lodge is laid outside it.
+            Some(Event::Died { cause, .. }) => {
+                sim.nav.release(id, ag.cell);
+                let cell = if ag.inside { outside_near(sim, ag.cell) } else { ag.cell };
+                sim.agents.remains.bodies.push(Body { id, cell, cause, age_days: age, died: sim.time_days });
+            }
+            // One that leaves walks off the map.
+            Some(Event::Departed { .. }) => {
+                let edge = edge_cells(sim, ag.cell).into_iter().take(12).find(|&e| sim.nav.may_reach(ag.cell, [e]));
+                match edge {
+                    Some(e) => {
+                        ag.inside = false;
+                        ag.load = None;
+                        ag.path = None;
+                        ag.task = Task::Idle;
+                        ag.assignment = Some(Assignment::Go(e));
+                        sim.agents.remains.leaving.push((ag, age));
+                    }
+                    None => sim.nav.release(id, ag.cell),
+                }
+            }
+            _ => sim.nav.release(id, ag.cell),
         }
     }
     let missing: Vec<(BeaverId, (f32, f32))> = sim
@@ -212,6 +356,20 @@ fn sync_agents(sim: &mut SimState) {
         .collect();
     for (id, pos) in missing {
         let (cx, cy) = (pos.0.max(0.0) as usize, pos.1.max(0.0) as usize);
+        // A newcomer comes in from the map's edge and walks to its new home.
+        if matches!(latest_event(sim, id), Some(Event::Immigrated { .. })) {
+            let home = outside_near(sim, (cx, cy));
+            let start = edge_cells(sim, home).into_iter().take(12).find(|&e| !sim.agents.by_id.values().any(|a| a.cell == e) && sim.nav.may_reach(e, [home]));
+            if let Some(e) = start {
+                if spawn_on(sim, id, e).is_ok() {
+                    if let Some(a) = sim.agents.by_id.get_mut(&id) {
+                        a.assignment = Some(Assignment::Go(home));
+                        a.move_state = MoveState::Moving;
+                    }
+                    continue;
+                }
+            }
+        }
         let free = (0..=SPAWN_RADIUS)
             .flat_map(|r| {
                 (cy.saturating_sub(r)..=cy + r)
@@ -233,6 +391,8 @@ struct Job {
     area: Option<Area>,
     only: Option<ResourceId>,
     min_age: f32,
+    /// The role the work counts for, whose distance from water limits it (None: a direct order).
+    role: Option<crate::jobs::RoleKind>,
 }
 
 
@@ -268,23 +428,23 @@ impl Job {
                 .resources
                 .get(id)
                 .filter(|r| gatherable(r) && (r.kind != ResourceKind::Pebbles || has_toolshed(sim)))
-                .map(|_| Job { kinds: &[], area: None, only: Some(id), min_age: 0.0 }),
+                .map(|_| Job { kinds: &[], area: None, only: Some(id), min_age: 0.0, role: None }),
             Assignment::Area(ResourceKind::Pebbles, _) if !has_toolshed(sim) => None,
-            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, None) }),
+            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, None), role: Some(crate::jobs::gather_role(kind)) }),
             Assignment::Slot(b, slot) => {
                 let place = sim.work.place(b)?;
                 match (place.slots.get(slot)?.role, place.area) {
                     (Role::Collect(kind), Some(area)) => {
-                        Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, Some(b)) })
+                        Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, Some(b)), role: Some(crate::jobs::gather_role(kind)) })
                     }
                     _ => None,
                 }
             }
-            Assignment::Go(_) => None,
+            Assignment::Go(_) | Assignment::Maintain => None,
         }
     }
     fn forages(&self) -> bool {
-        self.kinds.first() == Some(&ResourceKind::Plant)
+        self.kinds.contains(&ResourceKind::Plant)
     }
     fn permits(&self, r: &Resource) -> bool {
         if self.only.is_some_and(|id|id!=r.id) || self.area.is_some_and(|a|!a.contains(r.cell)) {return false;}
@@ -316,10 +476,15 @@ impl Job {
     /// The source a beaver at `from` should go to: the shortest round of walking there and
     /// carrying the load to where it is dropped off, among sources not already worked by as
     /// many beavers as they take. Kinds earlier in the job's list come first (felled trees
-    /// before standing ones); land and water plants count as one kind.
+    /// before standing ones); land and water plants count as one kind, and so do river clay
+    /// and mud banks.
     fn pick(&self, sim: &SimState, from: Cell) -> Option<ResourceId> {
         let rank = |r: &Resource| {
-            let kind = if r.kind == ResourceKind::WaterPlant { ResourceKind::Plant } else { r.kind };
+            let kind = match r.kind {
+                ResourceKind::WaterPlant => ResourceKind::Plant,
+                ResourceKind::RiverClay => ResourceKind::MudBank,
+                k => k,
+            };
             self.kinds.iter().position(|&k| k == kind).unwrap_or(0)
         };
         let reachable = |r: &Resource| {
@@ -333,6 +498,7 @@ impl Job {
         let mut best: Option<((usize, u32, ResourceId), ResourceId)> = None;
         let mut consider = |r: &Resource| {
             if !self.permits(r) || !worth_starting(r) || full(r) {return;}
+            if self.role.is_some_and(|role| !within_shore(sim, role, r.cell)) {return;}
             let walk = cell_dist(from, r.cell);
             if best.as_ref().is_some_and(|((k, c, _), _)| (rank(r), trip_key(walk)) > (*k, *c)) {return;}
             let good = self.good_of(r);
@@ -413,6 +579,47 @@ pub fn accepts(kind: BuildingKind, good: Good) -> bool {
 }
 
 /// Collecting pebbles needs the tools kept at a finished tool shed.
+/// Whether a role's workers may be sent to `c`: within the player's limit of cells from water.
+pub fn within_shore(sim: &SimState, role: crate::jobs::RoleKind, c: Cell) -> bool {
+    let Some(&max) = sim.work.shore_limits.get(&role) else { return true };
+    let n = sim.nav.surface.width();
+    sim.agents.shore.1.get(c.1 * n + c.0).is_none_or(|&d| d <= max)
+}
+
+/// Once a day while any role has a limit: how many steps (sideways or diagonal) each cell is
+/// from the nearest water or canal.
+fn measure_shore(sim: &mut SimState) {
+    let day = sim.time_days.floor();
+    if sim.work.shore_limits.is_empty() || (sim.agents.shore.0 == day && !sim.agents.shore.1.is_empty()) {
+        return;
+    }
+    let (w, h) = (sim.nav.surface.width(), sim.nav.surface.height());
+    let surf = sim.nav.surface.as_slice();
+    let mut d = vec![u16::MAX; w * h];
+    let mut queue = std::collections::VecDeque::new();
+    for (i, s) in surf.iter().enumerate() {
+        if matches!(s, Surface::Water | Surface::Canal) {
+            d[i] = 0;
+            queue.push_back(i);
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        let (x, y) = ((i % w) as i64, (i / w) as i64);
+        for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                continue;
+            }
+            let j = ny as usize * w + nx as usize;
+            if d[j] == u16::MAX {
+                d[j] = d[i] + 1;
+                queue.push_back(j);
+            }
+        }
+    }
+    sim.agents.shore = (day, d);
+}
+
 pub fn has_toolshed(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Toolshed && b.is_complete())
 }
@@ -426,11 +633,11 @@ fn nearest_store(sim: &SimState, who: BeaverId, from: Cell, good: Good) -> Optio
         .buildings
         .iter()
         .filter(|b| b.is_complete() && accepts(b.kind, good) && !sim.buildings.unusable(b, &sim.water.depth))
-        .map(|b|(crate::nav::minimum_cost(crate::stock::dist(from,b).saturating_sub(1)),b)).collect();
+        .map(|b|(sim.nav.minimum_cost(crate::stock::dist(from,b).saturating_sub(1)),b)).collect();
     stores.sort_by(|a,b|a.0.total_cmp(&b.0).then(a.1.id.cmp(&b.1.id)));
     let mut best:Option<(BuildingId,Path)>=None;
     for (bound,b) in stores {
-        // Even an all-canal path to this store cannot beat the known route.
+        // Even an all-canal path, with the fastest current behind it, cannot beat the known route.
         // Keep equal bounds: the lower building id still wins exact ties.
         if best.as_ref().is_some_and(|(_,path)|bound>path.cost) {break;}
         let path=if adjacent(from,b) {Path{steps:Vec::new(),cost:0.0}} else {
@@ -485,8 +692,8 @@ fn nearest_by_route<K: Copy + Ord>(sim: &SimState, ag: &Agent, to: &[Cell], plac
     let steps = |a: &[Cell], b: &[Cell]| a.iter().flat_map(|p| b.iter().map(move |q| p.0.abs_diff(q.0).max(p.1.abs_diff(q.1)))).min().unwrap_or(0).saturating_sub(1);
     let mut places: Vec<(f32, K, Vec<Cell>)> = places
         .map(|(k, cells)| {
-            let on = if to.is_empty() { 0.0 } else { crate::nav::minimum_cost(steps(&cells, to)) };
-            (crate::nav::minimum_cost(steps(&[ag.cell], &cells)) + on, k, cells)
+            let on = if to.is_empty() { 0.0 } else { sim.nav.minimum_cost(steps(&cells, to)) };
+            (sim.nav.minimum_cost(steps(&[ag.cell], &cells)) + on, k, cells)
         })
         .collect();
     places.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -547,12 +754,21 @@ pub fn pace(nav: &NavGrid, ag: &Agent) -> f32 {
     if surface == Some(Surface::Canal) && nav.floats(ag.cell) {
         return 1.0;
     }
-    let dry = !matches!(surface, Some(Surface::Water | Surface::LodgeEntrance | Surface::Canal));
+    let dry = !matches!(surface, Some(Surface::Water | Surface::LodgeEntrance | Surface::Canal | Surface::Lock));
     if load.good == Good::Sticks && dry { STICKS_LAND_PACE } else { LADEN_PACE }
 }
 
+/// How fast a beaver goes, as a share of a walk (or swim) unladen: `pace`, or a barge's when
+/// it is pushing one.
+pub fn travel_pace(nav: &NavGrid, ag: &Agent) -> f32 {
+    match ag.task {
+        Task::Barge { leg: 1 | 3 | 5, .. } => crate::harbor::BARGE_PACE,
+        _ => pace(nav, ag),
+    }
+}
+
 pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
-    let pace = pace(nav, ag);
+    let pace = travel_pace(nav, ag);
     let mut budget = ag.step_frac + dt_days * MOVE_COST_PER_DAY * pace;
     let mut moved = false;
     ag.trail.clear();
@@ -562,7 +778,8 @@ pub(crate) fn follow(nav: &mut NavGrid, ag: &mut Agent, dt_days: f32) -> bool {
             ag.path = None;
             break;
         };
-        let cost = nav.surface_at(next).and_then(NavGrid::step_cost).map_or(1.0, |c| c.0) * crate::nav::step_length(ag.cell, next);
+        // Swimming with the current is quicker than against it (`NavGrid::move_cost`).
+        let cost = nav.move_cost(ag.cell, next, pace).unwrap_or_else(|| crate::nav::step_length(ag.cell, next));
         ag.gait = gait;
         if budget < cost {
             ag.step_frac = budget;
@@ -592,8 +809,11 @@ enum Duty {
     Collect(Job),
     Build(BuildingId),
     Haul,
-    Tend(Area),
-    Plant(Area),
+    /// A forester's work in its area: collect seedlings, plant them, tend.
+    Forest(Area),
+    Mend(BuildingId),
+    /// A guard's watch at its lookout.
+    Guard(BuildingId),
 }
 
 fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
@@ -602,12 +822,16 @@ fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
     }
     match sim.work.slot_of(ag.id) {
         Some((b, _, Role::Build)) if sim.work.place(b).is_some_and(|p| p.site.is_some() || (!p.paused && (crate::dams::has_work_for(sim, b, false) || crate::canals::has_work_for(sim, b, false)))) => Duty::Build(b),
-        Some((b, _, Role::Maintain)) if sim.work.place(b).is_some_and(|p| p.site.is_some() || (!p.paused && (crate::dams::has_work_for(sim, b, true) || crate::canals::has_work_for(sim, b, true)))) => Duty::Build(b),
         Some((_, _, Role::Haul)) => Duty::Haul,
-        Some((b, _, Role::Tend)) => sim.work.place(b).and_then(|p| p.area).map_or(Duty::None, Duty::Tend),
-        Some((b, _, Role::Plant)) => sim.work.place(b).and_then(|p| p.area).map_or(Duty::None, Duty::Plant),
+        Some((b, _, Role::Guard)) if sim.buildings.building(b).is_some_and(|x| x.is_complete()) => Duty::Guard(b),
+        Some((b, _, Role::Forest)) => sim.work.place(b).and_then(|p| p.area).map_or(Duty::None, Duty::Forest),
         Some((b, i, Role::Collect(_))) => Job::resolve(sim, Assignment::Slot(b, i)).map_or(Duty::None, Duty::Collect),
         Some(_) => Duty::None,
+        None if ag.assignment == Some(Assignment::Maintain) => match sim.agents.maint_targets.get(&ag.id) {
+            Some(&b) if sim.buildings.building(b).is_some_and(|x| crate::maintenance::needs_mending(sim, x)) => Duty::Mend(b),
+            Some(&b) => Duty::Build(b),
+            None => Duty::None,
+        },
         None => ag.assignment.and_then(|a| Job::resolve(sim, a)).map_or(Duty::None, Duty::Collect),
     }
 }
@@ -641,7 +865,7 @@ fn is_canal(sim: &SimState, id: BuildingId) -> bool {
 /// A canal digger walks to the next cell (or the gate) and works there; no load is needed.
 /// A maintainer's dam or canal work is upkeep; a builder's is new work.
 fn upkeep(sim: &SimState, who: BeaverId) -> bool {
-    matches!(sim.work.slot_of(who), Some((_, _, Role::Maintain)))
+    sim.agents.maint_targets.contains_key(&who)
 }
 
 fn canal_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
@@ -709,6 +933,112 @@ fn site_fetch_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task>
     None
 }
 
+/// A haul between two stores goes by barge when there are at least two loads to move, barge
+/// water joins the two, and a barge is free; otherwise as it is, a load at a time.
+fn by_barge(sim: &SimState, ag: &Agent, t: Task) -> Task {
+    let Task::Fetch { from, good, then, site_delivery: false } = t else { return t };
+    if from == SUPPLIES || then == SUPPLIES || sim.fleet.barges.is_empty() || sim.work.stock_of(from, good) < 2.0 * load_size(good) {
+        return t;
+    }
+    let Some(barge) = crate::harbor::free_barge(sim, ag.cell) else { return t };
+    let harbor = sim.fleet.get(barge).map(|b| b.harbor);
+    if !harbor.is_some_and(|h| crate::harbor::joined(sim, h, from)) || !crate::harbor::joined(sim, from, then) {
+        return t;
+    }
+    Task::Barge { barge, from, to: then, good, leg: 0 }
+}
+
+/// One turn of a barge trip (see `Task::Barge`).
+#[allow(clippy::too_many_arguments)]
+fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8) {
+    use crate::harbor;
+    let let_go = |sim: &mut SimState, ag: &mut Agent| {
+        let at = ag.cell;
+        if let Some(b) = sim.fleet.get_mut(barge).filter(|b| b.hauler == Some(ag.id)) {
+            b.hauler = None;
+            if harbor::barge_water(sim, at) {
+                if let Some(b) = sim.fleet.get_mut(barge) {
+                    b.cell = at;
+                }
+            }
+        }
+        ag.path = None;
+        ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
+    };
+    let Some(b) = sim.fleet.get(barge).copied() else { return let_go(sim, ag) };
+    if !matches!(duty, Duty::Haul) || b.hauler.is_some_and(|h| h != ag.id) {
+        return let_go(sim, ag);
+    }
+    let docks_of = |sim: &SimState, id: BuildingId| sim.buildings.building(id).map(|x| harbor::docks(sim, x)).unwrap_or_default();
+    let next = |ag: &mut Agent, leg: u8| {
+        ag.path = None;
+        ag.task = Task::Barge { barge, from, to, good, leg };
+    };
+    match leg {
+        // To the barge, and on board.
+        0 => {
+            if let Some(x) = sim.fleet.get_mut(barge) {
+                x.hauler = Some(ag.id);
+            }
+            if ag.cell == b.cell {
+                return next(ag, 1);
+            }
+            if ag.path.is_none() {
+                ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(b.cell));
+                if ag.path.is_none() {
+                    return let_go(sim, ag);
+                }
+            }
+            let moved = follow(&mut sim.nav, ag, dt);
+            note(ag, moved);
+        }
+        // Pushing it: to the first store, to the second, home to its harbor.
+        1 | 3 | 5 => {
+            let target = docks_of(sim, match leg { 1 => from, 3 => to, _ => b.harbor });
+            if target.contains(&ag.cell) {
+                return next(ag, leg + 1);
+            }
+            if ag.path.is_none() {
+                ag.path = harbor::route(sim, ag.cell, &target);
+                if ag.path.is_none() {
+                    return let_go(sim, ag);
+                }
+            }
+            let moved = follow(&mut sim.nav, ag, dt);
+            let at = ag.cell;
+            if let Some(x) = sim.fleet.get_mut(barge) {
+                x.cell = at;
+            }
+            note(ag, moved);
+        }
+        // Loading as much as the barge takes.
+        2 => {
+            let want = (harbor::BARGE_LOADS * load_size(good)).min(sim.work.stock_of(from, good));
+            let (got, kind) = if want > WORK_EPS { sim.buildings.stores.take_kind_from(from, good, want) } else { (0.0, None) };
+            log_load(sim, ag, "TAKE_FOR_BARGE", from, good, want, got, &format!("to={} barge={barge}", to.0));
+            if got > WORK_EPS {
+                ag.load = Some(Load { species: kind, ..Load::new(good, got, true) });
+                next(ag, 3);
+            } else {
+                next(ag, 5);
+            }
+            note(ag, true);
+        }
+        // Unloading into the second store; what it cannot take is carried on as usual.
+        4 => {
+            if let Some(load) = ag.load {
+                let who = producer(sim, ag);
+                let taken = stow(sim, to, load, who).unwrap_or(0.0);
+                log_load(sim, ag, "DELIVER_BARGE", to, load.good, load.amount, taken, &format!("barge={barge}"));
+                ag.load = (load.amount - taken > WORK_EPS).then(|| Load { amount: load.amount - taken, ..load });
+            }
+            note(ag, true);
+            next(ag, 5);
+        }
+        _ => let_go(sim, ag),
+    }
+}
+
 fn site_haul_task(sim: &SimState, ag: &Agent) -> Option<Task> {
     let mut sites: Vec<_> = sim.work.places.iter().filter(|p| is_site(sim, p) && !p.paused).collect();
     sites.sort_by_key(|p| (std::cmp::Reverse(p.priority), p.building));
@@ -727,6 +1057,117 @@ fn haul_task(sim: &SimState) -> Option<Task> {
 
 /// How far round a gatherer's area it looks for its goods lying on the ground (cells).
 const PILE_REACH: usize = 8;
+
+/// How far a beaver whose one resource is used up looks for the next one of its kind (cells).
+const ORDER_REACH: usize = 24;
+/// How often (in steps) workers check that their target still has work for them.
+const RETARGET_STEPS: u64 = 4;
+
+/// The nearest gatherable resource of `kind` (felled trees before standing ones, as gatherers
+/// rank them) within `reach` of `from`.
+fn next_resource(sim: &SimState, kind: ResourceKind, from: Cell, reach: usize) -> Option<ResourceId> {
+    let area = Area { min: (from.0.saturating_sub(reach), from.1.saturating_sub(reach)), max: (from.0 + reach, from.1 + reach) };
+    let job = Job::resolve(sim, Assignment::Area(kind, area))?;
+    job.pick(sim, from)
+}
+
+/// Whether a workplace still has work for a seat of this role: a site with labour or materials
+/// to come, a dam or canal with cells to build or keep, or a gathering area with something left.
+fn seat_has_work(sim: &SimState, b: BuildingId, role: Role) -> bool {
+    let Some(p) = sim.work.place(b) else { return false };
+    if p.paused {
+        // Paused by the player: its workers wait there.
+        return true;
+    }
+    match role {
+        Role::Build => {
+            if p.site.is_some() && is_site(sim, p) {
+                return !site_stalled(sim, p);
+            }
+            crate::dams::has_work_for(sim, b, false) || crate::canals::has_work_for(sim, b, false)
+        }
+        Role::Collect(_) => p
+            .slots
+            .iter()
+            .position(|s| s.role == role)
+            .and_then(|i| Job::resolve(sim, Assignment::Slot(b, i)))
+            .is_some_and(|j| sim.resources.items().iter().any(|r| j.permits(r) && worth_starting(r))),
+        _ => true,
+    }
+}
+
+fn reaches_place(sim: &SimState, from: Cell, b: BuildingId) -> bool {
+    place_cells(sim, b).iter().any(|&c| sim.nav.may_reach_beside(from, c))
+}
+
+/// A worker whose target is done or out of reach goes on to the next one: a seated builder,
+/// maintainer or gatherer to the nearest workplace of the same job with work and an open seat;
+/// a gatherer sent to an area that has run out, to the nearest spot with more of the same.
+fn retarget(sim: &mut SimState) {
+    if sim.steps % RETARGET_STEPS != 0 {
+        return;
+    }
+    let workers: Vec<(BeaverId, Cell)> = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| b.can_work())
+        .filter_map(|b| sim.agents.get(b.id).map(|a| (b.id, a.cell)))
+        .collect();
+    for (who, at) in workers {
+        match sim.work.slot_of(who) {
+            Some((from, i, role)) if matches!(role, Role::Build | Role::Collect(_)) => {
+                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) {
+                    continue;
+                }
+                let kind = crate::jobs::role_kind(role);
+                let d = |b: BuildingId| sim.buildings.building(b).map_or(usize::MAX, |bd| bd.pos.0.abs_diff(at.0).pow(2) + bd.pos.1.abs_diff(at.1).pow(2));
+                let next = sim
+                    .work
+                    .places
+                    .iter()
+                    .filter(|p| p.building != from && !p.paused)
+                    .filter(|p| sim.buildings.building(p.building).is_some_and(|b| (b.is_complete() || is_site(sim, p)) && !sim.buildings.unusable(b, &sim.water.depth)))
+                    .filter(|p| role != Role::Build || takes_builders(sim, p))
+                    .filter_map(|p| {
+                        let (j, r) = p.open_seat(|r| crate::jobs::role_kind(r) == kind)?;
+                        Some((p, j, r))
+                    })
+                    .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building))
+                    .min_by_key(|(p, _, _)| (std::cmp::Reverse(p.priority), d(p.building), p.building))
+                    .map(|(p, j, _)| (p.building, j));
+                let Some((to, j)) = next else { continue };
+                let _ = sim.work.unassign(from, i);
+                if sim.work.assign(to, j, who).is_ok() {
+                    if let Ok(p) = sim.work.place_mut(to) {
+                        p.max_workers = p.max_workers.max(p.filled());
+                    }
+                    sim.agents.assign(who, None);
+                    if crate::trace::enabled() {
+                        crate::trace::event(format!("RESEAT {} beaver={} from={} to={} role={role:?}", crate::trace::sim_stamp(), who.0, from.0, to.0));
+                    }
+                }
+            }
+            Some(_) => {}
+            None => {
+                let Some(Assignment::Area(kind, area)) = sim.agents.get(who).and_then(|a| a.assignment) else { continue };
+                if gathering_available(sim, Assignment::Area(kind, area)) {
+                    continue;
+                }
+                let Some(r) = next_resource(sim, kind, at, GATHER_RADIUS).and_then(|id| sim.resources.get(id)) else { continue };
+                // The same area, moved to centre on the nearest of the same kind.
+                let (hw, hh) = ((area.max.0 - area.min.0) / 2, (area.max.1 - area.min.1) / 2);
+                let n = sim.world.size;
+                let c = r.cell;
+                let moved = Area { min: (c.0.saturating_sub(hw), c.1.saturating_sub(hh)), max: ((c.0 + hw).min(n - 1), (c.1 + hh).min(n - 1)) };
+                sim.agents.assign(who, Some(Assignment::Area(kind, moved)));
+                if crate::trace::enabled() {
+                    crate::trace::event(format!("REAREA {} beaver={} kind={kind:?} from={area:?} to={moved:?}", crate::trace::sim_stamp(), who.0));
+                }
+            }
+        }
+    }
+}
 
 /// What a gatherer's job left on the ground while no store would take it: once one will,
 /// carrying that in comes before gathering more, or it rots where it lies. An order for one
@@ -759,23 +1200,28 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
         Duty::None => "+choose work/none",
         Duty::Collect(_) => "+choose work/collect",
         Duty::Build(_) => "+choose work/build",
-        Duty::Tend(_) => "+choose work/tend",
-        Duty::Plant(_) => "+choose work/plant",
+        Duty::Forest(_) => "+choose work/forest",
         Duty::Haul => "+choose work/haul",
+        Duty::Mend(_) => "+choose work/mend",
+        Duty::Guard(_) => "+choose work/guard",
     });
     match duty {
         Duty::None => None,
         Duty::Collect(j) => pile_task(sim, j, ag).or_else(|| j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 })),
         Duty::Build(site) => build_task(sim, *site, ag),
-        Duty::Tend(area) => crate::forestry::tend_target(sim, *area, ag.cell, ag.id).map(|target| Task::Tend { target, progress: 0.0 }),
-        Duty::Plant(area) => plant_task(sim, *area, ag),
-        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim)).or_else(|| {
+        Duty::Mend(b) => Some(Task::Mend { building: *b }),
+        Duty::Guard(b) => Some(Task::Watch { lookout: *b }),
+        // Plant what the stores hold, collect more seedlings while there is room, else tend.
+        Duty::Forest(area) => plant_task(sim, *area, ag)
+            .or_else(|| seed_task(sim, *area, ag))
+            .or_else(|| crate::forestry::tend_target(sim, *area, ag.cell, ag.id).map(|target| Task::Tend { target, progress: 0.0 })),
+        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim).map(|t| by_barge(sim, ag, t))).or_else(|| {
             let (from, then, good) = crate::stock::fill_move(sim)?;
-            Some(Task::Fetch { from, good, then, site_delivery: false })
+            Some(by_barge(sim, ag, Task::Fetch { from, good, then, site_delivery: false }))
         }).or_else(|| {
             let own = sim.work.slot_of(ag.id).map(|s| s.0).filter(|b| sim.work.balanced.contains(b))?;
             let (from, then, good) = crate::stock::balance_move(sim, Some(own))?;
-            Some(Task::Fetch { from, good, then, site_delivery: false })
+            Some(by_barge(sim, ag, Task::Fetch { from, good, then, site_delivery: false }))
         }),
     }
 }
@@ -790,6 +1236,9 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         go_to(sim, ag, dt, to);
         return;
     }
+    if court(sim, ag, dt) || follow_parent(sim, ag, dt) {
+        return;
+    }
     if let Some(pile) = hungry_for_ground_food(sim, ag) {
         ag.path = None;
         ag.task = Task::Eat { pile };
@@ -797,18 +1246,28 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
     let duty = duty_of(sim, ag, can_work && !tired);
     ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
-    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. } | Task::Eat { .. }) {
+    // A guard rests at its post.
+    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. } | Task::Eat { .. } | Task::Watch { .. }) {
         ag.path = None;
         ag.task = Task::Rest;
     }
+    if let Some(Assignment::Resource(id)) = ag.assignment {
+        if let Some(r) = sim.resources.get(id) {
+            sim.agents.order_kinds.insert(ag.id, r.kind);
+        }
+    }
     if matches!(duty, Duty::None) && can_work && !tired && matches!(ag.assignment, Some(Assignment::Resource(_))) {
-        ag.assignment = None;
+        // That one is done with: on to the nearest of the same kind, or free if there is none.
+        let kind = sim.agents.order_kinds.get(&ag.id).copied();
+        ag.assignment = kind.and_then(|k| next_resource(sim, k, ag.cell, ORDER_REACH)).map(Assignment::Resource);
+        ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
+        ag.path = None;
     }
     match ag.task.clone() {
         Task::Idle => {
             ag.path = None;
             let dam_load = (matches!(duty, Duty::Build(b) if is_dam(sim, b) && !sim.maintenance.jobs.contains_key(&b)) && ag.load.is_some_and(|l| l.good == Good::Sticks))
-                || (matches!(duty, Duty::Plant(..)) && ag.load.is_some_and(|l| l.good == Good::Saplings));
+                || (matches!(duty, Duty::Forest(..)) && ag.load.is_some_and(|l| l.good == Good::Saplings));
             let dam_next = if dam_load { next_task(sim, &duty, ag) } else { None };
             if let Some(t) = dam_next {
                 ag.task = t;
@@ -856,6 +1315,17 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         Task::Haul { to } => haul(sim, ag, dt, to),
         Task::Pick { pile, then } => pick_up(sim, ag, dt, &duty, pile, then),
         Task::Eat { pile } => eat_on_ground(sim, ag, dt, pile),
+        Task::Mend { building } => mend(sim, ag, dt, &duty, building),
+        Task::Seed { tree, progress } => seed(sim, ag, dt, &duty, tree, progress),
+        Task::Barge { barge, from, to, good, leg } => barge_trip(sim, ag, dt, &duty, barge, from, to, good, leg),
+        Task::Watch { lookout } => {
+            if !matches!(duty, Duty::Guard(b) if b == lookout) {
+                ag.path = None;
+                ag.task = Task::Idle;
+            } else if approach(sim, ag, dt, lookout) {
+                note(ag, true);
+            }
+        }
     }
 }
 
@@ -1048,6 +1518,88 @@ fn waterworks_visit(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, si
     ag.task = Task::Idle;
 }
 
+/// A newly paired beaver's turn: to its lodge, wait there for its mate, court, then back to
+/// work. Returns false once there is no courtship (never was, or over).
+fn court(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
+    let Some(c) = sim.agents.courting.get(&ag.id).copied() else { return false };
+    let now = sim.time_days;
+    let partner_on = sim.agents.courting.get(&c.partner).is_some_and(|p| p.partner == ag.id);
+    // A guard keeps its post: it leaves only to eat, so it does not go courting.
+    let guard = |id: BeaverId| sim.work.slot_of(id).is_some_and(|(_, _, r)| r == Role::Guard);
+    let over = c.met.is_some_and(|m| now >= m + COURT_DAYS) || (c.met.is_none() && now >= c.started + COURT_WAIT_DAYS) || !partner_on || guard(ag.id) || guard(c.partner);
+    let home = home_of(sim, ag.id).map(|b| b.id);
+    if over || home.is_none() {
+        sim.agents.courting.remove(&ag.id);
+        ag.path = None;
+        ag.task = Task::Idle;
+        return false;
+    }
+    if c.met.is_some() {
+        ag.path = None;
+        note(ag, true);
+        return true;
+    }
+    // Out of the lodge and beside it; once both are, they meet.
+    let there = !ag.inside && approach(sim, ag, dt, home.unwrap());
+    if there {
+        ag.task = Task::Idle;
+        let partner_there = sim.agents.by_id.get(&c.partner).is_some_and(|p| {
+            !p.inside && p.cell.0.abs_diff(ag.cell.0).max(p.cell.1.abs_diff(ag.cell.1)) <= 3
+        });
+        if partner_there {
+            for who in [ag.id, c.partner] {
+                if let Some(x) = sim.agents.courting.get_mut(&who) {
+                    x.met = Some(now);
+                }
+            }
+        }
+    } else if ag.inside {
+        // Out of the lodge first, onto the ground or water just round it.
+        if ag.path.is_none() {
+            let cells = place_cells(sim, home.unwrap());
+            let ring: Vec<Cell> = cells
+                .iter()
+                .flat_map(|&(x, y)| [(x + 1, y), (x.wrapping_sub(1), y), (x, y + 1), (x, y.wrapping_sub(1))])
+                .filter(|c| !cells.contains(c) && matches!(sim.nav.surface_at(*c), Some(Surface::Land | Surface::Water | Surface::Canal | Surface::LodgeEntrance)))
+                .collect();
+            ag.path = sim.nav.find_path_onto_any(ag.id, ag.cell, &ring);
+        }
+        let moved = follow(&mut sim.nav, ag, dt);
+        note(ag, moved);
+    }
+    true
+}
+
+/// A kit's turn while a parent works out near home: it tags along a step behind.
+fn follow_parent(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
+    let Some(b) = sim.colony.beaver(ag.id) else { return false };
+    // Only a kit with nothing to do: one old enough to have a job keeps to it.
+    if b.stage != crate::colony::Stage::Kit || b.resting || sim.work.slot_of(ag.id).is_some() || ag.assignment.is_some() {
+        return false;
+    }
+    let home = home_of(sim, ag.id).map(|h| h.pos);
+    let near_home = |c: Cell| home.is_some_and(|h| h.0.abs_diff(c.0).max(h.1.abs_diff(c.1)) <= KIT_FOLLOW_RANGE);
+    let parent = [b.mother, b.father].into_iter().flatten().filter_map(|p| sim.agents.by_id.get(&p)).find(|p| {
+        !p.inside && near_home(p.cell) && !sim.agents.fleeing.contains(&p.id)
+    });
+    let Some(target) = parent.map(|p| p.cell) else { return false };
+    ag.task = Task::Idle;
+    let d = target.0.abs_diff(ag.cell.0).max(target.1.abs_diff(ag.cell.1));
+    if d <= 1 {
+        ag.path = None;
+        note(ag, true);
+        return true;
+    }
+    // Head for beside the parent; set out again once it has moved on.
+    let stale = ag.path.as_ref().and_then(|p| p.steps.last()).is_none_or(|s| s.0 .0.abs_diff(target.0).max(s.0 .1.abs_diff(target.1)) > 2);
+    if stale {
+        ag.path = sim.nav.find_path_beside_any(ag.id, ag.cell, &[target]);
+    }
+    let moved = follow(&mut sim.nav, ag, dt);
+    note(ag, moved);
+    true
+}
+
 fn approach(sim: &mut SimState, ag: &mut Agent, dt: f32, target: BuildingId) -> bool {
     let cells = place_cells(sim, target);
     if cells.is_empty() {
@@ -1232,6 +1784,22 @@ fn build(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Buildin
     }
 }
 
+/// Walk to a worn building and mend it, drawing the materials from the stores as the work goes.
+fn mend(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, building: BuildingId) {
+    let wanted = matches!(duty, Duty::Mend(b) if *b == building) && sim.buildings.building(building).is_some_and(|b| crate::maintenance::needs_mending(sim, b));
+    if !wanted {
+        return abandon(ag);
+    }
+    if approach(sim, ag, dt, building) {
+        let labour = dt * LABOUR_PER_DAY * worker_effort(sim, ag, crate::colony::Job::Builder);
+        let mended = crate::maintenance::mend(sim, building, labour);
+        note(ag, mended);
+        if !mended || !sim.buildings.building(building).is_some_and(|b| crate::maintenance::needs_mending(sim, b)) {
+            ag.task = Task::Idle;
+        }
+    }
+}
+
 fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
     let Some(load) = ag.load else {
         ag.task = Task::Idle;
@@ -1345,15 +1913,144 @@ pub(crate) fn home_area(sim: &SimState) -> Option<(Cell, Area)> {
     Some((home, Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) }))
 }
 
+/// How badly a waterwork or refit needs its maintainers, 0 (sound) to 1 (falling down): a dam
+/// by its weakest cell, a canal silting up. Refits that only strengthen a building come last.
+/// Worn buildings are mended in place and weighed in `send_maintainers`.
+pub fn repair_need(sim: &SimState, b: BuildingId) -> f32 {
+    if let Some(job) = sim.maintenance.jobs.get(&b) {
+        // A refit is a site waiting for its materials and labour.
+        if job.kind != crate::maintenance::Refit::Repair {
+            return 0.05;
+        }
+    }
+    if let Some(d) = crate::dams::dam(sim, b) {
+        if !crate::dams::has_work_for(sim, b, true) {
+            return 0.0;
+        }
+        let weakest = d.cells.iter().filter(|c| crate::dams::built(sim, c.cell) > 0.0).map(|c| crate::dams::integrity(sim, c.cell)).fold(1.0f32, f32::min);
+        return 1.0 - weakest;
+    }
+    if crate::canals::has_work_for(sim, b, true) {
+        return 0.4;
+    }
+    0.0
+}
+
+/// How much worse off another place must be before a busy maintainer leaves its own for it.
+const REPAIR_SWITCH: f32 = 0.2;
+
+fn is_maintainer(sim: &SimState, who: BeaverId) -> bool {
+    sim.work.slot_of(who).is_none() && sim.agents.get(who).is_some_and(|a| a.assignment == Some(Assignment::Maintain))
+}
+
+/// Maintainers need no seats and no orders, as gatherers need none. Each goes to the place it can
+/// reach in the worst repair: a worn building to mend (one marked for repair first, if the
+/// stores hold what mending it takes), a dam's worn cells, a canal's silt or a refit. Places in
+/// equal need are shared out, and a maintainer stays put unless another is much worse off.
+fn send_maintainers(sim: &mut SimState) {
+    if sim.steps % RETARGET_STEPS != 0 {
+        return;
+    }
+    let maintainers: Vec<(BeaverId, Cell)> = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| b.can_work() && is_maintainer(sim, b.id))
+        .filter_map(|b| sim.agents.get(b.id).map(|a| (b.id, a.cell)))
+        .collect();
+    sim.agents.maint_targets.retain(|who, _| maintainers.iter().any(|m| m.0 == *who));
+    if maintainers.is_empty() {
+        return;
+    }
+    let marked = |b: BuildingId| sim.maintenance.jobs.get(&b).is_some_and(|j| j.kind == crate::maintenance::Refit::Repair);
+    let mut places: Vec<(BuildingId, f32, Cell)> = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| !p.paused)
+        .filter_map(|p| {
+            let need = repair_need(sim, p.building);
+            let pos = sim.buildings.building(p.building)?.pos;
+            (need > 0.0).then_some((p.building, need, pos))
+        })
+        .collect();
+    places.extend(
+        sim.buildings
+            .buildings
+            .iter()
+            .filter(|b| crate::maintenance::needs_mending(sim, b))
+            .filter(|b| crate::maintenance::mend_rates(b).0.iter().all(|&(g, _)| sim.buildings.stores.amount(g) > WORK_EPS))
+            .map(|b| (b.id, 1.0 - b.condition + if marked(b.id) { 1.0 } else { 0.0 }, b.pos)),
+    );
+    for (who, at) in maintainers {
+        let need_of = |b: BuildingId| places.iter().find(|p| p.0 == b).map_or(0.0, |p| p.1);
+        let current = sim.agents.maint_targets.get(&who).copied().filter(|&b| need_of(b) > 0.0 && reaches_place(sim, at, b));
+        let crowd = |b: BuildingId| sim.agents.maint_targets.iter().filter(|(w, t)| **w != who && **t == b).count();
+        let best = places
+            .iter()
+            .filter(|p| reaches_place(sim, at, p.0))
+            .filter(|p| current.is_none_or(|c| p.1 > need_of(c) + REPAIR_SWITCH))
+            .min_by_key(|p| (std::cmp::Reverse((p.1 * 20.0) as i32), crowd(p.0), p.2.0.abs_diff(at.0).pow(2) + p.2.1.abs_diff(at.1).pow(2), p.0))
+            .map(|p| p.0);
+        match best.or(current) {
+            Some(b) => {
+                sim.agents.maint_targets.insert(who, b);
+            }
+            None => {
+                sim.agents.maint_targets.remove(&who);
+            }
+        }
+    }
+}
+
+/// Whether builders have a place here at all: a site, a refit, a dam or a canal.
+pub(crate) fn takes_builders(sim: &SimState, p: &crate::work::Workplace) -> bool {
+    is_site(sim, p) || sim.maintenance.jobs.contains_key(&p.building) || sim.buildings.building(p.building).is_some_and(|b| b.kind.is_waterworks())
+}
+
 fn tidy(sim: &mut SimState) {
+    // Maintainers have no seats; anyone found in one (an older save) keeps the role without it.
+    let seated: Vec<BeaverId> = sim.work.places.iter().flat_map(|p| p.slots.iter().filter(|s| s.role == Role::Maintain).filter_map(|s| s.worker)).collect();
+    for p in &mut sim.work.places {
+        p.slots.retain(|s| s.role != Role::Maintain);
+    }
+    for who in seated {
+        sim.agents.assign(who, Some(Assignment::Maintain));
+    }
+    // A forester's tend and plant seats (an older save) become its one forester seat, and it
+    // takes the wider range foresters now have.
+    let wider: Vec<(BuildingId, Option<Area>)> = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| p.slots.iter().any(|s| matches!(s.role, Role::Tend | Role::Plant)))
+        .map(|p| (p.building, sim.buildings.building(p.building).and_then(crate::catalogue::work_area)))
+        .collect();
+    for (b, area) in wider {
+        let Ok(p) = sim.work.place_mut(b) else { continue };
+        let worker = p.slots.iter().filter(|s| matches!(s.role, Role::Tend | Role::Plant)).find_map(|s| s.worker);
+        p.slots.retain(|s| !matches!(s.role, Role::Tend | Role::Plant));
+        p.slots.push(crate::work::Slot { role: Role::Forest, worker, off: false });
+        if area.is_some() {
+            p.area = area;
+        }
+    }
+    // Seats kept for builders at a finished building go once their builder has moved on.
+    let finished: Vec<BuildingId> = sim.work.places.iter().filter(|p| !takes_builders(sim, p)).map(|p| p.building).collect();
+    for p in sim.work.places.iter_mut().filter(|p| finished.contains(&p.building)) {
+        p.slots.retain(|s| s.worker.is_some() || s.role != Role::Build);
+    }
     let alive: std::collections::BTreeSet<BeaverId> = sim.colony.beavers.iter().map(|b| b.id).collect();
     let dry: Vec<BuildingId> = sim.buildings.buildings.iter().filter(|b| sim.buildings.unusable(b, &sim.water.depth)).map(|b| b.id).collect();
     for p in &mut sim.work.places {
         let refitting=sim.maintenance.jobs.contains_key(&p.building);
         let ruined=sim.buildings.building(p.building).is_some_and(|b|b.is_complete() && !b.operational());
         let closed = p.paused || (!refitting && (dry.contains(&p.building) || ruined));
+        let waiting_here = finished.contains(&p.building);
         for s in &mut p.slots {
-            if s.worker.is_some_and(|w| closed || !alive.contains(&w)) {
+            // Builders waiting at a finished building stay builders whatever becomes of it.
+            let waiting = waiting_here && s.role == Role::Build;
+            if s.worker.is_some_and(|w| (closed && !waiting) || !alive.contains(&w)) {
                 s.worker = None;
             }
         }
@@ -1479,26 +2176,21 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
         ag.task = Task::Carry { dest: site };
         return;
     }
+    // With no store to take it, no room left, or no way to a store, the load is left on the
+    // ground here, for builders and the hungry, and the beaver goes on with its work.
     if closest_store(sim, ag.cell, load.good).is_none() {
-        // No store takes it: it is left on the ground here, for builders and the hungry.
-        let now = sim.time_days;
-        sim.work.piles.drop_at(ag.cell, load.good, load.amount, now);
-        log_load(sim, ag, "DROP_GROUND", NO_STORE, load.good, load.amount, load.amount, "");
-        ag.load = None;
-        ag.path = None;
-        ag.task = Task::Idle;
+        drop_load(sim, ag, "no store");
         return;
     }
     if sim.buildings.stores.space(load.good) <= EPS {
-        ag.path = None;
-        note(ag, false);
+        drop_load(sim, ag, "stores full");
         return;
     }
     let dest = if ag.path.is_some() || adjacent_to_store(sim, ag.cell, dest, load.good) {
         dest
     } else {
         let Some((id, path)) = nearest_store(sim, ag.id, ag.cell, load.good) else {
-            note(ag, false);
+            drop_load(sim, ag, "no way to a store");
             return;
         };
         ag.task = Task::Carry { dest: id };
@@ -1513,16 +2205,8 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
     };
     if adjacent(ag.cell, store) {
         let who = producer(sim, ag);
-        let larder = store.kind == BuildingKind::Larder;
         let booked = stow(sim, dest, load, who);
         log_load(sim, ag, "DELIVER_STORE", dest, load.good, load.amount, *booked.as_ref().unwrap_or(&0.0), &format!("booked={} result={:?}", load.booked, booked.as_ref().map(|_| "ok").map_err(|e| format!("{e:?}"))));
-        // Foragers bring back seedlings of the trees where they foraged with fresh food; they
-        // are kept at the nearest forester, and lost if there is none.
-        if let (true, false, Good::Food, Some(sp), Ok(taken)) = (larder, load.booked, load.good, load.species, &booked) {
-            if let Some(nursery) = closest_store(sim, ag.cell, Good::Saplings) {
-                let _ = sim.buildings.stores.produce_kind_at(nursery, Good::Saplings, Some(sp), taken * SAPLINGS_PER_FOOD, who);
-            }
-        }
         match booked {
             Ok(taken) if taken >= load.amount => {
                 ag.load = None;
@@ -1530,15 +2214,28 @@ fn carry(sim: &mut SimState, ag: &mut Agent, dt: f32, dest: BuildingId) {
                 note(ag, true);
             }
             Ok(taken) => {
+                // The store had room for only part of it: the rest goes on the ground.
                 ag.load = Some(Load { amount: load.amount - taken, ..load });
-                note(ag, taken > 0.0);
+                drop_load(sim, ag, "store filled");
             }
-            Err(_) => note(ag, false),
+            Err(_) => drop_load(sim, ag, "store refused"),
         }
         return;
     }
     let moved = follow(&mut sim.nav, ag, dt);
     note(ag, moved);
+}
+
+/// Leave the carried load on the ground where the beaver stands and free it for other work.
+fn drop_load(sim: &mut SimState, ag: &mut Agent, why: &str) {
+    if let Some(load) = ag.load.take() {
+        let now = sim.time_days;
+        sim.work.piles.drop_at(ag.cell, load.good, load.amount, now);
+        log_load(sim, ag, "DROP_GROUND", NO_STORE, load.good, load.amount, load.amount, why);
+    }
+    ag.path = None;
+    ag.task = Task::Idle;
+    note(ag, true);
 }
 
 /// Put a carried load in a store: fresh loads are new production, taken-out stock goes back.
@@ -1600,9 +2297,59 @@ fn plant_task(sim: &SimState, area: Area, ag: &Agent) -> Option<Task> {
     Some(Task::Plant { store, cell, progress: 0.0 })
 }
 
+/// A grown tree in a forester's area to collect seedlings from, while a forester has room for them.
+fn seed_task(sim: &SimState, area: Area, ag: &Agent) -> Option<Task> {
+    if ag.load.is_some() || sim.buildings.stores.space(Good::Saplings) < SEEDLINGS_PER_TREE {
+        return None;
+    }
+    let now = sim.time_days;
+    sim.resources
+        .items()
+        .iter()
+        .filter(|r| area.reaches(r.cell) && seeds(r) && within_shore(sim, crate::jobs::RoleKind::Forester, r.cell))
+        .filter(|r| sim.agents.unreachable.get(&r.id).is_none_or(|&until| until <= now))
+        .filter(|r| !sim.agents.by_id.values().any(|a| a.id != ag.id && matches!(a.task, Task::Seed { tree, .. } if tree == r.id)))
+        .min_by(|a, b| cell_dist(ag.cell, a.cell).total_cmp(&cell_dist(ag.cell, b.cell)).then(a.id.cmp(&b.id)))
+        .filter(|r| sim.nav.may_reach_beside(ag.cell, r.cell))
+        .map(|r| Task::Seed { tree: r.id, progress: 0.0 })
+}
+
+/// Trees old enough to give seedlings.
+fn seeds(r: &Resource) -> bool {
+    matches!(r.stage(), Some(crate::forestry::TreeStage::Mature | crate::forestry::TreeStage::Old))
+}
+
+fn seed(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, tree: ResourceId, progress: f32) {
+    let Duty::Forest(area) = *duty else { return abandon(ag) };
+    let Some((cell, species)) = sim.resources.get(tree).filter(|r| seeds(r) && area.reaches(r.cell)).map(|r| (r.cell, r.species)) else {
+        ag.path = None;
+        ag.task = Task::Idle;
+        return;
+    };
+    match reach(sim, ag, dt, cell) {
+        None => {
+            sim.agents.unreachable.insert(tree, sim.time_days + UNREACHABLE_RETRY_DAYS);
+            ag.task = Task::Idle;
+            return;
+        }
+        Some(false) => return,
+        Some(true) => {}
+    }
+    note(ag, true);
+    let progress = progress + dt * LABOUR_PER_DAY * worker_effort(sim, ag, crate::colony::Job::Forager);
+    if progress + WORK_EPS < SEED_WORK {
+        ag.task = Task::Seed { tree, progress };
+        return;
+    }
+    // Seedlings of this tree's species, for the nearest forester's store.
+    ag.load = Some(Load { species, ..Load::new(Good::Saplings, SEEDLINGS_PER_TREE, false) });
+    ag.path = None;
+    ag.task = Task::Carry { dest: NO_STORE };
+}
+
 fn tend(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, target: ResourceId, progress: f32) {
-    let Duty::Tend(area) = *duty else { return abandon(ag) };
-    let Some(cell) = sim.resources.get(target).filter(|r| crate::forestry::wants_tending(r) && area.contains(r.cell)).map(|r| r.cell) else {
+    let Duty::Forest(area) = *duty else { return abandon(ag) };
+    let Some(cell) = sim.resources.get(target).filter(|r| crate::forestry::wants_tending(r) && area.reaches(r.cell)).map(|r| r.cell) else {
         ag.path = None;
         ag.task = Task::Idle;
         return;
@@ -1631,7 +2378,7 @@ fn tend(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, target: Resour
 
 #[allow(clippy::too_many_arguments)]
 fn plant(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, store: BuildingId, cell: Cell, progress: f32) {
-    let Duty::Plant(area) = *duty else { return abandon(ag) };
+    let Duty::Forest(area) = *duty else { return abandon(ag) };
     let Some(load) = ag.load.filter(|l| l.good == Good::Saplings) else {
         if ag.load.is_some() || sim.buildings.building(store).is_none_or(|b| !b.is_complete() || !accepts(b.kind, Good::Saplings)) {
             return abandon(ag);
@@ -1649,7 +2396,7 @@ fn plant(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, store: Buildi
         }
         return;
     };
-    if !area.contains(cell) || !crate::forestry::plantable(sim, cell) {
+    if !area.reaches(cell) || !crate::forestry::plantable(sim, cell) {
         ag.path = None;
         ag.task = match crate::forestry::plant_cell(sim, area, ag.cell, ag.id) {
             Some(cell) => Task::Plant { store, cell, progress: 0.0 },
@@ -1763,6 +2510,172 @@ mod ground_tests {
     }
 
     #[test]
+    fn a_builder_whose_site_is_done_moves_on_to_the_next_site() {
+        let (mut s, who, at) = open_valley();
+        let (done, next) = (BuildingId(5), BuildingId(6));
+        for (id, pos) in [(done, (at.0 + 4, at.1)), (next, (at.0 + 12, at.1))] {
+            s.buildings.buildings.push(Building { id, kind: BuildingKind::Warehouse, pos, status: crate::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+            s.work.add_site(id, BuildingKind::Warehouse, &[], 5.0).unwrap();
+        }
+        s.work.assign(done, 0, who).unwrap();
+        s.steps = 0;
+        retarget(&mut s);
+        assert_eq!(s.work.slot_of(who).map(|x| x.0), Some(done), "its own site still has work");
+        s.work.add_labour(done, 5.0).unwrap();
+        retarget(&mut s);
+        assert_eq!(s.work.slot_of(who).map(|x| x.0), Some(next), "done there: on to the next site");
+    }
+
+    #[test]
+    fn builders_stay_builders_when_their_building_is_finished() {
+        let (mut s, who, at) = open_valley();
+        let (first, second) = (BuildingId(5), BuildingId(6));
+        s.buildings.buildings.push(Building { id: first, kind: BuildingKind::Warehouse, pos: (at.0 + 4, at.1), status: crate::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        s.work.add_site(first, BuildingKind::Warehouse, &[], 1.0).unwrap();
+        s.work.assign(first, 0, who).unwrap();
+        s.work.add_labour(first, 1.0).unwrap();
+        finish_sites(&mut s);
+        assert!(s.buildings.building(first).unwrap().is_complete());
+        assert_eq!(s.work.slot_of(who).map(|x| (x.0, x.2)), Some((first, Role::Build)), "still a builder, waiting where it finished");
+        assert_eq!(crate::jobs::role_of(&s, who), Some(crate::jobs::RoleKind::Builder));
+        s.buildings.buildings.push(Building { id: second, kind: BuildingKind::Warehouse, pos: (at.0 + 12, at.1), status: crate::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        s.work.add_site(second, BuildingKind::Warehouse, &[], 5.0).unwrap();
+        s.steps = 0;
+        retarget(&mut s);
+        assert_eq!(s.work.slot_of(who).map(|x| x.0), Some(second), "on to the next builder job");
+        tidy(&mut s);
+        assert!(!s.work.place(first).unwrap().slots.iter().any(|x| x.role == Role::Build), "the seat it left behind is gone");
+    }
+
+    #[test]
+    fn maintainers_mend_the_worst_building_in_place_without_orders() {
+        let (mut s, who, at) = open_valley();
+        let (worn, wrecked) = (BuildingId(5), BuildingId(6));
+        for (id, pos, condition) in [(worn, (at.0 + 4, at.1), 0.7), (wrecked, (at.0 + 30, at.1), 0.2)] {
+            let b = Building { id, kind: BuildingKind::Warehouse, pos, status: crate::buildings::Status::Complete, output: 0.0, condition, reinforced: false, dam: None, canal: None };
+            s.work.add_complete(&b).unwrap();
+            s.buildings.buildings.push(b);
+        }
+        for (g, _) in crate::maintenance::mend_rates(s.buildings.building(worn).unwrap()).0 {
+            s.buildings.stores.produce_at(worn, g, 50.0, crate::buildings::Producer::Other).unwrap();
+        }
+        s.steps = 0;
+        send_maintainers(&mut s);
+        assert!(s.agents.maint_targets.is_empty(), "with no maintainers, nothing is mended");
+        s.agents.assign(who, Some(Assignment::Maintain));
+        send_maintainers(&mut s);
+        assert!(s.maintenance.jobs.is_empty(), "no repair is ordered");
+        assert_eq!(s.agents.maint_targets.get(&who), Some(&wrecked), "the worse-off building comes first, though further");
+        assert!(matches!(duty_of(&s, s.agents.get(who).unwrap(), true), Duty::Mend(b) if b == wrecked));
+        assert!(s.work.place(wrecked).unwrap().site.is_none(), "the building is not made a site");
+
+        crate::maintenance::order(&mut s, worn, crate::maintenance::Refit::Repair).unwrap();
+        send_maintainers(&mut s);
+        assert_eq!(s.agents.maint_targets.get(&who), Some(&worn), "a building marked for repair comes first");
+
+        let before: f32 = Good::ALL.iter().map(|&g| s.buildings.stores.amount(g)).sum();
+        assert!(crate::maintenance::mend(&mut s, worn, 1000.0));
+        assert_eq!(s.buildings.building(worn).unwrap().condition, 1.0);
+        assert!(Good::ALL.iter().map(|&g| s.buildings.stores.amount(g)).sum::<f32>() < before, "mending draws on the stores");
+        assert!(!s.maintenance.jobs.contains_key(&worn), "the mark goes once the building is whole");
+
+        // A building begun is finished, though it rises past the automatic mark.
+        s.buildings.buildings.iter_mut().find(|b| b.id == wrecked).unwrap().condition = crate::maintenance::AUTO_REPAIR_BELOW - 0.01;
+        s.agents.maint_targets.insert(who, wrecked);
+        assert!(crate::maintenance::mend(&mut s, wrecked, 0.5));
+        assert!(s.buildings.building(wrecked).unwrap().condition > crate::maintenance::AUTO_REPAIR_BELOW);
+        send_maintainers(&mut s);
+        assert_eq!(s.agents.maint_targets.get(&who), Some(&wrecked), "it stays until the building is whole");
+    }
+
+    #[test]
+    fn a_site_takes_as_many_builders_as_are_sent() {
+        let (mut s, _, at) = open_valley();
+        let site = BuildingId(5);
+        s.buildings.buildings.push(Building { id: site, kind: BuildingKind::Warehouse, pos: (at.0 + 4, at.1), status: crate::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        s.work.add_site(site, BuildingKind::Warehouse, &[], 5.0).unwrap();
+        let seats = s.work.place(site).unwrap().slots.len();
+        let crew: Vec<BeaverId> = s.colony.beavers.iter().filter(|b| b.can_work()).map(|b| b.id).collect();
+        for (n, &who) in crew.iter().enumerate() {
+            s.agents.spawn(who, at);
+            let (slot, _) = s.work.place(site).unwrap().open_seat(|_| true).expect("always a seat for a builder");
+            s.apply(crate::Command::FillSlot { building: site, slot, who }).unwrap();
+            assert_eq!(s.work.place(site).unwrap().builders(), n + 1);
+        }
+        assert!(crew.len() > seats, "more builders ({}) than the {seats} seats it began with", crew.len());
+    }
+
+    #[test]
+    fn a_gatherer_whose_area_runs_out_moves_on_to_more() {
+        let (mut s, who, at) = open_valley();
+        let area = Area { min: (at.0 - 3, at.1 - 3), max: (at.0 + 3, at.1 + 3) };
+        s.agents.assign(who, Some(Assignment::Area(ResourceKind::Plant, area)));
+        let far = (at.0 + 30, at.1 + 5);
+        s.resources.add(ResourceKind::Plant, far, 7.0);
+        s.steps = 0;
+        retarget(&mut s);
+        match s.agents.get(who).unwrap().assignment {
+            Some(Assignment::Area(ResourceKind::Plant, a)) => {
+                assert!(a.contains(far), "the area moved onto the food: {a:?}");
+                assert_eq!((a.max.0 - a.min.0, a.max.1 - a.min.1), (6, 6), "and kept its size");
+            }
+            other => panic!("still gathering food, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_beaver_sent_to_one_plant_goes_on_to_the_next_when_it_is_gone() {
+        let (mut s, who, at) = open_valley();
+        let first = s.resources.add(ResourceKind::Plant, (at.0 + 1, at.1), 7.0);
+        s.agents.assign(who, Some(Assignment::Resource(first)));
+        step(&mut s, crate::STEP_DAYS);
+        s.resources.clear();
+        let next = s.resources.add(ResourceKind::Plant, (at.0 + 6, at.1), 7.0);
+        step(&mut s, crate::STEP_DAYS);
+        assert_eq!(s.agents.get(who).unwrap().assignment, Some(Assignment::Resource(next)), "the first is gone: on to the next plant");
+    }
+
+    #[test]
+    fn foragers_strip_fallen_trees_but_never_fell_one() {
+        let (mut s, _, at) = open_valley();
+        let area = Area { min: (at.0 - 10, at.1 - 10), max: (at.0 + 10, at.1 + 10) };
+        for (i, sp) in [crate::trees::Tree::Aspen, crate::trees::Tree::Pine].into_iter().enumerate() {
+            s.resources.add_tree((at.0 + 3, at.1 + 2 * i), 3000.0, sp);
+        }
+        let foragers = Job::resolve(&s, Assignment::Area(ResourceKind::Plant, area)).unwrap();
+        let loggers = Job::resolve(&s, Assignment::Area(ResourceKind::Tree, area)).unwrap();
+        let trees: Vec<_> = s.resources.items().iter().filter(|r| r.kind == ResourceKind::Tree).collect();
+        assert!(trees.iter().all(|r| loggers.permits(r)), "loggers may fell both");
+        assert!(trees.iter().all(|r| !foragers.permits(r)), "no standing tree is a forager's");
+        let mut down = trees[0].clone();
+        down.kind = ResourceKind::Felled;
+        down.bark = 1.0;
+        assert!(foragers.permits(&down), "bark on a fallen tree is still food");
+        let plant = s.resources.add(ResourceKind::Plant, (at.0 + 1, at.1), 5.0);
+        assert_eq!(foragers.pick(&s, at), Some(plant));
+        let fallen = s.resources.add(ResourceKind::Felled, (at.0 - 6, at.1), 0.0);
+        s.resources.get_mut(fallen).unwrap().bark = 1.0;
+        assert_eq!(foragers.pick(&s, at), Some(fallen), "bark lying on the ground comes before a nearer plant");
+    }
+
+    #[test]
+    fn a_role_kept_near_water_leaves_trees_farther_out() {
+        let (mut s, _, at) = open_valley();
+        for y in 0..s.nav.surface.height() {
+            s.nav.set((at.0 + 12, y), Surface::Water);
+        }
+        let near = s.resources.add_tree((at.0 + 9, at.1), 3000.0, crate::trees::Tree::Aspen);
+        let far = s.resources.add_tree((at.0 - 2, at.1), 3000.0, crate::trees::Tree::Aspen);
+        let area = Area { min: (at.0 - 20, at.1 - 20), max: (at.0 + 20, at.1 + 20) };
+        let loggers = Job::resolve(&s, Assignment::Area(ResourceKind::Tree, area)).unwrap();
+        assert_eq!(loggers.pick(&s, at), Some(far), "with no limit the nearest tree");
+        s.apply(crate::Command::SetShoreLimit { role: crate::jobs::RoleKind::Logger, cells: Some(5) }).unwrap();
+        measure_shore(&mut s);
+        assert_eq!(loggers.pick(&s, at), Some(near), "14 cells from water is past the limit; 3 is within");
+        assert!(within_shore(&s, crate::jobs::RoleKind::Forager, (at.0 - 2, at.1)), "other roles are not limited");
+    }
+
+    #[test]
     fn a_logger_fetches_its_dropped_sticks_once_a_store_will_take_them() {
         let (mut s, who, at) = open_valley();
         s.work.piles.drop_at((at.0 + 3, at.1), Good::Sticks, 2.0, 0.0);
@@ -1865,19 +2778,30 @@ mod larder_tests {
     }
 
     #[test]
-    fn foragers_bring_saplings_of_the_trees_where_they_foraged() {
-        let (mut s, who, store, _) = setup();
+    fn foresters_collect_seedlings_for_their_store_and_foragers_bring_none() {
+        let (mut s, who, store, area) = setup();
+        let forester = s.work.place(BuildingId(8)).unwrap();
+        assert_eq!(forester.slots.iter().map(|x| x.role).collect::<Vec<_>>(), vec![Role::Forest], "one forester seat");
+        assert_eq!(BuildingKind::Forester.spec().area, Some((91, 91)), "a wide range");
         let mut a = take_agent(&mut s, who);
         deliver_food(&mut s, &mut a, Some(Tree::Birch));
         assert_eq!(s.work.stock_of(store, Good::Food), 4.0);
+        assert_eq!(s.work.stock_of(BuildingId(8), Good::Saplings), 0.0, "foragers bring no seedlings");
+
+        let at = (a.cell.0 + 1, a.cell.1);
+        let tree = s.resources.add_tree(at, 4000.0, Tree::Birch);
+        let duty = Duty::Forest(area);
+        assert!(matches!(seed_task(&s, area, &a), Some(Task::Seed { tree: t, .. }) if t == tree));
+        a.task = Task::Seed { tree, progress: 0.0 };
+        for _ in 0..200 {
+            match a.task {
+                Task::Seed { tree, progress } => seed(&mut s, &mut a, 0.01, &duty, tree, progress),
+                Task::Carry { dest } => carry(&mut s, &mut a, 0.01, dest),
+                _ => break,
+            }
+        }
         let saplings = s.buildings.stores.kinds_at(BuildingId(8), Good::Saplings);
-        assert_eq!(saplings.len(), 1);
-        assert_eq!(saplings[0].0, Some(Tree::Birch));
-        assert!((saplings[0].1 - 4.0 * SAPLINGS_PER_FOOD).abs() < 1e-5);
-        // Food from where no tree grows brings no seedlings home.
-        deliver_food(&mut s, &mut a, None);
-        assert_eq!(s.work.stock_of(store, Good::Food), 8.0);
-        assert!((s.work.stock_of(BuildingId(8), Good::Saplings) - 4.0 * SAPLINGS_PER_FOOD).abs() < 1e-5);
+        assert_eq!(saplings, vec![(Some(Tree::Birch), SEEDLINGS_PER_TREE)], "seedlings of the tree's species, in the forester's store");
     }
 
     #[test]
@@ -1903,7 +2827,7 @@ mod larder_tests {
         s.buildings.stores.produce_kind_at(BuildingId(8), Good::Saplings, Some(Tree::Pine), 1.0, Producer::Other).unwrap();
         s.buildings.stores.produce_kind_at(BuildingId(8), Good::Saplings, Some(Tree::Birch), 3.0, Producer::Other).unwrap();
         let mut a = take_agent(&mut s, who);
-        let duty = Duty::Plant(area);
+        let duty = Duty::Forest(area);
         let mut planted = Vec::new();
         for _ in 0..20000 {
             if planted.len() == 4 {
@@ -1972,7 +2896,7 @@ mod larder_tests {
         a.task = Task::Tend { target: id, progress: 0.0 };
         for _ in 0..400 {
             let Task::Tend { target, progress } = a.task.clone() else { break };
-            tend(&mut s, &mut a, 0.01, &Duty::Tend(area), target, progress);
+            tend(&mut s, &mut a, 0.01, &Duty::Forest(area), target, progress);
         }
         assert_eq!(a.task, Task::Idle);
         assert_eq!(s.resources.get(id).unwrap().tended_days, crate::forestry::TEND_DAYS);
@@ -1989,7 +2913,7 @@ mod larder_tests {
         let (mut s, who, _, area) = setup();
         s.buildings.stores.produce_at(BuildingId(8), Good::Saplings, 2.0, Producer::Other).unwrap();
         let mut a = take_agent(&mut s, who);
-        let duty = Duty::Plant(area);
+        let duty = Duty::Forest(area);
         for _ in 0..3000 {
             if s.resources.items().iter().any(|r| r.kind == ResourceKind::Tree) {
                 break;
@@ -2001,7 +2925,8 @@ mod larder_tests {
         }
         let trees: Vec<_> = s.resources.items().iter().filter(|r| r.kind == ResourceKind::Tree).collect();
         assert_eq!(trees.len(), 1);
-        assert!(area.contains(trees[0].cell));
+        assert!(area.reaches(trees[0].cell));
+        assert!(!area.reaches(area.min), "a forester's reach is round: its corners are out");
         assert_eq!(trees[0].stage(), Some(crate::forestry::TreeStage::Sapling));
         assert!(a.load.is_none());
         assert_eq!(s.work.stock_of(BuildingId(8), Good::Saplings), 1.0);
@@ -2048,7 +2973,7 @@ mod larder_tests {
 mod freight_tests {
     use super::*;
     #[test]
-    fn gathered_materials_with_no_store_stay_on_the_ground_and_full_storage_preserves_the_load() {
+    fn gathered_materials_with_no_store_or_no_room_are_left_on_the_ground() {
         let mut s = SimState::new(1);
         s.nav = NavGrid::new(16, 16);
         s.work.supplies = Some((5, 5));
@@ -2067,8 +2992,9 @@ mod freight_tests {
         a.load = Some(Load::new(Good::Clay, 4.0, false));
         a.task = Task::Carry { dest: NO_STORE };
         carry(&mut s, &mut a, 0.01, NO_STORE);
-        assert_eq!(a.load.unwrap().amount, 4.0);
-        assert!(matches!(a.task, Task::Carry { .. }));
+        assert!(a.load.is_none(), "a full store does not keep the beaver waiting");
+        assert!(matches!(a.task, Task::Idle));
+        assert_eq!(s.work.piles.items.iter().map(|p| p.amount).sum::<f32>(), 8.0, "the load is left beside the first");
     }
     #[test]
     fn direct_move_walks_over_multiple_steps_and_reports_blockage() {
@@ -2114,7 +3040,7 @@ mod freight_tests {
             let b=Building{id,kind:BuildingKind::Warehouse,pos,status:crate::buildings::Status::Complete,output:0.0,condition:0.5,reinforced:false,dam: None, canal: None};
             s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
         }
-        crate::maintenance::order(&mut s,BuildingId(2),crate::maintenance::Refit::Repair).unwrap();
+        crate::maintenance::order(&mut s,BuildingId(2),crate::maintenance::Refit::Reinforce).unwrap();
         s.buildings.stores.produce_at(BuildingId(1),Good::Clay,10.0,crate::buildings::Producer::Other).unwrap();
         let mut agents=Agents::default();agents.spawn(BeaverId(1),(9,10));let mut a=agents.by_id.remove(&BeaverId(1)).unwrap();
         fetch(&mut s,&mut a,0.01,&Duty::Haul,BuildingId(1),Good::Clay,BuildingId(2),true);
@@ -2174,13 +3100,13 @@ mod freight_tests {
         for kind in [ResourceKind::Tree,ResourceKind::Plant,ResourceKind::MudBank,ResourceKind::RiverClay] {
             for from in [(5,5),(size/2,size/2),(size-5,size-5)] {
                 for area in [None,Some(Area{min:(0,0),max:(size/2,size/2)})] {
-                    let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0};
+                    let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0,role:None};
                     let reference=s.resources.items().iter().filter(|r|job.permits(r) && worth_starting(r)
                         && s.agents.unreachable.get(&r.id).is_none_or(|&until|s.time_days>=until)
                         && s.nav.may_reach_beside(from,r.cell))
                         .min_by_key(|r|{
                             let haul=drop_spots(&s,job.good_of(r),from).iter().map(|&d|cell_dist(r.cell,d)).fold(f32::INFINITY,f32::min);
-                            let kind=if r.kind==ResourceKind::WaterPlant {ResourceKind::Plant} else {r.kind};
+                            let kind=match r.kind {ResourceKind::WaterPlant=>ResourceKind::Plant,ResourceKind::RiverClay=>ResourceKind::MudBank,k=>k};
                             (job.kinds.iter().position(|&k|k==kind).unwrap_or(0),trip_key(cell_dist(from,r.cell)+if haul.is_finite(){haul}else{0.0}),r.id)
                         }).map(|r|r.id);
                     assert_eq!(job.pick(&s,from),reference);
@@ -2196,7 +3122,7 @@ mod freight_tests {
         // Two deposits equally far from the store: the one nearer the beaver wins.
         let west=s.resources.add(ResourceKind::MudBank,(30,41),20.0);
         let east=s.resources.add(ResourceKind::MudBank,(53,41),20.0);
-        let job=Job{kinds:kinds_for(ResourceKind::MudBank),area:None,only:None,min_age:0.0};
+        let job=Job{kinds:kinds_for(ResourceKind::MudBank),area:None,only:None,min_age:0.0,role:None};
         assert_eq!(job.pick(&s,(20,41)),Some(west));
         assert_eq!(job.pick(&s,(60,41)),Some(east));
         // A deposit takes two diggers at once; a third goes to the next one.
@@ -2205,10 +3131,14 @@ mod freight_tests {
             s.agents.by_id.get_mut(&id).unwrap().task=Task::Collect{target:west,progress:0.0};
         }
         assert_eq!(job.pick(&s,(20,41)),Some(east),"west is fully worked");
+        // River clay is no better than a mud bank: the nearer one wins.
+        let river=s.resources.add(ResourceKind::RiverClay,(58,60),2.0);
+        assert_eq!(job.pick(&s,(60,41)),Some(east),"walked past a mud bank for distant river clay");
+        assert_eq!(job.pick(&s,(58,58)),Some(river));
         // A tree takes one logger.
         let tree=s.resources.add_tree((25,30),crate::forestry::MATURE_AGE,crate::trees::Tree::Aspen);
         let other=s.resources.add_tree((25,33),crate::forestry::MATURE_AGE,crate::trees::Tree::Aspen);
-        let loggers=Job{kinds:kinds_for(ResourceKind::Tree),area:None,only:None,min_age:0.0};
+        let loggers=Job{kinds:kinds_for(ResourceKind::Tree),area:None,only:None,min_age:0.0,role:None};
         assert_eq!(loggers.pick(&s,(25,29)),Some(tree));
         s.agents.by_id.get_mut(&BeaverId(100)).unwrap().task=Task::Collect{target:tree,progress:0.0};
         assert_eq!(loggers.pick(&s,(25,29)),Some(other));
@@ -2254,6 +3184,10 @@ fn act_timer(task: &Task) -> &'static str {
         Task::Haul { .. } => "step/agents/beaver haul",
         Task::Pick { .. } => "step/agents/beaver pick up from the ground",
         Task::Eat { .. } => "step/agents/beaver eat from the ground",
+        Task::Mend { .. } => "step/agents/beaver mend",
+        Task::Seed { .. } => "step/agents/beaver collect seedlings",
+        Task::Watch { .. } => "step/agents/beaver keep watch",
+        Task::Barge { .. } => "step/agents/beaver barge",
     }
 }
 
@@ -2270,8 +3204,11 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         nav.refresh(sim);
         sim.nav = nav;
     }
+    measure_shore(sim);
     { let _p = crate::prof::scope("step/agents/sync"); sync_agents(sim); }
     { let _p = crate::prof::scope("step/agents/tidy"); tidy(sim); }
+    { let _p = crate::prof::scope("step/agents/retarget"); retarget(sim); }
+    { let _p = crate::prof::scope("step/agents/maintainers"); send_maintainers(sim); }
     let ids: Vec<BeaverId> = sim.agents.by_id.keys().copied().collect();
     for id in ids {
         let Some(mut ag) = sim.agents.by_id.remove(&id) else { continue };
@@ -2281,6 +3218,25 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         }
         sim.agents.by_id.insert(id, ag);
     }
+    {
+        let _p = crate::prof::scope("step/agents/remains");
+        // Bodies lie a few days; leavers walk on until they are off the map.
+        sim.agents.remains.bodies.retain(|b| now - b.died < REMAINS_DAYS);
+        let mut leaving = std::mem::take(&mut sim.agents.remains.leaving);
+        leaving.retain_mut(|(ag, _)| {
+            ag.trail.clear();
+            if let Some(Assignment::Go(to)) = ag.assignment {
+                go_to(sim, ag, dt_days, to);
+            }
+            let on = ag.assignment.is_some();
+            if !on {
+                sim.nav.release(ag.id, ag.cell);
+            }
+            on
+        });
+        leaving.append(&mut sim.agents.remains.leaving);
+        sim.agents.remains.leaving = leaving;
+    }
     let _p = crate::prof::scope("step/agents/finish sites");
     finish_sites(sim);
 }
@@ -2288,4 +3244,246 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
 fn at_resting_place(ag: &Agent, home: Option<&Building>) -> bool {
     let _ = home;
     ag.inside
+}
+
+#[cfg(test)]
+mod life_tests {
+    use super::*;
+    use crate::buildings::BuildingKind;
+
+    /// A colony on a real map, settled, with a finished lodge.
+    fn colony() -> SimState {
+        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
+        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
+        crate::sandbox::run_days(&mut s, 0.2);
+        let near = site.camp;
+        let pos = (4..40usize)
+            .flat_map(|r| (0..=2 * r).flat_map(move |i| [(near.0 + i - r, near.1 - r), (near.0 + i - r, near.1 + r), (near.0 - r, near.1 + i - r), (near.0 + r, near.1 + i - r)]))
+            .find(|&p| s.check_site(BuildingKind::Shelter, p).is_ok())
+            .unwrap();
+        let id = s.place_site(BuildingKind::Shelter, pos).unwrap();
+        for &(g, a) in BuildingKind::Shelter.spec().cost {
+            s.work.deliver(id, g, a).unwrap();
+        }
+        s.work.add_labour(id, BuildingKind::Shelter.spec().work).unwrap();
+        crate::sandbox::run_days(&mut s, 0.2);
+        assert!(s.buildings.building(id).unwrap().is_complete());
+        s
+    }
+
+    fn on_edge(s: &SimState, c: Cell) -> bool {
+        let n = s.nav.surface.width();
+        c.0 == 0 || c.1 == 0 || c.0 == n - 1 || c.1 == n - 1
+    }
+
+    #[test]
+    fn a_dead_beaver_leaves_a_body_for_a_while() {
+        let mut s = colony();
+        let a = s.agents.by_id.values().map(|a| (a.id, a.cell, a.inside)).next().unwrap();
+        assert!(s.colony.kill(a.0, crate::colony::DeathCause::Predator));
+        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
+        let body = s.agents.remains.bodies.iter().find(|b| b.id == a.0).expect("a body");
+        if a.2 {
+            // One that died in its lodge is laid outside, close by.
+            assert_ne!(s.nav.surface_at(body.cell), Some(Surface::LodgeInside), "laid out of the lodge");
+            assert!(body.cell.0.abs_diff(a.1.0).max(body.cell.1.abs_diff(a.1.1)) <= 4, "beside the lodge");
+        } else {
+            assert_eq!(body.cell, a.1, "it lies where the beaver fell");
+        }
+        assert_eq!(body.cause, crate::colony::DeathCause::Predator);
+        crate::sandbox::run_days(&mut s, REMAINS_DAYS + 0.1);
+        assert!(s.agents.remains.bodies.iter().all(|b| b.id != a.0), "gone after a few days");
+    }
+
+    #[test]
+    fn a_beaver_that_leaves_walks_off_the_map() {
+        let mut s = colony();
+        let id = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult).unwrap().id;
+        let from = s.agents.get(id).unwrap().cell;
+        s.colony.depart(id);
+        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
+        let (ag, _) = s.agents.remains.leaving.iter().find(|(a, _)| a.id == id).expect("on its way");
+        let Some(Assignment::Go(to)) = ag.assignment else { panic!("not heading off") };
+        assert!(on_edge(&s, to), "heading for the edge: {to:?}");
+        crate::sandbox::run_days(&mut s, 0.3);
+        if let Some((a, _)) = s.agents.remains.leaving.iter().find(|(a, _)| a.id == id) {
+            assert_ne!(a.cell, from, "it walks");
+        }
+        crate::sandbox::run_days(&mut s, 20.0);
+        assert!(s.agents.remains.leaving.iter().all(|(a, _)| a.id != id), "off the map in the end");
+    }
+
+    #[test]
+    fn a_newcomer_walks_in_from_the_edge() {
+        let mut s = colony();
+        // An empty lodge for it to come to.
+        let home = s.agents.by_id.values().next().unwrap().cell;
+        s.colony.add_home((home.0 as f32 + 0.5, home.1 as f32 + 0.5));
+        let id = s.colony.admit_wanderer(true).unwrap();
+        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
+        let a = s.agents.get(id).expect("it arrives");
+        let n = s.nav.surface.width();
+        let edge_gap = a.cell.0.min(a.cell.1).min(n - 1 - a.cell.0).min(n - 1 - a.cell.1);
+        assert!(edge_gap <= 2, "it comes in at the edge: {:?}", a.cell);
+        assert!(matches!(a.assignment, Some(Assignment::Go(_))));
+    }
+
+    #[test]
+    fn a_new_pair_meets_at_its_lodge_then_goes_back_to_work() {
+        let mut s = colony();
+        let adults: Vec<BeaverId> = s.colony.beavers.iter().filter(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id).take(2).collect();
+        let (a, b) = (adults[0], adults[1]);
+        for (who, partner) in [(a, b), (b, a)] {
+            s.agents.courting.insert(who, Courtship { partner, started: s.time_days, met: None });
+        }
+        let mut met = false;
+        for _ in 0..400 {
+            crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
+            if s.agents.courting.get(&a).is_some_and(|c| c.met.is_some()) {
+                met = true;
+                break;
+            }
+        }
+        assert!(met, "they never met");
+        let (pa, pb) = (s.agents.get(a).unwrap().cell, s.agents.get(b).unwrap().cell);
+        assert!(pa.0.abs_diff(pb.0).max(pa.1.abs_diff(pb.1)) <= 3, "together: {pa:?} {pb:?}");
+        crate::sandbox::run_days(&mut s, COURT_DAYS + 0.05);
+        assert!(!s.agents.courting.contains_key(&a) && !s.agents.courting.contains_key(&b), "back to work");
+    }
+
+    #[test]
+    fn a_kit_tags_along_after_its_parent() {
+        let mut s = colony();
+        let mother = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult && b.sex == crate::colony::Sex::Female).unwrap().id;
+        let kit = s.colony.beavers.iter().find(|b| b.id != mother && b.stage != crate::colony::Stage::Adult).map(|b| b.id).unwrap();
+        if let Some(b) = s.colony.beavers.iter_mut().find(|b| b.id == kit) {
+            b.age_days = 30.0;
+            b.stage = crate::colony::Stage::Kit;
+            b.mother = Some(mother);
+            b.resting = false;
+            b.needs.rest = 1.0;
+        }
+        // The mother works out near home.
+        let home = s.agents.get(mother).unwrap().cell;
+        let spot = (3..10usize)
+            .flat_map(|r| (0..=2 * r).flat_map(move |i| [(home.0 + i - r, home.1 - r), (home.0 + i - r, home.1 + r), (home.0 - r, home.1 + i - r), (home.0 + r, home.1 + i - r)]))
+            .find(|&c| s.nav.surface_at(c) == Some(Surface::Land) && s.nav.may_reach(home, [c]))
+            .unwrap();
+        s.apply(crate::Command::Assign { who: vec![mother], to: Some(Assignment::Go(spot)) }).unwrap();
+        // While the mother is out, the kit keeps beside her.
+        let (mut out, mut beside) = (0, 0);
+        for _ in 0..30 {
+            crate::sandbox::run_days(&mut s, 0.01);
+            let (m, k) = (s.agents.get(mother).unwrap(), s.agents.get(kit).unwrap());
+            if !m.inside && m.cell.0.abs_diff(home.0).max(m.cell.1.abs_diff(home.1)) >= 3 {
+                out += 1;
+                beside += (!k.inside && m.cell.0.abs_diff(k.cell.0).max(m.cell.1.abs_diff(k.cell.1)) <= 2) as usize;
+            }
+        }
+        assert!(out >= 3, "the mother never went out");
+        assert!(beside * 3 >= out * 2, "the kit was beside its mother {beside} of {out} times");
+    }
+}
+
+#[cfg(test)]
+mod current_tests {
+    use super::*;
+    use crate::nav::{Goal, SWIM_COST, SWIM_SPEED_M_S};
+
+    /// A channel one cell wide along row 1, walled in, with `drift` m/s of current along x.
+    fn channel(len: usize, drift: f32) -> NavGrid {
+        let mut nav = NavGrid::new(len, 3);
+        for x in 0..len {
+            nav.set((x, 0), Surface::Solid);
+            nav.set((x, 2), Surface::Solid);
+            nav.set((x, 1), Surface::Water);
+            if drift != 0.0 {
+                nav.set_current((x, 1), (drift, 0.0));
+            }
+        }
+        nav
+    }
+
+    /// Days a beaver takes to swim the route from `from` to `to`, in steps of `dt`.
+    fn swim_days(nav: &mut NavGrid, from: Cell, to: Cell) -> f32 {
+        let mut agents = Agents::default();
+        agents.spawn(BeaverId(1), from);
+        let mut ag = agents.by_id.remove(&BeaverId(1)).unwrap();
+        ag.path = nav.find_path(ag.id, from, Goal::Cell(to));
+        assert!(ag.path.is_some());
+        let dt = 1.0e-4;
+        let mut days = 0.0;
+        while ag.cell != to {
+            follow(nav, &mut ag, dt);
+            days += dt;
+            assert!(days < 10.0, "never got there");
+        }
+        days
+    }
+
+    #[test]
+    fn a_beaver_swims_faster_downstream_than_upstream_by_the_current() {
+        // A current half a beaver's swimming speed, flowing east.
+        let drift = 0.5 * SWIM_SPEED_M_S;
+        let mut nav = channel(64, drift);
+        let swim = MOVE_COST_PER_DAY / SWIM_COST;
+        let cells = 50.0;
+        let down = cells / swim_days(&mut nav, (5, 1), (55, 1));
+        let up = cells / swim_days(&mut nav, (55, 1), (5, 1));
+        // Its own speed plus the current's going down, less it coming up.
+        assert!((down / swim - 1.5).abs() < 0.02, "downstream {down} cells a day, still water {swim}");
+        assert!((up / swim - 0.5).abs() < 0.02, "upstream {up} cells a day, still water {swim}");
+        // Against a current faster than it swims, it still crawls up at the floor.
+        let mut flood = channel(8, 2.0 * SWIM_SPEED_M_S);
+        let cost = flood.move_cost((4, 1), (3, 1), 1.0).unwrap();
+        assert!((cost - SWIM_COST / crate::nav::MIN_SWIM_SHARE).abs() < 1e-4, "{cost}");
+        assert!(swim_days(&mut flood, (6, 1), (1, 1)).is_finite());
+    }
+
+    #[test]
+    fn still_water_is_swum_as_before() {
+        let mut nav = channel(64, 0.0);
+        let path = nav.find_path(BeaverId(1), (5, 1), Goal::Cell((55, 1))).unwrap();
+        assert!((path.cost - 50.0 * SWIM_COST).abs() < 1e-3, "{}", path.cost);
+        let speed = 50.0 / swim_days(&mut nav, (5, 1), (55, 1));
+        assert!((speed / (MOVE_COST_PER_DAY / SWIM_COST) - 1.0).abs() < 0.02, "{speed}");
+        for s in [Surface::Land, Surface::Water, Surface::Canal, Surface::Dam, Surface::Thicket] {
+            nav.set((10, 1), s);
+            let base = NavGrid::step_cost(s).unwrap().0;
+            assert_eq!(nav.move_cost((9, 1), (10, 1), 1.0), Some(base));
+            assert_eq!(nav.move_cost((11, 1), (10, 1), 0.5), Some(base));
+        }
+        // A current across a step neither helps nor hinders it.
+        let mut across = NavGrid::new(4, 4);
+        across.set((1, 1), Surface::Water);
+        across.set_current((1, 1), (0.0, 0.6));
+        assert_eq!(across.move_cost((0, 1), (1, 1), 1.0), Some(SWIM_COST));
+    }
+
+    #[test]
+    fn a_route_down_the_current_beats_a_shorter_one_against_it() {
+        // Two channels from (2, 2) to (20, 2): straight along row 2 against the current, or
+        // round by row 0 with it, four cells longer.
+        let mut nav = NavGrid::new(23, 3);
+        for x in 0..23 {
+            nav.set((x, 0), Surface::Water);
+            nav.set((x, 1), if x == 2 || x == 20 { Surface::Water } else { Surface::Solid });
+            nav.set((x, 2), Surface::Water);
+        }
+        let who = BeaverId(1);
+        let still = nav.find_path(who, (2, 2), Goal::Cell((20, 2))).unwrap();
+        assert!(still.steps.iter().all(|s| s.0 .1 == 2), "in still water the short way: {:?}", still.steps);
+        let drift = 0.5 * SWIM_SPEED_M_S;
+        for x in 0..23 {
+            nav.set_current((x, 0), (drift, 0.0));
+            nav.set_current((x, 2), (-drift, 0.0));
+        }
+        let path = nav.find_path(who, (2, 2), Goal::Cell((20, 2))).unwrap();
+        assert!(path.steps.iter().any(|s| s.0 .1 == 0), "the long way, with the current: {:?}", path.steps);
+        assert!(path.steps.len() > still.steps.len());
+        // Four still cells across, eighteen at half again a swimmer's speed.
+        let quick = 4.0 * SWIM_COST + 18.0 * SWIM_COST / 1.5;
+        assert!((path.cost - quick).abs() < 1e-2, "{} vs {quick}", path.cost);
+        assert!(path.cost < 18.0 * SWIM_COST / 0.5);
+    }
 }

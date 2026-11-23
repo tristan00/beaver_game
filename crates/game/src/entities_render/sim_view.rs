@@ -19,6 +19,8 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
         Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
         Some(Surface::Water | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
+        // In a lock's chamber: half way up its gate, where the chamber water stands on average.
+        Some(Surface::Lock) => sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5,
         // A dry river cell is drawn with its channel cut; walk on the drawn bed.
         _ => -crate::terrain_render::channel_cut(sim, cell.0 as i32, cell.1 as i32),
     }
@@ -45,8 +47,10 @@ pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
     if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
-        let pace = MOVE_COST_PER_DAY * sim::agents::pace(&sim.nav, ag);
-        let cost = sim.nav.surface_at(n).and_then(sim::nav::NavGrid::step_cost).map_or(gait_cost(gait), |c| c.0) * sim::nav::step_length(ag.cell, n);
+        let pace = sim::agents::travel_pace(&sim.nav, ag);
+        // As the simulation spends it: a swimmer's step is quicker with the current.
+        let cost = sim.nav.move_cost(ag.cell, n, pace).unwrap_or_else(|| gait_cost(gait) * sim::nav::step_length(ag.cell, n));
+        let pace = MOVE_COST_PER_DAY * pace;
         // step_frac is remaining movement cost, not a normalized cell fraction.
         frac = ((ag.step_frac + pending_days * pace) / cost).clamp(0.0, 1.0);
         next = n;
@@ -84,11 +88,20 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
             Some(ResourceKind::Plant | ResourceKind::WaterPlant) => Pose::Forage,
             None => Pose::Work,
         },
-        Task::Build { .. } => Pose::Work,
-        Task::Tend { .. } => Pose::Forage,
-        Task::Plant { .. } if ag.load.is_some() => Pose::Dig,
+        Task::Build { .. } | Task::DamWork { .. } => Pose::Work,
+        Task::Mend { .. } => Pose::Mend,
+        Task::Tend { .. } | Task::Seed { .. } => Pose::Forage,
+        Task::Plant { .. } => Pose::Dig,
+        Task::Dig { .. } => Pose::Dig,
+        Task::Gate { .. } => Pose::Work,
+        Task::Eat { .. } => Pose::Forage,
+        Task::Pick { .. } | Task::Fetch { .. } | Task::Carry { .. } | Task::Haul { .. } => Pose::Handle,
+        Task::Watch { .. } => Pose::Watch,
+        // Loading and unloading a barge; otherwise holding it in the water.
+        Task::Barge { leg: 2 | 4, .. } => Pose::Handle,
+        Task::Barge { .. } => Pose::Swim,
         Task::Rest => Pose::Rest,
-        _ => Pose::Idle,
+        Task::Idle => Pose::Idle,
     }
 }
 
@@ -117,7 +130,7 @@ pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
     }
     match &ag.task {
         Task::Collect { target, .. } => sim.resources.get(*target).and_then(|r| toward((r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5))),
-        Task::Build { site } => sim.buildings.building(*site).and_then(|b| {
+        Task::Build { site: id } | Task::Mend { building: id } => sim.buildings.building(*id).and_then(|b| {
             let (w, h) = b.kind.spec().footprint;
             toward((b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0))
         }),

@@ -390,13 +390,52 @@ pub struct Water {
     pub shore: Grid<u8>,
     #[serde(skip)]
     told: crate::grid::Own<Told>,
+    /// Cells whose published `velocity` changed since the nav last took the currents
+    /// (`current_changes`), each listed once.
+    #[serde(skip)]
+    current_cells: Vec<u32>,
+    #[serde(skip)]
+    current_marked: Vec<bool>,
 }
 
-crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told });
+crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked });
 
 const FORCING_EVERY_S: f64 = 300.0;
 
+/// Water thinner than this is not drawn (a damp film reads as wet ground, not water).
+pub const SHOW_MIN_M: f32 = 0.003;
+/// A thin film on a cell with no wet neighbour is damp ground, not a pool.
+pub const LONE_FILM_M: f32 = 0.02;
+/// Water standing on a dam cell shallower than this (rain on the crest, the last of a spill)
+/// is not drawn: a sheet at crest height would show through the wall. A gate's water is always
+/// drawn, and so is a real overtopping.
+pub const DAM_FILM_M: f32 = 0.12;
+
 impl Water {
+    fn depth_at(&self, x: i32, y: i32) -> f32 {
+        let (w, h) = (self.depth.width() as i32, self.depth.height() as i32);
+        self.depth.as_slice()[(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize]
+    }
+
+    /// A thin film with no water on any of its four sides.
+    pub fn lone_film(&self, x: i32, y: i32) -> bool {
+        let h = self.depth_at(x, y);
+        h < LONE_FILM_M && [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|&(dx, dy)| self.depth_at(x + dx, y + dy) <= SHOW_MIN_M)
+    }
+
+    /// A thin sheet on a dam's crest (not at a gate).
+    pub fn dam_film(&self, x: i32, y: i32) -> bool {
+        let (cx, cy) = (x.max(0) as usize, y.max(0) as usize);
+        self.depth_at(x, y) < DAM_FILM_M
+            && self.dam_height.get(cx, cy).is_some_and(|&d| d > 0.0)
+            && !self.gate.get(cx, cy).copied().unwrap_or(false)
+    }
+
+    /// Whether this cell is shown as water: what the player sees is what play goes by.
+    pub fn shown(&self, x: i32, y: i32) -> bool {
+        self.depth_at(x, y) > SHOW_MIN_M && !self.lone_film(x, y) && !self.dam_film(x, y)
+    }
+
     pub fn new(size: usize) -> Self {
         let n = size;
         Self {
@@ -455,6 +494,8 @@ impl Water {
             h_published: false,
             shore: Grid::default(),
             told: Default::default(),
+            current_cells: Vec::new(),
+            current_marked: Vec::new(),
         }
     }
 
@@ -769,6 +810,13 @@ impl Water {
     pub(crate) fn clear_navigation_changes(&mut self) {
         for &i in &self.nav_cells {self.nav_marked[i]=false;}
         self.nav_cells.clear();
+        for &i in &self.current_cells {self.current_marked[i as usize]=false;}
+        self.current_cells.clear();
+    }
+
+    /// Cells whose current changed since the navigation changes were last cleared.
+    pub(crate) fn current_changes(&self) -> &[u32] {
+        &self.current_cells
     }
 
     pub fn refresh(&mut self, height: &HeightGrid) {
@@ -981,8 +1029,19 @@ impl Water {
         {
             let Self {
                 cell_m, h, qx, qy, lake_level, depth, width, discharge, velocity, channel, rows, pub_rows,
-                nav_revision, nav_marked, nav_cells, bed_live, bed_marked, shore, told, ..
+                nav_revision, nav_marked, nav_cells, bed_live, bed_marked, shore, told, current_cells, current_marked, ..
             } = self;
+            if current_marked.len() != n * n {
+                *current_marked = vec![false; n * n];
+                current_cells.clear();
+            }
+            // A cell whose current is no longer what the nav took is listed for it.
+            let mut flowed = |i: usize, was: (f32, f32), now: (f32, f32)| {
+                if (was.0.to_bits() != now.0.to_bits() || was.1.to_bits() != now.1.to_bits()) && !current_marked[i] {
+                    current_marked[i] = true;
+                    current_cells.push(i as u32);
+                }
+            };
             let w1 = n + 1;
             let dx = *cell_m;
             let lake = lake_level.as_slice();
@@ -1026,6 +1085,7 @@ impl Water {
                         if qxc.to_bits() == 0 && qyc.to_bits() == 0 {
                             // Still water (most of a pond): the same zeros, without the roots and divisions.
                             discharge[i] = 0.0;
+                            flowed(i, velocity[i], (0.0, 0.0));
                             velocity[i] = (0.0, 0.0);
                             channel[i] = false;
                             continue;
@@ -1033,6 +1093,7 @@ impl Water {
                         let q = (qxc * qxc + qyc * qyc).sqrt();
                         let (vx, vy) = if h > FACE_DRY { (qxc / h, qyc / h) } else { (0.0, 0.0) };
                         discharge[i] = q * dx;
+                        flowed(i, velocity[i], (vx, vy));
                         velocity[i] = (vx, vy);
                         channel[i] = h > 0.0 && (vx * vx + vy * vy).sqrt() > MOVING && lake[i].is_nan();
                     }

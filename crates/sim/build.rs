@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         starting.push(format!("(crate::buildings::Good::{good},{})",number(amount)));
     }
     constants.entry("starts".into()).or_default().push_str(&format!("pub const START_BUNDLE: [(crate::buildings::Good,f32); {}] = [{}];\n",starting.len(),starting.join(",")));
-    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer"];
+    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer","Guard"];
     let mut order = Vec::new();
     for row in db.prepare("SELECT role,priority FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))? {
         let (role,priority) = row?;
@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut slots = Vec::new();
         for role in db.prepare("SELECT role FROM slot WHERE building=? ORDER BY position")?.query_map([id], |r| r.get::<_,String>(0))? {
             let role = role?;
-            assert!(matches!(role.as_str(), "Build" | "Maintain" | "Haul" | "Tend" | "Plant" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)" | "Collect(ResourceKind::Pebbles)"), "invalid role {role}");
+            assert!(matches!(role.as_str(), "Build" | "Haul" | "Forest" | "Guard" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)" | "Collect(ResourceKind::Pebbles)"), "invalid role {role}");
             slots.push(format!("Role::{role}"));
         }
         let area = area.map_or("None".into(), |a| { assert!(a > 0 && a <= 1024); format!("Some(({a},{a}))") });

@@ -9,11 +9,14 @@ const MAX_VOICES: usize = 72;
 pub struct Mix {
     pub layers: LayerVolumes,
     pub settings: VolumeSettings,
+    /// Alarm tail slaps so far (a new one sounds each time it goes up) and how loud.
+    pub alarm_slaps: u32,
+    pub alarm_amp: f32,
 }
 
 impl Default for Mix {
     fn default() -> Self {
-        Self { layers: LayerVolumes::SILENT, settings: VolumeSettings::default() }
+        Self { layers: LayerVolumes::SILENT, settings: VolumeSettings::default(), alarm_slaps: 0, alarm_amp: 0.0 }
     }
 }
 
@@ -430,6 +433,7 @@ pub struct Synth {
     gust_slow: Wander,
     warmth_cur: f32,
     frames: u64,
+    slaps_heard: Option<u32>,
 }
 
 impl Synth {
@@ -456,6 +460,7 @@ impl Synth {
             gust_slow,
             warmth_cur: 1.0,
             frames: 0,
+            slaps_heard: None,
         }
     }
 
@@ -553,6 +558,11 @@ impl Synth {
         let c = self.cur;
         let eff = true;
         let roll = |s: &mut Self, rate: f32, vol: f32| vol > 0.01 && s.rng.f() < rate * vol * dt;
+        // A guard's alarm: one sharp slap for each new one.
+        if self.slaps_heard.is_some_and(|n| n != mix.alarm_slaps) {
+            self.spawn(Voice::new(Kind::Splash { slap: true, a: Svf::default(), b: Svf::default(), ph: 0.0 }, 1.4 * mix.alarm_amp, 0.0, eff));
+        }
+        self.slaps_heard = Some(mix.alarm_slaps);
 
         if roll(self, 26.0, c[WATER]) {
             let f0 = self.rng.range(380.0, 1500.0);

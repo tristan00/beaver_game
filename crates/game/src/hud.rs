@@ -564,6 +564,7 @@ pub enum HudAction {
     /// Make the picked dam cell a gate.
     AddDamGate(BuildingId),
     SetGate(BuildingId, Cell, sim::GateSetting),
+    UpgradeLock(BuildingId, Cell),
     GrowCanal(BuildingId, sim::CanalGrowth),
     CanalMaintain(BuildingId, bool),
     DamCell(Cell),
@@ -595,6 +596,8 @@ pub enum HudAction {
     Balance(BuildingId, bool),
     RemoveWorker(BuildingId),
     RoleAdjust(RoleKind, i32),
+    /// Keep a role's workers within this many cells of water (None: anywhere).
+    ShoreLimit(RoleKind, Option<u16>),
     Paused(BuildingId, bool),
     RepairBuilding(BuildingId),
     ReinforceBuilding(BuildingId),
@@ -850,7 +853,7 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
-    (windows, pops, problems, time): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>),
+    (windows, pops, problems, time, wolf_drawn): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Option<Res<crate::entities_render::WolfDrawn>>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh fast");
@@ -908,7 +911,7 @@ fn refresh_fast(
                 tree
             }
             _ => match cams.single() {
-                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs()),
+                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.0)),
                 Err(_) => Vec::new(),
             },
         };

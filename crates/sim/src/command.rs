@@ -37,6 +37,8 @@ pub enum Command {
     AddDamGate { dam: buildings::BuildingId, cell: water::Cell },
     /// Ask for a gate setting on a dam or canal; a builder makes the change.
     SetGate { building: buildings::BuildingId, cell: water::Cell, setting: gates::GateSetting },
+    /// Upgrade a built gate into a lock (needs a finished Harbor); a builder visits to build it.
+    UpgradeLock { building: buildings::BuildingId, cell: water::Cell },
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
@@ -53,6 +55,8 @@ pub enum Command {
     FillStore { store: buildings::BuildingId, on: bool },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     CancelSite { building: buildings::BuildingId },
+    /// Keep a role's workers within `cells` of water (None: no limit).
+    SetShoreLimit { role: jobs::RoleKind, cells: Option<u16> },
 }
 
 #[cfg(test)]
@@ -177,6 +181,7 @@ impl SimState {
                     dams::set_gate(self, building, cell, setting)
                 }
             }
+            Command::UpgradeLock { building, cell } => crate::locks::order(self, building, cell),
             Command::Assign { who, to } => {
                 if let Some(kit) = who.iter().find(|id| to.is_some() && !matches!(to, Some(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| !b.can_work())) {
                     return Err(SimError::InvalidCommand(format!("beaver {} is too young to work", kit.0)));
@@ -221,6 +226,7 @@ impl SimState {
                     .and_then(|ok| if ok { Ok(()) } else { Err(work::WorkError::NotAdult) })
                     .and_then(|()| self.work.place(building).ok_or(work::WorkError::NoSuchWorkplace))
                     .and_then(|p| match p.slots.get(slot) {
+                        None if slot == p.slots.len() && p.open_ended() => Ok(()),
                         None => Err(work::WorkError::SlotOutOfRange),
                         Some(s) if s.worker.is_some() => Err(work::WorkError::SlotTaken),
                         Some(_) => Ok(()),
@@ -240,6 +246,13 @@ impl SimState {
             Command::SetPriority { building, priority } => jobs::set_priority(self, building, priority),
             Command::SetPaused { building, paused } => jobs::set_paused(self, building, paused),
             Command::AdjustRole { role, delta } => jobs::adjust_role(self, role, delta),
+            Command::SetShoreLimit { role, cells } => {
+                match cells {
+                    Some(n) => self.work.shore_limits.insert(role, n),
+                    None => self.work.shore_limits.remove(&role),
+                };
+                Ok(())
+            }
             Command::SetWorkArea { building, area } => {
                 forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))

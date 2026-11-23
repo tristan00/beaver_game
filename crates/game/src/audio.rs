@@ -171,15 +171,17 @@ fn update_mix(
     sites: Res<AudioWorkSites>,
     vols: Res<AudioVolumes>,
     shared: Res<SharedMix>,
+    slaps: Option<Res<crate::entities_render::AlarmSlaps>>,
 ) {
     let _p = ::sim::prof::scope("game/update mix");
     *since += time.delta_secs();
-    if *since < 0.1 && !vols.is_changed() {
+    if *since < 0.1 && !vols.is_changed() && !slaps.as_ref().is_some_and(|s| s.is_changed()) {
         return;
     }
     *since = 0.0;
     let world = SimWorld { sim: &sim.0, sites: &sites.0 };
     let snap = mix::snapshot(&world, orbit.target.x, orbit.target.z, orbit.distance);
-    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0 };
+    let (alarm_slaps, alarm_amp) = slaps.map_or((0, 0.0), |s| (s.count, s.amp));
+    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps, alarm_amp };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
 }

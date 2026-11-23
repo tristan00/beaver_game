@@ -202,6 +202,60 @@ impl Mb {
         }
     }
 
+    /// A smooth tube through `rings` of (centre, half-width, half-height), each ring square to
+    /// the path; the width is along x, so paths should run in the y-z plane. Closed ends need a
+    /// tiny first and last ring.
+    pub fn loft(&mut self, rings: &[(Vec3, f32, f32)], seg: usize, col: [f32; 3]) {
+        let n = rings.len();
+        if n < 2 {
+            return;
+        }
+        let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
+        let base = self.pos.len() as u32;
+        let mut pts = Vec::with_capacity(n * (seg + 1));
+        for i in 0..n {
+            let t = (rings[(i + 1).min(n - 1)].0 - rings[i.saturating_sub(1)].0).normalize_or(Vec3::Z);
+            let up = t.cross(Vec3::X).normalize_or(Vec3::Y);
+            let side = up.cross(t);
+            let (c, hw, hh) = rings[i];
+            for j in 0..=seg {
+                let (s, co) = (j as f32 / seg as f32 * std::f32::consts::TAU).sin_cos();
+                pts.push((c + side * hw * co + up * hh * s, c, t));
+            }
+        }
+        let at = |i: usize, j: usize| pts[i * (seg + 1) + j % (seg + 1)].0;
+        for i in 0..n {
+            for j in 0..=seg {
+                let (p, c, t) = pts[i * (seg + 1) + j];
+                let along = at((i + 1).min(n - 1), j) - at(i.saturating_sub(1), j);
+                let round = at(i, j + 1) - at(i, (j + seg - 1) % seg);
+                let mut nrm = along.cross(round).normalize_or(p - c);
+                if nrm.length_squared() < 1e-6 || along.length_squared() < 1e-8 {
+                    nrm = (p - c).normalize_or(t);
+                }
+                if nrm.dot(p - c) < 0.0 {
+                    nrm = -nrm;
+                }
+                self.push(&m, &nm, p, nrm, col);
+            }
+        }
+        for i in 0..n as u32 - 1 {
+            for j in 0..seg as u32 {
+                let r = seg as u32 + 1;
+                let (a, b, c, d) = (base + i * r + j, base + (i + 1) * r + j, base + i * r + j + 1, base + (i + 1) * r + j + 1);
+                for tri in [[a, b, c], [c, b, d]] {
+                    let [p0, p1, p2] = tri.map(|k| Vec3::from(self.pos[k as usize]));
+                    let out = Vec3::from(self.nor[tri[0] as usize]) + Vec3::from(self.nor[tri[1] as usize]) + Vec3::from(self.nor[tri[2] as usize]);
+                    if (p1 - p0).cross(p2 - p0).dot(out) >= 0.0 {
+                        self.idx.extend_from_slice(&tri);
+                    } else {
+                        self.idx.extend_from_slice(&[tri[0], tri[2], tri[1]]);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn len(&self) -> usize { self.pos.len() }
 
     /// Recolours vertices `from..` by position, normal and old colour.
