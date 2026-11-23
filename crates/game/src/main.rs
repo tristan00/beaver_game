@@ -15,6 +15,7 @@ mod picking;
 mod perf;
 mod report_capture;
 mod sandbox;
+mod savegame;
 mod screenshot;
 mod seasonal;
 mod sim_driver;
@@ -27,8 +28,21 @@ mod water_render;
 use bevy::prelude::*;
 
 /// Fullscreen by default; `BEAVER_WINDOW=WxH` asks for a fixed-size window instead (screenshot tools).
-fn primary_window() -> Window {
+/// Automated runs render into a hidden window (default 1600x900) that never takes focus or shows in
+/// the taskbar, so they don't disturb whoever is using the desktop.
+fn primary_window(automated: bool) -> Window {
     let size = std::env::var("BEAVER_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))));
+    if automated {
+        return Window {
+            title: "Beaver Colony".into(),
+            resolution: size.unwrap_or((1600, 900)).into(),
+            mode: bevy::window::WindowMode::Windowed,
+            visible: false,
+            focused: false,
+            skip_taskbar: true,
+            ..default()
+        };
+    }
     let mode = if size.is_some() { bevy::window::WindowMode::Windowed } else { bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary) };
     Window { title: "Beaver Colony".into(), resolution: size.unwrap_or((1280, 720)).into(), mode, ..default() }
 }
@@ -42,6 +56,8 @@ fn main() -> AppExit {
         }
     };
     os_timer::high_resolution();
+    // Screenshots, colony scripts, reports, the gallery (a screenshot) and benchmarks.
+    let automated = cli.screenshot.is_some() || cli.colony_script.is_some() || cli.report_dir.is_some() || std::env::var_os("BC_PERF").is_some();
     let mut app = App::new();
     let mut tp = TaskPoolOptions::default();
     if let Some(n) = std::env::var("BEAVER_THREADS").ok().and_then(|v| v.parse::<usize>().ok()) {
@@ -51,7 +67,7 @@ fn main() -> AppExit {
         file_path: "assets".to_string(),
         ..default()
     }).set(WindowPlugin {
-        primary_window: Some(primary_window()),
+        primary_window: Some(primary_window(automated)),
         ..default()
     }).set(bevy::render::RenderPlugin {
         render_creation: bevy::render::settings::WgpuSettings {
@@ -89,8 +105,11 @@ fn main() -> AppExit {
         entities_render::EntitiesRenderPlugin,
         audio::AudioPlugin,
         screenshot::ScreenshotPlugin,
+        savegame::SaveGamePlugin,
     ));
-    app.run()
+    let exit = app.run();
+    sim::trace::flush();
+    exit
 }
 
 mod os_timer {

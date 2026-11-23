@@ -80,11 +80,13 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     match &ag.task {
         Task::Collect { target, .. } => match sim.resources.get(*target).map(|r| r.kind) {
             Some(ResourceKind::Tree | ResourceKind::Felled) => Pose::Gnaw,
-            Some(ResourceKind::MudBank | ResourceKind::RiverClay) => Pose::Dig,
-            Some(ResourceKind::Plant) => Pose::Forage,
+            Some(ResourceKind::MudBank | ResourceKind::RiverClay | ResourceKind::Pebbles) => Pose::Dig,
+            Some(ResourceKind::Plant | ResourceKind::WaterPlant) => Pose::Forage,
             None => Pose::Work,
         },
         Task::Build { .. } => Pose::Work,
+        Task::Tend { .. } => Pose::Forage,
+        Task::Plant { .. } if ag.load.is_some() => Pose::Dig,
         Task::Rest => Pose::Rest,
         _ => Pose::Idle,
     }

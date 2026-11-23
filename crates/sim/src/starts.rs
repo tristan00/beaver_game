@@ -1,7 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/starts_constants.rs"));
 use crate::SimState;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StartError {
     NoSite,
     Build(String),
@@ -144,7 +144,7 @@ fn dam_river_cell(sim: &SimState, dam: &[Cell]) -> Option<Cell> {
     dam.iter().copied().filter(|&(x, y)| sim.world.river.get(x, y) == Some(&true)).min_by(|a, b| bed(a).total_cmp(&bed(b)))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamEffect {
     pub rise: f32,
     pub flooded: usize,
@@ -249,7 +249,7 @@ fn camp_fits(sim: &SimState, c: Cell, pond: &std::collections::HashSet<Cell>, tr
 }
 
 fn trees(sim: &SimState) -> Vec<Cell> {
-    sim.resources.items.iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect()
+    sim.resources.items().iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect()
 }
 
 fn cells_by_distance(sim: &SimState, from: Cell, r: usize) -> Vec<Cell> {
@@ -355,7 +355,7 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
 }
 
 fn supplies_bank(sim: &SimState, camp: Cell) -> Option<Cell> {
-    let occupied: std::collections::HashSet<Cell> = sim.resources.items.iter()
+    let occupied: std::collections::HashSet<Cell> = sim.resources.items().iter()
         .filter(|r| r.is_solid()).map(|r| r.cell)
         .chain(sim.buildings.buildings.iter().flat_map(|b| b.cells()))
         .collect();
@@ -445,7 +445,6 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
             plan.camp = c;
         }
     }
-    sim.work.auto_organise = true;
     sim.fog = crate::fog::Fog::unseen(sim.world.size);
     {
         let allowed = crate::fog::open_at(&sim.world);
@@ -454,7 +453,7 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamSite {
     pub cells: Vec<Cell>,
     pub height: f32,
@@ -490,13 +489,18 @@ mod tests {
         assert_eq!((h.working + h.free, h.kits), (4, 0), "the colony panel counts all four as workers");
     }
 
-    /// Every map starts where several rivers meet or run side by side, not on a lone river.
+    /// Every map that has a place where several rivers meet or run side by side starts
+    /// there, not on a lone river. Some real valleys have none away from the edge.
     #[test]
     fn every_map_starts_among_several_rivers() {
-        for id in ["algonquin", "voyageurs", "bavarian", "telemark"] {
+        for id in crate::maps::all().into_iter().map(|m| m.id) {
+            let id = id.as_str();
             let (sim, site) = new_game_on_map(id).expect("start");
             let spots = river_spots(&sim);
             let reach = RIVERS_RADIUS * RIVERS_RADIUS;
+            if spots.iter().all(|&(branches, _)| branches < 2) {
+                continue;
+            }
             assert!(
                 spots.iter().any(|&(branches, c)| branches >= 2 && dist2(c, site.camp) <= reach),
                 "{id}: camp {:?} has fewer than two river branches in reach", site.camp

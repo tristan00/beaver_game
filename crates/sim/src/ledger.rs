@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 const N: usize = Good::ALL.len();
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DaySample {
     pub day: u64,
     pub produced: [f32; N],
@@ -14,7 +14,7 @@ pub struct DaySample {
     pub consumed_by: [[f32; N]; Use::COUNT],
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Open {
     day: u64,
     produced: [f32; N],
@@ -29,7 +29,7 @@ impl Open {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     open: Option<Open>,
     pub days: VecDeque<DaySample>,

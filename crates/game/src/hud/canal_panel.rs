@@ -278,7 +278,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
     let s = c.s;
     let crew = sim::canals::crew(s, id);
     let left = sim::canals::visits_left(s, id);
-    let clay: f32 = s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::MudBank && k.cells.iter().any(|x| x.cell.0.abs_diff(r.cell.0) <= 1 && x.cell.1.abs_diff(r.cell.1) <= 1)).map(|r| r.amount).sum();
+    let clay: f32 = s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::MudBank && k.cells.iter().any(|x| x.cell.0.abs_diff(r.cell.0) <= 1 && x.cell.1.abs_diff(r.cell.1) <= 1)).map(|r| r.amount).sum();
     u.rule();
     u.row(14.0, |r| {
         r.row(4.0, |x| {

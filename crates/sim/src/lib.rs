@@ -24,11 +24,15 @@ pub mod forestry;
 pub mod grid;
 pub mod hud;
 pub mod jobs;
+pub mod save;
+pub mod journal;
 pub mod inventory;
 pub mod ledger;
 pub mod maps;
 pub mod maintenance;
 pub mod nav;
+pub mod predators;
+pub mod prof;
 pub mod output;
 pub mod resources;
 pub mod runtime;
@@ -49,9 +53,10 @@ pub mod worldgen;
 
 use std::fmt;
 
+
 pub use grid::Grid;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SimError {
     InvalidDt(f32),
     InvalidCommand(String),
@@ -71,7 +76,7 @@ impl std::error::Error for SimError {}
 // not require wave-sized time steps; all game speeds share this same calendar.
 pub const STEP_DAYS: f32 = 1.0 / 96.0;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StepTimings {
     pub steps: u64,
     pub water_s: f64,
@@ -90,9 +95,11 @@ impl StepTimings {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SimState {
     pub seed: u64,
     pub instance: u64,
+    #[serde(skip)]
     pub client_commands: Option<Vec<Command>>,
     pub time_days: f64,
     pub height: grid::HeightGrid,
@@ -112,10 +119,22 @@ pub struct SimState {
     pub output: output::Output,
     pub fog: fog::Fog,
     pub steps: u64,
+    #[serde(skip)]
     pub recorder: Option<Vec<(u64, Command)>>,
     pub forestry: forestry::Forestry,
+    pub predators: predators::Predators,
     pub sandbox: bool,
+    #[serde(skip)]
     pub step_timings: StepTimings,
+    /// What the session journal has written so far (only used while a session trace is open).
+    #[serde(skip)]
+    pub journal: journal::Journal,
+}
+
+/// A number no other world in this run has: the interface restarts its worker when it changes.
+pub fn next_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl SimState {
@@ -131,7 +150,7 @@ impl SimState {
         let resources = resources::ResourceWorld::seeded(seed, &world);
         let mut sim = Self {
             seed,
-            instance: { static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) },
+            instance: next_instance(),
             client_commands: None,
             time_days: 0.0,
             height,
@@ -153,16 +172,26 @@ impl SimState {
             steps: 0,
             recorder: None,
             forestry: forestry::Forestry::new(seed),
+            predators: predators::Predators::new(seed),
             sandbox: false,
             step_timings: StepTimings::default(),
+            journal: journal::Journal::default(),
         };
         sim.work.inventory = sim.buildings.stores.inventory.view();
         forestry::clear_drowned(&mut sim);
         forestry::init(&mut sim);
+        sim.resources.log_changes = true;
         sim
     }
 
     /// Gameplay, sandbox and scripted playtests share the same physical clock.
+/// From here on this copy of the world is a guess: whoever shows the world applies commands
+    /// to its copy before the simulation has answered, to show at once what they should do.
+    /// What changes from now is marked as guessed, to be looked at again when the answer comes.
+    pub fn guess_ahead(&mut self) {
+        self.resources.guess_ahead();
+    }
+
     pub fn step(&mut self, dt_days: f32) -> Result<(), SimError> {
         if !dt_days.is_finite() || dt_days < 0.0 {
             return Err(SimError::InvalidDt(dt_days));
@@ -183,43 +212,69 @@ impl SimState {
             clock = now;
         };
         let mut t = self.step_timings;
+        let whole = prof::scope("step");
+        { let _p = prof::scope("step/journal"); journal::begin_step(self); }
         self.time_days += dt_days as f64;
         self.steps += 1;
+        trace::set_clock(self.time_days, self.steps);
         lap(&mut t.other_s);
-        self.water.step(&self.height, dt_days);
+        { let _p = prof::scope("step/water"); self.water.step(&self.height, dt_days); }
         lap(&mut t.water_s);
-        self.ecology.step(dt_days, &self.water.depth)?;
+        { let _p = prof::scope("step/ecology"); self.ecology.step(dt_days, &self.water.depth)?; }
         lap(&mut t.ecology_s);
-        self.derive_colony_jobs();
-        let land = WorldLand { world: &self.world, depth: &self.water.depth };
-        self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?;
-        lap(&mut t.colony_s);
-        let terrain = buildings::Terrain { depth: &self.water.depth };
-        self.buildings.step(dt_days, terrain);
-        self.sync_homes();
-        maintenance::step(self, dt_days);
-        lap(&mut t.buildings_s);
-        self.resources.step(dt_days, self.time_days).expect("dt validated above");
-        let day = self.time_days.floor();
-        if day > (self.time_days - dt_days as f64).floor() && self.colony.is_founded() {
-            wetland::step(self, day as u64);
+        {
+            let _p = prof::scope("step/colony");
+            { let _p = prof::scope("step/colony/jobs"); self.derive_colony_jobs(); }
+            let land = WorldLand { world: &self.world, depth: &self.water.depth };
+            { let _p = prof::scope("step/colony/beavers"); self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?; }
+            let _p = prof::scope("step/journal");
+            journal::scan(self, "colony");
         }
-        forestry::step(self, dt_days);
-        self.refresh_store_view();
+        lap(&mut t.colony_s);
+        {
+            let _p = prof::scope("step/buildings");
+            let terrain = buildings::Terrain { depth: &self.water.depth };
+            { let _p = prof::scope("step/buildings/step"); self.buildings.step(dt_days, terrain); }
+            { let _p = prof::scope("step/buildings/homes"); self.sync_homes(); }
+            let _p = prof::scope("step/buildings/maintenance");
+            maintenance::step(self, dt_days);
+        }
+        lap(&mut t.buildings_s);
+        { let _p = prof::scope("step/resources"); self.resources.step(dt_days, self.time_days).expect("dt validated above"); }
+        let day = self.time_days.floor();
+        if day > (self.time_days - dt_days as f64).floor() {
+            let _p = prof::scope("step/wetland");
+            wetland::seed_water_plants(self);
+            if self.colony.is_founded() {
+                wetland::step(self, day as u64);
+            }
+        }
+        { let _p = prof::scope("step/forestry"); forestry::step(self, dt_days); }
+        { let _p = prof::scope("step/stores"); self.refresh_store_view(); }
         lap(&mut t.other_s);
-        agents::step(self, dt_days);
+        { let _p = prof::scope("step/agents"); agents::step(self, dt_days); }
+        { let _p = prof::scope("step/predators"); predators::step(self, dt_days); }
         lap(&mut t.agents_s);
-        dams::step(self);
-        canals::step(self, dt_days);
+        { let _p = prof::scope("step/dams"); dams::step(self); }
+        { let _p = prof::scope("step/canals"); canals::step(self, dt_days); }
         lap(&mut t.shipping_s);
-        self.explore();
+        { let _p = prof::scope("step/fog"); self.explore(); }
         lap(&mut t.fog_s);
-        self.society.step(dt_days, self.time_days, &self.colony);
-        self.step_events(dt_days);
+        { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &self.colony); }
+        { let _p = prof::scope("step/events"); self.step_events(dt_days); }
+        {
+            let _p = prof::scope("step/journal");
+            journal::scan(self, "agents");
+            journal::poll(self);
+        }
 
-        self.output.step(dt_days);
-        self.refresh_store_view();
-        self.ledger.record(self.time_days, &self.buildings.stores);
+        {
+            let _p = prof::scope("step/ledger");
+            self.output.step(dt_days);
+            self.refresh_store_view();
+            self.ledger.record(self.time_days, &self.buildings.stores);
+        }
+        drop(whole);
         lap(&mut t.other_s);
         t.steps += 1;
         self.step_timings = t;
@@ -230,7 +285,7 @@ impl SimState {
         let world = &self.world;
         let allowed = fog::open_at(world);
         for a in self.agents.by_id.values().filter(|a| !a.inside) {
-            self.fog.reveal((a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5), fog::BEAVER_SIGHT, &allowed);
+            self.fog.sight(a.id, a.cell, &allowed);
         }
     }
 
@@ -264,10 +319,50 @@ impl Clone for SimState {
             steps: self.steps.clone(),
             recorder: self.recorder.clone(),
             forestry: self.forestry.clone(),
+            predators: self.predators.clone(),
             sandbox: self.sandbox.clone(),
             step_timings: self.step_timings.clone(),
+            journal: self.journal.clone(),
         };
         copy.work.inventory = copy.buildings.stores.inventory.view();
         copy
+    }
+
+    /// As `clone`, but copying into this state's buffers: the simulation's snapshots reuse the
+    /// one the interface hands back, which is far cheaper than allocating a world each time.
+    fn clone_from(&mut self, src: &Self) {
+        let Self {
+            seed, instance, client_commands, time_days, height, world, water, ecology, colony, buildings, events, nav,
+            resources, agents, work, maintenance, society, ledger, output, fog, steps, recorder, forestry, predators,
+            sandbox, step_timings, journal,
+        } = src;
+        self.seed = *seed;
+        self.instance = *instance;
+        self.client_commands.clone_from(client_commands);
+        self.time_days = *time_days;
+        self.height.clone_from(height);
+        self.world.clone_from(world);
+        self.water.clone_from(water);
+        self.ecology.clone_from(ecology);
+        self.colony.clone_from(colony);
+        self.buildings.clone_from(buildings);
+        self.events.clone_from(events);
+        self.nav.clone_from(nav);
+        self.resources.clone_from(resources);
+        self.agents.clone_from(agents);
+        self.work.clone_from(work);
+        self.maintenance.clone_from(maintenance);
+        self.society.clone_from(society);
+        self.ledger.clone_from(ledger);
+        self.output.clone_from(output);
+        self.fog.clone_from(fog);
+        self.steps = *steps;
+        self.recorder.clone_from(recorder);
+        self.forestry.clone_from(forestry);
+        self.predators.clone_from(predators);
+        self.sandbox = *sandbox;
+        self.step_timings = *step_timings;
+        self.journal.clone_from(journal);
+        self.work.inventory = self.buildings.stores.inventory.view();
     }
 }

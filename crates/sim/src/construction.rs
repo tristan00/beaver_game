@@ -1,6 +1,6 @@
 //! Building placement, paid construction and cancellation. Dams are placed
 //! and grown through `dams`; everything else is a paid site.
-use crate::{SimError, SimState, agents, buildings, maintenance, water, work};
+use crate::{SimError, SimState, agents, buildings, maintenance, water};
 
 #[cfg(test)]
 mod placement_tests {
@@ -108,7 +108,6 @@ impl SimState {
     }
 
     fn release_workers(&mut self, id: buildings::BuildingId) {
-        self.work.managed.retain(|_, duty| !matches!(duty, work::ManagedDuty::Slot(b, _) if *b == id));
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
                 ag.assignment = None;

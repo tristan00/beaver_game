@@ -8,7 +8,7 @@ const NONE: usize = usize::MAX;
 /// Tuning: stream reaches drain by their steepest link only.
 const SINGLE_PATH_REACHES: bool = true;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Flow {
     version: Option<((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool)>,
     nodes: Vec<Node>,
@@ -21,7 +21,7 @@ pub(super) struct Flow {
     stamp: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Node {
     cells: Vec<usize>,
     beds: Vec<f64>,
@@ -40,7 +40,7 @@ struct Node {
     rates: Vec<f64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Link {
     to: usize,
     crest: f64,

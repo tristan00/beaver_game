@@ -32,7 +32,7 @@ fn parse_kind(s: &str) -> Result<BuildingKind, String> {
 }
 
 fn parse_resource_kind(s: &str) -> Result<ResourceKind, String> {
-    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::RiverClay]
+    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::RiverClay, ResourceKind::Pebbles, ResourceKind::WaterPlant]
         .into_iter()
         .find(|k| format!("{k:?}").eq_ignore_ascii_case(s))
         .ok_or_else(|| format!("unknown resource '{s}'"))
@@ -55,6 +55,8 @@ pub fn to_line(c: &Command) -> String {
         Command::SetDamMaintain { dam, on } => format!("dam-maintain {} {}", dam.0, if *on { "on" } else { "off" }),
         Command::RepairBuilding { building } => format!("repair {}",building.0),
         Command::ReinforceBuilding { building } => format!("reinforce {}",building.0),
+        Command::PebbleBuilding { building } => format!("pebble {}", building.0),
+        Command::SetSlotOff { building, slot, off } => format!("slot-off {} {slot} {}", building.0, if *off { "on" } else { "off" }),
         Command::Settle { cell: c } => format!("settle {} {}", c.0, c.1),
         Command::BreachDam { x, y } => format!("breach {x} {y}"),
         Command::DigCanal { cells: v, depth } => format!("dig-canal {depth} {}", cells(v)),
@@ -84,13 +86,10 @@ pub fn to_line(c: &Command) -> String {
         Command::SetPriority { building, priority } => format!("priority {} {priority:?}", building.0),
         Command::SetPaused { building, paused } => format!("pause {} {}", building.0, if *paused { "on" } else { "off" }),
         Command::AdjustRole { role, delta } => format!("role {role:?} {delta}"),
-        Command::SetRoleWeight { role, weight } => format!("role-weight {role:?} {weight}"),
-        Command::SetRoleOrder { order } => format!("role-order {}", order.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(",")),
-        Command::SetAutoStaff { on } => format!("auto {}", if *on { "on" } else { "off" }),
-        Command::Unlock { who } => format!("unlock {}", who.0),
         Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
         Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
         Command::SetBalance { building, on } => format!("balance {} {}", building.0, if *on { "on" } else { "off" }),
+        Command::FillStore { store, on } => format!("fill-store {} {}", store.0, if *on { "on" } else { "off" }),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
         Command::CancelSite { building } => format!("cancel {}", building.0),
     }
@@ -135,6 +134,8 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "dam-maintain" => Command::SetDamMaintain { dam: b(1)?, on: on(2)? },
         "repair" => Command::RepairBuilding { building: b(1)? },
         "reinforce" => Command::ReinforceBuilding { building: b(1)? },
+        "pebble" => Command::PebbleBuilding { building: b(1)? },
+        "slot-off" => Command::SetSlotOff { building: b(1)?, slot: num(t.get(2), "slot")?, off: on(3)? },
         "settle" => Command::Settle { cell: (num(t.get(1), "x")?, num(t.get(2), "y")?) },
         "breach" => Command::BreachDam { x: num(t.get(1), "x")?, y: num(t.get(2), "y")? },
         "dig-canal" => Command::DigCanal { depth: num(t.get(1), "depth")?, cells: parse_cells(&t[2..])? },
@@ -191,10 +192,6 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         },
         "pause" => Command::SetPaused { building: b(1)?, paused: on(2)? },
         "role" => Command::AdjustRole { role: parse_role(t.get(1).ok_or("missing role")?)?, delta: num(t.get(2), "delta")? },
-        "role-weight" => Command::SetRoleWeight {role: parse_role(t.get(1).ok_or("missing role")?)?, weight: num(t.get(2), "weight")? },
-        "role-order" => Command::SetRoleOrder { order: t.get(1).ok_or("missing roles")?.split(',').map(parse_role).collect::<Result<_, _>>()? },
-        "auto" => Command::SetAutoStaff { on: on(1)? },
-        "unlock" => Command::Unlock { who: BeaverId(num(t.get(1), "beaver")?) },
         "work-area" => Command::SetWorkArea { building: b(1)?, area: Area { min: (num(t.get(2), "x0")?, num(t.get(3), "y0")?), max: (num(t.get(4), "x1")?, num(t.get(5), "y1")?) } },
 
         "balance" => Command::SetBalance {
@@ -203,6 +200,14 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 Some("on") => true,
                 Some("off") => false,
                 other => return Err(format!("balance takes on or off, not {other:?}")),
+            },
+        },
+        "fill-store" => Command::FillStore {
+            store: b(1)?,
+            on: match t.get(2).copied() {
+                Some("on") => true,
+                Some("off") => false,
+                other => return Err(format!("fill-store takes on or off, not {other:?}")),
             },
         },
         "haul" => Command::SetHaul { order: HaulOrder { from: b(1)?, to: b(2)?, good: parse_good(t.get(3).ok_or("missing good")?)? } },
@@ -235,7 +240,7 @@ pub fn parse_log(text: &str) -> Result<Vec<(u64, Command)>, String> {
         .collect()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum Stmt {
     Settle(Option<Cell>, bool),
     Place(BuildingKind, Option<Cell>),
@@ -244,7 +249,7 @@ enum Stmt {
     Do(Command),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     pub deaths: BTreeMap<String, u32>,
     pub births: u32,
@@ -260,7 +265,7 @@ pub struct Stats {
     pub collapsed: Option<f64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Outcome {
     pub lines: Vec<String>,
     pub checks: Vec<(String, bool)>,

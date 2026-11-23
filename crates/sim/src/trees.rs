@@ -3,11 +3,11 @@
 //! (`tree_species`, `tree_flora`).
 include!(concat!(env!("OUT_DIR"), "/trees_constants.rs"));
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Tree { Aspen, Willow, Birch, Alder, Pine, Maple, Spruce, Beech }
 
 /// Multipliers against the reference tree in the forestry and resource constants.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TreeSpec {
     pub growth: f32,
     pub logs: f32,
@@ -23,7 +23,7 @@ pub struct TreeSpec {
 
 /// One species' share of a map's forest on dry ground, on wet ground, extra on
 /// steep or high ground, and extra where the land cover is not closed forest.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Mix {
     pub dry: f32,
     pub wet: f32,
@@ -55,7 +55,7 @@ impl Tree {
 }
 
 /// Where a tree stands, as the world generator sees it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Habitat {
     pub moisture: f32,
     pub slope: f32,

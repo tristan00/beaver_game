@@ -1,7 +1,7 @@
 //! A model gallery for iterating on beavers and buildings: `BC_GALLERY=dist,yaw,pitch[,dz,dx]`
 //! lines up every building stage and every beaver pose on the flattest dry ground of the map
 //! and aims the camera there. `BC_SELECT_HOME=1` opens the first family's inspector. `BC_GALLERY_WHAT=build|beaver|all` picks the rows and
-//! `BC_GALLERY_POSE=n` shows a single pose (`BC_GALLERY_LOAD=n` picks what a carrier holds). See `tools/gallery_shot.sh`.
+//! `BC_GALLERY_POSE=n` shows a single pose (`BC_GALLERY_LOAD=n` gives every pose that load). See `tools/gallery_shot.sh`.
 use super::scene::{height_at, Pose, StructKind};
 use super::{models, BeaverSprite};
 use bevy::prelude::*;
@@ -56,7 +56,7 @@ pub(super) fn spawn_gallery(
     let white = m.white.clone();
     if what == "all" || what == "build" {
         let stages: Vec<u8> = (0..=models::STAGES).chain([models::DRY_STAGE]).collect();
-        for (row, kind) in [StructKind::Lodge, StructKind::Warehouse].into_iter().enumerate() {
+        for (row, kind) in [StructKind::Lodge, StructKind::Warehouse, StructKind::Larder, StructKind::Toolshed, StructKind::Forester, StructKind::Logistics].into_iter().enumerate() {
             for (i, &stage) in stages.iter().enumerate() {
                 let (x, z) = (cx + (i as f32 - stages.len() as f32 / 2.0) * 4.0, cz - 3.0 - row as f32 * 4.5);
                 let base = (0..9).map(|k| ground(x + (k % 3) as f32 - 1.0, z + (k / 3) as f32 - 1.0)).fold(f32::MIN, f32::max);
@@ -67,7 +67,7 @@ pub(super) fn spawn_gallery(
         use super::structures::{dam_cell_mesh, DamStage};
         for (k, st) in [DamStage::Staked, DamStage::Rising, DamStage::Done].into_iter().enumerate() {
             for i in 0..4u8 {
-                let (x, z) = (cx - 8.0 + k as f32 * 6.0 + i as f32, cz - 12.0);
+                let (x, z) = (cx - 8.0 + k as f32 * 6.0 + i as f32, cz - 31.0);
                 let mesh = meshes.add(dam_cell_mesh(4 + (i % 2) * 2, 1.35, i as u32, st));
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, ground(x, z), z)));
             }
@@ -80,7 +80,7 @@ pub(super) fn spawn_gallery(
             let base = Vec3::new(x, ground(x, z), z);
             let paces = matches!(pose, Pose::Walk | Pose::Carry | Pose::Climb | Pose::Swim);
             commands.spawn((
-                BeaverSprite { id, pose, load: load.map(|g| (g, sim::agents::LOAD_SIZE)), yaw, wet: pose == Pose::Swim },
+                BeaverSprite { id, pose, load: load.map(|g| (g, sim::agents::load_size(g))), yaw, wet: pose == Pose::Swim },
                 GalleryBeaver(base, paces),
                 Transform::from_translation(base).with_scale(Vec3::splat(super::sim_sync::BEAVER_SIZE * size)),
                 Visibility::Inherited,
@@ -92,7 +92,8 @@ pub(super) fn spawn_gallery(
             }
             let x = if only.is_some() { cx } else { cx + (i as f32 - POSES.len() as f32 / 2.0) * 1.4 };
             let good = std::env::var("BC_GALLERY_LOAD").ok().and_then(|v| v.parse::<usize>().ok()).and_then(|i| sim::buildings::Good::ALL.get(i).copied());
-            let load = (pose == Pose::Carry).then_some(good.unwrap_or(sim::buildings::Good::Sticks));
+            // With a load picked, every pose carries it; otherwise only the carrier does.
+            let load = if pose == Pose::Carry { Some(good.unwrap_or(sim::buildings::Good::Sticks)) } else { good };
             spawn(i as u64 + 1, pose, load, x, cz + 1.5, 1.0);
         }
         if only.is_none() {

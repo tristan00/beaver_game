@@ -28,10 +28,10 @@ mod repair_alert_tests {
         assert!(food_runout_days(100.0,1.0,2.0,0.01).is_infinite());
     }
     #[test]
-    fn emergency_food_response_scales_with_workers_and_respects_locked_orders() {
+    fn emergency_food_response_scales_with_workers() {
         let mut s=SimState::new(1);
         s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
-        s.resources.items.clear();s.resources.add(ResourceKind::Plant,(35,35),4.0);
+        s.resources.clear();s.resources.add(ResourceKind::Plant,(35,35),4.0);
         let adult=s.colony.beavers[0].clone();
         for i in 0..28 {
             let mut b=adult.clone();b.id=BeaverId(100+i);
@@ -40,10 +40,6 @@ mod repair_alert_tests {
         }
         for b in &s.colony.beavers {s.agents.spawn(b.id,(5,5));}
         assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:4});
-        for b in s.colony.beavers.iter().filter(|b|b.can_work()).skip(1) {s.work.player_orders.insert(b.id);}
-        assert_eq!(food_fix(&s),Fix::Gather{kind:ResourceKind::Plant,n:1});
-        let id=s.colony.beavers[0].id;s.work.player_orders.insert(id);
-        assert_eq!(food_fix(&s),Fix::Focus);
     }
 }
 
@@ -58,7 +54,7 @@ pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     Building(BuildingId),
     Beaver(BeaverId),
@@ -66,14 +62,14 @@ pub enum Source {
     None,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BreakdownRow {
     pub label: String,
     pub value: f32,
     pub source: Source,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Breakdown {
     pub total: f32,
     pub rows: Vec<BreakdownRow>,
@@ -196,20 +192,21 @@ fn dam_wear(sim: &SimState, c: Cell, source: Source) -> Breakdown {
     let w = &sim.water;
     let integrity = w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
     let over = (w.depth.get(c.0, c.1).copied().unwrap_or(0.0) - w.config.overtop_depth).max(0.0);
-    let mut rows = vec![row("Age", -w.config.dam_decay_per_day, source)];
+    let hold = w.dam_durability.get(c.0, c.1).copied().unwrap_or(1.0).max(1.0);
+    let mut rows = vec![row("Age", -w.config.dam_decay_per_day / hold, source)];
     if over > 0.0 {
-        rows.push(row("Overtopping", -w.config.overtop_erosion * over, source));
+        rows.push(row("Overtopping", -w.config.overtop_erosion * over / hold, source));
     }
     Breakdown::new(integrity, rows)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Severity {
     Urgent,
     Warning,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Fix {
     AddWorkers { building: BuildingId, n: usize },
     Gather { kind: ResourceKind, n: usize },
@@ -225,7 +222,7 @@ pub enum Fix {
     Focus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProblemKind {
     Food,
     WinterFood,
@@ -245,16 +242,18 @@ pub enum ProblemKind {
     CanalSilting,
     /// A pond is falling fast through an open gate.
     PondDraining,
+    /// A wolf the colony has seen is on the map.
+    Wolf,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Subject {
     Good(Good),
     Building(BuildingKind),
     Stage(Stage),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Problem {
     pub kind: ProblemKind,
     pub severity: Severity,
@@ -285,7 +284,7 @@ fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
         .colony
         .beavers
         .iter()
-        .filter(|b| b.can_work() && !sim.work.is_locked(b.id))
+        .filter(|b| b.can_work())
         .filter_map(|b| sim.agents.get(b.id).map(|a| (crate::jobs::is_busy(sim, b.id), a.cell.0.abs_diff(home.0) + a.cell.1.abs_diff(home.1), b.id)))
         .collect();
     v.sort();
@@ -296,7 +295,7 @@ fn food_fix(sim: &SimState) -> Fix {
     // Extra staff in an exhausted work area cannot resolve a food shortage.
     // Send available workers to food in the wider emergency gathering area.
     // A fixed pair is too small to respond to a mature colony's winter deficit.
-    // The player explicitly moves a quarter of the workforce; locked orders stay put.
+    // The player explicitly moves a quarter of the workforce.
     let workers=sim.colony.beavers.iter().filter(|b|b.can_work()).count();
     let n = gatherers(sim, workers.div_ceil(4).max(FIX_WORKERS)).len();
     if let Some(home) = colony_cell(sim).filter(|_|n>0) {
@@ -359,11 +358,11 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
 
 
     let n = sim.water.dam_height.width();
-    let weak: Vec<Cell> = (0..n * n)
-        .map(|i| (i % n, i / n))
-        .filter(|&(x, y)| {
-            sim.water.dam_height.get(x, y).is_some_and(|h| *h > 0.0) && sim.water.dam_integrity.get(x, y).is_some_and(|v| *v < WEAK_DAM)
-        })
+    // Row by row over both grids at once (they share the map's size): a scan of every cell.
+    let weak: Vec<Cell> = sim.water.dam_height.as_slice()[..n * n].iter().zip(sim.water.dam_integrity.as_slice())
+        .enumerate()
+        .filter(|&(_, (h, v))| *h > 0.0 && *v < WEAK_DAM)
+        .map(|(i, _)| (i % n, i / n))
         .collect();
     if !weak.is_empty() {
         let integ = |c: &Cell| sim.water.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
@@ -440,12 +439,12 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                     crate::jobs::IdleReason::Unreachable => "Unreachable",
                     crate::jobs::IdleReason::Resting => "Resting",
                     crate::jobs::IdleReason::Paused => "Paused",
-                    crate::jobs::IdleReason::AutoOff => "Auto off",
+                    crate::jobs::IdleReason::Free => "Free",
                 };
                 row(label, 1.0, Source::Beaver(id))
             })
             .collect();
-        let open = sim.work.role_order.iter().find_map(|&role| {
+        let open = crate::jobs::RoleKind::DEFAULT_ORDER.into_iter().find_map(|role| {
             let slots: usize = sim
                 .work
                 .places
@@ -515,6 +514,19 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             fix: Fix::Accept(r.id),
             alt_fix: Some(Fix::Decline(r.id)),
             focus: Some(r.at),
+        });
+    }
+
+    if let Some(w) = sim.predators.wolf.as_ref().filter(|_| sim.predators.spotted) {
+        out.push(Problem {
+            kind: ProblemKind::Wolf,
+            severity: Severity::Urgent,
+            value: 1.0,
+            cause: Breakdown::new(1.0, Vec::new()),
+            subject: None,
+            fix: Fix::Focus,
+            alt_fix: None,
+            focus: Some(w.cell()),
         });
     }
 

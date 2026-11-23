@@ -4,7 +4,7 @@ use crate::{colony::Colony, water::Season};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Events {
     rng: Pcg32,
     time_days: f64,
@@ -37,6 +37,7 @@ impl Events {
                 }
                 colony.add_immigrants(count);
                 let amount = (ARRIVAL_FOOD_COST * count as f32).min(stores.amount(crate::buildings::Good::Food));
+                crate::trace::event(format!("WANDERERS_ARRIVE day={:.4} count={count} set_off={day:.4} food_cost={amount:.1}", self.time_days));
                 stores.withdraw_for(crate::buildings::Good::Food, amount, crate::buildings::Use::Other).unwrap();
                 false
             });
@@ -44,11 +45,14 @@ impl Events {
             if season != Season::Winter && self.unit() < WANDERER_CHANCE_PER_DAY * sub as f32 {
                 let count = 1 + (self.unit() * WANDERER_COUNT_SPREAD) as u32;
                 self.wanderers.push((self.time_days, count));
+                crate::trace::event(format!("WANDERERS_SET_OFF day={:.4} count={count} arrive_in_days={WANDERER_TRAVEL_DAYS}", self.time_days));
             }
             if wetland > FOOD_EVENT_WETLAND_MIN && matches!(season, Season::Spring | Season::Summer)
                 && self.unit() < FOOD_EVENT_CHANCE_PER_DAY * wetland * sub as f32
             {
-                stores.deposit(crate::buildings::Good::Food, (FOOD_EVENT_BASE + FOOD_EVENT_SPREAD * self.unit()) * (1.0 + wetland)).unwrap();
+                let amount = (FOOD_EVENT_BASE + FOOD_EVENT_SPREAD * self.unit()) * (1.0 + wetland);
+                let got = stores.deposit(crate::buildings::Good::Food, amount).unwrap();
+                crate::trace::event(format!("FOOD_WINDFALL day={:.4} offered={amount:.1} stored={got:.1} wetland={wetland:.2}", self.time_days));
             }
         }
     }

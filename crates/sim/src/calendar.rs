@@ -1,6 +1,6 @@
 
 include!(concat!(env!("OUT_DIR"), "/calendar_constants.rs"));
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Season {
     Spring,
     Summer,
@@ -29,7 +29,7 @@ impl Season {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Date {
     pub year: u32,
     pub season: Season,

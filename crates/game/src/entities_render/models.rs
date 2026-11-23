@@ -587,7 +587,8 @@ pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
     use structures::Footing::*;
     Some(match kind {
         StructKind::Lodge => Mound(3.3),
-        StructKind::Warehouse => Piles(2.9, 2.5),
+        StructKind::Warehouse | StructKind::Larder => Piles(2.9, 2.5),
+        StructKind::Toolshed | StructKind::Forester | StructKind::Logistics => Piles(1.9, 1.6),
         _ => return None,
     })
 }
@@ -601,6 +602,10 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Dam => dam(&mut mb, len, f),
         StructKind::Canal => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
         StructKind::Warehouse => structures::stockpile(&mut mb, f),
+        StructKind::Larder => structures::larder(&mut mb, f),
+        StructKind::Toolshed => structures::toolshed(&mut mb, f),
+        StructKind::Forester => structures::forester(&mut mb, f),
+        StructKind::Logistics => structures::logistics(&mut mb, f),
     }
     if let Some(fo) = footing_of(kind) {
         let (hx, hz) = match fo {
@@ -651,6 +656,51 @@ pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
         }
     }
     mb.build()
+}
+
+/// Grey pebbles set shoulder to shoulder round the footing.
+pub fn pebble_facing_mesh(kind: StructKind) -> Mesh {
+    let mut mb = Mb::new();
+    let (dark, light) = (hex(0x6e6e74), hex(0xc2c0bc));
+    let mut r = Rng(77);
+    let (rx, rz, n) = match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5, 1.4)) {
+        structures::Footing::Mound(radius) => (radius + 0.45, radius + 0.45, 22),
+        structures::Footing::Piles(x, z) => (x + 0.55, z + 0.55, 20),
+    };
+    for k in 0..n {
+        let a = k as f32 * TAU / n as f32 + r.range(-0.05, 0.05);
+        let p = v(a.cos() * rx, 0.02, a.sin() * rz);
+        let s = r.range(0.28, 0.4);
+        mb.ellipsoid_r(p, v(s * 1.3, s * 0.75, s), Quat::from_rotation_y(-a + r.range(-0.3, 0.3)), mix(dark, light, r.next()));
+    }
+    mb.build()
+}
+
+/// A rocky outcrop: a few weathered boulders bedded in the ground.
+pub fn pebble_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    for (x, z, rx, ry, rz, yaw) in [(0.0, 0.0, 1.0, 0.75, 0.85, 0.3), (0.85, 0.55, 0.6, 0.45, 0.55, 1.2), (-0.75, 0.45, 0.55, 0.4, 0.5, 2.0), (0.2, -0.8, 0.55, 0.35, 0.45, 0.7)] {
+        let start = mb.len();
+        mb.ellipsoid_g(v(x, 0.0, z), v(rx, ry, rz), hex(0x5f5f64), hex(0xb9b7b2), 9, 6);
+        let c = v(x, 0.0, z);
+        mb.displace(start, |p| {
+            let q = p - c;
+            let k = 1.0 + 0.12 * (q.x * 6.0 + yaw).sin() * (q.z * 5.0 - yaw).cos();
+            c + v(q.x * k, q.y * (1.0 + 0.08 * (q.z * 7.0).sin()), q.z * k)
+        });
+    }
+    mb.ellipsoid(v(-0.2, 0.62, 0.15), v(0.28, 0.06, 0.22), hex(0x7f9a4a));
+    mb.build()
+}
+
+fn sapling_sprig(mb: &mut Mb, a: Vec3, b: Vec3) {
+    stick_c(mb, a, b, 0.03, hex(0x7a5a34));
+    mb.ellipsoid_g(b, v(0.16, 0.12, 0.16), col(palette::LEAF), col(palette::LEAF_LIGHT), 7, 5);
+    for (k, s) in [(0.55f32, 1.0f32), (0.75, -1.0)] {
+        let p = a.lerp(b, k);
+        mb.ellipsoid_g(p + v(0.1 * s, 0.02, 0.04), v(0.1, 0.07, 0.09), col(palette::LEAF), col(palette::LEAF_LIGHT), 6, 4);
+    }
+    mb.ellipsoid_g(a, v(0.11, 0.08, 0.11), col(palette::MUD_DARK), hex(0x77573a), 6, 4);
 }
 
 /// A lodge: a rough cone of crossed sticks bedded in mud, with its entrance under water and a
@@ -779,6 +829,11 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
         Good::Clay => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.2, 0.15, 0.17), col(palette::MUD_DARK), hex(0x80603f), 8, 5);
         }
+        Good::Pebbles => {
+            mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.18, 0.13, 0.15), hex(0x66666b), hex(0xb5b3ae), 7, 5);
+        }
+        // A rooted sapling held by the stem, leaves up.
+        Good::Saplings => sapling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
         // A leafy sprig held crosswise.
         Good::Food => {
             stick_c(&mut mb, v(-0.4, 0.0, 0.0), v(0.4, 0.05, 0.02), 0.025, hex(0x6f8a3a));
@@ -806,6 +861,11 @@ pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.26, 0.22, 0.22), col(palette::MUD_WET), col(palette::DAM_MUD), 9, 6);
             mb.ellipsoid(v(0.08, 0.13, 0.05), v(0.1, 0.06, 0.08), hex(0x6a4c33));
         }
+        Good::Pebbles => {
+            mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.27, 0.2, 0.22), hex(0x5f5f64), hex(0xbab8b3), 8, 5);
+        }
+        // Held slanted across the chest so the leaves stand clear of the head.
+        Good::Saplings => sapling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
         Good::Food => {
             for k in 0..3 {
                 let a = (k as f32 - 1.0) * 0.35;
@@ -853,6 +913,36 @@ pub fn mud_mesh() -> Mesh {
     let mut mb = Mb::new();
     for (x, z, rx, rz, hgt) in [(0.0, 0.0, 1.35, 0.85, 0.11), (0.75, 0.45, 0.8, 0.6, 0.09), (-0.8, 0.3, 0.7, 0.75, 0.08), (-0.2, -0.65, 0.9, 0.5, 0.09), (0.9, -0.5, 0.45, 0.4, 0.07)] {
         mb.ellipsoid_g(v(x, 0.0, z), v(rx, hgt, rz), hex(0x3f2c1b), hex(0x5e4430), 10, 4);
+    }
+    mb.build()
+}
+
+/// Water lilies: pads floating flat on the surface round a flower or two, a clump of reeds
+/// standing out of the water beside them. Origin at the water line.
+pub fn water_plant_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    let pads = [(0.0f32, 0.0f32, 0.34f32), (0.55, 0.2, 0.26), (-0.45, 0.35, 0.28), (0.15, -0.55, 0.24), (-0.4, -0.35, 0.2), (0.6, -0.4, 0.18)];
+    for (k, &(x, z, r)) in pads.iter().enumerate() {
+        let shade = if k % 2 == 0 { hex(0x3f8f35) } else { hex(0x56a443) };
+        mb.ellipsoid_r(v(x, 0.02, z), v(r, 0.025, r * 0.92), Quat::from_rotation_y(k as f32 * 1.3), shade);
+    }
+    // Flowers: a ring of pale petals round a yellow heart.
+    for &(x, z, s) in &[(0.05f32, 0.05f32, 1.0f32), (-0.42, 0.33, 0.75)] {
+        for i in 0..6 {
+            let a = i as f32 * std::f32::consts::TAU / 6.0;
+            mb.ellipsoid_r(v(x + a.cos() * 0.09 * s, 0.09 * s, z + a.sin() * 0.09 * s), v(0.09 * s, 0.035 * s, 0.05 * s), Quat::from_rotation_y(-a) * Quat::from_rotation_z(0.5), hex(0xf4e9f0));
+        }
+        mb.ellipsoid(v(x, 0.12 * s, z), v(0.05 * s, 0.04 * s, 0.05 * s), hex(0xf2c94c));
+    }
+    // Reeds with brown heads.
+    for i in 0..5 {
+        let a = 2.2 + i as f32 * 0.35;
+        let base = v(0.75 + 0.1 * a.cos(), -0.1, 0.55 + 0.1 * a.sin());
+        let tip = base + v(0.08 * (i as f32 - 2.0), 0.95 + 0.12 * (i % 2) as f32, 0.03 * i as f32);
+        mb.cyl(base, tip, 0.025, 0.012, hex(0x4f8a3a), hex(0x9cc96a), 4);
+        if i % 2 == 0 {
+            mb.cyl(tip - v(0.0, 0.28, 0.0), tip - v(0.0, 0.08, 0.0), 0.045, 0.045, hex(0x6b4426), hex(0x7d5130), 5);
+        }
     }
     mb.build()
 }

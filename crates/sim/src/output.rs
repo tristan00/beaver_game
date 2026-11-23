@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 const N: usize = Good::ALL.len();
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Flow {
     pub per_day: [f32; N],
     pub total: [f32; N],
@@ -22,7 +22,7 @@ impl Flow {
 
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub by: BTreeMap<BuildingId, Flow>,
 }

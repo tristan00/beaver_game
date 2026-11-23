@@ -91,7 +91,7 @@ const IDX: u32 = NEG - 1;
 
 type Version = ((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Subgrid {
     version: Option<Version>,
     n: usize,

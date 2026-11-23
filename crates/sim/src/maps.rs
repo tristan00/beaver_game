@@ -1,14 +1,21 @@
 use crate::worldgen::{self, World};
 use std::fmt;
 
-const FILES: [(&str, &[u8]); 4] = [
+const FILES: [(&str, &[u8]); 11] = [
     ("algonquin", include_bytes!("../maps/algonquin.map")),
     ("voyageurs", include_bytes!("../maps/voyageurs.map")),
     ("bavarian", include_bytes!("../maps/bavarian.map")),
     ("telemark", include_bytes!("../maps/telemark.map")),
+    ("voyageurs_forks", include_bytes!("../maps/voyageurs_forks.map")),
+    ("adirondacks_fork", include_bytes!("../maps/adirondacks_fork.map")),
+    ("adirondacks_huntington", include_bytes!("../maps/adirondacks_huntington.map")),
+    ("agder_tarn", include_bytes!("../maps/agder_tarn.map")),
+    ("voyageurs_twin", include_bytes!("../maps/voyageurs_twin.map")),
+    ("algonquin_mizzy", include_bytes!("../maps/algonquin_mizzy.map")),
+    ("bavarian_lusen", include_bytes!("../maps/bavarian_lusen.map")),
 ];
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MapInfo {
     pub id: String,
     pub name: String,
@@ -19,9 +26,35 @@ pub struct MapInfo {
     pub size: usize,
     pub source: String,
     pub inflows: Vec<(usize, usize, f32)>,
+    #[serde(default)]
+    pub climate: Option<Climate>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// The place's real weather, month by month (January first), from the map header.
+/// Not yet read by the water engine.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Climate {
+    pub temp_c: [f32; 12],
+    pub precip_mm: [f32; 12],
+    pub snow_mm: [f32; 12],
+    pub evap_mm: [f32; 12],
+    pub runoff_mm: [f32; 12],
+    /// Day of the year the ice forms and breaks up, when it does.
+    pub ice_days: Option<(u16, u16)>,
+}
+
+impl Climate {
+    pub fn runoff_year_mm(&self) -> f32 {
+        self.runoff_mm.iter().sum()
+    }
+
+    /// Months of the year under ice.
+    pub fn ice_months(&self) -> f32 {
+        self.ice_days.map_or(0.0, |(on, off)| ((365 + off as i32 - on as i32) % 365) as f32 / 365.0 * 12.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MapData {
     pub info: MapInfo,
     pub heights: Vec<f32>,
@@ -37,7 +70,7 @@ impl MapInfo {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MapError {
     Unknown(String),
     Corrupt(String),
@@ -88,6 +121,7 @@ pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
         size,
         source: get("source").unwrap_or("").to_string(),
         inflows,
+        climate: climate(&kv).map_err(|m| bad(&m))?,
     };
     let layers: Vec<&str> = get("layers").unwrap_or("height").split(',').collect();
     let has_cover = match layers.as_slice() {
@@ -105,8 +139,68 @@ pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
     Ok(MapData { info, heights, cover: has_cover.then(|| c.to_vec()) })
 }
 
+/// The `climate_*` header keys: all of them, or none.
+fn climate(kv: &std::collections::HashMap<&str, &str>) -> Result<Option<Climate>, String> {
+    const MONTHLY: [&str; 5] = ["climate_temp_c", "climate_precip_mm", "climate_snow_mm", "climate_evap_mm", "climate_runoff_mm"];
+    if MONTHLY.iter().all(|k| !kv.contains_key(k)) {
+        return Ok(None);
+    }
+    let months = |k: &str| -> Result<[f32; 12], String> {
+        let v: Vec<f32> = kv.get(k).ok_or(format!("missing {k}"))?.split(',').map(|t| t.trim().parse::<f32>()).collect::<Result<_, _>>().map_err(|_| format!("bad {k}"))?;
+        v.try_into().map_err(|_| format!("{k} needs 12 months"))
+    };
+    let ice_days = match kv.get("climate_ice_days").map(|v| v.split_once(',')) {
+        Some(Some((on, off))) => on.trim().parse().ok().zip(off.trim().parse().ok()),
+        _ => None,
+    };
+    Ok(Some(Climate {
+        temp_c: months(MONTHLY[0])?,
+        precip_mm: months(MONTHLY[1])?,
+        snow_mm: months(MONTHLY[2])?,
+        evap_mm: months(MONTHLY[3])?,
+        runoff_mm: months(MONTHLY[4])?,
+        ice_days,
+    }))
+}
+
 pub fn all() -> Vec<MapInfo> {
     FILES.iter().filter_map(|(_, b)| parse(b).ok().map(|d| d.info)).collect()
+}
+
+/// What a player choosing a map wants to know, read from the map file alone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapStats {
+    /// Streams flowing in from beyond the map edge.
+    pub streams: usize,
+    /// Share of the map under forest.
+    pub forest: f32,
+    /// Share of the map that is open water at the start.
+    pub water: f32,
+    /// Lowest to highest ground, metres.
+    pub relief_m: f32,
+    pub climate: Option<Climate>,
+}
+
+pub fn stats(id: &str) -> Option<MapStats> {
+    static CACHE: std::sync::OnceLock<Vec<(String, MapStats)>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| FILES.iter().filter_map(|(_, b)| parse(b).ok()).map(|d| (d.info.id.clone(), stats_of(&d))).collect())
+        .iter()
+        .find(|(k, _)| k == id)
+        .map(|(_, s)| s.clone())
+}
+
+fn stats_of(d: &MapData) -> MapStats {
+    let n = d.heights.len().max(1) as f32;
+    let share = |class: u8| d.cover.as_ref().map_or(0.0, |c| c.iter().filter(|&&v| v == class).count() as f32 / n);
+    let (lo, hi) = d.heights.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+    MapStats {
+        streams: d.info.inflows.len(),
+        forest: share(worldgen::TREE_COVER),
+        water: share(worldgen::OPEN_WATER),
+        relief_m: (hi - lo).max(0.0),
+        climate: d.info.climate.clone(),
+    }
 }
 
 pub fn world_from(data: MapData) -> Result<World, MapError> {
@@ -122,3 +216,36 @@ pub fn world(id: &str) -> Result<(MapInfo, World), MapError> {
     Ok((info, world_from(data)?))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_shipped_map_parses_with_sane_stats() {
+        assert_eq!(all().len(), FILES.len());
+        for m in all() {
+            let s = stats(&m.id).expect("stats");
+            assert!(s.streams >= 1 && s.relief_m > 0.0 && (0.0..=1.0).contains(&s.forest) && (0.0..=1.0).contains(&s.water), "{}: {s:?}", m.id);
+            if let Some(c) = &s.climate {
+                assert!(c.runoff_year_mm() > 0.0 && (0.0..12.0).contains(&c.ice_months()), "{}: {c:?}", m.id);
+            }
+        }
+    }
+
+    #[test]
+    fn climate_keys_are_all_or_nothing() {
+        let (_, bytes) = FILES.iter().find(|(k, _)| *k == "voyageurs_forks").unwrap();
+        let c = parse(bytes).unwrap().info.climate.expect("the new maps carry their weather");
+        assert_eq!(c.ice_days, Some((329, 113)));
+        assert!((c.runoff_year_mm() - 225.0).abs() < 5.0);
+        let text = String::from_utf8_lossy(bytes);
+        let end = text.find("---
+").unwrap();
+        let broken = text[..end].replace("climate_snow_mm=", "climate_snowfall=");
+        let mut b = broken.into_bytes();
+        b.extend_from_slice(&bytes[end..]);
+        assert!(matches!(parse(&b), Err(MapError::Corrupt(_))));
+        assert!(parse(FILES[0].1).unwrap().info.climate.is_none());
+    }
+}

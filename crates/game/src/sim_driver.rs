@@ -132,6 +132,7 @@ pub(crate) struct SimulationWorker {
 }
 
 fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+    let _p = ::sim::prof::scope("game/receive sim");
     if worker.instance != sim.0.instance { return; }
     let Some(snapshot) = worker.worker.as_ref().and_then(|w| w.poll()) else { return; };
     worker.pending.retain(|(sequence, _)| *sequence > snapshot.acknowledged);
@@ -141,10 +142,19 @@ fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut c
         }
     }
     let events = std::mem::take(&mut sim.0.colony.events);
-    sim.0 = snapshot.state;
+    // The simulation reports fog as newly seen once; keep it until the fog is redrawn.
+    let fog_seen = sim.0.fog.dirty;
+    // The world it replaces goes back to the worker, which copies the next snapshot into it.
+    let old = std::mem::replace(&mut sim.0, snapshot.state);
+    if let Some(owner) = &worker.worker { owner.recycle(old); }
     for event in events.into_iter().rev() { sim.0.colony.events.push_front(event); }
+    sim.0.fog.dirty |= fog_seen;
     // Reapply only commands newer than the received snapshot. They remain in
-    // the worker's queue and are not transmitted twice.
+    // the worker's queue and are not transmitted twice. What they change here is a guess
+    // until the simulation has applied them itself.
+    if !worker.pending.is_empty() {
+        sim.0.guess_ahead();
+    }
     for (_, command) in &worker.pending {
         let events = sim.0.colony.events.clone();
         let _ = sim.0.apply(command.clone());
@@ -156,6 +166,9 @@ fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut c
 
 fn send_commands(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
     if worker.instance != sim.0.instance { return; }
+    // Only touch the world when there is something to send: a write marks it changed, and
+    // everything drawn from it would then redo its work every frame.
+    if sim.0.client_commands.as_ref().is_none_or(|c| c.is_empty()) { return; }
     let commands = sim.0.client_commands.as_mut().map(std::mem::take).unwrap_or_default();
     for command in commands {
         worker.next_sequence += 1;

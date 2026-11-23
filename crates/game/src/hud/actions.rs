@@ -225,14 +225,17 @@ pub(super) fn button_actions(
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
             HudAction::FreeBeaver(id) => free_beaver(s, &mut hud, id, now),
             HudAction::AddWorker(building) => cmd(s, &mut hud, sim::Command::AddWorker { building }, now),
+            HudAction::Badge(key) => hud.open_badge = if hud.open_badge.as_ref() == Some(&key) { None } else { Some(key) },
+            HudAction::FillStore(store, on) => cmd(s, &mut hud, sim::Command::FillStore { store, on }, now),
+            HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
             HudAction::RemoveWorker(building) => cmd(s, &mut hud, sim::Command::RemoveWorker { building }, now),
             HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
-            HudAction::Unlock(who) => cmd(s, &mut hud, sim::Command::Unlock { who }, now),
             HudAction::RepairBuilding(building) => cmd(s, &mut hud, sim::Command::RepairBuilding { building }, now),
             HudAction::ReinforceBuilding(building) => cmd(s, &mut hud, sim::Command::ReinforceBuilding { building }, now),
+            HudAction::PebbleBuilding(building) => cmd(s, &mut hud, sim::Command::PebbleBuilding { building }, now),
+            HudAction::SlotOff(building, slot, off) => cmd(s, &mut hud, sim::Command::SetSlotOff { building, slot, off }, now),
             HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelSite { building }, now),
-            HudAction::AutoStaff(on) => cmd(s, &mut hud, sim::Command::SetAutoStaff { on }, now),
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);

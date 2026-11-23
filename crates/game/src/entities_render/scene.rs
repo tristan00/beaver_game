@@ -36,6 +36,10 @@ pub enum StructKind {
     Dam,
     Canal,
     Warehouse,
+    Larder,
+    Toolshed,
+    Forester,
+    Logistics,
 }
 
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {

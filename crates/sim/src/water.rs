@@ -18,7 +18,7 @@ pub(crate) mod equilibrium;
 
 /// Which water engine moves the water. Chosen once per world with `BC_WATER_ENGINE`
 /// (routed, subgrid, automaton, equilibrium); the player's Settings choice otherwise, equilibrium by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EngineKind {
     Routed,
     Subgrid,
@@ -57,12 +57,32 @@ impl EngineKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum Engine {
     Routed(routed::Flow),
     Subgrid(subgrid::Subgrid),
     Automaton(automaton::Automaton),
     Equilibrium(equilibrium::Equilibrium),
+}
+
+impl Clone for Engine {
+    fn clone(&self) -> Self {
+        match self {
+            Engine::Routed(e) => Engine::Routed(e.clone()),
+            Engine::Subgrid(e) => Engine::Subgrid(e.clone()),
+            Engine::Automaton(e) => Engine::Automaton(e.clone()),
+            Engine::Equilibrium(e) => Engine::Equilibrium(e.clone()),
+        }
+    }
+    fn clone_from(&mut self, src: &Self) {
+        match (self, src) {
+            (Engine::Routed(a), Engine::Routed(b)) => a.clone_from(b),
+            (Engine::Subgrid(a), Engine::Subgrid(b)) => a.clone_from(b),
+            (Engine::Automaton(a), Engine::Automaton(b)) => a.clone_from(b),
+            (Engine::Equilibrium(a), Engine::Equilibrium(b)) => a.clone_from(b),
+            (a, b) => *a = b.clone(),
+        }
+    }
 }
 
 impl Engine {
@@ -97,10 +117,88 @@ macro_rules! each_engine {
 pub use climate::{Forcing, Weather};
 pub use crate::calendar::Season;
 const FACE_DRY: f32 = 1.0e-4;
+/// Depth above which a cell's bed turns to bare sediment (m).
+const RIVERBED_WET: f32 = 0.005;
+/// Water deeper than this before and after a step has crossed none of the depths anything
+/// waits on (wading, the riverbed, the shore), and `publish` passes it by.
+const SHALLOW: f32 = if crate::buildings::WET_DEPTH > 0.03 { crate::buildings::WET_DEPTH } else { 0.03 };
+const _: () = assert!(RIVERBED_WET <= SHALLOW);
+
+/// The ground is drawn by how deep the water's edge lies on it: in whole centimetres, up to
+/// three (`Water::shore`). A pond rising a metre over ground already under water changes none
+/// of it.
+pub fn shore_step(depth: f32) -> u8 {
+    (depth >= 0.005) as u8 + (depth >= 0.015) as u8 + (depth >= 0.025) as u8
+}
+
+/// The riverbed is drawn in this many steps from turf to bare silt (see `DEPTH_STEP`).
+pub const RIVERBED_STEPS: f32 = 16.0;
+
+/// How far the depth (m) on some cell a tile reads must move before the tile of `depth` is
+/// stamped as changed, and likewise the speed (m/s) for `velocity`: the water is drawn no
+/// finer. Measured from when the tile was last stamped, so a pond creeping up a hair every
+/// step is reported once for each such step up, not at every one.
+pub const DEPTH_STEP: f32 = 0.002;
+pub const SPEED_STEP: f32 = 0.05;
+
+/// What follows when shallow water on a cell changes depth. Kept apart from the loop over every
+/// published cell, which rarely needs any of it.
+struct Edge<'a> {
+    nav_revision: &'a mut u64,
+    nav_marked: &'a mut Vec<bool>,
+    nav_cells: &'a mut Vec<usize>,
+    bed_live: &'a mut Option<Vec<u32>>,
+    bed_marked: &'a mut Vec<bool>,
+    shore: &'a mut [u8],
+    shore_marks: crate::grid::Marks<'a>,
+}
+
+impl Edge<'_> {
+    /// Cell `i`, at (x, y), went from `was` deep to `h`.
+    #[cold]
+    #[inline(never)]
+    fn moved(&mut self, i: usize, x: usize, y: usize, was: f32, h: f32) {
+        if (was > crate::buildings::WET_DEPTH) != (h > crate::buildings::WET_DEPTH) {
+            *self.nav_revision = self.nav_revision.wrapping_add(1);
+            if !self.nav_marked[i] {
+                self.nav_marked[i] = true;
+                self.nav_cells.push(i);
+            }
+        }
+        if (was > RIVERBED_WET) != (h > RIVERBED_WET) {
+            // Water came or went: the riverbed here starts changing.
+            if let Some(live) = self.bed_live.as_mut() {
+                if !self.bed_marked[i] {
+                    self.bed_marked[i] = true;
+                    live.push(i as u32);
+                }
+            }
+        }
+        let step = shore_step(h);
+        if self.shore[i] != step {
+            self.shore[i] = step;
+            self.shore_marks.at(x, y);
+        }
+    }
+}
+
+/// What was last told of the grids that are drawn only so finely (`Water::note_changes`).
+#[derive(Debug, Default)]
+struct Told {
+    depth: crate::grid::Told<f32>,
+    speed: crate::grid::Told<(f32, f32)>,
+    riverbed: crate::grid::Told<f32>,
+    /// The tiles with water published, and with riverbed changed, since they were looked at.
+    wet: crate::grid::Due,
+    bed: crate::grid::Due,
+    /// Stamp when asked (`note_changes`), not at every publish.
+    on_request: bool,
+}
+
 const EDGE_SLOPE_MIN: f32 = 1.0e-3;
 const MOVING: f32 = 0.02;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterConfig {
     pub rain: f32,
     pub evaporation: f32,
@@ -131,7 +229,7 @@ impl Default for WaterConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Source {
     pub x: usize,
     pub y: usize,
@@ -139,7 +237,7 @@ pub struct Source {
     pub seasonality: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Budget {
     pub sources: f64,
     pub rain: f64,
@@ -156,7 +254,7 @@ pub fn spill_head(q: f32, crest: f32) -> f32 {
     (q.max(0.0) / (WEIR * crest.max(1e-3))).powf(2.0 / 3.0)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WaterError {
     OutOfBounds { x: usize, y: usize },
     NoCells,
@@ -176,7 +274,7 @@ impl fmt::Display for WaterError {
 }
 impl std::error::Error for WaterError {}
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamPreview {
     pub level: f32,
     pub pond_area: usize,
@@ -194,7 +292,7 @@ pub struct DamPreview {
 }
 
 /// Where the water engine spends its time, accumulated since the last `reset_timings`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterTimings {
     pub faces_s: f64,
     pub publish_s: f64,
@@ -221,7 +319,7 @@ impl WaterTimings {
 
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Water {
     engine: Engine,
     routed_needs_sync: bool,
@@ -277,7 +375,24 @@ pub struct Water {
     dam_cells: Vec<u32>,
     ice_any: bool,
     since_environment: f64,
+    /// Cells whose riverbed is still turning to silt or back to turf; `None` until a full pass
+    /// lists them. Every other cell is at rest: bare under water or in a canal, turf when dry.
+    #[serde(skip)]
+    bed_live: Option<Vec<u32>>,
+    #[serde(skip)]
+    bed_marked: Vec<bool>,
+    /// Whether the published grids match `h` (not so between an engine's publish and ours).
+    #[serde(skip)]
+    h_published: bool,
+    /// `shore_step` of each cell's depth. Its tiles are stamped when the water's edge moves,
+    /// where `depth`'s are stamped by every ripple.
+    #[serde(skip)]
+    pub shore: Grid<u8>,
+    #[serde(skip)]
+    told: crate::grid::Own<Told>,
 }
+
+crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told });
 
 const FORCING_EVERY_S: f64 = 300.0;
 
@@ -335,6 +450,11 @@ impl Water {
             dam_cells: Vec::new(),
             ice_any: false,
             since_environment: 0.0,
+            bed_live: None,
+            bed_marked: Vec::new(),
+            h_published: false,
+            shore: Grid::default(),
+            told: Default::default(),
         }
     }
 
@@ -413,6 +533,14 @@ impl Water {
     pub fn reset_books(&mut self) {
         (self.added_volume, self.lost_volume) = (0.0, 0.0);
         self.books = Budget::default();
+    }
+
+    /// Put the engine's order-free lists in one order, so that two waters holding the same
+    /// water encode equally. Only for comparing runs: the order never changes what happens.
+    pub fn canonical(&mut self) {
+        if let Engine::Equilibrium(e) = &mut self.engine {
+            e.canonical();
+        }
     }
 
     pub fn reset_timings(&mut self) {
@@ -541,11 +669,11 @@ impl Water {
         let mut repaired = false;
         for (i, &(_, h)) in idx.into_iter().zip(cells) {
             if h > self.dam_height.as_slice()[i] {
-                self.dam_height.as_mut_slice()[i] = h;
+                self.dam_height[i] = h;
                 changed = true;
             }
             if self.dam_integrity.as_slice()[i] != 1.0 {
-                self.dam_integrity.as_mut_slice()[i] = 1.0;
+                self.dam_integrity[i] = 1.0;
                 repaired = true;
             }
         }
@@ -566,8 +694,8 @@ impl Water {
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
         for i in idx {
-            self.dam_height.as_mut_slice()[i] = height;
-            self.dam_integrity.as_mut_slice()[i] = 1.0;
+            self.dam_height[i] = height;
+            self.dam_integrity[i] = 1.0;
         }
         Ok(())
     }
@@ -577,8 +705,8 @@ impl Water {
         if self.dam_height.as_slice()[i] <= 0.0 {
             return Err(WaterError::NoDam { x, y });
         }
-        self.dam_height.as_mut_slice()[i] = 0.0;
-        self.dam_integrity.as_mut_slice()[i] = 0.0;
+        self.dam_height[i] = 0.0;
+        self.dam_integrity[i] = 0.0;
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
@@ -596,9 +724,9 @@ impl Water {
         if was == (height, true) {
             return Ok(());
         }
-        self.dam_height.as_mut_slice()[i] = height;
-        self.dam_integrity.as_mut_slice()[i] = if height > 0.0 { 1.0 } else { 0.0 };
-        self.gate.as_mut_slice()[i] = true;
+        self.dam_height[i] = height;
+        self.dam_integrity[i] = if height > 0.0 { 1.0 } else { 0.0 };
+        self.gate[i] = true;
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
@@ -610,10 +738,11 @@ impl Water {
     pub fn silt_canal(&mut self, height: &mut HeightGrid, cell: Cell, amount: f32, ground: f32) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
         Self::check_positive("silt", amount)?;
-        let h = &mut height.as_mut_slice()[i];
+        let h = &mut height[i];
         *h = (*h + amount).min(ground);
         if *h >= ground - 0.05 {
-            self.canal.as_mut_slice()[i] = false;
+            self.canal[i] = false;
+            self.bed_live = None;
         }
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
@@ -629,9 +758,10 @@ impl Water {
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
         for i in idx {
-            height.as_mut_slice()[i] -= depth;
-            self.canal.as_mut_slice()[i] = true;
-            self.riverbed.as_mut_slice()[i] = 1.0;
+            height[i] -= depth;
+            self.canal[i] = true;
+            self.bed_live = None;
+            self.riverbed[i] = 1.0;
         }
         Ok(())
     }
@@ -701,7 +831,7 @@ impl Water {
 
     fn step_physics(&mut self, height: &HeightGrid, dt_days: f32) {
         let t0 = std::time::Instant::now();
-        self.load_bed(height);
+        { let _p = crate::prof::scope("step/water/load bed"); self.load_bed(height); }
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         if !dt_days.is_finite() || dt_days <= 0.0 {
             self.publish();
@@ -709,9 +839,10 @@ impl Water {
         }
         self.run_engine(dt_days as f64 * DAY_S, true);
         let t0 = std::time::Instant::now();
-        self.update_dams(height, dt_days);
-        self.update_ice(dt_days);
+        { let _p = crate::prof::scope("step/water/dam wear"); self.update_dams(height, dt_days); }
+        { let _p = crate::prof::scope("step/water/ice"); self.update_ice(dt_days); }
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
+        let _p = crate::prof::scope("step/water/publish grids");
         self.publish();
     }
 
@@ -754,35 +885,78 @@ impl Water {
             self.refresh_sources();
             let started=std::time::Instant::now();
             let sync=std::mem::take(&mut self.routed_needs_sync);
-            flow.prepare(self,sync);
-            flow.advance(self,dt);
+            { let _p=crate::prof::scope("step/water/engine prepare"); flow.prepare(self,sync); }
+            { let _p=crate::prof::scope("step/water/engine advance"); flow.advance(self,dt); }
             if losses {
                 self.time_days+=dt/DAY_S;
                 self.since_environment+=dt;
                 if self.since_environment>=900.0-1.0e-3 {
+                    let _p=crate::prof::scope("step/water/engine weather");
                     flow.environment(self,self.since_environment/DAY_S);
                     self.since_environment=0.0;
                 }
             }
-            flow.publish(self);
+            { let _p=crate::prof::scope("step/water/engine publish"); flow.publish(self); }
+            self.h_published=false;
             self.timings.faces_s+=started.elapsed().as_secs_f64();
             left-=dt;
         }
     }
 
-    /// Remember bare sediment after floodwater recedes.
+    /// Remember bare sediment after floodwater recedes. Only cells still changing are visited:
+    /// a cell at rest stays there until its water comes or goes (`publish` wakes it) or a
+    /// canal is dug through it.
     fn update_riverbed(&mut self, dt: f32) {
-        for (i, bed) in self.riverbed.as_mut_slice().iter_mut().enumerate() {
-            if self.canal.as_slice()[i] {
-                *bed = 1.0;
-            } else if self.h[i] > 0.005 {
+        let next = |bed: f32, canal: bool, h: f32| {
+            if canal {
+                1.0
+            } else if h > RIVERBED_WET {
                 // Newly flooded turf becomes bare soil over half a day. Established beds
                 // remain exposed through a dry season; regrowth is deliberately slow.
-                *bed = (*bed + dt * 2.0).min(1.0);
+                (bed + dt * 2.0).min(1.0)
             } else {
-                *bed = (*bed - dt / 180.0).max(0.0);
+                (bed - dt / 180.0).max(0.0)
             }
+        };
+        let resting = |bed: f32, canal: bool, h: f32| bed == if canal || h > RIVERBED_WET { 1.0 } else { 0.0 };
+        if !self.h_published {
+            // Depths moved without passing through `publish`: nothing was woken.
+            self.bed_live = None;
         }
+        let canal = self.canal.as_slice();
+        let due = &mut self.told.0.bed;
+        due.sized(self.n);
+        let Some(mut live) = self.bed_live.take() else {
+            let mut live = Vec::new();
+            self.bed_marked.clear();
+            self.bed_marked.resize(self.n * self.n, false);
+            due.all();
+            for (i, bed) in self.riverbed.cells_and_marks().0.iter_mut().enumerate() {
+                *bed = next(*bed, canal[i], self.h[i]);
+                if !resting(*bed, canal[i], self.h[i]) {
+                    live.push(i as u32);
+                    self.bed_marked[i] = true;
+                }
+            }
+            self.bed_live = Some(live);
+            return;
+        };
+        if !live.is_empty() {
+            let n = self.n;
+            let beds = self.riverbed.cells_and_marks().0;
+            live.retain(|&i| {
+                let i = i as usize;
+                let bed = next(beds[i], canal[i], self.h[i]);
+                if bed != beds[i] {
+                    due.row(i / n, crate::grid::Due::across(i % n, i % n + 1));
+                }
+                beds[i] = bed;
+                let keep = !resting(beds[i], canal[i], self.h[i]);
+                self.bed_marked[i] = keep;
+                keep
+            });
+        }
+        self.bed_live = Some(live);
     }
 
     /// One explicit step of the local-inertial shallow-water equations (Bates et al. 2010):
@@ -792,45 +966,109 @@ impl Water {
         self.revision = self.revision.wrapping_add(1);
         let t0 = std::time::Instant::now();
         let n = self.n;
-        if std::mem::take(&mut self.full_publish) {
-            for y in 0..n {
-                self.publish_span(y, 0, n);
+        if self.shore.width() != n {
+            self.shore = Grid::new(n, n, 0);
+            for (shore, &d) in self.shore.as_mut_slice().iter_mut().zip(self.depth.as_slice()) {
+                *shore = shore_step(d);
             }
-        } else {
+        }
+        self.told.0.wet.sized(n);
+        let full = std::mem::take(&mut self.full_publish);
+        if full {
+            // Every cell may have changed: list the changing riverbed afresh.
+            self.bed_live = None;
+        }
+        {
+            let Self {
+                cell_m, h, qx, qy, lake_level, depth, width, discharge, velocity, channel, rows, pub_rows,
+                nav_revision, nav_marked, nav_cells, bed_live, bed_marked, shore, told, ..
+            } = self;
+            let w1 = n + 1;
+            let dx = *cell_m;
+            let lake = lake_level.as_slice();
+            // Depth and speed are stamped in `note_changes`, which looks at the tiles written here.
+            let wet = &mut told.0.wet;
+            let (depth, velocity) = (depth.cells_and_marks().0, velocity.cells_and_marks().0);
+            let (shore, shore_marks) = shore.cells_and_marks();
+            let mut edge = Edge { nav_revision, nav_marked, nav_cells, bed_live, bed_marked, shore, shore_marks };
+            let (width, discharge, channel) = (width.as_mut_slice(), discharge.as_mut_slice(), channel.as_mut_slice());
+            // Each row's spans (and, where they changed, last time's too: water that has gone
+            // must be cleared), copied to the grids the rest of the world reads.
+            let whole = [(0u32, n as u32)];
             for y in 0..n {
-                let old = if self.rows[y] == self.pub_rows[y] { 0 } else { self.pub_rows[y].len() };
-                for k in 0..self.rows[y].len() + old {
-                    let (a, b) = if k < self.rows[y].len() { self.rows[y][k] } else { self.pub_rows[y][k - self.rows[y].len()] };
-                    self.publish_span(y, a as usize, b as usize);
+                let (now, before): (&[(u32, u32)], &[(u32, u32)]) = if full {
+                    (&whole, &[])
+                } else if rows[y] == pub_rows[y] {
+                    (&rows[y], &[])
+                } else {
+                    (&rows[y], &pub_rows[y])
+                };
+                let mut across = 0;
+                for &(a, b) in now.iter().chain(before) {
+                    let (a, b) = (a as usize, b as usize);
+                    if a >= b {
+                        continue;
+                    }
+                    across |= crate::grid::Due::across(a, b);
+                    for x in a..b {
+                        let i = y * n + x;
+                        let h = h[i];
+                        let was = depth[i];
+                        // Deep water staying deep (most of a pond) crosses none of the depths anything
+                        // waits on, nor does a cell left as it was (the dry ground between a row's waters).
+                        if (was.to_bits() != h.to_bits()) & ((was <= SHALLOW) | (h <= SHALLOW)) {
+                            edge.moved(i, x, y, was, h);
+                        }
+                        let qxc = 0.5 * (qx[y * w1 + x] + qx[y * w1 + x + 1]);
+                        let qyc = 0.5 * (qy[y * n + x] + qy[(y + 1) * n + x]);
+                        depth[i] = h;
+                        width[i] = if h > 0.0 { dx } else { 0.0 };
+                        if qxc.to_bits() == 0 && qyc.to_bits() == 0 {
+                            // Still water (most of a pond): the same zeros, without the roots and divisions.
+                            discharge[i] = 0.0;
+                            velocity[i] = (0.0, 0.0);
+                            channel[i] = false;
+                            continue;
+                        }
+                        let q = (qxc * qxc + qyc * qyc).sqrt();
+                        let (vx, vy) = if h > FACE_DRY { (qxc / h, qyc / h) } else { (0.0, 0.0) };
+                        discharge[i] = q * dx;
+                        velocity[i] = (vx, vy);
+                        channel[i] = h > 0.0 && (vx * vx + vy * vy).sqrt() > MOVING && lake[i].is_nan();
+                    }
+                }
+                if across != 0 {
+                    wet.row(y, across);
                 }
             }
         }
         self.pub_rows.clone_from(&self.rows);
+        self.h_published = true;
         self.timings.publish_s += t0.elapsed().as_secs_f64();
+        if !self.told.0.on_request {
+            self.note_changes();
+        }
     }
 
-    fn publish_span(&mut self, y: usize, a: usize, b: usize) {
-        let n = self.n;
-        let w1 = n + 1;
-        let dx = self.cell_m;
-        let lake = self.lake_level.as_slice();
-        for x in a..b {
-            let i = y * n + x;
-            let h = self.h[i];
-            if (self.depth.as_slice()[i] > crate::buildings::WET_DEPTH) != (h > crate::buildings::WET_DEPTH) {
-                self.nav_revision = self.nav_revision.wrapping_add(1);
-                if !self.nav_marked[i] {self.nav_marked[i]=true;self.nav_cells.push(i);}
-            }
-            let qxc = 0.5 * (self.qx[y * w1 + x] + self.qx[y * w1 + x + 1]);
-            let qyc = 0.5 * (self.qy[y * n + x] + self.qy[(y + 1) * n + x]);
-            let q = (qxc * qxc + qyc * qyc).sqrt();
-            let (vx, vy) = if h > FACE_DRY { (qxc / h, qyc / h) } else { (0.0, 0.0) };
-            self.depth.as_mut_slice()[i] = h;
-            self.width.as_mut_slice()[i] = if h > 0.0 { dx } else { 0.0 };
-            self.discharge.as_mut_slice()[i] = q * dx;
-            self.velocity.as_mut_slice()[i] = (vx, vy);
-            self.channel.as_mut_slice()[i] = h > 0.0 && (vx * vx + vy * vy).sqrt() > MOVING && lake[i].is_nan();
-        }
+    /// From now on, `depth`, `velocity` and `riverbed` are stamped only when `note_changes` is called:
+    /// for an owner that shows the world less often than it steps it.
+    pub fn note_on_request(&mut self) {
+        self.told.0.on_request = true;
+    }
+
+    /// Stamp the tiles of `depth`, `velocity` and `riverbed` in which some cell has moved by
+    /// more than is drawn of it (`DEPTH_STEP`, `SPEED_STEP`, a step of `RIVERBED_STEPS`) since
+    /// the tile was last stamped. Only tiles written since the last call are looked at.
+    pub fn note_changes(&mut self) {
+        let _p = crate::prof::scope("note changes");
+        let told = &mut self.told.0;
+        told.wet.sized(self.n);
+        told.bed.sized(self.n);
+        told.depth.note(&mut self.depth, Some(&told.wet), |a, b| (a - b).abs() > DEPTH_STEP);
+        told.speed.note(&mut self.velocity, Some(&told.wet), |a, b| (a.0 - b.0).abs() > SPEED_STEP || (a.1 - b.1).abs() > SPEED_STEP);
+        told.riverbed.note(&mut self.riverbed, Some(&told.bed), |a, b| (a - b).abs() > 1.0 / RIVERBED_STEPS);
+        told.wet.clear();
+        told.bed.clear();
     }
 
     fn update_ice(&mut self, dt_days: f32) {
@@ -839,10 +1077,16 @@ impl Water {
             return;
         }
         let (grow, melt) = (self.config.ice_growth_per_day * dt_days, self.config.ice_melt_per_day * dt_days);
-        let mut any = false;
-        for (ice, &d) in self.ice.as_mut_slice().iter_mut().zip(&self.h) {
-            *ice = if winter && d > WET_EPS { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
-            any |= *ice > 0.0;
+        let (mut any, mut changed) = (false, false);
+        let (cells, mut marks) = self.ice.cells_and_marks();
+        for (ice, &d) in cells.iter_mut().zip(&self.h) {
+            let now = if winter && d > WET_EPS { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
+            changed |= now != *ice;
+            any |= now > 0.0;
+            *ice = now;
+        }
+        if changed {
+            marks.all();
         }
         self.ice_any = any;
     }
@@ -863,7 +1107,7 @@ impl Water {
                 }
             }
             let over = (top - crest - self.config.overtop_depth).max(0.0);
-            let integ = &mut self.dam_integrity.as_mut_slice()[i];
+            let integ = &mut self.dam_integrity[i];
             *integ -= (self.config.dam_decay_per_day + self.config.overtop_erosion * over) * dt / self.dam_durability.as_slice()[i].max(1.0);
             if *integ <= 0.0 {
                 broken.push(i);
@@ -876,8 +1120,8 @@ impl Water {
             self.full_publish = true;
         }
         for i in broken {
-            self.dam_height.as_mut_slice()[i] = 0.0;
-            self.dam_integrity.as_mut_slice()[i] = 0.0;
+            self.dam_height[i] = 0.0;
+            self.dam_integrity[i] = 0.0;
             let z = &mut self.z[i];
             *z = height.as_slice()[i];
         }
@@ -913,113 +1157,160 @@ pub fn corner(bed: &[f32], dammed: impl Fn(usize) -> bool, n: usize, i: usize, j
 /// The still pond these dam heights would hold, and (with `head` > 0) how far the extra depth
 /// of water flowing over its spill would spread.
 pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32], head: f32) -> Result<DamPreview, WaterError> {
-    let water = &state.water;
-    let idx = water.check_cells(cells)?;
-    if heights.len() != cells.len() {
-        return Err(WaterError::NoCells);
-    }
-    for &hh in heights {
-        Water::check_positive("dam height", hh)?;
-    }
-    let terrain = state.height.as_slice();
-    let n = state.height.width();
-    let mut bed: Vec<f32> = terrain.iter().zip(water.dam_height.as_slice()).map(|(t, d)| t + d).collect();
-    let mut is_new = vec![false; n * n];
-    for (&i, &hh) in idx.iter().zip(heights) {
-        bed[i] = terrain[i] + hh.max(water.dam_height.as_slice()[i]);
-        is_new[i] = true;
-    }
-    let crest = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
-    let dams = water.dam_height.as_slice();
-    let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
-    let drains_to = |i: usize| neighbours8(n, i).filter(|&j| terrain[j] < terrain[i]).min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]).then(a.cmp(&b)));
-    let seeds: Vec<usize> = idx.iter().flat_map(|&d| neighbours8(n, d).filter(move |&m| drains_to(m) == Some(d))).filter(|&m| !is_new[m]).collect();
-    let below: std::collections::HashSet<usize> = idx.iter().filter_map(|&d| drains_to(d)).filter(|&m| !is_new[m]).collect();
-    let (mut spill_level, mut spill_at) = (f32::INFINITY, None);
-    if !seeds.is_empty() && !below.is_empty() {
-        let mut best = vec![f32::INFINITY; n * n];
-        let mut saddle = vec![usize::MAX; n * n];
-        let mut heap = BinaryHeap::new();
-        let key = |l: f32, i: usize| Reverse(((l.max(-1.0e6) * 1000.0) as i64, i));
-        for &s in &seeds {
-            (best[s], saddle[s]) = (bed[s], s);
-            heap.push(key(bed[s], s));
+    Ok(StillPond::behind(state, cells, heights)?.preview(state, head))
+}
+
+/// The still pond behind planned dam heights: found once, then asked for the pond itself and
+/// for how far flowing water spreads over it (a dam's estimate needs both).
+pub(crate) struct StillPond {
+    n: usize,
+    /// Terrain plus dams, with the planned heights in place.
+    bed: Vec<f32>,
+    /// The planned dam's own cells.
+    is_new: Vec<bool>,
+    /// Cells the still pond covers, and where its flood started.
+    seen: Vec<bool>,
+    seeds: Vec<usize>,
+    flooded: Vec<usize>,
+    level: f32,
+    crest: f32,
+    spill_at: Option<Cell>,
+}
+
+impl StillPond {
+    pub(crate) fn behind(state: &SimState, cells: &[Cell], heights: &[f32]) -> Result<StillPond, WaterError> {
+        let water = &state.water;
+        let idx = water.check_cells(cells)?;
+        if heights.len() != cells.len() {
+            return Err(WaterError::NoCells);
         }
-        while let Some(Reverse((_, i))) = heap.pop() {
-            let l = best[i];
-            if l >= crest {
-                break;
+        for &hh in heights {
+            Water::check_positive("dam height", hh)?;
+        }
+        let terrain = state.height.as_slice();
+        let n = state.height.width();
+        let _p = crate::prof::scope("+still pond/setup");
+        let mut bed: Vec<f32> = terrain.iter().zip(water.dam_height.as_slice()).map(|(t, d)| t + d).collect();
+        let mut is_new = vec![false; n * n];
+        for (&i, &hh) in idx.iter().zip(heights) {
+            bed[i] = terrain[i] + hh.max(water.dam_height.as_slice()[i]);
+            is_new[i] = true;
+        }
+        let crest = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
+        let dams = water.dam_height.as_slice();
+        let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
+        let drains_to = |i: usize| neighbours8(n, i).filter(|&j| terrain[j] < terrain[i]).min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]).then(a.cmp(&b)));
+        let seeds: Vec<usize> = idx.iter().flat_map(|&d| neighbours8(n, d).filter(move |&m| drains_to(m) == Some(d))).filter(|&m| !is_new[m]).collect();
+        // Cells just below the dam: the flood has found its way round once it reaches one.
+        let mut below = vec![false; n * n];
+        let mut any_below = false;
+        for m in idx.iter().filter_map(|&d| drains_to(d)).filter(|&m| !is_new[m]) {
+            below[m] = true;
+            any_below = true;
+        }
+        let (mut spill_level, mut spill_at) = (f32::INFINITY, None);
+        drop(_p);
+        let _p = crate::prof::scope("+still pond/find spill");
+        if !seeds.is_empty() && any_below {
+            let mut best = vec![f32::INFINITY; n * n];
+            let mut saddle = vec![usize::MAX; n * n];
+            let mut heap = BinaryHeap::new();
+            let key = |l: f32, i: usize| Reverse(((l.max(-1.0e6) * 1000.0) as i64, i));
+            for &s in &seeds {
+                (best[s], saddle[s]) = (bed[s], s);
+                heap.push(key(bed[s], s));
             }
-            if below.contains(&i) {
-                (spill_level, spill_at) = (l, Some(saddle[i]));
-                break;
-            }
-            for m in neighbours8(n, i).filter(|&m| !is_new[m]) {
-                let nl = l.max(pass(i, m));
-                if nl < best[m] {
-                    best[m] = nl;
-                    saddle[m] = if nl > l { m } else { saddle[i] };
-                    heap.push(key(nl, m));
+            while let Some(Reverse((_, i))) = heap.pop() {
+                let l = best[i];
+                if l >= crest {
+                    break;
+                }
+                if below[i] {
+                    (spill_level, spill_at) = (l, Some(saddle[i]));
+                    break;
+                }
+                for m in neighbours8(n, i).filter(|&m| !is_new[m]) {
+                    let nl = l.max(pass(i, m));
+                    if nl < best[m] {
+                        best[m] = nl;
+                        saddle[m] = if nl > l { m } else { saddle[i] };
+                        heap.push(key(nl, m));
+                    }
                 }
             }
         }
-    }
-    let level = crest.min(spill_level);
-    let spill_at = spill_at.filter(|_| spill_level < crest).map(|i| (i % n, i / n));
-    let mut seen = vec![false; n * n];
-    let mut stack: Vec<usize> = seeds.iter().copied().filter(|&m| bed[m] < level).collect();
-    stack.iter().for_each(|&m| seen[m] = true);
-    let mut flooded = Vec::new();
-    while let Some(i) = stack.pop() {
-        flooded.push(i);
-        for m in neighbours8(n, i) {
-            if !seen[m] && !is_new[m] && pass(i, m) < level {
-                seen[m] = true;
-                stack.push(m);
-            }
-        }
-    }
-    let flow_level = level + head.max(0.0);
-    let mut flow = flooded.clone();
-    if head > 0.0 {
-        // The water reaching the dam stands `head` deep even where no still pond forms (it
-        // runs straight round an end): start from the cells draining into the dam too.
-        for &m in &seeds {
-            if !seen[m] && bed[m] < flow_level {
-                seen[m] = true;
-                flow.push(m);
-            }
-        }
-        // Only up into the shallow fringe: cells below the still level that the still pond
-        // did not reach lie past a saddle, where the water runs away instead.
-        let mut stack = flow.clone();
+        let level = crest.min(spill_level);
+        drop(_p);
+        let _p = crate::prof::scope("+still pond/flood");
+        let spill_at = spill_at.filter(|_| spill_level < crest).map(|i| (i % n, i / n));
+        let mut seen = vec![false; n * n];
+        let mut stack: Vec<usize> = seeds.iter().copied().filter(|&m| bed[m] < level).collect();
+        stack.iter().for_each(|&m| seen[m] = true);
+        let mut flooded = Vec::new();
         while let Some(i) = stack.pop() {
+            flooded.push(i);
             for m in neighbours8(n, i) {
-                if !seen[m] && !is_new[m] && bed[m] >= level && pass(i, m) < flow_level {
+                if !seen[m] && !is_new[m] && pass(i, m) < level {
                     seen[m] = true;
-                    flow.push(m);
                     stack.push(m);
                 }
             }
         }
+        crate::prof::count("+still pond/flood/cells", flooded.len() as u64);
+        // In map order from here on: every use wants it sorted.
+        flooded.sort_unstable();
+        drop(_p);
+        Ok(StillPond { n, bed, is_new, seen, seeds, flooded, level, crest, spill_at })
     }
-    flooded.sort_unstable();
-    flow.sort_unstable();
-    let veg = state.ecology.vegetation.as_slice();
-    let occ = water.structures.as_slice();
-    Ok(DamPreview {
-        level,
-        pond_area: flooded.len(),
-        volume: flooded.iter().map(|&i| level - bed[i]).sum(),
-        flooded_trees: flooded.iter().filter(|&&i| veg[i] > TREE_VEGETATION).count(),
-        flooded_buildings: flooded.iter().filter(|&&i| occ[i]).count(),
-        reaches_map_edge: flooded.iter().any(|&i| i % n == 0 || i % n == n - 1 || i / n == 0 || i / n == n - 1),
-        flooded_cells: flooded.iter().map(|&i| (i % n, i / n)).collect(),
-        crest,
-        spill_at,
-        flow_level,
-        flow_cells: flow.iter().map(|&i| (i % n, i / n)).collect(),
-    })
+
+    pub(crate) fn preview(&self, state: &SimState, head: f32) -> DamPreview {
+        let water = &state.water;
+        let (n, bed, is_new, level) = (self.n, &self.bed, &self.is_new, self.level);
+        let dams = water.dam_height.as_slice();
+        let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
+        let flow_level = level + head.max(0.0);
+        let flooded = &self.flooded;
+        let mut flow = flooded.clone();
+        if head > 0.0 {
+            let mut seen = self.seen.clone();
+            // The water reaching the dam stands `head` deep even where no still pond forms (it
+            // runs straight round an end): start from the cells draining into the dam too.
+            for &m in &self.seeds {
+                if !seen[m] && bed[m] < flow_level {
+                    seen[m] = true;
+                    flow.push(m);
+                }
+            }
+            // Only up into the shallow fringe: cells below the still level that the still pond
+            // did not reach lie past a saddle, where the water runs away instead.
+            let mut stack = flow.clone();
+            while let Some(i) = stack.pop() {
+                for m in neighbours8(n, i) {
+                    if !seen[m] && !is_new[m] && bed[m] >= level && pass(i, m) < flow_level {
+                        seen[m] = true;
+                        flow.push(m);
+                        stack.push(m);
+                    }
+                }
+            }
+        }
+        flow.sort_unstable();
+        let veg = state.ecology.vegetation.as_slice();
+        let occ = water.structures.as_slice();
+        DamPreview {
+            level,
+            pond_area: flooded.len(),
+            volume: flooded.iter().map(|&i| level - bed[i]).sum(),
+            flooded_trees: flooded.iter().filter(|&&i| veg[i] > TREE_VEGETATION).count(),
+            flooded_buildings: flooded.iter().filter(|&&i| occ[i]).count(),
+            reaches_map_edge: flooded.iter().any(|&i| i % n == 0 || i % n == n - 1 || i / n == 0 || i / n == n - 1),
+            flooded_cells: flooded.iter().map(|&i| (i % n, i / n)).collect(),
+            crest: self.crest,
+            spill_at: self.spill_at,
+            flow_level,
+            flow_cells: flow.iter().map(|&i| (i % n, i / n)).collect(),
+        }
+    }
 }
 
 #[cfg(test)]

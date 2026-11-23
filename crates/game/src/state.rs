@@ -64,6 +64,15 @@ impl Plugin for StatePlugin {
             app.insert_resource(Sim(sim)).insert_resource(PlannedDam(dam)).insert_resource(CurrentMap(choice));
             return;
         }
+        if let Some(path) = &cli.load {
+            let (header, sim) = sim::save::load(path).unwrap_or_else(|e| {
+                eprintln!("error: cannot load {}: {e}", path.display());
+                std::process::exit(1);
+            });
+            let choice = crate::savegame::map_from(&header.map);
+            app.insert_resource(Sim(sim)).insert_resource(PlannedDam(None)).insert_resource(CurrentMap(choice));
+            return;
+        }
         let choice = match cli.map.as_deref() {
             Some("generated") => MapChoice::Generated(seed),
             Some(id) => MapChoice::Real(id.to_string()),

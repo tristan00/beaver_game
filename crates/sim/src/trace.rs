@@ -1,18 +1,38 @@
 //! Local diagnostics shared by the interface and command dispatcher. The game starts it for
 //! every play session; headless runs and tests never write anything.
-use std::{collections::VecDeque, fs::File, io::Write, path::Path, sync::{Mutex, OnceLock}, time::Instant};
+use std::{collections::VecDeque, fs::File, io::{BufWriter, Write}, path::Path, sync::{Mutex, OnceLock, atomic::{AtomicBool, Ordering}}, time::Instant};
 
 /// Lines kept in memory for a capture, about the last few minutes of play.
 const RECENT_LINES: usize = 20_000;
 
-struct Trace { started: Instant, file: Mutex<Option<File>>, recent: Mutex<VecDeque<(f64, String)>> }
+/// The open log: buffered, and written out at least every `FLUSH_SECONDS`.
+struct Sink { out: BufWriter<File>, flushed: Instant }
+const FLUSH_SECONDS: f64 = 0.5;
 
-fn open(path: &Path) -> std::io::Result<File> {
+struct Trace { started: Instant, file: Mutex<Option<Sink>>, recent: Mutex<VecDeque<(f64, String)>> }
+
+fn open(path: &Path) -> std::io::Result<Sink> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "SESSION pid={} unix_seconds={}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())?;
-    Ok(file)
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    writeln!(out, "SESSION pid={} unix_seconds={}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())?;
+    out.flush()?;
+    Ok(Sink { out, flushed: Instant::now() })
 }
+
+/// Write out everything buffered (before a capture, or on the way out).
+pub fn flush() {
+    if let Ok(mut slot) = trace().file.lock() {
+        if let Some(sink) = slot.as_mut() {
+            let _ = sink.out.flush();
+            sink.flushed = Instant::now();
+        }
+    }
+}
+
+/// Whether a log is open, kept beside the lock so the many checks deep in the sim cost a load
+/// rather than a lock. Set wherever the open log is set or dropped, under the lock.
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn trace() -> &'static Trace {
     static TRACE: OnceLock<Trace> = OnceLock::new();
@@ -21,6 +41,7 @@ fn trace() -> &'static Trace {
             Ok(file) => Some(file),
             Err(e) => { eprintln!("Input trace could not open {}: {e}", Path::new(&path).display()); None }
         });
+        ENABLED.store(file.is_some(), Ordering::Release);
         Trace { started: Instant::now(), file: Mutex::new(file), recent: Mutex::new(VecDeque::new()) }
     })
 }
@@ -31,27 +52,55 @@ pub fn start(path: &Path) {
     if let Ok(mut slot) = trace.file.lock() {
         if slot.is_none() {
             match open(path) {
-                Ok(file) => *slot = Some(file),
+                Ok(file) => { *slot = Some(file); ENABLED.store(true, Ordering::Release); }
                 Err(e) => eprintln!("Input trace could not open {}: {e}", path.display()),
             }
         }
     }
 }
 
-pub fn enabled() -> bool { trace().file.lock().is_ok_and(|f| f.is_some()) }
+pub fn enabled() -> bool {
+    // The first call opens a log `BC_INPUT_LOG` names.
+    let _ = trace();
+    ENABLED.load(Ordering::Acquire)
+}
+
+static SIM_DAY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SIM_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The sim time lines from deep in the sim (stores, resources) are stamped with.
+pub fn set_clock(day: f64, step: u64) {
+    SIM_DAY.store(day.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    SIM_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `day=… step=…` of the step being run.
+pub fn sim_stamp() -> String {
+    let day = f64::from_bits(SIM_DAY.load(std::sync::atomic::Ordering::Relaxed));
+    format!("day={day:.4} step={}", SIM_STEP.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 /// Seconds since the session started, the clock every line is stamped with.
 pub fn clock() -> f64 { trace().started.elapsed().as_secs_f64() }
 
 pub fn event(message: impl std::fmt::Display) {
     let trace = trace();
+    if !ENABLED.load(Ordering::Acquire) {
+        return;
+    }
     let Ok(mut slot) = trace.file.lock() else { return };
-    let Some(file) = slot.as_mut() else { return };
+    let Some(sink) = slot.as_mut() else { return };
     let t = trace.started.elapsed().as_secs_f64();
     let line = message.to_string();
-    if let Err(e) = writeln!(file, "{t:010.3} {line}") {
+    let mut result = writeln!(sink.out, "{t:010.3} {line}");
+    if result.is_ok() && sink.flushed.elapsed().as_secs_f64() >= FLUSH_SECONDS {
+        result = sink.out.flush();
+        sink.flushed = Instant::now();
+    }
+    if let Err(e) = result {
         eprintln!("Input trace stopped: {e}");
         *slot = None;
+        ENABLED.store(false, Ordering::Release);
     }
     if let Ok(mut recent) = trace.recent.lock() {
         if recent.len() >= RECENT_LINES { recent.pop_front(); }

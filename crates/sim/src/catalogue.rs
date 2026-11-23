@@ -1,5 +1,6 @@
 //! One definition per building: construction, staffing, storage and progression.
 use crate::buildings::{Amount, BuildingKind, Good, Site};
+use crate::resources::ResourceKind;
 use crate::work::Role;
 
 #[derive(Clone, Copy, Debug)]

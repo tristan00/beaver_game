@@ -158,6 +158,7 @@ fn capture(
     let png = dir.join(format!("{name}.png"));
     let here = scene(&sim.0, window, cams.single().ok(), &hud, &selection, &point, &thing, &over, &clock);
     sim::trace::event(format!("SCREENSHOT {} | {here}", png.display()));
+    sim::trace::flush();
     let mut text = format!("Screenshot {}\nAt the moment of F12: {here}\n\nLast {CAPTURE_SECONDS:.0} s of input (seconds since the session started):\n", png.display());
     for line in sim::trace::recent(CAPTURE_SECONDS) {
         text.push_str(&line);

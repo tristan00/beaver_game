@@ -12,7 +12,9 @@ use bevy::window::PresentMode;
 use sim::SimState;
 
 pub const CELL_SIZE: f32 = 1.0;
-pub const CHUNK: usize = 16;
+/// A chunk of terrain or water is one of the simulation's tiles, so the stamp the simulation
+/// keeps for each tile of a grid says whether the chunk's cells were written.
+pub const CHUNK: usize = sim::grid::TILE;
 const REBUILD_BUDGET: usize = 10;
 const LOD1_DISTANCE: f32 = 150.0;
 pub const WET_EPS: f32 = 0.02;
@@ -160,15 +162,17 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     for y in y0..=y0 + n {
         for x in x0..=x0 + n {
             // Terrain colour needs depth only to a few centimetres (wet ground, submerged bed);
-            // water meshes follow it to 2 mm.
+            // water meshes follow it to 2 mm. These are the steps the simulation stamps its
+            // tiles by (`ground_stamp`): a change it does not stamp must not change the hash.
             let d = at(&s.water.depth, x, y);
-            let dq = if !with_veg { (d * 500.0).round() as i32 } else { (d.min(0.03) * 100.0).round() as i32 };
+            let dq = if !with_veg { (d * 500.0).round() as i32 } else { sim::water::shore_step(d) as i32 };
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             v ^= (at(&s.water.dam_height, x, y).to_bits() as u64).rotate_left(9);
             if with_veg {
-                let vq = (at(&s.ecology.vegetation, x, y) * 64.0).round() as i32;
+                // Ground this deep under water is drawn as bed alone (`world_color`).
+                let vq = if d >= 0.03 { 0 } else { (at(&s.ecology.vegetation, x, y) * sim::ecology::COVER_STEPS).round() as i32 };
                 v ^= (vq as u32 as u64).rotate_left(17);
-                let bq = (at(&s.water.riverbed, x, y) * 16.0).round() as u64;
+                let bq = (at(&s.water.riverbed, x, y) * sim::water::RIVERBED_STEPS).round() as u64;
                 v ^= bq.rotate_left(41);
             } else {
                 let ix = x.clamp(0, s.height.width() as i32 - 1) as usize;
@@ -189,21 +193,61 @@ pub fn lod_step(cam: Vec3, centre: Vec3) -> usize {
     if cam.distance(centre) > LOD1_DISTANCE { 2 } else { 1 }
 }
 
-/// Never simplify a one-cell stream or excavated canal into its surrounding banks.
-/// The halo also keeps the terrain on both sides of a chunk seam at the same resolution.
-pub fn hydrology_lod(s: &SimState, cx: usize, cy: usize, cam: Vec3) -> usize {
-    if lod_step(cam, chunk_centre(s, cx, cy)) == 1 {
-        return 1;
-    }
+/// Water, a riverbed, a canal or a mapped river in the chunk or within two cells of it. Such
+/// a chunk is never drawn coarsely: a one-cell stream or dug canal would be smoothed into its
+/// banks. The halo also keeps the terrain on both sides of a chunk seam at the same resolution.
+pub fn wet_ground(s: &SimState, cx: usize, cy: usize) -> bool {
     for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
         for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
             let i = y * s.height.width() + x;
-            if s.water.depth.as_slice()[i] > 0.003 || s.water.riverbed.as_slice()[i] > 0.1 || s.water.canal.as_slice()[i] || s.world.river.as_slice()[i] {
-                return 1;
+            // In the steps the simulation stamps tiles by: water on the cell, a bed part bare.
+            let bed = (s.water.riverbed.as_slice()[i] * sim::water::RIVERBED_STEPS).round() >= 2.0;
+            if sim::water::shore_step(s.water.depth.as_slice()[i]) > 0 || bed || s.water.canal.as_slice()[i] || s.world.river.as_slice()[i] {
+                return true;
             }
         }
     }
-    2
+    false
+}
+
+fn fold(h: u64, v: u64) -> u64 {
+    let h = (h ^ v).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^ h >> 29
+}
+
+/// One number for the stamps of several grids at chunk (cx, cy): it changes whenever the
+/// simulation has written a cell of any of them in the chunk or within `sim::grid::REACH`
+/// cells of it (or the grid is another).
+macro_rules! stamp_near {
+    ($cx:expr, $cy:expr, $($g:expr),+) => {{
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        $( h = fold(fold(h, $g.origin()), $g.tile_stamp($cx, $cy)); )+
+        h
+    }};
+}
+
+/// The lens and the season's step a chunk is drawn for.
+pub(crate) type View = (u8, u32);
+
+/// Changes when anything the ground of chunk (cx, cy) is drawn from may have: the cells
+/// `region_hash` reads for terrain, and those `wet_ground` reads. Of the water only its edge
+/// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here.
+fn ground_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
+    stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal)
+}
+
+/// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
+fn ground_stamps(s: &SimState) -> [(u64, u64); 6] {
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp()]
+}
+
+/// As `ground_stamp`, for the water's surface.
+pub(crate) fn water_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
+    stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.depth, s.water.velocity, s.water.ice, s.water.shore, s.water.riverbed, s.water.canal)
+}
+
+pub(crate) fn water_stamps(s: &SimState) -> [(u64, u64); 8] {
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.depth.stamp(), s.water.velocity.stamp(), s.water.ice.stamp(), s.water.shore.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp()]
 }
 
 pub fn chunk_centre(s: &SimState, cx: usize, cy: usize) -> Vec3 {
@@ -297,6 +341,100 @@ pub fn elevation_ramp(t: f32) -> Rgb {
 
 pub const ELEVATION_WATER: Rgb = [0.31, 0.56, 0.86];
 
+pub const DEPOSIT_LENS: u8 = 5;
+/// The underwater lens: the water taken away to show a depth chart of the bed, contour lines
+/// near the view (hud::world) and the deposits on the bed in their deposit colours.
+pub const UNDERWATER_LENS: u8 = 6;
+/// Depth that the chart shows as its deepest blue; most water is far shallower.
+const CHART_DEEP: f32 = 0.6;
+/// Depths at which contour lines are drawn near the view.
+pub const CONTOURS: [f32; 3] = [0.1, 0.2, 0.4];
+/// The shoreline drawn over the chart: water deep enough to count as water (`WET_DEPTH`).
+pub const SHORE_DEPTH: f32 = sim::buildings::WET_DEPTH;
+/// The thinnest film still drawn as bed rather than land.
+pub const BED_FILM: f32 = 0.003;
+
+/// Deposits the current lens tints into the ground: all of them in the deposits lens, those
+/// lying on the bed in the underwater lens.
+fn lens_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource> {
+    let lens = map_lens();
+    shown_deposits(s).filter(move |r| match lens {
+        DEPOSIT_LENS => true,
+        UNDERWATER_LENS => underwater_deposit(s, r),
+        _ => false,
+    })
+}
+
+/// A deposit worth showing on the bed: water plants, clay and pebbles that lie under water.
+pub fn underwater_deposit(s: &SimState, r: &sim::resources::Resource) -> bool {
+    use sim::resources::ResourceKind::*;
+    matches!(r.kind, WaterPlant | RiverClay | MudBank | Pebbles) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
+}
+
+fn underwater_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
+    let depth = at(&s.water.depth, x, y);
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
+    // Land recedes to a pale wash of its own colour, so the water reads first.
+    let land = mix(world_color(s, p, maxh, x, y), [0.90, 0.89, 0.85], 0.6);
+    if depth <= BED_FILM {
+        return land;
+    }
+    // A depth chart: pale aqua in the shallows to deep blue, shaded by the slope of the bed.
+    const SHALLOW: Rgb = [0.66, 0.90, 0.90];
+    const MID: Rgb = [0.30, 0.66, 0.80];
+    const DEEP: Rgb = [0.08, 0.24, 0.56];
+    let t = (depth / CHART_DEEP).clamp(0.0, 1.0).sqrt();
+    let c = if t < 0.5 { mix(SHALLOW, MID, t * 2.0) } else { mix(MID, DEEP, t * 2.0 - 1.0) };
+    let k = 0.82 + 0.6 * sunny;
+    let bed = [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)];
+    mix(land, bed, smooth(BED_FILM, 0.02, depth))
+}
+
+/// The deposits lens: one saturated colour per kind, none grey or blue, so they stand
+/// apart from the lens's grey land and blue-grey water.
+pub fn deposit_color(k: sim::resources::ResourceKind) -> Rgb {
+    use sim::resources::ResourceKind::*;
+    match k {
+        Tree => [0.10, 0.42, 0.16],
+        Felled => [0.92, 0.16, 0.12],
+        Plant => [0.62, 0.90, 0.16],
+        MudBank => [0.80, 0.46, 0.14],
+        RiverClay => [0.86, 0.22, 0.70],
+        Pebbles => [1.0, 0.90, 0.10],
+        WaterPlant => [1.0, 1.0, 1.0],
+    }
+}
+
+/// Deposits that still hold something, as the deposits lens shows them.
+pub fn shown_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource> {
+    s.resources.items().iter().filter(|r| r.has_yield())
+}
+
+/// Per-chunk fingerprint of the deposits in it (empty outside the deposits lens), so a
+/// chunk recolours when one appears, runs out or changes kind.
+fn deposit_hashes(s: &SimState, cols: usize, rows: usize) -> Vec<u64> {
+    if !matches!(map_lens(), DEPOSIT_LENS | UNDERWATER_LENS) {
+        return Vec::new();
+    }
+    let mut out = vec![0u64; cols * rows];
+    for r in lens_deposits(s) {
+        let v = (r.cell.0 as u64) | (r.cell.1 as u64) << 20 | (r.kind as u64) << 40;
+        let v = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ v >> 7;
+        // A cell on a chunk's low edge is also the last colour sample of the chunk before it.
+        let span = |c: usize, n: usize| {
+            let k = (c / CHUNK).min(n - 1);
+            (if c % CHUNK == 0 && k > 0 { k - 1 } else { k })..=k
+        };
+        for cy in span(r.cell.1, rows) {
+            for cx in span(r.cell.0, cols) {
+                out[cy * cols + cx] = out[cy * cols + cx].wrapping_add(v);
+            }
+        }
+    }
+    out
+}
+
 fn noise(x: i32, y: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(0x85eb_ca6b) ^ (y as u32).wrapping_mul(0xc2b2_ae35);
     h ^= h >> 15;
@@ -315,6 +453,13 @@ struct Slot {
     mesh: Handle<Mesh>,
     hash: u64,
     step: usize,
+    /// The deposits tinted into it (`deposit_hashes`).
+    deposits: u64,
+    /// The chunk's `ground_stamp` and the view when its cells were last hashed: until either
+    /// changes, `hash` stands and the cells are not read again.
+    seen: Option<(u64, View)>,
+    /// `wet_ground`, as of `seen`.
+    wet: bool,
 }
 
 #[derive(Resource, Default)]
@@ -376,51 +521,49 @@ pub fn spawn_terrain(
     chunks.slots = (0..cols * rows).map(|_| Slot::default()).collect();
     let campos = cam.iter().next().map(|t| t.translation).unwrap_or(Vec3::new(0.0, 100.0, 100.0));
     let range = terrain_range(&sim.0);
-    for cy in 0..rows {
-        for cx in 0..cols {
-            rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, true, range);
-        }
+    let deposits = deposit_hashes(&sim.0, cols, rows);
+    let view = (map_lens(), season.bucket());
+    for idx in 0..cols * rows {
+        let (cx, cy) = (idx % cols, idx / cols);
+        let slot = &mut chunks.slots[idx];
+        slot.wet = wet_ground(&sim.0, cx, cy);
+        slot.step = if slot.wet { 1 } else { lod_step(campos, chunk_centre(&sim.0, cx, cy)) };
+        slot.hash = region_hash(&sim.0, cx, cy, 2, season.bucket() as u64, true);
+        slot.deposits = deposits.get(idx).copied().unwrap_or(0);
+        slot.seen = Some((ground_stamp(&sim.0, cx, cy), view));
+        build_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, cx, cy, cols, range);
     }
 }
 
+/// Make chunk (cx, cy)'s mesh afresh, at the detail its slot asks for.
 #[allow(clippy::too_many_arguments)]
-fn rebuild_chunk(
+fn build_chunk(
     commands: &mut Commands,
     chunks: &mut TerrainChunks,
     meshes: &mut Assets<Mesh>,
     s: &SimState,
     season: &Season,
-    campos: Vec3,
     cx: usize,
     cy: usize,
     cols: usize,
-    force: bool,
     range: (f32, f32),
-) -> bool {
-    let step = hydrology_lod(s, cx, cy, campos);
-    let hash = region_hash(s, cx, cy, 2, season.bucket() as u64, true);
+) {
     let idx = cy * cols + cx;
-    let slot = &mut chunks.slots[idx];
-    if !force && slot.hash == hash && slot.step == step {
-        return false;
-    }
     MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let built = std::time::Instant::now();
-    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, step, range);
+    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, chunks.slots[idx].step, range);
     crate::perf::TERRAIN_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    let material = chunks.material.clone();
+    let slot = &mut chunks.slots[idx];
     match slot.entity {
         Some(_) => {
             let _ = meshes.insert(&slot.mesh, mesh);
         }
         None => {
             slot.mesh = meshes.add(mesh);
-            slot.entity = Some(commands.spawn((Mesh3d(slot.mesh.clone()), MeshMaterial3d(chunks.material.clone()), Transform::default())).id());
+            slot.entity = Some(commands.spawn((Mesh3d(slot.mesh.clone()), MeshMaterial3d(material), Transform::default())).id());
         }
     }
-    let slot = &mut chunks.slots[idx];
-    slot.hash = hash;
-    slot.step = step;
-    true
 }
 
 #[derive(Resource, Default)]
@@ -429,6 +572,9 @@ pub struct MeshBacklog {
     pub water: bool,
 }
 
+/// Rebuild the chunks whose ground changed. The simulation stamps each tile of a grid it
+/// writes to, so only chunks with a new stamp have their cells read (and hashed, to see
+/// whether what is drawn of them changed); the rest cost a comparison.
 #[allow(clippy::too_many_arguments)]
 fn update_terrain_chunks(
     mut commands: Commands,
@@ -439,27 +585,57 @@ fn update_terrain_chunks(
     cam: Query<&Transform, With<MainCamera>>,
     mut backlog: ResMut<MeshBacklog>,
     mut cursor: Local<usize>,
+    // The grids' stamps when every chunk was last up to date.
+    mut settled: Local<Option<[(u64, u64); 6]>>,
 ) {
+    let _p = ::sim::prof::scope("game/update terrain chunks");
     backlog.terrain = true;
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
     let (cols, rows) = chunk_dims(&sim.0);
     if chunks.slots.len() != cols * rows {
         return;
     }
+    let s = &sim.0;
+    let view = (map_lens(), season.bucket());
+    let stamps = ground_stamps(s);
+    // Nothing written since every chunk's stamp was read: they need not be read again.
+    let still = *settled == Some(stamps);
     let mut budget = REBUILD_BUDGET;
     let total = cols * rows;
-    let range = terrain_range(&sim.0);
+    let mut range = None;
+    let deposits = deposit_hashes(s, cols, rows);
     for k in 0..total {
         let idx = (*cursor + k) % total;
         let (cx, cy) = (idx % cols, idx / cols);
+        let slot = &mut chunks.slots[idx];
+        let stamp = match slot.seen {
+            Some((stamp, _)) if still => stamp,
+            _ => ground_stamp(s, cx, cy),
+        };
+        if slot.seen.map(|seen| seen.0) != Some(stamp) {
+            slot.wet = wet_ground(s, cx, cy);
+        }
+        let step = if slot.wet { 1 } else { lod_step(campos, chunk_centre(s, cx, cy)) };
+        let dep = deposits.get(idx).copied().unwrap_or(0);
+        let known = slot.seen == Some((stamp, view));
+        if known && slot.step == step && slot.deposits == dep {
+            continue;
+        }
+        let hash = if known { slot.hash } else { region_hash(s, cx, cy, 2, season.bucket() as u64, true) };
+        if slot.entity.is_some() && slot.hash == hash && slot.step == step && slot.deposits == dep {
+            slot.seen = Some((stamp, view));
+            continue;
+        }
         if budget == 0 {
             *cursor = idx;
             return;
         }
-        if rebuild_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, campos, cx, cy, cols, false, range) {
-            budget -= 1;
-        }
+        budget -= 1;
+        (slot.hash, slot.step, slot.deposits, slot.seen) = (hash, step, dep, Some((stamp, view)));
+        let range = *range.get_or_insert_with(|| terrain_range(s));
+        build_chunk(&mut commands, &mut chunks, &mut meshes, s, &season, cx, cy, cols, range);
     }
+    *settled = Some(stamps);
     backlog.terrain = budget < REBUILD_BUDGET;
 }
 
@@ -498,6 +674,7 @@ fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: 
     match map_lens() {
         0 => world_color(s, p, maxh, x, y),
         ELEVATION_LENS => elevation_color(s, minh, maxh, x, y),
+        UNDERWATER_LENS => underwater_color(s, p, maxh, x, y),
         lens => lens_color(s, maxh, x, y, lens),
     }
 }
@@ -739,6 +916,20 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     for j in 0..base_side { for i in 0..base_side {
         colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32));
     } }
+    if matches!(map_lens(), DEPOSIT_LENS | UNDERWATER_LENS) {
+        let span = (CHUNK + step) as i32;
+        for r in lens_deposits(s) {
+            let (dx, dy) = (r.cell.0 as i32 - x0, r.cell.1 as i32 - y0);
+            if dx < 0 || dy < 0 || dx >= span || dy >= span {
+                continue;
+            }
+            let (i, j) = (((dx + st / 2) / st) as usize, ((dy + st / 2) / st) as usize);
+            if i < base_side && j < base_side {
+                let c = &mut colours[j * base_side + i];
+                *c = deposit_color(r.kind);
+            }
+        }
+    }
     let (mut pos, mut nor, mut col, mut uv) = (vec![], vec![], vec![], vec![]);
     let field = GroundField::new(s, cx, cy);
     let mut vert = |x: f32, y: f32, drop: f32, shade: f32| {

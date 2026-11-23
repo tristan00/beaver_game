@@ -229,10 +229,24 @@ fn advance_flow(
     let _ = (&orbit, &sim);
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>) {
-    let events = sim.0.colony.take_events();
+fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>) {
+    // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
+    // nothing to tell.
+    let events = if sim.0.colony.events.is_empty() { Vec::new() } else { sim.0.colony.take_events() };
     for e in &events {
         flow.push_log(format!("day {:.0}: {:?}", e.day, e.event));
+        if let sim::colony::Event::Died { cause, .. } = e.event {
+            use sim::colony::DeathCause as C;
+            let (icon, why) = match cause {
+                C::Starvation => (crate::icons::Icon::Food, "Starved"),
+                C::Cold => (crate::icons::Icon::Winter, "Froze"),
+                C::Injury => (crate::icons::Icon::Health, "Died of injury"),
+                C::Exhaustion => (crate::icons::Icon::Hourglass, "Worked to death"),
+                C::OldAge => (crate::icons::Icon::Adult, "Died of old age"),
+                C::Predator => (crate::icons::Icon::Wolf, "Killed by the wolf"),
+            };
+            notices.push(vec![(crate::icons::Icon::Beaver, crate::hud::BAD), (icon, crate::hud::BAD)], why, time.elapsed_secs());
+        }
     }
     if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
         flow.fire(FlowEvent::Collapse);
@@ -242,6 +256,7 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
 }
 
 fn sample_history(sim: Res<Sim>, mut flow: ResMut<Flow>) {
+    let _p = ::sim::prof::scope("game/sample history");
     if !sim.0.colony.is_founded() {
         return;
     }

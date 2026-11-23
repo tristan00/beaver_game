@@ -25,8 +25,8 @@ icons! {
     Warehouse, LoggingCamp,
     RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler,
     ViewWater, ViewForest,
-    ViewElevation,
-    Idle, Unstaffed, Blocked, Full, HandLock, Warn, Urgent, Up, Down,
+    ViewElevation, ViewDeposits, ViewUnderwater,
+    Idle, Unstaffed, Blocked, Full, Warn, Urgent, Up, Down,
     Check, Cross,
     Pause, Play, Fast2, Fast3, Undo, Pin, Plus, Minus, Focus,
     Expand, Colony, Jobs, Follow, Area, Haul, Back,
@@ -35,6 +35,8 @@ icons! {
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Upstream, Gauge,
     Widen, Extend,
+    Pebbles, Sapling, Larder, Tend, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
+    Wolf,
 }
 
 #[derive(Resource, Clone)]
@@ -415,6 +417,13 @@ fn hammer(c: &mut Canvas) {
     c.add(rect_c(13.0, 7.0, 51.0, 25.0, 3.0));
 }
 
+/// An open-ended spanner: a bar with a round jaw cut open at the top.
+fn wrench(c: &mut Canvas) {
+    c.add(seg(32.0, 24.0, 32.0, 58.0, 8.0));
+    c.add(circle(32.0, 17.0, 12.5));
+    c.cut(seg(32.0, 4.0, 32.0, 17.0, 7.5));
+}
+
 fn shovel(c: &mut Canvas) {
     c.add(seg(32.0, 8.0, 32.0, 34.0, 7.0));
     c.add(seg(23.0, 7.0, 41.0, 7.0, 6.5));
@@ -445,14 +454,6 @@ fn crate_box(c: &mut Canvas) {
     c.add(rect_c(10.0, 12.0, 54.0, 54.0, 4.0));
     c.cut(seg(10.0, 26.0, 54.0, 26.0, 3.5));
     c.cut(seg(10.0, 40.0, 54.0, 40.0, 3.5));
-}
-
-fn padlock(c: &mut Canvas) {
-    c.add(rect_c(14.0, 27.0, 50.0, 56.0, 5.0));
-    c.add(arc(32.0, 25.0, 11.0, 180.0, 360.0, 6.5));
-    c.add(seg(21.0, 25.0, 21.0, 29.0, 6.5).or(seg(43.0, 25.0, 43.0, 29.0, 6.5)));
-    c.cut(circle(32.0, 38.0, 4.5));
-    c.cut(poly(&[(30.0, 39.0), (34.0, 39.0), (35.5, 48.0), (28.5, 48.0)]));
 }
 
 fn pine(c: &mut Canvas) {
@@ -525,6 +526,13 @@ fn paw(c: &mut Canvas) {
 
 fn slash(c: &mut Canvas) {
     c.knock(seg(10.0, 10.0, 54.0, 54.0, W));
+}
+
+fn sapling(c: &mut Canvas) {
+    c.add(seg(32.0, 57.0, 32.0, 24.0, 5.5));
+    c.add(leaf((31.0, 38.0), (8.0, 20.0), 14.0));
+    c.add(leaf((33.0, 27.0), (56.0, 8.0), 15.0));
+    c.add(seg(14.0, 58.0, 50.0, 58.0, 5.0));
 }
 
 fn tri_rounded(pts: &[(f32, f32)]) -> S {
@@ -603,6 +611,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleLogger => role(c, 35.0, axe),
         RoleMudDigger => role(c, 30.0, shovel),
         RoleBuilder => role(c, -35.0, hammer),
+        RoleMaintainer => role(c, 35.0, wrench),
+        Logistics => {
+            c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));
+            c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
+            c.cut_part(32.0, 47.0, 0.42, 0.0, 0.0, crate_box);
+        }
         RoleHauler => role(c, 0.0, crate_box),
         ViewWater => {
             c.add(drop_shape().grow(1.5));
@@ -616,6 +630,18 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(ellipse(33.0, 37.0, 26.0, 19.0).outline(W - 1.0));
             c.add(ellipse(30.0, 32.0, 16.0, 11.5).outline(W - 1.0));
             c.add(circle(28.0, 29.0, 5.5));
+        }
+        ViewUnderwater => {
+            // The surface as a wavy line, with a stone and a water weed on the bed below.
+            c.add(wave(5.0, 59.0, 14.0, 3.0, 2.0, 4.5));
+            c.add(ellipse(22.0, 50.0, 15.0, 8.5));
+            c.add(leaf((46.0, 59.0), (46.0, 26.0), 10.0));
+        }
+        ViewDeposits => {
+            c.add(circle(19.0, 19.0, 11.0));
+            c.add(rect_c(35.0, 9.0, 55.0, 29.0, 3.0));
+            c.add(poly(&[(19.0, 36.0), (31.0, 56.0), (7.0, 56.0)]).grow(1.0));
+            c.add(poly(&[(45.0, 34.0), (57.0, 46.0), (45.0, 58.0), (33.0, 46.0)]));
         }
         Idle => {
             c.add(circle(30.0, 33.0, 23.0).minus(circle(43.0, 24.0, 19.0)));
@@ -634,10 +660,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             for y in [13.5, 27.0, 40.5] {
                 c.add(rect_c(21.0, y, 43.0, y + 10.0, 2.0));
             }
-        }
-        HandLock => {
-            c.part(25.0, 25.0, 0.72, 0.0, 0.0, paw);
-            c.part(44.0, 42.0, 0.6, 0.0, 3.5, padlock);
         }
         Warn => c.add(poly(&[(32.0, 9.0), (55.0, 32.0), (32.0, 55.0), (9.0, 32.0)]).grow(3.0)),
         Urgent => c.add(rect(32.0, 32.0, 21.0, 21.0, 3.0)),
@@ -760,6 +782,45 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.part(44.0, 22.0, 0.62, 15.0, 3.0, paw);
         }
         Tree => round_tree(c),
+        Pebbles => {
+            c.add(poly(&[(5.0, 57.0), (9.0, 40.0), (21.0, 31.0), (33.0, 36.0), (37.0, 57.0)]).grow(2.0));
+            c.knock(poly(&[(27.0, 57.0), (31.0, 29.0), (44.0, 17.0), (57.0, 28.0), (59.0, 57.0)]).grow(2.0));
+            c.cut(seg(44.0, 25.0, 50.0, 40.0, 2.6).or(seg(14.0, 44.0, 22.0, 39.0, 2.4)));
+        }
+        Sapling => sapling(c),
+        Larder => {
+            c.add(poly(&[(4.0, 28.0), (32.0, 8.0), (60.0, 28.0)]).grow(1.5));
+            c.add(rect_c(9.0, 32.0, 55.0, 58.0, 3.0));
+            c.cut_part(32.0, 46.0, 0.42, 0.0, 0.0, berries);
+        }
+        Tend => {
+            c.part(25.0, 34.0, 0.8, 0.0, 0.0, sapling);
+            c.add(seg(51.0, 52.0, 51.0, 16.0, 5.0));
+            c.add(polyline(&[(42.0, 25.0), (51.0, 15.0), (60.0, 25.0)], 5.0));
+        }
+        RoleForester => role(c, 0.0, sapling),
+        Wolf => {
+            c.add(tri_rounded(&[(12.0, 3.0), (28.0, 17.0), (11.0, 27.0)]).or(tri_rounded(&[(52.0, 3.0), (36.0, 17.0), (53.0, 27.0)])));
+            c.add(poly(&[(9.0, 22.0), (22.0, 14.0), (42.0, 14.0), (55.0, 22.0), (51.0, 38.0), (38.0, 58.0), (26.0, 58.0), (13.0, 38.0)]).grow(1.0));
+            c.cut(seg(19.0, 30.0, 27.0, 34.0, 4.5).or(seg(45.0, 30.0, 37.0, 34.0, 4.5)));
+            c.cut(ellipse(32.0, 51.0, 5.5, 3.8));
+        }
+        Forester => {
+            c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));
+            c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
+            c.cut_part(32.0, 47.0, 0.42, 0.0, 0.0, sapling);
+        }
+        Toolshed => {
+            c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));
+            c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
+            c.cut_part(32.0, 46.0, 0.36, -40.0, 0.0, hammer);
+        }
+        WaterPlant => {
+            // A notched lily pad with a flower standing on it.
+            c.add(ellipse(31.0, 45.0, 28.0, 14.0));
+            c.cut(poly(&[(31.0, 45.0), (60.0, 36.0), (60.0, 52.0)]));
+            c.knock(poly(&[(14.0, 30.0), (20.0, 12.0), (27.0, 24.0), (32.0, 6.0), (37.0, 24.0), (44.0, 12.0), (50.0, 30.0), (32.0, 38.0)]).grow(1.0));
+        }
         Plant => {
             c.add(leaf((32.0, 57.0), (32.0, 6.0), 17.0));
             c.knock(leaf((30.0, 57.0), (5.0, 26.0), 13.0));

@@ -14,7 +14,7 @@ use crate::{SimError, SimState};
 
 const EPS: f32 = 1e-3;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamCell {
     pub cell: Cell,
     /// Height above this cell's ground that the dam is meant to reach.
@@ -23,14 +23,14 @@ pub struct DamCell {
     pub row: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamDay {
     pub level: f32,
     pub inflow: f32,
     pub outflow: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Spill {
     None,
     /// Water pours over the crest at this dam cell.
@@ -42,7 +42,7 @@ pub enum Spill {
 }
 
 /// The pond a dam holds, refreshed once a day and after every change.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pond {
     pub level: f32,
     pub full_level: f32,
@@ -57,7 +57,7 @@ pub struct Pond {
     pub flooded: Vec<Cell>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Dam {
     pub cells: Vec<DamCell>,
     pub rows: u8,
@@ -126,8 +126,26 @@ fn cell_work(sim: &SimState, d: &Dam, c: &DamCell) -> bool {
     h < c.target - EPS || (d.maintain && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW)
 }
 
-pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell) -> bool {
-    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| c.cell == cell && cell_work(sim, d, c)))
+/// Builders raise cells to their target; maintainers re-pack finished cells that have worn.
+fn cell_task(sim: &SimState, d: &Dam, c: &DamCell, upkeep: bool) -> bool {
+    if is_gate(d, c.cell) {
+        return false;
+    }
+    let h = built(sim, c.cell);
+    if upkeep {
+        d.maintain && h > 0.0 && h >= c.target - EPS && integrity(sim, c.cell) < REPAIR_BELOW
+    } else {
+        h < c.target - EPS
+    }
+}
+
+pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell, upkeep: bool) -> bool {
+    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| c.cell == cell && cell_task(sim, d, c, upkeep)))
+}
+
+/// Work for this dam's builders (`upkeep` false: raising, gates) or maintainers (re-packing).
+pub fn has_work_for(sim: &SimState, id: BuildingId, upkeep: bool) -> bool {
+    dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_task(sim, d, c, upkeep)) || (!upkeep && d.gates.iter().any(|g| !g.built || g.pending.is_some())))
 }
 
 pub fn has_work(sim: &SimState, id: BuildingId) -> bool {
@@ -232,12 +250,12 @@ pub fn claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> {
 }
 
 /// The lowest unfinished cell, nearest first among equals.
-pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell]) -> Option<Cell> {
+pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell], upkeep: bool) -> Option<Cell> {
     let d = dam(sim, id)?;
     let dist = |c: Cell| c.0.abs_diff(from.0) + c.1.abs_diff(from.1);
     d.cells
         .iter()
-        .filter(|c| cell_work(sim, d, c) && !taken.contains(&c.cell))
+        .filter(|c| cell_task(sim, d, c, upkeep) && !taken.contains(&c.cell))
         .min_by(|a, b| {
             let (ha, hb) = (built(sim, a.cell) * integrity(sim, a.cell).max(0.01), built(sim, b.cell) * integrity(sim, b.cell).max(0.01));
             ((ha / STEP_HEIGHT).floor() as i32, dist(a.cell), a.cell).cmp(&((hb / STEP_HEIGHT).floor() as i32, dist(b.cell), b.cell))
@@ -258,8 +276,9 @@ pub(crate) fn pack(sim: &mut SimState, id: BuildingId, cell: Cell, sticks: f32) 
     if sim.water.raise_dam(&[(cell, next)]).is_err() {
         return 0.0;
     }
+    let durability = rows as f32 * facing(sim, id);
     if let Some(v) = sim.water.dam_durability.get_mut(cell.0, cell.1) {
-        *v = rows as f32;
+        *v = durability;
     }
     sim.buildings.stores.book_site_delivery(Good::Sticks, sticks, None);
     if let Ok(d) = dam_mut(sim, id) {
@@ -475,13 +494,25 @@ pub fn apply_plan(sim: &mut SimState, id: BuildingId, plan: Plan) -> Result<(), 
     d.cells = plan.cells;
     d.rows = plan.rows;
     d.pond_day = f64::NEG_INFINITY;
-    let (rows, cells): (u8, Vec<Cell>) = (d.rows, d.cells.iter().map(|c| c.cell).collect());
+    refresh_durability(sim, id);
+    Ok(())
+}
+
+/// How much longer a pebble-faced dam's cells hold against age and overtopping.
+fn facing(sim: &SimState, id: BuildingId) -> f32 {
+    if sim.buildings.pebbled.contains(&id) { crate::buildings::PEBBLE_DAM_FACTOR } else { 1.0 }
+}
+
+/// Set every cell of a dam to its rows' strength, pebble facing included.
+pub(crate) fn refresh_durability(sim: &mut SimState, id: BuildingId) {
+    let Some(d) = dam(sim, id) else { return };
+    let rows = d.rows as f32 * facing(sim, id);
+    let cells: Vec<Cell> = d.cells.iter().map(|c| c.cell).collect();
     for c in cells {
         if let Some(v) = sim.water.dam_durability.get_mut(c.0, c.1) {
-            *v = rows as f32;
+            *v = rows;
         }
     }
-    Ok(())
 }
 
 pub fn set_maintain(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> {
@@ -539,8 +570,8 @@ fn measure(sim: &SimState, d: &Dam) -> Option<Pond> {
     if cells.is_empty() {
         return None;
     }
-    let p = crate::dam_preview::preview_heights(sim, &cells, &heights)?;
-    let live = live_pond(sim, d);
+    let p = { let _p = crate::prof::scope("step/dams/measure pond/still-pond estimate"); crate::dam_preview::preview_heights_kept(sim, &cells, &heights)? };
+    let live = { let _p = crate::prof::scope("step/dams/measure pond/live pond"); live_pond(sim, d) };
     let depth_at = |c: Cell| sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
     let wet: Vec<(Cell, f32)> = match &live {
         Some((_, cs)) => cs.iter().map(|&c| (c, depth_at(c))).collect(),
@@ -608,6 +639,7 @@ pub fn step(sim: &mut SimState) {
             continue;
         }
         let new_day = d.pond_day.is_finite() && d.pond_day < today || d.history.is_empty();
+        let _p = crate::prof::scope("step/dams/measure pond");
         let pond = measure(sim, d);
         let Ok(d) = dam_mut(sim, id) else { continue };
         if new_day {
@@ -739,8 +771,26 @@ mod tests {
         assert_eq!(used, sticks_per_step());
         assert!((built(&s, line[0]) - STEP_HEIGHT).abs() < 1e-5);
         assert_eq!(loads_left(&s, id), line.len() * 2 - 1);
-        let first = next_cell(&s, id, line[4], &[]).unwrap();
+        let first = next_cell(&s, id, line[4], &[], false).unwrap();
         assert_ne!(first, line[0], "the lowest cells are built first");
+    }
+
+    #[test]
+    fn builders_raise_dams_and_maintainers_repack_worn_cells() {
+        let (mut s, line) = flat_river();
+        let id = place(&mut s, &line).unwrap();
+        assert!(has_work_for(&s, id, false) && !has_work_for(&s, id, true), "a new dam is builders' work");
+        while let Some(c) = next_cell(&s, id, line[0], &[], false) {
+            pack(&mut s, id, c, sticks_per_step());
+        }
+        assert!(!has_work_for(&s, id, false) && !has_work_for(&s, id, true), "a sound, finished dam needs nobody");
+        *s.water.dam_integrity.get_mut(line[2].0, line[2].1).unwrap() = REPAIR_BELOW / 2.0;
+        assert!(has_work_for(&s, id, true) && !has_work_for(&s, id, false), "a worn cell is maintainers' work");
+        assert_eq!(next_cell(&s, id, line[0], &[], true), Some(line[2]));
+        pack(&mut s, id, line[2], sticks_per_step());
+        assert!(!has_work_for(&s, id, true), "re-packing restores the cell");
+        let slots = &s.work.place(id).unwrap().slots;
+        assert!(slots.iter().any(|sl| sl.role == crate::work::Role::Build) && slots.iter().any(|sl| sl.role == crate::work::Role::Maintain));
     }
 
     #[test]

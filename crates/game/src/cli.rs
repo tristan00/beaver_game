@@ -15,11 +15,13 @@ pub struct Cli {
     pub sandbox_script: Option<PathBuf>,
     pub colony_script: Option<PathBuf>,
     pub report_dir: Option<PathBuf>,
+    /// A saved game to carry on, straight into play.
+    pub load: Option<PathBuf>,
 }
 
 impl Cli {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-        let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, sandbox: false, sandbox_script: None, colony_script: None, report_dir: None };
+        let mut cli = Cli { seed: 1, map: None, cam: "iso".into(), screenshot: None, frames: DEFAULT_FRAMES, sandbox: false, sandbox_script: None, colony_script: None, report_dir: None, load: None };
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} requires a value"));
@@ -51,6 +53,7 @@ impl Cli {
                     cli.sandbox = true;
                 }
                 "--script" => cli.colony_script = Some(PathBuf::from(value("--script")?)),
+                "--load" => cli.load = Some(PathBuf::from(value("--load")?)),
                 "--report-dir" => cli.report_dir = Some(PathBuf::from(value("--report-dir")?)),
                 "--screenshot" => cli.screenshot = Some(PathBuf::from(value("--screenshot")?)),
                 other => return Err(format!("unknown argument '{other}'")),

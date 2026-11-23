@@ -1,6 +1,6 @@
 use super::{EVAP_MULT, INFLOW_MULT, RAIN_MULT, SEASON_DAYS};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Weather {
     #[default]
     Seasonal,
@@ -33,7 +33,7 @@ impl Weather {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Forcing {
     /// Metres of precipitation per day and seasonal evaporation multiplier.
     pub rain: f32,

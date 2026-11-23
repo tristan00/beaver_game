@@ -157,7 +157,7 @@ pub fn idle_reason_word(r: sim::jobs::IdleReason) -> &'static str {
         Unreachable => "Unreachable",
         Resting => "Resting",
         Paused => "Job paused",
-        AutoOff => "Auto off",
+        Free => "Free",
     }
 }
 
@@ -168,8 +168,12 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
     let idle = sim::jobs::idle_reasons(s);
     let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
     vec![panel_row(Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 16.0, |u| {
-        for g in [Good::Sticks, Good::Clay, Good::Food] {
+        // Pebbles and saplings only once the colony has some.
+        for g in [Good::Sticks, Good::Clay, Good::Food, Good::Pebbles, Good::Saplings] {
             let have = stores.amount(g);
+            if matches!(g, Good::Pebbles | Good::Saplings) && have < 0.5 {
+                continue;
+            }
             let short = have < 0.5 && s.ledger.days_left(g, have).is_some();
             u.row(6.0, |r| {
                 r.icon(good_icon(g), 20.0, good_color(g));
@@ -265,6 +269,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::CanalDry => (vec![(Icon::Canal, INK), (Icon::Drop, WARN)], String::new(), "Canal dry"),
         ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
         ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
+        ProblemKind::Wolf => (vec![(Icon::Wolf, BAD)], String::new(), "Wolf"),
         ProblemKind::HighAndDry => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
@@ -327,35 +332,104 @@ pub fn alert_tip(c: &Ctx, p: &Problem) -> Tip {
     cause
 }
 
-/// What needs the player: one token per problem, an icon and one number. A
-/// click jumps there; the fix is in the tooltip.
-pub fn alerts(c: &Ctx, u: &mut Ui) {
-    if c.problems.is_empty() {
-        return;
+const BADGE: f32 = 44.0;
+
+fn badge_node() -> Node {
+    Node { width: Val::Px(BADGE), height: Val::Px(BADGE), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, row_gap: Val::Px(0.0), flex_shrink: 0.0, ..default() }
+}
+
+/// Everything that wants the player, as badges side by side at the top centre: standing
+/// problems (icon and one number) and news (a wolf seen, a death, a save). No words until a
+/// badge is clicked; then its card opens beneath the row, with the fix for a problem.
+pub fn badges(c: &Ctx, notices: &[super::Notice], now: f32) -> Vec<VNode> {
+    if c.problems.is_empty() && notices.is_empty() {
+        return Vec::new();
     }
-    u.row(6.0, |r| {
+    let open = c.hud.open_badge.as_deref();
+    let mut col = VNode::new(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(8.0), ..abs(Some(0.0), Some(0.0), Some(12.0), None) });
+    let mut ui = Ui::default();
+    let mut card: Option<VNode> = None;
+    ui.row(6.0, |r| {
         for p in c.problems {
-            let (icon, col, value, _, skin) = alert_token(c.s, p);
-            let t = r.node(Node { width: Val::Px(44.0), height: Val::Px(44.0), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, row_gap: Val::Px(0.0), flex_shrink: 0.0, ..default() }, |k| {
+            let key = format!("alert:{:?}", p.kind);
+            let (icon, col, value, name, skin) = alert_token(c.s, p);
+            let t = r.node(badge_node(), |k| {
                 k.icon(icon, if value.is_empty() { 22.0 } else { 18.0 }, col);
                 if !value.is_empty() {
                     k.bold(value.clone(), 11.0, INK);
                 }
             });
             t.skin(skin);
-            t.tip(alert_tip(c, p));
-            t.action(match p.focus {
-                Some(f) => HudAction::Fix(Fix::Focus, Some(f)),
-                None => HudAction::Fix(p.fix, None),
+            t.action(HudAction::Badge(key.clone()));
+            if open == Some(key.as_str()) {
+                let mut k = Ui::default();
+                k.row(8.0, |row| {
+                    row.icon(icon, 20.0, col);
+                    row.bold(name.to_string(), 16.0, INK);
+                    if !value.is_empty() {
+                        row.bold(value.clone(), 16.0, MUTED);
+                    }
+                });
+                k.row(6.0, |row| {
+                    if let Some(f) = p.focus {
+                        row.pebble(Icon::Focus, 12.0, HudAction::Fix(Fix::Focus, Some(f)), Peb::Idle).tip(Tip::name("Go there"));
+                    }
+                    for f in std::iter::once(&p.fix).chain(p.alt_fix.iter()) {
+                        if let Some((icon, _, words)) = fix_face(f) {
+                            row.pebble(icon, 12.0, HudAction::Fix(*f, p.focus), Peb::Good).tip(Tip::name(words));
+                        }
+                    }
+                });
+                card = Some(card_node(k, Some(alert_tip(c, p))));
+            }
+        }
+        for n in &notices[notices.len().saturating_sub(super::NOTICES_SHOWN)..] {
+            let key = n.key();
+            let age = (now - n.born).max(0.0);
+            let shown = open == Some(key.as_str());
+            let fade = if shown { 1.0 } else { (1.0 - (age - (super::NOTICE_SECS - 1.0)).max(0.0)).clamp(0.0, 1.0) };
+            let t = r.node(badge_node(), |k| {
+                k.row(1.0, |row| {
+                    for (i, c) in &n.icons {
+                        row.icon(*i, if n.icons.len() > 1 { 17.0 } else { 22.0 }, c.with_alpha(fade));
+                    }
+                });
             });
+            t.skin = Some((Skin::Plate, Color::srgba(1.0, 1.0, 1.0, fade)));
+            t.action(HudAction::Badge(key.clone()));
+            if shown {
+                let mut k = Ui::default();
+                k.row(8.0, |row| {
+                    for (i, c) in &n.icons {
+                        row.icon(*i, 20.0, *c);
+                    }
+                    row.bold(n.text.clone(), 16.0, INK);
+                });
+                card = Some(card_node(k, None));
+            }
         }
     });
+    col.children = ui.nodes;
+    if let Some(card) = card {
+        col.children.push(card);
+    }
+    vec![col]
+}
+
+/// The words of an opened badge, on a plate under the row.
+fn card_node(k: Ui, tip: Option<Tip>) -> VNode {
+    let mut v = VNode::new(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)), ..default() });
+    v.children = k.nodes;
+    v.skin(Skin::Plate);
+    if let Some(tip) = tip {
+        v.tip(tip);
+    }
+    v
 }
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
     let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(84.0), Some(90.0)) });
     let mut ui = Ui::default();
-    alerts(c, &mut ui);
     if c.hud.tool == Tool::None && c.hud.colony.is_none() {
         for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
             if let Some(v) = super::inspect::inspector(c, *p) {
@@ -373,10 +447,10 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-/// Left: how to read the map. Three lenses; clicking the one that is on returns to the plain view.
+/// Left: how to read the map. Five lenses; clicking the one that is on returns to the plain view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
-        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3")] {
+        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Underwater, Icon::ViewUnderwater, "Under water", "F5")] {
             let on = c.lens == l;
             u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
         }
@@ -419,7 +493,7 @@ fn item_tip(kind: BuildingKind) -> Tip {
 pub fn bottom(c: &Ctx) -> Vec<VNode> {
     let hud = c.hud;
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)), ..default() }, 7.0, |u| {
-        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C")].into_iter().enumerate() {
+        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C"), (BuildingKind::Larder, "B"), (BuildingKind::Toolshed, "N"), (BuildingKind::Forester, "F"), (BuildingKind::Logistics, "H")].into_iter().enumerate() {
             if i == 2 {
                 // Waterworks first, as a pair; the drop-down buildings after a groove.
                 u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
@@ -778,16 +852,17 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
         let stage=match s.maintenance.jobs.get(&id).map(|j|j.kind) {
             Some(sim::maintenance::Refit::Repair)=>"Repairing",
             Some(sim::maintenance::Refit::Reinforce)=>"Reinforcing",
+            Some(sim::maintenance::Refit::Pebbles)=>"Facing with pebbles",
             None=>"Building",
         };
         return Some(if !waiting.is_empty() && !site.labour_open() {(None,"Waiting".into(),waiting,WARN)}
-            else if slots>0 && empty==slots {(Some(Icon::RoleBuilder),if s.work.auto_organise{"Queued"}else{"No builders"}.into(),vec![],MUTED)}
+            else if slots>0 && empty==slots {(Some(Icon::RoleBuilder),"No builders".into(),vec![],MUTED)}
             else {(Some(Icon::Hammer),stage.into(),vec![],GOOD)});
     }
     if b.is_complete() && !b.operational() {return Some((Some(Icon::Hammer),"Ruined".into(),vec![],BAD));}
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
         (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (Some(Icon::Flood), "Dry".into(), vec![], WARN),
-        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), "Idle".into(), vec![], if s.work.auto_organise{MUTED}else{WARN}),
+        (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), "Idle".into(), vec![], WARN),
         (Status::Complete, _) => (None, "Working".into(), vec![], if empty > 0 { WARN } else { GOOD }),
         (_, Some(site)) => {
             let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();

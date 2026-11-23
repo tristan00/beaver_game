@@ -5,6 +5,7 @@ mod scene;
 mod structures;
 pub mod sim_sync;
 pub mod sim_view;
+mod wolf;
 
 use crate::camera::MainCamera;
 use crate::cli::Cli;
@@ -29,6 +30,7 @@ impl Plugin for EntitiesRenderPlugin {
             .init_resource::<CurrentSeason>()
             .init_resource::<CanopyView>()
             .init_resource::<sim_sync::PendingDays>()
+            .add_plugins(wolf::WolfPlugin)
             .add_systems(Startup, init_models)
             .add_systems(
                 Update,
@@ -100,6 +102,8 @@ struct Models {
     felled: Vec<Handle<Mesh>>,
     mud: Handle<Mesh>,
     plant: Handle<Mesh>,
+    water_plant: Handle<Mesh>,
+    pebbles: Handle<Mesh>,
     far: Handle<Mesh>,
     wake: Handle<Mesh>,
     blob: Handle<Mesh>,
@@ -265,6 +269,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
         mud: meshes.add(models::mud_mesh()),
         plant: meshes.add(models::plant_mesh()),
+        water_plant: meshes.add(models::water_plant_mesh()),
+        pebbles: meshes.add(models::pebble_mesh()),
         far,
         wake,
         blob,
@@ -494,6 +500,14 @@ fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
     let rz = Quat::from_rotation_z;
     let mut r = Rig::rest();
     match pose {
+        // Standing about with a load: upright, still hugging it, looking around.
+        Pose::Idle if g.hug => {
+            r = hug_walk_rig(0.0);
+            let br = (t * 1.8 + id).sin();
+            r.parts[0].0.y += 0.012 * br;
+            r.squash = Vec3::new(1.0 + 0.012 * br, 1.0 + 0.018 * br, 1.0);
+            r.parts[1].1 = ry(0.4 * (t * 0.35 + id).sin()) * r.parts[1].1;
+        }
         Pose::Idle => r = idle_rig(t, id),
         Pose::Walk => r = travel_rig(g, 0.0),
         Pose::Carry if g.hug => r = hug_walk_rig(g.phase),
@@ -563,6 +577,8 @@ fn pose_rig(pose: Pose, t: f32, id: f32, g: Gait) -> Rig {
             let a = -2.25 + 0.12 * (t * 2.6 + id).sin();
             r.parts[3].1 = rx(a);
             r.parts[4].1 = rx(a - 0.05);
+            // What has been gathered so far is held up in the paws.
+            r.hold = Rig::paw_tip(a) + Vec3::new(0.0, 0.0, 0.08);
         }
         Pose::Rest => {
             let b = (t * 1.5 + id).sin();
@@ -622,6 +638,7 @@ fn animate_beavers(
     mut vis: Query<&mut Visibility, Without<BeaverRig>>,
     mut meshes: Query<&mut Mesh3d, Without<BeaverRig>>,
 ) {
+    let _p = ::sim::prof::scope("game/animate beavers");
     let Some(models) = models else { return };
     let cam_pos = cam.iter().next().map(|c| c.translation());
     let dt = time.delta_secs();
@@ -681,8 +698,10 @@ fn animate_beavers(
             }
         }
         let good = sprite.load.map(|l| l.0);
-        let hug = good.is_some_and(held_in_paws);
-        let load_scale = sprite.load.map_or(1.0, |(_, amount)| 0.6 + 0.4 * (amount / sim::agents::LOAD_SIZE).clamp(0.0, 1.0));
+        // Swimming and climbing need the forepaws, so then everything is carried in the teeth.
+        let paws_free = !matches!(sprite.pose, Pose::Swim | Pose::Climb);
+        let hug = paws_free && good.is_some_and(held_in_paws);
+        let load_scale = sprite.load.map_or(1.0, |(g, amount)| 0.75 + 0.5 * (amount / sim::agents::load_size(g)).clamp(0.0, 1.0));
         rig.init = true;
         if !near {
             continue;
@@ -747,6 +766,7 @@ fn update_tree_lod(
     selection: Option<Res<crate::flow::Selection>>,
     mut trees: Query<(&Transform, &mut TreeLod, &mut Mesh3d)>,
 ) {
+    let _p = ::sim::prof::scope("game/update tree lod");
     let (Some(models), Some(cam)) = (models, cam.iter().next()) else { return };
     let c = cam.translation();
     let (l0, l1) = (TREE_LOD0 * TREE_LOD0, TREE_LOD1 * TREE_LOD1);

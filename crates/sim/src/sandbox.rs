@@ -111,7 +111,7 @@ pub fn set_season(s: &mut SimState, season: crate::calendar::Season) {
     s.water.time_days = s.time_days;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Probe {
     pub ground: f32,
     pub dam: f32,
@@ -169,7 +169,7 @@ impl Books {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Report {
     pub map: String,
     pub lines: Vec<String>,

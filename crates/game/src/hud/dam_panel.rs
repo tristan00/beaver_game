@@ -283,10 +283,28 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
         };
         gate_button(r, id, gate, matches!(spill, Spill::Over(_)));
         r.spacer();
+        pebble_button(s, r, id);
         let on = d.maintain;
         r.pebble(Icon::Hammer, 15.0, HudAction::DamMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Builders repair worn cells", ""));
         r.pebble(if paused { Icon::Play } else { Icon::Pause }, 14.0, HudAction::Paused(id, !paused), if paused { Peb::On } else { Peb::Idle }).tip(Tip::name(if paused { "Resume" } else { "Pause" }));
     });
+}
+
+/// Face the dam with pebbles: it then wears and erodes more slowly.
+fn pebble_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
+    use super::words::{good_color, good_icon, good_name, num};
+    let Some(b) = s.buildings.building(id) else { return };
+    if s.buildings.pebbled.contains(&id) {
+        r.icon(Icon::Pebbles, 15.0, GOOD).tip(Tip::name("Pebble faced").line("Erodes", format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR))));
+    } else if s.maintenance.jobs.contains_key(&id) {
+        r.pebble(Icon::Undo, 12.0, HudAction::CancelMaintenance(id), Peb::Good).tip(Tip::name("Facing with pebbles").line("Stop", ""));
+    } else if b.is_complete() {
+        let mut tip = Tip::name("Face with pebbles").line("Erodes", format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR)));
+        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Pebbles).0 {
+            tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+        }
+        r.pebble(Icon::Pebbles, 15.0, HudAction::PebbleBuilding(id), Peb::Idle).tip(tip);
+    }
 }
 
 fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {

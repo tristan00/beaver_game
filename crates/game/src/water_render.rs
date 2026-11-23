@@ -23,7 +23,7 @@ impl Plugin for WaterRenderPlugin {
         app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
             .init_resource::<WaterChunks>()
             .add_systems(Startup, (demo_world.before(spawn_terrain), setup_water))
-            .add_systems(Update, (update_water_chunks, update_water_style));
+            .add_systems(Update, (update_water_chunks, update_water_style, hide_water_under_lens));
     }
 }
 
@@ -57,6 +57,11 @@ struct WSlot {
     mesh: Handle<Mesh>,
     hash: u64,
     step: usize,
+    /// The chunk's `water_stamp` and the view when its cells were last hashed (as the
+    /// terrain's slots keep theirs).
+    seen: Option<(u64, crate::terrain_render::View)>,
+    /// `wet_ground`, as of `seen`.
+    wet: bool,
 }
 
 #[derive(Resource, Default)]
@@ -104,6 +109,15 @@ fn update_water_style(season: Res<Season>, water: Res<WaterChunks>, mut material
     *last = Some(bucket);
     if let Some(mut m) = materials.get_mut(&water.material) {
         m.extension = style_for(&Palette::at(season.phase));
+    }
+}
+
+/// The underwater lens takes the water away altogether, so the bed shows as a depth chart.
+fn hide_water_under_lens(mut q: Query<&mut Visibility, With<WaterSurface>>) {
+    let hide = crate::terrain_render::map_lens() == crate::terrain_render::UNDERWATER_LENS;
+    let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut q {
+        v.set_if_neq(want);
     }
 }
 
@@ -501,69 +515,87 @@ fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Rebuild the chunks whose water changed, found by the simulation's stamps as the terrain's
+/// are (`update_terrain_chunks`).
+#[allow(clippy::too_many_arguments)]
 fn update_water_chunks(
     mut commands: Commands,
     sim: Res<Sim>,
-    season: Res<Season>,
     mut water: ResMut<WaterChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
     mut first: Local<bool>,
     mut cursor: Local<usize>,
     mut backlog: ResMut<MeshBacklog>,
+    mut settled: Local<Option<[(u64, u64); 8]>>,
 ) {
+    let _p = ::sim::prof::scope("game/update water chunks");
     backlog.water = true;
     let Some(campos) = cam.iter().next().map(|t| t.translation) else { return };
     let (cols, rows) = chunk_dims(&sim.0);
     if water.slots.len() != cols * rows {
         return;
     }
+    let s = &sim.0;
     let mut budget = if *first { 10 } else { usize::MAX };
     *first = true;
     let started = std::time::Instant::now();
     let n_chunks = cols * rows;
     let mut rebuilt = false;
-    let sea_bucket = season.bucket() as u64;
+    // The season colours the water through its material, not its mesh.
+    let view = (crate::terrain_render::map_lens(), 0);
+    let stamps = crate::terrain_render::water_stamps(s);
+    let still = *settled == Some(stamps);
     for k in 0..n_chunks {
-        {
-            let idx = (*cursor + k) % n_chunks;
-            let (cx, cy) = (idx % cols, idx / cols);
-            let step = hydrology_lod(&sim.0, cx, cy, campos);
-            let hash = region_hash(&sim.0, cx, cy, WATER_PAD, sea_bucket, false);
-            let slot = &mut water.slots[idx];
-            if slot.hash == hash.max(1) && slot.step == step {
-                continue;
+        let idx = (*cursor + k) % n_chunks;
+        let (cx, cy) = (idx % cols, idx / cols);
+        let slot = &mut water.slots[idx];
+        let stamp = match slot.seen {
+            Some((stamp, _)) if still => stamp,
+            _ => crate::terrain_render::water_stamp(s, cx, cy),
+        };
+        if slot.seen.map(|seen| seen.0) != Some(stamp) {
+            slot.wet = crate::terrain_render::wet_ground(s, cx, cy);
+        }
+        let step = if slot.wet { 1 } else { crate::terrain_render::lod_step(campos, crate::terrain_render::chunk_centre(s, cx, cy)) };
+        let known = slot.seen == Some((stamp, view));
+        if known && slot.step == step {
+            continue;
+        }
+        let hash = if known { slot.hash } else { region_hash(s, cx, cy, WATER_PAD, 0, false).max(1) };
+        if slot.hash == hash && slot.step == step {
+            slot.seen = Some((stamp, view));
+            continue;
+        }
+        if budget == 0 || started.elapsed().as_secs_f32() > WATER_REBUILD_BUDGET_S {
+            *cursor = idx;
+            return;
+        }
+        budget -= 1;
+        rebuilt = true;
+        MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let built = std::time::Instant::now();
+        let mesh = build_water_mesh(s, cx, cy, step);
+        crate::perf::WATER_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        let material = water.material.clone();
+        let slot = &mut water.slots[idx];
+        (slot.hash, slot.step, slot.seen) = (hash, step, Some((stamp, view)));
+        match (mesh, slot.entity) {
+            (Some(m), Some(_)) => {
+                let _ = meshes.insert(&slot.mesh, m);
             }
-            if budget == 0 || started.elapsed().as_secs_f32() > WATER_REBUILD_BUDGET_S {
-                *cursor = idx;
-                return;
+            (Some(m), None) => {
+                slot.mesh = meshes.add(m);
+                slot.entity = Some(commands.spawn((WaterSurface, Mesh3d(slot.mesh.clone()), MeshMaterial3d(material), Transform::default(), bevy::light::NotShadowCaster)).id());
             }
-            budget -= 1;
-            rebuilt = true;
-            MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let built = std::time::Instant::now();
-            let mesh = build_water_mesh(&sim.0, cx, cy, step);
-            crate::perf::WATER_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-            let material = water.material.clone();
-            let slot = &mut water.slots[idx];
-            slot.hash = hash.max(1);
-            slot.step = step;
-            match (mesh, slot.entity) {
-                (Some(m), Some(_)) => {
-                    let _ = meshes.insert(&slot.mesh, m);
-                }
-                (Some(m), None) => {
-                    slot.mesh = meshes.add(m);
-                    slot.entity = Some(commands.spawn((WaterSurface, Mesh3d(slot.mesh.clone()), MeshMaterial3d(material), Transform::default(), bevy::light::NotShadowCaster)).id());
-                }
-                (None, Some(e)) => {
-                    commands.entity(e).despawn();
-                    slot.entity = None;
-                }
-                (None, None) => {}
+            (None, Some(e)) => {
+                commands.entity(e).despawn();
+                slot.entity = None;
             }
+            (None, None) => {}
         }
     }
+    *settled = Some(stamps);
     backlog.water = rebuilt;
 }
 

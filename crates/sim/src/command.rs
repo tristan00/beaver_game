@@ -2,7 +2,7 @@
 use crate::{SimError, SimState, agents, buildings, canals, colony, dams, forestry, gates, invalid, jobs, maintenance, sandbox, society, starts, water, work};
 
 /// How a dam grows when the player asks for more.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DamGrowth {
     Raise,
     Widen,
@@ -10,7 +10,7 @@ pub enum DamGrowth {
 }
 
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     Regenerate { seed: u64 },
     BuildDam { cells: Vec<water::Cell>, height: f32 },
@@ -21,6 +21,10 @@ pub enum Command {
     SetDamMaintain { dam: buildings::BuildingId, on: bool },
     RepairBuilding { building: buildings::BuildingId },
     ReinforceBuilding { building: buildings::BuildingId },
+    /// Face a dam or building with pebbles so it wears and erodes more slowly.
+    PebbleBuilding { building: buildings::BuildingId },
+    /// Switch one worker slot (a food store's tending or planting) on or off.
+    SetSlotOff { building: buildings::BuildingId, slot: usize, off: bool },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
@@ -42,13 +46,11 @@ pub enum Command {
     SetPriority { building: buildings::BuildingId, priority: work::Priority },
     SetPaused { building: buildings::BuildingId, paused: bool },
     AdjustRole { role: jobs::RoleKind, delta: i32 },
-    SetRoleOrder { order: Vec<jobs::RoleKind> },
-    SetRoleWeight { role: jobs::RoleKind, weight: f32 },
-    SetAutoStaff { on: bool },
-    Unlock { who: colony::BeaverId },
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     SetHaul { order: work::HaulOrder },
     SetBalance { building: buildings::BuildingId, on: bool },
+    /// Have haulers fill this store to the brim from the others (or stop).
+    FillStore { store: buildings::BuildingId, on: bool },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     CancelSite { building: buildings::BuildingId },
 }
@@ -76,7 +78,7 @@ mod tests {
         let a = s.agents.by_id.get_mut(&id).unwrap();
         a.path = Some(crate::nav::Path { steps: vec![((3, 2), crate::nav::Gait::Walk)], cost: 1.0 });
         a.step_frac = 0.5;
-        a.load = Some(agents::Load { good: buildings::Good::Sticks, amount: 2.0, booked: false });
+        a.load = Some(agents::Load::new(buildings::Good::Sticks, 2.0, false));
         s.apply(Command::Assign { who: vec![id], to: Some(agents::Assignment::Go((2, 8))) }).unwrap();
         let a = s.agents.get(id).unwrap();
         assert!(a.path.is_none());
@@ -154,6 +156,8 @@ impl SimState {
             Command::SetDamMaintain { dam, on } => dams::set_maintain(self, dam, on),
             Command::RepairBuilding { building } => maintenance::order(self, building, maintenance::Refit::Repair),
             Command::ReinforceBuilding { building } => maintenance::order(self, building, maintenance::Refit::Reinforce),
+            Command::PebbleBuilding { building } => maintenance::order(self, building, maintenance::Refit::Pebbles),
+            Command::SetSlotOff { building, slot, off } => jobs::set_slot_off(self, building, slot, off),
             Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
             Command::DigCanal { cells, depth } => {
@@ -225,11 +229,7 @@ impl SimState {
                 jobs::place_by_hand(self, building, slot, who)
             }
             Command::EmptySlot { building, slot } => {
-                let who = self.work.place(building).and_then(|p| p.slots.get(slot)).and_then(|s| s.worker);
                 self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
-                if let Some(w) = who {
-                    self.work.managed.remove(&w);
-                }
                 if let Ok(p) = self.work.place_mut(building) {
                     p.max_workers = p.max_workers.min(p.filled());
                 }
@@ -240,33 +240,32 @@ impl SimState {
             Command::SetPriority { building, priority } => jobs::set_priority(self, building, priority),
             Command::SetPaused { building, paused } => jobs::set_paused(self, building, paused),
             Command::AdjustRole { role, delta } => jobs::adjust_role(self, role, delta),
-            Command::SetRoleWeight { role, weight } => {
-                if !weight.is_finite() || !(0.1..=20.0).contains(&weight) {
-                    return Err(SimError::InvalidCommand("role weight must be 0.1..20".into()));
-                }
-                self.work.role_weights[role as usize] = weight;
-                Ok(())
-            }
-            Command::SetRoleOrder { order } => jobs::set_role_order(self, order),
-            Command::SetAutoStaff { on } => {
-                self.work.auto_organise = on;
-                Ok(())
-            }
-            Command::Unlock { who } => jobs::unlock(self, who),
             Command::SetWorkArea { building, area } => {
                 forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
             Command::SetBalance { building, on } => {
-                let store = self.buildings.building(building).is_some_and(|b| b.is_complete() && agents::is_store(b.kind));
-                if !store {
-                    return Err(SimError::InvalidCommand(format!("building {} is not a finished store", building.0)));
+                let logistics = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind == buildings::BuildingKind::Logistics);
+                if !logistics {
+                    return Err(SimError::InvalidCommand(format!("building {} is not a finished logistics building", building.0)));
                 }
                 if on {
                     self.work.balanced.insert(building);
                 } else {
                     self.work.balanced.remove(&building);
+                }
+                Ok(())
+            }
+            Command::FillStore { store, on } => {
+                let ok = self.buildings.building(store).is_some_and(|b| b.is_complete() && agents::is_store(b.kind));
+                if !ok {
+                    return Err(SimError::InvalidCommand(format!("building {} is not a finished store", store.0)));
+                }
+                if on {
+                    self.work.fills.insert(store);
+                } else {
+                    self.work.fills.remove(&store);
                 }
                 Ok(())
             }

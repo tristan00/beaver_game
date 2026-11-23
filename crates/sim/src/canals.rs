@@ -17,7 +17,7 @@ use crate::{SimError, SimState};
 
 const EPS: f32 = 1e-3;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanalCell {
     pub cell: Cell,
     /// Elevation the bed is dug down to.
@@ -32,7 +32,7 @@ pub struct CanalCell {
     pub done: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanalDay {
     pub floatable: f32,
     pub inflow: f32,
@@ -41,7 +41,7 @@ pub struct CanalDay {
 }
 
 /// What the canal holds today, read from the live water.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanalStatus {
     pub cells: usize,
     pub wet: usize,
@@ -63,7 +63,7 @@ impl CanalStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Canal {
     /// Row 0 in route order from the intake (the gate cell first), then any widened row.
     pub cells: Vec<CanalCell>,
@@ -91,7 +91,7 @@ impl Canal {
 }
 
 /// How a canal grows when the player asks for more.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CanalGrowth {
     Deepen,
     Widen,
@@ -131,7 +131,7 @@ pub fn gate_owner(sim: &SimState, cell: Cell) -> Option<BuildingId> {
 }
 
 /// A drawn route with every cell's target, before it is placed.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Plan {
     pub cells: Vec<CanalCell>,
     pub source: Cell,
@@ -327,8 +327,18 @@ fn cell_work(sim: &SimState, k: &Canal, c: &CanalCell) -> bool {
     k.maintain && h > c.target + SILT_TOLERANCE
 }
 
-pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell) -> bool {
-    canal(sim, id).is_some_and(|k| k.cells.iter().any(|c| c.cell == cell && cell_work(sim, k, c)))
+/// Builders dig cells down to their target; maintainers clear silt from finished cells.
+fn cell_task(sim: &SimState, k: &Canal, c: &CanalCell, upkeep: bool) -> bool {
+    cell_work(sim, k, c) && c.done == upkeep
+}
+
+pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell, upkeep: bool) -> bool {
+    canal(sim, id).is_some_and(|k| k.cells.iter().any(|c| c.cell == cell && cell_task(sim, k, c, upkeep)))
+}
+
+/// Work for this canal's builders (digging, gate changes) or maintainers (silt).
+pub fn has_work_for(sim: &SimState, id: BuildingId, upkeep: bool) -> bool {
+    canal(sim, id).is_some_and(|k| (!upkeep && k.gate.built && k.gate.pending.is_some()) || k.cells.iter().any(|c| cell_task(sim, k, c, upkeep)))
 }
 
 pub fn gate_needs_visit(sim: &SimState, id: BuildingId) -> bool {
@@ -362,13 +372,13 @@ pub fn claimed(sim: &SimState, id: BuildingId, except: crate::colony::BeaverId) 
 /// What a digger should do next: a pending gate change first, then the undug cell farthest
 /// from the intake (so the canal is dug dry and the gate cell, which holds the water back,
 /// comes last), then silt clearing.
-pub fn next_job(sim: &SimState, id: BuildingId, taken: &[Cell]) -> Option<(Cell, bool)> {
+pub fn next_job(sim: &SimState, id: BuildingId, taken: &[Cell], upkeep: bool) -> Option<(Cell, bool)> {
     let k = canal(sim, id)?;
-    if k.gate.built && k.gate.pending.is_some() && !taken.contains(&k.gate.cell) {
+    if !upkeep && k.gate.built && k.gate.pending.is_some() && !taken.contains(&k.gate.cell) {
         return Some((k.gate.cell, true));
     }
     let gate = k.gate.cell;
-    let open: Vec<&CanalCell> = k.cells.iter().filter(|c| !taken.contains(&c.cell) && cell_work(sim, k, c)).collect();
+    let open: Vec<&CanalCell> = k.cells.iter().filter(|c| !taken.contains(&c.cell) && cell_task(sim, k, c, upkeep)).collect();
     let fresh = open.iter().filter(|c| !c.done && c.cell != gate).max_by_key(|c| (c.row == 0, k.cells.iter().position(|o| o.cell == c.cell)));
     let pick = fresh.or_else(|| open.iter().find(|c| c.cell == gate && !c.done)).or_else(|| open.first());
     pick.map(|c| (c.cell, false))
@@ -428,7 +438,8 @@ fn fell_trees_at(sim: &mut SimState, cell: Cell) {
     let trees: Vec<_> = sim.resources.at(cell).filter(|r| r.kind == ResourceKind::Tree).map(|r| r.id).collect();
     for t in trees {
         if sim.resources.fell(t, f32::MAX / 4.0).is_err() {
-            sim.resources.items.retain(|r| r.id != t);
+            if let Some(r) = sim.resources.get(t) { crate::resources::note("GONE", r, format_args!("why=cleared for a canal")); }
+            sim.resources.keep(|r| r.id != t);
         }
     }
 }
@@ -454,8 +465,8 @@ fn spoil(sim: &mut SimState, cell: Cell, clay: f32) {
         }
     }
     let Some((_, bank)) = best else { return };
-    let near = sim.resources.items.iter_mut().find(|r| r.kind == ResourceKind::MudBank && r.cell.0.abs_diff(bank.0) <= 1 && r.cell.1.abs_diff(bank.1) <= 1);
-    match near {
+    let near = sim.resources.items().iter().find(|r| r.kind == ResourceKind::MudBank && r.cell.0.abs_diff(bank.0) <= 1 && r.cell.1.abs_diff(bank.1) <= 1).map(|r| r.id);
+    match near.and_then(|id| sim.resources.get_mut(id).ok()) {
         Some(r) => {
             r.amount += clay;
             r.max_amount += clay;

@@ -652,6 +652,7 @@ pub fn tip_logic(
     over_ui: Res<super::PointerOverUi>,
     mut tips: ResMut<Tips>,
 ) {
+    let _p = ::sim::prof::scope("game/tip logic");
     let now = time.elapsed_secs();
     let Some(cursor) = cursor_logical(&windows, ui_scale.0) else {
         tips.layers.retain(|l| l.frozen);

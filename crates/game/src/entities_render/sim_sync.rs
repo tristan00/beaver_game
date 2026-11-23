@@ -263,6 +263,7 @@ pub(super) fn sync_sim_beavers(
     mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion), With<SimBeaver>>,
     mut seen: Local<HashSet<u64>>,
 ) {
+    let _p = ::sim::prof::scope("game/sync sim beavers");
     seen.clear();
     let now = clock.as_ref().map_or(sim.0.time_days + pending.0 as f64, |c| c.render_days(sim.0.time_days));
     for (e, mut tr, mut sprite, mut vis, mut motion) in &mut q {
@@ -334,12 +335,15 @@ pub enum ResSig {
     Tree(u8),
     Felled(u8, bool),
     Stock(ResourceKindTag, u8),
+    /// Water plants: how much is left, and the water level in tenths so they ride on it.
+    Floating(u8, i16),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResourceKindTag {
     Mud,
     Plant,
+    Pebbles,
 }
 
 /// A felled tree falls before its logs show: the standing tree is drawn again, tipping toward
@@ -353,14 +357,17 @@ fn spawn_topple(commands: &mut Commands, models: &Models, sim: &sim::SimState, r
     commands.spawn((SimEntity, Mesh3d(models.tree(sp, season, 0)), MeshMaterial3d(models.tree_tints[variant].clone()), tr, super::Topple { start: now, base: tr }));
 }
 
-pub fn res_sig(r: &sim::resources::Resource) -> ResSig {
-    let q = |n: f32| ((r.amount / r.max_amount.max(1e-3)).clamp(0.0, 1.0) * n).ceil() as u8;
-    match r.kind {
-        ResourceKind::Tree => ResSig::Tree(r.stage().map_or(2, |s| s as u8)),
-        ResourceKind::Felled => ResSig::Felled(r.amount.ceil().clamp(0.0, 3.0) as u8, r.branches > 0.0),
-        ResourceKind::MudBank => ResSig::Stock(ResourceKindTag::Mud, q(8.0)),
-        ResourceKind::RiverClay => ResSig::Stock(ResourceKindTag::Mud, q(8.0).max(1)),
-        ResourceKind::Plant => ResSig::Stock(ResourceKindTag::Plant, q(4.0)),
+/// `depth` is the water over the resource's cell; only water plants use it. The rest is the
+/// simulation's own account of how the resource looks, which is also what it reports changes of.
+pub fn res_sig(r: &sim::resources::Resource, depth: f32) -> ResSig {
+    use sim::resources::Look;
+    match r.look() {
+        Look::Tree(stage) => ResSig::Tree(stage as u8),
+        Look::Felled(logs, branches) => ResSig::Felled(logs, branches),
+        Look::Clay(q) => ResSig::Stock(ResourceKindTag::Mud, q),
+        Look::Plant(q) => ResSig::Stock(ResourceKindTag::Plant, q),
+        Look::Pebbles(q) => ResSig::Stock(ResourceKindTag::Pebbles, q),
+        Look::WaterPlant(q) => ResSig::Floating(q, (depth * 10.0).round() as i16),
     }
 }
 
@@ -381,11 +388,28 @@ fn species_of(r: &sim::resources::Resource) -> Species {
     }
 }
 
+/// The plants: what shows of them follows the water over their cell as well as their look.
+#[derive(Default)]
+struct Plants {
+    /// Each plant, the tile its cell is in, and whether it floats (a water plant).
+    at: Vec<(ResourceId, usize, bool)>,
+    known: HashSet<ResourceId>,
+    /// Each tile's water stamps when its plants were last looked at (`plant_water`), and the
+    /// stamps of the whole grids then.
+    tiles: Vec<(u64, u64)>,
+    grids: Option<[(u64, u64); 3]>,
+}
+
 #[derive(Default)]
 pub struct WorldSync {
     seed: Option<(u64, u32)>,
     time: f64,
     res: HashMap<ResourceId, (Entity, ResSig)>,
+    /// How many of the simulation's noted changes have been drawn, and the sources it had
+    /// only guessed at then.
+    drawn: Option<u64>,
+    guessed: Vec<ResourceId>,
+    plants: Plants,
     bld: HashMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
     anchors: HashMap<BuildingId, f32>,
     lodges: HashMap<u64, (Entity, f32)>,
@@ -402,7 +426,7 @@ pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
 }
 
 fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Season) -> (Handle<Mesh>, Vec3, Option<TreeLod>) {
-    let sig = res_sig(r);
+    let sig = res_sig(r, 0.0);
     let c = r.cell;
     let hash_scale = 0.8 + 0.4 * hash01(c.0, c.1, 5);
     let k = WORLD_SCALE;
@@ -415,12 +439,14 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
             (models.tree(sp, season, 0), stage_scale(st) * tree * hash_scale, Some(TreeLod { species: sp, lod: 0, season, cutaway: false }))
         }
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), None),
+        ResSig::Floating(q, _) => (models.water_plant.clone(), Vec3::splat(0.75 * (0.45 + 0.55 * q as f32 / 4.0)), None),
         ResSig::Stock(tag, q) => {
-            let n = if tag == ResourceKindTag::Plant { 4.0 } else { 8.0 };
+            let n = if tag == ResourceKindTag::Mud { 8.0 } else { 4.0 };
             let s = 0.45 + 0.55 * (q as f32 / n);
             let (mesh, base) = match tag {
                 ResourceKindTag::Mud => (models.mud.clone(), 0.62),
                 ResourceKindTag::Plant => (models.plant.clone(), 0.5),
+                ResourceKindTag::Pebbles => (models.pebbles.clone(), 0.9),
             };
             (mesh, Vec3::splat(base * s), None)
         }
@@ -430,7 +456,13 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
 fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3) -> Transform {
     let c = r.cell;
     let p = cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
-    let y = height_at(&sim.height, p.x, p.y) - if r.kind == ResourceKind::Tree { 0.05 } else { 0.0 };
+    let ground = height_at(&sim.height, p.x, p.y);
+    // Water plants float on the surface, so they rise and fall with the water.
+    let y = match r.kind {
+        ResourceKind::Tree => ground - 0.05,
+        ResourceKind::WaterPlant => ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0),
+        _ => ground,
+    };
     let yaw = hash01(c.0, c.1, 9) * std::f32::consts::TAU;
     Transform::from_xyz(p.x, y, p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(scale)
 }
@@ -443,6 +475,67 @@ fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<Standar
     } else { models.white.clone() }
 }
 
+/// A plant under water, or on a riverbed, does not show. Both are taken in the steps the
+/// simulation stamps its tiles by, so a plant is looked at again exactly when this can change.
+fn hidden(sim: &sim::SimState, r: &sim::resources::Resource) -> bool {
+    r.kind == ResourceKind::Plant
+        && (sim.water.depth.get(r.cell.0, r.cell.1).is_some_and(|&d| sim::water::shore_step(d) > 0)
+            || sim.water.riverbed.get(r.cell.0, r.cell.1).is_some_and(|&b| (b * sim::water::RIVERBED_STEPS).round() > 3.0))
+}
+
+/// Draw one resource as it now is: spawn it, change its model, or leave it.
+fn show_resource(commands: &mut Commands, res: &mut HashMap<ResourceId, (Entity, ResSig)>, models: &Models, sim: &sim::SimState, r: &sim::resources::Resource, season: models::Season, now: f32) {
+    let sig = res_sig(r, sim.water.depth.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0));
+    match res.get(&r.id).copied() {
+        Some((_, old)) if old == sig => {}
+        Some((e, old)) => {
+            if matches!(old, ResSig::Tree(_)) && matches!(sig, ResSig::Felled(..)) && !r.snag {
+                spawn_topple(commands, models, sim, r, season, now);
+            }
+            let (mesh, scale, lod) = res_visual(models, r, season);
+            let mut ec = commands.entity(e);
+            let tr = res_transform(sim, r, scale);
+            // A new model needs new bounds for picking and culling.
+            ec.insert((Mesh3d(mesh), MeshMaterial3d(material_for(models, r)), tr)).remove::<bevy::camera::primitives::Aabb>();
+            match lod {
+                Some(l) => ec.insert((l, Sway(tr.rotation))),
+                None => ec.remove::<(TreeLod, Sway)>(),
+            };
+            res.insert(r.id, (e, sig));
+        }
+        None => {
+            let (mesh, scale, lod) = res_visual(models, r, season);
+            let tr = res_transform(sim, r, scale);
+            let mut ec = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(material_for(models, r)), tr));
+            if let Some(l) = lod {
+                ec.insert((l, Sway(tr.rotation)));
+            }
+            if matches!(r.kind, ResourceKind::Tree | ResourceKind::Felled) {
+                ec.insert(Target::Resource(r.id));
+            }
+            let e = ec.id();
+            res.insert(r.id, (e, sig));
+        }
+    }
+}
+
+/// Each tile's water stamps, as far as plants care: the water's edge and the riverbed, for
+/// plants on land; the depth, for those that float on it.
+fn plant_water(sim: &sim::SimState) -> Vec<(u64, u64)> {
+    let (depth, edge, bed) = (&sim.water.depth, &sim.water.shore, &sim.water.riverbed);
+    let (cols, rows) = (depth.width().div_ceil(sim::grid::TILE), depth.height().div_ceil(sim::grid::TILE));
+    let mix = |a: u64, b: u64| (a ^ b).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
+    (0..cols * rows)
+        .map(|t| {
+            let (x, y) = (t % cols, t / cols);
+            (mix(mix(mix(edge.origin(), edge.tile_stamp(x, y)), bed.origin()), bed.tile_stamp(x, y)), mix(depth.origin(), depth.tile_stamp(x, y)))
+        })
+        .collect()
+}
+
+/// Trees, plants and deposits. The simulation notes each one that is added, removed or comes
+/// to look different, and stamps the tiles where water changed, so only those are looked at;
+/// all of them are compared only at the start, or when the notes no longer reach back.
 pub(super) fn sync_sim_resources(
     mut commands: Commands,
     sim: Res<Sim>,
@@ -451,6 +544,7 @@ pub(super) fn sync_sim_resources(
     flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>,
     clock: Res<super::RenderClock>,
 ) {
+    let _p = ::sim::prof::scope("game/sync sim resources");
     let Some(models) = models else { return };
     let generation = flow.map_or(0, |f| f.generation);
     let sim = &sim.0;
@@ -459,61 +553,80 @@ pub(super) fn sync_sim_resources(
             commands.entity(e).despawn();
         }
         st.seed = Some((sim.seed, generation));
-        st.time = f64::NEG_INFINITY;
+        st.drawn = None;
     }
-    if sim.time_days == st.time && !st.res.is_empty() {
-        return;
-    }
-    st.time = sim.time_days;
-    let mut live: HashSet<ResourceId> = HashSet::with_capacity(sim.resources.items.len());
+    let st = &mut *st;
     let no_trees = std::env::var_os("BC_NO_TREES").is_some();
-    for r in sim.resources.items.iter().filter(|r| !(no_trees && r.kind == ResourceKind::Tree)) {
-        if r.kind == ResourceKind::Plant && (
-            sim.water.depth.get(r.cell.0, r.cell.1).is_some_and(|&d| d > 0.003)
-            || sim.water.riverbed.get(r.cell.0, r.cell.1).is_some_and(|&b| b > 0.2)
-        ) {
-            continue;
-        }
-        live.insert(r.id);
-        let sig = res_sig(r);
-        match st.res.get(&r.id).copied() {
-            Some((_, old)) if old == sig => {}
-            Some((e, old)) => {
-                if matches!(old, ResSig::Tree(_)) && matches!(sig, ResSig::Felled(..)) && !r.snag {
-                    spawn_topple(&mut commands, &models, sim, r, season.0, clock.0);
+    let shown = |r: &sim::resources::Resource| !(no_trees && r.kind == ResourceKind::Tree) && !hidden(sim, r);
+    let tile_of = |r: &sim::resources::Resource| (r.cell.1 / sim::grid::TILE) * sim.water.depth.width().div_ceil(sim::grid::TILE) + r.cell.0 / sim::grid::TILE;
+    let changes = sim.resources.changes();
+    let water = [sim.water.depth.stamp(), sim.water.shore.stamp(), sim.water.riverbed.stamp()];
+    let noted = st.drawn.and_then(|drawn| changes.since(drawn)).filter(|_| !st.res.is_empty());
+    match noted {
+        None => {
+            // Everything, once: what is there, and which of it are plants.
+            let _p = ::sim::prof::scope("game/sync sim resources/all of them");
+            st.plants = Plants::default();
+            let mut live: HashSet<ResourceId> = HashSet::with_capacity(sim.resources.items().len());
+            for r in sim.resources.items() {
+                if r.kind.is_food_plant() {
+                    st.plants.known.insert(r.id);
+                    st.plants.at.push((r.id, tile_of(r), r.kind == ResourceKind::WaterPlant));
                 }
-                let (mesh, scale, lod) = res_visual(&models, r, season.0);
-                let mut ec = commands.entity(e);
-                let tr = res_transform(sim, r, scale);
-                // A new model needs new bounds for picking and culling.
-                ec.insert((Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), tr)).remove::<bevy::camera::primitives::Aabb>();
-                match lod {
-                    Some(l) => ec.insert((l, Sway(tr.rotation))),
-                    None => ec.remove::<(TreeLod, Sway)>(),
-                };
-                st.res.insert(r.id, (e, sig));
+                if shown(r) {
+                    live.insert(r.id);
+                    show_resource(&mut commands, &mut st.res, &models, sim, r, season.0, clock.0);
+                }
             }
-            None => {
-                let (mesh, scale, lod) = res_visual(&models, r, season.0);
-                let tr = res_transform(sim, r, scale);
-                let mut ec = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(material_for(&models, r)), tr));
-                if let Some(l) = lod {
-                    ec.insert((l, Sway(tr.rotation)));
+            let gone: Vec<ResourceId> = st.res.keys().copied().filter(|id| !live.contains(id)).collect();
+            for id in gone {
+                if let Some((e, _)) = st.res.remove(&id) {
+                    commands.entity(e).despawn();
                 }
-                if matches!(r.kind, ResourceKind::Tree | ResourceKind::Felled) {
-                    ec.insert(Target::Resource(r.id));
+            }
+            st.plants.tiles = plant_water(sim);
+        }
+        Some(noted) => {
+            let mut look: Vec<ResourceId> = noted.chain(st.guessed.drain(..)).collect();
+            if st.plants.grids != Some(water) {
+                // Water was written somewhere: the plants in the tiles where it was.
+                let now = plant_water(sim);
+                let was = &st.plants.tiles;
+                let moved = |t: usize, floats: bool| now.len() != was.len() || if floats { now[t].1 != was[t].1 } else { now[t].0 != was[t].0 };
+                look.extend(st.plants.at.iter().filter(|(_, t, floats)| moved(*t, *floats)).map(|(id, _, _)| *id));
+                st.plants.tiles = now;
+            }
+            look.sort_unstable();
+            look.dedup();
+            let mut lost = false;
+            for id in look {
+                let r = sim.resources.get(id);
+                match r {
+                    Some(r) if r.kind.is_food_plant() => {
+                        if st.plants.known.insert(id) {
+                            st.plants.at.push((id, tile_of(r), r.kind == ResourceKind::WaterPlant));
+                        }
+                    }
+                    _ => lost |= st.plants.known.remove(&id),
                 }
-                let e = ec.id();
-                st.res.insert(r.id, (e, sig));
+                match r.filter(|r| shown(r)) {
+                    Some(r) => show_resource(&mut commands, &mut st.res, &models, sim, r, season.0, clock.0),
+                    None => {
+                        if let Some((e, _)) = st.res.remove(&id) {
+                            commands.entity(e).despawn();
+                        }
+                    }
+                }
+            }
+            if lost {
+                let known = &st.plants.known;
+                st.plants.at.retain(|(id, _, _)| known.contains(id));
             }
         }
     }
-    let gone: Vec<ResourceId> = st.res.keys().copied().filter(|id| !live.contains(id)).collect();
-    for id in gone {
-        if let Some((e, _)) = st.res.remove(&id) {
-            commands.entity(e).despawn();
-        }
-    }
+    st.plants.grids = Some(water);
+    st.drawn = Some(changes.count());
+    st.guessed = changes.guesses().collect();
 }
 
 pub fn model_kind(k: BuildingKind) -> StructKind {
@@ -521,6 +634,10 @@ pub fn model_kind(k: BuildingKind) -> StructKind {
         BuildingKind::Dam => StructKind::Dam,
         BuildingKind::Shelter => StructKind::Lodge,
         BuildingKind::Warehouse => StructKind::Warehouse,
+        BuildingKind::Larder => StructKind::Larder,
+        BuildingKind::Toolshed => StructKind::Toolshed,
+        BuildingKind::Forester => StructKind::Forester,
+        BuildingKind::Logistics => StructKind::Logistics,
         BuildingKind::Canal => StructKind::Canal,
     }
 }
@@ -532,12 +649,13 @@ pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 
 #[derive(Default)]
 pub struct ReinforcementSync {
     generation: Option<(u64,u32)>,
-    drawn: HashMap<BuildingId,(Entity,f32)>,
-    meshes: HashMap<BuildingKind,Handle<Mesh>>,
+    drawn: HashMap<(BuildingId,bool),(Entity,f32)>,
+    meshes: HashMap<(BuildingKind,bool),Handle<Mesh>>,
 }
 
 pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<crate::flow::Flow>,models:Option<Res<Models>>,
     mut meshes:ResMut<Assets<Mesh>>,mut state:Local<ReinforcementSync>) {
+    let _p = ::sim::prof::scope("game/sync reinforcements");
     let Some(models)=models else{return};let s=&sim.0;
     let generation=(s.seed,flow.generation);
     if state.generation!=Some(generation) {
@@ -545,21 +663,24 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
         state.generation=Some(generation);
     }
     let mut live=HashSet::new();
-    for b in s.buildings.buildings.iter().filter(|b|b.reinforced) {
-        live.insert(b.id);
+    // Clay reinforcement and pebble facing, each its own ring round the footing.
+    let layers=s.buildings.buildings.iter().flat_map(|b|[(b,false,b.reinforced),(b,true,b.kind!=BuildingKind::Dam&&s.buildings.pebbled.contains(&b.id))]).filter(|l|l.2);
+    for (b,pebbled,_) in layers {
+        let key=(b.id,pebbled);
+        live.insert(key);
         // Rises with the building when the pond does, never down.
-        let was=state.drawn.get(&b.id).map(|v|v.1);
+        let was=state.drawn.get(&key).map(|v|v.1);
         let tr=building_transform(s,b,was);
-        if let Some(&(e,y))=state.drawn.get(&b.id) {
+        if let Some(&(e,y))=state.drawn.get(&key) {
             if tr.translation.y>y+0.01 {
                 commands.entity(e).insert(tr);
-                state.drawn.insert(b.id,(e,tr.translation.y));
+                state.drawn.insert(key,(e,tr.translation.y));
             }
             continue;
         }
-        let handle=state.meshes.entry(b.kind).or_insert_with(||meshes.add(models::reinforcement_mesh(model_kind(b.kind)))).clone();
+        let handle=state.meshes.entry((b.kind,pebbled)).or_insert_with(||meshes.add(if pebbled {models::pebble_facing_mesh(model_kind(b.kind))} else {models::reinforcement_mesh(model_kind(b.kind))})).clone();
         let entity=commands.spawn((Target::Building(b.id),SimEntity,Mesh3d(handle),MeshMaterial3d(models.white.clone()),tr)).id();
-        state.drawn.insert(b.id,(entity,tr.translation.y));
+        state.drawn.insert(key,(entity,tr.translation.y));
     }
     let gone:Vec<_>=state.drawn.keys().copied().filter(|id|!live.contains(id)).collect();
     for id in gone {if let Some((e,_))=state.drawn.remove(&id){commands.entity(e).despawn();}}
@@ -613,6 +734,7 @@ mod building_height_tests {
 }
 
 pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<WorldSync>) {
+    let _p = ::sim::prof::scope("game/sync sim buildings");
     let Some(mut models) = models else { return };
     let changed = sim.is_changed();
     let generation = flow.map_or(0, |f| f.generation);
@@ -835,8 +957,10 @@ pub struct DamCellVis {
 }
 
 /// Every dam cell as it should look: staked, rising beside its pile, or done, as its stretch
-/// of a continuous wall. A worn cell is drawn as low as the water now finds it.
-pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
+/// of a continuous wall. A worn cell is drawn as low as the water now finds it. With each,
+/// whether it belongs to no dam (a gate, a leftover): such a cell faces the lower water, which
+/// can change sides, where a dam's cells face downstream.
+fn dam_walls(sim: &sim::SimState) -> HashMap<(usize, usize), (DamCellVis, bool)> {
     let w = sim.water.dam_height.width();
     let mut cells: HashMap<(usize, usize), (f32, DamStage)> = HashMap::new();
     let integrity = |c: (usize, usize)| sim.water.dam_integrity.get(c.0, c.1).copied().unwrap_or(1.0).clamp(0.0, 1.0);
@@ -875,9 +999,27 @@ pub fn dam_cells(sim: &sim::SimState) -> HashMap<(usize, usize), DamCellVis> {
         .filter_map(|(&c, &(d, stage))| {
             let (piece, down) = *pieces.get(&c)?;
             let steps = (d / DAM_STEP).round().clamp(1.0, 16.0) as u8;
-            Some((c, DamCellVis { steps, stage, piece, flip: faces_downstream(sim, c, &piece, down) }))
+            Some((c, (DamCellVis { steps, stage, piece, flip: faces_downstream(sim, c, &piece, down) }, down.is_none())))
         })
         .collect()
+}
+
+/// Changes whenever a dam does: the simulation's stamps of the two dam grids, and every
+/// planned dam's cells and heights.
+fn dams_key(sim: &sim::SimState) -> ((u64, u64), (u64, u64), u64) {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut add = |v: u64| h = (h ^ v).wrapping_mul(0x100_0000_01b3);
+    for b in &sim.buildings.buildings {
+        let Some(d) = b.dam.as_deref() else { continue };
+        add(b.id.0);
+        add(d.rows as u64);
+        add(d.downstream.0 as u64 ^ (d.downstream.1 as u64) << 32);
+        for c in &d.cells {
+            add(c.cell.0 as u64 ^ (c.cell.1 as u64) << 24 ^ (c.row as u64) << 48);
+            add(c.target.to_bits() as u64);
+        }
+    }
+    (sim.water.dam_height.stamp(), sim.water.dam_integrity.stamp(), h)
 }
 
 #[derive(Default)]
@@ -885,6 +1027,9 @@ pub struct DamSync {
     seed: Option<(u64, u32)>,
     time: f64,
     cells: HashMap<(usize, usize), (Entity, DamCellVis)>,
+    /// The walls as last worked out, and the `dams_key` they were worked out for.
+    walls: HashMap<(usize, usize), (DamCellVis, bool)>,
+    key: Option<((u64, u64), (u64, u64), u64)>,
 }
 
 /// Where a piece of wall stands in the world, turned to its line (and round, if flipped).
@@ -896,6 +1041,7 @@ fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn
 }
 
 pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>) {
+    let _p = ::sim::prof::scope("game/sync sim dams");
     let Some(mut models) = models else { return };
     let generation = flow.map_or(0, |f| f.generation);
     let changed = sim.is_changed();
@@ -911,7 +1057,24 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
         return;
     }
     st.time = sim.time_days;
-    let want = dam_cells(sim);
+    let st = &mut *st;
+    let key = dams_key(sim);
+    if st.key != Some(key) {
+        st.walls = dam_walls(sim);
+        st.key = Some(key);
+    } else {
+        // No dam changed: only the cells that turn to face the lower water can have.
+        let mut turned = false;
+        for (c, (vis, _)) in st.walls.iter_mut().filter(|(_, (_, loose))| *loose) {
+            let flip = faces_downstream(sim, *c, &vis.piece, None);
+            turned |= flip != vis.flip;
+            vis.flip = flip;
+        }
+        if !turned && st.cells.len() == st.walls.len() {
+            return;
+        }
+    }
+    let want: HashMap<(usize, usize), DamCellVis> = st.walls.iter().map(|(c, (vis, _))| (*c, *vis)).collect();
     let gone: Vec<(usize, usize)> = st.cells.iter().filter(|(c, (_, v))| want.get(*c) != Some(v)).map(|(c, _)| *c).collect();
     for c in gone {
         if let Some((e, _)) = st.cells.remove(&c) {
@@ -956,6 +1119,7 @@ pub(super) fn sync_dam_ghosts(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut st: Local<GhostSync>,
 ) {
+    let _p = ::sim::prof::scope("game/sync dam ghosts");
     let Some(mut models) = models else { return };
     let sim = &sim.0;
     let mut want: HashMap<(usize, usize), (u8, Piece, bool, bool)> = HashMap::new();

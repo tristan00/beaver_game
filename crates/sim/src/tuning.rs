@@ -17,8 +17,8 @@ pub mod water {
     pub const RAIN: f32 = 0.002;
     pub const EVAPORATION: f32 = 0.002;
     pub const SEEPAGE: f32 = 0.002;
-    pub const DAM_DECAY_PER_DAY: f32 = 0.002;
-    pub const OVERTOP_EROSION: f32 = 1.0;
+    pub const DAM_DECAY_PER_DAY: f32 = 0.001;
+    pub const OVERTOP_EROSION: f32 = 0.5;
     pub const OVERTOP_DEPTH: f32 = 0.15;
     pub const ICE_GROWTH_PER_DAY: f32 = 0.1;
     pub const ICE_MELT_PER_DAY: f32 = 0.15;

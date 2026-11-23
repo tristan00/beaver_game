@@ -104,11 +104,6 @@ fn beavers(c: &Ctx, u: &mut Ui) {
 /// Who does what: one row per kind of work, its beavers as tokens and open places as rings.
 fn work(c: &Ctx, u: &mut Ui) {
     let s = c.s;
-    u.row(8.0, |r| {
-        r.spacer();
-        let auto = s.work.auto_organise;
-        r.pebble(Icon::Jobs, 15.0, HudAction::AutoStaff(!auto), if auto { Peb::Good } else { Peb::Idle }).tip(Tip::name("Auto-staffing").with_value(if auto { "On" } else { "Off" }).line("Free beavers fill open work", ""));
-    });
     for row in sim::jobs::jobs_board(s) {
         let role = row.role;
         u.row(8.0, |r| {
@@ -124,13 +119,7 @@ fn work(c: &Ctx, u: &mut Ui) {
             });
             r.spacer();
             let add = match sim::jobs::role_add_preview(s, role) {
-                Some(p) => {
-                    let who = s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default();
-                    match p.from {
-                        Some((_, from)) => Tip::name("Add one").line(who, format!("from {}", role_kind_name(from).to_lowercase())),
-                        None => Tip::name("Add one").line(who, "free"),
-                    }
-                }
+                Some(p) => Tip::name("Add one").line(s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default(), "free"),
                 None => Tip::name("No one to add"),
             };
             r.pebble(Icon::Minus, 10.0, HudAction::RoleAdjust(role, -1), Peb::Idle).tip(Tip::name("Free one"));

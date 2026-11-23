@@ -1,4 +1,5 @@
 use crate::grid::Grid;
+pub use crate::inventory::Kind;
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
@@ -14,11 +15,11 @@ mod access_tests {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Good { Food, Sticks, Clay }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum Good { Food, Sticks, Clay, Pebbles, Saplings }
 
 impl Good {
-    pub const ALL: [Good; 3] = [Good::Food, Good::Sticks, Good::Clay];
+    pub const ALL: [Good; 5] = [Good::Food, Good::Sticks, Good::Clay, Good::Pebbles, Good::Saplings];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -28,7 +29,7 @@ const N: usize = Good::ALL.len();
 
 pub type Amount = (Good, f32);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StoresError {
     InvalidAmount(f32),
     Insufficient { good: Good, needed: f32, have: f32 },
@@ -49,14 +50,14 @@ fn check_amount(a: f32) -> Result<(), StoresError> {
     if a.is_finite() && a >= 0.0 { Ok(()) } else { Err(StoresError::InvalidAmount(a)) }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Producer {
     Building(BuildingId),
     Order,
     Other,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Use {
     EatenAdults,
     EatenYearlings,
@@ -92,7 +93,7 @@ impl Use {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Stores {
     pub(crate) inventory: crate::inventory::Inventory,
     capacity: [f32; N],
@@ -136,6 +137,12 @@ impl Stores {
         self.consumed_total[good.index()] += amount;
         self.consumed_by[Use::Sites.index()][good.index()] += amount;
     }
+    /// Book carried goods used up away from any store, such as a sapling planted.
+    pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
+        self.tick_consumed[good.index()] += amount;
+        self.consumed_total[good.index()] += amount;
+        self.consumed_by[use_.index()][good.index()] += amount;
+    }
     pub fn amount(&self, g: Good) -> f32 {
         self.inventory.total(g)
     }
@@ -149,8 +156,16 @@ impl Stores {
         self.deposit_by(g, amount, Producer::Other)
     }
 
+    /// For the session journal: one store transaction and the stock it leaves.
+    fn note(&self, op: &str, g: Good, asked: f32, moved: f32, detail: std::fmt::Arguments) {
+        if (asked > 0.0 || moved > 0.0) && crate::trace::enabled() {
+            crate::trace::event(format!("STORE {op} {} good={g:?} asked={asked:.3} moved={moved:.3} stock={:.2}/{:.0} {detail}", crate::trace::sim_stamp(), self.amount(g), self.capacity(g)));
+        }
+    }
+
     pub fn deposit_by(&mut self, g: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_raw(g, amount)?;
+        self.note("DEPOSIT", g, amount, taken, format_args!("by={who:?}"));
         self.tick_produced[g.index()] += taken;
         self.produced_total[g.index()] += taken;
         if taken > 0.0 {
@@ -160,7 +175,9 @@ impl Stores {
     }
 
     pub fn withdraw_for(&mut self, g: Good, amount: f32, use_: Use) -> Result<(), StoresError> {
-        self.take_raw(g, amount)?;
+        let r = self.take_raw(g, amount);
+        self.note("WITHDRAW", g, amount, if r.is_ok() { amount } else { 0.0 }, format_args!("use={use_:?} result={r:?}"));
+        r?;
         self.tick_consumed[g.index()] += amount;
         self.consumed_total[g.index()] += amount;
         self.consumed_by[use_.index()][g.index()] += amount;
@@ -168,13 +185,15 @@ impl Stores {
     }
 
     pub fn refund(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
-        self.put_raw(g, amount)
+        let r = self.put_raw(g, amount);
+        self.note("REFUND", g, amount, *r.as_ref().unwrap_or(&0.0), format_args!(""));
+        r
     }
 
     pub(crate) fn put_raw(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(g));
-        self.inventory.put(crate::agents::SUPPLIES, g, taken);
+        self.inventory.put(crate::agents::SUPPLIES, g, None, taken);
         Ok(taken)
     }
     pub(crate) fn take_raw(&mut self, g: Good, amount: f32) -> Result<(), StoresError> {
@@ -189,17 +208,37 @@ impl Stores {
 
     /// Transfer from a physical store into a carried load. This is not consumption.
     pub fn take_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> f32 {
-        self.inventory.take(owner, good, amount)
+        let got = self.inventory.take(owner, good, amount);
+        self.note("TAKE", good, amount, got, format_args!("from={}", owner.0));
+        got
+    }
+    /// Take a load of one kind, such as saplings of one species, and say which kind.
+    pub fn take_kind_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> (f32, Kind) {
+        let got = self.inventory.take_kind(owner, good, amount);
+        self.note("TAKE", good, amount, got.0, format_args!("from={} kind={:?}", owner.0, got.1));
+        got
+    }
+    /// One store's stock of a good, kind by kind: saplings by species.
+    pub fn kinds_at(&self, owner: BuildingId, good: Good) -> Vec<(Kind, f32)> {
+        self.inventory.kinds(owner, good)
     }
     /// Return existing cargo, without recording new production.
     pub fn put_at(&mut self, owner: BuildingId, good: Good, amount: f32) -> Result<f32, StoresError> {
+        self.put_kind_at(owner, good, None, amount)
+    }
+    pub fn put_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(good));
-        self.inventory.put(owner, good, taken);
+        self.inventory.put(owner, good, kind, taken);
+        self.note("PUT", good, amount, taken, format_args!("into={} kind={kind:?}", owner.0));
         Ok(taken)
     }
     pub fn produce_at(&mut self, owner: BuildingId, good: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
-        let taken = self.put_at(owner, good, amount)?;
+        self.produce_kind_at(owner, good, None, amount, who)
+    }
+    pub fn produce_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32, who: Producer) -> Result<f32, StoresError> {
+        let taken = self.put_kind_at(owner, good, kind, amount)?;
+        self.note("PRODUCED", good, amount, taken, format_args!("into={} by={who:?}", owner.0));
         self.tick_produced[good.index()] += taken;
         self.produced_total[good.index()] += taken;
         *self.produced_by.entry((who, good)).or_default() += taken;
@@ -207,6 +246,7 @@ impl Stores {
     }
     pub fn consume_from(&mut self, owner: BuildingId, good: Good, amount: f32, use_: Use) -> f32 {
         let taken = self.take_from(owner, good, amount);
+        self.note("CONSUMED", good, amount, taken, format_args!("from={} use={use_:?}", owner.0));
         self.tick_consumed[good.index()] += taken;
         self.consumed_total[good.index()] += taken;
         self.consumed_by[use_.index()][good.index()] += taken;
@@ -225,15 +265,19 @@ impl Stores {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum BuildingKind {
     Dam,
     Shelter,
     Warehouse,
     Canal,
+    Larder,
+    Toolshed,
+    Forester,
+    Logistics,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Site {
     /// Part of the footprint stands in water at least `WET_DEPTH` deep.
     TouchesWater,
@@ -249,19 +293,19 @@ impl BuildingKind {
         matches!(self, BuildingKind::Dam | BuildingKind::Canal)
     }
 
-    pub const ALL: [BuildingKind; 4] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal];
+    pub const ALL: [BuildingKind; 8] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics];
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BuildingId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     Site,
     Complete,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Building {
     pub id: BuildingId,
     pub kind: BuildingKind,
@@ -293,7 +337,7 @@ impl Building {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BuildError {
     SupplyPile,
     Unexplored,
@@ -330,11 +374,13 @@ impl Terrain<'_> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Buildings {
     pub stores: Stores,
     pub buildings: Vec<Building>,
     pub water_bound: std::collections::BTreeSet<BuildingId>,
+    /// Dams and buildings faced with pebbles.
+    pub pebbled: std::collections::BTreeSet<BuildingId>,
     next_id: u64,
 }
 

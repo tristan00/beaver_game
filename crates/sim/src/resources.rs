@@ -5,42 +5,52 @@ use crate::worldgen::World;
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ResourceId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ResourceKind {
     Tree,
     Felled,
     Plant,
     MudBank,
     RiverClay,
+    /// Pebble beds, in clusters on high dry ground; heavy to carry.
+    Pebbles,
+    /// Water lilies and pond weed in shallow still water: few, but rich in food.
+    WaterPlant,
 }
 
 impl ResourceKind {
     pub fn gather_sources(self) -> &'static [ResourceKind] {
         match self {
             Self::Tree | Self::Felled => &[Self::Felled, Self::Tree],
-            Self::Plant => &[Self::Plant, Self::Felled, Self::Tree],
+            Self::Plant | Self::WaterPlant => &[Self::Plant, Self::WaterPlant, Self::Felled, Self::Tree],
             Self::MudBank | Self::RiverClay => &[Self::RiverClay, Self::MudBank],
+            Self::Pebbles => &[Self::Pebbles],
         }
     }
     pub fn yields(self) -> &'static [Good] {
         match self {
             ResourceKind::Tree => &[],
             ResourceKind::Felled => &[Good::Sticks, Good::Food],
-            ResourceKind::Plant => &[Good::Food],
+            ResourceKind::Plant | ResourceKind::WaterPlant => &[Good::Food],
             ResourceKind::MudBank => &[Good::Clay],
             ResourceKind::RiverClay => &[Good::Clay],
+            ResourceKind::Pebbles => &[Good::Pebbles],
         }
     }
     pub fn is_solid(self) -> bool {
-        matches!(self, ResourceKind::Tree)
+        matches!(self, ResourceKind::Tree | ResourceKind::Pebbles)
+    }
+    /// Food plants, on land or in water: they regrow and stay when eaten bare.
+    pub fn is_food_plant(self) -> bool {
+        matches!(self, ResourceKind::Plant | ResourceKind::WaterPlant)
     }
 }
 
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResourceError {
     NoSuchResource,
     WrongKind,
@@ -48,7 +58,7 @@ pub enum ResourceError {
     TooYoung,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Resource {
     pub id: ResourceId,
     pub kind: ResourceKind,
@@ -65,7 +75,42 @@ pub struct Resource {
     pub species: Option<crate::trees::Tree>,
 }
 
+/// What can be seen of a source: its kind, and how much of it there is in the steps it is
+/// drawn in. Sources that look alike have equal looks; one whose look has not changed needs no
+/// redrawing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Tree(crate::forestry::TreeStage),
+    /// Logs left (0 to 3), and whether there are branches.
+    Felled(u8, bool),
+    /// Eighths of the clay left; a river's clay bed never shows less than one.
+    Clay(u8),
+    /// Quarters left.
+    Plant(u8),
+    Pebbles(u8),
+    WaterPlant(u8),
+}
+
+/// How full, in `steps` steps, rounded up.
+fn fill(amount: f32, max_amount: f32, steps: f32) -> u8 {
+    let full = (amount / max_amount.max(1e-3)).clamp(0.0, 1.0) * steps;
+    let whole = full as u8;
+    whole + (full > whole as f32) as u8
+}
+
 impl Resource {
+    pub fn look(&self) -> Look {
+        let q = |steps: f32| fill(self.amount, self.max_amount, steps);
+        match self.kind {
+            ResourceKind::Tree => Look::Tree(self.stage().unwrap_or(crate::forestry::TreeStage::Mature)),
+            ResourceKind::Felled => Look::Felled(self.amount.ceil().clamp(0.0, 3.0) as u8, self.branches > 0.0),
+            ResourceKind::MudBank => Look::Clay(q(8.0)),
+            ResourceKind::RiverClay => Look::Clay(q(8.0).max(1)),
+            ResourceKind::Plant => Look::Plant(q(4.0)),
+            ResourceKind::Pebbles => Look::Pebbles(q(4.0)),
+            ResourceKind::WaterPlant => Look::WaterPlant(q(4.0)),
+        }
+    }
     pub fn is_solid(&self) -> bool {
         self.kind.is_solid() && !(self.kind == ResourceKind::Tree && self.stage() == Some(crate::forestry::TreeStage::Sapling))
     }
@@ -78,11 +123,66 @@ impl Resource {
     }
 }
 
+/// The sources that were added, removed or came to look different (`Resource::look`), oldest
+/// first. Whoever draws them keeps up by reading what was noted since it last looked, instead
+/// of comparing every source. Only so many notes are kept: a reader further behind than that
+/// is told so, and looks at everything once.
 #[derive(Clone, Debug, Default)]
+pub struct Changes {
+    /// How many notes were dropped from the front.
+    dropped: u64,
+    ids: std::collections::VecDeque<ResourceId>,
+    /// Notes from this count on are guesses (see `SimState::guess_ahead`).
+    guessed: Option<u64>,
+}
+
+impl Changes {
+    const KEPT: usize = 8192;
+
+    fn note(&mut self, id: ResourceId) {
+        self.ids.push_back(id);
+        if self.ids.len() > Self::KEPT {
+            self.ids.pop_front();
+            self.dropped += 1;
+        }
+    }
+
+    fn noted(&self) -> u64 { self.dropped + self.ids.len() as u64 }
+
+    /// How many changes the simulation has noted. Keep it, and hand it to `since` next time.
+    pub fn count(&self) -> u64 { self.guessed.unwrap_or(self.noted()) }
+
+    /// The sources noted after the first `count` changes, guesses included; `None` if the
+    /// list no longer reaches back that far (or `count` came from another world).
+    pub fn since(&self, count: u64) -> Option<impl Iterator<Item = ResourceId> + '_> {
+        (count >= self.dropped && count <= self.noted()).then(|| self.ids.iter().skip((count - self.dropped) as usize).copied())
+    }
+
+    /// The sources this copy of the world only guesses have changed: look at them again when
+    /// the simulation's next word arrives, whatever it says.
+    pub fn guesses(&self) -> impl Iterator<Item = ResourceId> + '_ {
+        let from = self.guessed.map_or(self.ids.len(), |g| g.saturating_sub(self.dropped) as usize);
+        self.ids.iter().skip(from).copied()
+    }
+
+    pub(crate) fn guess_ahead(&mut self) {
+        self.guessed.get_or_insert(self.dropped + self.ids.len() as u64);
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ResourceWorld {
-    pub items: Vec<Resource>,
+    /// In order of id. Private so that every change to a source passes through a method
+    /// here, which notes it in `changes`.
+    items: Vec<Resource>,
+    #[serde(skip)]
+    changes: Changes,
     pub river_clay_gathered: f32,
     pub river_clay_recovered: f32,
+    /// Water plants are set out once, when the starting water has settled.
+    pub water_plants_seeded: bool,
+    /// Write changes to the session journal (off while the world is first filled in).
+    pub log_changes: bool,
     next_id: u64,
     nav_revision: u64,
 }
@@ -104,6 +204,16 @@ pub fn is_bank(world: &World, cell: Cell) -> bool {
 
 pub fn is_wet(world: &World, (x, y): Cell) -> bool {
     !is_water(world, (x, y)) && world.moisture.get(x, y).is_some_and(|&m| m >= WET_MOISTURE)
+}
+
+/// For the session journal: one resource and what happened to it.
+pub fn note(what: &str, r: &Resource, detail: std::fmt::Arguments) {
+    if crate::trace::enabled() {
+        crate::trace::event(format!(
+            "RESOURCE_{what} {} id={} kind={:?} cell=({},{}) amount={:.2} branches={:.2} bark={:.2} age_days={:.0} species={:?} snag={} wet={} {detail}",
+            crate::trace::sim_stamp(), r.id.0, r.kind, r.cell.0, r.cell.1, r.amount, r.branches, r.bark, r.age_days, r.species, r.snag, r.wet
+        ));
+    }
 }
 
 impl ResourceWorld {
@@ -132,9 +242,13 @@ impl ResourceWorld {
             if near_river && !in_bed(c) && river_spots.iter().all(|&b|distance(c,b)>=RIVER_CLAY_SPACING) {river_spots.push(c);}
             if river_spots.len()>=RIVER_CLAY_SPOTS {break;}
         }
+        let pebbles = pebble_cells(world, &mut unit);
         for y in 0..n {for x in 0..n {
             let cell=(x,y);
-            if let Some(Some(sp)) = world.forest.get(x,y).copied() {
+            if pebbles.contains(&cell) {
+                out.add(ResourceKind::Pebbles,cell,PEBBLE_AMOUNT);
+
+            } else if let Some(Some(sp)) = world.forest.get(x,y).copied() {
                 out.add_tree(cell,crate::forestry::start_age(seed,cell),sp);
             } else if river_spots.contains(&cell) {
                 out.add(ResourceKind::RiverClay,cell,RIVER_CLAY_INITIAL);
@@ -159,9 +273,52 @@ impl ResourceWorld {
     pub fn get(&self, id: ResourceId) -> Option<&Resource> {
         self.index_of(id).map(|i| &self.items[i])
     }
+    /// Every source, in order of id.
+    pub fn items(&self) -> &[Resource] { &self.items }
+    /// What has changed, for whoever draws the sources.
+    pub fn changes(&self) -> &Changes { &self.changes }
+    pub(crate) fn guess_ahead(&mut self) { self.changes.guess_ahead(); }
+
+    /// A source to change, noted as changed whether or not it comes to look different.
     pub(crate) fn get_mut(&mut self, id: ResourceId) -> Result<&mut Resource, ResourceError> {
         let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
+        self.changes.note(id);
         Ok(&mut self.items[i])
+    }
+    /// Note the source at this place in `items` if it no longer looks as it did (`was`).
+    fn note_look(&mut self, i: usize, was: Look) {
+        if self.items[i].look() != was {
+            self.changes.note(self.items[i].id);
+        }
+    }
+    /// Change any of the sources, noting those that come to look different.
+    pub(crate) fn each_mut(&mut self, mut f: impl FnMut(&mut Resource)) {
+        for r in &mut self.items {
+            let was = r.look();
+            f(r);
+            if r.look() != was {
+                self.changes.note(r.id);
+            }
+        }
+    }
+    /// Remove the sources `keep` turns down.
+    pub(crate) fn keep(&mut self, mut keep: impl FnMut(&Resource) -> bool) {
+        let changes = &mut self.changes;
+        self.items.retain(|r| {
+            let stays = keep(r);
+            if !stays {
+                changes.note(r.id);
+            }
+            stays
+        });
+    }
+    /// Remove the source at this place in `items`.
+    pub(crate) fn remove_at(&mut self, i: usize) -> Resource {
+        self.changes.note(self.items[i].id);
+        self.items.remove(i)
+    }
+    pub fn clear(&mut self) {
+        self.keep(|_| false);
     }
     pub fn at(&self, cell: Cell) -> impl Iterator<Item = &Resource> {
         self.items.iter().filter(move |r| r.cell == cell)
@@ -174,7 +331,15 @@ impl ResourceWorld {
         if !work.is_finite() || work < 0.0 {
             return Err(ResourceError::InvalidAmount);
         }
-        let r = self.get_mut(id)?;
+        let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
+        let was = self.items[i].look();
+        let out = self.fell_at(i, work);
+        self.note_look(i, was);
+        out
+    }
+
+    fn fell_at(&mut self, i: usize, work: f32) -> Result<bool, ResourceError> {
+        let r = &mut self.items[i];
         if r.kind != ResourceKind::Tree {
             return Err(ResourceError::WrongKind);
         }
@@ -190,6 +355,8 @@ impl ResourceWorld {
         r.max_amount = logs;
         r.branches = branches;
         r.bark = bark;
+        let log = self.log_changes;
+        if log { note("FELLED", &self.items[i], format_args!("")); }
         self.nav_revision = self.nav_revision.wrapping_add(1);
         Ok(true)
     }
@@ -198,12 +365,21 @@ impl ResourceWorld {
         if !want.is_finite() || want < 0.0 {
             return Err(ResourceError::InvalidAmount);
         }
-        let r = self.get_mut(id)?;
+        let i = self.index_of(id).ok_or(ResourceError::NoSuchResource)?;
+        let was = self.items[i].look();
+        let out = self.strip_at(i, want);
+        self.note_look(i, was);
+        out
+    }
+
+    fn strip_at(&mut self, i: usize, want: f32) -> Result<(Good, f32), ResourceError> {
+        let r = &mut self.items[i];
         if r.kind != ResourceKind::Felled {
             return Err(ResourceError::WrongKind);
         }
         let got = want.min(r.bark);
         r.bark -= got;
+        if self.log_changes { note("STRIPPED", &self.items[i], format_args!("asked={want:.3} got={got:.3}")); }
         Ok((Good::Food, got))
     }
 
@@ -211,14 +387,23 @@ impl ResourceWorld {
         if !want.is_finite() || want <= 0.0 {
             return None;
         }
-        let r = self.get_mut(id).ok()?;
+        let i = self.index_of(id)?;
+        let was = self.items[i].look();
+        let out = self.take_at(i, want);
+        self.note_look(i, was);
+        out
+    }
+
+    fn take_at(&mut self, i: usize, want: f32) -> Option<(Good, f32)> {
+        let r = &mut self.items[i];
         let (good, slot) = match r.kind {
             ResourceKind::Tree => return None,
             ResourceKind::Felled if r.amount > 0.0 => (Good::Sticks, &mut r.amount),
             ResourceKind::Felled => (Good::Sticks, &mut r.branches),
-            ResourceKind::Plant => (Good::Food, &mut r.amount),
+            ResourceKind::Plant | ResourceKind::WaterPlant => (Good::Food, &mut r.amount),
             ResourceKind::MudBank => (Good::Clay, &mut r.amount),
             ResourceKind::RiverClay => (Good::Clay, &mut r.amount),
+            ResourceKind::Pebbles => (Good::Pebbles, &mut r.amount),
         };
         let got = want.min(*slot);
         if got <= 0.0 {
@@ -226,6 +411,7 @@ impl ResourceWorld {
         }
         *slot -= got;
         if r.kind == ResourceKind::RiverClay { self.river_clay_gathered += got; }
+        if self.log_changes { note("TAKEN", &self.items[i], format_args!("good={good:?} asked={want:.3} got={got:.3}")); }
         Some((good, got))
     }
 
@@ -236,18 +422,46 @@ impl ResourceWorld {
         let growth = crate::calendar::vegetation_growth(time_days - dt_days as f64 * 0.5);
         let decay = WINTER_PLANT_DECAY_PER_DAY * (1.0-growth);
         let survival = (-decay*dt_days).exp();
-        for r in self.items.iter_mut().filter(|r| r.kind == ResourceKind::Plant) {
-            let rate = if r.wet { PLANT_REGROW_PER_DAY*growth } else {0.0};
-            r.amount = if decay > 1e-7 {
-                r.amount*survival + rate/decay*(1.0-survival)
-            } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
+        let keep = |r: &Resource| r.kind.is_food_plant() || r.kind == ResourceKind::RiverClay || r.has_yield();
+        // One pass over every source: plants grow, clay beds refill, and whether any is used up.
+        let mut any_gone = false;
+        let changes = &mut self.changes;
+        // A plant or clay bed is noted when its amount crosses a step it is drawn in (most
+        // stand at their full amount, and nothing else changes here).
+        let mut grew = |r: &Resource, was: f32, steps: f32| {
+            if r.amount.to_bits() != was.to_bits() && fill(was, r.max_amount, steps) != fill(r.amount, r.max_amount, steps) {
+                changes.note(r.id);
+            }
+        };
+        for r in self.items.iter_mut() {
+            if r.kind.is_food_plant() {
+                let was = r.amount;
+                let tend = if r.tended_days > 0.0 { crate::forestry::TENDED_GROWTH } else { 1.0 };
+                r.tended_days = (r.tended_days - dt_days).max(0.0);
+                let regrow = if r.kind == ResourceKind::WaterPlant { WATER_PLANT_REGROW_PER_DAY } else { PLANT_REGROW_PER_DAY };
+                let rate = if r.wet { regrow*growth*tend } else {0.0};
+                r.amount = if decay > 1e-7 {
+                    r.amount*survival + rate/decay*(1.0-survival)
+                } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
+                grew(r, was, 4.0);
+            } else if r.kind == ResourceKind::RiverClay {
+                let before = r.amount;
+                r.amount=river_clay_amount(r.amount,r.max_amount,r.wet,dt_days);
+                self.river_clay_recovered += r.amount - before;
+                grew(r, before, 8.0);
+            }
+            any_gone |= !keep(r);
         }
-        for r in self.items.iter_mut().filter(|r|r.kind==ResourceKind::RiverClay) {
-            let before = r.amount;
-            r.amount=river_clay_amount(r.amount,r.max_amount,r.wet,dt_days);
-            self.river_clay_recovered += r.amount - before;
+        if !any_gone {
+            return Ok(());
         }
-        self.items.retain(|r| matches!(r.kind,ResourceKind::Plant | ResourceKind::RiverClay) || r.has_yield());
+        let before = self.items.len();
+        let solid_gone = self.items.iter().any(|r| r.kind == ResourceKind::Pebbles && !r.has_yield());
+        if self.log_changes {
+            for r in self.items.iter().filter(|r| !keep(r)) { note("GONE", r, format_args!("why=used up")); }
+        }
+        self.keep(keep);
+        if solid_gone && self.items.len() != before { self.nav_revision = self.nav_revision.wrapping_add(1); }
         Ok(())
     }
 
@@ -256,7 +470,9 @@ impl ResourceWorld {
         self.nav_revision = self.nav_revision.wrapping_add(1);
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
+        self.changes.note(id);
         self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0, species: None });
+        if self.log_changes { note("NEW", self.items.last().expect("just added"), format_args!("")); }
         id
     }
 
@@ -271,6 +487,50 @@ impl ResourceWorld {
         id
     }
 
+}
+
+/// A few pebble beds on the highest, steepest dry ground near water, well apart.
+fn pebble_cells(world: &World, unit: &mut impl FnMut() -> f32) -> std::collections::HashSet<Cell> {
+    let n = world.size;
+    let dry = |c: Cell| !is_water(world, c) && !is_bank(world, c) && world.moisture.get(c.0, c.1).is_some_and(|&m| m < WET_MOISTURE);
+    // Steps from the nearest water, so a tool shed on the bank can reach the bed.
+    let mut reach = vec![usize::MAX; n * n];
+    let mut queue = std::collections::VecDeque::new();
+    for y in 0..n { for x in 0..n { if is_water(world, (x, y)) { reach[y * n + x] = 0; queue.push_back((x, y)); } } }
+    while let Some((x, y)) = queue.pop_front() {
+        let d = reach[y * n + x];
+        if d >= PEBBLE_WATER_REACH { continue; }
+        for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+            if nx < n && ny < n && reach[ny * n + nx] == usize::MAX { reach[ny * n + nx] = d + 1; queue.push_back((nx, ny)); }
+        }
+    }
+    let mut spots: Vec<(f32, Cell)> = Vec::new();
+    let edge = 6;
+    for y in (edge..n.saturating_sub(edge)).step_by(3) {
+        for x in (edge..n.saturating_sub(edge)).step_by(3) {
+            if !dry((x, y)) || reach[y * n + x] > PEBBLE_WATER_REACH { continue; }
+            let h = world.height.get(x, y).copied().unwrap_or(0.0);
+            let slope = world.slope.get(x, y).copied().unwrap_or(0.0);
+            spots.push((h + 20.0 * slope + 4.0 * unit(), (x, y)));
+        }
+    }
+    spots.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut centres: Vec<Cell> = Vec::new();
+    for &(_, c) in &spots {
+        if centres.iter().all(|&o| distance(c, o) >= PEBBLE_SPACING) { centres.push(c); }
+        if centres.len() >= PEBBLE_OUTCROPS { break; }
+    }
+    let r = PEBBLE_RADIUS.ceil() as usize;
+    let mut out = std::collections::HashSet::new();
+    for c in centres {
+        for y in c.1.saturating_sub(r)..=(c.1 + r).min(n - 1) {
+            for x in c.0.saturating_sub(r)..=(c.0 + r).min(n - 1) {
+                let fill = if (x, y) == c { 1.0 } else { PEBBLE_FILL };
+                if distance((x, y), c) <= PEBBLE_RADIUS && dry((x, y)) && unit() < fill { out.insert((x, y)); }
+            }
+        }
+    }
+    out
 }
 
 fn distance(a:Cell,b:Cell)->f32 {

@@ -56,8 +56,11 @@ const OCEAN: u32 = u32::MAX - 1;
 
 type Version = ((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Equilibrium {
+    /// Which rebuild the drainage tables come from: a copy holding the same one keeps its own.
+    #[serde(skip)]
+    built: u64,
     version: Option<Version>,
     n: usize,
     zbed: Vec<f32>,
@@ -86,8 +89,20 @@ pub(super) struct Equilibrium {
     pools: Vec<Pool>,
     pool_of: Vec<u32>,
     carry: Vec<(u32, f64)>,
-    // Per step.
+    // Per step. Work known when the step begins is sorted once into `seeds`; `heap` takes
+    // only what turns up while routing. Together they pop in the order one heap would.
     heap: BinaryHeap<(u64, u32)>,
+    #[serde(skip)]
+    seeds: Vec<(u64, u32)>,
+    #[serde(skip)]
+    seeds_asked: Vec<(u64, u32)>,
+    #[serde(skip)]
+    seeds_prev: Vec<(u64, u32)>,
+    #[serde(skip)]
+    seeding: bool,
+    /// Worked out again when needed; a copy starts without them.
+    #[serde(skip)]
+    lake_orders: Vec<LakeOrder>,
     pend: Vec<f64>,
     inq: Vec<bool>,
     vstamp: Vec<u64>,
@@ -118,7 +133,55 @@ pub(super) struct Equilibrium {
     prev_y: Vec<u32>,
 }
 
-#[derive(Clone, Debug)]
+/// `Clone` field by field, as `grid::clone_fields`, but with the tables that only a rebuild
+/// writes copied just when the copy holds those of another rebuild. They are most of the
+/// engine's memory, and a snapshot is taken many times a second.
+macro_rules! clone_split {
+    ($t:ident, $stamp:ident, built { $($s:ident),* }, moving { $($d:ident),* }, scratch { $($c:ident),* }) => {
+        impl Clone for $t {
+            fn clone(&self) -> Self {
+                let $t { $stamp, $($s,)* $($d,)* $($c: _),* } = self;
+                $t { $stamp: *$stamp, $($s: $s.clone(),)* $($d: $d.clone(),)* $($c: Default::default()),* }
+            }
+            fn clone_from(&mut self, src: &Self) {
+                let $t { $stamp, $($s,)* $($d,)* $($c: _),* } = src;
+                if *$stamp == 0 || self.$stamp != *$stamp {
+                    $( self.$s.clone_from($s); )*
+                    self.$stamp = *$stamp;
+                }
+                $( self.$d.clone_from($d); )*
+            }
+        }
+    };
+}
+
+fn next_build() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+clone_split!(Equilibrium, built, built { zbed, recv, key, slope, own_of, pit_leaf, outlet, lake_cells, deps, dcells, dbeds, dprefix }, moving { version, n, own, slow, full, lvl, dirty, wet_deps, wet_flag, store, wet, pools, pool_of, carry, heap, seeds, seeds_asked, seeds_prev, seeding, pend, inq, vstamp, s0, iacc, oacc, touched, dstamp, dfwd, dcnt, crests, dinq, lake_roots, stamp, dt, last_dt, fresh, written, wmark, fx, fy, cx, cy, faces_x, faces_y, prev_x, prev_y }, scratch { lake_orders });
+
+/// A lake's cells in map order (see `lake_order`).
+#[derive(Clone, Debug, Default)]
+struct LakeOrder {
+    top: u32,
+    built: u64,
+    /// Own cells are listed up to this level.
+    upto: f64,
+    cells: Vec<LakeCell>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LakeCell {
+    cell: u32,
+    /// One of the top depression's own cells, under water only below the level; the rest lie
+    /// in depressions merged beneath it and are always under.
+    own: bool,
+    bed: f64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Dep {
     parent: u32,
     kids: [u32; 2],
@@ -138,7 +201,7 @@ struct Dep {
     lake: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Pool {
     cells: Vec<u32>,
     beds: Vec<f64>,
@@ -273,8 +336,12 @@ impl Equilibrium {
         self.pend[c as usize] += rate;
         if !self.inq[c as usize] {
             self.inq[c as usize] = true;
-            self.heap.push((self.key[c as usize], c));
+            self.queue((self.key[c as usize], c));
         }
+    }
+
+    fn queue(&mut self, work: (u64, u32)) {
+        if self.seeding { self.seeds_asked.push(work) } else { self.heap.push(work) }
     }
 
     fn dtouch(&mut self, d: usize) {
@@ -294,7 +361,7 @@ impl Equilibrium {
         if !self.dinq[d] {
             self.dinq[d] = true;
             let k = hkey(self.deps[d].zmin, 0);
-            self.heap.push((k, nn + d as u32));
+            self.queue((k, nn + d as u32));
         }
     }
 
@@ -383,6 +450,56 @@ impl Equilibrium {
         }
     }
 
+    /// The list of top lake `t`'s cells in map order, good for level `l`: its own cells up to
+    /// a little above the level, and everything in the depressions merged under it. Passes
+    /// over a whole lake run along the map's rows this way, instead of jumping from cell to
+    /// cell in order of bed height. Made again when the lake outgrows it or falls well below.
+    fn lake_order(&mut self, t: usize, l: f64) -> usize {
+        /// How far above the level the list reaches when made (m).
+        const ROOM: f64 = 0.25;
+        /// How far below its reach the level may fall before the list is cut down (m).
+        const SLACK: f64 = 1.0;
+        if self.lake_orders.iter().any(|o| o.built != self.built) {
+            self.lake_orders.clear();
+        }
+        let at = match self.lake_orders.iter().position(|o| o.top == t as u32) {
+            Some(at) if l < self.lake_orders[at].upto && l > self.lake_orders[at].upto - SLACK => return at,
+            Some(at) => at,
+            None => {
+                self.lake_orders.push(LakeOrder { top: t as u32, built: self.built, upto: 0.0, cells: Vec::new() });
+                self.lake_orders.len() - 1
+            }
+        };
+        let upto = l + ROOM;
+        let mut cells = std::mem::take(&mut self.lake_orders[at].cells);
+        cells.clear();
+        let mut stack = vec![t];
+        let mut own = true;
+        while let Some(d) = stack.pop() {
+            let dep = &self.deps[d];
+            let (s, mut e) = (dep.start as usize, dep.end as usize);
+            if own {
+                e = s + self.dbeds[s..e].partition_point(|&b| b < upto);
+            }
+            cells.extend((s..e).map(|k| LakeCell { cell: self.dcells[k], own, bed: self.dbeds[k] }));
+            own = false;
+            if dep.kids[0] != NONE {
+                stack.push(dep.kids[0] as usize);
+                stack.push(dep.kids[1] as usize);
+            }
+        }
+        cells.sort_unstable_by_key(|c| c.cell);
+        let order = &mut self.lake_orders[at];
+        (order.upto, order.cells) = (upto, cells);
+        at
+    }
+
+    /// Order-free lists put in one order, so that equal waters encode equally (for comparing
+    /// two runs).
+    pub(super) fn canonical(&mut self) {
+        self.written.sort_unstable();
+    }
+
     fn width(q: f64) -> f64 {
         (WIDTH_A * q.max(0.0).sqrt()).clamp(WIDTH_MIN, WIDTH_MAX)
     }
@@ -396,6 +513,10 @@ impl Equilibrium {
     }
 
     pub(super) fn prepare(&mut self, w: &mut Water, sync: bool) {
+        if self.built == 0 {
+            // Tables read from a save: name them, so copies can tell they hold the same.
+            self.built = next_build();
+        }
         let (terrain, dam) = w.bed_version.unwrap();
         let version = (terrain, dam, w.closed_edge.version(), w.lake_level.version(), w.config.open_edges);
         if self.version == Some(version) && !sync {
@@ -419,9 +540,11 @@ impl Equilibrium {
             (h, c)
         };
         if self.version != Some(version) {
+            let _p = crate::prof::scope("step/water/engine prepare/rebuild drainage");
             self.rebuild(w);
             self.version = Some(version);
         }
+        let _p = crate::prof::scope("step/water/engine prepare/refill");
         self.init(w, h, correction, !first);
     }
 
@@ -454,6 +577,7 @@ impl Equilibrium {
     }
 
     fn rebuild(&mut self, w: &Water) {
+        self.built = next_build();
         let n = w.n;
         let nn = n * n;
         self.n = n;
@@ -1082,7 +1206,7 @@ impl Equilibrium {
             self.pools[p].stamp = self.stamp;
             self.pools[p].fwd = 0.0;
         }
-        self.heap.push((self.pools[p].key, nn + self.deps.len() as u32 + p as u32));
+        self.queue((self.pools[p].key, nn + self.deps.len() as u32 + p as u32));
     }
 
     pub(super) fn advance(&mut self, w: &mut Water, seconds: f64) {
@@ -1107,6 +1231,8 @@ impl Equilibrium {
         let manning = w.config.manning as f64;
         let nn = (self.n * self.n) as u32;
         let nd = self.deps.len() as u32;
+        self.seeds_asked.clear();
+        self.seeding = true;
         for k in 0..w.source_cells.len() {
             let i = w.source_cells[k];
             let q = w.src[i] as f64 * area;
@@ -1144,8 +1270,26 @@ impl Equilibrium {
                 self.schedule_pool(p);
             }
         }
+        self.seeding = false;
+        // The same work as last step (the usual case) is already in order.
+        if self.seeds_asked != self.seeds_prev {
+            self.seeds.clone_from(&self.seeds_asked);
+            self.seeds.sort_unstable_by(|a, b| b.cmp(a));
+            std::mem::swap(&mut self.seeds_prev, &mut self.seeds_asked);
+        }
         let mut pops = 0u64;
-        while let Some((_, id)) = self.heap.pop() {
+        let mut next = 0;
+        let _route = crate::prof::scope("step/water/engine advance/route");
+        loop {
+            // The larger of the next seed and the heap's top, as one heap would pop them.
+            let id = match (self.seeds.get(next).copied(), self.heap.peek().copied()) {
+                (None, None) => break,
+                (Some(s), top) if top.is_none_or(|t| s >= t) => {
+                    next += 1;
+                    s.1
+                }
+                _ => self.heap.pop().expect("peeked").1,
+            };
             pops += 1;
             if id < nn {
                 self.visit(w, id as usize, dt, manning);
@@ -1156,6 +1300,8 @@ impl Equilibrium {
                 self.solve_pool((id - nn - nd) as usize, dt);
             }
         }
+        drop(_route);
+        crate::prof::count("step/water/engine advance/route/cells", pops);
         w.timings.cell_updates += pops;
         self.wet.clear();
         for k in 0..self.touched.len() {
@@ -1324,11 +1470,33 @@ impl Equilibrium {
         }
         let pool = &self.pools[p];
         let total = pool.vol + pool.fwd;
-        let q = |v: f64| super::WEIR as f64 * POOL_WEIR_M * (Self::pool_level(pool, v) - pool.crest).max(0.0).powf(1.5);
+        // What the outlet weir passes in this step with `v` left in the pool.
+        let k = super::WEIR as f64 * POOL_WEIR_M * dt;
+        let spill = |v: f64| {
+            let head = (Self::pool_level(pool, v) - pool.crest).max(0.0);
+            k * head * head.sqrt()
+        };
+        // The volume left, v + spill(v) = total, bracketed from both sides: secant steps
+        // (Illinois) with a bisection every third, to well within the water's own rounding.
         let (mut lo, mut hi) = (0.0, total);
-        for _ in 0..60 {
-            let mid = 0.5 * (lo + hi);
-            if mid + q(mid) * dt > total { hi = mid } else { lo = mid }
+        let (mut under, mut over) = (-total, spill(total));
+        let (mut side, mut tries) = (0i8, 0u32);
+        while over > 0.0 && hi - lo > 1.0e-13 * total && tries < 90 {
+            tries += 1;
+            let mut mid = hi - over * (hi - lo) / (over - under);
+            if tries % 3 == 0 || !(mid > lo && mid < hi) {
+                mid = 0.5 * (lo + hi);
+            }
+            let excess = mid + spill(mid) - total;
+            if excess > 0.0 {
+                (hi, over) = (mid, excess);
+                if side == 1 { under *= 0.5; }
+                side = 1;
+            } else {
+                (lo, under) = (mid, excess);
+                if side == -1 { over *= 0.5; }
+                side = -1;
+            }
         }
         let end = hi;
         let head = Self::pool_level(pool, end) - pool.crest;
@@ -1356,7 +1524,7 @@ impl Equilibrium {
     }
 
     pub(super) fn environment(&mut self, w: &mut Water, days: f64) {
-        w.update_riverbed(days as f32);
+        { let _p = crate::prof::scope("step/water/engine weather/riverbed"); w.update_riverbed(days as f32); }
         let forcing = w.forcing();
         let area = (w.cell_m * w.cell_m) as f64;
         let r = forcing.rain as f64 * days;
@@ -1370,16 +1538,15 @@ impl Equilibrium {
             (ev, inf.min((depth + r - ev).max(0.0)))
         };
         let (mut rain, mut evap, mut seep) = (0.0, 0.0, 0.0);
+        let _lakes = crate::prof::scope("step/water/engine weather/lakes");
         let tops = self.tops();
-        let mut cells = Vec::new();
         for t in tops {
             let l = self.level(t);
-            cells.clear();
-            self.covered(t, l, &mut cells);
+            let at = self.lake_order(t, l);
             let (mut rn, mut ev, mut sp) = (0.0, 0.0, 0.0);
-            for &c in &cells {
-                let depth = l - w.z[c as usize] as f64;
-                let (a, b) = loss(c as usize, depth);
+            for c in self.lake_orders[at].cells.iter().filter(|c| !c.own || c.bed < l) {
+                let depth = l - c.bed;
+                let (a, b) = loss(c.cell as usize, depth);
                 rn += r;
                 ev += a;
                 sp += b;
@@ -1398,6 +1565,8 @@ impl Equilibrium {
                 seep += sp * f;
             }
         }
+        drop(_lakes);
+        let _p = crate::prof::scope("step/water/engine weather/pools and reaches");
         for k in 0..self.pools.len() {
             if !self.pools[k].alive {
                 continue;
@@ -1511,21 +1680,22 @@ impl Equilibrium {
         for row in &mut w.rows {
             row.clear();
         }
+        let _lakes = crate::prof::scope("step/water/engine publish/lakes");
+        crate::prof::count("step/water/engine publish/lakes/edge cells", self.lake_cells.len() as u64);
         for k in 0..self.lake_cells.len() {
             let c = self.lake_cells[k] as usize;
             let h = w.lake_level.as_slice()[c] as f64 - w.z[c] as f64;
             self.write(w, c, h);
         }
         let tops = self.tops();
-        let mut cells = Vec::new();
         for t in tops {
             let l = self.level(t);
-            cells.clear();
-            self.covered(t, l, &mut cells);
-            for k in 0..cells.len() {
-                let c = cells[k] as usize;
-                self.write(w, c, l - w.z[c] as f64);
+            let at = self.lake_order(t, l);
+            let lake = std::mem::take(&mut self.lake_orders[at].cells);
+            for c in lake.iter().filter(|c| !c.own || c.bed < l) {
+                self.write(w, c.cell as usize, l - c.bed);
             }
+            self.lake_orders[at].cells = lake;
             let dep = &self.deps[t];
             if dep.parent == NONE && dep.spill.is_finite() && l > dep.spill {
                 let q = if self.dstamp[t] == self.stamp { self.dfwd[t] / self.dt_last() } else { 0.0 };
@@ -1550,6 +1720,8 @@ impl Equilibrium {
                 }
             }
         }
+        drop(_lakes);
+        let _reaches = crate::prof::scope("step/water/engine publish/pools and reaches");
         for k in 0..self.pools.len() {
             if !self.pools[k].alive {
                 continue;
@@ -1629,6 +1801,9 @@ impl Equilibrium {
             }
         }
         self.crests = crests;
+        drop(_reaches);
+        let _p = crate::prof::scope("step/water/engine publish/faces and rows");
+        crate::prof::count("step/water/engine publish/faces and rows/wet cells", self.written.len() as u64);
         let _ = area;
         for k in 0..self.faces_x.len() {
             let f = self.faces_x[k] as usize;
@@ -1646,11 +1821,16 @@ impl Equilibrium {
         std::mem::swap(&mut self.prev_y, &mut self.faces_y);
         self.faces_x.clear();
         self.faces_y.clear();
+        let _rows = crate::prof::scope("step/water/engine publish/faces and rows/row runs");
         let mut span = vec![(u32::MAX, 0u32); n];
+        let width = n as u32;
+        let shift = width.is_power_of_two().then(|| width.trailing_zeros());
         for &c in &self.written {
-            let (x, y) = (c as usize % n, c as usize / n);
-            span[y].0 = span[y].0.min(x as u32);
-            span[y].1 = span[y].1.max(x as u32 + 1);
+            let y = match shift { Some(s) => c >> s, None => c / width };
+            let x = c - y * width;
+            let row = &mut span[y as usize];
+            row.0 = row.0.min(x);
+            row.1 = row.1.max(x + 1);
         }
         for (y, &(a, b)) in span.iter().enumerate() {
             let row = &mut w.rows[y];

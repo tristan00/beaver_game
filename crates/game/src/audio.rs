@@ -172,6 +172,7 @@ fn update_mix(
     vols: Res<AudioVolumes>,
     shared: Res<SharedMix>,
 ) {
+    let _p = ::sim::prof::scope("game/update mix");
     *since += time.delta_secs();
     if *since < 0.1 && !vols.is_changed() {
         return;

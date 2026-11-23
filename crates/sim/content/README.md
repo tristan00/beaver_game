@@ -1,6 +1,6 @@
 # Gameplay data
 
-`game.sqlite3` is the source for gameplay constants and all four building
+`game.sqlite3` is the source for gameplay constants and all building
 definitions. `build.rs` reads and validates the database, then generates Rust
 declarations in Cargo's `OUT_DIR`. Database edits require a rebuild; no database
 queries run during simulation steps.
@@ -12,7 +12,7 @@ queries run during simulation steps.
 | `constant_array`, `constant_range` | Ordered values and inclusive ranges |
 | `building`, `cost`, `slot` | Building footprints, terrain requirements, costs, labour, staffing and capacity |
 | `starting_good` | Initial material supplies |
-| `role_policy` | Default staffing priorities and weights |
+| `role_policy` | Order of the job rows in the colony panel |
 | `name_pool` | Beaver and family names |
 
 For example, change how many sticks a gate needs using SQLite:

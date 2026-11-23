@@ -81,12 +81,12 @@ fn diggers_work_far_end_first_and_the_gate_cell_last() {
     let mut s = pond_and_bank();
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
     assert_eq!(s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Canal).count(), 1);
-    assert_eq!(next_job(&s, id, &[]), Some(((24, 20), false)));
-    assert_eq!(next_job(&s, id, &[(24, 20)]), Some(((23, 20), false)), "a claimed cell is skipped");
+    assert_eq!(next_job(&s, id, &[], false), Some(((24, 20), false)));
+    assert_eq!(next_job(&s, id, &[(24, 20)], false), Some(((23, 20), false)), "a claimed cell is skipped");
     let k = canal(&s, id).unwrap();
     let gate = k.gate.cell;
     let all_but_gate: Vec<Cell> = k.cells.iter().map(|c| c.cell).filter(|&c| c != gate).collect();
-    assert_eq!(next_job(&s, id, &all_but_gate), Some((gate, false)));
+    assert_eq!(next_job(&s, id, &all_but_gate, false), Some((gate, false)));
 }
 
 #[test]
@@ -94,13 +94,13 @@ fn a_visit_digs_one_step_and_leaves_clay_on_the_bank() {
     let mut s = pond_and_bank();
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
     let before = ground(&s, (24, 20));
-    let clay_before: f32 = s.resources.items.iter().filter(|r| r.kind == ResourceKind::MudBank).map(|r| r.amount).sum();
+    let clay_before: f32 = s.resources.items().iter().filter(|r| r.kind == ResourceKind::MudBank).map(|r| r.amount).sum();
     dig(&mut s, id, (24, 20)).unwrap();
     assert!((before - ground(&s, (24, 20)) - DIG_STEP).abs() < 1e-4);
     assert!(*s.water.canal.get(24, 20).unwrap());
-    let clay: f32 = s.resources.items.iter().filter(|r| r.kind == ResourceKind::MudBank).map(|r| r.amount).sum();
+    let clay: f32 = s.resources.items().iter().filter(|r| r.kind == ResourceKind::MudBank).map(|r| r.amount).sum();
     assert!((clay - clay_before - CLAY_PER_STEP).abs() < 1e-4);
-    while cell_needs_work(&s, id, (24, 20)) {
+    while cell_needs_work(&s, id, (24, 20), false) {
         dig(&mut s, id, (24, 20)).unwrap();
     }
     let c = canal(&s, id).unwrap().cells.iter().find(|c| c.cell == (24, 20)).copied().unwrap();
@@ -134,7 +134,7 @@ fn a_gate_change_waits_for_a_visit() {
     s.apply(Command::SetGate { building: id, cell: gate, setting: GateSetting::Open }).unwrap();
     assert_eq!(canal(&s, id).unwrap().gate.setting, GateSetting::Shut, "nothing changes until a beaver visits");
     assert!(has_work(&s, id));
-    assert_eq!(next_job(&s, id, &[]), Some((gate, true)), "the gate visit comes first");
+    assert_eq!(next_job(&s, id, &[], false), Some((gate, true)), "the gate visit comes first");
     turn_gate(&mut s, id).unwrap();
     let k = canal(&s, id).unwrap();
     assert_eq!(k.gate.setting, GateSetting::Open);
@@ -146,7 +146,7 @@ fn silt_fills_an_unkept_canal_and_diggers_clear_a_kept_one() {
     let mut s = pond_and_bank();
     let id = place(&mut s, &route((16, 20), (20, 20))).unwrap();
     let c = (20, 20);
-    while cell_needs_work(&s, id, c) {
+    while cell_needs_work(&s, id, c, false) {
         dig(&mut s, id, c).unwrap();
     }
     let dug = ground(&s, c);
@@ -154,9 +154,10 @@ fn silt_fills_an_unkept_canal_and_diggers_clear_a_kept_one() {
         silt(&mut s, id, 1.0);
     }
     assert!(ground(&s, c) > dug + 0.15, "200 still days of silt raise the bed");
-    assert!(cell_needs_work(&s, id, c), "a silted cell needs clearing while maintained");
+    assert!(cell_needs_work(&s, id, c, true), "a silted cell needs clearing while maintained");
+    assert!(!cell_needs_work(&s, id, c, false), "silt is maintainers' work, not builders'");
     set_maintain(&mut s, id, false).unwrap();
-    assert!(!cell_needs_work(&s, id, c));
+    assert!(!cell_needs_work(&s, id, c, true));
     for _ in 0..2000 {
         silt(&mut s, id, 1.0);
     }

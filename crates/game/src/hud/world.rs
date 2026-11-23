@@ -211,6 +211,7 @@ pub fn world_hover(
     menu: Res<super::MenuOpen>,
     picker: crate::picking::Picker,
 ) {
+    let _p = ::sim::prof::scope("game/world hover");
     let mut model = None;
     let p = (|| {
         if over.0 || menu.0 || cli.report_dir.is_some() {
@@ -390,6 +391,53 @@ pub fn frame_target(cam: &Camera, gt: &GlobalTransform, win: Vec2, s: &sim::SimS
     Some(Vec3::new(p.x + d.x, target.y, p.z + d.z))
 }
 
+/// The drawn bed under a point: the ground, less the channel a river cuts.
+fn bed_y(s: &sim::SimState, x: f32, y: f32) -> f32 {
+    height_at(&s.height, x, y) - crate::terrain_render::channel_cut(s, x.round() as i32, y.round() as i32)
+}
+
+/// Depth contours on the bed near the view, and the shoreline, by marching squares over cell
+/// centres: each line is a level of depth, darker the deeper it lies.
+fn draw_contours(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (usize, usize), r: usize) {
+    let n = s.world.size;
+    let depth = |x: usize, y: usize| s.water.depth.get(x, y).copied().unwrap_or(0.0);
+    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9))];
+    for (i, &l) in crate::terrain_render::CONTOURS.iter().enumerate() {
+        let k = i as f32 / (crate::terrain_render::CONTOURS.len() - 1) as f32;
+        levels.push((l, Color::srgba(0.05 + 0.1 * (1.0 - k), 0.18 + 0.25 * (1.0 - k), 0.35 + 0.2 * (1.0 - k), 0.85)));
+    }
+    let point = |x: f32, y: f32| {
+        let mut v = cell_world(&s.height, (x, y));
+        v.y = bed_y(s, x, y) + 0.05;
+        v
+    };
+    for y in ty.saturating_sub(r)..(ty + r).min(n - 1) {
+        for x in tx.saturating_sub(r)..(tx + r).min(n - 1) {
+            let c = [depth(x, y), depth(x + 1, y), depth(x + 1, y + 1), depth(x, y + 1)];
+            let pos = [(x as f32, y as f32), (x as f32 + 1.0, y as f32), (x as f32 + 1.0, y as f32 + 1.0), (x as f32, y as f32 + 1.0)];
+            for &(level, colour) in &levels {
+                let mut hits = [Vec3::ZERO; 4];
+                let mut k = 0;
+                for e in 0..4 {
+                    let (a, b) = (c[e], c[(e + 1) % 4]);
+                    if (a < level) != (b < level) {
+                        let t = (level - a) / (b - a);
+                        let (pa, pb) = (pos[e], pos[(e + 1) % 4]);
+                        hits[k] = point(pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t);
+                        k += 1;
+                    }
+                }
+                if k >= 2 {
+                    g.line(hits[0], hits[1], colour);
+                }
+                if k == 4 {
+                    g.line(hits[2], hits[3], colour);
+                }
+            }
+        }
+    }
+}
+
 fn cell_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, y: Option<f32>, colour: Color) {
     let (x, z) = (c.0 as f32, c.1 as f32);
     let corners = [(x - 0.5, z - 0.5), (x + 0.5, z - 0.5), (x + 0.5, z + 0.5), (x - 0.5, z + 0.5)];
@@ -470,6 +518,7 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
 }
 
 pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
+    let _p = ::sim::prof::scope("game/draw world overlay");
     let s = &sim.0;
     let h = &s.height;
     let lens = crate::terrain_render::map_lens();
@@ -503,10 +552,33 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
     }
     if lens == MapLens::Forest.code() {
         let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
-        for t in s.resources.items.iter().filter(|t| t.cell.0.abs_diff(tx) <= r && t.cell.1.abs_diff(ty) <= r) {
+        for t in s.resources.items().iter().filter(|t| t.cell.0.abs_diff(tx) <= r && t.cell.1.abs_diff(ty) <= r) {
             if let Some(st) = t.stage() {
                 tree_dot(&mut g, h, t.cell, st);
             }
+        }
+    }
+    if lens == MapLens::Deposits.code() {
+        // Near the view, outline each deposit's cell (on the surface when under water, where
+        // the terrain tint is hidden). Trees stand out on their own.
+        let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
+        let near = |d: &&sim::resources::Resource| d.kind != sim::resources::ResourceKind::Tree && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r;
+        for d in crate::terrain_render::shown_deposits(s).filter(near) {
+            let depth = s.water.depth.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0);
+            let top = (depth > 0.03).then(|| h.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0) + depth);
+            let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
+            cell_outline(&mut g, h, d.cell, top, Color::srgb(cr, cg, cb));
+        }
+    }
+    if lens == MapLens::Underwater.code() {
+        // Lines cover about what the camera sees.
+        let r = (orbit.distance * 1.4).clamp(30.0, 110.0) as usize;
+        let (tx, ty) = (tx.max(0.0) as usize, ty.max(0.0) as usize);
+        draw_contours(&mut g, s, (tx, ty), r);
+        // Outline what lies on the bed, at the bed.
+        for d in s.resources.items().iter().filter(|d| d.has_yield() && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r && crate::terrain_render::underwater_deposit(s, d)) {
+            let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
+            cell_outline(&mut g, h, d.cell, Some(bed_y(s, d.cell.0 as f32, d.cell.1 as f32)), Color::srgb(cr, cg, cb));
         }
     }
     if let Some((b, d)) = match *sel { Selection::Site(id) => s.buildings.building(id).and_then(|b| b.dam.as_deref().map(|d| (b, d))), _ => None } {
@@ -628,7 +700,7 @@ fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Opt
         };
         shoreline(g, h, cells, level + 0.06, FOAM);
         let flooded: std::collections::HashSet<Cell> = cells.iter().copied().collect();
-        for t in s.resources.items.iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && flooded.contains(&r.cell)) {
+        for t in s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && flooded.contains(&r.cell)) {
             if build_logic::is_wet(s, t.cell.0, t.cell.1) {
                 continue;
             }

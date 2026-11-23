@@ -2,10 +2,10 @@ include!(concat!(env!("OUT_DIR"), "/society_constants.rs"));
 use crate::colony::Colony;
 use crate::tuning::colony::{JOIN_ADULT_SHARE, JOIN_MAX_PENDING, JOIN_REQUESTS_PER_YEAR};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct RequestId(pub u64);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct JoinRequest {
     pub id: RequestId,
     pub name: String,
@@ -14,19 +14,19 @@ pub struct JoinRequest {
     pub arrived_day: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Answer {
     Accept,
     TurnAway,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SocietyError {
     NoSuchRequest,
     Colony(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Society {
     pub requests: Vec<JoinRequest>,
     next_id: u64,

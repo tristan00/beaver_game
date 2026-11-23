@@ -1,7 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/work_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::jobs::RoleKind;
 
 use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
@@ -35,7 +34,7 @@ mod lifecycle_tests {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Area {
     pub min: Cell,
     pub max: Cell,
@@ -50,27 +49,34 @@ impl Area {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     Collect(crate::resources::ResourceKind),
     Build,
     Haul,
+    /// Clear round food plants and young trees in the area so they grow faster.
+    Tend,
+    /// Plant the store's saplings in the area.
+    Plant,
+    /// Keep it standing: repairs, refits, re-packing a dam's worn cells, clearing canal silt.
+    Maintain,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
     pub role: Role,
     pub worker: Option<BeaverId>,
-    pub locked: bool,
+    /// Switched off by the player: nobody is sent to it.
+    pub off: bool,
 }
 
 impl Slot {
     pub fn empty(role: Role) -> Self {
-        Slot { role, worker: None, locked: false }
+        Slot { role, worker: None, off: false }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Priority {
     Low,
     #[default]
@@ -78,7 +84,7 @@ pub enum Priority {
     High,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Workplace {
     pub building: BuildingId,
     pub kind: BuildingKind,
@@ -103,7 +109,7 @@ impl Workplace {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SiteProgress {
     pub needed: Vec<Amount>,
     pub delivered: Vec<Amount>,
@@ -136,14 +142,14 @@ impl SiteProgress {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HaulOrder {
     pub from: BuildingId,
     pub to: BuildingId,
     pub good: Good,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WorkError {
     NoSuchWorkplace,
     SlotTaken,
@@ -156,19 +162,16 @@ pub enum WorkError {
     InvalidAmount,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
     pub balanced: BTreeSet<BuildingId>,
+    /// Stores the player asked haulers to fill to the brim.
+    pub fills: BTreeSet<BuildingId>,
     pub(crate) inventory: crate::inventory::Inventory,
     pub dam_plans: Vec<DamPlan>,
     pub dam_failures: Vec<(BuildingId, String)>,
-    pub auto_organise: bool,
-    pub managed: BTreeMap<BeaverId, ManagedDuty>,
-    pub role_order: Vec<RoleKind>,
-    pub role_weights: [f32; RoleKind::ALL.len()],
-    pub player_orders: BTreeSet<BeaverId>,
     pub supplies: Option<Cell>,
     pub canal_plans: Vec<CanalPlan>,
     pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
@@ -180,14 +183,10 @@ impl Default for Work {
             places: Vec::new(),
             hauls: Vec::new(),
             balanced: BTreeSet::new(),
+            fills: BTreeSet::new(),
             inventory: Default::default(),
             dam_plans: Vec::new(),
             dam_failures: Vec::new(),
-            auto_organise: false,
-            managed: BTreeMap::new(),
-            role_order: RoleKind::DEFAULT_ORDER.to_vec(),
-            role_weights: DEFAULT_ROLE_WEIGHTS,
-            player_orders: BTreeSet::new(),
             supplies: None,
             canal_plans: Vec::new(),
             homes: BTreeMap::new(),
@@ -195,14 +194,14 @@ impl Default for Work {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CanalPlan {
     pub building: BuildingId,
     pub cells: Vec<Cell>,
     pub depth: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamPlan {
     pub building: BuildingId,
     /// Reuses a completed dam building; cancelling keeps that building.
@@ -211,12 +210,6 @@ pub struct DamPlan {
     pub height: f32,
     pub heights: Vec<f32>,
     pub from: Vec<f32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ManagedDuty {
-    Gather(crate::agents::Assignment),
-    Slot(BuildingId, usize),
 }
 
 impl Work {
@@ -243,33 +236,20 @@ impl Work {
     pub fn unassign(&mut self, b: BuildingId, slot: usize) -> Result<(), WorkError> {
         let s = self.place_mut(b)?.slots.get_mut(slot).ok_or(WorkError::SlotOutOfRange)?;
         s.worker = None;
-        s.locked = false;
         Ok(())
     }
     pub fn vacate(&mut self, who: BeaverId) {
         for p in &mut self.places {
             for s in p.slots.iter_mut().filter(|s| s.worker == Some(who)) {
                 s.worker = None;
-                s.locked = false;
             }
         }
-    }
-    pub fn set_locked(&mut self, who: BeaverId, locked: bool) -> bool {
-        for p in &mut self.places {
-            if let Some(s) = p.slots.iter_mut().find(|s| s.worker == Some(who)) {
-                s.locked = locked;
-                return true;
-            }
-        }
-        false
-    }
-    pub fn is_locked(&self, who: BeaverId) -> bool {
-        self.player_orders.contains(&who) || self.places.iter().any(|p| p.slots.iter().any(|s| s.worker == Some(who) && s.locked))
-    }
-    pub fn role_rank(&self, role: RoleKind) -> usize {
-        self.role_order.iter().position(|r| *r == role).unwrap_or(self.role_order.len())
     }
     pub fn add_site(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
+        self.add_site_for(b, kind, needed, labour, Role::Build)
+    }
+    /// A site whose slots are `role`: builders for new work, maintainers for repairs and refits.
+    pub fn add_site_for(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32, role: Role) -> Result<(), WorkError> {
         if self.place(b).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
@@ -287,7 +267,7 @@ impl Work {
             labour_done: 0.0,
             labour_needed: labour,
         };
-        self.places.push(Workplace::new(b, kind, vec![Slot::empty(Role::Build); SITE_SLOTS], None, Some(site)));
+        self.places.push(Workplace::new(b, kind, vec![Slot::empty(role); SITE_SLOTS], None, Some(site)));
         Ok(())
     }
     fn site_mut(&mut self, b: BuildingId) -> Result<&mut SiteProgress, WorkError> {
@@ -331,12 +311,10 @@ impl Work {
     }
     pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
         let p = self.place_mut(b)?;
-        let builders: Vec<BeaverId> = p.slots.iter().filter_map(|s| s.worker).collect();
         p.slots = slots.iter().map(|&role| Slot::empty(role)).collect();
         p.site = None;
         p.area = area;
         p.max_workers = p.slots.len();
-        self.managed.retain(|id, _| !builders.contains(id));
         Ok(())
     }
     pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
@@ -344,7 +322,7 @@ impl Work {
     }
     #[cfg(test)]
     pub fn stock_add(&mut self, b: BuildingId, good: Good, amount: f32) {
-        self.inventory.put(b, good, amount);
+        self.inventory.put(b, good, None, amount);
     }
     pub fn set_area(&mut self, b: BuildingId, area: Area) -> Result<(), WorkError> {
         if area.min.0 > area.max.0 || area.min.1 > area.max.1 {

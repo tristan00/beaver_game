@@ -5,7 +5,7 @@
 #   tools/gallery_shot.sh WHAT DIST,YAW,PITCH[,DZ,DX] OUT.png [POSE]
 #
 # WHAT is build, beaver or all. DZ/DX shift the camera target from the gallery centre (buildings
-# are at DZ -1 to -10, beavers at +3.5). POSE (0-9) shows that one pose alone. With BC_BURST=N the
+# are at DZ -1 to -28, dam cells at -31, beavers at +3.5). POSE (0-9) shows that one pose alone. With BC_BURST=N the
 # clock runs and N frames are saved (OUT_000.png ...). Build with `cargo build -p game --release`.
 set -euo pipefail
 what=$1; cam=$2; out=$3; pose=${4:-}

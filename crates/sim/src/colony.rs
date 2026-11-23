@@ -78,14 +78,14 @@ mod health_tests {
 const SUBSTEP_DAYS: f32 = 0.5;
 const EVENT_LOG_CAP: usize = 2000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BeaverId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FamilyId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct LodgeId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Sex {
     Male,
     Female,
@@ -100,7 +100,7 @@ impl Sex {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Stage {
     Kit,
     Yearling,
@@ -133,7 +133,7 @@ impl Stage {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Job {
     Forager,
     Logger,
@@ -149,19 +149,20 @@ impl Job {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DeathCause {
     Starvation,
     Cold,
     Injury,
     Exhaustion,
     OldAge,
+    Predator,
 }
 
 const HARM_CAUSES: [DeathCause; 5] =
     [DeathCause::Starvation, DeathCause::Cold, DeathCause::Injury, DeathCause::Exhaustion, DeathCause::OldAge];
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ColonyError {
     InvalidDt(f32),
     Invalid(String),
@@ -211,7 +212,7 @@ impl Landscape for crate::grid::Grid<f32> {
 
 /// A straight river along y = 0, for tests that need water without a map.
 #[cfg(test)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RiverLand {
     pub y: f32,
     pub half_width: f32,
@@ -229,7 +230,7 @@ impl Landscape for RiverLand {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Needs {
     pub food: f32,
     pub rest: f32,
@@ -251,7 +252,7 @@ impl Needs {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Pregnancy {
     pub father: BeaverId,
     pub conceived_day: f64,
@@ -259,7 +260,7 @@ pub struct Pregnancy {
     pub litter: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Beaver {
     pub id: BeaverId,
     pub name: String,
@@ -288,6 +289,13 @@ pub struct Beaver {
 }
 
 impl Beaver {
+    /// Harm taken so far: starvation, cold, injury, exhaustion, old age.
+    pub fn harm(&self) -> [f32; 5] {
+        self.harm
+    }
+    pub fn low_mood_days(&self) -> f32 {
+        self.low_mood_days
+    }
     pub fn age_years(&self) -> f32 {
         self.age_days / DAYS_PER_YEAR as f32
     }
@@ -307,13 +315,13 @@ impl Beaver {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Family {
     pub id: FamilyId,
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Lodge {
     pub id: LodgeId,
     pub family: FamilyId,
@@ -321,7 +329,7 @@ pub struct Lodge {
     pub condition: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     Born { id: BeaverId, family: FamilyId },
     Matured { id: BeaverId, stage: Stage },
@@ -332,19 +340,19 @@ pub enum Event {
     Collapsed(CollapseReport),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LoggedEvent {
     pub day: f64,
     pub event: Event,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CollapseCause {
     Extinct,
     NoAdults,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CollapseReport {
     pub day: f64,
     pub cause: CollapseCause,
@@ -353,7 +361,7 @@ pub struct CollapseReport {
     pub departures: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     pub births: u32,
     pub deaths: u32,
@@ -362,20 +370,20 @@ pub struct Stats {
     pub peak_population: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct SiteEval {
     land_len: f32,
     water_dist: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Work {
     job: Job,
     units: f32,
     eval: SiteEval,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Colony {
     rng: Pcg32,
     pub time_days: f64,
@@ -742,11 +750,22 @@ impl Colony {
             }
         }
         let ids: Vec<BeaverId> = dead.iter().map(|d| d.0).collect();
+        self.trace_last_state("DYING", &dead.iter().map(|d| (d.0, format!("{:?}", d.1))).collect::<Vec<_>>());
         self.stats.deaths += dead.len() as u32;
         self.remove_beavers(&ids);
         for (id, cause, at) in dead {
             self.log(Event::Died { id, cause, at });
         }
+    }
+
+    /// A beaver killed outright, whatever its health (a predator's kill).
+    pub fn kill(&mut self, id: BeaverId, cause: DeathCause) -> bool {
+        let Some(at) = self.beaver(id).map(|b| b.pos) else { return false };
+        self.trace_last_state("DYING", &[(id, format!("{cause:?}"))]);
+        self.stats.deaths += 1;
+        self.remove_beavers(&[id]);
+        self.log(Event::Died { id, cause, at });
+        true
     }
 
     fn depart_unhappy(&mut self) {
@@ -756,10 +775,24 @@ impl Colony {
             .filter(|b| b.stage != Stage::Kit && b.low_mood_days >= DEPARTURE_BAD_MOOD_DAYS)
             .map(|b| b.id)
             .collect();
+        self.trace_last_state("DEPARTING", &leaving.iter().map(|&id| (id, "low mood".to_string())).collect::<Vec<_>>());
         self.stats.departures += leaving.len() as u32;
         self.remove_beavers(&leaving);
         for id in leaving {
             self.log(Event::Departed { id });
+        }
+    }
+
+    /// For the session journal: a beaver's whole record just before it leaves the colony.
+    fn trace_last_state(&self, what: &str, who: &[(BeaverId, String)]) {
+        if !crate::trace::enabled() {
+            return;
+        }
+        let temp = temperature(self.time_days);
+        for (id, why) in who {
+            if let Some(b) = self.beaver(*id) {
+                crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_store={:.1} | {}", self.time_days, self.food, crate::journal::describe(b)));
+            }
         }
     }
 
@@ -891,6 +924,7 @@ impl Colony {
                 continue;
             }
             let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
+            crate::trace::event(format!("CONCEIVED day={:.4} mother={} father={father:?} litter={litter} due_day={:.2} lodge_room={room} food={:.1}", self.time_days, id.0, self.time_days + GESTATION_DAYS, self.food));
             self.beavers.iter_mut().find(|b| b.id == id).unwrap().pregnancy = Some(Pregnancy {
                 father,
                 conceived_day: self.time_days,
@@ -1092,6 +1126,7 @@ impl Colony {
     }
 
     fn set_mates(&mut self, a: BeaverId, b: BeaverId) {
+        crate::trace::event(format!("PAIRED day={:.4} a={} b={}", self.time_days, a.0, b.0));
         for (x, y) in [(a, b), (b, a)] {
             if let Some(v) = self.beavers.iter_mut().find(|v| v.id == x) {
                 v.mate = Some(y);

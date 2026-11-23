@@ -39,7 +39,7 @@ pub(super) fn hotkeys(
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    for (k, l) in [(KeyCode::F1, MapLens::Water), (KeyCode::F2, MapLens::Forest), (KeyCode::F3, MapLens::Elevation)] {
+    for (k, l) in [(KeyCode::F1, MapLens::Water), (KeyCode::F2, MapLens::Forest), (KeyCode::F3, MapLens::Elevation), (KeyCode::F4, MapLens::Deposits), (KeyCode::F5, MapLens::Underwater)] {
         if keys.just_pressed(k) {
             *lens = if *lens == l { MapLens::World } else { l };
         }
@@ -56,6 +56,10 @@ pub(super) fn hotkeys(
             (KeyCode::KeyV, Tool::Canal),
             (KeyCode::KeyX, Tool::Building(BuildingKind::Shelter)),
             (KeyCode::KeyC, Tool::Building(BuildingKind::Warehouse)),
+            (KeyCode::KeyB, Tool::Building(BuildingKind::Larder)),
+            (KeyCode::KeyN, Tool::Building(BuildingKind::Toolshed)),
+            (KeyCode::KeyF, Tool::Building(BuildingKind::Forester)),
+            (KeyCode::KeyH, Tool::Building(BuildingKind::Logistics)),
             (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
             (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
         ];
@@ -408,7 +412,7 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
         Harvest::Cut => &[R::Tree],
         Harvest::Gather => &[R::Plant, R::MudBank, R::RiverClay],
     };
-    let here = |k: R| s.resources.items.iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverClay));
+    let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverClay));
     let at_click = s.resources.at(a).find(|r| wanted.contains(&r.kind)).map(|r| r.kind);
     let Some(kind) = at_click.or_else(|| wanted.iter().copied().find(|k| here(*k))) else {
         hud.say(Some((if h == Harvest::Cut { Icon::Tree } else { Icon::Plant }, BAD)), Some((Icon::Cross, BAD)), "", now);

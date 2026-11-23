@@ -53,7 +53,7 @@ const REVISIT_MIN: f64 = 0.005;
 /// Times a pool may be swept in one tick.
 const MAX_POOL_VISITS: u8 = 2;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Cand {
     /// Cell the water leaves from (a pool member for pools).
     from: usize,
@@ -73,13 +73,13 @@ struct Cand {
     t: f64,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Cell {
     z: f64,
     h: f64,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Pool {
     start: usize,
     len: usize,
@@ -97,7 +97,7 @@ struct Pool {
     area: f64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Automaton {
     version: Option<((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool)>,
     n: usize,

@@ -41,6 +41,9 @@ struct PendingValley {
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 enum MenuAction {
     NewGame,
+    /// Carry on the newest saved game.
+    Continue,
+    Save,
     MapPrev,
     MapNext,
     SeedPrev,
@@ -77,7 +80,7 @@ impl Plugin for MenuPlugin {
         let forced = std::env::var("BC_MENU").ok();
         let benchmarking = std::env::var_os("BC_PERF").is_some()
             && (std::env::var_os("BC_SPEED").is_some() || std::env::var_os("BC_REPORT_BENCH").is_some());
-        let scripted = cli.colony_script.is_some() || cli.sandbox
+        let scripted = cli.colony_script.is_some() || cli.sandbox || cli.load.is_some()
             || (benchmarking && std::env::var_os("BC_SETTLE").is_some())
             || (cli.screenshot.is_some() && forced.is_none());
         let first = match forced.as_deref() {
@@ -99,7 +102,7 @@ impl Plugin for MenuPlugin {
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
-        .add_systems(Update, (menu_keys, menu_actions, finish_loading, hold_still, pause_on_collapse, title_orbit, rebuild_menu).chain().before(hud::HudSet));
+        .add_systems(Update, (menu_keys, load_keys, menu_actions, finish_loading, hold_still, pause_on_collapse, title_orbit, rebuild_menu).chain().before(hud::HudSet));
     }
 }
 
@@ -165,6 +168,7 @@ fn menu_actions(
     mut sel: ResMut<Selection>,
     mut scale: ResMut<UiScale>,
     mut exit: MessageWriter<AppExit>,
+    mut save: ResMut<crate::savegame::SaveRequest>,
 ) {
     if menu.loading { return; }
     let mut pressed: Vec<MenuAction> = q.iter().filter(|(i, _)| **i == Interaction::Pressed).map(|(_, a)| *a).collect();
@@ -209,6 +213,14 @@ fn menu_actions(
                 clock.paused = true;
                 menu.load_error = None;
                 menu.screen = None;
+            }
+            MenuAction::Continue => {
+                start_load(&mut commands, &mut menu, &mut clock);
+                continue;
+            }
+            MenuAction::Save => {
+                save.0 = true;
+                continue;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
                 let mut options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
@@ -264,6 +276,41 @@ fn menu_actions(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Load the newest save in the background; `finish_loading` puts it in play.
+fn start_load(commands: &mut Commands, menu: &mut Menu, clock: &mut SimClock) {
+    let Some(path) = crate::savegame::latest_save() else {
+        menu.load_error = Some("No saved game".into());
+        return;
+    };
+    let map = match sim::save::peek(&path) {
+        Ok(h) => crate::savegame::map_from(&h.map),
+        Err(e) => {
+            menu.load_error = Some(e);
+            return;
+        }
+    };
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = sim::save::load(&path).map(|(h, s)| {
+            sim::trace::event(format!("LOADED path={} day={:.2} map={} saved_by={}", path.display(), h.day, h.map, h.version));
+            (s, None)
+        });
+        let _ = send.send(result);
+    });
+    commands.insert_resource(PendingValley { map, result: std::sync::Mutex::new(receive) });
+    menu.loading = true;
+    menu.load_error = None;
+    clock.paused = true;
+}
+
+/// Ctrl+L carries on the newest save from anywhere.
+fn load_keys(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if ctrl && keys.just_pressed(KeyCode::KeyL) && !menu.loading {
+        start_load(&mut commands, &mut menu, &mut clock);
+    }
+}
+
 fn finish_loading(
     pending: Option<Res<PendingValley>>, mut commands: Commands, mut menu: ResMut<Menu>,
     mut sim: ResMut<Sim>, mut planned: ResMut<PlannedDam>, mut current: ResMut<CurrentMap>,
@@ -398,7 +445,7 @@ fn rebuild_menu(
             }
             if let Some(error) = &menu.load_error { hud::text(p, error, 13.0, hud::BAD); }
             match screen {
-                Screen::Start => start_screen(p, &menu, &current.0),
+                Screen::Start => start_screen(p, &menu, &icons, &current.0),
                 Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
                 Screen::Settings => settings_screen(p, &menu, &icons),
             }
@@ -406,10 +453,13 @@ fn rebuild_menu(
     });
 }
 
-fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) {
+fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, current: &MapChoice) {
     let _ = current;
     hud::bold(p, "Beaver Colony", 30.0, INK);
     p.spawn(Node { height: Val::Px(6.0), ..default() });
+    if crate::savegame::latest_save().is_some() {
+        wide(p, "Continue", MenuAction::Continue, ACCENT);
+    }
     wide(p, "Play", MenuAction::NewGame, ACCENT);
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
         button(r, "<", MenuAction::MapPrev, FAINT, false);
@@ -419,7 +469,7 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) 
             match &menu.map {
                 MapChoice::Real(id) => {
                     if let Some(m) = sim::maps::all().into_iter().find(|m| &m.id == id) {
-                        hud::text(c, format!("{:.1} km", m.km()), 11.0, MUTED);
+                        hud::text(c, m.place, 11.0, MUTED);
                     }
                 }
                 MapChoice::Generated(seed) => {
@@ -433,8 +483,35 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, current: &MapChoice) 
         });
         button(r, ">", MenuAction::MapNext, FAINT, false);
     });
+    if let MapChoice::Real(id) = &menu.map {
+        map_stats(p, icons, id);
+    }
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Quit", MenuAction::Quit, FAINT);
+}
+
+/// A row of icon + value pairs; hovering one names it.
+fn map_stats(p: &mut ChildSpawnerCommands, icons: &Icons, id: &str) {
+    let Some(s) = sim::maps::stats(id) else { return };
+    let share = |v: f32| if v > 0.0 && v < 0.01 { "<1%".to_string() } else { format!("{:.0}%", v * 100.0) };
+    let mut stats = vec![
+        (Icon::Upstream, s.streams.to_string(), "Streams flowing in"),
+        (Icon::ViewForest, share(s.forest), "Forest"),
+        (Icon::ViewWater, share(s.water), "Open water at the start"),
+        (Icon::ViewElevation, format!("{:.0} m", s.relief_m), "Lowest to highest ground"),
+    ];
+    if let Some(c) = &s.climate {
+        stats.push((Icon::Winter, format!("{:.0} mo", c.ice_months()), "Months under ice"));
+        stats.push((Icon::Gauge, format!("{:.0} mm", c.runoff_year_mm()), "Water the streams carry in a year"));
+    }
+    p.spawn(Node { flex_wrap: FlexWrap::Wrap, justify_content: JustifyContent::Center, column_gap: Val::Px(12.0), row_gap: Val::Px(4.0), ..default() }).with_children(|r| {
+        for (icon, value, name) in stats {
+            r.spawn((hud::row(3.0), hud::hover_tip(name))).with_children(|c| {
+                c.spawn(icon_node(icons, icon, 14.0, MUTED));
+                hud::text(c, value, 11.0, MUTED);
+            });
+        }
+    });
 }
 
 fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &sim::SimState, clock: &SimClock) {
@@ -452,9 +529,12 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
     if s.colony.is_collapsed() {
         hud::bold(p, "The colony has been lost", 22.0, INK);
         hud::text(p, format!("Survived {:.0} days. {} beavers died.", s.time_days, s.colony.stats.deaths), 13.0, MUTED);
-        hud::text(p, "Start again with shelter and a reliable food supply before expanding.", 13.0, INK);
     } else {
         wide(p, "Resume", MenuAction::Resume, ACCENT);
+        wide(p, "Save", MenuAction::Save, FAINT);
+    }
+    if crate::savegame::latest_save().is_some() {
+        wide(p, "Load", MenuAction::Continue, FAINT);
     }
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Restart", MenuAction::Ask(Ask::Restart), FAINT);

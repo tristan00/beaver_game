@@ -85,19 +85,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         starting.push(format!("(crate::buildings::Good::{good},{})",number(amount)));
     }
     constants.entry("starts".into()).or_default().push_str(&format!("pub const START_BUNDLE: [(crate::buildings::Good,f32); {}] = [{}];\n",starting.len(),starting.join(",")));
-    let roles = ["Forager","Logger","MudDigger","Builder","Hauler"];
+    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer"];
     let mut order = Vec::new();
-    let mut weights = BTreeMap::new();
-    for row in db.prepare("SELECT role,priority,weight FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,f64>(2)?)))? {
-        let (role,priority,weight) = row?;
-        assert!(roles.contains(&role.as_str()) && weight.is_finite() && weight > 0.0);
+    for row in db.prepare("SELECT role,priority FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))? {
+        let (role,priority) = row?;
+        assert!(roles.contains(&role.as_str()));
         assert_eq!(priority as usize,order.len());
         order.push(format!("RoleKind::{role}"));
-        weights.insert(role,weight);
     }
     assert_eq!(order.len(),roles.len());
     constants.entry("jobs".into()).or_default().push_str(&format!("const DEFAULT_ROLE_ORDER: [RoleKind; {}] = [{}];\n",order.len(),order.join(",")));
-    constants.entry("work".into()).or_default().push_str(&format!("const DEFAULT_ROLE_WEIGHTS: [f32; {}] = [{}];\n",roles.len(),roles.iter().map(|r|number(weights[*r])).collect::<Vec<_>>().join(",")));
     trees(&db, constants.entry("trees".into()).or_default())?;
     for (module, text) in constants { fs::write(out.join(format!("{module}_constants.rs")), text)?; }
 
@@ -116,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut slots = Vec::new();
         for role in db.prepare("SELECT role FROM slot WHERE building=? ORDER BY position")?.query_map([id], |r| r.get::<_,String>(0))? {
             let role = role?;
-            assert!(matches!(role.as_str(), "Build" | "Haul" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)"), "invalid role {role}");
+            assert!(matches!(role.as_str(), "Build" | "Maintain" | "Haul" | "Tend" | "Plant" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)" | "Collect(ResourceKind::Pebbles)"), "invalid role {role}");
             slots.push(format!("Role::{role}"));
         }
         let area = area.map_or("None".into(), |a| { assert!(a > 0 && a <= 1024); format!("Some(({a},{a}))") });
@@ -168,7 +165,7 @@ fn amounts(db: &Connection, sql: &str, key: u32) -> rusqlite::Result<String> {
     let mut values = Vec::new();
     for row in db.prepare(sql)?.query_map([key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?)))? {
         let (good, amount) = row?;
-        assert!(matches!(good.as_str(), "Food" | "Sticks" | "Clay"));
+        assert!(matches!(good.as_str(), "Food" | "Sticks" | "Clay" | "Pebbles" | "Saplings"));
         values.push(format!("(Good::{good},{})", number(amount)));
     }
     Ok(values.join(","))

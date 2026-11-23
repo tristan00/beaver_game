@@ -58,6 +58,7 @@ fn explored_view(s: &sim::SimState) -> Option<(f32, f32, f32)> {
 }
 
 pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<ResMut<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
+    let _p = ::sim::prof::scope("game/update minimap");
     let Some(mut img) = img else { return };
     let now = time.elapsed_secs();
     if now < *next {
@@ -114,6 +115,9 @@ pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim
     }
     for bv in &s.colony.beavers {
         dot((bv.pos.0, bv.pos.1), big, [232, 132, 58]);
+    }
+    if let Some(w) = s.predators.wolf.as_ref() {
+        dot(w.pos, big + 1, [220, 30, 30]);
     }
     if let Some(mut image) = images.get_mut(&img.image) {
         image.data = Some(buf);

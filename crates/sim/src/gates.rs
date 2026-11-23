@@ -7,7 +7,7 @@ use crate::canals::GATE_STEP;
 use crate::water::Cell;
 use crate::{SimError, SimState};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GateSetting {
     Shut,
     /// Hold the water at this elevation (metres): only what rises above it passes.
@@ -25,7 +25,7 @@ impl GateSetting {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gate {
     pub cell: Cell,
     /// Elevation of the gate's floor: the sill when Open.

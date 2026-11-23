@@ -4,14 +4,14 @@ use crate::hud::{self, Fix};
 use crate::water::Cell;
 use crate::{Command, SimState};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Style {
     Attentive,
     IgnoresAlerts,
     HandsOff,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Player {
     pub style: Style,
     pub camp: Cell,
@@ -75,27 +75,124 @@ impl Player {
         if s.colony.food >= target {
             for (who, order) in std::mem::take(&mut self.food_relief) {
                 if s.agents.get(who).is_some_and(|a| a.assignment == Some(order)) {
-                    let _ = s.apply(Command::Unlock { who });
+                    let _ = s.apply(Command::Assign { who: vec![who], to: None });
                 }
             }
         }
     }
 
-    fn return_new_workers(&mut self, s: &mut SimState, locked: &std::collections::HashSet<crate::colony::BeaverId>) {
-        // Unlocking an area order cancels it before any gathering can happen.
-        let hand_back: Vec<_> = s.colony.beavers.iter().filter(|b| !locked.contains(&b.id)
-            && s.work.is_locked(b.id)).map(|b| b.id).collect();
-        for who in hand_back {
-            if let Some(order @ crate::agents::Assignment::Area(ResourceKind::Plant, _)) = s.agents.get(who).and_then(|a|a.assignment) {
-                self.food_relief.push((who,order));
-            } else { let _ = s.apply(Command::Unlock { who }); }
+    /// Follows an alert's fix; foragers it sends out in an emergency are called back once
+    /// food recovers.
+    fn apply_response(&mut self,s:&mut SimState,fix:Fix) {
+        let before:std::collections::HashMap<_,_>=s.agents.by_id.iter().map(|(&id,a)|(id,a.assignment)).collect();
+        if let Err(e)=hud::apply_fix(s,fix) {self.note(s,format!("fix {fix:?} refused: {e}"));}
+        for (&who,a) in &s.agents.by_id {
+            if let Some(order @ crate::agents::Assignment::Area(ResourceKind::Plant, _)) = a.assignment {
+                if before.get(&who).copied().flatten() != Some(order) && !self.food_relief.iter().any(|r| r.0 == who) {
+                    self.food_relief.push((who, order));
+                }
+            }
         }
     }
 
-    fn apply_response(&mut self,s:&mut SimState,fix:Fix) {
-        let locked:std::collections::HashSet<_>=s.colony.beavers.iter().filter(|b|s.work.is_locked(b.id)).map(|b|b.id).collect();
-        if let Err(e)=hud::apply_fix(s,fix) {self.note(s,format!("fix {fix:?} refused: {e}"));}
-        self.return_new_workers(s,&locked);
+    /// Staffs by hand with the player's own buttons: gatherers for whatever the stores are
+    /// short of (at most half the colony), then every open seat that has work.
+    fn staff(&mut self, s: &mut SimState) {
+        use crate::jobs::RoleKind;
+        let workers = s.colony.beavers.iter().filter(|b| b.can_work()).count();
+        let mut room = workers.div_ceil(2).max(1);
+        let roles = [(RoleKind::Forager, Good::Food, 0.5), (RoleKind::Logger, Good::Sticks, 0.34), (RoleKind::MudDigger, Good::Clay, 0.2)];
+        let short = roles.map(|(_, good, _)| crate::jobs::on_hand(s, good) < crate::jobs::stock_target(s, good));
+        // One gatherer for each thing the stores are short of, then more up to each share.
+        let mut wants = [0usize; 3];
+        for k in 0..3 {
+            if short[k] && room > 0 {
+                wants[k] = 1;
+                room -= 1;
+            }
+        }
+        for (k, &(_, _, share)) in roles.iter().enumerate() {
+            if short[k] {
+                let more = ((workers as f32 * share).ceil() as usize).saturating_sub(1).min(room);
+                wants[k] += more;
+                room -= more;
+            }
+        }
+        for (k, (role, _, _)) in roles.into_iter().enumerate() {
+            let relief = self.food_relief.iter().filter(|r| role == RoleKind::Forager && s.agents.get(r.0).is_some_and(|a| a.assignment == Some(r.1))).count();
+            let out = crate::jobs::out_gathering(s, role).len().saturating_sub(relief);
+            let want = wants[k];
+            for _ in out..want {
+                if s.apply(Command::AdjustRole { role, delta: 1 }).is_err() {
+                    break;
+                }
+            }
+            for _ in want..out {
+                if s.apply(Command::AdjustRole { role, delta: -1 }).is_err() {
+                    break;
+                }
+            }
+        }
+        // Builders waiting on a dam with no sticks, or on a stalled site, are called off.
+        let idle_seats: Vec<BuildingId> = s
+            .work
+            .places
+            .iter()
+            .filter(|p| p.filled() > 0)
+            .filter(|p| {
+                let b = p.building;
+                if crate::agents::is_site(s, p) {
+                    crate::agents::site_stalled(s, p)
+                } else if s.buildings.building(b).is_some_and(|x| matches!(x.kind, BuildingKind::Dam | BuildingKind::Canal)) {
+                    !(crate::dams::has_work(s, b) || crate::canals::has_work(s, b)) || crate::jobs::on_hand(s, Good::Sticks) < STICKS_TO_BUILD
+                } else {
+                    false
+                }
+            })
+            .map(|p| p.building)
+            .collect();
+        for b in idle_seats {
+            while s.apply(Command::RemoveWorker { building: b }).is_ok() {}
+        }
+        let mut seats: Vec<(std::cmp::Reverse<crate::work::Priority>, bool, BuildingId)> = s
+            .work
+            .places
+            .iter()
+            .filter(|p| !p.paused)
+            .filter(|p| {
+                let site = crate::agents::is_site(s, p);
+                let b = p.building;
+                if site {
+                    !crate::agents::site_stalled(s, p)
+                } else if s.buildings.building(b).is_some_and(|x| matches!(x.kind, BuildingKind::Dam | BuildingKind::Canal)) {
+                    // Dam and canal work burns sticks: no builders while there are none to build with.
+                    (crate::dams::has_work(s, b) || crate::canals::has_work(s, b)) && crate::jobs::on_hand(s, Good::Sticks) >= STICKS_TO_BUILD
+                } else {
+                    s.buildings.building(b).is_some_and(|x| x.operational())
+                }
+            })
+            .map(|p| (std::cmp::Reverse(p.priority), !crate::agents::is_site(s, p), p.building))
+            .collect();
+        seats.sort();
+        for (_, _, b) in seats {
+            while s.apply(Command::AddWorker { building: b }).is_ok() {}
+        }
+        // Nobody stands about: whoever is still free gathers what the stores are shortest of.
+        loop {
+            let free = s.colony.beavers.iter().any(|b| b.can_work() && !crate::jobs::is_busy(s, b.id));
+            let need = roles
+                .iter()
+                .filter(|(_, good, _)| crate::jobs::on_hand(s, *good) < crate::jobs::stock_target(s, *good))
+                .min_by(|a, b| {
+                    let left = |g: Good| crate::jobs::on_hand(s, g) / crate::jobs::stock_target(s, g).max(1.0);
+                    left(a.1).total_cmp(&left(b.1))
+                })
+                .map(|r| r.0);
+            match need {
+                Some(role) if free && s.apply(Command::AdjustRole { role, delta: 1 }).is_ok() => {}
+                _ => break,
+            }
+        }
     }
 
     pub fn act(&mut self, s: &mut SimState) {
@@ -103,6 +200,7 @@ impl Player {
             return;
         }
         self.release_food_relief(s);
+        self.staff(s);
         let count = |s: &SimState, k: BuildingKind| s.buildings.buildings.iter().filter(|b| b.kind == k).count();
         if count(s, BuildingKind::Shelter) == 0 && !self.tried_lately(s, BuildingKind::Shelter) {
             self.place(s, BuildingKind::Shelter);
@@ -127,11 +225,20 @@ impl Player {
         if count(s, BuildingKind::Warehouse) == 0 && s.has_building(BuildingKind::Shelter) && !self.tried_lately(s, BuildingKind::Warehouse) {
             self.place(s, BuildingKind::Warehouse);
         }
+        if count(s, BuildingKind::Larder) == 0 && s.has_building(BuildingKind::Warehouse) && !self.tried_lately(s, BuildingKind::Larder) {
+            self.place(s, BuildingKind::Larder);
+        }
+        if count(s, BuildingKind::Forester) == 0 && s.has_building(BuildingKind::Larder) && !self.tried_lately(s, BuildingKind::Forester) {
+            self.place(s, BuildingKind::Forester);
+        }
+        if count(s, BuildingKind::Logistics) == 0 && s.has_building(BuildingKind::Larder) && !self.tried_lately(s, BuildingKind::Logistics) {
+            self.place(s, BuildingKind::Logistics);
+        }
         let stores: Vec<BuildingId> = s
             .buildings
             .buildings
             .iter()
-            .filter(|b| b.is_complete() && b.kind == BuildingKind::Warehouse)
+            .filter(|b| b.is_complete() && b.kind == BuildingKind::Logistics)
             .map(|b| b.id)
             .filter(|id| !s.work.balanced.contains(id))
             .collect();
@@ -164,6 +271,9 @@ impl Player {
         }
     }
 }
+
+/// Sticks the bot wants in store before it puts builders on a dam or canal.
+const STICKS_TO_BUILD: f32 = 10.0;
 
 pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     place_ring(s, kind, around, 2..=29, keep_clear)
@@ -223,18 +333,12 @@ mod relief_tests {
         for &who in &ids {
             s.agents.spawn(who,(1,1));
             s.agents.assign(who,Some(gather));
-            s.work.player_orders.insert(who);
         }
         let mut p=Player::new(Style::Attentive,(1,1),None);
-        p.return_new_workers(&mut s,&[ids[1]].into_iter().collect());
-        assert_eq!(p.food_relief.len(),2);
+        p.food_relief=vec![(ids[0],gather),(ids[2],gather)];
         s.colony.food=0.0;
         p.release_food_relief(&mut s);
-        assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)));
-        s.time_days=190.0;s.colony.food=crate::hud::food_need_per_day(&s)*31.0;
-        p.release_food_relief(&mut s);
-        assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)));
-        s.time_days=0.0;
+        assert!(ids.iter().all(|&id|s.agents.get(id).unwrap().assignment==Some(gather)), "kept while food is short");
         // A later player order must survive the caretaker's cleanup.
         let override_order=Assignment::Go((3,3));
         s.agents.assign(ids[2],Some(override_order));
@@ -243,5 +347,6 @@ mod relief_tests {
         assert_eq!(s.agents.get(ids[0]).unwrap().assignment,None);
         assert_eq!(s.agents.get(ids[1]).unwrap().assignment,Some(gather));
         assert_eq!(s.agents.get(ids[2]).unwrap().assignment,Some(override_order));
+        assert!(p.food_relief.is_empty());
     }
 }

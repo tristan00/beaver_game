@@ -39,6 +39,7 @@ fn update_fog(
     mut materials: ResMut<Assets<StandardMaterial>>,
     sheets: Query<(Entity, &Mesh3d), With<FogSheet>>,
 ) {
+    let _p = ::sim::prof::scope("game/update fog");
     if std::env::var_os("BC_NO_FOG").is_some() {
         return;
     }

@@ -113,6 +113,7 @@ fn asset(segs: &[[Vec3; 2]], w: usize, d: usize, color: Color) -> GizmoAsset {
 /// Contours of the ground round where the camera looks: light every 10 cm, bold every metre;
 /// redrawn as the view moves or the ground and dams change.
 pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, orbit: Res<crate::camera::OrbitCamera>, mut c: ResMut<Contours>, mut assets: ResMut<Assets<GizmoAsset>>) {
+    let _p = ::sim::prof::scope("game/update contours");
     let on = crate::terrain_render::map_lens() == MapLens::Elevation.code();
     if !on {
         for e in c.shown.drain(..) {

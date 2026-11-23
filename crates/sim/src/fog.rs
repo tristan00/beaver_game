@@ -4,19 +4,25 @@ use crate::worldgen::World;
 
 pub const EXPLORED: f32 = 0.5;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Fog {
     pub size: usize,
     pub seen: Vec<f32>,
     pub dirty: bool,
+    /// The cell each beaver last looked around from. Sight only ever clears fog, so looking
+    /// again from the same cell changes nothing and is skipped.
+    #[serde(skip)]
+    sighted: std::collections::HashMap<crate::colony::BeaverId, Cell>,
 }
+
+crate::grid::clone_fields!(Fog { size, seen, dirty, sighted });
 
 impl Fog {
     pub fn unseen(size: usize) -> Fog {
-        Fog { size, seen: vec![0.0; size * size], dirty: true }
+        Fog { size, seen: vec![0.0; size * size], dirty: true, sighted: Default::default() }
     }
     pub fn clear(size: usize) -> Fog {
-        Fog { size, seen: vec![1.0; size * size], dirty: true }
+        Fog { size, seen: vec![1.0; size * size], dirty: true, sighted: Default::default() }
     }
     pub fn get(&self, c: Cell) -> f32 {
         if c.0 < self.size && c.1 < self.size { self.seen[c.1 * self.size + c.0] } else { 0.0 }
@@ -24,6 +30,15 @@ impl Fog {
     pub fn explored(&self, c: Cell) -> bool {
         self.get(c) >= EXPLORED
     }
+    /// What a beaver at `cell` sees (`BEAVER_SIGHT` around the cell's centre).
+    pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell, allowed: &dyn Fn(usize, usize) -> bool) {
+        if self.sighted.get(&who) == Some(&cell) {
+            return;
+        }
+        self.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), BEAVER_SIGHT, allowed);
+        self.sighted.insert(who, cell);
+    }
+
     pub fn reveal(&mut self, centre: (f32, f32), radius: f32, allowed: &dyn Fn(usize, usize) -> bool) -> bool {
         if self.size == 0 {
             return false;

@@ -12,6 +12,8 @@ pub fn good_name(g: Good) -> &'static str {
         Good::Sticks => "Sticks",
         Good::Clay => "Clay",
         Good::Food => "Food",
+        Good::Pebbles => "Pebbles",
+        Good::Saplings => "Saplings",
     }
 }
 
@@ -20,6 +22,8 @@ pub fn good_icon(g: Good) -> Icon {
         Good::Sticks => Icon::Sticks,
         Good::Clay => Icon::Mud,
         Good::Food => Icon::Food,
+        Good::Pebbles => Icon::Pebbles,
+        Good::Saplings => Icon::Sapling,
     }
 }
 
@@ -28,6 +32,8 @@ pub fn good_color(g: Good) -> Color {
         Good::Sticks => Color::srgb(0.88, 0.76, 0.52),
         Good::Clay => Color::srgb(0.66, 0.6, 0.42),
         Good::Food => Color::srgb(0.9, 0.42, 0.5),
+        Good::Pebbles => Color::srgb(0.7, 0.71, 0.74),
+        Good::Saplings => Color::srgb(0.52, 0.8, 0.42),
     }
 }
 
@@ -38,6 +44,10 @@ pub fn building_icon(k: BuildingKind) -> Icon {
         Shelter => Icon::Lodge,
         Warehouse => Icon::Warehouse,
         Canal => Icon::Canal,
+        Larder => Icon::Larder,
+        Toolshed => Icon::Toolshed,
+        Forester => Icon::Forester,
+        Logistics => Icon::Logistics,
     }
 }
 
@@ -45,8 +55,10 @@ pub fn resource_icon(k: ResourceKind) -> Icon {
     match k {
         ResourceKind::Tree | ResourceKind::Felled => Icon::Tree,
         ResourceKind::Plant => Icon::Plant,
+        ResourceKind::WaterPlant => Icon::WaterPlant,
         ResourceKind::MudBank => Icon::MudBank,
         ResourceKind::RiverClay => Icon::MudBank,
+        ResourceKind::Pebbles => Icon::Pebbles,
     }
 }
 
@@ -55,8 +67,10 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
         ResourceKind::Tree => "Tree",
         ResourceKind::Felled => "Felled tree",
         ResourceKind::Plant => "Edible shoots",
+        ResourceKind::WaterPlant => "Water lilies",
         ResourceKind::MudBank => "Clay deposit",
         ResourceKind::RiverClay => "River clay",
+        ResourceKind::Pebbles => "Pebbles",
     }
 }
 
@@ -144,10 +158,26 @@ fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
         RoleKind::MudDigger => (Icon::RoleMudDigger, "Clay digger"),
         RoleKind::Builder => (Icon::RoleBuilder, "Builder"),
         RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
+        RoleKind::Forester => (Icon::RoleForester, "Forester"),
+        RoleKind::Maintainer => (Icon::RoleMaintainer, "Maintainer"),
     }
 }
 
 pub fn role_kind_icon(role: RoleKind) -> Icon { role_presentation(role).0 }
 pub fn role_kind_name(role: RoleKind) -> &'static str { role_presentation(role).1 }
-pub fn role_icon(role: Role) -> Icon { role_kind_icon(jobs::role_kind(role)) }
-pub fn role_name(role: Role) -> &'static str { role_kind_name(jobs::role_kind(role)) }
+pub fn role_icon(role: Role) -> Icon {
+    match role {
+        Role::Tend => Icon::Tend,
+        Role::Plant => Icon::Sapling,
+        Role::Collect(ResourceKind::Pebbles) => Icon::Pebbles,
+        r => role_kind_icon(jobs::role_kind(r)),
+    }
+}
+pub fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Tend => "Tending",
+        Role::Plant => "Planting",
+        Role::Collect(ResourceKind::Pebbles) => "Pebble collector",
+        r => role_kind_name(jobs::role_kind(r)),
+    }
+}

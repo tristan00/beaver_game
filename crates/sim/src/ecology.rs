@@ -8,16 +8,25 @@ const MAX_SUBSTEP_DAYS: f32 = 1.0;
 /// Forest, meadow and wetland change over days; the whole-map vegetation refreshes
 /// every six hours.
 const GRID_EVERY_DAYS: f32 = 0.25;
+/// Plant cover is drawn in this many steps from bare to full.
+pub const COVER_STEPS: f32 = 64.0;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Ecology {
+    /// Its tiles are stamped as changed (`Grid::tile_stamp`) when the cover on some cell has
+    /// moved by a step it is drawn in (`COVER_STEPS`) since the tile was last stamped.
     pub vegetation: VegetationGrid,
     pub forest: Grid<f32>,
     pub meadow: Grid<f32>,
     pub wetland: Grid<f32>,
     pub flood_days: Grid<f32>,
     pending_days: f32,
+    /// The cover each tile of `vegetation` reads, as it was when the tile was last stamped.
+    #[serde(skip)]
+    told: crate::grid::Own<crate::grid::Told<f32>>,
 }
+
+crate::grid::clone_fields!(Ecology { vegetation, forest, meadow, wetland, flood_days, pending_days, told });
 
 fn clamp01(v: f32) -> f32 { v.clamp(0.0, 1.0) }
 
@@ -28,7 +37,7 @@ impl Ecology {
         let mut rng = Pcg32::seed_from_u64(seed ^ 0xEC01_06E5);
         let mut forest = g(0.0);
         for v in forest.as_mut_slice() { *v = START_FOREST_MIN + START_FOREST_SPREAD * unit(&mut rng); }
-        let mut e = Self { vegetation: g(0.0), forest, meadow: g(0.0), wetland: g(0.0), flood_days: g(0.0), pending_days: 0.0 };
+        let mut e = Self { vegetation: g(0.0), forest, meadow: g(0.0), wetland: g(0.0), flood_days: g(0.0), pending_days: 0.0, told: Default::default() };
         e.refresh_vegetation();
         e
     }
@@ -105,11 +114,13 @@ impl Ecology {
     }
 
     fn refresh_vegetation(&mut self) {
-        let n = self.size();
-        for i in 0..n * n {
-            let (forest, meadow, wetland) = (self.forest.as_slice()[i], self.meadow.as_slice()[i], self.wetland.as_slice()[i]);
-            self.vegetation.as_mut_slice()[i] = clamp01(forest + VEGETATION_MEADOW * meadow + VEGETATION_WETLAND * wetland);
+        let (forest, meadow, wetland) = (self.forest.as_slice(), self.meadow.as_slice(), self.wetland.as_slice());
+        for (i, cell) in self.vegetation.cells_and_marks().0.iter_mut().enumerate() {
+            *cell = clamp01(forest[i] + VEGETATION_MEADOW * meadow[i] + VEGETATION_WETLAND * wetland[i]);
         }
+        // Meadow regrows a little everywhere each time: a tile is stamped once some cell it
+        // reads has moved a whole step of what is drawn since it was last stamped.
+        self.told.0.note(&mut self.vegetation, None, |a, b| (a - b).abs() > 1.0 / COVER_STEPS);
     }
 }
 

@@ -46,6 +46,11 @@ pub(crate) fn row(gap: f32) -> Node {
     ui::row_node(gap)
 }
 
+/// Hover text for a plain UI node, such as a stat in the start menu.
+pub(crate) fn hover_tip(label: impl Into<String>) -> (Interaction, ui::TipComp) {
+    (Interaction::default(), ui::TipComp { tip: Tip::name(label), depth: 0 })
+}
+
 const REFRESH_SECS: f32 = 0.1;
 const MSG_SECS: f32 = 3.0;
 
@@ -95,6 +100,8 @@ pub(crate) use world::{HoverPoint, HoverThing};
 
 #[derive(Resource)]
 pub struct HudState {
+    /// The top-centre badge opened by a click, showing its words.
+    pub open_badge: Option<String>,
     pub tool: Tool,
     pub drag_from: Option<Cell>,
     /// A dam end pressed on: dragging from it extends that dam.
@@ -145,6 +152,8 @@ pub enum MapLens {
     Water,
     Forest,
     Elevation,
+    Deposits,
+    Underwater,
 }
 
 impl MapLens {
@@ -154,6 +163,8 @@ impl MapLens {
             MapLens::Water => 1,
             MapLens::Forest => 3,
             MapLens::Elevation => 4,
+            MapLens::Deposits => crate::terrain_render::DEPOSIT_LENS,
+            MapLens::Underwater => crate::terrain_render::UNDERWATER_LENS,
         }
     }
 }
@@ -175,6 +186,7 @@ pub fn reset_for_new_game(world: &mut World) {
 impl Default for HudState {
     fn default() -> Self {
         HudState {
+            open_badge: None,
             tool: Tool::None,
             drag_from: None,
             grab: None,
@@ -273,6 +285,55 @@ pub struct Pops(pub Vec<Pop>);
 
 pub const POP_SECS: f32 = 2.4;
 
+/// News for the top of the screen: a wolf seen, a beaver dead, a game saved.
+#[derive(Clone, Debug)]
+pub struct Notice {
+    pub id: u64,
+    pub icons: Vec<(Icon, Color)>,
+    pub text: String,
+    pub born: f32,
+}
+
+#[derive(Resource, Default)]
+pub struct Notices(pub Vec<Notice>, u64);
+
+impl Notice {
+    /// The badge's key, as `HudState::open_badge` holds it.
+    pub fn key(&self) -> String {
+        format!("notice:{}", self.id)
+    }
+}
+
+/// How long a notice stays up, and how many show at once.
+pub const NOTICE_SECS: f32 = 7.0;
+pub const NOTICES_SHOWN: usize = 6;
+
+impl Notices {
+    pub fn push(&mut self, icons: Vec<(Icon, Color)>, text: impl Into<String>, now: f32) {
+        let text = text.into();
+        sim::trace::event(format!("NOTICE icons={:?} text={text:?}", icons.iter().map(|(i, _)| format!("{i:?}")).collect::<Vec<_>>()));
+        self.1 += 1;
+        let id = self.1;
+        self.0.push(Notice { id, icons, text, born: now });
+    }
+}
+
+/// A wolf comes into sight: say so once per visit.
+fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut seen: Local<bool>) {
+    let spotted = sim.0.predators.wolf.is_some() && sim.0.predators.spotted;
+    if spotted && !*seen {
+        notices.push(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs());
+    }
+    *seen = spotted;
+}
+
+/// News fades after a while, unless its badge is open.
+fn expire_notices(time: Res<Time>, hud: Res<HudState>, mut notices: ResMut<Notices>) {
+    let now = time.elapsed_secs();
+    let open = hud.open_badge.clone();
+    notices.0.retain(|n| now - n.born < NOTICE_SECS || open.as_deref() == Some(n.key().as_str()));
+}
+
 /// The problems found at the last panel refresh, for the markers drawn every frame.
 #[derive(Resource, Default)]
 pub struct LastProblems(pub Vec<sim::hud::Problem>);
@@ -287,8 +348,18 @@ pub struct PopWatch {
 /// Turns messages and colony events into pops: refusals at the cursor, a kit
 /// over its home, a splash where a dam cell wears through.
 fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState>, sim: Res<Sim>, mut pops: ResMut<Pops>, mut w: Local<PopWatch>) {
+    let _p = ::sim::prof::scope("game/collect pops");
     let now = time.elapsed_secs();
     pops.0.retain(|p| now - p.born < POP_SECS);
+    let before = pops.0.len();
+    collect_new_pops(now, &cursor, &mut hud, &sim, &mut pops, &mut w);
+    for p in &pops.0[before.min(pops.0.len())..] {
+        let icons: Vec<_> = p.icons.iter().map(|(i, _)| format!("{i:?}")).collect();
+        sim::trace::event(format!("POP day={:.4} icons={icons:?} text={:?} at={:?}", sim.0.time_days, p.text, match p.at { PopAt::Screen(v) => format!("screen({:.0},{:.0})", v.x, v.y), PopAt::Cell(c) => format!("cell({:.1},{:.1})", c.0, c.1) }));
+    }
+}
+
+fn collect_new_pops(now: f32, cursor: &CursorUi, hud: &mut HudState, sim: &Sim, pops: &mut Pops, w: &mut PopWatch) {
     if hud.msg.is_some() {
         if let Some((m, _)) = hud.msg.take() {
             let at = cursor.0.map(|c| c + Vec2::new(0.0, -28.0)).unwrap_or(Vec2::new(640.0, 300.0));
@@ -381,14 +452,20 @@ pub enum HudAction {
     Follow(BeaverId),
     FreeBeaver(BeaverId),
     AddWorker(BuildingId),
+    /// Open or close a top-centre badge to read it.
+    Badge(String),
+    /// Have haulers fill this store to the brim, or stop.
+    FillStore(BuildingId, bool),
+    /// A logistics building's haulers balance the stores, or stop.
+    Balance(BuildingId, bool),
     RemoveWorker(BuildingId),
     RoleAdjust(RoleKind, i32),
     Paused(BuildingId, bool),
-    Unlock(BeaverId),
     RepairBuilding(BuildingId),
     ReinforceBuilding(BuildingId),
+    PebbleBuilding(BuildingId),
+    SlotOff(BuildingId, usize, bool),
     CancelMaintenance(BuildingId),
-    AutoStaff(bool),
     Pin(Selection),
 }
 
@@ -410,7 +487,7 @@ fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_ui_font);
+        app.add_systems(Startup, load_ui_font).init_resource::<Notices>();
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
             return;
         }
@@ -423,6 +500,7 @@ impl Plugin for HudPlugin {
             .init_resource::<MenuOpen>()
             .init_resource::<Tips>()
             .init_resource::<Pops>()
+            .add_systems(Update, (notice_wolf, expire_notices))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
@@ -518,10 +596,7 @@ pub(crate) fn add_worker_tip(s: &sim::SimState, b: BuildingId) -> Tip {
     let mut t = Tip::name("Add a worker");
     if let Some(p) = sim::jobs::add_worker_preview(s, b) {
         let who = s.colony.beaver(p.who).map(|x| x.name.clone()).unwrap_or_default();
-        match p.from {
-            Some((_, role)) => t.push(TipLine::new(who, format!("from {}", role_kind_name(role).to_lowercase())).icon(role_kind_icon(role), MUTED)),
-            None => t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK)),
-        };
+        t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK));
     }
     t
 }
@@ -545,6 +620,7 @@ fn refresh_panels(
     (cursor, mut last): (Res<CursorUi>, ResMut<LastProblems>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
+    let _p = ::sim::prof::scope("game/refresh panels");
     let due = timer.0.tick(time.delta()).just_finished();
     let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
     if !due && !changed {
@@ -634,9 +710,10 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
-    (windows, pops, problems, time): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>),
+    (windows, pops, problems, time, notices): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Res<Notices>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
+    let _p = ::sim::prof::scope("game/refresh fast");
     let s = &sim.0;
     for (e, p, mut m) in &mut hosts {
         if !matches!(p, Panel::Cursor | Panel::Markers) {
@@ -686,6 +763,8 @@ fn refresh_fast(
                 };
                 let mut tree = tree;
                 tree.extend(world::screen_pops(&pops.0, time.elapsed_secs()));
+                let bctx = panels::Ctx { problems: &problems.0, ..ctx };
+                tree.extend(panels::badges(&bctx, &notices.0, time.elapsed_secs()));
                 tree
             }
             _ => match cams.single() {
@@ -701,7 +780,12 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
     let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
-    // `BC_LENS=height` holds the height lens, for screenshots.
-    let shown = if std::env::var("BC_LENS").is_ok_and(|v| v == "height") { MapLens::Elevation } else { shown };
+    // `BC_LENS=height|deposits|underwater` holds that lens, for screenshots.
+    let shown = match std::env::var("BC_LENS").as_deref() {
+        Ok("height") => MapLens::Elevation,
+        Ok("deposits") => MapLens::Deposits,
+        Ok("underwater") => MapLens::Underwater,
+        _ => shown,
+    };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

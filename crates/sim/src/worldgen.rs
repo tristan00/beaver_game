@@ -10,7 +10,9 @@ const LAKE_MIN_DEPTH: f32 = 0.5;
 const CULVERT_MAX_M: f32 = 25.0;
 const CULVERT_FALL_M: f32 = 0.05;
 const CULVERT_ROUNDS: usize = 12;
-const OPEN_WATER: u8 = 80;
+// ESA WorldCover classes.
+pub(crate) const OPEN_WATER: u8 = 80;
+pub(crate) const TREE_COVER: u8 = 10;
 const LAKE_COVER_MIN_M2: f32 = 200.0;
 const LAKE_LEVEL_TOL_M: f32 = 0.10;
 const LAKE_SHORE_SLOPE: f32 = 0.05;
@@ -27,7 +29,7 @@ pub const INFLOW_WALL_M: f32 = 12.0;
 
 pub use crate::trees::Tree;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WorldError {
     InvalidSize(usize),
     GenerationFailed { seed: u64, reason: String },
@@ -43,7 +45,7 @@ impl fmt::Display for WorldError {
 }
 impl std::error::Error for WorldError {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct World {
     pub seed: u64,
     pub size: usize,
@@ -64,6 +66,8 @@ pub struct World {
     pub forest: Grid<Option<Tree>>,
 }
 
+crate::grid::clone_fields!(World { seed, size, cell_m, height, surface, flow_to, flow_acc, river, main_river, river_flow, lake, lake_level, pond, water_inputs, moisture, slope, forest });
+
 impl World {
     pub fn downstream(&self, x: usize, y: usize) -> Option<(usize, usize)> {
         self.flow_to.get(x, y).copied().flatten().map(|i| (i % self.size, i / self.size))
@@ -71,13 +75,13 @@ impl World {
 
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum InputKind {
     Inflow,
     Baseflow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterInput {
     pub cell: (usize, usize),
     pub catchment: u32,

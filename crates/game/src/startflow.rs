@@ -140,6 +140,12 @@ fn begin_new_game(
         clock.paused = cli.screenshot.is_some();
         return;
     }
+    if sim.0.colony.is_founded() {
+        // A loaded game: carry on where it was.
+        begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
+        clock.paused = cli.screenshot.is_some();
+        return;
+    }
     let settle = std::env::var_os("BC_SETTLE").is_some();
     let benchmark = settle && std::env::var_os("BC_PERF").is_some();
     let scripted = cli.colony_script.is_some() || benchmark || cli.screenshot.is_some() && settle;

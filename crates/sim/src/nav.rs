@@ -8,7 +8,7 @@ use crate::colony::BeaverId;
 use crate::grid::Grid;
 use crate::water::Cell;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Surface {
     Land,
     Water,
@@ -27,7 +27,7 @@ pub fn shared(s: Surface) -> bool {
     s != Surface::Solid
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Gait {
     Walk,
     Swim,
@@ -45,19 +45,19 @@ pub fn lodge_entrance(pos: Cell) -> Cell {
     (pos.0 + 1, pos.1 + 3)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Path {
     pub steps: Vec<(Cell, Gait)>,
     pub cost: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Goal {
     Cell(Cell),
     Beside(Cell),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NavError {
     NotHolder(Cell),
     NotAdjacent,
@@ -66,7 +66,7 @@ pub enum NavError {
     Occupied(Cell),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NavGrid {
     pub surface: Grid<Surface>,
     pub reserved: Grid<Option<BeaverId>>,
@@ -84,7 +84,9 @@ pub struct NavGrid {
     floating: Vec<bool>,
 }
 
-#[derive(Default)]
+crate::grid::clone_fields!(NavGrid { surface, reserved, lodge, region, regions_ok, labelled, labelled_lodge, refresh_key, dry_surface, wet_surface, floating });
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Scratch {
     stamp: u32,
     seen: Vec<u32>,
@@ -265,7 +267,7 @@ impl NavGrid {
                 buildings=(buildings^value).wrapping_mul(0x100000001b3);
             }
         }
-        (sim.water.nav_revision,sim.water.topology_revision,buildings,sim.resources.nav_revision(),sim.resources.items.len(),sim.time_days.floor() as u64)
+        (sim.water.nav_revision,sim.water.topology_revision,buildings,sim.resources.nav_revision(),sim.resources.items().len(),sim.time_days.floor() as u64)
     }
 
     /// Water-level changes only update affected cells. Buildings and vegetation
@@ -314,7 +316,7 @@ impl NavGrid {
                 _=>for (x,y) in b.cells() {self.dry_surface[y*w+x]=Surface::Solid;self.wet_surface[y*w+x]=Surface::Solid;},
             }
         }
-        for r in sim.resources.items.iter().filter(|r|r.is_solid()) {
+        for r in sim.resources.items().iter().filter(|r|r.is_solid()) {
             let i=r.cell.1*w+r.cell.0;
             if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind==crate::resources::ResourceKind::Tree {Surface::Thicket} else {Surface::Solid};}
         }
@@ -453,6 +455,7 @@ impl NavGrid {
         let surf = self.surface.as_slice();
         let blocked = |i: usize| !shared(surf[i]) && matches!(self.reserved.as_slice()[i], Some(o) if o != who);
         let start = from.1 * w + from.0;
+        let _p = crate::prof::scope("+path search");
 
         SCRATCH.with(|sc| {
             let sc = &mut *sc.borrow_mut();
