@@ -5,7 +5,6 @@
 //! and prints, for every 30 days, the real seconds spent and the share of each part of a step.
 //! With `worker` the colony runs on the game's own simulation thread at the fastest game speed,
 //! snapshots included, which is what a player waits for.
-use sim::autoplay::{Player, Style};
 use sim::{Command, SimState, StepTimings, STEP_DAYS};
 use std::time::Instant;
 
@@ -41,20 +40,18 @@ fn fingerprint(s: &mut SimState) -> u64 {
     parts.iter().fold(0xCBF2_9CE4_8422_2325u64, |h, p| (h ^ p.1).wrapping_mul(0x100_0000_01B3))
 }
 
-fn start(map: &str) -> (SimState, Player) {
+/// A saved colony, or a newly settled one; either carries on with nobody at the controls.
+fn start(map: &str) -> SimState {
     if map.ends_with(".sav") {
-        // A saved colony carries on by itself, as it does in the game with nobody at the controls.
-        let s = sim::save::load(std::path::Path::new(map)).unwrap_or_else(|e| panic!("{map}: {e}")).1;
-        return (s, Player::new(Style::HandsOff, (0, 0), None));
+        return sim::save::load(std::path::Path::new(map)).unwrap_or_else(|e| panic!("{map}: {e}")).1;
     }
     let (mut s, dam) = sim::starts::new_game_on_map(map).unwrap_or_else(|e| panic!("map {map}: {e:?}"));
     s.apply(Command::Settle { cell: dam.camp }).expect("settle");
-    let player = Player::new(Style::Attentive, dam.camp, Some((dam.cells.clone(), dam.height)));
-    (s, player)
+    s
 }
 
 fn direct(map: &str, months: u32) {
-    let (mut s, mut player) = start(map);
+    let mut s = start(map);
     s.water.note_on_request();
     if std::env::var_os("SPEED_PROFILE").is_some() { sim::prof::enable(); }
     println!("{map}: {} cells, {} steps a day", s.world.size * s.world.size, (1.0 / STEP_DAYS) as u32);
@@ -62,11 +59,7 @@ fn direct(map: &str, months: u32) {
     for month in 1..=months {
         let before = s.step_timings;
         let begun = Instant::now();
-        let mut act = 0.0;
         for _ in 0..MONTH_DAYS as u32 {
-            let a = Instant::now();
-            player.act(&mut s);
-            act += a.elapsed().as_secs_f64();
             for step in 0..(1.0 / STEP_DAYS) as u32 {
                 s.step(STEP_DAYS).expect("step");
                 s.colony.take_events();
@@ -79,7 +72,7 @@ fn direct(map: &str, months: u32) {
         let now = s.step_timings;
         let split: Vec<String> = parts(&now).iter().zip(parts(&before)).map(|(a, b)| format!("{} {:.2}", a.0, a.1 - b.1)).collect();
         println!(
-            "month {month:>2}: {secs:>6.2} s ({:.3} ms a step) pop {:>2} buildings {:>2} | {} | caretaker {act:.2}",
+            "month {month:>2}: {secs:>6.2} s ({:.3} ms a step) pop {:>2} buildings {:>2} | {}",
             secs * 1000.0 / (MONTH_DAYS / STEP_DAYS as f64),
             s.colony.population(),
             s.buildings.buildings.len(),
@@ -93,12 +86,11 @@ fn direct(map: &str, months: u32) {
 }
 
 fn worker(map: &str, months: u32) {
-    let (s, mut player) = start(map);
+    let s = start(map);
     let worker = sim::runtime::Worker::spawn(s.clone());
     worker.clock(false, TOP_DAYS_PER_SECOND).expect("clock");
     let mut local = s;
-    let mut sequence = 0;
-    let (mut month_start, mut next_month, mut next_act) = (Instant::now(), MONTH_DAYS, 0.0);
+    let (mut month_start, mut next_month) = (Instant::now(), MONTH_DAYS);
     let (mut snapshots, mut total) = (0u32, 0.0);
     let end = MONTH_DAYS * months as f64;
     while local.time_days < end {
@@ -108,15 +100,6 @@ fn worker(map: &str, months: u32) {
         snapshots += 1;
         let old = std::mem::replace(&mut local, snapshot.state);
         worker.recycle(old);
-        if local.time_days >= next_act {
-            next_act = local.time_days.floor() + 1.0;
-            local.recorder = Some(Vec::new());
-            player.act(&mut local);
-            for (_, command) in local.recorder.take().unwrap_or_default() {
-                sequence += 1;
-                worker.command(sequence, command).expect("command");
-            }
-        }
         if local.time_days >= next_month {
             let secs = month_start.elapsed().as_secs_f64();
             total += secs;
@@ -139,7 +122,7 @@ fn copy(source: &str) {
     let s = if source.ends_with(".sav") {
         sim::save::load(std::path::Path::new(source)).unwrap_or_else(|e| panic!("{source}: {e}")).1
     } else {
-        start(source).0
+        start(source)
     };
     println!(
         "{source}: day {:.0}, {} beavers, {} buildings ({} dams, {} canals), {} resources",

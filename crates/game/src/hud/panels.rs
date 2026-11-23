@@ -500,8 +500,13 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
             }
             let tool = match kind { BuildingKind::Dam => Tool::Dam, BuildingKind::Canal => Tool::Canal, k => Tool::Building(k) };
             let on = hud.tool == tool;
-            let look = if on { Peb::On } else { Peb::Idle };
-            u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(item_tip(kind).key(key));
+            let locked = c.s.unlocked(kind).err();
+            let look = if on { Peb::On } else if locked.is_some() { Peb::Faded } else { Peb::Idle };
+            let mut tip = item_tip(kind).key(key);
+            if let Some(e) = locked {
+                tip = tip.line(e.to_string(), "");
+            }
+            u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(tip);
         }
         u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
         for (h, icon, name, line, key) in [

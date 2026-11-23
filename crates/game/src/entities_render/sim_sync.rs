@@ -1179,3 +1179,75 @@ mod wall_tests {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum GroundKey {
+    Pile(u64),
+    Supplies,
+}
+
+#[derive(Default)]
+pub struct GroundSync {
+    generation: Option<(u64, u32)>,
+    drawn: HashMap<GroundKey, (Entity, ((usize, usize), u8))>,
+    meshes: HashMap<Option<sim::buildings::Good>, Handle<Mesh>>,
+}
+
+/// Goods lying on the ground and the family's starting supplies, each a heap sized by how
+/// much is left; an emptied heap is gone.
+pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
+    mut meshes: ResMut<Assets<Mesh>>, mut st: Local<GroundSync>) {
+    let _p = ::sim::prof::scope("game/sync ground goods");
+    let Some(models) = models else { return };
+    let s = &sim.0;
+    let generation = (s.seed, flow.generation);
+    if st.generation != Some(generation) {
+        for (_, (e, _)) in st.drawn.drain() {
+            commands.entity(e).despawn();
+        }
+        st.generation = Some(generation);
+    }
+    let load = sim::agents::LOAD_SIZE;
+    let mut want: Vec<(GroundKey, (usize, usize), Option<sim::buildings::Good>, f32)> = s
+        .work
+        .piles
+        .items
+        .iter()
+        .map(|p| (GroundKey::Pile(p.id), p.cell, Some(p.good), (p.amount / load).cbrt().clamp(0.5, 1.8)))
+        .collect();
+    if let Some(c) = s.work.supplies {
+        let start: f32 = sim::starts::START_BUNDLE.iter().map(|g| g.1).sum();
+        let left: f32 = sim::buildings::Good::ALL.iter().map(|&g| s.work.stock_of(sim::agents::SUPPLIES, g)).sum();
+        if left > 0.05 {
+            want.push((GroundKey::Supplies, c, None, (left / start.max(1.0)).sqrt().clamp(0.45, 1.0)));
+        }
+    }
+    let mut live = HashSet::new();
+    for (key, cell, good, scale) in want {
+        live.insert(key);
+        let sig = (cell, (scale * 20.0).round() as u8);
+        if st.drawn.get(&key).is_some_and(|d| d.1 == sig) {
+            continue;
+        }
+        let p = cell_xz(s, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
+        let yaw = hash01(cell.0, cell.1, 23) * std::f32::consts::TAU;
+        let tr = Transform::from_xyz(p.x, height_at(&s.height, p.x, p.y), p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(scale));
+        let mesh = st.meshes.entry(good).or_insert_with(|| meshes.add(match good { Some(g) => models::heap_mesh(g), None => models::supplies_mesh() })).clone();
+        match st.drawn.get(&key) {
+            Some(&(e, _)) => {
+                commands.entity(e).insert(tr);
+                st.drawn.insert(key, (e, sig));
+            }
+            None => {
+                let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(models.white.clone()), tr)).id();
+                st.drawn.insert(key, (e, sig));
+            }
+        }
+    }
+    let gone: Vec<GroundKey> = st.drawn.keys().copied().filter(|k| !live.contains(k)).collect();
+    for k in gone {
+        if let Some((e, _)) = st.drawn.remove(&k) {
+            commands.entity(e).despawn();
+        }
+    }
+}

@@ -13,6 +13,8 @@ pub struct Spec {
     pub slots: &'static [Role],
     pub area: Option<(usize, usize)>,
     pub capacity: f32,
+    /// A building that must be finished before this one can be placed.
+    pub requires: Option<BuildingKind>,
 }
 
 include!(concat!(env!("OUT_DIR"), "/catalogue.rs"));

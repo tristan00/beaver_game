@@ -173,6 +173,8 @@ pub struct Work {
     pub dam_plans: Vec<DamPlan>,
     pub dam_failures: Vec<(BuildingId, String)>,
     pub supplies: Option<Cell>,
+    /// Goods lying on the ground.
+    pub piles: crate::piles::Piles,
     pub canal_plans: Vec<CanalPlan>,
     pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
 }
@@ -188,6 +190,7 @@ impl Default for Work {
             dam_plans: Vec::new(),
             dam_failures: Vec::new(),
             supplies: None,
+            piles: Default::default(),
             canal_plans: Vec::new(),
             homes: BTreeMap::new(),
         }

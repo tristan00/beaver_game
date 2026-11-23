@@ -43,6 +43,7 @@ impl Plugin for EntitiesRenderPlugin {
                     sim_sync::sync_sim_dams,
                     sim_sync::sync_dam_ghosts,
                     sim_sync::sync_reinforcements,
+                    sim_sync::sync_ground_goods,
                     gallery::spawn_gallery,
                     gallery::shuffle_gallery,
                     gallery::select_home,

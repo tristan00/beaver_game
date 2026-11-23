@@ -346,6 +346,8 @@ pub enum BuildError {
     BadTerrain(&'static str),
     Stores(StoresError),
     UnknownBuilding(BuildingId),
+    /// Not unlocked yet: needs a finished building of this kind first.
+    Locked(BuildingKind),
 }
 
 impl fmt::Display for BuildError {
@@ -353,6 +355,7 @@ impl fmt::Display for BuildError {
         match self {
             Self::SupplyPile => write!(f, "Blocked: the supply pile is there"),
             Self::Unexplored => write!(f, "Unexplored: the colony has not seen that ground"),
+            Self::Locked(k) => write!(f, "Needs a finished {} first", k.spec().name.to_lowercase()),
             _ => write!(f, "{self:?}"),
         }
     }

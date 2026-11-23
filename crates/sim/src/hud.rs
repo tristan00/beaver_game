@@ -322,7 +322,7 @@ fn winter_food_problem(sim:&SimState)->Option<Problem> {
         kind:ProblemKind::WinterFood,severity:Severity::Warning,value:stock/need,
         cause:Breakdown::new(stock/need,vec![row("Stored food",stock,Source::None),row("Storage capacity",capacity,Source::None),row("Winter reserve goal",target,Source::None),row("Daily appetite",need,Source::None)]),
         subject:Some(Subject::Good(Good::Food)),
-        fix:if add_cache {Fix::Place(BuildingKind::Warehouse)} else {gathering},
+        fix:if add_cache {place_fix(sim,BuildingKind::Warehouse)} else {gathering},
         alt_fix:if add_cache&&gathering!=Fix::Focus {Some(gathering)} else {None},focus:colony_cell(sim),
     })
 }
@@ -478,7 +478,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 value: (have / cap * 100.0).round(),
                 cause: Breakdown::new((have / cap * 100.0).round(), rows),
                 subject: Some(Subject::Good(g)),
-                fix: Fix::Place(BuildingKind::Warehouse),
+                fix: place_fix(sim, BuildingKind::Warehouse),
                 alt_fix: None,
                 focus: colony_cell(sim),
             });
@@ -533,6 +533,17 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     out.sort_by_key(|p| p.severity);
     out.truncate(MAX_PROBLEMS);
     out
+}
+
+/// Build `kind`, or, while it is locked, the building that unlocks it.
+fn place_fix(sim: &SimState, mut kind: BuildingKind) -> Fix {
+    while let Err(crate::buildings::BuildError::Locked(need)) = sim.unlocked(kind) {
+        if sim.buildings.buildings.iter().any(|b| b.kind == need) {
+            break;
+        }
+        kind = need;
+    }
+    Fix::Place(kind)
 }
 
 pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {

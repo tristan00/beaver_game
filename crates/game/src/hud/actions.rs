@@ -141,6 +141,7 @@ pub(super) fn button_actions(
                 let next = if hud.tool == t { Tool::None } else { t };
                 hud.set_tool(next);
             }
+            HudAction::Pick(kind) if s.unlocked(kind).is_err() => {}
             HudAction::Pick(kind) => {
                 let t = match kind {
                     BuildingKind::Dam => Tool::Dam,

@@ -15,6 +15,18 @@ fn pond_and_bank() -> SimState {
         }
     }
     s.fog = crate::fog::Fog::clear(s.world.size);
+    // Canals are unlocked by a finished dam: one stands far off in a corner.
+    s.buildings.buildings.push(crate::buildings::Building {
+        id: crate::buildings::BuildingId(900),
+        kind: crate::buildings::BuildingKind::Dam,
+        pos: (0, 0),
+        status: crate::buildings::Status::Complete,
+        output: 0.0,
+        condition: 1.0,
+        reinforced: false,
+        dam: None,
+        canal: None,
+    });
     s
 }
 
@@ -63,7 +75,7 @@ fn cuts_deeper_than_the_limit_are_refused_and_marked() {
     let p = plan(&s, &route((16, 20), (30, 20))).unwrap();
     assert_eq!(p.too_deep, vec![(25, 20)]);
     assert!(place(&mut s, &route((16, 20), (30, 20))).is_err(), "the command refuses what the preview marks");
-    assert!(s.buildings.buildings.is_empty(), "nothing is placed on refusal");
+    assert!(s.buildings.buildings.iter().all(|b| b.kind != crate::buildings::BuildingKind::Canal), "nothing is placed on refusal");
 }
 
 #[test]

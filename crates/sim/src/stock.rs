@@ -4,7 +4,6 @@ use crate::buildings::{Building, BuildingId, Good};
 use crate::water::Cell;
 use crate::SimState;
 
-const EPS: f32 = 1e-4;
 
 pub fn dist(c: Cell, b: &Building) -> usize {
     b.cells().map(|q| c.0.abs_diff(q.0) + c.1.abs_diff(q.1)).min().unwrap_or(usize::MAX)
@@ -17,22 +16,6 @@ pub fn holders(sim: &SimState, good: Good) -> Vec<BuildingId> {
     }
     out
 }
-
-fn cell_dist(sim: &SimState, from: Cell, id: BuildingId) -> usize {
-    if id == SUPPLIES {
-        return sim.work.supplies.map_or(usize::MAX, |p| from.0.abs_diff(p.0) + from.1.abs_diff(p.1));
-    }
-    sim.buildings.building(id).map_or(usize::MAX, |b| dist(from, b))
-}
-
-pub fn nearest_holding(sim: &SimState, from: Cell, good: Good, min: f32) -> Option<BuildingId> {
-    holders(sim, good)
-        .into_iter()
-        .filter(|&id| sim.work.stock_of(id, good) >= min.max(EPS))
-        .min_by_key(|&id| (cell_dist(sim, from, id), id))
-}
-
-
 
 /// A logistics building has its haulers balancing the stores.
 pub fn balancing(sim: &SimState) -> bool {

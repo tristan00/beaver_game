@@ -780,8 +780,9 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
     let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
-    // `BC_LENS=height|deposits|underwater` holds that lens, for screenshots.
+    // `BC_LENS=water|height|deposits|underwater` holds that lens, for screenshots.
     let shown = match std::env::var("BC_LENS").as_deref() {
+        Ok("water") => MapLens::Water,
         Ok("height") => MapLens::Elevation,
         Ok("deposits") => MapLens::Deposits,
         Ok("underwater") => MapLens::Underwater,

@@ -15,6 +15,7 @@ pub enum Screen {
     Start,
     Pause,
     Settings,
+    Load,
 }
 
 #[derive(Resource)]
@@ -28,6 +29,8 @@ pub struct Menu {
     confirm: Option<MenuAction>,
     loading: bool,
     load_error: Option<String>,
+    /// The saves the load screen lists, newest first.
+    saves: Vec<std::path::PathBuf>,
 }
 
 type LoadedValley = Result<(sim::SimState, Option<sim::starts::DamSite>), String>;
@@ -41,8 +44,10 @@ struct PendingValley {
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 enum MenuAction {
     NewGame,
-    /// Carry on the newest saved game.
-    Continue,
+    /// Open the list of saved games.
+    OpenLoad,
+    /// Load the save at this place in the list.
+    LoadSave(usize),
     Save,
     MapPrev,
     MapNext,
@@ -99,6 +104,7 @@ impl Plugin for MenuPlugin {
             confirm: None,
             loading: false,
             load_error: None,
+            saves: Vec::new(),
         })
         .init_resource::<MenuOpen>()
         .add_systems(Startup, spawn_root)
@@ -141,7 +147,7 @@ fn menu_keys(
             menu.screen = None;
             clock.paused = menu.was_paused;
         }
-        Some(Screen::Settings) => menu.screen = Some(menu.back_to),
+        Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
             let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.order_mode.is_some() || h.help);
@@ -214,8 +220,16 @@ fn menu_actions(
                 menu.load_error = None;
                 menu.screen = None;
             }
-            MenuAction::Continue => {
-                start_load(&mut commands, &mut menu, &mut clock);
+            MenuAction::OpenLoad => {
+                menu.back_to = menu.screen.unwrap_or(Screen::Pause);
+                menu.saves = crate::savegame::saves().into_iter().map(|s| s.0).collect();
+                menu.load_error = None;
+                menu.screen = Some(Screen::Load);
+            }
+            MenuAction::LoadSave(i) => {
+                if let Some(path) = menu.saves.get(i).cloned() {
+                    start_load(&mut commands, &mut menu, &mut clock, Some(path));
+                }
                 continue;
             }
             MenuAction::Save => {
@@ -276,9 +290,9 @@ fn menu_actions(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Load the newest save in the background; `finish_loading` puts it in play.
-fn start_load(commands: &mut Commands, menu: &mut Menu, clock: &mut SimClock) {
-    let Some(path) = crate::savegame::latest_save() else {
+/// Load a save (the newest when none is named) in the background; `finish_loading` puts it in play.
+fn start_load(commands: &mut Commands, menu: &mut Menu, clock: &mut SimClock, path: Option<std::path::PathBuf>) {
+    let Some(path) = path.or_else(crate::savegame::latest_save) else {
         menu.load_error = Some("No saved game".into());
         return;
     };
@@ -307,7 +321,7 @@ fn start_load(commands: &mut Commands, menu: &mut Menu, clock: &mut SimClock) {
 fn load_keys(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if ctrl && keys.just_pressed(KeyCode::KeyL) && !menu.loading {
-        start_load(&mut commands, &mut menu, &mut clock);
+        start_load(&mut commands, &mut menu, &mut clock, None);
     }
 }
 
@@ -448,6 +462,7 @@ fn rebuild_menu(
                 Screen::Start => start_screen(p, &menu, &icons, &current.0),
                 Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
                 Screen::Settings => settings_screen(p, &menu, &icons),
+                Screen::Load => load_screen(p, &menu),
             }
         });
     });
@@ -457,9 +472,6 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, curren
     let _ = current;
     hud::bold(p, "Beaver Colony", 30.0, INK);
     p.spawn(Node { height: Val::Px(6.0), ..default() });
-    if crate::savegame::latest_save().is_some() {
-        wide(p, "Continue", MenuAction::Continue, ACCENT);
-    }
     wide(p, "Play", MenuAction::NewGame, ACCENT);
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
         button(r, "<", MenuAction::MapPrev, FAINT, false);
@@ -486,8 +498,47 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, curren
     if let MapChoice::Real(id) = &menu.map {
         map_stats(p, icons, id);
     }
+    if crate::savegame::latest_save().is_some() {
+        wide(p, "Load", MenuAction::OpenLoad, FAINT);
+    }
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Quit", MenuAction::Quit, FAINT);
+}
+
+/// Every saved game, newest first: where, which day and how many beavers. Click one to load it.
+fn load_screen(p: &mut ChildSpawnerCommands, menu: &Menu) {
+    hud::bold(p, "Load", 22.0, INK);
+    if menu.saves.is_empty() {
+        hud::text(p, "No saved games", 13.0, MUTED);
+    }
+    for (i, path) in menu.saves.iter().enumerate() {
+        let (title, detail) = match sim::save::peek(path) {
+            Ok(h) => {
+                let place = crate::savegame::map_from(&h.map).label();
+                (place.split(',').next().unwrap_or("").to_string(), format!("Day {:.0} · {} beavers", h.day, h.population))
+            }
+            Err(e) => (path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), e),
+        };
+        p.spawn((
+            Interaction::default(),
+            FocusPolicy::Block,
+            MenuAction::LoadSave(i),
+            Node {
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(FAINT),
+            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+        ))
+        .with_children(|b| {
+            hud::bold(b, title, 14.0, INK);
+            hud::text(b, detail, 11.0, MUTED);
+        });
+    }
+    wide(p, "Back", MenuAction::Back, FAINT);
 }
 
 /// A row of icon + value pairs; hovering one names it.
@@ -534,7 +585,7 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
         wide(p, "Save", MenuAction::Save, FAINT);
     }
     if crate::savegame::latest_save().is_some() {
-        wide(p, "Load", MenuAction::Continue, FAINT);
+        wide(p, "Load", MenuAction::OpenLoad, FAINT);
     }
     wide(p, "Settings", MenuAction::OpenSettings, FAINT);
     wide(p, "Restart", MenuAction::Ask(Ask::Restart), FAINT);

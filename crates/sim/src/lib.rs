@@ -8,7 +8,6 @@ pub use canals::CanalGrowth;
 pub use gates::GateSetting;
 
 pub mod agents;
-pub mod autoplay;
 pub mod buildings;
 pub mod calendar;
 pub mod catalogue;
@@ -34,6 +33,7 @@ pub mod nav;
 pub mod predators;
 pub mod prof;
 pub mod output;
+pub mod piles;
 pub mod resources;
 pub mod runtime;
 pub mod sandbox;

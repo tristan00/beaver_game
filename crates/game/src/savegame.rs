@@ -35,6 +35,22 @@ pub fn latest_save() -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Every save in the save folder, newest first, with its header (or why it cannot be read).
+pub fn saves() -> Vec<(PathBuf, Result<sim::save::Header, String>)> {
+    let Ok(dir) = std::fs::read_dir(SAVE_DIR) else { return Vec::new() };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = dir
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sav"))
+        .filter_map(|p| std::fs::metadata(&p).and_then(|m| m.modified()).ok().map(|t| (t, p)))
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, p)| {
+        let h = sim::save::peek(&p);
+        (p, h)
+    }).collect()
+}
+
 pub fn map_name(m: &MapChoice) -> String {
     match m {
         MapChoice::Real(id) => id.clone(),

@@ -1,5 +1,4 @@
 use crate::agents::Assignment;
-use crate::autoplay::{Player, Style};
 use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::colony::{BeaverId, DeathCause, Event, Stage};
 use crate::jobs::RoleKind;
@@ -283,7 +282,6 @@ struct Runner {
     s: SimState,
     dam: Option<DamSite>,
     camp: Option<Cell>,
-    player: Option<Player>,
     at: Vec<(f64, Stmt)>,
     every: Vec<(f64, f64, Stmt)>,
     replay: Vec<(u64, Command)>,
@@ -327,12 +325,6 @@ impl Runner {
                 match target {
                     Some(c) => {
                         self.camp = Some(c);
-                        if let Some(p) = self.player.as_mut() {
-                            p.camp = c;
-                            if Some(c) != self.dam.as_ref().map(|d| d.camp) {
-                                p.dam = None;
-                            }
-                        }
                         self.s.apply(Command::Settle { cell: c }).map(|_| format!("settled at {c:?}")).map_err(|e| e.to_string())
                     }
                     None => Err("no settling place".into()),
@@ -340,7 +332,7 @@ impl Runner {
             }
             Stmt::Place(k, near) => {
                 let around = near.or(self.camp).unwrap_or((0, 0));
-                crate::autoplay::place_best(&mut self.s, *k, around, &[]).map(|id| format!("placed {k:?} #{}", id.0))
+                crate::construction::place_best(&mut self.s, *k, around, &[]).map(|id| format!("placed {k:?} #{}", id.0))
             }
             Stmt::DesignedDam => match self.dam.clone() {
                 Some(d) => self.s.apply(Command::PlaceDam { cells: d.cells }).map(|_| "drew the designed dam".into()).map_err(|e| e.to_string()),
@@ -348,7 +340,7 @@ impl Runner {
             },
             Stmt::FixTop => match crate::hud::problems(&self.s).into_iter().next() {
                 Some(p) => match p.fix {
-                    crate::hud::Fix::Place(k) => crate::autoplay::place_best(&mut self.s, k, self.camp.unwrap_or((0, 0)), &[]).map(|_| format!("fix: placed {k:?}")),
+                    crate::hud::Fix::Place(k) => crate::construction::place_best(&mut self.s, k, self.camp.unwrap_or((0, 0)), &[]).map(|_| format!("fix: placed {k:?}")),
                     crate::hud::Fix::OpenJobs | crate::hud::Fix::Focus => Ok(String::new()),
                     f => crate::hud::apply_fix(&mut self.s, f).map(|_| format!("fix: {f:?}")),
                 },
@@ -459,15 +451,6 @@ impl Runner {
                 for st in rep {
                     self.exec(&st);
                 }
-                if let Some(mut p) = self.player.take() {
-                    let before = p.log.len();
-                    p.act(&mut self.s);
-                    let new: Vec<String> = p.log[before..].to_vec();
-                    self.player = Some(p);
-                    for l in new {
-                        self.out.lines.push(l);
-                    }
-                }
                 self.daily();
                 if let Some(n) = self.report_every {
                     if now + 1e-9 >= self.next_report {
@@ -491,9 +474,6 @@ impl Runner {
             if self.s.colony.is_collapsed() && self.out.stats.collapsed.is_none() {
                 self.out.stats.collapsed = Some(self.s.time_days);
                 self.note("COLLAPSED".into());
-                // Preserve the requested observation horizon even when the
-                // colony fails. Reports retain the actual collapse date.
-                self.player=None;
             }
         }
     }
@@ -550,7 +530,6 @@ pub fn run_to_state(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -
                 s,
                 dam: Some(dam),
                 camp: None,
-                player: None,
                 at: Vec::new(),
                 every: Vec::new(),
                 replay: Vec::new(),
@@ -566,16 +545,6 @@ pub fn run_to_state(text: &str, load: &dyn Fn(&str) -> Result<String, String>) -
         }
         let run = r.as_mut().unwrap();
         match w.as_slice() {
-            ["policy", p] => {
-                let style = match *p {
-                    "attentive" => Style::Attentive,
-                    "ignores" => Style::IgnoresAlerts,
-                    "handsoff" => Style::HandsOff,
-                    other => return Err(err(format!("unknown policy '{other}'"))),
-                };
-                let dam = run.dam.as_ref().map(|d| (d.cells.clone(), d.height));
-                run.player = Some(Player::new(style, run.camp.or(run.dam.as_ref().map(|d| d.camp)).unwrap_or((0, 0)), dam));
-            }
             ["report", "every", d] => {
                 run.report_every = Some(d.parse().map_err(|_| err("bad days".into()))?);
                 run.next_report = run.s.time_days;

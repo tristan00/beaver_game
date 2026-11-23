@@ -261,7 +261,7 @@ impl Ui {
     /// A pebble button: an eight-sided stone around one icon.
     pub fn pebble(&mut self, icon: Icon, px: f32, action: HudAction, look: Peb) -> &mut VNode {
         let side = (px * 1.9).round().max(22.0);
-        let tint = if look == Peb::Primary { ON_ACCENT } else if look == Peb::Good { GOOD } else { INK };
+        let tint = if look == Peb::Primary { ON_ACCENT } else if look == Peb::Good { GOOD } else if look == Peb::Faded { INK.with_alpha(0.3) } else { INK };
         let v = self.node(Node { width: Val::Px(side), height: Val::Px(side), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |u| {
             u.icon(icon, px, tint);
         });

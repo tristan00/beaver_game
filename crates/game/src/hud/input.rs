@@ -64,7 +64,13 @@ pub(super) fn hotkeys(
             (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
         ];
         for (k, t) in tools {
-            if keys.just_pressed(k) {
+            let locked = match t {
+                Tool::Dam => sim.0.unlocked(BuildingKind::Dam).is_err(),
+                Tool::Canal => sim.0.unlocked(BuildingKind::Canal).is_err(),
+                Tool::Building(b) => sim.0.unlocked(b).is_err(),
+                _ => false,
+            };
+            if keys.just_pressed(k) && !locked {
                 let next = if hud.tool == t { Tool::None } else { t };
                 hud.set_tool(next);
                 *sel = Selection::None;

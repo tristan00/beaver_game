@@ -307,6 +307,7 @@ pub fn check(plan: &Plan) -> Result<(), String> {
 
 /// Draw a new canal; diggers then work every cell.
 pub fn place(sim: &mut SimState, drawn: &[Cell]) -> Result<BuildingId, SimError> {
+    sim.unlocked(crate::buildings::BuildingKind::Canal).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
     let p = plan(sim, drawn).map_err(invalid)?;
     check(&p).map_err(invalid)?;
     let first = *p.cells.iter().find(|c| c.cell == p.gate).expect("the gate is on the route");

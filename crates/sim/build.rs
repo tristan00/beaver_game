@@ -98,13 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     trees(&db, constants.entry("trees".into()).or_default())?;
     for (module, text) in constants { fs::write(out.join(format!("{module}_constants.rs")), text)?; }
 
-    let mut stmt = db.prepare("SELECT id,kind,name,width,depth,site,labour,capacity,area FROM building ORDER BY id")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,f64>(6)?,r.get::<_,f64>(7)?,r.get::<_,Option<u32>>(8)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let mut stmt = db.prepare("SELECT id,kind,name,width,depth,site,labour,capacity,area,requires FROM building ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,f64>(6)?,r.get::<_,f64>(7)?,r.get::<_,Option<u32>>(8)?,r.get::<_,Option<String>>(9)?)))?.collect::<Result<Vec<_>,_>>()?;
     let source = fs::read_to_string("src/buildings.rs")?;
     let kinds: Vec<_> = source.split("pub enum BuildingKind {").nth(1).unwrap().split('}').next().unwrap().split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     assert_eq!(kinds.len(), rows.len(), "content must define every supported building");
     let mut specs = String::from("const SPECS: &[Spec] = &[\n");
-    for (index, (id, kind, name, width, depth, site, labour, capacity, area)) in rows.iter().enumerate() {
+    for (index, (id, kind, name, width, depth, site, labour, capacity, area, requires)) in rows.iter().enumerate() {
         assert_eq!(*id, index as u32, "building IDs must follow BuildingKind order");
         assert_eq!(kind, kinds[index]);
         assert!(*width > 0 && *depth > 0 && *width <= 64 && *depth <= 64);
@@ -117,7 +117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             slots.push(format!("Role::{role}"));
         }
         let area = area.map_or("None".into(), |a| { assert!(a > 0 && a <= 1024); format!("Some(({a},{a}))") });
-        specs.push_str(&format!("Spec {{ name: {name:?}, footprint: ({width},{depth}), site: Site::{site}, cost: &[{costs}], work: {}, slots: &[{}], area: {area}, capacity: {} }},\n",number(*labour),slots.join(","),number(*capacity)));
+        let requires = requires.as_ref().map_or("None".into(), |r| {
+            assert!(kinds.contains(&r.as_str()) && r != kind, "{kind} requires unknown building {r}");
+            format!("Some(BuildingKind::{r})")
+        });
+        specs.push_str(&format!("Spec {{ name: {name:?}, footprint: ({width},{depth}), site: Site::{site}, cost: &[{costs}], work: {}, slots: &[{}], area: {area}, capacity: {}, requires: {requires} }},\n",number(*labour),slots.join(","),number(*capacity)));
     }
     specs.push_str("];\n");
     fs::write(out.join("catalogue.rs"), specs)?;

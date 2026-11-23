@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bumped by hand when the save layout changes in a way decoding would not catch.
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 const MAGIC: [u8; 8] = *b"BEAVSAVE";
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -124,8 +124,8 @@ mod tests {
     fn a_saved_game_resumes_exactly() {
         let (mut a, site) = crate::starts::new_game_on_map("telemark").unwrap();
         crate::starts::settle(&mut a, site.camp).unwrap();
-        let _ = crate::autoplay::place_best(&mut a, crate::buildings::BuildingKind::Shelter, site.camp, &[]);
-        let _ = crate::autoplay::place_best(&mut a, crate::buildings::BuildingKind::Larder, site.camp, &[]);
+        let _ = crate::construction::place_best(&mut a, crate::buildings::BuildingKind::Shelter, site.camp, &[]);
+        let _ = crate::construction::place_best(&mut a, crate::buildings::BuildingKind::Larder, site.camp, &[]);
         for _ in 0..(12 * 96) {
             a.step(crate::STEP_DAYS).unwrap();
         }

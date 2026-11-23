@@ -252,12 +252,25 @@ pub fn world_hover(
         if c == pile && hud.tool == Tool::None && matches!(t, Some(Thing::Cell(_))) {
             let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
             for g in Good::ALL {
-                let a = sim.0.buildings.stores.amount(g);
+                let a = sim.0.work.stock_of(sim::agents::SUPPLIES, g);
                 if a > 0.05 {
                     tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
                 }
             }
             tips.world = Some((u64::MAX, tip));
+            return;
+        }
+    }
+    if let Some((c, _)) = p {
+        let here: Vec<&sim::piles::Pile> = sim.0.work.piles.items.iter().filter(|q| q.cell == c).collect();
+        if let (Some(first), Tool::None, Some(Thing::Cell(_))) = (here.first(), hud.tool, t) {
+            let mut tip = Tip::titled(Some((good_icon(first.good), good_color(first.good))), "On the ground");
+            for q in &here {
+                tip.push(TipLine::new(good_name(q.good), num(q.amount)).icon(good_icon(q.good), good_color(q.good)));
+            }
+            let left = here.iter().map(|q| q.days_left(sim.0.time_days)).fold(f64::INFINITY, f64::min);
+            tip.push(TipLine::new("Rots in", format!("{left:.0} d")));
+            tips.world = Some((u64::MAX - 1 - first.id, tip));
             return;
         }
     }
@@ -314,13 +327,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         }
         if let (Some((i, c)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
             out.push(pin(pos, i, c, Skin::Pebble, 28.0));
-        }
-    }
-    if let Some(c) = s.work.supplies {
-        if let Some(pos) = place((c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.9) {
-            let mut v = pin(pos, Icon::Logs, good_color(Good::Sticks), Skin::Pebble, 26.0);
-            v.solid = false;
-            out.push(v);
         }
     }
     for id in sim::hud::idle_beavers(s) {
@@ -517,6 +523,96 @@ fn area_outline(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area, c
     edge((x0, y1), (x0, y0));
 }
 
+/// The water lens: short flow lines traced along the current from seeds across the view,
+/// down to a centimetre of water, each ending in an arrowhead and coloured by speed (pale
+/// blue for slow water, white for a steady current, orange for fast water). The water engine
+/// moves water along each channel's thread; water spread beside it is drawn going the way of
+/// the nearest thread, slower.
+fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distance: f32) {
+    const MIN_DEPTH: f32 = 0.01;
+    let h = &s.height;
+    let n = s.world.size as i32;
+    let r = (distance * 1.4).clamp(30.0, 120.0) as i32;
+    let stride = if r <= 60 { 2 } else if r <= 95 { 3 } else { 4 };
+    const SPREAD: i32 = 4;
+    let vel = |c: (i32, i32)| -> Option<Vec2> {
+        if c.0 < 0 || c.1 < 0 || c.0 >= n || c.1 >= n {
+            return None;
+        }
+        let v = s.water.velocity.get(c.0 as usize, c.1 as usize)?;
+        let v = Vec2::new(v.0, v.1);
+        (v.length() > 1e-4).then_some(v)
+    };
+    // The current at a wet cell: its own, or the nearest thread's within SPREAD cells, slower.
+    let current = |c: (i32, i32)| -> Option<(Vec2, f32)> {
+        if let Some(v) = vel(c) {
+            return Some((v.normalize(), v.length()));
+        }
+        let mut best: Option<(i32, Vec2)> = None;
+        for dy in -SPREAD..=SPREAD {
+            for dx in -SPREAD..=SPREAD {
+                let d2 = dx * dx + dy * dy;
+                if d2 == 0 || d2 > SPREAD * SPREAD || best.is_some_and(|b| b.0 <= d2) {
+                    continue;
+                }
+                if let Some(v) = vel((c.0 + dx, c.1 + dy)) {
+                    best = Some((d2, v));
+                }
+            }
+        }
+        best.map(|(d2, v)| (v.normalize(), v.length() / (1.0 + (d2 as f32).sqrt())))
+    };
+    let colour = |speed: f32| {
+        let (slow, mid, fast) = (Vec3::new(0.05, 0.16, 0.4), Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 0.55, 0.15));
+        let c = if speed < 0.3 { slow.lerp(mid, speed / 0.3) } else { mid.lerp(fast, ((speed - 0.3) / 0.7).min(1.0)) };
+        Color::srgb(c.x, c.y, c.z)
+    };
+    let surface = |p: (f32, f32)| {
+        let c = (p.0.max(0.0) as usize, p.1.max(0.0) as usize);
+        let mut v = cell_world(h, p);
+        v.y = h.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0) + 0.15;
+        v
+    };
+    let (cx0, cy0) = (tx as i32, ty as i32);
+    for y in ((cy0 - r).max(1)..(cy0 + r).min(n - 1)).filter(|y| y.rem_euclid(stride) == 0) {
+        for x in ((cx0 - r).max(1)..(cx0 + r).min(n - 1)).filter(|x| x.rem_euclid(stride) == 0) {
+            if s.water.depth.get(x as usize, y as usize).copied().unwrap_or(0.0) < MIN_DEPTH {
+                continue;
+            }
+            let Some((_, speed)) = current((x, y)) else { continue };
+            // Trace a few steps along the current; a line stops where the water does.
+            let mut p = (x as f32 + 0.5, y as f32 + 0.5);
+            let mut pts = vec![p];
+            let mut dir = Vec2::ZERO;
+            for _ in 0..5 {
+                let c = (p.0 as i32, p.1 as i32);
+                if c.0 < 0 || c.1 < 0 || c.0 >= n || c.1 >= n || s.water.depth.get(c.0 as usize, c.1 as usize).copied().unwrap_or(0.0) < MIN_DEPTH {
+                    break;
+                }
+                let Some((d, v)) = current(c) else { break };
+                dir = d;
+                let step = (0.8 + 0.6 * v.sqrt()).min(1.5);
+                p = (p.0 + dir.x * step, p.1 + dir.y * step);
+                pts.push(p);
+            }
+            if pts.len() < 2 {
+                continue;
+            }
+            let col = colour(speed);
+            let (d3, side) = (Vec3::new(dir.x, 0.0, dir.y), Vec3::new(-dir.y, 0.0, dir.x));
+            // Drawn twice, a hair apart, so a line reads at a distance.
+            for nudge in [Vec3::ZERO, side * 0.06] {
+                for w in pts.windows(2) {
+                    g.line(surface(w[0]) + nudge, surface(w[1]) + nudge, col);
+                }
+                let tip = surface(*pts.last().unwrap()) + nudge;
+                g.line(tip, tip - d3 * 0.4 + side * 0.25, col);
+                g.line(tip, tip - d3 * 0.4 - side * 0.25, col);
+            }
+        }
+    }
+}
+
 pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
     let _p = ::sim::prof::scope("game/draw world overlay");
     let s = &sim.0;
@@ -524,31 +620,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
     let lens = crate::terrain_render::map_lens();
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
     if lens == MapLens::Water.code() {
-        let r = 40i32;
-        for y in ((ty as i32 - r).max(1)..(ty as i32 + r).min(s.world.size as i32 - 1)).step_by(3) {
-            for x in ((tx as i32 - r).max(1)..(tx as i32 + r).min(s.world.size as i32 - 1)).step_by(3) {
-                let (cx, cy) = (x as usize, y as usize);
-                let d = s.water.depth.get(cx, cy).copied().unwrap_or(0.0);
-                if d < 0.05 {
-                    continue;
-                }
-                let (fx, fy) = s.water.flow_at(cx, cy);
-                let m = (fx * fx + fy * fy).sqrt();
-                if m < 1e-5 {
-                    continue;
-                }
-                let len = (0.25 * m.sqrt()).clamp(0.35, 1.4);
-                let dir = Vec2::new(fx, fy) / m;
-                let mut a = cell_world(h, (cx as f32, cy as f32));
-                a.y = h.get(cx, cy).copied().unwrap_or(0.0) + d + 0.12;
-                let b = a + Vec3::new(dir.x, 0.0, dir.y) * len;
-                let side = Vec3::new(-dir.y, 0.0, dir.x) * 0.25;
-                let back = Vec3::new(dir.x, 0.0, dir.y) * 0.3;
-                g.line(a, b, Color::WHITE);
-                g.line(b, b - back + side, Color::WHITE);
-                g.line(b, b - back - side, Color::WHITE);
-            }
-        }
+        draw_currents(&mut g, s, (tx, ty), orbit.distance);
     }
     if lens == MapLens::Forest.code() {
         let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);

@@ -957,3 +957,57 @@ pub fn plant_mesh() -> Mesh {
     mb.ellipsoid(v(0.0, 0.8, 0.0), v(0.3, 0.1, 0.3), hex(0x9bd86a));
     mb.build()
 }
+
+/// Goods lying on the ground, about one load's worth; scaled with the amount.
+pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
+    use sim::buildings::Good;
+    let mut mb = Mb::new();
+    match good {
+        Good::Sticks => stick_pile(&mut mb, v(0.0, 0.0, 0.0), 0.4, 7, 11),
+        Good::Clay => {
+            for (x, z, r, h) in [(0.0f32, 0.0f32, 0.42f32, 0.2f32), (0.3, 0.22, 0.25, 0.14), (-0.28, 0.18, 0.22, 0.12)] {
+                mb.ellipsoid_g(v(x, 0.0, z), v(r, h, r * 0.85), col(palette::MUD_DARK), hex(0x80603f), 9, 5);
+            }
+        }
+        Good::Pebbles => {
+            for (k, (x, z)) in [(0.0f32, 0.0f32), (0.22, 0.12), (-0.2, 0.15), (0.05, -0.22), (-0.15, -0.12)].into_iter().enumerate() {
+                let r = 0.14 + 0.03 * (k % 2) as f32;
+                mb.ellipsoid_g(v(x, r * 0.6, z), v(r, r * 0.75, r * 0.9), hex(0x66666b), hex(0xb5b3ae), 7, 5);
+            }
+        }
+        Good::Saplings => {
+            for k in 0..3 {
+                let x = -0.2 + 0.2 * k as f32;
+                sapling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
+            }
+        }
+        // Leafy sprigs and bark strips in a loose heap.
+        Good::Food => {
+            for k in 0..7 {
+                let a = k as f32 * 0.9;
+                let (x, z) = (0.25 * a.cos(), 0.25 * a.sin());
+                stick_c(&mut mb, v(x - 0.25 * a.sin(), 0.04, z + 0.25 * a.cos()), v(x + 0.25 * a.sin(), 0.08, z - 0.25 * a.cos()), 0.025, hex(0x6f8a3a));
+                mb.ellipsoid_r(v(x, 0.1 + 0.03 * (k % 3) as f32, z), v(0.16, 0.04, 0.09), Quat::from_rotation_y(a), mix(col(palette::LEAF), col(palette::LEAF_LIGHT), 0.3 * (k % 3) as f32));
+            }
+        }
+    }
+    mb.build()
+}
+
+/// The family's starting supplies: a tied bundle of sticks, mud and a heap of food.
+pub fn supplies_mesh() -> Mesh {
+    let mut mb = Mb::new();
+    for k in 0..9 {
+        let (y, z) = (0.1 + 0.09 * (k / 3) as f32, -0.1 + 0.1 * (k % 3) as f32);
+        stick(&mut mb, v(-0.7, y, z), v(0.7, y + 0.02, z + 0.02), 0.05, 0.2 + 0.08 * k as f32);
+    }
+    for x in [-0.4f32, 0.4] {
+        mb.cyl(v(x, 0.0, -0.22), v(x, 0.42, 0.22), 0.03, 0.03, hex(0x9c7a4a), hex(0xb8935c), 5);
+    }
+    mb.ellipsoid_g(v(0.1, 0.0, 0.55), v(0.4, 0.24, 0.32), col(palette::MUD_DARK), hex(0x80603f), 9, 5);
+    for k in 0..5 {
+        let a = k as f32 * 1.25;
+        mb.ellipsoid_r(v(-0.45 + 0.14 * a.cos(), 0.08 + 0.04 * (k % 2) as f32, 0.5 + 0.14 * a.sin()), v(0.17, 0.04, 0.09), Quat::from_rotation_y(a), mix(col(palette::LEAF), col(palette::LEAF_LIGHT), 0.3 * (k % 3) as f32));
+    }
+    mb.build()
+}

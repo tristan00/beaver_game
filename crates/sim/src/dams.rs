@@ -358,6 +358,7 @@ pub fn first_targets(sim: &SimState, cells: &[Cell]) -> Vec<f32> {
 }
 
 pub fn place(sim: &mut SimState, cells: &[Cell]) -> Result<BuildingId, SimError> {
+    sim.unlocked(BuildingKind::Dam).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
     check_line(sim, cells).map_err(invalid)?;
     let targets = first_targets(sim, cells);
     let id = BuildingId(sim.buildings.fresh_id());
