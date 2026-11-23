@@ -98,12 +98,16 @@ pub struct Predators {
     /// spotted counts as seen where it stands.
     #[serde(skip)]
     pub last_seen: Option<((f32, f32), f64)>,
+    /// A beaver out of its lodge, or a lookout's guard, sees the wolf this step: only then
+    /// does the player see where it is.
+    #[serde(skip)]
+    pub in_sight: bool,
 }
 
 impl Predators {
     pub fn new(seed: u64) -> Self {
         Self { rng: Pcg32::seed_from_u64(seed ^ 0x3017_F00D), wolf: None, last_year: None, spotted: false, refuge: None,
-            chance_per_day: WOLF_CHANCE_PER_DAY, visits: 0, kills: 0, alarms: Vec::new(), given_up: Vec::new(), given_up_animals: Vec::new(), last_seen: None }
+            chance_per_day: WOLF_CHANCE_PER_DAY, visits: 0, kills: 0, alarms: Vec::new(), given_up: Vec::new(), given_up_animals: Vec::new(), last_seen: None, in_sight: false }
     }
 
     /// The beaver being charged or killed, if any.
@@ -270,6 +274,7 @@ pub fn summon(sim: &mut SimState) -> bool {
     p.last_year = Some(year(now));
     p.spotted = false;
     p.last_seen = None;
+    p.in_sight = false;
     p.visits += 1;
     note(sim, sim.predators.wolf.as_ref(), "ARRIVED", format!("visit={} leave_by={:.2}", sim.predators.visits, now + WOLF_VISIT_DAYS));
     true
@@ -310,6 +315,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         sim.predators.alarms.clear();
         sim.predators.spotted = false;
         sim.predators.last_seen = None;
+        sim.predators.in_sight = false;
     }
 }
 
@@ -345,10 +351,16 @@ fn spot(sim: &mut SimState, wolf: &Wolf) {
     // Only sight counts: being charged or caught tells the colony nothing.
     let sees_now = !sim.predators.alarms.is_empty() || sim.agents.by_id.values().any(|a| sees(a, wolf));
     let p = &mut sim.predators;
+    p.in_sight = sees_now;
     if sees_now || (p.spotted && p.last_seen.is_none()) {
         p.last_seen = Some((wolf.pos, now));
     }
     p.spotted = p.last_seen.is_some_and(|(_, t)| now - t <= WOLF_SEEN_DAYS);
+}
+
+/// Where the wolf is, while the colony sees it.
+pub fn in_sight(sim: &SimState) -> Option<(f32, f32)> {
+    sim.predators.wolf.as_ref().filter(|_| sim.predators.in_sight).map(|w| w.pos)
 }
 
 /// Where the colony last saw the wolf, while its alert stands.
@@ -801,6 +813,7 @@ mod tests {
         let w = s.predators.wolf.clone().unwrap();
         spot(&mut s, &w);
         assert!(s.predators.spotted);
+        assert_eq!(in_sight(&s), Some(w.pos));
         let seen_at = w.pos;
         // Gone from sight: the alert stands a while, at the place it was seen, then clears.
         s.predators.wolf.as_mut().unwrap().pos = centre((60 - sight - 20, 60));
@@ -808,6 +821,7 @@ mod tests {
         s.time_days += WOLF_SEEN_DAYS * 0.5;
         spot(&mut s, &w);
         assert!(s.predators.spotted);
+        assert_eq!(in_sight(&s), None, "out of sight, where it is stays hidden");
         assert_eq!(last_seen(&s), Some(seen_at), "the alert points where it was seen, not where it is");
         s.time_days += WOLF_SEEN_DAYS;
         spot(&mut s, &w);

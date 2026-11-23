@@ -121,6 +121,11 @@ pub(super) fn button_actions(
                     }
                 }
             },
+            HudAction::FocusWolf => {
+                if let Some(to) = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)) {
+                    flow.focus = Some(cell_world(&s.height, to));
+                }
+            }
             HudAction::CycleIdle => {
                 if shift {
                     hud.colony = Some(ColonyTab::Jobs);
@@ -246,6 +251,10 @@ pub(super) fn button_actions(
                     }
                 }
                 NoticeAt::Spot(p) => flow.focus = Some(cell_world(&s.height, p)),
+                NoticeAt::Wolf(p) => {
+                    let to = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)).unwrap_or(p);
+                    flow.focus = Some(cell_world(&s.height, to));
+                }
                 _ => {}
             },
             HudAction::SelectBeaver(id) => {

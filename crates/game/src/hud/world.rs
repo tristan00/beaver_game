@@ -95,7 +95,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
     }
-    if s.predators.wolf.as_ref().is_some_and(|w| d2(w.pos) < 1.2 * 1.2 && s.fog.explored(cell)) {
+    if sim::predators::in_sight(s).is_some_and(|w| d2(w) < 1.2 * 1.2) {
         return Thing::Wolf;
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
@@ -309,11 +309,11 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     };
     for p in problems {
         let Some(f) = p.focus else { continue };
-        // The wolf's pin rides over the wolf as drawn, not its cell, so it doesn't hop; once
-        // the colony loses sight of it, the pin stays where it was last seen.
-        let in_sight = s.predators.last_seen.is_some_and(|(_, t)| s.time_days - t < 0.05);
+        // The wolf's pin rides over the wolf as drawn, not its cell, so it doesn't hop, and only
+        // while the colony sees it: out of sight, where it is stays unknown.
         let at = match (p.kind, wolf_at) {
-            (sim::hud::ProblemKind::Wolf, Some(w)) if in_sight => project(w, 2.4),
+            (sim::hud::ProblemKind::Wolf, Some(w)) => project(w, 2.4),
+            (sim::hud::ProblemKind::Wolf, None) => None,
             _ => place((f.0 as f32 + 0.5, f.1 as f32 + 0.5), 2.4),
         };
         let Some(pos) = at else { continue };
@@ -699,8 +699,8 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<C
         }
     }
     if sel == Selection::Wolf || thing == Some(Thing::Wolf) {
-        if let Some(w) = s.predators.wolf.as_ref() {
-            sight_circle(g, h, w.pos, sim::predators::WOLF_SIGHT, wolf_col);
+        if let Some(w) = sim::predators::in_sight(s) {
+            sight_circle(g, h, w, sim::predators::WOLF_SIGHT, wolf_col);
         }
     }
     for at in shown_lookouts(s, hud, hover, sel, thing) {

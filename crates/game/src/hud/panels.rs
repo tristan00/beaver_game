@@ -376,7 +376,8 @@ pub fn badges(c: &Ctx) -> Vec<VNode> {
                 }
             });
             t.skin(skin);
-            t.action(HudAction::Badge(key.clone()));
+            // The wolf's badge takes the camera to the wolf; the others open their card.
+            t.action(if p.kind == ProblemKind::Wolf { HudAction::FocusWolf } else { HudAction::Badge(key.clone()) });
             if open == Some(key.as_str()) {
                 let mut k = Ui::default();
                 k.row(8.0, |row| {
@@ -796,8 +797,13 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
     // Each alert shows where it is as its own icon, ringed red if urgent.
     let mut markers: Vec<((f32, f32), Icon, Color, Color)> = Vec::new();
     for p in c.problems {
-        if let Some(f) = p.focus {
-            let m = at((f.0 as f32 + 0.5, f.1 as f32 + 0.5));
+        // The wolf shows only while the colony sees it, where it is now.
+        let focus = match p.kind {
+            ProblemKind::Wolf => sim::predators::in_sight(c.s),
+            _ => p.focus.map(|f| (f.0 as f32 + 0.5, f.1 as f32 + 0.5)),
+        };
+        if let Some(f) = focus {
+            let m = at(f);
             let (icons, _, _) = alert_face(c.s, p);
             if let (true, Some(&(icon, col))) = (inside(m), icons.first()) {
                 markers.push((m, icon, col, if p.severity == Severity::Urgent { BAD } else { WARN }));

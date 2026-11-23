@@ -358,6 +358,9 @@ pub enum NoticeAt {
     Beaver(BeaverId),
     Building(BuildingId),
     Spot((f32, f32)),
+    /// A wolf sighting: to the wolf while it is seen, else to where it was last seen, else
+    /// where this sighting was.
+    Wolf((f32, f32)),
 }
 
 /// The journal's lines, and today's game day (stamped on new lines).
@@ -390,7 +393,7 @@ fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut
     }
     let spotted = sim.0.predators.wolf.is_some() && sim.0.predators.spotted;
     if spotted && !*seen {
-        let at = sim.0.predators.wolf.as_ref().map(|w| NoticeAt::Spot(w.pos));
+        let at = sim.0.predators.wolf.as_ref().map(|w| NoticeAt::Wolf(w.pos));
         notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), at);
     }
     *seen = spotted;
@@ -553,6 +556,8 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
     Fix(Fix, Option<Cell>),
+    /// To the wolf while it is seen, else to where it was last seen.
+    FocusWolf,
     CycleIdle,
     Pause,
     Speed(Speed),

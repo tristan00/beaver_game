@@ -339,7 +339,9 @@ fn force_wolf(mut sim: ResMut<Sim>, mut done: Local<bool>) {
         return;
     };
     let s = &mut sim.0;
-    let near = how.starts_with("near");
+    // `near` puts it just past a beaver's sight (inside its own); `close`, well inside it.
+    let close = how.starts_with("close");
+    let near = close || how.starts_with("near");
     let day: f64 = how.split_once(':').and_then(|(_, d)| d.parse().ok()).unwrap_or(0.0);
     if s.time_days < day {
         return;
@@ -362,7 +364,7 @@ fn force_wolf(mut sim: ResMut<Sim>, mut done: Local<bool>) {
         return;
     }
     if let (true, Some(home)) = (near, prey) {
-        let ring = sim::predators::WOLF_SIGHT - 2.0;
+        let ring = if close { 20.0 } else { sim::predators::WOLF_SIGHT - 2.0 };
         let spot = (0..32).map(|k| k as f32 / 32.0 * std::f32::consts::TAU).find_map(|a| {
             let c = (home.0 as f32 + ring * a.cos(), home.1 as f32 + ring * a.sin());
             let cell = (c.0.max(0.0) as usize, c.1.max(0.0) as usize);
@@ -530,20 +532,27 @@ fn sync_wolf(
     meshes: Option<Res<WolfMeshes>>,
     models: Option<Res<Models>>,
     mut drawn: ResMut<WolfDrawn>,
-    mut q: Query<(Entity, &mut Transform, &mut WolfTrack), (With<WolfRig>, With<SimWolf>)>,
+    mut q: Query<(Entity, &mut Transform, &mut WolfTrack, &mut Visibility), (With<WolfRig>, With<SimWolf>)>,
 ) {
     let _p = ::sim::prof::scope("game/sync wolf");
     let (Some(wm), Some(m)) = (meshes, models) else { return };
     let s = &sim.0;
     let Some(wolf) = s.predators.wolf.as_ref() else {
         drawn.0 = None;
-        for (e, _, _) in &q {
+        for (e, _, _, _) in &q {
             commands.entity(e).despawn();
         }
         return;
     };
+    // Only a wolf the colony sees is drawn: out of every beaver's sight it is hidden, so the
+    // player learns no more than the beavers know.
+    let seen = s.predators.in_sight;
     let here = cell_xz(s, wolf.pos);
-    if let Ok((_, mut tr, mut track)) = q.single_mut() {
+    if let Ok((_, mut tr, mut track, mut vis)) = q.single_mut() {
+        let want = if seen { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
+        }
         track.record(s.instance, s.time_days, here);
         let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
         let (aim, going) = track.at(now).unwrap_or((here, None));
@@ -554,7 +563,7 @@ fn sync_wolf(
         };
         track.shown = Some(xz);
         tr.translation = Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y), xz.y);
-        drawn.0 = Some(tr.translation);
+        drawn.0 = seen.then_some(tr.translation);
         // Face the way it is going; standing, the way the sim last turned it (at its prey).
         let want = Quat::from_rotation_y(going.map_or(wolf.heading, |d| d.x.atan2(d.y)));
         tr.rotation = tr.rotation.slerp(want, 1.0 - (-time.delta_secs() * 8.0).exp());
