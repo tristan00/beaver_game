@@ -86,6 +86,32 @@ fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
     }
 }
 
+/// A beaver's job: its icon, colour and name, and the building it works at. A seat gives the
+/// job; so does an order to gather (that sort of gatherer), to keep things mended, or to go
+/// somewhere.
+fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str, Option<BuildingId>) {
+    use sim::agents::Assignment;
+    use sim::work::Role;
+    if !b.can_work() {
+        return (Icon::Kit, REST, "Too young", None);
+    }
+    if let Some((bid, _, role)) = s.work.slot_of(b.id) {
+        return (role_icon(role), GOOD, role_name(role), Some(bid));
+    }
+    let gatherer = |kind| (role_icon(Role::Collect(kind)), GOOD, role_name(Role::Collect(kind)), None);
+    match s.agents.get(b.id).and_then(|a| a.assignment) {
+        Some(Assignment::Resource(r)) => match s.resources.get(r) {
+            Some(res) => gatherer(res.kind),
+            None => (Icon::Hammer, GOOD, "Gatherer", None),
+        },
+        Some(Assignment::Area(kind, _)) => gatherer(kind),
+        Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Worker", Some(bid)),
+        Some(Assignment::Maintain) => (role_icon(Role::Maintain), GOOD, role_name(Role::Maintain), None),
+        Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
+        None => (Icon::Idle, ACCENT, "Free", None),
+    }
+}
+
 /// What a beaver is busy with, as an icon, its colour and a word for the tooltip.
 pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str) {
     use sim::agents::Task;
@@ -358,27 +384,23 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
     };
     let tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line("Age", format!("{:.1}", b.age_years())).line("Health", format!("{:.0}", b.health * 100.0));
     frame(c, sel, Icon::Beaver, FUR, b.name.clone(), Some(b.health), tip, |u| {
-        // What it is doing and where.
-        u.row(8.0, |r| {
-            match s.work.slot_of(id) {
-                Some((bid, _, role)) => {
-                    r.icon(role_icon(role), 18.0, MUTED).tip(Tip::name(role_name(role)));
-                    r.icon(Icon::Expand, 10.0, MUTED);
-                    if let Some(bb) = s.buildings.building(bid) {
-                        r.pebble(building_icon(bb.kind), 14.0, HudAction::SelectBuilding(bid), Peb::Idle).tip(Tip::name(bb.kind.spec().name).line("Show", ""));
-                    }
+        // Its job, big and named, with the workplace; what it is doing this moment; its load.
+        let (job_icon, job_col, job_name, place) = job(s, b);
+        let (now_icon, now_col, now_name) = activity(s, b);
+        u.row(10.0, |r| {
+            r.node(Node { width: Val::Px(40.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |p| {
+                p.icon(job_icon, 26.0, job_col);
+            })
+            .skin(Skin::Portrait)
+            .tip(Tip::name(job_name));
+            r.col(4.0, |x| {
+                x.bold(job_name, 15.0, job_col);
+                if now_icon != job_icon {
+                    x.icon(now_icon, 14.0, now_col).tip(Tip::name(now_name));
                 }
-                None => match s.agents.get(id).and_then(|a| a.assignment) {
-                    Some(_) => {
-                        r.icon(Icon::Hammer, 18.0, MUTED).tip(Tip::name("On an order"));
-                    }
-                    None if !b.can_work() => {
-                        r.icon(Icon::Kit, 18.0, REST).tip(Tip::name("Too young to work"));
-                    }
-                    None => {
-                        r.icon(Icon::Idle, 18.0, ACCENT).tip(Tip::name("Free"));
-                    }
-                },
+            });
+            if let Some(bb) = place.and_then(|bid| s.buildings.building(bid)) {
+                r.pebble(building_icon(bb.kind), 14.0, HudAction::SelectBuilding(bb.id), Peb::Idle).tip(Tip::name(bb.kind.spec().name).line("Show", ""));
             }
             r.spacer();
             if let Some(l) = s.agents.get(id).and_then(|a| a.load.as_ref()) {

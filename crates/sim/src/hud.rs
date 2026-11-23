@@ -535,7 +535,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     }
 
     // First, so the cap on alerts never hides it.
-    if let Some(w) = sim.predators.wolf.as_ref().filter(|_| sim.predators.spotted) {
+    if let Some(seen) = crate::predators::last_seen(sim) {
         out.insert(0, Problem {
             kind: ProblemKind::Wolf,
             severity: Severity::Urgent,
@@ -544,7 +544,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             subject: None,
             fix: Fix::Focus,
             alt_fix: None,
-            focus: Some(w.cell()),
+            focus: Some((seen.0.max(0.0) as usize, seen.1.max(0.0) as usize)),
         });
     }
 

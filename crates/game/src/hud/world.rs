@@ -309,9 +309,11 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     };
     for p in problems {
         let Some(f) = p.focus else { continue };
-        // The wolf's pin rides over the wolf as drawn, not its cell, so it doesn't hop.
+        // The wolf's pin rides over the wolf as drawn, not its cell, so it doesn't hop; once
+        // the colony loses sight of it, the pin stays where it was last seen.
+        let in_sight = s.predators.last_seen.is_some_and(|(_, t)| s.time_days - t < 0.05);
         let at = match (p.kind, wolf_at) {
-            (sim::hud::ProblemKind::Wolf, Some(w)) => project(w, 2.4),
+            (sim::hud::ProblemKind::Wolf, Some(w)) if in_sight => project(w, 2.4),
             _ => place((f.0 as f32 + 0.5, f.1 as f32 + 0.5), 2.4),
         };
         let Some(pos) = at else { continue };
@@ -321,32 +323,34 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             sim::hud::Fix::OpenDam { .. } => super::HudAction::Fix(p.fix, p.focus),
             _ => super::HudAction::Fix(sim::hud::Fix::Focus, p.focus),
         };
-        v.action(act);
+        v.action(act).tip(super::panels::alert_tip_in(s, p));
         out.push(v);
     }
     for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
         let selected = matches!(sel, Selection::Site(id) if id == b.id);
-        let mut icon: Option<(Icon, Color)> = None;
+        let mut icon: Option<(Icon, Color, &str)> = None;
         if let Some(pl) = s.work.place(b.id) {
             let empty = pl.slots.iter().filter(|x| x.worker.is_none()).count();
             if pl.is_open_site() && selected && !pl.paused && empty == pl.slots.len() && !pl.slots.is_empty() {
-                icon = Some((Icon::RoleBuilder, WARN));
+                icon = Some((Icon::RoleBuilder, WARN, "No builder"));
             } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.worker).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
-                icon = Some((Icon::Blocked, BAD));
+                icon = Some((Icon::Blocked, BAD, "Workers can't get there"));
             }
         }
         if b.is_complete() && s.buildings.stranded(b, &s.water.depth) {
-            icon = Some((Icon::Flood, WARN));
+            icon = Some((Icon::Flood, WARN, "High and dry"));
         }
         if sim::buildings::flooded(b, &s.water.depth) {
-            icon = Some((Icon::Flood, BAD));
+            icon = Some((Icon::Flood, BAD, "Flooded"));
         }
         // The dam being drawn would drown it.
         if hud.tool == super::Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0.0 == hud.line && d.1.contains(&b.id)) {
-            icon = Some((Icon::Flood, BAD));
+            icon = Some((Icon::Flood, BAD, "This dam would flood it"));
         }
-        if let (Some((i, c)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
-            out.push(pin(pos, i, c, Skin::Pebble, 28.0));
+        if let (Some((i, c, words)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
+            let mut v = pin(pos, i, c, Skin::Pebble, 28.0);
+            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(words, ""));
+            out.push(v);
         }
     }
     for id in sim::hud::idle_beavers(s) {
@@ -596,6 +600,86 @@ fn sight_circle(g: &mut Gizmos, h: &sim::grid::HeightGrid, at: (f32, f32), r: f3
     }
 }
 
+/// The middles of the lookouts whose range shows: hovered, selected, or being placed.
+fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    for id in [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }].into_iter().flatten() {
+        if let Some(b) = s.buildings.building(id).filter(|b| b.kind == BuildingKind::Lookout) {
+            out.push(sim::predators::lookout_centre(b));
+        }
+    }
+    if let (Tool::Building(BuildingKind::Lookout), Some(c)) = (hud.tool, hover) {
+        let b = sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Lookout, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+        out.push(sim::predators::lookout_centre(&b));
+    }
+    out.dedup();
+    out
+}
+
+/// A lookout's range is wide (more than a screen across at the usual zoom), so besides its
+/// rim the ground it covers is washed over: one disc laid on the ground and water, redrawn
+/// only when the lookout shown changes.
+#[allow(clippy::too_many_arguments)]
+pub fn lookout_range(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    hud: Res<HudState>,
+    hover: Res<HoverCell>,
+    sel: Res<Selection>,
+    thing: Res<HoverThing>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut shown: Local<Option<(Entity, (i32, i32))>>,
+) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let s = &sim.0;
+    let want = shown_lookouts(s, &hud, hover.0, *sel, thing.0).first().copied();
+    let key = want.map(|c| ((c.0 * 2.0) as i32, (c.1 * 2.0) as i32));
+    if shown.map(|x| x.1) == key && (key.is_none() || shown.is_some()) {
+        return;
+    }
+    if let Some((e, _)) = shown.take() {
+        commands.entity(e).despawn();
+    }
+    let (Some(at), Some(key)) = (want, key) else { return };
+    let h = &s.height;
+    let r = sim::predators::LOOKOUT_SIGHT;
+    let (rings, segs) = (24usize, 120usize);
+    let ground = |q: (f32, f32)| {
+        let c = (q.0.max(0.0) as usize, q.1.max(0.0) as usize);
+        let wet = s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0);
+        cell_world(h, q).with_y(height_at(h, q.0, q.1) + wet + 0.3)
+    };
+    let mut pos: Vec<[f32; 3]> = vec![ground(at).to_array()];
+    for i in 1..=rings {
+        let rr = r * i as f32 / rings as f32;
+        for j in 0..segs {
+            let t = j as f32 / segs as f32 * std::f32::consts::TAU;
+            pos.push(ground((at.0 + rr * t.cos(), at.1 + rr * t.sin())).to_array());
+        }
+    }
+    let mut idx: Vec<u32> = Vec::new();
+    let ring = |i: usize, j: usize| (1 + (i - 1) * segs + j % segs) as u32;
+    for j in 0..segs {
+        idx.extend([0, ring(1, j + 1), ring(1, j)]);
+    }
+    for i in 1..rings {
+        for j in 0..segs {
+            let (a, b, c, d) = (ring(i, j), ring(i, j + 1), ring(i + 1, j), ring(i + 1, j + 1));
+            idx.extend([a, b, c, b, d, c]);
+        }
+    }
+    let n = pos.len();
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n])
+        .with_inserted_indices(Indices::U32(idx));
+    let mat = materials.add(StandardMaterial { base_color: ACCENT.with_alpha(0.14), alpha_mode: AlphaMode::Blend, unlit: true, double_sided: true, cull_mode: None, depth_bias: 50.0, ..default() });
+    let e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), Transform::default(), bevy::light::NotShadowCaster)).id();
+    *shown = Some((e, key));
+}
+
 /// Sight ranges to show: of a hovered or selected beaver, the wolf, and of a lookout hovered,
 /// selected or being placed.
 fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) {
@@ -619,17 +703,23 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<C
             sight_circle(g, h, w.pos, sim::predators::WOLF_SIGHT, wolf_col);
         }
     }
-    let mut lookouts: Vec<sim::buildings::Building> = Vec::new();
-    for id in [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }].into_iter().flatten() {
-        if let Some(b) = s.buildings.building(id).filter(|b| b.kind == BuildingKind::Lookout) {
-            lookouts.push(b.clone());
+    for at in shown_lookouts(s, hud, hover, sel, thing) {
+        // A solid rim, doubled so it holds up from far out (the area is washed by
+        // `lookout_range`).
+        let r = sim::predators::LOOKOUT_SIGHT;
+        let n = 360;
+        let p = |i: usize, dr: f32| {
+            let t = i as f32 / n as f32 * std::f32::consts::TAU;
+            let q = (at.0 + (r + dr) * t.cos(), at.1 + (r + dr) * t.sin());
+            let c = (q.0.max(0.0) as usize, q.1.max(0.0) as usize);
+            let wet = s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0);
+            cell_world(h, q).with_y(height_at(h, q.0, q.1) + wet + 0.35)
+        };
+        for i in 0..n {
+            for dr in [0.0, -0.3] {
+                g.line(p(i, dr), p(i + 1, dr), ACCENT);
+            }
         }
-    }
-    if let (Tool::Building(BuildingKind::Lookout), Some(c)) = (hud.tool, hover) {
-        lookouts.push(sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Lookout, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-    }
-    for b in &lookouts {
-        sight_circle(g, h, sim::predators::lookout_centre(b), sim::predators::LOOKOUT_SIGHT, ACCENT);
     }
 }
 

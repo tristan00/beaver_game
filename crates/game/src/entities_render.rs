@@ -57,6 +57,7 @@ impl Plugin for EntitiesRenderPlugin {
                     gallery::spawn_gallery,
                     gallery::shuffle_gallery,
                     gallery::select_home,
+                    gallery::select_debug,
                     attach_rigs,
                     animate_beavers,
                     canopy_key,

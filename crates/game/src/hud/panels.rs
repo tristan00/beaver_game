@@ -330,9 +330,14 @@ pub fn alert_token(s: &sim::SimState, p: &Problem) -> (Icon, Color, String, &'st
 
 /// What an alert's tooltip says: why, and the fix as a line you can click.
 pub fn alert_tip(c: &Ctx, p: &Problem) -> Tip {
-    let (icons, value, name) = alert_face(c.s, p);
+    alert_tip_in(c.s, p)
+}
+
+/// `alert_tip`, from the world alone (for the pins over the map).
+pub fn alert_tip_in(s: &sim::SimState, p: &Problem) -> Tip {
+    let (icons, value, name) = alert_face(s, p);
     let mut cause = Tip::titled(icons.first().copied(), name).with_value(value);
-    for l in breakdown_lines(c.s, &p.cause, p.kind == ProblemKind::Food) {
+    for l in breakdown_lines(s, &p.cause, p.kind == ProblemKind::Food) {
         cause.push(l);
     }
     for f in std::iter::once(&p.fix).chain(p.alt_fix.iter()) {
@@ -788,12 +793,14 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
     };
     let inside = |(x, y): (f32, f32)| (0.0..=SIZE).contains(&x) && (0.0..=SIZE).contains(&y);
     let (cx, cy) = at(c.view_cell);
-    let mut markers: Vec<((f32, f32), Color)> = Vec::new();
+    // Each alert shows where it is as its own icon, ringed red if urgent.
+    let mut markers: Vec<((f32, f32), Icon, Color, Color)> = Vec::new();
     for p in c.problems {
         if let Some(f) = p.focus {
             let m = at((f.0 as f32 + 0.5, f.1 as f32 + 0.5));
-            if inside(m) {
-                markers.push((m, if p.severity == Severity::Urgent { BAD } else { WARN }));
+            let (icons, _, _) = alert_face(c.s, p);
+            if let (true, Some(&(icon, col))) = (inside(m), icons.first()) {
+                markers.push((m, icon, col, if p.severity == Severity::Urgent { BAD } else { WARN }));
             }
         }
     }
@@ -814,17 +821,25 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                     ..default()
                 }))
                 .border(BorderColor::all(SELECT));
-                for ((x, y), col) in &markers {
-                    m.add(VNode::new(Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px((x - 4.0).clamp(0.0, SIZE - 8.0)),
-                        top: Val::Px((y - 4.0).clamp(0.0, SIZE - 8.0)),
-                        width: Val::Px(8.0),
-                        height: Val::Px(8.0),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        ..default()
-                    }))
-                    .bg(*col);
+                for &((x, y), icon, col, ring) in &markers {
+                    let v = m.node(
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px((x - 9.0).clamp(0.0, SIZE - 18.0)),
+                            top: Val::Px((y - 9.0).clamp(0.0, SIZE - 18.0)),
+                            width: Val::Px(18.0),
+                            height: Val::Px(18.0),
+                            border: UiRect::all(Val::Px(1.5)),
+                            border_radius: BorderRadius::all(Val::Px(9.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        |d| {
+                            d.icon(icon, 11.0, col);
+                        },
+                    );
+                    v.bg(Color::srgba(0.1, 0.09, 0.08, 0.9)).border(BorderColor::all(ring));
                 }
                 m.nodes
             });

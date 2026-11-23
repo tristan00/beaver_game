@@ -1,4 +1,5 @@
-//! Minimap image updates and navigation. The map shows only explored ground, framed to fit it.
+//! Minimap image updates and navigation. The map shows only explored ground, framed to fit it,
+//! and turns with the camera: the way the camera looks is always up.
 use super::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -14,14 +15,34 @@ const MARGIN: f32 = 4.0;
 #[derive(Resource)]
 pub(super) struct MinimapImage {
     pub(super) image: Handle<Image>,
-    /// The square of cells the image shows: left, top and side.
+    /// The square of cells the image frames: left, top and side.
     pub(super) view: (f32, f32, f32),
+    /// The camera's yaw the image was drawn for.
+    pub(super) yaw: f32,
 }
 
 impl MinimapImage {
+    /// The way the camera looks across the ground, and its right, in cells.
+    fn axes(&self) -> ((f32, f32), (f32, f32)) {
+        let (s, c) = self.yaw.sin_cos();
+        ((-s, -c), (c, -s))
+    }
+    fn centre(&self) -> (f32, f32) {
+        (self.view.0 + self.view.2 / 2.0, self.view.1 + self.view.2 / 2.0)
+    }
     /// Where a cell falls on the minimap, 0..1 each way.
     pub(super) fn to_map(&self, c: (f32, f32)) -> (f32, f32) {
-        ((c.0 - self.view.0) / self.view.2, (c.1 - self.view.1) / self.view.2)
+        let ((fx, fy), (rx, ry)) = self.axes();
+        let (cx, cy) = self.centre();
+        let d = (c.0 - cx, c.1 - cy);
+        ((d.0 * rx + d.1 * ry) / self.view.2 + 0.5, 0.5 - (d.0 * fx + d.1 * fy) / self.view.2)
+    }
+    /// The cell under a point of the minimap, 0..1 each way.
+    pub(super) fn from_map(&self, u: f32, v: f32) -> (f32, f32) {
+        let ((fx, fy), (rx, ry)) = self.axes();
+        let (cx, cy) = self.centre();
+        let (a, b) = ((u - 0.5) * self.view.2, (0.5 - v) * self.view.2);
+        (cx + a * rx + b * fx, cy + a * ry + b * fy)
     }
 }
 
@@ -29,7 +50,7 @@ pub(super) fn setup_minimap(mut commands: Commands, sim: Res<Sim>, mut images: R
     let r = RES as u32;
     let img = Image::new_fill(Extent3d { width: r, height: r, depth_or_array_layers: 1 }, TextureDimension::D2, &[0, 0, 0, 0], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
     let n = sim.0.world.size as f32;
-    commands.insert_resource(MinimapImage { image: images.add(img), view: (0.0, 0.0, n) });
+    commands.insert_resource(MinimapImage { image: images.add(img), view: (0.0, 0.0, n), yaw: 0.0 });
 }
 
 /// The square around everything explored, with a margin, kept on the map.
@@ -57,17 +78,23 @@ fn explored_view(s: &sim::SimState) -> Option<(f32, f32, f32)> {
     Some((left, top, span))
 }
 
-pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, img: Option<ResMut<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
+/// Redraws the map once a second, and whenever the camera has turned.
+pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim>, orbit: Res<crate::camera::OrbitCamera>, img: Option<ResMut<MinimapImage>>, mut images: ResMut<Assets<Image>>) {
     let _p = ::sim::prof::scope("game/update minimap");
     let Some(mut img) = img else { return };
     let now = time.elapsed_secs();
-    if now < *next {
+    let turned = (orbit.yaw - img.yaw).abs() > 0.01;
+    if now < *next && !turned {
         return;
     }
-    *next = now + 1.0;
     let s = &sim.0;
-    let Some(view) = explored_view(s) else { return };
-    img.view = view;
+    if now >= *next {
+        *next = now + 1.0;
+        let Some(view) = explored_view(s) else { return };
+        img.view = view;
+    }
+    img.yaw = orbit.yaw;
+    let view = img.view;
     let n = s.world.size;
     let maxh = s.height.as_slice().iter().copied().fold(1.0f32, f32::max);
     let px = view.2 / RES as f32;
@@ -78,7 +105,8 @@ pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim
     let mut buf = vec![0u8; RES * RES * 4];
     for py in 0..RES {
         for qx in 0..RES {
-            let Some((x, y)) = cell_at(view.0 + (qx as f32 + 0.5) * px, view.1 + (py as f32 + 0.5) * px) else { continue };
+            let at = img.from_map((qx as f32 + 0.5) / RES as f32, (py as f32 + 0.5) / RES as f32);
+            let Some((x, y)) = cell_at(at.0, at.1) else { continue };
             if !s.fog.explored((x, y)) {
                 continue;
             }
@@ -96,7 +124,8 @@ pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim
         }
     }
     let mut dot = |c: (f32, f32), r: i32, col: [u8; 3]| {
-        let (u, v) = (((c.0 - view.0) / px) as i32, ((c.1 - view.1) / px) as i32);
+        let m = img.to_map(c);
+        let (u, v) = ((m.0 * RES as f32) as i32, (m.1 * RES as f32) as i32);
         for dy in -r..=r {
             for dx in -r..=r {
                 let (x, y) = (u + dx, v + dy);
@@ -116,10 +145,7 @@ pub(super) fn update_minimap(time: Res<Time>, mut next: Local<f32>, sim: Res<Sim
     for bv in &s.colony.beavers {
         dot((bv.pos.0, bv.pos.1), big, [232, 132, 58]);
     }
-    // Like everything else on the map, a wolf shows only on ground the colony has explored.
-    if let Some(w) = s.predators.wolf.as_ref().filter(|w| s.fog.explored(w.cell())) {
-        dot(w.pos, big + 1, [220, 30, 30]);
-    }
+    // The wolf shows as its alert's marker, where the colony last saw it (see `panels::minimap`).
     if let Some(mut image) = images.get_mut(&img.image) {
         image.data = Some(buf);
     }
@@ -133,8 +159,8 @@ pub(super) fn minimap_click(q: Query<(&Interaction, &RelativeCursorPosition, &Ta
         }
         let Some(n) = rel.normalized else { continue };
         let size = sim.0.world.size as f32;
-        let (x0, y0, span) = map.view;
-        let cell = ((x0 + (n.x + 0.5) * span).clamp(0.0, size - 1.0), (y0 + (n.y + 0.5) * span).clamp(0.0, size - 1.0));
+        let c = map.from_map(n.x + 0.5, n.y + 0.5);
+        let cell = (c.0.clamp(0.0, size - 1.0), c.1.clamp(0.0, size - 1.0));
         orbit.target = cell_world(&sim.0.height, cell);
     }
 }

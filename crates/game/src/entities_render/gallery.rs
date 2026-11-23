@@ -229,3 +229,20 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
         *sel = want;
     }
 }
+
+/// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected, and `BC_SELECT_LOOKOUT=1`
+/// its first lookout, for screenshots of the inspector and the lookout's range.
+pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
+    let Some(mut sel) = sel else { return };
+    let s = &sim.0;
+    let want = if std::env::var_os("BC_SELECT_BEAVER").is_some() {
+        s.colony.beavers.iter().find(|b| b.can_work() && (s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()))).map(|b| crate::flow::Selection::Beaver(b.id))
+    } else if std::env::var_os("BC_SELECT_LOOKOUT").is_some() {
+        s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Lookout).map(|b| crate::flow::Selection::Site(b.id))
+    } else {
+        None
+    };
+    if let Some(w) = want.filter(|w| *sel != *w) {
+        *sel = w;
+    }
+}
