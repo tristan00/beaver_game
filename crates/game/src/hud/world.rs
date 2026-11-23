@@ -249,7 +249,11 @@ pub fn world_hover(
     if point.0 != p {
         point.0 = p;
     }
-    let ground = p.map(|(c, p)| pick(&sim.0, c, p));
+    // Nothing in the fog of war can be pointed at.
+    if p.is_some_and(|(c, _)| crate::fog_render::unexplored(&sim.0, c)) {
+        model = None;
+    }
+    let ground = p.filter(|(c, _)| !crate::fog_render::unexplored(&sim.0, *c)).map(|(c, p)| pick(&sim.0, c, p));
     let t = model.or(ground);
     let order = if matches!(model, Some(Thing::Resource(_))) { ground } else { t };
     if thing.0 != t || thing.1 != order {

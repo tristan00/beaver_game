@@ -631,6 +631,8 @@ pub struct WorldSync {
     /// Each building's wear band and condition as last drawn, and when it last puffed dust.
     wear: HashMap<BuildingId, (u8, f32, f32)>,
     lodges: HashMap<u64, (Entity, f32)>,
+    /// The fog's revision when the sources were last drawn.
+    fog: u64,
 }
 
 pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
@@ -786,7 +788,7 @@ pub(super) fn sync_sim_resources(
     }
     let st = &mut *st;
     let no_trees = std::env::var_os("BC_NO_TREES").is_some();
-    let shown = |r: &sim::resources::Resource| !(no_trees && r.kind == ResourceKind::Tree) && !hidden(sim, r);
+    let shown = |r: &sim::resources::Resource| !(no_trees && r.kind == ResourceKind::Tree) && !hidden(sim, r) && !crate::fog_render::unexplored(sim, r.cell);
     let tile_of = |r: &sim::resources::Resource| (r.cell.1 / sim::grid::TILE) * sim.water.depth.width().div_ceil(sim::grid::TILE) + r.cell.0 / sim::grid::TILE;
     let changes = sim.resources.changes();
     let water = [sim.water.depth.stamp(), sim.water.shore.stamp(), sim.water.riverbed.stamp()];
@@ -851,8 +853,18 @@ pub(super) fn sync_sim_resources(
                 let known = &st.plants.known;
                 st.plants.at.retain(|(id, _, _)| known.contains(id));
             }
+            // More ground explored: draw what grows there.
+            if st.fog != sim.fog.revision {
+                let _p = ::sim::prof::scope("game/sync sim resources/fog cleared");
+                for r in sim.resources.items() {
+                    if !st.res.contains_key(&r.id) && shown(r) {
+                        show_resource(&mut commands, &mut st.res, &models, sim, r, season.0, clock.0);
+                    }
+                }
+            }
         }
     }
+    st.fog = sim.fog.revision;
     st.plants.grids = Some(water);
     st.drawn = Some(changes.count());
     st.guessed = changes.guesses().collect();

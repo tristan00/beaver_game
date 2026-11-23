@@ -527,7 +527,7 @@ fn drive(
     clock: Option<Res<crate::sim_driver::SimClock>>,
     meshes: Option<Res<WildMeshes>>,
     models: Option<Res<Models>>,
-    mut beasts: Query<(Entity, &mut Beast, &mut Transform, Option<&mut WolfTrack>, Option<&Wild>, Option<&Carcass>, Option<&GalleryBeast>)>,
+    mut beasts: Query<(Entity, &mut Beast, &mut Transform, &mut Visibility, Option<&mut WolfTrack>, Option<&Wild>, Option<&Carcass>, Option<&GalleryBeast>)>,
     mut parts: Query<&mut Transform, Without<Beast>>,
 ) {
     let _p = ::sim::prof::scope("game/wildlife");
@@ -539,7 +539,7 @@ fn drive(
     let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
     let mut seen: Vec<u32> = Vec::with_capacity(wl.animals.len());
     let mut seen_dead: Vec<u64> = Vec::with_capacity(wl.carcasses.len());
-    for (e, mut b, mut tr, track, wild, carcass, gallery) in &mut beasts {
+    for (e, mut b, mut tr, mut vis, track, wild, carcass, gallery) in &mut beasts {
         let (speed, doing, dead, alt) = if let Some(g) = gallery {
             (g.speed, g.doing, g.dead, Some(g.alt))
         } else if let Some(&Carcass(key)) = carcass {
@@ -578,6 +578,17 @@ fn drive(
         } else {
             continue;
         };
+        // Nothing in the fog of war is drawn.
+        if gallery.is_none() {
+            let cell = crate::flow::world_cell(&s.height, tr.translation);
+            let want = if crate::fog_render::unexplored(s, (cell.0.max(0.0) as usize, cell.1.max(0.0) as usize)) { Visibility::Hidden } else { Visibility::Inherited };
+            if *vis != want {
+                *vis = want;
+            }
+            if want == Visibility::Hidden {
+                continue;
+            }
+        }
         animate(&mut b, speed, doing, dead, alt, t, dt, &mut parts);
     }
     for a in &wl.animals {

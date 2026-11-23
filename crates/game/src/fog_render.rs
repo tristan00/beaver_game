@@ -7,8 +7,10 @@ use bevy::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::prelude::*;
 
-const LIFT: f32 = 25.0;
-const DENSITY: f32 = 0.9;
+/// How high the fog lies over the ground and water it hides. Nothing standing in the fog is
+/// drawn (see `unexplored`), so it only has to cover the ground itself.
+const LIFT: f32 = 1.0;
+const DENSITY: f32 = 1.0;
 pub const UNEXPLORED_COLOR: [f32; 3] = [0.20, 0.23, 0.17];
 const REBUILD_SECS: f32 = 0.25;
 
@@ -19,6 +21,13 @@ struct FogSheet;
 struct FogState {
     generation: Option<u32>,
     next: f32,
+}
+
+/// Whether `cell` is still hidden by the fog of war: nothing on it is drawn or can be pointed
+/// at (`BC_NO_FOG` lifts the fog for screenshots).
+pub fn unexplored(s: &sim::SimState, cell: (usize, usize)) -> bool {
+    static NO_FOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*NO_FOG.get_or_init(|| std::env::var_os("BC_NO_FOG").is_some()) && !s.fog.explored(cell)
 }
 
 pub struct FogRenderPlugin;
@@ -78,13 +87,16 @@ fn fog_mesh(s: &sim::SimState) -> Mesh {
             for dy in -3i32..=3 {
                 for dx in -3i32..=3 {
                     let (cx, cy) = ((x as i32 + dx).clamp(0, n as i32 - 1) as usize, (y as i32 + dy).clamp(0, n as i32 - 1) as usize);
-                    top = top.max(h.get(cx, cy).copied().unwrap_or(0.0));
+                    top = top.max(h.get(cx, cy).copied().unwrap_or(0.0) + s.water.depth.get(cx, cy).copied().unwrap_or(0.0).max(0.0));
                     unseen += 1.0 - (fog.get((cx, cy)) / EXPLORED).min(1.0);
                     k += 1.0;
                 }
             }
             let t = (unseen / k).clamp(0.0, 1.0);
-            let a = t * t * (3.0 - 2.0 * t) * DENSITY;
+            // A blanket laid over the ground, solid a little way in from the explored edge, so
+            // nothing under it shows from any angle.
+            let u = (t / 0.3).clamp(0.0, 1.0);
+            let a = u * u * (3.0 - 2.0 * u) * DENSITY;
             pos.push([(x as f32 + 0.5) * CELL_SIZE - ox, top + LIFT, (y as f32 + 0.5) * CELL_SIZE - oz]);
             nor.push([0.0, 1.0, 0.0]);
             col.push([lin(UNEXPLORED_COLOR[0]), lin(UNEXPLORED_COLOR[1]), lin(UNEXPLORED_COLOR[2]), a]);

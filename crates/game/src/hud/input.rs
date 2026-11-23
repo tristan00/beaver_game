@@ -212,13 +212,14 @@ pub(super) fn world_input(
                 hud.grab = dam_end_near(&sim.0, *sel, thing.0, cell);
                 hud.box_from = cursor.0;
             }
-            // Dragging away from a dam's end extends it from that end; a plain click selects it.
+            // Dragging away from a dam's end extends it from that end, and dragging from a canal
+            // extends it from its open end; a plain click selects it.
             if let Some((id, end)) = hud.grab {
                 let moved = matches!((hud.box_from, cursor.0), (Some(a), Some(b)) if a.distance(b) > 8.0);
                 if mouse.pressed(MouseButton::Left) && moved {
                     hud.grab = None;
                     hud.box_from = None;
-                    hud.set_tool(Tool::Dam);
+                    hud.set_tool(if sim::canals::canal(&sim.0, id).is_some() { Tool::Canal } else { Tool::Dam });
                     hud.extending = Some(id);
                     hud.corners = vec![end];
                     hud.drag_from = Some(end);
@@ -237,6 +238,23 @@ pub(super) fn world_input(
                     }
                 }
                 let t = thing.0.unwrap_or(world::Thing::Cell(cell));
+                // On the dam or canal already selected, a click picks the cell under it (for a
+                // gate, or to raise or deepen just there); shift adds to the pick.
+                if let (world::Thing::Building(id), Selection::Site(sid)) = (t, *sel) {
+                    if id == sid && on_line(&sim.0, id, cell) {
+                        match hud.dam_cells.iter().position(|x| *x == cell) {
+                            Some(i) => {
+                                hud.dam_cells.remove(i);
+                            }
+                            None if shift => hud.dam_cells.push(cell),
+                            None => hud.dam_cells = vec![cell],
+                        }
+                        return;
+                    }
+                }
+                if t.selection() != *sel {
+                    hud.dam_cells.clear();
+                }
                 match t {
                     world::Thing::Beaver(id) if shift => {
                         if let Some(i) = hud.selected.iter().position(|x| *x == id) {
@@ -396,6 +414,13 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
 
 /// The end of the selected dam under the pointer: grabbing it starts an extension.
 /// The dam end at or next to `cell`, on the dam under the pointer or else the selected one.
+/// Whether `cell` is on the line of dam or canal `id` (a cell the panels let you pick).
+fn on_line(s: &sim::SimState, id: BuildingId, cell: Cell) -> bool {
+    sim::dams::dam(s, id).is_some_and(|d| d.line().any(|c| c.cell == cell)) || sim::canals::canal(s, id).is_some_and(|k| k.cells.iter().any(|c| c.cell == cell))
+}
+
+/// The dam end, or the canal's open end, that a press at `cell` grabs: a dam by either end, a
+/// canal anywhere along it (it can only grow from its open end).
 fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Option<world::Thing>, cell: Cell) -> Option<(BuildingId, Cell)> {
     let under = match thing {
         Some(world::Thing::Building(id)) => Some(id),
@@ -406,6 +431,10 @@ fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Option<world::Thing>, 
         _ => None,
     };
     [under, selected].into_iter().flatten().find_map(|id| {
+        if let Some(k) = sim::canals::canal(s, id) {
+            let near = k.cells.iter().any(|c| c.cell.0.abs_diff(cell.0).max(c.cell.1.abs_diff(cell.1)) <= 1);
+            return near.then(|| (id, k.end()));
+        }
         let d = sim::dams::dam(s, id)?;
         let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
         [line.first(), line.last()].into_iter().flatten().copied()

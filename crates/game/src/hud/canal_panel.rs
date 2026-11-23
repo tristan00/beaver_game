@@ -274,7 +274,14 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
     u.row(4.0, |r| {
         grow_button(r, Icon::Down, if picked.is_empty() { "Deepen" } else { "Deepen picked cells" }, id, CanalGrowth::Deepen, deepen.clone(), dry && deepen.is_ok());
         grow_button(r, Icon::Widen, if picked.is_empty() { "Widen" } else { "Widen at picked cells" }, id, CanalGrowth::Widen, widen, false);
-        grow_button(r, Icon::Extend, "Extend", id, CanalGrowth::Extend, Ok(0.0), false);
+        // Extending is drawn, not bought here: this starts the drawing from the open end.
+        let drawing = c.hud.extending == Some(id);
+        r.node(Node { width: Val::Px(64.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, |b| {
+            b.icon(Icon::Extend, 18.0, INK);
+        })
+        .skin(if drawing { Skin::PebbleOn } else { Skin::Pebble })
+        .action(HudAction::GrowCanal(id, CanalGrowth::Extend))
+        .tip(Tip::name("Extend").line("Drag from the open end", "").line("Click", "add a corner"));
         r.spacer();
         let on = k.maintain;
         r.pebble(Icon::Hammer, 15.0, HudAction::CanalMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Maintainers clear silt", ""));

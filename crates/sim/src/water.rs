@@ -1215,6 +1215,45 @@ pub fn corner(bed: &[f32], dammed: impl Fn(usize) -> bool, n: usize, i: usize, j
     if i % n == j % n || i / n == j / n || !(dammed(a) || dammed(b)) { f32::NEG_INFINITY } else { bed[a].min(bed[b]) }
 }
 
+/// For a dam line crossing water: a test of which side of it a neighbouring cell lies, by the
+/// line's own run there (positive downstream, negative upstream, zero along the line).
+/// Downstream is where the current over the wet cells runs, or failing that the side where the
+/// water beside them stands lower. `None` when the line crosses no water to tell by.
+fn dam_sides<'a>(state: &'a SimState, cells: &'a [Cell], idx: &'a [usize]) -> Option<impl Fn(usize, usize) -> i32 + 'a> {
+    let water = &state.water;
+    let depth = water.depth.as_slice();
+    let n = state.height.width();
+    let at = move |i: usize| ((i % n) as i64, (i / n) as i64);
+    let tangent = move |k: usize| {
+        let (a, b) = (cells[k.saturating_sub(1)], cells[(k + 1).min(cells.len() - 1)]);
+        (b.0 as i64 - a.0 as i64, b.1 as i64 - a.1 as i64)
+    };
+    let raw = move |k: usize, m: usize| {
+        let (t, c, p) = (tangent(k), at(idx[k]), at(m));
+        (t.0 * (p.1 - c.1) - t.1 * (p.0 - c.0)).signum() as i32
+    };
+    let wet: Vec<usize> = (0..idx.len()).filter(|&k| depth[idx[k]] > WET_EPS).collect();
+    if wet.is_empty() {
+        return None;
+    }
+    let vel = water.velocity.as_slice();
+    let mut by_flow = 0.0f32;
+    for &k in &wet {
+        let (t, v) = (tangent(k), vel[idx[k]]);
+        by_flow += t.0 as f32 * v.1 - t.1 as f32 * v.0;
+    }
+    let terrain = state.height.as_slice();
+    let surface = |i: usize| terrain[i] + water.dam_height.as_slice()[i] + depth[i].max(0.0);
+    let mut by_level = 0.0f32;
+    for &k in &wet {
+        for m in neighbours8(n, idx[k]).filter(|&m| depth[m] > WET_EPS && !idx.contains(&m)) {
+            by_level -= raw(k, m) as f32 * surface(m);
+        }
+    }
+    let sign = if by_flow.abs() > 1e-4 { by_flow.signum() } else if by_level.abs() > 1e-4 { by_level.signum() } else { return None };
+    Some(move |k: usize, m: usize| raw(k, m) * sign as i32)
+}
+
 /// The still pond these dam heights would hold, and (with `head` > 0) how far the extra depth
 /// of water flowing over its spill would spread.
 pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32], head: f32) -> Result<DamPreview, WaterError> {
@@ -1261,13 +1300,38 @@ impl StillPond {
         let dams = water.dam_height.as_slice();
         let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
         let drains_to = |i: usize| neighbours8(n, i).filter(|&j| terrain[j] < terrain[i]).min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]).then(a.cmp(&b)));
-        let seeds: Vec<usize> = idx.iter().flat_map(|&d| neighbours8(n, d).filter(move |&m| drains_to(m) == Some(d))).filter(|&m| !is_new[m]).collect();
+        // Which side of the line is downstream, from the water it crosses: where its current
+        // runs, else the side its water stands lower. The ground's slope alone can't say: on
+        // a long dam mostly over land, the banks on both sides slope down to the line.
+        let side = (idx.len() > 1).then(|| dam_sides(state, cells, &idx)).flatten();
+        let mut seeds: Vec<usize> = Vec::new();
         // Cells just below the dam: the flood has found its way round once it reaches one.
         let mut below = vec![false; n * n];
         let mut any_below = false;
-        for m in idx.iter().filter_map(|&d| drains_to(d)).filter(|&m| !is_new[m]) {
-            below[m] = true;
-            any_below = true;
+        match &side {
+            Some(side) => {
+                for (k, &d) in idx.iter().enumerate() {
+                    for m in neighbours8(n, d).filter(|&m| !is_new[m]) {
+                        match side(k, m) {
+                            s if s < 0 && (drains_to(m) == Some(d) || water.depth.as_slice()[m] > WET_EPS) => seeds.push(m),
+                            s if s > 0 => {
+                                below[m] = true;
+                                any_below = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                seeds.sort_unstable();
+                seeds.dedup();
+            }
+            None => {
+                seeds = idx.iter().flat_map(|&d| neighbours8(n, d).filter(move |&m| drains_to(m) == Some(d))).filter(|&m| !is_new[m]).collect();
+                for m in idx.iter().filter_map(|&d| drains_to(d)).filter(|&m| !is_new[m]) {
+                    below[m] = true;
+                    any_below = true;
+                }
+            }
         }
         let (mut spill_level, mut spill_at) = (f32::INFINITY, None);
         drop(_p);

@@ -13,16 +13,20 @@ pub struct Fog {
     /// again from the same cell changes nothing and is skipped.
     #[serde(skip)]
     sighted: std::collections::HashMap<crate::colony::BeaverId, Cell>,
+    /// Counts the times more ground was explored, so a viewer can tell when to look again at
+    /// what the fog hid.
+    #[serde(skip)]
+    pub revision: u64,
 }
 
-crate::grid::clone_fields!(Fog { size, seen, dirty, sighted });
+crate::grid::clone_fields!(Fog { size, seen, dirty, sighted, revision });
 
 impl Fog {
     pub fn unseen(size: usize) -> Fog {
-        Fog { size, seen: vec![0.0; size * size], dirty: true, sighted: Default::default() }
+        Fog { size, seen: vec![0.0; size * size], dirty: true, sighted: Default::default(), revision: 0 }
     }
     pub fn clear(size: usize) -> Fog {
-        Fog { size, seen: vec![1.0; size * size], dirty: true, sighted: Default::default() }
+        Fog { size, seen: vec![1.0; size * size], dirty: true, sighted: Default::default(), revision: 0 }
     }
     pub fn get(&self, c: Cell) -> f32 {
         if c.0 < self.size && c.1 < self.size { self.seen[c.1 * self.size + c.0] } else { 0.0 }
@@ -59,6 +63,7 @@ impl Fog {
             }
         }
         self.dirty |= changed;
+        self.revision += changed as u64;
         changed
     }
 }

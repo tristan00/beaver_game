@@ -175,11 +175,13 @@ pub(super) fn button_actions(
             HudAction::CanalMaintain(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalMaintain { canal, on }, now),
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {
+                    // Draw on from the open end: the player drags (or clicks corners) the new
+                    // run out; the click on the button itself draws nothing.
                     if let Some(end) = sim::canals::canal(s, canal).map(|k| k.end()) {
                         hud.set_tool(Tool::Canal);
                         hud.extending = Some(canal);
                         hud.corners = vec![end];
-                        hud.drag_from = Some(end);
+                        hud.swallow_click();
                     }
                 } else {
                     let cells = hud.dam_cells.clone();
