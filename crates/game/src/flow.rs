@@ -229,24 +229,47 @@ fn advance_flow(
     let _ = (&orbit, &sim);
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>) {
+fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
+    use crate::hud::{NoticeAt, BAD, GOOD, INK, MUTED};
+    use crate::icons::Icon;
     // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
     // nothing to tell.
     let events = if sim.0.colony.events.is_empty() { Vec::new() } else { sim.0.colony.take_events() };
+    let now = time.elapsed_secs();
+    // A beaver that has died is gone from the colony by now: its name is kept from before.
+    let name_of = |names: &std::collections::HashMap<u64, String>, s: &sim::SimState, id: sim::colony::BeaverId| {
+        s.colony.beaver(id).map(|b| b.name.clone()).or_else(|| names.get(&id.0).cloned()).unwrap_or_default()
+    };
     for e in &events {
         flow.push_log(format!("day {:.0}: {:?}", e.day, e.event));
-        if let sim::colony::Event::Died { cause, .. } = e.event {
-            use sim::colony::DeathCause as C;
-            let (icon, why) = match cause {
-                C::Starvation => (crate::icons::Icon::Food, "Starved"),
-                C::Cold => (crate::icons::Icon::Winter, "Froze"),
-                C::Injury => (crate::icons::Icon::Health, "Died of injury"),
-                C::Exhaustion => (crate::icons::Icon::Hourglass, "Worked to death"),
-                C::OldAge => (crate::icons::Icon::Adult, "Died of old age"),
-                C::Predator => (crate::icons::Icon::Wolf, "Killed by the wolf"),
-            };
-            notices.push(vec![(crate::icons::Icon::Beaver, crate::hud::BAD), (icon, crate::hud::BAD)], why, time.elapsed_secs());
+        use sim::colony::Event as E;
+        let s = &sim.0;
+        match &e.event {
+            E::Died { id, cause, at } => {
+                use sim::colony::DeathCause as C;
+                let (icon, why) = match cause {
+                    C::Starvation => (Icon::Food, "starved"),
+                    C::Cold => (Icon::Winter, "froze"),
+                    C::Injury => (Icon::Health, "died of injury"),
+                    C::Exhaustion => (Icon::Hourglass, "worked to death"),
+                    C::OldAge => (Icon::Adult, "died of old age"),
+                    C::Predator => (Icon::Wolf, "killed by the wolf"),
+                };
+                notices.push_at(vec![(Icon::Beaver, BAD), (icon, BAD)], format!("{} {why}", name_of(&names, s, *id)), now, Some(NoticeAt::Spot(*at)));
+            }
+            E::Born { id, .. } => notices.push_at(vec![(Icon::Kit, GOOD)], format!("{} born", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
+            E::Matured { id, stage: sim::colony::Stage::Adult } => notices.push_at(vec![(Icon::Adult, INK)], format!("{} grown", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
+            E::Departed { id } => notices.push_at(vec![(Icon::Beaver, MUTED), (Icon::Back, MUTED)], format!("{} left", name_of(&names, s, *id)), now, None),
+            E::Immigrated { id } => notices.push_at(vec![(Icon::Beaver, GOOD), (Icon::Plus, GOOD)], format!("{} joined", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
+            E::NewFamily { family, a, .. } => {
+                let name = s.colony.family(*family).map(|f| f.name.clone()).unwrap_or_default();
+                notices.push_at(vec![(Icon::Home, GOOD)], format!("{name} family"), now, Some(NoticeAt::Beaver(*a)));
+            }
+            _ => {}
         }
+    }
+    if names.len() != sim.0.colony.beavers.len() || !events.is_empty() {
+        *names = sim.0.colony.beavers.iter().map(|b| (b.id.0, b.name.clone())).collect();
     }
     if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
         flow.fire(FlowEvent::Collapse);

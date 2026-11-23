@@ -269,6 +269,18 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
     })
 }
 
+/// The buildings the water would put too deep to use (see `buildings::MAX_BUILDING_DEPTH`) if
+/// each cell's depth became `then(x, y)`, leaving out those already that deep.
+pub fn drowned_by(sim: &crate::SimState, then: impl Fn(usize, usize) -> f32) -> Vec<BuildingId> {
+    let now = |x: usize, y: usize| sim.water.depth.get(x, y).copied().unwrap_or(0.0);
+    let max = crate::buildings::MAX_BUILDING_DEPTH;
+    sim.buildings.buildings.iter()
+        .filter(|b| !b.kind.is_waterworks())
+        .filter(|b| crate::buildings::footprint_depth(b.kind, b.pos, now) <= max && crate::buildings::footprint_depth(b.kind, b.pos, |x, y| then(x, y).max(now(x, y))) > max)
+        .map(|b| b.id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +305,18 @@ mod tests {
     }
 
     #[test]
+    fn a_pond_deep_over_a_building_drowns_it() {
+        let mut s = running_river();
+        let n = s.height.width();
+        let dry = |s: &crate::SimState, x: usize, y: usize| (0..3).all(|dy| (0..3).all(|dx| s.water.depth.get(x + dx, y + dy).is_some_and(|&d| d < 0.01)));
+        let pos = (4..n - 4).flat_map(|y| (4..n - 4).map(move |x| (x, y))).find(|&(x, y)| dry(&s, x, y)).expect("dry ground");
+        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(77), kind: BuildingKind::Shelter, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        let over = |depth: f32| move |x: usize, y: usize| if (pos.0..pos.0 + 3).contains(&x) && (pos.1..pos.1 + 3).contains(&y) { depth } else { 0.0 };
+        assert!(drowned_by(&s, over(0.5)).is_empty(), "shallow water is a beaver's home");
+        assert_eq!(drowned_by(&s, over(crate::buildings::MAX_BUILDING_DEPTH + 0.3)), vec![BuildingId(77)]);
+    }
+
+    #[test]
     fn water_pouring_over_a_full_dam_stands_above_its_crest() {
         let s = running_river();
         let across: Vec<Cell> = (30..99).map(|y| (64, y)).collect();
@@ -314,6 +338,8 @@ pub struct Settled {
     /// Cells it deepens by a noticeable amount, and the highest surface among them.
     pub flooded: Vec<Cell>,
     pub level: f32,
+    /// The depth each of `flooded` settles to.
+    pub depths: Vec<f32>,
 }
 
 pub fn settle(mut water: crate::water::Water, height: &crate::grid::HeightGrid, cells: &[Cell], heights: &[f32]) -> Option<Settled> {
@@ -339,6 +365,7 @@ pub fn settle(mut water: crate::water::Water, height: &crate::grid::HeightGrid, 
     }
     let mut rise = 0.0f32;
     let mut flooded = Vec::new();
+    let mut depths = Vec::new();
     let mut level = f32::NEG_INFINITY;
     for (&c, &b) in near.iter().zip(&before) {
         let after = surface(&water, c);
@@ -346,10 +373,11 @@ pub fn settle(mut water: crate::water::Water, height: &crate::grid::HeightGrid, 
         rise = rise.max(r);
         if r > 0.02 && water.depth.get(c.0, c.1).is_some_and(|&d| d > crate::water::WET_EPS) {
             flooded.push(c);
+            depths.push(water.depth.get(c.0, c.1).copied().unwrap_or(0.0));
             level = level.max(after);
         }
     }
-    Some(Settled { rise, flooded, level })
+    Some(Settled { rise, flooded, level, depths })
 }
 
 /// How far (cells) round a dam `settle` compares the water, and for how long it runs.

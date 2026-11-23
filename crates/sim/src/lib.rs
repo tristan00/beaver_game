@@ -272,13 +272,27 @@ impl SimState {
             let _p = prof::scope("step/ledger");
             self.output.step(dt_days);
             self.refresh_store_view();
-            self.ledger.record(self.time_days, &self.buildings.stores);
+            // Counting the colony walks every tree: only when a day closes.
+            let census = if self.ledger.closes_day(self.time_days) { self.census() } else { ledger::Census::default() };
+            self.ledger.record(self.time_days, &self.buildings.stores, move || census);
         }
         drop(whole);
         lap(&mut t.other_s);
         t.steps += 1;
         self.step_timings = t;
         Ok(())
+    }
+
+    /// The colony counted now, for the ledger's long record.
+    pub fn census(&self) -> ledger::Census {
+        let cell_area = self.water.cell_m * self.water.cell_m;
+        ledger::Census {
+            beavers: self.colony.beavers.len() as u16,
+            young: self.colony.beavers.iter().filter(|b| b.is_young()).count() as u16,
+            water: self.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum(),
+            trees: self.resources.items().iter().filter(|r| r.kind == resources::ResourceKind::Tree && !r.snag).count() as u32,
+            planted: self.ledger.planted,
+        }
     }
 
     fn explore(&mut self) {

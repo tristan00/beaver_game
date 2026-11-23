@@ -110,13 +110,15 @@ pub struct RoleRow {
     pub filled: usize,
     pub slots: usize,
     pub output_per_day: Vec<(Good, f32)>,
+    /// The beavers filling it: slot workers first, then those on orders.
+    pub workers: Vec<BeaverId>,
 }
 
 fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplace> {
     sim.work
         .places
         .iter()
-        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.stranded(b, &sim.water.depth)) || is_site(sim, p)))
+        .filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.unusable(b, &sim.water.depth)) || is_site(sim, p)))
 }
 
 pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
@@ -125,6 +127,7 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
         .map(|role| {
             let (mut filled, mut slots) = (0, 0);
             let mut out: Vec<(Good, f32)> = Vec::new();
+            let mut workers: Vec<BeaverId> = Vec::new();
             for p in working_places(sim).filter(|p| !p.paused) {
                 let mine = p.slots.iter().filter(|s| role_kind(s.role) == role && !s.off);
                 let n = mine.clone().count();
@@ -132,7 +135,8 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
                     continue;
                 }
                 slots += n;
-                filled += mine.filter(|s| s.worker.is_some()).count();
+                filled += mine.clone().filter(|s| s.worker.is_some()).count();
+                workers.extend(mine.filter_map(|s| s.worker));
                 for (g, r) in sim.output.of(p.building).map(|f| f.rates()).unwrap_or_default() {
                     match out.iter_mut().find(|e| e.0 == g) {
                         Some(e) => e.1 += r,
@@ -140,15 +144,18 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
                     }
                 }
             }
-            let ordered = sim
+            let on_orders: Vec<BeaverId> = sim
                 .colony
                 .beavers
                 .iter()
                 .filter(|b| sim.work.slot_of(b.id).is_none())
                 .filter(|b| sim.agents.get(b.id).and_then(|a| a.assignment).and_then(|a| assignment_role(sim, a)) == Some(role))
-                .count();
+                .map(|b| b.id)
+                .collect();
+            let ordered = on_orders.len();
+            workers.extend(on_orders);
             out.sort_by(|a, b| b.1.total_cmp(&a.1));
-            RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out }
+            RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out, workers }
         })
         // Gathering needs no building: its rows are always there, so the first beaver can be sent.
         .filter(|r| r.slots > 0 || r.filled > 0 || gather_kind(r.role).is_some())
@@ -254,7 +261,7 @@ fn pick(sim: &SimState, at: Cell) -> Option<(AddPreview, usize)> {
 fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(usize, Role, Cell)> {
     let p = sim.work.place(b)?;
     let bd = sim.buildings.building(b)?;
-    if p.paused || !(bd.is_complete() || is_site(sim, p)) || sim.buildings.stranded(bd, &sim.water.depth) {
+    if p.paused || !(bd.is_complete() || is_site(sim, p)) || sim.buildings.unusable(bd, &sim.water.depth) {
         return None;
     }
     let i = p.slots.iter().position(|s| s.worker.is_none() && !s.off && role.is_none_or(|r| role_kind(s.role) == r))?;
@@ -288,7 +295,7 @@ fn invalid(m: impl Into<String>) -> SimError {
 }
 
 pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
-    if sim.buildings.building(b).is_some_and(|bd| sim.buildings.stranded(bd, &sim.water.depth)) {
+    if sim.buildings.building(b).is_some_and(|bd| sim.buildings.unusable(bd, &sim.water.depth)) {
         return Err(workplace_error(sim, b));
     }
     sim.work.assign(b, slot, who).map_err(|e| invalid(format!("{e:?}")))?;
@@ -302,7 +309,8 @@ fn workplace_error(sim: &SimState, b: BuildingId) -> SimError {
     match sim.work.place(b) {
         None => invalid(format!("building {} has no worker slots", b.0)),
         Some(p) if p.paused => invalid(format!("building {} is paused", b.0)),
-        Some(_) if sim.buildings.building(b).is_some_and(|bd| sim.buildings.stranded(bd, &sim.water.depth)) => invalid(format!("building {} is high and dry: no water", b.0)),
+        Some(_) if sim.buildings.building(b).is_some_and(|bd| crate::buildings::flooded(bd, &sim.water.depth)) => invalid(format!("building {} is flooded: too deep", b.0)),
+        Some(_) if sim.buildings.building(b).is_some_and(|bd| sim.buildings.unusable(bd, &sim.water.depth)) => invalid(format!("building {} is high and dry: no water", b.0)),
         Some(p) if p.filled() == p.slots.len() => invalid(format!("building {} has no free slot", b.0)),
         Some(_) => invalid(format!("building {} takes no workers now", b.0)),
     }

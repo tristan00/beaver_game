@@ -236,6 +236,8 @@ pub enum ProblemKind {
     LoggingAreaRunningOut,
     ForestFalling,
     HighAndDry,
+    /// A building stands in water deeper than beavers build for.
+    Flooded,
     /// A dug canal has held no water deep enough to float a load for days.
     CanalDry,
     /// A canal's cells are silting up with nobody keeping it.
@@ -399,6 +401,21 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             severity: if home { Severity::Urgent } else { Severity::Warning },
             value: dry.len() as f32,
             cause: Breakdown::new(dry.len() as f32, rows),
+            subject: Some(Subject::Building(first.kind)),
+            fix: Fix::Focus,
+            alt_fix: None,
+            focus: building_cell(sim, first.id),
+        });
+    }
+
+    let drowned: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| crate::buildings::flooded(b, &sim.water.depth)).collect();
+    if let Some(first) = drowned.iter().find(|b| b.kind == BuildingKind::Shelter).or(drowned.first()) {
+        let rows = drowned.iter().map(|b| row("Under water (m)", crate::buildings::flood_depth(b, &sim.water.depth), building_source(sim, b.id))).collect();
+        out.push(Problem {
+            kind: ProblemKind::Flooded,
+            severity: Severity::Urgent,
+            value: drowned.len() as f32,
+            cause: Breakdown::new(drowned.len() as f32, rows),
             subject: Some(Subject::Building(first.kind)),
             fix: Fix::Focus,
             alt_fix: None,

@@ -1,6 +1,6 @@
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, Harvest, HudAction, HudState, MapLens, Tool};
+use super::{ColonyTab, Harvest, HudAction, HudState, LedgerTab, MapLens, Tool};
 use crate::build_logic;
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
@@ -22,6 +22,9 @@ pub struct Ctx<'a> {
     pub minimap: Option<&'a super::minimap::MinimapImage>,
     pub view_cell: (f32, f32),
     pub cursor: Option<Vec2>,
+    /// The journal's lines, oldest first, and the real time now.
+    pub journal: &'a [super::Notice],
+    pub now: f32,
 }
 
 impl Ctx<'_> {
@@ -270,6 +273,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
         ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
         ProblemKind::Wolf => (vec![(Icon::Wolf, BAD)], String::new(), "Wolf"),
+        ProblemKind::Flooded => {
+            let k = match p.subject {
+                Some(Subject::Building(k)) => k,
+                _ => sim::buildings::BuildingKind::Shelter,
+            };
+            (vec![(super::words::building_icon(k), INK), (Icon::Flood, BAD)], format!("{}", v as i64), "Flooded")
+        }
         ProblemKind::HighAndDry => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
@@ -338,11 +348,11 @@ fn badge_node() -> Node {
     Node { width: Val::Px(BADGE), height: Val::Px(BADGE), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, row_gap: Val::Px(0.0), flex_shrink: 0.0, ..default() }
 }
 
-/// Everything that wants the player, as badges side by side at the top centre: standing
-/// problems (icon and one number) and news (a wolf seen, a death, a save). No words until a
-/// badge is clicked; then its card opens beneath the row, with the fix for a problem.
-pub fn badges(c: &Ctx, notices: &[super::Notice], now: f32) -> Vec<VNode> {
-    if c.problems.is_empty() && notices.is_empty() {
+/// What wants the player, as badges side by side at the top centre: standing problems, each
+/// an icon and one number. No words until a badge is clicked; then its card opens beneath the
+/// row, with the fix. What merely happened goes to the journal instead.
+pub fn badges(c: &Ctx) -> Vec<VNode> {
+    if c.problems.is_empty() {
         return Vec::new();
     }
     let open = c.hud.open_badge.as_deref();
@@ -383,31 +393,6 @@ pub fn badges(c: &Ctx, notices: &[super::Notice], now: f32) -> Vec<VNode> {
                 card = Some(card_node(k, Some(alert_tip(c, p))));
             }
         }
-        for n in &notices[notices.len().saturating_sub(super::NOTICES_SHOWN)..] {
-            let key = n.key();
-            let age = (now - n.born).max(0.0);
-            let shown = open == Some(key.as_str());
-            let fade = if shown { 1.0 } else { (1.0 - (age - (super::NOTICE_SECS - 1.0)).max(0.0)).clamp(0.0, 1.0) };
-            let t = r.node(badge_node(), |k| {
-                k.row(1.0, |row| {
-                    for (i, c) in &n.icons {
-                        row.icon(*i, if n.icons.len() > 1 { 17.0 } else { 22.0 }, c.with_alpha(fade));
-                    }
-                });
-            });
-            t.skin = Some((Skin::Plate, Color::srgba(1.0, 1.0, 1.0, fade)));
-            t.action(HudAction::Badge(key.clone()));
-            if shown {
-                let mut k = Ui::default();
-                k.row(8.0, |row| {
-                    for (i, c) in &n.icons {
-                        row.icon(*i, 20.0, *c);
-                    }
-                    row.bold(n.text.clone(), 16.0, INK);
-                });
-                card = Some(card_node(k, None));
-            }
-        }
     });
     col.children = ui.nodes;
     if let Some(card) = card {
@@ -428,9 +413,15 @@ fn card_node(k: Ui, tip: Option<Tip>) -> VNode {
 }
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
-    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(84.0), Some(90.0)) });
+    let bottom = super::journal::height(c) + 20.0;
+    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(84.0), Some(bottom)) });
     let mut ui = Ui::default();
-    if c.hud.tool == Tool::None && c.hud.colony.is_none() {
+    // A beaver pointed at in the colony book or ledger shows on its own.
+    if let Some(id) = c.hud.peek.filter(|id| c.s.colony.beaver(*id).is_some()) {
+        if let Some(v) = super::inspect::inspector(c, Selection::Beaver(id)) {
+            ui.add(v);
+        }
+    } else if c.hud.tool == Tool::None {
         for p in c.hud.pinned.iter().filter(|p| **p != c.sel) {
             if let Some(v) = super::inspect::inspector(c, *p) {
                 ui.add(v);
@@ -457,6 +448,8 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();
         u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony book").key("Tab"));
+        let open = c.hud.ledger.is_some();
+        u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony ledger").key("L"));
     })]
 }
 
@@ -748,6 +741,19 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     x.bold(rise_text(rise), 15.0, INK);
                 })
                 .tip(tip);
+                let drowned = c.hud.drowned.as_ref().filter(|d| d.0.0 == plan.line).map_or(&[][..], |d| &d.1[..]);
+                if !drowned.is_empty() {
+                    let mut tip = Tip::titled(Some((Icon::Flood, BAD)), "Buildings flooded").with_value(format!("{}", drowned.len()));
+                    for b in drowned.iter().filter_map(|id| c.s.buildings.building(*id)) {
+                        tip.push(TipLine::new(b.kind.spec().name, "").icon(building_icon(b.kind), INK).sub());
+                    }
+                    r.row(3.0, |x| {
+                        x.icon(Icon::Warn, 15.0, BAD);
+                        x.icon(Icon::Building, 15.0, BAD);
+                        x.bold(format!("{}", drowned.len()), 15.0, BAD);
+                    })
+                    .tip(tip);
+                }
                 let drowned = plan.preview.as_ref().map_or(0, |p| p.flooded_trees);
                 if drowned > 0 {
                     r.row(4.0, |x| {
@@ -866,6 +872,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     }
     if b.is_complete() && !b.operational() {return Some((Some(Icon::Hammer),"Ruined".into(),vec![],BAD));}
     Some(match (b.status, place.and_then(|pl| pl.site.as_ref())) {
+        (Status::Complete, _) if sim::buildings::flooded(b, &s.water.depth) => (Some(Icon::Flood), "Flooded".into(), vec![], BAD),
         (Status::Complete, _) if s.buildings.stranded(b, &s.water.depth) => (Some(Icon::Flood), "Dry".into(), vec![], WARN),
         (Status::Complete, _) if slots > 0 && empty == slots => (Some(Icon::Unstaffed), "Idle".into(), vec![], WARN),
         (Status::Complete, _) => (None, "Working".into(), vec![], if empty > 0 { WARN } else { GOOD }),

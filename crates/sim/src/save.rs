@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bumped by hand when the save layout changes in a way decoding would not catch.
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 const MAGIC: [u8; 8] = *b"BEAVSAVE";
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

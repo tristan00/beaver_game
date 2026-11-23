@@ -46,6 +46,19 @@ pub(super) fn hotkeys(
     }
     if keys.just_pressed(KeyCode::Tab) {
         hud.colony = if hud.colony.is_some() { None } else { Some(ColonyTab::Population) };
+        if hud.colony.is_some() {
+            hud.ledger = None;
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyL) && !ctrl {
+        hud.ledger = if hud.ledger.is_some() { None } else { Some(LedgerTab::Charts) };
+        hud.scroll = 0;
+        if hud.ledger.is_some() {
+            hud.colony = None;
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyJ) {
+        hud.journal_open = !hud.journal_open;
     }
     if keys.just_pressed(KeyCode::KeyI) {
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
@@ -80,8 +93,9 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
-        } else if hud.colony.is_some() {
+        } else if hud.colony.is_some() || hud.ledger.is_some() {
             hud.colony = None;
+            hud.ledger = None;
         } else if *sel != Selection::None || !hud.selected.is_empty() {
             *sel = Selection::None;
             hud.selected.clear();

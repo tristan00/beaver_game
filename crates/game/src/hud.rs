@@ -7,6 +7,8 @@ mod canal_panel;
 mod dam_panel;
 mod elevation;
 mod inspect;
+mod journal;
+mod ledger;
 mod panels;
 mod ui;
 mod words;
@@ -88,6 +90,36 @@ pub enum ColonyTab {
     Water,
 }
 
+/// The colony ledger's pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedgerTab {
+    Charts,
+    Beavers,
+    Dams,
+    Buildings,
+}
+
+/// How far back the ledger's charts look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Span {
+    Season,
+    Year,
+    #[default]
+    All,
+}
+
+/// A column of the ledger's beaver table, to sort by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BeaverCol {
+    #[default]
+    Family,
+    Name,
+    Age,
+    Job,
+    Skill,
+    Pace,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Msg {
     pub icon: Option<(Icon, Color)>,
@@ -125,6 +157,19 @@ pub struct HudState {
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
     pub colony: Option<ColonyTab>,
+    /// The colony ledger's open page, if it is open.
+    pub ledger: Option<LedgerTab>,
+    pub span: Span,
+    /// The beaver table's sort column, and whether it runs high to low.
+    pub sort: (BeaverCol, bool),
+    /// Rows scrolled past at the top of the ledger's long lists.
+    pub scroll: usize,
+    /// A beaver whose inspector shows while the pointer is on it in the book or ledger.
+    pub peek: Option<BeaverId>,
+    /// The journal, bottom right: a few lines, or many.
+    pub journal_open: bool,
+    /// The buildings the drawn dam would drown: worked out for this line and engine answer.
+    pub drowned: Option<((Vec<Cell>, bool), Vec<BuildingId>)>,
     undo: Vec<UndoItem>,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
@@ -178,6 +223,9 @@ pub struct MenuOpen(pub bool);
 pub fn reset_for_new_game(world: &mut World) {
     world.insert_resource(HudState::default());
     world.insert_resource(MapLens::default());
+    if let Some(mut n) = world.get_resource_mut::<Notices>() {
+        n.0.clear();
+    }
     if let Some(mut s) = world.get_resource_mut::<Selection>() {
         *s = Selection::None;
     }
@@ -202,6 +250,13 @@ impl Default for HudState {
             msg: None,
             idle_cursor: 0,
             colony: None,
+            ledger: None,
+            span: Span::All,
+            sort: (BeaverCol::Family, false),
+            scroll: 0,
+            peek: None,
+            journal_open: false,
+            drowned: None,
             undo: Vec::new(),
             selected: Vec::new(),
             follow: None,
@@ -285,53 +340,123 @@ pub struct Pops(pub Vec<Pop>);
 
 pub const POP_SECS: f32 = 2.4;
 
-/// News for the top of the screen: a wolf seen, a beaver dead, a game saved.
+/// What happened, for the journal at the bottom right: births and deaths, buildings finished,
+/// a wolf seen, a game saved. Problems that want the player are the badges at the top.
 #[derive(Clone, Debug)]
 pub struct Notice {
-    pub id: u64,
     pub icons: Vec<(Icon, Color)>,
     pub text: String,
     pub born: f32,
+    /// The game day it happened.
+    pub day: f64,
+    /// Where a click on it takes the camera.
+    pub focus: Option<NoticeAt>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NoticeAt {
+    Beaver(BeaverId),
+    Building(BuildingId),
+    Spot((f32, f32)),
+}
+
+/// The journal's lines, and today's game day (stamped on new lines).
 #[derive(Resource, Default)]
-pub struct Notices(pub Vec<Notice>, u64);
+pub struct Notices(pub Vec<Notice>, pub f64);
 
-impl Notice {
-    /// The badge's key, as `HudState::open_badge` holds it.
-    pub fn key(&self) -> String {
-        format!("notice:{}", self.id)
-    }
-}
-
-/// How long a notice stays up, and how many show at once.
+/// How long a new line stands out in the journal, and how many lines it keeps.
 pub const NOTICE_SECS: f32 = 7.0;
-pub const NOTICES_SHOWN: usize = 6;
+pub const JOURNAL_KEPT: usize = 200;
 
 impl Notices {
     pub fn push(&mut self, icons: Vec<(Icon, Color)>, text: impl Into<String>, now: f32) {
+        self.push_at(icons, text, now, None);
+    }
+    pub fn push_at(&mut self, icons: Vec<(Icon, Color)>, text: impl Into<String>, now: f32, focus: Option<NoticeAt>) {
         let text = text.into();
         sim::trace::event(format!("NOTICE icons={:?} text={text:?}", icons.iter().map(|(i, _)| format!("{i:?}")).collect::<Vec<_>>()));
-        self.1 += 1;
-        let id = self.1;
-        self.0.push(Notice { id, icons, text, born: now });
+        let day = self.1;
+        self.0.push(Notice { icons, text, born: now, day, focus });
+        if self.0.len() > JOURNAL_KEPT {
+            self.0.remove(0);
+        }
     }
 }
 
 /// A wolf comes into sight: say so once per visit.
 fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut seen: Local<bool>) {
+    if notices.1 != sim.0.time_days {
+        notices.1 = sim.0.time_days;
+    }
     let spotted = sim.0.predators.wolf.is_some() && sim.0.predators.spotted;
     if spotted && !*seen {
-        notices.push(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs());
+        let at = sim.0.predators.wolf.as_ref().map(|w| NoticeAt::Spot(w.pos));
+        notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), at);
     }
     *seen = spotted;
 }
 
-/// News fades after a while, unless its badge is open.
-fn expire_notices(time: Res<Time>, hud: Res<HudState>, mut notices: ResMut<Notices>) {
-    let now = time.elapsed_secs();
-    let open = hud.open_badge.clone();
-    notices.0.retain(|n| now - n.born < NOTICE_SECS || open.as_deref() == Some(n.key().as_str()));
+type BuildingsSeen = std::collections::BTreeMap<BuildingId, (BuildingKind, bool, (usize, usize))>;
+
+/// Buildings finished, and finished ones lost, into the journal.
+fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut was: Local<Option<(u64, BuildingsSeen)>>) {
+    let s = &sim.0;
+    if !s.is_running() {
+        *was = None;
+        return;
+    }
+    let changed = was.as_ref().is_none_or(|(i, before)| *i != s.instance || before.len() != s.buildings.buildings.len() || s.buildings.buildings.iter().any(|b| before.get(&b.id).is_none_or(|x| x.1 != b.is_complete())));
+    if !changed {
+        return;
+    }
+    let now: BuildingsSeen = s.buildings.buildings.iter().map(|b| (b.id, (b.kind, b.is_complete(), b.pos))).collect();
+    if let Some((_, before)) = was.as_ref().filter(|(i, _)| *i == s.instance) {
+        let t = time.elapsed_secs();
+        for (id, (kind, done, _)) in &now {
+            if *done && before.get(id).is_some_and(|b| !b.1) {
+                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Check, GOOD)], format!("{} built", kind.spec().name), t, Some(NoticeAt::Building(*id)));
+            }
+        }
+        for (id, (kind, done, pos)) in before {
+            if *done && !now.contains_key(id) {
+                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Cross, BAD)], format!("{} lost", kind.spec().name), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
+            }
+        }
+    }
+    *was = Some((s.instance, now));
+}
+
+/// The pointer on a beaver in the colony book or ledger shows its inspector.
+fn peek_hover(q: Query<(&Interaction, &ui::Peek)>, mut hud: ResMut<HudState>) {
+    let on = q.iter().find(|(i, _)| **i != Interaction::None).map(|(_, p)| p.0);
+    if hud.peek != on {
+        hud.peek = on;
+    }
+}
+
+/// The most rows any of the ledger's lists can scroll past.
+pub(crate) fn longest_list(s: &sim::SimState) -> usize {
+    s.colony.beavers.len().max(s.buildings.buildings.len())
+}
+
+/// The mouse wheel over a long list in the ledger scrolls it.
+fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Query<(&ui::TagComp, &bevy::ui::RelativeCursorPosition)>, sim: Res<Sim>, mut hud: ResMut<HudState>) {
+    if scroll.delta.y == 0.0 || hud.ledger.is_none() {
+        return;
+    }
+    let over = q.iter().any(|(t, r)| t.0 == Tag::Scroll && r.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5));
+    if !over {
+        return;
+    }
+    let lines = match scroll.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => scroll.delta.y,
+        bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y / 20.0,
+    };
+    let step = (-lines * 2.0).round() as i64;
+    let next = ((hud.scroll as i64 + step).max(0) as usize).min(longest_list(&sim.0));
+    if next != hud.scroll {
+        hud.scroll = next;
+    }
 }
 
 /// The problems found at the last panel refresh, for the markers drawn every frame.
@@ -418,11 +543,12 @@ enum Panel {
     Bottom,
     Minimap,
     Colony,
+    Journal,
     Cursor,
     Markers,
 }
 
-const SLOW_PANELS: [Panel; 8] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right];
+const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Journal, Panel::Right];
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
@@ -447,6 +573,15 @@ pub enum HudAction {
     SetLens(MapLens),
     Undo,
     Colony(Option<ColonyTab>),
+    Ledger(Option<LedgerTab>),
+    Span(Span),
+    Sort(BeaverCol),
+    /// Scroll the ledger's long list by rows.
+    Scroll(i32),
+    /// Show many lines of the journal, or few.
+    Journal(bool),
+    /// Take the camera to where a journal line happened.
+    GoTo(NoticeAt),
     SelectBeaver(BeaverId),
     SelectBuilding(BuildingId),
     Follow(BeaverId),
@@ -500,7 +635,7 @@ impl Plugin for HudPlugin {
             .init_resource::<MenuOpen>()
             .init_resource::<Tips>()
             .init_resource::<Pops>()
-            .add_systems(Update, (notice_wolf, expire_notices))
+            .add_systems(Update, (notice_wolf, notice_buildings))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
@@ -511,7 +646,7 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver),
+                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scroll_lists),
                     (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay),
                 )
                     .chain()
@@ -571,7 +706,7 @@ fn settle_dam_line(time: Res<Time>, sim: Res<crate::state::Sim>, mut hud: ResMut
 }
 
 fn spawn_hosts(mut commands: Commands) {
-    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Right, Panel::Cursor].into_iter().enumerate() {
+    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Journal, Panel::Colony, Panel::Right, Panel::Cursor].into_iter().enumerate() {
         commands.spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), top: Val::Px(0.0), bottom: Val::Px(0.0), ..default() },
             GlobalZIndex(10 + i as i32),
@@ -617,12 +752,12 @@ fn refresh_panels(
     minimap: Option<Res<MinimapImage>>,
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
-    (cursor, mut last): (Res<CursorUi>, ResMut<LastProblems>),
+    (cursor, mut last, notices): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh panels");
     let due = timer.0.tick(time.delta()).just_finished();
-    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || (hover.is_changed() && hud.tool != Tool::None);
+    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || (hover.is_changed() && hud.tool != Tool::None) || notices.is_changed();
     if !due && !changed {
         return;
     }
@@ -644,6 +779,7 @@ fn refresh_panels(
             hud.canal_plan = Some((line.clone(), sim::canals::plan(s, &line)));
         }
     }
+    update_drowned(s, &mut hud);
     if let Selection::Site(id) = *sel {
         if let Some(d) = sim::dams::dam(s, id) {
             let day = s.time_days.floor();
@@ -668,6 +804,8 @@ fn refresh_panels(
         minimap: minimap.as_deref(),
         view_cell: crate::flow::world_cell(&s.height, orbit.target),
         cursor: cursor.0,
+        journal: &notices.0,
+        now,
     };
     let founded = s.is_running();
     for (e, p, mut m) in &mut hosts {
@@ -688,7 +826,9 @@ fn refresh_panels(
             Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),
             Panel::Minimap => panels::minimap(&ctx),
+            Panel::Colony if ctx.hud.ledger.is_some() => ledger::screen(&ctx),
             Panel::Colony => colony::screen(&ctx),
+            Panel::Journal => journal::screen(&ctx),
             _ => continue,
         };
         ui::reconcile(&mut commands, &icons, e, &mut m, tree, 0);
@@ -710,7 +850,7 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
-    (windows, pops, problems, time, notices): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Res<Notices>),
+    (windows, pops, problems, time): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh fast");
@@ -730,7 +870,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0 };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
                 let tree = if hud.tool == Tool::Canal {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
@@ -764,7 +904,7 @@ fn refresh_fast(
                 let mut tree = tree;
                 tree.extend(world::screen_pops(&pops.0, time.elapsed_secs()));
                 let bctx = panels::Ctx { problems: &problems.0, ..ctx };
-                tree.extend(panels::badges(&bctx, &notices.0, time.elapsed_secs()));
+                tree.extend(panels::badges(&bctx));
                 tree
             }
             _ => match cams.single() {
@@ -774,6 +914,36 @@ fn refresh_fast(
         };
         ui::reconcile(&mut commands, &icons, e, &mut m, tree, 0);
     }
+}
+
+/// Which buildings the dam being drawn would drown, from the quick estimate and, once it is in,
+/// the water engine's own run; worked out again only when either changes.
+fn update_drowned(s: &sim::SimState, hud: &mut HudState) {
+    let Some(plan) = hud.plan.as_ref().filter(|p| hud.tool == Tool::Dam && p.refusal.is_none()) else {
+        if hud.drowned.is_some() {
+            hud.drowned = None;
+        }
+        return;
+    };
+    let key = (plan.line.clone(), hud.dam_settled().is_some());
+    if hud.drowned.as_ref().is_some_and(|d| d.0 == key) {
+        return;
+    }
+    let mut depth: std::collections::HashMap<Cell, f32> = std::collections::HashMap::new();
+    if let Some(pv) = plan.preview.as_ref() {
+        for &c in &pv.flow_flooded {
+            let floor = s.height.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0);
+            depth.insert(c, (pv.flow_level - floor).max(0.0));
+        }
+    }
+    if let Some(r) = hud.dam_settled() {
+        for (c, d) in r.flooded.iter().zip(&r.depths) {
+            let e = depth.entry(*c).or_insert(0.0);
+            *e = e.max(*d);
+        }
+    }
+    let drowned = sim::dam_preview::drowned_by(s, |x, y| depth.get(&(x, y)).copied().unwrap_or(0.0));
+    hud.drowned = Some((key, drowned));
 }
 
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, sim: Res<Sim>) {
@@ -790,3 +960,4 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     };
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
+

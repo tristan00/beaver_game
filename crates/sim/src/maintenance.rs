@@ -166,16 +166,20 @@ pub fn step(s: &mut SimState, dt: f32) {
     let temp=(std::f64::consts::TAU*(s.time_days-crate::tuning::colony::MIDSUMMER_DAY)/crate::calendar::YEAR_DAYS).cos() as f32;
     let cold=((crate::tuning::colony::COLD_BELOW_TEMP-temp)/crate::tuning::colony::COLD_RANGE).clamp(0.0,1.0);
     let pebbled=s.buildings.pebbled.clone();
+    let depth=&s.water.depth;
     for b in &mut s.buildings.buildings {
         if !b.is_complete() {continue;}
+        let drowned=crate::buildings::flooded(b,depth);
         if b.kind!=K::Dam {
             let wear=if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY};
-            let loss=wear*(1.0+COLD_WEAR_SCALE*cold);
+            // Too deep under water, a building wears away fast.
+            let loss=wear*(1.0+COLD_WEAR_SCALE*cold)*if drowned {FLOODED_WEAR_SCALE} else {1.0};
             let faced=if pebbled.contains(&b.id) {crate::buildings::PEBBLE_FACTOR} else {1.0};
             b.condition=(b.condition-loss*dt/(b.durability()*faced)).max(0.0);
         }
         if let Some(home)=s.work.homes.get(&b.id).copied() {
-            if let Some(l)=s.colony.lodges.iter_mut().find(|l|l.id==home) {l.condition=b.condition;}
+            // A flooded lodge keeps no one warm.
+            if let Some(l)=s.colony.lodges.iter_mut().find(|l|l.id==home) {l.condition=if drowned {0.0} else {b.condition};}
         }
     }
 }

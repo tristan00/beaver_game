@@ -325,6 +325,13 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         if b.is_complete() && s.buildings.stranded(b, &s.water.depth) {
             icon = Some((Icon::Flood, WARN));
         }
+        if sim::buildings::flooded(b, &s.water.depth) {
+            icon = Some((Icon::Flood, BAD));
+        }
+        // The dam being drawn would drown it.
+        if hud.tool == super::Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0.0 == hud.line && d.1.contains(&b.id)) {
+            icon = Some((Icon::Flood, BAD));
+        }
         if let (Some((i, c)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
             out.push(pin(pos, i, c, Skin::Pebble, 28.0));
         }
@@ -441,6 +448,28 @@ fn draw_contours(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (usize, usize), r:
                 }
             }
         }
+    }
+}
+
+/// A building's footprint traced on the ground (or the water over it), a cell edge at a time.
+fn footprint_outline(g: &mut Gizmos, s: &sim::SimState, b: &sim::buildings::Building, colour: Color) {
+    let (w, d) = b.kind.spec().footprint;
+    let (x0, y0) = (b.pos.0 as f32, b.pos.1 as f32);
+    let at = |x: f32, y: f32| {
+        let c = (x.max(0.0) as usize, y.max(0.0) as usize);
+        let wet = s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+        cell_world(&s.height, (x, y)).with_y(height_at(&s.height, x, y) + wet + 0.12)
+    };
+    let mut edge = |a: (f32, f32), b: (f32, f32)| g.line(at(a.0, a.1), at(b.0, b.1), colour);
+    for i in 0..w {
+        let x = x0 + i as f32;
+        edge((x, y0), (x + 1.0, y0));
+        edge((x, y0 + d as f32), (x + 1.0, y0 + d as f32));
+    }
+    for j in 0..d {
+        let y = y0 + j as f32;
+        edge((x0, y), (x0, y + 1.0));
+        edge((x0 + w as f32, y), (x0 + w as f32, y + 1.0));
     }
 }
 
@@ -779,6 +808,12 @@ fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Opt
             let base = cell_world(h, (t.cell.0 as f32, t.cell.1 as f32)).with_y(height_at(h, t.cell.0 as f32, t.cell.1 as f32) + 0.25);
             ring(g, base, 0.55, WATER);
             ring(g, base + Vec3::Y * 0.04, 0.5, WATER);
+        }
+        // Buildings the new pond would put too deep to use: their footprint ringed in red.
+        if let Some((_, ids)) = hud.drowned.as_ref().filter(|d| d.0.0 == hud.line) {
+            for b in ids.iter().filter_map(|id| s.buildings.building(*id)) {
+                footprint_outline(g, s, b, BAD);
+            }
         }
         if let Some(c) = pv.spill_at.filter(|c| !hud.line.contains(c)) {
             let base = cell_world(h, (c.0 as f32, c.1 as f32)).with_y(pv.level.max(height_at(h, c.0 as f32, c.1 as f32)) + 0.1);

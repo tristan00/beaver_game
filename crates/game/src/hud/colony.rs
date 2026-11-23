@@ -47,7 +47,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
 }
 
 /// The pip under a beaver token: green working, amber free, blue resting or too young.
-fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
+pub(super) fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
     if !b.can_work() || b.resting {
         REST
     } else if s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) {
@@ -57,7 +57,7 @@ fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
     }
 }
 
-fn token_px(st: sim::colony::Stage) -> f32 {
+pub(super) fn token_px(st: sim::colony::Stage) -> f32 {
     match st {
         sim::colony::Stage::Adult => 24.0,
         sim::colony::Stage::Yearling => 19.0,
@@ -83,7 +83,7 @@ fn beavers(c: &Ctx, u: &mut Ui) {
                     .line("Age", format!("{:.1}", b.age_years()))
                     .line("Health", format!("{:.0}", b.health * 100.0))
                     .line("Mood", format!("{:.0}", b.mood * 100.0));
-                r.token(Icon::Beaver, token_px(b.stage), Some(doing(s, b))).action(HudAction::SelectBeaver(b.id)).tip(t);
+                r.token(Icon::Beaver, token_px(b.stage), Some(doing(s, b))).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(t);
             }
         });
         u.rule();
@@ -110,10 +110,16 @@ fn work(c: &Ctx, u: &mut Ui) {
             r.icon(role_kind_icon(role), 20.0, MUTED).tip(Tip::name(role_kind_name(role)));
             r.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(6.0), row_gap: Val::Px(4.0), width: Val::Px(220.0), align_items: AlignItems::Center, ..default() }, |t| {
                 for i in 0..row.slots.min(12) {
-                    if i < row.filled {
-                        t.token(Icon::Beaver, 18.0, None);
-                    } else {
-                        t.empty_token(18.0);
+                    match row.workers.get(i).and_then(|id| s.colony.beaver(*id)) {
+                        Some(b) => {
+                            t.token(Icon::Beaver, 18.0, None).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()));
+                        }
+                        None if i < row.filled => {
+                            t.token(Icon::Beaver, 18.0, None);
+                        }
+                        None => {
+                            t.empty_token(18.0);
+                        }
                     }
                 }
             });

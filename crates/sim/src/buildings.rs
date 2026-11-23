@@ -13,6 +13,25 @@ mod access_tests {
         assert!(b.check_ground(BuildingKind::Warehouse,(8,5),t).is_err());
         assert!(b.check_ground(BuildingKind::Warehouse,(9,5),t).is_ok());
     }
+
+    #[test]
+    fn a_building_too_deep_under_water_is_out_of_use() {
+        let mut b = Buildings::default();
+        let mut d = Grid::new(24, 24, 0.5);
+        let id = b.add_complete(BuildingKind::Warehouse, (5, 5), Terrain { depth: &d }).unwrap();
+        let bd = b.building(id).unwrap().clone();
+        assert!(!flooded(&bd, &d) && !b.unusable(&bd, &d), "half a metre is fine");
+        for y in 5..8 {
+            for x in 5..8 {
+                *d.get_mut(x, y).unwrap() = MAX_BUILDING_DEPTH + 0.5;
+            }
+        }
+        assert!(flooded(&bd, &d) && b.unusable(&bd, &d), "deeper than beavers build for");
+        b.update_capacity(Terrain { depth: &d });
+        assert_eq!(b.stores.capacity(Good::Sticks), BASE_CAPACITY, "a flooded store holds nothing");
+        let deep = Grid::new(24, 24, MAX_BUILDING_DEPTH + 0.5);
+        assert!(b.can_place_site(BuildingKind::Warehouse, (14, 14), Terrain { depth: &deep }).is_err(), "nor can one be put there");
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -387,7 +406,33 @@ pub struct Buildings {
     next_id: u64,
 }
 
+/// The mean water depth over a building's footprint (m); none for dams and canals.
+pub fn flood_depth(b: &Building, depth: &Grid<f32>) -> f32 {
+    footprint_depth(b.kind, b.pos, |x, y| depth.get(x, y).copied().unwrap_or(0.0))
+}
+
+/// The mean depth over a footprint, the depth of each cell read from `at`.
+pub fn footprint_depth(kind: BuildingKind, pos: (usize, usize), at: impl Fn(usize, usize) -> f32) -> f32 {
+    if kind.is_waterworks() {
+        return 0.0;
+    }
+    let (w, h) = kind.spec().footprint;
+    let n = (w * h).max(1) as f32;
+    (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).map(|(x, y)| at(x, y).max(0.0)).sum::<f32>() / n
+}
+
+/// Beaver buildings stand in shallow water, not deep: past `MAX_BUILDING_DEPTH` a finished
+/// one cannot be used and wears away fast.
+pub fn flooded(b: &Building, depth: &Grid<f32>) -> bool {
+    b.is_complete() && !b.kind.is_waterworks() && flood_depth(b, depth) > MAX_BUILDING_DEPTH
+}
+
 impl Buildings {
+    /// Out of use: high and dry, or too deep under water.
+    pub fn unusable(&self, b: &Building, depth: &Grid<f32>) -> bool {
+        self.stranded(b, depth) || flooded(b, depth)
+    }
+
     pub fn stranded(&self, b: &Building, depth: &Grid<f32>) -> bool {
         if !b.is_complete() || !self.water_bound.contains(&b.id) {
             return false;
@@ -474,6 +519,9 @@ impl Buildings {
             }
             _ => {}
         }
+        if solid(kind) && footprint_depth(kind, pos, |x, y| terrain.depth.get(x, y).copied().unwrap_or(0.0)) > MAX_BUILDING_DEPTH {
+            return Err(BuildError::BadTerrain("too deep"));
+        }
         Ok(())
     }
 
@@ -514,7 +562,7 @@ impl Buildings {
             let stored: f32 = self
                 .buildings
                 .iter()
-                .filter(|b| b.is_complete() && !self.stranded(b, terrain.depth) && crate::agents::accepts(b.kind, g))
+                .filter(|b| b.is_complete() && !self.unusable(b, terrain.depth) && crate::agents::accepts(b.kind, g))
                 .map(|b| b.kind.spec().capacity)
                 .sum();
             self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;

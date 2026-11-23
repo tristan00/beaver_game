@@ -36,7 +36,7 @@ icons! {
     Building, Home, Upstream, Gauge,
     Widen, Extend,
     Pebbles, Sapling, Larder, Tend, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
-    Wolf,
+    Wolf, Ledger, Journal,
 }
 
 #[derive(Resource, Clone)]
@@ -881,6 +881,19 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(rect_c(10.0, 14.0, 54.0, 27.0, 3.0));
             c.add(rect_c(10.0, 37.0, 54.0, 50.0, 3.0));
             c.add(tri_rounded(&[(32.0, 64.0), (24.0, 54.0), (40.0, 54.0)]));
+        }
+        Ledger => {
+            c.add(rect_c(6.0, 53.0, 58.0, 58.0, 2.0));
+            c.add(rect_c(10.0, 34.0, 22.0, 50.0, 2.0));
+            c.add(rect_c(26.0, 20.0, 38.0, 50.0, 2.0));
+            c.add(rect_c(42.0, 8.0, 54.0, 50.0, 2.0));
+        }
+        Journal => {
+            c.add(poly(&[(5.0, 12.0), (29.0, 18.0), (29.0, 56.0), (5.0, 50.0)]).grow(1.0));
+            c.add(poly(&[(35.0, 18.0), (59.0, 12.0), (59.0, 50.0), (35.0, 56.0)]).grow(1.0));
+            for y in [26.0, 35.0, 44.0] {
+                c.cut(seg(10.0, y - 3.0, 24.0, y, 3.0).or(seg(40.0, y, 54.0, y - 3.0, 3.0)));
+            }
         }
         Extend => {
             c.add(seg(14.0, 32.0, 50.0, 32.0, 6.0));

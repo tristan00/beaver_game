@@ -29,14 +29,51 @@ impl Open {
     }
 }
 
+/// How many days the colony's own record keeps: four years.
+pub const COLONY_DAYS: usize = 4 * crate::calendar::YEAR_DAYS as usize;
+
+/// The colony counted at the close of a day.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Census {
+    pub beavers: u16,
+    /// Kits and yearlings among them.
+    pub young: u16,
+    /// Water held in dam ponds (m³).
+    pub water: f32,
+    /// Living trees standing.
+    pub trees: u32,
+    /// Saplings planted since the colony began.
+    pub planted: u32,
+}
+
+/// One day of the colony's long record: its census and each good's flow and stock.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColonyDay {
+    pub day: u64,
+    pub census: Census,
+    pub produced: [f32; N],
+    pub consumed: [f32; N],
+    pub stock: [f32; N],
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     open: Option<Open>,
     pub days: VecDeque<DaySample>,
+    /// The long record, a day at a time, for the colony ledger's charts.
+    pub colony: VecDeque<ColonyDay>,
+    /// Saplings planted so far.
+    pub planted: u32,
 }
 
 impl Ledger {
-    pub fn record(&mut self, time_days: f64, stores: &Stores) {
+    /// Whether the next `record` at this time closes a day (and so asks for a census).
+    pub fn closes_day(&self, time_days: f64) -> bool {
+        let today = time_days.max(0.0).floor() as u64;
+        self.open.as_ref().is_some_and(|o| today > o.day)
+    }
+
+    pub fn record(&mut self, time_days: f64, stores: &Stores, census: impl FnOnce() -> Census) {
         let today = time_days.max(0.0).floor() as u64;
         let Some(open) = &self.open else {
             self.open = Some(Open::at(today, stores));
@@ -45,6 +82,7 @@ impl Ledger {
         if today <= open.day {
             return;
         }
+        let census = census();
         let day = open.day;
         let span = (today - day) as f32;
         let stock: [f32; N] = std::array::from_fn(|i| stores.amount(Good::ALL[i]));
@@ -62,6 +100,10 @@ impl Ledger {
             self.days.push_back(DaySample { day: d, produced, consumed, stock, produced_by: produced_by.clone(), consumed_by });
             if self.days.len() > HISTORY_DAYS {
                 self.days.pop_front();
+            }
+            self.colony.push_back(ColonyDay { day: d, census, produced, consumed, stock });
+            if self.colony.len() > COLONY_DAYS {
+                self.colony.pop_front();
             }
         }
         self.open = Some(Open::at(today, stores));

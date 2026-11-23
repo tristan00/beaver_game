@@ -207,7 +207,46 @@ pub(super) fn button_actions(
                 hud.set_changed();
             }
             HudAction::Undo => undo_last(s, &mut hud, now),
-            HudAction::Colony(t) => hud.colony = t,
+            HudAction::Colony(t) => {
+                hud.colony = t;
+                if t.is_some() {
+                    hud.ledger = None;
+                }
+            }
+            HudAction::Ledger(t) => {
+                if t != hud.ledger {
+                    hud.scroll = 0;
+                }
+                hud.ledger = t;
+                if t.is_some() {
+                    hud.colony = None;
+                }
+            }
+            HudAction::Span(sp) => hud.span = sp,
+            HudAction::Sort(col) => {
+                hud.sort = if hud.sort.0 == col { (col, !hud.sort.1) } else { (col, !matches!(col, BeaverCol::Name | BeaverCol::Family | BeaverCol::Job)) };
+                hud.scroll = 0;
+            }
+            HudAction::Scroll(n) => hud.scroll = ((hud.scroll as i64 + n as i64).max(0) as usize).min(super::longest_list(s)),
+            HudAction::Journal(open) => hud.journal_open = open,
+            HudAction::GoTo(at) => match at {
+                NoticeAt::Beaver(id) if s.colony.beaver(id).is_some() => {
+                    *sel = Selection::Beaver(id);
+                    hud.selected = vec![id];
+                    if let Some(b) = s.colony.beaver(id) {
+                        flow.focus = Some(cell_world(&s.height, b.pos));
+                    }
+                }
+                NoticeAt::Building(id) if s.buildings.building(id).is_some() => {
+                    *sel = Selection::Site(id);
+                    hud.selected.clear();
+                    if let Some(b) = s.buildings.building(id) {
+                        flow.focus = Some(cell_world(&s.height, (b.pos.0 as f32, b.pos.1 as f32)));
+                    }
+                }
+                NoticeAt::Spot(p) => flow.focus = Some(cell_world(&s.height, p)),
+                _ => {}
+            },
             HudAction::SelectBeaver(id) => {
                 *sel = Selection::Beaver(id);
                 hud.selected = vec![id];

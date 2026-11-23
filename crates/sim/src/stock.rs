@@ -23,7 +23,7 @@ pub fn balancing(sim: &SimState) -> bool {
 }
 
 fn open_store(sim: &SimState, b: &Building) -> bool {
-    b.is_complete() && crate::agents::is_store(b.kind) && !sim.buildings.stranded(b, &sim.water.depth)
+    b.is_complete() && crate::agents::is_store(b.kind) && !sim.buildings.unusable(b, &sim.water.depth)
 }
 
 /// Loads on their way into `to`.

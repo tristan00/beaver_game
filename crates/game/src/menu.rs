@@ -150,7 +150,7 @@ fn menu_keys(
         Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.order_mode.is_some() || h.help);
+            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
                 menu.was_paused = clock.paused;
                 clock.paused = true;

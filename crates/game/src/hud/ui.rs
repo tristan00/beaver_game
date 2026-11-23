@@ -121,6 +121,8 @@ pub enum Tag {
     None,
     Minimap,
     TipLayer(u8),
+    /// A list the mouse wheel scrolls.
+    Scroll,
 }
 
 #[derive(Clone, Debug)]
@@ -136,12 +138,14 @@ pub struct VNode {
     pub solid: bool,
     pub tag: Tag,
     pub depth: u8,
+    /// A beaver whose inspector shows while the pointer is on this node.
+    pub peek: Option<sim::colony::BeaverId>,
     pub children: Vec<VNode>,
 }
 
 impl VNode {
     pub fn new(node: Node) -> VNode {
-        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, children: Vec::new() }
+        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, peek: None, children: Vec::new() }
     }
     pub fn skin(&mut self, s: Skin) -> &mut Self {
         self.skin = Some((s, Color::WHITE));
@@ -177,6 +181,12 @@ impl VNode {
         self.solid = true;
         self
     }
+    /// Show this beaver's inspector while hovered.
+    pub fn peek(&mut self, b: sim::colony::BeaverId) -> &mut Self {
+        self.peek = Some(b);
+        self.solid = true;
+        self
+    }
     pub fn tag(&mut self, t: Tag) -> &mut Self {
         self.tag = t;
         self
@@ -186,7 +196,7 @@ impl VNode {
         self
     }
     fn interactive(&self) -> bool {
-        self.solid || self.action.is_some() || self.tip.is_some()
+        self.solid || self.action.is_some() || self.tip.is_some() || self.peek.is_some()
     }
     fn same_shape(&self, o: &VNode) -> bool {
         self.kind.same_shape(&o.kind)
@@ -388,6 +398,10 @@ pub struct TipComp {
 #[derive(Component)]
 pub struct TagComp(pub Tag);
 
+/// The beaver a node peeks at (see `VNode::peek`).
+#[derive(Component, Clone, Copy, PartialEq)]
+pub struct Peek(pub sim::colony::BeaverId);
+
 #[derive(Component, Default)]
 pub struct Mounted {
     tree: Vec<VNode>,
@@ -475,9 +489,12 @@ fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> Mounted
     if let Some(t) = &v.tip {
         ec.insert(TipComp { tip: t.clone(), depth: v.depth });
     }
+    if let Some(b) = v.peek {
+        ec.insert(Peek(b));
+    }
     if v.tag != Tag::None {
         ec.insert(TagComp(v.tag));
-        if matches!(v.tag, Tag::Minimap | Tag::TipLayer(_)) {
+        if matches!(v.tag, Tag::Minimap | Tag::TipLayer(_) | Tag::Scroll) {
             ec.insert(RelativeCursorPosition::default());
         }
     }
@@ -542,6 +559,16 @@ fn update_tree(cmd: &mut Commands, icons: &Icons, old: &VNode, new: &VNode, m: &
             }
             None => {
                 ec.remove::<HudAction>();
+            }
+        }
+    }
+    if old.peek != new.peek {
+        match new.peek {
+            Some(b) => {
+                ec.insert(Peek(b));
+            }
+            None => {
+                ec.remove::<Peek>();
             }
         }
     }

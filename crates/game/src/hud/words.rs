@@ -147,6 +147,8 @@ pub fn sim_error(m: &str) -> String {
         ("out of bounds", "Off map"),
         ("disabled", "Locked"),
         ("(locked)", "Locked"),
+        ("too deep", "Too deep"),
+        ("flooded", "Flooded"),
     ];
     table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }

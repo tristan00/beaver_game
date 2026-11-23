@@ -86,7 +86,7 @@ fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
 }
 
 /// What a beaver is busy with, as an icon, its colour and a word for the tooltip.
-fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str) {
+pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str) {
     use sim::agents::Task;
     use sim::resources::ResourceKind;
     if !b.can_work() {
