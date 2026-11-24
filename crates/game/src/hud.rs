@@ -599,6 +599,9 @@ pub enum HudAction {
     ConfirmLine,
     CloseInspector,
     SetLens(MapLens),
+    /// Show only this role's paths (`None`: free beavers'), or every path again if it is the
+    /// one shown already.
+    PathsOnly(Option<RoleKind>),
     Colony(Option<ColonyTab>),
     Ledger(Option<LedgerTab>),
     Span(Span),

@@ -209,6 +209,10 @@ pub(super) fn button_actions(
                 *lens = l;
                 hud.set_changed();
             }
+            HudAction::PathsOnly(r) => {
+                super::paths::toggle_only(r);
+                hud.set_changed();
+            }
             HudAction::BeaverDetails(who) => {
                 hud.details = who;
                 hud.scroll = 0;

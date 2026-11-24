@@ -3,10 +3,33 @@ use super::words::role_kind_name;
 use crate::flow::{cell_world, height_at};
 use bevy::prelude::*;
 use sim::jobs::RoleKind;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Whether the paths view is on screen (set by `sync_lens`, which may show another view over it).
 pub static SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// The one role whose paths are shown, picked in the legend: `ALL_ROLES` for every path, `FREE`
+/// for free beavers', otherwise the role's place in `RoleKind::ALL`.
+static ONLY: AtomicU8 = AtomicU8::new(ALL_ROLES);
+const ALL_ROLES: u8 = u8::MAX;
+const FREE_ROLE: u8 = u8::MAX - 1;
+
+fn code(r: Option<RoleKind>) -> u8 {
+    r.map_or(FREE_ROLE, |r| RoleKind::ALL.iter().position(|k| *k == r).unwrap_or(0) as u8)
+}
+
+/// Show only this role's paths, or every path again if it is the one shown.
+pub fn toggle_only(r: Option<RoleKind>) {
+    let c = code(r);
+    let now = ONLY.load(Ordering::Relaxed);
+    ONLY.store(if now == c { ALL_ROLES } else { c }, Ordering::Relaxed);
+}
+
+/// Whether this role's paths are drawn.
+fn shown(r: Option<RoleKind>) -> bool {
+    let only = ONLY.load(Ordering::Relaxed);
+    only == ALL_ROLES || only == code(r)
+}
 
 const LIFT: f32 = 0.18;
 const WIDTH: f32 = 3.0;
@@ -51,7 +74,7 @@ pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>) {
         let wet = s.water.depth.get(x as usize, y as usize).copied().unwrap_or(0.0).max(0.0);
         cell_world(h, (x, y)).with_y(height_at(h, x, y) + wet + LIFT)
     };
-    for (a, role) in walking(s) {
+    for (a, role) in walking(s).filter(|(_, r)| shown(*r)) {
         let col = role_color(role);
         let start = s.colony.beaver(a.id).map_or((a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5), |b| b.pos);
         let steps = &a.path.as_ref().expect("walking").steps;
@@ -69,25 +92,30 @@ pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>) {
     }
 }
 
-/// Beside the rail while the paths view is on: a swatch and name for each role walking now.
+/// Beside the rail while the paths view is on: a swatch and name for every role, each a button
+/// that shows only that role's paths (and every path again on a second click). Roles no one
+/// is walking for now are dimmed.
 pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
     if !SHOWN.load(Ordering::Relaxed) {
         return None;
     }
-    let mut roles: Vec<Option<RoleKind>> = walking(s).map(|(_, r)| r).collect();
-    roles.sort_by_key(|r| r.map_or(usize::MAX, |r| RoleKind::ALL.iter().position(|k| *k == r).unwrap_or(0)));
-    roles.dedup();
-    if roles.is_empty() {
-        return None;
-    }
+    let walking_now: Vec<Option<RoleKind>> = walking(s).map(|(_, r)| r).collect();
+    let picked = ONLY.load(Ordering::Relaxed) != ALL_ROLES;
+    let roles = RoleKind::ALL.iter().map(|r| Some(*r)).chain(std::iter::once(None));
     let mut ui = Ui::default();
     ui.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), padding: UiRect::all(Val::Px(8.0)), ..node }, |u| {
         for r in roles {
+            let on = shown(r);
+            let busy = walking_now.contains(&r);
+            let swatch = if on { role_color(r) } else { role_color(r).with_alpha(0.25) };
+            let ink = if !on { FAINT.with_alpha(0.5) } else if busy { INK } else { MUTED };
             u.row(6.0, |x| {
-                x.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(4.0), ..default() })).bg(role_color(r));
-                x.text(r.map_or("Free", role_kind_name), 12.0, INK);
+                x.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(if picked && on { 6.0 } else { 4.0 }), ..default() })).bg(swatch);
+                x.text(r.map_or("Free", role_kind_name), 12.0, ink);
             })
-            .style(|n| n.align_items = AlignItems::Center);
+            .style(|n| n.align_items = AlignItems::Center)
+            .tip(Tip::name(if picked && on { "Show all" } else { "Show only these" }))
+            .action(super::HudAction::PathsOnly(r));
         }
     });
     let mut v = ui.nodes.pop()?;
