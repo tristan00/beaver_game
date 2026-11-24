@@ -166,7 +166,10 @@ pub(super) fn button_actions(
                 }
             }
             HudAction::SetGate(building, cell, setting) => cmd(s, &mut hud, sim::Command::SetGate { building, cell, setting }, now),
-            HudAction::UpgradeLock(building, cell) => cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell }, now),
+            HudAction::UpgradeLock(building, cell) => {
+                cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell }, now);
+                hud.dam_cells.retain(|c| *c != cell);
+            }
             HudAction::CanalMaintain(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalMaintain { canal, on }, now),
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {

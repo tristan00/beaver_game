@@ -452,7 +452,6 @@ fn a_gate_is_upgraded_into_a_lock_by_a_visit_once_a_harbor_stands() {
     let lock = Command::UpgradeLock { building: dam, cell: (12, 20) };
     assert!(s.apply(lock.clone()).is_err(), "no harbor yet");
     s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 44), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-    assert!(s.apply(lock.clone()).is_err(), "the gate is not built yet");
     crate::dams::work_gate(&mut s, dam, (12, 20)).unwrap();
     s.apply(lock.clone()).unwrap();
     assert!(crate::locks::pending(&s, (12, 20)) && !crate::locks::is_lock(&s, (12, 20)));
@@ -464,4 +463,21 @@ fn a_gate_is_upgraded_into_a_lock_by_a_visit_once_a_harbor_stands() {
     assert_eq!(crate::dams::gate_job(&s, dam, &[]), None);
     assert!(s.apply(lock).is_err(), "already a lock");
     assert_eq!(crate::script::parse_command(&crate::script::to_line(&Command::UpgradeLock { building: dam, cell: (12, 20) })).unwrap(), Command::UpgradeLock { building: dam, cell: (12, 20) });
+}
+
+#[test]
+fn a_lock_goes_straight_onto_a_dam_cell_gate_and_all_in_one_visit() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 40.0);
+    s.buildings.stores.deposit(crate::buildings::Good::Clay, 20.0).unwrap();
+    let line: Vec<Cell> = (15..26).map(|y| (12, y)).collect();
+    let dam = crate::dams::place(&mut s, &line).unwrap();
+    s.water.build_dam(&line, 1.0).unwrap();
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 44), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    s.apply(Command::UpgradeLock { building: dam, cell: (12, 20) }).unwrap();
+    assert!(crate::dams::dam(&s, dam).unwrap().gates.iter().any(|g| g.cell == (12, 20) && !g.built), "the cell is to be a gate");
+    assert_eq!(crate::dams::gate_job(&s, dam, &[]), Some((12, 20)), "a builder goes to build it");
+    crate::dams::work_gate(&mut s, dam, (12, 20)).unwrap();
+    assert!(crate::locks::is_lock(&s, (12, 20)), "gate and lock built in the one visit");
+    assert_eq!(crate::dams::gate_job(&s, dam, &[]), None);
 }

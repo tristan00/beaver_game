@@ -247,6 +247,8 @@ pub enum ProblemKind {
     Wolf,
     /// Every beaver in one job is waiting at home with nothing that job can do.
     NoWork,
+    /// A digging job idle because the ground is frozen hard (see `weather`).
+    GroundFrozen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -377,9 +379,11 @@ fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
         if fit.is_empty() || !fit.iter().all(|b| waiting_for_work(sim, b.id)) {
             continue;
         }
-        let rows = fit.iter().map(|b| row("No work", 1.0, Source::Beaver(b.id))).collect();
+        // Diggers wait out frozen ground: their beds and banks are frozen in.
+        let frozen = crate::agents::frozen(sim) && matches!(role, crate::jobs::RoleKind::MudDigger | crate::jobs::RoleKind::PebbleCollector);
+        let rows = fit.iter().map(|b| row(if frozen { "Ground frozen" } else { "No work" }, 1.0, Source::Beaver(b.id))).collect();
         out.push(Problem {
-            kind: ProblemKind::NoWork,
+            kind: if frozen { ProblemKind::GroundFrozen } else { ProblemKind::NoWork },
             severity: Severity::Warning,
             value: fit.len() as f32,
             cause: Breakdown::new(fit.len() as f32, rows),

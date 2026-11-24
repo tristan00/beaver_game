@@ -70,6 +70,41 @@ pub struct HoverThing(pub Option<Thing>, pub Option<Thing>);
 #[derive(Resource, Default)]
 pub struct HoverPoint(pub Option<(Cell, (f32, f32))>);
 
+/// While a dam or canal is selected, the cell along it the pointer is on: the one nearest its
+/// line of sight, within about a cell, however the sticks catch the ray. A click picks it.
+#[derive(Resource, Default, PartialEq)]
+pub struct WorksSnap(pub Option<Cell>);
+
+/// How far from the pointer's line of sight (m) a dam or canal cell can still be picked.
+const SNAP_M: f32 = 0.9;
+
+/// Where a dam's or canal's cell is pointed at: the top of what stands there, or the water on it.
+pub fn works_top(s: &sim::SimState, c: Cell) -> f32 {
+    let ground = s.height.get(c.0, c.1).copied().unwrap_or(0.0);
+    let built = sim::dams::built(s, c);
+    let water = ground + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    (ground + built).max(water) + 0.12
+}
+
+/// The cell of the dam's line, or of the canal, nearest a line of sight, if close enough.
+fn works_cell_on_ray(s: &sim::SimState, id: BuildingId, origin: Vec3, dir: Vec3) -> Option<Cell> {
+    let cells: Vec<Cell> = if let Some(d) = sim::dams::dam(s, id) {
+        d.line().map(|c| c.cell).collect()
+    } else {
+        sim::canals::canal(s, id)?.cells.iter().map(|c| c.cell).collect()
+    };
+    cells
+        .into_iter()
+        .filter_map(|c| {
+            let p = cell_world(&s.height, (c.0 as f32, c.1 as f32)).with_y(works_top(s, c));
+            let t = (p - origin).dot(dir);
+            (t > 0.0).then(|| (c, (origin + dir * t).distance(p)))
+        })
+        .filter(|x| x.1 < SNAP_M)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|x| x.0)
+}
+
 pub fn beaver_at(s: &sim::SimState, id: BeaverId) -> Option<(f32, f32)> {
     let ag = s.agents.get(id)?;
     if ag.inside {
@@ -209,7 +244,13 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                     }
                 }
             }
-            if let Some(p) = s.work.places.iter().find(|p| p.area.is_some_and(|a| a.contains(r.cell))) {
+            // The area of a building that works this kind of thing, not just any area over it.
+            let works = |p: &sim::work::Workplace| p.slots.iter().any(|sl| match sl.role {
+                sim::work::Role::Collect(k) => k.gather_sources().contains(&r.kind),
+                sim::work::Role::Forest => r.kind == ResourceKind::Tree,
+                _ => false,
+            });
+            if let Some(p) = s.work.places.iter().find(|p| p.area.is_some_and(|a| a.contains(r.cell)) && works(p)) {
                 if let Some(b) = s.buildings.building(p.building) {
                     tip.push(TipLine::new(format!("{}'s area", b.kind.spec().name), "").icon(Icon::Area, MUTED));
                 }
@@ -254,9 +295,12 @@ pub fn world_hover(
     mut tips: ResMut<Tips>,
     menu: Res<super::MenuOpen>,
     picker: crate::picking::Picker,
+    sel: Res<Selection>,
+    mut snap: ResMut<WorksSnap>,
 ) {
     let _p = ::sim::prof::scope("game/world hover");
     let mut model = None;
+    let mut on_works_cell = None;
     let p = (|| {
         if over.0 || menu.0 || cli.report_dir.is_some() {
             return None;
@@ -264,6 +308,9 @@ pub fn world_hover(
         let cursor = windows.single().ok()?.cursor_position()?;
         let (cam, gt) = cams.single().ok()?;
         let ray = cam.viewport_to_world(gt, cursor).ok()?;
+        if let Selection::Site(id) = *sel {
+            on_works_cell = works_cell_on_ray(&sim.0, id, ray.origin, *ray.direction);
+        }
         let ground = crate::flow::ray_surface(ray.origin, *ray.direction, &sim.0.height, &sim.0.water.depth);
         let hit = picker.cast_at(ray, ground.as_ref().map(|g|g.2));
         model = hit.map(|(t, _)| Thing::from(t));
@@ -289,6 +336,9 @@ pub fn world_hover(
     })();
     if point.0 != p {
         point.0 = p;
+    }
+    if snap.0 != on_works_cell {
+        snap.0 = on_works_cell;
     }
     // Nothing in the fog of war can be pointed at.
     if p.is_some_and(|(c, _)| crate::fog_render::unexplored(&sim.0, c)) {
@@ -875,7 +925,8 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
     }
 }
 
-pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>) {
+#[allow(clippy::too_many_arguments)]
+pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>, snap: Res<WorksSnap>) {
     let _p = ::sim::prof::scope("game/draw world overlay");
     let s = &sim.0;
     let h = &s.height;
@@ -916,6 +967,12 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
             cell_outline(&mut g, h, d.cell, top, Color::srgb(cr, cg, cb));
         }
+    }
+    // The dam or canal cell a click would pick, ringed.
+    if let Some(c) = snap.0 {
+        let at = cell_world(h, (c.0 as f32, c.1 as f32)).with_y(works_top(s, c) + 0.06);
+        ring(&mut g, at, 0.55, Color::WHITE.with_alpha(0.95));
+        ring(&mut g, at, 0.48, Color::WHITE.with_alpha(0.6));
     }
     if let Some((b, d)) = match *sel { Selection::Site(id) => s.buildings.building(id).and_then(|b| b.dam.as_deref().map(|d| (b, d))), _ => None } {
         draw_dam(&mut g, s, &hud, b.id, d);
@@ -1207,12 +1264,7 @@ fn ring(g: &mut Gizmos, at: Vec3, r: f32, col: Color) {
 /// drag it longer, worn cells ringed, the pond's shore and the suggested growth.
 fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d: &sim::dams::Dam) {
     let h = &s.height;
-    let top = |c: Cell| {
-        let ground = s.height.get(c.0, c.1).copied().unwrap_or(0.0);
-        let built = sim::dams::built(s, c);
-        let water = ground + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-        (ground + built).max(water) + 0.12
-    };
+    let top = |c: Cell| works_top(s, c);
     let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
     for w in line.windows(2) {
         for k in 0..4 {

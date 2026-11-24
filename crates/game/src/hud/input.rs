@@ -140,6 +140,7 @@ pub(super) fn world_input(
     mut sel: ResMut<Selection>,
     menu: Res<MenuOpen>,
     mut flow: ResMut<Flow>,
+    snap: Res<world::WorksSnap>,
 ) {
     if menu.0 {
         return;
@@ -242,19 +243,23 @@ pub(super) fn world_input(
                     }
                 }
                 let t = thing.0.unwrap_or(world::Thing::Cell(cell));
-                // On the dam or canal already selected, a click picks the cell under it (for a
-                // gate, or to raise or deepen just there); shift adds to the pick.
-                if let (world::Thing::Building(id), Selection::Site(sid)) = (t, *sel) {
-                    if id == sid && on_line(&sim.0, id, cell) {
-                        match hud.dam_cells.iter().position(|x| *x == cell) {
-                            Some(i) => {
-                                hud.dam_cells.remove(i);
-                            }
-                            None if shift => hud.dam_cells.push(cell),
-                            None => hud.dam_cells = vec![cell],
+                // On the dam or canal already selected, a click picks the cell it is ringed
+                // on (`WorksSnap`), or failing that the one under it (for a gate or lock, or to
+                // raise or deepen just there); shift adds to the pick.
+                let on_works = match (t, *sel) {
+                    (_, Selection::Site(_)) if snap.0.is_some() => snap.0,
+                    (world::Thing::Building(id), Selection::Site(sid)) if id == sid && on_line(&sim.0, id, cell) => Some(cell),
+                    _ => None,
+                };
+                if let Some(cell) = on_works {
+                    match hud.dam_cells.iter().position(|x| *x == cell) {
+                        Some(i) => {
+                            hud.dam_cells.remove(i);
                         }
-                        return;
+                        None if shift => hud.dam_cells.push(cell),
+                        None => hud.dam_cells = vec![cell],
                     }
+                    return;
                 }
                 if t.selection() != *sel {
                     hud.dam_cells.clear();

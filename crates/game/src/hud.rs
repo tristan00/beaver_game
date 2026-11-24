@@ -674,6 +674,7 @@ impl Plugin for HudPlugin {
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()
+            .init_resource::<world::WorksSnap>()
             .init_resource::<elevation::Contours>()
             .init_resource::<DamSettle>()
             .insert_resource(RefreshTimer(Timer::from_seconds(REFRESH_SECS, TimerMode::Repeating)))

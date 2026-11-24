@@ -339,6 +339,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
         ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
         ProblemKind::Wolf => (vec![(Icon::Wolf, BAD)], String::new(), "Wolf"),
+        ProblemKind::GroundFrozen => {
+            let icon = match p.subject {
+                Some(Subject::Role(role)) => role_kind_icon(role),
+                _ => Icon::Jobs,
+            };
+            (vec![(icon, INK), (Icon::Winter, season_color(Season::Winter))], format!("{}", v as i64), "Ground frozen")
+        }
         ProblemKind::NoWork => {
             let icon = match p.subject {
                 Some(Subject::Role(role)) => role_kind_icon(role),

@@ -75,18 +75,23 @@ fn gate_built(sim: &SimState, building: BuildingId, cell: Cell) -> Option<bool> 
     crate::dams::dam(sim, building)?.gates.iter().find(|g| g.cell == cell).map(|g| g.built)
 }
 
-/// Order a gate upgraded into a lock; a builder visits to build it.
+/// Order a lock at a gate, or straight on a built dam cell: the cell is made a gate at the same
+/// time, and the builder who comes builds the gate and then the lock in one visit.
 pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(), SimError> {
     if !unlocked(sim) {
         return Err(invalid("locks need a finished Harbor"));
     }
-    match gate_built(sim, building, cell) {
-        None => return Err(invalid("no gate there")),
-        Some(false) => return Err(invalid("the gate is not built yet")),
-        Some(true) => {}
-    }
     if sim.locks.at.contains_key(&cell) {
         return Err(invalid("that gate is already a lock"));
+    }
+    match gate_built(sim, building, cell) {
+        Some(_) => {}
+        None if crate::dams::dam(sim, building).is_some() => crate::dams::add_gate(sim, building, cell)?,
+        None => return Err(invalid("no gate there")),
+    }
+    // A canal's gate not built yet is built on the same visit.
+    if let Some(k) = crate::canals::canal_mut(sim, building).ok().filter(|k| !k.gate.built && k.gate.pending.is_none()) {
+        k.gate.pending = Some(k.gate.setting);
     }
     sim.locks.at.insert(cell, Lock { cell, building, built: false });
     Ok(())

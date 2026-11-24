@@ -120,7 +120,7 @@ pub fn canal(sim: &SimState, id: BuildingId) -> Option<&Canal> {
     sim.buildings.building(id).and_then(|b| b.canal.as_deref())
 }
 
-fn canal_mut(sim: &mut SimState, id: BuildingId) -> Result<&mut Canal, SimError> {
+pub(crate) fn canal_mut(sim: &mut SimState, id: BuildingId) -> Result<&mut Canal, SimError> {
     sim.buildings.buildings.iter_mut().find(|b| b.id == id).and_then(|b| b.canal.as_deref_mut()).ok_or_else(|| invalid("no such canal"))
 }
 

@@ -237,6 +237,29 @@ fn gate_button(u: &mut Ui, id: BuildingId, plan: Result<f32, String>, suggested:
     }
 }
 
+/// Make the picked dam cell a lock straight away: its gate and the lock in one builder visit.
+fn lock_button(u: &mut Ui, id: BuildingId, picked: Option<sim::water::Cell>) {
+    use sim::locks;
+    let ok = picked.is_some();
+    let sticks = sim::canals::GATE_STICKS + locks::LOCK_STICKS;
+    let v = u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(3.0), ..default() }, |b| {
+        b.icon(Icon::LockGates, 16.0, if ok { INK } else { FAINT.with_alpha(0.5) });
+        b.row(3.0, |x| {
+            x.icon(good_icon(Good::Sticks), 12.0, if ok { WOOD } else { MUTED });
+            x.bold(format!("{}", sticks.round() as i64), 11.5, if ok { INK } else { MUTED });
+        });
+    });
+    v.skin(Skin::Pebble);
+    if !ok {
+        v.faded();
+    }
+    let tip = Tip::name("Lock").line("Beavers and barges get past", "").line("Sticks", num(sticks)).line("Clay", num(locks::LOCK_CLAY));
+    v.tip(if ok { tip } else { tip.line("Pick a built dam cell first", "") });
+    if let Some(cell) = picked {
+        v.action(HudAction::UpgradeLock(id, cell));
+    }
+}
+
 /// The lock pebble at the end of a built gate's row: upgrade it into a lock (with a Harbor),
 /// waiting for its builder, or a lock already.
 pub(super) fn lock_pebble(r: &mut Ui, s: &sim::SimState, id: BuildingId, cell: sim::water::Cell) {
@@ -317,7 +340,11 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
             [] => Err("pick a dam cell first".into()),
             _ => Err("pick one cell".into()),
         };
+        let picked = c.hud.dam_cells.first().copied().filter(|_| gate.is_ok());
         gate_button(r, id, gate, matches!(spill, Spill::Over(_)));
+        if sim::locks::unlocked(s) {
+            lock_button(r, id, picked);
+        }
         r.spacer();
         pebble_button(s, r, id);
         let on = d.maintain;
