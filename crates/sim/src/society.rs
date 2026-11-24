@@ -31,10 +31,10 @@ pub struct Society {
     pub requests: Vec<JoinRequest>,
     next_id: u64,
     rng: u64,
-    /// The year the last newcomer came asking: one a year at most. Not saved; a reload only
-    /// risks one more that year.
+    /// The year newcomers last came asking, and how many that year: as many a year at most as
+    /// may join (`MAX_IMMIGRANTS_PER_YEAR`). Not saved; a reload only risks one more that year.
     #[serde(skip)]
-    asked_year: Option<i64>,
+    asked: Option<(i64, u32)>,
 }
 
 impl Society {
@@ -64,7 +64,7 @@ impl Society {
     /// How many beavers a year ask to join now, or what stops them.
     pub fn newcomers(&self, sim_time: f64, colony: &Colony) -> Result<f32, &'static str> {
         if colony.migration_remaining() == 0 {
-            return Err("One joined this year");
+            return Err("This year's newcomers have joined");
         }
         if !colony.is_founded() || colony.is_collapsed() {
             return Err("No colony");
@@ -75,9 +75,10 @@ impl Society {
         if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
             return Err("Too little food a head");
         }
-        // A single newcomer at a time, and at most one a year.
-        if self.asked_year == Some((sim_time / crate::calendar::YEAR_DAYS).floor() as i64) {
-            return Err("One asked this year");
+        // A single newcomer at a time, and no more a year than may join.
+        let year = (sim_time / crate::calendar::YEAR_DAYS).floor() as i64;
+        if self.asked.is_some_and(|(y, n)| y == year && n >= crate::colony::MAX_IMMIGRANTS_PER_YEAR) {
+            return Err("This year's newcomers have asked");
         }
         Ok(JOIN_REQUESTS_PER_YEAR)
     }
@@ -107,7 +108,8 @@ impl Society {
         if self.unit() < JOIN_REQUESTS_PER_YEAR / crate::calendar::YEAR_DAYS as f32 * dt_days {
             let adult = self.unit() < JOIN_ADULT_SHARE;
             if self.raise(colony, adult, sim_time).is_ok() {
-                self.asked_year = Some(year);
+                let before = self.asked.filter(|a| a.0 == year).map_or(0, |a| a.1);
+                self.asked = Some((year, before + 1));
             }
         }
     }

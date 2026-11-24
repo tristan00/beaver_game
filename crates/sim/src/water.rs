@@ -198,6 +198,12 @@ struct Told {
 const EDGE_SLOPE_MIN: f32 = 1.0e-3;
 const MOVING: f32 = 0.02;
 
+
+/// How often ice is worked out, in days: six game hours.
+const ICE_EVERY_DAYS: f64 = 0.25;
+/// How often the work of beavers on the ground (digging, silt, dams built up) is taken into the
+/// water, in days. Gates, breaches and failures are taken at once.
+const BED_EVERY_DAYS: f64 = 1.0;
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterConfig {
     pub rain: f32,
@@ -396,12 +402,16 @@ pub struct Water {
     current_cells: Vec<u32>,
     #[serde(skip)]
     current_marked: Vec<bool>,
+    /// A gate moved, a dam breached or failed: the water takes the ground at its next step
+    /// rather than at its next daily look (`BED_EVERY_DAYS`).
+    #[serde(skip)]
+    ground_now: bool,
     /// The place's weather (see `weather`): set from the world's seed, so never saved.
     #[serde(skip)]
     pub sky: crate::weather::Sky,
 }
 
-crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked, sky });
+crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked, ground_now, sky });
 
 const FORCING_EVERY_S: f64 = 300.0;
 
@@ -499,6 +509,7 @@ impl Water {
             told: Default::default(),
             current_cells: Vec::new(),
             current_marked: Vec::new(),
+            ground_now: false,
             sky: Default::default(),
         }
     }
@@ -753,6 +764,7 @@ impl Water {
         }
         self.dam_height[i] = 0.0;
         self.dam_integrity[i] = 0.0;
+        self.ground_now = true;
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
@@ -768,6 +780,7 @@ impl Water {
         }
         self.dam_height[i] = 0.0;
         self.dam_integrity[i] = 0.0;
+        self.ground_now = true;
         self.gate[i] = false;
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
@@ -790,6 +803,7 @@ impl Water {
         self.dam_height[i] = height;
         self.dam_integrity[i] = if height > 0.0 { 1.0 } else { 0.0 };
         self.gate[i] = true;
+        self.ground_now = true;
         self.revision = self.revision.wrapping_add(1);
         self.nav_revision = self.nav_revision.wrapping_add(1);
         self.topology_revision = self.topology_revision.wrapping_add(1);
@@ -844,6 +858,11 @@ impl Water {
     pub fn refresh(&mut self, height: &HeightGrid) {
         self.load_bed(height);
         self.publish();
+    }
+
+    /// Take changes to the ground into the water now, not at its next look (see `BED_EVERY_DAYS`).
+    pub(crate) fn take_ground(&mut self, height: &HeightGrid) {
+        self.load_bed(height);
     }
 
     /// Bed = terrain + dams.
@@ -901,7 +920,15 @@ impl Water {
 
     fn step_physics(&mut self, height: &HeightGrid, dt_days: f32) {
         let t0 = std::time::Instant::now();
-        { let _p = crate::prof::scope("step/water/load bed"); self.load_bed(height); }
+        // Ground dug, silted or dammed reaches the water every `BED_EVERY_DAYS`, all at once:
+        // each change has the drainage worked out afresh over the whole map.
+        let due = self.bed_version.is_none() || self.ground_now || !dt_days.is_finite()
+            || ((self.time_days + dt_days as f64) / BED_EVERY_DAYS).floor() > (self.time_days / BED_EVERY_DAYS).floor();
+        if due {
+            let _p = crate::prof::scope("step/water/load bed");
+            self.load_bed(height);
+            self.ground_now = false;
+        }
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         if !dt_days.is_finite() || dt_days <= 0.0 {
             self.publish();
@@ -910,7 +937,12 @@ impl Water {
         self.run_engine(dt_days as f64 * DAY_S, true);
         let t0 = std::time::Instant::now();
         { let _p = crate::prof::scope("step/water/dam wear"); self.update_dams(height, dt_days); }
-        { let _p = crate::prof::scope("step/water/ice"); self.update_ice(dt_days); }
+        // Ice thickens and thaws over days: every `ICE_EVERY_DAYS`, for that long, is plenty.
+        let turns = ((self.time_days / ICE_EVERY_DAYS).floor() - ((self.time_days - dt_days as f64) / ICE_EVERY_DAYS).floor()).max(0.0);
+        if turns > 0.0 {
+            let _p = crate::prof::scope("step/water/ice");
+            self.update_ice((turns * ICE_EVERY_DAYS) as f32);
+        }
         self.timings.upkeep_s += t0.elapsed().as_secs_f64();
         let _p = crate::prof::scope("step/water/publish grids");
         self.publish();
@@ -1238,6 +1270,7 @@ impl Water {
             }
         }
         if !broken.is_empty() {
+            self.ground_now = true;
             self.nav_revision = self.nav_revision.wrapping_add(1);
             self.topology_revision = self.topology_revision.wrapping_add(1);
             self.topology_dirty = true;

@@ -3,12 +3,35 @@ use bevy::prelude::*;
 use sim::grid::HeightGrid;
 use sim::SimState;
 
+/// One model per tree species the simulation grows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Species {
     Aspen,
-    Maple,
-    Pine,
+    Birch,
     Willow,
+    Alder,
+    Maple,
+    Beech,
+    Pine,
+    Spruce,
+}
+
+impl Species {
+    pub const ALL: [Species; 8] = [Species::Aspen, Species::Birch, Species::Willow, Species::Alder, Species::Maple, Species::Beech, Species::Pine, Species::Spruce];
+    pub fn index(self) -> usize { self as usize }
+    pub fn of(t: sim::trees::Tree) -> Self {
+        use sim::trees::Tree;
+        match t {
+            Tree::Aspen => Species::Aspen,
+            Tree::Birch => Species::Birch,
+            Tree::Willow => Species::Willow,
+            Tree::Alder => Species::Alder,
+            Tree::Maple => Species::Maple,
+            Tree::Beech => Species::Beech,
+            Tree::Pine => Species::Pine,
+            Tree::Spruce => Species::Spruce,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

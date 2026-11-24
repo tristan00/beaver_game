@@ -119,7 +119,7 @@ fn lock_button(u: &mut Ui, id: BuildingId, picked: Option<sim::water::Cell>) {
     if !ok {
         v.faded();
     }
-    let tip = Tip::name("Lock").line("Beavers and barges get past", "").line("Sticks", num(sticks)).line("Clay", num(locks::LOCK_CLAY));
+    let tip = Tip::name("Lock").line("Beavers and rafts get past", "").line("Sticks", num(sticks)).line("Clay", num(locks::LOCK_CLAY));
     v.tip(if ok { tip } else { tip.line("Pick a built dam cell first", "") });
     if let Some(cell) = picked {
         v.action(HudAction::UpgradeLock(id, cell));
@@ -139,13 +139,15 @@ pub(super) fn lock_pebble(r: &mut Ui, s: &sim::SimState, id: BuildingId, cell: s
         }
     };
     if locks::is_lock(s, cell) {
-        shown(r, Peb::On, Tip::name("Lock").line("Beavers and barges get past", ""));
+        shown(r, Peb::On, Tip::name("Lock").line("Beavers and rafts get past", ""));
     } else if locks::pending(s, cell) {
         shown(r, Peb::On, cost(Tip::name("Lock").line("A builder will build it", "")));
-    } else if locks::unlocked(s) {
-        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), Peb::Idle).tip(cost(Tip::name("Make a lock").line("Beavers and barges get past", "")));
-    } else {
+    } else if !locks::unlocked(s) {
         shown(r, Peb::Faded, Tip::name("Lock").line("Needs", "Harbor"));
+    } else if locks::check_room(s, id, cell).is_err() {
+        shown(r, Peb::Faded, Tip::name("Lock").line("Needs", "room"));
+    } else {
+        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), Peb::Idle).tip(cost(Tip::name("Make a lock").line("Beavers and rafts get past", "")));
     }
 }
 
@@ -318,8 +320,7 @@ fn gate_rows(u: &mut Ui, s: &sim::SimState, id: BuildingId, d: &Dam) {
                 r.pebble(icon, 13.0, HudAction::SetGate(id, g.cell, setting), if on { Peb::On } else { Peb::Idle }).tip(tip);
             }
             if matches!(wanted, GateSetting::Level(_)) {
-                r.pebble(Icon::Minus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at - sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Lower the sill").line("Step", "5 cm"));
-                r.pebble(Icon::Plus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at + sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Raise the sill").line("Step", "5 cm"));
+                sill_steps(r, id, g, level_at);
             }
             r.spacer();
             if g.built {
@@ -328,6 +329,21 @@ fn gate_rows(u: &mut Ui, s: &sim::SimState, id: BuildingId, d: &Dam) {
                 r.icon(Icon::LockGates, 13.0, WARN).tip(Tip::name("Lock").line("Built with the gate", ""));
             }
         });
+    }
+}
+
+/// Lower and raise a Level gate's sill a step from where it stands (the snapped sill, so every
+/// press moves it), faded at its floor and its top.
+pub(super) fn sill_steps(r: &mut Ui, id: BuildingId, g: &sim::gates::Gate, level_at: f32) {
+    use sim::GateSetting;
+    let sill = g.sill_of(GateSetting::Level(level_at));
+    for (icon, step, name, room) in [(Icon::Minus, -sim::canals::GATE_STEP, "Lower the sill", sill > g.floor + 1e-3), (Icon::Plus, sim::canals::GATE_STEP, "Raise the sill", sill < g.top - 1e-3)] {
+        r.pebble(icon, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(sill + step)), if room { Peb::Idle } else { Peb::Faded }).tip(Tip::name(name).line("Step", "5 cm"));
+        if !room {
+            if let Some(v) = r.nodes.last_mut() {
+                v.action = None;
+            }
+        }
     }
 }
 

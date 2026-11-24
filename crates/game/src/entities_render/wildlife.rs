@@ -560,6 +560,7 @@ fn drive(
             };
             seen.push(id);
             let here = cell_xz(s, a.pos);
+            track.follow(s, &a.track, 60.0);
             track.record_with(s.instance, s.time_days, here, 60.0);
             let (aim, going) = track.at(now).unwrap_or((here, None));
             let k = 1.0 - (-dt * 10.0).exp();

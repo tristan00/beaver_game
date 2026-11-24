@@ -21,7 +21,7 @@ pub enum Thing {
     Resource(ResourceId),
     Lodge(LodgeId),
     Cell(Cell),
-    Wolf,
+    Wolf(u64),
     Animal(u32),
 }
 
@@ -33,7 +33,7 @@ impl Thing {
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
             Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
-            Thing::Wolf => 6 << 60,
+            Thing::Wolf(k) => (6 << 60) | (k & ((1 << 60) - 1)),
             Thing::Animal(id) => 7 << 60 | id as u64,
         }
     }
@@ -44,7 +44,7 @@ impl Thing {
             Thing::Resource(r) => Selection::Tree(r),
             Thing::Lodge(l) => Selection::Lodge(l),
             Thing::Cell(c) => Selection::Cell(c),
-            Thing::Wolf => Selection::Wolf,
+            Thing::Wolf(k) => Selection::Wolf(k),
             Thing::Animal(id) => Selection::Animal(id),
         }
     }
@@ -155,8 +155,8 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
     }
-    if sim::predators::in_sight(s).is_some_and(|w| d2(w) < 1.2 * 1.2) {
-        return Thing::Wolf;
+    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.2 * 1.2).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) {
+        return Thing::Wolf(w.key());
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
@@ -223,7 +223,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return Tip::default() };
             use sim::resources::ResourceKind;
-            let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), r.species.map_or(resource_name(r.kind), |t| t.name()));
+            let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), r.plant.map(|p| p.name()).or(r.species.map(|t| t.name())).unwrap_or(resource_name(r.kind)));
             // Trees: age, chewing left, and what felling gives; trunks: what is left to haul.
             let yields = match r.kind {
                 ResourceKind::Tree => {
@@ -265,7 +265,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
             Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
         }
-        Thing::Wolf => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
+        Thing::Wolf(_) => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
         Thing::Animal(id) => {
             let Some(a) = s.wildlife.get(id) else { return Tip::default() };
             let (icon, doing) = animal_doing(a);
@@ -439,7 +439,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             icon = Some((Icon::Flood, BAD, "Flooded"));
         }
         // The dam being drawn would drown it.
-        if hud.tool == super::Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0.0 == hud.line && d.1.contains(&b.id)) {
+        if hud.tool == super::Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0 == hud.line && d.1.contains(&b.id)) {
             icon = Some((Icon::Flood, BAD, "This dam would flood it"));
         }
         if let (Some((i, c, words)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
@@ -591,7 +591,7 @@ fn draw_contours(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (usize, usize), r:
     let depth = |x: usize, y: usize| s.water.depth.get(x, y).copied().unwrap_or(0.0);
     let line = Color::srgba(0.05, 0.18, 0.35, 0.55);
     let (near, max) = crate::terrain_render::flood_depths();
-    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9)), (sim::harbor::BARGE_DEPTH, line), (near, line), (max, line)];
+    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9)), (sim::harbor::RAFT_DEPTH, line), (near, line), (max, line)];
     levels.extend(crate::terrain_render::DEPTH_BANDS.iter().map(|b| b.0).filter(|&d| d.is_finite() && d < near).map(|d| (d, line)));
     let point = |x: f32, y: f32| {
         let mut v = cell_world(&s.height, (x, y));
@@ -855,10 +855,8 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<C
             sight_circle(g, h, at, sim::fog::BEAVER_SIGHT, Color::WHITE.with_alpha(0.75));
         }
     }
-    if sel == Selection::Wolf || thing == Some(Thing::Wolf) {
-        if let Some(w) = sim::predators::in_sight(s) {
-            sight_circle(g, h, w, sim::predators::WOLF_SIGHT, wolf_col);
-        }
+    for w in sim::predators::seen(s).filter(|w| sel == Selection::Wolf(w.key()) || thing == Some(Thing::Wolf(w.key()))) {
+        sight_circle(g, h, w.pos, sim::predators::WOLF_SIGHT, wolf_col);
     }
     for at in shown_lookouts(s, hud, hover, sel, thing) {
         // A solid rim, doubled so it holds up from far out (the area is washed by
@@ -1235,22 +1233,17 @@ fn shoreline(g: &mut Gizmos, h: &sim::grid::HeightGrid, cells: &[Cell], y: f32, 
 fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<Cell>) {
     let h = &s.height;
     if let Some(pv) = hud.dam_preview() {
-        let (cells, level) = match hud.dam_settled() {
-            Some(r) if !r.flooded.is_empty() => (&r.flooded, r.level),
-            _ => (&pv.flow_flooded, pv.flow_level),
-        };
-        shoreline(g, h, cells, level + 0.06, FOAM);
-        let flooded: std::collections::HashSet<Cell> = cells.iter().copied().collect();
-        for t in s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && flooded.contains(&r.cell)) {
-            if build_logic::is_wet(s, t.cell.0, t.cell.1) {
-                continue;
+        // The pond the water engine makes behind the line, once its run is in.
+        if let Some(r) = hud.dam_settled().filter(|r| !r.water.flooded.is_empty()) {
+            shoreline(g, h, &r.water.flooded, r.water.level + 0.06, FOAM);
+            for &t in &r.trees {
+                let base = cell_world(h, (t.0 as f32, t.1 as f32)).with_y(height_at(h, t.0 as f32, t.1 as f32) + 0.25);
+                ring(g, base, 0.55, WATER);
+                ring(g, base + Vec3::Y * 0.04, 0.5, WATER);
             }
-            let base = cell_world(h, (t.cell.0 as f32, t.cell.1 as f32)).with_y(height_at(h, t.cell.0 as f32, t.cell.1 as f32) + 0.25);
-            ring(g, base, 0.55, WATER);
-            ring(g, base + Vec3::Y * 0.04, 0.5, WATER);
         }
         // Buildings the new pond would put too deep to use: their footprint ringed in red.
-        if let Some((_, ids)) = hud.drowned.as_ref().filter(|d| d.0.0 == hud.line) {
+        if let Some((_, ids)) = hud.drowned.as_ref().filter(|d| d.0 == hud.line) {
             for b in ids.iter().filter_map(|id| s.buildings.building(*id)) {
                 footprint_outline(g, s, b, BAD);
             }

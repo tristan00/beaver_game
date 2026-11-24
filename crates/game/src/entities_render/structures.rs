@@ -127,6 +127,8 @@ pub const FOOTING_DEPTH: f32 = 4.2;
 pub enum Footing {
     Mound(f32),
     Piles(f32, f32),
+    /// A wall of mud and sticks round open water, down to the bed (the forester's shallows).
+    Ring(f32),
 }
 
 const STAIN_Y: f32 = -0.42;
@@ -163,6 +165,10 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
                     mb.cyl(top, top + v(0.0, -r.range(0.35, 0.8), 0.0), 0.07, 0.015, dried_weed(), mix(dried_weed(), stain(), 0.4), 4);
                 }
             }
+        }
+        Footing::Ring(rad) => {
+            let (lo, hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
+            mb.lathe(Mat4::IDENTITY, &[(rad * 0.85, -d), (rad * 1.2, -d), (rad * 1.08, -0.3), (rad * 1.02, 0.0), (rad * 0.88, 0.0), (rad * 0.85, -d)], 20, lo, hi, false);
         }
         // A raft of logs on rough posts driven into the bed, packed round with mud.
         Footing::Piles(hx, hz) => {
@@ -225,232 +231,6 @@ pub fn decay(mb: &mut Mb, hx: f32, hz: f32) {
         let p = v(a.cos() * (hx + r.range(0.2, 0.9)), 0.08, a.sin() * (hz + r.range(0.2, 0.9)));
         let d = v(r.range(-1.0, 1.0), 0.0, r.range(-1.0, 1.0)).normalize_or_zero();
         stick_c(mb, p - d * 0.6, p + d * 0.6, 0.07, mix(col(palette::BARK), col(palette::DECAY), 0.5));
-    }
-}
-
-/// The colony's stockpile: one raft holding all three stores side by side, so each reads at a
-/// glance: a crib of cut sticks, a mound of wet mud and clay, and a heap of leafy food
-/// branches. Every heap grows from nothing as the stockpile is built.
-pub fn stockpile(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (2.4f32, 2.0f32);
-    let done = f >= 1.0;
-    let grow = 0.25 + 0.75 * f;
-    let mut r = Rng(2024);
-    // A low rim of piled sticks round the raft.
-    for i in 0..30 {
-        let a = i as f32 / 30.0 * TAU + r.range(-0.1, 0.1);
-        let p = v(a.cos() * hx * 0.98, 0.1 + 0.12 * (i % 2) as f32, a.sin() * hz * 0.98);
-        let d = v(-a.sin(), r.range(-0.1, 0.1), a.cos()).normalize();
-        stick(mb, p - d * 0.55, p + d * 0.55, 0.07, r.next());
-    }
-    stick_crib(mb, v(-1.45, 0.0, 0.0), grow, &mut r);
-    mud_mound(mb, v(0.05, 0.0, 0.1), grow, &mut r);
-    pebble_cairn(mb, v(1.5, 0.0, -0.05), grow, &mut r);
-    if !done {
-        site_markers(mb, hx + 1.0, hz + 1.0, 0.0);
-        stick_pile(mb, v(-hx - 0.8, 0.0, hz + 1.6), 0.2, 7, 41);
-    }
-}
-
-/// A food store: a raft of piled food with a bundle of saplings heeled in at one end.
-pub fn larder(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (2.4f32, 2.0f32);
-    let done = f >= 1.0;
-    let grow = 0.25 + 0.75 * f;
-    let mut r = Rng(3031);
-    for i in 0..30 {
-        let a = i as f32 / 30.0 * TAU + r.range(-0.1, 0.1);
-        let p = v(a.cos() * hx * 0.98, 0.1 + 0.12 * (i % 2) as f32, a.sin() * hz * 0.98);
-        let d = v(-a.sin(), r.range(-0.1, 0.1), a.cos()).normalize();
-        stick(mb, p - d * 0.55, p + d * 0.55, 0.07, r.next());
-    }
-    food_heap(mb, v(-0.9, 0.0, 0.1), grow, &mut r);
-    food_heap(mb, v(0.6, 0.0, -0.3), grow * 0.8, &mut r);
-    // Saplings standing in a heap of wet mud.
-    let bed = v(1.55, 0.0, 0.75);
-    mb.ellipsoid_g(bed, v(0.6, 0.25, 0.5), col(palette::MUD_WET), col(palette::DAM_MUD), 10, 5);
-    let n = (2.0 + 6.0 * grow) as usize;
-    for k in 0..n {
-        let a = k as f32 * 2.4;
-        let base = bed + v(a.cos() * 0.3, 0.15, a.sin() * 0.25);
-        let tip = base + v(r.range(-0.15, 0.15), r.range(0.8, 1.15), r.range(-0.15, 0.15));
-        stick_c(mb, base, tip, 0.035, hex(0x7a5a34));
-        for j in 0..3 {
-            let p = base.lerp(tip, 0.55 + 0.2 * j as f32) + v(r.range(-0.12, 0.12), 0.0, r.range(-0.12, 0.12));
-            let s = r.range(0.12, 0.18);
-            mb.ellipsoid_g(p, v(s, s * 0.7, s), col(palette::LEAF), col(palette::LEAF_LIGHT), 6, 4);
-        }
-    }
-    if !done {
-        site_markers(mb, hx + 1.0, hz + 1.0, 0.0);
-        stick_pile(mb, v(-hx - 0.8, 0.0, hz + 1.6), 0.2, 7, 43);
-    }
-}
-
-/// A tool shed: a lean-to of poles and bark over a rack of digging sticks, a heap of
-/// pebbles beside it.
-pub fn toolshed(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (1.6f32, 1.3f32);
-    let done = f >= 1.0;
-    let grow = 0.25 + 0.75 * f;
-    let mut r = Rng(4242);
-    let h = 0.4 + 1.4 * grow;
-    // Four poles, the back pair taller, and a roof of laid sticks sloping to the front.
-    for (x, z, top) in [(-hx * 0.8, -hz * 0.6, h), (hx * 0.8, -hz * 0.6, h), (-hx * 0.8, hz * 0.6, h * 0.65), (hx * 0.8, hz * 0.6, h * 0.65)] {
-        stick_c(mb, v(x, 0.0, z), v(x, top, z), 0.08, col(palette::BARK));
-    }
-    if f > 0.4 {
-        let n = 9;
-        for k in 0..n {
-            let x = -hx * 0.9 + 1.8 * hx * k as f32 / (n - 1) as f32;
-            stick(mb, v(x, h + 0.05, -hz * 0.75), v(x + r.range(-0.05, 0.05), h * 0.65 + 0.05, hz * 0.8), 0.07, r.next());
-        }
-    }
-    // Digging sticks leaning on the back.
-    for k in 0..3 {
-        let x = -0.6 + 0.6 * k as f32;
-        stick_c(mb, v(x, 0.0, -hz * 0.3), v(x + 0.15, h * 0.85, -hz * 0.6), 0.05, col(palette::PEELED));
-    }
-    pebble_cairn(mb, v(hx + 0.6, 0.0, 0.5), grow * 0.7, &mut r);
-    if !done {
-        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
-    }
-}
-
-/// A forester's nursery: a low wattle fence round beds of mud with saplings set out in rows,
-/// a digging stick leaning on the fence.
-pub fn forester(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (1.6f32, 1.3f32);
-    let done = f >= 1.0;
-    let grow = 0.25 + 0.75 * f;
-    let mut r = Rng(5151);
-    let post = 0.25 + 0.4 * grow;
-    let corners = [v(-hx, 0.0, -hz), v(hx, 0.0, -hz), v(hx, 0.0, hz), v(-hx, 0.0, hz)];
-    for (i, &a) in corners.iter().enumerate() {
-        let b = corners[(i + 1) % 4];
-        let n = 4;
-        for k in 0..n {
-            let p = a.lerp(b, k as f32 / n as f32);
-            stick_c(mb, p, p + v(0.0, post, 0.0), 0.05, col(palette::BARK));
-        }
-        // Wattle: two rails woven between the posts, the gap left at the front for a gate.
-        if i == 2 {
-            continue;
-        }
-        for h in [0.4f32, 0.85] {
-            let y = post * h;
-            stick(mb, a + v(0.0, y, 0.0), b + v(0.0, y + r.range(-0.03, 0.03), 0.0), 0.04, r.next());
-        }
-    }
-    // Two beds of dark mud with saplings set out along them.
-    let rows = [-0.55f32, 0.45];
-    let per = (1.0 + 3.0 * grow) as usize;
-    for &z in &rows {
-        let bed = v(-0.1, 0.0, z);
-        mb.ellipsoid_g(bed, v(1.15, 0.12, 0.32), col(palette::MUD_DARK), col(palette::MUD_WET), 10, 4);
-        for k in 0..per {
-            let x = -0.9 + 1.6 * k as f32 / 3.0;
-            let base = v(x, 0.08, z + r.range(-0.06, 0.06));
-            let tip = base + v(r.range(-0.05, 0.05), r.range(0.45, 0.7) * grow, r.range(-0.05, 0.05));
-            stick_c(mb, base, tip, 0.03, hex(0x7a5a34));
-            let s = r.range(0.15, 0.22) * grow;
-            mb.ellipsoid_g(tip, v(s, s * 0.8, s), col(palette::LEAF), col(palette::LEAF_LIGHT), 6, 4);
-        }
-    }
-    stick_c(mb, v(hx + 0.15, 0.0, -0.2), v(hx - 0.05, post * 1.6, 0.3), 0.05, col(palette::PEELED));
-    if !done {
-        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
-    }
-}
-
-/// A logistics yard: a lean-to over stacked loads, and a sled of poles for dragging them.
-pub fn logistics(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (1.6f32, 1.3f32);
-    let done = f >= 1.0;
-    let grow = 0.25 + 0.75 * f;
-    let mut r = Rng(6161);
-    let h = 0.4 + 1.3 * grow;
-    for (x, z, top) in [(-hx * 0.85, -hz * 0.7, h), (hx * 0.85, -hz * 0.7, h), (-hx * 0.85, 0.1, h * 0.7), (hx * 0.85, 0.1, h * 0.7)] {
-        stick_c(mb, v(x, 0.0, z), v(x, top, z), 0.08, col(palette::BARK));
-    }
-    if f > 0.4 {
-        for k in 0..9 {
-            let x = -hx * 0.9 + 1.8 * hx * k as f32 / 8.0;
-            stick(mb, v(x, h + 0.05, -hz * 0.8), v(x + r.range(-0.05, 0.05), h * 0.7 + 0.05, 0.2), 0.07, r.next());
-        }
-    }
-    // Loads waiting under the roof: a crib of sticks and a heap of mud.
-    stick_crib(mb, v(-0.6, 0.0, -0.4), grow * 0.6, &mut r);
-    mud_mound(mb, v(0.7, 0.0, -0.4), grow * 0.6, &mut r);
-    // A sled in front: two runners and cross bars.
-    for x in [-0.35f32, 0.35] {
-        stick_c(mb, v(x, 0.08, 0.5), v(x, 0.08, hz + 0.5), 0.06, col(palette::PEELED));
-    }
-    for k in 0..3 {
-        let z = 0.7 + 0.45 * k as f32;
-        stick(mb, v(-0.5, 0.15, z), v(0.5, 0.15, z), 0.05, r.next());
-    }
-    if !done {
-        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
-    }
-}
-
-/// A lookout: four tall poles leaning in, braced, carrying a stick platform with a rail and a
-/// brush roof, and a ladder up one side. The poles go up first, then the deck, then the roof.
-pub fn lookout(mb: &mut Mb, f: f32) {
-    let (hx, hz) = (1.2f32, 1.2f32);
-    let done = f >= 1.0;
-    let mut r = Rng(7171);
-    let deck = 3.2;
-    let rise = (f / 0.5).min(1.0);
-    let top = 0.5 + (deck + 1.5 - 0.5) * rise;
-    let at = |x: f32, z: f32, y: f32| {
-        // Poles lean in towards the top.
-        let k = 1.0 - 0.22 * (y / (deck + 1.5));
-        v(x * k, y, z * k)
-    };
-    for (x, z) in [(-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz)] {
-        stick_c(mb, at(x, z, 0.0), at(x, z, top), 0.1, peeled());
-    }
-    if f > 0.3 {
-        // Cross bracing on each side.
-        for (a, b) in [((-hx, -hz), (hx, -hz)), ((hx, -hz), (hx, hz)), ((hx, hz), (-hx, hz)), ((-hx, hz), (-hx, -hz))] {
-            stick(mb, at(a.0, a.1, 0.4), at(b.0, b.1, deck - 0.3), 0.06, r.next());
-            stick(mb, at(b.0, b.1, 0.4), at(a.0, a.1, deck - 0.3), 0.06, r.next());
-        }
-    }
-    if f > 0.5 {
-        // The deck, sticks laid side by side, and a rail round it.
-        let n = 9;
-        for k in 0..n {
-            let z = -hz + 2.0 * hz * k as f32 / (n - 1) as f32;
-            stick(mb, at(-hx - 0.15, z, deck), at(hx + 0.15, z, deck) + v(0.0, r.range(-0.03, 0.03), 0.0), 0.08, r.next());
-        }
-        for (a, b) in [((-hx, -hz), (hx, -hz)), ((hx, -hz), (hx, hz)), ((-hx, hz), (-hx, -hz))] {
-            stick(mb, at(a.0, a.1, deck + 0.6), at(b.0, b.1, deck + 0.6), 0.05, r.next());
-        }
-        // A ladder up the open side.
-        for x in [-0.35f32, 0.35] {
-            stick_c(mb, v(x, 0.0, hz + 0.9), at(x, hz, deck), 0.05, peeled());
-        }
-        for k in 1..6 {
-            let t = k as f32 / 6.0;
-            let y = deck * t;
-            let z = hz + 0.9 * (1.0 - t) + at(0.0, hz, y).z * t - hz * t;
-            stick(mb, v(-0.38, y, z), v(0.38, y, z), 0.04, r.next());
-        }
-    }
-    if f > 0.8 || done {
-        // A brush roof: sticks leaning from the pole tops to a peak.
-        let peak = v(0.0, deck + 2.3, 0.0);
-        for k in 0..14 {
-            let a = k as f32 / 14.0 * TAU;
-            let foot = v(a.cos() * (hx + 0.3), deck + 1.35, a.sin() * (hz + 0.3));
-            stick(mb, foot, peak + v(r.range(-0.08, 0.08), 0.0, r.range(-0.08, 0.08)), 0.07, r.next());
-        }
-    }
-    if !done {
-        site_markers(mb, hx + 0.8, hz + 0.8, 0.0);
     }
 }
 
@@ -517,7 +297,7 @@ pub fn harbor(mb: &mut Mb, f: f32) {
 }
 
 /// Collected pebbles heaped in a low cairn.
-fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
+pub(super) fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let n = (3.0 + 9.0 * grow) as usize;
     for i in 0..n {
         let layer = (i / 5) as f32;
@@ -530,7 +310,7 @@ fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
 }
 
 /// Cut sticks stacked in crossing layers, cut ends out.
-fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
+pub(super) fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let layers = (1.0 + 5.0 * grow) as usize;
     let rad = 0.13;
     for layer in 0..layers {
@@ -554,7 +334,7 @@ fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
 }
 
 /// Wet mud heaped up with lumps of clay worked into balls on top.
-fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
+pub(super) fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let (lo, hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
     let (rx, ry, rz) = (0.8, 0.25 + 0.9 * grow, 1.35);
     let start = mb.len();
@@ -576,7 +356,7 @@ fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
 }
 
 /// Leafy branches piled into a rounded heap, leaves out.
-fn food_heap(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
+pub(super) fn food_heap(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let (rx, top, rz) = (0.85f32, 0.3 + 1.15 * grow, 1.4f32);
     mb.ellipsoid_g(c, v(rx, top, rz), col(palette::BARK_DARK), mix(col(palette::BARK), hex(0x8a7a3a), 0.4), 12, 7);
     let leaf = |k: usize| match k % 3 { 0 => col(palette::LEAF), 1 => mix(col(palette::LEAF), hex(0xB59A3C), 0.55), _ => col(palette::LEAF_LIGHT) };

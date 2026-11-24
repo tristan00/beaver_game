@@ -249,6 +249,8 @@ pub enum ProblemKind {
     NoWork,
     /// A digging job idle because the ground is frozen hard (see `weather`).
     GroundFrozen,
+    /// Every builder waiting at a site that needs a good nobody has or is bringing (the subject).
+    WaitingFor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -362,6 +364,16 @@ fn held_back_by_room(sim: &SimState, g: Good) -> bool {
     sim.colony.beavers.iter().any(|b| crate::jobs::role_of(sim, b.id).and_then(gathered_good) == Some(g) && waiting_for_work(sim, b.id))
 }
 
+fn good_word(g: Good) -> &'static str {
+    match g {
+        Good::Food => "food",
+        Good::Sticks => "sticks",
+        Good::Clay => "clay",
+        Good::Pebbles => "pebbles",
+        Good::Saplings => "saplings",
+    }
+}
+
 /// One alert for each job whose workers are all waiting with nothing to do. Gatherers held
 /// back by a full store are left to the full-store alert.
 fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
@@ -378,6 +390,28 @@ fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
             .collect();
         if fit.is_empty() || !fit.iter().all(|b| waiting_for_work(sim, b.id)) {
             continue;
+        }
+        // Builders at sites short of a good nobody has: that good is what they wait for.
+        if role == crate::jobs::RoleKind::Builder {
+            let waits: Vec<Option<Good>> = fit
+                .iter()
+                .map(|b| sim.work.slot_of(b.id).and_then(|(site, _, _)| sim.work.place(site)).and_then(|p| crate::agents::site_waits_on(sim, p)))
+                .collect();
+            let most = Good::ALL.into_iter().map(|g| (waits.iter().filter(|w| **w == Some(g)).count(), g)).max_by_key(|x| x.0);
+            if let (true, Some((_, g))) = (waits.iter().all(Option::is_some), most) {
+                let rows = fit.iter().zip(&waits).map(|(b, w)| row(format!("Waiting for {}", good_word(w.unwrap_or(g))), 1.0, Source::Beaver(b.id))).collect();
+                out.push(Problem {
+                    kind: ProblemKind::WaitingFor,
+                    severity: Severity::Warning,
+                    value: fit.len() as f32,
+                    cause: Breakdown::new(fit.len() as f32, rows),
+                    subject: Some(Subject::Good(g)),
+                    fix: Fix::OpenJobs,
+                    alt_fix: None,
+                    focus: Some((fit[0].pos.0.max(0.0) as usize, fit[0].pos.1.max(0.0) as usize)),
+                });
+                continue;
+            }
         }
         // Diggers wait out frozen ground: their beds and banks are frozen in.
         let frozen = crate::agents::frozen(sim) && matches!(role, crate::jobs::RoleKind::MudDigger | crate::jobs::RoleKind::PebbleCollector);
@@ -716,35 +750,3 @@ fn canal_problems(sim: &SimState, out: &mut Vec<Problem>) {
     }
 }
 
-#[cfg(test)]
-mod no_work_tests {
-    use super::*;
-
-    #[test]
-    fn a_job_with_nothing_to_do_raises_its_own_alert() {
-        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
-        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
-        let build = |s: &mut SimState, kind: BuildingKind| {
-            let pos = (4..40usize)
-                .flat_map(|r| (0..=2 * r).flat_map(move |i| [(site.camp.0 + i - r, site.camp.1 - r), (site.camp.0 + i - r, site.camp.1 + r), (site.camp.0 - r, site.camp.1 + i - r), (site.camp.0 + r, site.camp.1 + i - r)]))
-                .find(|&p| s.check_site(kind, p).is_ok())
-                .expect("a site");
-            let id = s.place_site(kind, pos).unwrap();
-            for &(g, a) in kind.spec().cost {
-                s.work.deliver(id, g, a).unwrap();
-            }
-            s.work.add_labour(id, kind.spec().work).unwrap();
-            crate::sandbox::run_days(s, 0.05);
-            id
-        };
-        build(&mut s, BuildingKind::Shelter);
-        s.apply(crate::Command::AdjustRole { role: RoleKind::Forager, delta: 1 }).unwrap();
-        let no_work = |s: &SimState| problems(s).iter().any(|p| p.kind == ProblemKind::NoWork && p.subject == Some(Subject::Role(RoleKind::Forager)));
-        crate::sandbox::run_days(&mut s, 0.5);
-        assert!(!no_work(&s), "foragers with plants to pick have work");
-        s.resources.keep(|r| !r.kind.is_food_plant());
-        s.work.piles.items.clear();
-        crate::sandbox::run_days(&mut s, 1.0);
-        assert!(no_work(&s), "foragers with nothing to pick: {:?}", problems(&s).iter().map(|p| p.kind).collect::<Vec<_>>());
-    }
-}

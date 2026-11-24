@@ -3,7 +3,7 @@ use sim::starts::DamSite;
 use sim::SimState;
 
 /// The maps the start screen offers, in order.
-const MENU_MAPS: [&str; 4] = ["algonquin_mizzy", "voyageurs_twin", "agder_tarn", "voyageurs_forks"];
+const MENU_MAPS: [&str; 4] = ["voyageurs_twin", "algonquin_mizzy", "agder_tarn", "voyageurs_forks"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapChoice {

@@ -67,6 +67,9 @@ impl SimState {
         if cells.iter().any(|&(x, y)| x < self.fog.size && y < self.fog.size && !self.fog.explored((x, y))) {
             return Err(BuildError::Unexplored);
         }
+        if cells.iter().any(|&c| crate::locks::reserved(self, c, None) || self.resources.boulder_at(c)) {
+            return Err(BuildError::Blocked);
+        }
         let terrain = buildings::Terrain { depth: &self.water.depth };
         self.buildings.can_place_site(kind, pos, terrain)
     }

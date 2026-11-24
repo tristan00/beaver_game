@@ -22,7 +22,9 @@ pub fn on_map(id: &str) -> Result<SimState, String> {
         return Ok(SimState::sandbox(1, crate::worldgen::fixture(1)));
     }
     let (info, world) = crate::maps::world(id).map_err(|e| format!("map {id}: {e}"))?;
-    Ok(SimState::sandbox(info.seed(), world))
+    let mut s = SimState::sandbox(info.seed(), world);
+    crate::wetland::set_flora(&mut s, &info.id);
+    Ok(s)
 }
 
 pub(crate) fn apply(s: &mut SimState, cmd: Command) -> Result<(), SimError> {

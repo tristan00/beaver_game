@@ -96,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(order.len(),roles.len());
     constants.entry("jobs".into()).or_default().push_str(&format!("const DEFAULT_ROLE_ORDER: [RoleKind; {}] = [{}];\n",order.len(),order.join(",")));
     trees(&db, constants.entry("trees".into()).or_default())?;
+    plants(&db, constants.entry("plants".into()).or_default())?;
     for (module, text) in constants { fs::write(out.join(format!("{module}_constants.rs")), text)?; }
 
     let mut stmt = db.prepare("SELECT id,kind,name,width,depth,site,labour,capacity,area,requires FROM building ORDER BY id")?;
@@ -162,6 +163,47 @@ fn trees(db: &Connection, out: &mut String) -> Result<(), Box<dyn std::error::Er
         entries.push(format!("({map:?}, [{}])", mix.join(",")));
     }
     out.push_str(&format!("pub const FLORA: [(&str, [Mix; {}]); {}] = [{}];\n", kinds.len(), entries.len(), entries.join(",")));
+    Ok(())
+}
+
+/// Food plant stats follow the `Plant` enum order; every shipped map and `default` need a flora,
+/// and each flora some plant for every habitat.
+fn plants(db: &Connection, out: &mut String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=src/plants.rs");
+    let source = fs::read_to_string("src/plants.rs")?;
+    let kinds: Vec<String> = source.split("pub enum Plant {").nth(1).unwrap().split('}').next().unwrap().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let rows = db.prepare("SELECT position,species,habitat,food,regrow,creep,seed,keep,min_depth,max_depth FROM plant_species ORDER BY position")?
+        .query_map([], |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,[r.get::<_,f64>(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?])))?.collect::<Result<Vec<_>,_>>()?;
+    assert_eq!(rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), kinds, "plant_species must follow the Plant enum");
+    let mut specs = Vec::new();
+    let mut habitats = Vec::new();
+    for (position, species, habitat, v) in &rows {
+        assert_eq!(*position as usize, specs.len());
+        assert!(matches!(habitat.as_str(), "Upland" | "Meadow" | "Shore" | "Water"), "{species}: unknown habitat {habitat}");
+        assert!(v[0] > 0.0 && v[4] < 1.0 && v[6] >= v[5], "{species} needs food, a winter share below 1 and a depth range");
+        habitats.push(habitat.clone());
+        specs.push(format!("PlantSpec {{ habitat: Habitat::{habitat}, food: {}, regrow: {}, creep: {}, seed: {}, keep: {}, min_depth: {}, max_depth: {} }}", number(v[0]), number(v[1]), number(v[2]), number(v[3]), number(v[4]), number(v[5]), number(v[6])));
+    }
+    out.push_str(&format!("pub const SPECS: [PlantSpec; {}] = [{}];\n", specs.len(), specs.join(",")));
+    let mut flora: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for row in db.prepare("SELECT map,species,weight FROM plant_flora")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?)))? {
+        let (map, species, w) = row?;
+        assert!(identifier(&map));
+        let i = kinds.iter().position(|k| *k == species).expect("plant flora names a known species");
+        flora.entry(map).or_insert_with(|| vec![0.0; kinds.len()])[i] = w;
+    }
+    let mut maps: Vec<String> = fs::read_dir("maps")?.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".map").map(str::to_string)).collect();
+    maps.push("default".into());
+    for m in &maps { assert!(flora.contains_key(m), "map {m} needs a plant_flora"); }
+    let mut entries = Vec::new();
+    for (map, mix) in flora {
+        assert!(maps.contains(&map), "plant_flora for unknown map {map}");
+        for h in ["Upland", "Meadow", "Shore", "Water"] {
+            assert!(mix.iter().zip(&habitats).any(|(w, hh)| *w > 0.0 && hh == h), "{map} needs a {h} plant");
+        }
+        entries.push(format!("({map:?}, [{}])", mix.iter().map(|w| number(*w)).collect::<Vec<_>>().join(",")));
+    }
+    out.push_str(&format!("pub const FLORA: [(&str, [f32; {}]); {}] = [{}];\n", kinds.len(), entries.len(), entries.join(",")));
     Ok(())
 }
 

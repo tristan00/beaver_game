@@ -300,7 +300,7 @@ fn daily(sim: &mut SimState, day: i64) {
     let _trees = crate::prof::scope("step/forestry/daily/trees");
     let winter = Season::at(day as f64 - 0.5) == Season::Winter;
     let n = sim.world.size;
-    let occupied: HashSet<Cell> = sim.resources.items().iter().map(|r| r.cell).collect();
+    let occupied: HashSet<Cell> = sim.resources.taken_cells().collect();
     let built = building_cells(sim);
     let mut occupied = occupied;
     let mut gone: HashSet<ResourceId> = HashSet::new();
@@ -598,7 +598,7 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell, species: Tre
 }
 
 fn planting_blocked(sim: &SimState) -> (HashSet<Cell>, HashSet<Cell>) {
-    let occupied = sim.resources.items().iter().map(|r| r.cell).collect();
+    let occupied = sim.resources.taken_cells().collect();
     let mut near = HashSet::new();
     for b in &sim.buildings.buildings {
         for c in b.cells() {
@@ -613,11 +613,14 @@ fn planting_blocked(sim: &SimState) -> (HashSet<Cell>, HashSet<Cell>) {
 }
 
 fn plantable_with(sim: &SimState, c: Cell, occupied: &HashSet<Cell>, near: &HashSet<Cell>) -> bool {
+    !occupied.contains(&c) && !near.contains(&c) && plantable_ground(sim, c)
+}
+
+/// The ground itself takes a sapling, whatever stands on or round it.
+fn plantable_ground(sim: &SimState, c: Cell) -> bool {
     let n = sim.world.size;
     // Planting on every other row and column keeps lanes open through the grown wood.
     c.0 < n && c.1 < n && c.0 % 2 == 0 && c.1 % 2 == 0
-        && !occupied.contains(&c)
-        && !near.contains(&c)
         && is_dry(sim, c)
         && sim.work.supplies != Some(c)
         && !sim.forestry.flood_plan.contains(&c)
@@ -628,8 +631,9 @@ fn plantable_with(sim: &SimState, c: Cell, occupied: &HashSet<Cell>, near: &Hash
 
 /// A sapling can still go here.
 pub fn plantable(sim: &SimState, c: Cell) -> bool {
-    let (occupied, near) = planting_blocked(sim);
-    plantable_with(sim, c, &occupied, &near)
+    // One cell: what stands on it and the buildings round it, not the whole map's sets.
+    let near_building = sim.buildings.buildings.iter().any(|b| b.cells().any(|k| k.0.abs_diff(c.0) <= 2 && k.1.abs_diff(c.1) <= 2));
+    !near_building && sim.resources.at(c).next().is_none() && plantable_ground(sim, c)
 }
 
 /// Where a forester puts the next sapling: anywhere in its area that grows well, picked at

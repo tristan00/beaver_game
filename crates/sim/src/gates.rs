@@ -1,4 +1,4 @@
-//! A gate is one cell of a dam, or a canal's intake, whose height the player sets.
+//! A gate is one cell of a dam's line (and the cells behind it on a widened dam), or a canal's intake, whose height the player sets.
 //!
 //! The water grid sees a gate as an ordinary dam cell with a sill, so every water engine
 //! handles it unchanged; the gate flag only stops overtopping from wearing it away.

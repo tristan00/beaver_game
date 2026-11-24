@@ -14,12 +14,39 @@ mod migration_tests {
     fn all_arrivals_share_one_annual_allowance() {
         let mut c=Colony::default();c.found((0.0,3.0),&RiverLand::default()).unwrap();
         c.add_home((15.0,0.0));c.add_home((30.0,0.0));
-        assert_eq!(MAX_IMMIGRANTS_PER_YEAR,1,"one newcomer a year");
+        assert_eq!(MAX_IMMIGRANTS_PER_YEAR,2,"two newcomers a year");
+        c.admit_wanderer(true).unwrap();
+        assert_eq!(c.migration_remaining(),1);
         c.admit_wanderer(true).unwrap();
         assert_eq!(c.migration_remaining(),0);assert!(c.admit_wanderer(true).is_err());assert_eq!(c.add_immigrants(10),0);
-        c.time_days=360.0;assert_eq!(c.migration_remaining(),1);assert_eq!(c.immigration_by_year.get(&0),Some(&1));
+        c.time_days=360.0;assert_eq!(c.migration_remaining(),2);assert_eq!(c.immigration_by_year.get(&0),Some(&2));
         c.beavers.clear();c.check_collapse();assert!(c.is_collapsed());
         c.time_days=720.0;assert_eq!(c.migration_remaining(),0);assert_eq!(c.add_immigrants(2),0);
+    }
+}
+
+#[cfg(test)]
+mod kin_tests {
+    use super::*;
+
+    #[test]
+    fn parents_children_and_siblings_never_pair_but_cousins_may() {
+        let mut c = Colony::default();
+        c.found((0.0, 3.0), &RiverLand::default()).unwrap();
+        let fam = c.beavers[0].family;
+        let born = |c: &mut Colony, father: Option<BeaverId>, mother: Option<BeaverId>| c.spawn(Sex::Male, 900.0, fam, None, (0.0, 0.0), father, mother);
+        let (gf, gm) = (born(&mut c, None, None), born(&mut c, None, None));
+        let (aunt, dad) = (born(&mut c, Some(gf), Some(gm)), born(&mut c, Some(gf), Some(gm)));
+        let half = born(&mut c, Some(gf), None);
+        let (other, mum) = (born(&mut c, None, None), born(&mut c, None, None));
+        let (me, sister) = (born(&mut c, Some(dad), Some(mum)), born(&mut c, Some(dad), Some(mum)));
+        let cousin = born(&mut c, Some(other), Some(aunt));
+        assert!(c.close_kin(me, dad) && c.close_kin(mum, me), "parent and child");
+        assert!(c.close_kin(me, sister), "brother and sister");
+        assert!(c.close_kin(aunt, half), "half brother and sister");
+        assert!(!c.close_kin(me, cousin), "cousins may pair");
+        assert!(!c.close_kin(me, aunt) && !c.close_kin(me, gm), "aunts and grandparents are not barred");
+        assert!(!c.close_kin(dad, mum), "a couple is not kin");
     }
 }
 
@@ -432,8 +459,7 @@ pub struct Colony {
     pub experience: [f32; Job::ALL.len()],
     pub stats: Stats,
     pub immigration_by_year: std::collections::BTreeMap<i64, u32>,
-    /// Parent records survive deaths and dispersal, so family changes cannot
-    /// make close relatives eligible to mate.
+    /// Each beaver's parents, kept past deaths and dispersal (looks and family trees read it).
     pub ancestry: HashMap<BeaverId, (Option<BeaverId>, Option<BeaverId>)>,
     pub events: VecDeque<LoggedEvent>,
     pub events_dropped: u64,
@@ -920,14 +946,6 @@ impl Colony {
         }
     }
 
-    /// A beaver leaving the colony at once, as an unhappy one does (for tests).
-    #[cfg(test)]
-    pub(crate) fn depart(&mut self, id: BeaverId) {
-        self.stats.departures += 1;
-        self.remove_beavers(&[id]);
-        self.log(Event::Departed { id });
-    }
-
     /// A beaver killed outright, whatever its health (a predator's kill).
     pub fn kill(&mut self, id: BeaverId, cause: DeathCause) -> bool {
         let Some(at) = self.beaver(id).map(|b| b.pos) else { return false };
@@ -1016,23 +1034,6 @@ impl Colony {
         }
     }
 
-    pub fn close_relatives(&self, a: BeaverId, b: BeaverId) -> bool {
-        let ancestors = |who| {
-            let mut all = HashSet::from([who]);
-            let mut generation = vec![who];
-            for _ in 0..2 {
-                let next: Vec<_> = generation
-                    .iter()
-                    .flat_map(|id| self.ancestry.get(id).into_iter().flat_map(|&(f, m)| [f, m].into_iter().flatten()))
-                    .collect();
-                all.extend(next.iter().copied());
-                generation = next;
-            }
-            all
-        };
-        !ancestors(a).is_disjoint(&ancestors(b))
-    }
-
     /// Whether a female could conceive now, the season and the daily chance aside: `None` for
     /// one that never could (male, young, too old, or already expecting), else the first thing
     /// in the way.
@@ -1042,7 +1043,7 @@ impl Colony {
         }
         let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
         let lodge = self.lodges.iter().find(|l| Some(l.id) == m.lodge && l.family == m.family);
-        let mate = m.mate.and_then(|id| self.beaver(id)).filter(|f| f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult && !self.close_relatives(m.id, f.id));
+        let mate = m.mate.and_then(|id| self.beaver(id)).filter(|f| f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult);
         let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == m.lodge).count());
         let daily_food = HUNGER_PER_DAY * (self.beavers.iter().map(|b| b.stage.food_weight()).sum::<f32>() + MIN_LITTER as f32 * KIT_FOOD_WEIGHT);
         Some(if m.last_birth_year == birth_year {
@@ -1156,6 +1157,14 @@ impl Colony {
         }
     }
 
+    /// Whether two beavers are too close kin to pair: parent and child, or brother and sister
+    /// (sharing a mother or a father). Cousins and further are not.
+    pub fn close_kin(&self, a: BeaverId, b: BeaverId) -> bool {
+        let (Some(x), Some(y)) = (self.beaver(a), self.beaver(b)) else { return false };
+        let parents = |p: &Beaver| [p.mother, p.father];
+        parents(x).contains(&Some(b)) || parents(y).contains(&Some(a)) || parents(x).into_iter().flatten().any(|p| parents(y).contains(&Some(p)))
+    }
+
     fn pair_and_disperse(&mut self) {
         let doy = day_of_year(self.time_days);
         if !(SPRING_START..SPRING_END).contains(&doy) && !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) {
@@ -1168,7 +1177,8 @@ impl Colony {
             .map(|b| (b.id, b.sex))
             .collect();
         // Who looks for a mate first, and whom they find, is left to chance: any unpaired adult
-        // of the other sex in the colony who is not a close relative, newcomer or not.
+        // of the other sex in the colony, newcomer or not, but never its parent, child, brother
+        // or sister (`close_kin`).
         for i in (1..eligible.len()).rev() {
             let j = self.range(i as u32 + 1) as usize;
             eligible.swap(i, j);
@@ -1180,7 +1190,7 @@ impl Colony {
             }
             let options: Vec<BeaverId> = eligible
                 .iter()
-                .filter(|&&(b, s)| b != a && s != sex && !used.contains(&b) && !self.close_relatives(a, b))
+                .filter(|&&(b, s)| b != a && s != sex && !used.contains(&b) && !self.close_kin(a, b))
                 .map(|p| p.0)
                 .collect();
             if options.is_empty() {

@@ -102,6 +102,7 @@ pub enum LedgerTab {
     Beavers,
     Dams,
     Buildings,
+    Run,
 }
 
 /// How far back the ledger's charts look.
@@ -149,7 +150,7 @@ pub struct HudState {
     /// What the drawn line would build, worked out once per change of line.
     pub plan: Option<LinePlan>,
     /// What the water engine itself makes of the drawn line, once its background run finishes.
-    pub settled: Option<(Vec<Cell>, sim::dam_preview::Settled)>,
+    pub settled: Option<(Vec<Cell>, DamLook)>,
     /// What the drawn canal would dig, worked out once per change of line.
     pub canal_plan: Option<(Vec<Cell>, Result<sim::canals::Plan, String>)>,
     /// Set while a dam is being lengthened from one of its ends.
@@ -179,8 +180,8 @@ pub struct HudState {
     pub peek: Option<BeaverId>,
     /// The journal, bottom right: a few lines, or many.
     pub journal_open: bool,
-    /// The buildings the drawn dam would drown: worked out for this line and engine answer.
-    pub drowned: Option<((Vec<Cell>, bool), Vec<BuildingId>)>,
+    /// The buildings the drawn dam would drown, worked out for this line from the engine's answer.
+    pub drowned: Option<(Vec<Cell>, Vec<BuildingId>)>,
     undo: Vec<UndoItem>,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
@@ -311,7 +312,7 @@ impl HudState {
         self.plan.as_ref().and_then(|p| p.preview.as_ref())
     }
     /// The water engine's answer for the line being drawn, once it is in.
-    pub fn dam_settled(&self) -> Option<&sim::dam_preview::Settled> {
+    pub fn dam_settled(&self) -> Option<&DamLook> {
         let plan = self.plan.as_ref()?;
         self.settled.as_ref().filter(|(line, _)| *line == plan.line).map(|(_, s)| s)
     }
@@ -383,6 +384,13 @@ pub struct Notices(pub Vec<Notice>, pub f64);
 #[derive(Resource, Default)]
 pub struct Floods(pub u32);
 
+/// Wolves sighted and beavers killed by them so far, for their sounds.
+#[derive(Resource, Default)]
+pub struct WolfCues {
+    pub sighted: u32,
+    pub kills: u32,
+}
+
 /// How long a new line stands out in the journal, and how many lines it keeps.
 pub const NOTICE_SECS: f32 = 7.0;
 pub const JOURNAL_KEPT: usize = 200;
@@ -402,17 +410,24 @@ impl Notices {
     }
 }
 
-/// A wolf comes into sight: say so once per visit.
-fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut seen: Local<bool>) {
+/// A wolf comes into sight: say so once per wolf, while the alert has stood since.
+fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<Vec<u64>>) {
     if notices.1 != sim.0.time_days {
         notices.1 = sim.0.time_days;
     }
-    let spotted = sim.0.predators.wolf.is_some() && sim.0.predators.spotted;
-    if spotted && !*seen {
-        let at = sim.0.predators.wolf.as_ref().map(|w| NoticeAt::Wolf(w.pos));
-        notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), at);
+    let p = &sim.0.predators;
+    if !p.spotted {
+        told.clear();
+        return;
     }
-    *seen = spotted;
+    told.retain(|k| p.wolf(*k).is_some());
+    for w in sim::predators::seen(&sim.0) {
+        if !told.contains(&w.key()) {
+            told.push(w.key());
+            notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), Some(NoticeAt::Wolf(w.pos)));
+            cues.sighted += 1;
+        }
+    }
 }
 
 type BuildingsSeen = std::collections::BTreeMap<BuildingId, (BuildingKind, bool, (usize, usize))>;
@@ -701,6 +716,7 @@ impl Plugin for HudPlugin {
             .init_resource::<Tips>()
             .init_resource::<Pops>()
             .init_resource::<Floods>()
+            .init_resource::<WolfCues>()
             .add_systems(Update, (notice_wolf, notice_buildings, notice_floods))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
@@ -721,6 +737,24 @@ impl Plugin for HudPlugin {
             )
             .add_systems(Update, elevation::update_contours.after(sync_lens).in_set(HudSet))
             .add_systems(Update, settle_dam_line.after(refresh_panels).in_set(HudSet));
+    }
+}
+
+/// The water engine's answer for a drawn dam line (see `sim::dam_preview::settle`), with the
+/// pond cells that are dry today and the trees standing on them.
+#[derive(Clone, Debug, Default)]
+pub struct DamLook {
+    pub water: sim::dam_preview::Settled,
+    pub new_wet: usize,
+    pub trees: Vec<Cell>,
+}
+
+impl DamLook {
+    fn new(s: &sim::SimState, water: sim::dam_preview::Settled) -> Self {
+        let dry: Vec<Cell> = water.flooded.iter().copied().filter(|&(x, y)| !build_logic::is_wet(s, x, y)).collect();
+        let dry_set: std::collections::HashSet<Cell> = dry.iter().copied().collect();
+        let trees = s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && dry_set.contains(&r.cell)).map(|r| r.cell).collect();
+        DamLook { water, new_wet: dry.len(), trees }
     }
 }
 
@@ -745,7 +779,8 @@ fn settle_dam_line(time: Res<Time>, sim: Res<crate::state::Sim>, mut hud: ResMut
         } else if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
             let line = std::mem::take(line);
             job.0 = None;
-            hud.settled = result.map(|r| (line, r));
+            // Nothing left to raise on this line: the water stays as it is.
+            hud.settled = Some((line, result.map(|r| DamLook::new(&sim.0, r)).unwrap_or_default()));
             return;
         } else {
             return;
@@ -980,7 +1015,7 @@ fn refresh_fast(
             _ => match cams.single() {
                 Ok((cam, gt)) => {
                     let mut tree = world::pond_levels(s, cam, gt, scale.0, hover.0);
-                    tree.extend(world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.0)));
+                    tree.extend(world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.key()))));
                     tree
                 }
                 Err(_) => Vec::new(),
@@ -990,32 +1025,20 @@ fn refresh_fast(
     }
 }
 
-/// Which buildings the dam being drawn would drown, from the quick estimate and, once it is in,
-/// the water engine's own run; worked out again only when either changes.
+/// Which buildings the dam being drawn would drown, from the water engine's own run; worked out
+/// again only when that changes.
 fn update_drowned(s: &sim::SimState, hud: &mut HudState) {
-    let Some(plan) = hud.plan.as_ref().filter(|p| hud.tool == Tool::Dam && p.refusal.is_none()) else {
+    let Some(r) = hud.plan.as_ref().filter(|p| hud.tool == Tool::Dam && p.refusal.is_none()).and_then(|_| hud.dam_settled()) else {
         if hud.drowned.is_some() {
             hud.drowned = None;
         }
         return;
     };
-    let key = (plan.line.clone(), hud.dam_settled().is_some());
+    let key = hud.plan.as_ref().map(|p| p.line.clone()).unwrap_or_default();
     if hud.drowned.as_ref().is_some_and(|d| d.0 == key) {
         return;
     }
-    let mut depth: std::collections::HashMap<Cell, f32> = std::collections::HashMap::new();
-    if let Some(pv) = plan.preview.as_ref() {
-        for &c in &pv.flow_flooded {
-            let floor = s.height.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0);
-            depth.insert(c, (pv.flow_level - floor).max(0.0));
-        }
-    }
-    if let Some(r) = hud.dam_settled() {
-        for (c, d) in r.flooded.iter().zip(&r.depths) {
-            let e = depth.entry(*c).or_insert(0.0);
-            *e = e.max(*d);
-        }
-    }
+    let depth: std::collections::HashMap<Cell, f32> = r.water.flooded.iter().copied().zip(r.water.depths.iter().copied()).collect();
     let drowned = sim::dam_preview::drowned_by(s, |x, y| depth.get(&(x, y)).copied().unwrap_or(0.0));
     hud.drowned = Some((key, drowned));
 }

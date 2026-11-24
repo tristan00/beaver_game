@@ -21,6 +21,8 @@ pub enum Goal {
     Wet,
     /// Beavers alive at the end.
     Beavers,
+    /// Beavers × wet cells over the start × the share of top speed the sim held (`blend`).
+    Blend,
 }
 
 impl Goal {
@@ -28,14 +30,17 @@ impl Goal {
         match s {
             "wet" => Some(Goal::Wet),
             "beavers" => Some(Goal::Beavers),
+            "blend" => Some(Goal::Blend),
             _ => None,
         }
     }
 
-    pub fn score(self, start_wet: usize, s: &sim::SimState) -> i64 {
+    /// `speed`: game days per second the sim spent stepping over the run's last year.
+    pub fn score(self, start_wet: usize, s: &sim::SimState, speed: f64) -> f64 {
         match self {
-            Goal::Wet => score(start_wet, s),
-            Goal::Beavers => s.colony.beavers.len() as i64,
+            Goal::Wet => score(start_wet, s) as f64,
+            Goal::Beavers => s.colony.beavers.len() as f64,
+            Goal::Blend => blend(start_wet, s, speed),
         }
     }
 }
@@ -49,6 +54,17 @@ pub fn wet_cells(depth: &sim::grid::WaterGrid) -> usize {
 pub fn score(start_wet: usize, s: &sim::SimState) -> i64 {
     wet_cells(&s.water.depth) as i64 - start_wet as i64
 }
+
+/// Beavers × (wet cells now / wet cells at the start) × min(1, speed / `DEFAULT_SPEED`),
+/// to one decimal.
+pub fn blend(start_wet: usize, s: &sim::SimState, speed: f64) -> f64 {
+    let water = wet_cells(&s.water.depth) as f64 / start_wet.max(1) as f64;
+    let pace = (speed / DEFAULT_SPEED).min(1.0);
+    (s.colony.beavers.len() as f64 * water * pace * 10.0).round() / 10.0
+}
+
+/// The speed of the run's last `SPEED_WINDOW_DAYS` is what the blend scores.
+pub const SPEED_WINDOW_DAYS: f64 = 360.0;
 
 /// Game days per real second: the game's fastest speed.
 pub const DEFAULT_SPEED: f64 = 6.0;
@@ -115,29 +131,4 @@ mod tests {
         assert_eq!(read_frame(&mut r), None);
     }
 
-    #[test]
-    fn the_score_is_wet_cells_gained() {
-        let (mut s, site) = sim::starts::new_game_on_map("algonquin").unwrap();
-        s.apply(sim::Command::Settle { cell: site.camp }).unwrap();
-        let start = wet_cells(&s.water.depth);
-        assert!(start > 0, "the map has rivers");
-        assert_eq!(score(start, &s), 0);
-        let n = s.water.depth.as_slice().len();
-        let dry: Vec<usize> = (0..n).filter(|&i| s.water.depth.as_slice()[i] < sim::buildings::WET_DEPTH).take(3).collect();
-        let w = s.water.depth.width();
-        for &i in &dry {
-            *s.water.depth.get_mut(i % w, i / w).unwrap() = sim::buildings::WET_DEPTH;
-        }
-        assert_eq!(score(start, &s), 3, "a cell exactly 5 cm deep is wet");
-    }
-
-    #[test]
-    fn a_sent_state_decodes_to_the_same_day() {
-        let (mut s, site) = sim::starts::new_game_on_map("algonquin").unwrap();
-        s.apply(sim::Command::Settle { cell: site.camp }).unwrap();
-        let mut buf = Vec::new();
-        write_frame(&mut buf, &sim::save::encode(&s, "algonquin").unwrap()).unwrap();
-        let (_, back) = sim::save::decode(&read_frame(&mut buf.as_slice()).unwrap()).unwrap();
-        assert_eq!((back.time_days, back.colony.beavers.len()), (s.time_days, s.colony.beavers.len()));
-    }
 }

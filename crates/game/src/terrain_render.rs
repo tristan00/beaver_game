@@ -355,7 +355,7 @@ pub fn min_height(s: &SimState) -> f32 {
 }
 
 /// The water lens (`MapLens::Water`): the water taken away to show its depth in bands, the
-/// shallows barges cannot use apart, and water near or past the depth that floods buildings
+/// shallows rafts cannot use apart, and water near or past the depth that floods buildings
 /// in colours of their own; currents, the bed's deposits and its depth lines are drawn over it
 /// (hud::world).
 pub const WATER_LENS: u8 = 1;
@@ -688,9 +688,9 @@ fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
 }
 
 /// Depth bands of the water lens, from shallow to deep: each band's deepest edge and colour.
-/// Water shallower than barges need is a pale sand-green; water within `FLOOD_NEAR` of the
+/// Water shallower than rafts need is a pale sand-green; water within `FLOOD_NEAR` of the
 /// depth that floods buildings (`MAX_BUILDING_DEPTH`) is amber, and from there on red.
-pub const BARGE_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
+pub const RAFT_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
 pub const DEPTH_BANDS: [(f32, Rgb); 2] = [(0.5, [0.55, 0.78, 0.93]), (f32::INFINITY, [0.30, 0.56, 0.86])];
 pub const FLOOD_RISK: Rgb = [0.96, 0.62, 0.18];
 pub const FLOODED: Rgb = [0.86, 0.20, 0.24];
@@ -703,7 +703,7 @@ pub fn flood_depths() -> (f32, f32) {
     ((max - FLOOD_NEAR).max(0.0), max)
 }
 
-/// The water lens's band for a depth: 0 the barge shallows, then `DEPTH_BANDS`, then the flood
+/// The water lens's band for a depth: 0 the raft shallows, then `DEPTH_BANDS`, then the flood
 /// risk, then flooded.
 pub fn water_band(depth: f32) -> u8 {
     let (near, max) = flood_depths();
@@ -713,7 +713,7 @@ pub fn water_band(depth: f32) -> u8 {
     if depth >= near {
         return DEPTH_BANDS.len() as u8 + 1;
     }
-    if depth < sim::harbor::BARGE_DEPTH {
+    if depth < sim::harbor::RAFT_DEPTH {
         return 0;
     }
     1 + DEPTH_BANDS.iter().position(|b| depth < b.0).unwrap_or(DEPTH_BANDS.len() - 1) as u8
@@ -722,7 +722,7 @@ pub fn water_band(depth: f32) -> u8 {
 /// The colour of a `water_band`.
 pub fn band_color(band: u8) -> Rgb {
     match band as usize {
-        0 => BARGE_SHALLOWS,
+        0 => RAFT_SHALLOWS,
         b if b <= DEPTH_BANDS.len() => DEPTH_BANDS[b - 1].1,
         b if b == DEPTH_BANDS.len() + 1 => FLOOD_RISK,
         _ => FLOODED,

@@ -9,8 +9,8 @@ use bevy::prelude::*;
 
 const W: f32 = 270.0;
 const ROW: f32 = 20.0;
-const FEW: usize = 3;
-const MANY: usize = 14;
+const FEW: usize = 10;
+const MANY: usize = 24;
 
 fn shown(c: &Ctx) -> usize {
     c.journal.len().min(if c.hud.journal_open { MANY } else { FEW })

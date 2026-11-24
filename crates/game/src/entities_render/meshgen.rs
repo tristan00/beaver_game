@@ -274,6 +274,41 @@ impl Mb {
         }
     }
 
+    /// Normals of vertices `from..` worked out again from the faces they are on, after a
+    /// `displace` that changed the shape too much to keep the old ones (rocks, heaps).
+    pub fn renormal(&mut self, from: usize) {
+        let mut acc = vec![Vec3::ZERO; self.pos.len() - from.min(self.pos.len())];
+        for t in self.idx.chunks_exact(3) {
+            let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+            if a < from || b < from || c < from {
+                continue;
+            }
+            let (pa, pb, pc) = (Vec3::from(self.pos[a]), Vec3::from(self.pos[b]), Vec3::from(self.pos[c]));
+            let n = (pb - pa).cross(pc - pa);
+            for i in [a, b, c] {
+                acc[i - from] += n;
+            }
+        }
+        for (i, n) in acc.into_iter().enumerate() {
+            if n.length_squared() > 1e-12 {
+                // Keep the side the old normal faced (lathes wind either way).
+                let old = Vec3::from(self.nor[from + i]);
+                let n = n.normalize();
+                self.nor[from + i] = if n.dot(old) < 0.0 { (-n).to_array() } else { n.to_array() };
+            }
+        }
+    }
+
+    /// Moves and turns vertices `from..` (normals turned with them): a part built in its own
+    /// frame, set in place.
+    pub fn place(&mut self, from: usize, m: Mat4) {
+        let nm = Mat3::from_mat4(m).inverse().transpose();
+        for i in from..self.pos.len() {
+            self.pos[i] = m.transform_point3(Vec3::from(self.pos[i])).to_array();
+            self.nor[i] = (nm * Vec3::from(self.nor[i])).normalize_or_zero().to_array();
+        }
+    }
+
     /// A flat strip quad, visible from both sides.
     pub fn quad2(&mut self, q: [Vec3; 4], col: [f32; 3]) {
         let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);

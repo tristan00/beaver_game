@@ -120,8 +120,8 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
     match k {
         ResourceKind::Tree => "Tree",
         ResourceKind::Felled => "Felled tree",
-        ResourceKind::Plant => "Edible shoots",
-        ResourceKind::WaterPlant => "Water lilies",
+        ResourceKind::Plant => "Food plants",
+        ResourceKind::WaterPlant => "Water plants",
         ResourceKind::MudBank => "Clay deposit",
         ResourceKind::RiverClay => "River clay",
         ResourceKind::Pebbles => "Pebbles",

@@ -17,11 +17,12 @@ const ROWS: usize = 16;
 /// The most bars a chart draws: longer spans are averaged into this many.
 const BARS: usize = 60;
 
-const TABS: [(LedgerTab, Icon, &str); 4] = [
+const TABS: [(LedgerTab, Icon, &str); 5] = [
     (LedgerTab::Charts, Icon::Ledger, "Charts"),
     (LedgerTab::Beavers, Icon::Beaver, "Beavers"),
     (LedgerTab::Dams, Icon::Dam, "Dams"),
     (LedgerTab::Buildings, Icon::Building, "Buildings"),
+    (LedgerTab::Run, Icon::Hourglass, "This run"),
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
@@ -49,6 +50,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                 LedgerTab::Beavers => beavers(c, u),
                 LedgerTab::Dams => dams(c, u),
                 LedgerTab::Buildings => buildings(c, u),
+                LedgerTab::Run => run(c, u),
             }
         },
     );
@@ -164,6 +166,7 @@ fn chart(u: &mut Ui, icon: Icon, col: Color, col_b: Color, name: &str, value: St
 }
 
 fn vol(m3: f32) -> String {
+    let m3 = m3.max(0.0);
     if m3 >= 10_000.0 { format!("{:.0}k", m3 / 1000.0) } else if m3 >= 1000.0 { format!("{:.1}k", m3 / 1000.0) } else { format!("{:.0}", m3) }
 }
 
@@ -216,6 +219,81 @@ fn charts(c: &Ctx, u: &mut Ui) {
         chart(g, Icon::Tree, GOOD, Color::srgb(0.75, 0.92, 0.55), "Trees standing, and planted", format!("{trees}  +{}", s.ledger.planted), INK, &data, false, |b| {
             Tip::titled(Some((Icon::Tree, GOOD)), day_range(b)).line("Standing", num(b.a)).line("Planted", format!("{}", b.b as i64)).line("Planted in all", format!("{}", s.ledger.planted))
         });
+    });
+    // What the stores hold of each good, against what they can hold.
+    u.rule();
+    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
+        for g_ in Good::ALL {
+            let i = g_.index();
+            let data = bars(c, |d| (d.stock[i], 0.0, 0.0));
+            let stores = &s.buildings.stores;
+            let value = format!("{}/{}", vol(stores.amount(g_)), vol(stores.capacity(g_)));
+            let name = format!("{} in stores", good_name(g_));
+            chart(g, good_icon(g_), good_color(g_), good_color(g_), &name, value, INK, &data, false, |b| {
+                Tip::titled(Some((good_icon(g_), good_color(g_))), day_range(b)).line("Stored", num(b.a))
+            });
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// This run
+
+/// A number under its icon; the words in its tip.
+fn tile(u: &mut Ui, icon: Icon, col: Color, value: String, name: &str) {
+    u.col(3.0, |t| {
+        t.icon(icon, 20.0, col);
+        t.bold(value, 14.0, INK);
+    })
+    .style(|n| {
+        n.width = Val::Px(62.0);
+        n.align_items = AlignItems::Center;
+    })
+    .tip(Tip::titled(Some((icon, col)), name));
+}
+
+fn tiles(u: &mut Ui, f: impl FnOnce(&mut Ui)) {
+    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(8.0), row_gap: Val::Px(10.0), ..default() }, f);
+}
+
+/// The whole run in numbers: the colony's lives, what it gathered, what went by raft, what it
+/// built and the most water it held.
+fn run(c: &Ctx, u: &mut Ui) {
+    let s = c.s;
+    let (st, run) = (&s.colony.stats, &s.run);
+    tiles(u, |r| {
+        let d = sim::calendar::Date::at(s.time_days);
+        tile(r, Icon::Hourglass, MUTED, format!("{}y {}d", d.year.saturating_sub(1), (s.time_days.max(0.0) as u64) % sim::calendar::YEAR_DAYS as u64), "Time");
+        tile(r, Icon::Kit, FUR, format!("{}", st.births), "Born in the colony");
+        tile(r, Icon::Walk, FUR, format!("{}", st.immigrants), "Came to join");
+        tile(r, Icon::Beaver, FUR, format!("{}", st.peak_population), "Most beavers at once");
+        tile(r, Icon::MoodBad, BAD, format!("{}", st.deaths), "Died");
+        tile(r, Icon::Back, MUTED, format!("{}", st.departures), "Left");
+    });
+    u.rule();
+    tiles(u, |r| {
+        for g in Good::ALL {
+            tile(r, good_icon(g), good_color(g), vol(s.buildings.stores.produced_total[g.index()]), &format!("{} gathered", good_name(g)));
+        }
+        tile(r, Icon::Plant, GOOD, format!("{}", s.ledger.planted), "Saplings planted");
+    });
+    u.rule();
+    tiles(u, |r| {
+        tile(r, Icon::Raft, WATER, format!("{}", run.raft_trips), "Raft loads delivered");
+        for g in Good::ALL {
+            let a = run.raftd[g.index()];
+            if a > 0.0 {
+                tile(r, good_icon(g), good_color(g), vol(a), &format!("{} moved by raft", good_name(g)));
+            }
+        }
+    });
+    u.rule();
+    tiles(u, |r| {
+        for k in BuildingKind::ALL {
+            tile(r, building_icon(k), INK, format!("{}", run.built_of(k)), &format!("{} built", k.spec().name));
+        }
+        tile(r, Icon::Lock, INK, format!("{}", run.locks), "Locks built");
+        tile(r, Icon::Drop, WATER, vol(run.peak_water), "Most water held behind dams (m³)");
     });
 }
 

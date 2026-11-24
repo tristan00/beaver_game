@@ -238,11 +238,10 @@ fn gate_row(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
         }
         r.spacer();
         if (g.built || g.pending.is_some()) && matches!(wanted, GateSetting::Level(_)) {
-            r.pebble(Icon::Minus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at - sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Lower the sill").line("Step", "5 cm"));
             let span = (g.top - g.floor).max(0.05);
             let frac = ((g.sill_of(GateSetting::Level(level_at)) - g.floor) / span).clamp(0.0, 1.0);
             r.notches(frac, 6, 70.0, 10.0, WOOD);
-            r.pebble(Icon::Plus, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(level_at + sim::canals::GATE_STEP)), Peb::Idle).tip(Tip::name("Raise the sill").line("Step", "5 cm"));
+            super::dam_panel::sill_steps(r, id, &g, level_at);
         }
         if g.built {
             super::dam_panel::lock_pebble(r, s, id, g.cell);

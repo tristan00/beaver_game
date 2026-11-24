@@ -39,7 +39,9 @@ pub mod predators;
 pub mod prof;
 pub mod output;
 pub mod piles;
+pub mod plants;
 pub mod resources;
+pub mod run;
 pub mod runtime;
 pub mod sandbox;
 pub mod script;
@@ -132,7 +134,7 @@ pub struct SimState {
     /// Gates upgraded into locks (saved after the world; see `save`).
     #[serde(skip)]
     pub locks: locks::Locks,
-    /// Each harbor's barges (saved after the world; see `save`).
+    /// Each harbor's rafts (saved after the world; see `save`).
     #[serde(skip)]
     pub fleet: harbor::Fleet,
     /// Rabbits, deer and birds (saved after the world; see `save`).
@@ -141,6 +143,9 @@ pub struct SimState {
     /// Every beaver's life story (saved after the world; see `save`).
     #[serde(skip)]
     pub lives: lives::Lives,
+    /// The run's tallies (saved after the world; see `save`).
+    #[serde(skip)]
+    pub run: run::RunStats,
     pub sandbox: bool,
     #[serde(skip)]
     pub step_timings: StepTimings,
@@ -195,6 +200,7 @@ impl SimState {
             fleet: harbor::Fleet::default(),
             wildlife: wildlife::Wildlife::new(seed),
             lives: lives::Lives::default(),
+            run: run::RunStats::default(),
             sandbox: false,
             step_timings: StepTimings::default(),
             journal: journal::Journal::default(),
@@ -223,6 +229,8 @@ impl SimState {
             let clock = std::time::Instant::now();
             self.time_days += dt_days as f64;
             self.steps += 1;
+            // The sandbox is for watching the water answer each change at once.
+            self.water.take_ground(&self.height);
             self.water.step(&self.height, dt_days);
             self.step_timings.water_s += clock.elapsed().as_secs_f64();
             self.step_timings.steps += 1;
@@ -278,6 +286,7 @@ impl SimState {
         { let _p = prof::scope("step/agents"); agents::step(self, dt_days); }
         { let _p = prof::scope("step/predators"); predators::step(self, dt_days); }
         { let _p = prof::scope("step/wildlife"); wildlife::step(self, dt_days); }
+        wildlife::note_tracks(self);
         { let _p = prof::scope("step/lives"); lives::step(self); }
         lap(&mut t.agents_s);
         { let _p = prof::scope("step/dams"); dams::step(self); }
@@ -300,7 +309,11 @@ impl SimState {
             self.output.step(dt_days);
             self.refresh_store_view();
             // Counting the colony walks every tree: only when a day closes.
-            let census = if self.ledger.closes_day(self.time_days) { self.census() } else { ledger::Census::default() };
+            let closes = self.ledger.closes_day(self.time_days);
+            let census = if closes { self.census() } else { ledger::Census::default() };
+            if closes {
+                run::close_day(self, census.water);
+            }
             self.ledger.record(self.time_days, &self.buildings.stores, move || census);
         }
         drop(whole);
@@ -365,6 +378,7 @@ impl Clone for SimState {
             fleet: self.fleet.clone(),
             wildlife: self.wildlife.clone(),
             lives: self.lives.clone(),
+            run: self.run.clone(),
             sandbox: self.sandbox.clone(),
             step_timings: self.step_timings.clone(),
             journal: self.journal.clone(),
@@ -379,7 +393,7 @@ impl Clone for SimState {
         let Self {
             seed, instance, client_commands, time_days, height, world, water, ecology, colony, buildings, events, nav,
             resources, agents, work, maintenance, society, ledger, output, fog, steps, recorder, forestry, predators,
-            locks, fleet, wildlife, lives, sandbox, step_timings, journal,
+            locks, fleet, wildlife, lives, run, sandbox, step_timings, journal,
         } = src;
         self.seed = *seed;
         self.instance = *instance;
@@ -409,6 +423,7 @@ impl Clone for SimState {
         self.fleet.clone_from(fleet);
         self.wildlife.clone_from(wildlife);
         self.lives.clone_from(lives);
+        self.run.clone_from(run);
         self.sandbox = *sandbox;
         self.step_timings = *step_timings;
         self.journal.clone_from(journal);

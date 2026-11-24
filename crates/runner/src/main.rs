@@ -7,7 +7,9 @@
 //!
 //! The last line printed is the result: `map=… goal=… score=… …`. With `--score wet` (the
 //! default) the score is the number of wet cells gained since the colony settled
-//! (`runner::score`); with `--score beavers` it is the number of beavers alive at the end.
+//! (`runner::score`); with `--score beavers` it is the number of beavers alive at the end; with
+//! `--score blend` it is `runner::blend`: beavers × wet cells over the start × the share of top
+//! speed the sim held over the run's last year (`speed=`, game days per second spent stepping).
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command as Process, Stdio};
@@ -26,7 +28,7 @@ struct Args {
     goal: runner::Goal,
 }
 
-const USAGE: &str = "usage: runner --map ID --policy PROGRAM [--days N] [--speed DAYS_PER_SECOND] [--score wet|beavers] [--log FILE] [--save-end FILE] [-- POLICY ARGS]";
+const USAGE: &str = "usage: runner --map ID --policy PROGRAM [--days N] [--speed DAYS_PER_SECOND] [--score wet|beavers|blend] [--log FILE] [--save-end FILE] [-- POLICY ARGS]";
 
 fn args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
@@ -42,7 +44,7 @@ fn args() -> Result<Args, String> {
             "--speed" => speed = value("--speed")?.parse().map_err(|e| format!("--speed: {e}"))?,
             "--log" => log = Some(PathBuf::from(value("--log")?)),
             "--save-end" => save_end = Some(PathBuf::from(value("--save-end")?)),
-            "--score" => goal = runner::Goal::parse(&value("--score")?).ok_or("--score is wet or beavers")?,
+            "--score" => goal = runner::Goal::parse(&value("--score")?).ok_or("--score is wet, beavers or blend")?,
             "--" => policy_args.extend(it.by_ref()),
             other => return Err(format!("unknown argument '{other}'")),
         }
@@ -148,8 +150,14 @@ fn main() {
     let begun = Instant::now();
     let mut due = begun;
     let (mut applied, mut rejected, mut behind) = (0u64, 0u64, Duration::ZERO);
+    // Time the sim spends applying commands and stepping over the run's last year: the speed
+    // the blend scores. Copying states for the policy is not counted.
+    let window_from = (a.days - runner::SPEED_WINDOW_DAYS).max(0.0);
+    let (mut window_days, mut window_busy) = (0.0f64, Duration::ZERO);
     note(&log, format!("runner: map={} days={} speed={} policy={}", a.map, a.days, a.speed, a.policy.display()));
     while s.time_days - start_day < a.days - 1e-9 {
+        let busy_from = Instant::now();
+        let in_window = s.time_days - start_day >= window_from - 1e-9;
         while let Ok(line) = cmd_rx.try_recv() {
             let result = sim::script::parse_command(&line).and_then(|c| match c {
                 // River-sandbox tools: a new world, or dams and canals made and broken for nothing.
@@ -167,9 +175,14 @@ fn main() {
                 }
             }
         }
+        let before = s.time_days;
         if let Err(e) = s.step(sim::STEP_DAYS) {
             note(&log, format!("day {:.3} the simulation stopped: {e}", s.time_days));
             break;
+        }
+        if in_window {
+            window_days += s.time_days - before;
+            window_busy += busy_from.elapsed();
         }
         if mail.wanted.swap(false, Ordering::AcqRel) {
             let mut slot = mail.slot.lock().unwrap();
@@ -217,13 +230,15 @@ fn main() {
     let c = s.census();
     let dams = s.buildings.buildings.iter().filter(|b| b.dam.is_some()).count();
     let days = s.time_days - start_day;
+    let speed = window_days / window_busy.as_secs_f64().max(1e-9);
     let result = format!(
-        "map={} goal={:?} score={} wet_start={} wet_end={} days={:.1} beavers={} dams={} commands={} rejected={} states_sent={} pace={:.2} behind_s={:.1} policy={}",
+        "map={} goal={:?} score={} wet_start={} wet_end={} speed={:.2} days={:.1} beavers={} dams={} commands={} rejected={} states_sent={} pace={:.2} behind_s={:.1} policy={}",
         a.map,
         a.goal,
-        a.goal.score(start_wet, &s),
+        a.goal.score(start_wet, &s, speed),
         start_wet,
         runner::wet_cells(&s.water.depth),
+        speed,
         days,
         c.beavers,
         dams,

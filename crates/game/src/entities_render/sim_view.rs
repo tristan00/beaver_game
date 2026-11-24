@@ -48,15 +48,8 @@ pub fn is_moving(ag: &Agent) -> bool {
 /// Where a beaver is drawn: on its way from cell to cell, or wherever it is in a lock's working
 /// (`harbor::lock_pose`).
 pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
-    if let Some((p, _)) = super::harbor::lock_pose(sim, ag, pending_days) {
-        return p;
-    }
-    agent_cells_pos(sim, ag, pending_days)
-}
-
-/// Where a beaver is on the ground, part way from its cell to the next.
-pub fn agent_world_xz(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec2 {
-    agent_cells_pos(sim, ag, pending_days).xz()
+    let base = agent_cells_pos(sim, ag, pending_days);
+    super::harbor::lock_pose(sim, ag, pending_days, base).map_or(base, |p| p.0)
 }
 
 fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
@@ -113,9 +106,9 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
         Task::Eat { .. } => Pose::Forage,
         Task::Pick { .. } | Task::Fetch { .. } | Task::Carry { .. } | Task::Haul { .. } => Pose::Handle,
         Task::Watch { .. } => Pose::Watch,
-        // Loading and unloading a barge; otherwise holding it in the water.
-        Task::Barge { leg: 2 | 4, .. } => Pose::Handle,
-        Task::Barge { .. } => Pose::Swim,
+        // Loading and unloading a raft; otherwise holding it in the water.
+        Task::Raft { leg: 2 | 4, .. } => Pose::Handle,
+        Task::Raft { .. } => Pose::Swim,
         Task::Rest => Pose::Rest,
         Task::Idle => Pose::Idle,
     }

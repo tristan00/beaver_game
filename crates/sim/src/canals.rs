@@ -174,6 +174,7 @@ fn face_connected(cells: &[Cell]) -> bool {
 fn owned_by_building(sim: &SimState, c: Cell, except: Option<BuildingId>) -> bool {
     sim.buildings.buildings.iter().any(|b| Some(b.id) != except && b.cells().any(|p| p == c))
         || sim.water.dam_height.get(c.0, c.1).is_some_and(|h| *h > 0.0)
+        || crate::locks::reserved(sim, c, except)
 }
 
 /// Targets along a route that starts after the source water: the bed falls from `bed0`
@@ -647,7 +648,12 @@ pub fn silt_per_day(sim: &SimState, c: Cell) -> f32 {
     SILT_PER_DAY * if running(sim, c) { SILT_RUNNING_FACTOR } else { 1.0 }
 }
 
+/// How often settled silt is laid into the ground, in days, for every canal at once. Each
+/// time the ground changes the water works out its drainage afresh, which is costly.
+const SILT_SETTLES_EVERY_DAYS: f64 = 5.0;
+
 fn silt(sim: &mut SimState, id: BuildingId, dt: f32) {
+    let settle = (sim.time_days / SILT_SETTLES_EVERY_DAYS).floor() > ((sim.time_days - dt as f64) / SILT_SETTLES_EVERY_DAYS).floor();
     let Some(k) = canal(sim, id) else { return };
     let mut fills = Vec::new();
     let mut silts = Vec::with_capacity(k.cells.len());
@@ -658,9 +664,10 @@ fn silt(sim: &mut SimState, id: BuildingId, dt: f32) {
             continue;
         }
         let mut s = c.silt + silt_per_day(sim, c.cell) * dt;
-        if s >= SILT_STEP {
-            fills.push((c.cell, SILT_STEP, c.ground));
-            s -= SILT_STEP;
+        if settle && s >= SILT_STEP {
+            let steps = (s / SILT_STEP).floor();
+            fills.push((c.cell, SILT_STEP * steps, c.ground));
+            s -= SILT_STEP * steps;
         }
         silts.push(s);
     }

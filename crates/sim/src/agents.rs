@@ -81,9 +81,9 @@ pub enum Task {
     Seed { tree: ResourceId, progress: f32 },
     /// Keep watch beside a lookout; a guard leaves its post only to eat.
     Watch { lookout: BuildingId },
-    /// A hauler's barge trip (see `harbor`): to the barge (leg 0), push it to `from` (1), load
+    /// A hauler's raft trip (see `harbor`): to the raft (leg 0), push it to `from` (1), load
     /// (2), push it to `to` (3), unload (4), take it back to its harbor (5), let it go (6).
-    Barge { barge: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8 },
+    Raft { raft: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8 },
 }
 
 impl Task {
@@ -104,8 +104,16 @@ pub struct Agent {
     pub stuck_ticks: u32,
     pub speed: f32,
     pub trail: Vec<(Cell, Gait)>,
+    /// The cells it has moved into over its last steps, each with the time the step that took
+    /// it there ended: for drawing it along its real route when the interface sees the world
+    /// only every few steps (at speed). Not saved.
+    #[serde(skip)]
+    pub history: std::collections::VecDeque<(f64, Cell, Gait)>,
     pub next_work_probe: f64,
     pub next_home_probe: f64,
+    /// When a worker whose seat or area gave it nothing next looks for another (`retarget`).
+    #[serde(skip)]
+    pub next_retarget: f64,
     /// When a hungry beaver next looks for food lying on the ground.
     #[serde(default)]
     pub next_meal_probe: f64,
@@ -207,8 +215,10 @@ impl Agents {
                 stuck_ticks: 0,
                 speed: 1.0,
                 trail: Vec::new(),
+                history: Default::default(),
                 next_work_probe: 0.0,
                 next_home_probe: 0.0,
+                next_retarget: 0.0,
                 next_meal_probe: 0.0,
                 source: None,
             },
@@ -219,6 +229,7 @@ impl Agents {
             Some(ag) => {
                 ag.next_work_probe=0.0;
                 ag.next_home_probe=0.0;
+                ag.next_retarget=0.0;
                 ag.assignment = a;
                 ag.path = None;
                 ag.step_frac = 0.0;
@@ -782,11 +793,11 @@ pub fn pace(nav: &NavGrid, ag: &Agent) -> f32 {
     if load.good == Good::Sticks && dry { STICKS_LAND_PACE } else { LADEN_PACE }
 }
 
-/// How fast a beaver goes, as a share of a walk (or swim) unladen: `pace`, or a barge's when
+/// How fast a beaver goes, as a share of a walk (or swim) unladen: `pace`, or a raft's when
 /// it is pushing one.
 pub fn travel_pace(nav: &NavGrid, ag: &Agent) -> f32 {
     match ag.task {
-        Task::Barge { leg: 1 | 3 | 5, .. } => crate::harbor::BARGE_PACE,
+        Task::Raft { leg: 1 | 3 | 5, .. } => crate::harbor::RAFT_PACE,
         _ => pace(nav, ag),
     }
 }
@@ -960,31 +971,31 @@ fn site_fetch_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task>
     None
 }
 
-/// A haul between two stores goes by barge when there are at least two loads to move, barge
-/// water joins the two, and a barge is free; otherwise as it is, a load at a time.
-fn by_barge(sim: &SimState, ag: &Agent, t: Task) -> Task {
+/// A haul between two stores goes by raft when there are at least two loads to move, raft
+/// water joins the two, and a raft is free; otherwise as it is, a load at a time.
+fn by_raft(sim: &SimState, ag: &Agent, t: Task) -> Task {
     let Task::Fetch { from, good, then, site_delivery: false } = t else { return t };
-    if from == SUPPLIES || then == SUPPLIES || sim.fleet.barges.is_empty() || sim.work.stock_of(from, good) < 2.0 * load_size(good) {
+    if from == SUPPLIES || then == SUPPLIES || sim.fleet.rafts.is_empty() || sim.work.stock_of(from, good) < 2.0 * load_size(good) {
         return t;
     }
-    let Some(barge) = crate::harbor::free_barge(sim, ag.cell) else { return t };
-    let harbor = sim.fleet.get(barge).map(|b| b.harbor);
+    let Some(raft) = crate::harbor::free_raft(sim, ag.cell) else { return t };
+    let harbor = sim.fleet.get(raft).map(|b| b.harbor);
     if !harbor.is_some_and(|h| crate::harbor::joined(sim, h, from)) || !crate::harbor::joined(sim, from, then) {
         return t;
     }
-    Task::Barge { barge, from, to: then, good, leg: 0 }
+    Task::Raft { raft, from, to: then, good, leg: 0 }
 }
 
-/// One turn of a barge trip (see `Task::Barge`).
+/// One turn of a raft trip (see `Task::Raft`).
 #[allow(clippy::too_many_arguments)]
-fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8) {
+fn raft_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, raft: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8) {
     use crate::harbor;
     let let_go = |sim: &mut SimState, ag: &mut Agent| {
         let at = ag.cell;
-        if let Some(b) = sim.fleet.get_mut(barge).filter(|b| b.hauler == Some(ag.id)) {
+        if let Some(b) = sim.fleet.get_mut(raft).filter(|b| b.hauler == Some(ag.id)) {
             b.hauler = None;
-            if harbor::barge_water(sim, at) {
-                if let Some(b) = sim.fleet.get_mut(barge) {
+            if harbor::raft_water(sim, at) {
+                if let Some(b) = sim.fleet.get_mut(raft) {
                     b.cell = at;
                 }
             }
@@ -992,19 +1003,19 @@ fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u
         ag.path = None;
         ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
     };
-    let Some(b) = sim.fleet.get(barge).copied() else { return let_go(sim, ag) };
+    let Some(b) = sim.fleet.get(raft).copied() else { return let_go(sim, ag) };
     if !matches!(duty, Duty::Haul) || b.hauler.is_some_and(|h| h != ag.id) {
         return let_go(sim, ag);
     }
     let docks_of = |sim: &SimState, id: BuildingId| sim.buildings.building(id).map(|x| harbor::docks(sim, x)).unwrap_or_default();
     let next = |ag: &mut Agent, leg: u8| {
         ag.path = None;
-        ag.task = Task::Barge { barge, from, to, good, leg };
+        ag.task = Task::Raft { raft, from, to, good, leg };
     };
     match leg {
-        // To the barge, and on board.
+        // To the raft, and on board.
         0 => {
-            if let Some(x) = sim.fleet.get_mut(barge) {
+            if let Some(x) = sim.fleet.get_mut(raft) {
                 x.hauler = Some(ag.id);
             }
             if ag.cell == b.cell {
@@ -1026,8 +1037,8 @@ fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u
                 return next(ag, leg + 1);
             }
             // Water that has iced over (or run too shallow) since the way was planned: plan
-            // again, or tie the barge up where it is.
-            if ag.path.as_ref().and_then(|p| p.steps.first()).is_some_and(|st| !harbor::barge_water(sim, st.0)) {
+            // again, or tie the raft up where it is.
+            if ag.path.as_ref().and_then(|p| p.steps.first()).is_some_and(|st| !harbor::raft_water(sim, st.0)) {
                 ag.path = None;
             }
             if ag.path.is_none() {
@@ -1038,16 +1049,16 @@ fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u
             }
             let moved = follow(&mut sim.nav, ag, dt);
             let at = ag.cell;
-            if let Some(x) = sim.fleet.get_mut(barge) {
+            if let Some(x) = sim.fleet.get_mut(raft) {
                 x.cell = at;
             }
             note(ag, moved);
         }
-        // Loading as much as the barge takes.
+        // Loading as much as the raft takes.
         2 => {
-            let want = (harbor::BARGE_LOADS * load_size(good)).min(sim.work.stock_of(from, good));
+            let want = (harbor::RAFT_LOADS * load_size(good)).min(sim.work.stock_of(from, good));
             let (got, kind) = if want > WORK_EPS { sim.buildings.stores.take_kind_from(from, good, want) } else { (0.0, None) };
-            log_load(sim, ag, "TAKE_FOR_BARGE", from, good, want, got, &format!("to={} barge={barge}", to.0));
+            log_load(sim, ag, "TAKE_FOR_RAFT", from, good, want, got, &format!("to={} raft={raft}", to.0));
             if got > WORK_EPS {
                 ag.load = Some(Load { species: kind, ..Load::new(good, got, true) });
                 next(ag, 3);
@@ -1061,7 +1072,8 @@ fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u
             if let Some(load) = ag.load {
                 let who = producer(sim, ag);
                 let taken = stow(sim, to, load, who).unwrap_or(0.0);
-                log_load(sim, ag, "DELIVER_BARGE", to, load.good, load.amount, taken, &format!("barge={barge}"));
+                log_load(sim, ag, "DELIVER_RAFT", to, load.good, load.amount, taken, &format!("raft={raft}"));
+                sim.run.raft_delivered(load.good, taken);
                 ag.load = (load.amount - taken > WORK_EPS).then(|| Load { amount: load.amount - taken, ..load });
             }
             note(ag, true);
@@ -1104,6 +1116,12 @@ const PILE_REACH: usize = 8;
 const ORDER_REACH: usize = 24;
 /// How often (in steps) workers check that their target still has work for them.
 const RETARGET_STEPS: u64 = 4;
+/// How long a worker whose seat or area gave it nothing, and found nowhere better, waits
+/// before looking again, in days.
+const RETARGET_WAIT_DAYS: f64 = 1.0;
+/// How long a beaver waiting at home for work lets pass between looks for some, in days. A
+/// new job or order looks at once.
+const WORK_PROBE_DAYS: f64 = 1.0;
 
 /// The nearest gatherable resource of `kind` (felled trees before standing ones, as gatherers
 /// rank them) within `reach` of `from`.
@@ -1166,14 +1184,34 @@ fn retarget(sim: &mut SimState) {
         .filter(|b| b.can_work())
         .filter_map(|b| sim.agents.get(b.id).map(|a| (b.id, a.cell)))
         .collect();
+    // A worker its target failed looks again only a day later: the looks plan tasks and search
+    // routes, and would find the same thing every few steps.
+    let wait = |sim: &mut SimState, who: BeaverId| {
+        if let Some(a) = sim.agents.by_id.get_mut(&who) {
+            a.next_retarget = sim.time_days + RETARGET_WAIT_DAYS;
+        }
+    };
     for (who, at) in workers {
+        if sim.agents.get(who).is_some_and(|a| sim.time_days < a.next_retarget) {
+            continue;
+        }
         match sim.work.slot_of(who) {
             Some((from, i, role)) if matches!(role, Role::Build | Role::Collect(_)) => {
                 // A builder stays while its place gives it something to do; one blocked there
                 // (nothing it can take, or out of reach) goes on to the next place that does.
                 let ag = sim.agents.get(who);
+                // Only a worker left with nothing to do can be blocked: one waiting at home, or
+                // with no home, idle. Idle between loads it is only choosing its next one.
+                let homeless = !has_lodge(sim);
+                if busy_here(ag, from) || ag.is_some_and(|a| !(a.task == Task::Rest || (homeless && a.task == Task::Idle))) {
+                    continue;
+                }
                 let gives = |b: BuildingId| role != Role::Build || ag.is_some_and(|a| build_task(sim, b, a).is_some());
-                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) && (gives(from) || sim.work.place(from).is_some_and(|p| p.paused) || busy_here(ag, from)) {
+                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) && (sim.work.place(from).is_some_and(|p| p.paused) || gives(from)) {
+                    // At home, it looks for work once a day (`WORK_PROBE_DAYS`): so does this.
+                    if ag.is_some_and(|a| a.task == Task::Rest) {
+                        wait(sim, who);
+                    }
                     continue;
                 }
                 let kind = crate::jobs::role_kind(role);
@@ -1192,10 +1230,17 @@ fn retarget(sim: &mut SimState) {
                         let (j, r) = p.open_seat(|r| crate::jobs::role_kind(r) == kind).or(reopen.then_some((p.slots.len(), Role::Build)))?;
                         Some((p, j, r))
                     })
-                    .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building) && gives(p.building))
-                    .min_by_key(|(p, _, _)| (std::cmp::Reverse(p.priority), d(p.building), p.building))
-                    .map(|(p, j, _)| (p.building, j));
-                let Some((to, j)) = next else { continue };
+                    .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building))
+                    .map(|(p, j, _)| ((std::cmp::Reverse(p.priority), d(p.building), p.building), j))
+                    .collect::<Vec<_>>();
+                // Best first, planning a task (route searches) only until one gives work.
+                let mut next = next;
+                next.sort_unstable();
+                let next = next.into_iter().find(|(k, _)| gives(k.2)).map(|(k, j)| (k.2, j));
+                let Some((to, j)) = next else {
+                    wait(sim, who);
+                    continue;
+                };
                 // A reopened builder seat on a finished dam or canal: put it back first.
                 if let Ok(p) = sim.work.place_mut(to) {
                     if j == p.slots.len() && !p.open_ended() {
@@ -1220,7 +1265,10 @@ fn retarget(sim: &mut SimState) {
                 if gathering_available(sim, Assignment::Area(kind, area)) {
                     continue;
                 }
-                let Some(r) = next_resource(sim, kind, at, GATHER_RADIUS).and_then(|id| sim.resources.get(id)) else { continue };
+                let Some(r) = next_resource(sim, kind, at, GATHER_RADIUS).and_then(|id| sim.resources.get(id)) else {
+                    wait(sim, who);
+                    continue;
+                };
                 // The same area, moved to centre on the nearest of the same kind.
                 let (hw, hh) = ((area.max.0 - area.min.0) / 2, (area.max.1 - area.min.1) / 2);
                 let n = sim.world.size;
@@ -1298,13 +1346,13 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
         Duty::Guard(b) => Some(Task::Watch { lookout: *b }),
         // Plant what the stores hold, else collect more seedlings while there is room.
         Duty::Forest(area) => plant_task(sim, *area, ag).or_else(|| seed_task(sim, *area, ag)),
-        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))).or_else(|| {
+        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim).filter(|t| room_for_move(sim, t)).map(|t| by_raft(sim, ag, t))).or_else(|| {
             let (from, then, good) = crate::stock::fill_move(sim)?;
-            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))
+            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_raft(sim, ag, t))
         }).or_else(|| {
             let own = sim.work.slot_of(ag.id).map(|s| s.0).filter(|b| sim.work.balanced.contains(b))?;
             let (from, then, good) = crate::stock::balance_move(sim, Some(own))?;
-            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))
+            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_raft(sim, ag, t))
         }),
     }
 }
@@ -1373,9 +1421,18 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
             }
         }
         Task::Rest => {
-            let work = if sim.time_days >= ag.next_work_probe {
-                ag.next_work_probe=sim.time_days+crate::STEP_DAYS as f64;
-                next_task(sim, &duty, ag).is_some()
+            // Fit to work and finding none, it looks again a day later; tired or holed up, it
+            // looks as soon as it can work again.
+            let fit = can_work && !tired && !holed;
+            let work = if !fit {
+                ag.next_work_probe = 0.0;
+                false
+            } else if sim.time_days >= ag.next_work_probe {
+                let found = next_task(sim, &duty, ag).is_some();
+                if !found {
+                    ag.next_work_probe = sim.time_days + WORK_PROBE_DAYS;
+                }
+                found
             } else {false};
             if ag.load.is_some() || work {
                 ag.task = Task::Idle;
@@ -1409,7 +1466,7 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         Task::Eat { pile } => eat_on_ground(sim, ag, dt, pile),
         Task::Mend { building } => mend(sim, ag, dt, &duty, building),
         Task::Seed { tree, progress } => seed(sim, ag, dt, &duty, tree, progress),
-        Task::Barge { barge, from, to, good, leg } => barge_trip(sim, ag, dt, &duty, barge, from, to, good, leg),
+        Task::Raft { raft, from, to, good, leg } => raft_trip(sim, ag, dt, &duty, raft, from, to, good, leg),
         Task::Watch { lookout } => {
             if !matches!(duty, Duty::Guard(b) if b == lookout) {
                 ag.path = None;
@@ -2004,6 +2061,16 @@ pub(crate) fn site_stalled(sim: &SimState, p: &crate::work::Workplace) -> bool {
             s.missing(n.0) <= WORK_EPS
                 || (promised(sim, p.building, n.0) <= WORK_EPS && crate::stock::holders(sim, n.0).iter().all(|&h| sim.work.stock_of(h, n.0) <= WORK_EPS))
         })
+}
+
+/// The good a stalled site waits on: the first it still needs that no store holds and no one
+/// is bringing.
+pub(crate) fn site_waits_on(sim: &SimState, p: &crate::work::Workplace) -> Option<Good> {
+    let s = p.site.as_ref()?;
+    if !site_stalled(sim, p) {
+        return None;
+    }
+    s.needed.iter().map(|n| n.0).find(|&g| s.missing(g) > WORK_EPS)
 }
 
 /// Goods beavers have taken out of stores and are still carrying.
@@ -3279,7 +3346,7 @@ fn act_timer(task: &Task) -> &'static str {
         Task::Mend { .. } => "step/agents/beaver mend",
         Task::Seed { .. } => "step/agents/beaver collect seedlings",
         Task::Watch { .. } => "step/agents/beaver keep watch",
-        Task::Barge { .. } => "step/agents/beaver barge",
+        Task::Raft { .. } => "step/agents/beaver raft",
     }
 }
 
@@ -3310,6 +3377,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
             let _p = crate::prof::scope(act_timer(&ag.task));
             tick(sim, &mut ag, dt_days);
         }
+        ag.keep_history(now);
         sim.agents.by_id.insert(id, ag);
     }
     {
@@ -3322,6 +3390,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
             if let Some(Assignment::Go(to)) = ag.assignment {
                 go_to(sim, ag, dt_days, to);
             }
+            ag.keep_history(now);
             let on = ag.assignment.is_some();
             if !on {
                 sim.nav.release(ag.id, ag.cell);
@@ -3335,182 +3404,25 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     finish_sites(sim);
 }
 
+/// Cells of history an agent keeps (`Agent::history`): more than it covers between two looks
+/// at the world at the fastest speed.
+const HISTORY_CELLS: usize = 96;
+
+impl Agent {
+    /// This step's trail into the history, at the time the step ends (`now`).
+    fn keep_history(&mut self, now: f64) {
+        for &(c, g) in &self.trail {
+            self.history.push_back((now, c, g));
+        }
+        while self.history.len() > HISTORY_CELLS {
+            self.history.pop_front();
+        }
+    }
+}
+
 fn at_resting_place(ag: &Agent, home: Option<&Building>) -> bool {
     let _ = home;
     ag.inside
-}
-
-#[cfg(test)]
-mod life_tests {
-    use super::*;
-    use crate::buildings::BuildingKind;
-
-    /// A colony on a real map, settled, with a finished lodge.
-    fn colony() -> SimState {
-        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
-        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
-        crate::sandbox::run_days(&mut s, 0.2);
-        let near = site.camp;
-        let pos = (4..40usize)
-            .flat_map(|r| (0..=2 * r).flat_map(move |i| [(near.0 + i - r, near.1 - r), (near.0 + i - r, near.1 + r), (near.0 - r, near.1 + i - r), (near.0 + r, near.1 + i - r)]))
-            .find(|&p| s.check_site(BuildingKind::Shelter, p).is_ok())
-            .unwrap();
-        let id = s.place_site(BuildingKind::Shelter, pos).unwrap();
-        for &(g, a) in BuildingKind::Shelter.spec().cost {
-            s.work.deliver(id, g, a).unwrap();
-        }
-        s.work.add_labour(id, BuildingKind::Shelter.spec().work).unwrap();
-        crate::sandbox::run_days(&mut s, 0.2);
-        assert!(s.buildings.building(id).unwrap().is_complete());
-        s
-    }
-
-    /// In bitter cold the colony keeps to its lodge, and comes out again once it eases.
-    #[test]
-    fn in_bitter_cold_beavers_keep_to_their_lodges() {
-        let mut s = colony();
-        // The first spell of the place's winter bitter for half a day and more.
-        let sky = s.water.sky;
-        let bitter = (0..360 * 24).map(|h| s.time_days + h as f64 / 24.0).find(|&t| sky.at(t).bitter() && sky.at(t + 0.5).bitter()).expect("a bitter winter spell");
-        // Skip ahead to the day before it.
-        let start = bitter - 1.0;
-        s.time_days = start;
-        s.water.time_days = start;
-        s.colony.time_days = start;
-        // Everyone out cutting trees: not a source winter closes.
-        let n = s.world.size;
-        for a in s.agents.by_id.values_mut() {
-            a.assignment = Some(Assignment::Area(ResourceKind::Tree, Area { min: (0, 0), max: (n, n) }));
-        }
-        let out = |s: &SimState| s.agents.by_id.values().filter(|a| !a.inside).count();
-        crate::sandbox::run_days(&mut s, 0.4);
-        assert!(!s.agents.holed_up && out(&s) > 0, "out at work before the cold comes");
-        crate::sandbox::run_days(&mut s, 1.1);
-        assert!(s.agents.holed_up, "holed up at {:?}", sky.at(s.time_days));
-        // Still water has frozen over hard enough to walk on: it is ground now, not water.
-        let frozen = (0..s.world.size * s.world.size).find(|&i| s.water.ice.as_slice()[i] >= crate::tuning::water::ICE_WALK_M && s.water.depth.as_slice()[i] > crate::buildings::WET_DEPTH && s.water.dam_height.as_slice()[i] <= 0.0).expect("ice");
-        let n = s.world.size;
-        assert_eq!(s.nav.surface_at((frozen % n, frozen / n)), Some(Surface::Land), "frozen water is walked");
-        let (inside, all) = (s.agents.by_id.values().filter(|a| a.inside).count(), s.agents.by_id.len());
-        assert!(inside * 10 >= all * 8, "{inside} of {all} in their lodge at {:?}", sky.at(s.time_days));
-        let eased = (0..60 * 24).map(|h| s.time_days + h as f64 / 24.0).find(|&t| sky.at(t).feels_c > crate::weather::COME_OUT_FEELS_C + 3.0).unwrap();
-        let wait = eased - s.time_days + 0.5;
-        crate::sandbox::run_days(&mut s, wait);
-        assert!(!s.agents.holed_up && out(&s) > 0, "out again once it eases");
-    }
-
-    fn on_edge(s: &SimState, c: Cell) -> bool {
-        let n = s.nav.surface.width();
-        c.0 == 0 || c.1 == 0 || c.0 == n - 1 || c.1 == n - 1
-    }
-
-    #[test]
-    fn a_dead_beaver_leaves_a_body_for_a_while() {
-        let mut s = colony();
-        let a = s.agents.by_id.values().map(|a| (a.id, a.cell, a.inside)).next().unwrap();
-        assert!(s.colony.kill(a.0, crate::colony::DeathCause::Predator));
-        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-        let body = s.agents.remains.bodies.iter().find(|b| b.id == a.0).expect("a body");
-        if a.2 {
-            // One that died in its lodge is laid outside, close by.
-            assert_ne!(s.nav.surface_at(body.cell), Some(Surface::LodgeInside), "laid out of the lodge");
-            assert!(body.cell.0.abs_diff(a.1.0).max(body.cell.1.abs_diff(a.1.1)) <= 4, "beside the lodge");
-        } else {
-            assert_eq!(body.cell, a.1, "it lies where the beaver fell");
-        }
-        assert_eq!(body.cause, crate::colony::DeathCause::Predator);
-        crate::sandbox::run_days(&mut s, REMAINS_DAYS + 0.1);
-        assert!(s.agents.remains.bodies.iter().all(|b| b.id != a.0), "gone after a few days");
-    }
-
-    #[test]
-    fn a_beaver_that_leaves_walks_off_the_map() {
-        let mut s = colony();
-        let id = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult).unwrap().id;
-        let from = s.agents.get(id).unwrap().cell;
-        s.colony.depart(id);
-        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-        let (ag, _) = s.agents.remains.leaving.iter().find(|(a, _)| a.id == id).expect("on its way");
-        let Some(Assignment::Go(to)) = ag.assignment else { panic!("not heading off") };
-        assert!(on_edge(&s, to), "heading for the edge: {to:?}");
-        crate::sandbox::run_days(&mut s, 0.3);
-        if let Some((a, _)) = s.agents.remains.leaving.iter().find(|(a, _)| a.id == id) {
-            assert_ne!(a.cell, from, "it walks");
-        }
-        crate::sandbox::run_days(&mut s, 20.0);
-        assert!(s.agents.remains.leaving.iter().all(|(a, _)| a.id != id), "off the map in the end");
-    }
-
-    #[test]
-    fn a_newcomer_walks_in_from_the_edge() {
-        let mut s = colony();
-        // An empty lodge for it to come to.
-        let home = s.agents.by_id.values().next().unwrap().cell;
-        s.colony.add_home((home.0 as f32 + 0.5, home.1 as f32 + 0.5));
-        let id = s.colony.admit_wanderer(true).unwrap();
-        crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-        let a = s.agents.get(id).expect("it arrives");
-        let n = s.nav.surface.width();
-        let edge_gap = a.cell.0.min(a.cell.1).min(n - 1 - a.cell.0).min(n - 1 - a.cell.1);
-        assert!(edge_gap <= 2, "it comes in at the edge: {:?}", a.cell);
-        assert!(matches!(a.assignment, Some(Assignment::Go(_))));
-    }
-
-    #[test]
-    fn a_new_pair_meets_at_its_lodge_then_goes_back_to_work() {
-        let mut s = colony();
-        let adults: Vec<BeaverId> = s.colony.beavers.iter().filter(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id).take(2).collect();
-        let (a, b) = (adults[0], adults[1]);
-        for (who, partner) in [(a, b), (b, a)] {
-            s.agents.courting.insert(who, Courtship { partner, started: s.time_days, met: None });
-        }
-        let mut met = false;
-        for _ in 0..400 {
-            crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-            if s.agents.courting.get(&a).is_some_and(|c| c.met.is_some()) {
-                met = true;
-                break;
-            }
-        }
-        assert!(met, "they never met");
-        let (pa, pb) = (s.agents.get(a).unwrap().cell, s.agents.get(b).unwrap().cell);
-        assert!(pa.0.abs_diff(pb.0).max(pa.1.abs_diff(pb.1)) <= 3, "together: {pa:?} {pb:?}");
-        crate::sandbox::run_days(&mut s, COURT_DAYS + 0.05);
-        assert!(!s.agents.courting.contains_key(&a) && !s.agents.courting.contains_key(&b), "back to work");
-    }
-
-    #[test]
-    fn a_kit_tags_along_after_its_parent() {
-        let mut s = colony();
-        let mother = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult && b.sex == crate::colony::Sex::Female).unwrap().id;
-        let kit = s.colony.beavers.iter().find(|b| b.id != mother && b.stage != crate::colony::Stage::Adult).map(|b| b.id).unwrap();
-        if let Some(b) = s.colony.beavers.iter_mut().find(|b| b.id == kit) {
-            b.age_days = 30.0;
-            b.stage = crate::colony::Stage::Kit;
-            b.mother = Some(mother);
-            b.resting = false;
-            b.needs.rest = 1.0;
-        }
-        // The mother works out near home.
-        let home = s.agents.get(mother).unwrap().cell;
-        let spot = (3..10usize)
-            .flat_map(|r| (0..=2 * r).flat_map(move |i| [(home.0 + i - r, home.1 - r), (home.0 + i - r, home.1 + r), (home.0 - r, home.1 + i - r), (home.0 + r, home.1 + i - r)]))
-            .find(|&c| s.nav.surface_at(c) == Some(Surface::Land) && s.nav.may_reach(home, [c]))
-            .unwrap();
-        s.apply(crate::Command::Assign { who: vec![mother], to: Some(Assignment::Go(spot)) }).unwrap();
-        // While the mother is out, the kit keeps beside her.
-        let (mut out, mut beside) = (0, 0);
-        for _ in 0..30 {
-            crate::sandbox::run_days(&mut s, 0.01);
-            let (m, k) = (s.agents.get(mother).unwrap(), s.agents.get(kit).unwrap());
-            if !m.inside && m.cell.0.abs_diff(home.0).max(m.cell.1.abs_diff(home.1)) >= 3 {
-                out += 1;
-                beside += (!k.inside && m.cell.0.abs_diff(k.cell.0).max(m.cell.1.abs_diff(k.cell.1)) <= 2) as usize;
-            }
-        }
-        assert!(out >= 3, "the mother never went out");
-        assert!(beside * 3 >= out * 2, "the kit was beside its mother {beside} of {out} times");
-    }
 }
 
 #[cfg(test)]

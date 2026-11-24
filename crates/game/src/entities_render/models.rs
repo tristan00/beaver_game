@@ -1,6 +1,6 @@
 use super::meshgen::{hex, mix, Mb, Rng};
-use super::structures;
-use super::scene::{Species, StructKind};
+use super::{islands, structures};
+use super::scene::StructKind;
 use bevy::prelude::*;
 use std::f32::consts::TAU;
 
@@ -227,287 +227,7 @@ impl Season {
     pub fn all() -> impl Iterator<Item = Self> { (0..Self::COUNT as u8).map(Self) }
     pub fn at(phase: f32) -> Self { Self(((phase.rem_euclid(1.0) * Self::COUNT as f32).round() as usize % Self::COUNT) as u8) }
     pub fn index(self) -> usize { self.0 as usize }
-    fn phase(self) -> f32 { self.0 as f32 / Self::COUNT as f32 }
-}
-
-const FOLIAGE_SATURATION: f32 = 1.22;
-
-fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
-    let keys = match sp {
-        Species::Aspen => [(0x77A45B,0xB1CC7B),(0x568347,0x9DB96B),(0xA98E49,0xD1B56C),(0x917A51,0xB7A377)],
-        Species::Maple => [(0x679856,0xA2C276),(0x4F8055,0x87A965),(0x98634C,0xC59869),(0x775D48,0xAC8D67)],
-        Species::Pine => [(0x5B8C61,0x95B678),(0x4C7D55,0x88AA6B),(0x567954,0x90A372),(0x4E715A,0x90AB8C)],
-        Species::Willow => [(0x7CAA62,0xB5CF83),(0x628E52,0x9AB86E),(0x9A9552,0xC2BA74),(0x8E8257,0xB6A976)],
-    };
-    let dark = keys.map(|(a,_)| crate::palette::rgb(a));
-    let light = keys.map(|(_,b)| crate::palette::rgb(b));
-    // Foliage a little richer than the palette keys: under the strong ambient light, crowns at
-    // the keys' saturation read as a pale olive haze.
-    let richer = |c: [f32; 3]| { let g = (c[0] + c[1] + c[2]) / 3.0; c.map(|v| (g + (v - g) * FOLIAGE_SATURATION).clamp(0.0, 1.0)) };
-    let colour = |k: &[_; 4]| crate::palette::display_linear(richer(crate::seasonal::blend(k,s.phase(),crate::palette::mix)));
-    (colour(&dark), colour(&light))
-}
-
-fn trunk_color(sp: Species) -> [f32; 3] {
-    hex(match sp {
-        Species::Aspen => 0xe6dccb,
-        Species::Maple => 0x7d5632,
-        Species::Pine => 0x6b4630,
-        Species::Willow => 0x6c5a3e,
-    })
-}
-
-pub fn tree_cutaway_mesh(sp: Species) -> Mesh {
-    let mut mb = Mb::new();
-    // Dark, so a cut-away reads as a stump in shade rather than a pale shape on the grass.
-    let trunk = mix(trunk_color(sp), hex(0x3e3024), 0.8);
-    root_flare(&mut mb, 0.2, trunk);
-    mb.cyl(v(0.0,-0.1,0.0),v(0.0,0.55,0.0),0.2,0.1,trunk,trunk,7);
-    for i in 0..3 {
-        let angle = i as f32 * TAU / 3.0;
-        mb.cyl(v(0.0,0.35,0.0),v(angle.cos()*0.3,0.5,angle.sin()*0.3),0.07,0.025,trunk,trunk,5);
-    }
-    mb.build()
-}
-
-pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
-    let mut mb = Mb::new();
-    let (dark, light) = foliage(sp, season);
-    let trunk = trunk_color(sp);
-    // Ground contact comes from the scene shadow map. An opaque horizontal disc
-    // attached to the trunk floats over sloping banks and covers the river below.
-    let leaves = crate::seasonal::leaves(season.phase());
-    let leaf_scale = leaves.sqrt();
-    let bare = leaves < 0.035 && sp != Species::Pine;
-    let snow = crate::seasonal::snow(season.phase());
-    let pine_top = mix(light, hex(0xCBDDE0), snow * 0.45);
-    let seg = match lod { 0 => 9, 1 => 6, _ => 5 };
-    let top_h = match sp {
-        Species::Aspen => 4.9,
-        Species::Maple => 4.4,
-        Species::Pine => 5.8,
-        Species::Willow => 4.2,
-    };
-    match lod {
-        0 => match sp {
-            Species::Aspen => {
-                root_flare(&mut mb, 0.19, trunk);
-                mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 2.9, 0.0), 0.19, 0.1, trunk, trunk, 7);
-                bark_eyes(&mut mb, 2.9, 0.19, 0.1, 9, 11);
-                canopy(&mut mb, canopy_of(sp), leaves, hex(0x9B8469), dark, light, true);
-            }
-            Species::Maple => {
-                mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.55, -0.1), (0.42, 0.08), (0.3, 0.45), (0.22, 1.6), (0.0, 1.6)], 9, mix(trunk, hex(INK), 0.2), trunk, false);
-                let c = canopy_of(sp);
-                let tips = canopy(&mut mb, c, leaves, hex(0x6b4a30), dark, light, true);
-                let bloom = crate::seasonal::bloom(season.phase());
-                if bloom > 0.1 {
-                    // Blossom flecks around each tip's clump, on bare twigs before the leaves.
-                    let mut r = Rng(77);
-                    let reach = c.clump * leaves.powf(0.6).max(0.45);
-                    for &(t, _) in &tips {
-                        for _ in 0..3 {
-                            let d = v(r.range(-1.0, 1.0), r.range(-0.2, 1.0), r.range(-1.0, 1.0)).normalize_or_zero();
-                            mb.ellipsoid(t + d * reach, v(0.075, 0.05, 0.075) * bloom, mix(hex(0xF3C0BC), hex(0xFFF0EC), r.range(0.0, 0.5)));
-                        }
-                    }
-                }
-            }
-            Species::Pine => {
-                mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 1.5, 0.0), 0.24, 0.16, trunk, trunk, 7);
-                root_flare(&mut mb, 0.24, trunk);
-                let top = pine_top;
-                let tiers = [(0.95f32, 1.55f32, 1.35f32), (1.85, 1.28, 1.2), (2.7, 1.0, 1.1), (3.45, 0.74, 1.0), (4.1, 0.46, 0.85)];
-                for (k, (y0, rr, h)) in tiers.into_iter().enumerate() {
-                    let prof = [(0.12, y0 + 0.3), (rr * 0.88, y0 - 0.04), (rr, y0 + 0.1), (rr * 0.74, y0 + h * 0.42), (rr * 0.32, y0 + h * 0.82), (0.0, y0 + h)];
-                    let under = mix(dark, hex(INK), 0.12);
-                    mb.lathe(Mat4::from_rotation_y(k as f32 * 0.7), &prof, seg + 1, under, mix(top, light, 0.15 * k as f32), true);
-                }
-            }
-            Species::Willow => {
-                root_flare(&mut mb, 0.28, trunk);
-                mb.cyl(v(0.0, -0.1, 0.0), v(0.12, 1.3, 0.0), 0.28, 0.2, trunk, trunk, 7);
-                mb.cyl(v(0.12, 1.2, 0.0), v(0.0, 2.3, 0.06), 0.2, 0.14, trunk, trunk, 7);
-                let c = canopy_of(sp);
-                let tips = canopy(&mut mb, c, leaves, hex(0x7d6a44), dark, light, true);
-                willow_strands(&mut mb, c, &tips, leaves, dark, light);
-            }
-        },
-        1 => {
-            if sp == Species::Pine {
-                mb.cyl(v(0.0, -0.1, 0.0), v(0.0, top_h * 0.55, 0.0), 0.26, 0.16, trunk, trunk, 5);
-                let top = pine_top;
-                for (y0, rr, h) in [(1.0f32, 1.5f32, 1.9f32), (2.4, 1.05, 1.6), (3.6, 0.6, 1.2)] {
-                    mb.lathe(Mat4::IDENTITY, &[(0.0, y0 + 0.2), (rr, y0), (rr * 0.6, y0 + h * 0.5), (0.0, y0 + h)], seg, dark, top, true);
-                }
-            } else {
-                let c = canopy_of(sp);
-                let tw = if sp == Species::Aspen { 0.12 } else { 0.2 };
-                mb.cyl(v(0.0, -0.1, 0.0), c.fork + v(0.0, 0.2, 0.0), tw * 1.3, tw * 0.8, trunk, trunk, 5);
-                canopy(&mut mb, c, leaves, trunk, dark, light, false);
-            }
-        }
-        _ => {
-            if bare {
-                mb.cyl(v(0.0, -0.1, 0.0), v(0.0, top_h * 0.7, 0.0), 0.25, 0.1, trunk, hex(0x8a7a60), 4);
-            } else if sp == Species::Pine {
-                let top = pine_top;
-                mb.lathe(Mat4::IDENTITY, &[(0.0, 0.8), (1.5, 1.8), (1.1, 3.4), (0.0, 4.9)], 6, dark, top, true);
-            } else {
-                mb.lathe(Mat4::IDENTITY, &[(0.0, 1.2), (1.5 * leaf_scale, 2.6), (1.1 * leaf_scale, 3.9), (0.0, 4.8)], 5, dark, light, false);
-            }
-        }
-    }
-    mb.build()
-}
-
-/// The shape of a broadleaf crown: where its limbs leave the trunk, the crown it fills, how many
-/// branch tips carry leaves, how big a full clump is, and how thick a limb starts.
-#[derive(Clone, Copy)]
-struct Canopy {
-    fork: Vec3,
-    centre: Vec3,
-    radius: Vec3,
-    tips: usize,
-    clump: f32,
-    limb: f32,
-    seed: u32,
-}
-
-fn canopy_of(sp: Species) -> Canopy {
-    match sp {
-        Species::Aspen => Canopy { fork: v(0.0, 2.3, 0.0), centre: v(0.0, 3.6, 0.0), radius: v(0.85, 1.45, 0.85), tips: 12, clump: 0.46, limb: 0.075, seed: 3 },
-        Species::Maple => Canopy { fork: v(0.0, 1.45, 0.0), centre: v(0.0, 3.2, 0.0), radius: v(1.6, 1.3, 1.6), tips: 16, clump: 0.66, limb: 0.12, seed: 7 },
-        Species::Willow => Canopy { fork: v(0.0, 2.2, 0.0), centre: v(0.0, 3.15, 0.0), radius: v(1.6, 0.95, 1.6), tips: 12, clump: 0.55, limb: 0.1, seed: 9 },
-        Species::Pine => Canopy { fork: v(0.0, 1.5, 0.0), centre: v(0.0, 3.0, 0.0), radius: v(1.2, 1.5, 1.2), tips: 8, clump: 0.5, limb: 0.1, seed: 5 },
-    }
-}
-
-/// A broadleaf crown grown on its branches. Limbs rise from the trunk, curve outward and fork;
-/// every tip carries a clump of leaves that swells from a bud in spring to the full crown in
-/// summer and thins again in autumn. Branches end in leaves (or bare tips in winter), so none
-/// stick out past the crown. Returns the tips, for blossom and hanging strands.
-fn canopy(mb: &mut Mb, c: Canopy, leaves: f32, bark: [f32; 3], dark: [f32; 3], light: [f32; 3], detail: bool) -> Vec<(Vec3, f32)> {
-    let mut rng = Rng(c.seed * 7919 + 13);
-    let n = if detail { c.tips } else { (c.tips / 2).max(4) };
-    let tips: Vec<(Vec3, f32)> = (0..n).map(|i| {
-        let y = 0.85 - (i as f32 + 0.5) / n as f32 * 1.35;
-        let ring = (1.0 - y * y).max(0.0).sqrt();
-        let a = i as f32 * 2.399_963 + rng.range(-0.3, 0.3);
-        (c.centre + v(a.cos() * ring * c.radius.x, y * c.radius.y, a.sin() * ring * c.radius.z) * 0.78, y)
-    }).collect();
-    let seg = if detail { 5 } else { 4 };
-    let tip_col = mix(bark, hex(0xb8a68c), 0.3);
-    let lean = |from: Vec3, to: Vec3| v((to - from).x * 0.3, (to - from).y * 0.65, (to - from).z * 0.3);
-    let mut forks = Vec::new();
-    // Limbs in pairs of neighbouring tips: up from the trunk, out, then forking to each tip.
-    for pair in tips.chunks(2) {
-        let m = pair.iter().map(|t| t.0).sum::<Vec3>() / pair.len() as f32;
-        let elbow = c.fork + lean(c.fork, m);
-        let split = m.lerp(elbow, 0.35);
-        mb.cyl(c.fork, elbow, c.limb, c.limb * 0.7, bark, bark, seg);
-        mb.cyl(elbow, split, c.limb * 0.7, c.limb * 0.45, bark, bark, seg);
-        for &(t, _) in pair {
-            mb.cyl(split, t, c.limb * 0.42, (c.limb * 0.15).max(0.012), bark, tip_col, seg - 1);
-            if detail && leaves < 0.6 {
-                // Fine twigs at the tip: a bare crown still reads as a branching tree.
-                let out = (t - c.centre).normalize_or_zero();
-                for k in [-1.0f32, 1.0] {
-                    let side = out.cross(Vec3::Y).normalize_or_zero() * 0.35 * k;
-                    let end = t + (out * 0.6 + Vec3::Y * 0.55 + side).normalize() * 0.32;
-                    mb.cyl(t, end, 0.018, 0.006, tip_col, tip_col, 3);
-                }
-            }
-        }
-        forks.push(split);
-    }
-    if leaves < 0.02 {
-        return tips;
-    }
-    let grow = leaves.powf(0.6);
-    let fill = smooth01(0.3, 1.0, leaves);
-    let (cs, cr) = if detail { (8, 5) } else { (5, 3) };
-    if fill > 0.02 {
-        mb.ellipsoid_g(c.centre, c.radius * 0.72 * fill, mix(dark, hex(INK), 0.14), mix(dark, light, 0.4), cs + 1, cr + 1);
-    }
-    // Clumps darken toward their undersides and the crown's base, so a crown has form in
-    // mostly ambient light.
-    let clump_col = |y: f32, j: f32| {
-        let up = (y * 0.5 + 0.5).clamp(0.0, 1.0);
-        let lo = mix(mix(dark, hex(INK), 0.16 * (1.0 - up)), light, (0.02 + 0.3 * up + j).clamp(0.0, 1.0));
-        let hi = mix(dark, light, (0.5 + 0.35 * up + j).clamp(0.0, 1.0));
-        (lo, hi)
-    };
-    for &(t, y) in &tips {
-        let s = c.clump * rng.range(0.85, 1.15) * (1.0 - 0.15 * y.max(0.0)) * grow;
-        let (lo, hi) = clump_col(y, rng.range(-0.12, 0.12));
-        mb.ellipsoid_g(t, v(s, s * 0.82, s), lo, hi, cs, cr);
-    }
-    if detail && fill > 0.02 {
-        for &f in &forks {
-            let y = ((f.y - c.centre.y) / c.radius.y).clamp(-1.0, 1.0);
-            let s = c.clump * 0.8 * fill;
-            let (lo, hi) = clump_col(y, rng.range(-0.1, 0.1));
-            mb.ellipsoid_g(f, v(s, s * 0.82, s), lo, hi, cs, cr);
-        }
-    }
-    tips
-}
-
-/// Willow: from each outer tip, thin yellowish withies droop to below the crown, leafed along
-/// their length in season.
-fn willow_strands(mb: &mut Mb, c: Canopy, tips: &[(Vec3, f32)], leaves: f32, dark: [f32; 3], light: [f32; 3]) {
-    let withy = hex(0x9a8a4a);
-    let grow = leaves.powf(0.6);
-    let mut r = Rng(19);
-    for &(t, y) in tips.iter().filter(|t| t.1 < 0.55) {
-        let out = v(t.x - c.centre.x, 0.0, t.z - c.centre.z).normalize_or_zero();
-        for k in 0..2 {
-            let side = out.cross(Vec3::Y) * (k as f32 - 0.5) * 0.5;
-            let len = r.range(1.3, 1.8) * (1.0 - 0.3 * y.max(0.0));
-            let p1 = t + out * 0.3 + side + Vec3::Y * 0.08;
-            let p2 = p1 + out * 0.12 - Vec3::Y * len * 0.5;
-            let p3 = p2 + out * 0.04 - Vec3::Y * len * 0.5;
-            for (a, b) in [(t, p1), (p1, p2), (p2, p3)] {
-                mb.cyl(a, b, 0.02, 0.012, withy, withy, 3);
-            }
-            if grow > 0.02 {
-                for i in 0..6 {
-                    let u = i as f32 / 5.0;
-                    let p = if u < 0.5 { p1.lerp(p2, u * 2.0) } else { p2.lerp(p3, (u - 0.5) * 2.0) };
-                    let s = 0.1 * grow * (1.0 - 0.35 * u);
-                    mb.ellipsoid_g(p, v(s, s * 1.7, s), mix(dark, light, 0.15), mix(dark, light, 0.5), 5, 3);
-                }
-            }
-        }
-    }
-}
-
-fn root_flare(mb: &mut Mb, r: f32, bark: [f32; 3]) {
-    mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (r * 1.9, -0.1), (r * 1.25, 0.1), (r, 0.42)], 8, mix(bark, hex(INK), 0.25), bark, true);
-}
-
-fn bark_eyes(mb: &mut Mb, h: f32, r0: f32, r1: f32, n: usize, seed: u32) {
-    let mut rng = Rng(seed);
-    for _ in 0..n {
-        let y = rng.range(0.35, h * 0.85);
-        let a = rng.range(0.0, TAU);
-        let rr = r0 + (r1 - r0) * (y / h) + 0.004;
-        let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - a);
-        mb.ellipsoid_r(v(a.cos() * rr, y, a.sin() * rr), v(0.075, 0.028, 0.018), rot, hex(0x4a4036));
-    }
-}
-
-pub fn snag_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    let (g0, g1) = (hex(0x6e675d), hex(0x9a9283));
-    mb.cyl(v(0.0, -0.4, 0.0), v(0.28, 3.4, 0.1), 0.24, 0.12, g0, g1, 7);
-    mb.cyl(v(0.28, 3.3, 0.1), v(0.4, 3.9, 0.12), 0.12, 0.03, g1, hex(0xc8c0b0), 5);
-    mb.cyl(v(0.15, 2.2, 0.05), v(1.0, 3.0, 0.3), 0.08, 0.03, g0, g1, 5);
-    mb.cyl(v(0.2, 1.5, 0.0), v(-0.65, 2.2, 0.3), 0.07, 0.03, g0, g1, 5);
-    mb.cyl(v(0.1, 2.9, 0.0), v(-0.4, 3.5, -0.2), 0.05, 0.02, g0, g1, 4);
-    mb.ellipsoid_g(v(0.0, 0.1, 0.0), v(0.36, 0.25, 0.36), hex(0x4f6b2c), hex(0x7da83f), 8, 4);
-    mb.build()
+    pub(super) fn phase(self) -> f32 { self.0 as f32 / Self::COUNT as f32 }
 }
 
 /// Construction shows in this many steps before a building is complete.
@@ -596,9 +316,13 @@ pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
     use structures::Footing::*;
     Some(match kind {
         StructKind::Lodge => Mound(3.3),
-        StructKind::Warehouse | StructKind::Larder => Piles(2.9, 2.5),
-        StructKind::Toolshed | StructKind::Forester | StructKind::Logistics => Piles(1.9, 1.6),
-        StructKind::Lookout => Piles(1.5, 1.5),
+        // Islands in the shallows, heaped up from the bed.
+        StructKind::Warehouse => Mound(2.6),
+        StructKind::Larder => Mound(1.5),
+        StructKind::Toolshed => Mound(1.6),
+        StructKind::Logistics => Mound(1.7),
+        StructKind::Lookout => Mound(1.5),
+        StructKind::Forester => Ring(1.75),
         StructKind::Harbor => Piles(2.9, 2.5),
         _ => return None,
     })
@@ -612,17 +336,17 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Lodge => lodge(&mut mb, f),
         StructKind::Dam => dam(&mut mb, len, f),
         StructKind::Canal => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
-        StructKind::Warehouse => structures::stockpile(&mut mb, f),
-        StructKind::Larder => structures::larder(&mut mb, f),
-        StructKind::Toolshed => structures::toolshed(&mut mb, f),
-        StructKind::Forester => structures::forester(&mut mb, f),
-        StructKind::Logistics => structures::logistics(&mut mb, f),
-        StructKind::Lookout => structures::lookout(&mut mb, f),
+        StructKind::Warehouse => islands::cache_island(&mut mb, f),
+        StructKind::Larder => islands::feed_pile(&mut mb, f),
+        StructKind::Toolshed => islands::stone_cache(&mut mb, f),
+        StructKind::Forester => islands::willow_shallows(&mut mb, f),
+        StructKind::Logistics => islands::haul_island(&mut mb, f),
+        StructKind::Lookout => islands::watch_mound(&mut mb, f),
         StructKind::Harbor => structures::harbor(&mut mb, f),
     }
     if let Some(fo) = footing_of(kind) {
         let (hx, hz) = match fo {
-            structures::Footing::Mound(r) => (r, r),
+            structures::Footing::Mound(r) | structures::Footing::Ring(r) => (r, r),
             structures::Footing::Piles(x, z) => (x, z),
         };
         if dry {
@@ -641,7 +365,7 @@ pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
     let (dark, light) = (col(palette::MUD_DARK), col(palette::DAM_MUD));
     let stone = (hex(0x77777c), hex(0xb7b5b2));
     match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5, 1.4)) {
-        structures::Footing::Mound(radius) => {
+        structures::Footing::Mound(radius) | structures::Footing::Ring(radius) => {
             for k in 0..16 {
                 let angle = k as f32 * TAU / 16.0;
                 let p = v(angle.cos() * (radius + 0.10), 0.08, angle.sin() * (radius + 0.10));
@@ -677,7 +401,7 @@ pub fn pebble_facing_mesh(kind: StructKind) -> Mesh {
     let (dark, light) = (hex(0x6e6e74), hex(0xc2c0bc));
     let mut r = Rng(77);
     let (rx, rz, n) = match footing_of(kind).unwrap_or(structures::Footing::Piles(2.5, 1.4)) {
-        structures::Footing::Mound(radius) => (radius + 0.45, radius + 0.45, 22),
+        structures::Footing::Mound(radius) | structures::Footing::Ring(radius) => (radius + 0.45, radius + 0.45, 22),
         structures::Footing::Piles(x, z) => (x + 0.55, z + 0.55, 20),
     };
     for k in 0..n {
@@ -686,23 +410,6 @@ pub fn pebble_facing_mesh(kind: StructKind) -> Mesh {
         let s = r.range(0.28, 0.4);
         mb.ellipsoid_r(p, v(s * 1.3, s * 0.75, s), Quat::from_rotation_y(-a + r.range(-0.3, 0.3)), mix(dark, light, r.next()));
     }
-    mb.build()
-}
-
-/// A rocky outcrop: a few weathered boulders bedded in the ground.
-pub fn pebble_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    for (x, z, rx, ry, rz, yaw) in [(0.0, 0.0, 1.0, 0.75, 0.85, 0.3), (0.85, 0.55, 0.6, 0.45, 0.55, 1.2), (-0.75, 0.45, 0.55, 0.4, 0.5, 2.0), (0.2, -0.8, 0.55, 0.35, 0.45, 0.7)] {
-        let start = mb.len();
-        mb.ellipsoid_g(v(x, 0.0, z), v(rx, ry, rz), hex(0x5f5f64), hex(0xb9b7b2), 9, 6);
-        let c = v(x, 0.0, z);
-        mb.displace(start, |p| {
-            let q = p - c;
-            let k = 1.0 + 0.12 * (q.x * 6.0 + yaw).sin() * (q.z * 5.0 - yaw).cos();
-            c + v(q.x * k, q.y * (1.0 + 0.08 * (q.z * 7.0).sin()), q.z * k)
-        });
-    }
-    mb.ellipsoid(v(-0.2, 0.62, 0.15), v(0.28, 0.06, 0.22), hex(0x7f9a4a));
     mb.build()
 }
 
@@ -919,56 +626,6 @@ fn stump_low() -> Mb {
     mb.lathe(Mat4::IDENTITY, &[(0.0, -0.1), (0.55, -0.1), (0.4, 0.12), (0.34, 0.3)], 10, bark, bark, true);
     mb.lathe(Mat4::IDENTITY, &[(0.34, 0.3), (0.0, 0.32)], 10, hex(0xeed3a0), hex(0xf6e2b8), false);
     mb
-}
-
-pub fn mud_mesh() -> Mesh {
-    // A low, lobed spread of wet mud: no single dome (a dome with clods round it reads as a turtle).
-    let mut mb = Mb::new();
-    for (x, z, rx, rz, hgt) in [(0.0, 0.0, 1.35, 0.85, 0.11), (0.75, 0.45, 0.8, 0.6, 0.09), (-0.8, 0.3, 0.7, 0.75, 0.08), (-0.2, -0.65, 0.9, 0.5, 0.09), (0.9, -0.5, 0.45, 0.4, 0.07)] {
-        mb.ellipsoid_g(v(x, 0.0, z), v(rx, hgt, rz), hex(0x3f2c1b), hex(0x5e4430), 10, 4);
-    }
-    mb.build()
-}
-
-/// Water lilies: pads floating flat on the surface round a flower or two, a clump of reeds
-/// standing out of the water beside them. Origin at the water line.
-pub fn water_plant_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    let pads = [(0.0f32, 0.0f32, 0.34f32), (0.55, 0.2, 0.26), (-0.45, 0.35, 0.28), (0.15, -0.55, 0.24), (-0.4, -0.35, 0.2), (0.6, -0.4, 0.18)];
-    for (k, &(x, z, r)) in pads.iter().enumerate() {
-        let shade = if k % 2 == 0 { hex(0x3f8f35) } else { hex(0x56a443) };
-        mb.ellipsoid_r(v(x, 0.02, z), v(r, 0.025, r * 0.92), Quat::from_rotation_y(k as f32 * 1.3), shade);
-    }
-    // Flowers: a ring of pale petals round a yellow heart.
-    for &(x, z, s) in &[(0.05f32, 0.05f32, 1.0f32), (-0.42, 0.33, 0.75)] {
-        for i in 0..6 {
-            let a = i as f32 * std::f32::consts::TAU / 6.0;
-            mb.ellipsoid_r(v(x + a.cos() * 0.09 * s, 0.09 * s, z + a.sin() * 0.09 * s), v(0.09 * s, 0.035 * s, 0.05 * s), Quat::from_rotation_y(-a) * Quat::from_rotation_z(0.5), hex(0xf4e9f0));
-        }
-        mb.ellipsoid(v(x, 0.12 * s, z), v(0.05 * s, 0.04 * s, 0.05 * s), hex(0xf2c94c));
-    }
-    // Reeds with brown heads.
-    for i in 0..5 {
-        let a = 2.2 + i as f32 * 0.35;
-        let base = v(0.75 + 0.1 * a.cos(), -0.1, 0.55 + 0.1 * a.sin());
-        let tip = base + v(0.08 * (i as f32 - 2.0), 0.95 + 0.12 * (i % 2) as f32, 0.03 * i as f32);
-        mb.cyl(base, tip, 0.025, 0.012, hex(0x4f8a3a), hex(0x9cc96a), 4);
-        if i % 2 == 0 {
-            mb.cyl(tip - v(0.0, 0.28, 0.0), tip - v(0.0, 0.08, 0.0), 0.045, 0.045, hex(0x6b4426), hex(0x7d5130), 5);
-        }
-    }
-    mb.build()
-}
-
-pub fn plant_mesh() -> Mesh {
-    let mut mb = Mb::new();
-    for i in 0..6 {
-        let a = i as f32 * 1.05;
-        let tip = v(a.cos() * 0.45, 0.9 + 0.1 * (i % 3) as f32, a.sin() * 0.45);
-        mb.cyl(v(a.cos() * 0.08, 0.0, a.sin() * 0.08), tip, 0.06, 0.02, hex(0x3f8f35), hex(0x8bd05a), 4);
-    }
-    mb.ellipsoid(v(0.0, 0.8, 0.0), v(0.3, 0.1, 0.3), hex(0x9bd86a));
-    mb.build()
 }
 
 /// Goods lying on the ground, about one load's worth; scaled with the amount.

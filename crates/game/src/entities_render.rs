@@ -1,11 +1,15 @@
+mod deposits;
 mod effects;
+mod islands;
 mod gallery;
 pub(crate) mod harbor;
 mod meshgen;
 mod models;
+mod plants;
 pub mod portrait;
 mod scene;
 mod structures;
+mod trees;
 mod wildlife;
 pub mod sim_sync;
 pub mod sim_view;
@@ -78,8 +82,9 @@ impl Plugin for EntitiesRenderPlugin {
                     .after(crate::terrain_render::update_season),
             )
             .add_systems(Update, (effects::grow, effects::puffs, effects::falls).chain().after(topple_trees))
+            .add_systems(Update, update_plant_season.after(update_tree_lod))
             .add_systems(Startup, harbor::init_harbor_meshes)
-            .add_systems(Update, (harbor::sync_locks, harbor::sync_barges, harbor::animate_locks).chain().after(sim_sync::sync_sim_dams));
+            .add_systems(Update, (harbor::sync_locks, harbor::sync_rafts, harbor::animate_locks).chain().after(sim_sync::sync_sim_dams));
     }
 }
 
@@ -133,10 +138,16 @@ struct Models {
     loads: Vec<Handle<Mesh>>,
     paw_loads: Vec<Handle<Mesh>>,
     felled: Vec<Handle<Mesh>>,
-    mud: Handle<Mesh>,
-    plant: Handle<Mesh>,
-    water_plant: Handle<Mesh>,
-    pebbles: Handle<Mesh>,
+    /// Each food plant species through the year (`Models::plant`).
+    plants: Vec<Handle<Mesh>>,
+    /// Pebbles left in quarters: heaps on land, gravel bars in streams.
+    pebble_heaps: Vec<Handle<Mesh>>,
+    gravel_bars: Vec<Handle<Mesh>>,
+    boulders: Vec<Handle<Mesh>>,
+    clay_heap: Handle<Mesh>,
+    river_clay: Handle<Mesh>,
+    /// Wet clay's slick sheen.
+    wet: Handle<StandardMaterial>,
     far: Handle<Mesh>,
     wake: Handle<Mesh>,
     blob: Handle<Mesh>,
@@ -144,20 +155,12 @@ struct Models {
     dams: HashMap<(u8, u32, u32, structures::DamStage), Handle<Mesh>>,
 }
 
-fn species_index(s: Species) -> usize {
-    match s {
-        Species::Aspen => 0,
-        Species::Maple => 1,
-        Species::Pine => 2,
-        Species::Willow => 3,
-    }
-}
-
-const SPECIES: [Species; 4] = [Species::Aspen, Species::Maple, Species::Pine, Species::Willow];
-
 impl Models {
+    fn plant(&self, p: sim::plants::Plant, season: Season) -> Handle<Mesh> {
+        self.plants[p as usize * Season::COUNT + season.index()].clone()
+    }
     fn tree(&self, sp: Species, season: Season, lod: u8) -> Handle<Mesh> {
-        self.trees[(species_index(sp) * Season::COUNT + season.index()) * 3 + lod as usize].clone()
+        self.trees[(sp.index() * Season::COUNT + season.index()) * 3 + lod as usize].clone()
     }
 }
 
@@ -168,6 +171,13 @@ struct TreeLod {
     lod: u8,
     season: Season,
     cutaway: bool,
+}
+
+/// A food plant, redrawn as the year turns (each a little out of step with its neighbours).
+#[derive(Component)]
+struct PlantLook {
+    plant: sim::plants::Plant,
+    season: Season,
 }
 
 #[derive(Component)]
@@ -324,10 +334,10 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     let wear = [tint(&mut materials, 0.86, 0.84, 0.8), tint(&mut materials, 0.72, 0.7, 0.66), tint(&mut materials, 0.58, 0.56, 0.54)];
     let rot = [tint(&mut materials, 0.84, 0.86, 0.66), tint(&mut materials, 0.56, 0.6, 0.42)];
     let mut trees = Vec::new();
-    for sp in SPECIES {
+    for sp in Species::ALL {
         for season in Season::all() {
             for lod in 0..3u8 {
-                trees.push(meshes.add(models::tree_mesh(sp, season, lod)));
+                trees.push(meshes.add(trees::tree_mesh(sp, season, lod)));
             }
         }
     }
@@ -356,8 +366,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         wear,
         rot,
         trees,
-        cutaway_trees: SPECIES.into_iter().map(|sp|meshes.add(models::tree_cutaway_mesh(sp))).collect(),
-        snag: meshes.add(models::snag_mesh()),
+        cutaway_trees: Species::ALL.into_iter().map(|sp|meshes.add(trees::tree_cutaway_mesh(sp))).collect(),
+        snag: meshes.add(trees::snag_mesh()),
         body,
         head,
         tail,
@@ -369,10 +379,13 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::load_mesh(*g))).collect(),
         paw_loads: sim::buildings::Good::ALL.iter().map(|g| meshes.add(models::paw_load_mesh(*g))).collect(),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
-        mud: meshes.add(models::mud_mesh()),
-        plant: meshes.add(models::plant_mesh()),
-        water_plant: meshes.add(models::water_plant_mesh()),
-        pebbles: meshes.add(models::pebble_mesh()),
+        plants: sim::plants::Plant::ALL.into_iter().flat_map(|p| Season::all().map(move |s| (p, s))).map(|(p, s)| meshes.add(plants::plant_mesh(p, s))).collect(),
+        pebble_heaps: (1..=4).map(|q| meshes.add(deposits::pebble_heap_mesh(q))).collect(),
+        gravel_bars: (1..=4).map(|q| meshes.add(deposits::gravel_bar_mesh(q))).collect(),
+        boulders: (0..deposits::BOULDER_VARIANTS).map(|v| meshes.add(deposits::boulder_mesh(v))).collect(),
+        clay_heap: meshes.add(deposits::clay_heap_mesh()),
+        river_clay: meshes.add(deposits::river_clay_mesh()),
+        wet: materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 0.32, reflectance: 0.3, ..default() }),
         far,
         wake,
         blob,
@@ -1080,8 +1093,20 @@ fn update_tree_lod(
             lod.lod = want;
             lod.season = tree_season;
             lod.cutaway = cutaway;
-            mesh.0 = if cutaway { models.cutaway_trees[species_index(lod.species)].clone() }
+            mesh.0 = if cutaway { models.cutaway_trees[lod.species.index()].clone() }
                 else { models.tree(lod.species, tree_season, want) };
+        }
+    }
+}
+
+fn update_plant_season(season: Res<crate::terrain_render::Season>, models: Option<Res<Models>>, mut plants: Query<(&Transform, &mut PlantLook, &mut Mesh3d)>) {
+    let Some(models) = models else { return };
+    for (t, mut look, mut mesh) in &mut plants {
+        let offset = (t.translation.x * 0.754_877_7 + t.translation.z * 0.569_840_3).rem_euclid(1.0) - 0.5;
+        let s = Season::at(season.phase + offset / Season::COUNT as f32);
+        if s != look.season {
+            look.season = s;
+            mesh.0 = models.plant(look.plant, s);
         }
     }
 }

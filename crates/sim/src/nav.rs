@@ -420,12 +420,21 @@ impl NavGrid {
                 _=>for (x,y) in b.cells() {self.dry_surface[y*w+x]=Surface::Solid;self.wet_surface[y*w+x]=Surface::Solid;},
             }
         }
-        // A lock is swum through, whatever the water there, right through a widened dam.
+        // A lock is swum through, whatever the water there, right through a widened dam, and
+        // only down its lane: nothing passes through its walls.
         for l in sim.locks.at.values().filter(|l|l.built) {
+            for c in crate::locks::wall_cells(sim,l) {
+                let i=c.1*w+c.0;
+                if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Solid;self.wet_surface[i]=Surface::Solid;}
+            }
             for c in crate::locks::lock_cells(sim,l) {
                 let i=c.1*w+c.0;
                 if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Lock;self.wet_surface[i]=Surface::Lock;}
             }
+        }
+        for b in &sim.resources.boulders {
+            let i=b.cell.1*w+b.cell.0;
+            if i<self.dry_surface.len() && self.dry_surface[i]==Surface::Land {self.dry_surface[i]=Surface::Solid;}
         }
         for r in sim.resources.items().iter().filter(|r|r.is_solid()) {
             let i=r.cell.1*w+r.cell.0;

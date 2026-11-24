@@ -410,7 +410,7 @@ impl Runner {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} sticks {:>4.1} | built {} sites {} dry {} | barges {} carried {:.0} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} sticks {:>4.1} | built {} sites {} dry {} | rafts {} carried {:.0} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),

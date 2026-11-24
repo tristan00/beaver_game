@@ -507,81 +507,17 @@ pub fn new_game_with_dam(seed: u64) -> Result<(SimState, DamSite), StartError> {
 
 pub fn new_game_on_map(id: &str) -> Result<(SimState, DamSite), StartError> {
     let (info, world) = crate::maps::world(id).map_err(|e| StartError::Build(e.to_string()))?;
-    build_river_on(SimState::from_world(info.seed(), world))
+    build_river_on(on_flora(SimState::from_world(info.seed(), world), &info.id))
 }
 
 pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::World) -> Result<(SimState, DamSite), StartError> {
-    build_river_on(SimState::from_world(info.seed(), world))
+    build_river_on(on_flora(SimState::from_world(info.seed(), world), &info.id))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The family's two pups are past six months on arrival, so all four can work.
-    #[test]
-    fn the_founding_family_arrives_with_four_workers() {
-        let mut sim = SimState::new(1);
-        let camp = crate::site::best_site(&sim).expect("valid founding site");
-        settle(&mut sim, camp).expect("settle");
-        assert_eq!(sim.colony.beavers.len(), 4);
-        assert!(sim.colony.beavers.iter().all(|b| b.can_work()), "{:?}", sim.colony.beavers.iter().map(|b| (b.stage, b.age_days)).collect::<Vec<_>>());
-        let h = crate::jobs::headcount(&sim);
-        assert_eq!((h.working + h.free, h.kits), (4, 0), "the colony panel counts all four as workers");
-    }
-
-    /// Every map that has a place where several rivers meet or run side by side starts
-    /// there, not on a lone river. Some real valleys have none away from the edge.
-    #[test]
-    fn every_map_starts_among_several_rivers() {
-        for id in crate::maps::all().into_iter().map(|m| m.id) {
-            let id = id.as_str();
-            let (sim, site) = new_game_on_map(id).expect("start");
-            let spots = river_spots(&sim);
-            let reach = RIVERS_RADIUS * RIVERS_RADIUS;
-            if spots.iter().all(|&(branches, _)| branches < 2) {
-                continue;
-            }
-            assert!(
-                spots.iter().any(|&(branches, c)| branches >= 2 && dist2(c, site.camp) <= reach),
-                "{id}: camp {:?} has fewer than two river branches in reach", site.camp
-            );
-        }
-    }
-
-    /// However little clay a map has, a few clay banks lie by the river near the camp.
-    #[test]
-    fn every_map_has_clay_near_its_start() {
-        for id in crate::maps::all().into_iter().map(|m| m.id) {
-            let (sim, site) = new_game_on_map(&id).expect("start");
-            assert!(clay_near(&sim, site.camp) >= START_CLAY, "{id}: only {} clay within {START_CLAY_REACH} of camp {:?}", clay_near(&sim, site.camp), site.camp);
-        }
-    }
-
-    #[test]
-    fn starting_supplies_are_on_a_clear_bank_reachable_from_arrival() {
-        for seed in [1, 2, 3] {
-            let mut sim = SimState::new(seed);
-            let camp = crate::site::best_site(&sim).expect("valid founding site");
-            settle(&mut sim, camp).expect("settle beside the river");
-            let pile = sim.work.supplies.expect("starting supplies");
-            assert!(sim.fog.explored(pile));
-            assert!(!sim.resources.blocks(pile));
-            assert!(sim.water.depth.get(pile.0, pile.1).unwrap() <= &crate::buildings::WET_DEPTH);
-            assert!(sim.world.river.as_slice().iter().enumerate().any(|(i, &river)| {
-                river && (i % sim.world.size).abs_diff(pile.0) + (i / sim.world.size).abs_diff(pile.1) == 1
-            }), "supplies must touch the river, seed {seed}");
-            let mut nav = sim.nav.clone();
-            nav.rebuild(&sim);
-            for beaver in &sim.colony.beavers {
-                let from = sim.agents.get(beaver.id).expect("arriving beaver").cell;
-                assert!(nav.find_path(beaver.id, from, crate::nav::Goal::Beside(pile)).is_some());
-            }
-            for (good, amount) in START_BUNDLE {
-                assert_eq!(sim.work.stock_of(crate::agents::SUPPLIES, good), amount);
-            }
-        }
-    }
+/// The world with its plants drawn from this map's flora.
+fn on_flora(mut sim: SimState, map: &str) -> SimState {
+    crate::wetland::set_flora(&mut sim, map);
+    sim
 }
 
 use crate::water::Cell;

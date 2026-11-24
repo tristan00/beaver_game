@@ -36,7 +36,7 @@ icons! {
     Building, Home, Upstream, Gauge,
     Widen, Extend,
     Pebbles, Sapling, Larder, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
-    Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Barge,
+    Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Raft,
     Deer, Rabbit, Bird,
     Cloud, Rain, Storm, Blizzard,
 }
@@ -648,7 +648,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(12.0, 42.0, 32.0, 50.0, 4.0).or(seg(52.0, 42.0, 32.0, 50.0, 4.0)));
             c.add(wave(14.0, 50.0, 33.0, 2.5, 1.0, 4.0));
         }
-        Barge => {
+        Raft => {
             // A flat raft with a load heaped on it.
             c.add(poly(&[(4.0, 38.0), (60.0, 38.0), (54.0, 48.0), (10.0, 48.0)]).grow(1.0));
             c.add(rect_c(16.0, 24.0, 34.0, 38.0, 3.0));

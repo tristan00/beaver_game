@@ -15,9 +15,10 @@ pub enum ResourceKind {
     Plant,
     MudBank,
     RiverClay,
-    /// Pebble beds, in clusters on high dry ground; heavy to carry.
+    /// Pebbles: heaped round the boulders of rocky outcrops on high dry ground, in heaps of
+    /// their own, and in gravel bars along the streams; heavy to carry.
     Pebbles,
-    /// Water lilies and pond weed in shallow still water: few, but rich in food.
+    /// Plants rooted in open water (lilies, pondweed, arrowhead): rich in food.
     WaterPlant,
 }
 
@@ -42,8 +43,10 @@ impl ResourceKind {
             ResourceKind::Pebbles => &[Good::Pebbles],
         }
     }
+    /// Stands in the way. Pebbles are a low heap, walked over; the boulders they lie round
+    /// stand in the way (see `Boulder`).
     pub fn is_solid(self) -> bool {
-        matches!(self, ResourceKind::Tree | ResourceKind::Pebbles)
+        matches!(self, ResourceKind::Tree)
     }
     /// Food plants, on land or in water: they regrow and stay when eaten bare.
     pub fn is_food_plant(self) -> bool {
@@ -74,6 +77,21 @@ pub struct Resource {
     pub snag: bool,
     /// Trees and felled trees only.
     pub species: Option<crate::trees::Tree>,
+    /// Food plants only; set from the map's flora (see `wetland::assign_plants`). Saved after
+    /// the world (see `save`).
+    #[serde(skip)]
+    pub plant: Option<crate::plants::Plant>,
+}
+
+/// A boulder of a rocky outcrop: scenery, never gathered, standing in its cell's way. The
+/// pebbles round it are the resource.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Boulder {
+    pub cell: Cell,
+    /// Roughly how many metres across.
+    pub size: f32,
+    /// Picks its shape and turn.
+    pub seed: u32,
 }
 
 /// What can be seen of a source: its kind, and how much of it there is in the steps it is
@@ -207,6 +225,13 @@ pub struct ResourceWorld {
     pub water_plants_seeded: bool,
     /// Write changes to the session journal (off while the world is first filled in).
     pub log_changes: bool,
+    /// The map whose flora the plants come from (`plants::flora`); empty for the default.
+    /// Saved after the world (see `save`).
+    #[serde(skip)]
+    pub flora: String,
+    /// Saved after the world (see `save`).
+    #[serde(skip)]
+    pub boulders: Vec<Boulder>,
     next_id: u64,
     nav_revision: u64,
 }
@@ -266,25 +291,43 @@ impl ResourceWorld {
             if near_river && !in_bed(c) && river_spots.iter().all(|&b|distance(c,b)>=RIVER_CLAY_SPACING) {river_spots.push(c);}
             if river_spots.len()>=RIVER_CLAY_SPOTS {break;}
         }
-        let pebbles = pebble_cells(world, &mut unit);
+        let reach = water_reach(world, PEBBLE_WATER_REACH.max(CLAY_POCKET_WATER_REACH));
+        let pockets = clay_pockets(world, &reach, &mut unit, &beds);
+        let (pebbles, boulders) = outcrops(world, &reach, &mut unit);
+        let keep_off: Vec<Cell> = river_spots.iter().chain(&beds).chain(&pockets).copied().collect();
+        let gravel = stream_pebbles(world, &mut unit, &keep_off);
+        let rocks: std::collections::HashSet<Cell> = boulders.iter().map(|b| b.cell).collect();
+        let in_pocket = |c: Cell, unit: &mut dyn FnMut() -> f32| pockets.iter().any(|&p| p == c || (distance(c, p) <= CLAY_POCKET_RADIUS && unit() < 0.75));
+        let upland = |c: Cell| !is_water(world, c) && !is_bank(world, c) && !is_wet(world, c) && treeless(c.0, c.1)
+            && world.moisture.get(c.0, c.1).is_some_and(|&m| m >= crate::wetland::UPLAND_MOISTURE);
         for y in 0..n {for x in 0..n {
             let cell=(x,y);
+            if rocks.contains(&cell) {
+                continue;
+            }
             if pebbles.contains(&cell) {
                 out.add(ResourceKind::Pebbles,cell,PEBBLE_AMOUNT);
-
+            } else if gravel.contains(&cell) {
+                let id = out.add(ResourceKind::Pebbles,cell,STREAM_PEBBLE_AMOUNT);
+                out.items.iter_mut().find(|r| r.id == id).expect("just added").wet = true;
             } else if let Some(Some(sp)) = world.forest.get(x,y).copied() {
                 out.add_tree(cell,crate::forestry::start_age(seed,cell),sp);
             } else if river_spots.contains(&cell) {
                 out.add(ResourceKind::RiverClay,cell,RIVER_CLAY_INITIAL);
             } else if is_bank(world,cell) && in_bed(cell) {
                 if unit()<CLAY_FILL {out.add(ResourceKind::MudBank,cell,CLAY_AMOUNT);}
+            } else if !is_water(world,cell) && in_pocket(cell, &mut unit) {
+                out.add(ResourceKind::MudBank,cell,CLAY_POCKET_AMOUNT);
             } else if is_bank(world,cell) && unit()<STRAY_MUD_CHANCE {
                 out.add(ResourceKind::MudBank,cell,STRAY_MUD_AMOUNT);
             } else if is_wet(world,cell) && unit()<PLANT_CHANCE {
                 let id=out.add(ResourceKind::Plant,cell,PLANT_MAX);
                 out.get_mut(id).unwrap().wet=true;
+            } else if upland(cell) && unit()<UPLAND_PLANT_CHANCE {
+                out.add(ResourceKind::Plant,cell,PLANT_MAX);
             }
         }}
+        out.boulders = boulders;
         out
     }
 
@@ -348,7 +391,14 @@ impl ResourceWorld {
         self.items.iter().filter(move |r| r.cell == cell)
     }
     pub fn blocks(&self, cell: Cell) -> bool {
-        self.at(cell).any(|r| r.is_solid() && r.has_yield())
+        self.at(cell).any(|r| r.is_solid() && r.has_yield()) || self.boulder_at(cell)
+    }
+    pub fn boulder_at(&self, cell: Cell) -> bool {
+        self.boulders.iter().any(|b| b.cell == cell)
+    }
+    /// Cells taken by a source or a boulder: nothing else roots or is set there.
+    pub fn taken_cells(&self) -> impl Iterator<Item = Cell> + '_ {
+        self.items.iter().map(|r| r.cell).chain(self.boulders.iter().map(|b| b.cell))
     }
 
     pub fn fell(&mut self, id: ResourceId, work: f32) -> Result<bool, ResourceError> {
@@ -472,7 +522,8 @@ impl ResourceWorld {
         for r in self.items.iter_mut() {
             if r.kind.is_food_plant() {
                 let was = r.amount;
-                let rate = plant_regrow(r, growth);
+                // Toward what it keeps over winter, not to nothing.
+                let rate = plant_regrow(r, growth) + decay * plant_winter_floor(r);
                 r.amount = if decay > 1e-7 {
                     r.amount*survival + rate/decay*(1.0-survival)
                 } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
@@ -504,7 +555,7 @@ impl ResourceWorld {
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
         self.changes.note(id);
-        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, species: None });
+        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, species: None, plant: None });
         if self.log_changes { note("NEW", self.items.last().expect("just added"), format_args!("")); }
         id
     }
@@ -522,25 +573,33 @@ impl ResourceWorld {
 
 }
 
-/// A few pebble beds on the highest, steepest dry ground near water, well apart.
-fn pebble_cells(world: &World, unit: &mut impl FnMut() -> f32) -> std::collections::HashSet<Cell> {
+/// Steps from the nearest water, up to `max` (further cells read `usize::MAX`).
+fn water_reach(world: &World, max: usize) -> Vec<usize> {
     let n = world.size;
-    let dry = |c: Cell| !is_water(world, c) && !is_bank(world, c) && world.moisture.get(c.0, c.1).is_some_and(|&m| m < WET_MOISTURE);
-    // Steps from the nearest water, so a tool shed on the bank can reach the bed.
     let mut reach = vec![usize::MAX; n * n];
     let mut queue = std::collections::VecDeque::new();
     for y in 0..n { for x in 0..n { if is_water(world, (x, y)) { reach[y * n + x] = 0; queue.push_back((x, y)); } } }
     while let Some((x, y)) = queue.pop_front() {
         let d = reach[y * n + x];
-        if d >= PEBBLE_WATER_REACH { continue; }
+        if d >= max { continue; }
         for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
             if nx < n && ny < n && reach[ny * n + nx] == usize::MAX { reach[ny * n + nx] = d + 1; queue.push_back((nx, ny)); }
         }
     }
+    reach
+}
+
+/// Rocky outcrops on the highest, steepest dry ground near water, well apart. Most are a few
+/// boulders with pebbles lying round them; some are a heap of pebbles alone. Returns the
+/// pebble cells and the boulders.
+fn outcrops(world: &World, reach: &[usize], unit: &mut impl FnMut() -> f32) -> (std::collections::HashSet<Cell>, Vec<Boulder>) {
+    let n = world.size;
+    let dry = |c: Cell| !is_water(world, c) && !is_bank(world, c) && world.moisture.get(c.0, c.1).is_some_and(|&m| m < WET_MOISTURE);
     let mut spots: Vec<(f32, Cell)> = Vec::new();
     let edge = 6;
     for y in (edge..n.saturating_sub(edge)).step_by(3) {
         for x in (edge..n.saturating_sub(edge)).step_by(3) {
+            // Near enough the water that a tool shed on the bank reaches it.
             if !dry((x, y)) || reach[y * n + x] > PEBBLE_WATER_REACH { continue; }
             let h = world.height.get(x, y).copied().unwrap_or(0.0);
             let slope = world.slope.get(x, y).copied().unwrap_or(0.0);
@@ -553,13 +612,96 @@ fn pebble_cells(world: &World, unit: &mut impl FnMut() -> f32) -> std::collectio
         if centres.iter().all(|&o| distance(c, o) >= PEBBLE_SPACING) { centres.push(c); }
         if centres.len() >= PEBBLE_OUTCROPS { break; }
     }
-    let r = PEBBLE_RADIUS.ceil() as usize;
-    let mut out = std::collections::HashSet::new();
+    let mut pebbles = std::collections::HashSet::new();
+    let mut boulders: Vec<Boulder> = Vec::new();
     for c in centres {
+        let pile = unit() < PEBBLE_PILE_SHARE;
+        let radius = if pile { PEBBLE_PILE_RADIUS } else { PEBBLE_RADIUS };
+        let mut rocks: Vec<Cell> = Vec::new();
+        if !pile {
+            let span = BOULDERS_PER_OUTCROP.end() - BOULDERS_PER_OUTCROP.start() + 1;
+            let count = BOULDERS_PER_OUTCROP.start() + ((unit() * span as f32) as usize).min(span - 1);
+            for k in 0..count * 3 {
+                if rocks.len() >= count { break; }
+                let cell = if k == 0 { c } else {
+                    let (a, d) = (unit() * std::f32::consts::TAU, 1.0 + unit() * 1.4);
+                    ((c.0 as f32 + a.cos() * d).round() as usize, (c.1 as f32 + a.sin() * d).round() as usize)
+                };
+                if cell.0 < n && cell.1 < n && dry(cell) && !rocks.contains(&cell) {
+                    rocks.push(cell);
+                    let size = if k == 0 { 1.2 + 0.5 * unit() } else { 0.55 + 0.6 * unit() };
+                    boulders.push(Boulder { cell, size, seed: (unit() * 65535.0) as u32 });
+                }
+            }
+        }
+        let r = radius.ceil() as usize;
         for y in c.1.saturating_sub(r)..=(c.1 + r).min(n - 1) {
             for x in c.0.saturating_sub(r)..=(c.0 + r).min(n - 1) {
-                let fill = if (x, y) == c { 1.0 } else { PEBBLE_FILL };
-                if distance((x, y), c) <= PEBBLE_RADIUS && dry((x, y)) && unit() < fill { out.insert((x, y)); }
+                let cell = (x, y);
+                if rocks.contains(&cell) || distance(cell, c) > radius || !dry(cell) { continue; }
+                let fill = if cell == c || (pile && distance(cell, c) < 1.1) { 1.0 } else { PEBBLE_FILL };
+                if unit() < fill { pebbles.insert(cell); }
+            }
+        }
+    }
+    (pebbles, boulders)
+}
+
+/// Gravel bars: running water washes pebbles out of the bed and heaps them along the edges of
+/// the streams. A few small ones, well apart and clear of the clay.
+fn stream_pebbles(world: &World, unit: &mut impl FnMut() -> f32, keep_off: &[Cell]) -> std::collections::HashSet<Cell> {
+    let n = world.size;
+    let river = |c: Cell| world.river.get(c.0, c.1).copied().unwrap_or(false) && !world.lake.get(c.0, c.1).copied().unwrap_or(false);
+    let near4 = |(x, y): Cell| [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)];
+    let mut spots: Vec<(f32, Cell)> = Vec::new();
+    for y in 2..n.saturating_sub(2) {
+        for x in 2..n.saturating_sub(2) {
+            let c = (x, y);
+            if river(c) && near4(c).iter().any(|&o| o.0 < n && o.1 < n && !is_water(world, o)) {
+                spots.push((unit(), c));
+            }
+        }
+    }
+    spots.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut beds: Vec<Cell> = Vec::new();
+    for &(_, c) in &spots {
+        if beds.len() >= STREAM_PEBBLE_BEDS { break; }
+        if beds.iter().all(|&b| distance(c, b) >= STREAM_PEBBLE_SPACING) && keep_off.iter().all(|&k| distance(c, k) >= STREAM_PEBBLE_CLAY_GAP) {
+            beds.push(c);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for b in beds {
+        out.insert(b);
+        for o in near4(b) {
+            if o.0 < n && o.1 < n && river(o) && unit() < 0.5 { out.insert(o); }
+        }
+    }
+    out
+}
+
+/// Small clay pockets, mostly along the water a step or three from it, a few in wet low ground
+/// further off; clear of each other and of the big clay beds. Returns their centres.
+fn clay_pockets(world: &World, reach: &[usize], unit: &mut impl FnMut() -> f32, beds: &[Cell]) -> Vec<Cell> {
+    let n = world.size;
+    let (mut shore, mut inland): (Vec<(f32, Cell)>, Vec<(f32, Cell)>) = (Vec::new(), Vec::new());
+    for y in (4..n.saturating_sub(4)).step_by(2) {
+        for x in (4..n.saturating_sub(4)).step_by(2) {
+            let c = (x, y);
+            if is_water(world, c) { continue; }
+            let d = reach[y * n + x];
+            if (1..=CLAY_POCKET_WATER_REACH).contains(&d) { shore.push((unit(), c)); }
+            else if d > CLAY_POCKET_WATER_REACH && is_wet(world, c) { inland.push((unit(), c)); }
+        }
+    }
+    let inland_n = (CLAY_POCKETS as f32 * CLAY_POCKET_INLAND_SHARE).round() as usize;
+    let mut out: Vec<Cell> = Vec::new();
+    for (pool, want) in [(&mut inland, inland_n), (&mut shore, CLAY_POCKETS)] {
+        pool.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for &(_, c) in pool.iter() {
+            if out.len() >= want { break; }
+            if out.iter().all(|&o| distance(c, o) >= CLAY_POCKET_SPACING) && beds.iter().all(|&b| distance(c, b) >= CLAY_BED_RADIUS + CLAY_POCKET_SPACING * 0.5) {
+                out.push(c);
             }
         }
     }
@@ -571,10 +713,20 @@ fn distance(a:Cell,b:Cell)->f32 {
 }
 
 /// Clay arrives gradually with the flowing river; exhausted spots remain on the map.
-/// Food a plant regrows a day at the season's `growth`: none on dry ground.
+/// Food a plant regrows a day at the season's `growth`: none out of its habitat (`wet`).
 pub fn plant_regrow(r: &Resource, growth: f32) -> f32 {
-    let regrow = if r.kind == ResourceKind::WaterPlant { WATER_PLANT_REGROW_PER_DAY } else { PLANT_REGROW_PER_DAY };
+    let regrow = match r.plant {
+        Some(p) => p.spec().regrow,
+        None if r.kind == ResourceKind::WaterPlant => WATER_PLANT_REGROW_PER_DAY,
+        None => PLANT_REGROW_PER_DAY,
+    };
     if r.wet { regrow * growth } else { 0.0 }
+}
+
+/// The food a plant keeps through winter, in its roots, rhizomes or canes: the cold takes the
+/// rest.
+pub fn plant_winter_floor(r: &Resource) -> f32 {
+    r.plant.map_or(0.0, |p| p.spec().keep * r.max_amount)
 }
 
 /// The share of a plant's food lost a day to the cold at the season's `growth`.

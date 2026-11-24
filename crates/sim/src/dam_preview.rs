@@ -48,14 +48,6 @@ pub struct DamPreview {
     pub fill_days: f32,
     pub inflow: f32,
     pub pond_loss: f32,
-    /// Where the water settles once the river runs past the dam: the still level plus the
-    /// depth it takes to push the inflow over the spill (weir law), and never below today's
-    /// surface beside the dam.
-    pub flow_level: f32,
-    /// How much higher that is than the water beside the dam today.
-    pub flow_rise: f32,
-    /// The cells that level covers.
-    pub flow_flooded: Vec<Cell>,
 }
 
 impl DamPreview {
@@ -73,7 +65,6 @@ pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<Dam
 /// still pond and the land draining to it. It is most of the work, and a dam nobody is
 /// building on asks for the same one every day.
 pub(crate) struct Ground {
-    still: crate::water::StillPond,
     level: f32,
     crest: f32,
     spill_at: Option<Cell>,
@@ -122,7 +113,7 @@ fn ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<Grou
             }
         }
     }
-    Some(Ground { still, level: pond.level, crest: pond.crest, spill_at: pond.spill_at, flooded: pond.flooded_cells, in_pond, watershed: seen })
+    Some(Ground { level: pond.level, crest: pond.crest, spill_at: pond.spill_at, flooded: pond.flooded_cells, in_pond, watershed: seen })
 }
 
 pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<DamPreview> {
@@ -187,7 +178,7 @@ pub(crate) fn flooded_kept(sim: &crate::SimState, cells: &[Cell], heights: &[f32
 fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Ground) -> Option<DamPreview> {
     let (w, h) = (sim.height.width(), sim.height.height());
     let idx = |&(x, y): &Cell| y * w + x;
-    let (still, seen) = (&ground.still, &ground.watershed);
+    let seen = &ground.watershed;
     let in_pond = ground.in_pond.clone();
     let under = |c: &Cell| c.0 < w && c.1 < h && in_pond[idx(c)];
 
@@ -219,31 +210,6 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
     let inflow = (pressure - lost_on_way).max(0.0);
     let pond_loss: f32 = ground.flooded.iter().map(idx).map(loss_at).sum();
 
-    // Flowing water stands above the spill by the weir head for the inflow it passes. Over the
-    // crest it spreads along the crest cells at the low point; around the dam, over the
-    // notch the water finds (as wide as the water engine lets a spill be).
-    // The discharge reaching the dam: what the catchment walk finds, or the river the world
-    // traced through these cells (its walk stops at small dips in real terrain), by season.
-    let river_q = cells.iter()
-        .flat_map(|&(x, y)| (-1i64..=1).flat_map(move |dx| (-1i64..=1).map(move |dy| (x as i64 + dx, y as i64 + dy))))
-        .filter(|&(x, y)| x >= 0 && y >= 0)
-        .filter_map(|(x, y)| sim.world.river_flow.get(x as usize, y as usize).copied())
-        .fold(0.0f32, f32::max) * forcing.inflow.max(0.0);
-    let q = (inflow * sim.water.cell_m * sim.water.cell_m / 86_400.0).max(river_q);
-    let low_crest = cells.iter().map(crest).fold(f32::INFINITY, f32::min);
-    let weir_cells = match ground.spill_at {
-        Some(_) => crate::water::equilibrium::WEIR_MAX_M,
-        None => cells.iter().filter(|c| crest(c) < low_crest + 0.02).count().clamp(1, crate::water::equilibrium::WEIR_MAX_M),
-    };
-    let head = crate::water::spill_head(q, weir_cells as f32 * sim.water.cell_m);
-    let flowing = still.preview(sim, head);
-    // The rise is how much deeper the water gets where the dam backs it up most: over every
-    // cell the flowing level covers, its level less today's surface there (a dry cell's is
-    // its ground).
-    let surface = |c: &Cell| terrain[idx(c)] + water[idx(c)];
-    let flow_level = flowing.flow_level;
-    let flow_rise = flowing.flow_cells.iter().map(|c| flow_level - surface(c)).fold(0.0f32, f32::max);
-
     let missing: f32 = ground.flooded.iter().map(idx)
         .map(|i| (ground.level - terrain[i] - dams[i] - water[i]).max(0.0)).sum();
     let net = inflow - 0.5 * pond_loss;
@@ -262,9 +228,6 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
         fill_days,
         inflow,
         pond_loss,
-        flow_level,
-        flow_rise,
-        flow_flooded: flowing.flow_cells,
     })
 }
 
@@ -292,18 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn a_dam_the_river_runs_around_still_raises_the_water_beside_it() {
-        let s = running_river();
-        // Across the river where it runs at x = 64, but too short to reach the valley sides.
-        let y0 = (0..128).max_by(|&a, &b| s.world.river_flow.get(64, a).unwrap().total_cmp(s.world.river_flow.get(64, b).unwrap())).unwrap();
-        let short: Vec<Cell> = (y0 - 3..=y0 + 3).map(|y| (64, y)).collect();
-        let p = preview_heights(&s, &short, &vec![1.0; short.len()]).unwrap();
-        assert!(p.spill_at.is_some(), "the river finds a way round a short dam");
-        assert!(p.flow_level > p.level, "flowing water stands above the still level");
-        assert!(p.flow_rise > 0.05, "the badge shows the water rising: {}", p.flow_rise);
-    }
-
-    #[test]
     fn a_pond_deep_over_a_building_drowns_it() {
         let mut s = running_river();
         let n = s.height.width();
@@ -315,90 +266,112 @@ mod tests {
         assert_eq!(drowned_by(&s, over(crate::buildings::MAX_BUILDING_DEPTH + 0.3)), vec![BuildingId(77)]);
     }
 
+    /// The badge's rise is what the water does days after the dam stands, beside the same water
+    /// left without it.
     #[test]
-    fn water_pouring_over_a_full_dam_stands_above_its_crest() {
+    fn the_settled_rise_is_what_the_water_does() {
         let s = running_river();
         let across: Vec<Cell> = (30..99).map(|y| (64, y)).collect();
-        let p = preview_heights(&s, &across, &vec![0.5; across.len()]).unwrap();
-        assert!(p.flow_level > p.crest, "{} over a crest at {}", p.flow_level, p.crest);
-        assert!(p.flow_flooded.len() >= p.flooded.len());
+        let heights = crate::dams::first_targets(&s, &across);
+        let got = settle(s.water.clone(), &s.height, &across, &heights).unwrap();
+        let (mut with, mut without) = (s.water.clone(), s.water.clone());
+        let pairs: Vec<(Cell, f32)> = across.iter().copied().zip(heights.iter().copied()).collect();
+        with.raise_dam(&pairs).unwrap();
+        run(&mut with, &s.height, 0.0, 5.0);
+        run(&mut without, &s.height, 0.0, 5.0);
+        let truth = pond(&with, &without, &s.height, &across);
+        assert!(truth.rise > 0.3, "the dam backs the river up: {}", truth.rise);
+        assert!((got.rise - truth.rise).abs() < 0.05, "badge {} against {}", got.rise, truth.rise);
     }
 }
 
-/// What the water really does once a dam stands: a copy of the water runs on with the dam in
-/// place, and every cell near it is compared with today. The game's own engine, so it matches
-/// play exactly where the quick estimate (`preview_heights`) guesses wrong, for instance a line
-/// drawn along a channel rather than across it. It takes about a tenth of a second, so the
-/// game runs it in the background.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// What the water really does once a dam stands: the game's own engine runs on from today
+/// twice, with the dam and without it, until the water behind the dam stops rising. The pond
+/// is every wet cell, reached from the dam, standing higher than it would without it, so the
+/// river's own rise and fall over those hours is not counted. It takes a fraction of a second,
+/// so the game runs it in the background.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Settled {
-    /// The most the water deepens anywhere near the dam.
+    /// The most the dam deepens the water anywhere in its pond.
     pub rise: f32,
-    /// Cells it deepens by a noticeable amount, and the highest surface among them.
+    /// The pond's cells, and the highest surface among them.
     pub flooded: Vec<Cell>,
     pub level: f32,
     /// The depth each of `flooded` settles to.
     pub depths: Vec<f32>,
 }
 
-pub fn settle(mut water: crate::water::Water, height: &crate::grid::HeightGrid, cells: &[Cell], heights: &[f32]) -> Option<Settled> {
+pub fn settle(water: crate::water::Water, height: &crate::grid::HeightGrid, cells: &[Cell], heights: &[f32]) -> Option<Settled> {
     let pairs: Vec<(Cell, f32)> = cells.iter().copied().zip(heights.iter().copied())
         .filter(|&(c, h)| h > water.dam_height.get(c.0, c.1).copied().unwrap_or(0.0))
         .collect();
     if pairs.is_empty() {
         return None;
     }
-    let (w, h) = (height.width(), height.height());
-    let (x0, x1) = (cells.iter().map(|c| c.0).min()?.saturating_sub(SETTLE_REACH), (cells.iter().map(|c| c.0).max()? + SETTLE_REACH).min(w - 1));
-    let (y0, y1) = (cells.iter().map(|c| c.1).min()?.saturating_sub(SETTLE_REACH), (cells.iter().map(|c| c.1).max()? + SETTLE_REACH).min(h - 1));
-    let dam: HashSet<Cell> = cells.iter().copied().collect();
-    let near: Vec<Cell> = (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).filter(|c| !dam.contains(c)).collect();
-    let surface = |wt: &crate::water::Water, c: Cell| height.get(c.0, c.1).copied().unwrap_or(0.0) + wt.depth.get(c.0, c.1).copied().unwrap_or(0.0);
-    let before: Vec<f32> = near.iter().map(|&c| surface(&water, c)).collect();
-    water.raise_dam(&pairs).ok()?;
+    let mut without = water.clone();
+    let mut with = water;
+    with.raise_dam(&pairs).ok()?;
+    // The dam stands from the first step, not from the water's next look at the ground.
+    with.refresh(height);
     let mut t = 0.0;
-    while t < SETTLE_DAYS {
-        let dt = crate::STEP_DAYS.min(SETTLE_DAYS - t);
+    let mut last: Option<f32> = None;
+    loop {
+        let until = t + SETTLE_CHUNK_DAYS;
+        std::thread::scope(|sc| {
+            sc.spawn(|| run(&mut without, height, t, until));
+            run(&mut with, height, t, until);
+        });
+        t = until;
+        let pond = pond(&with, &without, height, cells);
+        let still = last.is_some_and(|l| (pond.rise - l).abs() < SETTLE_STILL_M);
+        if still || t >= SETTLE_MAX_DAYS - 1e-6 {
+            return Some(pond);
+        }
+        last = Some(pond.rise);
+    }
+}
+
+fn run(water: &mut crate::water::Water, height: &crate::grid::HeightGrid, from: f32, until: f32) {
+    let mut t = from;
+    while t < until - 1e-6 {
+        let dt = crate::STEP_DAYS.min(until - t);
         water.step(height, dt);
         t += dt;
     }
-    let mut rise = 0.0f32;
-    let mut flooded = Vec::new();
-    let mut depths = Vec::new();
-    let mut level = f32::NEG_INFINITY;
-    for (&c, &b) in near.iter().zip(&before) {
-        let after = surface(&water, c);
-        let r = after - b;
-        rise = rise.max(r);
-        if r > 0.02 && water.depth.get(c.0, c.1).is_some_and(|&d| d > crate::water::WET_EPS) {
-            flooded.push(c);
-            depths.push(water.depth.get(c.0, c.1).copied().unwrap_or(0.0));
-            level = level.max(after);
+}
+
+/// The cells the dam holds water over: from beside the dam, through every cell whose water it
+/// changes by more than `POND_RISE_M` (the channel it starves below, the way round it finds),
+/// the wet ones standing that much above the water without it.
+fn pond(with: &crate::water::Water, without: &crate::water::Water, height: &crate::grid::HeightGrid, cells: &[Cell]) -> Settled {
+    let n = height.width();
+    let (ground, on, off) = (height.as_slice(), with.depth.as_slice(), without.depth.as_slice());
+    let mut seen = vec![false; n * n];
+    cells.iter().for_each(|c| seen[c.1 * n + c.0] = true);
+    let mut stack: Vec<usize> = cells.iter().flat_map(|c| crate::water::neighbours8(n, c.1 * n + c.0)).collect();
+    let mut out = Settled { rise: 0.0, flooded: Vec::new(), level: f32::NEG_INFINITY, depths: Vec::new() };
+    while let Some(i) = stack.pop() {
+        let change = on[i] - off[i];
+        if seen[i] || change.abs() <= POND_RISE_M {
+            continue;
+        }
+        seen[i] = true;
+        stack.extend(crate::water::neighbours8(n, i));
+        if change > 0.0 && on[i] > crate::water::WET_EPS {
+            out.rise = out.rise.max(change);
+            out.level = out.level.max(ground[i] + on[i]);
+            out.flooded.push((i % n, i / n));
+            out.depths.push(on[i]);
         }
     }
-    Some(Settled { rise, flooded, level, depths })
+    out
 }
 
-/// How far (cells) round a dam `settle` compares the water, and for how long it runs.
-const SETTLE_REACH: usize = 40;
-const SETTLE_DAYS: f32 = 0.05;
-
-#[cfg(test)]
-mod settle_tests {
-    use super::*;
-
-    /// A line drawn along a creek on the Bavarian map, where the quick estimate saw no rise
-    /// but the water rose a third of a metre in play.
-    #[test]
-    fn settling_finds_the_rise_play_shows() {
-        let (mut s, _) = crate::starts::new_game_on_map("bavarian").unwrap();
-        // Other tests switch the process-wide default engine: use the game's own.
-        s.water.set_engine(crate::water::DEFAULT_ENGINE);
-        crate::sandbox::run_days(&mut s, 0.01);
-        let cells = crate::sandbox::line(&[(387, 69), (384, 54)]);
-        let h = crate::dams::first_targets(&s, &cells);
-        let got = settle(s.water.clone(), &s.height, &cells, &h).unwrap();
-        assert!(got.rise > 0.25, "settled rise {}", got.rise);
-        assert!(!got.flooded.is_empty());
-    }
-}
+/// How the background run settles: it compares the water every `SETTLE_CHUNK_DAYS`, stops
+/// once the dam's rise moves less than `SETTLE_STILL_M` between looks (a big pond takes a day
+/// or more to fill), and stops waiting at `SETTLE_MAX_DAYS`. A cell counts as pond when it
+/// stands `POND_RISE_M` above the water without the dam.
+const SETTLE_CHUNK_DAYS: f32 = 0.25;
+const SETTLE_STILL_M: f32 = 0.01;
+const SETTLE_MAX_DAYS: f32 = 3.0;
+const POND_RISE_M: f32 = 0.02;

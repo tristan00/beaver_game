@@ -14,6 +14,10 @@ queries run during simulation steps.
 | `starting_good` | Initial material supplies |
 | `role_policy` | Order of the job rows in the colony panel |
 | `name_pool` | Beaver and family names |
+| `tree_species` | Each tree's growth, yield and flood tolerance. `growth` is set so a tree on ordinary ground turns mature (full logs, starts seeding) at half its real seed-bearing age, per the USDA *Silvics of North America*: aspen and willow 10 years, birch 15, alder 4 (red alder), pine 20 (eastern white pine), spruce 30, maple and beech 40. A tree ages `growth` days a day outside winter; mature is 1080 days. |
+
+| `plant_species` | Each food plant beavers eat: its `habitat` (`Upland` moist open ground, `Meadow` wet ground, `Shore` the waterline out to `max_depth`, `Water` between `min_depth` and `max_depth`), the most `food` it holds, and per day in full growing season how much it `regrow`s, the chance it `creep`s by its roots into a neighbouring cell and the chance its `seed` takes root up to `SEED_REACH` cells off. `keep` is the share of its food it holds through winter in roots, rhizomes or canes (cattail, arrowhead and lily rhizomes, raspberry canes: what beavers dig for in winter). |
+| `plant_flora` | How common each food plant is on each map, from the map region's real wetlands: Joe-Pye weed only in North America, meadowsweet only in Europe, little cattail or arrowhead in Norway. Every map and `default` need one, with a plant for every habitat. |
 
 For example, change how many sticks a gate needs using SQLite:
 

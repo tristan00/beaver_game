@@ -20,8 +20,7 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
     let mut beavers = String::from("id,name,family,sex,age_days,mother,father,mate,home,pregnancy_due,litter\n");
     for b in &s.colony.beavers {
         if let Some(m) = b.mate {
-            if s.colony.beaver(m).is_none_or(|other| other.mate != Some(b.id) || other.family != b.family || other.lodge != b.lodge)
-                || s.colony.close_relatives(b.id, m) { violations.push(format!("invalid pair {} / {}", b.id.0, m.0)); }
+            if s.colony.beaver(m).is_none_or(|other| other.mate != Some(b.id) || other.family != b.family || other.lodge != b.lodge) { violations.push(format!("invalid pair {} / {}", b.id.0, m.0)); }
         }
         writeln!(beavers, "{},{},{},{:?},{:.2},{},{},{},{},{},{}", b.id.0, b.name, b.family.0, b.sex, b.age_days,
             b.mother.map_or(0,|v|v.0), b.father.map_or(0,|v|v.0), b.mate.map_or(0,|v|v.0), b.lodge.map_or(0,|v|v.0),

@@ -69,7 +69,7 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
             Some(super::dam_panel::dam_panel(c, b.id, b.dam.as_deref()?))
         }
         Selection::Tree(id) => resource(c, id),
-        Selection::Wolf => wolf(c),
+        Selection::Wolf(key) => wolf(c, key),
         Selection::Animal(id) => animal(c, id),
         Selection::None => None,
     }
@@ -145,7 +145,7 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
         Some(Task::Rest) if !b.resting => (Icon::Idle, WARN, "No work: waiting at home"),
         Some(Task::Rest) => (Icon::Idle, REST, "Resting"),
         Some(Task::Watch { .. }) => (Icon::RoleGuard, GOOD, "On watch"),
-        Some(Task::Barge { .. }) => (Icon::Barge, GOOD, "Barging"),
+        Some(Task::Raft { .. }) => (Icon::Raft, GOOD, "Barging"),
         Some(Task::Idle) | None => match s.work.slot_of(b.id) {
             Some((_, _, role)) => (role_icon(role), GOOD, role_name(role)),
             None if s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) => (Icon::Walk, GOOD, "On an order"),
@@ -622,7 +622,8 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
             } else if r.kind == ResourceKind::RiverClay {
                 amount = if r.wet { amount.line("A day", format!("+{:.2}", sim::resources::RIVER_CLAY_PER_DAY)) } else { amount.line("Not flowing", "×0") };
             }
-            Some(frame(c, sel, resource_icon(r.kind), good_color(good), resource_name(r.kind).to_string(), None, Tip::name(resource_name(r.kind)), |u| {
+            let name = r.plant.map_or(resource_name(r.kind), |p| p.name());
+            Some(frame(c, sel, resource_icon(r.kind), good_color(good), name.to_string(), None, Tip::name(name), |u| {
                 u.row(8.0, |x| {
                     x.icon(good_icon(good), 16.0, good_color(good));
                     x.notches(r.amount / r.max_amount.max(0.01), 10, 170.0, 12.0, ACCENT);
@@ -662,12 +663,11 @@ fn animal(c: &Ctx, id: u32) -> Option<VNode> {
     }))
 }
 
-/// The wolf, while the colony sees it: what it is after, and when it leaves.
-fn wolf(c: &Ctx) -> Option<VNode> {
+/// A wolf, while the colony sees it: what it is after, and when it leaves.
+fn wolf(c: &Ctx, key: u64) -> Option<VNode> {
     use sim::predators::WolfState;
     let s = c.s;
-    sim::predators::in_sight(s)?;
-    let w = s.predators.wolf.as_ref()?;
+    let w = s.predators.wolf(key).filter(|w| w.seen)?;
     let beaver = |id| s.colony.beaver(id).map_or_else(|| "a beaver".to_string(), |b| b.name.clone());
     let prey = |id| s.wildlife.get(id).map_or("animal", |a| animal_name(a.kind)).to_lowercase();
     let (icon, col, doing) = match w.state {
@@ -679,7 +679,7 @@ fn wolf(c: &Ctx) -> Option<VNode> {
         WolfState::Feed { animal, .. } => (Icon::Food, WARN, format!("Eating a {}", prey(animal))),
     };
     let tip = Tip::titled(Some((Icon::Wolf, BAD)), "Wolf").line("Hunts beavers on land", "");
-    Some(frame(c, Selection::Wolf, Icon::Wolf, BAD, "Wolf".to_string(), None, tip, |u| {
+    Some(frame(c, Selection::Wolf(key), Icon::Wolf, BAD, "Wolf".to_string(), None, tip, |u| {
         line(u, icon, col, doing, if w.pace > 0.0 { format!("{}/d", num(w.pace)) } else { String::new() });
         if w.state != WolfState::Leave {
             line(u, Icon::Hourglass, MUTED, "Leaves in".to_string(), days((w.leave_by - s.time_days) as f32)).tip(Tip::name("Heads off the map"));

@@ -126,7 +126,7 @@ pub fn check_dam(sim: &SimState, cells: &[Cell]) -> Result<(), PlaceError> {
     if cells.iter().any(|&(x, y)| !sim.water.depth.in_bounds(x, y)) {
         return Err(PlaceError::OutOfBounds);
     }
-    if !sim.sandbox && !cells.iter().any(|&c| sim::dams::water_for_dam(sim, c)) {
+    if !sim.sandbox && !sim::dams::line_crosses_water(sim, cells) {
         return Err(PlaceError::NeedsWater);
     }
     sim::dams::check_line(sim, cells).map_err(PlaceError::Sim)
@@ -166,7 +166,6 @@ pub struct LinePlan {
     pub targets: Vec<(Cell, f32)>,
     pub preview: Option<sim::dam_preview::DamPreview>,
     pub sticks: f32,
-    pub new_wet: usize,
     pub refusal: Option<(crate::icons::Icon, String)>,
     /// The cells and heights the water engine is asked to settle (see `sim::dam_preview::settle`).
     pub settle_cells: Vec<Cell>,
@@ -181,7 +180,7 @@ fn sentence(m: &str) -> String {
 /// Work out a drawn line: a new dam, or more cells for `extending`.
 pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings::BuildingId>) -> LinePlan {
     use crate::icons::Icon;
-    let mut out = LinePlan { line: line.to_vec(), targets: Vec::new(), preview: None, sticks: 0.0, new_wet: 0, refusal: None, settle_cells: Vec::new(), settle_heights: Vec::new() };
+    let mut out = LinePlan { line: line.to_vec(), targets: Vec::new(), preview: None, sticks: 0.0, refusal: None, settle_cells: Vec::new(), settle_heights: Vec::new() };
     match extending {
         Some(id) => match (sim::dams::dam(sim, id), sim::dams::plan_extend_to(sim, id, line)) {
             (Some(d), Ok(plan)) => {
@@ -211,7 +210,6 @@ pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings
             });
         }
     }
-    out.new_wet = out.preview.as_ref().map_or(0, |p| p.flow_flooded.iter().filter(|&&(x, y)| !is_wet(sim, x, y)).count());
     out
 }
 

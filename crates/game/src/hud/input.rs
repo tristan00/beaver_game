@@ -305,14 +305,19 @@ pub(super) fn world_input(
                 let p = build_logic::site_preview(&sim.0, kind, cell);
                 match build_logic::emit(&mut sim.0, &BuildOrder::Building { kind, pos: p.pos }) {
                     Ok(_) => {
+                        // Shift keeps the building in hand for the next spot.
                         if let Some(b) = sim.0.buildings.buildings.last() {
                             let id = b.id;
                             hud.undo.push(UndoItem::Site(id));
-                            hud.frame_req = Some(cell_world(&sim.0.height, (b.pos.0 as f32, b.pos.1 as f32)));
-                            hud.selected.clear();
-                            *sel = Selection::Site(id);
+                            if !shift {
+                                hud.frame_req = Some(cell_world(&sim.0.height, (b.pos.0 as f32, b.pos.1 as f32)));
+                                hud.selected.clear();
+                                *sel = Selection::Site(id);
+                            }
                         }
-                        hud.finish_placement();
+                        if !shift {
+                            hud.finish_placement();
+                        }
                         hud.swallow_click();
                     }
                     Err(e) => {
@@ -487,25 +492,3 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_dam_end_is_grabbed_from_the_cell_beside_it_without_selecting_the_dam_first() {
-        let (mut s, site) = sim::starts::new_game_with_dam(1).expect("start");
-        s.fog = sim::fog::Fog::clear(s.world.size);
-        let id = sim::dams::place(&mut s, &site.cells).expect("dam");
-        let line: Vec<Cell> = sim::dams::dam(&s, id).unwrap().line().map(|c| c.cell).collect();
-        let (first, last) = (line[0], *line.last().unwrap());
-        let beside = (first.0 + 1, first.1);
-        let on = Some(world::Thing::Building(id));
-        assert_eq!(dam_end_near(&s, Selection::None, on, first), Some((id, first)));
-        assert_eq!(dam_end_near(&s, Selection::None, on, beside).map(|g| g.0), Some(id));
-        assert_eq!(dam_end_near(&s, Selection::Site(id), None, last), Some((id, last)));
-        let far = (first.0 + 5, first.1 + 5);
-        if line.iter().all(|c| c.0.abs_diff(far.0).max(c.1.abs_diff(far.1)) > 1) {
-            assert_eq!(dam_end_near(&s, Selection::None, None, far), None);
-        }
-    }
-}

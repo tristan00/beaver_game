@@ -1,5 +1,5 @@
 //! Locks. Once a Harbor stands, a built gate can be upgraded into a lock: a pair of gates with
-//! a chamber between. A swimming beaver or a barge goes in, the gate behind it shuts, the
+//! a chamber between. A swimming beaver or a raft goes in, the gate behind it shuts, the
 //! chamber fills or drains to the level on the far side, and the gate ahead opens; so it gets
 //! past, either way, while the gate keeps holding the water as set.
 //!
@@ -32,29 +32,155 @@ fn invalid(m: impl Into<String>) -> SimError {
     SimError::InvalidCommand(m.into())
 }
 
-/// Locks (and barges) need a finished Harbor.
+/// Locks (and rafts) need a finished Harbor.
 pub fn unlocked(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Harbor && sim.finished(b))
 }
 
-/// The cells a built lock takes up: its gate's cell and, on a widened dam, the dam cell behind
-/// it in every row, so the lock runs right through the dam to the water beyond.
+/// The gate a lock is made from: its cell and, on a widened dam, the dam cell behind it in every
+/// row.
+fn gate_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
+    match crate::dams::dam(sim, l.building) {
+        Some(d) => crate::dams::gate_cells(d, l.cell),
+        None => vec![l.cell],
+    }
+}
+
+/// The cells a built lock's chamber takes up, swum through from gate to gate: a lane one cell
+/// wide down its middle, the length of the chamber, right through the dam (every row of a
+/// widened one). Stepped side to side (never corner to corner) on a slant, so it is swum
+/// through between its walls.
 pub fn lock_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
-    let mut out = vec![l.cell];
-    if let Some(d) = crate::dams::dam(sim, l.building) {
-        for k in 1..d.rows as i64 {
-            let (x, y) = (l.cell.0 as i64 + d.downstream.0 as i64 * k, l.cell.1 as i64 + d.downstream.1 as i64 * k);
-            if x < 0 || y < 0 {
-                break;
+    let Some(f) = frame(sim, l) else { return gate_cells(sim, l) };
+    let w = lane(&f);
+    let mut out = cells_where(sim, &f, f.half, |a, x| a.abs() <= f.half - 0.5 + 1e-3 && x.abs() <= w);
+    if !out.contains(&l.cell) {
+        out.push(l.cell);
+    }
+    out
+}
+
+/// The cells under a built lock's walls, either side of its lane from end to end of the walls
+/// (which run on past the gates): nothing passes through them, so the only way through or
+/// into the chamber is along the lane.
+pub fn wall_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
+    let Some(f) = frame(sim, l) else { return Vec::new() };
+    let w = lane(&f);
+    let end = f.half * WALL_REACH;
+    let lock = lock_cells(sim, l);
+    cells_where(sim, &f, end, |a, x| a.abs() <= end && x.abs() > w && x.abs() <= HALF_WIDTH).into_iter().filter(|c| !lock.contains(c)).collect()
+}
+
+/// Half a lock's width across its flow, in cells: its walls and the stakes behind them.
+pub const HALF_WIDTH: f32 = 1.36;
+
+/// How far a lock's walls reach from its middle along the flow, in halves of its chamber: on
+/// past each gate, guiding the way in.
+pub const WALL_REACH: f32 = 1.6 / 1.05;
+
+/// How far from a lock's middle line its lane takes in a cell: half a cell straight along the
+/// grid, more on a slant, so the lane steps side to side.
+fn lane(f: &Frame) -> f32 {
+    (f.axis.0.abs() + f.axis.1.abs()) / 2.0
+}
+
+/// The cells within `reach` of a lock's middle, either way along, whose middles (along, across
+/// its flow) pass `keep`.
+fn cells_where(sim: &SimState, f: &Frame, reach: f32, keep: impl Fn(f32, f32) -> bool) -> Vec<Cell> {
+    let r = reach.ceil() as i64 + 2;
+    let (cx, cy) = (f.centre.0.floor() as i64, f.centre.1.floor() as i64);
+    let (w, h) = (sim.height.width() as i64, sim.height.height() as i64);
+    let mut out = Vec::new();
+    for y in (cy - r).max(0)..=(cy + r).min(h - 1) {
+        for x in (cx - r).max(0)..=(cx + r).min(w - 1) {
+            let (px, py) = (x as f32 + 0.5 - f.centre.0, y as f32 + 0.5 - f.centre.1);
+            if keep(px * f.axis.0 + py * f.axis.1, -px * f.axis.1 + py * f.axis.0) {
+                out.push((x as usize, y as usize));
             }
-            let c = (x as usize, y as usize);
-            if !d.cells.iter().any(|dc| dc.cell == c) {
-                break;
-            }
-            out.push(c);
         }
     }
     out
+}
+
+/// Where a lock's chamber lies, in cells: its middle, the way it runs (along the flow, either
+/// sign) and half its length; long enough for a raft with its beaver however thin the dam.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub centre: (f32, f32),
+    pub axis: (f32, f32),
+    pub half: f32,
+}
+
+/// The way a line of cells runs through `c`, from the line within a few cells of it: a
+/// stepped line drawn at a slant runs at its slant, not along its last step.
+fn line_dir(line: &[Cell], c: Cell) -> (f32, f32) {
+    const REACH: f32 = 4.5;
+    let pts: Vec<(f32, f32)> = line.iter().map(|o| (o.0 as f32 - c.0 as f32, o.1 as f32 - c.1 as f32)).filter(|p| p.0.hypot(p.1) <= REACH).collect();
+    if pts.len() < 2 {
+        return (1.0, 0.0);
+    }
+    let k = pts.len() as f32;
+    let (mx, my) = (pts.iter().map(|p| p.0).sum::<f32>() / k, pts.iter().map(|p| p.1).sum::<f32>() / k);
+    let (mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0);
+    for p in &pts {
+        let (x, y) = (p.0 - mx, p.1 - my);
+        xx += x * x;
+        yy += y * y;
+        xy += x * y;
+    }
+    let a = 0.5 * (2.0 * xy).atan2(xx - yy);
+    (a.cos(), a.sin())
+}
+
+pub fn frame(sim: &SimState, l: &Lock) -> Option<Frame> {
+    let c = l.cell;
+    let canal = crate::canals::canal(sim, l.building);
+    let along: Vec<Cell> = match canal {
+        Some(k) => k.cells.iter().filter(|x| x.row == 0).map(|x| x.cell).collect(),
+        // Along the drawn line only: the rows a widened dam adds lie behind it.
+        None => crate::dams::dam(sim, l.building)?.cells.iter().filter(|x| x.row == 0).map(|x| x.cell).collect(),
+    };
+    let (dx, dy) = line_dir(&along, c);
+    let n = (dx * dx + dy * dy).sqrt().max(1e-6);
+    // A canal's line runs along the flow; a dam's across it.
+    let axis = if canal.is_some() { (dx / n, dy / n) } else { (-dy / n, dx / n) };
+    let cells = gate_cells(sim, l);
+    let pts: Vec<(f32, f32)> = cells.iter().map(|c| (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).collect();
+    let k = pts.len().max(1) as f32;
+    let centre = (pts.iter().map(|p| p.0).sum::<f32>() / k, pts.iter().map(|p| p.1).sum::<f32>() / k);
+    let span = pts.iter().map(|p| ((p.0 - centre.0) * axis.0 + (p.1 - centre.1) * axis.1).abs()).fold(0.0, f32::max);
+    // The gates stand half a cell past the lane's end cells, so whoever waits at one waits a
+    // cell's middle away, clear of it.
+    let mut f = Frame { centre, axis, half: (span + 0.8).max(2.2) };
+    let w = lane(&f);
+    let ends = cells_where(sim, &f, f.half, |a, x| a.abs() <= f.half && x.abs() <= w).iter().map(|c| ((c.0 as f32 + 0.5 - centre.0) * axis.0 + (c.1 as f32 + 0.5 - centre.1) * axis.1).abs()).fold(0.0, f32::max);
+    f.half = ends + 0.5;
+    Some(f)
+}
+
+/// The ground a lock keeps clear: its chamber, the walls that run on past its gates by about
+/// half as far again, and the water off each end that leads in. Nothing else may stand there.
+pub fn footprint(sim: &SimState, l: &Lock) -> Vec<Cell> {
+    let Some(f) = frame(sim, l) else { return Vec::new() };
+    let reach = f.half * 1.5 + 0.5;
+    cells_where(sim, &f, reach, |a, x| a.abs() <= reach && x.abs() <= HALF_WIDTH)
+}
+
+/// Whether a lock (built or ordered) keeps this cell clear of everything but its own dam or
+/// canal (`except`).
+pub fn reserved(sim: &SimState, c: Cell, except: Option<BuildingId>) -> bool {
+    sim.locks.at.values().any(|l| Some(l.building) != except && footprint(sim, l).contains(&c))
+}
+
+/// Why a lock can't go at this gate: something else stands where its chamber or its ways in
+/// would be.
+pub fn check_room(sim: &SimState, building: BuildingId, cell: Cell) -> Result<(), String> {
+    let room = footprint(sim, &Lock { cell, building, built: false });
+    let other = |c: &Cell| sim.buildings.buildings.iter().any(|b| b.id != building && b.cells().any(|p| p == *c));
+    if room.iter().any(other) || sim.work.supplies.is_some_and(|p| room.contains(&p)) {
+        return Err("something is built where the lock would stand".into());
+    }
+    Ok(())
 }
 
 /// A cell of a built lock (see `lock_cells`).
@@ -84,10 +210,13 @@ pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(),
     if sim.locks.at.contains_key(&cell) {
         return Err(invalid("that gate is already a lock"));
     }
-    match gate_built(sim, building, cell) {
-        Some(_) => {}
-        None if crate::dams::dam(sim, building).is_some() => crate::dams::add_gate(sim, building, cell)?,
-        None => return Err(invalid("no gate there")),
+    let gate = gate_built(sim, building, cell);
+    if gate.is_none() && crate::dams::dam(sim, building).is_none() {
+        return Err(invalid("no gate there"));
+    }
+    check_room(sim, building, cell).map_err(invalid)?;
+    if gate.is_none() {
+        crate::dams::add_gate(sim, building, cell)?;
     }
     // A canal's gate not built yet is built on the same visit.
     if let Some(k) = crate::canals::canal_mut(sim, building).ok().filter(|k| !k.gate.built && k.gate.pending.is_none()) {
@@ -133,5 +262,39 @@ mod tests {
         s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(9), kind: BuildingKind::Harbor, pos: (20, 20), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         assert!(unlocked(&s));
         assert!(order(&mut s, k, cell).is_err(), "no gate there");
+    }
+
+    #[test]
+    fn a_slanted_lane_is_swum_side_to_side_from_end_to_end() {
+        let s = SimState::new(1);
+        for deg in [0.0f32, 17.0, 27.0, 45.0, 63.0, 90.0, 120.0] {
+            let r = deg.to_radians();
+            let f = Frame { centre: (30.5, 30.0), axis: (r.cos(), r.sin()), half: 3.0 };
+            let w = lane(&f);
+            let cells = cells_where(&s, &f, f.half, |a, x| a.abs() <= f.half && x.abs() <= w);
+            // Every cell joins the rest side to side: no corner-to-corner step needed.
+            let mut seen = vec![cells[0]];
+            let mut i = 0;
+            while i < seen.len() {
+                let c = seen[i];
+                for &o in &cells {
+                    if !seen.contains(&o) && c.0.abs_diff(o.0) + c.1.abs_diff(o.1) == 1 {
+                        seen.push(o);
+                    }
+                }
+                i += 1;
+            }
+            assert_eq!(seen.len(), cells.len(), "at {deg}°: {cells:?}");
+        }
+    }
+
+    #[test]
+    fn a_lock_runs_square_to_a_slanted_line_not_to_its_last_step() {
+        // A line stepping two across for each one up, as a dam drawn at a slant is.
+        let line: Vec<Cell> = (0..12).map(|i| (10 + i, 20 + i / 2)).collect();
+        let (dx, dy) = line_dir(&line, (16, 23));
+        let slant = 0.5f32.atan();
+        let a = dy.atan2(dx).rem_euclid(std::f32::consts::PI);
+        assert!((a - slant).abs() < 0.08, "{a} vs {slant}");
     }
 }

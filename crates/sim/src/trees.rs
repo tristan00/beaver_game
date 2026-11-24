@@ -133,7 +133,8 @@ mod tests {
     fn broadleaves_feed_beavers_and_conifers_do_not() {
         assert!(Tree::Aspen.feeds() && Tree::Willow.feeds() && Tree::Birch.feeds());
         assert!(!Tree::Pine.feeds() && !Tree::Spruce.feeds());
-        assert!(Tree::Willow.spec().growth > Tree::Aspen.spec().growth && Tree::Aspen.spec().growth > Tree::Spruce.spec().growth);
+        // Willow and aspen both start seeding at about ten in the wild; spruce far later.
+        assert!(Tree::Willow.spec().growth >= Tree::Aspen.spec().growth && Tree::Aspen.spec().growth > Tree::Spruce.spec().growth);
         assert!(Tree::Aspen.spec().bark > Tree::Birch.spec().bark);
     }
 }

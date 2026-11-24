@@ -138,6 +138,12 @@ fn headcount_tip(s: &sim::SimState) -> Tip {
     t.push(TipLine::new("Working", format!("{}", h.working)).icon(Icon::Jobs, INK));
     t.push(TipLine::new("Free", format!("{}", h.free)).icon(Icon::Idle, if h.free > 0 { WARN } else { INK }));
     t.push(TipLine::new("Kits", format!("{}", h.kits)).icon(Icon::Kit, MUTED));
+    // Finished shelters nobody lives in: room for a new family.
+    let empty = s.buildings.buildings.iter()
+        .filter(|b| b.kind == BuildingKind::Shelter && b.is_complete())
+        .filter(|b| s.work.homes.get(&b.id).is_none_or(|home| !s.colony.beavers.iter().any(|bv| bv.lodge == Some(*home))))
+        .count();
+    t.push(TipLine::new("Empty shelters", format!("{empty}")).icon(building_icon(BuildingKind::Shelter), INK));
     let b = sim::hud::headcount_breakdown(s);
     let mut more = Tip::name("Beavers");
     for l in breakdown_lines(s, &b, false) {
@@ -357,6 +363,20 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
             };
             (vec![(icon, INK), (Icon::Idle, WARN)], format!("{}", v as i64), name)
         }
+        ProblemKind::WaitingFor => {
+            let g = match p.subject {
+                Some(Subject::Good(g)) => g,
+                _ => Good::Clay,
+            };
+            let name = match g {
+                Good::Sticks => "Builders waiting for sticks",
+                Good::Clay => "Builders waiting for clay",
+                Good::Food => "Builders waiting for food",
+                Good::Pebbles => "Builders waiting for pebbles",
+                Good::Saplings => "Builders waiting for saplings",
+            };
+            (vec![(Icon::RoleBuilder, INK), (good_icon(g), good_color(g))], format!("{}", v as i64), name)
+        }
         ProblemKind::Flooded => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
@@ -572,6 +592,10 @@ fn item_tip(kind: BuildingKind) -> Tip {
     }
     for (g, a) in item_cost(kind) {
         t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
+    }
+    // What digging one gives back: the clay from its spoil.
+    if kind == BuildingKind::Canal {
+        t.push(TipLine::new(good_name(Good::Clay), "+").icon(good_icon(Good::Clay), good_color(Good::Clay)).color(GOOD).sub());
     }
     t
 }
@@ -792,21 +816,26 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     x.bold(format!("{}", plan.sticks.round() as i64), 15.0, INK);
                 })
                 .tip(Tip::titled(Some((good_icon(Good::Sticks), good_color(Good::Sticks))), "Sticks for the first stage").line("Carried load by load", ""));
-                // The higher of the quick estimate of the full pond and the engine's own short run
-                // (`dam_settled`). That run covers only the first hour, so it catches what the
-                // estimate misses (a line along a channel) but not a pond that takes days to fill.
-                let quick = plan.preview.as_ref().map_or(0.0, |p| p.flow_rise);
-                let rise = c.hud.dam_settled().map_or(quick, |r| r.rise.max(quick));
-                let mut tip = Tip::titled(Some((Icon::Drop, WATER)), "Water rises").with_value(rise_text(rise)).line("New pond cells", format!("{}", plan.new_wet));
+                // The water engine's own run with the dam in place (`dam_settled`); until it is
+                // in, no number rather than a guess.
+                let look = c.hud.dam_settled();
+                let rise = look.map(|r| rise_text(r.water.rise));
+                let mut tip = Tip::titled(Some((Icon::Drop, WATER)), "Water rises").with_value(rise.clone().unwrap_or_else(|| "…".into()));
+                if let Some(r) = look {
+                    tip = tip.line("New pond cells", format!("{}", r.new_wet));
+                }
                 if plan.preview.as_ref().is_some_and(|p| p.spill_at.is_some()) {
                     tip = tip.line("Runs around the dam", "");
                 }
                 r.row(4.0, |x| {
                     x.icon(Icon::Drop, 17.0, WATER);
-                    x.bold(rise_text(rise), 15.0, INK);
+                    match &rise {
+                        Some(t) => x.bold(t.clone(), 15.0, INK),
+                        None => x.bold("…", 15.0, MUTED),
+                    };
                 })
                 .tip(tip);
-                let drowned = c.hud.drowned.as_ref().filter(|d| d.0.0 == plan.line).map_or(&[][..], |d| &d.1[..]);
+                let drowned = c.hud.drowned.as_ref().filter(|d| d.0 == plan.line).map_or(&[][..], |d| &d.1[..]);
                 if !drowned.is_empty() {
                     let mut tip = Tip::titled(Some((Icon::Flood, BAD)), "Buildings flooded").with_value(format!("{}", drowned.len()));
                     for b in drowned.iter().filter_map(|id| c.s.buildings.building(*id)) {
@@ -819,7 +848,7 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     })
                     .tip(tip);
                 }
-                let drowned = plan.preview.as_ref().map_or(0, |p| p.flooded_trees);
+                let drowned = look.map_or(0, |r| r.trees.len());
                 if drowned > 0 {
                     r.row(4.0, |x| {
                         x.icon(Icon::Tree, 16.0, WARN);

@@ -36,14 +36,14 @@ pub fn legend(node: Node) -> Option<VNode> {
         let n = tr::DEPTH_BANDS.len() as u8;
         for band in 0..=n + 2 {
             let edge = match band {
-                0 => Some(sim::harbor::BARGE_DEPTH),
+                0 => Some(sim::harbor::RAFT_DEPTH),
                 b if b <= n => Some(tr::DEPTH_BANDS[b as usize - 1].0.min(near)),
                 b if b == n + 1 => Some(max),
                 _ => None,
             };
             let label = edge.map_or_else(|| format!("> {} m", num(max)), |e| format!("< {} m", num(e)));
             let (mark, tip) = match band {
-                0 => (None, Some("Too shallow for barges")),
+                0 => (None, Some("Too shallow for rafts")),
                 b if b == n + 1 => (Some(Icon::Warn), Some("Buildings near flooding")),
                 b if b == n + 2 => (Some(Icon::Flood), Some("Buildings flood")),
                 _ => (None, None),

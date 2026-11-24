@@ -87,6 +87,39 @@ pub(super) fn spawn_gallery(
             }
         }
     }
+    // Every species (across) in spring, summer, autumn and winter (rows, nearest first).
+    if what == "trees" {
+        let tree = super::sim_sync::TREE_SCALE;
+        for (row, phase) in [0.125f32, 0.375, 0.6, 0.875].into_iter().enumerate() {
+            for (i, sp) in super::scene::Species::ALL.into_iter().enumerate() {
+                let (x, z) = (cx + (i as f32 - 3.5) * 9.0, cz - row as f32 * 11.0);
+                let mesh = m.tree(sp, models::Season::at(phase), 0);
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(m.tree_tints[0].clone()), Transform::from_xyz(x, ground(x, z) - 0.05, z).with_scale(Vec3::splat(tree))));
+            }
+        }
+    }
+    // Food plants (across) in spring, summer, autumn and winter (rows, nearest first); behind
+    // them the boulders, pebble heaps and gravel bars by quarters left, and the two clays.
+    if what == "res" {
+        let place = |commands: &mut Commands, mesh: Handle<Mesh>, mat: &Handle<StandardMaterial>, x: f32, z: f32, s: f32| {
+            commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::from_xyz(x, ground(x, z), z).with_scale(Vec3::splat(s))));
+        };
+        for (row, phase) in [0.125f32, 0.4, 0.62, 0.875].into_iter().enumerate() {
+            for (i, p) in sim::plants::Plant::ALL.into_iter().enumerate() {
+                let (x, z) = (cx + (i as f32 - 5.0) * 1.3, cz - row as f32 * 1.6);
+                place(&mut commands, m.plant(p, models::Season::at(phase)), &white, x, z, 1.0);
+            }
+        }
+        for (i, b) in m.boulders.iter().enumerate() {
+            place(&mut commands, b.clone(), &white, cx + (i as f32 - 3.5) * 1.8, cz - 8.5, 1.0 + 0.1 * (i % 3) as f32);
+        }
+        for q in 0..4 {
+            place(&mut commands, m.pebble_heaps[q].clone(), &white, cx - 6.0 + q as f32 * 1.4, cz - 11.0, 1.0);
+            place(&mut commands, m.gravel_bars[q].clone(), &white, cx + 1.0 + q as f32 * 1.4, cz - 11.0, 1.0);
+        }
+        place(&mut commands, m.clay_heap.clone(), &m.wet, cx - 2.0, cz - 13.0, 1.0);
+        place(&mut commands, m.river_clay.clone(), &m.wet, cx + 1.0, cz - 13.0, 1.0);
+    }
     if let (true, Some(hm)) = (what == "harbor", harbor_meshes.as_deref()) {
         super::harbor::spawn_gallery(&mut commands, hm, &m, &mut meshes, Vec3::new(cx, 0.0, cz), ground);
     }
@@ -240,7 +273,16 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
 /// its first lookout, for screenshots of the inspector and the lookout's range.
 /// `BC_SELECT_BEAVER=out` picks the first beaver out of its lodge instead, `=load` the first carrying
 /// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
-pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
+/// `BC_LEDGER=page` keeps that page of the colony ledger open.
+pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, mut hud: Option<ResMut<crate::hud::HudState>>) {
+    // `BC_LEDGER=charts|beavers|dams|buildings|run`: that page of the ledger stays open.
+    if let (Some(page), Some(h)) = (std::env::var("BC_LEDGER").ok(), hud.as_mut()) {
+        use crate::hud::LedgerTab::*;
+        let want = match page.as_str() { "beavers" => Beavers, "dams" => Dams, "buildings" => Buildings, "run" => Run, _ => Charts };
+        if h.ledger != Some(want) {
+            h.ledger = Some(want);
+        }
+    }
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
     // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel.

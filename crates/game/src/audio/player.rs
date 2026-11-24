@@ -13,11 +13,15 @@ pub struct Mix {
     pub alarm_amp: f32,
     /// Buildings gone under water so far (each rise sounds the flood).
     pub floods: u32,
+    /// Wolves sighted so far (each rise sounds a growl) and beavers they have killed (each a
+    /// distant howl).
+    pub wolf_sighted: u32,
+    pub wolf_kills: u32,
 }
 
 impl Default for Mix {
     fn default() -> Self {
-        Self { layers: LayerVolumes::SILENT, settings: VolumeSettings::default(), alarm_slaps: 0, alarm_amp: 0.0, floods: 0 }
+        Self { layers: LayerVolumes::SILENT, settings: VolumeSettings::default(), alarm_slaps: 0, alarm_amp: 0.0, floods: 0, wolf_sighted: 0, wolf_kills: 0 }
     }
 }
 
@@ -30,6 +34,8 @@ pub struct Bank {
     pub river: Sound,
     pub slaps: Vec<Sound>,
     pub flood: Sound,
+    pub growl: Sound,
+    pub howl: Sound,
 }
 
 /// Brings a recording to stereo at `SAMPLE_RATE`, with windowed-sinc resampling cut off below
@@ -114,14 +120,15 @@ struct Voice {
     amp: f32,
 }
 
-/// Plays the beds under everything and a cue on each new alarm slap or flood.
+/// Plays the beds under everything and a cue on each new alarm slap, flood, wolf sighted (a
+/// growl) or beaver killed by a wolf (a distant howl).
 pub struct Player {
     bank: Option<Arc<Bank>>,
     pos: [usize; 2],
     cur: [f32; 2],
     duck: f32,
     voices: Vec<Voice>,
-    heard: Option<(u32, u32)>,
+    heard: Option<[u32; 4]>,
     next_slap: usize,
 }
 
@@ -140,8 +147,9 @@ impl Player {
     }
 
     fn cues(&mut self, mix: &Mix) {
-        let (slaps, floods) = self.heard.unwrap_or((mix.alarm_slaps, mix.floods));
-        self.heard = Some((mix.alarm_slaps, mix.floods));
+        let now = [mix.alarm_slaps, mix.floods, mix.wolf_sighted, mix.wolf_kills];
+        let [slaps, floods, sighted, kills] = self.heard.unwrap_or(now);
+        self.heard = Some(now);
         let Some(bank) = &self.bank else { return };
         if slaps != mix.alarm_slaps && !bank.slaps.is_empty() {
             let sound = bank.slaps[self.next_slap % bank.slaps.len()].clone();
@@ -150,6 +158,13 @@ impl Player {
         }
         if floods != mix.floods {
             self.voices.push(Voice { sound: bank.flood.clone(), pos: 0, amp: 0.9 });
+        }
+        // Low and short: heard, not startling.
+        if sighted != mix.wolf_sighted {
+            self.voices.push(Voice { sound: bank.growl.clone(), pos: 0, amp: 0.55 });
+        }
+        if kills != mix.wolf_kills {
+            self.voices.push(Voice { sound: bank.howl.clone(), pos: 0, amp: 0.35 });
         }
     }
 

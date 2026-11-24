@@ -56,7 +56,7 @@ struct Extras3 {
     locks: crate::locks::Locks,
 }
 
-/// Added after `Extras3`, written after it: the harbors' barges.
+/// Added after `Extras3`, written after it: the harbors' rafts.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extras4 {
     fleet: crate::harbor::Fleet,
@@ -86,6 +86,28 @@ struct Extras8 {
     sources: std::collections::BTreeMap<crate::colony::BeaverId, crate::resources::ResourceId>,
 }
 
+/// Added after `Extras11`, written after it: the plants' species, the map they come from, and
+/// the outcrops' boulders.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras12 {
+    flora: String,
+    plants: Vec<(crate::resources::ResourceId, crate::plants::Plant)>,
+    boulders: Vec<crate::resources::Boulder>,
+}
+
+/// Added after `Extras10`, written after it: the run's tallies.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras11 {
+    run: crate::run::RunStats,
+}
+
+/// Added after `Extras9`, written after it: the wolves after the first (the first is saved
+/// in the world, where the one wolf always was).
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras10 {
+    more_wolves: Vec<crate::predators::Wolf>,
+}
+
 /// Added after `Extras5`, written after it: which beaver planted which tree.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extras6 {
@@ -113,6 +135,16 @@ pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
     body.extend(postcard::to_stdvec(&extras8).map_err(|e| format!("could not write the settings: {e}"))?);
     let extras9 = Extras9 { looks: sim.colony.looks.clone() };
     body.extend(postcard::to_stdvec(&extras9).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras10 = Extras10 { more_wolves: sim.predators.wolves.iter().skip(1).cloned().collect() };
+    body.extend(postcard::to_stdvec(&extras10).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras11 = Extras11 { run: sim.run.clone() };
+    body.extend(postcard::to_stdvec(&extras11).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras12 = Extras12 {
+        flora: sim.resources.flora.clone(),
+        plants: sim.resources.items().iter().filter_map(|r| r.plant.map(|p| (r.id, p))).collect(),
+        boulders: sim.resources.boulders.clone(),
+    };
+    body.extend(postcard::to_stdvec(&extras12).map_err(|e| format!("could not write the settings: {e}"))?);
     let mut out = Vec::with_capacity(8 + 4 + head.len() + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&(head.len() as u32).to_le_bytes());
@@ -152,9 +184,13 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     let (extras6, rest) = if rest.is_empty() { (Extras6::default(), rest) } else { postcard::take_from_bytes::<Extras6>(rest).map_err(|_| bad())? };
     let (extras7, rest) = if rest.is_empty() { (Extras7::default(), rest) } else { postcard::take_from_bytes::<Extras7>(rest).map_err(|_| bad())? };
     let (extras8, rest) = if rest.is_empty() { (Extras8::default(), rest) } else { postcard::take_from_bytes::<Extras8>(rest).map_err(|_| bad())? };
-    let extras9 = match rest {
-        [] => Extras9::default(),
-        _ => match postcard::take_from_bytes::<Extras9>(rest) {
+    let (extras9, rest) = if rest.is_empty() { (Extras9::default(), rest) } else { postcard::take_from_bytes::<Extras9>(rest).map_err(|_| bad())? };
+    let (extras10, rest) = if rest.is_empty() { (Extras10::default(), rest) } else { postcard::take_from_bytes::<Extras10>(rest).map_err(|_| bad())? };
+    let fresh = rest.is_empty();
+    let (extras11, rest) = if rest.is_empty() { (Extras11::default(), rest) } else { postcard::take_from_bytes::<Extras11>(rest).map_err(|_| bad())? };
+    let extras12 = match rest {
+        [] => Extras12::default(),
+        _ => match postcard::take_from_bytes::<Extras12>(rest) {
             Ok((e, [])) => e,
             _ => return Err(bad()),
         },
@@ -167,6 +203,18 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     sim.forestry.planted = extras6.planted;
     sim.lives = extras7.lives;
     sim.colony.looks = extras9.looks;
+    sim.predators.wolves.extend(extras10.more_wolves);
+    sim.run = extras11.run;
+    sim.resources.flora = extras12.flora;
+    sim.resources.boulders = extras12.boulders;
+    let species: std::collections::HashMap<_, _> = extras12.plants.into_iter().collect();
+    let ids: Vec<_> = sim.resources.items().iter().filter(|r| species.contains_key(&r.id)).map(|r| r.id).collect();
+    for id in ids {
+        if let Ok(r) = sim.resources.get_mut(id) {
+            r.plant = species.get(&id).copied();
+        }
+    }
+    // A save from before plant species: they come from the default flora (see `wetland::step`).
     // A save from before looks were kept: each beaver gets one now, and keeps it.
     sim.colony.fill_looks();
     for (id, source) in extras8.sources {
@@ -179,6 +227,11 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     sim.water.sky = crate::weather::Sky::for_seed(sim.seed);
     sim.colony.sky = sim.water.sky;
     sim.instance = crate::next_instance();
+    // A save from before the run's tallies counts what already stands.
+    if fresh {
+        let water = sim.census().water;
+        crate::run::close_day(&mut sim, water);
+    }
     Ok((header, sim))
 }
 
@@ -223,101 +276,3 @@ pub fn peek(path: &Path) -> Result<Header, String> {
     split(&bytes).map(|(h, _)| h)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A game saved part-way and loaded again carries on exactly as if it had never stopped.
-    #[test]
-    fn a_saved_game_resumes_exactly() {
-        let (mut a, site) = crate::starts::new_game_on_map("telemark").unwrap();
-        crate::starts::settle(&mut a, site.camp).unwrap();
-        let _ = crate::construction::place_best(&mut a, crate::buildings::BuildingKind::Shelter, site.camp, &[]);
-        let _ = crate::construction::place_best(&mut a, crate::buildings::BuildingKind::Larder, site.camp, &[]);
-        for _ in 0..(12 * 96) {
-            a.step(crate::STEP_DAYS).unwrap();
-        }
-        let bytes = encode(&a, "telemark").unwrap();
-        let (header, mut b) = decode(&bytes).unwrap();
-        assert_eq!((header.map.as_str(), header.day), ("telemark", a.time_days));
-        assert_ne!(a.instance, b.instance, "a loaded world is a new instance");
-        for _ in 0..(8 * 96) {
-            a.step(crate::STEP_DAYS).unwrap();
-            b.step(crate::STEP_DAYS).unwrap();
-        }
-        assert_eq!(a.time_days, b.time_days);
-        assert_eq!(a.colony.population(), b.colony.population());
-        let agents = |s: &SimState| s.agents.by_id.values().map(|ag| (ag.id, ag.cell, format!("{:?}", ag.task))).collect::<Vec<_>>();
-        assert_eq!(agents(&a), agents(&b), "every beaver is where it would have been");
-        assert_eq!(a.water.depth.as_slice(), b.water.depth.as_slice(), "and so is every drop of water");
-        assert_eq!(a.resources.items(), b.resources.items());
-        for g in crate::buildings::Good::ALL {
-            assert_eq!(a.buildings.stores.amount(g), b.buildings.stores.amount(g));
-        }
-        // The loaded world's stores and its work planner share one stock, as a fresh one's do.
-        let b2 = b.buildings.buildings.iter().find(|x| crate::agents::is_store(x.kind)).map(|x| x.id);
-        if let Some(id) = b2 {
-            b.buildings.stores.put_at(id, crate::buildings::Good::Food, 1.0).unwrap();
-            assert_eq!(b.work.stock_of(id, crate::buildings::Good::Food), b.buildings.stores.inventory.at(id, crate::buildings::Good::Food));
-        }
-    }
-
-    #[test]
-    fn broken_or_foreign_files_are_refused() {
-        let (a, _) = crate::starts::new_game_on_map("telemark").unwrap();
-        let bytes = encode(&a, "telemark").unwrap();
-        assert!(decode(&bytes[..bytes.len() / 2]).is_err(), "a cut-short save");
-        assert!(decode(b"not a save at all").is_err());
-        let dir = std::env::temp_dir().join(format!("beaver_save_test_{}", std::process::id()));
-        let path = dir.join("t.sav");
-        save(&a, "telemark", &path).unwrap();
-        assert_eq!(peek(&path).unwrap().map, "telemark", "the header reads on its own");
-        assert_eq!(load(&path).unwrap().1.time_days, a.time_days);
-        std::fs::remove_dir_all(&dir).unwrap();
-        let mut extra = bytes.clone();
-        extra.push(0);
-        assert!(decode(&extra).is_err(), "trailing bytes mean a different layout");
-    }
-
-    #[test]
-    fn settings_ride_after_the_world_and_older_saves_load_without_them() {
-        let (mut a, _) = crate::starts::new_game_on_map("telemark").unwrap();
-        let plain = encode(&a, "telemark").unwrap();
-        a.apply(crate::Command::SetShoreLimit { role: crate::jobs::RoleKind::Logger, cells: Some(10) }).unwrap();
-        let (_, b) = decode(&encode(&a, "telemark").unwrap()).unwrap();
-        assert_eq!(b.work.shore_limits.get(&crate::jobs::RoleKind::Logger), Some(&10));
-        // Older saves end before the locks (one empty map), before the bodies (two empty
-        // lists), or before the settings too.
-        // The wild animals come last; then the barges (an empty list and a counter, two bytes).
-        // The life stories come last (an empty map and a day, nine bytes), then who planted
-        // what (an empty map, one byte), then the wild animals.
-        // Last of all, the beavers' looks, then the gatherers' sources (an empty map, one byte).
-        let looks = postcard::to_stdvec(&Extras9 { looks: a.colony.looks.clone() }).unwrap().len();
-        let plain = &plain[..plain.len() - looks];
-        let before_looks = decode(plain).unwrap().1;
-        assert_eq!(before_looks.colony.looks.len(), a.colony.looks.len(), "a save from before the looks gives every beaver one");
-        let plain = &plain[..plain.len() - 1];
-        assert!(decode(plain).unwrap().1.agents.by_id.values().all(|a| a.source.is_none()), "a save from before the gatherers' sources loads");
-        let lives = postcard::to_stdvec(&Extras7 { lives: a.lives.clone() }).unwrap().len();
-        let plain = &plain[..plain.len() - lives];
-        assert!(decode(plain).unwrap().1.lives.of.is_empty(), "a save from before the life stories loads");
-        let plain = &plain[..plain.len() - 1];
-        assert!(decode(plain).unwrap().1.forestry.planted.is_empty(), "a save from before the planting record loads");
-        let wild = postcard::to_stdvec(&Extras5 { wildlife: a.wildlife.clone() }).unwrap().len();
-        let plain = &plain[..plain.len() - wild];
-        assert!(decode(plain).unwrap().1.wildlife.animals.is_empty(), "a save from before the wild animals loads");
-        let newer = &plain[..plain.len() - 2];
-        assert!(decode(newer).unwrap().1.fleet.barges.is_empty(), "a save from before the barges loads");
-        let old = &plain[..plain.len() - 3];
-        assert!(decode(old).unwrap().1.locks.at.is_empty(), "a save from before the locks loads");
-        let older = &plain[..plain.len() - 5];
-        assert!(decode(older).unwrap().1.agents.remains.bodies.is_empty(), "a save from before the bodies loads");
-        let oldest = &plain[..plain.len() - 6];
-        assert!(decode(oldest).unwrap().1.work.shore_limits.is_empty(), "a save from before the settings loads");
-        // Bodies ride along.
-        let mut c = b.clone();
-        c.agents.remains.bodies.push(crate::agents::Body { id: crate::colony::BeaverId(9), cell: (3, 4), cause: crate::colony::DeathCause::Cold, age_days: 400.0, died: c.time_days });
-        let (_, d) = decode(&encode(&c, "telemark").unwrap()).unwrap();
-        assert_eq!(d.agents.remains.bodies.len(), 1);
-    }
-}

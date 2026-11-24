@@ -1,6 +1,6 @@
-//! Harbors, barges and locks: their models, the barges moored at a harbor, and a lock working
-//! (gates swinging, the chamber filling or draining) while a beaver passes through it.
-//! `BC_GALLERY_WHAT=harbor` lines up a harbor's stages, a barge with each load and a lock on a
+//! Harbors, rafts and locks: their models, the rafts moored at a harbor, and a lock working
+//! (gates sinking to open and rising to shut, the chamber filling or draining) while a beaver passes through it.
+//! `BC_GALLERY_WHAT=harbor` lines up a harbor's stages, a raft with each load and a lock on a
 //! loop (see `gallery.rs`).
 use super::meshgen::{mix, Mb, Rng};
 use super::models::{col, stick, stick_c};
@@ -16,9 +16,9 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
 }
 
-/// A barge: a raft of logs lashed side by side, a low rail along each side and a raised prow,
+/// A raft: logs lashed side by side, a low rail along each side and a raised prow,
 /// about two and a half cells long. Its cargo is drawn on top separately.
-pub fn barge_mesh(mb: &mut Mb) {
+pub fn raft_mesh(mb: &mut Mb) {
     let mut r = Rng(9191);
     let (len, logs) = (1.25f32, 6);
     for i in 0..logs {
@@ -41,63 +41,35 @@ pub fn barge_mesh(mb: &mut Mb) {
     }
 }
 
-/// A box from `a` to `b` (opposite corners), its lower face `lo` and its upper `hi`.
-fn slab(mb: &mut Mb, a: Vec3, b: Vec3, lo: [f32; 3], hi: [f32; 3]) {
-    mb.hex([v(a.x, a.y, a.z), v(b.x, a.y, a.z), v(b.x, a.y, b.z), v(a.x, a.y, b.z), v(a.x, b.y, a.z), v(b.x, b.y, a.z), v(b.x, b.y, b.z), v(a.x, b.y, b.z)], lo, hi);
+/// A section of dam wall built in its own frame (running along x, its smooth mud face +z),
+/// thinned to `thick` of a dam's width, turned by `yaw` and set at `at`.
+fn wall(mb: &mut Mb, at: Vec3, yaw: f32, len: f32, thick: f32, variant: u32) {
+    let start = mb.len();
+    super::structures::dam_cell(mb, 1.0, len, variant, super::structures::DamStage::Done);
+    mb.place(start, Mat4::from_scale_rotation_translation(Vec3::new(1.0, 1.0, thick), Quat::from_rotation_y(yaw), at));
 }
 
-/// One leaf of a lock's mitre gates: a heavy door of planks, hinged on a thick heel post at its
-/// left end (x = 0) and reaching along +x, faced with cross planks and a diagonal brace, with a
-/// balance beam along its top running back past the hinge, as a real lock's gates have. One
-/// unit tall (scaled to the chamber's height).
-pub fn lock_leaf_mesh(mb: &mut Mb) {
-    let mut r = Rng(5353);
-    let (wood, dark) = (col(palette::BARK), col(palette::MUD_DARK));
-    // The door: planks side by side, wet and dark low down.
-    slab(mb, v(0.02, -0.3, -0.06), v(0.6, 1.0, 0.06), dark, wood);
-    for y in [0.12f32, 0.5, 0.88] {
-        stick_c(mb, v(0.0, y, 0.08), v(0.6, y, 0.08), 0.06, col(palette::PEELED));
-        stick_c(mb, v(0.0, y, -0.08), v(0.6, y, -0.08), 0.06, col(palette::PEELED));
-    }
-    stick(mb, v(0.05, 0.1, 0.09), v(0.56, 0.86, 0.09), 0.05, r.next());
-    // The heel post it swings on, and the mitre post where the pair meet.
-    stick_c(mb, v(0.0, -0.3, 0.0), v(0.0, 1.12, 0.0), 0.11, col(palette::PEELED));
-    stick(mb, v(0.6, -0.3, 0.0), v(0.6, 1.04, 0.0), 0.08, r.next());
-    // The balance beam, out over the wall to push the gate open by.
-    stick_c(mb, v(-0.75, 1.1, 0.0), v(0.6, 1.1, 0.0), 0.1, col(palette::PEELED));
+/// A lock's gate: a short section of dam across the chamber, the beavers' own way of holding
+/// water back. Sunk into the bed it lets a swimmer over; raised it shuts. One unit tall
+/// (scaled to the chamber's height).
+pub fn lock_gate_mesh(mb: &mut Mb) {
+    wall(mb, Vec3::ZERO, 0.0, 1.4, 0.35, 7);
 }
 
-/// A lock's chamber walls either side of the channel along the flow (z): a face of planks on
-/// the inside, for the water's level to show against, backed by stakes and capped with a
-/// beam to walk on; and the posts the gates hang on. One unit tall.
+/// A lock's chamber walls either side of the channel along the flow (z): stick-and-mud dam
+/// faces like the dam they stand in, smooth wet mud on the inside for the water's level to
+/// show against, sticks laid up the outside. One unit tall.
 pub fn lock_walls_mesh(mb: &mut Mb) {
-    let mut r = Rng(7373);
-    let (wood, dark) = (col(palette::BARK), col(palette::MUD_DARK));
     for s in [-1.0f32, 1.0] {
-        let x = s * 0.66;
-        // The plank face, from below the floor to the top.
-        let (a, b) = (x + s * 0.02, x + s * 0.1);
-        slab(mb, v(a.min(b), -0.3, -1.55), v(a.max(b), 1.0, 1.55), dark, wood);
-        for k in 0..9 {
-            let y = -0.2 + k as f32 * 0.14;
-            stick(mb, v(x + s * 0.005, y, -1.55), v(x + s * 0.005, y, 1.55), 0.03, r.next() * 0.3);
-        }
-        for k in 0..8 {
-            let z = -1.45 + k as f32 * 0.414;
-            stick(mb, v(x + s * 0.14, -0.3, z), v(x + s * 0.14, 1.06 + r.range(-0.04, 0.04), z), 0.07, r.next());
-        }
-        stick_c(mb, v(x + s * 0.08, 1.04, -1.6), v(x + s * 0.08, 1.04, 1.6), 0.12, col(palette::PEELED));
-        // Gate posts at both ends.
-        for z in [-1.05f32, 1.05] {
-            stick_c(mb, v(x, -0.3, z), v(x, 1.25, z), 0.12, col(palette::PEELED));
-        }
+        // The mud face turned inward, toward the channel.
+        wall(mb, Vec3::new(s * 0.96, 0.0, 0.0), -s * std::f32::consts::FRAC_PI_2, 3.2, 0.45, if s > 0.0 { 3 } else { 4 });
     }
 }
 
 #[derive(Resource)]
 pub(super) struct HarborMeshes {
-    pub barge: Handle<Mesh>,
-    pub leaf: Handle<Mesh>,
+    pub raft: Handle<Mesh>,
+    pub gate: Handle<Mesh>,
     pub walls: Handle<Mesh>,
 }
 
@@ -108,8 +80,8 @@ pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Asse
         meshes.add(mb.build())
     };
     commands.insert_resource(HarborMeshes {
-        barge: build(&barge_mesh),
-        leaf: build(&lock_leaf_mesh),
+        raft: build(&raft_mesh),
+        gate: build(&lock_gate_mesh),
         walls: build(&lock_walls_mesh),
     });
 }
@@ -118,7 +90,10 @@ pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Asse
 /// are doing now.
 #[derive(Component)]
 pub(super) struct LockVis {
-    pub leaves: [Entity; 4],
+    /// The gates at the low end and the high end.
+    pub gates: [Entity; 2],
+    /// The chamber's height, the gates' and walls' scale.
+    pub h: f32,
     pub water: Entity,
     /// Elevations of the water on the low and high side, and of the chamber's floor.
     pub low: f32,
@@ -147,7 +122,7 @@ const WIDTH: f32 = 1.6;
 
 /// Seconds a passage takes on the gallery's loop.
 const PASSAGE_S: f32 = 5.0;
-/// Seconds the far gates take to swing shut behind a beaver that has left.
+/// Seconds a gate takes to drop shut behind a beaver that has left.
 const SHUT_S: f32 = 0.8;
 
 /// Spawn a lock's parts at `at` (the chamber's middle), the chamber running along `axis_yaw`
@@ -158,20 +133,16 @@ pub(super) fn spawn_lock(commands: &mut Commands, hm: &HarborMeshes, m: &Models,
     // low enough not to hide what is in it.
     let h = (high + 0.3 - floor).max(0.4);
     let w = &m.white;
-    // Wide enough to stand clear of the dam either side, with room for a barge.
+    // Wide enough to stand clear of the dam either side, with room for a raft.
     let root = commands
         .spawn((Transform::from_translation(Vec3::new(at.x, floor, at.z)).with_rotation(Quat::from_rotation_y(axis_yaw)).with_scale(Vec3::new(WIDTH, 1.0, 1.0)), Visibility::Inherited, super::SimEntity))
         .id();
     // The walls' gate posts stand at ±1.05 in their mesh.
     commands.spawn((Mesh3d(hm.walls.clone()), MeshMaterial3d(w.clone()), Transform::from_scale(Vec3::new(1.0, h, half / 1.05)), ChildOf(root)));
     let water = commands.spawn((Transform::from_xyz(0.0, low, 0.0), Visibility::Inherited, super::SimEntity, bevy::light::NotShadowCaster)).id();
-    // Leaves: at each end a pair hinged on the posts, meeting in the middle.
-    let mut leaves = [Entity::PLACEHOLDER; 4];
-    for (k, (x, z, flip)) in [(-0.62f32, -half, false), (0.62, -half, true), (-0.62, half, false), (0.62, half, true)].into_iter().enumerate() {
-        let tr = Transform::from_xyz(x, 0.0, z).with_scale(Vec3::new(if flip { -1.0 } else { 1.0 }, h * 0.98, 1.0));
-        leaves[k] = commands.spawn((Mesh3d(hm.leaf.clone()), MeshMaterial3d(w.clone()), tr, ChildOf(root))).id();
-    }
-    commands.entity(root).insert(LockVis { leaves, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, sheet: false, looping, k: 0.0, up: true });
+    // A gate at each end, between the posts.
+    let gates = [-half, half].map(|z| commands.spawn((Mesh3d(hm.gate.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.0, z).with_scale(Vec3::new(1.0, h * 0.98, 1.0)), ChildOf(root))).id());
+    commands.entity(root).insert(LockVis { gates, h, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, sheet: false, looping, k: 0.0, up: true });
     root
 }
 
@@ -184,10 +155,10 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 // the chamber levels to the near side while the swimmer waits at the shut gate; the gate
 // opens; it swims in; the gate shuts behind it; the chamber fills or drains to the far side's
 // level, lifting or lowering it; the far gate opens, and it swims out.
-const ENTRY_OPEN: (f32, f32) = (0.2, 0.3);
-const SWIM_IN: (f32, f32) = (0.3, 0.45);
-const ENTRY_SHUT: (f32, f32) = (0.45, 0.55);
-const FILL: (f32, f32) = (0.55, 0.85);
+const ENTRY_OPEN: (f32, f32) = (0.15, 0.28);
+const SWIM_IN: (f32, f32) = (0.26, 0.52);
+const ENTRY_SHUT: (f32, f32) = (0.52, 0.6);
+const FILL: (f32, f32) = (0.6, 0.85);
 const EXIT_OPEN: (f32, f32) = (0.85, 1.0);
 
 /// The gates (near end, far end) and the chamber's level `f` of the way through a passage:
@@ -214,15 +185,13 @@ pub(super) struct Chamber {
 }
 
 /// The chamber of a built lock: right through the dam (every row of a widened one), and at
-/// least long enough for a barge with its beaver.
+/// least long enough for a raft with its beaver.
 pub(super) fn chamber(s: &sim::SimState, l: &sim::locks::Lock) -> Option<Chamber> {
     let (yaw, _, _, floor, _) = lock_frame(s, l)?;
     let axis = Vec2::new(yaw.sin(), yaw.cos());
-    let cells = sim::locks::lock_cells(s, l);
-    let pts: Vec<Vec2> = cells.iter().map(|c| cell_xz(s, (c.0 as f32 + 0.5, c.1 as f32 + 0.5))).collect();
-    let centre = pts.iter().copied().sum::<Vec2>() / pts.len().max(1) as f32;
-    let span = pts.iter().map(|p| (*p - centre).dot(axis).abs()).fold(0.0, f32::max);
-    let half = (span + 0.8).max(2.2);
+    let f = sim::locks::frame(s, l)?;
+    let centre = cell_xz(s, f.centre);
+    let half = f.half * crate::terrain_render::CELL_SIZE;
     // The water just beyond each end.
     let (w, h) = (s.height.width() as f32 / 2.0, s.height.height() as f32 / 2.0);
     let beyond = |d: f32| {
@@ -255,11 +224,11 @@ pub(crate) fn chamber_holes(s: &sim::SimState) -> Vec<(Vec2, Vec2, f32, f32)> {
 }
 
 /// Where a beaver is in a lock's working: coming in (how far through its wait), or swimming
-/// out through the chamber (how far out), and whether it goes up, from the low side to the high.
+/// out down the lane, and whether it goes up, from the low side to the high.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Stage {
     Entering { f: f32, up: bool },
-    Leaving { g: f32, up: bool },
+    Leaving { up: bool },
 }
 
 impl Stage {
@@ -294,14 +263,10 @@ pub(super) fn passage<'a>(s: &'a sim::SimState, ag: &sim::agents::Agent, pending
     let dir = |a: (usize, usize), b: (usize, usize)| Vec2::new(b.0 as f32 - a.0 as f32, b.1 as f32 - a.1 as f32);
     if let Some(l) = lock_at(s, ag.cell) {
         let ch = chamber(s, l)?;
-        let up = next.is_none_or(|n| dir(ag.cell, n).dot(ch.axis) >= 0.0);
-        // Out through the chamber: the steps still to take to its first cell beyond, against
-        // the lock's length in cells.
-        let cells = sim::locks::lock_cells(s, l);
-        let left = steps.iter().position(|st| !cells.contains(&st.0)).map_or(steps.len(), |i| i + 1) as f32;
-        let f = next.map_or(1.0, |n| step_progress(s, ag, n, pending_days));
-        let g = (1.0 - (left - f) / cells.len().max(1) as f32).clamp(0.0, 1.0);
-        return Some((l, ch, Stage::Leaving { g, up }));
+        // Which way it is going: by the lane's end it is making for.
+        let ahead = steps.iter().map(|st| st.0).find(|c| lock_at(s, *c).is_none()).or(next);
+        let up = ahead.is_none_or(|n| dir(ag.cell, n).dot(ch.axis) >= 0.0);
+        return Some((l, ch, Stage::Leaving { up }));
     }
     let n = next?;
     let l = lock_at(s, n)?;
@@ -310,67 +275,164 @@ pub(super) fn passage<'a>(s: &'a sim::SimState, ag: &sim::agents::Agent, pending
     Some((l, ch, Stage::Entering { f, up: dir(ag.cell, n).dot(ch.axis) >= 0.0 }))
 }
 
-/// How far outside a gate a beaver waits for it, more with a barge pushed ahead of it.
-fn wait_off(ag: &sim::agents::Agent) -> f32 {
-    if matches!(ag.task, sim::agents::Task::Barge { leg: 1 | 3 | 5, .. }) { 1.8 } else { 0.45 }
-}
+/// How far back a hauler waits for a lock with a raft ahead of it, past where a swimmer
+/// alone waits, so the raft waits clear of the shut gate.
+const RAFT_BACK: f32 = 1.2;
 
-/// Where a beaver is drawn by a lock, and the way it faces. Passing it, it waits outside the
-/// shut gate, swims in when the gate opens, rides the chamber's water up or down, and swims
-/// out straight down the chamber past the far gate. Not passing, it is kept out of the chamber,
-/// at the gate nearest it. `None` away from every lock.
-pub(super) fn lock_pose(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(Vec3, f32)> {
-    let Some((_, ch, stage)) = passage(s, ag, pending_days) else { return keep_out(s, ag, pending_days) };
-    let up = stage.up();
-    let (entry, exit) = if up { (ch.low, ch.high) } else { (ch.high, ch.low) };
-    let u = if up { ch.axis } else { -ch.axis };
-    let yaw = u.x.atan2(u.y);
-    let barge = wait_off(ag) > 1.0;
-    let wait = ch.centre - u * (ch.half + wait_off(ag));
-    // In the chamber: with a barge ahead, far enough back for the barge to fit between the gates.
-    let hold = ch.centre - u * if barge { 0.45 } else { 0.0 };
-    let out = ch.centre + u * (ch.half + 0.45);
-    let (xz, y) = match stage {
-        Stage::Entering { f, .. } => {
-            let xz = if f < SWIM_IN.0 { wait } else { wait.lerp(hold, smooth(SWIM_IN.0, SWIM_IN.1, f)) };
-            (xz, entry + (exit - entry) * smooth(FILL.0, FILL.1, f))
-        }
-        Stage::Leaving { g, .. } => (hold.lerp(out, g), exit),
-    };
-    Some((Vec3::new(xz.x, y, xz.y), yaw))
-}
-
-/// A swimmer by a lock but not passing it is drawn outside its chamber, at the gate it is
-/// nearer, so nothing is seen inside the chamber but what is passing through. One about to
-/// pass waits there with room for its barge.
-fn keep_out(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(Vec3, f32)> {
-    let barge = matches!(ag.task, sim::agents::Task::Barge { leg: 1 | 3 | 5, .. });
-    if ag.gait != sim::nav::Gait::Swim && !barge {
+/// Where a swimmer at `p` near a lock is drawn: straight down the middle of the chamber and of
+/// its way in between the walls, easing back onto its own line as it comes clear of them. The
+/// simulation keeps it to the lock's lane and out of the walls (`sim::locks`), so this only
+/// straightens the lane's steps. With `raft_back`, a hauler bringing a raft up to the gate is
+/// drawn further back, so the raft ahead of it waits clear of the gate. `None` clear of the lock.
+fn on_lane(ch: &Chamber, p: Vec2, raft_back: bool) -> Option<Vec2> {
+    let (u, n) = (ch.axis, ch.axis.perp());
+    let d = p - ch.centre;
+    let (a, x) = (d.dot(u), d.dot(n));
+    let end = ch.half * sim::locks::WALL_REACH;
+    let clear = end + 1.5;
+    let wide = sim::locks::HALF_WIDTH + 0.6;
+    if a.abs() >= clear || x.abs() >= wide {
         return None;
     }
+    let free = smooth(end - 0.5, clear, a.abs());
+    let lane = 1.0 - smooth(0.8, wide, x.abs());
+    let x2 = x * (1.0 - (1.0 - free) * lane);
+    let back = if raft_back && a.abs() > ch.half { RAFT_BACK * (1.0 - smooth(ch.half + 0.5, clear, a.abs())) } else { 0.0 };
+    let a2 = a + a.signum() * back;
+    Some(ch.centre + u * a2 + n * x2)
+}
+
+/// Whether a beaver is pushing a raft.
+fn with_raft(ag: &sim::agents::Agent) -> bool {
+    matches!(ag.task, sim::agents::Task::Raft { leg: 1 | 3 | 5, .. })
+}
+
+fn cell_mid(s: &sim::SimState, c: (usize, usize)) -> Vec2 {
+    cell_xz(s, (c.0 as f32 + 0.5, c.1 as f32 + 0.5))
+}
+
+/// Where a beaver is drawn by a lock, given where it would be drawn on its way (`base`), and
+/// the way it faces when the lock decides that. Passing, it waits at the shut gate, swims in
+/// when the gate sinks, rides the chamber's water up or down while the gates work, then swims
+/// on down the lane and out over the far gate. Near a lock and not passing, it keeps to the
+/// lane's middle (`on_lane`). `None` away from every lock.
+pub(super) fn lock_pose(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32, base: Vec3) -> Option<(Vec3, Option<f32>)> {
     if s.locks.at.values().all(|l| !l.built) {
         return None;
     }
-    let p = super::sim_view::agent_world_xz(s, ag, pending_days);
-    let steps = ag.path.as_ref().map(|p| p.steps.as_slice()).unwrap_or(&[]);
-    for l in s.locks.at.values().filter(|l| l.built) {
-        let Some(ch) = chamber(s, l) else { continue };
-        let d = p - ch.centre;
-        let (along, across) = (d.dot(ch.axis), d.dot(ch.axis.perp()));
-        // Coming up to pass it: wait room on the near side.
-        let cells = sim::locks::lock_cells(s, l);
-        let coming = steps.iter().take(6).any(|st| cells.contains(&st.0));
-        let off = if coming { wait_off(ag) } else { 0.45 };
-        if across.abs() >= 0.62 * WIDTH + 0.3 || along.abs() >= ch.half + off {
-            continue;
-        }
-        let side = if along >= 0.0 { 1.0 } else { -1.0 };
-        let at = ch.centre + ch.axis * side * (ch.half + off) + ch.axis.perp() * across;
-        let y = if side > 0.0 { ch.high } else { ch.low };
-        let toward = super::sim_view::facing_of(s, ag).unwrap_or((-ch.axis * side).x.atan2((-ch.axis * side).y));
-        return Some((Vec3::new(at.x, y, at.y), toward));
+    let raft = with_raft(ag);
+    if let Some((l, ch, stage)) = passage(s, ag, pending_days) {
+        let up = stage.up();
+        let (entry, exit) = if up { (ch.low, ch.high) } else { (ch.high, ch.low) };
+        let u = if up { ch.axis } else { -ch.axis };
+        let yaw = u.x.atan2(u.y);
+        let (xz, y) = match stage {
+            Stage::Entering { f, .. } => {
+                // Waiting where it came up to the gate, then into the lane's first cell.
+                let wait = on_lane(&ch, cell_mid(s, ag.cell), raft).unwrap_or(ch.centre - u * (ch.half + 0.5));
+                let first = ag.path.as_ref().and_then(|p| p.steps.first()).map(|st| st.0).unwrap_or(l.cell);
+                let inside = on_lane(&ch, cell_mid(s, first), false).unwrap_or(ch.centre - u * (ch.half - 0.5));
+                // Coming up to the wait as it was drawn on its way, and no further than it.
+                let here = on_lane(&ch, base.xz(), raft).unwrap_or(base.xz());
+                let come = if (here - ch.centre).dot(u) > (wait - ch.centre).dot(u) { wait } else { here };
+                let xz = if f < SWIM_IN.0 { come } else { come.lerp(inside, smooth(SWIM_IN.0, SWIM_IN.1, f)) };
+                (xz, entry + (exit - entry) * smooth(FILL.0, FILL.1, f))
+            }
+            Stage::Leaving { .. } => {
+                // On down the lane as drawn on its way, never back behind where it came in.
+                let here = on_lane(&ch, base.xz(), false).unwrap_or(base.xz());
+                let came_in = ch.centre - u * (ch.half - 0.5);
+                let a = (here - ch.centre).dot(u).max((came_in - ch.centre).dot(u));
+                (ch.centre + u * a + ch.axis.perp() * (here - ch.centre).dot(ch.axis.perp()), exit)
+            }
+        };
+        return Some((Vec3::new(xz.x, y, xz.y), Some(yaw)));
     }
-    None
+    if ag.gait != sim::nav::Gait::Swim && !raft {
+        return None;
+    }
+    let steps = ag.path.as_ref().map(|p| p.steps.as_slice()).unwrap_or(&[]);
+    s.locks.at.values().filter(|l| l.built).find_map(|l| {
+        let ch = chamber(s, l)?;
+        let coming = raft && {
+            let cells = sim::locks::lock_cells(s, l);
+            steps.iter().take(8).any(|st| cells.contains(&st.0))
+        };
+        on_lane(&ch, base.xz(), coming).map(|xz| (Vec3::new(xz.x, base.y, xz.y), None))
+    })
+}
+
+/// Each built lock's chamber.
+pub(super) fn chambers(s: &sim::SimState) -> Vec<Chamber> {
+    s.locks.at.values().filter(|l| l.built).filter_map(|l| chamber(s, l)).collect()
+}
+
+/// A beaver drawn near a lock, glided over any jump in where it would be drawn and turned
+/// rather than snapped round: where it was last drawn and last put, how it was last moving
+/// a frame, the way it faces, and whether it is near a lock.
+#[derive(Component, Default)]
+pub(super) struct LockGlide {
+    shown: Option<Vec3>,
+    last: Option<Vec3>,
+    vel: Vec3,
+    yaw: Option<f32>,
+    near: bool,
+}
+
+/// A move in one frame that differs from the one before by more than this is a jump, glided
+/// over: a swimmer speeds up, slows and turns far more gently.
+const JUMP: f32 = 0.06;
+/// Seconds a jump is glided over.
+const GLIDE_S: f32 = 0.15;
+/// How fast a beaver near a lock turns, radians a second.
+const TURN: f32 = 2.5;
+
+/// The way a beaver faces this frame, wanting to face `want`: near a lock it turns toward it
+/// at `TURN`, so neither it nor the raft ahead of it swings round in a frame.
+pub(super) fn turn(g: &mut LockGlide, want: f32, dt: f32) -> f32 {
+    let yaw = match g.yaw.filter(|_| g.near) {
+        Some(y) => {
+            let d = (want - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            y + d.clamp(-TURN * dt, TURN * dt)
+        }
+        None => want,
+    };
+    g.yaw = Some(yaw);
+    yaw
+}
+
+/// Where a beaver is drawn this frame, given where it would be (`target`). Away from locks it is
+/// drawn where it is; near one, a jump in where it would be is glided over, and a smooth move
+/// is followed exactly.
+pub(super) fn glide(g: &mut LockGlide, chs: &[Chamber], target: Vec3, dt: f32) -> Vec3 {
+    let (Some(shown), Some(last)) = (g.shown, g.last) else {
+        *g = LockGlide { shown: Some(target), last: Some(target), ..default() };
+        return target;
+    };
+    g.last = Some(target);
+    let near = |p: Vec2| {
+        chs.iter().any(|ch| {
+            let d = p - ch.centre;
+            d.dot(ch.axis).abs() < ch.half * sim::locks::WALL_REACH + 4.0 && d.dot(ch.axis.perp()).abs() < 5.0
+        })
+    };
+    let moved = (target - last).length();
+    g.near = near(target.xz());
+    if moved > 12.0 || (shown.distance(target) < 0.01 && !g.near) {
+        g.shown = Some(target);
+        g.vel = target - last;
+        return target;
+    }
+    let k = 1.0 - (-dt / GLIDE_S).exp();
+    // A smooth move is followed as it goes; a jump is glided over.
+    let step = target - last;
+    let jump = (step - g.vel).xz().length() > JUMP;
+    // Through a jump it carries on as it was going, easing to where it now is.
+    let from = if jump { shown + g.vel } else { shown + step };
+    g.vel = if jump { g.vel * 0.5 } else { step };
+    let next = from + (target - from) * k;
+    g.shown = Some(next);
+    next
 }
 
 /// Gates and chamber on the gallery's loop: a passage up, then one down.
@@ -393,18 +455,11 @@ pub(super) fn animate_locks(time: Res<Time>, mut locks: Query<&mut LockVis>, mut
     }
 }
 
-/// Swing a lock's leaves and set its chamber's water as its state says.
+/// Sink or raise a lock's gates and set its chamber's water as its state says.
 fn show(l: &LockVis, parts: &mut Query<&mut Transform, Without<LockVis>>) {
-    for (i, &e) in l.leaves.iter().enumerate() {
-        // Leaves 0 and 1 are at the low end (-z), 2 and 3 at the high end.
-        let open = l.open[i / 2];
-        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
-        // Shut: the pair meet in a V pointing upstream; open: folded back against the walls.
-        let shut = if i < 2 { 0.35 } else { -0.35 };
-        let open_a = if i < 2 { -1.45 } else { 1.45 };
-        let a = shut + (open_a - shut) * open;
+    for (&e, &open) in l.gates.iter().zip(&l.open) {
         if let Ok(mut t) = parts.get_mut(e) {
-            t.rotation = Quat::from_rotation_y(side * a);
+            t.translation.y = -open * 1.05 * l.h;
         }
     }
     if let Ok(mut t) = parts.get_mut(l.water) {
@@ -422,20 +477,14 @@ pub(super) struct LockSync {
 /// either side, and its gate's floor and top.
 fn lock_frame(s: &sim::SimState, l: &sim::locks::Lock) -> Option<(f32, f32, f32, f32, f32)> {
     let c = l.cell;
-    let (floor, top, along): (f32, f32, Vec<(usize, usize)>) = if let Some(k) = sim::canals::canal(s, l.building) {
-        // A canal's gate: the flow runs along the canal.
-        (k.gate.floor, k.gate.top, k.cells.iter().filter(|x| x.row == 0).map(|x| x.cell).collect())
+    let (floor, top) = if let Some(k) = sim::canals::canal(s, l.building) {
+        (k.gate.floor, k.gate.top)
     } else {
-        let d = sim::dams::dam(s, l.building)?;
-        let g = d.gates.iter().find(|g| g.cell == c)?;
-        // Along the drawn line only: the rows a widened dam adds lie behind it.
-        (g.floor, g.top, d.cells.iter().filter(|x| x.row == 0).map(|x| x.cell).collect())
+        let g = sim::dams::dam(s, l.building)?.gates.iter().find(|g| g.cell == c)?;
+        (g.floor, g.top)
     };
-    let near: Vec<(i32, i32)> = along.iter().filter(|&&o| o != c && o.0.abs_diff(c.0) <= 1 && o.1.abs_diff(c.1) <= 1).map(|o| (o.0 as i32 - c.0 as i32, o.1 as i32 - c.1 as i32)).collect();
-    let line = near.first().copied().unwrap_or((1, 0));
-    let line = Vec2::new(line.0 as f32, line.1 as f32).normalize_or(Vec2::X);
-    // A dam's line runs across the flow; a canal's along it.
-    let flow = if sim::canals::canal(s, l.building).is_some() { line } else { Vec2::new(-line.y, line.x) };
+    let f = sim::locks::frame(s, l)?;
+    let flow = Vec2::new(f.axis.0, f.axis.1);
     let level = |d: Vec2| {
         let p = (c.0 as f32 + 0.5 + d.x * 1.6, c.1 as f32 + 0.5 + d.y * 1.6);
         let q = (p.0.max(0.0) as usize, p.1.max(0.0) as usize);
@@ -526,7 +575,7 @@ pub(super) fn sync_locks(
                 v.level = level;
             }
             None => {
-                // Empty: the gates swing shut, and the chamber stays where it was left.
+                // Empty: the gates drop shut, and the chamber stays where it was left.
                 v.occupant = None;
                 for o in &mut v.open {
                     *o = (*o - dt / SHUT_S).max(0.0);
@@ -537,25 +586,25 @@ pub(super) fn sync_locks(
     }
 }
 
-/// The drawn barges, by barge id: the barge and the heap of goods on it.
+/// The drawn rafts, by raft id: the raft and the heap of goods on it.
 #[derive(Default)]
-pub(super) struct BargeSync {
+pub(super) struct RaftSync {
     drawn: HashMap<u32, (Entity, Entity, Option<sim::buildings::Good>)>,
 }
 
-/// Each barge: moored where it floats, rocking gently, or pushed along just ahead of its
+/// Each raft: moored where it floats, rocking gently, or pushed along just ahead of its
 /// hauler with the hauler's load heaped on it.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn sync_barges(
+pub(super) fn sync_rafts(
     mut commands: Commands,
     sim: Res<Sim>,
     models: Option<Res<Models>>,
     hm: Option<Res<HarborMeshes>>,
     clock: Res<RenderClock>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut st: Local<BargeSync>,
-    beavers: Query<(&super::BeaverSprite, &Transform), Without<BargeMark>>,
-    mut tr: Query<(&mut Transform, &mut Visibility), With<BargeMark>>,
+    mut st: Local<RaftSync>,
+    beavers: Query<(&super::BeaverSprite, &Transform), Without<RaftMark>>,
+    mut tr: Query<(&mut Transform, &mut Visibility), With<RaftMark>>,
     mut heap_mesh: Local<HashMap<sim::buildings::Good, Handle<Mesh>>>,
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
@@ -568,15 +617,15 @@ pub(super) fn sync_barges(
         }
         keep
     });
-    for b in &s.fleet.barges {
+    for b in &s.fleet.rafts {
         let entry = st.drawn.entry(b.id).or_insert_with(|| {
-            let e = commands.spawn((Mesh3d(hm.barge.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Inherited, BargeMark, super::SimEntity)).id();
-            let h = commands.spawn((Mesh3d(hm.barge.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Hidden, BargeMark, super::SimEntity)).id();
+            let e = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Inherited, RaftMark, super::SimEntity)).id();
+            let h = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Hidden, RaftMark, super::SimEntity)).id();
             (e, h, None)
         });
         let (e, h) = (entry.0, entry.1);
         let hauler = b.hauler.and_then(|w| s.agents.get(w).map(|a| (w, a)));
-        let pushed = hauler.filter(|(_, a)| matches!(a.task, sim::agents::Task::Barge { leg: 1..=5, .. }));
+        let pushed = hauler.filter(|(_, a)| matches!(a.task, sim::agents::Task::Raft { leg: 1..=5, .. }));
         let drawn_hauler = pushed.and_then(|(w, _)| beavers.iter().find(|(sp, _)| sp.id == w.0).map(|(sp, t)| (sp.yaw, t.translation)));
         let (pos, yaw) = match drawn_hauler {
             // Just ahead of the beaver pushing it, the way it faces.
@@ -608,22 +657,121 @@ pub(super) fn sync_barges(
     }
 }
 
-/// A barge or the load on one.
+/// A raft or the load on one.
 #[derive(Component)]
-pub(super) struct BargeMark;
+pub(super) struct RaftMark;
 
-/// `BC_GALLERY_WHAT=harbor`: a barge with each load in a row, and a lock passing beavers up
+/// `BC_GALLERY_WHAT=harbor`: a raft with each load in a row, and a lock passing beavers up
 /// and down on a loop beside them.
 pub(super) fn spawn_gallery(commands: &mut Commands, hm: &HarborMeshes, m: &Models, meshes: &mut Assets<Mesh>, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
     let goods = sim::buildings::Good::ALL;
     for (i, g) in goods.into_iter().enumerate() {
         let x = centre.x + (i as f32 - (goods.len() as f32 - 1.0) / 2.0) * 1.8;
         let z = centre.z + 2.0;
-        let barge = commands.spawn((Mesh3d(hm.barge.clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(x, ground(x, z) + 0.12, z).with_scale(Vec3::splat(0.55)))).id();
+        let raft = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(x, ground(x, z) + 0.12, z).with_scale(Vec3::splat(0.55)))).id();
         let heap = meshes.add(super::models::heap_mesh(g));
-        commands.spawn((Mesh3d(heap), MeshMaterial3d(m.white.clone()), Transform::from_xyz(0.0, 0.18, -0.1).with_scale(Vec3::splat(1.3)), ChildOf(barge)));
+        commands.spawn((Mesh3d(heap), MeshMaterial3d(m.white.clone()), Transform::from_xyz(0.0, 0.18, -0.1).with_scale(Vec3::splat(1.3)), ChildOf(raft)));
     }
     let (x, z) = (centre.x, centre.z - 2.5);
     let g = ground(x, z);
     spawn_lock(commands, hm, m, Vec3::new(x, g, z), std::f32::consts::FRAC_PI_2, 2.2, g - 0.2, g + 0.25, g + 1.05, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lock() -> Chamber {
+        Chamber { centre: Vec2::ZERO, axis: Vec2::Y, half: 2.2, low: 0.0, high: 1.0, floor: -0.5, iced: false }
+    }
+
+    #[test]
+    fn a_swimmer_setting_off_from_rest_is_followed_and_a_hop_is_glided() {
+        let ch = lock();
+        let mut g = LockGlide::default();
+        let mut p = Vec3::new(0.0, 1.0, -5.0);
+        for _ in 0..30 {
+            glide(&mut g, &[ch], p, 1.0 / 60.0);
+        }
+        for _ in 0..60 {
+            p.z += 0.06;
+            let at = glide(&mut g, &[ch], p, 1.0 / 60.0);
+            assert!(at.distance(p) < 0.03, "keeps up: {at} vs {p}");
+        }
+        // Stopped, then put 0.13 to one side: no hop in one frame.
+        for _ in 0..30 {
+            glide(&mut g, &[ch], p, 1.0 / 60.0);
+        }
+        let before = glide(&mut g, &[ch], p, 1.0 / 60.0);
+        let after = glide(&mut g, &[ch], p + Vec3::X * 0.13, 1.0 / 60.0);
+        assert!(after.distance(before) < 0.03);
+    }
+
+    #[test]
+    fn a_swimmer_stopping_short_stops_where_it_is() {
+        let ch = lock();
+        let mut g = LockGlide::default();
+        let mut p = Vec3::new(0.0, 1.0, -6.0);
+        for _ in 0..60 {
+            p.z += 0.07;
+            glide(&mut g, &[ch], p, 1.0 / 60.0);
+        }
+        let mut at = Vec3::ZERO;
+        for _ in 0..90 {
+            at = glide(&mut g, &[ch], p, 1.0 / 60.0);
+            assert!(at.z <= p.z + 0.15, "no overshoot: {at} vs {p}");
+        }
+        assert!(at.distance(p) < 0.01);
+    }
+
+    #[test]
+    fn a_beaver_by_a_lock_turns_rather_than_snapping_round() {
+        let ch = lock();
+        let mut g = LockGlide::default();
+        glide(&mut g, &[ch], Vec3::new(0.0, 1.0, -4.0), 1.0 / 60.0);
+        glide(&mut g, &[ch], Vec3::new(0.0, 1.0, -4.0), 1.0 / 60.0);
+        turn(&mut g, 0.5, 1.0 / 60.0);
+        let y = turn(&mut g, 0.0, 1.0 / 60.0);
+        assert!((y - (0.5 - TURN / 60.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_smooth_swim_is_followed_exactly() {
+        let ch = lock();
+        let mut g = LockGlide::default();
+        for i in 0..60 {
+            let p = Vec3::new(5.0, 1.0, -3.0 + i as f32 * 0.05);
+            let at = glide(&mut g, &[ch], p, 1.0 / 60.0);
+            assert!(at.distance(p) < 1e-4);
+        }
+    }
+
+    #[test]
+    fn the_lane_is_drawn_straight_and_meets_the_swimmer_s_own_line_past_the_walls() {
+        let ch = lock();
+        let inside = on_lane(&ch, Vec2::new(0.45, 1.0), false).unwrap();
+        assert!(inside.x.abs() < 1e-4 && (inside.y - 1.0).abs() < 1e-4);
+        // Moving out along a slanted lane: no step bigger than the move itself, out to its line.
+        let mut last = on_lane(&ch, Vec2::new(0.4, 2.0), false).unwrap();
+        for i in 1..=200 {
+            let p = Vec2::new(0.4, 2.0 + i as f32 * 0.02);
+            let at = on_lane(&ch, p, false).unwrap_or(p);
+            assert!(at.distance(last) < 0.05, "jump at {p}");
+            last = at;
+        }
+    }
+
+    #[test]
+    fn a_hauler_waits_back_far_enough_for_its_raft_and_comes_on_without_a_jump() {
+        let ch = lock();
+        let wait = on_lane(&ch, Vec2::new(0.0, -(ch.half + 0.5)), true).unwrap();
+        assert!(-wait.y >= ch.half + 0.5 + RAFT_BACK - 1e-3);
+        let mut last = wait;
+        for i in 1..=200 {
+            let p = Vec2::new(0.0, -(ch.half + 0.5) - i as f32 * 0.02);
+            let at = on_lane(&ch, p, true).unwrap_or(p);
+            assert!(at.distance(last) < 0.05 && at.y <= last.y, "jump at {p}");
+            last = at;
+        }
+    }
 }

@@ -1,10 +1,10 @@
-//! Harbors and barges. A finished Harbor keeps `BARGES_PER_HARBOR` barges moored at its
+//! Harbors and rafts. A finished Harbor keeps `RAFTS_PER_HARBOR` rafts moored at its
 //! waterfront and lets gates be upgraded into locks (see `locks`).
 //!
 //! A hauler with at least two loads of a good to move between two stores that both stand on
-//! barge water (at least `BARGE_DEPTH` deep), joined by it, takes a free barge: it fetches the
-//! barge, pushes it to the first store, loads up to `BARGE_LOADS` loads, pushes it to the
-//! second, unloads, and takes it back to its harbor. A barge goes at `BARGE_PACE` of a
+//! raft water (at least `RAFT_DEPTH` deep), joined by it, takes a free raft: it fetches the
+//! raft, pushes it to the first store, loads up to `RAFT_LOADS` loads, pushes it to the
+//! second, unloads, and takes it back to its harbor. A raft goes at `RAFT_PACE` of a
 //! swimmer's speed (with the current, as a swimmer does) and passes dams only through locks;
 //! it carries far more than a beaver, so over any distance it moves goods faster.
 include!(concat!(env!("OUT_DIR"), "/harbor_constants.rs"));
@@ -19,7 +19,7 @@ use crate::water::Cell;
 use crate::SimState;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Barge {
+pub struct Raft {
     pub id: u32,
     pub harbor: BuildingId,
     /// Where it floats: moored, or wherever its hauler has pushed it.
@@ -30,9 +30,9 @@ pub struct Barge {
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Fleet {
-    pub barges: Vec<Barge>,
+    pub rafts: Vec<Raft>,
     next: u32,
-    /// Which stretch of barge water each cell is on (0: none), worked out once a day, and the
+    /// Which stretch of raft water each cell is on (0: none), worked out once a day, and the
     /// day it was.
     #[serde(skip)]
     regions: Vec<u32>,
@@ -41,47 +41,47 @@ pub struct Fleet {
 }
 
 impl Fleet {
-    pub fn get(&self, id: u32) -> Option<&Barge> {
-        self.barges.iter().find(|b| b.id == id)
+    pub fn get(&self, id: u32) -> Option<&Raft> {
+        self.rafts.iter().find(|b| b.id == id)
     }
-    pub fn get_mut(&mut self, id: u32) -> Option<&mut Barge> {
-        self.barges.iter_mut().find(|b| b.id == id)
+    pub fn get_mut(&mut self, id: u32) -> Option<&mut Raft> {
+        self.rafts.iter_mut().find(|b| b.id == id)
     }
-    /// The barge this hauler is pushing.
-    pub fn of(&self, who: BeaverId) -> Option<&Barge> {
-        self.barges.iter().find(|b| b.hauler == Some(who))
+    /// The raft this hauler is pushing.
+    pub fn of(&self, who: BeaverId) -> Option<&Raft> {
+        self.rafts.iter().find(|b| b.hauler == Some(who))
     }
 }
 
-/// Ice this thick (m) stops a barge: the ice that bears a beaver.
-pub const BARGE_ICE_M: f32 = crate::tuning::water::ICE_WALK_M;
+/// Ice this thick (m) stops a raft: the ice that bears a beaver.
+pub const RAFT_ICE_M: f32 = crate::tuning::water::ICE_WALK_M;
 
-/// Water a barge can float on: open water, a canal or a lock, at least `BARGE_DEPTH` deep (a
+/// Water a raft can float on: open water, a canal or a lock, at least `RAFT_DEPTH` deep (a
 /// lock always is), and not iced over.
 
-pub fn barge_water(sim: &SimState, c: Cell) -> bool {
+pub fn raft_water(sim: &SimState, c: Cell) -> bool {
     match sim.nav.surface_at(c) {
         Some(Surface::Lock) => true,
-        // Ice thick enough to walk on holds a barge fast.
-        Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= BARGE_DEPTH) && sim.water.ice.get(c.0, c.1).is_none_or(|&t| t < BARGE_ICE_M),
+        // Ice thick enough to walk on holds a raft fast.
+        Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= RAFT_DEPTH) && sim.water.ice.get(c.0, c.1).is_none_or(|&t| t < RAFT_ICE_M),
         _ => false,
     }
 }
 
-/// Barge water beside a building, where a barge ties up to it.
+/// Raft water beside a building, where a raft ties up to it.
 pub fn docks(sim: &SimState, b: &Building) -> Vec<Cell> {
     let cells: Vec<Cell> = b.cells().collect();
     let mut out: Vec<Cell> = cells
         .iter()
         .flat_map(|&(x, y)| [(x + 1, y), (x.wrapping_sub(1), y), (x, y + 1), (x, y.wrapping_sub(1))])
-        .filter(|c| !cells.contains(c) && barge_water(sim, *c))
+        .filter(|c| !cells.contains(c) && raft_water(sim, *c))
         .collect();
     out.sort();
     out.dedup();
     out
 }
 
-/// The quickest barge route from `from` to any of `to`, on barge water only, at barge pace.
+/// The quickest raft route from `from` to any of `to`, on raft water only, at raft pace.
 pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
     if to.is_empty() {
         return None;
@@ -116,7 +116,7 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
                 continue;
             }
             let n = (x as usize, y as usize);
-            if !barge_water(sim, n) {
+            if !raft_water(sim, n) {
                 continue;
             }
             // No cutting a corner past a bank, except into or out of a lock: on a diagonal dam
@@ -124,7 +124,7 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
             if dx != 0 && dy != 0 && !corner_ok(sim, c, n) {
                 continue;
             }
-            let Some(step) = sim.nav.move_cost(c, n, BARGE_PACE) else { continue };
+            let Some(step) = sim.nav.move_cost(c, n, RAFT_PACE) else { continue };
             let next = cost + step;
             if best.get(&idx(n)).is_none_or(|b| next + 1e-4 < b.0) {
                 best.insert(idx(n), (next, Some(c)));
@@ -144,7 +144,7 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
     Some(Path { steps, cost: total })
 }
 
-/// Whether barge water joins these two stores (worked out at most once a day for each pair).
+/// Whether raft water joins these two stores (worked out at most once a day for each pair).
 pub fn joined(sim: &SimState, a: BuildingId, b: BuildingId) -> bool {
     let (Some(x), Some(y)) = (sim.buildings.building(a), sim.buildings.building(b)) else { return false };
     let w = sim.nav.surface.width();
@@ -153,19 +153,19 @@ pub fn joined(sim: &SimState, a: BuildingId, b: BuildingId) -> bool {
     docks(sim, y).into_iter().map(region).any(|r| r != 0 && here.contains(&r))
 }
 
-/// Whether a barge may go corner to corner from `a` to `b` (both barge water): round no bank,
+/// Whether a raft may go corner to corner from `a` to `b` (both raft water): round no bank,
 /// unless one end is a lock, whose far side on a diagonal dam touches it only at a corner.
 fn corner_ok(sim: &SimState, a: Cell, b: Cell) -> bool {
     let lock = |c: Cell| sim.nav.surface_at(c) == Some(Surface::Lock);
-    lock(a) || lock(b) || (barge_water(sim, (b.0, a.1)) && barge_water(sim, (a.0, b.1)))
+    lock(a) || lock(b) || (raft_water(sim, (b.0, a.1)) && raft_water(sim, (a.0, b.1)))
 }
 
-/// Label the stretches of barge water, each joined cell to cell (diagonals round no bank, but
+/// Label the stretches of raft water, each joined cell to cell (diagonals round no bank, but
 /// into and out of a lock; see `corner_ok`).
 fn label_regions(sim: &mut SimState) {
     let (w, h) = (sim.nav.surface.width(), sim.nav.surface.height());
     let mut regions = vec![0u32; w * h];
-    let wet: Vec<bool> = (0..w * h).map(|i| barge_water(sim, (i % w, i / w))).collect();
+    let wet: Vec<bool> = (0..w * h).map(|i| raft_water(sim, (i % w, i / w))).collect();
     let mut next = 0u32;
     let mut queue = std::collections::VecDeque::new();
     for start in 0..w * h {
@@ -194,7 +194,7 @@ fn label_regions(sim: &mut SimState) {
     sim.fleet.regions = regions;
 }
 
-/// Keep each finished harbor's barges: new ones moored at its docks, those of a harbor that
+/// Keep each finished harbor's rafts: new ones moored at its docks, those of a harbor that
 /// is gone taken away, and any whose hauler has stopped using it let go.
 pub fn step(sim: &mut SimState) {
     let day = sim.time_days.floor() as i64;
@@ -210,32 +210,32 @@ pub fn step(sim: &mut SimState) {
         .filter(|b| b.kind == BuildingKind::Harbor && sim.finished(b))
         .map(|b| (b.id, docks(sim, b)))
         .collect();
-    sim.fleet.barges.retain(|b| harbors.iter().any(|h| h.0 == b.harbor));
+    sim.fleet.rafts.retain(|b| harbors.iter().any(|h| h.0 == b.harbor));
     for (id, docks) in &harbors {
-        let have = sim.fleet.barges.iter().filter(|b| b.harbor == *id).count();
-        for k in have..BARGES_PER_HARBOR {
+        let have = sim.fleet.rafts.iter().filter(|b| b.harbor == *id).count();
+        for k in have..RAFTS_PER_HARBOR {
             let Some(&cell) = docks.get(k % docks.len().max(1)) else { break };
             let n = sim.fleet.next;
             sim.fleet.next += 1;
-            sim.fleet.barges.push(Barge { id: n, harbor: *id, cell, hauler: None });
+            sim.fleet.rafts.push(Raft { id: n, harbor: *id, cell, hauler: None });
         }
     }
-    let using: Vec<(u32, BeaverId)> = sim.fleet.barges.iter().filter_map(|b| b.hauler.map(|h| (b.id, h))).collect();
-    for (barge, who) in using {
-        let still = sim.agents.get(who).is_some_and(|a| matches!(a.task, crate::agents::Task::Barge { barge: x, .. } if x == barge));
+    let using: Vec<(u32, BeaverId)> = sim.fleet.rafts.iter().filter_map(|b| b.hauler.map(|h| (b.id, h))).collect();
+    for (raft, who) in using {
+        let still = sim.agents.get(who).is_some_and(|a| matches!(a.task, crate::agents::Task::Raft { raft: x, .. } if x == raft));
         if !still {
-            if let Some(b) = sim.fleet.get_mut(barge) {
+            if let Some(b) = sim.fleet.get_mut(raft) {
                 b.hauler = None;
             }
         }
     }
 }
 
-/// A free barge for a trip from `from` to `to`, the nearest one to `at`, if barge water joins
-/// them and the barge can get to `from`.
-pub fn free_barge(sim: &SimState, at: Cell) -> Option<u32> {
+/// A free raft for a trip from `from` to `to`, the nearest one to `at`, if raft water joins
+/// them and the raft can get to `from`.
+pub fn free_raft(sim: &SimState, at: Cell) -> Option<u32> {
     sim.fleet
-        .barges
+        .rafts
         .iter()
         .filter(|b| b.hauler.is_none())
         .min_by_key(|b| (b.cell.0.abs_diff(at.0) + b.cell.1.abs_diff(at.1), b.id))
@@ -282,17 +282,17 @@ mod tests {
     }
 
     #[test]
-    fn a_hauler_moves_many_loads_at_once_by_barge_along_a_waterway() {
+    fn a_hauler_moves_many_loads_at_once_by_raft_along_a_waterway() {
         let (mut s, a, b, who) = waterway();
         let dt = crate::STEP_DAYS;
-        let (mut biggest, mut used_barge) = (0.0f32, false);
+        let (mut biggest, mut used_raft) = (0.0f32, false);
         for _ in 0..(6.0 / dt) as usize {
             s.time_days += dt as f64;
             step(&mut s);
             crate::agents::step(&mut s, dt);
             if let Some(ag) = s.agents.get(who) {
-                if matches!(ag.task, crate::agents::Task::Barge { .. }) {
-                    used_barge = true;
+                if matches!(ag.task, crate::agents::Task::Raft { .. }) {
+                    used_raft = true;
                     biggest = biggest.max(ag.load.map_or(0.0, |l| l.amount));
                 }
             }
@@ -300,15 +300,15 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(s.fleet.barges.len(), BARGES_PER_HARBOR, "the harbor's barges are moored");
-        assert!(used_barge, "the hauler never took a barge");
-        assert!(biggest > 2.5 * crate::agents::load_size(Good::Sticks), "a barge took only {biggest}");
+        assert_eq!(s.fleet.rafts.len(), RAFTS_PER_HARBOR, "the harbor's rafts are moored");
+        assert!(used_raft, "the hauler never took a raft");
+        assert!(biggest > 2.5 * crate::agents::load_size(Good::Sticks), "a raft took only {biggest}");
         assert!(s.work.stock_of(b, Good::Sticks) >= 2.0 * crate::agents::load_size(Good::Sticks), "the far store got {}", s.work.stock_of(b, Good::Sticks));
         assert!(s.work.stock_of(a, Good::Sticks) < 60.0);
     }
 
     #[test]
-    fn a_barge_stays_on_deep_water_and_passes_a_dam_only_by_its_lock() {
+    fn a_raft_stays_on_deep_water_and_passes_a_dam_only_by_its_lock() {
         let (mut s, _, _, _) = waterway();
         // A dam across the channel at x 60.
         for y in 30..35 {
@@ -317,14 +317,14 @@ mod tests {
         s.nav = NavGrid::new(s.world.size, s.world.size);
         crate::agents::place_beavers(&mut s);
         let to = [(70usize, 32usize)];
-        assert!(route(&s, (50, 32), &to).is_none(), "a dam blocks a barge");
+        assert!(route(&s, (50, 32), &to).is_none(), "a dam blocks a raft");
         // A lock in the dam lets it through.
         s.locks.at.insert((60, 32), crate::locks::Lock { cell: (60, 32), building: BuildingId(99), built: true });
         s.nav = NavGrid::new(s.world.size, s.world.size);
         crate::agents::place_beavers(&mut s);
         let p = route(&s, (50, 32), &to).expect("through the lock");
         assert!(p.steps.iter().any(|st| st.0 == (60, 32)), "by the lock cell");
-        assert!(p.steps.iter().all(|st| barge_water(&s, st.0)), "on barge water all the way");
+        assert!(p.steps.iter().all(|st| raft_water(&s, st.0)), "on raft water all the way");
         // A swimming beaver could wait out the lock too, but over a dam this thin it is quicker
         // to climb.
         let path = s.nav.find_path(crate::colony::BeaverId(1), (50, 32), crate::nav::Goal::Cell((70, 32))).unwrap();
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_barge_passes_a_lock_in_a_diagonal_dam() {
+    fn a_raft_passes_a_lock_in_a_diagonal_dam() {
         let (mut s, _, _, _) = waterway();
         for y in 20..46 {
             for x in 40..80 {
@@ -353,14 +353,14 @@ mod tests {
         s.locks.at.insert(lock, crate::locks::Lock { cell: lock, building: BuildingId(99), built: true });
         s.nav = NavGrid::new(s.world.size, s.world.size);
         crate::agents::place_beavers(&mut s);
-        assert!(barge_water(&s, (lock.0 + 1, lock.1 - 1)), "open water off the lock's far corner");
-        assert!(!barge_water(&s, (lock.0 + 1, lock.1)) && !barge_water(&s, (lock.0, lock.1 - 1)), "dam on its far sides");
+        assert!(raft_water(&s, (lock.0 + 1, lock.1 - 1)), "open water off the lock's far corner");
+        assert!(!raft_water(&s, (lock.0 + 1, lock.1)) && !raft_water(&s, (lock.0, lock.1 - 1)), "dam on its far sides");
         let to = [(70usize, 20usize)];
         let p = route(&s, (50, 40), &to).expect("through the lock");
         assert!(p.steps.iter().any(|st| st.0 == lock), "by the lock cell");
         label_regions(&mut s);
         let w = s.nav.surface.width();
         let region = |c: Cell| s.fleet.regions[c.1 * w + c.0];
-        assert_eq!(region((50, 40)), region((70, 20)), "one stretch of barge water through the lock");
+        assert_eq!(region((50, 40)), region((70, 20)), "one stretch of raft water through the lock");
     }
 }

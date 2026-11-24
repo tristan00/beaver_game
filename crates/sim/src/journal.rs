@@ -80,9 +80,9 @@ fn agent_context_into(out: &mut String, sim: &SimState, id: BeaverId) {
         a.load.map(|l| (l.good, (l.amount * 100.0).round() / 100.0)), a.stuck_ticks,
         a.path.as_ref().is_some_and(|p| !p.steps.is_empty())
     );
-    match &sim.predators.wolf {
-        Some(w) => {
-            let d = ((w.pos.0 - a.cell.0 as f32 - 0.5).powi(2) + (w.pos.1 - a.cell.1 as f32 - 0.5).powi(2)).sqrt();
+    let nearest = sim.predators.wolves.iter().map(|w| ((w.pos.0 - a.cell.0 as f32 - 0.5).powi(2) + (w.pos.1 - a.cell.1 as f32 - 0.5).powi(2)).sqrt()).min_by(f32::total_cmp);
+    match nearest {
+        Some(d) => {
             let _ = write!(out, "{d:.1}");
         }
         None => out.push_str("none"),
@@ -202,23 +202,24 @@ fn jobs(sim: &SimState, j: &mut Journal) {
 }
 
 fn wolf(sim: &SimState, j: &mut Journal) {
-    if let Some(w) = &sim.predators.wolf {
+    for w in &sim.predators.wolves {
         // Every step it is on the map: where, doing what, and the beavers it could see.
         let near = sim.agents.by_id.values().filter(|a| !a.inside)
             .map(|a| (((a.cell.0 as f32 + 0.5 - w.pos.0).powi(2) + (a.cell.1 as f32 + 0.5 - w.pos.1).powi(2)).sqrt(), a))
             .min_by(|a, b| a.0.total_cmp(&b.0));
         let near = near.map_or("none".to_string(), |(d, a)| format!("beaver={} dist={d:.1} surface={:?}", a.id.0, sim.nav.surface_at(a.cell)));
-        trace::event(format!("WOLF_STEP {} state={:?} pos=({:.2},{:.2}) heading={:.2} pace={:.1} route_left={} rest_until={:.2} leave_by={:.2} nearest_outside={near}",
-            stamp(sim), w.state, w.pos.0, w.pos.1, w.heading, w.pace, w.route_left(), w.rest_until(), w.leave_by));
+        trace::event(format!("WOLF_STEP {} arrived={:.2} state={:?} pos=({:.2},{:.2}) heading={:.2} pace={:.1} route_left={} rest_until={:.2} leave_by={:.2} nearest_outside={near}",
+            stamp(sim), w.arrived, w.state, w.pos.0, w.pos.1, w.heading, w.pace, w.route_left(), w.rest_until(), w.leave_by));
     }
-    let now = match &sim.predators.wolf {
-        Some(w) => format!("{:?}", w.state),
-        None => "absent".into(),
+    let now = if sim.predators.wolves.is_empty() {
+        "absent".into()
+    } else {
+        sim.predators.wolves.iter().map(|w| format!("{:?}", w.state)).collect::<Vec<_>>().join(" + ")
     };
     if j.wolf != now {
-        let detail = sim.predators.wolf.as_ref().map_or(String::new(), |w| {
-            format!(" pos=({:.1},{:.1}) pace={:.1} arrived={:.2} leave_by={:.2}", w.pos.0, w.pos.1, w.pace, w.arrived, w.leave_by)
-        });
+        let detail: String = sim.predators.wolves.iter().map(|w| {
+            format!(" [pos=({:.1},{:.1}) pace={:.1} arrived={:.2} leave_by={:.2}]", w.pos.0, w.pos.1, w.pace, w.arrived, w.leave_by)
+        }).collect();
         trace::event(format!("WOLF {} {} -> {}{}", stamp(sim), if j.wolf.is_empty() { "start" } else { &j.wolf }, now, detail));
         j.wolf = now;
     }
@@ -384,9 +385,11 @@ fn map(sim: &SimState) {
         let depth = sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0);
         trace::event(format!("POLL_LODGE {s} id={} family={} pos=({:.1},{:.1}) condition={:.2} depth={depth:.2} residents={residents:?}", l.id.0, l.family.0, l.pos.0, l.pos.1, l.condition));
     }
-    match &sim.predators.wolf {
-        Some(w) => trace::event(format!("POLL_WOLF {s} state={:?} pos=({:.1},{:.1}) pace={:.1} arrived={:.2} leave_by={:.2}", w.state, w.pos.0, w.pos.1, w.pace, w.arrived, w.leave_by)),
-        None => trace::event(format!("POLL_WOLF {s} absent")),
+    if sim.predators.wolves.is_empty() {
+        trace::event(format!("POLL_WOLF {s} absent"));
+    }
+    for w in &sim.predators.wolves {
+        trace::event(format!("POLL_WOLF {s} state={:?} pos=({:.1},{:.1}) pace={:.1} arrived={:.2} leave_by={:.2}", w.state, w.pos.0, w.pos.1, w.pace, w.arrived, w.leave_by));
     }
     let t = sim.step_timings;
     trace::event(format!("POLL_PERF {s} steps={} water_s={:.1} colony_s={:.1} agents_s={:.1} buildings_s={:.1} other_s={:.1} ecology_s={:.1} shipping_s={:.1} fog_s={:.1}", t.steps, t.water_s, t.colony_s, t.agents_s, t.buildings_s, t.other_s, t.ecology_s, t.shipping_s, t.fog_s));

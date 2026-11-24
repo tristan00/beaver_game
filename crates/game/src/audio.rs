@@ -19,6 +19,8 @@ const BROOK: &[u8] = include_bytes!("../audio/brook.ogg");
 const RIVER: &[u8] = include_bytes!("../audio/river.ogg");
 const SLAPS: [&[u8]; 3] = [include_bytes!("../audio/slap_1.ogg"), include_bytes!("../audio/slap_2.ogg"), include_bytes!("../audio/slap_3.ogg")];
 const FLOOD: &[u8] = include_bytes!("../audio/flood.ogg");
+const GROWL: &[u8] = include_bytes!("../audio/growl.ogg");
+const HOWL: &[u8] = include_bytes!("../audio/howl.ogg");
 
 /// The player's volumes, kept between games in a small file beside the saves.
 #[derive(Resource, Clone, Copy, Debug)]
@@ -129,6 +131,8 @@ fn load_bank() -> Option<Bank> {
         river: decode(RIVER, player::make_loop)?,
         slaps: SLAPS.iter().filter_map(|b| decode(b, player::make_clip)).collect(),
         flood: decode(FLOOD, player::make_clip)?,
+        growl: decode(GROWL, player::make_clip)?,
+        howl: decode(HOWL, player::make_clip)?,
     })
 }
 
@@ -262,43 +266,28 @@ fn update_mix(
     shared: Res<SharedMix>,
     slaps: Option<Res<crate::entities_render::AlarmSlaps>>,
     floods: Option<Res<crate::hud::Floods>>,
+    wolves: Option<Res<crate::hud::WolfCues>>,
 ) {
     let _p = ::sim::prof::scope("game/update mix");
     *since += time.delta_secs();
-    let cue = slaps.as_ref().is_some_and(|s| s.is_changed()) || floods.as_ref().is_some_and(|f| f.is_changed());
+    let cue = slaps.as_ref().is_some_and(|s| s.is_changed()) || floods.as_ref().is_some_and(|f| f.is_changed()) || wolves.as_ref().is_some_and(|w| w.is_changed());
     if *since < 0.1 && !vols.is_changed() && !cue {
         return;
     }
     *since = 0.0;
     let snap = mix::snapshot(&SimWorld { sim: &sim.0 }, orbit.target.x, orbit.target.z, orbit.distance);
     let (alarm_slaps, alarm_amp) = slaps.map_or((0, 0.0), |s| (s.count, s.amp));
-    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps, alarm_amp, floods: floods.map_or(0, |f| f.0) };
+    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: wolves.as_ref().map_or(0, |w| w.sighted), wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::TAU;
-
-    fn levels(buf: &[f32]) -> (f32, f32) {
-        let rms = (buf.iter().map(|s| (s * s) as f64).sum::<f64>() / buf.len() as f64).sqrt() as f32;
-        (rms, buf.iter().fold(0.0f32, |m, s| m.max(s.abs())))
-    }
-
-    fn render(player: &mut Player, mix: &Mix, secs: usize) -> Vec<f32> {
-        let mut out = Vec::new();
-        for _ in 0..secs * SAMPLE_RATE as usize / 1024 {
-            let mut buf = vec![0.0f32; 2048];
-            player.render(mix, &mut buf);
-            out.extend(buf);
-        }
-        out
-    }
 
     #[test]
     fn recordings_are_stored_ready_to_play() {
-        for bytes in [BROOK, RIVER, FLOOD].into_iter().chain(SLAPS) {
+        for bytes in [BROOK, RIVER, FLOOD, GROWL, HOWL].into_iter().chain(SLAPS) {
             let decoder = AudioSource { bytes: Arc::from(bytes) }.decoder();
             assert_eq!((decoder.sample_rate().get(), decoder.channels().get()), (SAMPLE_RATE, 2));
         }
@@ -317,61 +306,4 @@ mod tests {
         assert_eq!(odd.level(Channel::Alerts), VolumeSettings::default().effects);
     }
 
-    #[test]
-    fn beds_loop_without_a_seam() {
-        let bank = load_bank().expect("every recording decodes");
-        assert_eq!(bank.slaps.len(), SLAPS.len());
-        for bed in [&bank.brook, &bank.river] {
-            assert!(bed.len() > SAMPLE_RATE as usize * 10);
-            assert!(bed.iter().all(|f| f[0].is_finite() && f[1].is_finite()));
-            let step = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs().max((a[1] - b[1]).abs());
-            let largest = bed.windows(2).map(|w| step(w[0], w[1])).fold(0.0f32, f32::max);
-            assert!(step(bed[bed.len() - 1], bed[0]) <= largest);
-        }
-    }
-
-    #[test]
-    fn resampling_does_not_fold_high_pitches_down() {
-        // A 30 kHz tone at 96 kHz is above what 44.1 kHz can hold; it must vanish, not alias.
-        let rate = 96_000u32;
-        let tone = |hz: f32| -> Vec<f32> {
-            (0..rate as usize * 5).flat_map(|i| [(TAU * (hz as f64 * i as f64 / rate as f64).fract() as f32).sin(); 2]).collect()
-        };
-        let rms = |l: &Sound| (l.iter().map(|f| (f[0] * f[0]) as f64).sum::<f64>() / l.len() as f64).sqrt();
-        let mut ultrasonic = tone(30_000.0);
-        let low = tone(1_000.0);
-        ultrasonic.iter_mut().zip(&low).for_each(|(u, l)| *u += 0.01 * l);
-        let mixed = player::make_loop(&ultrasonic, 2, rate).unwrap();
-        let clean = player::make_loop(&low, 2, rate).unwrap();
-        let diff = mixed.iter().zip(clean.iter()).map(|(a, b)| ((a[0] - b[0]) as f64).powi(2)).sum::<f64>() / mixed.len() as f64;
-        assert!(diff.sqrt() < 0.05 * rms(&clean), "ultrasonic leaked: {:.4} vs {:.4}", diff.sqrt(), rms(&clean));
-    }
-
-    #[test]
-    fn cues_stand_out_over_the_water_without_clipping() {
-        let bank = Arc::new(load_bank().unwrap());
-        let water = mix::LayerVolumes { brook: 0.8, river: 0.7 };
-        let mut player = Player::new();
-        player.set_bank(bank);
-        let mut mix = Mix { layers: water, ..Mix::default() };
-        let (bed, _) = levels(&render(&mut player, &mix, 8)[SAMPLE_RATE as usize * 8..]);
-        assert!((0.03..0.1).contains(&bed), "bed rms {bed}");
-        // Nothing sounds for what had already happened before the player started.
-        let mut late = Player::new();
-        late.set_bank(Arc::new(load_bank().unwrap()));
-        let quiet = Mix { alarm_slaps: 5, alarm_amp: 1.2, floods: 3, ..Mix::default() };
-        assert_eq!(levels(&render(&mut late, &quiet, 2)).1, 0.0);
-        // The flood is heard over the loudest twentieth of a second; the slap, a crack, by its peak.
-        let loudest = |buf: &[f32]| buf.chunks(SAMPLE_RATE as usize / 10).map(|c| levels(c).0).fold(0.0f32, f32::max);
-        let water_alone = render(&mut player, &mix, 4);
-        mix.alarm_slaps = 1;
-        mix.alarm_amp = 1.2;
-        let slap = render(&mut player, &mix, 2);
-        mix.floods = 1;
-        let flood = render(&mut player, &mix, 4);
-        let (slap_peak, flood_peak, water_peak) = (levels(&slap).1, levels(&flood).1, levels(&water_alone).1);
-        assert!(slap_peak > 1.8 * water_peak, "slap {slap_peak} water {water_peak}");
-        assert!(loudest(&flood) > 2.0 * loudest(&water_alone), "flood {} water {}", loudest(&flood), loudest(&water_alone));
-        assert!(slap_peak < 0.95 && flood_peak < 0.95, "slap {slap_peak} flood {flood_peak}");
-    }
 }

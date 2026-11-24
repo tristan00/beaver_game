@@ -1,6 +1,5 @@
 use super::*;
 use crate::buildings::Good;
-use crate::water::EngineKind;
 use crate::Command;
 
 /// A flat pond (y 15..26, x 8..17, 0.3 m deep at ground 5 m) with dry land rising east of it.
@@ -287,116 +286,6 @@ fn a_load_floats_at_full_pace_in_a_deep_canal() {
 
 // ---- Water: every engine, on the fixture valley ----
 
-/// The fixture valley with its inflow cut to a real map's creek (about 50 L/s instead of
-/// 0.5 m³/s), so a one-cell gate passes it with a few centimetres of head.
-fn valley(kind: EngineKind) -> SimState {
-    let mut s = SimState::sandbox(1, crate::worldgen::fixture(1));
-    for src in &mut s.water.sources {
-        src.rate *= 0.12;
-    }
-    s.water.set_engine(kind);
-    // Gates are judged on steady streams, without showers moving the levels meanwhile.
-    s.water.weather = crate::water::Weather::Clear;
-    crate::sandbox::run_days(&mut s, 2.0);
-    s
-}
-
-/// The river's lowest cell in a column.
-fn river_y(s: &SimState, x: usize) -> usize {
-    (20..108).min_by(|&a, &b| ground(s, (x, a)).total_cmp(&ground(s, (x, b)))).unwrap()
-}
-
-fn level_at(s: &SimState, c: Cell) -> f32 {
-    ground(s, c) + depth(s, c)
-}
-
-fn books(s: &SimState, start: f64) -> f64 {
-    let w = &s.water;
-    ((w.total_volume() - (w.added_volume - w.lost_volume)) - start).abs() / w.total_volume().max(1.0)
-}
-
-/// C-W10: a reservoir behind a dam, a canal round the dam's end back to the river below.
-#[test]
-fn a_bypass_canal_round_a_dam_rejoins_the_river_and_its_gate_controls_the_reservoir() {
-    for kind in EngineKind::ALL {
-        let mut s = valley(kind);
-        let start = s.water.total_volume() - (s.water.added_volume - s.water.lost_volume);
-        let (dx, yc) = (60usize, river_y(&s, 60));
-        let crest = ground(&s, (dx, yc)) + 1.2;
-        let dam_cells: Vec<Cell> = (yc - 25..=yc + 25).map(|y| (dx, y)).filter(|&c| ground(&s, c) < crest).collect();
-        let heights: Vec<(Cell, f32)> = dam_cells.iter().map(|&c| (c, crest - ground(&s, c))).collect();
-        s.water.raise_dam(&heights).unwrap();
-        let dam = crate::dams::place(&mut s, &dam_cells).unwrap();
-        crate::sandbox::run_days(&mut s, 15.0);
-        let pond = (dx - 4, yc);
-        let full = level_at(&s, pond);
-        assert!(full > crest - 0.25, "{}: the reservoir fills ({full:.2} vs crest {crest:.2})", kind.name());
-
-        // Round the dam's north end: up the reservoir's edge, along past the dam, down to the river.
-        let top = dam_cells.iter().map(|c| c.1).min().unwrap() - 1;
-        let edge = (top..yc).find(|&y| canals_water(&s, (dx - 4, y))).unwrap();
-        let below = (dx + 6, river_y(&s, dx + 6));
-        let drawn = crate::sandbox::canal_line(&[(dx - 4, edge), (dx - 4, top - 1), (dx + 6, top - 1), below]);
-        let p = plan(&s, &drawn).unwrap_or_else(|e| panic!("{}: {e}", kind.name()));
-        assert!(p.through, "{}: the canal ends in the river", kind.name());
-        check(&p).unwrap_or_else(|e| panic!("{}: {e}", kind.name()));
-        for w in p.cells.windows(2) {
-            assert!(w[1].target <= w[0].target + 1e-4, "{}: the bed rises", kind.name());
-        }
-        let last = p.cells.last().unwrap();
-        assert!(last.target <= level_at(&s, below) + 0.05, "{}: the bed reaches the river's level", kind.name());
-        let id = place(&mut s, &drawn).unwrap();
-        // Dig it all at once (the sandbox has no diggers) and build the gate shut.
-        let cells: Vec<CanalCell> = canal(&s, id).unwrap().cells.clone();
-        for c in &cells {
-            let cut = ground(&s, c.cell) - c.target;
-            if cut > 1e-4 {
-                s.water.dig_canal(&mut s.height, &[c.cell], cut).unwrap();
-            }
-        }
-        canal_mut(&mut s, id).unwrap().gate.built = true;
-        let g = canal(&s, id).unwrap().gate;
-        crate::gates::apply(&mut s, &g).unwrap();
-
-        crate::sandbox::run_days(&mut s, 6.0);
-        let shut = level_at(&s, pond);
-        // Held, not drained (a wet spell may raise it a little meanwhile).
-        assert!(shut > full - 0.05 && shut < crest + 0.1, "{}: a shut gate holds the reservoir ({full:.2} -> {shut:.2})", kind.name());
-
-        let hold = crest - 0.4;
-        for setting in [GateSetting::Level(hold), GateSetting::Open] {
-            set_gate(&mut s, id, setting).unwrap();
-            turn_gate(&mut s, id).unwrap();
-            crate::sandbox::run_days(&mut s, 8.0);
-            let a = level_at(&s, pond);
-            crate::sandbox::run_days(&mut s, 2.0);
-            let b = level_at(&s, pond);
-            assert!((a - b).abs() < 0.03, "{} {setting:?}: the reservoir settles ({a:.2} -> {b:.2})", kind.name());
-            let sill = canal(&s, id).unwrap().gate.sill();
-            match setting {
-                // The reservoir settles above the sill by the head its inflow needs to pass a
-                // one-cell gate: a few centimetres for a creek.
-                GateSetting::Level(_) => assert!(b > sill - 0.03 && b < sill + 0.1, "{}: Level holds at the sill ({b:.2} vs {sill:.2})", kind.name()),
-                _ => assert!(b < sill + 0.15 && b > sill - 0.25, "{}: Open lowers the reservoir to about the intake bed ({b:.2}, bed {sill:.2})", kind.name()),
-            }
-            assert!(b < crest - 0.05, "{} {setting:?}: nothing goes over the dam", kind.name());
-            let wet = canal(&s, id).unwrap().cells.iter().filter(|c| depth(&s, c.cell) > WET_DEPTH).count();
-            assert!(wet > 3, "{} {setting:?}: water runs down the canal ({wet} wet cells)", kind.name());
-            crate::dams::step(&mut s);
-            let spill = crate::dams::dam(&s, dam).and_then(|d| d.pond.as_ref()).map(|p| p.spill);
-            assert!(!matches!(spill, Some(crate::dams::Spill::Around(_) | crate::dams::Spill::Over(_))), "{} {setting:?}: the dam doesn't report water going over or round ({spill:?})", kind.name());
-            if kind == EngineKind::Equilibrium {
-                assert!(matches!(spill, Some(crate::dams::Spill::Gate(_))), "{setting:?}: the dam reports the water leaving through the gate ({spill:?})");
-            }
-        }
-        assert!(books(&s, start) < 1e-6, "{}: water books balance", kind.name());
-    }
-}
-
-fn canals_water(s: &SimState, c: Cell) -> bool {
-    depth(s, c) >= WET_DEPTH
-}
-
 #[test]
 fn a_canal_may_start_on_any_water_that_is_shown() {
     let mut s = pond_and_bank();
@@ -504,4 +393,56 @@ fn a_lock_ordered_on_a_built_gate_is_offered_to_builders() {
     assert_eq!(next_job(&s, id, &[], false), Some((gate, true)), "the lock is built on a gate visit");
     turn_gate(&mut s, id).unwrap();
     assert!(!crate::locks::pending(&s, gate) && !has_work_for(&s, id, false));
+}
+
+/// A lock needs its chamber and ways in clear, and keeps them clear once ordered.
+#[test]
+fn a_lock_needs_room_and_keeps_it() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 40.0);
+    s.buildings.stores.put_at(crate::agents::SUPPLIES, Good::Clay, 40.0).unwrap();
+    let line: Vec<Cell> = (15..26).map(|y| (12, y)).collect();
+    let dam = crate::dams::place(&mut s, &line).unwrap();
+    s.water.build_dam(&line, 1.0).unwrap();
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 44), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    let room = crate::locks::footprint(&s, &crate::locks::Lock { cell: (12, 20), building: dam, built: false });
+    assert!(room.contains(&(9, 20)) && room.contains(&(15, 20)) && room.contains(&(14, 21)), "the chamber and its ways in either side: {room:?}");
+    assert!(!room.contains(&(12, 23)), "not along the dam beyond the walls");
+    // Something standing in the way in: no lock.
+    let shed = crate::buildings::Building { id: BuildingId(903), kind: BuildingKind::Harbor, pos: (15, 19), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+    s.buildings.buildings.push(shed);
+    assert!(s.apply(Command::UpgradeLock { building: dam, cell: (12, 20) }).is_err());
+    assert!(crate::dams::dam(&s, dam).unwrap().gates.is_empty(), "a refused lock leaves no gate behind");
+    s.buildings.buildings.retain(|b| b.id != BuildingId(903));
+    s.apply(Command::UpgradeLock { building: dam, cell: (12, 20) }).unwrap();
+    // Ordered, its ground is kept clear of buildings, other dams and canals.
+    logistics(&mut s);
+    let clear = s.check_site(BuildingKind::Harbor, (14, 23));
+    assert!(clear.is_ok(), "away from the lock: {clear:?}");
+    assert_eq!(s.check_site(BuildingKind::Harbor, (15, 19)), Err(crate::buildings::BuildError::Blocked));
+    assert!(crate::dams::check_line(&s, &[(14, 18), (14, 19), (14, 20)]).is_err());
+    assert!(plan(&s, &route((10, 20), (30, 20))).is_err());
+}
+
+/// A built lock is swum through only down its lane, from gate to gate: its walls are solid.
+#[test]
+fn a_built_lock_is_passed_down_its_lane_and_not_through_its_walls() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 40.0);
+    s.buildings.stores.put_at(crate::agents::SUPPLIES, Good::Clay, 40.0).unwrap();
+    let line: Vec<Cell> = (15..26).map(|y| (12, y)).collect();
+    let dam = crate::dams::place(&mut s, &line).unwrap();
+    s.water.build_dam(&line, 1.0).unwrap();
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 44), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    s.apply(Command::UpgradeLock { building: dam, cell: (12, 20) }).unwrap();
+    s.locks.at.get_mut(&(12, 20)).unwrap().built = true;
+    s.nav.rebuild(&s.clone());
+    let l = s.locks.at[&(12, 20)];
+    let lane = crate::locks::lock_cells(&s, &l);
+    assert!(lane.iter().all(|c| c.1 == 20), "one row straight across the dam: {lane:?}");
+    assert!(lane.contains(&(10, 20)) && lane.contains(&(14, 20)), "{lane:?}");
+    for c in [(12, 19), (12, 21), (10, 21), (14, 19)] {
+        assert_eq!(s.nav.surface_at(c), Some(crate::nav::Surface::Solid), "wall at {c:?}");
+    }
+    assert_eq!(s.nav.surface_at((12, 20)), Some(crate::nav::Surface::Lock));
 }

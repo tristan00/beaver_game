@@ -113,8 +113,38 @@ fn dam_mut(sim: &mut SimState, id: BuildingId) -> Result<&mut Dam, SimError> {
     sim.buildings.buildings.iter_mut().find(|b| b.id == id).and_then(|b| b.dam.as_deref_mut()).ok_or_else(|| invalid("no such dam"))
 }
 
-fn is_gate(d: &Dam, c: Cell) -> bool {
-    d.gates.iter().any(|g| g.cell == c && g.built)
+/// The cells a gate at `cell` stands in: its own on the line and, on a widened dam, the dam
+/// cell behind it in every row, so the gate runs right through the dam and the rows behind
+/// never hold back what it lets pass.
+pub fn gate_cells(d: &Dam, cell: Cell) -> Vec<Cell> {
+    let mut out = vec![cell];
+    for k in 1..d.rows as i64 {
+        let (x, y) = (cell.0 as i64 + d.downstream.0 as i64 * k, cell.1 as i64 + d.downstream.1 as i64 * k);
+        if x < 0 || y < 0 {
+            break;
+        }
+        let c = (x as usize, y as usize);
+        if !d.cells.iter().any(|dc| dc.cell == c) {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A cell of a built gate (see `gate_cells`): its height is the gate's to set.
+pub fn is_gate(d: &Dam, c: Cell) -> bool {
+    d.gates.iter().any(|g| g.built && gate_cells(d, g.cell).contains(&c))
+}
+
+/// Put a built gate's sill into every cell it stands in.
+fn apply_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
+    let d = dam(sim, id).ok_or_else(|| invalid("no such dam"))?;
+    let Some(g) = d.gates.iter().find(|g| g.cell == cell).copied() else { return Ok(()) };
+    for c in gate_cells(d, cell) {
+        crate::gates::apply(sim, &crate::gates::Gate { cell: c, ..g })?;
+    }
+    Ok(())
 }
 
 /// What a cell still needs: raising towards its target, or a repair. A built gate's height
@@ -329,7 +359,7 @@ fn connected(cells: &[Cell]) -> bool {
 }
 
 fn blocked_by_building(sim: &SimState, c: Cell, except: Option<BuildingId>) -> bool {
-    sim.buildings.buildings.iter().any(|b| Some(b.id) != except && b.cells().any(|x| x == c))
+    sim.buildings.buildings.iter().any(|b| Some(b.id) != except && b.cells().any(|x| x == c)) || crate::locks::reserved(sim, c, except)
 }
 
 /// Check a drawn line before it becomes a dam.
@@ -339,6 +369,19 @@ pub fn water_for_dam(sim: &SimState, c: Cell) -> bool {
     sim.water.shown(c.0 as i32, c.1 as i32)
         || sim.world.river.get(c.0, c.1).copied().unwrap_or(false)
         || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
+}
+
+/// Whether a dam line crosses water: stands on some, or passes corner to corner between two
+/// of its cells where water runs, as a slanting line does across a creek that slants the other
+/// way (the two cross at a corner, sharing no cell, and the dam still holds it).
+pub fn line_crosses_water(sim: &SimState, cells: &[Cell]) -> bool {
+    let on = |c: Cell| cells.contains(&c);
+    cells.iter().any(|&c| water_for_dam(sim, c))
+        || cells.iter().any(|&a| {
+            cells.iter().any(|&b| {
+                a.0.abs_diff(b.0) == 1 && a.1.abs_diff(b.1) == 1 && [(a.0, b.1), (b.0, a.1)].into_iter().any(|k| !on(k) && water_for_dam(sim, k))
+            })
+        })
 }
 
 pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
@@ -361,7 +404,7 @@ pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
     if cells.iter().any(|&c| blocked_by_building(sim, c, None)) {
         return Err("something is already built there".into());
     }
-    if !sim.sandbox && !cells.iter().any(|&c| water_for_dam(sim, c)) {
+    if !sim.sandbox && !line_crosses_water(sim, cells) {
         return Err("a dam must cross water".into());
     }
     Ok(())
@@ -514,7 +557,20 @@ pub fn apply_plan(sim: &mut SimState, id: BuildingId, plan: Plan) -> Result<(), 
     d.cells = plan.cells;
     d.rows = plan.rows;
     d.pond_day = f64::NEG_INFINITY;
+    // A gate is as tall as its cell is meant to stand: raising the dam raises what Shut holds.
+    let tops: Vec<(Cell, f32)> = d.cells.iter().filter(|c| c.row == 0).map(|c| (c.cell, c.target)).collect();
+    let mut gates = Vec::new();
+    for g in d.gates.iter_mut() {
+        if let Some(&(_, t)) = tops.iter().find(|t| t.0 == g.cell) {
+            g.top = (g.floor + t).max(g.top);
+        }
+        gates.push(g.cell);
+    }
     refresh_durability(sim, id);
+    // New rows behind a gate open with it.
+    for c in gates {
+        apply_gate(sim, id, c)?;
+    }
     Ok(())
 }
 
@@ -770,9 +826,8 @@ pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), S
     if let Some(s) = gate.pending.take() {
         gate.setting = s;
     }
-    let gate = *gate;
     d.pond_day = f64::NEG_INFINITY;
-    crate::gates::apply(sim, &gate)?;
+    apply_gate(sim, id, cell)?;
     crate::locks::build(sim, cell)
 }
 
@@ -829,6 +884,28 @@ mod tests {
         }
         assert!(s.water.shown(12, 20), "the creek is drawn");
         assert_eq!(check_line(&s, &line), Ok(()), "a dam across a shallow creek");
+    }
+
+    #[test]
+    fn a_slanting_dam_may_cross_a_creek_slanting_the_other_way() {
+        let mut s = SimState::new(1);
+        s.sandbox = false;
+        s.fog = crate::fog::Fog::clear(s.world.size);
+        s.water.depth.as_mut_slice().fill(0.0);
+        s.world.river.as_mut_slice().fill(false);
+        s.world.lake.as_mut_slice().fill(false);
+        // A creek stepping corner to corner, and a line slanting across it: they cross at a
+        // corner, with no cell in common.
+        for x in 12..30 {
+            *s.water.depth.get_mut(x, 41 - x).unwrap() = 0.2;
+        }
+        let line: Vec<Cell> = (17..25).map(|x| (x, x)).collect();
+        assert!(line.iter().all(|&c| !water_for_dam(&s, c)), "no cell of the line is wet");
+        assert!(s.water.shown(20, 21) && s.water.shown(21, 20), "the creek is drawn");
+        assert_eq!(check_line(&s, &line), Ok(()));
+        // Clear of it, still refused.
+        let dry: Vec<Cell> = (30..36).map(|x| (x, x)).collect();
+        assert!(check_line(&s, &dry).is_err());
     }
 
     #[test]
@@ -947,5 +1024,73 @@ mod tests {
         let ends: Vec<Cell> = dam(&s, id).unwrap().line().map(|c| c.cell).collect();
         let ends = (ends[0], ends[ends.len() - 1]);
         assert!(ends == ((8, 20), (16, 20)) || ends == ((16, 20), (8, 20)), "both ends stay ends: {ends:?}");
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::gates::GateSetting;
+
+    /// A dam across the fixture valley's running river, `rows` thick with its crest 1.5 m over
+    /// the riverbed, a gate at the river set to `setting`; the pond's level after 20 days, the
+    /// gate, and the dam.
+    fn pond_behind(rows: u8, setting: impl Fn(f32) -> GateSetting) -> (f32, crate::gates::Gate, SimState, BuildingId) {
+        let mut s = crate::sandbox::on_map("fixture").unwrap();
+        crate::sandbox::run_days(&mut s, 2.0);
+        let y0 = (0..128).max_by(|&a, &b| s.world.river_flow.get(64, a).unwrap().total_cmp(s.world.river_flow.get(64, b).unwrap())).unwrap();
+        let line: Vec<Cell> = (y0 - 30..=y0 + 30).map(|y| (64, y)).collect();
+        let id = place(&mut s, &line).unwrap();
+        for _ in 1..rows {
+            let p = plan_widen(&s, id).unwrap();
+            apply_plan(&mut s, id, p).unwrap();
+        }
+        let crest = ground(&s, (64, y0)) + 1.5;
+        let cells: Vec<Cell> = dam(&s, id).unwrap().cells.iter().map(|c| c.cell).collect();
+        for c in cells {
+            s.water.build_dam(&[c], (crest - ground(&s, c)).max(MIN_WALL)).unwrap();
+        }
+        for c in dam_mut(&mut s, id).unwrap().cells.iter_mut() {
+            c.target = 1.5;
+        }
+        s.work.supplies = Some((5, 5));
+        s.buildings.stores.put_at(crate::agents::SUPPLIES, Good::Sticks, 50.0).unwrap();
+        let gate = (64, y0);
+        add_gate(&mut s, id, gate).unwrap();
+        work_gate(&mut s, id, gate).unwrap();
+        let want = setting(ground(&s, gate));
+        set_gate(&mut s, id, gate, want).unwrap();
+        work_gate(&mut s, id, gate).unwrap();
+        crate::sandbox::run_days(&mut s, 20.0);
+        let up = (60, y0);
+        let level = ground(&s, up) + s.water.depth.get(up.0, up.1).copied().unwrap_or(0.0);
+        let g = dam(&s, id).unwrap().gates[0];
+        (level, g, s, id)
+    }
+
+    #[test]
+    fn a_level_gate_holds_the_pond_at_its_sill_however_thick_the_dam() {
+        for rows in [1u8, 2, 3] {
+            let (level, g, ..) = pond_behind(rows, |floor| GateSetting::Level(floor + 0.8));
+            assert!((level - g.sill()).abs() < 0.06, "rows {rows}: pond {level} against a sill at {}", g.sill());
+            let (open, g, ..) = pond_behind(rows, |_| GateSetting::Open);
+            assert!(open < g.floor + 0.2, "rows {rows}: an open gate lets the pond down, {open} over a floor at {}", g.floor);
+        }
+    }
+
+    #[test]
+    fn raising_a_dam_raises_its_shut_gates_and_widening_opens_the_new_row_with_them() {
+        let (_, g, mut s, id) = pond_behind(2, |floor| GateSetting::Level(floor + 0.5));
+        let p = plan_widen(&s, id).unwrap();
+        apply_plan(&mut s, id, p).unwrap();
+        let d = dam(&s, id).unwrap();
+        let through = gate_cells(d, g.cell);
+        assert_eq!(through.len(), 3);
+        assert!(through.iter().all(|&c| (ground(&s, c) + built(&s, c) - g.sill()).abs() < 1e-3 || ground(&s, c) > g.sill()), "every row stands at the sill");
+        assert!(!d.cells.iter().any(|c| through.contains(&c.cell) && cell_needs_work(&s, id, c.cell, false)), "nobody builds up a gate's cells");
+        let p = plan_raise(&s, id, &[]).unwrap();
+        apply_plan(&mut s, id, p).unwrap();
+        let top = dam(&s, id).unwrap().gates[0].top;
+        assert!(top > g.top + 0.4, "Shut stands at the raised crest: {top} after {}", g.top);
     }
 }

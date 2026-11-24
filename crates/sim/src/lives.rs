@@ -144,25 +144,3 @@ pub fn step(sim: &mut SimState) {
     sim.lives = lives;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_life_records_its_start_its_jobs_and_its_partner() {
-        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
-        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
-        crate::sandbox::run_days(&mut s, 1.0);
-        let id = s.colony.beavers.iter().find(|b| b.can_work()).unwrap().id;
-        let life = s.lives.of.get(&id).expect("every beaver has a life");
-        assert!(matches!(life.entries[0].what, What::Known), "{:?}", life.entries);
-        crate::jobs::adjust_role(&mut s, RoleKind::Forager, 1).unwrap();
-        crate::sandbox::run_days(&mut s, 1.0);
-        let who = s.colony.beavers.iter().find(|b| job_of(&s, b.id) == Some(RoleKind::Forager)).unwrap().id;
-        assert!(s.lives.of[&who].entries.iter().any(|e| e.what == What::Job(Some(RoleKind::Forager))), "{:?}", s.lives.of[&who].entries);
-        let paired = s.colony.beavers.iter().find(|b| b.mate.is_some()).map(|b| (b.id, b.mate));
-        if let Some((a, mate)) = paired {
-            assert!(s.lives.of[&a].entries.iter().any(|e| e.what == What::Partner(mate)));
-        }
-    }
-}

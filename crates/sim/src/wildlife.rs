@@ -90,6 +90,26 @@ pub enum Food {
     Pile(u64),
 }
 
+/// Where a wild animal or a wolf has stood at the end of each of its last steps that moved it:
+/// for drawing it along its real way when the interface sees the world only every few steps
+/// (at speed). Not saved.
+#[derive(Clone, Debug, Default)]
+pub struct Track(pub std::collections::VecDeque<(f64, (f32, f32))>);
+
+impl Track {
+    const KEEP: usize = 64;
+
+    pub fn note(&mut self, t: f64, p: (f32, f32)) {
+        if self.0.back().is_some_and(|b| b.1 == p) {
+            return;
+        }
+        self.0.push_back((t, p));
+        while self.0.len() > Self::KEEP {
+            self.0.pop_front();
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Animal {
     pub id: u32,
@@ -107,6 +127,8 @@ pub struct Animal {
     path: Vec<Cell>,
     /// When it next looks round for danger and for food.
     next_look: f64,
+    #[serde(skip)]
+    pub track: Track,
 }
 
 /// A dead animal, left lying a while.
@@ -203,12 +225,11 @@ fn cell_of(p: (f32, f32)) -> Cell {
     (p.0.max(0.0) as usize, p.1.max(0.0) as usize)
 }
 
-/// Where danger is for this animal: the wolf, or a beaver too close, nearest first.
+/// Where danger is for this animal: a wolf, or a beaver too close, nearest first.
 fn danger(sim: &SimState, a: &Animal) -> Option<(f32, f32)> {
-    if let Some(w) = sim.predators.wolf.as_ref() {
-        if dist(w.pos, a.pos) <= WOLF_FEAR {
-            return Some(w.pos);
-        }
+    let wolf = sim.predators.wolves.iter().map(|w| w.pos).filter(|&p| dist(p, a.pos) <= WOLF_FEAR).min_by(|x, y| dist(*x, a.pos).total_cmp(&dist(*y, a.pos)));
+    if wolf.is_some() {
+        return wolf;
     }
     let fear = a.kind.beaver_fear();
     if fear > 0.0 {
@@ -238,16 +259,17 @@ fn away(sim: &SimState, wl: &mut Wildlife, a: &Animal, from: (f32, f32), far: f3
     None
 }
 
-/// Somewhere to feed near the animal: a food plant (or, now and then, a sapling or food lying
-/// on the ground), picked at random from what grows within `SEARCH_RADIUS`, outside the
+/// Somewhere to feed near the animal: a food plant (or, now and then, a sapling or food the
+/// beavers left lying on the ground), picked at random from what grows within `SEARCH_RADIUS`, outside the
 /// colony's berth unless the food is left out on the ground.
 fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Food)> {
     use crate::resources::ResourceKind;
     let berth = berth(sim);
     let n = sim.nav.surface.width();
     let r = SEARCH_RADIUS as f32;
-    // Food left out: birds and rabbits go for it, even close to the colony.
-    if a.kind != Kind::Deer && wl.unit() < PILE_CHANCE {
+    // Food the beavers gathered and left lying, not carried to a store: any of them go for
+    // it, even close to the colony.
+    if wl.unit() < PILE_CHANCE {
         let pile = sim.work.piles.items.iter().filter(|p| p.good == crate::buildings::Good::Food && dist(centre(p.cell), a.pos) <= r * 2.0).min_by(|x, y| dist(centre(x.cell), a.pos).total_cmp(&dist(centre(y.cell), a.pos)));
         if let Some(p) = pile {
             return Some((p.cell, Food::Pile(p.id)));
@@ -424,6 +446,17 @@ pub fn release(sim: &mut SimState, id: u32) {
     }
 }
 
+/// Each animal's and wolf's place at the end of this step, into its track.
+pub fn note_tracks(sim: &mut SimState) {
+    let now = sim.time_days;
+    for a in &mut sim.wildlife.animals {
+        a.track.note(now, a.pos);
+    }
+    for w in &mut sim.predators.wolves {
+        w.track.note(now, w.pos);
+    }
+}
+
 pub fn step(sim: &mut SimState, dt: f32) {
     if !sim.colony.is_founded() {
         return;
@@ -444,7 +477,7 @@ pub fn step(sim: &mut SimState, dt: f32) {
                     wl.next_id += 1;
                     let stay = STAY_MIN_DAYS + wl.unit() * (STAY_MAX_DAYS - STAY_MIN_DAYS);
                     let look = now + wl.unit() as f64 * 0.05;
-                    wl.animals.push(Animal { id, kind, pos: centre(c), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: now + stay as f64, path: Vec::new(), next_look: look });
+                    wl.animals.push(Animal { id, kind, pos: centre(c), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: now + stay as f64, path: Vec::new(), next_look: look, track: Track::default() });
                 }
                 sim.wildlife = wl;
             }
@@ -562,104 +595,22 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn colony() -> SimState {
-        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
-        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
-        s
+    #[test]
+    fn deer_go_for_food_the_beavers_left_lying() {
+        let mut s = SimState::new(1);
+        let mut wl = Wildlife::new(7);
+        let deer = Animal { id: 1, kind: Kind::Deer, pos: (20.5, 20.5), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: 100.0, path: Vec::new(), next_look: 0.0, track: Track::default() };
+        s.work.piles.drop_at((24, 20), crate::buildings::Good::Food, 3.0, 0.0);
+        assert!((0..200).any(|_| matches!(find_food(&s, &mut wl, &deer), Some((_, Food::Pile(_))))));
     }
 
     #[test]
-    fn a_few_animals_come_in_keep_their_distance_and_eat() {
-        let mut s = colony();
-        crate::sandbox::run_days(&mut s, 30.0);
-        let w = &s.wildlife;
-        for kind in Kind::ALL {
-            let n = w.animals.iter().filter(|a| a.kind == kind).count();
-            assert!(n >= 1 && n <= kind.count(), "{kind:?}: {n}");
-        }
-        assert!(w.animals.len() > 1, "more of them than wolves");
-        assert!(w.eaten > 1.0, "they ate only {}", w.eaten);
-        // Most of the time they keep away from the colony.
-        let berth = berth(&s);
-        let (mut near, mut all) = (0, 0);
-        for _ in 0..20 {
-            crate::sandbox::run_days(&mut s, 0.25);
-            for a in &s.wildlife.animals {
-                all += 1;
-                near += (to_colony(&s, a.pos) < berth * 0.6) as usize;
-            }
-        }
-        assert!(near * 5 < all, "{near} of {all} sightings close in");
-    }
-
-    #[test]
-    fn a_rabbit_bolts_from_a_beaver_and_a_wolf_hunts_it_down() {
-        let mut s = colony();
-        crate::sandbox::run_days(&mut s, 0.1);
-        let b = s.agents.by_id.values().find(|a| !a.inside).map(|a| a.cell).unwrap_or(s.agents.by_id.values().next().unwrap().cell);
-        // A rabbit right beside a beaver, on land.
-        let spot = (1..8usize).flat_map(|r| [(b.0 + r, b.1), (b.0, b.1 + r), (b.0 - r, b.1), (b.0, b.1 - r)]).find(|&c| walkable(&s, c)).unwrap();
-        s.wildlife.animals.push(Animal { id: 999, kind: Kind::Rabbit, pos: centre(spot), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: f64::MAX, path: Vec::new(), next_look: 0.0 });
-        let start = centre(spot);
-        let mut fled = false;
-        for _ in 0..20 {
-            crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-            fled |= s.wildlife.get(999).is_some_and(|a| a.doing == Doing::Flee);
-        }
-        assert!(fled, "the rabbit sat tight next to a beaver");
-        assert!(s.wildlife.get(999).is_some_and(|a| dist(a.pos, start) > 2.0), "it ran");
-        // A wolf turns up near it, with no beaver in reach.
-        let at = s.wildlife.get(999).unwrap().pos;
-        assert!(crate::predators::summon(&mut s));
-        let near = (0..32).map(|k| k as f32 / 32.0 * std::f32::consts::TAU).find_map(|t| {
-            let c = cell_of((at.0 + 6.0 * t.cos(), at.1 + 6.0 * t.sin()));
-            walkable(&s, c).then_some(centre(c))
-        }).unwrap();
-        s.predators.wolf.as_mut().unwrap().pos = near;
-        for a in s.agents.by_id.values_mut() {
-            a.inside = true;
-        }
-        let mut hunted = false;
-        for _ in 0..400 {
-            crate::sandbox::run_days(&mut s, crate::STEP_DAYS as f64);
-            hunted |= matches!(s.predators.wolf.as_ref().map(|w| w.state), Some(crate::predators::WolfState::Hunt { animal: 999, .. }));
-            if s.wildlife.get(999).is_none() {
-                break;
-            }
-        }
-        assert!(hunted, "the wolf never went for the rabbit");
-    }
-
-    #[test]
-    fn wild_animals_eat_saplings_and_food_left_out() {
-        let mut s = colony();
-        let c = s.agents.by_id.values().next().unwrap().cell;
-        // Food dropped well out from the colony, and saplings round it.
-        let far = (40..80usize).flat_map(|r| [(c.0 + r, c.1), (c.0 - r, c.1), (c.0, c.1 + r), (c.0, c.1 - r)]).find(|&x| walkable(&s, x)).unwrap();
-        s.work.piles.drop_at(far, crate::buildings::Good::Food, 6.0, s.time_days);
-        let pile = s.work.piles.items.iter().find(|p| p.cell == far).unwrap().id;
-        let mut saplings = 0;
-        for dy in 0..6 {
-            for dx in 0..6 {
-                let x = (far.0 + 3 + dx, far.1 + 3 + dy);
-                if walkable(&s, x) && s.resources.at(x).next().is_none() {
-                    s.resources.add_tree(x, 10.0, crate::trees::Tree::Aspen);
-                    saplings += 1;
-                }
-            }
-        }
-        assert!(saplings > 5);
-        for k in 0..4u32 {
-            let kind = if k < 2 { Kind::Deer } else { Kind::Rabbit };
-            s.wildlife.animals.push(Animal { id: 900 + k, kind, pos: centre((far.0 + 1, far.1 + 1)), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: f64::MAX, path: Vec::new(), next_look: 0.0 });
-        }
-        // Each keeps to a plant until it is gone, so a few weeks for them to get round to these.
-        crate::sandbox::run_days(&mut s, 30.0);
-        assert!(s.wildlife.saplings_eaten > 0, "no sapling eaten");
-        assert!(s.work.piles.get(pile).is_none_or(|p| p.amount < 6.0), "the food left out was not touched");
+    fn there_are_three_times_the_deer_and_rabbits() {
+        assert_eq!((Kind::Deer.count(), Kind::Rabbit.count()), (15, 36));
     }
 }

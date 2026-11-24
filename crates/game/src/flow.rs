@@ -44,7 +44,8 @@ pub enum Selection {
     Lodge(LodgeId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
-    Wolf,
+    /// A wolf, by its `sim::predators::Wolf::key`.
+    Wolf(u64),
     /// A wild animal, by its id in `sim::wildlife`.
     Animal(u32),
 }
@@ -232,7 +233,7 @@ fn advance_flow(
     let _ = (&orbit, &sim);
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
+fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
     use crate::hud::{NoticeAt, BAD, GOOD, INK, MUTED};
     use crate::icons::Icon;
     // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
@@ -259,6 +260,9 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
                     C::Predator => (Icon::Wolf, "killed by the wolf"),
                 };
                 notices.push_at(vec![(Icon::Beaver, BAD), (icon, BAD)], format!("{} {why}", name_of(&names, s, *id)), now, Some(NoticeAt::Spot(*at)));
+                if matches!(cause, C::Predator) {
+                    wolf_cues.kills += 1;
+                }
             }
             E::Born { id, .. } => notices.push_at(vec![(Icon::Kit, GOOD)], format!("{} born", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
             E::Matured { id, stage: sim::colony::Stage::Adult } => notices.push_at(vec![(Icon::Adult, INK)], format!("{} grown", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),

@@ -67,9 +67,9 @@ struct WolfRig {
     kill_w: f32,
 }
 
-/// The wolf the sim drives (gallery wolves have a `GalleryWolf` instead).
+/// A wolf the sim drives, by its `Wolf::key` (gallery wolves have a `GalleryWolf` instead).
 #[derive(Component)]
-struct SimWolf;
+struct SimWolf(u64);
 
 /// A gallery wolf: its pace in cells a day, or a pounce on a loop.
 #[derive(Component)]
@@ -223,9 +223,16 @@ fn init_wolf_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     });
 }
 
-/// Where the wolf is drawn this frame, for anything shown over it (its alert pin).
+/// Where each wolf the colony sees is drawn this frame, by its `Wolf::key`, for anything shown
+/// over it (its alert pin).
 #[derive(Resource, Default)]
-pub struct WolfDrawn(pub Option<Vec3>);
+pub struct WolfDrawn(pub Vec<(u64, Vec3)>);
+
+impl WolfDrawn {
+    pub fn at(&self, key: u64) -> Option<Vec3> {
+        self.0.iter().find(|w| w.0 == key).map(|w| w.1)
+    }
+}
 
 /// Tail slaps so far, for the sound: their count, and how loud the last one is from where the
 /// camera looks.
@@ -370,7 +377,7 @@ fn force_wolf(mut sim: ResMut<Sim>, mut done: Local<bool>) {
             let cell = (c.0.max(0.0) as usize, c.1.max(0.0) as usize);
             sim::predators::walkable(s, cell).then_some((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5))
         });
-        if let (Some(p), Some(w)) = (spot, s.predators.wolf.as_mut()) {
+        if let (Some(p), Some(w)) = (spot, s.predators.wolves.last_mut()) {
             w.pos = p;
         }
     }
@@ -433,7 +440,7 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
                 let cell = (c.0.max(0.0) as usize, c.1.max(0.0) as usize);
                 sim::predators::walkable(s, cell).then_some((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5))
             });
-            if let (Some(p), Some(w)) = (spot, s.predators.wolf.as_mut()) {
+            if let (Some(p), Some(w)) = (spot, s.predators.wolves.first_mut()) {
                 w.pos = p;
             }
         }
@@ -441,14 +448,16 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
     }
 }
 
-/// `BC_SELECT_WOLF=1`: keep the wolf selected while there is one (for screenshots of its sight).
+/// `BC_SELECT_WOLF=1`: keep a wolf selected while there is one (for screenshots of its sight).
 fn select_wolf(sim: Res<Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
-    if std::env::var_os("BC_SELECT_WOLF").is_none() || sim.0.predators.wolf.is_none() {
+    let Some(first) = sim.0.predators.wolves.first() else { return };
+    if std::env::var_os("BC_SELECT_WOLF").is_none() {
         return;
     }
     if let Some(mut sel) = sel {
-        if *sel != crate::flow::Selection::Wolf {
-            *sel = crate::flow::Selection::Wolf;
+        let held = matches!(*sel, crate::flow::Selection::Wolf(k) if sim.0.predators.wolf(k).is_some());
+        if !held {
+            *sel = crate::flow::Selection::Wolf(first.key());
         }
     }
 }
@@ -457,10 +466,10 @@ fn select_wolf(sim: Res<Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
 fn follow_wolf(sim: Res<Sim>, mut orbit: ResMut<crate::camera::OrbitCamera>, rigs: Query<&Transform, With<SimWolf>>, spec: Local<Option<Vec<f32>>>) {
     let mut spec = spec;
     let p = spec.get_or_insert_with(|| std::env::var("BC_WOLF_CAM").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default());
-    if p.is_empty() || sim.0.predators.wolf.is_none() {
+    if p.is_empty() || sim.0.predators.wolves.is_empty() {
         return;
     }
-    if let Ok(tr) = rigs.single() {
+    if let Some(tr) = rigs.iter().next() {
         orbit.target = tr.translation;
         orbit.distance = p[0];
         orbit.yaw = p.get(1).copied().unwrap_or(orbit.yaw);
@@ -507,6 +516,15 @@ impl WolfTrack {
         }
     }
 
+    /// Its way since the last update, from the sim's track of it (`sim::wildlife::Track`):
+    /// at speed the game sees the world only every few steps, and a straight line from the last
+    /// place seen would cut across where it really went.
+    pub(super) fn follow(&mut self, s: &sim::SimState, track: &sim::wildlife::Track, jump: f32) {
+        for &(t, p) in &track.0 {
+            self.record_with(s.instance, t, cell_xz(s, p), jump);
+        }
+    }
+
     /// The position at `t` along straight lines between samples, and the way it is going.
     pub(super) fn at(&self, t: f64) -> Option<(Vec2, Option<Vec2>)> {
         let &(t0, first) = self.samples.front()?;
@@ -532,27 +550,28 @@ fn sync_wolf(
     meshes: Option<Res<WolfMeshes>>,
     models: Option<Res<Models>>,
     mut drawn: ResMut<WolfDrawn>,
-    mut q: Query<(Entity, &mut Transform, &mut WolfTrack, &mut Visibility), (With<WolfRig>, With<SimWolf>)>,
+    mut q: Query<(Entity, &SimWolf, &mut Transform, &mut WolfTrack, &mut Visibility), With<WolfRig>>,
 ) {
     let _p = ::sim::prof::scope("game/sync wolf");
     let (Some(wm), Some(m)) = (meshes, models) else { return };
     let s = &sim.0;
-    let Some(wolf) = s.predators.wolf.as_ref() else {
-        drawn.0 = None;
-        for (e, _, _, _) in &q {
+    drawn.0.clear();
+    let mut shown = Vec::new();
+    for (e, id, mut tr, mut track, mut vis) in &mut q {
+        // Gone from the map: its body goes too.
+        let Some(wolf) = s.predators.wolf(id.0) else {
             commands.entity(e).despawn();
-        }
-        return;
-    };
-    // Only a wolf the colony sees is drawn: out of every beaver's sight it is hidden, so the
-    // player learns no more than the beavers know.
-    let seen = s.predators.in_sight;
-    let here = cell_xz(s, wolf.pos);
-    if let Ok((_, mut tr, mut track, mut vis)) = q.single_mut() {
-        let want = if seen { Visibility::Inherited } else { Visibility::Hidden };
+            continue;
+        };
+        shown.push(id.0);
+        // Only a wolf the colony sees is drawn: out of every beaver's sight it is hidden, so
+        // the player learns no more than the beavers know.
+        let want = if wolf.seen { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
+        let here = cell_xz(s, wolf.pos);
+        track.follow(s, &wolf.track, 8.0);
         track.record(s.instance, s.time_days, here);
         let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
         let (aim, going) = track.at(now).unwrap_or((here, None));
@@ -563,16 +582,21 @@ fn sync_wolf(
         };
         track.shown = Some(xz);
         tr.translation = Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y), xz.y);
-        drawn.0 = seen.then_some(tr.translation);
+        if wolf.seen {
+            drawn.0.push((id.0, tr.translation));
+        }
         // Face the way it is going; standing, the way the sim last turned it (at its prey).
         let want = Quat::from_rotation_y(going.map_or(wolf.heading, |d| d.x.atan2(d.y)));
         tr.rotation = tr.rotation.slerp(want, 1.0 - (-time.delta_secs() * 8.0).exp());
-        return;
     }
-    let root = spawn_rig(&mut commands, &wm, &m, Transform::from_translation(ground(s, wolf.pos)).with_rotation(Quat::from_rotation_y(wolf.heading)));
-    let mut track = WolfTrack::default();
-    track.record(s.instance, s.time_days, here);
-    commands.entity(root).insert((SimWolf, track));
+    // A wolf just come gets its body.
+    for wolf in s.predators.wolves.iter().filter(|w| !shown.contains(&w.key())) {
+        let root = spawn_rig(&mut commands, &wm, &m, Transform::from_translation(ground(s, wolf.pos)).with_rotation(Quat::from_rotation_y(wolf.heading)));
+        let mut track = WolfTrack::default();
+        track.record(s.instance, s.time_days, cell_xz(s, wolf.pos));
+        let vis = if wolf.seen { Visibility::Inherited } else { Visibility::Hidden };
+        commands.entity(root).insert((SimWolf(wolf.key()), track, vis));
+    }
 }
 
 fn spawn_rig(commands: &mut Commands, wm: &WolfMeshes, m: &Models, at: Transform) -> Entity {
@@ -725,14 +749,14 @@ fn animate_wolf(
     time: Res<Time>,
     sim: Res<Sim>,
     clock: Option<Res<crate::sim_driver::SimClock>>,
-    mut rigs: Query<(&mut WolfRig, &Transform, Option<&GalleryWolf>)>,
+    mut rigs: Query<(&mut WolfRig, &Transform, Option<&GalleryWolf>, Option<&SimWolf>)>,
     mut parts: Query<&mut Transform, Without<WolfRig>>,
 ) {
-    let wolf = sim.0.predators.wolf.as_ref();
     let dt = time.delta_secs().max(1e-4);
     let t = time.elapsed_secs();
     let paused = clock.is_some_and(|c| c.paused);
-    for (mut rig, root, gallery) in &mut rigs {
+    for (mut rig, root, gallery, id) in &mut rigs {
+        let wolf = id.and_then(|id| sim.0.predators.wolf(id.0));
         let (pace, killing) = match (gallery, wolf) {
             (Some(g), _) => (g.pace, g.kill),
             (None, Some(w)) => (w.pace, matches!(w.state, WolfState::Kill { .. } | WolfState::Feed { .. })),
