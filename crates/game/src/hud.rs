@@ -14,6 +14,7 @@ mod family;
 mod ledger;
 mod panels;
 mod paths;
+mod water_legend;
 mod ui;
 mod words;
 mod world;
@@ -208,7 +209,6 @@ pub enum MapLens {
     Forest,
     Elevation,
     Deposits,
-    Underwater,
     /// Each beaver's way still to walk, over the plain ground.
     Paths,
 }
@@ -221,7 +221,6 @@ impl MapLens {
             MapLens::Forest => 3,
             MapLens::Elevation => 4,
             MapLens::Deposits => crate::terrain_render::DEPOSIT_LENS,
-            MapLens::Underwater => crate::terrain_render::UNDERWATER_LENS,
             MapLens::Paths => 0,
         }
     }
@@ -984,12 +983,11 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
     let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
-    // `BC_LENS=water|height|deposits|underwater|paths` holds that lens, for screenshots.
+    // `BC_LENS=water|height|deposits|paths` holds that lens, for screenshots.
     let shown = match std::env::var("BC_LENS").as_deref() {
         Ok("water") => MapLens::Water,
         Ok("height") => MapLens::Elevation,
         Ok("deposits") => MapLens::Deposits,
-        Ok("underwater") => MapLens::Underwater,
         Ok("paths") => MapLens::Paths,
         _ => shown,
     };

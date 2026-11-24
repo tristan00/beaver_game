@@ -25,7 +25,7 @@ icons! {
     Warehouse, LoggingCamp,
     RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler,
     ViewWater, ViewForest,
-    ViewElevation, ViewDeposits, ViewUnderwater,
+    ViewElevation, ViewDeposits,
     Idle, Unstaffed, Blocked, Full, Warn, Urgent, Up, Down,
     Check, Cross,
     Pause, Play, Fast2, Fast3, Undo, Pin, Plus, Minus, Focus,
@@ -668,12 +668,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(ellipse(33.0, 37.0, 26.0, 19.0).outline(W - 1.0));
             c.add(ellipse(30.0, 32.0, 16.0, 11.5).outline(W - 1.0));
             c.add(circle(28.0, 29.0, 5.5));
-        }
-        ViewUnderwater => {
-            // The surface as a wavy line, with a stone and a water weed on the bed below.
-            c.add(wave(5.0, 59.0, 14.0, 3.0, 2.0, 4.5));
-            c.add(ellipse(22.0, 50.0, 15.0, 8.5));
-            c.add(leaf((46.0, 59.0), (46.0, 26.0), 10.0));
         }
         ViewDeposits => {
             c.add(circle(19.0, 19.0, 11.0));

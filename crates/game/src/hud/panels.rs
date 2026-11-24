@@ -479,18 +479,12 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-/// Left: how to read the map. Six lenses; clicking the one that is on returns to the plain view.
+/// Left: how to read the map. Five lenses; clicking the one that is on returns to the plain view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     let mut rail = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
-        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Underwater, Icon::ViewUnderwater, "Under water", "F5"), (MapLens::Paths, Icon::Walk, "Paths", "F6")] {
+        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Paths, Icon::Walk, "Paths", "F5")] {
             let on = c.lens == l;
-            let mut tip = Tip::name(name);
-            if l == MapLens::Water {
-                tip = tip
-                    .line("Too shallow for barges", format!("< {} m", num(sim::harbor::BARGE_DEPTH)))
-                    .line("Floods if water rises", format!("{} m", num(crate::terrain_render::FLOOD_MARGIN)));
-            }
-            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(tip.key(key));
+            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
         }
         u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();
@@ -499,6 +493,7 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony ledger").key("L"));
     })];
     rail.extend(super::paths::legend(c.s, abs(Some(70.0), None, Some(84.0), None)));
+    rail.extend(super::water_legend::legend(abs(Some(70.0), None, Some(84.0), None)));
     rail
 }
 

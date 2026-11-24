@@ -165,7 +165,14 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             // water meshes follow it to 2 mm. These are the steps the simulation stamps its
             // tiles by (`ground_stamp`): a change it does not stamp must not change the hash.
             let d = at(&s.water.depth, x, y);
-            let dq = if !with_veg { (d * 500.0).round() as i32 } else { sim::water::shore_step(d) as i32 };
+            let dq = if !with_veg {
+                (d * 500.0).round() as i32
+            } else if map_lens() == WATER_LENS {
+                // The water lens colours water by band (`water_band`).
+                sim::water::shore_step(d) as i32 | (water_band(d) as i32) << 4
+            } else {
+                sim::water::shore_step(d) as i32
+            };
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             v ^= (at(&s.water.dam_height, x, y).to_bits() as u64).rotate_left(9);
             if with_veg {
@@ -231,14 +238,17 @@ pub(crate) type View = (u8, u32);
 
 /// Changes when anything the ground of chunk (cx, cy) is drawn from may have: the cells
 /// `region_hash` reads for terrain, and those `wet_ground` reads. Of the water only its edge
-/// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here.
+/// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here,
+/// except in the water lens, which colours water by its depth.
 fn ground_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
-    stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal)
+    let h = stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal);
+    if map_lens() == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
 }
 
 /// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
-fn ground_stamps(s: &SimState) -> [(u64, u64); 6] {
-    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp()]
+fn ground_stamps(s: &SimState) -> [(u64, u64); 7] {
+    let depth = if map_lens() == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth]
 }
 
 /// As `ground_stamp`, for the water's surface.
@@ -331,7 +341,9 @@ pub fn min_height(s: &SimState) -> f32 {
 }
 
 /// The water lens (`MapLens::Water`): the water taken away to show its depth in bands, the
-/// shallows barges cannot use apart, and the dry ground a small rise would flood.
+/// shallows barges cannot use apart, and water near or past the depth that floods buildings
+/// in colours of their own; currents, the bed's deposits and its depth lines are drawn over it
+/// (hud::world).
 pub const WATER_LENS: u8 = 1;
 pub const ELEVATION_LENS: u8 = 4;
 
@@ -345,53 +357,22 @@ pub fn elevation_ramp(t: f32) -> Rgb {
 pub const ELEVATION_WATER: Rgb = [0.31, 0.56, 0.86];
 
 pub const DEPOSIT_LENS: u8 = 5;
-/// The underwater lens: the water taken away to show a depth chart of the bed, contour lines
-/// near the view (hud::world) and the deposits on the bed in their deposit colours.
-pub const UNDERWATER_LENS: u8 = 6;
-/// Depth that the chart shows as its deepest blue; most water is far shallower.
-const CHART_DEEP: f32 = 0.6;
-/// Depths at which contour lines are drawn near the view.
-pub const CONTOURS: [f32; 3] = [0.1, 0.2, 0.4];
-/// The shoreline drawn over the chart: water deep enough to count as water (`WET_DEPTH`).
+/// The shoreline drawn over the water lens: water deep enough to count as water (`WET_DEPTH`).
 pub const SHORE_DEPTH: f32 = sim::buildings::WET_DEPTH;
 /// The thinnest film still drawn as bed rather than land.
 pub const BED_FILM: f32 = 0.003;
 
-/// Deposits the current lens tints into the ground: all of them in the deposits lens, those
-/// lying on the bed in the underwater lens.
+/// Deposits the current lens tints into the ground: all of them in the deposits lens.
 fn lens_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource> {
-    let lens = map_lens();
-    shown_deposits(s).filter(move |r| match lens {
-        DEPOSIT_LENS => true,
-        UNDERWATER_LENS => underwater_deposit(s, r),
-        _ => false,
-    })
+    let on = map_lens() == DEPOSIT_LENS;
+    shown_deposits(s).filter(move |_| on)
 }
 
-/// A deposit worth showing on the bed: water plants, clay and pebbles that lie under water.
+/// A deposit worth outlining on the bed in the water lens: water plants, clay and pebbles
+/// that lie under water.
 pub fn underwater_deposit(s: &SimState, r: &sim::resources::Resource) -> bool {
     use sim::resources::ResourceKind::*;
     matches!(r.kind, WaterPlant | RiverClay | MudBank | Pebbles) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
-}
-
-fn underwater_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
-    let depth = at(&s.water.depth, x, y);
-    let (gx, gz) = smooth_gradient(s, x, y, 1);
-    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
-    // Land recedes to a pale wash of its own colour, so the water reads first.
-    let land = mix(world_color(s, p, maxh, x, y), [0.90, 0.89, 0.85], 0.6);
-    if depth <= BED_FILM {
-        return land;
-    }
-    // A depth chart: pale aqua in the shallows to deep blue, shaded by the slope of the bed.
-    const SHALLOW: Rgb = [0.66, 0.90, 0.90];
-    const MID: Rgb = [0.30, 0.66, 0.80];
-    const DEEP: Rgb = [0.08, 0.24, 0.56];
-    let t = (depth / CHART_DEEP).clamp(0.0, 1.0).sqrt();
-    let c = if t < 0.5 { mix(SHALLOW, MID, t * 2.0) } else { mix(MID, DEEP, t * 2.0 - 1.0) };
-    let k = 0.82 + 0.6 * sunny;
-    let bed = [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)];
-    mix(land, bed, smooth(BED_FILM, 0.02, depth))
 }
 
 /// The deposits lens: one saturated colour per kind, none grey or blue, so they stand
@@ -417,7 +398,7 @@ pub fn shown_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Res
 /// Per-chunk fingerprint of the deposits in it (empty outside the deposits lens), so a
 /// chunk recolours when one appears, runs out or changes kind.
 fn deposit_hashes(s: &SimState, cols: usize, rows: usize) -> Vec<u64> {
-    if !matches!(map_lens(), DEPOSIT_LENS | UNDERWATER_LENS) {
+    if map_lens() != DEPOSIT_LENS {
         return Vec::new();
     }
     let mut out = vec![0u64; cols * rows];
@@ -589,7 +570,7 @@ fn update_terrain_chunks(
     mut backlog: ResMut<MeshBacklog>,
     mut cursor: Local<usize>,
     // The grids' stamps when every chunk was last up to date.
-    mut settled: Local<Option<[(u64, u64); 6]>>,
+    mut settled: Local<Option<[(u64, u64); 7]>>,
 ) {
     let _p = ::sim::prof::scope("game/update terrain chunks");
     backlog.terrain = true;
@@ -677,7 +658,6 @@ fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: 
     match map_lens() {
         0 => world_color(s, p, maxh, x, y),
         ELEVATION_LENS => elevation_color(s, minh, maxh, x, y),
-        UNDERWATER_LENS => underwater_color(s, p, maxh, x, y),
         WATER_LENS => water_lens_color(s, maxh, x, y),
         _ => lens_color(s, maxh, x, y),
     }
@@ -693,57 +673,64 @@ fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
     mix(land, ELEVATION_WATER, smooth(WET_EPS, 0.15, at(&s.water.depth, x, y)))
 }
 
-/// Rise of the water over which dry ground counts as at risk of flooding, in metres.
-pub const FLOOD_MARGIN: f32 = 0.5;
-/// How far round a dry cell the water lens looks for the water that could flood it (cells).
-const FLOOD_REACH: i32 = 4;
-/// Depth bands of the water lens, from the barges' least depth down: each band's deepest
-/// edge and its colour. Water shallower than barges need is a pale sand-green of its own.
-const BARGE_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
-const DEPTH_BANDS: [(f32, Rgb); 4] = [(0.5, [0.55, 0.78, 0.93]), (1.0, [0.33, 0.60, 0.88]), (2.0, [0.18, 0.42, 0.76]), (f32::INFINITY, [0.08, 0.24, 0.56])];
-const FLOOD_RISK: Rgb = [0.96, 0.58, 0.18];
+/// Depth bands of the water lens, from shallow to deep: each band's deepest edge and colour.
+/// Water shallower than barges need is a pale sand-green; water within `FLOOD_NEAR` of the
+/// depth that floods buildings (`MAX_BUILDING_DEPTH`) is amber, and from there on red.
+pub const BARGE_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
+pub const DEPTH_BANDS: [(f32, Rgb); 2] = [(0.5, [0.55, 0.78, 0.93]), (f32::INFINITY, [0.30, 0.56, 0.86])];
+pub const FLOOD_RISK: Rgb = [0.96, 0.62, 0.18];
+pub const FLOODED: Rgb = [0.86, 0.20, 0.24];
+/// How far short of flooding buildings water counts as a risk (m).
+pub const FLOOD_NEAR: f32 = 0.2;
 
-/// The water lens's colour for a point: water by its depth band (barge water apart from the
-/// shallows, a lock as barge water), dry ground grey and tinted amber where water close by
-/// stands within `FLOOD_MARGIN` of flooding it.
+/// Depth (m) from which water is drawn as a flood risk, and from which it floods buildings.
+pub fn flood_depths() -> (f32, f32) {
+    let max = sim::buildings::MAX_BUILDING_DEPTH;
+    ((max - FLOOD_NEAR).max(0.0), max)
+}
+
+/// The water lens's band for a depth: 0 the barge shallows, then `DEPTH_BANDS`, then the flood
+/// risk, then flooded.
+pub fn water_band(depth: f32) -> u8 {
+    let (near, max) = flood_depths();
+    if depth >= max {
+        return DEPTH_BANDS.len() as u8 + 2;
+    }
+    if depth >= near {
+        return DEPTH_BANDS.len() as u8 + 1;
+    }
+    if depth < sim::harbor::BARGE_DEPTH {
+        return 0;
+    }
+    1 + DEPTH_BANDS.iter().position(|b| depth < b.0).unwrap_or(DEPTH_BANDS.len() - 1) as u8
+}
+
+/// The colour of a `water_band`.
+pub fn band_color(band: u8) -> Rgb {
+    match band as usize {
+        0 => BARGE_SHALLOWS,
+        b if b <= DEPTH_BANDS.len() => DEPTH_BANDS[b - 1].1,
+        b if b == DEPTH_BANDS.len() + 1 => FLOOD_RISK,
+        _ => FLOODED,
+    }
+}
+
+/// The water lens's colour for a point: water by its band (a lock is never the shallows'),
+/// dry ground grey.
 fn water_lens_color(s: &SimState, maxh: f32, x: i32, y: i32) -> Rgb {
     let ground = at(&s.height, x, y);
     let depth = at(&s.water.depth, x, y);
     let (gx, gz) = smooth_gradient(s, x, y, 1);
     let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
     let shade = |c: Rgb, k: f32| [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)];
-    let cell = (x.max(0) as usize, y.max(0) as usize);
-    let lock = sim::locks::is_lock(s, cell);
+    let lock = sim::locks::is_lock(s, (x.max(0) as usize, y.max(0) as usize));
     if depth > WET_EPS || lock {
-        let band = if depth < sim::harbor::BARGE_DEPTH && !lock {
-            BARGE_SHALLOWS
-        } else {
-            DEPTH_BANDS.iter().find(|b| depth < b.0).map_or(DEPTH_BANDS[3].1, |b| b.1)
-        };
-        return shade(band, 0.9 + 0.3 * sunny);
+        let band = water_band(depth).max(lock as u8);
+        return shade(band_color(band), 0.9 + 0.3 * sunny);
     }
     let t = (ground / maxh).clamp(0.0, 1.0);
     let g = (0.56 + 0.3 * t) * (0.86 + 0.28 * sunny);
-    let land = [g, g * 0.985, g * 0.955];
-    if at(&s.water.dam_height, x, y) > 0.0 {
-        return land;
-    }
-    // The highest water close by: how far below it this ground stands decides the risk.
-    let mut level = f32::NEG_INFINITY;
-    for dy in -FLOOD_REACH..=FLOOD_REACH {
-        for dx in -FLOOD_REACH..=FLOOD_REACH {
-            let d = at(&s.water.depth, x + dx, y + dy);
-            if d > WET_EPS {
-                level = level.max(at(&s.height, x + dx, y + dy) + d);
-            }
-        }
-    }
-    if !level.is_finite() || ground >= level + FLOOD_MARGIN {
-        return land;
-    }
-    // Faint at the margin, strong where a few centimetres would do it.
-    let risk = 1.0 - ((ground - level) / FLOOD_MARGIN).clamp(0.0, 1.0);
-    mix(land, FLOOD_RISK, 0.75 * risk * risk)
+    [g, g * 0.985, g * 0.955]
 }
 
 fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32) -> Rgb {
@@ -968,7 +955,7 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     for j in 0..base_side { for i in 0..base_side {
         colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32));
     } }
-    if matches!(map_lens(), DEPOSIT_LENS | UNDERWATER_LENS) {
+    if map_lens() == DEPOSIT_LENS {
         let span = (CHUNK + step) as i32;
         for r in lens_deposits(s) {
             let (dx, dy) = (r.cell.0 as i32 - x0, r.cell.1 as i32 - y0);

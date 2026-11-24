@@ -371,29 +371,6 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         v.action(act).tip(super::panels::alert_tip_in(s, p));
         out.push(v);
     }
-    // In the water lens, each dam's pond carries its level, so ponds can be compared at a glance.
-    if crate::terrain_render::map_lens() == crate::terrain_render::WATER_LENS {
-        for b in &s.buildings.buildings {
-            let Some(d) = b.dam.as_deref() else { continue };
-            let Some(p) = d.pond.as_ref().filter(|p| p.area > 0) else { continue };
-            let line: Vec<Cell> = d.cells.iter().filter(|c| c.row == 0).map(|c| c.cell).collect();
-            if line.is_empty() {
-                continue;
-            }
-            let n = line.len() as f32;
-            let mid = (line.iter().map(|c| c.0 as f32).sum::<f32>() / n + 0.5, line.iter().map(|c| c.1 as f32).sum::<f32>() / n + 0.5);
-            let at = (mid.0 - d.downstream.0 as f32 * 4.0, mid.1 - d.downstream.1 as f32 * 4.0);
-            let Some(pos) = place(at, 0.6) else { continue };
-            let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(pos.x - 30.0), top: Val::Px(pos.y - 14.0), padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)), ..row_node(4.0) });
-            let mut ui = Ui::default();
-            ui.icon(Icon::Crest, 13.0, WATER);
-            ui.bold(format!("{:.2}", p.level), 12.0, INK);
-            v.children = ui.nodes;
-            v.skin(Skin::Plate);
-            v.tip(Tip::titled(Some((Icon::Dam, INK)), "Pond").line("Level", format!("{:.2} m", p.level)).line("Full at", format!("{:.2} m", p.full_level)).line("Deepest", format!("{:.2} m", p.max_depth)));
-            out.push(v);
-        }
-    }
     for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
         let selected = matches!(sel, Selection::Site(id) if id == b.id);
         let mut icon: Option<(Icon, Color, &str)> = None;
@@ -494,16 +471,15 @@ fn bed_y(s: &sim::SimState, x: f32, y: f32) -> f32 {
     height_at(&s.height, x, y) - crate::terrain_render::channel_cut(s, x.round() as i32, y.round() as i32)
 }
 
-/// Depth contours on the bed near the view, and the shoreline, by marching squares over cell
-/// centres: each line is a level of depth, darker the deeper it lies.
+/// Depth lines on the bed near the view at the water lens's band edges, and the shoreline, by
+/// marching squares over cell centres.
 fn draw_contours(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (usize, usize), r: usize) {
     let n = s.world.size;
     let depth = |x: usize, y: usize| s.water.depth.get(x, y).copied().unwrap_or(0.0);
-    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9))];
-    for (i, &l) in crate::terrain_render::CONTOURS.iter().enumerate() {
-        let k = i as f32 / (crate::terrain_render::CONTOURS.len() - 1) as f32;
-        levels.push((l, Color::srgba(0.05 + 0.1 * (1.0 - k), 0.18 + 0.25 * (1.0 - k), 0.35 + 0.2 * (1.0 - k), 0.85)));
-    }
+    let line = Color::srgba(0.05, 0.18, 0.35, 0.55);
+    let (near, max) = crate::terrain_render::flood_depths();
+    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9)), (sim::harbor::BARGE_DEPTH, line), (near, line), (max, line)];
+    levels.extend(crate::terrain_render::DEPTH_BANDS.iter().map(|b| b.0).filter(|&d| d.is_finite() && d < near).map(|d| (d, line)));
     let point = |x: f32, y: f32| {
         let mut v = cell_world(&s.height, (x, y));
         v.y = bed_y(s, x, y) + 0.05;
@@ -796,54 +772,72 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<C
 /// blue for slow water, white for a steady current, orange for fast water). The water engine
 /// moves water along each channel's thread; water spread beside it is drawn going the way of
 /// the nearest thread, slower.
+/// A current's arrow colour by its speed (m/s): dark blue slow, white steady, orange fast.
+pub fn current_colour(speed: f32) -> Color {
+    let (slow, mid, fast) = (Vec3::new(0.05, 0.16, 0.4), Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 0.55, 0.15));
+    let c = if speed < 0.3 { slow.lerp(mid, speed / 0.3) } else { mid.lerp(fast, ((speed - 0.3) / 0.7).min(1.0)) };
+    Color::srgb(c.x, c.y, c.z)
+}
+
 fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distance: f32) {
     const MIN_DEPTH: f32 = 0.01;
     let h = &s.height;
     let n = s.world.size as i32;
     let r = (distance * 1.4).clamp(30.0, 120.0) as i32;
     let stride = if r <= 60 { 2 } else if r <= 95 { 3 } else { 4 };
-    const SPREAD: i32 = 4;
-    let vel = |c: (i32, i32)| -> Option<Vec2> {
-        if c.0 < 0 || c.1 < 0 || c.0 >= n || c.1 >= n {
-            return None;
+    // The engine moves water only along each channel's thread; water beside it, a pond
+    // included, takes the way of the nearest thread it is joined to, up to SPREAD cells off,
+    // slower the farther it lies.
+    const SPREAD: u16 = 24;
+    let (cx0, cy0) = (tx as i32, ty as i32);
+    let (x0, y0) = ((cx0 - r - 8).max(0), (cy0 - r - 8).max(0));
+    let (x1, y1) = ((cx0 + r + 8).min(n), (cy0 + r + 8).min(n));
+    let (ww, wh) = ((x1 - x0).max(0) as usize, (y1 - y0).max(0) as usize);
+    let wet = |x: i32, y: i32| s.water.depth.get(x as usize, y as usize).copied().unwrap_or(0.0) >= MIN_DEPTH;
+    let mut field: Vec<Option<(Vec2, f32, u16)>> = vec![None; ww * wh];
+    let mut queue = std::collections::VecDeque::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let Some(v) = s.water.velocity.get(x as usize, y as usize).map(|v| Vec2::new(v.0, v.1)).filter(|v| v.length() > 1e-4) else { continue };
+            let i = (y - y0) as usize * ww + (x - x0) as usize;
+            field[i] = Some((v.normalize(), v.length(), 0));
+            queue.push_back((x, y));
         }
-        let v = s.water.velocity.get(c.0 as usize, c.1 as usize)?;
-        let v = Vec2::new(v.0, v.1);
-        (v.length() > 1e-4).then_some(v)
-    };
-    // The current at a wet cell: its own, or the nearest thread's within SPREAD cells, slower.
-    let current = |c: (i32, i32)| -> Option<(Vec2, f32)> {
-        if let Some(v) = vel(c) {
-            return Some((v.normalize(), v.length()));
+    }
+    while let Some((x, y)) = queue.pop_front() {
+        let Some((d, v, k)) = field[(y - y0) as usize * ww + (x - x0) as usize] else { continue };
+        if k >= SPREAD {
+            continue;
         }
-        let mut best: Option<(i32, Vec2)> = None;
-        for dy in -SPREAD..=SPREAD {
-            for dx in -SPREAD..=SPREAD {
-                let d2 = dx * dx + dy * dy;
-                if d2 == 0 || d2 > SPREAD * SPREAD || best.is_some_and(|b| b.0 <= d2) {
-                    continue;
-                }
-                if let Some(v) = vel((c.0 + dx, c.1 + dy)) {
-                    best = Some((d2, v));
-                }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 || !wet(nx, ny) {
+                continue;
+            }
+            let j = (ny - y0) as usize * ww + (nx - x0) as usize;
+            if field[j].is_none() {
+                field[j] = Some((d, v, k + 1));
+                queue.push_back((nx, ny));
             }
         }
-        best.map(|(d2, v)| (v.normalize(), v.length() / (1.0 + (d2 as f32).sqrt())))
+    }
+    let current = |c: (i32, i32)| -> Option<(Vec2, f32)> {
+        if c.0 < x0 || c.1 < y0 || c.0 >= x1 || c.1 >= y1 {
+            return None;
+        }
+        field[(c.1 - y0) as usize * ww + (c.0 - x0) as usize].map(|(d, v, k)| (d, v / (1.0 + k as f32)))
     };
-    let colour = |speed: f32| {
-        let (slow, mid, fast) = (Vec3::new(0.05, 0.16, 0.4), Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 0.55, 0.15));
-        let c = if speed < 0.3 { slow.lerp(mid, speed / 0.3) } else { mid.lerp(fast, ((speed - 0.3) / 0.7).min(1.0)) };
-        Color::srgb(c.x, c.y, c.z)
-    };
+    let colour = current_colour;
     let surface = |p: (f32, f32)| {
         let c = (p.0.max(0.0) as usize, p.1.max(0.0) as usize);
         let mut v = cell_world(h, p);
         v.y = h.get(c.0, c.1).copied().unwrap_or(0.0) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0) + 0.15;
         v
     };
-    let (cx0, cy0) = (tx as i32, ty as i32);
     for y in ((cy0 - r).max(1)..(cy0 + r).min(n - 1)).filter(|y| y.rem_euclid(stride) == 0) {
-        for x in ((cx0 - r).max(1)..(cx0 + r).min(n - 1)).filter(|x| x.rem_euclid(stride) == 0) {
+        // Every other row half a step along, so short arrows don't line up into long lines.
+        let shift = if (y / stride) % 2 == 1 { stride / 2 } else { 0 };
+        for x in ((cx0 - r).max(1)..(cx0 + r).min(n - 1)).filter(|x| (x - shift).rem_euclid(stride) == 0) {
             if s.water.depth.get(x as usize, y as usize).copied().unwrap_or(0.0) < MIN_DEPTH {
                 continue;
             }
@@ -852,7 +846,7 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
             let mut p = (x as f32 + 0.5, y as f32 + 0.5);
             let mut pts = vec![p];
             let mut dir = Vec2::ZERO;
-            for _ in 0..5 {
+            for _ in 0..2 {
                 let c = (p.0 as i32, p.1 as i32);
                 if c.0 < 0 || c.1 < 0 || c.0 >= n || c.1 >= n || s.water.depth.get(c.0 as usize, c.1 as usize).copied().unwrap_or(0.0) < MIN_DEPTH {
                     break;
@@ -889,6 +883,19 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
     if lens == MapLens::Water.code() {
         draw_currents(&mut g, s, (tx, ty), orbit.distance);
+        // Depth lines on the bed about what the camera sees, what lies on the bed outlined at
+        // the bed, and buildings standing too deep (flooded) outlined in the flooded colour.
+        let r = (orbit.distance * 1.4).clamp(30.0, 110.0) as usize;
+        let (tx, ty) = (tx.max(0.0) as usize, ty.max(0.0) as usize);
+        draw_contours(&mut g, s, (tx, ty), r);
+        for d in s.resources.items().iter().filter(|d| d.has_yield() && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r && crate::terrain_render::underwater_deposit(s, d)) {
+            let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
+            cell_outline(&mut g, h, d.cell, Some(bed_y(s, d.cell.0 as f32, d.cell.1 as f32)), Color::srgb(cr, cg, cb));
+        }
+        let [fr, fg, fb] = crate::terrain_render::FLOODED;
+        for b in s.buildings.buildings.iter().filter(|b| sim::buildings::flooded(b, &s.water.depth)) {
+            footprint_outline(&mut g, s, b, Color::srgb(fr, fg, fb));
+        }
     }
     if lens == MapLens::Forest.code() {
         let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
@@ -908,17 +915,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             let top = (depth > 0.03).then(|| h.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0) + depth);
             let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
             cell_outline(&mut g, h, d.cell, top, Color::srgb(cr, cg, cb));
-        }
-    }
-    if lens == MapLens::Underwater.code() {
-        // Lines cover about what the camera sees.
-        let r = (orbit.distance * 1.4).clamp(30.0, 110.0) as usize;
-        let (tx, ty) = (tx.max(0.0) as usize, ty.max(0.0) as usize);
-        draw_contours(&mut g, s, (tx, ty), r);
-        // Outline what lies on the bed, at the bed.
-        for d in s.resources.items().iter().filter(|d| d.has_yield() && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r && crate::terrain_render::underwater_deposit(s, d)) {
-            let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
-            cell_outline(&mut g, h, d.cell, Some(bed_y(s, d.cell.0 as f32, d.cell.1 as f32)), Color::srgb(cr, cg, cb));
         }
     }
     if let Some((b, d)) = match *sel { Selection::Site(id) => s.buildings.building(id).and_then(|b| b.dam.as_deref().map(|d| (b, d))), _ => None } {
