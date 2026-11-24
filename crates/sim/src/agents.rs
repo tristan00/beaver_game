@@ -1077,6 +1077,16 @@ fn site_haul_task(sim: &SimState, ag: &Agent) -> Option<Task> {
     sites.into_iter().find_map(|p| site_fetch_task(sim, p.building, ag))
 }
 
+/// Whether a move between stores has somewhere to go: the stores hold no more of the good than
+/// they have room for (they can, once flooding takes a store out of use). A hauler doesn't set
+/// out with a load nothing can take.
+fn room_for_move(sim: &SimState, t: &Task) -> bool {
+    match t {
+        Task::Fetch { good, site_delivery: false, .. } => sim.buildings.stores.amount(*good) <= sim.buildings.stores.capacity(*good) - WORK_EPS,
+        _ => true,
+    }
+}
+
 fn haul_task(sim: &SimState) -> Option<Task> {
     let ok = |id| sim.buildings.building(id).is_some_and(|b| b.is_complete());
     let open = |id| sim.buildings.building(id).is_some_and(|b| b.is_complete() && !sim.buildings.unusable(b, &sim.water.depth));
@@ -1162,14 +1172,24 @@ fn retarget(sim: &mut SimState) {
                     .filter(|p| sim.buildings.building(p.building).is_some_and(|b| (b.is_complete() || is_site(sim, p)) && !sim.buildings.unusable(b, &sim.water.depth)))
                     .filter(|p| role != Role::Build || takes_builders(sim, p))
                     .filter_map(|p| {
-                        let (j, r) = p.open_seat(|r| crate::jobs::role_kind(r) == kind)?;
+                        // A finished dam or canal keeps no builder seats; work ordered on it
+                        // (a gate, a lock) opens one.
+                        let reopen = role == Role::Build && takes_builders(sim, p) && !p.slots.iter().any(|s| s.role == Role::Build);
+                        let (j, r) = p.open_seat(|r| crate::jobs::role_kind(r) == kind).or(reopen.then_some((p.slots.len(), Role::Build)))?;
                         Some((p, j, r))
                     })
                     .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building))
                     .min_by_key(|(p, _, _)| (std::cmp::Reverse(p.priority), d(p.building), p.building))
                     .map(|(p, j, _)| (p.building, j));
                 let Some((to, j)) = next else { continue };
-                let _ = sim.work.unassign(from, i);
+                // A reopened builder seat on a finished dam or canal: put it back first.
+                if let Ok(p) = sim.work.place_mut(to) {
+                    if j == p.slots.len() && !p.open_ended() {
+                        p.slots.push(crate::work::Slot::empty(Role::Build));
+                    }
+                }
+                // Moving takes the new seat before leaving the old one (`assign` vacates it).
+                let _ = i;
                 if sim.work.assign(to, j, who).is_ok() {
                     if let Ok(p) = sim.work.place_mut(to) {
                         p.max_workers = p.max_workers.max(p.filled());
@@ -1264,13 +1284,13 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
         Duty::Guard(b) => Some(Task::Watch { lookout: *b }),
         // Plant what the stores hold, else collect more seedlings while there is room.
         Duty::Forest(area) => plant_task(sim, *area, ag).or_else(|| seed_task(sim, *area, ag)),
-        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim).map(|t| by_barge(sim, ag, t))).or_else(|| {
+        Duty::Haul => site_haul_task(sim, ag).or_else(|| haul_task(sim).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))).or_else(|| {
             let (from, then, good) = crate::stock::fill_move(sim)?;
-            Some(by_barge(sim, ag, Task::Fetch { from, good, then, site_delivery: false }))
+            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))
         }).or_else(|| {
             let own = sim.work.slot_of(ag.id).map(|s| s.0).filter(|b| sim.work.balanced.contains(b))?;
             let (from, then, good) = crate::stock::balance_move(sim, Some(own))?;
-            Some(by_barge(sim, ag, Task::Fetch { from, good, then, site_delivery: false }))
+            Some(Task::Fetch { from, good, then, site_delivery: false }).filter(|t| room_for_move(sim, t)).map(|t| by_barge(sim, ag, t))
         }),
     }
 }
@@ -1770,7 +1790,9 @@ fn fetch(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Buildin
         _ => false,
     };
     let from_ok = if from == SUPPLIES { sim.work.supplies.is_some() } else { sim.buildings.building(from).is_some_and(|b| b.is_complete()) };
-    if !still_wanted || !from_ok {
+    // A move between stores is given up once nothing could take the load at the other end.
+    let room = site || room_for_move(sim, &Task::Fetch { from, good, then, site_delivery: false });
+    if !still_wanted || !from_ok || !room {
         return abandon(ag);
     }
     if !approach(sim, ag, dt, from) {
@@ -1871,6 +1893,10 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
         ag.task = Task::Idle;
         return;
     };
+    // The stores filled up on the way: the load is set down here, not carried to no room.
+    if sim.buildings.stores.space(load.good) <= WORK_EPS {
+        return drop_load(sim, ag, "the stores filled up");
+    }
     let to = if sim.buildings.building(to).is_some_and(|b| b.is_complete() && !sim.buildings.unusable(b, &sim.water.depth)) {
         to
     } else {
@@ -1886,6 +1912,11 @@ fn haul(sim: &mut SimState, ag: &mut Agent, dt: f32, to: BuildingId) {
         let put=sim.buildings.stores.put_kind_at(to,load.good,load.kind(),load.amount).unwrap_or(0.0);
         log_load(sim, ag, "HAUL_STORE", to, load.good, load.amount, put, "");
         if put >= load.amount-WORK_EPS { ag.load=None; ag.task=Task::Idle; }
+        else if put <= WORK_EPS {
+            // No room anywhere (stores lost to flooding hold less than there is): the load is
+            // set down beside the store rather than tried again for ever.
+            return drop_load(sim, ag, "no room in the stores");
+        }
         else {ag.load=Some(Load{amount:load.amount-put,..load});}
         note(ag, put>0.0);
     }
@@ -2044,7 +2075,7 @@ fn send_maintainers(sim: &mut SimState) {
         sim.buildings
             .buildings
             .iter()
-            .filter(|b| crate::maintenance::needs_mending(sim, b))
+            .filter(|b| crate::maintenance::needs_mending(sim, b) && !crate::buildings::flooded(b, &sim.water.depth))
             .filter(|b| crate::maintenance::mend_rates(b).0.iter().all(|&(g, _)| sim.buildings.stores.amount(g) > WORK_EPS))
             .map(|b| (b.id, 1.0 - b.condition + if marked(b.id) { 1.0 } else { 0.0 }, b.pos)),
     );
