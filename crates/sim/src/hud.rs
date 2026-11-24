@@ -246,6 +246,8 @@ pub enum ProblemKind {
     PondDraining,
     /// A wolf the colony has seen is on the map.
     Wolf,
+    /// Every beaver in one job is waiting at home with nothing that job can do.
+    NoWork,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -253,6 +255,7 @@ pub enum Subject {
     Good(Good),
     Building(BuildingKind),
     Stage(Stage),
+    Role(RoleKind),
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -327,6 +330,40 @@ fn winter_food_problem(sim:&SimState)->Option<Problem> {
         fix:if add_cache {place_fix(sim,BuildingKind::Warehouse)} else {gathering},
         alt_fix:if add_cache&&gathering!=Fix::Focus {Some(gathering)} else {None},focus:colony_cell(sim),
     })
+}
+
+/// A beaver in a job, fit to work and not tired, waiting at home because its job has nothing
+/// for it (what its card shows as 'No work').
+fn waiting_for_work(sim: &SimState, id: BeaverId) -> bool {
+    sim.colony.beaver(id).is_some_and(|b| b.can_work() && !b.resting)
+        && sim.agents.get(id).is_some_and(|a| a.task == Task::Rest && a.load.is_none())
+}
+
+/// One alert for each job whose workers are all waiting with nothing to do.
+fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
+    for role in crate::jobs::RoleKind::DEFAULT_ORDER {
+        // Those in the job (a seat at a building or an order), fit to work and not tired.
+        let fit: Vec<&crate::colony::Beaver> = sim
+            .colony
+            .beavers
+            .iter()
+            .filter(|b| b.can_work() && !b.resting && crate::jobs::role_of(sim, b.id) == Some(role))
+            .collect();
+        if fit.is_empty() || !fit.iter().all(|b| waiting_for_work(sim, b.id)) {
+            continue;
+        }
+        let rows = fit.iter().map(|b| row("No work", 1.0, Source::Beaver(b.id))).collect();
+        out.push(Problem {
+            kind: ProblemKind::NoWork,
+            severity: Severity::Warning,
+            value: fit.len() as f32,
+            cause: Breakdown::new(fit.len() as f32, rows),
+            subject: Some(Subject::Role(role)),
+            fix: Fix::OpenJobs,
+            alt_fix: None,
+            focus: Some((fit[0].pos.0.max(0.0) as usize, fit[0].pos.1.max(0.0) as usize)),
+        });
+    }
 }
 
 pub fn problems(sim: &SimState) -> Vec<Problem> {
@@ -483,6 +520,8 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             focus: sim.colony.beaver(idle[0]).map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize)),
         });
     }
+
+    no_work_problems(sim, &mut out);
 
     for g in Good::ALL {
         let (have, cap) = (sim.buildings.stores.amount(g), sim.buildings.stores.capacity(g));
@@ -645,5 +684,38 @@ fn canal_problems(sim: &SimState, out: &mut Vec<Problem>) {
                 cause: Breakdown::new(v, vec![row("Fell today (cm)", v, Source::Building(b.id))]),
                 subject: Some(Subject::Building(BuildingKind::Dam)), fix: Fix::OpenDam { dam: b.id }, alt_fix: None, focus: Some(b.pos) });
         }
+    }
+}
+
+#[cfg(test)]
+mod no_work_tests {
+    use super::*;
+
+    #[test]
+    fn a_job_with_nothing_to_do_raises_its_own_alert() {
+        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
+        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
+        let build = |s: &mut SimState, kind: BuildingKind| {
+            let pos = (4..40usize)
+                .flat_map(|r| (0..=2 * r).flat_map(move |i| [(site.camp.0 + i - r, site.camp.1 - r), (site.camp.0 + i - r, site.camp.1 + r), (site.camp.0 - r, site.camp.1 + i - r), (site.camp.0 + r, site.camp.1 + i - r)]))
+                .find(|&p| s.check_site(kind, p).is_ok())
+                .expect("a site");
+            let id = s.place_site(kind, pos).unwrap();
+            for &(g, a) in kind.spec().cost {
+                s.work.deliver(id, g, a).unwrap();
+            }
+            s.work.add_labour(id, kind.spec().work).unwrap();
+            crate::sandbox::run_days(s, 0.05);
+            id
+        };
+        build(&mut s, BuildingKind::Shelter);
+        s.apply(crate::Command::AdjustRole { role: RoleKind::Forager, delta: 1 }).unwrap();
+        let no_work = |s: &SimState| problems(s).iter().any(|p| p.kind == ProblemKind::NoWork && p.subject == Some(Subject::Role(RoleKind::Forager)));
+        crate::sandbox::run_days(&mut s, 0.5);
+        assert!(!no_work(&s), "foragers with plants to pick have work");
+        s.resources.keep(|r| !r.kind.is_food_plant());
+        s.work.piles.items.clear();
+        crate::sandbox::run_days(&mut s, 1.0);
+        assert!(no_work(&s), "foragers with nothing to pick: {:?}", problems(&s).iter().map(|p| p.kind).collect::<Vec<_>>());
     }
 }

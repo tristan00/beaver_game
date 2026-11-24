@@ -274,6 +274,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
         ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
         ProblemKind::Wolf => (vec![(Icon::Wolf, BAD)], String::new(), "Wolf"),
+        ProblemKind::NoWork => {
+            let icon = match p.subject {
+                Some(Subject::Role(role)) => role_kind_icon(role),
+                _ => Icon::Jobs,
+            };
+            (vec![(icon, INK), (Icon::Idle, WARN)], format!("{}", v as i64), "No work")
+        }
         ProblemKind::Flooded => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
@@ -367,7 +374,8 @@ pub fn badges(c: &Ctx) -> Vec<VNode> {
     let mut card: Option<VNode> = None;
     ui.row(6.0, |r| {
         for p in c.problems {
-            let key = format!("alert:{:?}", p.kind);
+            // One per job for 'No work', so the subject is part of the key.
+            let key = format!("alert:{:?}:{:?}", p.kind, p.subject);
             let (icon, col, value, name, skin) = alert_token(c.s, p);
             let t = r.node(badge_node(), |k| {
                 k.icon(icon, if value.is_empty() { 22.0 } else { 18.0 }, col);
