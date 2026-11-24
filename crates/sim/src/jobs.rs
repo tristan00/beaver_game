@@ -172,8 +172,9 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
             out.sort_by(|a, b| b.1.total_cmp(&a.1));
             RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out, workers }
         })
-        // Gathering needs no building: its rows are always there, so the first beaver can be sent.
-        .filter(|r| r.slots > 0 || r.filled > 0 || gather_kind(r.role).is_some() || r.role == RoleKind::Maintainer)
+        // Gathering needs no building: its rows are always there, so the first beaver can be sent;
+        // pebbles only once a finished toolshed gives the tools for them.
+        .filter(|r| r.slots > 0 || r.filled > 0 || (gather_kind(r.role).is_some() && (r.role != RoleKind::PebbleCollector || crate::agents::has_toolshed(sim))) || r.role == RoleKind::Maintainer)
         .collect()
 }
 
@@ -524,5 +525,19 @@ mod home_run_tests {
         let (picked, _) = send_out_who(&s, RoleKind::Forager).unwrap();
         assert_ne!(picked, going, "the beaver on a move order was sent out");
         assert!(free(&s).contains(&picked));
+    }
+}
+
+#[cfg(test)]
+mod pebble_row_tests {
+    use super::*;
+
+    #[test]
+    fn pebble_collecting_is_not_offered_before_a_toolshed_stands() {
+        let (mut s, site) = crate::starts::new_game_on_map("voyageurs").unwrap();
+        s.apply(crate::Command::Settle { cell: site.camp }).unwrap();
+        let rows = |s: &SimState| jobs_board(s).iter().map(|r| r.role).collect::<Vec<_>>();
+        assert!(!rows(&s).contains(&RoleKind::PebbleCollector));
+        assert!(rows(&s).contains(&RoleKind::Forager));
     }
 }

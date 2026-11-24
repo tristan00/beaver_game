@@ -725,8 +725,11 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     x.bold(format!("{}", plan.sticks.round() as i64), 15.0, INK);
                 })
                 .tip(Tip::titled(Some((good_icon(Good::Sticks), good_color(Good::Sticks))), "Sticks for the first stage").line("Carried load by load", ""));
-                // The engine's own answer once its background run is in; the quick estimate till then.
-                let rise = c.hud.dam_settled().map(|r| r.rise).or(plan.preview.as_ref().map(|p| p.flow_rise)).unwrap_or(0.0);
+                // The higher of the quick estimate of the full pond and the engine's own short run
+                // (`dam_settled`). That run covers only the first hour, so it catches what the
+                // estimate misses (a line along a channel) but not a pond that takes days to fill.
+                let quick = plan.preview.as_ref().map_or(0.0, |p| p.flow_rise);
+                let rise = c.hud.dam_settled().map_or(quick, |r| r.rise.max(quick));
                 let mut tip = Tip::titled(Some((Icon::Drop, WATER)), "Water rises").with_value(rise_text(rise)).line("New pond cells", format!("{}", plan.new_wet));
                 if plan.preview.as_ref().is_some_and(|p| p.spill_at.is_some()) {
                     tip = tip.line("Runs around the dam", "");

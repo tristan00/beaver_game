@@ -214,3 +214,4 @@ pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings
     out.new_wet = out.preview.as_ref().map_or(0, |p| p.flow_flooded.iter().filter(|&&(x, y)| !is_wet(sim, x, y)).count());
     out
 }
+
