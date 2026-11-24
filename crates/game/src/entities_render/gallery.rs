@@ -215,12 +215,17 @@ pub(super) fn shuffle_gallery(time: Res<Time>, clock: Res<super::RenderClock>, m
     }
 }
 
-/// `BC_SELECT_HOME=1`: keep the first family's home selected, for screenshots of its inspector.
-pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
+/// `BC_SELECT_HOME=1`: keep the first family's home selected, for screenshots of its inspector;
+/// with `BC_DETAILS=1` too, its family page is opened (`BC_SELECT_HOME=2` for the second lodge...).
+pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
     if std::env::var_os("BC_SELECT_HOME").is_none() {
         return;
     }
-    let (Some(mut sel), Some(l)) = (sel, sim.0.colony.lodges.first()) else { return };
+    let nth = std::env::var("BC_SELECT_HOME").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
+    let (Some(mut sel), Some(l)) = (sel, sim.0.colony.lodges.get(nth)) else { return };
+    if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.lodge_page != Some(l.id)) {
+        hud.lodge_page = Some(l.id);
+    }
     let want = match crate::picking::Target::home(&sim.0, l.id) {
         crate::picking::Target::Building(b) => crate::flow::Selection::Site(b),
         _ => crate::flow::Selection::Lodge(l.id),
@@ -232,11 +237,20 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
 
 /// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected, and `BC_SELECT_LOOKOUT=1`
 /// its first lookout, for screenshots of the inspector and the lookout's range.
-/// With `BC_DETAILS=1` too, the beaver's story is opened.
+/// `BC_SELECT_BEAVER=out` picks the first beaver out of its lodge instead, `=load` the first carrying
+/// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
 pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
-    let want = if std::env::var_os("BC_SELECT_BEAVER").is_some() {
+    let pick = std::env::var("BC_SELECT_BEAVER").ok();
+    let out = |b: &&sim::colony::Beaver, f: &dyn Fn(&sim::agents::Agent) -> bool| s.agents.get(b.id).is_some_and(|a| !a.inside && f(a));
+    let want = if let Some(p) = pick.as_deref().filter(|p| matches!(*p, "out" | "load" | "swim")) {
+        s.colony.beavers.iter().find(|b| match p {
+            "load" => out(b, &|a| a.load.is_some()),
+            "swim" => out(b, &|a| a.gait == sim::nav::Gait::Swim),
+            _ => out(b, &|_| true),
+        }).map(|b| crate::flow::Selection::Beaver(b.id))
+    } else if pick.is_some() {
         s.colony.beavers.iter().find(|b| b.can_work() && (s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()))).map(|b| crate::flow::Selection::Beaver(b.id))
     } else if std::env::var_os("BC_SELECT_LOOKOUT").is_some() {
         s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Lookout).map(|b| crate::flow::Selection::Site(b.id))

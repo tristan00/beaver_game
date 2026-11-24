@@ -1,8 +1,12 @@
 //! A lodge's family page, full screen, opened from the lodge card or from a beaver's page: who
-//! lives there, and the family tree from the residents' grandparents down, each couple with
-//! their litters in order and each kit under its litter. Every beaver is a link to its page.
+//! lives there, and the family tree. The tree runs in generations, one row each, from the
+//! residents' oldest known forebears (up to their grandparents) down: a couple side by side,
+//! joined by a line, with their kits hung below them. Kits with no family of their own stand in
+//! short columns under their parents; one with a partner or kits gets a place of its own, with
+//! its partner beside it and its kits below. The living are drawn solid, the dead faint with a
+//! cross, and those living in this lodge are ringed. Every beaver is a link to its page.
 use super::kin::{self, name_of};
-use super::life::{about, when};
+use super::life::about;
 use super::panels::{stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
@@ -12,27 +16,42 @@ use bevy::prelude::*;
 use sim::colony::{BeaverId, LodgeId};
 use std::collections::BTreeSet;
 
-/// Tree lines shown at once (the wheel scrolls through the rest).
-const ROWS: usize = 26;
-/// Indent per generation.
-const STEP: f32 = 18.0;
+/// One beaver in the tree.
+const CHIP_W: f32 = 92.0;
+const CHIP_H: f32 = 24.0;
+/// Between partners (the line joining them).
+const LINK: f32 = 16.0;
+/// Between neighbours in a row.
+const GAP: f32 = 14.0;
+/// Between columns of kits, and between kits in a column.
+const COL_GAP: f32 = 6.0;
+const STACK: f32 = 4.0;
+/// Between generations.
+const DROP: f32 = 34.0;
+/// The room the tree has: wider trees stack kits in taller columns.
+const TREE_W: f32 = 1080.0;
+const VIEW_H: f32 = 560.0;
+/// How far one step of the wheel moves the tree.
+const STEP_PX: f32 = 24.0;
+const WIRE: f32 = 2.0;
+const WIRE_COL: Color = Color::srgba(0.78, 0.66, 0.5, 0.55);
 
-enum Line {
-    /// A beaver at this depth, with its partners (current, or those it had kits with).
-    Beaver { depth: usize, id: BeaverId, partners: Vec<BeaverId> },
-    /// One of a couple's litters.
-    Litter { depth: usize, number: usize, year: i64, kits: usize },
+/// A beaver with its partners, its kits that have families of their own, and those that don't.
+struct Unit {
+    id: BeaverId,
+    partners: Vec<BeaverId>,
+    kids: Vec<Unit>,
+    leaves: Vec<BeaverId>,
 }
 
-fn residents(c: &Ctx, lodge: LodgeId) -> Vec<BeaverId> {
-    let mut v: Vec<&sim::colony::Beaver> = c.s.colony.beavers.iter().filter(|b| b.lodge == Some(lodge)).collect();
+fn residents(s: &sim::SimState, lodge: LodgeId) -> Vec<BeaverId> {
+    let mut v: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().filter(|b| b.lodge == Some(lodge)).collect();
     v.sort_by_key(|b| (std::cmp::Reverse(b.stage), b.id.0));
     v.into_iter().map(|b| b.id).collect()
 }
 
-/// The family tree as lines: from the residents' oldest known forebears (up to their
-/// grandparents) down through every litter.
-fn tree(s: &sim::SimState, home: &[BeaverId]) -> Vec<Line> {
+/// The family trees of a lodge: one per oldest known forebear of its residents.
+fn forest(s: &sim::SimState, home: &[BeaverId]) -> Vec<Unit> {
     let all = kin::everyone(s);
     let up = |ids: &BTreeSet<BeaverId>| -> BTreeSet<BeaverId> { ids.iter().flat_map(|&i| kin::parents(s, i)).flatten().collect() };
     let mut near: BTreeSet<BeaverId> = home.iter().copied().collect();
@@ -42,94 +61,194 @@ fn tree(s: &sim::SimState, home: &[BeaverId]) -> Vec<Line> {
     near.extend(grand);
     let mut roots: Vec<BeaverId> = near.iter().copied().filter(|&i| kin::parents(s, i).iter().flatten().all(|p| !near.contains(p))).collect();
     roots.sort_by(|a, b| kin::born(s, *a).unwrap_or(f64::MIN).total_cmp(&kin::born(s, *b).unwrap_or(f64::MIN)).then(a.cmp(b)));
-    let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for r in roots {
-        descend(s, &all, r, 0, &mut seen, &mut out);
-    }
-    out
+    roots.into_iter().filter_map(|r| unit(s, &all, r, 0, &mut seen)).collect()
 }
 
-fn descend(s: &sim::SimState, all: &[BeaverId], id: BeaverId, depth: usize, seen: &mut BTreeSet<BeaverId>, out: &mut Vec<Line>) {
-    if !seen.insert(id) || depth > 12 {
-        return;
+fn unit(s: &sim::SimState, all: &[BeaverId], id: BeaverId, depth: usize, seen: &mut BTreeSet<BeaverId>) -> Option<Unit> {
+    if !seen.insert(id) {
+        return None;
     }
-    let kits = kin::children(s, all, id);
-    // Partners: its mate, and anyone it had kits with.
-    let mut partners: Vec<BeaverId> = kin::partner_of(s, id).into_iter().collect();
+    let kits: Vec<BeaverId> = kin::children(s, all, id).into_iter().filter(|k| !seen.contains(k)).collect();
+    // Partners: its mate, and anyone it had kits with; shown beside it, not again on their own.
+    let mut partners: Vec<BeaverId> = kin::partner_of(s, id).into_iter().filter(|p| !seen.contains(p)).collect();
     for &k in &kits {
-        for p in kin::parents(s, k).into_iter().flatten().filter(|&p| p != id) {
+        for p in kin::parents(s, k).into_iter().flatten().filter(|&p| p != id && !seen.contains(&p)) {
             if !partners.contains(&p) {
                 partners.push(p);
             }
         }
     }
-    // A partner shown here is not shown again as a root of its own.
-    for p in &partners {
-        seen.insert(*p);
-    }
-    out.push(Line::Beaver { depth, id, partners });
-    // Litters, oldest first: kits with the same other parent born the same year.
-    let mut litters: Vec<(i64, Option<BeaverId>, Vec<BeaverId>)> = Vec::new();
+    seen.extend(partners.iter().copied());
+    let (mut kids, mut leaves) = (Vec::new(), Vec::new());
     for k in kits {
-        let other = kin::parents(s, k).into_iter().flatten().find(|&p| p != id);
-        let year = kin::born_year(s, k).unwrap_or(0);
-        match litters.iter_mut().find(|l| l.0 == year && l.1 == other) {
-            Some(l) => l.2.push(k),
-            None => litters.push((year, other, vec![k])),
+        let family = kin::partner_of(s, k).is_some() || !kin::children(s, all, k).is_empty();
+        if family && depth < 12 {
+            kids.extend(unit(s, all, k, depth + 1, seen));
+        } else if seen.insert(k) {
+            leaves.push(k);
         }
     }
-    for (year, _, ks) in litters {
-        let number = kin::litter(s, all, ks[0]).map_or(0, |l| l.number);
-        out.push(Line::Litter { depth: depth + 1, number, year, kits: ks.len() });
-        for k in ks {
-            descend(s, all, k, depth + 2, seen, out);
+    Some(Unit { id, partners, kids, leaves })
+}
+
+/// What the tree is drawn with: chips (a beaver, where) and wires (a line, where).
+#[derive(Default)]
+struct Drawing {
+    chips: Vec<(BeaverId, Vec2)>,
+    wires: Vec<Rect>,
+    size: Vec2,
+}
+
+/// Sizes of a tree laid out with at most `per` kits to a column. Every generation's row is a
+/// chip high: a column of kits hangs down beside the row below, where nothing else stands.
+struct Layout {
+    per: usize,
+}
+
+impl Layout {
+    fn couple_w(u: &Unit) -> f32 {
+        let n = u.partners.len() as f32;
+        CHIP_W * (1.0 + n) + LINK * n
+    }
+    fn cols(&self, n: usize) -> usize {
+        n.div_ceil(self.per)
+    }
+    fn leaves_w(&self, n: usize) -> f32 {
+        let c = self.cols(n) as f32;
+        if c == 0.0 { 0.0 } else { c * CHIP_W + (c - 1.0) * COL_GAP }
+    }
+    fn kids_w(&self, u: &Unit) -> f32 {
+        let items = u.kids.len() + usize::from(!u.leaves.is_empty());
+        let w: f32 = u.kids.iter().map(|k| self.width(k)).sum::<f32>() + self.leaves_w(u.leaves.len());
+        w + GAP * items.saturating_sub(1) as f32
+    }
+    fn width(&self, u: &Unit) -> f32 {
+        Self::couple_w(u).max(self.kids_w(u))
+    }
+    fn top(&self, d: usize) -> f32 {
+        d as f32 * (CHIP_H + DROP)
+    }
+    /// Place a unit at `x`, generation `d`; where its own chip is, for the wire from its parents.
+    fn place(&self, u: &Unit, x: f32, d: usize, out: &mut Drawing) -> f32 {
+        let w = self.width(u);
+        let y = self.top(d);
+        // Where the kits hang from: under the middle of their row of anchors.
+        let mut anchors = Vec::new();
+        let mut cx = x + (w - self.kids_w(u)) / 2.0;
+        for k in &u.kids {
+            anchors.push(self.place(k, cx, d + 1, out));
+            cx += self.width(k) + GAP;
         }
+        let ky = self.top(d + 1);
+        for (i, &leaf) in u.leaves.iter().enumerate() {
+            let (col, row) = (i / self.per, i % self.per);
+            let at = Vec2::new(cx + col as f32 * (CHIP_W + COL_GAP), ky + row as f32 * (CHIP_H + STACK));
+            out.chips.push((leaf, at));
+            if row == 0 {
+                anchors.push(at.x + CHIP_W / 2.0);
+            }
+        }
+        // The couple, centred over its kits where it can be.
+        let cw = Self::couple_w(u);
+        let hang_off = if u.partners.is_empty() { CHIP_W / 2.0 } else { CHIP_W + LINK / 2.0 };
+        let mid = if anchors.is_empty() { x + w / 2.0 } else { (anchors[0] + anchors[anchors.len() - 1]) / 2.0 };
+        let bx = (mid - hang_off).clamp(x, x + w - cw);
+        out.chips.push((u.id, Vec2::new(bx, y)));
+        for (i, &p) in u.partners.iter().enumerate() {
+            let px = bx + (i + 1) as f32 * (CHIP_W + LINK);
+            out.chips.push((p, Vec2::new(px, y)));
+            out.wires.push(Rect::new(px - LINK, y + CHIP_H / 2.0 - WIRE / 2.0, px, y + CHIP_H / 2.0 + WIRE / 2.0));
+        }
+        if !anchors.is_empty() {
+            let hang = bx + hang_off;
+            let from = if u.partners.is_empty() { y + CHIP_H } else { y + CHIP_H / 2.0 };
+            let bus = ky - DROP / 2.0;
+            let wire = |x: f32, y0: f32, y1: f32| Rect::new(x - WIRE / 2.0, y0, x + WIRE / 2.0, y1);
+            out.wires.push(wire(hang, from, bus + WIRE / 2.0));
+            let (l, r) = anchors.iter().fold((hang, hang), |(l, r), &a| (l.min(a), r.max(a)));
+            out.wires.push(Rect::new(l - WIRE / 2.0, bus - WIRE / 2.0, r + WIRE / 2.0, bus + WIRE / 2.0));
+            for &a in &anchors {
+                out.wires.push(wire(a, bus, ky));
+            }
+        }
+        bx + CHIP_W / 2.0
     }
 }
 
-/// How many tree lines a lodge's page has, for scrolling.
+/// The lodge's trees, laid out side by side, kits stacked as tall as it takes to fit the room.
+fn draw(s: &sim::SimState, home: &[BeaverId]) -> Drawing {
+    let trees = forest(s, home);
+    let mut lay = Layout { per: 4 };
+    let total = |lay: &Layout| trees.iter().map(|t| lay.width(t)).sum::<f32>() + GAP * 2.0 * trees.len().saturating_sub(1) as f32;
+    for per in [4, 6, 8, 12, 16, 24] {
+        lay.per = per;
+        if total(&lay) <= TREE_W {
+            break;
+        }
+    }
+    let mut out = Drawing::default();
+    let mut x = 0.0;
+    for t in &trees {
+        lay.place(t, x, 0, &mut out);
+        x += lay.width(t) + GAP * 2.0;
+    }
+    let bottom = out.chips.iter().map(|c| c.1.y + CHIP_H).fold(0.0, f32::max);
+    out.size = Vec2::new(total(&lay).max(0.0), bottom);
+    out
+}
+
+/// How far the wheel can move a lodge's tree.
 pub fn tree_len(s: &sim::SimState, lodge: LodgeId) -> usize {
-    let home: Vec<BeaverId> = s.colony.beavers.iter().filter(|b| b.lodge == Some(lodge)).map(|b| b.id).collect();
-    tree(s, &home).len()
+    let h = draw(s, &residents(s, lodge)).size.y;
+    ((h - VIEW_H) / STEP_PX).ceil().max(0.0) as usize
 }
 
-/// Lines down the left of a tree line, one per generation above it.
-fn guides(r: &mut Ui, depth: usize) {
-    for _ in 0..depth {
-        r.add(VNode::new(Node { width: Val::Px(STEP), align_self: AlignSelf::Stretch, border: UiRect::left(Val::Px(1.0)), flex_shrink: 0.0, ..default() }))
-            .border(BorderColor::all(Color::srgba(0.6, 0.55, 0.48, 0.45)));
-    }
-}
-
-/// A beaver in the tree: a link to its page, marked when it lives in this lodge.
-fn chip(r: &mut Ui, s: &sim::SimState, id: BeaverId, home: &[BeaverId]) {
+/// A beaver in the tree: a link to its page. Solid while it lives, faint with a cross once gone,
+/// ringed when it lives here.
+fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]) {
     let b = s.colony.beaver(id);
     let here = home.contains(&id);
-    r.row(5.0, |x| {
+    let node = Node {
+        position_type: PositionType::Absolute,
+        left: Val::Px(at.x),
+        top: Val::Px(at.y),
+        width: Val::Px(CHIP_W),
+        height: Val::Px(CHIP_H),
+        padding: UiRect::horizontal(Val::Px(6.0)),
+        column_gap: Val::Px(5.0),
+        align_items: AlignItems::Center,
+        border: UiRect::all(Val::Px(if here { 2.0 } else { 1.0 })),
+        border_radius: BorderRadius::all(Val::Px(5.0)),
+        overflow: Overflow::clip(),
+        ..default()
+    };
+    let v = u.node(node, |x| {
         match b {
             Some(b) => {
-                x.icon(stage_icon(b.stage), 13.0, if here { INK } else { MUTED });
+                x.icon(stage_icon(b.stage), 13.0, if here { ACCENT } else { FUR });
+                x.bold(name_of(s, id), 12.0, INK);
             }
             None => {
-                x.icon(Icon::Cross, 11.0, MUTED);
+                x.icon(Icon::Cross, 10.0, MUTED);
+                x.text(name_of(s, id), 12.0, MUTED);
             }
         }
-        x.bold(name_of(s, id), 12.0, if b.is_none() { MUTED } else { INK });
-        if here {
-            x.icon(Icon::Lodge, 11.0, MUD);
-        }
-    })
-    .action(HudAction::BeaverDetails(Some(id)))
-    .tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
+    });
+    match (b.is_some(), here) {
+        (true, true) => v.bg(Color::srgba(0.91, 0.52, 0.23, 0.16)).border(BorderColor::all(ACCENT)),
+        (true, false) => v.bg(Color::srgba(1.0, 1.0, 1.0, 0.08)).border(BorderColor::all(LINE)),
+        (false, _) => v.border(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.1))),
+    };
+    v.action(HudAction::BeaverDetails(Some(id))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
 }
 
 pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
     let s = c.s;
     let l = s.colony.lodges.iter().find(|l| l.id == lodge);
     let fam = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| "Lodge".to_string(), |f| f.name.clone());
-    let home = residents(c, lodge);
-    let lines = tree(s, &home);
+    let home = residents(s, lodge);
+    let tree = draw(s, &home);
     let mut ui = Ui::default();
     ui.node(
         Node {
@@ -182,49 +301,48 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                     }
                 });
                 // The family tree.
-                cols.node(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: Val::Px(0.0), ..default() }, |u| {
+                cols.node(Node { flex_grow: 1.0, align_self: AlignSelf::Stretch, flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), overflow: Overflow::clip(), ..default() }, |u| {
                     u.row(8.0, |r| {
                         r.icon(Icon::Beaver, 16.0, FUR);
                         r.bold("Family tree".to_string(), 14.0, INK);
                     });
-                    let total = lines.len();
-                    let skip = c.hud.scroll.min(total.saturating_sub(1));
-                    for line in lines.iter().skip(skip).take(ROWS) {
-                        u.row(0.0, |r| match line {
-                            Line::Beaver { depth, id, partners } => {
-                                guides(r, *depth);
-                                r.row(6.0, |x| {
-                                    chip(x, s, *id, &home);
-                                    for p in partners {
-                                        x.text("&".to_string(), 11.0, MUTED);
-                                        chip(x, s, *p, &home);
-                                    }
-                                    if let Some(d) = kin::born(s, *id) {
-                                        x.text(format!("b. {}", when(d)), 10.0, MUTED);
-                                    }
-                                })
-                                .style(|n| n.padding = UiRect::axes(Val::Px(4.0), Val::Px(3.0)));
-                            }
-                            Line::Litter { depth, number, year, kits } => {
-                                guides(r, *depth);
-                                r.row(5.0, |x| {
-                                    x.icon(Icon::Kit, 12.0, GOOD);
-                                    let n = if *number > 0 { format!("Litter {number}") } else { "Litter".to_string() };
-                                    x.text(format!("{n} · {} · {kits}", kin::year_word(*year)), 11.0, MUTED);
-                                })
-                                .style(|n| n.padding = UiRect::axes(Val::Px(4.0), Val::Px(2.0)));
-                            }
-                        });
-                    }
-                    if total > ROWS {
-                        u.text(format!("{}–{} of {} · scroll for more", skip + 1, (skip + ROWS).min(total), total), 11.0, MUTED);
-                    }
-                    if total == 0 {
+                    if tree.chips.is_empty() {
                         u.text("No family known".to_string(), 12.0, MUTED);
+                        return;
                     }
+                    let max = ((tree.size.y - VIEW_H) / STEP_PX).ceil().max(0.0);
+                    let shift = (c.hud.scroll as f32).min(max) * STEP_PX;
+                    let canvas = Node {
+                        width: Val::Px(tree.size.x),
+                        height: Val::Px(tree.size.y),
+                        margin: UiRect::top(Val::Px(-shift)),
+                        align_self: AlignSelf::Center,
+                        flex_shrink: 0.0,
+                        ..default()
+                    };
+                    u.node(canvas, |t| {
+                        for w in &tree.wires {
+                            t.add(VNode::new(Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(w.min.x),
+                                top: Val::Px(w.min.y),
+                                width: Val::Px(w.width()),
+                                height: Val::Px(w.height()),
+                                ..default()
+                            }))
+                            .bg(WIRE_COL);
+                        }
+                        for &(id, at) in &tree.chips {
+                            chip(t, s, id, at, &home);
+                        }
+                    });
                 });
             })
-            .style(|n| n.align_items = AlignItems::FlexStart);
+            .style(|n| {
+                n.align_items = AlignItems::FlexStart;
+                n.flex_grow = 1.0;
+                n.min_height = Val::Px(0.0);
+            });
         },
     )
     .tag(Tag::Scroll);
@@ -233,4 +351,3 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
     v.node.padding = UiRect::all(Val::Px(18.0));
     vec![v]
 }
-

@@ -77,11 +77,18 @@ pub fn litter_mates(s: &SimState, all: &[BeaverId], l: Litter) -> Vec<BeaverId> 
     all.iter().copied().filter(|&c| parents(s, c)[0] == Some(l.mother) && born_year(s, c) == Some(l.year)).collect()
 }
 
+/// The order of a lodge-mate who is no kin.
+pub const LODGER: u8 = 20;
+
 /// The kind of tie, for filtering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum KinFilter {
     #[default]
     All,
+    /// Partner, parents, kits, brothers and sisters.
+    Close,
+    /// Those living in its lodge.
+    Home,
     Partner,
     Parents,
     Kits,
@@ -91,10 +98,12 @@ pub enum KinFilter {
 }
 
 impl KinFilter {
-    pub const ALL: [KinFilter; 7] = [KinFilter::All, KinFilter::Partner, KinFilter::Parents, KinFilter::Kits, KinFilter::Siblings, KinFilter::Grand, KinFilter::Other];
+    pub const ALL: [KinFilter; 9] = [KinFilter::All, KinFilter::Close, KinFilter::Home, KinFilter::Partner, KinFilter::Parents, KinFilter::Kits, KinFilter::Siblings, KinFilter::Grand, KinFilter::Other];
     pub fn label(self) -> &'static str {
         match self {
             KinFilter::All => "All",
+            KinFilter::Close => "Close",
+            KinFilter::Home => "Home",
             KinFilter::Partner => "Partner",
             KinFilter::Parents => "Parents",
             KinFilter::Kits => "Kits",
@@ -114,8 +123,18 @@ impl KinFilter {
             _ => KinFilter::Other,
         }
     }
-    pub fn takes(self, order: u8) -> bool {
-        self == KinFilter::All || KinFilter::of(order) == self
+    /// Whether a tie of this order shows under the filter; `home`: they share a lodge. A lodge-mate
+    /// who is not kin shows only under Home.
+    pub fn takes(self, order: u8, home: bool) -> bool {
+        if order == LODGER {
+            return self == KinFilter::Home;
+        }
+        match self {
+            KinFilter::All => true,
+            KinFilter::Close => order <= 3,
+            KinFilter::Home => home,
+            f => KinFilter::of(order) == f,
+        }
     }
 }
 

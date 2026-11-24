@@ -15,8 +15,9 @@ use sim::lives::{Life, What};
 
 /// Chronology rows shown at once (the wheel scrolls through the rest).
 const ROWS: usize = 22;
-/// The portrait's side on the details page.
-const PORTRAIT_PX: f32 = 128.0;
+/// The live portrait on the details page: the first column's width, in the image's shape.
+const PORTRAIT_W: f32 = COL_W;
+const PORTRAIT_H: f32 = COL_W * crate::entities_render::portrait::HEIGHT as f32 / crate::entities_render::portrait::WIDTH as f32;
 const COL_W: f32 = 390.0;
 
 
@@ -282,20 +283,30 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         fact(u, Icon::Kit, GOOD, "Litter", format!("{} of {}'s · {} · {} kits", l.number, name_of(s, l.mother), kin::year_word(l.year), kin::litter_mates(s, &all, l).len()));
     }
     // Every beaver the colony has known, living or remembered, that is kin.
-    let mut ties: Vec<(u8, &'static str, BeaverId)> = all.iter().filter_map(|&o| kin::kinship(s, id, o).map(|(order, word)| (order, word, o))).collect();
+    let my_lodge = b.and_then(|b| b.lodge);
+    let at_home = |o: BeaverId| my_lodge.is_some() && s.colony.beaver(o).and_then(|x| x.lodge) == my_lodge;
+    // Kin, and anyone else sharing its lodge.
+    let mut ties: Vec<(u8, &'static str, BeaverId)> = all
+        .iter()
+        .filter_map(|&o| kin::kinship(s, id, o).map(|(order, word)| (order, word, o)).or_else(|| (o != id && at_home(o)).then_some((kin::LODGER, "Lodge-mate", o))))
+        .collect();
     ties.sort_by(|a, b| a.0.cmp(&b.0).then(kin::born(s, a.2).unwrap_or(f64::MAX).total_cmp(&kin::born(s, b.2).unwrap_or(f64::MAX))).then(a.2.cmp(&b.2)));
     // Filters, each with how many it holds.
     let filter = c.hud.kin;
     u.row(4.0, |r| {
         for f in KinFilter::ALL {
-            let n = ties.iter().filter(|t| f.takes(t.0)).count();
+            let n = ties.iter().filter(|t| f.takes(t.0, at_home(t.2))).count();
             if n == 0 && f != KinFilter::All {
                 continue;
             }
             super::ledger::chip(r, &format!("{} {n}", f.label()), f == filter, HudAction::Kin(f));
         }
+    })
+    .style(|n| {
+        n.flex_wrap = FlexWrap::Wrap;
+        n.row_gap = Val::Px(4.0);
     });
-    let shown: Vec<_> = ties.iter().filter(|t| filter.takes(t.0)).collect();
+    let shown: Vec<_> = ties.iter().filter(|t| filter.takes(t.0, at_home(t.2))).collect();
     if shown.is_empty() {
         u.text("No family in the colony".to_string(), 12.0, MUTED);
     } else {
@@ -305,7 +316,6 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
             }
         });
     }
-    let my_lodge = b.and_then(|b| b.lodge);
     let my_year = kin::born_year(s, id);
     for &&(order, word, o) in &shown {
         let theirs = kin::litter(s, &all, o);
@@ -322,7 +332,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
             (_, None) => "—".to_string(),
         };
         let since = if order == 0 { life.and_then(|l| l.partnered_since()).map_or(String::new(), |d| format!(" · since {}", when(d))) } else { String::new() };
-        let home = if my_lodge.is_some() && s.colony.beaver(o).and_then(|x| x.lodge) == my_lodge { " · home" } else { "" };
+        let home = if at_home(o) { " · home" } else { "" };
         kin_row(u, s, o, word, litter, litter_tip(s, &all, theirs), format!("{}{since}{home}", about(s, o)));
     }
     u.rule();
@@ -373,6 +383,7 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
     if let Some(d) = life.arrived() {
         fact(u, Icon::Hourglass, MUTED, "In the colony", format!("since {} ({})", when(d), years(s.time_days - d)));
     }
+    let her = if life.sex == sim::colony::Sex::Male { "his" } else { "her" };
     let total = life.entries.len();
     let skip = c.hud.scroll.min(total.saturating_sub(1));
     for e in life.entries.iter().rev().skip(skip).take(ROWS) {
@@ -387,12 +398,12 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
             What::Job(Some(r)) => (role_kind_icon(r), INK, format!("Became a {}", role_kind_name(r).to_lowercase())),
             What::Job(None) => (Icon::Idle, ACCENT, "Left free of work".into()),
             What::Partner(Some(p)) => (Icon::MoodGood, GOOD, format!("Paired with {}", name_of(s, p))),
-            What::Partner(None) => (Icon::MoodBad, MUTED, "Lost its partner".into()),
+            What::Partner(None) => (Icon::MoodBad, MUTED, format!("Lost {her} partner")),
             What::Moved(Some(l)) => {
                 let fam = s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map(|f| f.name.clone()).unwrap_or_else(|| "a lodge".into());
                 (Icon::Lodge, MUD, format!("Moved into the {fam} lodge"))
             }
-            What::Moved(None) => (Icon::Lodge, MUTED, "Left its lodge".into()),
+            What::Moved(None) => (Icon::Lodge, MUTED, format!("Left {her} lodge")),
             What::Died(cause_of) => (Icon::Cross, BAD, format!("Died of {}", cause(cause_of))),
             What::Left => (Icon::Walk, MUTED, "Left the colony".into()),
         };
@@ -427,14 +438,6 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
         |u| {
             // Who: name, sex, age, stage, and how long it may live.
             u.row(14.0, |r| {
-                match c.portrait {
-                    Some(p) => {
-                        r.image(p.0.clone(), Node { width: Val::Px(PORTRAIT_PX), height: Val::Px(PORTRAIT_PX), flex_shrink: 0.0, ..default() }).skin(Skin::Portrait);
-                    }
-                    None => {
-                        r.portrait(Icon::Beaver, if b.is_some() { FUR } else { MUTED });
-                    }
-                }
                 r.col(4.0, |x| {
                     x.bold(name_of(s, id), 20.0, INK);
                     match b {
@@ -461,10 +464,16 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                 let col = |cols: &mut Ui, f: &dyn Fn(&mut Ui)| {
                     cols.node(Node { width: Val::Px(COL_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| f(u));
                 };
-                col(cols, &|u| match b {
-                    Some(b) => condition(c, u, b),
-                    None => {
-                        u.text("No longer in the colony".to_string(), 13.0, MUTED);
+                col(cols, &|u| {
+                    // What it is doing right now, live.
+                    if let Some(p) = c.portrait {
+                        u.image(p.0.clone(), Node { width: Val::Px(PORTRAIT_W), height: Val::Px(PORTRAIT_H), flex_shrink: 0.0, ..default() }).skin(Skin::Portrait);
+                    }
+                    match b {
+                        Some(b) => condition(c, u, b),
+                        None => {
+                            u.text("No longer in the colony".to_string(), 13.0, MUTED);
+                        }
                     }
                 });
                 col(cols, &|u| family(c, u, id, b, life));
