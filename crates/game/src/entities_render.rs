@@ -1,6 +1,6 @@
 mod effects;
 mod gallery;
-mod harbor;
+pub(crate) mod harbor;
 mod meshgen;
 mod models;
 pub mod portrait;
@@ -898,6 +898,7 @@ fn animate_beavers(
     clock: Res<RenderClock>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
+    focus: Res<portrait::PortraitFocus>,
     mut roots: Query<(&mut Transform, &mut BeaverRig, &BeaverSprite, Option<&SetDown>)>,
     mut parts: Query<&mut Transform, Without<BeaverRig>>,
     mut vis: Query<&mut Visibility, Without<BeaverRig>>,
@@ -933,7 +934,7 @@ fn animate_beavers(
         let stride = STRIDE * size * (1.0 + 1.2 * run);
         rig.stride += (moved / stride * std::f32::consts::TAU).min(MAX_STRIDE_HZ * std::f32::consts::TAU * dt.max(1e-4));
 
-        let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
+        let near = focus.0 == Some(sprite.id) || cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
         let swimming = pose == Pose::Swim;
         let wet = shows_wake(pose, sprite.wet);
         if near != rig.near || !rig.init {

@@ -68,6 +68,7 @@ enum MenuAction {
     Quit,
     Scale(f32),
     Water(sim::water::EngineKind),
+    Fahrenheit(bool),
     Ask(Ask),
     Confirm(bool),
 }
@@ -274,6 +275,7 @@ fn menu_actions(
                 menu.ui_scale = s;
                 scale.0 = s;
             }
+            MenuAction::Fahrenheit(on) => set_fahrenheit(on),
             MenuAction::Water(kind) => {
                 menu.water = kind;
                 sim::water::set_default_engine(kind);
@@ -605,6 +607,12 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
             button(r, &label, MenuAction::Scale(s), FAINT, (menu.ui_scale - s).abs() < 0.01);
         }
     });
+    hud::bold(p, "Temperature", 12.0, MUTED);
+    p.spawn(hud::row(6.0)).with_children(|r| {
+        let f = fahrenheit();
+        button(r, "°C", MenuAction::Fahrenheit(false), FAINT, !f);
+        button(r, "°F", MenuAction::Fahrenheit(true), FAINT, f);
+    });
     hud::bold(p, "Water", 12.0, MUTED);
     p.spawn(hud::row(6.0)).with_children(|r| {
         for kind in sim::water::EngineKind::ALL {
@@ -640,6 +648,41 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
     }
     hud::bold(p, "About", 12.0, MUTED);
     hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
+}
+
+/// Temperatures read in Fahrenheit rather than Celsius: the player's choice, kept between games
+/// in a small file beside the saves.
+static FAHRENHEIT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+const UNITS_FILE: &str = "units.txt";
+
+fn units_path() -> std::path::PathBuf {
+    std::path::Path::new(crate::savegame::SAVE_DIR).join(UNITS_FILE)
+}
+
+pub fn fahrenheit() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    match FAHRENHEIT.load(Relaxed) {
+        2 => {
+            let f = std::fs::read_to_string(units_path()).is_ok_and(|t| t.trim() == "fahrenheit");
+            FAHRENHEIT.store(f as u8, Relaxed);
+            f
+        }
+        v => v == 1,
+    }
+}
+
+fn set_fahrenheit(on: bool) {
+    FAHRENHEIT.store(on as u8, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+    let _ = std::fs::write(units_path(), if on { "fahrenheit
+" } else { "celsius
+" });
+}
+
+/// A temperature in the player's units, to the degree.
+pub fn degrees(celsius: f32) -> String {
+    let (v, u) = if fahrenheit() { (celsius * 9.0 / 5.0 + 32.0, "F") } else { (celsius, "C") };
+    format!("{:.0}°{u}", v.round() + 0.0)
 }
 
 /// Short names for the water engines in Settings.

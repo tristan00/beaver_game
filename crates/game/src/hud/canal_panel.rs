@@ -294,6 +294,7 @@ fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
         let on = k.maintain;
         r.pebble(Icon::Hammer, 15.0, HudAction::CanalMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Maintainers clear silt", ""));
         r.pebble(if paused { Icon::Play } else { Icon::Pause }, 14.0, HudAction::Paused(id, !paused), if paused { Peb::On } else { Peb::Idle }).tip(Tip::name(if paused { "Resume" } else { "Pause" }));
+        super::words::cancel_build(r, s, id);
     });
 }
 

@@ -346,7 +346,7 @@ fn map(sim: &SimState) {
             wet += 1;
             sum += depth as f64;
             deepest = deepest.max(depth);
-            if ice.get(i).is_some_and(|&i| i > 0.5) {
+            if ice.get(i).is_some_and(|&i| i > crate::tuning::water::ICE_COVER_M) {
                 iced += 1;
             }
             let (vx, vy) = velocity.get(i).copied().unwrap_or((0.0, 0.0));

@@ -242,6 +242,8 @@ fn site_rows(c: &Ctx, u: &mut Ui, id: BuildingId) -> bool {
     u.row(8.0, |r| {
         r.icon(Icon::Hammer, 16.0, MUTED);
         r.notches(site.fraction(), 10, 200.0, 12.0, ACCENT);
+        r.spacer();
+        cancel_build(r, s, id);
     })
     .tip({
         let mut tip = Tip::name("Built").line("Labour", format!("{} / {}", num(site.labour_done), num(site.labour_needed)));

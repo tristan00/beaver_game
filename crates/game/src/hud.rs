@@ -620,6 +620,8 @@ pub enum HudAction {
     FillStore(BuildingId, bool),
     /// A logistics building's haulers balance the stores, or stop.
     Balance(BuildingId, bool),
+    /// Cancel a building site, or take a dam or canal away altogether.
+    CancelBuild(BuildingId),
     RemoveWorker(BuildingId),
     RoleAdjust(RoleKind, i32),
     /// Keep a role's workers within this many cells of water (None: anywhere).

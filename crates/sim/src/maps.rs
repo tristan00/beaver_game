@@ -30,8 +30,8 @@ pub struct MapInfo {
     pub climate: Option<Climate>,
 }
 
-/// The place's real weather, month by month (January first), from the map header.
-/// Not yet read by the water engine.
+/// The place's real weather, month by month (January first), from the map header. The game's
+/// weather is drawn from it (see `weather`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Climate {
     pub temp_c: [f32; 12],
@@ -89,7 +89,9 @@ impl fmt::Display for MapError {
 
 impl std::error::Error for MapError {}
 
-pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
+/// A map file's header: what it is and where, whether a cover layer follows the heights, and
+/// where the header ends.
+fn parse_header(bytes: &[u8]) -> Result<(MapInfo, bool, usize), MapError> {
     let bad = |m: &str| MapError::Corrupt(m.to_string());
     let end = bytes.windows(4).position(|w| w == b"---\n").ok_or_else(|| bad("no header end"))?;
     let header = std::str::from_utf8(&bytes[..end]).map_err(|_| bad("header is not text"))?;
@@ -129,6 +131,13 @@ pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
         ["height", "cover"] => true,
         _ => return Err(bad("unknown layers")),
     };
+    Ok((info, has_cover, end))
+}
+
+pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
+    let bad = |m: &str| MapError::Corrupt(m.to_string());
+    let (info, has_cover, end) = parse_header(bytes)?;
+    let size = info.size;
     let data = &bytes[end + 4..];
     let want = size * size * if has_cover { 5 } else { 4 };
     if data.len() != want {
@@ -164,7 +173,13 @@ fn climate(kv: &std::collections::HashMap<&str, &str>) -> Result<Option<Climate>
 }
 
 pub fn all() -> Vec<MapInfo> {
-    FILES.iter().filter_map(|(_, b)| parse(b).ok().map(|d| d.info)).collect()
+    infos().to_vec()
+}
+
+/// Every shipped map's header, read once.
+pub fn infos() -> &'static [MapInfo] {
+    static CACHE: std::sync::OnceLock<Vec<MapInfo>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| FILES.iter().filter_map(|(_, b)| parse_header(b).ok().map(|(i, _, _)| i)).collect())
 }
 
 /// What a player choosing a map wants to know, read from the map file alone.

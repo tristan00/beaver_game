@@ -378,7 +378,7 @@ pub(super) fn sync_sim_beavers(
         let p = agent_world_pos(s, ag, 0.0) + spread(sprite.id, clock.is_some());
         let ground = |xz: Vec2| height_at(&s.height, xz.x, xz.y);
         motion.observe(s, ag, clock.is_some());
-        let heading = match motion.at(now) {
+        let mut heading = match motion.at(now) {
             Some((xz, lift, dir)) => {
                 tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
                 dir
@@ -388,6 +388,12 @@ pub(super) fn sync_sim_beavers(
                 None
             }
         };
+        // In a lock's working it waits, rides the chamber and swims out as the lock goes, at the
+        // moment shown.
+        if let Some((at, yaw)) = super::harbor::lock_pose(s, ag, (now - s.time_days) as f32) {
+            tr.translation = at;
+            heading = Some(Vec2::new(yaw.sin(), yaw.cos()));
+        }
         let fleeing = s.agents.fleeing.contains(&id);
         sprite.pose = if heading.is_some() {
             match ag.gait {
@@ -1262,6 +1268,8 @@ fn dam_walls(sim: &sim::SimState) -> HashMap<(usize, usize), (DamCellVis, bool)>
             }
         }
     }
+    // A lock stands in place of its gate's wall: the wall stops either side of its chamber.
+    cells.retain(|c, _| !sim::locks::is_lock(sim, *c) && !super::harbor::in_chamber(sim, *c));
     // Each dam's rows are walls of their own; cells no dam owns (gates, leftovers) form theirs.
     let mut pieces: HashMap<(usize, usize), (Piece, Option<(i32, i32)>)> = HashMap::new();
     for d in sim.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
@@ -1340,11 +1348,9 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
     }
     st.time = sim.time_days;
     let st = &mut *st;
-    // A lock stands in place of its gate's wall.
     let key = (dams_key(sim), sim.locks.at.values().filter(|l| l.built).count());
     if st.key != Some(key) {
         st.walls = dam_walls(sim);
-        st.walls.retain(|c, _| !sim::locks::is_lock(sim, *c));
         st.key = Some(key);
     } else {
         // No dam changed: only the cells that turn to face the lower water can have.

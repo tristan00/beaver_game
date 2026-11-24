@@ -99,18 +99,9 @@ impl SimState {
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
         if self.maintenance.jobs.contains_key(&id) { return maintenance::cancel(self, id); }
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
-        if b.dam.is_some() {
-            return self.remove_dam(id);
-        }
-        if b.canal.is_some() {
-            crate::canals::remove(self, id)?;
-            self.work.places.retain(|p| p.building != id);
-            self.release_workers(id);
-            self.buildings.buildings.retain(|b| b.id != id);
-            self.output.forget(id);
-            return Ok(Vec::new());
-        }
-        if b.is_complete() {
+        if b.dam.is_some() || b.canal.is_some() {
+            self.tear_down_works(id)?;
+        } else if b.is_complete() {
             return Err(SimError::InvalidCommand(format!("{} is finished; only unfinished sites can be cancelled", b.kind.spec().name)));
         }
         let mut refunded = Vec::new();
@@ -129,17 +120,19 @@ impl SimState {
         Ok(refunded)
     }
 
-    /// A dam with nothing built yet can be withdrawn; built cells stay in the river.
-    fn remove_dam(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
-        let built = crate::dams::dam(self, id).is_some_and(|d| d.cells.iter().any(|c| crate::dams::built(self, c.cell) > 0.0));
-        if built {
-            return Err(SimError::InvalidCommand("part of this dam is already built".into()));
+    /// A cancelled dam or canal: the dam's built cells and any gate come down, so the water
+    /// runs free again, and its locks go with them. A canal's dug cells stay dug: ground once
+    /// dug is just low ground.
+    fn tear_down_works(&mut self, id: buildings::BuildingId) -> Result<(), SimError> {
+        let mut cells: Vec<crate::water::Cell> = crate::dams::dam(self, id).map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
+        if let Some(k) = crate::canals::canal(self, id).filter(|k| k.gate.built) {
+            cells.push(k.gate.cell);
         }
-        self.work.places.retain(|p| p.building != id);
-        self.release_workers(id);
-        self.buildings.buildings.retain(|b| b.id != id);
-        self.output.forget(id);
-        Ok(Vec::new())
+        for c in cells {
+            self.water.clear_structure(c).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
+        }
+        self.locks.at.retain(|_, l| l.building != id);
+        Ok(())
     }
 
     fn release_workers(&mut self, id: buildings::BuildingId) {

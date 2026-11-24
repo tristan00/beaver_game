@@ -52,6 +52,7 @@ impl SimState {
             b.job = jobs.get(&b.id).map(|j| j.0);
             if let Some(a) = self.agents.get(b.id) {
                 b.pos = (a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5);
+                b.sheltered = a.inside;
             }
         }
         self.colony.slot_jobs = jobs;

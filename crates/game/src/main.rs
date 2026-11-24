@@ -24,6 +24,7 @@ mod startflow;
 mod state;
 mod terrain_render;
 mod water_render;
+mod weather_render;
 
 use bevy::prelude::*;
 
@@ -102,6 +103,7 @@ fn main() -> AppExit {
         terrain_render::TerrainRenderPlugin,
         fog_render::FogRenderPlugin,
         water_render::WaterRenderPlugin,
+        weather_render::WeatherRenderPlugin,
         entities_render::EntitiesRenderPlugin,
         audio::AudioPlugin,
         screenshot::ScreenshotPlugin,

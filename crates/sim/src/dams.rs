@@ -866,6 +866,18 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_dam_comes_down_even_part_built() {
+        let (mut s, line) = flat_river();
+        let id = place(&mut s, &line).unwrap();
+        pack(&mut s, id, line[0], sticks_per_step());
+        pack(&mut s, id, line[1], sticks_per_step());
+        assert!(built(&s, line[0]) > 0.0);
+        s.apply(crate::Command::CancelSite { building: id }).unwrap();
+        assert!(s.buildings.building(id).is_none() && s.work.place(id).is_none(), "no dam and no site left");
+        assert!(line.iter().all(|&c| built(&s, c) == 0.0), "its built cells come down");
+    }
+
+    #[test]
     fn height_needs_width_and_widening_thickens_downstream() {
         let (mut s, line) = flat_river();
         let id = place(&mut s, &line).unwrap();

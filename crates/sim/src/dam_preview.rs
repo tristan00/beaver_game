@@ -203,14 +203,13 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
     let low = cells.iter().min_by(|a, b| crest(a).total_cmp(&crest(b)))?;
     let rise = (ground.level - (terrain[idx(low)] + dams[idx(low)] + water[idx(low)])).max(0.0);
 
-    let season = sim.water.season();
     let forcing = sim.water.forcing();
     let pressure: f32 = sim.water.sources.iter().filter(|s| seen[s.y * w + s.x])
         .map(|s| s.rate * (1.0 + s.seasonality * (forcing.inflow - 1.0)).max(0.0)).sum();
 
     let cfg = &sim.water.config;
     let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
-    let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * crate::tuning::water::EVAP_MULT[season as usize] * (1.0 - ice[i]) + cfg.seepage };
+    let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * forcing.evaporation * (1.0 - (ice[i] / crate::tuning::water::ICE_COVER_M).min(1.0)) + cfg.seepage };
     let in_pond: Vec<bool> = {
         let mut v = in_pond;
         cells.iter().for_each(|c| v[idx(c)] = true);

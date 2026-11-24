@@ -304,6 +304,10 @@ pub(super) fn button_actions(
             HudAction::PebbleBuilding(building) => cmd(s, &mut hud, sim::Command::PebbleBuilding { building }, now),
             HudAction::SlotOff(building, slot, off) => cmd(s, &mut hud, sim::Command::SetSlotOff { building, slot, off }, now),
             HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelSite { building }, now),
+            HudAction::CancelBuild(building) => {
+                cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
+                hud.pinned.retain(|p| *p != Selection::Site(building));
+            }
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
                     hud.pinned.remove(i);

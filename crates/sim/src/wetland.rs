@@ -66,7 +66,7 @@ fn draw(seed: u64, day: u64, i: usize) -> f32 {
 fn river_clay_active(water: &crate::water::Water, (x,y): Cell) -> bool {
     [(x,y),(x.wrapping_sub(1),y),(x+1,y),(x,y.wrapping_sub(1)),(x,y+1)].iter().any(|&(x,y)| {
         let depth=water.depth.get(x,y).copied().unwrap_or(0.0);
-        let ice=water.ice.get(x,y).copied().unwrap_or(1.0);
+        let ice=if water.ice.in_bounds(x,y) {water.ice_cover(x,y)} else {1.0};
         let velocity=water.velocity.get(x,y).copied().unwrap_or((0.0,0.0));
         depth>=WET_DEPTH && ice<CLAY_MAX_ICE && velocity.0.hypot(velocity.1)>CLAY_MIN_VELOCITY
     })

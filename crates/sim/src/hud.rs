@@ -590,7 +590,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             kind: ProblemKind::Stranger,
             severity: Severity::Warning,
             value: 1.0,
-            cause: Breakdown::new(1.0, vec![row(if r.adult { "Adult" } else { "Young" }, 1.0, Source::Cell(r.at))]),
+            cause: Breakdown::new(1.0, vec![row(if r.adult { "Adult" } else { "Young" }, 1.0, Source::Cell(r.at)), row("Joins in (days)", crate::society::Society::days_to_answer(r, sim.time_days) as f32, Source::None)]),
             subject: Some(Subject::Stage(stage)),
             fix: Fix::Accept(r.id),
             alt_fix: Some(Fix::Decline(r.id)),

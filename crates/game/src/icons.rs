@@ -38,6 +38,7 @@ icons! {
     Pebbles, Sapling, Larder, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
     Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Barge,
     Deer, Rabbit, Bird,
+    Cloud, Rain, Storm, Blizzard,
 }
 
 #[derive(Resource, Clone)]
@@ -514,6 +515,11 @@ fn heart() -> S {
         .or(poly(&[(10.5, 28.5), (32.0, 52.0), (53.5, 28.5), (32.0, 24.0)]).grow(1.5))
 }
 
+/// A puffy cloud, flat along its bottom.
+fn cloud() -> S {
+    union(vec![circle(21.0, 36.0, 11.0), circle(35.0, 28.0, 15.0), circle(48.0, 37.0, 10.0), rect_c(10.0, 36.0, 58.0, 47.0, 5.5)])
+}
+
 fn sun(c: &mut Canvas, r: f32, ray0: f32, ray1: f32) {
     c.add(circle(32.0, 32.0, r));
     c.add(radial(8, 32.0, 32.0, || seg(32.0, 32.0 - ray0, 32.0, 32.0 - ray1, 5.5)));
@@ -909,6 +915,26 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(tri_rounded(&[(27.0, 20.0), (40.0, 32.0), (27.0, 44.0)]));
         }
         Drop => c.add(drop_shape().grow(1.5)),
+        Cloud => c.add(cloud()),
+        Rain => {
+            c.part(32.0, 22.0, 0.85, 0.0, 0.0, |c| c.add(cloud()));
+            for x in [20.0, 32.0, 44.0] {
+                c.add(seg(x, 44.0, x - 4.0, 58.0, 4.5));
+            }
+        }
+        Storm => {
+            c.part(32.0, 20.0, 0.85, 0.0, 0.0, |c| c.add(cloud()));
+            c.knock(poly(&[(35.0, 36.0), (24.0, 50.0), (31.0, 50.0), (26.0, 62.0), (41.0, 46.0), (34.0, 46.0), (39.0, 36.0)]));
+        }
+        Blizzard => {
+            c.part(22.0, 24.0, 0.55, 0.0, 0.0, |c| {
+                c.add(radial(3, 32.0, 32.0, || seg(32.0, 6.0, 32.0, 58.0, 6.0)));
+                c.add(radial(6, 32.0, 32.0, || polyline(&[(24.0, 11.0), (32.0, 19.0), (40.0, 11.0)], 5.5)));
+            });
+            c.add(wave(30.0, 60.0, 20.0, 2.5, 1.0, W));
+            c.add(wave(8.0, 60.0, 46.0, 2.5, 1.5, W));
+            c.add(wave(16.0, 54.0, 57.0, 2.5, 1.0, W));
+        }
         Site => {
             c.add(poly(&[(27.0, 8.0), (37.0, 8.0), (47.0, 50.0), (17.0, 50.0)]).grow(1.5));
             c.cut(seg(10.0, 22.0, 54.0, 22.0, 4.5).or(seg(10.0, 36.0, 54.0, 36.0, 4.5)));

@@ -123,22 +123,36 @@ pub(crate) fn update_season(sim: Res<Sim>, mut season: ResMut<Season>) {
     }
 }
 
+/// The season's sky and light, dulled under cloud and greyer still in rain and snow. The
+/// weather eases in over a few seconds rather than jumping with each simulation step.
 fn update_sky_and_light(
+    sim: Res<Sim>,
     season: Res<Season>,
+    time: Res<Time>,
+    mut overcast: Local<Option<f32>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
     mut suns: Query<&mut DirectionalLight>,
 ) {
-    if !season.is_changed() {
+    let now = sim.0.water.sky.at(sim.0.time_days);
+    let falling = ((now.rain + now.snow) * 1000.0 / 20.0).clamp(0.0, 1.0);
+    let target = (now.cloud * 0.75 + falling * 0.25).clamp(0.0, 1.0);
+    let was = overcast.unwrap_or(target);
+    let k = was + (target - was) * (time.delta_secs() * 0.6).min(1.0);
+    if !season.is_changed() && overcast.is_some_and(|o| (o - k).abs() < 1e-3) {
         return;
     }
+    *overcast = Some(k);
     let p = Palette::at(season.phase);
-    clear.0 = Color::srgb(p.sky[0], p.sky[1], p.sky[2]);
+    let grey = [0.6, 0.64, 0.68];
+    let sky = mix(p.sky, grey, 0.6 * k);
+    clear.0 = Color::srgb(sky[0], sky[1], sky[2]);
     ambient.color = Color::srgb(p.ambient[0], p.ambient[1], p.ambient[2]);
-    ambient.brightness = p.ambient_lux;
+    ambient.brightness = p.ambient_lux * (1.0 - 0.22 * k);
     for mut s in &mut suns {
-        s.color = Color::srgb(p.sun[0], p.sun[1], p.sun[2]);
-        s.illuminance = p.sun_lux;
+        let sun = mix(p.sun, [0.9, 0.92, 0.95], k);
+        s.color = Color::srgb(sun[0], sun[1], sun[2]);
+        s.illuminance = p.sun_lux * (1.0 - 0.6 * k);
     }
 }
 

@@ -53,6 +53,25 @@ pub fn building_icon(k: BuildingKind) -> Icon {
     }
 }
 
+/// The button that cancels a building site, or takes a whole dam or canal away (which stay
+/// works until removed, so they keep it once finished).
+pub fn cancel_build(r: &mut super::ui::Ui, s: &sim::SimState, id: sim::buildings::BuildingId) {
+    let Some(b) = s.buildings.building(id) else { return };
+    let works = b.dam.is_some() || b.canal.is_some();
+    if !works && b.is_complete() {
+        return;
+    }
+    let what = if b.dam.is_some() { "dam" } else if b.canal.is_some() { "canal" } else { "site" };
+    let tip = if !works {
+        super::ui::Tip::name("Cancel").line("Delivered materials come back", "")
+    } else if s.finished(b) {
+        super::ui::Tip::name(format!("Remove the {what}")).line(if b.dam.is_some() { "The whole dam comes down" } else { "Dug ground stays dug" }, "")
+    } else {
+        super::ui::Tip::name(format!("Cancel the {what}")).line(if b.dam.is_some() { "Built cells come down" } else { "Dug ground stays dug" }, "")
+    };
+    r.pebble(Icon::Cross, 12.0, super::HudAction::CancelBuild(id), super::ui::Peb::Idle).tip(tip);
+}
+
 pub fn animal_icon(k: sim::wildlife::Kind) -> Icon {
     match k {
         sim::wildlife::Kind::Deer => Icon::Deer,

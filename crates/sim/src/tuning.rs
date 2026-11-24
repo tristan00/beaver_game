@@ -10,10 +10,18 @@ pub mod water {
     pub const SEASON_DAYS: f64 = crate::calendar::SEASON_DAYS;
     pub const WET_EPS: f32 = 0.01;
     pub const TREE_VEGETATION: f32 = 0.5;
-    pub const MAX_ICE: f32 = 1.0;
-    pub const INFLOW_MULT: [f32; 4] = [3.0, 0.3, 0.8, 0.1];
-    pub const RAIN_MULT: [f32; 4] = [1.2, 0.4, 1.5, 0.3];
-    pub const EVAP_MULT: [f32; 4] = [1.0, 3.0, 0.8, 0.2];
+    /// Ice, in metres thick: the thickest a winter makes, and how thick before it covers a cell.
+    pub const MAX_ICE: f32 = 0.8;
+    pub const ICE_COVER_M: f32 = 0.03;
+    /// Stefan's law, m² per °C-day (lake ice thickens by about 2.7 cm × √(degree-days)), and the
+    /// first skin it grows from.
+    pub const ICE_STEFAN: f32 = 0.000_37;
+    pub const ICE_SEED_M: f32 = 0.02;
+    /// Ice melts this much a day for each degree of thaw.
+    pub const ICE_MELT_PER_DEGREE_DAY: f32 = 0.009;
+    /// Water this fast (m/s) does not freeze, and wears away ice it runs under at this rate a day.
+    pub const ICE_OPEN_SPEED: f32 = 0.35;
+    pub const ICE_FLOW_MELT: f32 = 0.05;
     pub const RAIN: f32 = 0.002;
     pub const EVAPORATION: f32 = 0.002;
     pub const SEEPAGE: f32 = 0.002;

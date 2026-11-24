@@ -43,7 +43,21 @@ pub fn is_moving(ag: &Agent) -> bool {
     !ag.trail.is_empty() || ag.path.as_ref().is_some_and(|p| !p.steps.is_empty())
 }
 
+/// Where a beaver is drawn: on its way from cell to cell, or wherever it is in a lock's working
+/// (`harbor::lock_pose`).
 pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
+    if let Some((p, _)) = super::harbor::lock_pose(sim, ag, pending_days) {
+        return p;
+    }
+    agent_cells_pos(sim, ag, pending_days)
+}
+
+/// Where a beaver is on the ground, part way from its cell to the next.
+pub fn agent_world_xz(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec2 {
+    agent_cells_pos(sim, ag, pending_days).xz()
+}
+
+fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
     if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {

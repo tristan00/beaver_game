@@ -82,8 +82,20 @@ impl Society {
         Ok(JOIN_REQUESTS_PER_YEAR)
     }
 
-    pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &Colony) {
-        self.requests.retain(|r| sim_time - r.arrived_day < JOIN_EXPIRES_DAYS);
+    /// Days left before an unanswered request is taken as a yes.
+    pub fn days_to_answer(r: &JoinRequest, sim_time: f64) -> f64 {
+        (JOIN_EXPIRES_DAYS - (sim_time - r.arrived_day)).max(0.0)
+    }
+
+    pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &mut Colony) {
+        // Unanswered for long enough, a newcomer joins: no answer is a yes.
+        let (due, waiting): (Vec<JoinRequest>, Vec<JoinRequest>) = std::mem::take(&mut self.requests).into_iter().partition(|r| sim_time - r.arrived_day >= JOIN_EXPIRES_DAYS);
+        self.requests = waiting;
+        for r in due {
+            if let Err(e) = colony.admit_wanderer(r.adult) {
+                crate::trace::event(format!("JOIN_LAPSED {} name={:?} why={e}", crate::trace::sim_stamp(), r.name));
+            }
+        }
         if colony.migration_remaining() == 0 {
             self.requests.clear();
             return;
@@ -114,3 +126,23 @@ pub fn work_speed(mood: f32) -> f32 {
     WORK_MOOD_BASE + WORK_MOOD_SCALE * mood.clamp(0.0, 1.0)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unanswered_newcomer_joins_when_the_wait_runs_out() {
+        let mut c = Colony::default();
+        c.found((0.0, 3.0), &crate::colony::RiverLand::default()).unwrap();
+        // An empty lodge for the newcomer to move into.
+        c.add_home((15.0, 0.0));
+        let mut s = Society::default();
+        s.raise(&c, true, c.time_days).unwrap();
+        let before = c.beavers.len();
+        s.step(0.0, c.time_days + JOIN_EXPIRES_DAYS * 0.5, &mut c);
+        assert_eq!((s.pending().len(), c.beavers.len()), (1, before), "still waiting for an answer");
+        s.step(0.0, c.time_days + JOIN_EXPIRES_DAYS, &mut c);
+        assert!(s.pending().is_empty(), "the request is settled");
+        assert_eq!(c.beavers.len(), before + 1, "no answer is a yes");
+    }
+}

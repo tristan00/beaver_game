@@ -312,6 +312,9 @@ pub struct Beaver {
     pub pos: (f32, f32),
     pub stage: Stage,
     pub resting: bool,
+    /// In its lodge now, out of the wind (from where its body is; not saved).
+    #[serde(skip)]
+    pub sheltered: bool,
     pub last_birth_year: i64,
     pub pregnancy: Option<Pregnancy>,
     low_mood_days: f32,
@@ -443,6 +446,9 @@ pub struct Colony {
     /// Each beaver's own look, kept for the dead too. Saved apart (see `save.rs`).
     #[serde(skip)]
     pub looks: std::collections::BTreeMap<BeaverId, crate::looks::Looks>,
+    /// The place's weather (see `weather`), set from the world's seed, so never saved.
+    #[serde(skip)]
+    pub sky: crate::weather::Sky,
 }
 
 impl Default for Colony {
@@ -452,8 +458,14 @@ impl Default for Colony {
 }
 
 
-/// How much of the cold a beaver's lodge keeps out: some in the open, more the better the lodge.
+/// How much of the cold keeps off a beaver: little out in the open, more inside its lodge the
+/// better the lodge.
 fn insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
+    if b.sheltered { lodge_insulation(lodges, b) } else { OPEN_INSULATION }
+}
+
+/// How well a beaver's lodge keeps the cold out, which is also how well it sleeps there.
+fn lodge_insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
     let condition = b.lodge.and_then(|l| lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
     condition.map_or(OPEN_INSULATION, |c| OPEN_INSULATION + LODGE_INSULATION * c)
 }
@@ -543,9 +555,6 @@ fn day_of_year(time_days: f64) -> f64 {
     time_days.rem_euclid(DAYS_PER_YEAR)
 }
 
-fn temperature(time_days: f64) -> f32 {
-    (std::f64::consts::TAU * (day_of_year(time_days) - MIDSUMMER_DAY) / DAYS_PER_YEAR).cos() as f32
-}
 
 fn check_point(name: &str, p: (f32, f32)) -> Result<(), ColonyError> {
     if p.0.is_finite() && p.1.is_finite() {
@@ -579,6 +588,7 @@ impl Colony {
             spoiled: 0.0,
             repair_wood: 0.0,
             looks: Default::default(),
+            sky: Default::default(),
         }
     }
 
@@ -698,8 +708,7 @@ impl Colony {
         if !self.founded {
             return;
         }
-        let temp = temperature(self.time_days);
-        let cold = ((COLD_BELOW_TEMP - temp) / COLD_RANGE).clamp(0.0, 1.0);
+        let cold = crate::weather::cold(self.sky.at(self.time_days).feels_c);
 
         self.adopt_orphans();
         let plan = self.plan_work(dt, land);
@@ -776,9 +785,9 @@ impl Colony {
     pub fn rates(&self, id: BeaverId, land: &dyn Landscape) -> Option<Rates> {
         let b = self.beaver(id)?;
         let insulation = insulation(&self.lodges, b);
-        let cold = ((COLD_BELOW_TEMP - temperature(self.time_days)) / COLD_RANGE).clamp(0.0, 1.0);
+        let cold = crate::weather::cold(self.sky.at(self.time_days).feels_c);
         let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
-        let sleep = insulation.max(OPEN_REST);
+        let sleep = lodge_insulation(&self.lodges, b).max(OPEN_REST);
         let mut rest = rest_per_day(worked, sleep);
         if b.resting {
             rest += RESTING_RECOVERY * sleep;
@@ -822,6 +831,7 @@ impl Colony {
         let eaten = &mut self.eaten;
         for b in self.beavers.iter_mut() {
             let insulation = insulation(&self.lodges, b);
+            let sleep = lodge_insulation(&self.lodges, b).max(OPEN_REST);
             let n = &mut b.needs;
 
             n.food = (n.food - HUNGER_PER_DAY * dt).max(0.0);
@@ -833,7 +843,6 @@ impl Colony {
                 n.food += take / w;
             }
             let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
-            let sleep = insulation.max(OPEN_REST);
             n.rest = (n.rest + rest_per_day(worked, sleep) * dt).clamp(0.0, 1.0);
             if b.resting {
                 n.rest = (n.rest + RESTING_RECOVERY * sleep * dt).min(1.0);
@@ -949,7 +958,7 @@ impl Colony {
         if !crate::trace::enabled() {
             return;
         }
-        let temp = temperature(self.time_days);
+        let temp = self.sky.at(self.time_days).temp_c;
         for (id, why) in who {
             if let Some(b) = self.beaver(*id) {
                 crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_store={:.1} | {}", self.time_days, self.food, crate::journal::describe(b)));
@@ -1322,6 +1331,7 @@ impl Colony {
             pos,
             stage: Stage::of_age_days(age_days),
             resting: false,
+            sheltered: false,
             last_birth_year: -1,
             pregnancy: None,
             low_mood_days: 0.0,

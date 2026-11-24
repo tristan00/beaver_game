@@ -175,6 +175,9 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
         }
     }
     sim.work.inventory = sim.buildings.stores.inventory.view();
+    // The weather is the place's, read from the world's seed.
+    sim.water.sky = crate::weather::Sky::for_seed(sim.seed);
+    sim.colony.sky = sim.water.sky;
     sim.instance = crate::next_instance();
     Ok((header, sim))
 }

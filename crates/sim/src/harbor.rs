@@ -53,12 +53,17 @@ impl Fleet {
     }
 }
 
+/// Ice this thick (m) stops a barge.
+pub const BARGE_ICE_M: f32 = 0.04;
+
 /// Water a barge can float on: open water, a canal or a lock, at least `BARGE_DEPTH` deep (a
-/// lock always is).
+/// lock always is), and not iced over.
+
 pub fn barge_water(sim: &SimState, c: Cell) -> bool {
     match sim.nav.surface_at(c) {
         Some(Surface::Lock) => true,
-        Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= BARGE_DEPTH),
+        // Ice thick enough to walk on holds a barge fast.
+        Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= BARGE_DEPTH) && sim.water.ice.get(c.0, c.1).is_none_or(|&t| t < BARGE_ICE_M),
         _ => false,
     }
 }
@@ -320,11 +325,12 @@ mod tests {
         let p = route(&s, (50, 32), &to).expect("through the lock");
         assert!(p.steps.iter().any(|st| st.0 == (60, 32)), "by the lock cell");
         assert!(p.steps.iter().all(|st| barge_water(&s, st.0)), "on barge water all the way");
-        // And a swimming beaver goes through it too, not over the dam.
+        // A swimming beaver could wait out the lock too, but over a dam this thin it is quicker
+        // to climb.
         let path = s.nav.find_path(crate::colony::BeaverId(1), (50, 32), crate::nav::Goal::Cell((70, 32))).unwrap();
-        let through = path.steps.iter().find(|st| st.0 .0 == 60).unwrap();
-        assert_eq!(through.0, (60, 32), "the beaver takes the lock");
-        assert_eq!(through.1, Gait::Swim);
+        assert!(path.steps.iter().all(|st| st.0 != (60, 32)), "the beaver goes over or round, not through the lock");
+        let wait = crate::nav::lock_wait(Surface::Water, Surface::Lock);
+        assert!(wait > crate::nav::CLIMB_COST, "a lock's wait ({wait}) is longer than a climb");
     }
 
     #[test]

@@ -197,7 +197,7 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
             level += at(&s.height, cx, cy) + at(&s.water.dam_height, cx, cy) + h;
             vx += u;
             vy += v;
-            ice += at(&s.water.ice, cx, cy);
+            ice += (at(&s.water.ice, cx, cy) / sim::tuning::water::ICE_COVER_M).min(1.0);
             k += 1.0;
         }
     }
@@ -415,6 +415,12 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
         }
     }
     let (mut pos, mut col, mut uv, mut uv1) = (vec![], vec![], vec![], vec![]);
+    // A lock's chamber holds its own water (drawn with the lock), not the pond's.
+    let holes = crate::entities_render::harbor::chamber_holes(s);
+    let in_hole = |t: &[WV; 3]| {
+        let c = Vec2::new(t[0].p[0] + t[1].p[0] + t[2].p[0], t[0].p[2] + t[1].p[2] + t[2].p[2]) / 3.0;
+        holes.iter().any(|&(m, a, half, w)| (c - m).dot(a).abs() < half && (c - m).dot(a.perp()).abs() < w)
+    };
     for j in 0..side - 1 {
         for i in 0..side - 1 {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
@@ -422,7 +428,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             let tris = if split_ae(grounds[a], grounds[b], grounds[c], grounds[e]) { [[a, c, e], [a, e, b]] } else { [[a, c, b], [b, c, e]] };
             for tri in tris {
                 let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
-                if t.iter().all(|v| v.edge <= 0.0) {
+                if t.iter().all(|v| v.edge <= 0.0) || in_hole(&t) {
                     continue;
                 }
                 let poly = clip_poly(&t);

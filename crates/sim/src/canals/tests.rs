@@ -223,14 +223,19 @@ fn grow_deepens_widens_and_extends() {
 }
 
 #[test]
-fn an_undug_canal_can_be_withdrawn_a_dug_one_stays() {
+fn a_canal_can_be_cancelled_dug_or_not_and_its_ditch_stays() {
     let mut s = pond_and_bank();
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
     s.apply(Command::CancelSite { building: id }).unwrap();
     assert!(s.buildings.building(id).is_none());
     let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
+    let before = s.height.get(24, 20).copied().unwrap();
     dig(&mut s, id, (24, 20)).unwrap();
-    assert!(s.apply(Command::CancelSite { building: id }).is_err());
+    let dug = s.height.get(24, 20).copied().unwrap();
+    assert!(dug < before);
+    s.apply(Command::CancelSite { building: id }).unwrap();
+    assert!(s.buildings.building(id).is_none() && s.work.place(id).is_none(), "no canal and no site left");
+    assert_eq!(s.height.get(24, 20).copied().unwrap(), dug, "the dug ditch stays");
 }
 
 #[test]
@@ -287,9 +292,11 @@ fn a_load_floats_at_full_pace_in_a_deep_canal() {
 fn valley(kind: EngineKind) -> SimState {
     let mut s = SimState::sandbox(1, crate::worldgen::fixture(1));
     for src in &mut s.water.sources {
-        src.rate *= 0.1;
+        src.rate *= 0.12;
     }
     s.water.set_engine(kind);
+    // Gates are judged on steady streams, without showers moving the levels meanwhile.
+    s.water.weather = crate::water::Weather::Clear;
     crate::sandbox::run_days(&mut s, 2.0);
     s
 }
@@ -353,7 +360,8 @@ fn a_bypass_canal_round_a_dam_rejoins_the_river_and_its_gate_controls_the_reserv
 
         crate::sandbox::run_days(&mut s, 6.0);
         let shut = level_at(&s, pond);
-        assert!((shut - full).abs() < 0.05, "{}: a shut gate holds the reservoir ({full:.2} -> {shut:.2})", kind.name());
+        // Held, not drained (a wet spell may raise it a little meanwhile).
+        assert!(shut > full - 0.05 && shut < crest + 0.1, "{}: a shut gate holds the reservoir ({full:.2} -> {shut:.2})", kind.name());
 
         let hold = crest - 0.4;
         for setting in [GateSetting::Level(hold), GateSetting::Open] {

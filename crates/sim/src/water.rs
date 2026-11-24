@@ -396,9 +396,12 @@ pub struct Water {
     current_cells: Vec<u32>,
     #[serde(skip)]
     current_marked: Vec<bool>,
+    /// The place's weather (see `weather`): set from the world's seed, so never saved.
+    #[serde(skip)]
+    pub sky: crate::weather::Sky,
 }
 
-crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked });
+crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked, sky });
 
 const FORCING_EVERY_S: f64 = 300.0;
 
@@ -496,6 +499,7 @@ impl Water {
             told: Default::default(),
             current_cells: Vec::new(),
             current_marked: Vec::new(),
+            sky: Default::default(),
         }
     }
 
@@ -503,6 +507,7 @@ impl Water {
         let n = world.size;
         let mut w = Self::new(n);
         w.cell_m = world.cell_m;
+        w.sky = crate::weather::Sky::for_seed(world.seed);
         w.sources = sources_for(world);
         let inflows: Vec<(usize, usize, f32)> =
             world.water_inputs.iter().filter(|i| i.kind == crate::worldgen::InputKind::Inflow).map(|i| (i.cell.0, i.cell.1, 1.0)).collect();
@@ -590,7 +595,7 @@ impl Water {
 
     pub fn season(&self) -> Season { Season::at(self.time_days) }
 
-    pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, self.config.rain) }
+    pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, &self.sky) }
 
     /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
@@ -754,6 +759,23 @@ impl Water {
         Ok(())
     }
 
+    /// Take away whatever dam or gate stands on a cell (a cancelled dam or canal gate), so the
+    /// water runs over its ground again.
+    pub fn clear_structure(&mut self, cell: Cell) -> Result<(), WaterError> {
+        let i = self.check(cell.0, cell.1)?;
+        if self.dam_height.as_slice()[i] <= 0.0 && !self.gate.as_slice()[i] {
+            return Ok(());
+        }
+        self.dam_height[i] = 0.0;
+        self.dam_integrity[i] = 0.0;
+        self.gate[i] = false;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
+        self.topology_dirty = true;
+        Ok(())
+    }
+
     /// Set a gate's sill: `height` above this cell's ground, 0 for wide open. The cell is
     /// marked as a gate so overtopping never wears it away.
     pub fn set_gate(&mut self, cell: Cell, height: f32) -> Result<(), WaterError> {
@@ -846,7 +868,7 @@ impl Water {
 
     fn refresh_sources(&mut self) {
         let forcing_time = (self.time_days * DAY_S / FORCING_EVERY_S).floor() * FORCING_EVERY_S / DAY_S;
-        let inflow = climate::forcing(forcing_time, self.weather, self.config.rain).inflow;
+        let inflow = climate::forcing(forcing_time, self.weather, &self.sky).inflow;
         let mut key = inflow.to_bits() as u64;
         for s in &self.sources {
             for v in [s.x as u32, s.y as u32, s.rate.to_bits(), s.seasonality.to_bits()] {
@@ -1132,16 +1154,35 @@ impl Water {
         told.bed.clear();
     }
 
+    /// How much of a cell the ice covers, 0 to 1: a skin at first, whole once `ICE_COVER_M` thick.
+    pub fn ice_cover(&self, x: usize, y: usize) -> f32 {
+        self.ice.get(x, y).map_or(0.0, |t| (t / ICE_COVER_M).min(1.0))
+    }
+
+    /// Ice (metres thick) follows the last days' air: it thickens on still water while that is
+    /// below freezing, quickly at first and slower as it thickens, and melts once it is above.
+    /// Water running fast stays open, so a winter river keeps open leads and rapids.
     fn update_ice(&mut self, dt_days: f32) {
-        let winter = self.season() == Season::Winter;
-        if !winter && !self.ice_any {
+        let air = self.sky.at(self.time_days).ground_c;
+        if air >= 0.0 && !self.ice_any {
             return;
         }
-        let (grow, melt) = (self.config.ice_growth_per_day * dt_days, self.config.ice_melt_per_day * dt_days);
         let (mut any, mut changed) = (false, false);
+        let velocity = self.velocity.as_slice();
         let (cells, mut marks) = self.ice.cells_and_marks();
-        for (ice, &d) in cells.iter_mut().zip(&self.h) {
-            let now = if winter && d > WET_EPS { (*ice + grow).min(MAX_ICE) } else { (*ice - melt).max(0.0) };
+        for ((ice, &d), v) in cells.iter_mut().zip(&self.h).zip(velocity) {
+            let still = (1.0 - v.0.hypot(v.1) / ICE_OPEN_SPEED).clamp(0.0, 1.0);
+            let now = if d <= WET_EPS {
+                0.0
+            } else if air < 0.0 && still > 0.0 {
+                // Stefan's law: growth slows as the ice thickens.
+                (*ice + ICE_STEFAN * -air / (*ice + ICE_SEED_M) * still * dt_days).min(MAX_ICE)
+            } else {
+                // Thawing air, or water running too fast to stay frozen.
+                let thaw = ICE_MELT_PER_DEGREE_DAY * air.max(0.0) + ICE_FLOW_MELT * (1.0 - still);
+                (*ice - thaw * dt_days).max(0.0)
+            };
+            let now = if now < 1e-4 { 0.0 } else { now };
             changed |= now != *ice;
             any |= now > 0.0;
             *ice = now;

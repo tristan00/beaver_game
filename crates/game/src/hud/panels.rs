@@ -226,7 +226,46 @@ fn season_color(se: Season) -> Color {
     }
 }
 
-/// Top right: the year and the speed.
+fn weather_face(k: sim::weather::Kind) -> (Icon, Color) {
+    use sim::weather::Kind;
+    match k {
+        Kind::Clear => (Icon::Summer, Color::srgb(0.95, 0.8, 0.4)),
+        Kind::Cloudy => (Icon::Cloud, MUTED),
+        Kind::Rain => (Icon::Rain, WATER),
+        Kind::Storm => (Icon::Storm, Color::srgb(0.62, 0.7, 0.92)),
+        Kind::Snow => (Icon::Winter, season_color(Season::Winter)),
+        Kind::Blizzard => (Icon::Blizzard, season_color(Season::Winter)),
+    }
+}
+
+/// The weather now: its sign and the temperature, and in the tip what it means for the colony.
+fn weather(r: &mut Ui, s: &sim::SimState) {
+    let now = s.water.sky.at(s.time_days);
+    let (icon, col) = weather_face(now.kind);
+    let bitter = s.agents.holed_up;
+    let deg = crate::menu::degrees;
+    let mut tip = Tip::titled(Some((icon, col)), now.kind.name()).line("Air", deg(now.temp_c));
+    if now.temp_c - now.feels_c >= 2.0 {
+        tip = tip.line("Feels", deg(now.feels_c));
+    }
+    let falling = (now.rain + now.snow) * 1000.0;
+    if falling >= 0.5 {
+        tip = tip.line(if now.snow > 0.0 { "Snow" } else { "Rain" }, format!("{falling:.0} mm/day"));
+    }
+    if now.ground_frozen() {
+        tip = tip.line("Ground frozen", "");
+    }
+    if bitter {
+        tip = tip.line("Beavers keep to their lodges", "");
+    }
+    r.row(4.0, |w| {
+        w.icon(icon, 15.0, col);
+        w.text(deg(now.temp_c), 12.0, if bitter { WARN } else { MUTED });
+    })
+    .tip(tip);
+}
+
+/// Top right: the year, the weather and the speed.
 pub fn calendar(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let t = s.time_days;
@@ -245,7 +284,11 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
         .skin(Skin::SeasonRing)
         .tip(Tip::titled(Some((season_icon(d.season), season_color(d.season))), d.season.name()));
         u.col(8.0, |x| {
-            x.bold(format!("Year {}", d.year), 13.0, INK);
+            x.row(8.0, |r| {
+                r.bold(format!("Year {}", d.year), 13.0, INK);
+                r.spacer();
+                weather(r, s);
+            });
             x.row(5.0, |r| {
                 r.pebble(Icon::Pause, 13.0, HudAction::Pause, if clock.paused { Peb::On } else { Peb::Idle }).tip(Tip::name("Pause").key("Space"));
                 for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {

@@ -52,6 +52,7 @@ pub mod trees;
 
 pub mod tuning;
 pub mod water;
+pub mod weather;
 pub mod wetland;
 pub mod work;
 pub mod worldgen;
@@ -198,6 +199,7 @@ impl SimState {
             step_timings: StepTimings::default(),
             journal: journal::Journal::default(),
         };
+        sim.colony.sky = sim.water.sky;
         sim.work.inventory = sim.buildings.stores.inventory.view();
         forestry::clear_drowned(&mut sim);
         forestry::init(&mut sim);
@@ -285,7 +287,7 @@ impl SimState {
         lap(&mut t.shipping_s);
         { let _p = prof::scope("step/fog"); self.explore(); }
         lap(&mut t.fog_s);
-        { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &self.colony); }
+        { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &mut self.colony); }
         { let _p = prof::scope("step/events"); self.step_events(dt_days); }
         {
             let _p = prof::scope("step/journal");

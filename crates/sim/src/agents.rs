@@ -179,6 +179,10 @@ pub struct Agents {
     /// A load and a fresh start are all a reload loses, so it is not saved.
     #[serde(skip)]
     pub fleeing: std::collections::BTreeSet<BeaverId>,
+    /// Weather too bitter to be out in: the colony keeps to its lodges until it eases (see
+    /// `weather::Now::bitter`). Read again from the sky every step, so it is not saved.
+    #[serde(skip)]
+    pub holed_up: bool,
 }
 
 
@@ -397,6 +401,18 @@ struct Job {
     min_age: f32,
     /// The role the work counts for, whose distance from water limits it (None: a direct order).
     role: Option<crate::jobs::RoleKind>,
+    /// The ground frozen hard: no mud, clay or pebbles to dig, and the water plants under ice.
+    frozen: bool,
+}
+
+/// Ground frozen too hard to dig, and still water iced over (see `weather::Now::ground_frozen`).
+pub fn frozen(sim: &SimState) -> bool {
+    !sim.sandbox && sim.water.sky.at(sim.time_days).ground_frozen()
+}
+
+/// Sources winter closes: dug from the ground or taken from under the water.
+fn frozen_out(kind: ResourceKind) -> bool {
+    matches!(kind, ResourceKind::MudBank | ResourceKind::RiverClay | ResourceKind::Pebbles | ResourceKind::WaterPlant)
 }
 
 
@@ -432,14 +448,14 @@ impl Job {
                 .resources
                 .get(id)
                 .filter(|r| gatherable(r) && (r.kind != ResourceKind::Pebbles || has_toolshed(sim)))
-                .map(|_| Job { kinds: &[], area: None, only: Some(id), min_age: 0.0, role: None }),
+                .map(|_| Job { kinds: &[], area: None, only: Some(id), min_age: 0.0, role: None, frozen: frozen(sim) }),
             Assignment::Area(ResourceKind::Pebbles, _) if !has_toolshed(sim) => None,
-            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, None), role: Some(crate::jobs::gather_role(kind)) }),
+            Assignment::Area(kind, area) => Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, None), role: Some(crate::jobs::gather_role(kind)), frozen: frozen(sim) }),
             Assignment::Slot(b, slot) => {
                 let place = sim.work.place(b)?;
                 match (place.slots.get(slot)?.role, place.area) {
                     (Role::Collect(kind), Some(area)) => {
-                        Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, Some(b)), role: Some(crate::jobs::gather_role(kind)) })
+                        Some(Job { kinds: kinds_for(kind), area: Some(area), only: None, min_age: crate::forestry::cut_min_age(sim, Some(b)), role: Some(crate::jobs::gather_role(kind)), frozen: frozen(sim) })
                     }
                     _ => None,
                 }
@@ -451,7 +467,7 @@ impl Job {
         self.kinds.contains(&ResourceKind::Plant)
     }
     fn permits(&self, r: &Resource) -> bool {
-        if self.only.is_some_and(|id|id!=r.id) || self.area.is_some_and(|a|!a.contains(r.cell)) {return false;}
+        if self.only.is_some_and(|id|id!=r.id) || self.area.is_some_and(|a|!a.contains(r.cell)) || (self.frozen && frozen_out(r.kind)) {return false;}
         let wanted = if self.forages() && r.kind == ResourceKind::Felled { r.bark > 0.0 } else { gatherable(r) };
         wanted
             && (self.only.is_some() || self.kinds.contains(&r.kind))
@@ -879,6 +895,9 @@ fn upkeep(sim: &SimState, who: BeaverId) -> bool {
 fn canal_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     let taken = crate::canals::claimed(sim, site, ag.id);
     let (cell, gate) = crate::canals::next_job(sim, site, &taken, upkeep(sim, ag.id))?;
+    if !gate && frozen(sim) {
+        return None;
+    }
     Some(if gate { Task::Gate { site, cell, progress: 0.0 } } else { Task::Dig { site, cell, progress: 0.0 } })
 }
 
@@ -1005,6 +1024,11 @@ fn barge_trip(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, barge: u
             let target = docks_of(sim, match leg { 1 => from, 3 => to, _ => b.harbor });
             if target.contains(&ag.cell) {
                 return next(ag, leg + 1);
+            }
+            // Water that has iced over (or run too shallow) since the way was planned: plan
+            // again, or tie the barge up where it is.
+            if ag.path.as_ref().and_then(|p| p.steps.first()).is_some_and(|st| !harbor::barge_water(sim, st.0)) {
+                ag.path = None;
             }
             if ag.path.is_none() {
                 ag.path = harbor::route(sim, ag.cell, &target);
@@ -1272,10 +1296,12 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         ag.task = Task::Eat { pile };
     }
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
-    let duty = duty_of(sim, ag, can_work && !tired);
+    // In bitter cold the colony keeps to its lodges, as tired beavers do, finishing a load first.
+    let holed = sim.agents.holed_up && has_lodge(sim);
+    let duty = duty_of(sim, ag, can_work && !tired && !holed);
     ag.speed = sim.colony.beaver(ag.id).map_or(1.0, |b| crate::society::work_speed(b.mood));
     // A guard rests at its post.
-    if tired && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. } | Task::Eat { .. } | Task::Watch { .. }) {
+    if (tired || holed) && ag.load.is_none() && !ag.inside && !matches!(ag.task, Task::Rest | Task::Carry { .. } | Task::Eat { .. }) && (holed || !matches!(ag.task, Task::Watch { .. })) {
         ag.path = None;
         ag.task = Task::Rest;
     }
@@ -3122,7 +3148,7 @@ mod freight_tests {
         for kind in [ResourceKind::Tree,ResourceKind::Plant,ResourceKind::MudBank,ResourceKind::RiverClay] {
             for from in [(5,5),(size/2,size/2),(size-5,size-5)] {
                 for area in [None,Some(Area{min:(0,0),max:(size/2,size/2)})] {
-                    let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0,role:None};
+                    let job=Job{kinds:kinds_for(kind),area,only:None,min_age:300.0,role:None,frozen:false};
                     let reference=s.resources.items().iter().filter(|r|job.permits(r) && worth_starting(r)
                         && s.agents.unreachable.get(&r.id).is_none_or(|&until|s.time_days>=until)
                         && s.nav.may_reach_beside(from,r.cell))
@@ -3144,7 +3170,7 @@ mod freight_tests {
         // Two deposits equally far from the store: the one nearer the beaver wins.
         let west=s.resources.add(ResourceKind::MudBank,(30,41),20.0);
         let east=s.resources.add(ResourceKind::MudBank,(53,41),20.0);
-        let job=Job{kinds:kinds_for(ResourceKind::MudBank),area:None,only:None,min_age:0.0,role:None};
+        let job=Job{kinds:kinds_for(ResourceKind::MudBank),area:None,only:None,min_age:0.0,role:None,frozen:false};
         assert_eq!(job.pick(&s,(20,41)),Some(west));
         assert_eq!(job.pick(&s,(60,41)),Some(east));
         // A deposit takes two diggers at once; a third goes to the next one.
@@ -3160,7 +3186,7 @@ mod freight_tests {
         // A tree takes one logger.
         let tree=s.resources.add_tree((25,30),crate::forestry::MATURE_AGE,crate::trees::Tree::Aspen);
         let other=s.resources.add_tree((25,33),crate::forestry::MATURE_AGE,crate::trees::Tree::Aspen);
-        let loggers=Job{kinds:kinds_for(ResourceKind::Tree),area:None,only:None,min_age:0.0,role:None};
+        let loggers=Job{kinds:kinds_for(ResourceKind::Tree),area:None,only:None,min_age:0.0,role:None,frozen:false};
         assert_eq!(loggers.pick(&s,(25,29)),Some(tree));
         s.agents.by_id.get_mut(&BeaverId(100)).unwrap().task=Task::Collect{target:tree,progress:0.0};
         assert_eq!(loggers.pick(&s,(25,29)),Some(other));
@@ -3226,6 +3252,8 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
         sim.nav = nav;
     }
     measure_shore(sim);
+    let sky = sim.water.sky.at(now);
+    sim.agents.holed_up = if sky.bitter() { true } else if sky.feels_c > crate::weather::COME_OUT_FEELS_C { false } else { sim.agents.holed_up };
     { let _p = crate::prof::scope("step/agents/sync"); sync_agents(sim); }
     { let _p = crate::prof::scope("step/agents/tidy"); tidy(sim); }
     { let _p = crate::prof::scope("step/agents/retarget"); retarget(sim); }
@@ -3290,6 +3318,36 @@ mod life_tests {
         crate::sandbox::run_days(&mut s, 0.2);
         assert!(s.buildings.building(id).unwrap().is_complete());
         s
+    }
+
+    /// In bitter cold the colony keeps to its lodge, and comes out again once it eases.
+    #[test]
+    fn in_bitter_cold_beavers_keep_to_their_lodges() {
+        let mut s = colony();
+        // The first spell of the place's winter bitter for half a day and more.
+        let sky = s.water.sky;
+        let bitter = (0..360 * 24).map(|h| s.time_days + h as f64 / 24.0).find(|&t| sky.at(t).bitter() && sky.at(t + 0.5).bitter()).expect("a bitter winter spell");
+        // Skip ahead to the day before it.
+        let start = bitter - 1.0;
+        s.time_days = start;
+        s.water.time_days = start;
+        s.colony.time_days = start;
+        // Everyone out cutting trees: not a source winter closes.
+        let n = s.world.size;
+        for a in s.agents.by_id.values_mut() {
+            a.assignment = Some(Assignment::Area(ResourceKind::Tree, Area { min: (0, 0), max: (n, n) }));
+        }
+        let out = |s: &SimState| s.agents.by_id.values().filter(|a| !a.inside).count();
+        crate::sandbox::run_days(&mut s, 0.4);
+        assert!(!s.agents.holed_up && out(&s) > 0, "out at work before the cold comes");
+        crate::sandbox::run_days(&mut s, 1.1);
+        assert!(s.agents.holed_up, "holed up at {:?}", sky.at(s.time_days));
+        let (inside, all) = (s.agents.by_id.values().filter(|a| a.inside).count(), s.agents.by_id.len());
+        assert!(inside * 10 >= all * 8, "{inside} of {all} in their lodge at {:?}", sky.at(s.time_days));
+        let eased = (0..60 * 24).map(|h| s.time_days + h as f64 / 24.0).find(|&t| sky.at(t).feels_c > crate::weather::COME_OUT_FEELS_C + 3.0).unwrap();
+        let wait = eased - s.time_days + 0.5;
+        crate::sandbox::run_days(&mut s, wait);
+        assert!(!s.agents.holed_up && out(&s) > 0, "out again once it eases");
     }
 
     fn on_edge(s: &SimState, c: Cell) -> bool {

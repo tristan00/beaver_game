@@ -165,6 +165,13 @@ fn octile(dx: usize, dy: usize, min: u32) -> u32 {
 }
 
 /// Cost factor of a step: √2 for a diagonal one.
+/// Going into a lock from outside, the wait while the gates and the chamber work, in movement
+/// cost at full pace: the gate opens, the swimmer comes in, the gate shuts behind it and the
+/// chamber fills or drains to the far side's level before the far gate opens.
+pub fn lock_wait(from: Surface, to: Surface) -> f32 {
+    if to == Surface::Lock && from != Surface::Lock { crate::locks::LOCK_PASS_DAYS * crate::agents::MOVE_COST_PER_DAY } else { 0.0 }
+}
+
 pub fn step_length(from: Cell, to: Cell) -> f32 {
     if from.0 != to.0 && from.1 != to.1 { std::f32::consts::SQRT_2 } else { 1.0 }
 }
@@ -466,7 +473,8 @@ impl NavGrid {
     pub fn move_cost(&self, from: Cell, to: Cell, pace: f32) -> Option<f32> {
         let (dx, dy) = (to.0 as f32 - from.0 as f32, to.1 as f32 - from.1 as f32);
         let len = step_length(from, to);
-        Some(len * self.cost_toward(to, (dx / len, dy / len), pace)?)
+        let wait = lock_wait(self.surface_at(from)?, self.surface_at(to)?) * pace;
+        Some(len * self.cost_toward(to, (dx / len, dy / len), pace)? + wait)
     }
 
     /// As `move_cost`, for each cell of a move onto `to` heading `dir` (a unit vector in cells).
@@ -485,8 +493,8 @@ impl NavGrid {
             Surface::Water | Surface::LodgeEntrance => Some((SWIM_COST, Gait::Swim)),
             Surface::Canal => Some((CANAL_COST, Gait::Swim)),
             Surface::Dam => Some((CLIMB_COST, Gait::Climb)),
-            // Waiting out the gates and the chamber filling or draining.
-            Surface::Lock => Some((crate::locks::LOCK_PASS_DAYS * crate::agents::MOVE_COST_PER_DAY, Gait::Swim)),
+            // Swum through; the wait for the gates is paid going in (`lock_wait`).
+            Surface::Lock => Some((SWIM_COST, Gait::Swim)),
             Surface::Thicket => Some((THICKET_COST, Gait::Walk)),
             Surface::Solid => None,
         }
@@ -637,7 +645,8 @@ impl NavGrid {
                     } else {
                         c
                     };
-                    let ng = g + (c * len * COST_UNIT).round() as u32;
+                    let c = c * len + lock_wait(surf[i], surf[j]);
+                    let ng = g + (c * COST_UNIT).round() as u32;
                     if sc.best(j).is_none_or(|old| ng < old) {
                         sc.set(j, ng, i as u32);
                         sc.heap.push(Reverse(pack(ng + heur((j % w, j / w)), j)));

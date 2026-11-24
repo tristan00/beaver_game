@@ -257,8 +257,7 @@ pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
     if !b.is_complete() || b.kind == K::Dam {
         return None;
     }
-    let temp=(std::f64::consts::TAU*(s.time_days-crate::tuning::colony::MIDSUMMER_DAY)/crate::calendar::YEAR_DAYS).cos() as f32;
-    let cold=((crate::tuning::colony::COLD_BELOW_TEMP-temp)/crate::tuning::colony::COLD_RANGE).clamp(0.0,1.0);
+    let cold=crate::weather::cold(s.water.sky.at(s.time_days).temp_c);
     Some(Wear {
         base: if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY},
         cold: 1.0+COLD_WEAR_SCALE*cold,

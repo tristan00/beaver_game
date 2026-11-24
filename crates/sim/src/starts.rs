@@ -449,7 +449,49 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
         let allowed = crate::fog::open_at(&sim.world);
         sim.fog.reveal((plan.camp.0 as f32 + 0.5, plan.camp.1 as f32 + 0.5), crate::fog::ARRIVAL_SIGHT, &allowed);
     }
+    clay_near_camp(&mut sim, plan.camp, &plan.dam, plan.height);
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
+}
+
+/// Clay banks within `START_CLAY_REACH` of the camp, counted as `clay_near_camp` counts them.
+pub(crate) fn clay_near(sim: &SimState, camp: Cell) -> f32 {
+    let r = START_CLAY_REACH;
+    sim.resources.items().iter()
+        .filter(|x| x.kind == crate::resources::ResourceKind::MudBank && dist2(x.cell, camp) <= r * r)
+        .map(|x| x.amount)
+        .sum()
+}
+
+/// Early clay: where the map left too little near the camp, a few clay banks along the
+/// river nearest it, clear of the camp itself, the starting supplies and the first pond.
+fn clay_near_camp(sim: &mut SimState, camp: Cell, dam: &[Cell], height: f32) {
+    let mut have = clay_near(sim, camp);
+    if have >= START_CLAY {
+        return;
+    }
+    let mut clear: std::collections::HashSet<Cell> = dam.iter().copied()
+        .chain(crate::dam_preview::preview(sim, dam, height).map(|p| p.flooded).unwrap_or_default())
+        .chain(sim.resources.items().iter().map(|r| r.cell))
+        .chain(sim.buildings.buildings.iter().flat_map(|b| b.cells()))
+        .collect();
+    clear.extend(supplies_bank(sim, camp));
+    let river = |(x, y): Cell| sim.world.river.get(x, y) == Some(&true);
+    let spots: Vec<Cell> = cells_by_distance(sim, camp, START_CLAY_REACH).into_iter()
+        .filter(|&c| dist2(c, camp) > START_CLAY_CLEAR * START_CLAY_CLEAR && !clear.contains(&c) && sim.fog.explored(c))
+        .filter(|&c| crate::resources::is_bank(&sim.world, c) && sim.water.depth.get(c.0, c.1).is_some_and(|d| *d <= crate::buildings::WET_DEPTH))
+        .filter(|&(x, y)| [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)].into_iter().any(river))
+        .collect();
+    let mut placed: Vec<Cell> = Vec::new();
+    for c in spots {
+        if have >= START_CLAY {
+            break;
+        }
+        if placed.iter().all(|&p| dist2(p, c) >= START_CLAY_SPACING * START_CLAY_SPACING) {
+            sim.resources.add(crate::resources::ResourceKind::MudBank, c, crate::resources::CLAY_AMOUNT);
+            placed.push(c);
+            have += crate::resources::CLAY_AMOUNT;
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -504,6 +546,15 @@ mod tests {
                 spots.iter().any(|&(branches, c)| branches >= 2 && dist2(c, site.camp) <= reach),
                 "{id}: camp {:?} has fewer than two river branches in reach", site.camp
             );
+        }
+    }
+
+    /// However little clay a map has, a few clay banks lie by the river near the camp.
+    #[test]
+    fn every_map_has_clay_near_its_start() {
+        for id in crate::maps::all().into_iter().map(|m| m.id) {
+            let (sim, site) = new_game_on_map(&id).expect("start");
+            assert!(clay_near(&sim, site.camp) >= START_CLAY, "{id}: only {} clay within {START_CLAY_REACH} of camp {:?}", clay_near(&sim, site.camp), site.camp);
         }
     }
 

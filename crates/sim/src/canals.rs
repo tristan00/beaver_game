@@ -611,15 +611,6 @@ pub fn set_gate(sim: &mut SimState, id: BuildingId, setting: GateSetting) -> Res
 
 /// A canal with nothing dug can be withdrawn. A dug canal stays in the ground; its gate is
 /// left standing as an ordinary dam cell that wears away.
-pub fn remove(sim: &mut SimState, id: BuildingId) -> Result<(), SimError> {
-    let k = canal(sim, id).ok_or_else(|| invalid("no such canal"))?;
-    let dug = k.cells.iter().any(|c| ground(sim, c.cell) < c.ground - EPS) || k.gate.built;
-    if dug {
-        return Err(invalid("part of this canal is already dug"));
-    }
-    Ok(())
-}
-
 /// Silt settles in dug cells; once a day the canal reads its water.
 pub fn step(sim: &mut SimState, dt: f32) {
     let today = sim.time_days.floor();
