@@ -191,11 +191,10 @@ pub fn headcount_breakdown(sim: &SimState) -> Breakdown {
 fn dam_wear(sim: &SimState, c: Cell, source: Source) -> Breakdown {
     let w = &sim.water;
     let integrity = w.dam_integrity.get(c.0, c.1).copied().unwrap_or(0.0);
-    let over = (w.depth.get(c.0, c.1).copied().unwrap_or(0.0) - w.config.overtop_depth).max(0.0);
-    let hold = w.dam_durability.get(c.0, c.1).copied().unwrap_or(1.0).max(1.0);
-    let mut rows = vec![row("Age", -w.config.dam_decay_per_day / hold, source)];
+    let (age, over) = w.dam_cell_wear(&sim.height, c.1 * sim.height.width() + c.0);
+    let mut rows = vec![row("Age", -age, source)];
     if over > 0.0 {
-        rows.push(row("Overtopping", -w.config.overtop_erosion * over / hold, source));
+        rows.push(row("Overtopping", -over, source));
     }
     Breakdown::new(integrity, rows)
 }
@@ -339,9 +338,35 @@ fn waiting_for_work(sim: &SimState, id: BeaverId) -> bool {
         && sim.agents.get(id).is_some_and(|a| a.task == Task::Rest && a.load.is_none())
 }
 
-/// One alert for each job whose workers are all waiting with nothing to do.
+/// The good a gathering role brings in.
+fn gathered_good(role: crate::jobs::RoleKind) -> Option<Good> {
+    use crate::jobs::RoleKind as R;
+    match role {
+        R::Forager => Some(Good::Food),
+        R::Logger => Some(Good::Sticks),
+        R::MudDigger => Some(Good::Clay),
+        R::PebbleCollector => Some(Good::Pebbles),
+        _ => None,
+    }
+}
+
+fn store_full(sim: &SimState, g: Good) -> bool {
+    let cap = sim.buildings.stores.capacity(g);
+    cap > 0.0 && sim.buildings.stores.amount(g) >= cap * FULL_SHARE
+}
+
+/// Whether anyone in a job gathering `g` is waiting for want of room.
+fn held_back_by_room(sim: &SimState, g: Good) -> bool {
+    sim.colony.beavers.iter().any(|b| crate::jobs::role_of(sim, b.id).and_then(gathered_good) == Some(g) && waiting_for_work(sim, b.id))
+}
+
+/// One alert for each job whose workers are all waiting with nothing to do. Gatherers held
+/// back by a full store are left to the full-store alert.
 fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
     for role in crate::jobs::RoleKind::DEFAULT_ORDER {
+        if gathered_good(role).is_some_and(|g| store_full(sim, g)) {
+            continue;
+        }
         // Those in the job (a seat at a building or an order), fit to work and not tired.
         let fit: Vec<&crate::colony::Beaver> = sim
             .colony
@@ -526,7 +551,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     for g in Good::ALL {
         let (have, cap) = (sim.buildings.stores.amount(g), sim.buildings.stores.capacity(g));
         let arriving = sim.ledger.in_per_day(g);
-        if cap > 0.0 && have >= cap * FULL_SHARE && arriving > 0.0 {
+        if store_full(sim, g) && (arriving > 0.0 || held_back_by_room(sim, g)) {
             let rows = vec![row("Stored", have, Source::None), row("Room", cap, Source::None), row("Arriving", arriving, Source::None)];
             out.push(Problem {
                 kind: ProblemKind::StoreFull,

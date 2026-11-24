@@ -195,8 +195,7 @@ pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f3
         TreeStage::Mature => (TreeStage::Old, OLD_AGE),
         TreeStage::Old | TreeStage::Snag => return None,
     };
-    let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
-    let rate = ground_growth(sim, r.cell) * tend * sp.spec().growth;
+    let rate = ground_growth(sim, r.cell) * sp.spec().growth;
     Some((next, (at - r.age_days).max(0.0) / rate.max(1e-3)))
 }
 
@@ -341,10 +340,8 @@ fn daily(sim: &mut SimState, day: i64) {
             }
             if !winter {
                 let ground = if x < n && y < n { f.growth[y * n + x] } else { 1.0 };
-                let tend = if r.tended_days > 0.0 { TENDED_GROWTH } else { 1.0 };
-                r.age_days += ground * tend * sp.spec().growth;
+                r.age_days += ground * sp.spec().growth;
             }
-            r.tended_days = (r.tended_days - 1.0).max(0.0);
             let stage = TreeStage::of_age(r.age_days);
             if stage == TreeStage::Old && chance(&mut f.rng, OLD_DEATH_CHANCE) {
                 crate::resources::note("DIED_STANDING", r, format_args!("why=old age"));
@@ -598,53 +595,6 @@ pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell, species: Tre
             sim.forestry.stumps.push((cell, species));
         }
     }
-}
-
-/// A food plant or growing tree that a keeper's clearing would help, not already helped.
-pub fn wants_tending(r: &Resource) -> bool {
-    r.tended_days <= 0.0
-        && match r.kind {
-            ResourceKind::Plant => r.wet,
-            ResourceKind::Tree => !r.snag && matches!(r.stage(), Some(TreeStage::Sapling | TreeStage::Young | TreeStage::Mature)),
-            _ => false,
-        }
-}
-
-/// What a food store's keeper tends next: young food trees, then food plants, then other
-/// young trees, then the rest; nearest first. Nothing grows in winter, so nothing then.
-pub fn tend_target(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Option<ResourceId> {
-    if Season::at(sim.time_days) == Season::Winter {
-        return None;
-    }
-    let claimed: HashSet<ResourceId> = sim
-        .agents
-        .by_id
-        .values()
-        .filter(|a| a.id != who)
-        .filter_map(|a| match a.task { crate::agents::Task::Tend { target, .. } => Some(target), _ => None })
-        .collect();
-    let class = |r: &Resource| match (r.kind, r.stage(), r.species.is_some_and(|s| s.feeds())) {
-        (ResourceKind::Tree, Some(TreeStage::Sapling | TreeStage::Young), true) => 0,
-        (ResourceKind::Plant, ..) => 1,
-        (ResourceKind::Tree, Some(TreeStage::Sapling | TreeStage::Young), false) => 2,
-        _ => 3,
-    };
-    let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
-    let mut best: Option<((u8, usize, ResourceId), ResourceId)> = None;
-    for r in sim.resources.items() {
-        if !area.reaches(r.cell) || !wants_tending(r) || claimed.contains(&r.id) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Forester, r.cell) {
-            continue;
-        }
-        let key = (class(r), d(r.cell), r.id);
-        if best.as_ref().is_some_and(|(k, _)| key >= *k) {
-            continue;
-        }
-        if sim.agents.unreachable.get(&r.id).is_some_and(|until| sim.time_days < *until) || !sim.nav.may_reach_beside(from, r.cell) {
-            continue;
-        }
-        best = Some((key, r.id));
-    }
-    best.map(|b| b.1)
 }
 
 fn planting_blocked(sim: &SimState) -> (HashSet<Cell>, HashSet<Cell>) {

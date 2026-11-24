@@ -123,24 +123,72 @@ pub(super) fn about(s: &sim::SimState, id: BeaverId) -> String {
     }
 }
 
+/// A level on the 0–100 scale the meters show.
+fn pts(v: f32) -> String {
+    format!("{:.0}", v * 100.0)
+}
+
+/// A change a day on that scale.
+fn per_day(v: f32) -> String {
+    format!("{:+.1}/d", v * 100.0)
+}
+
+/// A multiplier, only when it is not ×1.
+fn factor(t: Tip, label: &str, f: f32) -> Tip {
+    if (f - 1.0).abs() > 0.005 { t.line(label, format!("×{f:.2}")) } else { t }
+}
+
+const HARMS: [&str; 5] = ["Hunger", "Cold", "Injury", "Exhaustion", "Old age"];
+
 fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     let s = c.s;
+    let Some(r) = s.beaver_rates(b.id) else { return };
     heading(u, Icon::Health, "Condition");
-    meter(u, Icon::Health, level(b.health), "Health", b.health, Tip::name("Health").line("Falls with the harm below", ""));
+    let mut health = Tip::name("Health");
+    for (k, h) in r.harm.iter().enumerate().filter(|(_, h)| **h > 0.0) {
+        health = health.line(HARMS[k], per_day(-h));
+    }
+    if r.heal > 0.0 {
+        health = health.line("Mending", per_day(r.heal));
+    }
+    if r.old_age_death > 0.0 {
+        health = health.line("Death from age", format!("{:.0}%/y", (1.0 - (-r.old_age_death).exp()) * 100.0));
+    }
+    meter(u, Icon::Health, level(b.health), "Health", b.health, health);
     let (mi, mc) = mood_icon(b.mood);
-    meter(u, mi, mc, "Mood", b.mood, Tip::name("Mood").line("Work pace", format!("×{}", num(sim::society::work_speed(b.mood)))));
+    let mood = factor(Tip::name("Mood").line("Toward", pts(r.mood_to)), "Health", r.mood_health);
+    meter(u, mi, mc, "Mood", b.mood, factor(mood, "Work", sim::society::work_speed(b.mood)));
     let n = &b.needs;
-    for (icon, col, name, v, what) in [
-        (Icon::Food, good_color(sim::buildings::Good::Food), "Food", n.food, "Eats from the stores or the land"),
-        (Icon::Idle, REST, "Rest", n.rest, "Sleeps at home when tired"),
-        (Icon::Winter, MUTED, "Warmth", n.warmth, "A lodge keeps it warm in winter"),
-        (Icon::Home, MUD, "Safety", n.safety, "Falls when a wolf is about"),
-        (Icon::Beaver, FUR, "Company", n.social, "Family and neighbours"),
+    let food = Tip::name("Food").line("Hunger", per_day(-r.hunger)).line("Eats below", pts(r.eat_below));
+    let mut rest = factor(Tip::name("Rest").line("Now", per_day(r.rest)), "Sleep", r.sleep);
+    if r.resting {
+        rest = rest.line("Resting", "");
+    }
+    let mut warmth = Tip::name("Warmth").line("Toward", pts(r.warmth_to));
+    if r.cold > 0.005 {
+        warmth = warmth.line("Cold", pts(r.cold)).line("Lodge keeps out", format!("{:.0}%", r.insulation * 100.0));
+    }
+    let mut safety = Tip::name("Safety").line("Toward", pts(r.safety_to));
+    if let Some((land, water)) = r.exposure {
+        if land > 0.0 {
+            safety = safety.line("On land", "");
+        }
+        if water > 0.0 {
+            safety = safety.line("To water", format!("{} m", num(water)));
+        }
+    }
+    let company = Tip::name("Company").line("Toward", pts(r.social_to)).line("Lodge-mates", format!("{}", r.mates));
+    for (icon, col, name, v, tip) in [
+        (Icon::Food, good_color(sim::buildings::Good::Food), "Food", n.food, food),
+        (Icon::Idle, REST, "Rest", n.rest, rest),
+        (Icon::Winter, MUTED, "Warmth", n.warmth, warmth),
+        (Icon::Home, MUD, "Safety", n.safety, safety),
+        (Icon::Beaver, FUR, "Company", n.social, company),
     ] {
-        meter(u, icon, col, name, v, Tip::name(name).line(what, ""));
+        meter(u, icon, col, name, v, tip);
     }
     let harm = b.harm();
-    let names = ["Hunger", "Cold", "Injury", "Exhaustion", "Old age"];
+    let names = HARMS;
     if harm.iter().any(|h| *h > 0.005) {
         u.row(6.0, |r| {
             r.text("Harm taken".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
@@ -149,8 +197,8 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
             }
         });
     }
-    if b.low_mood_days() > 0.5 {
-        fact(u, Icon::MoodBad, BAD, "Unhappy for", days(b.low_mood_days()));
+    if let Some(left) = r.leaves_in.filter(|_| b.low_mood_days() > 0.5) {
+        fact(u, Icon::MoodBad, BAD, "Leaves in", days(left));
     }
     u.rule();
     heading(u, Icon::Hammer, "Work");
@@ -158,6 +206,14 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     fact(u, ai, ac, "Now", doing.to_string());
     let job = sim::lives::job_of(s, b.id);
     fact(u, job.map_or(Icon::Idle, role_kind_icon), INK, "Job", job.map_or("Free".to_string(), |r| role_kind_name(r).to_string()));
+    if let Some((pace, tip)) = super::ledger::pace(s, b) {
+        u.row(8.0, |r| {
+            r.icon(Icon::Fast2, 15.0, INK);
+            r.text("Pace".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
+            r.text(format!("×{pace:.2}"), 12.0, INK);
+        })
+        .tip(tip);
+    }
     if let Some(bid) = s.work.slot_of(b.id).map(|x| x.0) {
         if let Some(bb) = s.buildings.building(bid) {
             u.row(8.0, |r| {
@@ -169,8 +225,15 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
             });
         }
     }
-    if let Some(l) = s.agents.get(b.id).and_then(|a| a.load.as_ref()) {
-        fact(u, good_icon(l.good), good_color(l.good), "Carrying", format!("{} {}", num(l.amount), good_name(l.good)));
+    if let Some(a) = s.agents.get(b.id) {
+        if let Some(l) = a.load.as_ref() {
+            u.row(8.0, |r| {
+                r.icon(good_icon(l.good), 15.0, good_color(l.good));
+                r.text("Carrying".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
+                r.text(format!("{} {}", num(l.amount), good_name(l.good)), 12.0, INK);
+            })
+            .tip(factor(Tip::name("Carrying"), "Walk", sim::agents::travel_pace(&s.nav, a)));
+        }
     }
     if let Some(p) = &b.pregnancy {
         fact(u, Icon::Kit, GOOD, "Expecting", format!("{} kits in {}", p.litter, days((p.due_day - s.time_days) as f32)));
@@ -209,6 +272,12 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     heading(u, Icon::Home, "Family");
     let all = kin::everyone(s);
     let mine = kin::litter(s, &all, id);
+    // A female who could have kits: the daily chance now, or what stands in the way.
+    match s.colony.conception(id) {
+        Some(Ok(p)) => fact(u, Icon::Kit, GOOD, "Conceiving", format!("{:.1}%/d", p * 100.0)),
+        Some(Err(why)) => fact(u, Icon::Kit, MUTED, "No kits yet", why.to_string()),
+        None => {}
+    }
     if let Some(l) = mine {
         fact(u, Icon::Kit, GOOD, "Litter", format!("{} of {}'s · {} · {} kits", l.number, name_of(s, l.mother), kin::year_word(l.year), kin::litter_mates(s, &all, l).len()));
     }
@@ -280,7 +349,8 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
 
 fn skills(u: &mut Ui, b: &Beaver) {
     heading(u, Icon::Jobs, "Skills");
-    for j in Job::ALL {
+    // Hauling is walking, which no skill speeds.
+    for j in Job::ALL.into_iter().filter(|j| *j != Job::Hauler) {
         let v = b.skills[j.index()];
         u.row(8.0, |r| {
             r.icon(job_icon(j), 15.0, INK);
@@ -289,7 +359,7 @@ fn skills(u: &mut Ui, b: &Beaver) {
             r.spacer();
             r.bold(format!("{:.0}", v * 100.0), 12.0, INK);
         })
-        .tip(Tip::name(job_name(j)).with_value(format!("{:.0}", v * 100.0)).line("Grows with work at it; faster work", ""));
+        .tip(Tip::name(job_name(j)).with_value(format!("{:.0}", v * 100.0)).line("Work", format!("×{:.2}", sim::agents::work_factors(b, j).skill_x)));
     }
 }
 
@@ -372,7 +442,7 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                             let sex = if b.sex == sim::colony::Sex::Male { "Male" } else { "Female" };
                             x.row(8.0, |y| {
                                 y.icon(stage_icon(b.stage), 15.0, INK);
-                                y.text(format!("{sex} · {} · {} old · lives to about {}", stage_word(b.stage), years(b.age_days as f64), years(b.lifespan_days as f64)), 13.0, MUTED);
+                                y.text(format!("{sex} · {} · {} old", stage_word(b.stage), years(b.age_days as f64)), 13.0, MUTED);
                             });
                         }
                         None => {

@@ -41,6 +41,11 @@ impl SimState {
         // The arrival stockpile remains physical until its goods have been hauled.
     }
 
+    /// What moves a beaver's needs, health and mood now, on this map (see `colony::Rates`).
+    pub fn beaver_rates(&self, id: colony::BeaverId) -> Option<colony::Rates> {
+        self.colony.rates(id, &WorldLand { world: &self.world, depth: &self.water.depth })
+    }
+
     pub(super) fn derive_colony_jobs(&mut self) {
         let jobs = jobs::slot_jobs(self);
         for b in self.colony.beavers.iter_mut() {

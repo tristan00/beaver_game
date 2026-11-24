@@ -71,7 +71,7 @@ fn the_bed_falls_from_the_intake_and_never_rises() {
 #[test]
 fn cuts_deeper_than_the_limit_are_refused_and_marked() {
     let mut s = pond_and_bank();
-    *s.height.get_mut(25, 20).unwrap() = 8.0;
+    *s.height.get_mut(25, 20).unwrap() = 10.0;
     let p = plan(&s, &route((16, 20), (30, 20))).unwrap();
     assert_eq!(p.too_deep, vec![(25, 20)]);
     assert!(place(&mut s, &route((16, 20), (30, 20))).is_err(), "the command refuses what the preview marks");
@@ -84,7 +84,11 @@ fn buildings_dams_and_length_limit_the_route() {
     s.water.build_dam(&[(22, 20)], 1.0).unwrap();
     assert!(plan(&s, &route((16, 20), (30, 20))).is_err(), "a dam cell blocks the route");
     let s = pond_and_bank();
-    let long: Vec<Cell> = (16..16 + MAX_CELLS + 3).map(|x| (x, 20)).collect();
+    let n = s.height.width();
+    let mut long: Vec<Cell> = (16..n).map(|x| (x, 20)).collect();
+    let up = (MAX_CELLS + 3).saturating_sub(long.len());
+    long.extend((21..21 + up).map(|y| (n - 1, y)));
+    assert!(long.len() > MAX_CELLS && long.iter().all(|c| c.1 < n));
     assert!(plan(&s, &long).unwrap_err().starts_with("Too long"));
 }
 

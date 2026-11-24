@@ -1486,13 +1486,17 @@ pub struct GroundSync {
 
 /// Goods lying on the ground and the family's starting supplies, each a heap sized by how
 /// much is left; an emptied heap is gone.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
-    mut meshes: ResMut<Assets<Mesh>>, clock: Res<super::RenderClock>, mut st: Local<GroundSync>) {
+    mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>,
+    beavers: Query<(Entity, &Transform, &BeaverSprite), With<SimBeaver>>, clock: Res<super::RenderClock>, mut st: Local<GroundSync>) {
     let _p = ::sim::prof::scope("game/sync ground goods");
     let Some(models) = models else { return };
     let s = &sim.0;
     let generation = (s.seed, flow.generation);
-    if st.generation != Some(generation) {
+    // Goods already lying about when a game is loaded just appear; only new drops are shown.
+    let loading = st.generation != Some(generation);
+    if loading {
         for (_, (e, _)) in st.drawn.drain() {
             commands.entity(e).despawn();
         }
@@ -1534,6 +1538,28 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
         }
         let mat = if band == 0 { models.white.clone() } else { models.rot[(band - 1) as usize].clone() };
         let p = cell_xz(s, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
+        // A load set down here (a new heap, or one grown): the beaver beside it bows to put it
+        // down, the bundle drops from its mouth with a puff, and the heap grows in after it.
+        let grew = st.drawn.get(&key).is_none_or(|d| (d.1).1.0 < sig.1.0);
+        let dropped = !loading && grew && matches!(key, GroundKey::Pile(_));
+        let ground = Vec3::new(p.x, height_at(&s.height, p.x, p.y), p.y);
+        if dropped {
+            let by = s.agents.by_id.values().filter(|a| a.cell.0.abs_diff(cell.0) <= 1 && a.cell.1.abs_diff(cell.1) <= 1).map(|a| a.id.0).collect::<Vec<_>>();
+            if let Some((e, btr, _)) = beavers.iter().find(|(_, _, b)| by.contains(&b.id)) {
+                commands.entity(e).insert(super::SetDown { until: clock.0 + 1.0 });
+                if let Some(g) = good {
+                    let from = btr.translation + Vec3::Y * 0.8 * btr.scale.y + btr.rotation * Vec3::Z * 0.6 * btr.scale.z;
+                    commands.spawn((
+                        SimEntity,
+                        Mesh3d(models.loads[g.index()].clone()),
+                        MeshMaterial3d(models.white.clone()),
+                        Transform::from_translation(from).with_scale(btr.scale * super::LOAD_LOOK),
+                        super::effects::Fall { from, to: ground + Vec3::Y * 0.05, since: clock.0 + 0.3, secs: 0.35 },
+                    ));
+                }
+            }
+            super::effects::puff(&mut commands, &mut meshes, &mut materials, &mut puff_mesh, ground, 0.7);
+        }
         let yaw = hash01(cell.0, cell.1, 23) * std::f32::consts::TAU;
         let tr = Transform::from_xyz(p.x, height_at(&s.height, p.x, p.y), p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(scale));
         let mesh = st.meshes.entry(good).or_insert_with(|| meshes.add(match good { Some(g) => models::heap_mesh(g), None => models::supplies_mesh() })).clone();
@@ -1546,6 +1572,10 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
             }
             None => {
                 let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(mat), tr)).id();
+                if dropped {
+                    // Grows in once the bundle has landed.
+                    commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::splat(0.05), since: clock.0 + 0.6, secs: 0.5 });
+                }
                 st.drawn.insert(key, (e, sig));
             }
         }

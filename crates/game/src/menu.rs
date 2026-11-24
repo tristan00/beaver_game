@@ -60,8 +60,6 @@ enum MenuAction {
     Save,
     MapPrev,
     MapNext,
-    SeedPrev,
-    SeedNext,
     OpenSettings,
     Back,
     Resume,
@@ -249,21 +247,12 @@ fn menu_actions(
                 continue;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
-                let mut options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
-                let seed = match menu.map {
-                    MapChoice::Generated(s) => s,
-                    _ => 1,
-                };
-                options.push(MapChoice::Generated(seed));
+                // The real-place maps only.
+                let options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
                 let i = options.iter().position(|o| *o == menu.map).unwrap_or(0);
                 let n = options.len();
                 let j = if a == MenuAction::MapNext { (i + 1) % n } else { (i + n - 1) % n };
                 menu.map = options[j].clone();
-            }
-            MenuAction::SeedPrev | MenuAction::SeedNext => {
-                if let MapChoice::Generated(s) = menu.map {
-                    menu.map = MapChoice::Generated(if a == MenuAction::SeedNext { s.saturating_add(1) } else { s.saturating_sub(1).max(1) });
-                }
             }
             MenuAction::OpenSettings => {
                 menu.back_to = menu.screen.unwrap_or(Screen::Pause);
@@ -490,18 +479,9 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, curren
         r.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, flex_grow: 1.0, ..default() }).with_children(|c| {
             let label = menu.map.label();
             hud::bold(c, label.split(',').next().unwrap_or("").to_string(), 14.0, INK);
-            match &menu.map {
-                MapChoice::Real(id) => {
-                    if let Some(m) = sim::maps::all().into_iter().find(|m| &m.id == id) {
-                        hud::text(c, m.place, 11.0, MUTED);
-                    }
-                }
-                MapChoice::Generated(seed) => {
-                    c.spawn(hud::row(6.0)).with_children(|r| {
-                        button(r, "<", MenuAction::SeedPrev, FAINT, false);
-                        hud::bold(r, format!("{seed}"), 12.0, INK);
-                        button(r, ">", MenuAction::SeedNext, FAINT, false);
-                    });
+            if let MapChoice::Real(id) = &menu.map {
+                if let Some(m) = sim::maps::all().into_iter().find(|m| &m.id == id) {
+                    hud::text(c, m.place, 11.0, MUTED);
                 }
             }
         });

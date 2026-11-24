@@ -1152,24 +1152,32 @@ impl Water {
         self.ice_any = any;
     }
 
-    fn update_dams(&mut self, height: &HeightGrid, dt: f32) {
+    /// Integrity a dam cell loses a day: from age, and from water running over its crest
+    /// (deeper than the allowance), each divided by the cell's durability (pebble facing).
+    pub fn dam_cell_wear(&self, height: &HeightGrid, i: usize) -> (f32, f32) {
         let w = self.n;
         let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), &self.h);
         let surface = |i: usize| if depth[i] > WET_EPS { terrain[i] + dam[i] + depth[i] } else { f32::NEG_INFINITY };
-        let mut broken = Vec::new();
-        let gate = self.gate.as_slice();
-        for i in self.dam_cells.iter().map(|&i| i as usize).filter(|&i| dam[i] > 0.0 && !gate[i]) {
-            let (x, y) = (i % w, i / w);
-            let crest = terrain[i] + dam[i];
-            let mut top = surface(i);
-            for (ok, j) in [(x > 0, i.wrapping_sub(1)), (x + 1 < w, i + 1), (y > 0, i.wrapping_sub(w)), (y + 1 < w, i + w)] {
-                if ok {
-                    top = top.max(surface(j));
-                }
+        let (x, y) = (i % w, i / w);
+        let crest = terrain[i] + dam[i];
+        let mut top = surface(i);
+        for (ok, j) in [(x > 0, i.wrapping_sub(1)), (x + 1 < w, i + 1), (y > 0, i.wrapping_sub(w)), (y + 1 < w, i + w)] {
+            if ok {
+                top = top.max(surface(j));
             }
-            let over = (top - crest - self.config.overtop_depth).max(0.0);
+        }
+        let over = (top - crest - self.config.overtop_depth).max(0.0);
+        let hold = self.dam_durability.as_slice()[i].max(1.0);
+        (self.config.dam_decay_per_day / hold, self.config.overtop_erosion * over / hold)
+    }
+
+    fn update_dams(&mut self, height: &HeightGrid, dt: f32) {
+        let mut broken = Vec::new();
+        let cells: Vec<usize> = self.dam_cells.iter().map(|&i| i as usize).filter(|&i| self.dam_height.as_slice()[i] > 0.0 && !self.gate.as_slice()[i]).collect();
+        for i in cells {
+            let (age, top) = self.dam_cell_wear(height, i);
             let integ = &mut self.dam_integrity[i];
-            *integ -= (self.config.dam_decay_per_day + self.config.overtop_erosion * over) * dt / self.dam_durability.as_slice()[i].max(1.0);
+            *integ -= (age + top) * dt;
             if *integ <= 0.0 {
                 broken.push(i);
             }

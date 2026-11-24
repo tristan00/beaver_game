@@ -61,23 +61,37 @@ impl Society {
         Ok(id)
     }
 
+    /// How many beavers a year ask to join now, or what stops them.
+    pub fn newcomers(&self, sim_time: f64, colony: &Colony) -> Result<f32, &'static str> {
+        if colony.migration_remaining() == 0 {
+            return Err("One joined this year");
+        }
+        if !colony.is_founded() || colony.is_collapsed() {
+            return Err("No colony");
+        }
+        if self.requests.len() >= JOIN_MAX_PENDING {
+            return Err("A request is waiting");
+        }
+        if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
+            return Err("Too little food a head");
+        }
+        // A single newcomer at a time, and at most one a year.
+        if self.asked_year == Some((sim_time / crate::calendar::YEAR_DAYS).floor() as i64) {
+            return Err("One asked this year");
+        }
+        Ok(JOIN_REQUESTS_PER_YEAR)
+    }
+
     pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &Colony) {
         self.requests.retain(|r| sim_time - r.arrived_day < JOIN_EXPIRES_DAYS);
         if colony.migration_remaining() == 0 {
             self.requests.clear();
             return;
         }
-        if !colony.is_founded() || colony.is_collapsed() || self.requests.len() >= JOIN_MAX_PENDING {
+        if self.newcomers(sim_time, colony).is_err() {
             return;
         }
-        if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
-            return;
-        }
-        // A single newcomer at a time, and at most one a year.
         let year = (sim_time / crate::calendar::YEAR_DAYS).floor() as i64;
-        if self.asked_year == Some(year) {
-            return;
-        }
         if self.unit() < JOIN_REQUESTS_PER_YEAR / crate::calendar::YEAR_DAYS as f32 * dt_days {
             let adult = self.unit() < JOIN_ADULT_SHARE;
             if self.raise(colony, adult, sim_time).is_ok() {

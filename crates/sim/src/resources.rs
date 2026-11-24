@@ -72,7 +72,6 @@ pub struct Resource {
     pub wet: bool,
     pub age_days: f32,
     pub snag: bool,
-    pub tended_days: f32,
     /// Trees and felled trees only.
     pub species: Option<crate::trees::Tree>,
 }
@@ -457,7 +456,7 @@ impl ResourceWorld {
             return Err(ResourceError::InvalidAmount);
         }
         let growth = crate::calendar::vegetation_growth(time_days - dt_days as f64 * 0.5);
-        let decay = WINTER_PLANT_DECAY_PER_DAY * (1.0-growth);
+        let decay = plant_decay(growth);
         let survival = (-decay*dt_days).exp();
         let keep = |r: &Resource| r.kind.is_food_plant() || r.kind == ResourceKind::RiverClay || r.has_yield();
         // One pass over every source: plants grow, clay beds refill, and whether any is used up.
@@ -473,10 +472,7 @@ impl ResourceWorld {
         for r in self.items.iter_mut() {
             if r.kind.is_food_plant() {
                 let was = r.amount;
-                let tend = if r.tended_days > 0.0 { crate::forestry::TENDED_GROWTH } else { 1.0 };
-                r.tended_days = (r.tended_days - dt_days).max(0.0);
-                let regrow = if r.kind == ResourceKind::WaterPlant { WATER_PLANT_REGROW_PER_DAY } else { PLANT_REGROW_PER_DAY };
-                let rate = if r.wet { regrow*growth*tend } else {0.0};
+                let rate = plant_regrow(r, growth);
                 r.amount = if decay > 1e-7 {
                     r.amount*survival + rate/decay*(1.0-survival)
                 } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
@@ -508,7 +504,7 @@ impl ResourceWorld {
         let id = ResourceId(self.next_id);
         let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
         self.changes.note(id);
-        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, tended_days: 0.0, species: None });
+        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverClay { RIVER_CLAY_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, species: None });
         if self.log_changes { note("NEW", self.items.last().expect("just added"), format_args!("")); }
         id
     }
@@ -575,6 +571,17 @@ fn distance(a:Cell,b:Cell)->f32 {
 }
 
 /// Clay arrives gradually with the flowing river; exhausted spots remain on the map.
+/// Food a plant regrows a day at the season's `growth`: none on dry ground.
+pub fn plant_regrow(r: &Resource, growth: f32) -> f32 {
+    let regrow = if r.kind == ResourceKind::WaterPlant { WATER_PLANT_REGROW_PER_DAY } else { PLANT_REGROW_PER_DAY };
+    if r.wet { regrow * growth } else { 0.0 }
+}
+
+/// The share of a plant's food lost a day to the cold at the season's `growth`.
+pub fn plant_decay(growth: f32) -> f32 {
+    WINTER_PLANT_DECAY_PER_DAY * (1.0 - growth)
+}
+
 pub fn river_clay_amount(amount:f32,capacity:f32,flowing:bool,days:f32)->f32 {
     (amount + if flowing {RIVER_CLAY_PER_DAY*days.max(0.0)} else {0.0}).min(capacity)
 }

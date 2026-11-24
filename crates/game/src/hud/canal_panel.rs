@@ -189,6 +189,14 @@ fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
                 if silted {
                     tip = tip.line("Silted", "");
                 }
+                // Dug cells fill with silt, faster where water runs.
+                if g < cell.ground - 0.001 {
+                    let rate = sim::canals::silt_per_day(s, cell.cell);
+                    tip = tip.line("Next silt in", days((sim::canals::SILT_STEP - cell.silt).max(0.0) / rate.max(1e-6)));
+                    if sim::canals::running(s, cell.cell) {
+                        tip = tip.line("Running water", format!("×{}", num(sim::canals::SILT_RUNNING_FACTOR)));
+                    }
+                }
                 col.action(HudAction::DamCell(cell.cell)).tip(tip.line("Click", "pick for Deepen").line("Shift", "add"));
             }
         });
@@ -312,7 +320,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
                 x.icon(Icon::Site, 13.0, MUTED);
                 x.bold(format!("{left}"), 12.0, MUTED);
             })
-            .tip(Tip::name("Visits still to make").line("Beaver-days", num(left as f32 * sim::canals::DIG_WORK)));
+            .tip(Tip::name("Visits still to make").line("Beaver-days", num(sim::canals::dig_days(left))));
         }
         r.row(3.0, |x| {
             for _ in 0..k.width() {

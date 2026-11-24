@@ -100,13 +100,22 @@ mod health_tests {
         c.update_needs(0.5, 0.0, &mut crate::buildings::Stores::default());
         assert_eq!(c.beavers[0].health, 0.0);
         assert!(c.beavers[1].health > 0.5);
-        c.remove_dead();
+        c.remove_dead(0.0);
         assert!(c.beaver(dead).is_none());
         assert!(c.events.iter().any(|e| matches!(e.event,
             Event::Died { id, cause: DeathCause::Starvation, .. } if id == dead)));
     }
 }
 const SUBSTEP_DAYS: f32 = 0.5;
+
+/// The yearly chance of dying of old age at `years` of age: none before old age, then rising
+/// steeply each year after.
+fn old_age_hazard(years: f32) -> f32 {
+    if years < OLD_AGE_YEARS {
+        return 0.0;
+    }
+    OLD_AGE_DEATH_RATE * (OLD_AGE_DEATH_GROWTH * (years - OLD_AGE_YEARS)).exp()
+}
 const EVENT_LOG_CAP: usize = 2000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -301,7 +310,6 @@ pub struct Beaver {
     pub current_job: Option<Job>,
     pub lodge: Option<LodgeId>,
     pub pos: (f32, f32),
-    pub lifespan_days: f32,
     pub stage: Stage,
     pub resting: bool,
     pub last_birth_year: i64,
@@ -443,6 +451,93 @@ impl Default for Colony {
     }
 }
 
+
+/// How much of the cold a beaver's lodge keeps out: some in the open, more the better the lodge.
+fn insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
+    let condition = b.lodge.and_then(|l| lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
+    condition.map_or(OPEN_INSULATION, |c| OPEN_INSULATION + LODGE_INSULATION * c)
+}
+
+/// Rest gained a day (lost when negative) for the share of the day worked and how well it sleeps.
+fn rest_per_day(worked: f32, sleep: f32) -> f32 {
+    -TIRE_RATE * worked + SHELTER_REST_RATE * (1.0 - worked) * sleep
+}
+
+fn warmth_target(cold: f32, insulation: f32) -> f32 {
+    1.0 - cold * (1.0 - insulation)
+}
+
+fn social_target(mates: usize) -> f32 {
+    (SOCIAL_BASE + SOCIAL_PER_MATE * mates as f32).min(1.0)
+}
+
+/// Safety while working: lower out of the water, and the further from it.
+fn work_safety(land_len: f32, water_dist: f32) -> f32 {
+    let exposure = WORK_EXPOSURE_BASE + WORK_EXPOSURE_PER_LAND_CELL * land_len
+        + WORK_EXPOSURE_PER_WATER_DIST * water_dist.min(MAX_WATER_SCAN);
+    (1.0 - SAFETY_EXPOSURE_SCALE * exposure).clamp(SAFETY_MIN, 1.0)
+}
+
+/// Where mood heads: its needs together, lowered by poor health.
+fn mood_target(b: &Beaver) -> f32 {
+    b.needs.mood() * (MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health)
+}
+
+/// Health lost a day to each harm now (starvation, cold, injury, exhaustion, old age); 0 where
+/// it is not acting.
+fn harm_per_day(b: &Beaver) -> [f32; 5] {
+    let n = &b.needs;
+    let frail = if b.stage == Stage::Kit { KIT_FRAILTY } else { 1.0 };
+    let years = b.age_days / DAYS_PER_YEAR as f32;
+    let on = |hurting: bool, rate: f32| if hurting { rate } else { 0.0 };
+    [
+        on(n.food < STARVE_BELOW, STARVE_RATE * frail),
+        on(n.warmth < FREEZE_BELOW, FREEZE_RATE * frail),
+        0.0,
+        on(n.rest < EXHAUST_BELOW, EXHAUST_RATE),
+        on(years > OLD_AGE_YEARS, OLD_AGE_RATE * (years - OLD_AGE_YEARS)),
+    ]
+}
+
+/// Whether health mends: no harm but old age, fed and warm.
+fn heals(b: &Beaver, harm: &[f32; 5]) -> bool {
+    harm[..4].iter().all(|h| *h == 0.0) && b.needs.food > HEAL_ABOVE && b.needs.warmth > HEAL_ABOVE
+}
+
+/// What moves a beaver's needs, health and mood now, read the way the needs update reads it,
+/// for the HUD. Warmth, safety, company and mood head toward a target; food and rest change
+/// at a rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rates {
+    /// Food lost a day, and the level it eats below.
+    pub hunger: f32,
+    pub eat_below: f32,
+    /// Rest gained a day (lost when negative), how well it sleeps (1 in a sound lodge), and
+    /// whether it is resting off exhaustion.
+    pub rest: f32,
+    pub sleep: f32,
+    pub resting: bool,
+    /// Where warmth heads, the cold now (0 to 1) and the share of it the lodge keeps out.
+    pub warmth_to: f32,
+    pub cold: f32,
+    pub insulation: f32,
+    /// Where safety heads, and while working what lowers it: cells on land, and metres to water.
+    pub safety_to: f32,
+    pub exposure: Option<(f32, f32)>,
+    /// Where company heads, and the lodge-mates counted.
+    pub social_to: f32,
+    pub mates: usize,
+    /// Where mood heads, and the health factor on it.
+    pub mood_to: f32,
+    pub mood_health: f32,
+    /// Health lost a day to each harm, and gained a day while mending.
+    pub harm: [f32; 5],
+    pub heal: f32,
+    /// The yearly chance of dying of old age.
+    pub old_age_death: f32,
+    /// Days left before an unhappy beaver leaves.
+    pub leaves_in: Option<f32>,
+}
 
 fn day_of_year(time_days: f64) -> f64 {
     time_days.rem_euclid(DAYS_PER_YEAR)
@@ -613,7 +708,7 @@ impl Colony {
         self.update_work_safety(dt, &plan);
         self.update_needs(dt, cold, stores);
         self.age_and_stage(dt);
-        self.remove_dead();
+        self.remove_dead(dt);
         self.pair_and_disperse();
         self.leave_home();
         self.births(dt);
@@ -671,12 +766,49 @@ impl Colony {
     fn update_work_safety(&mut self, dt: f32, plan: &[Option<Work>]) {
         for i in 0..self.beavers.len() {
             let Some(w) = plan[i] else { continue };
-            let exposure = WORK_EXPOSURE_BASE + WORK_EXPOSURE_PER_LAND_CELL * w.eval.land_len
-                + WORK_EXPOSURE_PER_WATER_DIST * w.eval.water_dist.min(MAX_WATER_SCAN);
             let b = &mut self.beavers[i];
-            let target = (1.0 - SAFETY_EXPOSURE_SCALE * exposure).clamp(SAFETY_MIN, 1.0);
+            let target = work_safety(w.eval.land_len, w.eval.water_dist);
             b.needs.safety += (target - b.needs.safety) * (SAFETY_RATE * dt).min(1.0);
         }
+    }
+
+    /// What moves this beaver's needs, health and mood now (see `Rates`).
+    pub fn rates(&self, id: BeaverId, land: &dyn Landscape) -> Option<Rates> {
+        let b = self.beaver(id)?;
+        let insulation = insulation(&self.lodges, b);
+        let cold = ((COLD_BELOW_TEMP - temperature(self.time_days)) / COLD_RANGE).clamp(0.0, 1.0);
+        let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
+        let sleep = insulation.max(OPEN_REST);
+        let mut rest = rest_per_day(worked, sleep);
+        if b.resting {
+            rest += RESTING_RECOVERY * sleep;
+        }
+        let exposure = b.current_job.map(|_| {
+            let land_len = if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 };
+            (land_len, land.water_distance(b.pos.0, b.pos.1))
+        });
+        let mates = b.lodge.map_or(0, |l| self.beavers.iter().filter(|m| m.id != b.id && m.lodge == Some(l)).count()).min(SOCIAL_MAX_MATES);
+        let harm = harm_per_day(b);
+        Some(Rates {
+            hunger: HUNGER_PER_DAY,
+            eat_below: EAT_BELOW,
+            rest,
+            sleep,
+            resting: b.resting,
+            warmth_to: warmth_target(cold, insulation),
+            cold,
+            insulation,
+            safety_to: exposure.map_or(IDLE_SAFETY.min(1.0), |(l, d)| work_safety(l, d)),
+            exposure,
+            social_to: social_target(mates),
+            mates,
+            mood_to: mood_target(b),
+            mood_health: MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health,
+            harm,
+            heal: if heals(b, &harm) { HEAL_RATE } else { 0.0 },
+            old_age_death: old_age_hazard(b.age_years()),
+            leaves_in: (b.stage != Stage::Kit && b.mood < LOW_MOOD_BELOW).then(|| (DEPARTURE_BAD_MOOD_DAYS - b.low_mood_days).max(0.0)),
+        })
     }
 
     fn update_needs(&mut self, dt: f32, cold: f32, stores: &mut crate::buildings::Stores) {
@@ -689,8 +821,7 @@ impl Colony {
         use crate::buildings::{Good, Use};
         let eaten = &mut self.eaten;
         for b in self.beavers.iter_mut() {
-            let condition = b.lodge.and_then(|l| self.lodges.iter().find(|x| x.id == l)).map(|l| l.condition);
-            let insulation = condition.map_or(OPEN_INSULATION, |c| OPEN_INSULATION + LODGE_INSULATION * c);
+            let insulation = insulation(&self.lodges, b);
             let n = &mut b.needs;
 
             n.food = (n.food - HUNGER_PER_DAY * dt).max(0.0);
@@ -703,47 +834,31 @@ impl Colony {
             }
             let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
             let sleep = insulation.max(OPEN_REST);
-            n.rest = (n.rest - TIRE_RATE * worked * dt + SHELTER_REST_RATE * (1.0 - worked) * sleep * dt).clamp(0.0, 1.0);
+            n.rest = (n.rest + rest_per_day(worked, sleep) * dt).clamp(0.0, 1.0);
             if b.resting {
                 n.rest = (n.rest + RESTING_RECOVERY * sleep * dt).min(1.0);
                 b.resting = n.rest < RESUME_WORK_REST;
             } else if n.rest < EXHAUSTED_REST {
                 b.resting = true;
             }
-            n.warmth += (1.0 - cold * (1.0 - insulation) - n.warmth) * (WARMTH_RATE * dt).min(1.0);
+            n.warmth += (warmth_target(cold, insulation) - n.warmth) * (WARMTH_RATE * dt).min(1.0);
             if b.current_job.is_none() {
                 n.safety += (IDLE_SAFETY.min(1.0) - n.safety) * (SAFETY_RATE * dt).min(1.0);
             }
             let mates = b.lodge.map_or(0, |l| occupancy.get(&l).copied().unwrap_or(1) - 1).min(SOCIAL_MAX_MATES);
-            n.social += ((SOCIAL_BASE + SOCIAL_PER_MATE * mates as f32).min(1.0) - n.social) * (SOCIAL_RATE * dt).min(1.0);
+            n.social += (social_target(mates) - n.social) * (SOCIAL_RATE * dt).min(1.0);
 
-            let frail = if b.stage == Stage::Kit { KIT_FRAILTY } else { 1.0 };
-            let (mut loss, mut ageing) = (0.0, 0.0);
-            for (k, rate, hurting) in [
-                (0, STARVE_RATE * frail, n.food < STARVE_BELOW),
-                (1, FREEZE_RATE * frail, n.warmth < FREEZE_BELOW),
-                (3, EXHAUST_RATE, n.rest < EXHAUST_BELOW),
-                (
-                    4,
-                    OLD_AGE_RATE * (b.age_days / DAYS_PER_YEAR as f32 - OLD_AGE_YEARS),
-                    b.age_days > OLD_AGE_YEARS * DAYS_PER_YEAR as f32,
-                ),
-            ] {
-                if hurting {
-                    b.harm[k] += rate * dt;
-                    loss += rate * dt;
-                    if k == 4 {
-                        ageing += rate * dt;
-                    }
-                }
+            let harm = harm_per_day(b);
+            for (k, rate) in harm.iter().enumerate() {
+                b.harm[k] += rate * dt;
             }
-            b.health -= loss;
-            if b.health > 0.0 && loss == ageing && n.food > HEAL_ABOVE && n.warmth > HEAL_ABOVE {
+            b.health -= harm.iter().sum::<f32>() * dt;
+            if b.health > 0.0 && heals(b, &harm) {
                 b.health += HEAL_RATE * dt;
             }
             b.health = b.health.min(1.0);
 
-            b.mood += (n.mood() * (MOOD_HEALTH_BASE + MOOD_HEALTH_SCALE * b.health) - b.mood) * (MOOD_RATE * dt).min(1.0);
+            b.mood += (mood_target(b) - b.mood) * (MOOD_RATE * dt).min(1.0);
             b.low_mood_days = if b.mood < LOW_MOOD_BELOW { b.low_mood_days + dt } else { 0.0 };
         }
         let spoiled = (stores.amount(Good::Food) * FOOD_SPOILAGE * dt).min(stores.amount(Good::Food));
@@ -769,10 +884,18 @@ impl Colony {
         }
     }
 
-    fn remove_dead(&mut self) {
+    fn remove_dead(&mut self, dt: f32) {
+        let ages: Vec<f32> = self.beavers.iter().map(|b| b.age_days / DAYS_PER_YEAR as f32).collect();
+        let worn_out: Vec<bool> = ages
+            .into_iter()
+            .map(|years| {
+                let h = old_age_hazard(years);
+                h > 0.0 && self.unit() < 1.0 - (-h * dt / DAYS_PER_YEAR as f32).exp()
+            })
+            .collect();
         let mut dead = Vec::new();
-        for b in &self.beavers {
-            if b.age_days >= b.lifespan_days {
+        for (b, worn_out) in self.beavers.iter().zip(worn_out) {
+            if worn_out {
                 dead.push((b.id, DeathCause::OldAge, b.pos));
             } else if b.health <= 0.0 {
                 let (k, _) = b.harm.iter().enumerate().max_by(|a, c| a.1.total_cmp(c.1)).expect("non-empty");
@@ -901,6 +1024,48 @@ impl Colony {
         !ancestors(a).is_disjoint(&ancestors(b))
     }
 
+    /// Whether a female could conceive now, the season and the daily chance aside: `None` for
+    /// one that never could (male, young, too old, or already expecting), else the first thing
+    /// in the way.
+    fn can_breed(&self, m: &Beaver) -> Option<Result<(), &'static str>> {
+        if m.sex != Sex::Female || m.stage != Stage::Adult || m.age_years() >= MAX_BIRTH_AGE_YEARS || m.pregnancy.is_some() {
+            return None;
+        }
+        let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
+        let lodge = self.lodges.iter().find(|l| Some(l.id) == m.lodge && l.family == m.family);
+        let mate = m.mate.and_then(|id| self.beaver(id)).filter(|f| f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult && !self.close_relatives(m.id, f.id));
+        let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == m.lodge).count());
+        let daily_food = HUNGER_PER_DAY * (self.beavers.iter().map(|b| b.stage.food_weight()).sum::<f32>() + MIN_LITTER as f32 * KIT_FOOD_WEIGHT);
+        Some(if m.last_birth_year == birth_year {
+            Err("Had a litter this year")
+        } else if m.health < BREED_MIN_HEALTH {
+            Err("Too weak")
+        } else if m.needs.food < BREED_MIN_FOOD {
+            Err("Hungry")
+        } else if lodge.is_none() {
+            Err("No family lodge")
+        } else if lodge.is_some_and(|l| l.condition < BREED_MIN_HOME_CONDITION) {
+            Err("Lodge needs repair")
+        } else if mate.is_none() {
+            Err("No mate at home")
+        } else if room < MIN_LITTER as usize {
+            Err("Lodge full")
+        } else if self.food < daily_food * BIRTH_MIN_FOOD_DAYS {
+            Err("Food stores too low")
+        } else {
+            Ok(())
+        })
+    }
+
+    /// A female's chance a day of conceiving now, or what stops her; `None` for one that never
+    /// could (see `can_breed`).
+    pub fn conception(&self, id: BeaverId) -> Option<Result<f32, &'static str>> {
+        let ready = self.can_breed(self.beaver(id)?)?;
+        Some(ready.and_then(|()| {
+            if (MATING_FROM_DAY..MATING_TO_DAY).contains(&day_of_year(self.time_days)) { Ok(CONCEPTION_CHANCE_PER_DAY) } else { Err("Out of season") }
+        }))
+    }
+
     fn births(&mut self, dt: f32) {
         let due: Vec<_> = self
             .beavers
@@ -928,37 +1093,15 @@ impl Colony {
         if !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) {
             return;
         }
-        let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
         let candidates: Vec<_> = self
             .beavers
             .iter()
-            .filter(|m| {
-                m.sex == Sex::Female
-                    && m.stage == Stage::Adult
-                    && m.age_years() < MAX_BIRTH_AGE_YEARS
-                    && m.pregnancy.is_none()
-                    && m.last_birth_year != birth_year
-                    && m.health >= BREED_MIN_HEALTH
-                    && m.needs.food >= BREED_MIN_FOOD
-                    && self
-                        .lodges
-                        .iter()
-                        .any(|l| Some(l.id) == m.lodge && l.family == m.family && l.condition >= BREED_MIN_HOME_CONDITION)
-                    && m.mate.is_some_and(|id| {
-                        self.beaver(id).is_some_and(|f| {
-                            f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult && !self.close_relatives(m.id, f.id)
-                        })
-                    })
-            })
+            .filter(|m| self.can_breed(m) == Some(Ok(())))
             .map(|m| (m.id, m.mate.unwrap(), m.lodge))
             .collect();
         for (id, father, home) in candidates {
             let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == home).count());
-            let daily_food=HUNGER_PER_DAY*(self.beavers.iter().map(|b|b.stage.food_weight()).sum::<f32>()+MIN_LITTER as f32*KIT_FOOD_WEIGHT);
-            if room < MIN_LITTER as usize
-                || self.food < daily_food * BIRTH_MIN_FOOD_DAYS
-                || !self.chance(CONCEPTION_CHANCE_PER_DAY * dt)
-            {
+            if !self.chance(CONCEPTION_CHANCE_PER_DAY * dt) {
                 continue;
             }
             let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
@@ -1153,7 +1296,6 @@ impl Colony {
         let id = BeaverId(self.next_id);
         self.next_id += 1;
         let name = FIRST_NAMES[self.range(FIRST_NAMES.len() as u32) as usize].to_string();
-        let lifespan_days = (LIFESPAN_MIN_YEARS + LIFESPAN_SPREAD_YEARS * self.unit()) * DAYS_PER_YEAR as f32;
         let mut skills = [0.0; Job::ALL.len()];
         if age_days >= ADULT_DAYS {
             for s in skills.iter_mut() {
@@ -1178,7 +1320,6 @@ impl Colony {
             current_job: None,
             lodge,
             pos,
-            lifespan_days,
             stage: Stage::of_age_days(age_days),
             resting: false,
             last_birth_year: -1,

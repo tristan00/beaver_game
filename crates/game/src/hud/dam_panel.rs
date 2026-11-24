@@ -54,8 +54,18 @@ fn header(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
         portrait(r, health);
         r.col(7.0, |x| {
             x.bold("Dam", 16.0, INK);
-            x.pips(health, health_colour(health))
-            .tip(Tip::name("Condition").line("Worn cells", format!("{}", d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count())).with_value(format!("{:.0}%", health * 100.0)));
+            let mut tip = Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Worn cells", format!("{}", d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count()));
+            // Wear: the daily rate, then only what is acting on it now.
+            if let Some(w) = sim::dams::wear(s, d) {
+                tip = tip.line("Wear", format!("{:.2}%/day", (w.age + w.overtop) * 100.0)).line("Age", format!("{:.2}%/day", w.age * 100.0));
+                if w.overtopped > 0 {
+                    tip = tip.line("Overtopping", format!("{:.2}%/day", w.overtop * 100.0)).line("Overtopped cells", format!("{}", w.overtopped));
+                }
+                if w.faced > 1.005 {
+                    tip = tip.line("Pebble faced", format!("÷{:.2}", w.faced));
+                }
+            }
+            x.pips(health, health_colour(health)).tip(tip);
         });
         r.spacer();
         r.row(4.0, |y| {

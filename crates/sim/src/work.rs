@@ -62,14 +62,12 @@ pub enum Role {
     Build,
     Haul,
     /// Only in saves from before the forester's two seats became one; merged into `Forest` on load.
-    Tend,
-    /// Only in saves from before the forester's two seats became one; merged into `Forest` on load.
     Plant,
     /// Only in saves from before maintainers worked without seats; such seats are removed on
     /// load and whoever sat in them keeps the Maintainer role.
     Maintain,
     /// The forester: collects seedlings from grown trees in the area for its store, plants the
-    /// stored saplings there, and tends young trees and food plants when there is nothing else.
+    /// stored saplings there.
     Forest,
     /// The guard: keeps watch at its lookout and warns of wolves.
     Guard,

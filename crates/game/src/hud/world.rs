@@ -123,8 +123,11 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             tip.push(TipLine::new(doing, "").icon(icon, col));
             if let Some(a) = s.agents.get(id) {
                 if let Some(l) = &a.load {
-                    let _ = l;
-                    tip.push(TipLine::new("Carrying", "").icon(Icon::Haul, MUTED));
+                    tip.push(TipLine::new(good_name(l.good), num(l.amount)).icon(good_icon(l.good), good_color(l.good)));
+                    let walk = sim::agents::travel_pace(&s.nav, a);
+                    if (walk - 1.0).abs() > 0.005 {
+                        tip.push(TipLine::new("Walk", format!("×{walk:.2}")).icon(Icon::Walk, MUTED));
+                    }
                 }
             }
             let (mi, mc) = mood_icon(b.mood);
@@ -185,9 +188,6 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 if let Some(b) = s.buildings.building(p.building) {
                     tip.push(TipLine::new(format!("{}'s area", b.kind.spec().name), "").icon(Icon::Area, MUTED));
                 }
-            }
-            if r.tended_days > 0.0 {
-                tip.push(TipLine::new("Tended: grows", format!("×{}", num(sim::forestry::TENDED_GROWTH))).icon(Icon::Tend, GOOD));
             }
             if let Some(&(who, _)) = s.forestry.planted.get(&rid) {
                 let name = s.colony.beaver(who).map_or_else(|| "a beaver now gone".to_string(), |b| b.name.clone());
@@ -888,23 +888,46 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             (Selection::Beaver(b), true) => vec![b],
             _ => Vec::new(),
         };
-        if !picked.is_empty() {
-            if let (Some(c), Some(Thing::Cell(_))) = (hover.0, thing.1) {
-                let at = cell_world(h, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).with_y(height_at(h, c.0 as f32 + 0.5, c.1 as f32 + 0.5) + 0.15);
-                ring(&mut g, at, 0.4, Color::WHITE.with_alpha(0.8));
+        // Whatever the pointer is over gets the same white mark: a ring round a spot of ground,
+        // a plant, tree, clay bed, pebbles, beaver or lodge; an outline round a building.
+        let hover_col = Color::WHITE.with_alpha(0.8);
+        let at_ground = |x: f32, y: f32| cell_world(h, (x, y)).with_y(height_at(h, x, y) + 0.15);
+        match thing.0 {
+            Some(Thing::Resource(id)) => {
+                if let Some(r) = s.resources.get(id) {
+                    let big = matches!(r.kind, sim::resources::ResourceKind::Tree | sim::resources::ResourceKind::Felled);
+                    ring(&mut g, at_ground(r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5), if big { 0.6 } else { 0.45 }, hover_col);
+                }
             }
+            Some(Thing::Beaver(id)) => {
+                if let Some(b) = s.colony.beaver(id) {
+                    ring(&mut g, at_ground(b.pos.0, b.pos.1), 0.45, hover_col);
+                }
+            }
+            Some(Thing::Lodge(id)) => {
+                if let Some(l) = s.colony.lodges.iter().find(|l| l.id == id) {
+                    ring(&mut g, at_ground(l.pos.0, l.pos.1), 1.1, hover_col);
+                }
+            }
+            Some(Thing::Building(id)) => {
+                if let Some(b) = s.buildings.building(id) {
+                    for c in b.cells() {
+                        cell_outline(&mut g, h, c, None, hover_col);
+                    }
+                }
+            }
+            _ => {
+                if let (Some(c), Some(Thing::Cell(_))) = (hover.0, thing.1) {
+                    ring(&mut g, at_ground(c.0 as f32 + 0.5, c.1 as f32 + 0.5), 0.4, hover_col);
+                }
+            }
+        }
+        if !picked.is_empty() {
             for id in &picked {
                 if let Some(sim::agents::Assignment::Go(to)) = s.agents.get(*id).and_then(|a| a.assignment) {
                     let at = cell_world(h, (to.0 as f32 + 0.5, to.1 as f32 + 0.5)).with_y(height_at(h, to.0 as f32 + 0.5, to.1 as f32 + 0.5) + 0.15);
                     ring(&mut g, at, 0.4, ACCENT);
                     ring(&mut g, at, 0.3, ACCENT);
-                }
-            }
-        }
-        if let Some(Thing::Building(id)) = thing.0 {
-            if let Some(b) = s.buildings.building(id) {
-                for c in b.cells() {
-                    cell_outline(&mut g, h, c, None, Color::WHITE.with_alpha(0.5));
                 }
             }
         }

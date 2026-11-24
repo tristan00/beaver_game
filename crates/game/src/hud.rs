@@ -324,9 +324,6 @@ impl HudState {
         self.drag_from = dragging.then(|| corners[0]);
         self.corners = if dragging { corners[..1].to_vec() } else { corners };
     }
-    pub fn undo_is_empty(&self) -> bool {
-        self.undo.is_empty()
-    }
 }
 
 #[derive(Resource, Default)]
@@ -584,7 +581,6 @@ pub enum HudAction {
     CycleIdle,
     Pause,
     Speed(Speed),
-    Harvest(Harvest),
     Pick(BuildingKind),
     CancelTool,
     GrowDam(BuildingId, sim::DamGrowth),
@@ -600,7 +596,6 @@ pub enum HudAction {
     ConfirmLine,
     CloseInspector,
     SetLens(MapLens),
-    Undo,
     Colony(Option<ColonyTab>),
     Ledger(Option<LedgerTab>),
     Span(Span),

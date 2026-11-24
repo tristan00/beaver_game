@@ -14,7 +14,7 @@ pub enum RoleKind {
     MudDigger,
     Builder,
     Hauler,
-    /// Tends and plants the woods round a food store.
+    /// Collects seedlings and plants the woods round its store.
     Forester,
     /// Repairs and refits buildings and keeps dams and canals in order.
     Maintainer,
@@ -64,7 +64,7 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Collect(k) => gather_role(k),
         Role::Build => RoleKind::Builder,
         Role::Haul => RoleKind::Hauler,
-        Role::Tend | Role::Plant | Role::Forest => RoleKind::Forester,
+        Role::Plant | Role::Forest => RoleKind::Forester,
         Role::Maintain => RoleKind::Maintainer,
         Role::Guard => RoleKind::Guard,
     }

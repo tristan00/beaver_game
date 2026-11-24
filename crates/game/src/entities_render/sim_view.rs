@@ -90,7 +90,7 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
         },
         Task::Build { .. } | Task::DamWork { .. } => Pose::Work,
         Task::Mend { .. } => Pose::Mend,
-        Task::Tend { .. } | Task::Seed { .. } => Pose::Forage,
+        Task::Seed { .. } => Pose::Forage,
         Task::Plant { .. } => Pose::Dig,
         Task::Dig { .. } => Pose::Dig,
         Task::Gate { .. } => Pose::Work,

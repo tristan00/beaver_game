@@ -141,11 +141,6 @@ pub(super) fn button_actions(
                 clock.set_speed(sp);
                 hud.set_changed();
             }
-            HudAction::Harvest(h) => {
-                let t = Tool::Harvest(h);
-                let next = if hud.tool == t { Tool::None } else { t };
-                hud.set_tool(next);
-            }
             HudAction::Pick(kind) if s.unlocked(kind).is_err() => {}
             HudAction::Pick(kind) => {
                 let t = match kind {
@@ -214,7 +209,6 @@ pub(super) fn button_actions(
                 *lens = l;
                 hud.set_changed();
             }
-            HudAction::Undo => undo_last(s, &mut hud, now),
             HudAction::BeaverDetails(who) => {
                 hud.details = who;
                 hud.scroll = 0;

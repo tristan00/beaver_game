@@ -52,8 +52,8 @@ fn describe_into(out: &mut String, b: &Beaver) {
     let n = &b.needs;
     let h = b.harm();
     let _ = write!(out,
-        "id={} name={:?} sex={:?} age_days={:.1} stage={:?} lifespan_days={:.0} health={:.3} harm[starve={:.3} cold={:.3} injury={:.3} exhaust={:.3} old={:.3}] needs[food={:.3} rest={:.3} warmth={:.3} safety={:.3} social={:.3}] mood={:.3} low_mood_days={:.1} resting={} job={:?} current_job={:?} lodge={:?} family={:?} mate={:?} pregnant={} pos=({:.1},{:.1})",
-        b.id.0, b.name, b.sex, b.age_days, b.stage, b.lifespan_days, b.health, h[0], h[1], h[2], h[3], h[4],
+        "id={} name={:?} sex={:?} age_days={:.1} stage={:?} health={:.3} harm[starve={:.3} cold={:.3} injury={:.3} exhaust={:.3} old={:.3}] needs[food={:.3} rest={:.3} warmth={:.3} safety={:.3} social={:.3}] mood={:.3} low_mood_days={:.1} resting={} job={:?} current_job={:?} lodge={:?} family={:?} mate={:?} pregnant={} pos=({:.1},{:.1})",
+        b.id.0, b.name, b.sex, b.age_days, b.stage, b.health, h[0], h[1], h[2], h[3], h[4],
         n.food, n.rest, n.warmth, n.safety, n.social, b.mood, b.low_mood_days(), b.resting, b.job, b.current_job,
         b.lodge.map(|l| l.0), b.family.0, b.mate.map(|m| m.0), b.pregnancy.is_some(), b.pos.0, b.pos.1
     );

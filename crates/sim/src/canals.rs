@@ -153,7 +153,7 @@ impl Plan {
         self.cells.iter().map(|c| visits_for(c.ground, c.target)).sum()
     }
     pub fn labour_days(&self) -> f32 {
-        self.visits() as f32 * DIG_WORK
+        dig_days(self.visits())
     }
     pub fn clay(&self) -> f32 {
         self.visits() as f32 * CLAY_PER_STEP
@@ -303,7 +303,11 @@ fn approach_channel(sim: &SimState, from: Cell, bed: f32, avoid: &[Cell]) -> Vec
 }
 
 pub fn check(plan: &Plan) -> Result<(), String> {
-    if plan.too_deep.is_empty() { Ok(()) } else { Err(format!("Cut deeper than {MAX_CUT} m at {} cells", plan.too_deep.len())) }
+    if plan.too_deep.is_empty() {
+        return Ok(());
+    }
+    let over = plan.cells.iter().map(|c| c.ground - c.target - MAX_CUT).fold(0.0, f32::max);
+    Err(format!("Land {:.1} m too high", (over * 10.0).ceil().max(1.0) / 10.0))
 }
 
 /// Draw a new canal; diggers then work every cell.
@@ -575,11 +579,16 @@ pub fn plan_growth(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &
     Ok(out)
 }
 
+/// Beaver-days of digging, at pace ×1, for this many visits (walking not counted).
+pub fn dig_days(visits: usize) -> f32 {
+    visits as f32 * DIG_WORK / crate::work::LABOUR_PER_DAY
+}
+
 /// Labour a growth adds, in beaver-days.
 pub fn growth_labour(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &[Cell]) -> Result<f32, String> {
     let before: usize = canal(sim, id).map(|k| k.cells.iter().map(|c| visits_for(ground(sim, c.cell), c.target)).sum()).unwrap_or(0);
     let after: usize = plan_growth(sim, id, growth, cells)?.iter().map(|c| visits_for(ground(sim, c.cell), c.target)).sum();
-    Ok(after.saturating_sub(before) as f32 * DIG_WORK)
+    Ok(dig_days(after.saturating_sub(before)))
 }
 
 pub fn set_maintain(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> {
@@ -635,6 +644,17 @@ pub fn step(sim: &mut SimState, dt: f32) {
     }
 }
 
+/// Whether water runs through a canal cell, which silts it faster.
+pub fn running(sim: &SimState, c: Cell) -> bool {
+    let (u, v) = sim.water.velocity.get(c.0, c.1).copied().unwrap_or((0.0, 0.0));
+    depth(sim, c) > WET_DEPTH && u.hypot(v) > 0.02
+}
+
+/// Silt a dug canal cell gathers a day; it fills by `SILT_STEP` at a time.
+pub fn silt_per_day(sim: &SimState, c: Cell) -> f32 {
+    SILT_PER_DAY * if running(sim, c) { SILT_RUNNING_FACTOR } else { 1.0 }
+}
+
 fn silt(sim: &mut SimState, id: BuildingId, dt: f32) {
     let Some(k) = canal(sim, id) else { return };
     let mut fills = Vec::new();
@@ -645,9 +665,7 @@ fn silt(sim: &mut SimState, id: BuildingId, dt: f32) {
             silts.push(c.silt);
             continue;
         }
-        let (u, v) = sim.water.velocity.get(c.cell.0, c.cell.1).copied().unwrap_or((0.0, 0.0));
-        let running = depth(sim, c.cell) > WET_DEPTH && u.hypot(v) > 0.02;
-        let mut s = c.silt + SILT_PER_DAY * dt * if running { SILT_RUNNING_FACTOR } else { 1.0 };
+        let mut s = c.silt + silt_per_day(sim, c.cell) * dt;
         if s >= SILT_STEP {
             fills.push((c.cell, SILT_STEP, c.ground));
             s -= SILT_STEP;

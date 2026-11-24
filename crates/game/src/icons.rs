@@ -35,7 +35,7 @@ icons! {
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Upstream, Gauge,
     Widen, Extend,
-    Pebbles, Sapling, Larder, Tend, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
+    Pebbles, Sapling, Larder, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
     Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Barge,
 }
 
@@ -829,11 +829,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(poly(&[(4.0, 28.0), (32.0, 8.0), (60.0, 28.0)]).grow(1.5));
             c.add(rect_c(9.0, 32.0, 55.0, 58.0, 3.0));
             c.cut_part(32.0, 46.0, 0.42, 0.0, 0.0, berries);
-        }
-        Tend => {
-            c.part(25.0, 34.0, 0.8, 0.0, 0.0, sapling);
-            c.add(seg(51.0, 52.0, 51.0, 16.0, 5.0));
-            c.add(polyline(&[(42.0, 25.0), (51.0, 15.0), (60.0, 25.0)], 5.0));
         }
         RoleForester => role(c, 0.0, sapling),
         Wolf => {

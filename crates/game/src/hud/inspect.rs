@@ -138,7 +138,6 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
         Some(Task::DamWork { .. }) => (Icon::Dam, GOOD, "Building the dam"),
         Some(Task::Dig { .. }) => (Icon::Canal, GOOD, "Digging a canal"),
         Some(Task::Gate { .. }) => (Icon::Dam, GOOD, "Setting a gate"),
-        Some(Task::Tend { .. }) => (Icon::Tend, GOOD, "Tending"),
         Some(Task::Seed { .. }) => (Icon::Sapling, GOOD, "Collecting seedlings"),
         Some(Task::Plant { .. }) => (Icon::Sapling, GOOD, "Planting"),
         // Home but not tired: its job has nothing for it to do just now.
@@ -243,7 +242,14 @@ fn site_rows(c: &Ctx, u: &mut Ui, id: BuildingId) -> bool {
         r.icon(Icon::Hammer, 16.0, MUTED);
         r.notches(site.fraction(), 10, 200.0, 12.0, ACCENT);
     })
-    .tip(Tip::name("Built").line("Labour", format!("{} / {}", num(site.labour_done), num(site.labour_needed))));
+    .tip({
+        let mut tip = Tip::name("Built").line("Labour", format!("{} / {}", num(site.labour_done), num(site.labour_needed)));
+        let (crew, rate) = sim::agents::site_crew(s, id);
+        if crew > 0 && rate > 0.0 {
+            tip = tip.line("Builders", format!("{crew}")).line("A day", num(rate)).line("Done in", days((site.labour_needed - site.labour_done).max(0.0) / rate));
+        }
+        tip
+    });
     u.row(14.0, |r| {
         for a in &site.needed {
             let got = a.1 - site.missing(a.0);
@@ -271,7 +277,16 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
         (false, true) => "Clay reinforced",
         _ => "Timber",
     };
-    let tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(made, format!("{:.0}%", b.condition * 100.0));
+    let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(made, format!("{:.0}%", b.condition * 100.0));
+    // Wear: the daily rate, then only the factors acting on it now.
+    if let Some(w) = sim::maintenance::wear(s, b) {
+        tip = tip.line("Wear", format!("{:.2}%/day", w.per_day() * 100.0)).line("Base", format!("{:.2}%/day", w.base * 100.0));
+        for (label, f, op) in [("Cold", w.cold, "×"), ("Flooded", w.flooded, "×"), ("Clay reinforced", w.reinforced, "÷"), ("Pebble faced", w.pebbled, "÷")] {
+            if (f - 1.0).abs() > 0.005 {
+                tip = tip.line(label, format!("{op}{f:.2}"));
+            }
+        }
+    }
     let cond = b.is_complete().then_some(b.condition);
     frame(c, sel, building_icon(b.kind), MUD, name, cond, tip, |u| {
         let building = site_rows(c, u, id);
@@ -293,7 +308,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 fill_row(s, u, id);
                 if let Some(pl) = s.work.place(id) {
                     for (i, sl) in pl.slots.iter().enumerate() {
-                        let (name, does) = ("Forester", "Collects seedlings, plants them, tends trees");
+                        let (name, does) = ("Forester", "Collects seedlings and plants them");
                         u.row(8.0, |r| {
                             r.icon(role_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name).line(does, ""));
                             match sl.worker.and_then(|w| s.colony.beaver(w)) {
@@ -502,42 +517,23 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                         TreeStage::Young => (forestry::YOUNG_AGE, forestry::MATURE_AGE),
                         _ => (forestry::MATURE_AGE, forestry::OLD_AGE),
                     };
-                    let ground = forestry::ground_growth(s, r.cell);
-                    let tend = if r.tended_days > 0.0 { forestry::TENDED_GROWTH } else { 1.0 };
+                    // Only the factors acting on its growth now.
+                    let mut grow = Tip::name(format!("{} in", stage_name(next))).with_value(days(left));
+                    for (label, f) in [("Species", sp.spec().growth), ("Ground", forestry::ground_growth(s, r.cell))] {
+                        if (f - 1.0).abs() > 0.005 {
+                            grow = grow.line(label, format!("×{}", num(f)));
+                        }
+                    }
+                    if sim::calendar::Season::at(s.time_days) == sim::calendar::Season::Winter {
+                        grow = grow.line("Winter", "×0");
+                    }
                     u.row(8.0, |x| {
                         x.icon(Icon::Hourglass, 16.0, MUTED);
                         x.notches((r.age_days - from) / (to - from), 10, 170.0, 12.0, GOOD);
                         x.spacer();
                         x.bold(days(left), 13.0, INK);
                     })
-                    .tip(Tip::name(format!("{} in", stage_name(next))).with_value(days(left)).line("Species growth", format!("×{}", num(sp.spec().growth))).line("Ground", format!("×{}", num(ground))).line("Forester's tending", format!("×{}", num(tend))).line("Winter", "×0"));
-                }
-                // A forester's care: tended trees grow faster for a while; and the forester
-                // whose area it is in.
-                let tended = r.tended_days > 0.0;
-                let forester = s.work.places.iter().filter(|p| p.area.is_some_and(|a| a.contains(r.cell))).filter_map(|p| s.buildings.building(p.building)).find(|b| b.kind == BuildingKind::Forester);
-                if tended || forester.is_some() {
-                    let mut tip = Tip::name("Forester's care");
-                    tip = if tended {
-                        tip.line("Tended: grows", format!("×{}", num(forestry::TENDED_GROWTH))).line("For", days(r.tended_days))
-                    } else {
-                        tip.line("Not tended lately", "×1")
-                    };
-                    if forester.is_some() {
-                        tip = tip.line("In a forester's area", "");
-                    }
-                    u.row(8.0, |x| {
-                        x.icon(Icon::Tend, 16.0, if tended { GOOD } else { MUTED });
-                        x.bold(format!("×{}", num(if tended { forestry::TENDED_GROWTH } else { 1.0 })), 13.0, if tended { INK } else { MUTED });
-                        x.spacer();
-                        if tended {
-                            x.bold(days(r.tended_days), 13.0, MUTED);
-                        }
-                        if let Some(b) = forester {
-                            x.pebble(building_icon(b.kind), 12.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name(b.kind.spec().name).line("Show", ""));
-                        }
-                    })
-                    .tip(tip);
+                    .tip(grow);
                 }
                 // Who planted it, and when.
                 if let Some(&(who, day)) = s.forestry.planted.get(&id) {
@@ -585,7 +581,13 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                     x.spacer();
                     x.bold(format!("{} m", num(limit)), 13.0, INK);
                 })
-                .tip(Tip::name(if drown.is_some() { "Drowning" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("Stands up to", format!("{} m", num(limit))));
+                .tip({
+                    let tip = Tip::name(if drown.is_some() { "Drowning" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("Stands up to", format!("{} m", num(limit)));
+                    match drown {
+                        Some(d) => tip.line("Dies in", days((1.0 - d) * forestry::drown_days(stage, sp))),
+                        None => tip,
+                    }
+                });
             }))
         }
         ResourceKind::Felled => {
@@ -596,10 +598,24 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
         }
         _ => {
             let good = match r.kind {
-                ResourceKind::Plant => Good::Food,
+                k if k.is_food_plant() => Good::Food,
                 ResourceKind::Pebbles => Good::Pebbles,
                 _ => Good::Clay,
             };
+            // What refills it a day now.
+            let mut amount = Tip::name(good_name(good)).with_value(format!("{} / {}", num(r.amount), num(r.max_amount)));
+            if r.kind.is_food_plant() {
+                let growth = sim::calendar::vegetation_growth(s.time_days);
+                let net = sim::resources::plant_regrow(r, growth) - sim::resources::plant_decay(growth) * r.amount;
+                amount = amount.line("A day", format!("{net:+.2}"));
+                if !r.wet {
+                    amount = amount.line("Dry ground", "×0");
+                } else if (growth - 1.0).abs() > 0.005 {
+                    amount = amount.line("Season", format!("×{growth:.2}"));
+                }
+            } else if r.kind == ResourceKind::RiverClay {
+                amount = if r.wet { amount.line("A day", format!("+{:.2}", sim::resources::RIVER_CLAY_PER_DAY)) } else { amount.line("Not flowing", "×0") };
+            }
             Some(frame(c, sel, resource_icon(r.kind), good_color(good), resource_name(r.kind).to_string(), None, Tip::name(resource_name(r.kind)), |u| {
                 u.row(8.0, |x| {
                     x.icon(good_icon(good), 16.0, good_color(good));
@@ -607,7 +623,7 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                     x.spacer();
                     x.bold(num(r.amount), 13.0, INK);
                 })
-                .tip(Tip::name(good_name(good)).with_value(format!("{} / {}", num(r.amount), num(r.max_amount))));
+                .tip(amount);
             }))
         }
     }

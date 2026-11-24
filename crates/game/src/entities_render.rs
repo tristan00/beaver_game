@@ -5,7 +5,6 @@ mod meshgen;
 mod models;
 pub mod portrait;
 mod scene;
-mod silhouette;
 mod structures;
 mod wildlife;
 pub mod sim_sync;
@@ -30,6 +29,13 @@ const TREE_LOD1: f32 = 480.0;
 const SCREENSHOT_CLOCK: f32 = 31.0;
 /// How much bigger than its share of the load a carried good is drawn.
 const LOAD_LOOK: f32 = 1.5;
+
+/// A beaver setting a load down on the ground: it bows to put it down until `until` (render
+/// clock), whatever the sim says it is doing (its load is already on the ground there).
+#[derive(Component)]
+pub struct SetDown {
+    pub until: f32,
+}
 pub struct EntitiesRenderPlugin;
 
 impl Plugin for EntitiesRenderPlugin {
@@ -42,7 +48,6 @@ impl Plugin for EntitiesRenderPlugin {
             .init_resource::<sim_sync::PendingDays>()
             .add_plugins(wolf::WolfPlugin)
             .add_plugins(wildlife::WildlifePlugin)
-            .add_plugins(silhouette::SilhouettePlugin)
             .add_plugins(portrait::PortraitPlugin)
             .add_systems(Startup, init_models)
             .add_systems(
@@ -72,7 +77,7 @@ impl Plugin for EntitiesRenderPlugin {
                     .chain()
                     .after(crate::terrain_render::update_season),
             )
-            .add_systems(Update, (effects::grow, effects::puffs).chain().after(topple_trees))
+            .add_systems(Update, (effects::grow, effects::puffs, effects::falls).chain().after(topple_trees))
             .add_systems(Startup, harbor::init_harbor_meshes)
             .add_systems(Update, (harbor::sync_locks, harbor::sync_barges, harbor::animate_locks).chain().after(sim_sync::sync_sim_dams));
     }
@@ -386,9 +391,8 @@ fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::te
     }
 }
 
-fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Option<Res<silhouette::SilhouetteMat>>, mut mats: ResMut<Assets<StandardMaterial>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
-    let (Some(m), Some(ghost)) = (models, ghost) else { return };
-    let ghost = &ghost.0;
+fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, mut mats: ResMut<Assets<StandardMaterial>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
+    let Some(m) = models else { return };
     let plain = mats.get(&m.white).cloned().unwrap_or_default();
     for (root, sprite) in &q {
         // Its own fur; what it carries and the like keep their own colours.
@@ -418,18 +422,11 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Optio
             chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(loads.clone()), Transform::default(), Visibility::Hidden)).id();
             grey = p.spawn((Mesh3d(m.grey.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
-        // Each part's silhouette, seen through trees in front of it.
-        for (e, mesh) in [(body_mesh, &m.body), (parts[0], &m.head), (parts[1], &m.tail), (parts[2], &m.leg_front), (parts[3], &m.leg_front), (parts[4], &m.leg_hind), (parts[5], &m.leg_hind)] {
-            let mesh = mesh.clone();
-            commands.entity(e).with_children(|p| silhouette::twin(p, mesh, ghost));
-        }
         commands.entity(root).with_children(|p| {
             far = p.spawn((target, Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             wake = p.spawn((Mesh3d(m.wake.clone()), MeshMaterial3d(m.wake_mat.clone()), Transform::from_xyz(0.0, 0.04, 1.15), Visibility::Hidden)).id();
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });
-        let far_mesh = m.far.clone();
-        commands.entity(far).with_children(|p| silhouette::twin(p, far_mesh, ghost));
         commands.entity(root).insert(BeaverRig {
             body, body_mesh, far, parts, mouth, paws, lids, chips, grey, wake, blob,
             prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, shown: (None, None),
@@ -901,7 +898,7 @@ fn animate_beavers(
     clock: Res<RenderClock>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
-    mut roots: Query<(&mut Transform, &mut BeaverRig, &BeaverSprite)>,
+    mut roots: Query<(&mut Transform, &mut BeaverRig, &BeaverSprite, Option<&SetDown>)>,
     mut parts: Query<&mut Transform, Without<BeaverRig>>,
     mut vis: Query<&mut Visibility, Without<BeaverRig>>,
     mut meshes: Query<&mut Mesh3d, Without<BeaverRig>>,
@@ -917,7 +914,9 @@ fn animate_beavers(
             v.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
         }
     };
-    for (mut tr, mut rig, sprite) in &mut roots {
+    for (mut tr, mut rig, sprite, set_down) in &mut roots {
+        // Setting a load down shows as the put-down bow, whatever the sim moved on to.
+        let pose = if set_down.is_some_and(|d| clock.0 < d.until) { Pose::Handle } else { sprite.pose };
         let target_rot = Quat::from_rotation_y(sprite.yaw);
         tr.rotation = if rig.init { tr.rotation.slerp(target_rot, turn) } else { target_rot };
         let size = (tr.scale.x / sim_sync::BEAVER_SIZE).max(0.1);
@@ -935,8 +934,8 @@ fn animate_beavers(
         rig.stride += (moved / stride * std::f32::consts::TAU).min(MAX_STRIDE_HZ * std::f32::consts::TAU * dt.max(1e-4));
 
         let near = cam_pos.is_none_or(|c| c.distance(tr.translation) < BEAVER_NEAR);
-        let swimming = sprite.pose == Pose::Swim;
-        let wet = shows_wake(sprite.pose, sprite.wet);
+        let swimming = pose == Pose::Swim;
+        let wet = shows_wake(pose, sprite.wet);
         if near != rig.near || !rig.init {
             rig.near = near;
             show(&mut vis, rig.body, near);
@@ -949,9 +948,9 @@ fn animate_beavers(
                 t.translation.y = if swimming { SWIM_DEPTH } else { hop };
             }
         }
-        if sprite.pose != rig.cur {
+        if pose != rig.cur {
             rig.prev = rig.cur;
-            rig.cur = sprite.pose;
+            rig.cur = pose;
             rig.blend = if rig.init { 0.0 } else { 1.0 };
         }
         rig.blend = (rig.blend + dt * 5.0).min(1.0);
@@ -967,7 +966,7 @@ fn animate_beavers(
         }
         let good = sprite.load.map(|l| l.0);
         // Swimming and climbing need the forepaws, so then everything is carried in the teeth.
-        let paws_free = !matches!(sprite.pose, Pose::Swim | Pose::Climb);
+        let paws_free = !matches!(pose, Pose::Swim | Pose::Climb);
         let hug = paws_free && good.is_some_and(held_in_paws);
         // Loads are drawn larger than life so what a beaver carries reads from the usual camera.
         let load_scale = sprite.load.map_or(1.0, |(g, amount)| LOAD_LOOK * (0.75 + 0.5 * (amount / sim::agents::load_size(g)).clamp(0.0, 1.0)));
@@ -1050,8 +1049,8 @@ fn update_tree_lod(
     let (Some(models), Some(cam)) = (models, cam.iter().next()) else { return };
     let c = cam.translation();
     let (l0, l1) = (TREE_LOD0 * TREE_LOD0, TREE_LOD1 * TREE_LOD1);
-    // Beavers behind trees show through as silhouettes (see `silhouette`); trees are cut away
-    // only round a selected building and where something is being placed.
+    // Trees are cut away only round a selected building and where something is being placed;
+    // a beaver behind a tree is simply hidden by it.
     let mut clear: Vec<Vec3> = Vec::new();
     if let Some(crate::flow::Selection::Site(id)) = selection.as_deref().copied() {
         if let Some(b) = sim.0.buildings.building(id) {

@@ -23,7 +23,7 @@ pub enum Command {
     ReinforceBuilding { building: buildings::BuildingId },
     /// Face a dam or building with pebbles so it wears and erodes more slowly.
     PebbleBuilding { building: buildings::BuildingId },
-    /// Switch one worker slot (a food store's tending or planting) on or off.
+    /// Switch one worker slot on or off.
     SetSlotOff { building: buildings::BuildingId, slot: usize, off: bool },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },

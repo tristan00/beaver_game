@@ -994,13 +994,26 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
                 sapling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
             }
         }
-        // Leafy sprigs and bark strips in a loose heap.
+        // A cache of cut food left on the ground, made to read apart from a growing plant: a patch
+        // of trodden earth, cut branches laid crosswise (peeled white and in their bark), curls
+        // of stripped bark, and bundled greens heaped in a mound on top.
         Good::Food => {
-            for k in 0..7 {
-                let a = k as f32 * 0.9;
-                let (x, z) = (0.25 * a.cos(), 0.25 * a.sin());
-                stick_c(&mut mb, v(x - 0.25 * a.sin(), 0.04, z + 0.25 * a.cos()), v(x + 0.25 * a.sin(), 0.08, z - 0.25 * a.cos()), 0.025, hex(0x6f8a3a));
-                mb.ellipsoid_r(v(x, 0.1 + 0.03 * (k % 3) as f32, z), v(0.16, 0.04, 0.09), Quat::from_rotation_y(a), mix(col(palette::LEAF), col(palette::LEAF_LIGHT), 0.3 * (k % 3) as f32));
+            mb.disc(v(0.0, 0.015, 0.0), 0.56, 0.5, mix(col(palette::MUD_DARK), col(palette::BARK), 0.3), 14);
+            let mut r = Rng(77);
+            for k in 0..6 {
+                let a = k as f32 * 1.05 + r.range(-0.2, 0.2);
+                let (dx, dz) = (0.44 * a.cos(), 0.44 * a.sin());
+                let y = 0.05 + 0.045 * (k / 2) as f32;
+                let c = if k % 2 == 0 { col(palette::CUT_WOOD) } else { col(palette::BARK_LIGHT) };
+                stick_c(&mut mb, v(-dx, y, -dz), v(dx, y + 0.03, dz), 0.035, c);
+            }
+            for k in 0..4 {
+                let a = k as f32 * 1.6 + 0.4;
+                mb.ellipsoid_r(v(0.34 * a.cos(), 0.06, 0.34 * a.sin()), v(0.12, 0.025, 0.05), Quat::from_rotation_y(a + 0.6), col(palette::BARK));
+            }
+            let dark = mix(col(palette::LEAF), col(palette::BARK_DARK), 0.25);
+            for (x, z, y, k) in [(0.0f32, 0.0f32, 0.2f32, 1.0f32), (0.15, 0.08, 0.15, 0.8), (-0.14, 0.1, 0.14, 0.8), (0.05, -0.15, 0.14, 0.75), (-0.08, -0.07, 0.27, 0.6)] {
+                mb.ellipsoid_g(v(x, y, z), v(0.18 * k, 0.11 * k, 0.15 * k), dark, col(palette::LEAF_LIGHT), 7, 5);
             }
         }
     }

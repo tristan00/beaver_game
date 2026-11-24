@@ -240,24 +240,49 @@ fn unsite_old_repairs(s: &mut SimState) {
     }
 }
 
-pub fn step(s: &mut SimState, dt: f32) {
-    unsite_old_repairs(s);
+/// What wears a building down each day: the base rate for its kind, times the cold and a
+/// flooding, divided by clay reinforcement and pebble facing. Every factor is 1 when it does
+/// not apply. Dams wear cell by cell in the water model instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wear { pub base: f32, pub cold: f32, pub flooded: f32, pub reinforced: f32, pub pebbled: f32 }
+
+impl Wear {
+    /// Condition lost a day, as a share of full.
+    pub fn per_day(&self) -> f32 {
+        self.base * self.cold * self.flooded / (self.reinforced * self.pebbled)
+    }
+}
+
+pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
+    if !b.is_complete() || b.kind == K::Dam {
+        return None;
+    }
     let temp=(std::f64::consts::TAU*(s.time_days-crate::tuning::colony::MIDSUMMER_DAY)/crate::calendar::YEAR_DAYS).cos() as f32;
     let cold=((crate::tuning::colony::COLD_BELOW_TEMP-temp)/crate::tuning::colony::COLD_RANGE).clamp(0.0,1.0);
-    let pebbled=s.buildings.pebbled.clone();
-    let depth=&s.water.depth;
-    for b in &mut s.buildings.buildings {
-        if !b.is_complete() {continue;}
-        let drowned=crate::buildings::flooded(b,depth);
-        if b.kind!=K::Dam {
-            let wear=if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY};
-            // Too deep under water, a building wears away fast.
-            let loss=wear*(1.0+COLD_WEAR_SCALE*cold)*if drowned {FLOODED_WEAR_SCALE} else {1.0};
-            let faced=if pebbled.contains(&b.id) {crate::buildings::PEBBLE_FACTOR} else {1.0};
-            b.condition=(b.condition-loss*dt/(b.durability()*faced)).max(0.0);
+    Some(Wear {
+        base: if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY},
+        cold: 1.0+COLD_WEAR_SCALE*cold,
+        // Too deep under water, a building wears away fast.
+        flooded: if crate::buildings::flooded(b,&s.water.depth) {FLOODED_WEAR_SCALE} else {1.0},
+        reinforced: b.durability(),
+        pebbled: if s.buildings.pebbled.contains(&b.id) {crate::buildings::PEBBLE_FACTOR} else {1.0},
+    })
+}
+
+pub fn step(s: &mut SimState, dt: f32) {
+    unsite_old_repairs(s);
+    let rates: Vec<Option<f32>> = s.buildings.buildings.iter().map(|b| wear(s, b).map(|w| w.per_day())).collect();
+    for (b, rate) in s.buildings.buildings.iter_mut().zip(rates) {
+        if let Some(rate) = rate {
+            b.condition=(b.condition-rate*dt).max(0.0);
         }
+    }
+    let depth=&s.water.depth;
+    for b in &s.buildings.buildings {
+        if !b.is_complete() {continue;}
         if let Some(home)=s.work.homes.get(&b.id).copied() {
             // A flooded lodge keeps no one warm.
+            let drowned=crate::buildings::flooded(b,depth);
             if let Some(l)=s.colony.lodges.iter_mut().find(|l|l.id==home) {l.condition=if drowned {0.0} else {b.condition};}
         }
     }

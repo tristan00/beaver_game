@@ -685,6 +685,29 @@ pub fn step(sim: &mut SimState) {
     }
 }
 
+/// How the dam's built cells wear, averaged over them, per day: from age, from water
+/// running over the crest, and the pebble facing that divides both; with how many cells are
+/// being overtopped now.
+pub struct DamWear { pub age: f32, pub overtop: f32, pub faced: f32, pub overtopped: usize }
+
+pub fn wear(sim: &SimState, d: &Dam) -> Option<DamWear> {
+    let n = sim.height.width();
+    let cells: Vec<Cell> = d.cells.iter().map(|c| c.cell).filter(|&c| built(sim, c) > 0.0 && !is_gate(d, c)).collect();
+    if cells.is_empty() {
+        return None;
+    }
+    let k = cells.len() as f32;
+    let (mut age, mut overtop, mut faced, mut overtopped) = (0.0, 0.0, 0.0, 0);
+    for c in &cells {
+        let (a, o) = sim.water.dam_cell_wear(&sim.height, c.1 * n + c.0);
+        age += a;
+        overtop += o;
+        overtopped += usize::from(o > 0.0);
+        faced += sim.water.dam_durability.get(c.0, c.1).copied().unwrap_or(1.0).max(1.0);
+    }
+    Some(DamWear { age: age / k, overtop: overtop / k, faced: faced / k, overtopped })
+}
+
 /// Mean condition of the built part, 1 when nothing is built yet. Gates don't wear.
 pub fn health(sim: &SimState, d: &Dam) -> f32 {
     let built: Vec<f32> = d.cells.iter().filter(|c| built(sim, c.cell) > 0.0 && !is_gate(d, c.cell)).map(|c| integrity(sim, c.cell)).collect();

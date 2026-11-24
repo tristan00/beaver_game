@@ -36,6 +36,28 @@ pub fn grow(clock: Res<super::RenderClock>, mut commands: Commands, mut q: Query
     }
 }
 
+/// Something let go: it drops from `from` to `to` (gathering speed, turning over a little)
+/// from `since` for `secs`, then is gone.
+#[derive(Component)]
+pub struct Fall {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub since: f32,
+    pub secs: f32,
+}
+
+pub fn falls(clock: Res<super::RenderClock>, mut commands: Commands, mut q: Query<(Entity, &Fall, &mut Transform)>) {
+    for (e, f, mut tr) in &mut q {
+        let k = ((clock.0 - f.since) / f.secs).clamp(0.0, 1.0);
+        if clock.0 - f.since >= f.secs {
+            commands.entity(e).despawn();
+            continue;
+        }
+        tr.translation = f.from.lerp(f.to, k * k);
+        tr.rotation = Quat::from_rotation_x(0.9 * k);
+    }
+}
+
 /// A puff of dust at `at`, `size` across.
 pub fn puff(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, mesh: &mut PuffMesh, at: Vec3, size: f32) {
     let m = mesh.0.get_or_insert_with(|| {

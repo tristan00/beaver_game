@@ -64,10 +64,10 @@ fn centred(bottom: f32, child: VNode) -> VNode {
     v
 }
 
+/// Days until the food runs out: eating against gathering, with spoilage shrinking the stock
+/// (the same reckoning as the food alert).
 pub fn food_days(s: &sim::SimState) -> Option<f32> {
-    let need = sim::hud::food_need_per_day(s).max(s.ledger.out_per_day(Good::Food));
-    let gain = s.ledger.in_per_day(Good::Food);
-    (need > gain + 1e-3).then(|| s.buildings.stores.amount(Good::Food) / (need - gain))
+    Some(sim::hud::food_days_left(s)).filter(|d| d.is_finite())
 }
 
 pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) -> Vec<TipLine> {
@@ -98,7 +98,7 @@ pub fn breakdown_lines(s: &sim::SimState, b: &Breakdown, signed_values: bool) ->
 pub fn good_tip(s: &sim::SimState, g: Good) -> Tip {
     let st = &s.buildings.stores;
     let mut t = Tip::titled(Some((good_icon(g), good_color(g))), good_name(g)).with_value(format!("{}/{}", st.amount(g).round() as i64, st.capacity(g).round() as i64));
-    if g == Good::Food { t.push(TipLine::new("Shoots and bark to eat", "")); }
+    if g == Good::Food { t.push(TipLine::new("Spoils", format!("{:.1}%/d", sim::colony::FOOD_SPOILAGE * 100.0))); }
     if !s.ledger.has_data() {
         t.push(TipLine::new("Per day", "-"));
         return t;
@@ -144,6 +144,10 @@ fn headcount_tip(s: &sim::SimState) -> Tip {
         more.push(l);
     }
     t.push(TipLine::new("Housing", "").nested(more));
+    t.push(match s.society.newcomers(s.time_days, &s.colony) {
+        Ok(n) => TipLine::new("Newcomers", format!("{}/y", num(n))),
+        Err(why) => TipLine::new("Newcomers", why).color(MUTED),
+    });
     t.key("Tab")
 }
 
@@ -518,17 +522,6 @@ pub fn bottom(c: &Ctx) -> Vec<VNode> {
             }
             u.pebble(building_icon(kind), 21.0, HudAction::Pick(kind), look).tip(tip);
         }
-        u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
-        for (h, icon, name, line, key) in [
-            (Harvest::Gather, Icon::Plant, "Gather", "Click food or clay, or drag an area", "G"),
-            (Harvest::Cut, Icon::Tree, "Cut trees", "Click a tree, or drag an area", "T"),
-        ] {
-            let on = hud.tool == Tool::Harvest(h);
-            u.pebble(icon, 20.0, HudAction::Harvest(h), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).line(line, "").line("Selected beavers, or free ones", "").key(key));
-        }
-        u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
-        let can_undo = !hud.undo_is_empty();
-        u.pebble(Icon::Undo, 17.0, HudAction::Undo, if can_undo { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Undo").key("Ctrl+Z"));
     }))]
 }
 
@@ -645,6 +638,7 @@ pub fn canal_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     });
                 })
                 .tip(Tip::titled(Some((Icon::Canal, INK)), why.clone()));
+                r.bold(why.clone(), 14.0, BAD);
             }
             (None, Some(Ok(p))) => {
                 r.row(4.0, |x| {

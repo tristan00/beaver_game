@@ -246,6 +246,24 @@ fn times(x: f32) -> String {
     format!("×{:.2}", x)
 }
 
+/// The job a beaver works at a pace: one that work factors speed (not hauling, which is
+/// walking, nor guarding).
+fn paced_job(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
+    job_of(s, b).filter(|j| *j != sim::colony::Job::Hauler).filter(|_| b.can_work())
+}
+
+/// A beaver's pace at its job, and a tip with only the factors acting on it (not ×1).
+pub(super) fn pace(s: &sim::SimState, b: &Beaver) -> Option<(f32, Tip)> {
+    let wf = sim::agents::work_factors(b, paced_job(s, b)?);
+    let mut tip = Tip::name("Pace").with_value(times(wf.total()));
+    for (name, f) in [("Skill", wf.skill_x), ("Mood", wf.mood_x), ("Health", wf.health_x), ("Rest", wf.rest_x), ("Age", wf.age_x)] {
+        if (f - 1.0).abs() > 0.005 {
+            tip = tip.line(name, times(f));
+        }
+    }
+    Some((wf.total(), tip))
+}
+
 const COLS: [(Option<BeaverCol>, Icon, &str, f32); 11] = [
     (None, Icon::Beaver, "", 22.0),
     (Some(BeaverCol::Name), Icon::Beaver, "Name", 92.0),
@@ -270,8 +288,8 @@ fn beavers(c: &Ctx, u: &mut Ui) {
     let key_f = |b: &Beaver| -> f32 {
         match col {
             BeaverCol::Age => b.age_days,
-            BeaverCol::Skill => job_of(s, b).map_or(-1.0, |j| b.skills[j.index()]),
-            BeaverCol::Pace => job_of(s, b).map_or(-1.0, |j| sim::agents::work_factors(b, j).total()),
+            BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j.index()]),
+            BeaverCol::Pace => paced_job(s, b).map_or(-1.0, |j| sim::agents::work_factors(b, j).total()),
             _ => 0.0,
         }
     };
@@ -345,7 +363,8 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
     let cell = |w: f32| Node { width: Val::Px(w), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(3.0) };
     let job = job_of(s, b);
     let (icon, icon_col, word) = super::inspect::activity(s, b);
-    let wf = sim::agents::work_factors(b, job.unwrap_or(sim::colony::Job::Hauler));
+    let paced = pace(s, b);
+    let wf = paced_job(s, b).map(|j| sim::agents::work_factors(b, j));
     let row = u.row(4.0, |r| {
         r.node(Node { justify_content: JustifyContent::Center, ..cell(w(0)) }, |t| {
             t.token(Icon::Beaver, token_px(b.stage) * 0.75, Some(doing(s, b)));
@@ -365,11 +384,11 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
         .tip(Tip::name(word));
         // Skill at the job held: notches and the share; every skill in the tooltip.
         let mut skills = Tip::name("Skills");
-        for j in sim::colony::Job::ALL {
+        for j in sim::colony::Job::ALL.into_iter().filter(|j| *j != sim::colony::Job::Hauler) {
             skills.push(TipLine::new(job_name(j), format!("{:.0}%", b.skills[j.index()] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
         }
-        r.node(cell(w(5)), |x| match job {
-            Some(_) => {
+        r.node(cell(w(5)), |x| match wf {
+            Some(wf) => {
                 x.notches(wf.skill, 5, 34.0, 8.0, ACCENT);
                 x.text(format!("{:.0}", wf.skill * 100.0), 11.0, INK);
             }
@@ -378,36 +397,33 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
             }
         })
         .tip(skills);
-        for (i, f, name) in [(6, wf.mood_x, "Mood"), (7, wf.health_x, "Health"), (8, wf.rest_x, "Rest"), (9, wf.age_x, "Age")] {
-            // Kits too young to work have no pace to speak of.
-            let v = r.node(cell(w(i)), |x| {
-                if b.can_work() {
+        // Kits too young to work, haulers and guards have no work pace to speak of.
+        let factors = wf.map(|wf| [wf.mood_x, wf.health_x, wf.rest_x, wf.age_x]);
+        for (k, name) in ["Mood", "Health", "Rest", "Age"].into_iter().enumerate() {
+            let f = factors.map(|f| f[k]);
+            let v = r.node(cell(w(6 + k)), |x| match f {
+                Some(f) => {
                     x.text(times(f), 11.0, factor_col(f));
-                } else {
+                }
+                None => {
                     x.text("-", 12.0, MUTED);
                 }
             });
-            if b.can_work() {
+            if let Some(f) = f {
                 v.tip(Tip::name(name).with_value(times(f)));
             }
         }
-        r.node(cell(w(10)), |x| match job {
-            Some(_) => {
-                x.bold(times(wf.total()), 12.0, factor_col(wf.total()));
+        let v = r.node(cell(w(10)), |x| match &paced {
+            Some((p, _)) => {
+                x.bold(times(*p), 12.0, factor_col(*p));
             }
             None => {
                 x.text("-", 12.0, MUTED);
             }
-        })
-        .tip(
-            Tip::name("Pace")
-                .with_value(if job.is_some() { times(wf.total()) } else { "-".into() })
-                .line("Skill", times(wf.skill_x))
-                .line("Mood", times(wf.mood_x))
-                .line("Health", times(wf.health_x))
-                .line("Rest", times(wf.rest_x))
-                .line("Age", times(wf.age_x)),
-        );
+        });
+        if let Some((_, tip)) = paced {
+            v.tip(tip);
+        }
     });
     row.node.height = Val::Px(22.0);
     row.peek(b.id);
