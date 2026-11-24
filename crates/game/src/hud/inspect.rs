@@ -667,7 +667,7 @@ fn animal(c: &Ctx, id: u32) -> Option<VNode> {
 fn wolf(c: &Ctx, key: u64) -> Option<VNode> {
     use sim::predators::WolfState;
     let s = c.s;
-    let w = s.predators.wolf(key).filter(|w| w.seen)?;
+    let w = s.predators.wolf(key)?;
     let beaver = |id| s.colony.beaver(id).map_or_else(|| "a beaver".to_string(), |b| b.name.clone());
     let prey = |id| s.wildlife.get(id).map_or("animal", |a| animal_name(a.kind)).to_lowercase();
     let (icon, col, doing) = match w.state {

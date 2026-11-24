@@ -473,20 +473,21 @@ impl Notices {
     }
 }
 
-/// A wolf comes into sight: say so once per wolf, while the alert has stood since.
-fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<Vec<u64>>) {
-    if notices.1 != sim.0.time_days {
-        notices.1 = sim.0.time_days;
+/// How long after a wolf was announced a beaver spotting it again is news.
+const WOLF_AGAIN_DAYS: f64 = 7.0;
+
+/// A beaver (or a lookout's guard) spots a wolf: say so, then not again for that wolf for a
+/// week, however often it slips in and out of sight.
+fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<Vec<(u64, f64)>>) {
+    let s = &sim.0;
+    if notices.1 != s.time_days {
+        notices.1 = s.time_days;
     }
-    let p = &sim.0.predators;
-    if !p.spotted {
-        told.clear();
-        return;
-    }
-    told.retain(|k| p.wolf(*k).is_some());
-    for w in sim::predators::seen(&sim.0) {
-        if !told.contains(&w.key()) {
-            told.push(w.key());
+    let now = s.time_days;
+    told.retain(|(k, at)| s.predators.wolf(*k).is_some() && now >= *at && now - *at < WOLF_AGAIN_DAYS);
+    for w in sim::predators::seen(s) {
+        if !told.iter().any(|(k, _)| *k == w.key()) {
+            told.push((w.key(), now));
             notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), Some(NoticeAt::Wolf(w.pos)));
             cues.sighted += 1;
         }

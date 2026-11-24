@@ -155,7 +155,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some((id, _)) = near {
         return Thing::Beaver(id);
     }
-    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.2 * 1.2).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) {
+    if let Some(w) = s.predators.wolves.iter().filter(|w| d2(w.pos) < 1.2 * 1.2).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) {
         return Thing::Wolf(w.key());
     }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
@@ -855,7 +855,7 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Option<C
             sight_circle(g, h, at, sim::fog::BEAVER_SIGHT, Color::WHITE.with_alpha(0.75));
         }
     }
-    for w in sim::predators::seen(s).filter(|w| sel == Selection::Wolf(w.key()) || thing == Some(Thing::Wolf(w.key()))) {
+    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.key()) || thing == Some(Thing::Wolf(w.key()))) {
         sight_circle(g, h, w.pos, sim::predators::WOLF_SIGHT, wolf_col);
     }
     for at in shown_lookouts(s, hud, hover, sel, thing) {

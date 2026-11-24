@@ -44,6 +44,7 @@ fn orbit_input(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     menu: Option<Res<crate::hud::MenuOpen>>,
     mut orbit: ResMut<OrbitCamera>,
+    (flow, hud): (Option<ResMut<crate::flow::Flow>>, Option<ResMut<crate::hud::HudState>>),
 ) {
     let mut next = *orbit;
     let keys_free = !typing.0;
@@ -62,6 +63,19 @@ fn orbit_input(
     let forward = (held(KeyCode::KeyW, KeyCode::ArrowUp) - held(KeyCode::KeyS, KeyCode::ArrowDown) + edge_fwd).clamp(-1.0, 1.0);
     let right = (held(KeyCode::KeyD, KeyCode::ArrowRight) - held(KeyCode::KeyA, KeyCode::ArrowLeft) + edge_right).clamp(-1.0, 1.0);
     let pan = pan_vector(next.yaw, forward, right) * PAN_PER_DISTANCE * next.distance * time.delta_secs();
+    let turned = next.yaw != orbit.yaw || next.pitch != orbit.pitch;
+    if pan != Vec2::ZERO || turned {
+        if let Some(mut flow) = flow {
+            if flow.focus.is_some() {
+                flow.focus = None;
+            }
+        }
+        if let Some(mut hud) = hud {
+            if hud.follow.is_some() {
+                hud.follow = None;
+            }
+        }
+    }
     if pan != Vec2::ZERO {
         let h = &sim.0.height;
         let half = h.width() as f32 / 2.0;

@@ -564,11 +564,9 @@ fn sync_wolf(
             continue;
         };
         shown.push(id.0);
-        // Only a wolf the colony sees is drawn: out of every beaver's sight it is hidden, so
-        // the player learns no more than the beavers know.
-        let want = if wolf.seen { Visibility::Inherited } else { Visibility::Hidden };
-        if *vis != want {
-            *vis = want;
+        // The player sees every wolf; the colony's notice and alert wait for a beaver to spot it.
+        if *vis != Visibility::Inherited {
+            *vis = Visibility::Inherited;
         }
         let here = cell_xz(s, wolf.pos);
         track.follow(s, &wolf.track, 8.0);
@@ -594,8 +592,7 @@ fn sync_wolf(
         let root = spawn_rig(&mut commands, &wm, &m, Transform::from_translation(ground(s, wolf.pos)).with_rotation(Quat::from_rotation_y(wolf.heading)));
         let mut track = WolfTrack::default();
         track.record(s.instance, s.time_days, cell_xz(s, wolf.pos));
-        let vis = if wolf.seen { Visibility::Inherited } else { Visibility::Hidden };
-        commands.entity(root).insert((SimWolf(wolf.key()), track, vis));
+        commands.entity(root).insert((SimWolf(wolf.key()), track, Visibility::Inherited));
     }
 }
 

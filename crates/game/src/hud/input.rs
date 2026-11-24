@@ -94,6 +94,8 @@ pub(super) fn hotkeys(
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
+        // Esc always lets go of the camera: a glide to a notice ends where it is.
+        flow.focus = None;
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
         } else if hud.page().is_some() {
@@ -105,6 +107,8 @@ pub(super) fn hotkeys(
             hud.open_badge = None;
         } else if hud.journal_open {
             hud.journal_open = false;
+        } else if hud.follow.is_some() {
+            hud.follow = None;
         } else if *sel != Selection::None || !hud.selected.is_empty() {
             *sel = Selection::None;
             hud.selected.clear();
