@@ -94,24 +94,14 @@ pub fn lock_walls_mesh(mb: &mut Mb) {
     }
 }
 
-/// The water standing in a lock's chamber: a flat sheet (lifted or lowered as it fills).
-pub fn chamber_water_mesh(mb: &mut Mb) {
-    // Its colour is its material's: open water, or ice.
-    let c = [1.0, 1.0, 1.0];
-    mb.quad2([v(-0.6, 0.0, -1.0), v(0.6, 0.0, -1.0), v(0.6, 0.0, 1.0), v(-0.6, 0.0, 1.0)], c);
-}
-
 #[derive(Resource)]
 pub(super) struct HarborMeshes {
     pub barge: Handle<Mesh>,
     pub leaf: Handle<Mesh>,
     pub walls: Handle<Mesh>,
-    pub water: Handle<Mesh>,
-    pub water_mat: Handle<StandardMaterial>,
-    pub ice_mat: Handle<StandardMaterial>,
 }
 
-pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     let mut build = |f: &dyn Fn(&mut Mb)| {
         let mut mb = Mb::new();
         f(&mut mb);
@@ -121,9 +111,6 @@ pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Asse
         barge: build(&barge_mesh),
         leaf: build(&lock_leaf_mesh),
         walls: build(&lock_walls_mesh),
-        water: build(&chamber_water_mesh),
-        water_mat: materials.add(StandardMaterial { base_color: Color::srgba(0.3, 0.56, 0.66, 0.85), alpha_mode: AlphaMode::Blend, perceptual_roughness: 0.3, double_sided: true, cull_mode: None, ..default() }),
-        ice_mat: materials.add(StandardMaterial { base_color: Color::srgb(0.86, 0.92, 0.95), perceptual_roughness: 0.5, double_sided: true, cull_mode: None, ..default() }),
     });
 }
 
@@ -146,6 +133,8 @@ pub(super) struct LockVis {
     pub occupant: Option<u64>,
     /// Frozen over, as the water either side is.
     pub iced: bool,
+    /// Whether its water's sheet has been made.
+    pub sheet: bool,
     /// Shown on a loop (the gallery) rather than driven by beavers: how far through, and which way.
     pub looping: bool,
     pub k: f32,
@@ -175,14 +164,14 @@ pub(super) fn spawn_lock(commands: &mut Commands, hm: &HarborMeshes, m: &Models,
         .id();
     // The walls' gate posts stand at ±1.05 in their mesh.
     commands.spawn((Mesh3d(hm.walls.clone()), MeshMaterial3d(w.clone()), Transform::from_scale(Vec3::new(1.0, h, half / 1.05)), ChildOf(root)));
-    let water = commands.spawn((Mesh3d(hm.water.clone()), MeshMaterial3d(hm.water_mat.clone()), Transform::from_xyz(0.0, (low - floor).max(0.02), 0.0).with_scale(Vec3::new(1.0, 1.0, half)), ChildOf(root))).id();
+    let water = commands.spawn((Transform::from_xyz(0.0, low, 0.0), Visibility::Inherited, super::SimEntity, bevy::light::NotShadowCaster)).id();
     // Leaves: at each end a pair hinged on the posts, meeting in the middle.
     let mut leaves = [Entity::PLACEHOLDER; 4];
     for (k, (x, z, flip)) in [(-0.62f32, -half, false), (0.62, -half, true), (-0.62, half, false), (0.62, half, true)].into_iter().enumerate() {
         let tr = Transform::from_xyz(x, 0.0, z).with_scale(Vec3::new(if flip { -1.0 } else { 1.0 }, h * 0.98, 1.0));
         leaves[k] = commands.spawn((Mesh3d(hm.leaf.clone()), MeshMaterial3d(w.clone()), tr, ChildOf(root))).id();
     }
-    commands.entity(root).insert(LockVis { leaves, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, looping, k: 0.0, up: true });
+    commands.entity(root).insert(LockVis { leaves, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, sheet: false, looping, k: 0.0, up: true });
     root
 }
 
@@ -265,18 +254,18 @@ pub(crate) fn chamber_holes(s: &sim::SimState) -> Vec<(Vec2, Vec2, f32, f32)> {
     s.locks.at.values().filter(|l| l.built).filter_map(|l| chamber(s, l)).map(|ch| (ch.centre, ch.axis, ch.half, 0.66 * WIDTH)).collect()
 }
 
-/// Where a beaver is in a lock's working: coming in (how far through its wait, and whether it
-/// goes up, from the low side to the high), or swimming out through it.
+/// Where a beaver is in a lock's working: coming in (how far through its wait), or swimming
+/// out through the chamber (how far out), and whether it goes up, from the low side to the high.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Stage {
     Entering { f: f32, up: bool },
-    Leaving { up: bool },
+    Leaving { g: f32, up: bool },
 }
 
 impl Stage {
     fn up(self) -> bool {
         match self {
-            Stage::Entering { up, .. } | Stage::Leaving { up } => up,
+            Stage::Entering { up, .. } | Stage::Leaving { up, .. } => up,
         }
     }
 }
@@ -289,56 +278,99 @@ fn lock_at(s: &sim::SimState, c: (usize, usize)) -> Option<&sim::locks::Lock> {
     s.locks.at.values().find(|l| l.built && sim::locks::lock_cells(s, l).contains(&c))
 }
 
+/// How far through its step to the next cell a beaver is, `pending_days` after the simulation
+/// last moved it.
+fn step_progress(s: &sim::SimState, ag: &sim::agents::Agent, next: (usize, usize), pending_days: f32) -> f32 {
+    let pace = sim::agents::travel_pace(&s.nav, ag);
+    let cost = s.nav.move_cost(ag.cell, next, pace).unwrap_or(1.0).max(1e-3);
+    ((ag.step_frac + pending_days * sim::agents::MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0)
+}
+
 /// The lock this beaver is passing and how far it has got, `pending_days` after the simulation
 /// last moved it (negative while the picture plays catching up).
 pub(super) fn passage<'a>(s: &'a sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(&'a sim::locks::Lock, Chamber, Stage)> {
-    let next = ag.path.as_ref().and_then(|p| p.steps.first()).map(|x| x.0);
+    let steps = ag.path.as_ref().map(|p| p.steps.as_slice()).unwrap_or(&[]);
+    let next = steps.first().map(|x| x.0);
     let dir = |a: (usize, usize), b: (usize, usize)| Vec2::new(b.0 as f32 - a.0 as f32, b.1 as f32 - a.1 as f32);
     if let Some(l) = lock_at(s, ag.cell) {
         let ch = chamber(s, l)?;
         let up = next.is_none_or(|n| dir(ag.cell, n).dot(ch.axis) >= 0.0);
-        return Some((l, ch, Stage::Leaving { up }));
+        // Out through the chamber: the steps still to take to its first cell beyond, against
+        // the lock's length in cells.
+        let cells = sim::locks::lock_cells(s, l);
+        let left = steps.iter().position(|st| !cells.contains(&st.0)).map_or(steps.len(), |i| i + 1) as f32;
+        let f = next.map_or(1.0, |n| step_progress(s, ag, n, pending_days));
+        let g = (1.0 - (left - f) / cells.len().max(1) as f32).clamp(0.0, 1.0);
+        return Some((l, ch, Stage::Leaving { g, up }));
     }
     let n = next?;
     let l = lock_at(s, n)?;
     let ch = chamber(s, l)?;
-    let pace = sim::agents::travel_pace(&s.nav, ag);
-    let cost = s.nav.move_cost(ag.cell, n, pace)?;
-    let f = ((ag.step_frac + pending_days * sim::agents::MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0);
+    let f = step_progress(s, ag, n, pending_days);
     Some((l, ch, Stage::Entering { f, up: dir(ag.cell, n).dot(ch.axis) >= 0.0 }))
 }
 
-/// Where a beaver passing a lock is drawn, and the way it faces: waiting at the shut gate, in
-/// the chamber riding its water up or down, then out through the far gate. `None` when it is
-/// not in a lock's working.
+/// How far outside a gate a beaver waits for it, more with a barge pushed ahead of it.
+fn wait_off(ag: &sim::agents::Agent) -> f32 {
+    if matches!(ag.task, sim::agents::Task::Barge { leg: 1 | 3 | 5, .. }) { 1.8 } else { 0.45 }
+}
+
+/// Where a beaver is drawn by a lock, and the way it faces. Passing it, it waits outside the
+/// shut gate, swims in when the gate opens, rides the chamber's water up or down, and swims
+/// out straight down the chamber past the far gate. Not passing, it is kept out of the chamber,
+/// at the gate nearest it. `None` away from every lock.
 pub(super) fn lock_pose(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(Vec3, f32)> {
-    let (_, ch, stage) = passage(s, ag, pending_days)?;
+    let Some((_, ch, stage)) = passage(s, ag, pending_days) else { return keep_out(s, ag, pending_days) };
     let up = stage.up();
     let (entry, exit) = if up { (ch.low, ch.high) } else { (ch.high, ch.low) };
     let u = if up { ch.axis } else { -ch.axis };
     let yaw = u.x.atan2(u.y);
-    match stage {
+    let barge = wait_off(ag) > 1.0;
+    let wait = ch.centre - u * (ch.half + wait_off(ag));
+    // In the chamber: with a barge ahead, far enough back for the barge to fit between the gates.
+    let hold = ch.centre - u * if barge { 0.45 } else { 0.0 };
+    let out = ch.centre + u * (ch.half + 0.45);
+    let (xz, y) = match stage {
         Stage::Entering { f, .. } => {
-            let at = cell_xz(s, (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5));
-            let first = ag.path.as_ref().and_then(|p| p.steps.first()).map(|x| cell_xz(s, (x.0 .0 as f32 + 0.5, x.0 .1 as f32 + 0.5)))?;
-            // A barge goes ahead of its beaver: both wait clear of the gate.
-            let barge = matches!(ag.task, sim::agents::Task::Barge { leg: 1 | 3 | 5, .. });
-            let wait = ch.centre - u * (ch.half + if barge { 1.8 } else { 0.5 });
-            let xz = if f < ENTRY_OPEN.0 {
-                at.lerp(wait, smooth(0.0, ENTRY_OPEN.0, f))
-            } else if f < SWIM_IN.0 {
-                wait
-            } else {
-                wait.lerp(first, smooth(SWIM_IN.0, SWIM_IN.1, f))
-            };
-            let y = entry + (exit - entry) * smooth(FILL.0, FILL.1, f);
-            Some((Vec3::new(xz.x, y, xz.y), yaw))
+            let xz = if f < SWIM_IN.0 { wait } else { wait.lerp(hold, smooth(SWIM_IN.0, SWIM_IN.1, f)) };
+            (xz, entry + (exit - entry) * smooth(FILL.0, FILL.1, f))
         }
-        Stage::Leaving { .. } => {
-            let p = super::sim_view::agent_world_xz(s, ag, pending_days);
-            Some((Vec3::new(p.x, exit, p.y), yaw))
-        }
+        Stage::Leaving { g, .. } => (hold.lerp(out, g), exit),
+    };
+    Some((Vec3::new(xz.x, y, xz.y), yaw))
+}
+
+/// A swimmer by a lock but not passing it is drawn outside its chamber, at the gate it is
+/// nearer, so nothing is seen inside the chamber but what is passing through. One about to
+/// pass waits there with room for its barge.
+fn keep_out(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(Vec3, f32)> {
+    let barge = matches!(ag.task, sim::agents::Task::Barge { leg: 1 | 3 | 5, .. });
+    if ag.gait != sim::nav::Gait::Swim && !barge {
+        return None;
     }
+    if s.locks.at.values().all(|l| !l.built) {
+        return None;
+    }
+    let p = super::sim_view::agent_world_xz(s, ag, pending_days);
+    let steps = ag.path.as_ref().map(|p| p.steps.as_slice()).unwrap_or(&[]);
+    for l in s.locks.at.values().filter(|l| l.built) {
+        let Some(ch) = chamber(s, l) else { continue };
+        let d = p - ch.centre;
+        let (along, across) = (d.dot(ch.axis), d.dot(ch.axis.perp()));
+        // Coming up to pass it: wait room on the near side.
+        let cells = sim::locks::lock_cells(s, l);
+        let coming = steps.iter().take(6).any(|st| cells.contains(&st.0));
+        let off = if coming { wait_off(ag) } else { 0.45 };
+        if across.abs() >= 0.62 * WIDTH + 0.3 || along.abs() >= ch.half + off {
+            continue;
+        }
+        let side = if along >= 0.0 { 1.0 } else { -1.0 };
+        let at = ch.centre + ch.axis * side * (ch.half + off) + ch.axis.perp() * across;
+        let y = if side > 0.0 { ch.high } else { ch.low };
+        let toward = super::sim_view::facing_of(s, ag).unwrap_or((-ch.axis * side).x.atan2((-ch.axis * side).y));
+        return Some((Vec3::new(at.x, y, at.y), toward));
+    }
+    None
 }
 
 /// Gates and chamber on the gallery's loop: a passage up, then one down.
@@ -376,7 +408,7 @@ fn show(l: &LockVis, parts: &mut Query<&mut Transform, Without<LockVis>>) {
         }
     }
     if let Ok(mut t) = parts.get_mut(l.water) {
-        t.translation.y = (l.level - l.floor).max(0.02);
+        t.translation.y = l.level.max(l.floor + 0.02) + 0.01;
     }
 }
 
@@ -428,6 +460,8 @@ pub(super) fn sync_locks(
     mut st: Local<LockSync>,
     mut q: Query<&mut LockVis>,
     mut parts: Query<&mut Transform, Without<LockVis>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    water: Option<Res<crate::water_render::SharedWater>>,
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
     let s = &sim.0;
@@ -436,6 +470,9 @@ pub(super) fn sync_locks(
     st.drawn.retain(|c, e| {
         let keep = built.iter().any(|l| l.cell == *c);
         if !keep {
+            if let Ok(v) = q.get(*e) {
+                commands.entity(v.water).despawn();
+            }
             commands.entity(*e).despawn();
         }
         keep
@@ -462,9 +499,16 @@ pub(super) fn sync_locks(
         };
         let Ok(mut v) = q.get_mut(e) else { continue };
         (v.low, v.high) = (ch.low, ch.high);
-        if v.iced != ch.iced {
+        // The chamber's water in the pond's own look: rebuilt when it freezes or thaws.
+        if v.iced != ch.iced || !v.sheet {
             v.iced = ch.iced;
-            commands.entity(v.water).insert(MeshMaterial3d(if ch.iced { hm.ice_mat.clone() } else { hm.water_mat.clone() }));
+            v.sheet = true;
+            let (a, p) = (ch.axis, ch.axis.perp() * 0.62 * WIDTH);
+            let corner = |k: f32, j: f32| { let c = ch.centre + a * ch.half * k + p * j; Vec3::new(c.x, 0.0, c.y) };
+            let mesh = meshes.add(crate::water_render::water_sheet([corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)], (ch.high - ch.floor).max(0.5), if ch.iced { 1.0 } else { 0.0 }));
+            if let Some(w) = &water {
+                commands.entity(v.water).insert((Mesh3d(mesh), MeshMaterial3d(w.0.clone())));
+            }
         }
         match passing.get(&l.cell).copied() {
             Some((who, stage)) => {

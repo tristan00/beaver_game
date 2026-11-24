@@ -92,11 +92,31 @@ const WATER_DEEP_M: f32 = 0.6;
 const WATER_FILM_ALPHA: f32 = 0.72;
 const WATER_DEEP_ALPHA: f32 = 0.93;
 
-fn setup_water(sim: Res<Sim>, season: Res<Season>, mut water: ResMut<WaterChunks>, mut materials: ResMut<Assets<WaterMaterial>>) {
+/// The water surface's material, for water drawn elsewhere to look the same (a lock's chamber).
+#[derive(Resource, Clone)]
+pub struct SharedWater(pub Handle<WaterMaterial>);
+
+/// A flat sheet of water in the water surface's own look: corners in world space at height 0
+/// (lift it by its transform), `depth` metres deep, `ice` 0 open to 1 frozen over.
+pub fn water_sheet(corners: [Vec3; 4], depth: f32, ice: f32) -> Mesh {
+    let tri = [0usize, 1, 2, 0, 2, 3];
+    let pos: Vec<[f32; 3]> = tri.iter().map(|&i| corners[i].to_array()).collect();
+    let n = pos.len();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, pos.iter().map(|p| [p[0], p[2]]).collect::<Vec<_>>())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0f32, 0.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[depth, 0.0, ice, 1.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_indices(Indices::U32((0..n as u32).collect()))
+}
+
+fn setup_water(mut commands: Commands, sim: Res<Sim>, season: Res<Season>, mut water: ResMut<WaterChunks>, mut materials: ResMut<Assets<WaterMaterial>>) {
     water.material = materials.add(WaterMaterial {
         base: StandardMaterial { base_color: Color::WHITE, alpha_mode: AlphaMode::Blend, perceptual_roughness: 0.3, reflectance: 0.06, cull_mode: None, ..default() },
         extension: style_for(&Palette::at(season.phase)),
     });
+    commands.insert_resource(SharedWater(water.material.clone()));
     let (cols, rows) = chunk_dims(&sim.0);
     water.slots = (0..cols * rows).map(|_| WSlot::default()).collect();
 }
