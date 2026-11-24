@@ -235,13 +235,22 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
     }
 }
 
-/// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected, and `BC_SELECT_LOOKOUT=1`
+/// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected (`BC_SELECT_BUILDING=id`
+/// a building instead), and `BC_SELECT_LOOKOUT=1`
 /// its first lookout, for screenshots of the inspector and the lookout's range.
 /// `BC_SELECT_BEAVER=out` picks the first beaver out of its lodge instead, `=load` the first carrying
 /// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
 pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
+    // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel.
+    if let Some(id) = std::env::var("BC_SELECT_BUILDING").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let want = crate::flow::Selection::Site(sim::buildings::BuildingId(id));
+        if *sel != want {
+            *sel = want;
+        }
+        return;
+    }
     let pick = std::env::var("BC_SELECT_BEAVER").ok();
     let out = |b: &&sim::colony::Beaver, f: &dyn Fn(&sim::agents::Agent) -> bool| s.agents.get(b.id).is_some_and(|a| !a.inside && f(a));
     let want = if let Some(p) = pick.as_deref().filter(|p| matches!(*p, "out" | "load" | "swim")) {
