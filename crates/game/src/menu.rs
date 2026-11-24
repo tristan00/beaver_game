@@ -71,6 +71,7 @@ enum MenuAction {
     Scale(f32),
     Water(sim::water::EngineKind),
     Fahrenheit(bool),
+    Volume(crate::audio::Channel, f32),
     Ask(Ask),
     Confirm(bool),
 }
@@ -88,6 +89,7 @@ struct MenuRoot;
 pub struct MenuPlugin;
 
 const SCALES: [f32; 4] = [0.85, 1.0, 1.15, 1.3];
+const LEVELS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
@@ -288,6 +290,11 @@ fn menu_actions(
                 scale.0 = s;
             }
             MenuAction::Fahrenheit(on) => set_fahrenheit(on),
+            MenuAction::Volume(ch, v) => commands.queue(move |w: &mut World| {
+                if let Some(mut vols) = w.get_resource_mut::<crate::audio::AudioVolumes>() {
+                    vols.set(ch, v);
+                }
+            }),
             MenuAction::Water(kind) => {
                 menu.water = kind;
                 sim::water::set_default_engine(kind);
@@ -429,6 +436,26 @@ fn button(p: &mut ChildSpawnerCommands, label: &str, action: MenuAction, fill: C
     .with_children(|b| hud::bold(b, label, 14.0, ink));
 }
 
+/// A small step on a volume row.
+fn level_button(p: &mut ChildSpawnerCommands, label: &str, action: MenuAction, on: bool) {
+    p.spawn((
+        Interaction::default(),
+        FocusPolicy::Block,
+        action,
+        Node {
+            width: Val::Px(44.0),
+            padding: UiRect::vertical(Val::Px(5.0)),
+            border: UiRect::all(Val::Px(if on { 2.0 } else { 1.0 })),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(FAINT),
+        BorderColor::all(if on { Color::WHITE } else { Color::srgba(1.0, 1.0, 1.0, 0.14) }),
+    ))
+    .with_children(|b| hud::bold(b, label, 12.0, INK));
+}
+
 fn icon_button(p: &mut ChildSpawnerCommands, icons: &Icons, icon: Icon, action: MenuAction, fill: Color) {
     let ink = if fill == ACCENT { Color::srgb(0.13, 0.09, 0.05) } else { INK };
     p.spawn((
@@ -455,9 +482,11 @@ fn rebuild_menu(
     current: Res<CurrentMap>,
     clock: Res<SimClock>,
     icons: Res<Icons>,
+    vols: Option<Res<crate::audio::AudioVolumes>>,
     mut root: Query<(Entity, &mut Visibility, &mut BackgroundColor), With<MenuRoot>>,
 ) {
-    if !menu.is_changed() {
+    let volume_moved = menu.screen == Some(Screen::Settings) && vols.as_ref().is_some_and(|v| v.is_changed());
+    if !menu.is_changed() && !volume_moved {
         return;
     }
     let Ok((e, mut vis, mut bg)) = root.single_mut() else { return };
@@ -491,7 +520,7 @@ fn rebuild_menu(
             match screen {
                 Screen::Start => start_screen(p, &menu, &icons, &current.0),
                 Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
-                Screen::Settings => settings_screen(p, &menu, &icons),
+                Screen::Settings => settings_screen(p, &menu, &icons, vols.as_deref()),
                 Screen::Load => load_screen(p, &menu),
             }
         });
@@ -622,11 +651,32 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
     wide(p, "Quit", MenuAction::Ask(Ask::Quit), FAINT);
 }
 
-fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
+fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vols: Option<&crate::audio::AudioVolumes>) {
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
         hud::bold(r, "Settings", 22.0, INK);
         icon_button(r, icons, Icon::Back, MenuAction::Back, FAINT);
     });
+    if let Some(vols) = vols {
+        hud::bold(p, "Sound", 12.0, MUTED);
+        for ch in crate::audio::Channel::ALL {
+            let name = match ch {
+                crate::audio::Channel::Master => "All",
+                crate::audio::Channel::Water => "Water",
+                crate::audio::Channel::Alerts => "Alerts",
+            };
+            let now = vols.level(ch);
+            let nearest = LEVELS.iter().copied().fold(LEVELS[0], |a, l| if (l - now).abs() < (a - now).abs() { l } else { a });
+            p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(6.0) }).with_children(|r| {
+                hud::text(r, name, 12.0, INK);
+                r.spawn(hud::row(4.0)).with_children(|b| {
+                    for l in LEVELS {
+                        let label = if l == 0.0 { "Off".to_string() } else { format!("{:.0}", l * 100.0) };
+                        level_button(b, &label, MenuAction::Volume(ch, l), l == nearest);
+                    }
+                });
+            });
+        }
+    }
     hud::bold(p, "UI size", 12.0, MUTED);
     p.spawn(hud::row(6.0)).with_children(|r| {
         for s in SCALES {
@@ -664,7 +714,7 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons) {
         ("Colony book", "Tab"),
         ("Next free beaver", "I"),
         ("Pause, speed", "Space, 1 2 3"),
-        ("Volume", "- =  [ ]  ; '  , ."),
+        ("Volume: all, alerts, water", "- =  ; '  , ."),
         ("Mute", "M"),
         ("Menu", "Esc"),
     ] {

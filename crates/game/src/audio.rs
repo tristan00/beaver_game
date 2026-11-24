@@ -13,18 +13,85 @@ use std::num::NonZero;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-// Field recordings, all CC0 from freesound.org (see `audio/SOURCES.md`).
+// Field recordings, all CC0 from freesound.org (see `audio/SOURCES.md`), stored at the rate
+// the game plays so starting them is only decoding.
 const BROOK: &[u8] = include_bytes!("../audio/brook.ogg");
 const RIVER: &[u8] = include_bytes!("../audio/river.ogg");
 const SLAPS: [&[u8]; 3] = [include_bytes!("../audio/slap_1.ogg"), include_bytes!("../audio/slap_2.ogg"), include_bytes!("../audio/slap_3.ogg")];
 const FLOOD: &[u8] = include_bytes!("../audio/flood.ogg");
 
+/// The player's volumes, kept between games in a small file beside the saves.
 #[derive(Resource, Clone, Copy, Debug)]
-pub struct AudioVolumes(pub VolumeSettings);
+pub struct AudioVolumes(VolumeSettings);
 
-impl Default for AudioVolumes {
-    fn default() -> Self {
-        Self(VolumeSettings::default())
+/// What a volume control turns up or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Master,
+    Water,
+    Alerts,
+}
+
+impl Channel {
+    pub const ALL: [Channel; 3] = [Channel::Master, Channel::Water, Channel::Alerts];
+    fn key(self) -> &'static str {
+        match self {
+            Channel::Master => "master",
+            Channel::Water => "water",
+            Channel::Alerts => "alerts",
+        }
+    }
+}
+
+impl AudioVolumes {
+    pub fn level(&self, ch: Channel) -> f32 {
+        match ch {
+            Channel::Master => self.0.master,
+            Channel::Water => self.0.ambience,
+            Channel::Alerts => self.0.effects,
+        }
+    }
+    pub fn set(&mut self, ch: Channel, v: f32) {
+        let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { return };
+        match ch {
+            Channel::Master => self.0.master = v,
+            Channel::Water => self.0.ambience = v,
+            Channel::Alerts => self.0.effects = v,
+        }
+    }
+    fn to_text(self) -> String {
+        Channel::ALL.iter().map(|&c| format!("{} {:.2}\n", c.key(), self.level(c))).collect()
+    }
+    fn from_text(text: &str) -> Self {
+        let mut v = Self(VolumeSettings::default());
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let (Some(key), Some(Ok(level))) = (words.next(), words.next().map(str::parse::<f32>)) else { continue };
+            if let Some(&c) = Channel::ALL.iter().find(|c| c.key() == key) {
+                v.set(c, level);
+            }
+        }
+        v
+    }
+}
+
+const SOUND_FILE: &str = "sound.txt";
+
+fn sound_path() -> std::path::PathBuf {
+    std::path::Path::new(crate::savegame::SAVE_DIR).join(SOUND_FILE)
+}
+
+/// Writes the volumes once they have stopped changing for half a second.
+fn keep_volumes(time: Res<Time>, vols: Res<AudioVolumes>, mut waiting: Local<Option<f32>>) {
+    if vols.is_changed() && !vols.is_added() {
+        *waiting = Some(0.0);
+    }
+    let Some(t) = waiting.as_mut() else { return };
+    *t += time.delta_secs();
+    if *t >= 0.5 {
+        *waiting = None;
+        let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+        let _ = std::fs::write(sound_path(), vols.to_text());
     }
 }
 
@@ -126,6 +193,8 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
+        let kept = std::fs::read_to_string(sound_path()).map(|t| AudioVolumes::from_text(&t)).unwrap_or(AudioVolumes(VolumeSettings::default()));
+        app.insert_resource(kept).add_systems(Update, keep_volumes);
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some()
             || app.world().get_resource::<Assets<AudioSource>>().is_none()
         {
@@ -133,7 +202,6 @@ impl Plugin for AudioPlugin {
         }
         let shared = SharedMix(Arc::new(Mutex::new(Mix::default())));
         app.add_audio_source::<Soundscape>()
-            .init_resource::<AudioVolumes>()
             .insert_resource(shared)
             .add_systems(Startup, start_soundscape)
             .add_systems(Update, (volume_keys, update_mix).chain());
@@ -153,6 +221,10 @@ fn start_soundscape(mut commands: Commands, mut assets: ResMut<Assets<Soundscape
 }
 
 fn volume_keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut vols: ResMut<AudioVolumes>, mut muted: Local<Option<f32>>) {
+    if muted.is_some() && vols.0.master > 0.0 {
+        // Turned back up some other way.
+        *muted = None;
+    }
     let step = time.delta_secs() * 0.4;
     let adjust = |down: KeyCode, up: KeyCode, v: &mut f32| {
         if keys.pressed(down) {
@@ -222,6 +294,27 @@ mod tests {
             out.extend(buf);
         }
         out
+    }
+
+    #[test]
+    fn recordings_are_stored_ready_to_play() {
+        for bytes in [BROOK, RIVER, FLOOD].into_iter().chain(SLAPS) {
+            let decoder = AudioSource { bytes: Arc::from(bytes) }.decoder();
+            assert_eq!((decoder.sample_rate().get(), decoder.channels().get()), (SAMPLE_RATE, 2));
+        }
+    }
+
+    #[test]
+    fn volumes_are_kept() {
+        let mut v = AudioVolumes(VolumeSettings::default());
+        v.set(Channel::Master, 0.5);
+        v.set(Channel::Water, 0.25);
+        v.set(Channel::Alerts, 0.0);
+        let back = AudioVolumes::from_text(&v.to_text());
+        assert!(Channel::ALL.iter().all(|&c| (back.level(c) - v.level(c)).abs() < 1e-3));
+        let odd = AudioVolumes::from_text("water 7\nalerts nope\nmaster");
+        assert_eq!(odd.level(Channel::Water), 1.0);
+        assert_eq!(odd.level(Channel::Alerts), VolumeSettings::default().effects);
     }
 
     #[test]
