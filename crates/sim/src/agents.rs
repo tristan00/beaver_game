@@ -1138,6 +1138,16 @@ fn seat_has_work(sim: &SimState, b: BuildingId, role: Role) -> bool {
     }
 }
 
+/// Already at work on this place (a step under way, a load on its way there): not blocked.
+fn busy_here(ag: Option<&Agent>, b: BuildingId) -> bool {
+    ag.is_some_and(|a| match a.task {
+        Task::Build { site } | Task::Dig { site, .. } | Task::Gate { site, .. } => site == b,
+        Task::DamWork { dam, .. } => dam == b,
+        Task::Fetch { then, .. } | Task::Pick { then, .. } => then == b,
+        _ => false,
+    })
+}
+
 fn reaches_place(sim: &SimState, from: Cell, b: BuildingId) -> bool {
     place_cells(sim, b).iter().any(|&c| sim.nav.may_reach_beside(from, c))
 }
@@ -1159,7 +1169,11 @@ fn retarget(sim: &mut SimState) {
     for (who, at) in workers {
         match sim.work.slot_of(who) {
             Some((from, i, role)) if matches!(role, Role::Build | Role::Collect(_)) => {
-                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) {
+                // A builder stays while its place gives it something to do; one blocked there
+                // (nothing it can take, or out of reach) goes on to the next place that does.
+                let ag = sim.agents.get(who);
+                let gives = |b: BuildingId| role != Role::Build || ag.is_some_and(|a| build_task(sim, b, a).is_some());
+                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) && (gives(from) || sim.work.place(from).is_some_and(|p| p.paused) || busy_here(ag, from)) {
                     continue;
                 }
                 let kind = crate::jobs::role_kind(role);
@@ -1178,7 +1192,7 @@ fn retarget(sim: &mut SimState) {
                         let (j, r) = p.open_seat(|r| crate::jobs::role_kind(r) == kind).or(reopen.then_some((p.slots.len(), Role::Build)))?;
                         Some((p, j, r))
                     })
-                    .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building))
+                    .filter(|(p, _, r)| seat_has_work(sim, p.building, *r) && reaches_place(sim, at, p.building) && gives(p.building))
                     .min_by_key(|(p, _, _)| (std::cmp::Reverse(p.priority), d(p.building), p.building))
                     .map(|(p, j, _)| (p.building, j));
                 let Some((to, j)) = next else { continue };

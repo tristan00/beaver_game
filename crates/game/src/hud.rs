@@ -441,6 +441,30 @@ fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>
     *was = Some((s.instance, now));
 }
 
+/// A building going under water, into the journal: once, and not again for a few days while
+/// the water hovers about the limit.
+fn notice_floods(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut was: Local<(u64, f64, std::collections::BTreeMap<BuildingId, (bool, f64)>)>) {
+    const AGAIN_DAYS: f64 = 3.0;
+    let s = &sim.0;
+    if !s.is_running() || (was.0 == s.instance && was.1 == s.time_days) {
+        return;
+    }
+    let fresh = was.0 != s.instance;
+    *was = (s.instance, s.time_days, if fresh { Default::default() } else { std::mem::take(&mut was.2) });
+    for b in &s.buildings.buildings {
+        let flooded = sim::buildings::flooded(b, &s.water.depth);
+        let (before, told) = was.2.get(&b.id).copied().unwrap_or((flooded || fresh, f64::NEG_INFINITY));
+        let mut told_at = told;
+        if flooded && !before && s.time_days - told >= AGAIN_DAYS {
+            notices.push_at(vec![(building_icon(b.kind), INK), (Icon::Flood, BAD)], format!("{} flooded", b.kind.spec().name), time.elapsed_secs(), Some(NoticeAt::Building(b.id)));
+            told_at = s.time_days;
+        }
+        was.2.insert(b.id, (flooded, told_at));
+    }
+    let standing: std::collections::BTreeSet<BuildingId> = s.buildings.buildings.iter().map(|b| b.id).collect();
+    was.2.retain(|id, _| standing.contains(id));
+}
+
 /// The pointer on a beaver in the colony book or ledger shows its inspector.
 fn peek_hover(q: Query<(&Interaction, &ui::Peek)>, mut hud: ResMut<HudState>) {
     let on = q.iter().find(|(i, _)| **i != Interaction::None).map(|(_, p)| p.0);
@@ -670,7 +694,7 @@ impl Plugin for HudPlugin {
             .init_resource::<MenuOpen>()
             .init_resource::<Tips>()
             .init_resource::<Pops>()
-            .add_systems(Update, (notice_wolf, notice_buildings))
+            .add_systems(Update, (notice_wolf, notice_buildings, notice_floods))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
             .init_resource::<world::HoverPoint>()

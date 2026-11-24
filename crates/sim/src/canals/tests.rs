@@ -481,3 +481,27 @@ fn a_lock_goes_straight_onto_a_dam_cell_gate_and_all_in_one_visit() {
     assert!(crate::locks::is_lock(&s, (12, 20)), "gate and lock built in the one visit");
     assert_eq!(crate::dams::gate_job(&s, dam, &[]), None);
 }
+
+/// A lock ordered on a built gate is builders' work, and the visit that builds it is offered.
+#[test]
+fn a_lock_ordered_on_a_built_gate_is_offered_to_builders() {
+    let mut s = pond_and_bank();
+    stock_sticks(&mut s, 40.0);
+    s.buildings.stores.put_at(crate::agents::SUPPLIES, Good::Clay, 40.0).unwrap();
+    logistics(&mut s);
+    let id = place(&mut s, &route((16, 20), (24, 20))).unwrap();
+    let gate = canal(&s, id).unwrap().gate.cell;
+    for c in canal(&s, id).unwrap().cells.iter().map(|c| c.cell).collect::<Vec<_>>() {
+        while cell_needs_work(&s, id, c, false) {
+            dig(&mut s, id, c).unwrap();
+        }
+    }
+    build_gate(&mut s, id);
+    assert!(!has_work_for(&s, id, false), "dug, gate built: nothing for builders");
+    s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(902), kind: BuildingKind::Harbor, pos: (2, 45), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+    crate::locks::order(&mut s, id, gate).unwrap();
+    assert!(has_work_for(&s, id, false));
+    assert_eq!(next_job(&s, id, &[], false), Some((gate, true)), "the lock is built on a gate visit");
+    turn_gate(&mut s, id).unwrap();
+    assert!(!crate::locks::pending(&s, gate) && !has_work_for(&s, id, false));
+}

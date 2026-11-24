@@ -380,7 +380,8 @@ pub fn claimed(sim: &SimState, id: BuildingId, except: crate::colony::BeaverId) 
 /// comes last), then silt clearing.
 pub fn next_job(sim: &SimState, id: BuildingId, taken: &[Cell], upkeep: bool) -> Option<(Cell, bool)> {
     let k = canal(sim, id)?;
-    if !upkeep && k.gate.pending.is_some() && !taken.contains(&k.gate.cell) {
+    // A gate to turn or a lock to build at it: a visit to the gate, before any digging.
+    if !upkeep && (k.gate.pending.is_some() || crate::locks::pending(sim, k.gate.cell)) && !taken.contains(&k.gate.cell) {
         return Some((k.gate.cell, true));
     }
     let gate = k.gate.cell;
