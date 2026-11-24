@@ -3342,6 +3342,10 @@ mod life_tests {
         assert!(!s.agents.holed_up && out(&s) > 0, "out at work before the cold comes");
         crate::sandbox::run_days(&mut s, 1.1);
         assert!(s.agents.holed_up, "holed up at {:?}", sky.at(s.time_days));
+        // Still water has frozen over hard enough to walk on: it is ground now, not water.
+        let frozen = (0..s.world.size * s.world.size).find(|&i| s.water.ice.as_slice()[i] >= crate::tuning::water::ICE_WALK_M && s.water.depth.as_slice()[i] > crate::buildings::WET_DEPTH && s.water.dam_height.as_slice()[i] <= 0.0).expect("ice");
+        let n = s.world.size;
+        assert_eq!(s.nav.surface_at((frozen % n, frozen / n)), Some(Surface::Land), "frozen water is walked");
         let (inside, all) = (s.agents.by_id.values().filter(|a| a.inside).count(), s.agents.by_id.len());
         assert!(inside * 10 >= all * 8, "{inside} of {all} in their lodge at {:?}", sky.at(s.time_days));
         let eased = (0..60 * 24).map(|h| s.time_days + h as f64 / 24.0).find(|&t| sky.at(t).feels_c > crate::weather::COME_OUT_FEELS_C + 3.0).unwrap();

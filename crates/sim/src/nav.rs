@@ -383,7 +383,7 @@ impl NavGrid {
                 let mut connectivity=false;
                 let blocked=|s:Surface|matches!(s,Surface::Solid|Surface::LodgeInside|Surface::LodgeEntrance);
                 for &i in &sim.water.nav_cells {
-                    let next=if sim.water.depth.as_slice()[i]>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};
+                    let next=self.surface_now(i,sim.water.depth.as_slice()[i],sim.water.ice.as_slice()[i]);
                     let old=self.surface.as_slice()[i];
                     connectivity|=blocked(old)!=blocked(next);
                     self.surface.as_mut_slice()[i]=next;
@@ -431,9 +431,17 @@ impl NavGrid {
             let i=r.cell.1*w+r.cell.0;
             if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind==crate::resources::ResourceKind::Tree {Surface::Thicket} else {Surface::Solid};}
         }
-        for (i,&d) in depth.iter().enumerate() {self.surface.as_mut_slice()[i]=if d>crate::buildings::WET_DEPTH {self.wet_surface[i]} else {self.dry_surface[i]};}
+        let ice=sim.water.ice.as_slice();
+        for (i,&d) in depth.iter().enumerate() {self.surface.as_mut_slice()[i]=self.surface_now(i,d,ice[i]);}
         self.label_regions();self.refresh_key=Some(Self::key(sim));
         self.take_currents(&sim.water,true);
+    }
+
+    /// What a cell is now: its wet or its dry surface by the water standing there, and water (a
+    /// canal, a lock) frozen hard enough to bear a beaver is ground, walked over, not swum.
+    fn surface_now(&self, i: usize, depth: f32, ice: f32) -> Surface {
+        let s = if depth > crate::buildings::WET_DEPTH { self.wet_surface[i] } else { self.dry_surface[i] };
+        if ice >= crate::tuning::water::ICE_WALK_M && matches!(s, Surface::Water | Surface::Canal | Surface::Lock) { Surface::Land } else { s }
     }
 
     pub fn set(&mut self, cell: Cell, s: Surface) {

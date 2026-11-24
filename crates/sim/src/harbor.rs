@@ -53,8 +53,8 @@ impl Fleet {
     }
 }
 
-/// Ice this thick (m) stops a barge.
-pub const BARGE_ICE_M: f32 = 0.04;
+/// Ice this thick (m) stops a barge: the ice that bears a beaver.
+pub const BARGE_ICE_M: f32 = crate::tuning::water::ICE_WALK_M;
 
 /// Water a barge can float on: open water, a canal or a lock, at least `BARGE_DEPTH` deep (a
 /// lock always is), and not iced over.

@@ -13,6 +13,9 @@ pub mod water {
     /// Ice, in metres thick: the thickest a winter makes, and how thick before it covers a cell.
     pub const MAX_ICE: f32 = 0.8;
     pub const ICE_COVER_M: f32 = 0.03;
+    /// Ice this thick (m) bears a beaver: the water under it is walked over, not swum, and no
+    /// barge moves through it.
+    pub const ICE_WALK_M: f32 = 0.04;
     /// Stefan's law, m² per °C-day (lake ice thickens by about 2.7 cm × √(degree-days)), and the
     /// first skin it grows from.
     pub const ICE_STEFAN: f32 = 0.000_37;

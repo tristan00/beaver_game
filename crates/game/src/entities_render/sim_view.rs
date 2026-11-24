@@ -21,6 +21,8 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
         Some(Surface::Water | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
         // In a lock's chamber: half way up its gate, where the chamber water stands on average.
         Some(Surface::Lock) => sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5,
+        // On ice, on top of it.
+        _ if sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) + 0.02,
         // A dry river cell is drawn with its channel cut; walk on the drawn bed.
         _ => -crate::terrain_render::channel_cut(sim, cell.0 as i32, cell.1 as i32),
     }

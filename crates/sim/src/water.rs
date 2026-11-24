@@ -1168,9 +1168,11 @@ impl Water {
             return;
         }
         let (mut any, mut changed) = (false, false);
+        // Cells whose ice now bears a beaver, or no longer does: walked, not swum (see `nav`).
+        let mut firm: Vec<usize> = Vec::new();
         let velocity = self.velocity.as_slice();
         let (cells, mut marks) = self.ice.cells_and_marks();
-        for ((ice, &d), v) in cells.iter_mut().zip(&self.h).zip(velocity) {
+        for (i, ((ice, &d), v)) in cells.iter_mut().zip(&self.h).zip(velocity).enumerate() {
             let still = (1.0 - v.0.hypot(v.1) / ICE_OPEN_SPEED).clamp(0.0, 1.0);
             let now = if d <= WET_EPS {
                 0.0
@@ -1183,6 +1185,9 @@ impl Water {
                 (*ice - thaw * dt_days).max(0.0)
             };
             let now = if now < 1e-4 { 0.0 } else { now };
+            if (now >= ICE_WALK_M) != (*ice >= ICE_WALK_M) {
+                firm.push(i);
+            }
             changed |= now != *ice;
             any |= now > 0.0;
             *ice = now;
@@ -1191,6 +1196,15 @@ impl Water {
             marks.all();
         }
         self.ice_any = any;
+        if !firm.is_empty() {
+            self.nav_revision = self.nav_revision.wrapping_add(1);
+            for i in firm {
+                if !self.nav_marked[i] {
+                    self.nav_marked[i] = true;
+                    self.nav_cells.push(i);
+                }
+            }
+        }
     }
 
     /// Integrity a dam cell loses a day: from age, and from water running over its crest
