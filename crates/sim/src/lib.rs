@@ -18,6 +18,7 @@ pub mod gates;
 pub mod harbor;
 pub mod locks;
 pub mod wildlife;
+pub mod lives;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
@@ -135,6 +136,9 @@ pub struct SimState {
     /// Rabbits, deer and birds (saved after the world; see `save`).
     #[serde(skip)]
     pub wildlife: wildlife::Wildlife,
+    /// Every beaver's life story (saved after the world; see `save`).
+    #[serde(skip)]
+    pub lives: lives::Lives,
     pub sandbox: bool,
     #[serde(skip)]
     pub step_timings: StepTimings,
@@ -188,6 +192,7 @@ impl SimState {
             locks: locks::Locks::default(),
             fleet: harbor::Fleet::default(),
             wildlife: wildlife::Wildlife::new(seed),
+            lives: lives::Lives::default(),
             sandbox: false,
             step_timings: StepTimings::default(),
             journal: journal::Journal::default(),
@@ -270,6 +275,7 @@ impl SimState {
         { let _p = prof::scope("step/agents"); agents::step(self, dt_days); }
         { let _p = prof::scope("step/predators"); predators::step(self, dt_days); }
         { let _p = prof::scope("step/wildlife"); wildlife::step(self, dt_days); }
+        { let _p = prof::scope("step/lives"); lives::step(self); }
         lap(&mut t.agents_s);
         { let _p = prof::scope("step/dams"); dams::step(self); }
         { let _p = prof::scope("step/canals"); canals::step(self, dt_days); }
@@ -355,6 +361,7 @@ impl Clone for SimState {
             locks: self.locks.clone(),
             fleet: self.fleet.clone(),
             wildlife: self.wildlife.clone(),
+            lives: self.lives.clone(),
             sandbox: self.sandbox.clone(),
             step_timings: self.step_timings.clone(),
             journal: self.journal.clone(),
@@ -369,7 +376,7 @@ impl Clone for SimState {
         let Self {
             seed, instance, client_commands, time_days, height, world, water, ecology, colony, buildings, events, nav,
             resources, agents, work, maintenance, society, ledger, output, fog, steps, recorder, forestry, predators,
-            locks, fleet, wildlife, sandbox, step_timings, journal,
+            locks, fleet, wildlife, lives, sandbox, step_timings, journal,
         } = src;
         self.seed = *seed;
         self.instance = *instance;
@@ -398,6 +405,7 @@ impl Clone for SimState {
         self.locks.clone_from(locks);
         self.fleet.clone_from(fleet);
         self.wildlife.clone_from(wildlife);
+        self.lives.clone_from(lives);
         self.sandbox = *sandbox;
         self.step_timings = *step_timings;
         self.journal.clone_from(journal);

@@ -147,7 +147,8 @@ pub fn step(sim: &mut SimState, day: u64) {
                 continue;
             }
             let roll = draw(sim.seed, day, y * n + x);
-            if roll < sprouting && is_shore(sim, c) && crowd(&plants, c) < CROWDED {
+            // Shoots spread from living plants: none come up where there is none within reach.
+            if roll < sprouting && is_shore(sim, c) && (1..CROWDED).contains(&crowd(&plants, c)) {
                 plants[y * n + x] = 1;
                 new.push((c, ResourceKind::Plant));
             } else if roll < rooting && in_still_water(sim, c) && alone(&lilies, c) {

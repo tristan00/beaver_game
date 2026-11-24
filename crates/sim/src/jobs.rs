@@ -20,10 +20,12 @@ pub enum RoleKind {
     Maintainer,
     /// Keeps watch at a lookout.
     Guard,
+    /// Gathers pebbles (a digger's skill, its own row on the board).
+    PebbleCollector,
 }
 
 impl RoleKind {
-    pub const ALL: [RoleKind; 8] = [
+    pub const ALL: [RoleKind; 9] = [
         RoleKind::Forager,
         RoleKind::Logger,
         RoleKind::MudDigger,
@@ -32,8 +34,9 @@ impl RoleKind {
         RoleKind::Forester,
         RoleKind::Maintainer,
         RoleKind::Guard,
+        RoleKind::PebbleCollector,
     ];
-    pub const DEFAULT_ORDER: [RoleKind; 8] = DEFAULT_ROLE_ORDER;
+    pub const DEFAULT_ORDER: [RoleKind; 9] = DEFAULT_ROLE_ORDER;
 }
 
 
@@ -72,7 +75,8 @@ pub fn gather_role(k: ResourceKind) -> RoleKind {
         ResourceKind::Plant | ResourceKind::WaterPlant => RoleKind::Forager,
         ResourceKind::Tree | ResourceKind::Felled => RoleKind::Logger,
         ResourceKind::MudBank => RoleKind::MudDigger,
-        ResourceKind::RiverClay | ResourceKind::Pebbles => RoleKind::MudDigger,
+        ResourceKind::RiverClay => RoleKind::MudDigger,
+        ResourceKind::Pebbles => RoleKind::PebbleCollector,
     }
 }
 
@@ -86,10 +90,11 @@ pub fn colony_job(r: RoleKind) -> Option<Job> {
         RoleKind::Forester => Some(Job::Forager),
         RoleKind::Maintainer => Some(Job::Builder),
         RoleKind::Guard => None,
+        RoleKind::PebbleCollector => Some(Job::Digger),
     }
 }
 
-fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
+pub(crate) fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind> {
     match a {
         Assignment::Resource(id) => sim.resources.get(id).map(|r| gather_role(r.kind)),
         Assignment::Area(k, _) => Some(gather_role(k)),
@@ -412,6 +417,7 @@ fn gather_kind(role: RoleKind) -> Option<ResourceKind> {
         RoleKind::Forager => Some(ResourceKind::Plant),
         RoleKind::Logger => Some(ResourceKind::Tree),
         RoleKind::MudDigger => Some(ResourceKind::MudBank),
+        RoleKind::PebbleCollector => Some(ResourceKind::Pebbles),
         _ => None,
     }
 }

@@ -141,6 +141,8 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
         Some(Task::Tend { .. }) => (Icon::Tend, GOOD, "Tending"),
         Some(Task::Seed { .. }) => (Icon::Sapling, GOOD, "Collecting seedlings"),
         Some(Task::Plant { .. }) => (Icon::Sapling, GOOD, "Planting"),
+        // Home but not tired: its job has nothing for it to do just now.
+        Some(Task::Rest) if !b.resting => (Icon::Idle, WARN, "No work: waiting at home"),
         Some(Task::Rest) => (Icon::Idle, REST, "Resting"),
         Some(Task::Watch { .. }) => (Icon::RoleGuard, GOOD, "On watch"),
         Some(Task::Barge { .. }) => (Icon::Barge, GOOD, "Barging"),
@@ -440,6 +442,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
             if assigned {
                 r.pebble(Icon::Minus, 11.0, HudAction::FreeBeaver(id), Peb::Idle).tip(Tip::name("Free"));
             }
+            r.pebble(Icon::Journal, 13.0, HudAction::BeaverDetails(Some(id)), if c.hud.details == Some(id) { Peb::On } else { Peb::Idle }).tip(Tip::name("Details").line("Life, family, skills", ""));
             r.pebble(Icon::Follow, 13.0, HudAction::Follow(id), if c.hud.follow == Some(id) { Peb::On } else { Peb::Idle }).tip(Tip::name("Follow"));
         });
     })
@@ -500,13 +503,60 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                         _ => (forestry::MATURE_AGE, forestry::OLD_AGE),
                     };
                     let ground = forestry::ground_growth(s, r.cell);
+                    let tend = if r.tended_days > 0.0 { forestry::TENDED_GROWTH } else { 1.0 };
                     u.row(8.0, |x| {
                         x.icon(Icon::Hourglass, 16.0, MUTED);
                         x.notches((r.age_days - from) / (to - from), 10, 170.0, 12.0, GOOD);
                         x.spacer();
                         x.bold(days(left), 13.0, INK);
                     })
-                    .tip(Tip::name(format!("{} in", stage_name(next))).with_value(days(left)).line("Species growth", format!("×{}", num(sp.spec().growth))).line("Ground", format!("×{}", num(ground))));
+                    .tip(Tip::name(format!("{} in", stage_name(next))).with_value(days(left)).line("Species growth", format!("×{}", num(sp.spec().growth))).line("Ground", format!("×{}", num(ground))).line("Forester's tending", format!("×{}", num(tend))).line("Winter", "×0"));
+                }
+                // A forester's care: tended trees grow faster for a while; and the forester
+                // whose area it is in.
+                let tended = r.tended_days > 0.0;
+                let forester = s.work.places.iter().filter(|p| p.area.is_some_and(|a| a.contains(r.cell))).filter_map(|p| s.buildings.building(p.building)).find(|b| b.kind == BuildingKind::Forester);
+                if tended || forester.is_some() {
+                    let mut tip = Tip::name("Forester's care");
+                    tip = if tended {
+                        tip.line("Tended: grows", format!("×{}", num(forestry::TENDED_GROWTH))).line("For", days(r.tended_days))
+                    } else {
+                        tip.line("Not tended lately", "×1")
+                    };
+                    if forester.is_some() {
+                        tip = tip.line("In a forester's area", "");
+                    }
+                    u.row(8.0, |x| {
+                        x.icon(Icon::Tend, 16.0, if tended { GOOD } else { MUTED });
+                        x.bold(format!("×{}", num(if tended { forestry::TENDED_GROWTH } else { 1.0 })), 13.0, if tended { INK } else { MUTED });
+                        x.spacer();
+                        if tended {
+                            x.bold(days(r.tended_days), 13.0, MUTED);
+                        }
+                        if let Some(b) = forester {
+                            x.pebble(building_icon(b.kind), 12.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name(b.kind.spec().name).line("Show", ""));
+                        }
+                    })
+                    .tip(tip);
+                }
+                // Who planted it, and when.
+                if let Some(&(who, day)) = s.forestry.planted.get(&id) {
+                    let name = s.colony.beaver(who).map(|b| b.name.clone());
+                    u.row(8.0, |x| {
+                        x.icon(Icon::Sapling, 16.0, GOOD);
+                        match &name {
+                            Some(n) => {
+                                x.token(Icon::Beaver, 16.0, None).action(HudAction::SelectBeaver(who)).tip(Tip::name(n.clone()).line("Show", ""));
+                                x.bold(n.clone(), 13.0, INK);
+                            }
+                            None => {
+                                x.icon(Icon::Beaver, 16.0, MUTED);
+                            }
+                        }
+                        x.spacer();
+                        x.bold(days((s.time_days - day) as f32), 13.0, MUTED);
+                    })
+                    .tip(Tip::name("Planted").line("By", name.unwrap_or_else(|| "a beaver now gone".into())).line("Ago", days((s.time_days - day) as f32)));
                 }
                 // What felling it now gives.
                 if let Some((logs, branches, bark)) = stage.fell_yield(sp) {

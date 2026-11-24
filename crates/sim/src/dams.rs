@@ -371,8 +371,12 @@ pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
 pub fn first_targets(sim: &SimState, cells: &[Cell]) -> Vec<f32> {
     let low = cells.iter().map(|&c| ground(sim, c)).fold(f32::INFINITY, f32::min);
     let crest = low + DEFAULT_TARGET;
-    cells.iter().map(|&c| (crest - ground(sim, c)).clamp(0.0, HEIGHT_PER_ROW)).collect()
+    cells.iter().map(|&c| (crest - ground(sim, c)).clamp(MIN_WALL, HEIGHT_PER_ROW)).collect()
 }
+
+/// Every cell of a drawn dam gets at least a footing wall (`MIN_WALL`), even where the ground
+/// already stands above the crest: the whole line the player drew is built, and none of it is
+/// left staked out with nothing ever to build there.
 
 pub fn place(sim: &mut SimState, cells: &[Cell]) -> Result<BuildingId, SimError> {
     sim.unlocked(BuildingKind::Dam).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
@@ -449,7 +453,7 @@ pub fn plan_widen(sim: &SimState, id: BuildingId) -> Result<Plan, String> {
         if cells.iter().any(|x| x.cell == at) || blocked_by_building(sim, at, Some(id)) {
             continue;
         }
-        cells.push(DamCell { cell: at, target: c.target, row: d.rows });
+        cells.push(DamCell { cell: at, target: c.target.max(MIN_WALL), row: d.rows });
     }
     if cells.len() == d.cells.len() {
         return Err("no room downstream to widen".into());
@@ -496,7 +500,7 @@ pub fn plan_extend_to(sim: &SimState, id: BuildingId, drawn: &[Cell]) -> Result<
         if blocked_by_building(sim, at, Some(id)) {
             return Err("something is already built there".into());
         }
-        let h = (top - ground(sim, at)).clamp(0.0, d.cap());
+        let h = (top - ground(sim, at)).clamp(MIN_WALL, d.cap().max(MIN_WALL));
         cells.push(DamCell { cell: at, target: h, row: 0 });
     }
     if cells.len() == d.cells.len() {
@@ -654,6 +658,16 @@ pub fn step(sim: &mut SimState) {
         if d.pond_day >= today {
             continue;
         }
+        // Dams drawn before every cell had a footing get theirs (once a day is plenty).
+        if d.cells.iter().any(|c| c.target < MIN_WALL && !is_gate(d, c.cell)) {
+            if let Ok(d) = dam_mut(sim, id) {
+                let gates: Vec<Cell> = d.gates.iter().map(|g| g.cell).collect();
+                for c in d.cells.iter_mut().filter(|c| c.target < MIN_WALL && !gates.contains(&c.cell)) {
+                    c.target = MIN_WALL;
+                }
+            }
+        }
+        let Some(d) = dam(sim, id) else { continue };
         let new_day = d.pond_day.is_finite() && d.pond_day < today || d.history.is_empty();
         let _p = crate::prof::scope("step/dams/measure pond");
         let pond = measure(sim, d);

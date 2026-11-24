@@ -4,6 +4,7 @@ mod harbor;
 mod meshgen;
 mod models;
 mod scene;
+mod silhouette;
 mod structures;
 mod wildlife;
 pub mod sim_sync;
@@ -40,6 +41,7 @@ impl Plugin for EntitiesRenderPlugin {
             .init_resource::<sim_sync::PendingDays>()
             .add_plugins(wolf::WolfPlugin)
             .add_plugins(wildlife::WildlifePlugin)
+            .add_plugins(silhouette::SilhouettePlugin)
             .add_systems(Startup, init_models)
             .add_systems(
                 Update,
@@ -360,8 +362,9 @@ fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::te
     }
 }
 
-fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
-    let Some(m) = models else { return };
+fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Option<Res<silhouette::SilhouetteMat>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
+    let (Some(m), Some(ghost)) = (models, ghost) else { return };
+    let ghost = &ghost.0;
     let w = &m.white;
     for (root, sprite) in &q {
         let target = crate::picking::Target::Beaver(sim::colony::BeaverId(sprite.id));
@@ -388,11 +391,18 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, q: Query<(En
             chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             grey = p.spawn((Mesh3d(m.grey.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
+        // Each part's silhouette, seen through trees in front of it.
+        for (e, mesh) in [(body_mesh, &m.body), (parts[0], &m.head), (parts[1], &m.tail), (parts[2], &m.leg_front), (parts[3], &m.leg_front), (parts[4], &m.leg_hind), (parts[5], &m.leg_hind)] {
+            let mesh = mesh.clone();
+            commands.entity(e).with_children(|p| silhouette::twin(p, mesh, ghost));
+        }
         commands.entity(root).with_children(|p| {
             far = p.spawn((target, Mesh3d(m.far.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
             wake = p.spawn((Mesh3d(m.wake.clone()), MeshMaterial3d(m.wake_mat.clone()), Transform::from_xyz(0.0, 0.04, 1.15), Visibility::Hidden)).id();
             blob = p.spawn((Mesh3d(m.blob.clone()), MeshMaterial3d(m.blob_mat.clone()), Transform::from_xyz(0.0, 0.05, 0.0))).id();
         });
+        let far_mesh = m.far.clone();
+        commands.entity(far).with_children(|p| silhouette::twin(p, far_mesh, ghost));
         commands.entity(root).insert(BeaverRig {
             body, body_mesh, far, parts, mouth, paws, lids, chips, grey, wake, blob,
             prev: sprite.pose, cur: sprite.pose, blend: 1.0, near: true, init: false, shown: (None, None),
@@ -1007,8 +1017,9 @@ fn update_tree_lod(
     let (Some(models), Some(cam)) = (models, cam.iter().next()) else { return };
     let c = cam.translation();
     let (l0, l1) = (TREE_LOD0 * TREE_LOD0, TREE_LOD1 * TREE_LOD1);
-    let mut clear: Vec<Vec3> = sim.0.agents.by_id.values().filter(|a| !a.inside)
-        .map(|a| sim_view::agent_world_pos(&sim.0, a, 0.0) + Vec3::Y * 0.4).collect();
+    // Beavers behind trees show through as silhouettes (see `silhouette`); trees are cut away
+    // only round a selected building and where something is being placed.
+    let mut clear: Vec<Vec3> = Vec::new();
     if let Some(crate::flow::Selection::Site(id)) = selection.as_deref().copied() {
         if let Some(b) = sim.0.buildings.building(id) {
             clear.push(crate::flow::cell_world(&sim.0.height, (b.pos.0 as f32 + 0.5, b.pos.1 as f32 + 0.5)));

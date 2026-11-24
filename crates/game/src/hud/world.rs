@@ -115,15 +115,12 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         Thing::Beaver(id) => {
             let Some(b) = s.colony.beaver(id) else { return Tip::default() };
             let mut tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone());
-            match s.work.slot_of(id) {
-                Some((bid, _, role)) => {
-                    let place = s.buildings.building(bid).map(|x| x.kind.spec().name).unwrap_or("");
-                    tip.push(TipLine::new(role_name(role), place).icon(role_icon(role), INK));
-                }
-                None => {
-                    tip.push(TipLine::new("Free", "").icon(Icon::Idle, WARN));
-                }
+            // Its job, then what it is doing about it now.
+            if let Some((_, _, role)) = s.work.slot_of(id) {
+                tip.push(TipLine::new(role_name(role), "").icon(role_icon(role), INK));
             }
+            let (icon, col, doing) = super::inspect::activity(s, b);
+            tip.push(TipLine::new(doing, "").icon(icon, col));
             if let Some(a) = s.agents.get(id) {
                 if let Some(l) = &a.load {
                     let _ = l;
@@ -186,8 +183,15 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             if let Some(p) = s.work.places.iter().find(|p| p.area.is_some_and(|a| a.contains(r.cell))) {
                 if let Some(b) = s.buildings.building(p.building) {
-                    tip.push(TipLine::new(b.kind.spec().name, "").icon(Icon::Area, MUTED));
+                    tip.push(TipLine::new(format!("{}'s area", b.kind.spec().name), "").icon(Icon::Area, MUTED));
                 }
+            }
+            if r.tended_days > 0.0 {
+                tip.push(TipLine::new("Tended: grows", format!("×{}", num(sim::forestry::TENDED_GROWTH))).icon(Icon::Tend, GOOD));
+            }
+            if let Some(&(who, _)) = s.forestry.planted.get(&rid) {
+                let name = s.colony.beaver(who).map_or_else(|| "a beaver now gone".to_string(), |b| b.name.clone());
+                tip.push(TipLine::new("Planted by", name).icon(Icon::Sapling, GOOD));
             }
             tip
         }

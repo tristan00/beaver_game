@@ -359,6 +359,7 @@ fn eat(sim: &mut SimState, food: Food, amount: f32) -> f32 {
             Ok(r) if r.amount > 0.0 => {
                 let got = amount.min(r.amount);
                 r.amount -= got;
+                sim.resources.remove_if_bare(id);
                 got
             }
             _ => 0.0,

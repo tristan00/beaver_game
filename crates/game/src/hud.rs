@@ -8,6 +8,7 @@ mod dam_panel;
 mod elevation;
 mod inspect;
 mod journal;
+mod life;
 mod ledger;
 mod panels;
 mod ui;
@@ -157,6 +158,8 @@ pub struct HudState {
     pub msg: Option<(Msg, f32)>,
     idle_cursor: usize,
     pub colony: Option<ColonyTab>,
+    /// The beaver whose whole story is open in the drawer.
+    pub details: Option<BeaverId>,
     /// The colony ledger's open page, if it is open.
     pub ledger: Option<LedgerTab>,
     pub span: Span,
@@ -234,6 +237,7 @@ pub fn reset_for_new_game(world: &mut World) {
 impl Default for HudState {
     fn default() -> Self {
         HudState {
+            details: None,
             open_badge: None,
             tool: Tool::None,
             drag_from: None,
@@ -444,7 +448,7 @@ pub(crate) fn longest_list(s: &sim::SimState) -> usize {
 
 /// The mouse wheel over a long list in the ledger scrolls it.
 fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Query<(&ui::TagComp, &bevy::ui::RelativeCursorPosition)>, sim: Res<Sim>, mut hud: ResMut<HudState>) {
-    if scroll.delta.y == 0.0 || hud.ledger.is_none() {
+    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.details.is_none()) {
         return;
     }
     let over = q.iter().any(|(t, r)| t.0 == Tag::Scroll && r.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5));
@@ -456,7 +460,11 @@ fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Quer
         bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y / 20.0,
     };
     let step = (-lines * 2.0).round() as i64;
-    let next = ((hud.scroll as i64 + step).max(0) as usize).min(longest_list(&sim.0));
+    let longest = match hud.details {
+        Some(id) => sim.0.lives.of.get(&id).map_or(0, |l| l.entries.len()),
+        None => longest_list(&sim.0),
+    };
+    let next = ((hud.scroll as i64 + step).max(0) as usize).min(longest);
     if next != hud.scroll {
         hud.scroll = next;
     }
@@ -556,6 +564,8 @@ const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
     Fix(Fix, Option<Cell>),
+    /// Open (or, with `None`, close) a beaver's story.
+    BeaverDetails(Option<BeaverId>),
     /// To the wolf while it is seen, else to where it was last seen.
     FocusWolf,
     CycleIdle,
@@ -830,6 +840,8 @@ fn refresh_panels(
             _ if !founded => Vec::new(),
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
+            // A beaver's full page covers the map; the card would only sit on top of it.
+            Panel::Right if ctx.hud.details.is_some() => Vec::new(),
             Panel::Right => panels::right(&ctx),
             Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),

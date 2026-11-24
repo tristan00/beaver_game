@@ -2421,7 +2421,8 @@ fn plant(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, store: Buildi
     }
     // A sapling grows into its own species; one of no known species is a cutting from nearby.
     let species = load.species.unwrap_or_else(|| crate::forestry::planting_species(sim, cell));
-    sim.resources.add_tree(cell, 0.0, species);
+    let tree = sim.resources.add_tree(cell, 0.0, species);
+    sim.forestry.planted.insert(tree, (ag.id, sim.time_days));
     sim.ledger.planted += 1;
     let used = load.amount.min(1.0);
     log_load(sim, ag, "PLANT", NO_STORE, Good::Saplings, load.amount, used, &format!("species={species:?} at=({},{})", cell.0, cell.1));

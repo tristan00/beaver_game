@@ -164,6 +164,7 @@ fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
         RoleKind::Forester => (Icon::RoleForester, "Forester"),
         RoleKind::Maintainer => (Icon::RoleMaintainer, "Maintainer"),
         RoleKind::Guard => (Icon::RoleGuard, "Guard"),
+        RoleKind::PebbleCollector => (Icon::Pebbles, "Pebble collector"),
     }
 }
 

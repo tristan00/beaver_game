@@ -416,7 +416,19 @@ impl ResourceWorld {
         let was = self.items[i].look();
         let out = self.take_at(i, want);
         self.note_look(i, was);
+        self.remove_if_bare(id);
         out
+    }
+
+    /// A food plant picked bare dies: new ones only spread in from living plants nearby (see
+    /// `wetland::step`), so gathering clears the ground round a colony as felling does.
+    pub(crate) fn remove_if_bare(&mut self, id: ResourceId) {
+        let Some(i) = self.index_of(id) else { return };
+        let r = &self.items[i];
+        if r.kind.is_food_plant() && r.amount < PLANT_BARE {
+            if self.log_changes { note("GONE", r, format_args!("why=picked bare")); }
+            self.remove_at(i);
+        }
     }
 
     fn take_at(&mut self, i: usize, want: f32) -> Option<(Good, f32)> {

@@ -14,9 +14,10 @@ mod migration_tests {
     fn all_arrivals_share_one_annual_allowance() {
         let mut c=Colony::default();c.found((0.0,3.0),&RiverLand::default()).unwrap();
         c.add_home((15.0,0.0));c.add_home((30.0,0.0));
-        c.admit_wanderer(true).unwrap();c.admit_wanderer(true).unwrap();
+        assert_eq!(MAX_IMMIGRANTS_PER_YEAR,1,"one newcomer a year");
+        c.admit_wanderer(true).unwrap();
         assert_eq!(c.migration_remaining(),0);assert!(c.admit_wanderer(true).is_err());assert_eq!(c.add_immigrants(10),0);
-        c.time_days=360.0;assert_eq!(c.migration_remaining(),2);assert_eq!(c.immigration_by_year.get(&0),Some(&2));
+        c.time_days=360.0;assert_eq!(c.migration_remaining(),1);assert_eq!(c.immigration_by_year.get(&0),Some(&1));
         c.beavers.clear();c.check_collapse();assert!(c.is_collapsed());
         c.time_days=720.0;assert_eq!(c.migration_remaining(),0);assert_eq!(c.add_immigrants(2),0);
     }
@@ -1216,7 +1217,7 @@ impl Colony {
 impl Colony {
     pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
         if !self.founded {return Err(ColonyError::Invalid("colony is not founded".into()));}
-        if self.migration_remaining() == 0 {return Err(ColonyError::Invalid("annual migration limit reached (2 per year)".into()));}
+        if self.migration_remaining() == 0 {return Err(ColonyError::Invalid(format!("annual migration limit reached ({MAX_IMMIGRANTS_PER_YEAR} a year)")));}
         let waiting=adult.then(||self.beavers.iter().find(|b|b.stage==Stage::Adult && b.mate.is_none()
             && b.lodge.is_some() && self.beavers.iter().filter(|x|x.lodge==b.lodge && x.stage==Stage::Adult).count()==1).cloned()).flatten();
         let empty=self.lodges.iter().find(|l|!self.beavers.iter().any(|b|b.lodge==Some(l.id))).cloned();

@@ -232,7 +232,8 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
 
 /// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected, and `BC_SELECT_LOOKOUT=1`
 /// its first lookout, for screenshots of the inspector and the lookout's range.
-pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
+/// With `BC_DETAILS=1` too, the beaver's story is opened.
+pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
     let want = if std::env::var_os("BC_SELECT_BEAVER").is_some() {
@@ -244,5 +245,10 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     };
     if let Some(w) = want.filter(|w| *sel != *w) {
         *sel = w;
+    }
+    if let (Some(mut hud), Some(crate::flow::Selection::Beaver(id))) = (hud, want) {
+        if std::env::var_os("BC_DETAILS").is_some() && hud.details != Some(id) {
+            hud.details = Some(id);
+        }
     }
 }

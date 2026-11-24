@@ -215,7 +215,15 @@ pub(super) fn button_actions(
                 hud.set_changed();
             }
             HudAction::Undo => undo_last(s, &mut hud, now),
+            HudAction::BeaverDetails(who) => {
+                hud.details = who;
+                hud.scroll = 0;
+                if who.is_some() {
+                    hud.ledger = None;
+                }
+            }
             HudAction::Colony(t) => {
+                hud.details = None;
                 hud.colony = t;
                 if t.is_some() {
                     hud.ledger = None;

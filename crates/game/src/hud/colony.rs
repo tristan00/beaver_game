@@ -19,6 +19,10 @@ const TABS: [(ColonyTab, Icon, &str); 4] = [
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
+    // A beaver's story, opened from its card, takes the drawer.
+    if let Some(id) = c.hud.details {
+        return super::life::screen(c, id);
+    }
     let Some(tab) = c.hud.colony else { return Vec::new() };
     let mut ui = Ui::default();
     ui.node(
@@ -128,7 +132,7 @@ fn work(c: &Ctx, u: &mut Ui) {
                 }
             });
             r.spacer();
-            if matches!(role, RoleKind::Forager | RoleKind::Logger | RoleKind::MudDigger | RoleKind::Forester) {
+            if matches!(role, RoleKind::Forager | RoleKind::Logger | RoleKind::MudDigger | RoleKind::PebbleCollector | RoleKind::Forester) {
                 // Each click tightens the limit a step, then lifts it.
                 let now = s.work.shore_limits.get(&role).copied();
                 let next = match now {

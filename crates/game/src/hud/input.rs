@@ -95,6 +95,8 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
+        } else if hud.details.is_some() {
+            hud.details = None;
         } else if hud.colony.is_some() || hud.ledger.is_some() {
             hud.colony = None;
             hud.ledger = None;

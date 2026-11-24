@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         starting.push(format!("(crate::buildings::Good::{good},{})",number(amount)));
     }
     constants.entry("starts".into()).or_default().push_str(&format!("pub const START_BUNDLE: [(crate::buildings::Good,f32); {}] = [{}];\n",starting.len(),starting.join(",")));
-    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer","Guard"];
+    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer","Guard","PebbleCollector"];
     let mut order = Vec::new();
     for row in db.prepare("SELECT role,priority FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))? {
         let (role,priority) = row?;

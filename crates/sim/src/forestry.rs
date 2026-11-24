@@ -103,6 +103,9 @@ pub struct Forestry {
     unreachable: BTreeMap<Cell, f64>,
     day: Option<i64>,
     rng: Pcg32,
+    /// Trees a beaver planted: who, and on what day (saved after the world; see `save`).
+    #[serde(skip)]
+    pub planted: BTreeMap<ResourceId, (BeaverId, f64)>,
 }
 
 impl Default for Forestry {
@@ -126,6 +129,7 @@ impl Forestry {
             unreachable: BTreeMap::new(),
             day: None,
             rng: Pcg32::seed_from_u64(seed ^ 0xF0E5_7E1D),
+            planted: BTreeMap::new(),
         }
     }
 
@@ -379,6 +383,9 @@ fn daily(sim: &mut SimState, day: i64) {
         f.deeds.pop_front();
     }
     f.unreachable.retain(|_, until| *until > today);
+    // Trees felled or gone are forgotten.
+    let planted = std::mem::take(&mut sim.forestry.planted);
+    sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some_and(|r| r.kind == ResourceKind::Tree)).collect();
     drop(_trees);
     { let _p = crate::prof::scope("step/forestry/daily/thinning"); refresh_thinning(sim); }
     { let _p = crate::prof::scope("step/forestry/daily/forest cover"); derive_ecology(sim); }
@@ -675,7 +682,10 @@ pub fn plantable(sim: &SimState, c: Cell) -> bool {
     plantable_with(sim, c, &occupied, &near)
 }
 
-/// Where a food store's planter puts the next sapling: moist ground first, then nearest.
+/// Where a forester puts the next sapling: anywhere in its area that grows well, picked at
+/// random so the planting spreads across the area instead of filling in beside the building.
+/// The ground's growth counts in broad bands only, so a slightly richer patch doesn't draw
+/// every sapling to it.
 pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Option<Cell> {
     let claimed: HashSet<Cell> = sim
         .agents
@@ -686,7 +696,14 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
         .collect();
     let (occupied, near) = planting_blocked(sim);
     let n = sim.world.size;
-    let d = |c: Cell| c.0.abs_diff(from.0).pow(2) + c.1.abs_diff(from.1).pow(2);
+    // A fresh draw every few hours and for each planter, the same within one.
+    let draw = (sim.time_days * 6.0).floor() as u64 ^ who.0.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let lot = |c: Cell| {
+        let mut z = draw ^ ((c.0 as u64) << 32 | c.1 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) as usize
+    };
     let mut best: Option<((i32, usize, Cell), Cell)> = None;
     for y in area.min.1..=area.max.1.min(n.saturating_sub(1)) {
         for x in area.min.0..=area.max.0.min(n.saturating_sub(1)) {
@@ -694,7 +711,7 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
             if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Forester, c) {
                 continue;
             }
-            let key = (-((ground_growth(sim, c) * 10.0).round() as i32), d(c), c);
+            let key = (-((ground_growth(sim, c) * 3.0).round() as i32), lot(c), c);
             if best.as_ref().is_some_and(|(k, _)| key >= *k) {
                 continue;
             }

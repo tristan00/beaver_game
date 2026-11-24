@@ -68,6 +68,18 @@ struct Extras5 {
     wildlife: crate::wildlife::Wildlife,
 }
 
+/// Added after `Extras6`, written after it: every beaver's life story.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras7 {
+    lives: crate::lives::Lives,
+}
+
+/// Added after `Extras5`, written after it: which beaver planted which tree.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras6 {
+    planted: std::collections::BTreeMap<crate::resources::ResourceId, (crate::colony::BeaverId, f64)>,
+}
+
 pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
     let head = postcard::to_stdvec(&header_for(sim, map)).map_err(|e| format!("could not write the header: {e}"))?;
     let mut body = postcard::to_stdvec(sim).map_err(|e| format!("could not write the world: {e}"))?;
@@ -81,6 +93,10 @@ pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
     body.extend(postcard::to_stdvec(&extras4).map_err(|e| format!("could not write the settings: {e}"))?);
     let extras5 = Extras5 { wildlife: sim.wildlife.clone() };
     body.extend(postcard::to_stdvec(&extras5).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras6 = Extras6 { planted: sim.forestry.planted.clone() };
+    body.extend(postcard::to_stdvec(&extras6).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras7 = Extras7 { lives: sim.lives.clone() };
+    body.extend(postcard::to_stdvec(&extras7).map_err(|e| format!("could not write the settings: {e}"))?);
     let mut out = Vec::with_capacity(8 + 4 + head.len() + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&(head.len() as u32).to_le_bytes());
@@ -113,10 +129,15 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     let (extras3, rest) = if rest.is_empty() { (Extras3::default(), rest) } else { postcard::take_from_bytes::<Extras3>(rest).map_err(|_| bad())? };
     let (extras4, rest) = if rest.is_empty() { (Extras4::default(), rest) } else { postcard::take_from_bytes::<Extras4>(rest).map_err(|_| bad())? };
     // A save from before the wild animals starts with none; they wander in.
-    let wildlife = match rest {
-        [] => crate::wildlife::Wildlife::new(sim.seed),
-        _ => match postcard::take_from_bytes::<Extras5>(rest) {
-            Ok((e, [])) => e.wildlife,
+    let (wildlife, rest) = match rest {
+        [] => (crate::wildlife::Wildlife::new(sim.seed), rest),
+        _ => postcard::take_from_bytes::<Extras5>(rest).map(|(e, r)| (e.wildlife, r)).map_err(|_| bad())?,
+    };
+    let (extras6, rest) = if rest.is_empty() { (Extras6::default(), rest) } else { postcard::take_from_bytes::<Extras6>(rest).map_err(|_| bad())? };
+    let extras7 = match rest {
+        [] => Extras7::default(),
+        _ => match postcard::take_from_bytes::<Extras7>(rest) {
+            Ok((e, [])) => e,
             _ => return Err(bad()),
         },
     };
@@ -125,6 +146,8 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     sim.locks = extras3.locks;
     sim.fleet = extras4.fleet;
     sim.wildlife = wildlife;
+    sim.forestry.planted = extras6.planted;
+    sim.lives = extras7.lives;
     sim.work.inventory = sim.buildings.stores.inventory.view();
     sim.instance = crate::next_instance();
     Ok((header, sim))
@@ -237,6 +260,13 @@ mod tests {
         // Older saves end before the locks (one empty map), before the bodies (two empty
         // lists), or before the settings too.
         // The wild animals come last; then the barges (an empty list and a counter, two bytes).
+        // The life stories come last (an empty map and a day, nine bytes), then who planted
+        // what (an empty map, one byte), then the wild animals.
+        let lives = postcard::to_stdvec(&Extras7 { lives: a.lives.clone() }).unwrap().len();
+        let plain = &plain[..plain.len() - lives];
+        assert!(decode(plain).unwrap().1.lives.of.is_empty(), "a save from before the life stories loads");
+        let plain = &plain[..plain.len() - 1];
+        assert!(decode(plain).unwrap().1.forestry.planted.is_empty(), "a save from before the planting record loads");
         let wild = postcard::to_stdvec(&Extras5 { wildlife: a.wildlife.clone() }).unwrap().len();
         let plain = &plain[..plain.len() - wild];
         assert!(decode(plain).unwrap().1.wildlife.animals.is_empty(), "a save from before the wild animals loads");

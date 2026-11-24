@@ -31,6 +31,10 @@ pub struct Society {
     pub requests: Vec<JoinRequest>,
     next_id: u64,
     rng: u64,
+    /// The year the last newcomer came asking: one a year at most. Not saved; a reload only
+    /// risks one more that year.
+    #[serde(skip)]
+    asked_year: Option<i64>,
 }
 
 impl Society {
@@ -69,9 +73,16 @@ impl Society {
         if colony.food_per_capita() < JOIN_MIN_FOOD_PER_HEAD {
             return;
         }
+        // A single newcomer at a time, and at most one a year.
+        let year = (sim_time / crate::calendar::YEAR_DAYS).floor() as i64;
+        if self.asked_year == Some(year) {
+            return;
+        }
         if self.unit() < JOIN_REQUESTS_PER_YEAR / crate::calendar::YEAR_DAYS as f32 * dt_days {
             let adult = self.unit() < JOIN_ADULT_SHARE;
-            let _ = self.raise(colony, adult, sim_time);
+            if self.raise(colony, adult, sim_time).is_ok() {
+                self.asked_year = Some(year);
+            }
         }
     }
 
