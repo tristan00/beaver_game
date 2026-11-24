@@ -947,7 +947,11 @@ fn refresh_fast(
                 tree
             }
             _ => match cams.single() {
-                Ok((cam, gt)) => world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.0)),
+                Ok((cam, gt)) => {
+                    let mut tree = world::pond_levels(s, cam, gt, scale.0, hover.0);
+                    tree.extend(world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.0)));
+                    tree
+                }
                 Err(_) => Vec::new(),
             },
         };

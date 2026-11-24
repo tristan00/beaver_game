@@ -477,6 +477,69 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     out
 }
 
+/// The water lens: over each dam's pond, how high it stands against the water under the
+/// pointer (against the lowest pond in view when the pointer isn't on water), so what joining
+/// two of them would do reads at a glance.
+pub fn pond_levels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hover: Option<Cell>) -> Vec<VNode> {
+    if crate::terrain_render::map_lens() != crate::terrain_render::WATER_LENS {
+        return Vec::new();
+    }
+    let n = s.height.width() as i32;
+    let depth = |c: Cell| s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    let surface = |c: Cell| s.height.get(c.0, c.1).copied().unwrap_or(0.0) + depth(c);
+    let wet = |c: Cell| depth(c) > sim::buildings::WET_DEPTH;
+    // Each pond's level: the water against its dam's upstream face, and where to show it.
+    let mut ponds: Vec<(f32, Vec2)> = Vec::new();
+    for d in s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
+        let on_dam: std::collections::HashSet<Cell> = d.cells.iter().map(|c| c.cell).collect();
+        let (ux, uy) = (-d.downstream.0, -d.downstream.1);
+        let face: Vec<Cell> = d.line().filter_map(|c| {
+            (1..=d.rows as i32 + 2).map(|k| (c.cell.0 as i32 + ux * k, c.cell.1 as i32 + uy * k)).find(|&(x, y)| x < 0 || y < 0 || x >= n || y >= n || !on_dam.contains(&(x as usize, y as usize)))
+                .filter(|&(x, y)| x >= 0 && y >= 0 && x < n && y < n).map(|(x, y)| (x as usize, y as usize))
+        }).filter(|&c| wet(c)).collect();
+        if face.is_empty() {
+            continue;
+        }
+        let level = face.iter().map(|&c| surface(c)).sum::<f32>() / face.len() as f32;
+        // Over the middle of the pond's wet cells, or the middle of its wet face.
+        let flooded: Vec<Cell> = d.pond.iter().flat_map(|p| p.flooded.iter().copied()).filter(|&c| wet(c)).collect();
+        let around = if flooded.is_empty() { &face } else { &flooded };
+        let (sx, sy) = around.iter().fold((0.0, 0.0), |a, c| (a.0 + c.0 as f32, a.1 + c.1 as f32));
+        let centre = (sx / around.len() as f32, sy / around.len() as f32);
+        let mid = *around.iter().min_by(|a, b| {
+            let d = |c: &&Cell| (c.0 as f32 - centre.0).powi(2) + (c.1 as f32 - centre.1).powi(2);
+            d(a).total_cmp(&d(b))
+        }).unwrap_or(&face[0]);
+        let mut w = cell_world(&s.height, (mid.0 as f32 + 0.5, mid.1 as f32 + 0.5));
+        w.y = level + 1.2;
+        let Some(at) = cam.world_to_viewport(gt, w).ok().map(|v| v / scale.max(0.01)) else { continue };
+        // Two dams on one pond show it once.
+        if ponds.iter().any(|p| (p.0 - level).abs() < 0.05 && p.1.distance(at) < 90.0) {
+            continue;
+        }
+        ponds.push((level, at));
+    }
+    let pointed = hover.filter(|&c| wet(c)).map(surface);
+    let Some(reference) = pointed.or_else(|| ponds.iter().map(|p| p.0).reduce(f32::min)) else { return Vec::new() };
+    if pointed.is_none() && ponds.len() < 2 {
+        return Vec::new();
+    }
+    ponds.iter().map(|&(level, at)| {
+        let dz = level - reference;
+        let even = dz.abs() < 0.05;
+        let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(at.x - 26.0), top: Val::Px(at.y - 14.0), padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)), ..row_node(3.0) });
+        let mut ui = Ui::default();
+        if !even {
+            ui.icon(if dz > 0.0 { Icon::Up } else { Icon::Down }, 12.0, if dz > 0.0 { ACCENT } else { WATER });
+        }
+        ui.bold(if even { "0 m".to_string() } else { format!("{} m", num(dz.abs())) }, 12.0, INK);
+        v.children = ui.nodes;
+        v.skin(Skin::Plate);
+        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" }));
+        v
+    }).collect()
+}
+
 /// Pops at a screen point (refusals by the cursor), for the topmost layer.
 pub fn screen_pops(pops: &[super::Pop], now: f32) -> Vec<VNode> {
     pops.iter().filter_map(|p| match p.at {
@@ -877,6 +940,55 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
         }
         field[(c.1 - y0) as usize * ww + (c.0 - x0) as usize].map(|(d, v, k)| (d, v / (1.0 + k as f32)))
     };
+    // Open water (a pond, a wide reach): within OPEN steps of a cell OPEN steps from any
+    // shore. There the way the water goes is plain, so it gets a third of the arrows; a
+    // stream narrower than that keeps them all.
+    const OPEN: u8 = 4;
+    let open = {
+        let mut dist = vec![OPEN; ww * wh];
+        let mut q = std::collections::VecDeque::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if !wet(x, y) {
+                    let i = (y - y0) as usize * ww + (x - x0) as usize;
+                    dist[i] = 0;
+                    q.push_back((x, y));
+                }
+            }
+        }
+        let spread = |dist: &mut Vec<u8>, q: &mut std::collections::VecDeque<(i32, i32)>, grow: bool| {
+            while let Some((x, y)) = q.pop_front() {
+                let k = dist[(y - y0) as usize * ww + (x - x0) as usize];
+                let next = if grow { k + 1 } else { k - 1 };
+                if (grow && next >= OPEN) || (!grow && k <= 1) {
+                    continue;
+                }
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 || !wet(nx, ny) {
+                        continue;
+                    }
+                    let j = (ny - y0) as usize * ww + (nx - x0) as usize;
+                    if (grow && dist[j] > next) || (!grow && dist[j] < next) {
+                        dist[j] = next;
+                        q.push_back((nx, ny));
+                    }
+                }
+            }
+        };
+        spread(&mut dist, &mut q, true);
+        // Back out from the cells at least OPEN from shore, OPEN steps, over the water.
+        let mut reach = vec![0u8; ww * wh];
+        for (i, d) in dist.iter().enumerate() {
+            if *d >= OPEN {
+                reach[i] = OPEN;
+                q.push_back(((i % ww) as i32 + x0, (i / ww) as i32 + y0));
+            }
+        }
+        spread(&mut reach, &mut q, false);
+        reach
+    };
+    let is_open = |x: i32, y: i32| x >= x0 && y >= y0 && x < x1 && y < y1 && open[(y - y0) as usize * ww + (x - x0) as usize] > 0;
     let colour = current_colour;
     let surface = |p: (f32, f32)| {
         let c = (p.0.max(0.0) as usize, p.1.max(0.0) as usize);
@@ -889,6 +1001,11 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
         let shift = if (y / stride) % 2 == 1 { stride / 2 } else { 0 };
         for x in ((cx0 - r).max(1)..(cx0 + r).min(n - 1)).filter(|x| (x - shift).rem_euclid(stride) == 0) {
             if s.water.depth.get(x as usize, y as usize).copied().unwrap_or(0.0) < MIN_DEPTH {
+                continue;
+            }
+            // In open water, every third row and every third seed along it, staggered.
+            let (i, j) = ((x - shift) / stride, y / stride);
+            if is_open(x, y) && (j % 3 != 0 || (i + j / 3) % 3 != 0) {
                 continue;
             }
             let Some((_, speed)) = current((x, y)) else { continue };

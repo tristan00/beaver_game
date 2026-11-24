@@ -442,20 +442,23 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         }
         u.rule();
         u.row(8.0, |r| {
-            if let Some(f) = s.colony.family(b.family) {
-                r.icon(Icon::Home, 16.0, MUD).tip(Tip::name(f.name.clone()));
-            }
-            if let Some(m) = b.mate.and_then(|m| s.colony.beaver(m)) {
-                r.token(Icon::Beaver, 20.0, None).action(HudAction::SelectBeaver(m.id)).tip(Tip::name(m.name.clone()).line("Mate", ""));
-            }
-            for k in s.colony.beavers.iter().filter(|k| k.stage != sim::colony::Stage::Adult && (k.mother == Some(id) || k.father == Some(id))) {
-                r.token(Icon::Beaver, 14.0, None).action(HudAction::SelectBeaver(k.id)).tip(Tip::name(k.name.clone()).line("Young", ""));
-            }
-            if let Some(p) = &b.pregnancy {
-                r.icon(Icon::Kit, 14.0, GOOD);
-                r.bold(format!("{:.0}d", (p.due_day - s.time_days).max(0.0)), 12.0, INK).tip(Tip::name(format!("{} kits on the way", p.litter)));
-            }
-            r.spacer();
+            // Family first, wrapping onto more lines when the young are many, so the buttons
+            // after it stay in the panel.
+            r.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, flex_grow: 1.0, flex_shrink: 1.0, min_width: Val::Px(0.0), column_gap: Val::Px(8.0), row_gap: Val::Px(4.0), align_items: AlignItems::Center, ..default() }, |r| {
+                if let Some(f) = s.colony.family(b.family) {
+                    r.icon(Icon::Home, 16.0, MUD).tip(Tip::name(f.name.clone()));
+                }
+                if let Some(m) = b.mate.and_then(|m| s.colony.beaver(m)) {
+                    r.token(Icon::Beaver, 20.0, None).action(HudAction::SelectBeaver(m.id)).tip(Tip::name(m.name.clone()).line("Mate", ""));
+                }
+                for k in s.colony.beavers.iter().filter(|k| k.stage != sim::colony::Stage::Adult && (k.mother == Some(id) || k.father == Some(id))) {
+                    r.token(Icon::Beaver, 14.0, None).action(HudAction::SelectBeaver(k.id)).tip(Tip::name(k.name.clone()).line("Young", ""));
+                }
+                if let Some(p) = &b.pregnancy {
+                    r.icon(Icon::Kit, 14.0, GOOD);
+                    r.bold(format!("{:.0}d", (p.due_day - s.time_days).max(0.0)), 12.0, INK).tip(Tip::name(format!("{} kits on the way", p.litter)));
+                }
+            });
             let assigned = s.work.slot_of(id).is_some() || s.agents.get(id).and_then(|a| a.assignment).is_some();
             if assigned {
                 r.pebble(Icon::Minus, 11.0, HudAction::FreeBeaver(id), Peb::Idle).tip(Tip::name("Free"));
