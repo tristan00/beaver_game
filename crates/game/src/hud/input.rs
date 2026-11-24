@@ -39,7 +39,7 @@ pub(super) fn hotkeys(
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    for (k, l) in [(KeyCode::F1, MapLens::Water), (KeyCode::F2, MapLens::Forest), (KeyCode::F3, MapLens::Elevation), (KeyCode::F4, MapLens::Deposits), (KeyCode::F5, MapLens::Underwater)] {
+    for (k, l) in [(KeyCode::F1, MapLens::Water), (KeyCode::F2, MapLens::Forest), (KeyCode::F3, MapLens::Elevation), (KeyCode::F4, MapLens::Deposits), (KeyCode::F5, MapLens::Underwater), (KeyCode::F6, MapLens::Paths)] {
         if keys.just_pressed(k) {
             *lens = if *lens == l { MapLens::World } else { l };
         }

@@ -13,6 +13,7 @@ mod kin;
 mod family;
 mod ledger;
 mod panels;
+mod paths;
 mod ui;
 mod words;
 mod world;
@@ -208,6 +209,8 @@ pub enum MapLens {
     Elevation,
     Deposits,
     Underwater,
+    /// Each beaver's way still to walk, over the plain ground.
+    Paths,
 }
 
 impl MapLens {
@@ -219,6 +222,7 @@ impl MapLens {
             MapLens::Elevation => 4,
             MapLens::Deposits => crate::terrain_render::DEPOSIT_LENS,
             MapLens::Underwater => crate::terrain_render::UNDERWATER_LENS,
+            MapLens::Paths => 0,
         }
     }
 }
@@ -652,6 +656,7 @@ impl Plugin for HudPlugin {
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
             return;
         }
+        paths::setup(app);
         app.init_resource::<HudState>()
             .init_resource::<HoverCell>()
             .init_resource::<PointerOverUi>()
@@ -673,7 +678,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scroll_lists),
-                    (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay, world::lookout_range),
+                    (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay, world::lookout_range, paths::draw_paths),
                 )
                     .chain()
                     .in_set(HudSet),
@@ -979,14 +984,16 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let _ = &sim;
     let shown = if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens };
-    // `BC_LENS=water|height|deposits|underwater` holds that lens, for screenshots.
+    // `BC_LENS=water|height|deposits|underwater|paths` holds that lens, for screenshots.
     let shown = match std::env::var("BC_LENS").as_deref() {
         Ok("water") => MapLens::Water,
         Ok("height") => MapLens::Elevation,
         Ok("deposits") => MapLens::Deposits,
         Ok("underwater") => MapLens::Underwater,
+        Ok("paths") => MapLens::Paths,
         _ => shown,
     };
+    paths::SHOWN.store(shown == MapLens::Paths, std::sync::atomic::Ordering::Relaxed);
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
 

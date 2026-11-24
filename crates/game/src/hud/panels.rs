@@ -479,10 +479,10 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-/// Left: how to read the map. Five lenses; clicking the one that is on returns to the plain view.
+/// Left: how to read the map. Six lenses; clicking the one that is on returns to the plain view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
-    vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
-        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Underwater, Icon::ViewUnderwater, "Under water", "F5")] {
+    let mut rail = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
+        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Underwater, Icon::ViewUnderwater, "Under water", "F5"), (MapLens::Paths, Icon::Walk, "Paths", "F6")] {
             let on = c.lens == l;
             let mut tip = Tip::name(name);
             if l == MapLens::Water {
@@ -497,7 +497,9 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony book").key("Tab"));
         let open = c.hud.ledger.is_some();
         u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony ledger").key("L"));
-    })]
+    })];
+    rail.extend(super::paths::legend(c.s, abs(Some(70.0), None, Some(84.0), None)));
+    rail
 }
 
 fn cost_row(u: &mut Ui, cost: &[(Good, f32)], size: f32, col: Color) {
