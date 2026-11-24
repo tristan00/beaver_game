@@ -74,6 +74,12 @@ struct Extras7 {
     lives: crate::lives::Lives,
 }
 
+/// Added after `Extras7`, written after it: the source each gatherer is working.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Extras8 {
+    sources: std::collections::BTreeMap<crate::colony::BeaverId, crate::resources::ResourceId>,
+}
+
 /// Added after `Extras5`, written after it: which beaver planted which tree.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extras6 {
@@ -97,6 +103,8 @@ pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
     body.extend(postcard::to_stdvec(&extras6).map_err(|e| format!("could not write the settings: {e}"))?);
     let extras7 = Extras7 { lives: sim.lives.clone() };
     body.extend(postcard::to_stdvec(&extras7).map_err(|e| format!("could not write the settings: {e}"))?);
+    let extras8 = Extras8 { sources: sim.agents.by_id.iter().filter_map(|(id, a)| Some((*id, a.source?))).collect() };
+    body.extend(postcard::to_stdvec(&extras8).map_err(|e| format!("could not write the settings: {e}"))?);
     let mut out = Vec::with_capacity(8 + 4 + head.len() + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&(head.len() as u32).to_le_bytes());
@@ -134,9 +142,10 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
         _ => postcard::take_from_bytes::<Extras5>(rest).map(|(e, r)| (e.wildlife, r)).map_err(|_| bad())?,
     };
     let (extras6, rest) = if rest.is_empty() { (Extras6::default(), rest) } else { postcard::take_from_bytes::<Extras6>(rest).map_err(|_| bad())? };
-    let extras7 = match rest {
-        [] => Extras7::default(),
-        _ => match postcard::take_from_bytes::<Extras7>(rest) {
+    let (extras7, rest) = if rest.is_empty() { (Extras7::default(), rest) } else { postcard::take_from_bytes::<Extras7>(rest).map_err(|_| bad())? };
+    let extras8 = match rest {
+        [] => Extras8::default(),
+        _ => match postcard::take_from_bytes::<Extras8>(rest) {
             Ok((e, [])) => e,
             _ => return Err(bad()),
         },
@@ -148,6 +157,11 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     sim.wildlife = wildlife;
     sim.forestry.planted = extras6.planted;
     sim.lives = extras7.lives;
+    for (id, source) in extras8.sources {
+        if let Some(a) = sim.agents.by_id.get_mut(&id) {
+            a.source = Some(source);
+        }
+    }
     sim.work.inventory = sim.buildings.stores.inventory.view();
     sim.instance = crate::next_instance();
     Ok((header, sim))
@@ -262,6 +276,9 @@ mod tests {
         // The wild animals come last; then the barges (an empty list and a counter, two bytes).
         // The life stories come last (an empty map and a day, nine bytes), then who planted
         // what (an empty map, one byte), then the wild animals.
+        // Last of all, the gatherers' sources (an empty map, one byte).
+        let plain = &plain[..plain.len() - 1];
+        assert!(decode(plain).unwrap().1.agents.by_id.values().all(|a| a.source.is_none()), "a save from before the gatherers' sources loads");
         let lives = postcard::to_stdvec(&Extras7 { lives: a.lives.clone() }).unwrap().len();
         let plain = &plain[..plain.len() - lives];
         assert!(decode(plain).unwrap().1.lives.of.is_empty(), "a save from before the life stories loads");

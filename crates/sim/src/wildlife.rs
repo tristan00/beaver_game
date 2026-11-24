@@ -78,6 +78,9 @@ pub enum Doing {
     Leave,
     /// Pinned by a wolf; dead when the wolf's kill ends.
     Caught,
+    /// Sitting a while between bites by the food it is eating, then back to it: it keeps to
+    /// one plant until the plant is gone, unless something (danger, time to leave) comes between.
+    Digest { food: Food, until: f64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -379,7 +382,8 @@ fn eat(sim: &mut SimState, food: Food, amount: f32) -> f32 {
 
 fn food_left(sim: &SimState, food: Food) -> bool {
     match food {
-        Food::Plant(id) => sim.resources.get(id).is_some_and(|r| r.amount > 0.2),
+        // Eaten until it dies (`eat` removes it once bare).
+        Food::Plant(id) => sim.resources.get(id).is_some(),
         Food::Sapling(id) => sim.resources.get(id).is_some(),
         Food::Pile(id) => sim.work.piles.get(id).is_some_and(|p| p.amount > 0.05),
     }
@@ -517,8 +521,17 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
             }
             let got = eat(sim, food, a.kind.appetite() * dt);
             wl.eaten += got;
-            if now >= until || !food_left(sim, food) {
+            if !food_left(sim, food) {
                 a.doing = Doing::Rest { until: now + REST_DAYS as f64 * (0.5 + wl.unit() as f64) };
+            } else if now >= until {
+                a.doing = Doing::Digest { food, until: now + REST_DAYS as f64 * (0.5 + wl.unit() as f64) };
+            }
+        }
+        Doing::Digest { food, until } => {
+            if !food_left(sim, food) {
+                a.doing = Doing::Wander;
+            } else if now >= until {
+                a.doing = Doing::Feed { food, until: now + FEED_DAYS as f64 * (0.5 + wl.unit() as f64) };
             }
         }
         Doing::Rest { until } => {
@@ -644,7 +657,8 @@ mod tests {
             let kind = if k < 2 { Kind::Deer } else { Kind::Rabbit };
             s.wildlife.animals.push(Animal { id: 900 + k, kind, pos: centre((far.0 + 1, far.1 + 1)), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: f64::MAX, path: Vec::new(), next_look: 0.0 });
         }
-        crate::sandbox::run_days(&mut s, 12.0);
+        // Each keeps to a plant until it is gone, so a few weeks for them to get round to these.
+        crate::sandbox::run_days(&mut s, 30.0);
         assert!(s.wildlife.saplings_eaten > 0, "no sapling eaten");
         assert!(s.work.piles.get(pile).is_none_or(|p| p.amount < 6.0), "the food left out was not touched");
     }

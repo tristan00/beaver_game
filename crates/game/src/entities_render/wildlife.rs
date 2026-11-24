@@ -637,7 +637,7 @@ fn ease(w: &mut f32, on: bool, rate: f32, dt: f32) {
 fn animate(b: &mut Beast, speed: f32, doing: Doing, dead: bool, alt: Option<f32>, t: f32, dt: f32, parts: &mut Query<&mut Transform, Without<Beast>>) {
     let first = b.down == 0.0 && dead;
     ease(&mut b.feed, matches!(doing, Doing::Feed { .. }) && speed < 0.3, 3.0, dt);
-    ease(&mut b.rest, matches!(doing, Doing::Rest { .. }) && speed < 0.3, 1.6, dt);
+    ease(&mut b.rest, matches!(doing, Doing::Rest { .. } | Doing::Digest { .. }) && speed < 0.3, 1.6, dt);
     ease(&mut b.down, doing == Doing::Caught, 5.0, dt);
     if first {
         b.down = 1.0;

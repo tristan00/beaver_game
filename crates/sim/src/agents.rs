@@ -111,6 +111,11 @@ pub struct Agent {
     /// When a hungry beaver next looks for food lying on the ground.
     #[serde(default)]
     pub next_meal_probe: f64,
+    /// The source a gatherer is working: it goes back to it after each load until it is used
+    /// up, and only picks another when something else (fleeing, eating, resting, an order)
+    /// comes between. Saved apart (see `save.rs`).
+    #[serde(skip)]
+    pub source: Option<ResourceId>,
 }
 
 
@@ -203,6 +208,7 @@ impl Agents {
                 next_work_probe: 0.0,
                 next_home_probe: 0.0,
                 next_meal_probe: 0.0,
+                source: None,
             },
         );
     }
@@ -400,15 +406,15 @@ fn gatherable(r: &Resource) -> bool {
     match r.kind {
         ResourceKind::Tree => crate::forestry::fellable(r),
         ResourceKind::Felled => r.amount > 0.0 || r.branches > 0.0,
-        ResourceKind::Plant | ResourceKind::WaterPlant => r.amount >= PLANT_MIN_TAKE,
+        // A living plant is picked to nothing (`worth_starting` decides whether to begin one).
+        ResourceKind::Plant | ResourceKind::WaterPlant => r.amount >= crate::resources::PLANT_BARE,
         ResourceKind::RiverClay => r.amount >= crate::resources::RIVER_CLAY_MIN_TAKE,
         _ => r.amount > 0.0,
     }
 }
 
-/// A food plant is only worth setting out for with enough on it; once there, a beaver strips
-/// it down to `PLANT_MIN_TAKE`. Without the gap, foragers wait on a grazed plant and carry
-/// home each sliver of regrowth.
+/// A fresh food plant is only worth setting out for with enough on it. A gatherer goes back
+/// to its own source (`Agent::source`) whatever is left, and picks a plant bare, when it dies.
 fn worth_starting(r: &Resource) -> bool {
     !r.kind.is_food_plant() || r.amount >= PLANT_PICK_MIN
 }
@@ -1172,6 +1178,20 @@ fn retarget(sim: &mut SimState) {
 /// What a gatherer's job left on the ground while no store would take it: once one will,
 /// carrying that in comes before gathering more, or it rots where it lies. An order for one
 /// resource goes straight to it.
+/// Back to the gatherer's own source after a load, while it has something left for this job,
+/// can be reached, and no one else has taken it over meanwhile.
+fn own_source(sim: &SimState, j: &Job, ag: &Agent) -> Option<Task> {
+    let id = ag.source?;
+    let r = sim.resources.get(id).filter(|r| j.permits(r))?;
+    if sim.agents.unreachable.get(&id).is_some_and(|until| sim.time_days < *until) {
+        return None;
+    }
+    if sim.agents.by_id.values().filter(|a| matches!(a.task, Task::Collect { target, .. } if target == id)).count() >= gatherers_per(r.kind) {
+        return None;
+    }
+    Some(Task::Collect { target: id, progress: 0.0 })
+}
+
 fn pile_task(sim: &SimState, j: &Job, ag: &Agent) -> Option<Task> {
     if j.only.is_some() || sim.work.piles.items.is_empty() {
         return None;
@@ -1207,7 +1227,9 @@ fn next_task(sim: &SimState, duty: &Duty, ag: &Agent) -> Option<Task> {
     });
     match duty {
         Duty::None => None,
-        Duty::Collect(j) => pile_task(sim, j, ag).or_else(|| j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 })),
+        Duty::Collect(j) => own_source(sim, j, ag)
+            .or_else(|| pile_task(sim, j, ag))
+            .or_else(|| j.pick(sim, ag.cell).map(|t| Task::Collect { target: t, progress: 0.0 })),
         Duty::Build(site) => build_task(sim, *site, ag),
         Duty::Mend(b) => Some(Task::Mend { building: *b }),
         Duty::Guard(b) => Some(Task::Watch { lookout: *b }),
@@ -1230,13 +1252,16 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     // A trail belongs to this step, including steps spent working or resting.
     ag.trail.clear();
     if crate::predators::flee(sim, ag, dt) {
+        ag.source = None;
         return;
     }
     if let Some(Assignment::Go(to)) = ag.assignment {
+        ag.source = None;
         go_to(sim, ag, dt, to);
         return;
     }
     if court(sim, ag, dt) || follow_parent(sim, ag, dt) {
+        ag.source = None;
         return;
     }
     if let Some(pile) = hungry_for_ground_food(sim, ag) {
@@ -1262,6 +1287,11 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         ag.assignment = kind.and_then(|k| next_resource(sim, k, ag.cell, ORDER_REACH)).map(Assignment::Resource);
         ag.task = if ag.load.is_some() { Task::Carry { dest: NO_STORE } } else { Task::Idle };
         ag.path = None;
+    }
+    // Anything but gathering and taking the load in (eating, resting, other work) breaks a
+    // gatherer's round: afterwards it picks its source afresh.
+    if !matches!(ag.task, Task::Idle | Task::Collect { .. } | Task::Carry { .. }) {
+        ag.source = None;
     }
     match ag.task.clone() {
         Task::Idle => {
@@ -2096,6 +2126,7 @@ fn collect(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: Duty, target: Reso
     }
     ag.path = None;
     note(ag, true);
+    ag.source = Some(target);
     if res.kind == ResourceKind::Tree {
         if sim.resources.fell(target, dt * worker_effort(sim, ag, crate::colony::Job::Logger) * FELL_PER_DAY).expect("kind checked above") {
             sim.nav.set(res.cell, Surface::Land);
@@ -2864,7 +2895,8 @@ mod larder_tests {
     }
 
     /// Foragers used to wait on a grazed plant by the food store, carrying each sliver of
-    /// regrowth in: they looked stuck at the store and the colony went hungry.
+    /// regrowth in: they looked stuck at the store and the colony went hungry. A plant a
+    /// forager is on, though, it picks to nothing, and the plant dies.
     #[test]
     fn foragers_pass_over_a_grazed_plant_and_move_on_when_one_runs_out() {
         let (mut s, who, _, area) = setup();
@@ -2879,9 +2911,21 @@ mod larder_tests {
         let mut a = take_agent(&mut s, who);
         a.load = Some(Load::new(Good::Food, 1.5, false));
         a.task = Task::Collect { target: grazed, progress: 0.4 };
+        for _ in 0..200 {
+            let job = Job::resolve(&s, Assignment::Area(ResourceKind::Plant, Area { min: (0, 0), max: (n, n) })).unwrap();
+            collect(&mut s, &mut a, 0.01, Duty::Collect(job), grazed);
+            if s.resources.get(grazed).is_none() {
+                break;
+            }
+        }
+        assert!(s.resources.get(grazed).is_none(), "the plant was picked bare and died");
+        // All of it but the last sliver, which dies with the plant (`PLANT_BARE`).
+        assert!(a.load.unwrap().amount > 1.7 - crate::resources::PLANT_BARE - 1e-3, "all of it was taken: {:?}", a.load);
+        let kept = a.load.unwrap().amount;
+        let job = Job::resolve(&s, Assignment::Area(ResourceKind::Plant, Area { min: (0, 0), max: (n, n) })).unwrap();
         collect(&mut s, &mut a, 0.01, Duty::Collect(job), grazed);
         assert!(matches!(a.task, Task::Collect { target, .. } if target == lush), "{:?}", a.task);
-        assert_eq!(a.load.map(|l| l.amount), Some(1.5), "the part load is kept");
+        assert_eq!(a.load.map(|l| l.amount), Some(kept), "the part load is kept");
         let _ = area;
     }
 
