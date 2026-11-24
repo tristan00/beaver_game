@@ -100,6 +100,31 @@ pub fn install_game(
     Ok(())
 }
 
+/// Put a freshly built valley behind the start screen, unsettled, as a new game starts on it.
+pub fn install_preview(
+    mut s: SimState,
+    dam: Option<sim::starts::DamSite>,
+    sim: &mut Sim,
+    planned: &mut PlannedDam,
+    flow: &mut Flow,
+    clock: &mut SimClock,
+    orbit: &mut OrbitCamera,
+    sel: &mut Selection,
+) {
+    start_recording(&mut s);
+    let mut next_flow = Flow::new(&s.world);
+    next_flow.generation = flow.generation + 1;
+    if s.sandbox {
+        begin_sandbox(&s, &mut next_flow, clock, orbit, sel);
+    } else {
+        begin_scouting(&s, &mut next_flow, clock, orbit, sel, dam.as_ref().map(|d| d.camp));
+    }
+    clock.paused = true;
+    sim.0 = s;
+    planned.0 = dam;
+    *flow = next_flow;
+}
+
 pub struct StartPlugin;
 
 impl Plugin for StartPlugin {

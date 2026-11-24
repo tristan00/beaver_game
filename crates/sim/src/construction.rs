@@ -135,6 +135,45 @@ impl SimState {
         Ok(())
     }
 
+    /// A finished building worn to nothing falls apart: what it held is left lying where it
+    /// stood, its workers and residents go, and the ground is free again.
+    pub(crate) fn wreck(&mut self, id: buildings::BuildingId) {
+        let Some(b) = self.buildings.building(id) else { return };
+        let (kind, pos) = (b.kind, b.pos);
+        if self.maintenance.jobs.contains_key(&id) {
+            let _ = maintenance::cancel(self, id);
+        }
+        let (w, h) = kind.spec().footprint;
+        let spot = (pos.0 + w / 2, pos.1 + h / 2);
+        for g in buildings::Good::ALL {
+            let held = self.buildings.stores.inventory.at(id, g);
+            let got = self.buildings.stores.take_from(id, g, held);
+            if got > 0.0 {
+                self.work.piles.drop_at(spot, g, got, self.time_days);
+            }
+        }
+        self.work.places.retain(|p| p.building != id);
+        self.work.hauls.retain(|o| o.from != id && o.to != id);
+        self.work.balanced.remove(&id);
+        self.work.fills.remove(&id);
+        if let Some(home) = self.work.homes.remove(&id) {
+            for b in self.colony.beavers.iter_mut().filter(|b| b.lodge == Some(home)) {
+                b.lodge = None;
+            }
+            self.colony.lodges.retain(|l| l.id != home);
+            self.colony.house_homeless();
+        }
+        self.agents.maint_targets.retain(|_, t| *t != id);
+        self.forestry.cut_rules.remove(&id);
+        self.buildings.water_bound.remove(&id);
+        self.buildings.pebbled.remove(&id);
+        self.release_workers(id);
+        self.buildings.buildings.retain(|b| b.id != id);
+        self.buildings.wrecked.insert(id);
+        self.output.forget(id);
+        crate::trace::event(format!("BUILDING_WRECKED {} id={} kind={kind:?}", crate::trace::sim_stamp(), id.0));
+    }
+
     fn release_workers(&mut self, id: buildings::BuildingId) {
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {

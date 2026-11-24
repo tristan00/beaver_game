@@ -405,6 +405,9 @@ pub struct Buildings {
     pub water_bound: std::collections::BTreeSet<BuildingId>,
     /// Dams and buildings faced with pebbles.
     pub pebbled: std::collections::BTreeSet<BuildingId>,
+    /// Buildings that wore to nothing and fell apart, for the journal. Not saved.
+    #[serde(skip)]
+    pub wrecked: std::collections::BTreeSet<BuildingId>,
     next_id: u64,
 }
 

@@ -2,6 +2,9 @@ use bevy::prelude::*;
 use sim::starts::DamSite;
 use sim::SimState;
 
+/// The maps the start screen offers, in order.
+const MENU_MAPS: [&str; 4] = ["algonquin_mizzy", "voyageurs_twin", "agder_tarn", "voyageurs_forks"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapChoice {
     Real(String),
@@ -10,7 +13,15 @@ pub enum MapChoice {
 
 impl MapChoice {
     pub fn first() -> MapChoice {
-        sim::maps::all().first().map_or(MapChoice::Generated(1), |m| MapChoice::Real(m.id.clone()))
+        MapChoice::menu().into_iter().next()
+            .or_else(|| sim::maps::all().first().map(|m| MapChoice::Real(m.id.clone())))
+            .unwrap_or(MapChoice::Generated(1))
+    }
+
+    /// The maps the start screen cycles through, in order. The others still load by id.
+    pub fn menu() -> Vec<MapChoice> {
+        let shipped = sim::maps::all();
+        MENU_MAPS.iter().filter(|id| shipped.iter().any(|m| m.id == **id)).map(|id| MapChoice::Real(id.to_string())).collect()
     }
 
     pub fn build(&self) -> Result<(SimState, DamSite), String> {

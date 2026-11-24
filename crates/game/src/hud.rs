@@ -379,6 +379,10 @@ pub enum NoticeAt {
 #[derive(Resource, Default)]
 pub struct Notices(pub Vec<Notice>, pub f64);
 
+/// Buildings that have gone under water so far, for the sound.
+#[derive(Resource, Default)]
+pub struct Floods(pub u32);
+
 /// How long a new line stands out in the journal, and how many lines it keeps.
 pub const NOTICE_SECS: f32 = 7.0;
 pub const JOURNAL_KEPT: usize = 200;
@@ -434,7 +438,8 @@ fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>
         }
         for (id, (kind, done, pos)) in before {
             if *done && !now.contains_key(id) {
-                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Cross, BAD)], format!("{} lost", kind.spec().name), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
+                let how = if s.buildings.wrecked.contains(id) { "fell apart" } else { "lost" };
+                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Cross, BAD)], format!("{} {how}", kind.spec().name), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
             }
         }
     }
@@ -443,7 +448,7 @@ fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>
 
 /// A building going under water, into the journal: once, and not again for a few days while
 /// the water hovers about the limit.
-fn notice_floods(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut was: Local<(u64, f64, std::collections::BTreeMap<BuildingId, (bool, f64)>)>) {
+fn notice_floods(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut floods: ResMut<Floods>, mut was: Local<(u64, f64, std::collections::BTreeMap<BuildingId, (bool, f64)>)>) {
     const AGAIN_DAYS: f64 = 3.0;
     let s = &sim.0;
     if !s.is_running() || (was.0 == s.instance && was.1 == s.time_days) {
@@ -458,6 +463,7 @@ fn notice_floods(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, m
         if flooded && !before && s.time_days - told >= AGAIN_DAYS {
             notices.push_at(vec![(building_icon(b.kind), INK), (Icon::Flood, BAD)], format!("{} flooded", b.kind.spec().name), time.elapsed_secs(), Some(NoticeAt::Building(b.id)));
             told_at = s.time_days;
+            floods.0 = floods.0.wrapping_add(1);
         }
         was.2.insert(b.id, (flooded, told_at));
     }
@@ -694,6 +700,7 @@ impl Plugin for HudPlugin {
             .init_resource::<MenuOpen>()
             .init_resource::<Tips>()
             .init_resource::<Pops>()
+            .init_resource::<Floods>()
             .add_systems(Update, (notice_wolf, notice_buildings, notice_floods))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()

@@ -47,6 +47,8 @@ type LoadedValley = Result<(sim::SimState, Option<sim::starts::DamSite>), String
 #[derive(Resource)]
 struct PendingValley {
     map: MapChoice,
+    /// Built only to stand behind the start screen for the map the selector shows.
+    preview: bool,
     result: std::sync::Mutex<std::sync::mpsc::Receiver<LoadedValley>>,
 }
 
@@ -214,7 +216,7 @@ fn menu_actions(
                             else { build_map.build().map(|(s, d)| (s, Some(d))) };
                         let _ = send.send(result);
                     });
-                    commands.insert_resource(PendingValley { map, result: std::sync::Mutex::new(receive) });
+                    commands.insert_resource(PendingValley { map, preview: false, result: std::sync::Mutex::new(receive) });
                     menu.loading = true;
                     menu.load_error = None;
                     clock.paused = true;
@@ -248,12 +250,22 @@ fn menu_actions(
                 continue;
             }
             MenuAction::MapPrev | MenuAction::MapNext => {
-                // The real-place maps only.
-                let options: Vec<MapChoice> = sim::maps::all().into_iter().map(|m| MapChoice::Real(m.id)).collect();
+                let options = MapChoice::menu();
                 let i = options.iter().position(|o| *o == menu.map).unwrap_or(0);
                 let n = options.len();
                 let j = if a == MenuAction::MapNext { (i + 1) % n } else { (i + n - 1) % n };
                 menu.map = options[j].clone();
+                if menu.screen == Some(Screen::Start) && menu.map != current.0 {
+                    let (send, receive) = std::sync::mpsc::channel();
+                    let build_map = menu.map.clone();
+                    let sandbox = sim.0.sandbox;
+                    std::thread::spawn(move || {
+                        let result = if sandbox { build_map.sandbox().map(|s| (s, None)) }
+                            else { build_map.build().map(|(s, d)| (s, Some(d))) };
+                        let _ = send.send(result);
+                    });
+                    commands.insert_resource(PendingValley { map: menu.map.clone(), preview: true, result: std::sync::Mutex::new(receive) });
+                }
             }
             MenuAction::OpenSettings => {
                 menu.back_to = menu.screen.unwrap_or(Screen::Pause);
@@ -314,7 +326,7 @@ fn start_load(commands: &mut Commands, menu: &mut Menu, clock: &mut SimClock, pa
         });
         let _ = send.send(result);
     });
-    commands.insert_resource(PendingValley { map, result: std::sync::Mutex::new(receive) });
+    commands.insert_resource(PendingValley { map, preview: false, result: std::sync::Mutex::new(receive) });
     menu.loading = true;
     menu.load_error = None;
     clock.paused = true;
@@ -339,6 +351,21 @@ fn finish_loading(
         Err(std::sync::mpsc::TryRecvError::Empty) => return,
         Err(_) => Err("The valley could not be prepared. Please try again.".into()),
     };
+    if pending.preview {
+        // Only the valley the selector still shows, and only while the start screen is up.
+        if pending.map == menu.map && menu.screen == Some(Screen::Start) {
+            match result {
+                Ok((state, dam)) => {
+                    crate::startflow::install_preview(state, dam, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel);
+                    current.0 = pending.map.clone();
+                    commands.queue(hud::reset_for_new_game);
+                }
+                Err(error) => menu.load_error = Some(error),
+            }
+        }
+        commands.remove_resource::<PendingValley>();
+        return;
+    }
     menu.loading = false;
     match result.and_then(|(state, dam)| {
         crate::startflow::install_game(state, dam, &mut sim, &mut planned, &mut flow, &mut clock, &mut orbit, &mut sel)

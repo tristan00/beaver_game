@@ -112,6 +112,31 @@ mod tests {
         assert!(p.site.is_some() && p.slots.is_empty(),"a refit is a site with no seats");
     }
     #[test]
+    fn a_building_worn_to_nothing_falls_apart_and_leaves_its_goods() {
+        let mut s=SimState::new(1);
+        let mut store=lodge();store.id=BuildingId(7);store.kind=K::Warehouse;store.pos=(40,25);store.condition=1e-6;
+        s.work.add_complete(&store).unwrap();s.buildings.buildings.push(store);
+        s.buildings.stores.inventory.put(BuildingId(7),Good::Sticks,None,12.0);
+        step(&mut s,1.0);
+        assert!(s.buildings.building(BuildingId(7)).is_none(),"gone");
+        assert!(s.work.place(BuildingId(7)).is_none(),"no workplace left");
+        assert!(s.buildings.wrecked.contains(&BuildingId(7)));
+        assert_eq!(s.buildings.stores.amount(Good::Sticks),0.0,"no longer in store");
+        let lying:f32=s.work.piles.items.iter().filter(|p|p.good==Good::Sticks).map(|p|p.amount).sum();
+        assert!((lying-12.0).abs()<1e-3,"left lying where it stood: {lying}");
+    }
+    #[test]
+    fn a_lodge_worn_to_nothing_leaves_its_family_without_it() {
+        let mut s=SimState::new(1);
+        let mut b=lodge();b.condition=1e-6;let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
+        let home=s.colony.add_home((26.0,26.0));s.work.homes.insert(id,home);
+        step(&mut s,1.0);
+        assert!(s.buildings.building(id).is_none());
+        assert!(!s.work.homes.contains_key(&id));
+        assert!(s.colony.lodges.iter().all(|l|l.id!=home),"its household is gone");
+        assert!(s.colony.beavers.iter().all(|b|b.lodge!=Some(home)));
+    }
+    #[test]
     fn mending_needs_the_materials_in_store() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
         assert!(!mend(&mut s,id,1.0),"nothing in store");
@@ -276,6 +301,11 @@ pub fn step(s: &mut SimState, dt: f32) {
             b.condition=(b.condition-rate*dt).max(0.0);
         }
     }
+    // Worn to nothing, a building falls apart. Dams and canals keep their own upkeep.
+    let wrecked: Vec<BuildingId> = s.buildings.buildings.iter()
+        .filter(|b| b.is_complete() && b.dam.is_none() && b.canal.is_none() && b.kind != K::Dam && b.condition <= 0.0)
+        .map(|b| b.id).collect();
+    for id in wrecked { s.wreck(id); }
     let depth=&s.water.depth;
     for b in &s.buildings.buildings {
         if !b.is_complete() {continue;}
