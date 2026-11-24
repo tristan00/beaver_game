@@ -5,7 +5,7 @@
 //! dead too, so family links still lead somewhere. Saved after the world (see `save`).
 use std::collections::BTreeMap;
 
-use crate::colony::{BeaverId, DeathCause, LodgeId, Stage};
+use crate::colony::{BeaverId, DeathCause, LodgeId, Sex, Stage};
 use crate::jobs::RoleKind;
 use crate::SimState;
 
@@ -47,6 +47,10 @@ struct Seen {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Life {
     pub name: String,
+    /// Kept so family ties can still be named once it is gone.
+    pub sex: Sex,
+    pub mother: Option<BeaverId>,
+    pub father: Option<BeaverId>,
     pub entries: Vec<Entry>,
     /// Still in the colony (false once dead or gone).
     pub here: bool,
@@ -109,7 +113,7 @@ pub fn step(sim: &mut SimState) {
             if seen.partner.is_some() {
                 entries.push(Entry { day: now, what: What::Partner(seen.partner) });
             }
-            lives.of.insert(b.id, Life { name: b.name.clone(), entries, here: true, seen });
+            lives.of.insert(b.id, Life { name: b.name.clone(), sex: b.sex, mother: b.mother, father: b.father, entries, here: true, seen });
             continue;
         };
         let was = life.seen;

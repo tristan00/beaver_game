@@ -191,42 +191,102 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     }
 }
 
+/// A beaver's parents, whether it is still here or only remembered.
+fn parents(s: &sim::SimState, id: BeaverId) -> [Option<BeaverId>; 2] {
+    match s.colony.beaver(id) {
+        Some(b) => [b.mother, b.father],
+        None => s.lives.of.get(&id).map_or([None, None], |l| [l.mother, l.father]),
+    }
+}
+
+fn sex_of(s: &sim::SimState, id: BeaverId) -> Option<sim::colony::Sex> {
+    s.colony.beaver(id).map(|b| b.sex).or_else(|| s.lives.of.get(&id).map(|l| l.sex))
+}
+
+fn partner_of(s: &sim::SimState, id: BeaverId) -> Option<BeaverId> {
+    s.colony.beaver(id).and_then(|b| b.mate)
+}
+
+/// How `other` is related to `me`, closest tie first, in words that follow its sex; with an
+/// order to list relatives in (nearest first).
+fn kinship(s: &sim::SimState, me: BeaverId, other: BeaverId) -> Option<(u8, &'static str)> {
+    use sim::colony::Sex;
+    if me == other {
+        return None;
+    }
+    let male = sex_of(s, other) == Some(Sex::Male);
+    let pick = |m: &'static str, f: &'static str| if male { m } else { f };
+    let mine = parents(s, me);
+    let theirs = parents(s, other);
+    let parent_of = |p: BeaverId, c: BeaverId| parents(s, c).contains(&Some(p));
+    let shared = mine.iter().flatten().filter(|p| theirs.contains(&Some(**p))).count();
+    let siblings = |a: BeaverId, b: BeaverId| a != b && parents(s, a).iter().flatten().any(|p| parents(s, b).contains(&Some(*p)));
+    if partner_of(s, me) == Some(other) {
+        return Some((0, "Partner"));
+    }
+    if parent_of(other, me) {
+        return Some((1, pick("Father", "Mother")));
+    }
+    if parent_of(me, other) {
+        return Some((2, pick("Son", "Daughter")));
+    }
+    if shared == 2 {
+        return Some((3, pick("Brother", "Sister")));
+    }
+    if shared == 1 {
+        return Some((3, pick("Half-brother", "Half-sister")));
+    }
+    if mine.iter().flatten().any(|p| parent_of(other, *p)) {
+        return Some((4, pick("Grandfather", "Grandmother")));
+    }
+    if theirs.iter().flatten().any(|p| parent_of(me, *p)) {
+        return Some((5, pick("Grandson", "Granddaughter")));
+    }
+    if mine.iter().flatten().any(|p| siblings(*p, other)) {
+        return Some((6, pick("Uncle", "Aunt")));
+    }
+    if theirs.iter().flatten().any(|p| siblings(*p, me)) {
+        return Some((7, pick("Nephew", "Niece")));
+    }
+    if mine.iter().flatten().any(|p| theirs.iter().flatten().any(|q| siblings(*p, *q))) {
+        return Some((8, "Cousin"));
+    }
+    if let Some(m) = partner_of(s, me) {
+        if parent_of(other, m) {
+            return Some((9, pick("Father-in-law", "Mother-in-law")));
+        }
+        if siblings(m, other) {
+            return Some((9, pick("Brother-in-law", "Sister-in-law")));
+        }
+    }
+    if partner_of(s, other).is_some_and(|p| parent_of(me, p)) {
+        return Some((10, pick("Son-in-law", "Daughter-in-law")));
+    }
+    None
+}
+
 fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&Life>) {
     let s = c.s;
     heading(u, Icon::Home, "Family");
-    let born = life.and_then(|l| l.entries.iter().find_map(|e| if let What::Born { mother, father } = e.what { Some((mother, father)) } else { None }));
-    let (mother, father) = match (b, born) {
-        (Some(b), _) => (b.mother, b.father),
-        (None, Some(p)) => p,
-        _ => (None, None),
-    };
-    let mut any = false;
-    for (p, what) in [(mother, "Mother"), (father, "Father")] {
-        if let Some(p) = p {
-            link(u, s, p, format!("{what} · {}", about(s, p)));
-            any = true;
-        }
+    // Every beaver the colony has known, living or remembered, that is kin.
+    let mut kin: Vec<(u8, &'static str, BeaverId)> = s
+        .colony
+        .beavers
+        .iter()
+        .map(|o| o.id)
+        .chain(s.lives.of.keys().copied())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|o| kinship(s, id, o).map(|(order, word)| (order, word, o)))
+        .collect();
+    kin.sort_by_key(|k| (k.0, s.colony.beaver(k.2).is_none(), k.2));
+    let my_lodge = b.and_then(|b| b.lodge);
+    for &(_, word, o) in &kin {
+        let since = if word == "Partner" { life.and_then(|l| l.partnered_since()).map_or(String::new(), |d| format!(" · since {}", when(d))) } else { String::new() };
+        let home = if my_lodge.is_some() && s.colony.beaver(o).and_then(|x| x.lodge) == my_lodge { " · lives here too" } else { "" };
+        link(u, s, o, format!("{word} · {}{since}{home}", about(s, o)));
     }
-    if let Some(m) = b.and_then(|b| b.mate) {
-        let since = life.and_then(|l| l.partnered_since()).map_or(String::new(), |d| format!(" · since {}", when(d)));
-        link(u, s, m, format!("Partner{since}"));
-        any = true;
-    }
-    let mut young: Vec<BeaverId> = s.colony.beavers.iter().filter(|k| k.mother == Some(id) || k.father == Some(id)).map(|k| k.id).collect();
-    for (kid, l) in &s.lives.of {
-        if !young.contains(kid) && l.entries.iter().any(|e| matches!(e.what, What::Born { mother, father } if mother == Some(id) || father == Some(id))) {
-            young.push(*kid);
-        }
-    }
-    for k in young {
-        link(u, s, k, format!("Young · {}", about(s, k)));
-        any = true;
-    }
-    for o in s.colony.beavers.iter().filter(|o| o.id != id && ((mother.is_some() && o.mother == mother) || (father.is_some() && o.father == father))) {
-        link(u, s, o.id, format!("Sibling · {}", about(s, o.id)));
-        any = true;
-    }
-    if !any {
+    if kin.is_empty() {
         u.text("No family in the colony".to_string(), 12.0, MUTED);
     }
     u.rule();
@@ -237,9 +297,6 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
             fact(u, Icon::Lodge, MUD, "Lodge", fam);
             if let Some(d) = life.and_then(|l| l.home_since()) {
                 fact(u, Icon::Hourglass, MUTED, "Since", when(d));
-            }
-            for o in s.colony.beavers.iter().filter(|o| o.id != id && o.lodge == Some(l.id)) {
-                link(u, s, o.id, format!("Lives here too · {}", about(s, o.id)));
             }
         }
         None => {
