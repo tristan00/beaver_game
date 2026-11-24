@@ -219,7 +219,8 @@ fn lock_frame(s: &sim::SimState, l: &sim::locks::Lock) -> Option<(f32, f32, f32,
     } else {
         let d = sim::dams::dam(s, l.building)?;
         let g = d.gates.iter().find(|g| g.cell == c)?;
-        (g.floor, g.top, d.cells.iter().map(|x| x.cell).collect())
+        // Along the drawn line only: the rows a widened dam adds lie behind it.
+        (g.floor, g.top, d.cells.iter().filter(|x| x.row == 0).map(|x| x.cell).collect())
     };
     let near: Vec<(i32, i32)> = along.iter().filter(|&&o| o != c && o.0.abs_diff(c.0) <= 1 && o.1.abs_diff(c.1) <= 1).map(|o| (o.0 as i32 - c.0 as i32, o.1 as i32 - c.1 as i32)).collect();
     let line = near.first().copied().unwrap_or((1, 0));

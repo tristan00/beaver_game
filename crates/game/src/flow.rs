@@ -45,6 +45,8 @@ pub enum Selection {
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
     Wolf,
+    /// A wild animal, by its id in `sim::wildlife`.
+    Animal(u32),
 }
 
 pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {

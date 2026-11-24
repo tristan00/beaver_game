@@ -413,10 +413,12 @@ impl NavGrid {
                 _=>for (x,y) in b.cells() {self.dry_surface[y*w+x]=Surface::Solid;self.wet_surface[y*w+x]=Surface::Solid;},
             }
         }
-        // A lock is swum through, whatever the water there.
+        // A lock is swum through, whatever the water there, right through a widened dam.
         for l in sim.locks.at.values().filter(|l|l.built) {
-            let i=l.cell.1*w+l.cell.0;
-            if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Lock;self.wet_surface[i]=Surface::Lock;}
+            for c in crate::locks::lock_cells(sim,l) {
+                let i=c.1*w+c.0;
+                if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Lock;self.wet_surface[i]=Surface::Lock;}
+            }
         }
         for r in sim.resources.items().iter().filter(|r|r.is_solid()) {
             let i=r.cell.1*w+r.cell.0;

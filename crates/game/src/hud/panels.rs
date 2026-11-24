@@ -257,6 +257,22 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
     })]
 }
 
+/// The "No work" alert's name, for the role it is about.
+fn no_work_name(role: sim::jobs::RoleKind) -> &'static str {
+    use sim::jobs::RoleKind::*;
+    match role {
+        Forager => "No work for foragers",
+        Logger => "No work for loggers",
+        MudDigger => "No work for clay diggers",
+        Builder => "No work for builders",
+        Hauler => "No work for haulers",
+        Forester => "No work for foresters",
+        Maintainer => "No work for maintainers",
+        Guard => "No work for guards",
+        PebbleCollector => "No work for pebble collectors",
+    }
+}
+
 fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'static str) {
     let v = p.value;
     match p.kind {
@@ -285,7 +301,11 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
                 Some(Subject::Role(role)) => role_kind_icon(role),
                 _ => Icon::Jobs,
             };
-            (vec![(icon, INK), (Icon::Idle, WARN)], format!("{}", v as i64), "No work")
+            let name = match p.subject {
+                Some(Subject::Role(role)) => no_work_name(role),
+                _ => "No work",
+            };
+            (vec![(icon, INK), (Icon::Idle, WARN)], format!("{}", v as i64), name)
         }
         ProblemKind::Flooded => {
             let k = match p.subject {
@@ -464,7 +484,13 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
     vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
         for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Underwater, Icon::ViewUnderwater, "Under water", "F5")] {
             let on = c.lens == l;
-            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
+            let mut tip = Tip::name(name);
+            if l == MapLens::Water {
+                tip = tip
+                    .line("Too shallow for barges", format!("< {} m", num(sim::harbor::BARGE_DEPTH)))
+                    .line("Floods if water rises", format!("{} m", num(crate::terrain_render::FLOOD_MARGIN)));
+            }
+            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(tip.key(key));
         }
         u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();

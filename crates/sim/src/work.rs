@@ -192,6 +192,8 @@ pub enum WorkError {
 pub struct Work {
     pub places: Vec<Workplace>,
     pub hauls: Vec<HaulOrder>,
+    /// Logistics buildings whose haulers balance the stores: each from when it is finished,
+    /// until the player switches it off.
     pub balanced: BTreeSet<BuildingId>,
     /// Stores the player asked haulers to fill to the brim.
     pub fills: BTreeSet<BuildingId>,
@@ -348,6 +350,7 @@ impl Work {
         }
         let slots = b.kind.spec().slots.iter().map(|&role| Slot::empty(role)).collect();
         self.places.push(Workplace::new(b.id, b.kind, slots, crate::catalogue::work_area(b), None));
+        self.balance_from_the_start(b.id, b.kind);
         Ok(())
     }
     pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
@@ -357,8 +360,16 @@ impl Work {
         p.site = None;
         p.area = area;
         p.max_workers = p.slots.len();
+        let kind = p.kind;
         self.keep_crew(b, crew);
+        self.balance_from_the_start(b, kind);
         Ok(())
+    }
+    /// A finished logistics building's haulers balance the stores until switched off.
+    fn balance_from_the_start(&mut self, b: BuildingId, kind: BuildingKind) {
+        if kind == BuildingKind::Logistics {
+            self.balanced.insert(b);
+        }
     }
     /// The builders and maintainers seated at a place.
     pub fn crew(&self, b: BuildingId) -> Vec<Slot> {

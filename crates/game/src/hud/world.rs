@@ -22,6 +22,7 @@ pub enum Thing {
     Lodge(LodgeId),
     Cell(Cell),
     Wolf,
+    Animal(u32),
 }
 
 impl Thing {
@@ -33,6 +34,7 @@ impl Thing {
             Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
             Thing::Wolf => 6 << 60,
+            Thing::Animal(id) => 7 << 60 | id as u64,
         }
     }
     pub fn selection(self) -> Selection {
@@ -43,6 +45,7 @@ impl Thing {
             Thing::Lodge(l) => Selection::Lodge(l),
             Thing::Cell(c) => Selection::Cell(c),
             Thing::Wolf => Selection::Wolf,
+            Thing::Animal(id) => Selection::Animal(id),
         }
     }
 }
@@ -87,6 +90,28 @@ pub fn beaver_world(s: &sim::SimState, id: BeaverId) -> Option<Vec3> {
 pub fn building_centre(b: &sim::buildings::Building) -> (f32, f32) {
     let (w, d) = b.kind.spec().footprint;
     (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0)
+}
+
+/// The nearest wild animal the fog does not hide that the ray passes through, roughly by its
+/// body, and how far along the ray it is.
+fn animal_on_ray(s: &sim::SimState, ray: Ray3d) -> Option<(u32, f32)> {
+    use sim::wildlife::Kind;
+    s.wildlife
+        .animals
+        .iter()
+        .filter(|a| !crate::fog_render::unexplored(s, (a.pos.0.max(0.0) as usize, a.pos.1.max(0.0) as usize)))
+        .filter_map(|a| {
+            // As drawn: a deer about a cell long, rabbits and birds a third of that.
+            let size = match a.kind {
+                Kind::Deer => 1.0,
+                Kind::Rabbit => 0.32,
+                Kind::Bird => 0.36,
+            };
+            let at = cell_world(&s.height, a.pos) + Vec3::Y * size * 0.6;
+            let t = (at - ray.origin).dot(*ray.direction);
+            (t > 0.0 && (ray.origin + *ray.direction * t).distance(at) < (size * 0.7).max(0.5)).then_some((a.id, t))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
@@ -200,6 +225,13 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
         }
         Thing::Wolf => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
+        Thing::Animal(id) => {
+            let Some(a) = s.wildlife.get(id) else { return Tip::default() };
+            let (icon, doing) = animal_doing(a);
+            let mut tip = Tip::titled(Some((animal_icon(a.kind), INK)), animal_name(a.kind));
+            tip.push(TipLine::new(doing, "").icon(icon, MUTED));
+            tip
+        }
         Thing::Cell(c) => {
             let mut tip = Tip::default();
             for (i, col, name, v) in cell_rows(s, c) {
@@ -235,6 +267,11 @@ pub fn world_hover(
         let ground = crate::flow::ray_surface(ray.origin, *ray.direction, &sim.0.height, &sim.0.water.depth);
         let hit = picker.cast_at(ray, ground.as_ref().map(|g|g.2));
         model = hit.map(|(t, _)| Thing::from(t));
+        if let Some((id, t)) = animal_on_ray(&sim.0, ray) {
+            if hit.is_none_or(|(_, d)| t < d) {
+                model = Some(Thing::Animal(id));
+            }
+        }
         // On a dam or canal the cell is the one the pointer touches on the structure, not the
         // ground the ray would reach behind it, so its ends can be grabbed.
         let on_works = hit.and_then(|(t, d)| match t {
@@ -259,7 +296,7 @@ pub fn world_hover(
     }
     let ground = p.filter(|(c, _)| !crate::fog_render::unexplored(&sim.0, *c)).map(|(c, p)| pick(&sim.0, c, p));
     let t = model.or(ground);
-    let order = if matches!(model, Some(Thing::Resource(_))) { ground } else { t };
+    let order = if matches!(model, Some(Thing::Resource(_) | Thing::Animal(_))) { ground } else { t };
     if thing.0 != t || thing.1 != order {
         thing.0 = t;
         thing.1 = order;
@@ -333,6 +370,29 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         };
         v.action(act).tip(super::panels::alert_tip_in(s, p));
         out.push(v);
+    }
+    // In the water lens, each dam's pond carries its level, so ponds can be compared at a glance.
+    if crate::terrain_render::map_lens() == crate::terrain_render::WATER_LENS {
+        for b in &s.buildings.buildings {
+            let Some(d) = b.dam.as_deref() else { continue };
+            let Some(p) = d.pond.as_ref().filter(|p| p.area > 0) else { continue };
+            let line: Vec<Cell> = d.cells.iter().filter(|c| c.row == 0).map(|c| c.cell).collect();
+            if line.is_empty() {
+                continue;
+            }
+            let n = line.len() as f32;
+            let mid = (line.iter().map(|c| c.0 as f32).sum::<f32>() / n + 0.5, line.iter().map(|c| c.1 as f32).sum::<f32>() / n + 0.5);
+            let at = (mid.0 - d.downstream.0 as f32 * 4.0, mid.1 - d.downstream.1 as f32 * 4.0);
+            let Some(pos) = place(at, 0.6) else { continue };
+            let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(pos.x - 30.0), top: Val::Px(pos.y - 14.0), padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)), ..row_node(4.0) });
+            let mut ui = Ui::default();
+            ui.icon(Icon::Crest, 13.0, WATER);
+            ui.bold(format!("{:.2}", p.level), 12.0, INK);
+            v.children = ui.nodes;
+            v.skin(Skin::Plate);
+            v.tip(Tip::titled(Some((Icon::Dam, INK)), "Pond").line("Level", format!("{:.2} m", p.level)).line("Full at", format!("{:.2} m", p.full_level)).line("Deepest", format!("{:.2} m", p.max_depth)));
+            out.push(v);
+        }
     }
     for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
         let selected = matches!(sel, Selection::Site(id) if id == b.id);
@@ -873,6 +933,13 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             }
         }
     }
+    if let Selection::Animal(id) = *sel {
+        if let Some(a) = s.wildlife.get(id) {
+            let at = cell_world(h, a.pos).with_y(height_at(h, a.pos.0, a.pos.1) + 0.15);
+            ring(&mut g, at, 0.6, SELECT);
+            ring(&mut g, at, 0.53, SELECT);
+        }
+    }
     if let Selection::Tree(id) = *sel {
         if let Some(r) = s.resources.get(id) {
             let (x, y) = (r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5);
@@ -1205,6 +1272,7 @@ pub fn cell_rows(s: &sim::SimState, cell: Cell) -> Vec<(Icon, Color, &'static st
     let mut rows = vec![(Icon::ViewElevation, MUTED, "Height", num(h))];
     if d > 0.01 {
         rows.push((Icon::Drop, WATER, "Depth", format!("{d:.2} m")));
+        rows.push((Icon::Crest, WATER, "Level", format!("{:.2} m", h + d)));
     }
     rows
 }

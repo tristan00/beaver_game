@@ -330,6 +330,9 @@ pub fn min_height(s: &SimState) -> f32 {
     s.height.as_slice().iter().cloned().fold(f32::MAX, f32::min).min(max_height(s) - 0.5)
 }
 
+/// The water lens (`MapLens::Water`): the water taken away to show its depth in bands, the
+/// shallows barges cannot use apart, and the dry ground a small rise would flood.
+pub const WATER_LENS: u8 = 1;
 pub const ELEVATION_LENS: u8 = 4;
 
 pub fn elevation_ramp(t: f32) -> Rgb {
@@ -675,7 +678,8 @@ fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: 
         0 => world_color(s, p, maxh, x, y),
         ELEVATION_LENS => elevation_color(s, minh, maxh, x, y),
         UNDERWATER_LENS => underwater_color(s, p, maxh, x, y),
-        lens => lens_color(s, maxh, x, y, lens),
+        WATER_LENS => water_lens_color(s, maxh, x, y),
+        _ => lens_color(s, maxh, x, y),
     }
 }
 
@@ -689,7 +693,60 @@ fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
     mix(land, ELEVATION_WATER, smooth(WET_EPS, 0.15, at(&s.water.depth, x, y)))
 }
 
-fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32, lens: u8) -> Rgb {
+/// Rise of the water over which dry ground counts as at risk of flooding, in metres.
+pub const FLOOD_MARGIN: f32 = 0.5;
+/// How far round a dry cell the water lens looks for the water that could flood it (cells).
+const FLOOD_REACH: i32 = 4;
+/// Depth bands of the water lens, from the barges' least depth down: each band's deepest
+/// edge and its colour. Water shallower than barges need is a pale sand-green of its own.
+const BARGE_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
+const DEPTH_BANDS: [(f32, Rgb); 4] = [(0.5, [0.55, 0.78, 0.93]), (1.0, [0.33, 0.60, 0.88]), (2.0, [0.18, 0.42, 0.76]), (f32::INFINITY, [0.08, 0.24, 0.56])];
+const FLOOD_RISK: Rgb = [0.96, 0.58, 0.18];
+
+/// The water lens's colour for a point: water by its depth band (barge water apart from the
+/// shallows, a lock as barge water), dry ground grey and tinted amber where water close by
+/// stands within `FLOOD_MARGIN` of flooding it.
+fn water_lens_color(s: &SimState, maxh: f32, x: i32, y: i32) -> Rgb {
+    let ground = at(&s.height, x, y);
+    let depth = at(&s.water.depth, x, y);
+    let (gx, gz) = smooth_gradient(s, x, y, 1);
+    let sunny = ((gx + gz) * -0.5).clamp(-0.5, 0.5);
+    let shade = |c: Rgb, k: f32| [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)];
+    let cell = (x.max(0) as usize, y.max(0) as usize);
+    let lock = sim::locks::is_lock(s, cell);
+    if depth > WET_EPS || lock {
+        let band = if depth < sim::harbor::BARGE_DEPTH && !lock {
+            BARGE_SHALLOWS
+        } else {
+            DEPTH_BANDS.iter().find(|b| depth < b.0).map_or(DEPTH_BANDS[3].1, |b| b.1)
+        };
+        return shade(band, 0.9 + 0.3 * sunny);
+    }
+    let t = (ground / maxh).clamp(0.0, 1.0);
+    let g = (0.56 + 0.3 * t) * (0.86 + 0.28 * sunny);
+    let land = [g, g * 0.985, g * 0.955];
+    if at(&s.water.dam_height, x, y) > 0.0 {
+        return land;
+    }
+    // The highest water close by: how far below it this ground stands decides the risk.
+    let mut level = f32::NEG_INFINITY;
+    for dy in -FLOOD_REACH..=FLOOD_REACH {
+        for dx in -FLOOD_REACH..=FLOOD_REACH {
+            let d = at(&s.water.depth, x + dx, y + dy);
+            if d > WET_EPS {
+                level = level.max(at(&s.height, x + dx, y + dy) + d);
+            }
+        }
+    }
+    if !level.is_finite() || ground >= level + FLOOD_MARGIN {
+        return land;
+    }
+    // Faint at the margin, strong where a few centimetres would do it.
+    let risk = 1.0 - ((ground - level) / FLOOD_MARGIN).clamp(0.0, 1.0);
+    mix(land, FLOOD_RISK, 0.75 * risk * risk)
+}
+
+fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32) -> Rgb {
     let t = (at(&s.height, x, y) / maxh).clamp(0.0, 1.0);
     let depth = at(&s.water.depth, x, y);
     let (gx, gz) = smooth_gradient(s, x, y, 1);
@@ -697,12 +754,7 @@ fn lens_color(s: &SimState, maxh: f32, x: i32, y: i32, lens: u8) -> Rgb {
     let g = (0.52 + 0.36 * t) * (0.86 + 0.28 * sunny);
     let land = [g, g * 0.985, g * 0.955];
     let wet = smooth(WET_EPS, 0.3, depth);
-    let water = if lens == 1 {
-        mix([0.66, 0.85, 0.96], [0.08, 0.34, 0.66], (depth / 3.0).clamp(0.0, 1.0).sqrt())
-    } else {
-        [0.62, 0.69, 0.75]
-    };
-    mix(land, water, wet)
+    mix(land, [0.62, 0.69, 0.75], wet)
 }
 
 fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {

@@ -17,7 +17,8 @@ pub fn holders(sim: &SimState, good: Good) -> Vec<BuildingId> {
     out
 }
 
-/// A logistics building has its haulers balancing the stores.
+/// A logistics building has its haulers balancing the stores (from when it is finished, until
+/// switched off).
 pub fn balancing(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind == crate::buildings::BuildingKind::Logistics && b.is_complete() && sim.work.balanced.contains(&b.id))
 }
@@ -151,6 +152,10 @@ mod tests {
         let l = put(&mut s, 3, K::Logistics, (30, 10));
         assert!(s.work.place(l).unwrap().slots.iter().all(|sl| sl.role == crate::work::Role::Haul), "haulers work from logistics");
         assert!(s.work.place(a).unwrap().slots.is_empty(), "a warehouse needs nobody");
+        assert!(balancing(&s), "a finished logistics building balances from the start");
+        s.apply(Command::SetBalance { building: l, on: false }).unwrap();
+        assert!(!balancing(&s), "until switched off");
+        assert_eq!(balance_move(&s, None), None);
         s.apply(Command::SetBalance { building: l, on: true }).unwrap();
         assert!(balancing(&s));
         assert_eq!(balance_move(&s, None).map(|m| m.2), Some(Good::Clay), "the most uneven good moves first");

@@ -114,8 +114,9 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
             if !barge_water(sim, n) {
                 continue;
             }
-            // No cutting a corner past a bank.
-            if dx != 0 && dy != 0 && !(barge_water(sim, (x as usize, c.1)) && barge_water(sim, (c.0, y as usize))) {
+            // No cutting a corner past a bank, except into or out of a lock: on a diagonal dam
+            // the water either side of a lock meets it only at its corners.
+            if dx != 0 && dy != 0 && !corner_ok(sim, c, n) {
                 continue;
             }
             let Some(step) = sim.nav.move_cost(c, n, BARGE_PACE) else { continue };
@@ -147,7 +148,15 @@ pub fn joined(sim: &SimState, a: BuildingId, b: BuildingId) -> bool {
     docks(sim, y).into_iter().map(region).any(|r| r != 0 && here.contains(&r))
 }
 
-/// Label the stretches of barge water, each joined cell to cell (diagonals round no bank).
+/// Whether a barge may go corner to corner from `a` to `b` (both barge water): round no bank,
+/// unless one end is a lock, whose far side on a diagonal dam touches it only at a corner.
+fn corner_ok(sim: &SimState, a: Cell, b: Cell) -> bool {
+    let lock = |c: Cell| sim.nav.surface_at(c) == Some(Surface::Lock);
+    lock(a) || lock(b) || (barge_water(sim, (b.0, a.1)) && barge_water(sim, (a.0, b.1)))
+}
+
+/// Label the stretches of barge water, each joined cell to cell (diagonals round no bank, but
+/// into and out of a lock; see `corner_ok`).
 fn label_regions(sim: &mut SimState) {
     let (w, h) = (sim.nav.surface.width(), sim.nav.surface.height());
     let mut regions = vec![0u32; w * h];
@@ -163,13 +172,14 @@ fn label_regions(sim: &mut SimState) {
         queue.push_back(start);
         while let Some(i) = queue.pop_front() {
             let (x, y) = ((i % w) as i32, (i / w) as i32);
-            for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (nx, ny) = (x + dx, y + dy);
                 if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
                     continue;
                 }
                 let j = ny as usize * w + nx as usize;
-                if wet[j] && regions[j] == 0 {
+                let corner = dx != 0 && dy != 0;
+                if wet[j] && regions[j] == 0 && (!corner || corner_ok(sim, (x as usize, y as usize), (nx as usize, ny as usize))) {
                     regions[j] = next;
                     queue.push_back(j);
                 }
@@ -315,5 +325,36 @@ mod tests {
         let through = path.steps.iter().find(|st| st.0 .0 == 60).unwrap();
         assert_eq!(through.0, (60, 32), "the beaver takes the lock");
         assert_eq!(through.1, Gait::Swim);
+    }
+
+    #[test]
+    fn a_barge_passes_a_lock_in_a_diagonal_dam() {
+        let (mut s, _, _, _) = waterway();
+        for y in 20..46 {
+            for x in 40..80 {
+                *s.water.depth.get_mut(x, y).unwrap() = 1.0;
+            }
+        }
+        // A dam running corner to corner right across the pond (staircased, so no water gets
+        // by), with a lock in it: the water on its far side meets the lock only at a corner.
+        for y in 20..46usize {
+            let x = 60 + y - 32;
+            for c in [(x, y), (x + 1, y)] {
+                *s.water.dam_height.get_mut(c.0, c.1).unwrap() = 1.0;
+            }
+        }
+        let lock = (60usize, 32usize);
+        s.locks.at.insert(lock, crate::locks::Lock { cell: lock, building: BuildingId(99), built: true });
+        s.nav = NavGrid::new(s.world.size, s.world.size);
+        crate::agents::place_beavers(&mut s);
+        assert!(barge_water(&s, (lock.0 + 1, lock.1 - 1)), "open water off the lock's far corner");
+        assert!(!barge_water(&s, (lock.0 + 1, lock.1)) && !barge_water(&s, (lock.0, lock.1 - 1)), "dam on its far sides");
+        let to = [(70usize, 20usize)];
+        let p = route(&s, (50, 40), &to).expect("through the lock");
+        assert!(p.steps.iter().any(|st| st.0 == lock), "by the lock cell");
+        label_regions(&mut s);
+        let w = s.nav.surface.width();
+        let region = |c: Cell| s.fleet.regions[c.1 * w + c.0];
+        assert_eq!(region((50, 40)), region((70, 20)), "one stretch of barge water through the lock");
     }
 }

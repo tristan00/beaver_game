@@ -53,6 +53,39 @@ pub fn building_icon(k: BuildingKind) -> Icon {
     }
 }
 
+pub fn animal_icon(k: sim::wildlife::Kind) -> Icon {
+    match k {
+        sim::wildlife::Kind::Deer => Icon::Deer,
+        sim::wildlife::Kind::Rabbit => Icon::Rabbit,
+        sim::wildlife::Kind::Bird => Icon::Bird,
+    }
+}
+
+pub fn animal_name(k: sim::wildlife::Kind) -> &'static str {
+    match k {
+        sim::wildlife::Kind::Deer => "Deer",
+        sim::wildlife::Kind::Rabbit => "Rabbit",
+        sim::wildlife::Kind::Bird => "Bird",
+    }
+}
+
+/// What a wild animal is doing, as an icon and a few words.
+pub fn animal_doing(a: &sim::wildlife::Animal) -> (Icon, &'static str) {
+    use sim::wildlife::{Doing, Food};
+    match a.doing {
+        Doing::Wander => (Icon::Walk, "Wandering"),
+        Doing::Feed { food, .. } | Doing::Digest { food, .. } => match food {
+            Food::Plant(_) => (Icon::Plant, "Eating a plant"),
+            Food::Sapling(_) => (Icon::Sapling, "Eating a sapling"),
+            Food::Pile(_) => (Icon::Food, "Eating dropped food"),
+        },
+        Doing::Rest { .. } => (Icon::Idle, "Resting"),
+        Doing::Flee => (Icon::Fast2, "Fleeing"),
+        Doing::Leave => (Icon::Walk, "Leaving"),
+        Doing::Caught => (Icon::Wolf, "Caught by the wolf"),
+    }
+}
+
 pub fn resource_icon(k: ResourceKind) -> Icon {
     match k {
         ResourceKind::Tree | ResourceKind::Felled => Icon::Tree,

@@ -50,7 +50,7 @@ impl Kind {
         }
     }
     /// Food it eats a day while feeding.
-    fn appetite(self) -> f32 {
+    pub fn appetite(self) -> f32 {
         match self {
             Kind::Rabbit => RABBIT_EATS_PER_DAY,
             Kind::Deer => DEER_EATS_PER_DAY,

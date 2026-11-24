@@ -37,9 +37,29 @@ pub fn unlocked(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Harbor && sim.finished(b))
 }
 
-/// A built lock at this cell.
+/// The cells a built lock takes up: its gate's cell and, on a widened dam, the dam cell behind
+/// it in every row, so the lock runs right through the dam to the water beyond.
+pub fn lock_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
+    let mut out = vec![l.cell];
+    if let Some(d) = crate::dams::dam(sim, l.building) {
+        for k in 1..d.rows as i64 {
+            let (x, y) = (l.cell.0 as i64 + d.downstream.0 as i64 * k, l.cell.1 as i64 + d.downstream.1 as i64 * k);
+            if x < 0 || y < 0 {
+                break;
+            }
+            let c = (x as usize, y as usize);
+            if !d.cells.iter().any(|dc| dc.cell == c) {
+                break;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A cell of a built lock (see `lock_cells`).
 pub fn is_lock(sim: &SimState, c: Cell) -> bool {
-    sim.locks.at.get(&c).is_some_and(|l| l.built)
+    sim.locks.at.get(&c).is_some_and(|l| l.built) || sim.locks.at.values().any(|l| l.built && lock_cells(sim, l).contains(&c))
 }
 
 /// A lock ordered at this cell and not yet built.

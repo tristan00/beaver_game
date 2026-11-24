@@ -37,6 +37,7 @@ icons! {
     Widen, Extend,
     Pebbles, Sapling, Larder, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
     Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Barge,
+    Deer, Rabbit, Bird,
 }
 
 #[derive(Resource, Clone)]
@@ -836,6 +837,30 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(poly(&[(9.0, 22.0), (22.0, 14.0), (42.0, 14.0), (55.0, 22.0), (51.0, 38.0), (38.0, 58.0), (26.0, 58.0), (13.0, 38.0)]).grow(1.0));
             c.cut(seg(19.0, 30.0, 27.0, 34.0, 4.5).or(seg(45.0, 30.0, 37.0, 34.0, 4.5)));
             c.cut(ellipse(32.0, 51.0, 5.5, 3.8));
+        }
+        Deer => {
+            // A stag's head: antlers over two ears and a long face.
+            c.add(polyline(&[(24.0, 20.0), (16.0, 10.0), (12.0, 2.0)], 3.5).or(polyline(&[(16.0, 10.0), (6.0, 8.0)], 3.0)));
+            c.add(polyline(&[(40.0, 20.0), (48.0, 10.0), (52.0, 2.0)], 3.5).or(polyline(&[(48.0, 10.0), (58.0, 8.0)], 3.0)));
+            c.add(ellipse(14.0, 26.0, 9.0, 4.5).or(ellipse(50.0, 26.0, 9.0, 4.5)));
+            c.add(poly(&[(22.0, 20.0), (42.0, 20.0), (40.0, 46.0), (36.0, 60.0), (28.0, 60.0), (24.0, 46.0)]).grow(1.5));
+            c.cut(circle(26.0, 32.0, 2.8).or(circle(38.0, 32.0, 2.8)));
+        }
+        Rabbit => {
+            // Two long ears over a round head.
+            c.add(ellipse(23.0, 18.0, 6.0, 16.0).or(ellipse(41.0, 18.0, 6.0, 16.0)));
+            c.add(ellipse(32.0, 44.0, 18.0, 15.0));
+            c.cut(circle(25.0, 41.0, 2.8).or(circle(39.0, 41.0, 2.8)));
+            c.cut(ellipse(32.0, 51.0, 3.5, 2.5));
+        }
+        Bird => {
+            // Side on: body, head, beak, tail and a cut-out wing.
+            c.add(ellipse(30.0, 38.0, 19.0, 13.0));
+            c.add(circle(46.0, 24.0, 9.0));
+            c.add(poly(&[(53.0, 20.0), (62.0, 25.0), (53.0, 28.0)]));
+            c.add(poly(&[(14.0, 34.0), (2.0, 28.0), (6.0, 44.0)]));
+            c.cut(qbez((16.0, 34.0), (30.0, 50.0), (42.0, 36.0), 3.0));
+            c.cut(circle(47.0, 22.0, 2.2));
         }
         Forester => {
             c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));

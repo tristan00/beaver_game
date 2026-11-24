@@ -112,9 +112,10 @@ fn update_water_style(season: Res<Season>, water: Res<WaterChunks>, mut material
     }
 }
 
-/// The underwater lens takes the water away altogether, so the bed shows as a depth chart.
+/// The underwater and water lenses take the water away altogether, so the bed shows their
+/// depth chart.
 fn hide_water_under_lens(mut q: Query<&mut Visibility, With<WaterSurface>>) {
-    let hide = crate::terrain_render::map_lens() == crate::terrain_render::UNDERWATER_LENS;
+    let hide = matches!(crate::terrain_render::map_lens(), crate::terrain_render::UNDERWATER_LENS | crate::terrain_render::WATER_LENS);
     let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
     for mut v in &mut q {
         v.set_if_neq(want);

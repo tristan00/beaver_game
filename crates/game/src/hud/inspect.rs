@@ -69,8 +69,9 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
             Some(super::dam_panel::dam_panel(c, b.id, b.dam.as_deref()?))
         }
         Selection::Tree(id) => resource(c, id),
-        // The wolf has no panel: selecting it shows its sight range.
-        Selection::None | Selection::Wolf => None,
+        Selection::Wolf => wolf(c),
+        Selection::Animal(id) => animal(c, id),
+        Selection::None => None,
     }
 }
 
@@ -627,6 +628,59 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
             }))
         }
     }
+}
+
+/// One plain line on a card: icon, words, and a value at the right.
+fn line(u: &mut Ui, icon: Icon, col: Color, words: String, value: String) -> &mut VNode {
+    u.row(8.0, |x| {
+        x.icon(icon, 16.0, col);
+        x.text(words, 13.0, INK);
+        x.spacer();
+        x.bold(value, 13.0, INK);
+    })
+}
+
+/// A deer, rabbit or bird: what it is doing, how much it eats, and when it moves on.
+fn animal(c: &Ctx, id: u32) -> Option<VNode> {
+    let s = c.s;
+    let a = s.wildlife.get(id)?;
+    let (icon, doing) = animal_doing(a);
+    let name = animal_name(a.kind);
+    let tip = Tip::titled(Some((animal_icon(a.kind), INK)), name).line(if a.kind.prey() { "Prey for wolves" } else { "Flies from wolves" }, "");
+    Some(frame(c, Selection::Animal(id), animal_icon(a.kind), FUR, name.to_string(), None, tip, |u| {
+        let pace = if a.pace > 0.0 { format!("{}/d", num(a.pace)) } else { String::new() };
+        line(u, icon, MUTED, doing.to_string(), pace).tip(Tip::name(doing).line("Cells a day", num(a.pace)));
+        line(u, Icon::Food, good_color(Good::Food), "Eats".to_string(), format!("{}/d", num(a.kind.appetite()))).tip(Tip::name("Eats while feeding").line("Food a day", num(a.kind.appetite())));
+        if !matches!(a.doing, sim::wildlife::Doing::Leave | sim::wildlife::Doing::Caught) {
+            line(u, Icon::Hourglass, MUTED, "Moves on in".to_string(), days((a.leave_by - s.time_days) as f32)).tip(Tip::name("Wanders off the map"));
+        }
+    }))
+}
+
+/// The wolf, while the colony sees it: what it is after, and when it leaves.
+fn wolf(c: &Ctx) -> Option<VNode> {
+    use sim::predators::WolfState;
+    let s = c.s;
+    sim::predators::in_sight(s)?;
+    let w = s.predators.wolf.as_ref()?;
+    let beaver = |id| s.colony.beaver(id).map_or_else(|| "a beaver".to_string(), |b| b.name.clone());
+    let prey = |id| s.wildlife.get(id).map_or("animal", |a| animal_name(a.kind)).to_lowercase();
+    let (icon, col, doing) = match w.state {
+        WolfState::Roam => (Icon::Walk, MUTED, "Roaming".to_string()),
+        WolfState::Charge { target, .. } => (Icon::Fast2, BAD, format!("Charging {}", beaver(target))),
+        WolfState::Kill { target, .. } => (Icon::Cross, BAD, format!("Killing {}", beaver(target))),
+        WolfState::Leave => (Icon::Walk, MUTED, "Leaving".to_string()),
+        WolfState::Hunt { animal, .. } => (Icon::Fast2, WARN, format!("Hunting a {}", prey(animal))),
+        WolfState::Feed { animal, .. } => (Icon::Food, WARN, format!("Eating a {}", prey(animal))),
+    };
+    let tip = Tip::titled(Some((Icon::Wolf, BAD)), "Wolf").line("Hunts beavers on land", "");
+    Some(frame(c, Selection::Wolf, Icon::Wolf, BAD, "Wolf".to_string(), None, tip, |u| {
+        line(u, icon, col, doing, if w.pace > 0.0 { format!("{}/d", num(w.pace)) } else { String::new() });
+        if w.state != WolfState::Leave {
+            line(u, Icon::Hourglass, MUTED, "Leaves in".to_string(), days((w.leave_by - s.time_days) as f32)).tip(Tip::name("Heads off the map"));
+        }
+        line(u, Icon::Focus, MUTED, "Sees".to_string(), format!("{} cells", num(sim::predators::WOLF_SIGHT))).tip(Tip::name("Sight").line("Circle on the map", ""));
+    }))
 }
 
 fn lodge(c: &Ctx, id: sim::colony::LodgeId) -> VNode {
