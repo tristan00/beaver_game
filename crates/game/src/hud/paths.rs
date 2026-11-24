@@ -1,5 +1,6 @@
 use super::ui::*;
-use super::words::role_kind_name;
+use super::words::{role_kind_icon, role_kind_name};
+use crate::icons::Icon;
 use crate::flow::{cell_world, height_at};
 use bevy::prelude::*;
 use sim::jobs::RoleKind;
@@ -92,9 +93,9 @@ pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>) {
     }
 }
 
-/// Beside the rail while the paths view is on: a swatch and name for every role, each a button
-/// that shows only that role's paths (and every path again on a second click). Roles no one
-/// is walking for now are dimmed.
+/// Over the lens rail while the paths view is on, in one row: every role's icon on its colour,
+/// each a button that shows only that role's paths (and every path again on a second click).
+/// Roles no one is walking for now are dimmed; the name is in the tooltip.
 pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
     if !SHOWN.load(Ordering::Relaxed) {
         return None;
@@ -103,18 +104,19 @@ pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
     let picked = ONLY.load(Ordering::Relaxed) != ALL_ROLES;
     let roles = RoleKind::ALL.iter().map(|r| Some(*r)).chain(std::iter::once(None));
     let mut ui = Ui::default();
-    ui.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), padding: UiRect::all(Val::Px(8.0)), ..node }, |u| {
+    ui.node(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(8.0), padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..node }, |u| {
+        u.icon(Icon::Walk, 14.0, INK).tip(Tip::name("Paths").key("F5"));
         for r in roles {
             let on = shown(r);
             let busy = walking_now.contains(&r);
             let swatch = if on { role_color(r) } else { role_color(r).with_alpha(0.25) };
             let ink = if !on { FAINT.with_alpha(0.5) } else if busy { INK } else { MUTED };
-            u.row(6.0, |x| {
-                x.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(if picked && on { 6.0 } else { 4.0 }), ..default() })).bg(swatch);
-                x.text(r.map_or("Free", role_kind_name), 12.0, ink);
+            u.col(2.0, |x| {
+                x.icon(r.map_or(Icon::Idle, role_kind_icon), 14.0, ink);
+                x.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(if picked && on { 5.0 } else { 3.0 }), ..default() })).bg(swatch);
             })
             .style(|n| n.align_items = AlignItems::Center)
-            .tip(Tip::name(if picked && on { "Show all" } else { "Show only these" }))
+            .tip(Tip::name(r.map_or("Free", role_kind_name)).line(if picked && on { "Show all" } else { "Show only these" }, ""))
             .action(super::HudAction::PathsOnly(r));
         }
     });

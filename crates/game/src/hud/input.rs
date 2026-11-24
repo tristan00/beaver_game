@@ -3,10 +3,16 @@ use super::*;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::window::PrimaryWindow;
 
-pub(super) fn pointer_over_ui(q: Query<&Interaction, With<Blocks>>, mut over: ResMut<PointerOverUi>) {
-    let v = q.iter().any(|i| *i != Interaction::None);
-    if over.0 != v {
-        over.0 = v;
+/// Whether the pointer is on a panel (which keeps every click from the map), or only on a pin
+/// over the map (which takes left clicks but lets right-click orders through).
+pub(super) fn pointer_over_ui(q: Query<(&Interaction, Has<ui::MapPin>), With<Blocks>>, mut over: ResMut<PointerOverUi>, mut pin: ResMut<PointerOverPin>) {
+    let panel = q.iter().any(|(i, p)| *i != Interaction::None && !p);
+    let on_pin = q.iter().any(|(i, p)| *i != Interaction::None && p);
+    if over.0 != panel {
+        over.0 = panel;
+    }
+    if pin.0 != on_pin {
+        pin.0 = on_pin;
     }
 }
 
@@ -45,17 +51,12 @@ pub(super) fn hotkeys(
         }
     }
     if keys.just_pressed(KeyCode::Tab) {
-        hud.colony = if hud.colony.is_some() { None } else { Some(ColonyTab::Population) };
-        if hud.colony.is_some() {
-            hud.ledger = None;
-        }
+        let open = hud.colony.is_some() && hud.page().is_none();
+        hud.open_book(if open { None } else { Some(ColonyTab::Population) }, None);
     }
     if keys.just_pressed(KeyCode::KeyL) && !ctrl {
-        hud.ledger = if hud.ledger.is_some() { None } else { Some(LedgerTab::Charts) };
-        hud.scroll = 0;
-        if hud.ledger.is_some() {
-            hud.colony = None;
-        }
+        let open = hud.ledger.is_some();
+        hud.open_book(None, if open { None } else { Some(LedgerTab::Charts) });
     }
     if keys.just_pressed(KeyCode::KeyJ) {
         hud.journal_open = !hud.journal_open;
@@ -95,13 +96,15 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
-        } else if hud.details.is_some() {
-            hud.details = None;
-        } else if hud.lodge_page.is_some() {
-            hud.lodge_page = None;
+        } else if hud.page().is_some() {
+            hud.page_back();
         } else if hud.colony.is_some() || hud.ledger.is_some() {
             hud.colony = None;
             hud.ledger = None;
+        } else if hud.open_badge.is_some() {
+            hud.open_badge = None;
+        } else if hud.journal_open {
+            hud.journal_open = false;
         } else if *sel != Selection::None || !hud.selected.is_empty() {
             *sel = Selection::None;
             hud.selected.clear();
@@ -132,6 +135,7 @@ pub(super) fn world_input(
     time: Res<Time>,
     hover: Res<HoverCell>,
     over: Res<PointerOverUi>,
+    on_pin: Res<PointerOverPin>,
     thing: Res<world::HoverThing>,
     point: Res<world::HoverPoint>,
     cursor: Res<CursorUi>,
@@ -178,6 +182,20 @@ pub(super) fn world_input(
         }
         return;
     }
+    // A box dragged out on the map selects even when let go over a panel; a press that never
+    // reached the map leaves no box behind.
+    if hud.box_from.is_some() && !mouse.pressed(MouseButton::Left) && !mouse.just_released(MouseButton::Left) {
+        hud.box_from = None;
+    }
+    if mouse.just_released(MouseButton::Left) && hud.tool == Tool::None && hud.grab.is_none() {
+        if let (Some(a), Some(b)) = (hud.box_from, cursor.0) {
+            if a.distance(b) > 8.0 {
+                hud.box_from = None;
+                hud.box_done = Some((a, b));
+                return;
+            }
+        }
+    }
     if over.0 {
         return;
     }
@@ -204,6 +222,10 @@ pub(super) fn world_input(
                 order(&mut sim.0, &mut hud, &who, t, shift, now);
             }
         }
+        return;
+    }
+    // A pin takes its own left click.
+    if on_pin.0 {
         return;
     }
     let Some(cell) = hover.0.or_else(|| match thing.0 {
@@ -266,12 +288,16 @@ pub(super) fn world_input(
                 }
                 match t {
                     world::Thing::Beaver(id) if shift => {
+                        // Shift adds to the beaver already selected, or takes one away.
+                        if let (true, Selection::Beaver(x)) = (hud.selected.is_empty(), *sel) {
+                            hud.selected.push(x);
+                        }
                         if let Some(i) = hud.selected.iter().position(|x| *x == id) {
                             hud.selected.remove(i);
                         } else {
                             hud.selected.push(id);
                         }
-                        *sel = Selection::Beaver(id);
+                        *sel = if hud.selected.contains(&id) { Selection::Beaver(id) } else { hud.selected.first().map_or(Selection::None, |f| Selection::Beaver(*f)) };
                     }
                     world::Thing::Beaver(id) => {
                         hud.selected = vec![id];
@@ -392,23 +418,40 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
     }
 }
 
-pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, mut sel: ResMut<Selection>) {
+/// Every beaver inside the box dragged out on the map, kits too; with Shift held, added to
+/// those already selected.
+pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>) {
     let Some((a, b)) = hud.box_done.take() else { return };
     let Ok((cam, gt)) = cams.single() else { return };
     let (lo, hi) = (a.min(b), a.max(b));
     let s = &sim.0;
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let picked: Vec<BeaverId> = s
         .colony
         .beavers
         .iter()
-        .filter(|bv| bv.can_work())
         .filter(|bv| world::beaver_world(s, bv.id).and_then(|w| cam.world_to_viewport(gt, w).ok()).map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
         .map(|bv| bv.id)
         .collect();
-    if let Some(first) = picked.first() {
-        *sel = Selection::Beaver(*first);
+    if shift {
+        if let (true, Selection::Beaver(x)) = (hud.selected.is_empty(), *sel) {
+            hud.selected.push(x);
+        }
+        for id in picked {
+            if !hud.selected.contains(&id) {
+                hud.selected.push(id);
+            }
+        }
+    } else {
+        hud.selected = picked;
     }
-    hud.selected = picked;
+    let keep = matches!(*sel, Selection::Beaver(x) if hud.selected.contains(&x));
+    if !keep {
+        *sel = hud.selected.first().map_or(Selection::None, |f| Selection::Beaver(*f));
+    }
+    if hud.follow.is_some_and(|f| !hud.selected.contains(&f)) {
+        hud.follow = None;
+    }
 }
 
 pub(super) fn frame_camera(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, windows: Query<&Window, With<PrimaryWindow>>, orbit: Res<crate::camera::OrbitCamera>, mut flow: ResMut<Flow>) {

@@ -280,7 +280,7 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
     vec![panel_row(Node { padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)), ..abs(None, Some(12.0), Some(10.0), None) }, 12.0, |u| {
         let phase = calendar::year_phase(t);
         u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |ring| {
-            ring.bold(format!("{}", d.day), 15.0, INK);
+            ring.bold(format!("{}", d.day), 14.0, INK);
             let ang = phase * std::f32::consts::TAU;
             let (x, y) = (26.0 + 22.0 * ang.sin() - 5.0, 26.0 - 22.0 * ang.cos() - 5.0);
             ring.add(VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(x), top: Val::Px(y), width: Val::Px(10.0), height: Val::Px(10.0), border: UiRect::all(Val::Px(2.0)), border_radius: BorderRadius::all(Val::Px(5.0)), ..default() }))
@@ -551,7 +551,7 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
 
 /// Left: how to read the map. Five lenses; clicking the one that is on returns to the plain view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
-    let mut rail = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
+    let rail = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
         for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Paths, Icon::Walk, "Paths", "F5")] {
             let on = c.lens == l;
             u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
@@ -562,10 +562,16 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         let open = c.hud.ledger.is_some();
         u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony ledger").key("L"));
     })];
-    rail.extend(super::paths::legend(c.s, abs(Some(70.0), None, Some(84.0), None)));
-    rail.extend(super::water_legend::legend(abs(Some(70.0), None, Some(84.0), None)));
     rail
 }
+
+/// Where a lens's legend sits: over the lens rail, under the stores, where no page covers it.
+fn legend_at() -> Node {
+    abs(Some(12.0), None, Some(LEGEND_TOP), None)
+}
+
+/// The top of the row between the stores and the lens rail that the legends use.
+pub const LEGEND_TOP: f32 = 52.0;
 
 fn cost_row(u: &mut Ui, cost: &[(Good, f32)], size: f32, col: Color) {
     u.row(6.0, |r| {
@@ -740,17 +746,17 @@ pub fn canal_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
             (None, Some(Ok(p))) => {
                 r.row(4.0, |x| {
                     x.icon(Icon::Beaver, 17.0, Color::srgb(0.73, 0.47, 0.25));
-                    x.bold(format!("{}d", p.labour_days().ceil().max(1.0) as i64), 15.0, INK);
+                    x.bold(format!("{}d", p.labour_days().ceil().max(1.0) as i64), 14.0, INK);
                 })
                 .tip(Tip::titled(Some((Icon::Beaver, INK)), "Digging").line("Beaver-days", num(p.labour_days())));
                 r.row(4.0, |x| {
                     x.icon(good_icon(Good::Clay), 17.0, good_color(Good::Clay));
-                    x.bold(format!("+{}", p.clay().round() as i64), 15.0, INK);
+                    x.bold(format!("+{}", p.clay().round() as i64), 14.0, INK);
                 })
                 .tip(Tip::titled(Some((good_icon(Good::Clay), good_color(Good::Clay))), "Clay from the spoil"));
                 r.row(4.0, |x| {
                     x.icon(Icon::Logs, 17.0, WATER);
-                    x.bold(format!("{:.0}%", p.floatable_share() * 100.0), 15.0, INK);
+                    x.bold(format!("{:.0}%", p.floatable_share() * 100.0), 14.0, INK);
                 })
                 .tip(Tip::titled(Some((Icon::Logs, WATER)), "Floats a load").line(if p.through { "Runs into other water" } else { "Ends on land" }, ""));
             }
@@ -813,7 +819,7 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
             None => {
                 r.row(4.0, |x| {
                     x.icon(good_icon(Good::Sticks), 18.0, good_color(Good::Sticks));
-                    x.bold(format!("{}", plan.sticks.round() as i64), 15.0, INK);
+                    x.bold(format!("{}", plan.sticks.round() as i64), 14.0, INK);
                 })
                 .tip(Tip::titled(Some((good_icon(Good::Sticks), good_color(Good::Sticks))), "Sticks for the first stage").line("Carried load by load", ""));
                 // The water engine's own run with the dam in place (`dam_settled`); until it is
@@ -830,8 +836,8 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                 r.row(4.0, |x| {
                     x.icon(Icon::Drop, 17.0, WATER);
                     match &rise {
-                        Some(t) => x.bold(t.clone(), 15.0, INK),
-                        None => x.bold("…", 15.0, MUTED),
+                        Some(t) => x.bold(t.clone(), 14.0, INK),
+                        None => x.bold("…", 14.0, MUTED),
                     };
                 })
                 .tip(tip);
@@ -844,7 +850,7 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                     r.row(3.0, |x| {
                         x.icon(Icon::Warn, 15.0, BAD);
                         x.icon(Icon::Building, 15.0, BAD);
-                        x.bold(format!("{}", drowned.len()), 15.0, BAD);
+                        x.bold(format!("{}", drowned.len()), 14.0, BAD);
                     })
                     .tip(tip);
                 }
@@ -852,7 +858,7 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                 if drowned > 0 {
                     r.row(4.0, |x| {
                         x.icon(Icon::Tree, 16.0, WARN);
-                        x.bold(format!("{drowned}"), 15.0, WARN);
+                        x.bold(format!("{drowned}"), 14.0, WARN);
                     })
                     .tip(Tip::titled(Some((Icon::Tree, WARN)), "Trees drowned"));
                 }
@@ -896,6 +902,8 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
 
 pub fn minimap(c: &Ctx) -> Vec<VNode> {
     let Some(map) = c.minimap else { return Vec::new() };
+    // The legends live with the minimap's host so they show while a dam or canal is drawn too.
+    let legends: Vec<VNode> = super::paths::legend(c.s, legend_at()).into_iter().chain(super::water_legend::legend(legend_at())).collect();
     const SIZE: f32 = 150.0;
     let at = |p: (f32, f32)| {
         let (u, v) = map.to_map(p);
@@ -919,7 +927,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
             }
         }
     }
-    vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 0.0, |u| {
+    let mut out = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), ..abs(Some(12.0), None, None, Some(12.0)) }, 0.0, |u| {
         u.image(map.image.clone(), Node { width: Val::Px(SIZE), height: Val::Px(SIZE), ..default() })
             .tag(Tag::Minimap)
             .solid()
@@ -958,7 +966,9 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                 }
                 m.nodes
             });
-    })]
+    })];
+    out.extend(legends);
+    out
 }
 
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {

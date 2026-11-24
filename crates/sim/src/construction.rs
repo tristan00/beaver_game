@@ -100,7 +100,15 @@ impl SimState {
     }
 
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
-        if self.maintenance.jobs.contains_key(&id) { return maintenance::cancel(self, id); }
+        if self.maintenance.jobs.contains_key(&id) {
+            // A refit on a dam or canal is dropped and the works come down all the same;
+            // on any other building the refit is all there is to cancel.
+            let works = self.buildings.building(id).is_some_and(|b| b.dam.is_some() || b.canal.is_some());
+            if !works {
+                return maintenance::cancel(self, id);
+            }
+            maintenance::cancel(self, id)?;
+        }
         let b = self.buildings.building(id).ok_or_else(|| SimError::InvalidCommand(format!("no building {}", id.0)))?;
         if b.dam.is_some() || b.canal.is_some() {
             self.tear_down_works(id)?;

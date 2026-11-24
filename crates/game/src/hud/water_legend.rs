@@ -13,20 +13,20 @@ fn swatch(u: &mut Ui, c: Color) {
     u.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(10.0), ..default() })).bg(c);
 }
 
-/// Beside the rail while the water view is on: its depth bands, up to the depths that flood
-/// buildings, and the current's colours.
+/// Over the lens rail while the water view is on (or a dam or canal is being drawn): its depth
+/// bands, up to the depths that flood buildings, and the current's colours, in one row.
 pub fn legend(node: Node) -> Option<VNode> {
     if tr::map_lens() != tr::WATER_LENS {
         return None;
     }
     let mut ui = Ui::default();
-    ui.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), padding: UiRect::all(Val::Px(8.0)), ..node }, |u| {
+    ui.node(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(12.0), padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..node }, |u| {
+        u.icon(Icon::ViewWater, 14.0, WATER).tip(Tip::name("Water").key("F1"));
         let row = |u: &mut Ui, f: &dyn Fn(&mut Ui), label: String, tip: Option<&str>| {
-            let r = u.row(6.0, |x| {
+            let r = u.row(4.0, |x| {
                 f(x);
-                x.text(label, 12.0, INK);
+                x.text(label, 11.0, INK);
             });
-            r.style(|n| n.align_items = AlignItems::Center);
             if let Some(t) = tip {
                 r.tip(Tip::name(t));
             }

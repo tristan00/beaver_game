@@ -116,6 +116,15 @@ pub fn is_water(sim: &SimState, c: Cell) -> bool {
     sim.water.shown(c.0 as i32, c.1 as i32) || sim.world.river.get(c.0, c.1).copied().unwrap_or(false) || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
 }
 
+/// How far the water at the far end stands below the source pond: the fall along the canal.
+/// None while no water reaches the end.
+pub fn end_drop(sim: &SimState, k: &Canal) -> Option<f32> {
+    let level = k.status.as_ref()?.source_level;
+    let end = k.end();
+    let d = depth(sim, end);
+    (d > crate::buildings::WET_DEPTH).then(|| (level - (ground(sim, end) + d)).max(0.0))
+}
+
 pub fn canal(sim: &SimState, id: BuildingId) -> Option<&Canal> {
     sim.buildings.building(id).and_then(|b| b.canal.as_deref())
 }

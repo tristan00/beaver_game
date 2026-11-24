@@ -102,7 +102,7 @@ pub(super) fn button_actions(
         match a {
             HudAction::Fix(fix, at) => match fix {
                 Fix::Place(kind) => hud.set_tool(match kind { BuildingKind::Dam => Tool::Dam, BuildingKind::Canal => Tool::Canal, k => Tool::Building(k) }),
-                Fix::OpenJobs => hud.colony = Some(ColonyTab::Jobs),
+                Fix::OpenJobs => hud.open_book(Some(ColonyTab::Jobs), None),
                 Fix::OpenDam { dam } => {
                     *sel = Selection::Site(dam);
                     hud.selected.clear();
@@ -128,7 +128,7 @@ pub(super) fn button_actions(
             }
             HudAction::CycleIdle => {
                 if shift {
-                    hud.colony = Some(ColonyTab::Jobs);
+                    hud.open_book(Some(ColonyTab::Jobs), None);
                 } else {
                     next_idle(s, &mut hud, &mut sel, &mut flow);
                 }
@@ -154,13 +154,13 @@ pub(super) fn button_actions(
             }
             HudAction::CancelTool => hud.set_tool(Tool::None),
             HudAction::GrowDam(dam, growth) => {
-                let cells = if growth == sim::DamGrowth::Raise { hud.dam_cells.clone() } else { Vec::new() };
+                let cells = if growth == sim::DamGrowth::Raise { picks_on(s, dam, &hud.dam_cells) } else { Vec::new() };
                 cmd(s, &mut hud, sim::Command::GrowDam { dam, growth, cells }, now);
                 hud.dam_ghost = None;
             }
             HudAction::DamMaintain(dam, on) => cmd(s, &mut hud, sim::Command::SetDamMaintain { dam, on }, now),
             HudAction::AddDamGate(dam) => {
-                if let Some(&cell) = hud.dam_cells.first() {
+                if let Some(&cell) = picks_on(s, dam, &hud.dam_cells).first() {
                     cmd(s, &mut hud, sim::Command::AddDamGate { dam, cell }, now);
                     hud.dam_cells.clear();
                 }
@@ -182,7 +182,7 @@ pub(super) fn button_actions(
                         hud.swallow_click();
                     }
                 } else {
-                    let cells = hud.dam_cells.clone();
+                    let cells = picks_on(s, canal, &hud.dam_cells);
                     cmd(s, &mut hud, sim::Command::GrowCanal { canal, growth, cells }, now);
                     hud.dam_cells.clear();
                 }
@@ -203,11 +203,6 @@ pub(super) fn button_actions(
                     hud.selected.clear();
                 }
             }
-            HudAction::CloseInspector => {
-                *sel = Selection::None;
-                hud.selected.clear();
-                hud.follow = None;
-            }
             HudAction::SetLens(l) => {
                 *lens = l;
                 hud.set_changed();
@@ -216,48 +211,29 @@ pub(super) fn button_actions(
                 super::paths::toggle_only(r);
                 hud.set_changed();
             }
-            HudAction::BeaverDetails(who) => {
-                hud.details = who;
-                hud.scroll = 0;
-                if who.is_some() {
-                    hud.ledger = None;
-                    hud.lodge_page = None;
-                }
-            }
-            HudAction::LodgePage(lodge) => {
-                hud.lodge_page = lodge;
-                hud.scroll = 0;
-                if lodge.is_some() {
-                    hud.ledger = None;
-                    hud.details = None;
-                }
-            }
+            HudAction::BeaverDetails(who) => match who {
+                Some(id) => hud.open_page(super::Page::Beaver(id)),
+                None => hud.close_pages(),
+            },
+            HudAction::LodgePage(lodge) => match lodge {
+                Some(l) => hud.open_page(super::Page::Lodge(l)),
+                None => hud.close_pages(),
+            },
+            HudAction::PageBack => hud.page_back(),
             HudAction::Kin(f) => {
                 hud.kin = f;
             }
-            HudAction::Colony(t) => {
-                hud.details = None;
-                hud.lodge_page = None;
-                hud.colony = t;
-                if t.is_some() {
-                    hud.ledger = None;
-                }
-            }
-            HudAction::Ledger(t) => {
-                if t != hud.ledger {
-                    hud.scroll = 0;
-                }
-                hud.ledger = t;
-                if t.is_some() {
-                    hud.colony = None;
-                }
-            }
+            HudAction::Colony(t) => hud.open_book(t, None),
+            HudAction::Ledger(t) => hud.open_book(None, t),
             HudAction::Span(sp) => hud.span = sp,
             HudAction::Sort(col) => {
-                hud.sort = if hud.sort.0 == col { (col, !hud.sort.1) } else { (col, !matches!(col, BeaverCol::Name | BeaverCol::Family | BeaverCol::Job)) };
+                hud.sort = if hud.sort.0 == col { (col, !hud.sort.1) } else { (col, !matches!(col, BeaverCol::Name | BeaverCol::Family | BeaverCol::Job | BeaverCol::Doing)) };
                 hud.scroll = 0;
             }
-            HudAction::Scroll(n) => hud.scroll = ((hud.scroll as i64 + n as i64).max(0) as usize).min(super::longest_list(s)),
+            HudAction::Scroll(n) => {
+                let max = super::scroll_max(s, &hud);
+                hud.scroll = ((hud.scroll as i64 + n as i64).max(0) as usize).min(max);
+            }
             HudAction::Journal(open) => hud.journal_open = open,
             HudAction::GoTo(at) => match at {
                 NoticeAt::Beaver(id) if s.colony.beaver(id).is_some() => {
@@ -310,7 +286,32 @@ pub(super) fn button_actions(
             HudAction::ReinforceBuilding(building) => cmd(s, &mut hud, sim::Command::ReinforceBuilding { building }, now),
             HudAction::PebbleBuilding(building) => cmd(s, &mut hud, sim::Command::PebbleBuilding { building }, now),
             HudAction::SlotOff(building, slot, off) => cmd(s, &mut hud, sim::Command::SetSlotOff { building, slot, off }, now),
-            HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelSite { building }, now),
+            HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelMaintenance { building }, now),
+            HudAction::ClearPicks => hud.dam_cells.clear(),
+            HudAction::ClosePanel(p, selected) => {
+                hud.pinned.retain(|x| *x != p);
+                if selected {
+                    *sel = Selection::None;
+                    hud.selected.clear();
+                    hud.follow = None;
+                    hud.dam_cells.clear();
+                }
+            }
+            HudAction::RemoveWorks(building) => {
+                if hud.remove_armed.is_some_and(|(b, t)| b == building && now - t <= super::REMOVE_ARM_SECS) {
+                    hud.remove_armed = None;
+                    cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
+                    if s.buildings.building(building).is_none() {
+                        hud.pinned.retain(|p| *p != Selection::Site(building));
+                        hud.dam_cells.clear();
+                        if *sel == Selection::Site(building) {
+                            *sel = Selection::None;
+                        }
+                    }
+                } else {
+                    hud.remove_armed = Some((building, now));
+                }
+            }
             HudAction::CancelBuild(building) => {
                 cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
                 hud.pinned.retain(|p| *p != Selection::Site(building));
@@ -327,6 +328,13 @@ pub(super) fn button_actions(
             }
         }
     }
+}
+
+/// The picked cells that lie on this dam or canal: a pick on another one is not for it.
+fn picks_on(s: &sim::SimState, id: sim::buildings::BuildingId, picks: &[Cell]) -> Vec<Cell> {
+    let Some(b) = s.buildings.building(id) else { return Vec::new() };
+    let on = |c: &Cell| b.dam.as_ref().is_some_and(|d| d.cells.iter().any(|x| x.cell == *c)) || b.canal.as_ref().is_some_and(|k| k.cells.iter().any(|x| x.cell == *c));
+    picks.iter().copied().filter(|c| on(c)).collect()
 }
 
 fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command, now: f32) {

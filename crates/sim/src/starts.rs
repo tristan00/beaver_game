@@ -395,10 +395,6 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
         .ok_or_else(|| invalid("no clear, dry riverbank for starting supplies".into()))?;
     let land = crate::WorldLand { world: &sim.world, depth: &sim.water.depth };
     sim.colony.arrive((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), &land).map_err(|e| invalid(format!("{e:?}")))?;
-    for b in sim.colony.beavers.iter_mut().filter(|b| b.stage == crate::colony::Stage::Yearling) {
-        b.age_days = KIT_AGE_DAYS;
-        b.stage = crate::colony::Stage::Kit;
-    }
     let swim = swim_cells(sim, supplies, sim.colony.beavers.len());
     let near = swim.first().is_some_and(|&c| dist2(c, supplies) <= SWIM_REACH * SWIM_REACH);
     if near && swim.len() == sim.colony.beavers.len() {

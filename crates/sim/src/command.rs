@@ -55,6 +55,8 @@ pub enum Command {
     FillStore { store: buildings::BuildingId, on: bool },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     CancelSite { building: buildings::BuildingId },
+    /// Stop a repair, reinforcing or pebble facing, leaving the building itself standing.
+    CancelMaintenance { building: buildings::BuildingId },
     /// Keep a role's workers within `cells` of water (None: no limit).
     SetShoreLimit { role: jobs::RoleKind, cells: Option<u16> },
 }
@@ -258,6 +260,7 @@ impl SimState {
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
+            Command::CancelMaintenance { building } => crate::maintenance::cancel(self, building).map(|_| ()),
             Command::SetBalance { building, on } => {
                 let logistics = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind == buildings::BuildingKind::Logistics);
                 if !logistics {

@@ -94,6 +94,7 @@ pub fn to_line(c: &Command) -> String {
         Command::FillStore { store, on } => format!("fill-store {} {}", store.0, if *on { "on" } else { "off" }),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
         Command::CancelSite { building } => format!("cancel {}", building.0),
+        Command::CancelMaintenance { building } => format!("cancel-refit {}", building.0),
     }
 }
 
@@ -231,6 +232,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             },
         },
         "cancel" => Command::CancelSite { building: b(1)? },
+        "cancel-refit" => Command::CancelMaintenance { building: b(1)? },
         other => return Err(format!("unknown command '{other}'")),
     })
 }

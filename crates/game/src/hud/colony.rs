@@ -29,7 +29,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.colony else { return Vec::new() };
     let mut ui = Ui::default();
     ui.node(
-        Node { position_type: PositionType::Absolute, left: Val::Px(76.0), width: Val::Px(DRAWER_W), top: Val::Px(84.0), max_height: Val::Percent(80.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
+        Node { width: Val::Px(DRAWER_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             u.row(6.0, |r| {
                 for (t, icon, name) in TABS {
@@ -37,7 +37,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                     r.pebble(icon, 16.0, HudAction::Colony(Some(t)), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
                 }
                 r.spacer();
-                r.pebble(Icon::Cross, 10.0, HudAction::Colony(None), Peb::Bare).tip(Tip::name("Close").key("Tab"));
+                r.close_button(HudAction::Colony(None), true);
             });
             u.rule();
             match tab {
@@ -51,7 +51,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     let mut v = ui.nodes.pop().unwrap();
     panel(&mut v);
     v.node.padding = UiRect::all(Val::Px(14.0));
-    vec![v]
+    vec![page_area(v, false)]
 }
 
 /// The pip under a beaver token: green working, amber free, blue resting or too young.
@@ -88,7 +88,7 @@ fn beavers(c: &Ctx, u: &mut Ui) {
         u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(10.0), row_gap: Val::Px(8.0), align_items: AlignItems::FlexEnd, padding: UiRect::left(Val::Px(4.0)), ..default() }, |r| {
             for b in &members {
                 let t = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone())
-                    .line("Age", format!("{:.1}", b.age_years()))
+                    .line("Age", span(b.age_days as f64))
                     .line("Health", format!("{:.0}", b.health * 100.0))
                     .line("Mood", format!("{:.0}", b.mood * 100.0));
                 r.token(Icon::Beaver, token_px(b.stage), Some(doing(s, b))).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(t);

@@ -44,7 +44,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
             let row = u.row(5.0, |r| {
                 r.node(Node { width: Val::Px(34.0), flex_shrink: 0.0, ..row_node(2.0) }, |x| {
                     x.icon(season_icon(d.season), 10.0, MUTED);
-                    x.text(format!("{}", d.day), 10.0, MUTED);
+                    x.text(format!("{}", d.day), 11.0, MUTED);
                 });
                 for (i, col) in &e.icons {
                     r.icon(*i, 13.0, *col);
@@ -56,7 +56,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
             if fresh {
                 row.bg(Color::srgba(1.0, 1.0, 1.0, 0.05));
             }
-            let mut tip = Tip::titled(e.icons.first().copied(), e.text.clone()).line(d.season.name(), format!("Year {} · {}", d.year, d.day));
+            let mut tip = Tip::titled(e.icons.first().copied(), e.text.clone()).line(date(e.day), "");
             if e.focus.is_some() {
                 tip = tip.line("Go there", "");
             }

@@ -69,7 +69,7 @@ pub fn cancel_build(r: &mut super::ui::Ui, s: &sim::SimState, id: sim::buildings
     } else {
         super::ui::Tip::name(format!("Cancel the {what}")).line(if b.dam.is_some() { "Built cells come down" } else { "Dug ground stays dug" }, "")
     };
-    r.pebble(Icon::Cross, 12.0, super::HudAction::CancelBuild(id), super::ui::Peb::Idle).tip(tip);
+    r.pebble(Icon::Remove, 12.0, super::HudAction::CancelBuild(id), super::ui::Peb::Idle).tip(tip);
 }
 
 pub fn animal_icon(k: sim::wildlife::Kind) -> Icon {
@@ -154,6 +154,19 @@ pub fn num(v: f32) -> String {
     } else {
         format!("{v:.1}")
     }
+}
+
+/// A game day as a date, "Y2 Spring 14": the one way the HUD writes a date.
+pub fn date(day: f64) -> String {
+    let d = sim::calendar::Date::at(day);
+    format!("Y{} {} {}", d.year, d.season.name(), d.day)
+}
+
+/// A length of time in years and days, "1y 40d" (or "40d" under a year).
+pub fn span(days: f64) -> String {
+    let y = sim::calendar::YEAR_DAYS;
+    let (years, rest) = ((days.max(0.0) / y).floor() as i64, (days.max(0.0) % y).floor() as i64);
+    if years > 0 { format!("{years}y {rest}d") } else { format!("{rest}d") }
 }
 
 pub fn days(d: f32) -> String {

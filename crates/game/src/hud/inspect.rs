@@ -29,7 +29,7 @@ fn frame(c: &Ctx, sel: Selection, icon: Icon, icon_col: Color, name: String, con
             r.spacer();
             r.row(4.0, |x| {
                 x.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
-                x.pebble(Icon::Cross, 10.0, if pinned { HudAction::Pin(sel) } else { HudAction::CloseInspector }, Peb::Bare).tip(Tip::name("Close").key("Esc"));
+                x.close_button(HudAction::ClosePanel(sel, c.sel == sel), c.sel == sel);
             })
             .style(|n| n.align_self = AlignSelf::FlexStart);
         });
@@ -402,7 +402,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
     let Some(b) = s.colony.beaver(id) else {
         return frame(c, sel, Icon::Beaver, MUTED, "-".into(), None, Tip::name("Gone"), |_| {});
     };
-    let tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line("Age", format!("{:.1}", b.age_years())).line("Health", format!("{:.0}", b.health * 100.0));
+    let tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line("Age", span(b.age_days as f64)).line("Health", format!("{:.0}", b.health * 100.0));
     frame(c, sel, Icon::Beaver, FUR, b.name.clone(), Some(b.health), tip, |u| {
         // Its job, big and named, with the workplace; what it is doing this moment; its load.
         let (job_icon, job_col, job_name, place) = job(s, b);
@@ -414,7 +414,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
             .skin(Skin::Portrait)
             .tip(Tip::name(job_name));
             r.col(4.0, |x| {
-                x.bold(job_name, 15.0, job_col);
+                x.bold(job_name, 14.0, job_col);
                 if now_icon != job_icon {
                     x.icon(now_icon, 14.0, now_col).tip(Tip::name(now_name));
                 }

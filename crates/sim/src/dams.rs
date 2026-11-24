@@ -105,6 +105,30 @@ fn ground(sim: &SimState, c: Cell) -> f32 {
     sim.height.get(c.0, c.1).copied().unwrap_or(0.0)
 }
 
+/// How far the pond stands below the lowest finished cell of the dam's crest (gates aside):
+/// how much more it can rise before it spills over. Zero or less: it is going over.
+pub fn freeboard(sim: &SimState, d: &Dam) -> Option<f32> {
+    let level = d.pond.as_ref()?.level;
+    let lowest = d.line().filter(|c| !is_gate(d, c.cell) && built(sim, c.cell) > 0.0).map(|c| ground(sim, c.cell) + built(sim, c.cell)).fold(f32::INFINITY, f32::min);
+    lowest.is_finite().then_some(lowest - level)
+}
+
+/// How far the pond stands above the water just below the dam (or the ground there, where
+/// it is dry): the fall the dam holds back.
+pub fn drop(sim: &SimState, d: &Dam) -> Option<f32> {
+    let level = d.pond.as_ref()?.level;
+    let n = sim.height.width();
+    let on_dam: std::collections::HashSet<Cell> = d.cells.iter().map(|c| c.cell).collect();
+    let below: Vec<Cell> = d.line().filter_map(|c| offset(c.cell, d.downstream, d.rows as i32, n)).filter(|c| !on_dam.contains(c)).collect();
+    if below.is_empty() {
+        return None;
+    }
+    let depth = |c: Cell| sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
+    let wet: Vec<f32> = below.iter().filter(|&&c| depth(c) > crate::buildings::WET_DEPTH).map(|&c| ground(sim, c) + depth(c)).collect();
+    let surface = if wet.is_empty() { below.iter().map(|&c| ground(sim, c)).fold(f32::INFINITY, f32::min) } else { wet.iter().sum::<f32>() / wet.len() as f32 };
+    Some((level - surface).max(0.0))
+}
+
 pub fn dam(sim: &SimState, id: BuildingId) -> Option<&Dam> {
     sim.buildings.building(id).and_then(|b| b.dam.as_deref())
 }

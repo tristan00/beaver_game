@@ -1,446 +1,307 @@
-//! The panel a dam opens: what it is doing in a word, its pond, each gate plainly built or
-//! not, the work on it, and what can be done to it. Detail lives in tooltips.
+//! The panel a dam opens. Laid out like the canal's (see `works`): header, what it is doing
+//! with the one fix, then Water (a side view: how far the pond is from spilling, how far it
+//! drops below the dam), Work, Build, Gates and Upkeep. Detail lives in tooltips.
 use super::panels::{Ctx, RIGHT_W};
 use super::ui::*;
 use super::words::*;
-use super::{DamTab, HudAction};
-use crate::flow::Selection;
+use super::works::{self, abs_box, cap, dashes, label_left_of, DEEP, EARTH, SHALLOW, VIEW_W, WOOD};
+use super::{ColonyTab, DamTab, HudAction};
+use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingId, Good};
 use sim::dams::{Dam, Spill};
 use sim::DamGrowth;
 
-const DEEP: Color = Color::srgb(0.12, 0.54, 0.72);
-const SHALLOW: Color = Color::srgb(0.44, 0.83, 0.88);
-const WOOD: Color = Color::srgb(0.95, 0.85, 0.66);
-const INNER: f32 = RIGHT_W - 20.0;
-
-fn abs_box(left: f32, top: f32, w: f32, h: f32) -> Node {
-    Node { position_type: PositionType::Absolute, left: Val::Px(left), top: Val::Px(top), width: Val::Px(w), height: Val::Px(h), ..default() }
-}
+const VIEW_H: f32 = 92.0;
 
 /// A small painted view of the dam: deep water behind, a stick wall, the stream below.
-fn portrait(u: &mut Ui, health: f32) {
-    u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), padding: UiRect::all(Val::Px(5.0)), flex_shrink: 0.0, ..default() }, |frame| {
-    frame.node(Node { width: Val::Px(42.0), height: Val::Px(42.0), overflow: Overflow::clip(), ..default() }, |p| {
+fn portrait(p: &mut Ui, health: f32) {
+    p.node(Node { width: Val::Px(42.0), height: Val::Px(42.0), overflow: Overflow::clip(), ..default() }, |p| {
         p.add(VNode::new(abs_box(0.0, 10.0, 19.0, 32.0))).bg(DEEP);
         p.add(VNode::new(abs_box(28.0, 32.0, 14.0, 10.0))).bg(SHALLOW.with_alpha(0.8));
         let mound = p.add(VNode::new(Node { border_radius: BorderRadius::top(Val::Px(5.0)), ..abs_box(16.0, 6.0, 14.0, 36.0) }));
-        mound.bg = if health < 0.5 { Color::srgb(0.66, 0.4, 0.33) } else { MUD };
+        mound.bg = if health < 0.5 { BAD.with_alpha(0.7) } else { MUD };
         for (y, x) in [(16.0, 23.0), (26.0, 22.0), (36.0, 23.0)] {
             p.add(VNode::new(abs_box(x - 6.0, y - 4.0, 14.0, 2.0))).bg(WOOD.with_alpha(0.6));
         }
     });
-    })
-    .skin(Skin::Portrait);
 }
 
-fn health_colour(h: f32) -> Color {
-    if h < 0.5 { BAD } else if h < sim::dams::REPAIR_BELOW { WARN } else { GOOD }
+/// What can be done to the dam now, worked out once for the status line and the buttons.
+struct Offers {
+    picks: Vec<Cell>,
+    raise: Result<f32, String>,
+    widen: Result<f32, String>,
+    extend: Result<f32, String>,
+    gate: Result<f32, String>,
+    /// The picked cell a lock would go on.
+    lock: Result<Cell, String>,
 }
 
-fn days(d: f32) -> String {
-    if !d.is_finite() { "∞".into() } else { format!("{}d", d.ceil().max(1.0) as i64) }
-}
-
-
-fn tabs(c: &Ctx, u: &mut Ui) {
-    u.row(6.0, |r| {
-        for (tab, icon, name) in [(DamTab::Status, Icon::Drop, "Status"), (DamTab::History, Icon::Hourglass, "History")] {
-            let on = c.hud.dam_tab == tab;
-            r.pebble(icon, 13.0, HudAction::DamTab(tab), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
-        }
-    });
-    u.rule();
-}
-
-
-
-fn grow_button(u: &mut Ui, icon: Icon, name: &str, id: BuildingId, growth: DamGrowth, plan: Result<f32, String>, suggested: bool) {
-    let ok = plan.is_ok();
-    let v = u.node(Node { width: Val::Px(64.0), height: Val::Px(52.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(3.0), ..default() }, |b| {
-        b.icon(icon, 16.0, if ok { INK } else { FAINT.with_alpha(0.5) });
-        b.row(3.0, |x| {
-            x.icon(good_icon(Good::Sticks), 12.0, if ok { WOOD } else { MUTED });
-            x.bold(plan.as_ref().map(|c| format!("{}", c.round() as i64)).unwrap_or_else(|_| "-".into()), 11.5, if ok { INK } else { MUTED });
-        });
-    });
-    v.skin(if suggested { Skin::PebbleOn } else { Skin::Pebble });
-    if !ok {
-        v.faded();
-    }
-    let tip = match &plan {
-        Ok(c) => Tip::name(name).line("Sticks", num(*c)),
-        Err(e) => Tip::name(name).line(e.clone(), ""),
+fn offers(c: &Ctx, id: BuildingId, d: &Dam) -> Offers {
+    let s = c.s;
+    let picks: Vec<Cell> = c.hud.dam_cells.iter().copied().filter(|p| d.cells.iter().any(|x| x.cell == *p)).collect();
+    let cost = |plan: Result<sim::dams::Plan, String>| plan.map(|p| sim::dams::plan_cost(s, d, &p)).map_err(|e| cap(&e));
+    let around = d.pond.as_ref().is_some_and(|p| matches!(p.spill, Spill::Around(_)));
+    let gate = match picks.as_slice() {
+        [cell] => sim::dams::plan_gate(s, id, *cell).map_err(|e| cap(&e)),
+        [] => Err("Pick a cell on the dam first".into()),
+        _ => Err("Pick just one cell".into()),
     };
-    v.tip(tip);
-    if ok {
-        v.action(HudAction::GrowDam(id, growth));
-    }
-}
-
-/// Turn the picked dam cell into a gate (suggested when the pond runs over the crest).
-fn gate_button(u: &mut Ui, id: BuildingId, plan: Result<f32, String>, suggested: bool) {
-    let ok = plan.is_ok();
-    let v = u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(3.0), ..default() }, |b| {
-        b.icon(Icon::Lock, 16.0, if ok { INK } else { FAINT.with_alpha(0.5) });
-        b.row(3.0, |x| {
-            x.icon(good_icon(Good::Sticks), 12.0, if ok { WOOD } else { MUTED });
-            x.bold(plan.as_ref().map(|c| format!("{}", c.round() as i64)).unwrap_or_else(|_| "-".into()), 11.5, if ok { INK } else { MUTED });
-        });
-    });
-    v.skin(if suggested && ok { Skin::PebbleOn } else { Skin::Pebble });
-    if !ok {
-        v.faded();
-    }
-    v.tip(match &plan {
-        Ok(c) => Tip::name("Gate").line("Let water through here", "").line("Sticks", num(*c)),
-        Err(e) => Tip::name("Gate").line(e.clone(), ""),
-    });
-    if ok {
-        v.action(HudAction::AddDamGate(id));
-    }
-}
-
-/// Make the picked dam cell a lock straight away: its gate and the lock in one builder visit.
-fn lock_button(u: &mut Ui, id: BuildingId, picked: Option<sim::water::Cell>) {
-    use sim::locks;
-    let ok = picked.is_some();
-    let sticks = sim::canals::GATE_STICKS + locks::LOCK_STICKS;
-    let v = u.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(3.0), ..default() }, |b| {
-        b.icon(Icon::LockGates, 16.0, if ok { INK } else { FAINT.with_alpha(0.5) });
-        b.row(3.0, |x| {
-            x.icon(good_icon(Good::Sticks), 12.0, if ok { WOOD } else { MUTED });
-            x.bold(format!("{}", sticks.round() as i64), 11.5, if ok { INK } else { MUTED });
-        });
-    });
-    v.skin(Skin::Pebble);
-    if !ok {
-        v.faded();
-    }
-    let tip = Tip::name("Lock").line("Beavers and rafts get past", "").line("Sticks", num(sticks)).line("Clay", num(locks::LOCK_CLAY));
-    v.tip(if ok { tip } else { tip.line("Pick a built dam cell first", "") });
-    if let Some(cell) = picked {
-        v.action(HudAction::UpgradeLock(id, cell));
-    }
-}
-
-/// The lock pebble at the end of a built gate's row: upgrade it into a lock (with a Harbor),
-/// waiting for its builder, or a lock already.
-pub(super) fn lock_pebble(r: &mut Ui, s: &sim::SimState, id: BuildingId, cell: sim::water::Cell) {
-    use sim::locks;
-    let cost = |t: Tip| t.line("Sticks", num(locks::LOCK_STICKS)).line("Clay", num(locks::LOCK_CLAY));
-    // Only the upgrade itself is a button; the other states just show.
-    let shown = |r: &mut Ui, look: Peb, tip: Tip| {
-        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), look).tip(tip);
-        if let Some(v) = r.nodes.last_mut() {
-            v.action = None;
-        }
-    };
-    if locks::is_lock(s, cell) {
-        shown(r, Peb::On, Tip::name("Lock").line("Beavers and rafts get past", ""));
-    } else if locks::pending(s, cell) {
-        shown(r, Peb::On, cost(Tip::name("Lock").line("A builder will build it", "")));
-    } else if !locks::unlocked(s) {
-        shown(r, Peb::Faded, Tip::name("Lock").line("Needs", "Harbor"));
-    } else if locks::check_room(s, id, cell).is_err() {
-        shown(r, Peb::Faded, Tip::name("Lock").line("Needs", "room"));
+    let lock = if !sim::locks::unlocked(s) {
+        Err("Needs a Harbor".into())
     } else {
-        r.pebble(Icon::LockGates, 13.0, HudAction::UpgradeLock(id, cell), Peb::Idle).tip(cost(Tip::name("Make a lock").line("Beavers and rafts get past", "")));
+        gate.clone().map(|_| picks[0])
+    };
+    Offers {
+        raise: cost(sim::dams::plan_raise(s, id, &picks)),
+        widen: cost(sim::dams::plan_widen(s, id)),
+        extend: if around { cost(sim::dams::plan_extend(s, id)) } else { Err("Water isn't getting round the ends".into()) },
+        gate,
+        lock,
+        picks,
     }
 }
 
-
-
-/// Face the dam with pebbles: it then wears and erodes more slowly.
-fn pebble_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
-    use super::words::{good_color, good_icon, good_name, num};
-    let Some(b) = s.buildings.building(id) else { return };
-    if s.buildings.pebbled.contains(&id) {
-        r.icon(Icon::Pebbles, 15.0, GOOD).tip(Tip::name("Pebble faced").line("Erodes", format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR))));
-    } else if s.maintenance.jobs.contains_key(&id) {
-        r.pebble(Icon::Undo, 12.0, HudAction::CancelMaintenance(id), Peb::Good).tip(Tip::name("Facing with pebbles").line("Stop", ""));
-    } else if b.is_complete() {
-        let mut tip = Tip::name("Face with pebbles").line("Erodes", format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR)));
-        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Pebbles).0 {
-            tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
-        }
-        r.pebble(Icon::Pebbles, 15.0, HudAction::PebbleBuilding(id), Peb::Idle).tip(tip);
-    }
+/// The button the status line points at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fix {
+    None,
+    Assign,
+    Raise,
+    Widen,
+    Extend,
+    Maintain,
 }
 
-
-/// A short state in its colour: an icon and a word or two.
-fn chip<'a>(r: &'a mut Ui, icon: Icon, text: &str, col: Color) -> &'a mut VNode {
-    r.row(4.0, |x| {
-        x.icon(icon, 13.0, col);
-        x.bold(text, 12.0, col);
-    })
-}
-
-/// What the dam as a whole is doing, in a word or two, and its colour.
-fn dam_state(s: &sim::SimState, id: BuildingId, d: &Dam) -> (Icon, &'static str, Color, &'static str) {
+/// What the dam as a whole is doing, its colour, why, and the one fix.
+fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (Icon, &'static str, Color, &'static str, Fix) {
     let (builders, _) = sim::dams::crew(s, id);
     let building = sim::dams::has_work_for(s, id, false);
     if building && builders == 0 {
-        return (Icon::RoleBuilder, "No builders", BAD, "Work is waiting and no builder is on it");
+        return (Icon::RoleBuilder, "No builders", BAD, "Work is waiting and no builder is on it", Fix::Assign);
     }
     if building {
-        return (Icon::Hammer, "Building", WARN, "Builders are at work on it");
+        return (Icon::Hammer, "Building", WARN, "Builders are at work on it", Fix::None);
     }
+    let worn = sim::dams::health(s, d) < sim::dams::REPAIR_BELOW && !d.maintain;
     match d.pond.as_ref().map(|p| (p.spill, p.days_to_full)) {
-        None => (Icon::Hourglass, "No pond yet", MUTED, "The finished cells will start holding water"),
-        Some((Spill::Over(_), _)) => (Icon::Crest, "Spilling over", WARN, "Water runs over the crest and wears it"),
-        Some((Spill::Around(_), _)) => (Icon::Extend, "Water going round", WARN, "Water gets round an end: extend the dam"),
-        Some((_, days)) if days > 0.0 => (Icon::Up, "Filling", WATER, "The pond is still rising"),
-        Some((Spill::Gate(_), _)) => (Icon::Lock, "Holding", GOOD, "Full, letting water out by its gate"),
-        Some(_) => (Icon::Check, "Holding", GOOD, "Full"),
+        None => (Icon::Hourglass, "No pond yet", MUTED, "The finished cells will start holding water", Fix::None),
+        Some((Spill::Over(_), _)) => {
+            let fix = if o.raise.is_ok() { Fix::Raise } else if o.widen.is_ok() { Fix::Widen } else { Fix::None };
+            (Icon::Crest, "Spilling over", WARN, "Water runs over the top and wears it", fix)
+        }
+        Some((Spill::Around(_), _)) => (Icon::Extend, "Water going round", WARN, "Water gets round an end", if o.extend.is_ok() { Fix::Extend } else { Fix::None }),
+        _ if worn => (Icon::Hammer, "Wearing", WARN, "Cells are worn and nobody keeps it up", Fix::Maintain),
+        Some((_, days)) if days > 0.0 => (Icon::Up, "Filling", WATER, "The pond is still rising", Fix::None),
+        Some((Spill::Gate(_), _)) => (Icon::Lock, "Holding", GOOD, "Full, letting water out by its gate", Fix::None),
+        Some(_) => (Icon::Check, "Holding", GOOD, "Full", Fix::None),
     }
 }
 
-fn header(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
-    let s = c.s;
-    let health = sim::dams::health(s, d);
-    let sel = Selection::Site(id);
-    let pinned = c.hud.pinned.contains(&sel);
-    let (icon, state, col, why) = dam_state(s, id, d);
-    u.row(10.0, |r| {
-        portrait(r, health);
-        r.col(6.0, |x| {
-            x.bold("Dam", 16.0, INK);
-            chip(x, icon, state, col).tip(Tip::name(state).line(why, ""));
-            let mut tip = Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Worn cells", format!("{}", d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count()));
-            if let Some(w) = sim::dams::wear(s, d) {
-                tip = tip.line("Wear", format!("{:.2}%/day", (w.age + w.overtop) * 100.0)).line("Age", format!("{:.2}%/day", w.age * 100.0));
-                if w.overtopped > 0 {
-                    tip = tip.line("Overtopping", format!("{:.2}%/day", w.overtop * 100.0)).line("Overtopped cells", format!("{}", w.overtopped));
-                }
-                if w.faced > 1.005 {
-                    tip = tip.line("Pebble faced", format!("÷{:.2}", w.faced));
-                }
-            }
-            tip = tip.line("Rows", format!("{}", d.rows)).line("Height limit", num(d.cap()));
-            x.row(5.0, |y| {
-                y.pips(health, health_colour(health));
-                y.text(format!("{:.0}%", health * 100.0), 11.0, MUTED);
-            })
-            .tip(tip);
-        });
-        r.spacer();
-        r.row(4.0, |y| {
-            y.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
-            y.pebble(Icon::Cross, 10.0, if pinned { HudAction::Pin(sel) } else { HudAction::CloseInspector }, Peb::Bare).tip(Tip::name("Close").key("Esc"));
-        })
-        .style(|n| n.align_self = AlignSelf::FlexStart);
-    });
+fn sticks(c: f32) -> Option<(Icon, Color, String)> {
+    Some((good_icon(Good::Sticks), WOOD, format!("{}", c.round() as i64)))
 }
 
-/// The pond: how full, water in and out a day, and where it leaves.
-fn water(u: &mut Ui, d: &Dam) {
+fn condition_tip(s: &sim::SimState, d: &Dam, health: f32) -> Tip {
+    let worn = d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0 && sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count();
+    let mut tip = Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Worn cells", format!("{worn}"));
+    if let Some(w) = sim::dams::wear(s, d) {
+        tip = tip.line("Wear", format!("{:.2}%/day", (w.age + w.overtop) * 100.0));
+        if w.overtopped > 0 {
+            tip = tip.line("From spilling over", format!("{:.2}%/day", w.overtop * 100.0));
+        }
+        if w.faced > 1.005 {
+            tip = tip.line("Pebble faced", format!("÷{:.2}", w.faced));
+        }
+    }
+    tip.line("Rows", format!("{}", d.rows)).line("Height limit", format!("{} m", num(d.cap())))
+}
+
+/// The pond from the side: water behind the dam, the dam, the water below; how much more the
+/// pond can rise before it spills, and how far it stands above the water below.
+fn water(c: &Ctx, u: &mut Ui, d: &Dam) {
+    let s = c.s;
+    u.section("Water", |_| {});
     let Some(p) = d.pond.as_ref() else {
-        u.row(6.0, |r| {
-            r.icon(Icon::Gauge, 15.0, MUTED);
-            r.text("No pond yet", 12.0, MUTED);
-        });
+        u.icon(Icon::Hourglass, 15.0, MUTED).tip(Tip::name("No pond yet").line("The finished cells will start holding water", ""));
         return;
     };
-    let span = (p.full_level - p.bottom).max(0.01);
-    let frac = ((p.level - p.bottom) / span).clamp(0.0, 1.0);
-    u.row(6.0, |r| {
-        r.icon(Icon::Gauge, 15.0, WATER);
-        r.bar(frac, 170.0, 10.0, WATER);
-        r.bold(format!("{} m", num(p.level - p.bottom)), 12.0, INK);
-        r.spacer();
-        if p.days_to_full > 0.0 {
-            r.icon(Icon::Up, 11.0, WATER);
-            r.text(days(p.days_to_full), 11.0, MUTED);
+    let level = p.level;
+    let room = sim::dams::freeboard(s, d);
+    let fall = sim::dams::drop(s, d);
+    let crest = room.map_or(level, |r| level + r.max(0.0));
+    let below = fall.map(|f| level - f);
+    let low = p.bottom.min(below.unwrap_or(p.bottom)) - 0.1;
+    let high = crest.max(level);
+    const HEAD: f32 = 22.0;
+    const FLOOR: f32 = 8.0;
+    let px = (VIEW_H - HEAD - FLOOR) / (high - low).max(0.3);
+    let y = |v: f32| HEAD + (high - v) * px;
+    let ground = y(low);
+    let spilling = room.is_some_and(|r| r <= 0.02);
+    let depth = level - p.bottom;
+    let mut pond_tip = Tip::name("Pond").line("Depth", format!("{} m", num(depth))).line("Full at", format!("{} m", num(p.full_level - p.bottom))).line("Area", format!("{} cells", p.area));
+    if p.days_to_full > 0.0 {
+        pond_tip = pond_tip.line("Full in", days(p.days_to_full));
+    }
+    u.node(Node { width: Val::Px(VIEW_W), height: Val::Px(VIEW_H), overflow: Overflow::clip(), border_radius: BorderRadius::all(Val::Px(5.0)), ..default() }, |v| {
+        v.add(VNode::new(abs_box(0.0, ground, VIEW_W, VIEW_H - ground))).bg(EARTH);
+        v.add(VNode::new(abs_box(0.0, y(level), 118.0, ground - y(level)))).bg(DEEP).tip(pond_tip);
+        if let Some(b) = below {
+            v.add(VNode::new(abs_box(150.0, y(b), VIEW_W - 150.0, ground - y(b)))).bg(SHALLOW.with_alpha(0.8));
+        }
+        let wall = v.add(VNode::new(Node { border_radius: BorderRadius::top(Val::Px(4.0)), ..abs_box(118.0, y(crest), 32.0, ground - y(crest)) }));
+        wall.bg = MUD;
+        if spilling {
+            v.add(VNode::new(abs_box(116.0, y(crest) - 3.0, 36.0, 3.0))).bg(WATER);
+            v.add(VNode::new(abs_box(150.0, y(crest) - 1.0, 4.0, below.map_or(ground, y) - y(crest) + 1.0))).bg(WATER.with_alpha(0.8));
+        }
+        if depth > 0.3 && ground - y(level) > 20.0 {
+            v.node(abs_box(6.0, ground - 18.0, 100.0, 16.0), |l| {
+                l.bold(format!("{} m deep", num(depth)), 12.0, INK);
+            });
+        }
+        if let Some(r) = room {
+            let tip = Tip::name("Room to rise").line("Before water runs over the lowest part of the top", "");
+            if spilling {
+                label_left_of(v, 112.0, (y(crest) - 18.0).max(2.0), "0 m to spill".into(), WARN, tip);
+            } else {
+                v.add(VNode::new(abs_box(110.0, y(crest), 1.5, y(level) - y(crest)))).bg(INK);
+                v.add(VNode::new(abs_box(106.0, y(crest), 9.0, 1.5))).bg(INK);
+                label_left_of(v, 104.0, (y(crest) - 18.0).max(2.0), format!("{:.1} m to spill", r), INK, tip);
+            }
+        }
+        if let (Some(f), Some(b)) = (fall, below) {
+            dashes(v, 152.0, 262.0, y(level), WATER.with_alpha(0.7));
+            if f > 0.02 {
+                v.add(VNode::new(abs_box(266.0, y(level), 1.5, y(b) - y(level)))).bg(INK);
+                v.add(VNode::new(abs_box(262.0, y(level), 9.0, 1.5))).bg(INK);
+                v.add(VNode::new(abs_box(262.0, y(b) - 1.5, 9.0, 1.5))).bg(INK);
+                label_left_of(v, 260.0, ((y(level) + y(b)) / 2.0 - 8.0).max(2.0), format!("{:.1} m drop", f), INK, Tip::name("Drop").line("From the pond down to the water below the dam", ""));
+            }
         }
     })
-    .tip(Tip::name("Pond").line("Depth", format!("{} m", num(p.level - p.bottom))).line("Full at", format!("{} m", num(p.full_level - p.bottom))).line("Area", format!("{} cells", p.area)).line("Deepest", format!("{} m", num(p.max_depth))).line(if p.days_to_full > 0.0 { "Full in" } else { "Full" }, if p.days_to_full > 0.0 { days(p.days_to_full) } else { String::new() }));
-    let (out_icon, out_col, out_name) = match p.spill {
-        Spill::Over(_) => (Icon::Crest, WARN, "Over the crest"),
-        Spill::Around(_) => (Icon::Extend, WARN, "Round an end"),
-        Spill::Gate(_) => (Icon::Lock, GOOD, "Through a gate"),
-        Spill::None => (Icon::Drop, MUTED, "Seeping and drying"),
+    .bg(FAINT);
+    let (out_word, out_col) = match p.spill {
+        Spill::Over(_) => ("over the top", WARN),
+        Spill::Around(_) => ("round an end", WARN),
+        Spill::Gate(_) => ("by its gate", INK),
+        Spill::None => ("seeping", INK),
     };
-    u.row(12.0, |r| {
-        r.row(4.0, |x| {
-            x.icon(Icon::Upstream, 13.0, WATER);
-            x.bold(format!("{}/d", num(p.inflow)), 12.0, INK);
-        })
-        .tip(Tip::name("Water in").line("per day", ""));
-        r.row(4.0, |x| {
-            x.icon(Icon::Push, 13.0, WATER);
-            x.bold(format!("{}/d", num(p.outflow)), 12.0, INK);
-            x.icon(out_icon, 13.0, out_col);
-        })
-        .tip(Tip::name("Water out").line(out_name, "").line("Spill, seepage and evaporation", "per day"));
+    u.row(14.0, |r| {
+        r.stat(Icon::Upstream, WATER, format!("{}/d", num(p.inflow)), None, INK, Tip::name("Water in").line("Per day", ""));
+        r.stat(Icon::Push, WATER, format!("{}/d", num(p.outflow)), Some(out_word), out_col, Tip::name("Water out").line(cap(out_word), "").line("Spill, seepage and evaporation", "per day"));
+        r.spacer();
+        if p.days_to_full > 0.0 {
+            r.stat(Icon::Up, WATER, days(p.days_to_full), Some("to full"), INK, Tip::name("Still rising").line("Full in", days(p.days_to_full)));
+        } else {
+            r.stat(Icon::Check, GOOD, "Full", None, GOOD, Tip::name("As high as it will get"));
+        }
     });
 }
 
-/// One row per gate: plainly whether it is built yet, what it is set to, and its settings.
-fn gate_rows(u: &mut Ui, s: &sim::SimState, id: BuildingId, d: &Dam) {
-    use sim::GateSetting;
-    if d.gates.is_empty() {
-        return;
-    }
-    u.rule();
-    for g in &d.gates {
-        let wanted = g.wanted();
-        // Level starts at the pond's own level: hold it where it stands.
-        let level_at = match wanted { GateSetting::Level(e) => e, _ => d.pond.as_ref().map_or(g.sill(), |p| p.level) };
-        let lock = sim::locks::is_lock(s, g.cell);
-        let setting_name = |st: GateSetting| match st {
-            GateSetting::Shut => "Shut",
-            GateSetting::Level(_) => "Level",
-            GateSetting::Open => "Open",
-        };
-        u.row(5.0, |r| {
-            r.icon(if lock { Icon::LockGates } else { Icon::Lock }, 15.0, if g.built { WOOD } else { WARN });
-            // What it is now, in a word: not built yet (whatever it is set to), changing, or set.
-            let (word, col, tip) = if !g.built {
-                ("Not built", WARN, Tip::name("Not built yet").line("A builder brings its sticks", "").line("Then", setting_name(wanted)))
-            } else if g.pending.is_some() {
-                ("Changing", WARN, Tip::name(format!("To be {}", setting_name(wanted))).line("A builder will set it", ""))
-            } else {
-                (setting_name(g.setting), INK, Tip::name(setting_name(g.setting)).line("Sill", num(g.sill())))
-            };
-            r.node(Node { width: Val::Px(70.0), ..default() }, |w| {
-                w.bold(word, 12.0, col);
-            })
-            .tip(tip);
-            for (setting, icon, name) in [(GateSetting::Shut, Icon::Lock, "Shut"), (GateSetting::Level(level_at), Icon::Crest, "Level"), (GateSetting::Open, Icon::Flood, "Open")] {
-                let on = std::mem::discriminant(&wanted) == std::mem::discriminant(&setting);
-                let tip = match setting {
-                    GateSetting::Shut => Tip::name(name).line("Stands at the crest", ""),
-                    GateSetting::Level(_) => Tip::name(name).line("Holds the pond at the sill", "").line("Sill", num(g.sill_of(setting))),
-                    GateSetting::Open => Tip::name(name).line("Lets the pond down to the ground", ""),
-                };
-                r.pebble(icon, 13.0, HudAction::SetGate(id, g.cell, setting), if on { Peb::On } else { Peb::Idle }).tip(tip);
-            }
-            if matches!(wanted, GateSetting::Level(_)) {
-                sill_steps(r, id, g, level_at);
-            }
-            r.spacer();
-            if g.built {
-                lock_pebble(r, s, id, g.cell);
-            } else if sim::locks::pending(s, g.cell) {
-                r.icon(Icon::LockGates, 13.0, WARN).tip(Tip::name("Lock").line("Built with the gate", ""));
-            }
-        });
-    }
-}
-
-/// Lower and raise a Level gate's sill a step from where it stands (the snapped sill, so every
-/// press moves it), faded at its floor and its top.
-pub(super) fn sill_steps(r: &mut Ui, id: BuildingId, g: &sim::gates::Gate, level_at: f32) {
-    use sim::GateSetting;
-    let sill = g.sill_of(GateSetting::Level(level_at));
-    for (icon, step, name, room) in [(Icon::Minus, -sim::canals::GATE_STEP, "Lower the sill", sill > g.floor + 1e-3), (Icon::Plus, sim::canals::GATE_STEP, "Raise the sill", sill < g.top - 1e-3)] {
-        r.pebble(icon, 10.0, HudAction::SetGate(id, g.cell, GateSetting::Level(sill + step)), if room { Peb::Idle } else { Peb::Faded }).tip(Tip::name(name).line("Step", "5 cm"));
-        if !room {
-            if let Some(v) = r.nodes.last_mut() {
-                v.action = None;
-            }
-        }
-    }
-}
-
-/// The work on it: builders here, loads coming, loads still to carry; and plainly when work
-/// waits with no builder on it.
-fn work(c: &Ctx, u: &mut Ui, id: BuildingId) {
+/// Builders here, loads coming, loads left; and the way to the jobs.
+fn work(c: &Ctx, u: &mut Ui, id: BuildingId, fix: Fix) {
     let s = c.s;
     let (builders, loads) = sim::dams::crew(s, id);
     let left = sim::dams::loads_left(s, id);
     let waiting = sim::dams::has_work_for(s, id, false);
-    if !waiting && builders == 0 {
-        return;
-    }
-    u.rule();
-    u.row(12.0, |r| {
-        r.row(4.0, |x| {
-            x.icon(Icon::RoleBuilder, 14.0, if builders == 0 && waiting { BAD } else { INK });
-            x.bold(format!("{builders}"), 12.0, if builders == 0 && waiting { BAD } else { INK });
-        })
-        .tip(Tip::name("Builders here"));
-        r.row(4.0, |x| {
-            x.icon(good_icon(Good::Sticks), 14.0, WOOD);
-            x.bold(format!("{loads}"), 12.0, INK);
-        })
-        .tip(Tip::name("Loads on the way"));
-        if left > 0 {
-            r.row(4.0, |x| {
-                x.icon(Icon::Site, 13.0, MUTED);
-                x.bold(format!("{left}"), 12.0, MUTED);
-            })
-            .tip(Tip::name("Loads still to carry").line("Sticks", num(left as f32 * sim::dams::sticks_per_step())));
-        }
-        r.spacer();
-        if waiting && builders == 0 {
-            chip(r, Icon::Jobs, "Assign builders", BAD).tip(Tip::name("No builder is on it").line("Open the jobs", "")).action(HudAction::Colony(Some(super::ColonyTab::Jobs)));
+    u.section("Work", |r| {
+        r.small_button(Some(Icon::Jobs), Some("Assign"), Some(HudAction::Colony(Some(ColonyTab::Jobs))), Tip::name("Builders").line("Open the jobs", ""), if fix == Fix::Assign { Small::Hint } else { Small::Idle });
+    });
+    let short = builders == 0 && waiting;
+    u.row(14.0, |r| {
+        r.stat(Icon::RoleBuilder, if short { BAD } else { INK }, format!("{builders}"), None, if short { BAD } else { INK }, Tip::name("Builders here"));
+        r.stat(good_icon(Good::Sticks), WOOD, format!("{loads}"), Some("coming"), INK, Tip::name("Loads on the way"));
+        r.stat(Icon::Site, MUTED, format!("{left}"), Some("to carry"), INK, Tip::name("Loads still to carry").line("Sticks", num(left as f32 * sim::dams::sticks_per_step())));
+    });
+}
+
+fn build(u: &mut Ui, id: BuildingId, o: &Offers, fix: Fix) {
+    u.section("Build", |_| {});
+    let picked = !o.picks.is_empty();
+    u.row(6.0, |r| {
+        let rows: [(Icon, &str, DamGrowth, &Result<f32, String>, &str, Fix); 3] = [
+            (Icon::Rise, "Raise", DamGrowth::Raise, &o.raise, if picked { "The picked cells, one step" } else { "The whole top, one step" }, Fix::Raise),
+            (Icon::Widen, "Widen", DamGrowth::Widen, &o.widen, "A row thicker, so it can stand higher", Fix::Widen),
+            (Icon::Extend, "Extend", DamGrowth::Extend, &o.extend, "Longer, to close the gap water goes round", Fix::Extend),
+        ];
+        for (icon, word, growth, plan, what, f) in rows {
+            let (cost, action, tip) = match plan {
+                Ok(c) => (sticks(*c), Some(HudAction::GrowDam(id, growth)), Tip::name(word).line(what, "").line("Sticks", num(*c))),
+                Err(e) => (Some((good_icon(Good::Sticks), WOOD, "-".into())), None, Tip::name(word).line(what, "").line(e.clone(), "")),
+            };
+            r.big_button(BigButton { icon, word, cost, action, tip, hint: fix == f, on: false });
         }
     });
 }
 
-/// What can be done to it, and a word on picking a cell for a gate or a lock.
-fn actions(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam) {
+fn gates(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers) {
     let s = c.s;
-    let cost = |plan: Result<sim::dams::Plan, String>| plan.map(|p| sim::dams::plan_cost(s, d, &p));
-    let raise = cost(sim::dams::plan_raise(s, id, &c.hud.dam_cells));
-    let widen = cost(sim::dams::plan_widen(s, id));
-    let spill = d.pond.as_ref().map_or(Spill::None, |p| p.spill);
-    let extend = if matches!(spill, Spill::Around(_)) { cost(sim::dams::plan_extend(s, id)) } else { Err("water is not getting around the ends".into()) };
-    let paused = s.work.place(id).is_some_and(|p| p.paused);
-    let gate = match c.hud.dam_cells.as_slice() {
-        [cell] => sim::dams::plan_gate(s, id, *cell),
-        [] => Err("click a cell on the dam first".into()),
-        _ => Err("pick one cell".into()),
-    };
-    let picked = c.hud.dam_cells.first().copied().filter(|_| gate.is_ok());
-    u.rule();
+    u.section("Gates", |r| works::picks(r, o.picks.len(), "dam"));
     u.row(6.0, |r| {
-        if c.hud.dam_cells.is_empty() {
-            r.icon(Icon::Focus, 12.0, MUTED);
-            r.text("Click the dam to pick a cell", 11.0, MUTED);
+        let (cost, action, tip) = match &o.gate {
+            Ok(c) => (sticks(*c), Some(HudAction::AddDamGate(id)), Tip::name("Gate").line("Let water through here", "").line("Sticks", num(*c))),
+            Err(e) => (sticks(sim::canals::GATE_STICKS), None, Tip::name("Gate").line("Let water through here", "").line(e.clone(), "")),
+        };
+        r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost, action, tip, hint: false, on: false });
+        let lock_sticks = sim::canals::GATE_STICKS + sim::locks::LOCK_STICKS;
+        let what = Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(lock_sticks)).line("Clay", num(sim::locks::LOCK_CLAY));
+        let (action, tip) = match &o.lock {
+            Ok(cell) => (Some(HudAction::UpgradeLock(id, *cell)), what),
+            Err(e) => (None, what.line(e.clone(), "")),
+        };
+        r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: sticks(lock_sticks), action, tip, hint: false, on: false });
+    });
+    let pond = d.pond.as_ref().map(|p| p.level);
+    for g in &d.gates {
+        works::gate_row(u, s, id, g, pond, true, Ok(()));
+    }
+}
+
+/// Face it with pebbles: then it wears more slowly.
+fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
+    let Some(b) = s.buildings.building(id) else { return };
+    let slower = format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR));
+    if s.buildings.pebbled.contains(&id) {
+        r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
+    } else if s.maintenance.jobs.contains_key(&id) {
+        r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::CancelMaintenance(id)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
+    } else {
+        let mut tip = Tip::name("Face with pebbles").line("Wears", slower);
+        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Pebbles).0 {
+            tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+        }
+        if b.is_complete() {
+            r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::PebbleBuilding(id)), tip, Small::Idle);
         } else {
-            r.icon(Icon::Focus, 12.0, SELECT);
-            r.text(if c.hud.dam_cells.len() == 1 { "1 cell picked".to_string() } else { format!("{} cells picked", c.hud.dam_cells.len()) }, 11.0, SELECT);
-            r.spacer();
-            r.pebble(Icon::Cross, 9.0, HudAction::DamCell(c.hud.dam_cells[0]), Peb::Bare).tip(Tip::name("Unpick"));
+            r.small_button(Some(Icon::Pebbles), Some("Face"), None, tip.line("Finish the dam first", ""), Small::Idle);
         }
-    });
-    u.row(4.0, |r| {
-        grow_button(r, Icon::Rise, if c.hud.dam_cells.is_empty() { "Raise" } else { "Raise picked cells" }, id, DamGrowth::Raise, raise.clone(), matches!(spill, Spill::Over(_)) && raise.is_ok());
-        grow_button(r, Icon::Widen, "Widen", id, DamGrowth::Widen, widen, matches!(spill, Spill::Over(_)) && raise.is_err());
-        grow_button(r, Icon::Extend, "Extend", id, DamGrowth::Extend, extend.clone(), extend.is_ok());
-        gate_button(r, id, gate, matches!(spill, Spill::Over(_)));
-        if sim::locks::unlocked(s) {
-            lock_button(r, id, picked);
-        }
-    });
-    u.row(4.0, |r| {
-        pebble_button(s, r, id);
-        let on = d.maintain;
-        r.pebble(Icon::Hammer, 15.0, HudAction::DamMaintain(id, !on), if on { Peb::Good } else { Peb::Idle }).tip(Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line("Maintainers repair worn cells", ""));
-        r.pebble(if paused { Icon::Play } else { Icon::Pause }, 14.0, HudAction::Paused(id, !paused), if paused { Peb::On } else { Peb::Idle }).tip(Tip::name(if paused { "Resume" } else { "Pause" }));
+    }
+}
+
+fn upkeep(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
+    u.section("Upkeep", |_| {});
+    u.row(6.0, |r| {
+        works::maintain_button(r, d.maintain, HudAction::DamMaintain(id, !d.maintain), "Maintainers repair worn cells", fix == Fix::Maintain);
+        face_button(c.s, r, id);
+        works::pause_button(r, c.s, id);
         r.spacer();
-        super::words::cancel_build(r, s, id);
+        works::remove_button(c, r, id);
     });
 }
 
 fn history(u: &mut Ui, d: &Dam) {
     if d.history.is_empty() {
-        u.row(6.0, |r| {
-            r.icon(Icon::Hourglass, 14.0, MUTED);
-        })
-        .tip(Tip::name("No days recorded yet"));
+        u.icon(Icon::Hourglass, 14.0, MUTED).tip(Tip::name("No days recorded yet"));
         return;
     }
     let low = d.history.iter().map(|h| h.level).fold(f32::INFINITY, f32::min);
     let high = d.history.iter().map(|h| h.level).fold(f32::NEG_INFINITY, f32::max).max(low + 0.05);
     let flow_top = d.history.iter().map(|h| h.inflow.max(h.outflow)).fold(0.0, f32::max).max(1e-3);
-    let w = (INNER / sim::dams::HISTORY_DAYS as f32).floor().max(2.0);
+    let w = ((VIEW_W - 20.0) / sim::dams::HISTORY_DAYS as f32).floor().max(2.0);
     let chart = |u: &mut Ui, icon: Icon, col: Color, name: &str, value: &dyn Fn(&sim::dams::DamDay) -> f32| {
         u.row(6.0, |r| {
             r.icon(icon, 13.0, col);
@@ -459,16 +320,32 @@ fn history(u: &mut Ui, d: &Dam) {
 }
 
 pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
+    let s = c.s;
+    let health = sim::dams::health(s, d);
+    let o = offers(c, id, d);
+    let (icon, text, col, why, fix) = status(s, id, d, &o);
+    let selected_here = c.sel == Selection::Site(id) || matches!(c.sel, Selection::Cell(cell) if d.cells.iter().any(|x| x.cell == cell));
+    let fix_button = match fix {
+        Fix::None => None,
+        Fix::Assign => Some(("Assign", HudAction::Colony(Some(ColonyTab::Jobs)), Tip::name("Builders").line("Open the jobs", ""))),
+        Fix::Raise => Some(("Raise", HudAction::GrowDam(id, DamGrowth::Raise), Tip::name("Raise").line("Sticks", o.raise.as_ref().map(|c| num(*c)).unwrap_or_default()))),
+        Fix::Widen => Some(("Widen", HudAction::GrowDam(id, DamGrowth::Widen), Tip::name("Widen").line("Sticks", o.widen.as_ref().map(|c| num(*c)).unwrap_or_default()))),
+        Fix::Extend => Some(("Extend", HudAction::GrowDam(id, DamGrowth::Extend), Tip::name("Extend").line("Sticks", o.extend.as_ref().map(|c| num(*c)).unwrap_or_default()))),
+        Fix::Maintain => Some(("Maintain", HudAction::DamMaintain(id, true), Tip::name("Maintain").line("Maintainers repair worn cells", ""))),
+    };
+    let tab = c.hud.dam_tab;
     let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        header(c, u, id, d);
-        tabs(c, u);
-        match c.hud.dam_tab {
+    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), ..default() }, |u| {
+        works::header(c, u, id, "Dam", selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
+        u.status_line(icon, text, col, Tip::name(text).line(why, ""), fix_button);
+        u.tabs(&[(Icon::Drop, "Now", HudAction::DamTab(DamTab::Status), tab == DamTab::Status), (Icon::Hourglass, "History", HudAction::DamTab(DamTab::History), tab == DamTab::History)]);
+        match tab {
             DamTab::Status => {
-                water(u, d);
-                gate_rows(u, c.s, id, d);
-                work(c, u, id);
-                actions(c, u, id, d);
+                water(c, u, d);
+                work(c, u, id, fix);
+                build(u, id, &o, fix);
+                gates(c, u, id, d, &o);
+                upkeep(c, u, id, d, fix);
             }
             DamTab::History => history(u, d),
         }

@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use sim::buildings::{BuildingKind, Good};
 use sim::colony::Beaver;
 
-pub const LEDGER_W: f32 = 600.0;
+pub const LEDGER_W: f32 = 640.0;
 /// Rows of a long list shown at once; the wheel scrolls the rest.
 const ROWS: usize = 16;
 /// The most bars a chart draws: longer spans are averaged into this many.
@@ -29,7 +29,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.ledger else { return Vec::new() };
     let mut ui = Ui::default();
     ui.node(
-        Node { position_type: PositionType::Absolute, left: Val::Px(76.0), width: Val::Px(LEDGER_W), top: Val::Px(84.0), max_height: Val::Percent(80.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
+        Node { width: Val::Px(LEDGER_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             u.row(6.0, |r| {
                 for (t, icon, name) in TABS {
@@ -42,7 +42,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                     }
                     r.add(VNode::new(Node { width: Val::Px(8.0), ..default() }));
                 }
-                r.pebble(Icon::Cross, 10.0, HudAction::Ledger(None), Peb::Bare).tip(Tip::name("Close").key("L"));
+                r.close_button(HudAction::Ledger(None), true);
             });
             u.rule();
             match tab {
@@ -57,7 +57,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     let mut v = ui.nodes.pop().unwrap();
     panel(&mut v);
     v.node.padding = UiRect::all(Val::Px(14.0));
-    vec![v]
+    vec![page_area(v, false)]
 }
 
 /// A small button with a word on it.
@@ -112,13 +112,7 @@ fn bars(c: &Ctx, f: impl Fn(&sim::ledger::ColonyDay) -> (f32, f32, f32)) -> Vec<
 }
 
 fn day_range(b: &Bar) -> String {
-    let d0 = sim::calendar::Date::at(b.day0 as f64);
-    if b.day0 == b.day1 {
-        format!("Y{} {} {}", d0.year, d0.season.name(), d0.day)
-    } else {
-        let d1 = sim::calendar::Date::at(b.day1 as f64);
-        format!("Y{} {} {} – {} {}", d0.year, d0.season.name(), d0.day, d1.season.name(), d1.day)
-    }
+    if b.day0 == b.day1 { date(b.day0 as f64) } else { format!("{} – {}", date(b.day0 as f64), date(b.day1 as f64)) }
 }
 
 const CHART_W: f32 = 272.0;
@@ -262,8 +256,7 @@ fn run(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let (st, run) = (&s.colony.stats, &s.run);
     tiles(u, |r| {
-        let d = sim::calendar::Date::at(s.time_days);
-        tile(r, Icon::Hourglass, MUTED, format!("{}y {}d", d.year.saturating_sub(1), (s.time_days.max(0.0) as u64) % sim::calendar::YEAR_DAYS as u64), "Time");
+        tile(r, Icon::Hourglass, MUTED, span(s.time_days), "Time");
         tile(r, Icon::Kit, FUR, format!("{}", st.births), "Born in the colony");
         tile(r, Icon::Walk, FUR, format!("{}", st.immigrants), "Came to join");
         tile(r, Icon::Beaver, FUR, format!("{}", st.peak_population), "Most beavers at once");
@@ -316,6 +309,21 @@ fn job_name(j: sim::colony::Job) -> &'static str {
     }
 }
 
+/// The job a beaver holds, in a word (free beavers too), for sorting by it.
+fn role_word(s: &sim::SimState, b: &Beaver) -> &'static str {
+    sim::jobs::role_of(s, b.id).map_or("Free", role_kind_name)
+}
+
+/// How far each page's long list can scroll: past this the page would show fewer rows than fit.
+pub fn scroll_max(s: &sim::SimState, tab: LedgerTab) -> usize {
+    match tab {
+        LedgerTab::Beavers => s.colony.beavers.len().saturating_sub(ROWS),
+        LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam && b.dam.is_some()).count().saturating_sub(4),
+        LedgerTab::Buildings => s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).count().saturating_sub(ROWS),
+        LedgerTab::Charts | LedgerTab::Run => 0,
+    }
+}
+
 fn factor_col(x: f32) -> Color {
     if x < 0.8 { BAD } else if x < 0.95 { WARN } else if x > 1.05 { GOOD } else { INK }
 }
@@ -342,12 +350,13 @@ pub(super) fn pace(s: &sim::SimState, b: &Beaver) -> Option<(f32, Tip)> {
     Some((wf.total(), tip))
 }
 
-const COLS: [(Option<BeaverCol>, Icon, &str, f32); 11] = [
+const COLS: [(Option<BeaverCol>, Icon, &str, f32); 12] = [
     (None, Icon::Beaver, "", 22.0),
     (Some(BeaverCol::Name), Icon::Beaver, "Name", 92.0),
     (Some(BeaverCol::Age), Icon::Hourglass, "Age (years)", 34.0),
     (Some(BeaverCol::Family), Icon::Home, "Family", 78.0),
-    (Some(BeaverCol::Job), Icon::Jobs, "Doing", 26.0),
+    (Some(BeaverCol::Job), Icon::Jobs, "Job", 26.0),
+    (Some(BeaverCol::Doing), Icon::Walk, "Doing now", 26.0),
     (Some(BeaverCol::Skill), Icon::Hammer, "Skill at this job", 64.0),
     (None, Icon::MoodGood, "Mood", 42.0),
     (None, Icon::Health, "Health", 42.0),
@@ -375,7 +384,8 @@ fn beavers(c: &Ctx, u: &mut Ui) {
         let o = match col {
             BeaverCol::Name => a.name.cmp(&b.name),
             BeaverCol::Family => family(a).cmp(&family(b)).then(b.age_days.total_cmp(&a.age_days)),
-            BeaverCol::Job => job_of(s, a).map(|j| j.index()).cmp(&job_of(s, b).map(|j| j.index())),
+            BeaverCol::Job => role_word(s, a).cmp(role_word(s, b)),
+            BeaverCol::Doing => super::inspect::activity(s, a).2.cmp(super::inspect::activity(s, b).2),
             _ => key_f(a).total_cmp(&key_f(b)),
         };
         let o = if desc { o.reverse() } else { o };
@@ -456,16 +466,21 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
         r.node(cell(w(3)), |x| {
             x.text(family.to_string(), 12.0, MUTED);
         });
+        let role = sim::jobs::role_of(s, b.id);
         r.node(cell(w(4)), |x| {
+            x.icon(role.map_or(Icon::Idle, role_kind_icon), 15.0, if role.is_some() { INK } else { ACCENT });
+        })
+        .tip(Tip::name("Job").line(role.map_or("Free", role_kind_name), ""));
+        r.node(cell(w(5)), |x| {
             x.icon(icon, 15.0, icon_col);
         })
-        .tip(Tip::name(word));
+        .tip(Tip::name("Doing now").line(word, ""));
         // Skill at the job held: notches and the share; every skill in the tooltip.
         let mut skills = Tip::name("Skills");
         for j in sim::colony::Job::ALL.into_iter().filter(|j| *j != sim::colony::Job::Hauler) {
             skills.push(TipLine::new(job_name(j), format!("{:.0}%", b.skills[j.index()] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
         }
-        r.node(cell(w(5)), |x| match wf {
+        r.node(cell(w(6)), |x| match wf {
             Some(wf) => {
                 x.notches(wf.skill, 5, 34.0, 8.0, ACCENT);
                 x.text(format!("{:.0}", wf.skill * 100.0), 11.0, INK);
@@ -479,7 +494,7 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
         let factors = wf.map(|wf| [wf.mood_x, wf.health_x, wf.rest_x, wf.age_x]);
         for (k, name) in ["Mood", "Health", "Rest", "Age"].into_iter().enumerate() {
             let f = factors.map(|f| f[k]);
-            let v = r.node(cell(w(6 + k)), |x| match f {
+            let v = r.node(cell(w(7 + k)), |x| match f {
                 Some(f) => {
                     x.text(times(f), 11.0, factor_col(f));
                 }
@@ -491,7 +506,7 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
                 v.tip(Tip::name(name).with_value(times(f)));
             }
         }
-        let v = r.node(cell(w(10)), |x| match &paced {
+        let v = r.node(cell(w(11)), |x| match &paced {
             Some((p, _)) => {
                 x.bold(times(*p), 12.0, factor_col(*p));
             }

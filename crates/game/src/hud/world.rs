@@ -418,7 +418,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
             sim::hud::Fix::OpenDam { .. } => super::HudAction::Fix(p.fix, p.focus),
             _ => super::HudAction::Fix(sim::hud::Fix::Focus, p.focus),
         };
-        v.action(act).tip(super::panels::alert_tip_in(s, p));
+        v.action(act).tip(super::panels::alert_tip_in(s, p)).pin();
         out.push(v);
     }
     for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
@@ -444,7 +444,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         }
         if let (Some((i, c, words)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
             let mut v = pin(pos, i, c, Skin::Pebble, 28.0);
-            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(words, ""));
+            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(words, "")).pin();
             out.push(v);
         }
     }
@@ -535,7 +535,7 @@ pub fn pond_levels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale:
         ui.bold(if even { "0 m".to_string() } else { format!("{} m", num(dz.abs())) }, 12.0, INK);
         v.children = ui.nodes;
         v.skin(Skin::Plate);
-        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" }));
+        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" })).pass();
         v
     }).collect()
 }

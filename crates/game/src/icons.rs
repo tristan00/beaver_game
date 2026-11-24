@@ -39,6 +39,7 @@ icons! {
     Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Raft,
     Deer, Rabbit, Bird,
     Cloud, Rain, Storm, Blizzard,
+    Remove, Next,
 }
 
 #[derive(Resource, Clone)]
@@ -934,6 +935,17 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(30.0, 60.0, 20.0, 2.5, 1.0, W));
             c.add(wave(8.0, 60.0, 46.0, 2.5, 1.5, W));
             c.add(wave(16.0, 54.0, 57.0, 2.5, 1.0, W));
+        }
+        Remove => {
+            // A bin: lid with a handle, and a tapered body with two grooves.
+            c.add(rect_c(8.0, 13.0, 56.0, 20.0, 2.0));
+            c.add(rect_c(24.0, 6.0, 40.0, 13.0, 2.0).outline(4.0));
+            c.add(poly(&[(13.0, 24.0), (51.0, 24.0), (47.0, 58.0), (17.0, 58.0)]).grow(1.0));
+            c.cut(seg(26.0, 31.0, 27.0, 51.0, 4.0).or(seg(38.0, 31.0, 37.0, 51.0, 4.0)));
+        }
+        Next => {
+            c.add(seg(8.0, 32.0, 44.0, 32.0, 8.0));
+            c.add(polyline(&[(32.0, 14.0), (52.0, 32.0), (32.0, 50.0)], 8.0));
         }
         Site => {
             c.add(poly(&[(27.0, 8.0), (37.0, 8.0), (47.0, 50.0), (17.0, 50.0)]).grow(1.5));

@@ -17,6 +17,7 @@ mod paths;
 mod water_legend;
 mod ui;
 mod words;
+mod works;
 mod world;
 
 use actions::{button_actions, commit_line, undo_last};
@@ -59,6 +60,8 @@ pub(crate) fn hover_tip(label: impl Into<String>) -> (Interaction, ui::TipComp) 
 }
 
 const REFRESH_SECS: f32 = 0.1;
+/// How long a dam or canal's Remove stays armed after the first click.
+pub(crate) const REMOVE_ARM_SECS: f32 = 3.0;
 const MSG_SECS: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -122,8 +125,17 @@ pub enum BeaverCol {
     Name,
     Age,
     Job,
+    /// What it is doing this moment.
+    Doing,
     Skill,
     Pace,
+}
+
+/// A full page: a beaver's story or a lodge's family page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Beaver(BeaverId),
+    Lodge(sim::colony::LodgeId),
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -158,6 +170,8 @@ pub struct HudState {
     /// Cells picked in the dam panel's cross-section; raises apply to them only.
     pub dam_cells: Vec<Cell>,
     pub dam_tab: DamTab,
+    /// A dam or canal whose Remove was clicked once, and when: a second click removes it.
+    pub remove_armed: Option<(BuildingId, f32)>,
     /// The selected dam's suggested growth, ghosted on the map: (dam, day, cells).
     pub dam_ghost: Option<(BuildingId, f64, Vec<Cell>)>,
     pub msg: Option<(Msg, f32)>,
@@ -169,6 +183,8 @@ pub struct HudState {
     pub lodge_page: Option<sim::colony::LodgeId>,
     /// Which ties the family table on a beaver's page shows.
     pub kin: kin::KinFilter,
+    /// The pages gone through to reach the open one, for Back (and Esc).
+    pub back: Vec<Page>,
     /// The colony ledger's open page, if it is open.
     pub ledger: Option<LedgerTab>,
     pub span: Span,
@@ -250,6 +266,7 @@ impl Default for HudState {
             details: None,
             lodge_page: None,
             kin: kin::KinFilter::All,
+            back: Vec::new(),
             open_badge: None,
             tool: Tool::None,
             drag_from: None,
@@ -262,6 +279,7 @@ impl Default for HudState {
             extending: None,
             dam_cells: Vec::new(),
             dam_tab: DamTab::Status,
+            remove_armed: None,
             dam_ghost: None,
             msg: None,
             idle_cursor: 0,
@@ -300,6 +318,51 @@ impl HudState {
     }
     fn finish_placement(&mut self) {
         self.set_tool(Tool::None);
+    }
+    /// The full page open now, if any.
+    pub fn page(&self) -> Option<Page> {
+        self.details.map(Page::Beaver).or(self.lodge_page.map(Page::Lodge))
+    }
+    fn show_page(&mut self, p: Option<Page>) {
+        if let Some(Page::Beaver(id)) = p {
+            if self.details != Some(id) {
+                self.kin = kin::KinFilter::All;
+            }
+        }
+        self.details = match p { Some(Page::Beaver(id)) => Some(id), _ => None };
+        self.lodge_page = match p { Some(Page::Lodge(l)) => Some(l), _ => None };
+        self.scroll = 0;
+        if p.is_some() {
+            self.ledger = None;
+        }
+    }
+    /// Open a full page; the one it was opened from is remembered for Back.
+    pub(crate) fn open_page(&mut self, p: Page) {
+        if let Some(now) = self.page().filter(|now| *now != p) {
+            self.back.push(now);
+            if self.back.len() > 16 {
+                self.back.remove(0);
+            }
+        }
+        self.show_page(Some(p));
+    }
+    /// Back to the page before, or closed when there was none.
+    pub(crate) fn page_back(&mut self) {
+        let p = self.back.pop();
+        self.show_page(p);
+    }
+    pub(crate) fn close_pages(&mut self) {
+        self.back.clear();
+        self.show_page(None);
+    }
+    /// Open the colony book or the ledger: they replace any full page.
+    pub(crate) fn open_book(&mut self, colony: Option<ColonyTab>, ledger: Option<LedgerTab>) {
+        self.close_pages();
+        if ledger != self.ledger {
+            self.scroll = 0;
+        }
+        self.colony = colony;
+        self.ledger = ledger;
     }
 
     fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
@@ -494,9 +557,15 @@ fn peek_hover(q: Query<(&Interaction, &ui::Peek)>, mut hud: ResMut<HudState>) {
     }
 }
 
-/// The most rows any of the ledger's lists can scroll past.
-pub(crate) fn longest_list(s: &sim::SimState) -> usize {
-    s.colony.beavers.len().max(s.buildings.buildings.len())
+/// How far the open page's long list can scroll: the beaver's story, the family tree, or the
+/// ledger page's own list.
+pub(crate) fn scroll_max(s: &sim::SimState, hud: &HudState) -> usize {
+    match (hud.details, hud.lodge_page, hud.ledger) {
+        (Some(id), _, _) => s.lives.of.get(&id).map_or(0, |l| l.entries.len().saturating_sub(life::ROWS)),
+        (None, Some(l), _) => family::tree_len(s, l),
+        (None, None, Some(tab)) => ledger::scroll_max(s, tab),
+        _ => 0,
+    }
 }
 
 /// The mouse wheel over a long list in the ledger scrolls it.
@@ -513,11 +582,7 @@ fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Quer
         bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y / 20.0,
     };
     let step = (-lines * 2.0).round() as i64;
-    let longest = match (hud.details, hud.lodge_page) {
-        (Some(id), _) => sim.0.lives.of.get(&id).map_or(0, |l| l.entries.len()),
-        (None, Some(l)) => family::tree_len(&sim.0, l),
-        (None, None) => longest_list(&sim.0),
-    };
+    let longest = scroll_max(&sim.0, &hud);
     let next = ((hud.scroll as i64 + step).max(0) as usize).min(longest);
     if next != hud.scroll {
         hud.scroll = next;
@@ -590,6 +655,10 @@ fn collect_new_pops(now: f32, cursor: &CursorUi, hud: &mut HudState, sim: &Sim, 
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
 
+/// The pointer is on a pin over the map (see `ui::VNode::pin`).
+#[derive(Resource, Default)]
+pub struct PointerOverPin(pub bool);
+
 #[derive(Resource, Default)]
 struct CursorUi(Option<Vec2>);
 
@@ -642,7 +711,6 @@ pub enum HudAction {
     DamCell(Cell),
     DamTab(DamTab),
     ConfirmLine,
-    CloseInspector,
     SetLens(MapLens),
     /// Show only this role's paths (`None`: free beavers'), or every path again if it is the
     /// one shown already.
@@ -681,6 +749,14 @@ pub enum HudAction {
     SlotOff(BuildingId, usize, bool),
     CancelMaintenance(BuildingId),
     Pin(Selection),
+    /// Drop every cell picked on a dam or canal.
+    ClearPicks,
+    /// Back to the full page this one was opened from.
+    PageBack,
+    /// Close a dam or canal panel: unpin it, and deselect it too if it is the selection.
+    ClosePanel(Selection, bool),
+    /// Take a dam or canal away: the first click arms it, a second within a few seconds acts.
+    RemoveWorks(BuildingId),
 }
 
 pub struct HudPlugin;
@@ -709,6 +785,7 @@ impl Plugin for HudPlugin {
         app.init_resource::<HudState>()
             .init_resource::<HoverCell>()
             .init_resource::<PointerOverUi>()
+            .init_resource::<PointerOverPin>()
             .init_resource::<CursorUi>()
             .init_resource::<MapLens>()
             .init_resource::<TextCapture>()
@@ -1007,6 +1084,15 @@ fn refresh_fast(
                     panels::cursor_tag(&ctx)
                 };
                 let mut tree = tree;
+                // The box being dragged out to select beavers.
+                if let (Tool::None, None, Some(a), Some(b)) = (hud.tool, hud.grab, hud.box_from, cursor.0) {
+                    if a.distance(b) > 8.0 {
+                        let (lo, hi) = (a.min(b), a.max(b));
+                        let mut v = ui::VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(lo.x), top: Val::Px(lo.y), width: Val::Px(hi.x - lo.x), height: Val::Px(hi.y - lo.y), border: UiRect::all(Val::Px(1.5)), ..default() });
+                        v.bg(ui::SELECT.with_alpha(0.08)).border(BorderColor::all(ui::SELECT.with_alpha(0.8)));
+                        tree.push(v);
+                    }
+                }
                 tree.extend(world::screen_pops(&pops.0, time.elapsed_secs()));
                 let bctx = panels::Ctx { problems: &problems.0, ..ctx };
                 tree.extend(panels::badges(&bctx));

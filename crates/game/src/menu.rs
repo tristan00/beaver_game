@@ -163,7 +163,7 @@ fn menu_keys(
         Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.order_mode.is_some() || h.help);
+            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
                 menu.saved = None;
                 menu.was_paused = clock.paused;
@@ -512,7 +512,7 @@ fn rebuild_menu(
     commands.entity(e).with_children(|r| {
         r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| {
             if menu.loading {
-                hud::bold(p, "Preparing your valley...", 22.0, INK);
+                hud::bold(p, "Preparing your valley...", 20.0, INK);
                 hud::text(p, menu.map.label(), 13.0, MUTED);
                 return;
             }
@@ -557,7 +557,7 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, curren
 
 /// Every saved game, newest first: where, which day and how many beavers. Click one to load it.
 fn load_screen(p: &mut ChildSpawnerCommands, menu: &Menu) {
-    hud::bold(p, "Load", 22.0, INK);
+    hud::bold(p, "Load", 20.0, INK);
     if menu.saves.is_empty() {
         hud::text(p, "No saved games", 13.0, MUTED);
     }
@@ -619,7 +619,7 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
     let _ = (s, clock);
     if menu.confirm.is_some() {
         p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-            hud::bold(r, "Lose colony?", 15.0, INK);
+            hud::bold(r, "Lose colony?", 14.0, INK);
             r.spawn(hud::row(8.0)).with_children(|b| {
                 icon_button(b, icons, Icon::Cross, MenuAction::Confirm(false), FAINT);
                 icon_button(b, icons, Icon::Check, MenuAction::Confirm(true), ACCENT);
@@ -628,7 +628,7 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
         return;
     }
     if s.colony.is_collapsed() {
-        hud::bold(p, "The colony has been lost", 22.0, INK);
+        hud::bold(p, "The colony has been lost", 20.0, INK);
         hud::text(p, format!("Survived {:.0} days. {} beavers died.", s.time_days, s.colony.stats.deaths), 13.0, MUTED);
     } else {
         wide(p, "Resume", MenuAction::Resume, ACCENT);
@@ -653,7 +653,7 @@ fn pause_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, s: &si
 
 fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vols: Option<&crate::audio::AudioVolumes>) {
     p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-        hud::bold(r, "Settings", 22.0, INK);
+        hud::bold(r, "Settings", 20.0, INK);
         icon_button(r, icons, Icon::Back, MenuAction::Back, FAINT);
     });
     if let Some(vols) = vols {
@@ -719,12 +719,12 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         ("Menu", "Esc"),
     ] {
         p.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..hud::row(8.0) }).with_children(|r| {
-            hud::text(r, k, 11.5, MUTED);
-            hud::bold(r, v, 11.5, INK);
+            hud::text(r, k, 12.0, MUTED);
+            hud::bold(r, v, 12.0, INK);
         });
     }
     hud::bold(p, "About", 12.0, MUTED);
-    hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 9.5, MUTED);
+    hud::text(p, "Elevation: AWS Open Data Terrain Tiles (SRTM, USGS 3DEP, NRCan CDEM, EU-DEM)", 11.0, MUTED);
 }
 
 /// Temperatures read in Fahrenheit rather than Celsius: the player's choice, kept between games

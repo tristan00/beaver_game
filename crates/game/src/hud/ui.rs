@@ -25,8 +25,54 @@ pub const SELECT: Color = Color::srgb(0.97, 0.95, 0.9);
 /// The dark groove a gauge is cut into.
 pub const GROOVE: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
 
+/// The HUD's type scale. Every text is drawn at one of these; any other size asked for is
+/// taken to the nearest.
+pub mod ts {
+    pub const SMALL: f32 = 11.0;
+    pub const BODY: f32 = 12.0;
+    pub const VALUE: f32 = 13.0;
+    pub const HEAD: f32 = 14.0;
+    pub const TITLE: f32 = 16.0;
+    pub const PAGE: f32 = 20.0;
+    pub const DISPLAY: f32 = 30.0;
+    pub const ALL: [f32; 7] = [SMALL, BODY, VALUE, HEAD, TITLE, PAGE, DISPLAY];
+    pub fn snap(size: f32) -> f32 {
+        ALL.into_iter().min_by(|a, b| (a - size).abs().total_cmp(&(b - size).abs())).unwrap_or(BODY)
+    }
+}
+
 pub fn font(size: f32, bold: bool) -> TextFont {
-    TextFont { font_size: FontSize::Px(size), weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL }, ..default() }
+    TextFont { font_size: FontSize::Px(ts::snap(size)), weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL }, ..default() }
+}
+
+/// Where full pages sit: right of the lens rail, under the top bar, and above the bottom row,
+/// so the minimap, legends, build bar and journal always stay in view.
+pub const PAGE_LEFT: f32 = 76.0;
+pub const PAGE_TOP: f32 = 84.0;
+pub const PAGE_RIGHT: f32 = 20.0;
+pub const PAGE_BOTTOM: f32 = 190.0;
+
+/// A page's panel in the page area: `fill` stretches it over the area (a beaver's story, a
+/// family page); otherwise it keeps its own width and grows down to the area's foot at most.
+pub fn page_area(mut panel: VNode, fill: bool) -> VNode {
+    let mut area = VNode::new(Node {
+        position_type: PositionType::Absolute,
+        left: Val::Px(PAGE_LEFT),
+        right: Val::Px(PAGE_RIGHT),
+        top: Val::Px(PAGE_TOP),
+        bottom: Val::Px(PAGE_BOTTOM),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::FlexStart,
+        ..default()
+    });
+    panel.node.position_type = PositionType::Relative;
+    panel.node.max_height = Val::Percent(100.0);
+    if fill {
+        panel.node.width = Val::Percent(100.0);
+        panel.node.height = Val::Percent(100.0);
+    }
+    area.children.push(panel);
+    area
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -140,12 +186,16 @@ pub struct VNode {
     pub depth: u8,
     /// A beaver whose inspector shows while the pointer is on this node.
     pub peek: Option<sim::colony::BeaverId>,
+    /// Shows its tip but lets every click through to the map (a label on the map).
+    pub pass: bool,
+    /// A pin over the map: takes a left click, but a right click goes on to the map beneath.
+    pub pin: bool,
     pub children: Vec<VNode>,
 }
 
 impl VNode {
     pub fn new(node: Node) -> VNode {
-        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, peek: None, children: Vec::new() }
+        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, peek: None, pass: false, pin: false, children: Vec::new() }
     }
     pub fn skin(&mut self, s: Skin) -> &mut Self {
         self.skin = Some((s, Color::WHITE));
@@ -187,6 +237,16 @@ impl VNode {
         self.solid = true;
         self
     }
+    /// Let clicks through to the map; the tip still shows.
+    pub fn pass(&mut self) -> &mut Self {
+        self.pass = true;
+        self
+    }
+    /// A pin over the map: right clicks go on to the map beneath.
+    pub fn pin(&mut self) -> &mut Self {
+        self.pin = true;
+        self
+    }
     pub fn tag(&mut self, t: Tag) -> &mut Self {
         self.tag = t;
         self
@@ -202,6 +262,8 @@ impl VNode {
         self.kind.same_shape(&o.kind)
             && self.skin.is_some() == o.skin.is_some()
             && self.interactive() == o.interactive()
+            && self.pass == o.pass
+            && self.pin == o.pin
             && self.tag == o.tag
             && self.children.len() == o.children.len()
             && self.children.iter().zip(&o.children).all(|(a, b)| a.same_shape(b))
@@ -327,6 +389,165 @@ impl Ui {
         v.border = Some(BorderColor::all(MUTED.with_alpha(0.55)));
         v
     }
+    /// What a thing is doing in a word or two, tinted by how well it goes, and the one fix as
+    /// the panel's main button. `why` is the tooltip on the words.
+    pub fn status_line(&mut self, icon: Icon, text: &str, col: Color, why: Tip, fix: Option<(&str, HudAction, Tip)>) -> &mut VNode {
+        let v = self.row(8.0, |r| {
+            r.row(8.0, |w| {
+                w.icon(icon, 15.0, col);
+                w.bold(text, 14.0, col);
+            })
+            .tip(why);
+            r.spacer();
+            if let Some((word, action, tip)) = fix {
+                r.row(5.0, |b| {
+                    b.bold(word, 13.0, ON_ACCENT);
+                    b.icon(Icon::Next, 11.0, ON_ACCENT);
+                })
+                .style(|n| {
+                    n.padding = UiRect::axes(Val::Px(9.0), Val::Px(5.0));
+                    n.flex_shrink = 0.0;
+                })
+                .skin(Skin::PebblePrimary)
+                .action(action)
+                .tip(tip);
+            }
+        });
+        v.node.padding = UiRect { left: Val::Px(10.0), right: Val::Px(5.0), top: Val::Px(4.0), bottom: Val::Px(4.0) };
+        v.node.min_height = Val::Px(36.0);
+        v.node.border_radius = BorderRadius::all(Val::Px(6.0));
+        v.bg(col.with_alpha(0.14))
+    }
+    /// Pages as words with a line under the open one.
+    pub fn tabs(&mut self, tabs: &[(Icon, &str, HudAction, bool)]) {
+        self.col(0.0, |c| {
+            c.row(16.0, |r| {
+                for (icon, name, action, on) in tabs {
+                    let col = if *on { INK } else { MUTED };
+                    r.col(5.0, |t| {
+                        t.row(5.0, |x| {
+                            x.icon(*icon, 13.0, col);
+                            x.bold(*name, 13.0, col);
+                        });
+                        t.add(VNode::new(Node { height: Val::Px(2.0), width: Val::Percent(100.0), ..default() })).bg(if *on { ACCENT } else { Color::NONE });
+                    })
+                    .action(action.clone());
+                }
+            });
+            c.add(VNode::new(Node { height: Val::Px(1.0), width: Val::Percent(100.0), ..default() })).bg(LINE);
+        });
+    }
+    /// A section's name, small and quiet, with room on the right for one control.
+    pub fn section(&mut self, name: &str, right: impl FnOnce(&mut Ui)) -> &mut VNode {
+        self.row(6.0, |r| {
+            r.bold(name.to_uppercase(), 11.0, MUTED);
+            r.spacer();
+            right(r);
+        })
+        .style(|n| n.min_height = Val::Px(22.0))
+    }
+    /// The small amber "!" on the button the status line asks for.
+    pub fn hint_badge(&mut self) -> &mut VNode {
+        let v = self.node(
+            Node { position_type: PositionType::Absolute, top: Val::Px(-7.0), right: Val::Px(-7.0), width: Val::Px(17.0), height: Val::Px(17.0), border_radius: BorderRadius::all(Val::Px(8.5)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+            |b| {
+                b.bold("!", 12.0, ON_ACCENT);
+            },
+        );
+        v.bg(ACCENT)
+    }
+    /// One of a row of large buttons: icon, word and cost. Without an action it stays in its
+    /// place, faded, and its tooltip says why.
+    pub fn big_button(&mut self, b: BigButton) -> &mut VNode {
+        let ok = b.action.is_some();
+        let ink = if ok { INK } else { INK.with_alpha(0.35) };
+        let v = self.node(
+            Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), height: Val::Px(54.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: Val::Px(2.0), ..default() },
+            |x| {
+                x.icon(b.icon, 16.0, ink);
+                x.bold(b.word, 12.0, ink);
+                x.row(3.0, |c| {
+                    if let Some((i, col, t)) = &b.cost {
+                        c.icon(*i, 12.0, if ok { *col } else { col.with_alpha(0.35) });
+                        c.bold(t.clone(), 12.0, ink);
+                    }
+                });
+                if b.hint {
+                    x.hint_badge();
+                }
+            },
+        );
+        v.skin(if b.on { Skin::PebbleOn } else { Skin::Pebble });
+        if !ok {
+            v.faded();
+        }
+        v.tip(b.tip);
+        if let Some(a) = b.action {
+            v.action(a);
+        }
+        v
+    }
+    /// A small button: an icon, a word or both. Without an action it stays, faded, and its
+    /// tooltip says why.
+    pub fn small_button(&mut self, icon: Option<Icon>, word: Option<&str>, action: Option<HudAction>, tip: Tip, look: Small) -> &mut VNode {
+        let ok = action.is_some();
+        let col = match look {
+            Small::Danger | Small::Armed => BAD,
+            _ => INK,
+        };
+        let col = if ok { col } else { col.with_alpha(0.35) };
+        let hint = look == Small::Hint;
+        let v = self.row(5.0, |r| {
+            if let Some(i) = icon {
+                r.icon(i, 14.0, col);
+            }
+            if let Some(w) = word {
+                r.bold(w, 12.0, col);
+            }
+            if hint {
+                r.hint_badge();
+            }
+        });
+        v.node.height = Val::Px(28.0);
+        v.node.min_width = Val::Px(28.0);
+        v.node.padding = UiRect::axes(Val::Px(if word.is_some() { 9.0 } else { 6.0 }), Val::Px(0.0));
+        v.node.justify_content = JustifyContent::Center;
+        v.node.flex_shrink = 0.0;
+        v.skin(match look {
+            Small::On => Skin::PebbleOn,
+            Small::Armed => Skin::TokenBad,
+            _ => Skin::Pebble,
+        });
+        if !ok {
+            v.faded();
+        }
+        v.tip(tip);
+        if let Some(a) = action {
+            v.action(a);
+        }
+        v
+    }
+    /// A reading: icon, number, and an optional quiet word after it.
+    pub fn stat(&mut self, icon: Icon, icon_col: Color, value: impl Into<String>, word: Option<&str>, col: Color, tip: Tip) -> &mut VNode {
+        let value = value.into();
+        self.row(4.0, |x| {
+            x.icon(icon, 14.0, icon_col);
+            x.bold(value, 13.0, col);
+            if let Some(w) = word {
+                x.text(w, 12.0, MUTED);
+            }
+        })
+        .tip(tip)
+    }
+    /// The one close button, top right of every panel and page.
+    pub fn close_button(&mut self, action: HudAction, esc: bool) -> &mut VNode {
+        let tip = Tip::name("Close");
+        self.pebble(Icon::Cross, 11.0, action, Peb::Bare).tip(if esc { tip.key("Esc") } else { tip })
+    }
+    /// Back to the page this one was opened from, named.
+    pub fn back_button(&mut self, to: &str) -> &mut VNode {
+        self.small_button(Some(Icon::Back), Some(to), Some(HudAction::PageBack), Tip::name("Back").key("Esc"), Small::Idle)
+    }
     /// A portrait: one large icon in a dark cut-corner frame.
     pub fn portrait(&mut self, icon: Icon, col: Color) -> &mut VNode {
         let v = self.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |p| {
@@ -340,6 +561,32 @@ impl Ui {
 pub const FUR: Color = Color::srgb(0.73, 0.47, 0.25);
 pub const MUD: Color = Color::srgb(0.56, 0.43, 0.32);
 pub const REST: Color = Color::srgb(0.56, 0.72, 0.88);
+
+/// A large button's contents (see `Ui::big_button`).
+pub struct BigButton<'a> {
+    pub icon: Icon,
+    pub word: &'a str,
+    pub cost: Option<(Icon, Color, String)>,
+    /// None: shown faded, the tooltip saying why.
+    pub action: Option<HudAction>,
+    pub tip: Tip,
+    /// The status line's fix: marked with the "!".
+    pub hint: bool,
+    pub on: bool,
+}
+
+/// The looks a small button can take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Small {
+    Idle,
+    On,
+    /// The status line's fix: marked with the "!".
+    Hint,
+    /// Takes something away.
+    Danger,
+    /// Takes something away on the next click.
+    Armed,
+}
 
 /// The looks a pebble button can take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,6 +644,10 @@ pub struct TipComp {
 
 #[derive(Component)]
 pub struct TagComp(pub Tag);
+
+/// A pin over the map (see `VNode::pin`).
+#[derive(Component)]
+pub struct MapPin;
 
 /// The beaver a node peeks at (see `VNode::peek`).
 #[derive(Component, Clone, Copy, PartialEq)]
@@ -481,7 +732,14 @@ fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> Mounted
         }
     }
     if v.interactive() {
-        ec.insert((Interaction::default(), FocusPolicy::Block, Blocks));
+        if v.pass {
+            ec.insert((Interaction::default(), FocusPolicy::Pass));
+        } else {
+            ec.insert((Interaction::default(), FocusPolicy::Block, Blocks));
+            if v.pin {
+                ec.insert(MapPin);
+            }
+        }
     }
     if let Some(a) = &v.action {
         ec.insert(a.clone());

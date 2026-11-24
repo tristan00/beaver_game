@@ -6,7 +6,7 @@ use super::panels::{stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
 use super::world::mood_icon;
-use super::HudAction;
+use super::{HudAction, Page};
 use super::kin::{self, name_of, KinFilter};
 use crate::icons::Icon;
 use bevy::prelude::*;
@@ -14,21 +14,35 @@ use sim::colony::{Beaver, BeaverId, DeathCause, Job, Stage};
 use sim::lives::{Life, What};
 
 /// Chronology rows shown at once (the wheel scrolls through the rest).
-const ROWS: usize = 22;
-/// The live portrait on the details page: the first column's width, in the image's shape.
-const PORTRAIT_W: f32 = COL_W;
-const PORTRAIT_H: f32 = COL_W * crate::entities_render::portrait::HEIGHT as f32 / crate::entities_render::portrait::WIDTH as f32;
-const COL_W: f32 = 390.0;
+pub(super) const ROWS: usize = 22;
+/// The live portrait's shape, width over height.
+const PORTRAIT_ASPECT: f32 = crate::entities_render::portrait::WIDTH as f32 / crate::entities_render::portrait::HEIGHT as f32;
+/// The widest a column of the page grows.
+const COL_MAX: f32 = 430.0;
+
+/// A page's name, for the Back button that returns to it.
+pub(super) fn page_name(s: &sim::SimState, p: Page) -> String {
+    match p {
+        Page::Beaver(id) => name_of(s, id),
+        Page::Lodge(l) => s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map_or_else(|| "Lodge".to_string(), |f| format!("{} family", f.name)),
+    }
+}
+
+/// The top of a full page: Back to the page it came from, if any, and Close.
+pub(super) fn page_controls(c: &Ctx, r: &mut Ui, close: HudAction) {
+    if let Some(&p) = c.hud.back.last() {
+        r.back_button(&page_name(c.s, p));
+    }
+    r.close_button(close, c.hud.back.is_empty());
+}
 
 
-/// "Year 2, day 140": the year of the colony and the day in it.
-pub(super) fn when(day: f64) -> String {
-    let y = sim::calendar::YEAR_DAYS;
-    format!("Y{} D{}", (day / y).floor() as i64 + 1, (day % y).floor() as i64 + 1)
+fn when(day: f64) -> String {
+    date(day)
 }
 
 fn years(days: f64) -> String {
-    format!("{:.1} y", days / sim::calendar::YEAR_DAYS)
+    span(days)
 }
 
 fn job_icon(j: Job) -> Icon {
@@ -201,7 +215,11 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     if let Some(left) = r.leaves_in.filter(|_| b.low_mood_days() > 0.5) {
         fact(u, Icon::MoodBad, BAD, "Leaves in", days(left));
     }
-    u.rule();
+}
+
+/// What it does: now, its job, its pace, where, what it carries.
+fn work(c: &Ctx, u: &mut Ui, b: &Beaver) {
+    let s = c.s;
     heading(u, Icon::Hammer, "Work");
     let (ai, ac, doing) = super::inspect::activity(s, b);
     fact(u, ai, ac, "Now", doing.to_string());
@@ -270,7 +288,16 @@ fn litter_tip(s: &sim::SimState, all: &[BeaverId], l: Option<kin::Litter>) -> Ti
 
 fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&Life>) {
     let s = c.s;
-    heading(u, Icon::Home, "Family");
+    // The family tree lives on its lodge's family page: one clear way there.
+    u.row(8.0, |r| {
+        r.icon(Icon::Home, 16.0, ACCENT);
+        r.bold("Family".to_string(), 14.0, INK);
+        r.spacer();
+        match b.and_then(|b| b.lodge) {
+            Some(l) => r.small_button(Some(Icon::Lodge), Some("Family tree"), Some(HudAction::LodgePage(Some(l))), Tip::name("Family page").line("Who lives in its lodge, and the family tree", ""), Small::Idle),
+            None => r.small_button(Some(Icon::Lodge), Some("Family tree"), None, Tip::name("Family page").line("No home: a family page belongs to a lodge", ""), Small::Idle),
+        };
+    });
     let all = kin::everyone(s);
     let mine = kin::litter(s, &all, id);
     // A female who could have kits: the daily chance now, or what stands in the way.
@@ -291,11 +318,12 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         .filter_map(|&o| kin::kinship(s, id, o).map(|(order, word)| (order, word, o)).or_else(|| (o != id && at_home(o)).then_some((kin::LODGER, "Lodge-mate", o))))
         .collect();
     ties.sort_by(|a, b| a.0.cmp(&b.0).then(kin::born(s, a.2).unwrap_or(f64::MAX).total_cmp(&kin::born(s, b.2).unwrap_or(f64::MAX))).then(a.2.cmp(&b.2)));
-    // Filters, each with how many it holds.
-    let filter = c.hud.kin;
+    // Filters, each with how many it holds; one that holds nobody here falls back to All.
+    let count = |f: KinFilter| ties.iter().filter(|t| f.takes(t.0, at_home(t.2))).count();
+    let filter = if count(c.hud.kin) == 0 { KinFilter::All } else { c.hud.kin };
     u.row(4.0, |r| {
         for f in KinFilter::ALL {
-            let n = ties.iter().filter(|t| f.takes(t.0, at_home(t.2))).count();
+            let n = count(f);
             if n == 0 && f != KinFilter::All {
                 continue;
             }
@@ -312,7 +340,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     } else {
         u.row(6.0, |r| {
             for (w, h) in [(92.0, "Tie"), (104.0, "Beaver"), (84.0, "Litter")] {
-                r.text(h.to_string(), 10.0, MUTED).style(move |n| n.width = Val::Px(w));
+                r.text(h.to_string(), 11.0, MUTED).style(move |n| n.width = Val::Px(w));
             }
         });
     }
@@ -340,13 +368,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     match b.and_then(|b| b.lodge).and_then(|l| s.colony.lodges.iter().find(|x| x.id == l)) {
         Some(l) => {
             let fam = s.colony.family(l.family).map(|f| f.name.clone()).unwrap_or_default();
-            u.row(8.0, |r| {
-                r.icon(Icon::Lodge, 15.0, MUD);
-                r.text("Lodge".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
-                r.text(fam, 12.0, INK);
-                r.spacer();
-                r.pebble(Icon::Journal, 11.0, HudAction::LodgePage(Some(l.id)), Peb::Idle).tip(Tip::name("Family page").line("Who lives there, and the family tree", ""));
-            });
+            fact(u, Icon::Lodge, MUD, "Lodge", fam);
             if let Some(d) = life.and_then(|l| l.home_since()) {
                 fact(u, Icon::Hourglass, MUTED, "Since", when(d));
             }
@@ -408,7 +430,7 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
             What::Left => (Icon::Walk, MUTED, "Left the colony".into()),
         };
         u.row(8.0, |r| {
-            r.text(when(e.day), 11.0, MUTED).style(|n| n.width = Val::Px(72.0));
+            r.text(when(e.day), 11.0, MUTED).style(|n| n.width = Val::Px(92.0));
             r.icon(icon, 14.0, col);
             r.text(words, 12.0, INK);
         });
@@ -424,17 +446,7 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
     let life = s.lives.of.get(&id);
     let mut ui = Ui::default();
     ui.node(
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(76.0),
-            right: Val::Px(20.0),
-            top: Val::Px(70.0),
-            bottom: Val::Px(96.0),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(10.0),
-            overflow: Overflow::clip(),
-            ..default()
-        },
+        Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             // Who: name, sex, age, stage, and how long it may live.
             u.row(14.0, |r| {
@@ -455,19 +467,20 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                 });
                 r.spacer();
                 if b.is_some() {
-                    r.pebble(Icon::Focus, 13.0, HudAction::SelectBeaver(id), Peb::Idle).tip(Tip::name("Show on the map"));
+                    r.small_button(Some(Icon::Focus), None, Some(HudAction::SelectBeaver(id)), Tip::name("Show on the map"), Small::Idle);
                 }
-                r.pebble(Icon::Cross, 11.0, HudAction::BeaverDetails(None), Peb::Bare).tip(Tip::name("Close").key("Esc"));
-            });
+                page_controls(c, r, HudAction::BeaverDetails(None));
+            })
+            .style(|n| n.align_items = AlignItems::FlexStart);
             u.rule();
             u.row(28.0, |cols| {
                 let col = |cols: &mut Ui, f: &dyn Fn(&mut Ui)| {
-                    cols.node(Node { width: Val::Px(COL_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| f(u));
+                    cols.node(Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_width: Val::Px(0.0), max_width: Val::Px(COL_MAX), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), overflow: Overflow::clip(), ..default() }, |u| f(u));
                 };
                 col(cols, &|u| {
                     // What it is doing right now, live.
                     if let Some(p) = c.portrait {
-                        u.image(p.0.clone(), Node { width: Val::Px(PORTRAIT_W), height: Val::Px(PORTRAIT_H), flex_shrink: 0.0, ..default() }).skin(Skin::Portrait);
+                        u.image(p.0.clone(), Node { width: Val::Percent(100.0), aspect_ratio: Some(PORTRAIT_ASPECT), flex_shrink: 0.0, ..default() }).skin(Skin::Portrait);
                     }
                     match b {
                         Some(b) => condition(c, u, b),
@@ -476,7 +489,13 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                         }
                     }
                 });
-                col(cols, &|u| family(c, u, id, b, life));
+                col(cols, &|u| {
+                    if let Some(b) = b {
+                        work(c, u, b);
+                        u.rule();
+                    }
+                    family(c, u, id, b, life);
+                });
                 col(cols, &|u| {
                     if let Some(b) = b {
                         skills(u, b);
@@ -492,5 +511,5 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
     let mut v = ui.nodes.pop().unwrap();
     panel(&mut v);
     v.node.padding = UiRect::all(Val::Px(18.0));
-    vec![v]
+    vec![page_area(v, true)]
 }
