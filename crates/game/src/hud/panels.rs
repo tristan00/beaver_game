@@ -20,6 +20,8 @@ pub struct Ctx<'a> {
     pub hover: Option<Cell>,
     pub problems: &'a [Problem],
     pub minimap: Option<&'a super::minimap::MinimapImage>,
+    /// What the beaver details page shows as its portrait.
+    pub portrait: Option<&'a crate::entities_render::portrait::PortraitImage>,
     pub view_cell: (f32, f32),
     pub cursor: Option<Vec2>,
     /// The journal's lines, oldest first, and the real time now.

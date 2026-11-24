@@ -14,6 +14,8 @@ use sim::lives::{Life, What};
 
 /// Chronology rows shown at once (the wheel scrolls through the rest).
 const ROWS: usize = 22;
+/// The portrait's side on the details page.
+const PORTRAIT_PX: f32 = 128.0;
 const COL_W: f32 = 390.0;
 
 fn name_of(s: &sim::SimState, id: BeaverId) -> String {
@@ -384,7 +386,14 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
         |u| {
             // Who: name, sex, age, stage, and how long it may live.
             u.row(14.0, |r| {
-                r.portrait(Icon::Beaver, if b.is_some() { FUR } else { MUTED });
+                match c.portrait {
+                    Some(p) => {
+                        r.image(p.0.clone(), Node { width: Val::Px(PORTRAIT_PX), height: Val::Px(PORTRAIT_PX), flex_shrink: 0.0, ..default() }).skin(Skin::Portrait);
+                    }
+                    None => {
+                        r.portrait(Icon::Beaver, if b.is_some() { FUR } else { MUTED });
+                    }
+                }
                 r.col(4.0, |x| {
                     x.bold(name_of(s, id), 20.0, INK);
                     match b {

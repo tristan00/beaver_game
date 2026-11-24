@@ -110,7 +110,7 @@ pub(super) fn spawn_gallery(
             };
             let base = Vec3::new(x, ground(x, z), z);
             let mut e = commands.spawn((
-                BeaverSprite { id, pose, load: None, yaw, wet: pose == Pose::Swim, look },
+                BeaverSprite { id, pose, load: None, yaw, wet: pose == Pose::Swim, look, features: Default::default() },
                 GalleryBeaver(base, paces),
                 Transform::from_translation(base).with_scale(Vec3::splat(super::sim_sync::BEAVER_SIZE)),
                 Visibility::Inherited,
@@ -162,7 +162,7 @@ pub(super) fn spawn_gallery(
             let base = Vec3::new(x, ground(x, z), z);
             let paces = matches!(pose, Pose::Walk | Pose::Carry | Pose::Climb | Pose::Swim);
             commands.spawn((
-                BeaverSprite { id, pose, load: load.map(|g| (g, sim::agents::load_size(g))), yaw, wet: pose == Pose::Swim, look: Default::default() },
+                BeaverSprite { id, pose, load: load.map(|g| (g, sim::agents::load_size(g))), yaw, wet: pose == Pose::Swim, look: Default::default(), features: Default::default() },
                 GalleryBeaver(base, paces),
                 Transform::from_translation(base).with_scale(Vec3::splat(super::sim_sync::BEAVER_SIZE * size)),
                 Visibility::Inherited,

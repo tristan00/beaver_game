@@ -3,6 +3,7 @@ mod gallery;
 mod harbor;
 mod meshgen;
 mod models;
+pub mod portrait;
 mod scene;
 mod silhouette;
 mod structures;
@@ -42,6 +43,7 @@ impl Plugin for EntitiesRenderPlugin {
             .add_plugins(wolf::WolfPlugin)
             .add_plugins(wildlife::WildlifePlugin)
             .add_plugins(silhouette::SilhouettePlugin)
+            .add_plugins(portrait::PortraitPlugin)
             .add_systems(Startup, init_models)
             .add_systems(
                 Update,
@@ -180,6 +182,28 @@ pub struct BeaverSprite {
     pub yaw: f32,
     pub wet: bool,
     pub look: Look,
+    /// Its own look (fur, build, size, head, tail), for the whole of its life.
+    pub features: sim::looks::Looks,
+}
+
+/// How much bigger or smaller than the plain model a beaver is drawn for its looks.
+pub fn looks_size(l: &sim::looks::Looks) -> f32 {
+    1.0 + 0.06 * l.size
+}
+
+/// A beaver's fur, as a tint over the model's colours: lighter or darker, redder or greyer.
+pub fn fur_tint(l: &sim::looks::Looks) -> Color {
+    let b = 1.0 + 0.16 * l.shade;
+    Color::LinearRgba(LinearRgba::rgb(b * (1.0 + 0.1 * l.warmth), b * (1.0 + 0.01 * l.warmth), b * (1.0 - 0.12 * l.warmth)))
+}
+
+/// Its build, head and tail, as scales on the body, head and tail meshes.
+pub fn looks_shape(l: &sim::looks::Looks) -> (Vec3, Vec3, Vec3) {
+    (
+        Vec3::new(1.0 + 0.08 * l.build, 1.0 + 0.06 * l.build, 1.0 - 0.02 * l.build),
+        Vec3::splat(1.0 + 0.07 * l.head),
+        Vec3::new(1.0 + 0.14 * l.tail, 1.0, 1.0 + 0.1 * l.tail),
+    )
 }
 
 /// How a beaver's state shows on whatever it is doing, each 0 (not at all) to 1 (badly).
@@ -362,11 +386,14 @@ fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::te
     }
 }
 
-fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Option<Res<silhouette::SilhouetteMat>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
+fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Option<Res<silhouette::SilhouetteMat>>, mut mats: ResMut<Assets<StandardMaterial>>, q: Query<(Entity, &BeaverSprite), (With<BeaverSprite>, Without<BeaverRig>)>) {
     let (Some(m), Some(ghost)) = (models, ghost) else { return };
     let ghost = &ghost.0;
-    let w = &m.white;
+    let plain = mats.get(&m.white).cloned().unwrap_or_default();
     for (root, sprite) in &q {
+        // Its own fur; what it carries and the like keep their own colours.
+        let w = &mats.add(StandardMaterial { base_color: fur_tint(&sprite.features), ..plain.clone() });
+        let loads = &m.white;
         let target = crate::picking::Target::Beaver(sim::colony::BeaverId(sprite.id));
         let mut body = Entity::PLACEHOLDER;
         commands.entity(root).with_children(|p| {
@@ -382,13 +409,13 @@ fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, ghost: Optio
                 let mesh = if k < 2 { m.leg_front.clone() } else { m.leg_hind.clone() };
                 parts[2 + k] = p.spawn((target, Mesh3d(mesh), MeshMaterial3d(w.clone()), Transform::from_translation(models::LEG_PIVOTS[k]))).id();
             }
-            paws = p.spawn((Mesh3d(m.paw_loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::CHEST_HOLD), Visibility::Hidden)).id();
+            paws = p.spawn((Mesh3d(m.paw_loads[0].clone()), MeshMaterial3d(loads.clone()), Transform::from_translation(models::CHEST_HOLD), Visibility::Hidden)).id();
         });
         let (mut mouth, mut lids, mut chips, mut grey) = (Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER, Entity::PLACEHOLDER);
         commands.entity(parts[0]).with_children(|p| {
-            mouth = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(w.clone()), Transform::from_translation(models::MOUTH), Visibility::Hidden)).id();
+            mouth = p.spawn((Mesh3d(m.loads[0].clone()), MeshMaterial3d(loads.clone()), Transform::from_translation(models::MOUTH), Visibility::Hidden)).id();
             lids = p.spawn((Mesh3d(m.lids.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
-            chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
+            chips = p.spawn((Mesh3d(m.chips.clone()), MeshMaterial3d(loads.clone()), Transform::default(), Visibility::Hidden)).id();
             grey = p.spawn((Mesh3d(m.grey.clone()), MeshMaterial3d(w.clone()), Transform::default(), Visibility::Hidden)).id();
         });
         // Each part's silhouette, seen through trees in front of it.
@@ -961,8 +988,14 @@ fn animate_beavers(
                 t.rotation = *rot;
             }
         }
+        let (build, head, tail) = looks_shape(&sprite.features);
         if let Ok(mut t) = parts.get_mut(rig.body_mesh) {
-            t.scale = r.squash;
+            t.scale = r.squash * build;
+        }
+        for (e, s) in [(rig.parts[0], head), (rig.parts[1], tail)] {
+            if let Ok(mut t) = parts.get_mut(e) {
+                t.scale = s;
+            }
         }
         // What shows in the mouth and in the paws.
         use sim::buildings::Good;

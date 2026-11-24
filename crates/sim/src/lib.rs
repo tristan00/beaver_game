@@ -19,6 +19,7 @@ pub mod harbor;
 pub mod locks;
 pub mod wildlife;
 pub mod lives;
+pub mod looks;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;

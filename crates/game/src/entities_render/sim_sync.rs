@@ -458,7 +458,7 @@ pub(super) fn sync_sim_beavers(
             true
         };
         sprite.look = look;
-        let mut size = BEAVER_SIZE * super::age_scale_days(age);
+        let mut size = BEAVER_SIZE * super::age_scale_days(age) * super::looks_size(&sprite.features);
         if let Some(n) = newborn {
             let k = ramp(0.0, POP_S, t - n.0);
             size *= 0.2 + 0.8 * (1.0 - (1.0 - k) * (1.0 - k));
@@ -486,9 +486,9 @@ pub(super) fn sync_sim_beavers(
         let mut e = commands.spawn((
             SimBeaver,
             motion,
-            BeaverSprite { id: id.0, pose: pose_of(s, ag), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, id) },
+            BeaverSprite { id: id.0, pose: pose_of(s, ag), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, id), features: s.colony.looks_of(id) },
             LodgeDive { inside: ag.inside, since: -100.0, at },
-            Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(age))),
+            Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(age) * super::looks_size(&s.colony.looks_of(id)))),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
         ));
         // A beaver a day or two old is just born: it pops into view.
@@ -539,8 +539,8 @@ pub(super) fn sync_bodies(
         let yaw = (body.id.0 as f32 * 2.399).rem_euclid(std::f32::consts::TAU);
         commands.spawn((
             BodySprite(body.id.0),
-            BeaverSprite { id: body.id.0, pose: Pose::Dead, load: None, yaw, wet: false, look },
-            Transform::from_xyz(xz.x, y, xz.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(body.age_days))),
+            BeaverSprite { id: body.id.0, pose: Pose::Dead, load: None, yaw, wet: false, look, features: s.colony.looks_of(body.id) },
+            Transform::from_xyz(xz.x, y, xz.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(body.age_days) * super::looks_size(&s.colony.looks_of(body.id)))),
             Visibility::Inherited,
         ));
     }

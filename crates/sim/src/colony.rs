@@ -432,6 +432,9 @@ pub struct Colony {
     pub eaten: [f32; 4],
     pub spoiled: f32,
     pub repair_wood: f32,
+    /// Each beaver's own look, kept for the dead too. Saved apart (see `save.rs`).
+    #[serde(skip)]
+    pub looks: std::collections::BTreeMap<BeaverId, crate::looks::Looks>,
 }
 
 impl Default for Colony {
@@ -480,6 +483,7 @@ impl Colony {
             eaten: [0.0; 4],
             spoiled: 0.0,
             repair_wood: 0.0,
+            looks: Default::default(),
         }
     }
 
@@ -1183,7 +1187,34 @@ impl Colony {
             harm: [0.0; 5],
         });
         self.ancestry.insert(id, (father, mother));
+        let key = crate::looks::key(id, self.time_days, pos);
+        let looks = crate::looks::Looks::of_kit(key, mother.map(|m| self.looks_of(m)), father.map(|f| self.looks_of(f)));
+        self.looks.insert(id, looks);
         id
+    }
+
+    /// A beaver's look: as drawn when it came in, or for one from before looks were kept,
+    /// drawn now from its parents' and itself (the same each time).
+    pub fn looks_of(&self, id: BeaverId) -> crate::looks::Looks {
+        if let Some(l) = self.looks.get(&id) {
+            return *l;
+        }
+        let (father, mother) = self.ancestry.get(&id).copied().unwrap_or((None, None));
+        // Parents' ids are always lower than their kits', so this ends.
+        let parent = |p: Option<BeaverId>| p.filter(|p| p.0 < id.0).map(|p| self.looks_of(p));
+        crate::looks::Looks::of_kit(crate::looks::key(id, 0.0, (0.0, 0.0)), parent(mother), parent(father))
+    }
+
+    /// Keep a look for every beaver that has none yet (those from before looks were kept).
+    pub fn fill_looks(&mut self) {
+        let mut ids: Vec<BeaverId> = self.beavers.iter().map(|b| b.id).chain(self.ancestry.keys().copied()).collect();
+        ids.sort();
+        for id in ids {
+            if !self.looks.contains_key(&id) {
+                let l = self.looks_of(id);
+                self.looks.insert(id, l);
+            }
+        }
     }
 
     fn set_mates(&mut self, a: BeaverId, b: BeaverId) {

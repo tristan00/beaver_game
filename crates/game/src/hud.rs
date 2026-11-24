@@ -767,7 +767,7 @@ fn refresh_panels(
     hover: Res<HoverCell>,
     lens: Res<MapLens>,
     orbit: Res<crate::camera::OrbitCamera>,
-    minimap: Option<Res<MinimapImage>>,
+    (minimap, portrait): (Option<Res<MinimapImage>>, Option<Res<crate::entities_render::portrait::PortraitImage>>),
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
     (cursor, mut last, notices): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>),
@@ -820,6 +820,7 @@ fn refresh_panels(
         hover: hover.0,
         problems: &problems,
         minimap: minimap.as_deref(),
+        portrait: portrait.as_deref(),
         view_cell: crate::flow::world_cell(&s.height, orbit.target),
         cursor: cursor.0,
         journal: &notices.0,
@@ -890,7 +891,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
                 let tree = if hud.tool == Tool::Canal {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
