@@ -621,6 +621,10 @@ fn lodge(c: &Ctx, id: sim::colony::LodgeId) -> VNode {
     frame(c, Selection::Lodge(id), Icon::Lodge, MUD, name, cond, Tip::name("Lodge"), |u| {
         let residents: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).collect();
         family_rows(c, u, &residents, sim::colony::LODGE_CAPACITY);
+        u.row(6.0, |r| {
+            r.spacer();
+            r.pebble(Icon::Journal, 13.0, HudAction::LodgePage(Some(id)), if c.hud.lodge_page == Some(id) { Peb::On } else { Peb::Idle }).tip(Tip::name("Family").line("Who lives here, and the family tree", ""));
+        });
     })
 }
 

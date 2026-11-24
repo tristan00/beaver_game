@@ -23,6 +23,9 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     if let Some(id) = c.hud.details {
         return super::life::screen(c, id);
     }
+    if let Some(l) = c.hud.lodge_page {
+        return super::family::screen(c, l);
+    }
     let Some(tab) = c.hud.colony else { return Vec::new() };
     let mut ui = Ui::default();
     ui.node(

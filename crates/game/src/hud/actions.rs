@@ -220,10 +220,23 @@ pub(super) fn button_actions(
                 hud.scroll = 0;
                 if who.is_some() {
                     hud.ledger = None;
+                    hud.lodge_page = None;
                 }
+            }
+            HudAction::LodgePage(lodge) => {
+                hud.lodge_page = lodge;
+                hud.scroll = 0;
+                if lodge.is_some() {
+                    hud.ledger = None;
+                    hud.details = None;
+                }
+            }
+            HudAction::Kin(f) => {
+                hud.kin = f;
             }
             HudAction::Colony(t) => {
                 hud.details = None;
+                hud.lodge_page = None;
                 hud.colony = t;
                 if t.is_some() {
                     hud.ledger = None;

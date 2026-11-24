@@ -9,6 +9,8 @@ mod elevation;
 mod inspect;
 mod journal;
 mod life;
+mod kin;
+mod family;
 mod ledger;
 mod panels;
 mod ui;
@@ -160,6 +162,10 @@ pub struct HudState {
     pub colony: Option<ColonyTab>,
     /// The beaver whose whole story is open in the drawer.
     pub details: Option<BeaverId>,
+    /// The lodge whose family page is open.
+    pub lodge_page: Option<sim::colony::LodgeId>,
+    /// Which ties the family table on a beaver's page shows.
+    pub kin: kin::KinFilter,
     /// The colony ledger's open page, if it is open.
     pub ledger: Option<LedgerTab>,
     pub span: Span,
@@ -238,6 +244,8 @@ impl Default for HudState {
     fn default() -> Self {
         HudState {
             details: None,
+            lodge_page: None,
+            kin: kin::KinFilter::All,
             open_badge: None,
             tool: Tool::None,
             drag_from: None,
@@ -448,7 +456,7 @@ pub(crate) fn longest_list(s: &sim::SimState) -> usize {
 
 /// The mouse wheel over a long list in the ledger scrolls it.
 fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Query<(&ui::TagComp, &bevy::ui::RelativeCursorPosition)>, sim: Res<Sim>, mut hud: ResMut<HudState>) {
-    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.details.is_none()) {
+    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.details.is_none() && hud.lodge_page.is_none()) {
         return;
     }
     let over = q.iter().any(|(t, r)| t.0 == Tag::Scroll && r.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5));
@@ -460,9 +468,10 @@ fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Quer
         bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y / 20.0,
     };
     let step = (-lines * 2.0).round() as i64;
-    let longest = match hud.details {
-        Some(id) => sim.0.lives.of.get(&id).map_or(0, |l| l.entries.len()),
-        None => longest_list(&sim.0),
+    let longest = match (hud.details, hud.lodge_page) {
+        (Some(id), _) => sim.0.lives.of.get(&id).map_or(0, |l| l.entries.len()),
+        (None, Some(l)) => family::tree_len(&sim.0, l),
+        (None, None) => longest_list(&sim.0),
     };
     let next = ((hud.scroll as i64 + step).max(0) as usize).min(longest);
     if next != hud.scroll {
@@ -566,6 +575,10 @@ pub enum HudAction {
     Fix(Fix, Option<Cell>),
     /// Open (or, with `None`, close) a beaver's story.
     BeaverDetails(Option<BeaverId>),
+    /// Open (or close) a lodge's family page.
+    LodgePage(Option<sim::colony::LodgeId>),
+    /// Which ties the family table shows.
+    Kin(kin::KinFilter),
     /// To the wolf while it is seen, else to where it was last seen.
     FocusWolf,
     CycleIdle,
@@ -842,7 +855,7 @@ fn refresh_panels(
             Panel::Strip => panels::strip(&ctx),
             Panel::Calendar => panels::calendar(&ctx),
             // A beaver's full page covers the map; the card would only sit on top of it.
-            Panel::Right if ctx.hud.details.is_some() => Vec::new(),
+            Panel::Right if ctx.hud.details.is_some() || ctx.hud.lodge_page.is_some() => Vec::new(),
             Panel::Right => panels::right(&ctx),
             Panel::Rail if !placing => panels::rail(&ctx),
             Panel::Bottom => panels::bottom(&ctx),

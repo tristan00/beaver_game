@@ -97,6 +97,8 @@ pub(super) fn hotkeys(
             hud.set_tool(Tool::None);
         } else if hud.details.is_some() {
             hud.details = None;
+        } else if hud.lodge_page.is_some() {
+            hud.lodge_page = None;
         } else if hud.colony.is_some() || hud.ledger.is_some() {
             hud.colony = None;
             hud.ledger = None;

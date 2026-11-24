@@ -7,6 +7,7 @@ use super::ui::*;
 use super::words::*;
 use super::world::mood_icon;
 use super::HudAction;
+use super::kin::{self, name_of, KinFilter};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::colony::{Beaver, BeaverId, DeathCause, Job, Stage};
@@ -18,12 +19,9 @@ const ROWS: usize = 22;
 const PORTRAIT_PX: f32 = 128.0;
 const COL_W: f32 = 390.0;
 
-fn name_of(s: &sim::SimState, id: BeaverId) -> String {
-    s.colony.beaver(id).map(|b| b.name.clone()).or_else(|| s.lives.of.get(&id).map(|l| l.name.clone())).unwrap_or_else(|| "?".into())
-}
 
 /// "Year 2, day 140": the year of the colony and the day in it.
-fn when(day: f64) -> String {
+pub(super) fn when(day: f64) -> String {
     let y = sim::calendar::YEAR_DAYS;
     format!("Y{} D{}", (day / y).floor() as i64 + 1, (day % y).floor() as i64 + 1)
 }
@@ -63,7 +61,7 @@ fn cause(c: DeathCause) -> &'static str {
     }
 }
 
-fn stage_word(st: Stage) -> &'static str {
+pub(super) fn stage_word(st: Stage) -> &'static str {
     match st {
         Stage::Kit => "Kit",
         Stage::Yearling => "Yearling",
@@ -110,22 +108,8 @@ fn fact(u: &mut Ui, icon: Icon, col: Color, name: &str, value: String) {
     });
 }
 
-/// A beaver as a link to its own page: its name, and a few words on it.
-fn link(u: &mut Ui, s: &sim::SimState, id: BeaverId, note: String) {
-    let b = s.colony.beaver(id);
-    u.row(8.0, |r| {
-        r.token(Icon::Beaver, 16.0, None);
-        r.bold(name_of(s, id), 12.0, if b.is_some() { INK } else { MUTED });
-        r.text(note, 11.0, MUTED);
-        r.spacer();
-        r.icon(Icon::Journal, 12.0, MUTED);
-    })
-    .action(HudAction::BeaverDetails(Some(id)))
-    .tip(Tip::name(name_of(s, id)).line("Open their page", ""));
-}
-
 /// A few words on a relative: stage and age, or that it is gone.
-fn about(s: &sim::SimState, id: BeaverId) -> String {
+pub(super) fn about(s: &sim::SimState, id: BeaverId) -> String {
     match s.colony.beaver(id) {
         Some(b) => format!("{} · {}", stage_word(b.stage), years(b.age_days as f64)),
         None => match s.lives.of.get(&id).and_then(|l| l.entries.last()) {
@@ -193,110 +177,97 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     }
 }
 
-/// A beaver's parents, whether it is still here or only remembered.
-fn parents(s: &sim::SimState, id: BeaverId) -> [Option<BeaverId>; 2] {
-    match s.colony.beaver(id) {
-        Some(b) => [b.mother, b.father],
-        None => s.lives.of.get(&id).map_or([None, None], |l| [l.mother, l.father]),
-    }
+/// One row of the family table: tie, name (a link to their page), litter, and a few words.
+fn kin_row(u: &mut Ui, s: &sim::SimState, other: BeaverId, tie: &str, litter: String, litter_tip: Tip, note: String) {
+    let here = s.colony.beaver(other).is_some();
+    u.row(6.0, |r| {
+        r.text(tie.to_string(), 11.0, MUTED).style(|n| n.width = Val::Px(92.0));
+        r.row(5.0, |x| {
+            x.token(Icon::Beaver, 13.0, None);
+            x.bold(name_of(s, other), 12.0, if here { INK } else { MUTED });
+        })
+        .style(|n| n.width = Val::Px(104.0))
+        .action(HudAction::BeaverDetails(Some(other)))
+        .tip(Tip::name(name_of(s, other)).line("Open their page", ""));
+        r.text(litter, 11.0, INK).style(|n| n.width = Val::Px(84.0)).tip(litter_tip);
+        r.text(note, 11.0, MUTED);
+    });
 }
 
-fn sex_of(s: &sim::SimState, id: BeaverId) -> Option<sim::colony::Sex> {
-    s.colony.beaver(id).map(|b| b.sex).or_else(|| s.lives.of.get(&id).map(|l| l.sex))
-}
-
-fn partner_of(s: &sim::SimState, id: BeaverId) -> Option<BeaverId> {
-    s.colony.beaver(id).and_then(|b| b.mate)
-}
-
-/// How `other` is related to `me`, closest tie first, in words that follow its sex; with an
-/// order to list relatives in (nearest first).
-fn kinship(s: &sim::SimState, me: BeaverId, other: BeaverId) -> Option<(u8, &'static str)> {
-    use sim::colony::Sex;
-    if me == other {
-        return None;
+/// Which of its mother's litters a beaver came in, and when, for a tip.
+fn litter_tip(s: &sim::SimState, all: &[BeaverId], l: Option<kin::Litter>) -> Tip {
+    match l {
+        Some(l) => Tip::name(format!("Litter {} of {}", l.number, name_of(s, l.mother)))
+            .line("Born", kin::year_word(l.year))
+            .line("Kits in it", format!("{}", kin::litter_mates(s, all, l).len())),
+        None => Tip::name("Litter not known").line("Came in as a newcomer, or before records began", ""),
     }
-    let male = sex_of(s, other) == Some(Sex::Male);
-    let pick = |m: &'static str, f: &'static str| if male { m } else { f };
-    let mine = parents(s, me);
-    let theirs = parents(s, other);
-    let parent_of = |p: BeaverId, c: BeaverId| parents(s, c).contains(&Some(p));
-    let shared = mine.iter().flatten().filter(|p| theirs.contains(&Some(**p))).count();
-    let siblings = |a: BeaverId, b: BeaverId| a != b && parents(s, a).iter().flatten().any(|p| parents(s, b).contains(&Some(*p)));
-    if partner_of(s, me) == Some(other) {
-        return Some((0, "Partner"));
-    }
-    if parent_of(other, me) {
-        return Some((1, pick("Father", "Mother")));
-    }
-    if parent_of(me, other) {
-        return Some((2, pick("Son", "Daughter")));
-    }
-    if shared == 2 {
-        return Some((3, pick("Brother", "Sister")));
-    }
-    if shared == 1 {
-        return Some((3, pick("Half-brother", "Half-sister")));
-    }
-    if mine.iter().flatten().any(|p| parent_of(other, *p)) {
-        return Some((4, pick("Grandfather", "Grandmother")));
-    }
-    if theirs.iter().flatten().any(|p| parent_of(me, *p)) {
-        return Some((5, pick("Grandson", "Granddaughter")));
-    }
-    if mine.iter().flatten().any(|p| siblings(*p, other)) {
-        return Some((6, pick("Uncle", "Aunt")));
-    }
-    if theirs.iter().flatten().any(|p| siblings(*p, me)) {
-        return Some((7, pick("Nephew", "Niece")));
-    }
-    if mine.iter().flatten().any(|p| theirs.iter().flatten().any(|q| siblings(*p, *q))) {
-        return Some((8, "Cousin"));
-    }
-    if let Some(m) = partner_of(s, me) {
-        if parent_of(other, m) {
-            return Some((9, pick("Father-in-law", "Mother-in-law")));
-        }
-        if siblings(m, other) {
-            return Some((9, pick("Brother-in-law", "Sister-in-law")));
-        }
-    }
-    if partner_of(s, other).is_some_and(|p| parent_of(me, p)) {
-        return Some((10, pick("Son-in-law", "Daughter-in-law")));
-    }
-    None
 }
 
 fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&Life>) {
     let s = c.s;
     heading(u, Icon::Home, "Family");
-    // Every beaver the colony has known, living or remembered, that is kin.
-    let mut kin: Vec<(u8, &'static str, BeaverId)> = s
-        .colony
-        .beavers
-        .iter()
-        .map(|o| o.id)
-        .chain(s.lives.of.keys().copied())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .filter_map(|o| kinship(s, id, o).map(|(order, word)| (order, word, o)))
-        .collect();
-    kin.sort_by_key(|k| (k.0, s.colony.beaver(k.2).is_none(), k.2));
-    let my_lodge = b.and_then(|b| b.lodge);
-    for &(_, word, o) in &kin {
-        let since = if word == "Partner" { life.and_then(|l| l.partnered_since()).map_or(String::new(), |d| format!(" · since {}", when(d))) } else { String::new() };
-        let home = if my_lodge.is_some() && s.colony.beaver(o).and_then(|x| x.lodge) == my_lodge { " · lives here too" } else { "" };
-        link(u, s, o, format!("{word} · {}{since}{home}", about(s, o)));
+    let all = kin::everyone(s);
+    let mine = kin::litter(s, &all, id);
+    if let Some(l) = mine {
+        fact(u, Icon::Kit, GOOD, "Litter", format!("{} of {}'s · {} · {} kits", l.number, name_of(s, l.mother), kin::year_word(l.year), kin::litter_mates(s, &all, l).len()));
     }
-    if kin.is_empty() {
+    // Every beaver the colony has known, living or remembered, that is kin.
+    let mut ties: Vec<(u8, &'static str, BeaverId)> = all.iter().filter_map(|&o| kin::kinship(s, id, o).map(|(order, word)| (order, word, o))).collect();
+    ties.sort_by(|a, b| a.0.cmp(&b.0).then(kin::born(s, a.2).unwrap_or(f64::MAX).total_cmp(&kin::born(s, b.2).unwrap_or(f64::MAX))).then(a.2.cmp(&b.2)));
+    // Filters, each with how many it holds.
+    let filter = c.hud.kin;
+    u.row(4.0, |r| {
+        for f in KinFilter::ALL {
+            let n = ties.iter().filter(|t| f.takes(t.0)).count();
+            if n == 0 && f != KinFilter::All {
+                continue;
+            }
+            super::ledger::chip(r, &format!("{} {n}", f.label()), f == filter, HudAction::Kin(f));
+        }
+    });
+    let shown: Vec<_> = ties.iter().filter(|t| filter.takes(t.0)).collect();
+    if shown.is_empty() {
         u.text("No family in the colony".to_string(), 12.0, MUTED);
+    } else {
+        u.row(6.0, |r| {
+            for (w, h) in [(92.0, "Tie"), (104.0, "Beaver"), (84.0, "Litter")] {
+                r.text(h.to_string(), 10.0, MUTED).style(move |n| n.width = Val::Px(w));
+            }
+        });
+    }
+    let my_lodge = b.and_then(|b| b.lodge);
+    let my_year = kin::born_year(s, id);
+    for &&(order, word, o) in &shown {
+        let theirs = kin::litter(s, &all, o);
+        let litter = match (order, theirs) {
+            // Brothers and sisters: the same litter, or an older or younger one.
+            (3, Some(t)) if mine.is_some_and(|m| m.mother == t.mother && m.year == t.year) => "Littermate".to_string(),
+            (3, _) => match (kin::born_year(s, o), my_year) {
+                (Some(y), Some(me)) if y < me => format!("Older · {}", kin::year_word(y)),
+                (Some(y), Some(me)) if y > me => format!("Younger · {}", kin::year_word(y)),
+                (Some(y), _) => format!("Same year · {}", kin::year_word(y)),
+                _ => "—".to_string(),
+            },
+            (_, Some(t)) => format!("#{} · {}", t.number, kin::year_word(t.year)),
+            (_, None) => "—".to_string(),
+        };
+        let since = if order == 0 { life.and_then(|l| l.partnered_since()).map_or(String::new(), |d| format!(" · since {}", when(d))) } else { String::new() };
+        let home = if my_lodge.is_some() && s.colony.beaver(o).and_then(|x| x.lodge) == my_lodge { " · home" } else { "" };
+        kin_row(u, s, o, word, litter, litter_tip(s, &all, theirs), format!("{}{since}{home}", about(s, o)));
     }
     u.rule();
     heading(u, Icon::Lodge, "Home");
     match b.and_then(|b| b.lodge).and_then(|l| s.colony.lodges.iter().find(|x| x.id == l)) {
         Some(l) => {
             let fam = s.colony.family(l.family).map(|f| f.name.clone()).unwrap_or_default();
-            fact(u, Icon::Lodge, MUD, "Lodge", fam);
+            u.row(8.0, |r| {
+                r.icon(Icon::Lodge, 15.0, MUD);
+                r.text("Lodge".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
+                r.text(fam, 12.0, INK);
+                r.spacer();
+                r.pebble(Icon::Journal, 11.0, HudAction::LodgePage(Some(l.id)), Peb::Idle).tip(Tip::name("Family page").line("Who lives there, and the family tree", ""));
+            });
             if let Some(d) = life.and_then(|l| l.home_since()) {
                 fact(u, Icon::Hourglass, MUTED, "Since", when(d));
             }

@@ -59,7 +59,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
 }
 
 /// A small button with a word on it.
-fn chip<'a>(r: &'a mut Ui, label: &str, on: bool, a: HudAction) -> &'a mut VNode {
+pub(super) fn chip<'a>(r: &'a mut Ui, label: &str, on: bool, a: HudAction) -> &'a mut VNode {
     let v = r.node(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, |x| {
         x.bold(label.to_string(), 11.0, if on { INK } else { MUTED });
     });
