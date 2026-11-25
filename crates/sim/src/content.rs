@@ -260,6 +260,8 @@ fn one() -> f32 { 1.0 }
 pub struct Spec {
     pub key: String,
     pub name: String,
+    /// Very short (2–4 word) description of what the building does.
+    #[serde(default)] pub summary: String,
     pub footprint: (usize, usize),
     pub site: Site,
     #[serde(default)] pub cost: Vec<Amount>,

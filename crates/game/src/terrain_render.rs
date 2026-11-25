@@ -166,7 +166,7 @@ pub fn map_lens() -> u8 {
 }
 
 pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, with_veg: bool) -> u64 {
-    let extra = extra ^ ((map_lens() as u64) << 48);
+    let extra = extra ^ ((map_lens() as u64) << 48) ^ locks_hash(s);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ extra.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let (x0, y0) = ((cx * CHUNK) as i32 - pad, (cy * CHUNK) as i32 - pad);
     let n = CHUNK as i32 + 2 * pad;
@@ -247,28 +247,38 @@ macro_rules! stamp_near {
 /// The lens and the season's step a chunk is drawn for.
 pub(crate) type View = (u8, u32);
 
+/// Fingerprint of all built locks, so terrain and water chunks rebuild immediately when a lock
+/// finishes building or is removed (cutting its chamber hole and lowering its chamber bed).
+pub(crate) fn locks_hash(s: &SimState) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for l in s.locks.at.values().filter(|l| l.built) {
+        h = fold(h, (l.cell.0 as u64) | ((l.cell.1 as u64) << 20) | ((l.building.0 as u64) << 40));
+    }
+    h
+}
+
 /// Changes when anything the ground of chunk (cx, cy) is drawn from may have: the cells
 /// `region_hash` reads for terrain, and those `wet_ground` reads. Of the water only its edge
 /// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here,
 /// except in the water lens, which colours water by its depth.
 fn ground_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
-    let h = stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal);
+    let h = fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal), locks_hash(s));
     if map_lens() == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
 }
 
 /// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
-fn ground_stamps(s: &SimState) -> [(u64, u64); 7] {
+fn ground_stamps(s: &SimState) -> [(u64, u64); 8] {
     let depth = if map_lens() == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
-    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth]
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth, (locks_hash(s), 0)]
 }
 
 /// As `ground_stamp`, for the water's surface.
 pub(crate) fn water_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
-    stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.depth, s.water.velocity, s.water.ice, s.water.shore, s.water.riverbed, s.water.canal)
+    fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.depth, s.water.velocity, s.water.ice, s.water.shore, s.water.riverbed, s.water.canal), locks_hash(s))
 }
 
-pub(crate) fn water_stamps(s: &SimState) -> [(u64, u64); 8] {
-    [s.height.stamp(), s.water.dam_height.stamp(), s.water.depth.stamp(), s.water.velocity.stamp(), s.water.ice.stamp(), s.water.shore.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp()]
+pub(crate) fn water_stamps(s: &SimState) -> [(u64, u64); 9] {
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.depth.stamp(), s.water.velocity.stamp(), s.water.ice.stamp(), s.water.shore.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), (locks_hash(s), 0)]
 }
 
 pub fn chunk_centre(s: &SimState, cx: usize, cy: usize) -> Vec3 {
@@ -571,7 +581,7 @@ fn update_terrain_chunks(
     mut backlog: ResMut<MeshBacklog>,
     mut cursor: Local<usize>,
     // The grids' stamps when every chunk was last up to date.
-    mut settled: Local<Option<[(u64, u64); 7]>>,
+    mut settled: Local<Option<[(u64, u64); 8]>>,
 ) {
     let _p = ::sim::prof::scope("game/update terrain chunks");
     backlog.terrain = true;
@@ -835,9 +845,14 @@ fn terrain_range(s: &SimState) -> (f32, f32) {
 /// staircase.
 pub const RIVER_SUBDIVISIONS: usize = 2;
 pub fn canal_subdivisions(s: &SimState, cx: usize, cy: usize) -> usize {
+    let (x0, y0) = ((cx * CHUNK).saturating_sub(2), (cy * CHUNK).saturating_sub(2));
+    let (x1, y1) = (((cx + 1) * CHUNK + 3).min(s.height.width()), ((cy + 1) * CHUNK + 3).min(s.height.height()));
+    if s.locks.at.values().any(|l| l.built && l.cell.0 + 6 >= x0 && l.cell.0 <= x1 + 6 && l.cell.1 + 6 >= y0 && l.cell.1 <= y1 + 6) {
+        return 4;
+    }
     let mut fine = 1;
-    for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
-        for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
+    for y in y0..y1 {
+        for x in x0..x1 {
             if *s.water.canal.get(x, y).unwrap() { return 4; }
             if *s.world.river.get(x, y).unwrap() { fine = RIVER_SUBDIVISIONS; }
         }
@@ -894,16 +909,35 @@ impl Field {
     }
 }
 
-/// The drawn ground around one chunk: heights and the softened river mask.
+/// The drawn ground around one chunk: heights, softened river mask, and any built lock
+/// chambers overlapping the chunk.
 pub struct GroundField {
     height: Field,
     mask: Field,
     canal: bool,
+    half_dims: (f32, f32),
+    chambers: Vec<(Vec2, Vec2, f32, f32, f32)>,
 }
 
 impl GroundField {
     pub fn new(s: &SimState, cx: usize, cy: usize) -> GroundField {
-        GroundField { height: Field::new(cx, cy, |x, y| at(&s.height, x, y)), mask: Field::new(cx, cy, |x, y| river_mask(s, x, y)), canal: canal_subdivisions(s, cx, cy) == 4 }
+        let half_dims = (s.height.width() as f32 / 2.0, s.height.height() as f32 / 2.0);
+        let (wx0, wz0) = (((cx * CHUNK) as f32 + GRID_OFFSET - half_dims.0) * CELL_SIZE, ((cy * CHUNK) as f32 + GRID_OFFSET - half_dims.1) * CELL_SIZE);
+        let (wx1, wz1) = (wx0 + CHUNK as f32 * CELL_SIZE, wz0 + CHUNK as f32 * CELL_SIZE);
+        let chambers = crate::entities_render::raft_landing::chamber_floors(s)
+            .into_iter()
+            .filter(|&(centre, _, half, w, _)| {
+                let reach = half.max(w) + 2.0;
+                centre.x + reach >= wx0 && centre.x - reach <= wx1 && centre.y + reach >= wz0 && centre.y - reach <= wz1
+            })
+            .collect();
+        GroundField {
+            height: Field::new(cx, cy, |x, y| at(&s.height, x, y)),
+            mask: Field::new(cx, cy, |x, y| river_mask(s, x, y)),
+            canal: canal_subdivisions(s, cx, cy) == 4,
+            half_dims,
+            chambers,
+        }
     }
 
     /// `ground_at` from the cached values.
@@ -914,7 +948,20 @@ impl GroundField {
     /// `canal_ground` from the cached values.
     pub fn fine(&self, s: &SimState, x: f32, y: f32) -> f32 {
         let base = self.height.bilinear(x, y) - cut_of_mask(self.mask.bilinear(x, y));
-        if self.canal { canal_blend(s, x, y, base) } else { base }
+        let mut h = if self.canal { canal_blend(s, x, y, base) } else { base };
+        if !self.chambers.is_empty() {
+            let p = Vec2::new((x + GRID_OFFSET - self.half_dims.0) * CELL_SIZE, (y + GRID_OFFSET - self.half_dims.1) * CELL_SIZE);
+            for &(centre, axis, half, half_w, floor) in &self.chambers {
+                let d = p - centre;
+                let a = d.dot(axis).abs();
+                let w = d.dot(axis.perp()).abs();
+                if a <= half + 0.35 && w <= half_w + 0.35 {
+                    let k = (1.0 - smooth(half, half + 0.35, a)) * (1.0 - smooth(half_w, half_w + 0.35, w));
+                    h += (h.min(floor) - h) * k;
+                }
+            }
+        }
+        h
     }
 
     fn gradient(&self, x: i32, y: i32, st: i32) -> (f32, f32) {
@@ -925,14 +972,29 @@ impl GroundField {
     }
 }
 
-/// Give excavated cells a visible floor instead of a V-shaped point. This is a
-/// local reconstruction of the rendered bed; simulation heights/volumes stay unchanged.
+/// Give excavated cells a visible floor instead of a V-shaped point. Where a canal meets
+/// already-deep water (not marked `canal` because it needed no digging), include those wet
+/// cells so the canal mouth opens cleanly without banks pinching earth across the shoreline.
+/// This is a local reconstruction of the rendered bed; simulation heights/volumes stay unchanged.
 fn canal_blend(s: &SimState, x: f32, y: f32, base: f32) -> f32 {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let mut any_canal = false;
+    for dy in 0..=1 { for dx in 0..=1 {
+        let (cx, cy) = (ix + dx, iy + dy);
+        if cx >= 0 && cy >= 0 && s.water.canal.get(cx as usize, cy as usize).copied().unwrap_or(false) {
+            any_canal = true;
+        }
+    } }
+    if !any_canal {
+        return base;
+    }
     let (mut sum, mut weight) = (0.0, 0.0);
     for dy in 0..=1 { for dx in 0..=1 {
         let (cx, cy) = (ix + dx, iy + dy);
-        if cx < 0 || cy < 0 || !s.water.canal.get(cx as usize, cy as usize).copied().unwrap_or(false) { continue; }
+        if cx < 0 || cy < 0 { continue; }
+        let is_canal = s.water.canal.get(cx as usize, cy as usize).copied().unwrap_or(false);
+        let is_water = s.water.depth.get(cx as usize, cy as usize).copied().unwrap_or(0.0) > WET_EPS;
+        if !is_canal && !is_water { continue; }
         let d = (x - cx as f32).abs().max((y - cy as f32).abs());
         let w = 1.0 - smooth(0.25, 0.75, d);
         sum += at(&s.height, cx, cy) * w;
@@ -1176,5 +1238,38 @@ fn frame_log(
         if cli.screenshot.is_none() {
             exit.write(AppExit::Success);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canal_mouth_blends_cleanly_into_lake_without_earth_pinch() {
+        let mut s = SimState::new(1);
+        let w = s.height.width();
+        let (cx, cy) = (10usize, 10usize);
+        // Set up a high dry bank (12.0 m) flanking a canal at (10, 10) dug to 9.6 m,
+        // meeting an already-deep lake cell at (10, 9) at 9.5 m (not marked canal).
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let (x, y) = ((cx as i32 + dx) as usize, (cy as i32 + dy) as usize);
+                s.height[y * w + x] = 12.0;
+                s.water.depth[y * w + x] = 0.0;
+                s.water.canal[y * w + x] = false;
+            }
+        }
+        s.height[(cy - 1) * w + cx] = 9.5;
+        s.water.depth[(cy - 1) * w + cx] = 0.5; // lake water surface at 10.0 m
+        s.height[cy * w + cx] = 9.6;
+        s.water.depth[cy * w + cx] = 0.4;
+        s.water.canal[cy * w + cx] = true;
+
+        // At (10.25, 9.5) — across the shoreline boundary inside the canal — terrain must stay
+        // below the 10.0 m water surface instead of pinching earth up from the 12.0 m bank.
+        let base = bilinear(|x, y| at(&s.height, x, y), 10.25, 9.5);
+        let h = canal_blend(&s, 10.25, 9.5, base);
+        assert!(h < 9.7, "canal mouth pinched terrain up to {h:.3} m (above bed 9.6 m)");
     }
 }

@@ -49,9 +49,37 @@ impl Motion {
             Some(b) if b.0 > t => return,
             _ => self.samples.push_back((t, xz, lift)),
         }
-        while self.samples.len() > 256 {
+        while self.samples.len() > 512 {
             self.samples.pop_front();
         }
+    }
+
+    /// Record a batch of cells all sharing one sim step ending at `end`, spacing them
+    /// strictly monotonically across `(step_start, end]` by their travel cost so multiple
+    /// waypoints never collide at `end` and get overwritten.
+    fn record_step(&mut self, sim: &sim::SimState, offset: Vec2, ground: &impl Fn(Vec2) -> f32, step_start: f64, end: f64, cells: &[(sim::water::Cell, sim::nav::Gait)], mut prev: Vec2) -> Vec2 {
+        if cells.is_empty() {
+            return prev;
+        }
+        let mut pts = Vec::with_capacity(cells.len());
+        let mut weights = Vec::with_capacity(cells.len());
+        let mut total_w = 0.0f64;
+        for &(cell, gait) in cells {
+            let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset;
+            let dist = prev.distance(next) / crate::terrain_render::CELL_SIZE;
+            let w = if dist > 1e-4 { (dist * gait_cost(gait)) as f64 } else { 1.0 };
+            total_w += w;
+            pts.push((cell, next, w));
+            weights.push(total_w);
+            prev = next;
+        }
+        let span = (end - step_start).max(1e-7);
+        for (i, &(cell, next, _)) in pts.iter().enumerate() {
+            let frac = if total_w > 0.0 { weights[i] / total_w } else { (i + 1) as f64 / pts.len() as f64 };
+            let t = if i + 1 == pts.len() { end } else { step_start + span * frac };
+            self.record(t, next, stand_y(sim, cell) - ground(next));
+        }
+        prev
     }
 
     fn observe(&mut self, sim: &sim::SimState, ag: &sim::agents::Agent, game: bool) {
@@ -66,35 +94,32 @@ impl Motion {
         if self.observed_time.is_some_and(|t| t >= sim.time_days) { return; }
         if let (Some(previous), Some(&(_, mut point, _))) = (self.observed_time, self.samples.back()) {
             // A trail is the last step's cells. Seen only every few steps (at speed), the way
-            // since comes from the history the sim keeps, each step's cells timed within it.
+            // since comes from the history the sim keeps, grouped by step so every waypoint
+            // keeps its own timestamp and destination pauses are preserved.
             if sim.time_days - previous > sim::STEP_DAYS as f64 + 1e-8 {
-                let pace = sim::agents::travel_pace(&sim.nav, ag);
-                let rate = sim::agents::MOVE_COST_PER_DAY * pace;
-                let mut t = previous;
+                let mut prev_t = previous;
+                let mut batch: Vec<(sim::water::Cell, sim::nav::Gait)> = Vec::new();
+                let mut batch_end: Option<f64> = None;
                 for &(end, cell, gait) in ag.history.iter().filter(|h| h.0 > previous + 1e-9) {
-                    let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset.xz();
-                    let dir = (next - point).normalize_or_zero();
-                    let cost = sim.nav.cost_toward(cell, (dir.x, dir.y), pace).unwrap_or(gait_cost(gait));
-                    let cells = point.distance(next) / crate::terrain_render::CELL_SIZE;
-                    t = t.max(end - sim::STEP_DAYS as f64);
-                    t = (t + (cells * cost / rate) as f64).min(end);
-                    self.record(t, next, stand_y(sim, cell) - ground(next));
-                    point = next;
+                    if let Some(cur_end) = batch_end {
+                        if (end - cur_end).abs() > 1e-9 {
+                            let step_start = prev_t.max(cur_end - sim::STEP_DAYS as f64);
+                            point = self.record_step(sim, offset.xz(), &ground, step_start, cur_end, &batch, point);
+                            prev_t = cur_end;
+                            batch.clear();
+                            batch_end = Some(end);
+                        }
+                    } else {
+                        batch_end = Some(end);
+                    }
+                    batch.push((cell, gait));
                 }
-            } else {
-                let pace = sim::agents::travel_pace(&sim.nav, ag);
-                let rate = sim::agents::MOVE_COST_PER_DAY * pace;
-                let mut t = previous;
-                for &(cell, gait) in &ag.trail {
-                    let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset.xz();
-                    // Timed as the simulation moved it: with or against the current there.
-                    let dir = (next - point).normalize_or_zero();
-                    let cost = sim.nav.cost_toward(cell, (dir.x, dir.y), pace).unwrap_or(gait_cost(gait));
-                    let cells = point.distance(next) / crate::terrain_render::CELL_SIZE;
-                    t = (t + (cells * cost / rate) as f64).min(sim.time_days);
-                    self.record(t, next, stand_y(sim, cell) - ground(next));
-                    point = next;
+                if let Some(cur_end) = batch_end {
+                    let step_start = prev_t.max(cur_end - sim::STEP_DAYS as f64);
+                    self.record_step(sim, offset.xz(), &ground, step_start, cur_end, &batch, point);
                 }
+            } else if !ag.trail.is_empty() {
+                self.record_step(sim, offset.xz(), &ground, previous, sim.time_days, &ag.trail, point);
             }
         }
         self.record(sim.time_days, p.xz(), p.y - ground(p.xz()));
@@ -124,11 +149,12 @@ impl Motion {
     /// Where the beaver is drawn at `t`. Paths run cell to cell in four directions, so a
     /// diagonal route is a staircase; the drawn beaver takes the average of the route over a
     /// cell either side of where it is (by distance travelled, using the planned path ahead),
-    /// which straightens staircases and rounds corners. The window narrows to nothing at the
-    /// route's ends, so a beaver still stops exactly where it works.
+    /// which straightens staircases and rounds corners. The window narrows to nothing at
+    /// route ends, destination pauses, and turnaround points, so a beaver visibly reaches
+    /// every destination even when playing back many steps ahead at fast speeds.
     fn at(&mut self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
-        // Keep a few cells of history behind for the window.
-        while self.samples.len() > 8 && self.samples[6].0 <= t {
+        // Keep enough history behind for the smoothing window.
+        while self.samples.len() > 16 && self.samples[10].0 <= t {
             self.samples.pop_front();
         }
         let (raw, lift, moving) = self.raw_at(t)?;
@@ -153,7 +179,30 @@ impl Motion {
         let k = self.samples.iter().position(|s| s.0 > t).unwrap_or(self.samples.len() - 1).max(1);
         let s_t = cum[k - 1] + pts[k - 1].distance(raw);
         let end = *cum.last()?;
-        let h = SMOOTH_CELLS.min(s_t).min(end - s_t).max(0.0);
+
+        // Anchor points where smoothing must narrow to zero: pauses (repeated positions) and
+        // sharp reversals (>105° turnarounds, e.g. quick deliver-and-return at fast speed).
+        let mut lo_bound = 0.0f32;
+        let mut hi_bound = end;
+        for i in 1..pts.len().saturating_sub(1) {
+            let pause = pts[i].distance(pts[i - 1]) < 1e-3 || pts[i + 1].distance(pts[i]) < 1e-3;
+            let reversal = !pause && {
+                let a = (pts[i] - pts[i - 1]).normalize_or_zero();
+                let b = (pts[i + 1] - pts[i]).normalize_or_zero();
+                a.dot(b) < -0.25
+            };
+            if pause || reversal {
+                let s = cum[i];
+                if s <= s_t {
+                    lo_bound = lo_bound.max(s);
+                }
+                if s >= s_t {
+                    hi_bound = hi_bound.min(s);
+                }
+            }
+        }
+
+        let h = SMOOTH_CELLS.min(s_t - lo_bound).min(hi_bound - s_t).max(0.0);
         if h < 1e-3 {
             return Some((raw, lift, Some(heading)));
         }
@@ -1484,6 +1533,62 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
     for k in gone {
         if let Some((e, _)) = st.drawn.remove(&k) {
             commands.entity(e).despawn();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_speed_out_and_back_reaches_destination_without_skipping() {
+        let mut motion = Motion::default();
+        // Simulate an out-and-back trip where the beaver walks from x=0 to x=4,
+        // pauses/works at x=4, and walks back to x=0, all already recorded before playback.
+        for i in 0..=4 {
+            motion.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0);
+        }
+        // Dwell at destination x=4 for one step.
+        motion.record(0.05, Vec2::new(4.0, 0.0), 0.0);
+        // Walk back to x=0.
+        for i in 1..=4 {
+            motion.record(0.05 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0);
+        }
+
+        // At arrival (t = 0.04) and during dwell (t = 0.045), beaver must reach x = 4.0 cleanly.
+        let (at_arrive, _, _) = motion.at(0.04).expect("sample at arrival");
+        assert!((at_arrive.x - 4.0).abs() < 0.02, "beaver cut short of destination: x={}", at_arrive.x);
+
+        // Also test instant reversal (no dwell step at all) at x=4:
+        let mut instant = Motion::default();
+        for i in 0..=4 {
+            instant.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0);
+        }
+        for i in 1..=4 {
+            instant.record(0.04 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0);
+        }
+        let (at_turn, _, _) = instant.at(0.04).expect("sample at turnaround");
+        assert!((at_turn.x - 4.0).abs() < 0.02, "beaver skipped turnaround destination: x={}", at_turn.x);
+    }
+
+    #[test]
+    fn multi_cell_step_preserves_every_waypoint() {
+        let sim = sim::SimState::new(1);
+        let mut motion = Motion::default();
+        let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
+        let start = cell_xz(&sim, (2.5, 2.5));
+        motion.record(0.0, start, 0.0);
+        let cells = [
+            ((3, 2), sim::nav::Gait::Walk),
+            ((4, 2), sim::nav::Gait::Walk),
+            ((5, 2), sim::nav::Gait::Walk),
+            ((5, 3), sim::nav::Gait::Walk),
+        ];
+        motion.record_step(&sim, Vec2::ZERO, &ground, 0.0, sim::STEP_DAYS as f64, &cells, start);
+        assert_eq!(motion.samples.len(), 5, "all 4 waypoints plus start must be preserved");
+        for w in motion.samples.as_slices().0.windows(2) {
+            assert!(w[1].0 > w[0].0, "timestamps must be strictly increasing");
         }
     }
 }

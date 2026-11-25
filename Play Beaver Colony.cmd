@@ -8,7 +8,7 @@ set "BC_SETTLE="
 set "BC_PERF="
 set "BC_MENU="
 if not exist "target\release\beaver_colony.exe" (
-  echo Build the game first: cargo build --offline --release -p game
+  echo Build the game first: cargo build --release -p game
   pause
   exit /b 1
 )

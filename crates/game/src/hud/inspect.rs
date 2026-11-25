@@ -107,6 +107,12 @@ fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str
         Some(Assignment::Area(kind, _)) => gatherer(kind),
         Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Working here", Some(bid)),
         Some(Assignment::Mend) => (job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Mend)), GOOD, sim::jobs::Job::with_duty(sim::content::Duty::Mend).name(), None),
+        Some(Assignment::Build) => (
+            job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)),
+            GOOD,
+            sim::jobs::Job::with_duty(sim::content::Duty::Build).name(),
+            s.agents.build_targets.get(&b.id).copied(),
+        ),
         Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
         None => (Icon::Idle, ACCENT, "Free", None),
     }
@@ -279,7 +285,9 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     let sel = Selection::Site(id);
     let home = s.work.homes.get(&id).and_then(|h| s.colony.lodges.iter().find(|l| l.id == *h));
     let name = match (b.kind, home) {
-        (k, Some(l)) if k.is_home() => s.colony.family(l.family).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone()),
+        (k, Some(l)) if k.is_home() && s.colony.beavers.iter().any(|x| x.lodge == Some(l.id)) => {
+            s.colony.family(l.family).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone())
+        }
         _ => b.kind.spec().name.to_string(),
     };
     let made = match (s.buildings.pebbled.contains(&id), b.reinforced) {
@@ -360,8 +368,9 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 }
             }
             r.spacer();
-            r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), Peb::Idle).tip(Tip::name("Free a beaver"));
-            r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), Peb::Idle).tip(super::add_beaver_tip(s, id));
+            let add_ok = sim::jobs::add_beaver_check(s, id).is_ok();
+            r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
+            r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), if add_ok { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
         });
         if b.is_complete() {
             repair_row(c, u, id);

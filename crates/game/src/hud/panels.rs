@@ -438,6 +438,9 @@ pub fn alert_tip_in(s: &sim::SimState, p: &Problem) -> Tip {
     for l in breakdown_lines(s, &p.cause, p.kind == ProblemKind::Food) {
         cause.push(l);
     }
+    if p.kind == ProblemKind::Wolf && cause.lines.is_empty() {
+        cause.push(TipLine::new("Wolf sighted", "Click to locate"));
+    }
     for f in std::iter::once(&p.fix).chain(p.alt_fix.iter()) {
         if let Some((icon, _, words)) = fix_face(f) {
             cause.push(TipLine::new(words, "").icon(icon, INK).act(HudAction::Fix(*f, p.focus)));
@@ -453,8 +456,8 @@ fn badge_node() -> Node {
 }
 
 /// What wants the player, as badges side by side at the top centre: standing problems, each
-/// an icon and one number. No words until a badge is clicked; then its card opens beneath the
-/// row, with the fix. What merely happened goes to the journal instead.
+/// an icon and one number. Hovering a badge shows its text and fix; clicking opens its card
+/// beneath the row. What merely happened goes to the journal instead.
 pub fn badges(c: &Ctx) -> Vec<VNode> {
     if c.problems.is_empty() {
         return Vec::new();
@@ -475,6 +478,7 @@ pub fn badges(c: &Ctx) -> Vec<VNode> {
                 }
             });
             t.skin(skin);
+            t.tip(alert_tip(c, p));
             // The wolf's badge takes the camera to the wolf; the others open their card.
             t.action(if p.kind == ProblemKind::Wolf { HudAction::FocusWolf } else { HudAction::Badge(key.clone()) });
             if open == Some(key.as_str()) {
@@ -544,18 +548,27 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     vec![col]
 }
 
-/// Left: how to read the map. Five lenses; clicking the one that is on returns to the plain view.
+/// Left: how to read the map. Normal view first, then the five lenses; clicking the active
+/// lens (or pressing Esc) returns to Normal view.
 pub fn rail(c: &Ctx) -> Vec<VNode> {
     let rail = vec![panel_col(Node { padding: UiRect::all(Val::Px(8.0)), align_items: AlignItems::Center, ..abs(Some(12.0), None, Some(84.0), None) }, 6.0, |u| {
-        for (l, icon, name, key) in [(MapLens::Water, Icon::ViewWater, "Water", "F1"), (MapLens::Forest, Icon::ViewForest, "Forest", "F2"), (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"), (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"), (MapLens::Paths, Icon::Walk, "Paths", "F5")] {
+        for (l, icon, name, key) in [
+            (MapLens::World, Icon::ViewWorld, "Normal", "Esc"),
+            (MapLens::Water, Icon::ViewWater, "Water", "F1"),
+            (MapLens::Forest, Icon::ViewForest, "Forest", "F2"),
+            (MapLens::Elevation, Icon::ViewElevation, "Height", "F3"),
+            (MapLens::Deposits, Icon::ViewDeposits, "Deposits", "F4"),
+            (MapLens::Paths, Icon::Walk, "Paths", "F5"),
+        ] {
             let on = c.lens == l;
-            u.pebble(icon, 17.0, HudAction::SetLens(if on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
+            let next = if l == MapLens::World || on { MapLens::World } else { l };
+            u.pebble(icon, 17.0, HudAction::SetLens(next), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
         }
         u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();
         u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Jobs) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony").key("Tab"));
         let open = c.hud.ledger.is_some();
-        u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Territory").key("L"));
+        u.pebble(Icon::Territory, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Territory").key("L"));
     })];
     rail
 }
@@ -587,7 +600,11 @@ fn item_cost(kind: BuildingKind) -> Vec<(Good, f32)> {
 }
 
 fn item_tip(kind: BuildingKind) -> Tip {
-    let mut t = Tip::titled(Some((building_icon(kind), INK)), kind.spec().name.as_str());
+    let spec = kind.spec();
+    let mut t = Tip::titled(Some((building_icon(kind), INK)), spec.name.as_str());
+    if !spec.summary.is_empty() {
+        t.push(TipLine::new(spec.summary.as_str(), ""));
+    }
     if kind.is_dam() {
         t.push(TipLine::new("Per load", "raises one cell"));
     }
@@ -916,7 +933,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
     let inside = |(x, y): (f32, f32)| (0.0..=SIZE).contains(&x) && (0.0..=SIZE).contains(&y);
     let (cx, cy) = at(c.view_cell);
     // Each alert shows where it is as its own icon, ringed red if urgent.
-    let mut markers: Vec<((f32, f32), Icon, Color, Color)> = Vec::new();
+    let mut markers: Vec<((f32, f32), Icon, Color, Color, &Problem)> = Vec::new();
     for p in c.problems {
         // The wolf shows only while the colony sees it, where it is now.
         let focus = match p.kind {
@@ -927,7 +944,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
             let m = at(f);
             let (icons, _, _) = alert_face(c.s, p);
             if let (true, Some(&(icon, col))) = (inside(m), icons.first()) {
-                markers.push((m, icon, col, if p.severity == Severity::Urgent { BAD } else { WARN }));
+                markers.push((m, icon, col, if p.severity == Severity::Urgent { BAD } else { WARN }, p));
             }
         }
     }
@@ -948,7 +965,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                     ..default()
                 }))
                 .border(BorderColor::all(SELECT));
-                for &((x, y), icon, col, ring) in &markers {
+                for &((x, y), icon, col, ring, p) in &markers {
                     let v = m.node(
                         Node {
                             position_type: PositionType::Absolute,
@@ -966,7 +983,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
                             d.icon(icon, 11.0, col);
                         },
                     );
-                    v.bg(Color::srgba(0.1, 0.09, 0.08, 0.9)).border(BorderColor::all(ring));
+                    v.bg(Color::srgba(0.1, 0.09, 0.08, 0.9)).border(BorderColor::all(ring)).tip(alert_tip(c, p)).click_through();
                 }
                 m.nodes
             });

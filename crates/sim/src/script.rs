@@ -77,6 +77,7 @@ pub fn to_line(c: &Command) -> String {
                 Some(Assignment::Slot(b, s)) => format!("slot {} {s}", b.0),
                 Some(Assignment::Go(c)) => format!("go {} {}", c.0, c.1),
                 Some(Assignment::Mend) => "upkeep".to_string(),
+                Some(Assignment::Build) => "build".to_string(),
             };
             format!("assign {} {to}", ids(who))
         }
@@ -179,6 +180,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 Some("slot") => Some(Assignment::Slot(b(3)?, num(t.get(4), "slot")?)),
                 Some("go") => Some(Assignment::Go((num(t.get(3), "x")?, num(t.get(4), "y")?))),
                 Some("upkeep") => Some(Assignment::Mend),
+                Some("build") => Some(Assignment::Build),
                 other => return Err(format!("unknown assignment {other:?}")),
             };
             Command::Assign { who, to }

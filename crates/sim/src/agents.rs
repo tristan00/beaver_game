@@ -45,6 +45,8 @@ pub enum Assignment {
     Go(Cell),
     /// Works as a mender: goes wherever repair is most needed, without a seat.
     Mend,
+    /// Works as a builder: goes to any active build site, dam or canal, without a seat.
+    Build,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -171,6 +173,9 @@ pub struct Agents {
     /// Where each mender is working now. Chosen again every few steps, so it is not saved.
     #[serde(skip)]
     pub maint_targets: BTreeMap<BeaverId, BuildingId>,
+    /// Where each free-roaming builder is working now. Chosen again every few steps, so it is not saved.
+    #[serde(skip)]
+    pub build_targets: BTreeMap<BeaverId, BuildingId>,
     /// Cells from each cell to the nearest water, and the day it was measured (see `shore`).
     #[serde(skip)]
     pub(crate) shore: (f64, Vec<u16>),
@@ -472,7 +477,7 @@ impl Gather {
                     _ => None,
                 }
             }
-            Assignment::Go(_) | Assignment::Mend => None,
+            Assignment::Go(_) | Assignment::Mend | Assignment::Build => None,
         }
     }
     fn forages(&self) -> bool {
@@ -844,6 +849,10 @@ fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
             Some(&b) if sim.buildings.building(b).is_some_and(|x| crate::maintenance::needs_mending(sim, x)) => Duty::Mend(b),
             Some(&b) => Duty::Build(b),
             None => Duty::None,
+        },
+        None if ag.assignment == Some(Assignment::Build) => match sim.agents.build_targets.get(&ag.id) {
+            Some(&b) if sim.work.place(b).is_some_and(|p| p.site.is_some() || (!p.paused && (crate::dams::has_work_for(sim, b, false) || crate::canals::has_work_for(sim, b, false)))) => Duty::Build(b),
+            _ => Duty::None,
         },
         None => ag.assignment.and_then(|a| Gather::resolve(sim, a)).map_or(Duty::None, Duty::Collect),
     }
@@ -2297,10 +2306,16 @@ pub(crate) fn site_waits_on(sim: &SimState, p: &crate::work::Workplace) -> Optio
     s.needed.iter().map(|n| n.0).find(|&g| s.missing(g) > WORK_EPS)
 }
 
-/// Where the colony keeps its goods: its first store of the dam's material, its first home, or the supply pile.
+/// Where the colony keeps its goods: its first store of the dam's material, its first home,
+/// the supply pile, or (as a last resort) a lodge or beaver's cell.
 pub fn colony_home(sim: &SimState) -> Option<Cell> {
     let built = |k: BuildingKind| sim.buildings.buildings.iter().find(|b| b.kind == k && b.is_complete()).map(|b| (b.pos.0 + 1, b.pos.1 + 1));
-    BuildingKind::store_for(crate::dams::material()).and_then(built).or_else(|| built(BuildingKind::home())).or(sim.work.supplies)
+    BuildingKind::store_for(crate::dams::material())
+        .and_then(built)
+        .or_else(|| built(BuildingKind::home()))
+        .or(sim.work.supplies)
+        .or_else(|| sim.colony.lodges.first().map(|l| (l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize)))
+        .or_else(|| sim.colony.beavers.first().map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize)))
 }
 
 /// The ground round home that beavers are sent out over to gather.
@@ -2338,6 +2353,83 @@ const REPAIR_SWITCH: f32 = 0.2;
 
 fn is_mender(sim: &SimState, who: BeaverId) -> bool {
     sim.work.slot_of(who).is_none() && sim.agents.get(who).is_some_and(|a| a.assignment == Some(Assignment::Mend))
+}
+
+fn is_roaming_builder(sim: &SimState, who: BeaverId) -> bool {
+    sim.work.slot_of(who).is_none() && sim.agents.get(who).is_some_and(|a| a.assignment == Some(Assignment::Build))
+}
+
+/// Builders assigned without a fixed seat automatically pick up any active build site, dam, or
+/// canal needing new work, preferring sites with work ready and higher priority, and wait when
+/// nothing needs building.
+fn send_builders(sim: &mut SimState) {
+    let builders: Vec<(BeaverId, Cell)> = sim
+        .colony
+        .beavers
+        .iter()
+        .filter(|b| b.can_work() && is_roaming_builder(sim, b.id))
+        .filter_map(|b| sim.agents.get(b.id).map(|a| (b.id, a.cell)))
+        .collect();
+    sim.agents.build_targets.retain(|who, _| builders.iter().any(|b| b.0 == *who));
+    if builders.is_empty() {
+        return;
+    }
+    let any_unassigned = builders.iter().any(|(who, _)| !sim.agents.build_targets.contains_key(who));
+    if !any_unassigned && sim.steps % RETARGET_STEPS != 0 {
+        return;
+    }
+    let places: Vec<(BuildingId, crate::work::Priority, Cell)> = sim
+        .work
+        .places
+        .iter()
+        .filter(|p| {
+            !p.paused
+                && (is_site(sim, p)
+                    || (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.unusable(b, &sim.water.depth))
+                        && (crate::dams::has_work_for(sim, p.building, false) || crate::canals::has_work_for(sim, p.building, false))))
+        })
+        .filter_map(|p| Some((p.building, p.priority, sim.buildings.building(p.building)?.pos)))
+        .collect();
+    for (who, at) in builders {
+        let ag = sim.agents.get(who);
+        let ready = |b: BuildingId| ag.is_some_and(|a| build_task(sim, b, a).is_some());
+        let prio_of = |b: BuildingId| places.iter().find(|p| p.0 == b).map(|p| p.1);
+        let current = sim
+            .agents
+            .build_targets
+            .get(&who)
+            .copied()
+            .filter(|&b| prio_of(b).is_some() && reaches_place(sim, at, b));
+        let cur_rank = current.map(|b| (ready(b), prio_of(b).unwrap()));
+        let crowd = |b: BuildingId| {
+            let slotted = sim.work.place(b).map_or(0, |p| p.builders());
+            let roaming = sim.agents.build_targets.iter().filter(|(w, t)| **w != who && **t == b).count();
+            slotted + roaming
+        };
+        let best = places
+            .iter()
+            .filter(|p| reaches_place(sim, at, p.0))
+            .map(|p| (p.0, ready(p.0), p.1, p.2))
+            .filter(|p| cur_rank.is_none_or(|(cr, cp)| (p.1, p.2) > (cr, cp)))
+            .min_by_key(|p| {
+                (
+                    std::cmp::Reverse(p.1),
+                    std::cmp::Reverse(p.2),
+                    crowd(p.0),
+                    p.3.0.abs_diff(at.0).pow(2) + p.3.1.abs_diff(at.1).pow(2),
+                    p.0,
+                )
+            })
+            .map(|p| p.0);
+        match best.or(current) {
+            Some(b) => {
+                sim.agents.build_targets.insert(who, b);
+            }
+            None => {
+                sim.agents.build_targets.remove(&who);
+            }
+        }
+    }
 }
 
 /// Menders need no seats and no orders, as gatherers need none. Each goes to the place it can
@@ -2849,6 +2941,7 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     { let _p = crate::prof::scope("step/agents/sync"); sync_agents(sim); }
     { let _p = crate::prof::scope("step/agents/tidy"); tidy(sim); }
     { let _p = crate::prof::scope("step/agents/retarget"); retarget(sim); }
+    { let _p = crate::prof::scope("step/agents/builders"); send_builders(sim); }
     { let _p = crate::prof::scope("step/agents/menders"); send_menders(sim); }
     { let _p = crate::prof::scope("step/agents/supplies"); crate::supply::tidy(sim); }
     let ids: Vec<BeaverId> = sim.agents.by_id.keys().copied().collect();
@@ -2893,13 +2986,30 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
 
 /// Cells of history an agent keeps (`Agent::history`): more than it covers between two looks
 /// at the world at the fastest speed.
-const HISTORY_CELLS: usize = 96;
+const HISTORY_CELLS: usize = 256;
 
 impl Agent {
     /// This step's trail into the history, at the time the step ends (`now`).
+    /// When the agent stays put (working, delivering, eating, resting), record the dwell so
+    /// fast-speed playback visits and pauses at destinations instead of cutting across them.
     fn keep_history(&mut self, now: f64) {
-        for &(c, g) in &self.trail {
-            self.history.push_back((now, c, g));
+        if self.trail.is_empty() {
+            let len = self.history.len();
+            let same_last_two = len >= 2
+                && self.history[len - 1].1 == self.cell
+                && self.history[len - 2].1 == self.cell;
+            if same_last_two {
+                if let Some(back) = self.history.back_mut() {
+                    back.0 = now;
+                    back.2 = self.gait;
+                }
+            } else if self.history.back().is_none_or(|h| h.1 != self.cell || (now - h.0).abs() > 1e-9) {
+                self.history.push_back((now, self.cell, self.gait));
+            }
+        } else {
+            for &(c, g) in &self.trail {
+                self.history.push_back((now, c, g));
+            }
         }
         while self.history.len() > HISTORY_CELLS {
             self.history.pop_front();

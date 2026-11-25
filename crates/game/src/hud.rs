@@ -889,9 +889,14 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
 
 pub(crate) fn add_beaver_tip(s: &sim::SimState, b: BuildingId) -> Tip {
     let mut t = Tip::name("Add a beaver");
-    if let Some(p) = sim::jobs::add_beaver_preview(s, b) {
-        let who = s.colony.beaver(p.who).map(|x| x.name.clone()).unwrap_or_default();
-        t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK));
+    match sim::jobs::add_beaver_check(s, b) {
+        Ok(p) => {
+            let who = s.colony.beaver(p.who).map(|x| x.name.clone()).unwrap_or_default();
+            t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK));
+        }
+        Err(why) => {
+            t.push(TipLine::new(why, "").color(WARN));
+        }
     }
     t
 }
@@ -1019,7 +1024,7 @@ fn refresh_fast(
     flow: Res<Flow>,
     lens: Res<MapLens>,
     sel: Res<Selection>,
-    (windows, pops, problems, time, wolf_drawn): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Option<Res<crate::entities_render::WolfDrawn>>),
+    (windows, pops, problems, time, wolf_drawn, orbit): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Option<Res<crate::entities_render::WolfDrawn>>, Res<crate::camera::OrbitCamera>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh fast");
@@ -1087,7 +1092,7 @@ fn refresh_fast(
             }
             _ => match cams.single() {
                 Ok((cam, gt)) => {
-                    let mut tree = world::pond_levels(s, cam, gt, scale.0, hover.0);
+                    let mut tree = world::water_labels(s, cam, gt, scale.0, hover.0, &orbit, *lens);
                     tree.extend(world::markers(s, cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.key()))));
                     tree
                 }

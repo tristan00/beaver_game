@@ -1,3 +1,4 @@
+mod app_icon;
 mod audio;
 mod build_logic;
 mod camera;
@@ -92,6 +93,7 @@ fn main() -> AppExit {
         input::InputPlugin,
         input_trace::InputTracePlugin,
         startflow::StartPlugin,
+        app_icon::AppIconPlugin,
         icons::IconsPlugin,
         hud::HudPlugin,
         menu::MenuPlugin,

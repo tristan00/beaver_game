@@ -597,7 +597,8 @@ fn dams(c: &Ctx, u: &mut Ui) {
             cards.col(6.0, |k| {
                 k.row(10.0, |r| {
                     r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), 18.0, MUD);
-                    r.bold(format!("{}", i + 1), 14.0, INK);
+                    let title = sim::names::pond_name(s, b.id).map_or_else(|| format!("Dam {}", i + 1), |n| n.to_string());
+                    r.bold(title, 14.0, INK);
                     r.pips(health, if health < 0.5 { BAD } else if health < sim::dams::REPAIR_BELOW { WARN } else { GOOD }).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
                     r.spacer();
                     let left = sim::dams::loads_left(s, b.id);

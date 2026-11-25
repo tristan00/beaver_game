@@ -176,7 +176,13 @@ pub fn place_error(e: &PlaceError) -> String {
 }
 
 pub fn sim_error(m: &str) -> String {
-    let l = m.to_lowercase();
+    let raw = m.trim();
+    let clean = raw
+        .strip_prefix("invalid command:")
+        .or_else(|| raw.strip_prefix("InvalidCommand:"))
+        .unwrap_or(raw)
+        .trim();
+    let l = clean.to_lowercase();
     let table: &[(&str, &str)] = &[
         ("in the way", "Needs lock"),
         ("at least one good", "No goods"),
@@ -187,23 +193,37 @@ pub fn sim_error(m: &str) -> String {
         ("already that high", "Built"),
         ("dam height", "Crest 0.5-3"),
         ("not a valid dam line", "No pond"),
+        ("too young", "Too young"),
         ("kit", "Too young"),
         ("notadult", "Too young"),
-        ("slottaken", "Taken"),
+        ("slottaken", "Seat taken"),
+        ("slotoutofrange", "No open seat"),
         ("only unfinished", "Finished"),
         ("haul needs", "No store"),
-        ("nosuchworkplace", "Gone"),
+        ("nosuchworkplace", "No worker slots"),
         ("no building", "Gone"),
-        ("no agent", "Unreachable"),
+        ("no agent", "Not on map yet"),
+        ("no reachable", "Unreachable"),
         ("invalidarea", "Bad area"),
         ("blocked", "Occupied"),
         ("out of bounds", "Off map"),
+        ("outside the map", "Off map"),
         ("disabled", "Locked"),
         ("(locked)", "Locked"),
         ("too deep", "Too deep"),
-        ("flooded", "Flooded"),
     ];
-    table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
+    if let Some((_, v)) = table.iter().find(|(k, _)| l.contains(k)) {
+        return (*v).to_string();
+    }
+    // Pass through plain, human-readable refusal reasons (such as job refusal details)
+    // instead of hiding them behind "Refused".
+    if !clean.is_empty() && clean.len() <= 64 && clean.contains(' ') && !clean.contains('{') {
+        let mut chars = clean.chars();
+        if let Some(first) = chars.next() {
+            return first.to_uppercase().collect::<String>() + chars.as_str();
+        }
+    }
+    "Refused".into()
 }
 
 /// A job's icon, as its row names it.
@@ -214,4 +234,43 @@ pub fn job_icon(j: Job) -> Icon {
 /// A beaver's name with its epithet, if it has earned one.
 pub fn full_name(s: &sim::SimState, id: sim::colony::BeaverId, name: &str) -> String {
     sim::deeds::full_name(s, id, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn building_summaries_are_short_and_present() {
+        for kind in BuildingKind::all().filter(|k| k.row().menu.is_some()) {
+            let s = kind.spec().summary.trim();
+            let words = s.split_whitespace().count();
+            assert!((2..=4).contains(&words), "building {} summary {:?} must be 2-4 words", kind.key(), s);
+        }
+    }
+
+    #[test]
+    fn content_icons_all_exist() {
+        for g in Good::all() {
+            let _ = good_icon(g);
+        }
+        for b in BuildingKind::all() {
+            let _ = building_icon(b);
+        }
+        for r in ResourceKind::all() {
+            let _ = resource_icon(r);
+        }
+        for j in Job::all() {
+            let _ = job_icon(j);
+        }
+    }
+
+    #[test]
+    fn sim_error_preserves_job_refusal_reasons() {
+        assert_eq!(sim_error("invalid command: beaver 3 is too young to work"), "Too young");
+        assert_eq!(sim_error("invalid command: No reachable destination for beaver 3"), "Unreachable");
+        assert_eq!(sim_error("invalid command: No active build site"), "No active build site");
+        assert_eq!(sim_error("invalid command: All seats full — build another haul mound"), "All seats full — build another haul mound");
+        assert_eq!(sim_error("invalid command: Workplace paused"), "Workplace paused");
+    }
 }

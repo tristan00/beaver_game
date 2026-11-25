@@ -149,6 +149,7 @@ fn menu_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<Menu>,
     hud: Option<Res<hud::HudState>>,
+    lens: Option<Res<hud::MapLens>>,
     sel: Res<Selection>,
     typing: Option<Res<hud::TextCapture>>,
     mut clock: ResMut<SimClock>,
@@ -164,7 +165,18 @@ fn menu_keys(
         Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.welcome || h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open);
+            let busy = hud.as_ref().is_some_and(|h| {
+                h.welcome
+                    || h.opening.is_some()
+                    || h.tool != hud::Tool::None
+                    || h.colony.is_some()
+                    || h.ledger.is_some()
+                    || h.page().is_some()
+                    || h.open_badge.is_some()
+                    || h.journal_open
+                    || h.follow.is_some()
+                    || !h.selected.is_empty()
+            }) || lens.is_some_and(|l| *l != hud::MapLens::World);
             if !busy && *sel == Selection::None {
                 menu.saved = None;
                 menu.was_paused = clock.paused;

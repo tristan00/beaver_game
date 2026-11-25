@@ -216,6 +216,12 @@ pub(crate) fn chamber_holes(s: &sim::SimState) -> Vec<(Vec2, Vec2, f32, f32)> {
     s.locks.at.values().filter(|l| l.built).filter_map(|l| chamber(s, l)).map(|ch| (ch.centre, ch.axis, ch.half, 0.66 * WIDTH)).collect()
 }
 
+/// Each built lock's chamber bed as the terrain clears it inside the walls: middle, axis along
+/// flow, half length, half inner width, and chamber floor elevation.
+pub(crate) fn chamber_floors(s: &sim::SimState) -> Vec<(Vec2, Vec2, f32, f32, f32)> {
+    s.locks.at.values().filter(|l| l.built).filter_map(|l| chamber(s, l)).map(|ch| (ch.centre, ch.axis, ch.half, 0.66 * WIDTH, ch.floor)).collect()
+}
+
 /// Where a beaver is in a lock's working: coming in (how far through its wait), or swimming
 /// out down the lane, and whether it goes up, from the low side to the high.
 #[derive(Clone, Copy, Debug, PartialEq)]

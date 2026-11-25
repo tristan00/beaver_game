@@ -477,67 +477,179 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
     out
 }
 
-/// The water lens: over each dam's pond, how high it stands against the water under the
-/// pointer (against the lowest pond in view when the pointer isn't on water), so what joining
-/// two of them would do reads at a glance.
-pub fn pond_levels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hover: Option<Cell>) -> Vec<VNode> {
-    if crate::terrain_render::map_lens() != crate::terrain_render::WATER_LENS {
+/// Camera height (m above target) at which named bodies of water begin showing on the map in
+/// Normal view, reaching full opacity at `WATER_NAME_FULL_HEIGHT`.
+const WATER_NAME_SHOW_HEIGHT: f32 = 50.0;
+const WATER_NAME_FULL_HEIGHT: f32 = 65.0;
+
+/// Pick the cell in `cells` closest to its centroid, so a label always lands on the water itself.
+fn water_anchor(cells: &[Cell]) -> Option<Cell> {
+    if cells.is_empty() {
+        return None;
+    }
+    let (sx, sy) = cells.iter().fold((0.0f32, 0.0f32), |a, c| (a.0 + c.0 as f32, a.1 + c.1 as f32));
+    let (cx, cy) = (sx / cells.len() as f32, sy / cells.len() as f32);
+    cells
+        .iter()
+        .copied()
+        .min_by(|a, b| {
+            let d = |c: &Cell| (c.0 as f32 - cx).powi(2) + (c.1 as f32 - cy).powi(2);
+            d(a).total_cmp(&d(b))
+        })
+}
+
+/// Labels over water bodies:
+/// - In Water map mode: every named body of water shows its name, and dam ponds also show their
+///   level relative to the water pointed at (or the lowest pond in view).
+/// - In Normal view when zoomed out above `WATER_NAME_SHOW_HEIGHT`: every named body of water
+///   shows its name cleanly over the map.
+pub fn water_labels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hover: Option<Cell>, orbit: &crate::camera::OrbitCamera, lens: MapLens) -> Vec<VNode> {
+    let active_lens = crate::terrain_render::map_lens();
+    let in_water = active_lens == crate::terrain_render::WATER_LENS;
+    let in_normal = !in_water && lens == MapLens::World;
+    let cam_height = (orbit.eye().y - orbit.target.y).max(0.0);
+    let name_alpha = if in_water {
+        1.0
+    } else if in_normal && cam_height >= WATER_NAME_SHOW_HEIGHT {
+        ((cam_height - WATER_NAME_SHOW_HEIGHT) / (WATER_NAME_FULL_HEIGHT - WATER_NAME_SHOW_HEIGHT)).clamp(0.25, 1.0)
+    } else {
+        0.0
+    };
+    if !in_water && name_alpha <= 0.0 {
         return Vec::new();
     }
     let n = s.height.width() as i32;
     let depth = |c: Cell| s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
     let surface = |c: Cell| s.height.get(c.0, c.1).copied().unwrap_or(0.0) + depth(c);
     let wet = |c: Cell| depth(c) > sim::buildings::WET_DEPTH;
-    // Each pond's level: the water against its dam's upstream face, and where to show it.
-    let mut ponds: Vec<(f32, Vec2)> = Vec::new();
-    for d in s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {
+    let project_cell = |c: Cell, level: f32| -> Option<Vec2> {
+        let mut w = cell_world(&s.height, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
+        w.y = level + 1.3;
+        cam.world_to_viewport(gt, w).ok().map(|v| v / scale.max(0.01))
+    };
+
+    struct Entry {
+        name: Option<String>,
+        level: Option<f32>,
+        at: Vec2,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1. Standing dam ponds: in Water mode these get level comparisons (and their name if named);
+    //    in zoomed-out Normal mode only named ones appear.
+    for b in &s.buildings.buildings {
+        let Some(d) = b.dam.as_deref() else { continue };
+        let name = sim::names::pond_name(s, b.id).map(|n| n.to_string());
+        if !in_water && name.is_none() {
+            continue;
+        }
         let on_dam: std::collections::HashSet<Cell> = d.cells.iter().map(|c| c.cell).collect();
         let (ux, uy) = (-d.downstream.0, -d.downstream.1);
-        let face: Vec<Cell> = d.line().filter_map(|c| {
-            (1..=d.rows as i32 + 2).map(|k| (c.cell.0 as i32 + ux * k, c.cell.1 as i32 + uy * k)).find(|&(x, y)| x < 0 || y < 0 || x >= n || y >= n || !on_dam.contains(&(x as usize, y as usize)))
-                .filter(|&(x, y)| x >= 0 && y >= 0 && x < n && y < n).map(|(x, y)| (x as usize, y as usize))
-        }).filter(|&c| wet(c)).collect();
-        if face.is_empty() {
-            continue;
-        }
-        let level = face.iter().map(|&c| surface(c)).sum::<f32>() / face.len() as f32;
-        // Over the middle of the pond's wet cells, or the middle of its wet face.
+        let face: Vec<Cell> = d
+            .line()
+            .filter_map(|c| {
+                (1..=d.rows as i32 + 2)
+                    .map(|k| (c.cell.0 as i32 + ux * k, c.cell.1 as i32 + uy * k))
+                    .find(|&(x, y)| x < 0 || y < 0 || x >= n || y >= n || !on_dam.contains(&(x as usize, y as usize)))
+                    .filter(|&(x, y)| x >= 0 && y >= 0 && x < n && y < n)
+                    .map(|(x, y)| (x as usize, y as usize))
+            })
+            .filter(|&c| wet(c))
+            .collect();
         let flooded: Vec<Cell> = d.pond.iter().flat_map(|p| p.flooded.iter().copied()).filter(|&c| wet(c)).collect();
-        let around = if flooded.is_empty() { &face } else { &flooded };
-        let (sx, sy) = around.iter().fold((0.0, 0.0), |a, c| (a.0 + c.0 as f32, a.1 + c.1 as f32));
-        let centre = (sx / around.len() as f32, sy / around.len() as f32);
-        let mid = *around.iter().min_by(|a, b| {
-            let d = |c: &&Cell| (c.0 as f32 - centre.0).powi(2) + (c.1 as f32 - centre.1).powi(2);
-            d(a).total_cmp(&d(b))
-        }).unwrap_or(&face[0]);
-        let mut w = cell_world(&s.height, (mid.0 as f32 + 0.5, mid.1 as f32 + 0.5));
-        w.y = level + 1.2;
-        let Some(at) = cam.world_to_viewport(gt, w).ok().map(|v| v / scale.max(0.01)) else { continue };
+        let around = if !flooded.is_empty() { &flooded } else { &face };
+        let Some(mid) = water_anchor(around) else { continue };
+        let level = if !face.is_empty() {
+            face.iter().map(|&c| surface(c)).sum::<f32>() / face.len() as f32
+        } else {
+            surface(mid)
+        };
+        let Some(at) = project_cell(mid, level) else { continue };
         // Two dams on one pond show it once.
-        if ponds.iter().any(|p| (p.0 - level).abs() < 0.05 && p.1.distance(at) < 90.0) {
+        if let Some(ref nm) = name {
+            if !seen_names.insert(nm.clone()) {
+                continue;
+            }
+        } else if entries.iter().any(|e| e.level.is_some_and(|l| (l - level).abs() < 0.05) && e.at.distance(at) < 90.0) {
             continue;
         }
-        ponds.push((level, at));
+        entries.push(Entry { name, level: in_water.then_some(level), at });
     }
-    let pointed = hover.filter(|&c| wet(c)).map(surface);
-    let Some(reference) = pointed.or_else(|| ponds.iter().map(|p| p.0).reduce(f32::min)) else { return Vec::new() };
-    if pointed.is_none() && ponds.len() < 2 {
-        return Vec::new();
-    }
-    ponds.iter().map(|&(level, at)| {
-        let dz = level - reference;
-        let even = dz.abs() < 0.05;
-        let mut v = VNode::new(Node { position_type: PositionType::Absolute, left: Val::Px(at.x - 26.0), top: Val::Px(at.y - 14.0), padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)), ..row_node(3.0) });
-        let mut ui = Ui::default();
-        if !even {
-            ui.icon(if dz > 0.0 { Icon::Up } else { Icon::Down }, 12.0, if dz > 0.0 { ACCENT } else { WATER });
+
+    // 2. Any other named body of water (e.g. a named pond whose dam was later removed, or
+    //    whose dam had no wet face yet): still show its name over its water cells.
+    if name_alpha > 0.0 {
+        for pond in &s.names.ponds {
+            if pond.name.is_empty() || seen_names.contains(&pond.name) {
+                continue;
+            }
+            let wet_cells: Vec<Cell> = pond.cells().iter().copied().filter(|&c| wet(c)).collect();
+            let chosen = if !wet_cells.is_empty() { &wet_cells[..] } else if pond.dam.is_some() { pond.cells() } else { continue };
+            let Some(mid) = water_anchor(chosen) else { continue };
+            let level = surface(mid);
+            let Some(at) = project_cell(mid, level) else { continue };
+            seen_names.insert(pond.name.clone());
+            entries.push(Entry { name: Some(pond.name.clone()), level: None, at });
         }
-        ui.bold(if even { "0 m".to_string() } else { format!("{} m", num(dz.abs())) }, 12.0, INK);
-        v.children = ui.nodes;
-        v.skin(Skin::Plate);
-        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" })).click_through();
-        v
-    }).collect()
+    }
+
+    let pointed = in_water.then(|| hover.filter(|&c| wet(c)).map(surface)).flatten();
+    let dam_pond_count = entries.iter().filter(|e| e.level.is_some()).count();
+    let reference = if in_water && (pointed.is_some() || dam_pond_count >= 2) {
+        pointed.or_else(|| entries.iter().filter_map(|e| e.level).reduce(f32::min))
+    } else {
+        None
+    };
+
+    let mut out = Vec::new();
+    for entry in entries {
+        let show_name = entry.name.as_deref().filter(|_| name_alpha > 0.0);
+        let dz = entry.level.zip(reference).map(|(l, r)| l - r);
+        if show_name.is_none() && dz.is_none() {
+            continue;
+        }
+        // A transparent 220px-wide centred wrapper ensures every label sits squarely over its anchor.
+        let mut wrap = VNode::new(Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(entry.at.x - 110.0),
+            top: Val::Px(entry.at.y - 18.0),
+            width: Val::Px(220.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(3.0),
+            ..default()
+        });
+        let mut ui = Ui::default();
+        if let Some(name) = show_name {
+            let pill = ui.row(5.0, |r| {
+                r.icon(Icon::Drop, 12.0, WATER.with_alpha(name_alpha));
+                r.bold(name.to_string(), 13.0, INK.with_alpha(name_alpha));
+            });
+            pill.node.padding = UiRect::axes(Val::Px(9.0), Val::Px(3.0));
+            pill.node.border = UiRect::all(Val::Px(1.0));
+            pill.node.border_radius = BorderRadius::all(Val::Px(6.0));
+            pill.bg(Color::srgba(0.07, 0.10, 0.14, 0.80 * name_alpha))
+                .border(BorderColor::all(WATER.with_alpha(0.45 * name_alpha)));
+            pill.click_through();
+        }
+        if let Some(dz) = dz {
+            let even = dz.abs() < 0.05;
+            let lvl = ui.row(3.0, |r| {
+                if !even {
+                    r.icon(if dz > 0.0 { Icon::Up } else { Icon::Down }, 12.0, if dz > 0.0 { ACCENT } else { WATER });
+                }
+                r.bold(if even { "0 m".to_string() } else { format!("{} m", num(dz.abs())) }, 12.0, INK);
+            });
+            lvl.node.padding = UiRect::axes(Val::Px(7.0), Val::Px(3.0));
+            lvl.skin(Skin::Plate);
+            lvl.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" }))
+                .click_through();
+        }
+        wrap.children = ui.nodes;
+        out.push(wrap);
+    }
+    out
 }
 
 /// Pops at a screen point (refusals by the cursor), for the topmost layer.

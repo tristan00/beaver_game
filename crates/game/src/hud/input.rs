@@ -111,6 +111,8 @@ pub(super) fn hotkeys(
             *sel = Selection::None;
             hud.selected.clear();
             hud.follow = None;
+        } else if *lens != MapLens::World {
+            *lens = MapLens::World;
         }
     }
 }
@@ -417,6 +419,11 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
     match t {
         world::Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return };
+            let workers: Vec<BeaverId> = who.iter().copied().filter(|id| s.colony.beaver(*id).is_some_and(|b| b.can_work())).collect();
+            if workers.is_empty() {
+                hud.refuse("Too young", now);
+                return;
+            }
             let to = if one {
                 sim::agents::Assignment::Resource(rid)
             } else {
@@ -427,8 +434,8 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 sim::agents::Assignment::Area(r.kind, area)
             };
             let kind = r.kind;
-            match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(to) }) {
-                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", who.len()), now),
+            match s.apply(sim::Command::Assign { who: workers.clone(), to: Some(to) }) {
+                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", workers.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
@@ -439,15 +446,23 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             }
         }
         world::Thing::Building(b) => {
+            let workers: Vec<BeaverId> = who.iter().copied().filter(|id| s.colony.beaver(*id).is_some_and(|bv| bv.can_work())).collect();
+            if workers.is_empty() {
+                hud.refuse("Too young", now);
+                return;
+            }
             let mut placed = 0;
-            for &w in who {
+            let mut last_err: Option<String> = None;
+            for &w in &workers {
                 let Some(slot) = s.work.place(b).and_then(|p| p.open_seat(|_| true)).map(|x| x.0) else { break };
-                if s.apply(sim::Command::FillSlot { building: b, slot, who: w }).is_ok() {
-                    placed += 1;
+                match s.apply(sim::Command::FillSlot { building: b, slot, who: w }) {
+                    Ok(_) => placed += 1,
+                    Err(e) => last_err = Some(sim_error(&e.to_string())),
                 }
             }
             if placed == 0 {
-                hud.refuse("Full", now);
+                let why = last_err.unwrap_or_else(|| sim::jobs::workplace_error_reason(s, b));
+                hud.refuse(why, now);
             }
         }
         _ => {}

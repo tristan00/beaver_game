@@ -137,6 +137,9 @@ fn work(c: &Ctx, u: &mut Ui) {
                         }
                     }
                 }
+                if row.filled > 12 {
+                    t.bold(format!("+{}", row.filled - 12), 11.0, MUTED);
+                }
             });
             r.spacer();
             if role.row().shore_limit {
@@ -152,12 +155,12 @@ fn work(c: &Ctx, u: &mut Ui) {
                     r.bold(format!("{n}"), 12.0, INK);
                 }
             }
-            let add = match sim::jobs::role_add_preview(s, role) {
-                Some(p) => Tip::name("Add one").line(s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default(), "free"),
-                None => Tip::name("No one to add"),
+            let (add_look, add_tip) = match sim::jobs::role_add_check(s, role) {
+                Ok(p) => (Peb::Idle, Tip::name("Add one").line(s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default(), "free")),
+                Err(why) => (Peb::Faded, Tip::name("Can't add").line(why, "")),
             };
-            r.pebble(Icon::Minus, 10.0, HudAction::RoleAdjust(role, -1), Peb::Idle).tip(Tip::name("Free one"));
-            r.pebble(Icon::Plus, 10.0, HudAction::RoleAdjust(role, 1), Peb::Idle).tip(add);
+            r.pebble(Icon::Minus, 10.0, HudAction::RoleAdjust(role, -1), if row.filled > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free one"));
+            r.pebble(Icon::Plus, 10.0, HudAction::RoleAdjust(role, 1), add_look).tip(add_tip);
         });
     }
 }

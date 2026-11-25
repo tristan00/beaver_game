@@ -1,15 +1,18 @@
 # Beaver Colony
 
-## Play
+A beaver colony builder and river-hydrology simulation written in Rust and Bevy. Dam streams, flood valleys into ponds, dig canals and locks, manage timber and food through the seasons, and keep your families safe from wolves.
+
+## How to Run
 
 ### Requirements
 
-- [Rust](https://rustup.rs) 1.97.1 or newer (`rustup update` if you have an older toolchain)
-- A GPU with Vulkan, DirectX 12 or Metal support
-- Linux only: the usual Bevy system packages, e.g. on Debian/Ubuntu
-  `sudo apt install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0`
+- [Rust](https://rustup.rs) (edition 2024 — run `rustup update` if you have an older toolchain)
+- A GPU with Vulkan, DirectX 12, or Metal support
+- **Linux only:** Bevy's standard system libraries (on Debian/Ubuntu: `sudo apt install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0`)
 
-### Build
+### Build & Play
+
+Clone the repository and build the release binary from the repo root:
 
 ```sh
 git clone https://github.com/tristan00/beaver_game.git
@@ -17,22 +20,109 @@ cd beaver_game
 cargo build --release -p game
 ```
 
-The first build downloads and compiles dependencies and takes several minutes.
+Then launch the game from the repository root:
 
-### Launch
+- **Windows:** double-click `Play Beaver Colony.cmd` (or run `target\release\beaver_colony.exe`)
+- **macOS / Linux:** run `./target/release/beaver_colony`
 
-Run from the repository root, since saves are written to `saves/` in the current folder.
+You can also build and launch in a single step on any platform with:
 
-- **Windows:** double-click `Play Beaver Colony.cmd`
-- **Any platform:** `cargo run --release -p game`
+```sh
+cargo run --release -p game
+```
 
-Optional arguments (after `--` when using `cargo run`):
+> Saves are stored in `saves/` inside the repository folder, so always launch from the repo root.
 
-| Argument | Effect |
-| --- | --- |
-| `--map ID` | Start on a specific map (`algonquin`, `telemark`, `voyageurs`, …) or `generated` |
-| `--seed N` | Seed for the generated map |
-| `--load FILE` | Continue a saved game |
-| `--sandbox` | River sandbox on a real map (`River Sandbox.cmd` on Windows) |
+---
 
-Example: `cargo run --release -p game -- --map telemark`
+## Roles & Jobs
+
+| Role | Max Slots | Workplace | What They Do |
+| --- | --- | --- | --- |
+| **Builder** | Unlimited | None (roams to any active site, dam, or canal) | Builds structures, dams, canals, gates, and locks. |
+| **Forager** | Unlimited | None | Gathers land food plants, water plants, and bark from felled trees. |
+| **Feller** | Unlimited | None | Fells trees and gnaws logs and branches into sticks. |
+| **Mud digger** | Unlimited | None | Digs mud from mud banks and river mud deposits (pauses when ground freezes). |
+| **Mender** | Unlimited | None | Repairs worn buildings and dams, clears canal silt, and applies refits. |
+| **Hauler** | 3 per Haul mound | Haul mound | Moves goods between stores, balances store levels, and pushes rafts. |
+| **Planter** | 1 per Forester | Forester | Collects seedlings from mature trees and plants saplings in the Forester's area. |
+| **Sentry** | 1 per Lookout | Lookout | Watches for wolves at extended range and slaps tail to warn nearby beavers. |
+| **Pebbler** | 1 per Pebble heap | Pebble heap | Collects river pebbles for pebble-facing dams and buildings (pauses when ground freezes). |
+
+---
+
+## Buildings & Waterworks
+
+| Building | Footprint | Cost | Prerequisites | Storage / Capacity | Seats | Function |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Dam** | Freeform line | Sticks & mud per cell | None | — | Open (Builders) | Holds back water to form ponds and raise water levels; can be raised, widened, extended, reinforced, pebble-faced, or fitted with gates. |
+| **Canal** | Freeform line | Digging labour | None | — | Open (Builders) | Cuts channels to route water or connect ponds for swimming and rafts; can be deepened, widened, extended, or fitted with gates and locks. |
+| **Lodge** | 3×3 (water) | 20 Sticks, 12 Mud | None | Houses 1 family | — | Family home where beavers rest, shelter from bitter weather, and raise kits. |
+| **Stick pile** | 2×2 (water) | 6 Sticks, 2 Mud | None | 400 Sticks | — | Stores sticks gathered by fellers. |
+| **Food cache** | 2×2 (water) | 6 Sticks, 2 Mud | None | 400 Food | — | Stores food plants and bark for the colony, especially over winter. |
+| **Pebble heap** | 2×2 (water) | 4 Sticks, 2 Mud | None | 400 Pebbles | 1 Pebbler | Stores river pebbles and provides a Pebbler seat. |
+| **Forester** | 2×2 (water) | 12 Sticks, 6 Mud | Food cache | 40 Seedlings | 1 Planter | Replants trees within its work area (25×25) and stores seedlings. |
+| **Haul mound** | 2×2 (water) | 10 Sticks, 4 Mud | Stick pile | — | 3 Haulers | Coordinates haulers to balance stores, fulfill haul orders, and run rafts. |
+| **Lookout** | 2×2 (water) | 10 Sticks, 4 Mud | None | — | 1 Sentry | Watch post where a Sentry spots wolves from far away and warns the colony. |
+| **Raft landing** | 2×2 (water) | 20 Sticks, 4 Mud | Haul mound | 1 Raft | — | Launches a log raft so Haulers can carry bulk loads across connected water and locks. |
+
+### Waterworks Upgrades
+
+| Upgrade | Built On | Cost | Prerequisites | Function |
+| --- | --- | --- | --- | --- |
+| **Gate** | Dam or Canal cell | 6 Sticks | Haul mound | Opens, shuts, or holds water at a target level. |
+| **Lock** | Canal gate | 12 Sticks, 4 Mud | Raft landing | Twin-gate chamber that lets rafts pass between two different water levels. |
+
+---
+
+## Trees
+
+| Tree | Type | Growth Speed | Sticks (Logs + Branches) | Bark Food | Fell Work | Flood Tolerance |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Aspen** | Deciduous | Fast (1.35×) | 8 + 4 | 6.0 | 0.90 | Dry land only (dies in 10d flooded) |
+| **Willow** | Deciduous | Very fast (1.50×) | 6 + 6 | 5.0 | 0.80 | Wet-tolerant (up to 0.50 m water) |
+| **Birch** | Deciduous | Fast (1.20×) | 9 + 4 | 4.5 | 0.95 | Dry land only (dies in 12d flooded) |
+| **Alder** | Deciduous | Medium (1.10×) | 8 + 5 | 4.0 | 0.95 | Wet-tolerant (up to 0.40 m water) |
+| **Pine** | Evergreen | Slow (0.85×) | 15 + 3 | 1.5 | 1.25 | Dry land only (dies in 12d flooded) |
+| **Maple** | Deciduous | Slow (0.80×) | 14 + 5 | 3.0 | 1.30 | Dry land only (dies in 14d flooded) |
+| **Spruce** | Evergreen | Slow (0.75×) | 14 + 3 | 1.5 | 1.30 | Shallow-wet tolerant (up to 0.15 m water) |
+| **Beech** | Deciduous | Very slow (0.65×) | 17 + 5 | 2.0 | 1.45 | Dry land only (dies in 10d flooded) |
+
+---
+
+## Food Plants
+
+### Land & Bank Plants
+
+| Plant | Max Food | Regrow / Day | Winter Keep | Habitat |
+| --- | --- | --- | --- | --- |
+| **Sedge** | 12 | 0.055 | 40% | Moist banks & shores |
+| **Reed canary grass** | 16 | 0.070 | 35% | Moist shores & riverbanks |
+| **Meadowsweet** | 14 | 0.055 | 25% | Damp meadows & banks |
+| **Joe-Pye weed** | 16 | 0.050 | 20% | Damp meadows & wetlands |
+| **Wild raspberry** | 20 | 0.045 | 25% | Dry upland clearings |
+
+### Water Plants
+
+Water plants grow in ponds and slow shallows, but become inaccessible when still water freezes over in winter.
+
+| Plant | Water Depth | Max Food | Regrow / Day | Winter Keep |
+| --- | --- | --- | --- | --- |
+| **Water horsetail** | 0.05 – 0.60 m | 15 | 0.065 | 35% |
+| **Cattail** | 0.05 – 0.70 m | 24 | 0.070 | 45% |
+| **Arrowhead** | 0.10 – 0.80 m | 20 | 0.055 | 30% |
+| **Yellow pond lily** | 0.30 – 1.80 m | 28 | 0.060 | 45% |
+| **White water lily** | 0.40 – 2.00 m | 26 | 0.055 | 40% |
+| **Pondweed** | 0.20 – 2.20 m | 18 | 0.075 | 50% |
+
+---
+
+## Animals
+
+| Animal | Role | Max on Map | Diet / Target | Behavior & Colony Interaction |
+| --- | --- | --- | --- | --- |
+| **Beaver** | Colonist | Unlimited | Food plants, water plants, tree bark | Your colonists. Live in family lodges, swim fast in water, flee wolves to water, and work assigned roles. |
+| **Rabbit** | Wildlife | 36 | Food plants, saplings, ground food piles | Grazes near the valley edges, bolts from both beavers and wolves, and is hunted by wolves. |
+| **Deer** | Wildlife | 15 | Food plants, saplings | Grazes across the valley; unafraid of beavers, flees wolves, and is hunted by wolves. |
+| **Bird** | Wildlife | 10 | Food plants, ground food piles | Roams and pecks at plants and dropped food; flies away from beavers and wolves. |
+| **Wolf** | Predator | 3 | Beavers on land, rabbits, deer | Hunts on land and never enters water. Beavers spotted far from water are at risk; Sentries at Lookouts spot wolves early and warn the colony. |

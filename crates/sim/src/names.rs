@@ -81,6 +81,13 @@ pub struct Pond {
     cells: Vec<Cell>,
 }
 
+impl Pond {
+    /// Sample cells of this named body of water.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Names {
     pub ponds: Vec<Pond>,
@@ -369,10 +376,66 @@ fn name_ponds(sim: &mut SimState) {
                 cx >= 0 && cy >= 0 && wet.contains(&(cx as usize, cy as usize))
             }))
         };
-        let first = sim.colony.lodges.iter().filter(|l| on(l.pos)).map(|l| l.family).min();
+        // The first occupied lodge built on this pond gives it its family's name.
+        // Empty lodges carry a placeholder FamilyId(0) or a departed family, so ignore them.
+        let occupied = |id: crate::colony::LodgeId| sim.colony.beavers.iter().any(|b| b.lodge == Some(id));
+        let first = sim.colony.lodges.iter().filter(|l| occupied(l.id) && on(l.pos)).min_by_key(|l| (l.id, l.family)).map(|l| l.family);
         if let Some(f) = first.and_then(|f| sim.colony.family(f)).filter(|f| !f.name.is_empty()) {
             let name = f.name.clone();
             sim.names.ponds.push(Pond { dam: Some(dam), name, cells: sample });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colony::{Family, Landscape};
+    use crate::dams::{Pond as DamPond, Spill};
+
+    struct DryLand;
+    impl Landscape for DryLand {
+        fn is_water(&self, _: f32, _: f32) -> bool { false }
+    }
+
+    #[test]
+    fn pond_names_after_first_occupied_family_ignoring_empty_lodge() {
+        let mut sim = SimState::new(1);
+        let green_run = sim.colony.found((2.0, 2.0), &DryLand).expect("found");
+        sim.colony.families[0].name = "Green Run".into();
+        // Add an empty lodge on the pond at (13, 12) BEFORE Boneset moves in (gets placeholder FamilyId(0)).
+        let _empty_lodge = sim.colony.add_home((13.0, 12.0));
+        // Add a second family ("Boneset") living in a lodge on the pond at (12, 12).
+        let boneset = FamilyId(green_run.0 + 100);
+        sim.colony.families.push(Family { id: boneset, name: "Boneset".into() });
+        let boneset_lodge = sim.colony.add_home((12.0, 12.0));
+        sim.colony.lodges.last_mut().unwrap().family = boneset;
+        sim.colony.beavers[0].family = boneset;
+        sim.colony.beavers[0].lodge = Some(boneset_lodge);
+        // Even if Green Run later adds a lodge on the same pond, Boneset's occupied lodge was first.
+        let later_lodge = sim.colony.add_home((14.0, 12.0));
+        sim.colony.lodges.last_mut().unwrap().family = green_run;
+        sim.colony.beavers[1].lodge = Some(later_lodge);
+
+        // Add a dam holding a pond over (12, 12)..(14, 13).
+        sim.sandbox = true;
+        let dam_id = crate::dams::place(&mut sim, &[(12, 14)]).expect("place dam");
+        let pond = DamPond {
+            level: 1.0,
+            full_level: 1.0,
+            bottom: 0.0,
+            area: 6,
+            volume: 3.0,
+            max_depth: 0.5,
+            inflow: 1.0,
+            outflow: 1.0,
+            days_to_full: 0.0,
+            spill: Spill::None,
+            flooded: vec![(12, 12), (12, 13), (13, 12), (13, 13), (14, 12), (14, 13)],
+        };
+        sim.buildings.buildings.iter_mut().find(|b| b.id == dam_id).unwrap().dam.as_deref_mut().unwrap().pond = Some(pond);
+
+        name_ponds(&mut sim);
+        assert_eq!(pond_name(&sim, dam_id), Some("Boneset"));
     }
 }

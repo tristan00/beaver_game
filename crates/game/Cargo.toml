@@ -10,3 +10,4 @@ path = "src/main.rs"
 [dependencies]
 sim = { path = "../sim" }
 bevy = { version = "=0.20.1" }
+winit = { version = "0.30.13", default-features = false }

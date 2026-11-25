@@ -529,7 +529,7 @@ fn update_water_chunks(
     mut first: Local<bool>,
     mut cursor: Local<usize>,
     mut backlog: ResMut<MeshBacklog>,
-    mut settled: Local<Option<[(u64, u64); 8]>>,
+    mut settled: Local<Option<[(u64, u64); 9]>>,
 ) {
     let _p = ::sim::prof::scope("game/update water chunks");
     backlog.water = true;
