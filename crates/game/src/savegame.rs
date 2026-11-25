@@ -18,12 +18,45 @@ const AUTO: &str = "autosave.sav";
 /// year goes by in a minute).
 const AUTOSAVE_SECONDS: f32 = 300.0;
 
+/// Folder for saves and small player preferences. Uses `./saves` when running inside a repo
+/// or when a local `saves/` folder already exists; otherwise stores saves in the user's app
+/// data folder so a standalone `.exe` works from any location (Desktop, Downloads, etc.).
+pub fn save_dir() -> PathBuf {
+    let local = PathBuf::from(SAVE_DIR);
+    if local.is_dir() || Path::new("crates/sim/content").is_dir() {
+        return local;
+    }
+    #[cfg(windows)]
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(base).join("Beaver Colony").join(SAVE_DIR);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join("Library/Application Support/Beaver Colony").join(SAVE_DIR);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(base) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(base).join("beaver-colony").join(SAVE_DIR);
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(".local/share/beaver-colony").join(SAVE_DIR);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join(SAVE_DIR);
+        }
+    }
+    local
+}
+
 pub fn quick_path() -> PathBuf {
-    Path::new(SAVE_DIR).join(QUICK)
+    save_dir().join(QUICK)
 }
 
 fn auto_path() -> PathBuf {
-    Path::new(SAVE_DIR).join(AUTO)
+    save_dir().join(AUTO)
 }
 
 /// The newest save there is, quick or auto.
@@ -37,7 +70,7 @@ pub fn latest_save() -> Option<PathBuf> {
 
 /// Every save in the save folder, newest first, with its header (or why it cannot be read).
 pub fn saves() -> Vec<(PathBuf, Result<sim::save::Header, String>)> {
-    let Ok(dir) = std::fs::read_dir(SAVE_DIR) else { return Vec::new() };
+    let Ok(dir) = std::fs::read_dir(save_dir()) else { return Vec::new() };
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = dir
         .filter_map(|e| e.ok())
         .map(|e| e.path())

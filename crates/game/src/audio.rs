@@ -80,7 +80,7 @@ impl AudioVolumes {
 const SOUND_FILE: &str = "sound.txt";
 
 fn sound_path() -> std::path::PathBuf {
-    std::path::Path::new(crate::savegame::SAVE_DIR).join(SOUND_FILE)
+    crate::savegame::save_dir().join(SOUND_FILE)
 }
 
 /// Writes the volumes once they have stopped changing for half a second.
@@ -92,7 +92,7 @@ fn keep_volumes(time: Res<Time>, vols: Res<AudioVolumes>, mut waiting: Local<Opt
     *t += time.delta_secs();
     if *t >= 0.5 {
         *waiting = None;
-        let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+        let _ = std::fs::create_dir_all(crate::savegame::save_dir());
         let _ = std::fs::write(sound_path(), vols.to_text());
     }
 }

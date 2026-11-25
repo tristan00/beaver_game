@@ -773,7 +773,7 @@ static FAHRENHEIT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::ne
 const UNITS_FILE: &str = "units.txt";
 
 fn units_path() -> std::path::PathBuf {
-    std::path::Path::new(crate::savegame::SAVE_DIR).join(UNITS_FILE)
+    crate::savegame::save_dir().join(UNITS_FILE)
 }
 
 pub fn fahrenheit() -> bool {
@@ -790,7 +790,7 @@ pub fn fahrenheit() -> bool {
 
 fn set_fahrenheit(on: bool) {
     FAHRENHEIT.store(on as u8, std::sync::atomic::Ordering::Relaxed);
-    let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+    let _ = std::fs::create_dir_all(crate::savegame::save_dir());
     let _ = std::fs::write(units_path(), if on { "fahrenheit
 " } else { "celsius
 " });

@@ -1,5 +1,6 @@
-//! Game content, read from the TOML files in `content/` when the game starts (see the README
-//! there). Each row has a stable `key`, written in saves, and ids are positions in their table.
+//! Game content: built into the binary by default, or overridden from a `content/` folder
+//! beside the executable, `crates/sim/content`, or `BEAVER_CONTENT`. Each row has a stable
+//! `key`, written in saves, and ids are positions in their table.
 use crate::buildings::{Amount, Site};
 use std::marker::PhantomData;
 use crate::plants::PlantSpec;
@@ -9,9 +10,27 @@ use std::{cell::RefCell, collections::BTreeMap, path::{Path, PathBuf}, sync::Onc
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
 
-/// The loaded content. Loads the default content on first use.
+/// Built-in content tables compiled into the binary so the executable runs standalone anywhere.
+const EMBEDDED: [(&str, &str); 8] = [
+    ("buildings.toml", include_str!("../content/buildings.toml")),
+    ("flora.toml", include_str!("../content/flora.toml")),
+    ("goods.toml", include_str!("../content/goods.toml")),
+    ("jobs.toml", include_str!("../content/jobs.toml")),
+    ("names.toml", include_str!("../content/names.toml")),
+    ("plants.toml", include_str!("../content/plants.toml")),
+    ("resources.toml", include_str!("../content/resources.toml")),
+    ("trees.toml", include_str!("../content/trees.toml")),
+];
+
+/// The loaded content. Loads overrides from disk when present, else the embedded defaults.
 pub fn content() -> &'static Content {
-    CONTENT.get_or_init(|| Content::load(&default_path()).unwrap_or_else(|e| panic!("{e}")))
+    CONTENT.get_or_init(|| {
+        let loaded = match default_path() {
+            Some(dir) => Content::load(&dir),
+            None => Content::load_embedded(),
+        };
+        loaded.unwrap_or_else(|e| panic!("{e}"))
+    })
 }
 
 /// Use other content (a test fixture, a mod) for the rest of this process. Must run before
@@ -20,9 +39,23 @@ pub fn init(dir: &Path) -> Result<(), String> {
     CONTENT.set(Content::load(dir)?).map_err(|_| "content was already loaded".to_string())
 }
 
-/// `BEAVER_CONTENT` if set, else the content folder beside the simulation's source.
-pub fn default_path() -> PathBuf {
-    std::env::var_os("BEAVER_CONTENT").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("content"))
+/// Optional external content directory: `BEAVER_CONTENT` if set, else a `content/` folder
+/// beside the executable, else `crates/sim/content` in the current working directory.
+/// Returns `None` when running standalone (uses the embedded default content).
+pub fn default_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("BEAVER_CONTENT") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent().map(|p| p.join("content")).filter(|p| p.is_dir()) {
+            return Some(dir);
+        }
+    }
+    let repo_local = PathBuf::from("crates/sim/content");
+    if repo_local.is_dir() {
+        return Some(repo_local);
+    }
+    None
 }
 
 /// An id into one content table.
@@ -538,12 +571,22 @@ impl Content {
         paths.sort();
         let mut texts = Vec::new();
         for p in paths {
-            texts.push((std::fs::read_to_string(&p).map_err(|e| format!("content: {}: {e}", p.display()))?, p));
+            let text = std::fs::read_to_string(&p).map_err(|e| format!("content: {}: {e}", p.display()))?;
+            texts.push((text, p.display().to_string()));
         }
+        Self::load_texts(&texts)
+    }
+
+    pub fn load_embedded() -> Result<Content, String> {
+        let texts: Vec<(String, String)> = EMBEDDED.iter().map(|(name, body)| ((*body).to_string(), (*name).to_string())).collect();
+        Self::load_texts(&texts)
+    }
+
+    fn load_texts(texts: &[(String, String)]) -> Result<Content, String> {
         // Every row's key first, so that rows can name rows in any table or file.
         let mut keys: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
-        for (text, path) in &texts {
-            let table: toml::Table = text.parse().map_err(|e| format!("content: {}: {e}", path.display()))?;
+        for (text, label) in texts {
+            let table: toml::Table = text.parse().map_err(|e| format!("content: {label}: {e}"))?;
             for t in [BuildingKind::TABLE, Good::TABLE, ResourceKind::TABLE, Job::TABLE, Tree::TABLE, Plant::TABLE] {
                 for row in table.get(t).and_then(|r| r.as_array()).into_iter().flatten() {
                     keys.entry(t).or_default().push(row.get("key").and_then(|k| k.as_str()).unwrap_or_default().to_string());
@@ -554,7 +597,7 @@ impl Content {
             check(ks.iter().enumerate().all(|(i, k)| !ks[..i].contains(k)), || format!("{t}: keys must be unique"))?;
         }
         LOADING.with(|l| *l.borrow_mut() = Some(keys));
-        let parsed: Result<Vec<File>, String> = texts.iter().map(|(t, p)| toml::from_str(t).map_err(|e| format!("content: {}: {e}", p.display()))).collect();
+        let parsed: Result<Vec<File>, String> = texts.iter().map(|(t, label)| toml::from_str(t).map_err(|e| format!("content: {label}: {e}"))).collect();
         LOADING.with(|l| *l.borrow_mut() = None);
         let mut c = File::default();
         for f in parsed? {
@@ -645,5 +688,19 @@ impl Content {
             goods: c.good, food, seedling, repair_fallback: c.repair_fallback, works: c.works.ok_or("content: buildings: no `works`")?, start: c.start, buildings: c.building, resources: c.resource, roles: c.roles.ok_or("content: resources: no `roles`")?, jobs: c.job, trees: c.tree, plants: c.plant, tree_flora, plant_flora,
             names: c.names.into_iter().map(|(k, v)| (k, v.into_iter().map(|w| &*Box::leak(w.into_boxed_str())).collect())).collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_content_loads_standalone() {
+        let c = Content::load_embedded().expect("embedded TOMLs must load standalone");
+        assert!(!c.buildings.is_empty());
+        assert!(!c.jobs.is_empty());
+        assert!(!c.trees.is_empty());
+        assert!(!c.plants.is_empty());
     }
 }

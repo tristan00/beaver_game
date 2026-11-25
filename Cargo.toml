@@ -16,3 +16,13 @@ opt-level = 3
 # long tests and `cargo run` crawl.
 [profile.dev.package.sim]
 opt-level = 3
+
+[profile.release]
+debug = false
+strip = "symbols"
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+
+[profile.release.package.sim]
+opt-level = 3

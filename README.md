@@ -1,37 +1,10 @@
 # Beaver Colony
 
-A beaver colony builder and river-hydrology simulation written in Rust and Bevy. Dam streams, flood valleys into ponds, dig canals and locks, manage timber and food through the seasons, and keep your families safe from wolves.
+A beaver colony builder and river simulation. Dam streams, flood valleys into ponds, dig canals and locks, manage timber and food through the seasons, and keep your families safe from wolves.
 
-## How to Run
+## How to Play
 
-### Requirements
-
-- [Rust](https://rustup.rs) (edition 2024 — run `rustup update` if you have an older toolchain)
-- A GPU with Vulkan, DirectX 12, or Metal support
-- **Linux only:** Bevy's standard system libraries (on Debian/Ubuntu: `sudo apt install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0`)
-
-### Build & Play
-
-Clone the repository and build the release binary from the repo root:
-
-```sh
-git clone https://github.com/tristan00/beaver_game.git
-cd beaver_game
-cargo build --release -p game
-```
-
-Then launch the game from the repository root:
-
-- **Windows:** double-click `Play Beaver Colony.cmd` (or run `target\release\beaver_colony.exe`)
-- **macOS / Linux:** run `./target/release/beaver_colony`
-
-You can also build and launch in a single step on any platform with:
-
-```sh
-cargo run --release -p game
-```
-
-> Saves are stored in `saves/` inside the repository folder, so always launch from the repo root.
+Double-click **beaver_colony.exe** to start playing. No installation or extra files are needed.
 
 ---
 
@@ -39,7 +12,7 @@ cargo run --release -p game
 
 | Role | Max Slots | Workplace | What They Do |
 | --- | --- | --- | --- |
-| **Builder** | Unlimited | None (roams to any active site, dam, or canal) | Builds structures, dams, canals, gates, and locks. |
+| **Builder** | Unlimited | None | Builds structures, dams, canals, gates, and locks wherever work is active. |
 | **Forager** | Unlimited | None | Gathers land food plants, water plants, and bark from felled trees. |
 | **Feller** | Unlimited | None | Fells trees and gnaws logs and branches into sticks. |
 | **Mud digger** | Unlimited | None | Digs mud from mud banks and river mud deposits (pauses when ground freezes). |
@@ -104,7 +77,7 @@ cargo run --release -p game
 
 ### Water Plants
 
-Water plants grow in ponds and slow shallows, but become inaccessible when still water freezes over in winter.
+Water plants grow in ponds and slow shallows, and become inaccessible when still water freezes over in winter.
 
 | Plant | Water Depth | Max Food | Regrow / Day | Winter Keep |
 | --- | --- | --- | --- | --- |

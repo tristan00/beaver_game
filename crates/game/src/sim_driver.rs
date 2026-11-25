@@ -47,7 +47,7 @@ static DEV_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new
 const DEV_SPEED_FILE: &str = "dev_speed.txt";
 
 fn dev_speed_path() -> std::path::PathBuf {
-    std::path::Path::new(crate::savegame::SAVE_DIR).join(DEV_SPEED_FILE)
+    crate::savegame::save_dir().join(DEV_SPEED_FILE)
 }
 
 pub fn dev_speed() -> bool {
@@ -64,7 +64,7 @@ pub fn dev_speed() -> bool {
 
 pub fn set_dev_speed(on: bool) {
     DEV_SPEED.store(on as u8, std::sync::atomic::Ordering::Relaxed);
-    let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+    let _ = std::fs::create_dir_all(crate::savegame::save_dir());
     let _ = std::fs::write(dev_speed_path(), if on { "on
 " } else { "off
 " });
