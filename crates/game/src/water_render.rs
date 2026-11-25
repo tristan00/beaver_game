@@ -343,11 +343,15 @@ fn shown_flow(vel: [f32; 2], grad: [f32; 2]) -> [f32; 2] {
 }
 const FLOW_SLOPE: [f32; 2] = [0.0008, 0.006];
 
-fn water_sample(s: &SimState, field: &WaterField, x: f32, y: f32, step: usize) -> CellWater {
+fn water_sample(s: &SimState, field: &WaterField, x: f32, y: f32, step: usize) -> (CellWater, bool) {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
     let (u, v) = (x - ix as f32, y - iy as f32);
-    if u == 0.0 && v == 0.0 { return if step == 1 { field.cell(s, ix, iy) } else { vertex_water(s, ix, iy, step as i32) }; }
+    if u == 0.0 && v == 0.0 {
+        let w = if step == 1 { field.cell(s, ix, iy) } else { vertex_water(s, ix, iy, step as i32) };
+        return (w, w.is_some());
+    }
     let (mut level, mut vx, mut vy, mut white, mut ice, mut total) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut all_wet = true;
     for dy in 0..=1 { for dx in 0..=1 {
         let weight = (if dx == 0 { 1.0 - u } else { u }) * (if dy == 0 { 1.0 - v } else { v });
         if weight <= 0.0 { continue; }
@@ -358,9 +362,11 @@ fn water_sample(s: &SimState, field: &WaterField, x: f32, y: f32, step: usize) -
             white += w.2 * weight;
             ice += w.3 * weight;
             total += weight;
+        } else {
+            all_wet = false;
         }
     } }
-    (total > 0.0).then(|| (level / total, [vx / total, vy / total], white / total, ice / total))
+    ((total > 0.0).then(|| (level / total, [vx / total, vy / total], white / total, ice / total)), total > 0.0 && all_wet)
 }
 
 pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Option<Mesh> {
@@ -376,9 +382,9 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     let mut any = false;
     for j in -1..=side as i32 {
         for i in -1..=side as i32 {
-            let w = water_sample(s, &field, x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, step);
+            let (w, wet) = water_sample(s, &field, x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, step);
             any |= w.is_some();
-            own.push(w);
+            own.push((w, wet));
         }
     }
     if !any {
@@ -389,7 +395,8 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     for j in 0..side {
         for i in 0..side {
             let (x, y) = (x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing);
-            let at_ext = |di: i32, dj: i32| own[(j as i32 + 1 + dj) as usize * ext + (i as i32 + 1 + di) as usize];
+            let at_ext = |di: i32, dj: i32| own[(j as i32 + 1 + dj) as usize * ext + (i as i32 + 1 + di) as usize].0;
+            let all_wet = own[(j + 1) * ext + (i + 1)].1;
             // A dry vertex takes the level of the water beside it, so the waterline falls where
             // that level meets the ground between them.
             let (level, vel, white, ice) = match at_ext(0, 0) {
@@ -418,7 +425,9 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             };
             let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_shown(s, x, y, step) };
             let ground = bare + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
-            let level = if at_ext(0, 0).is_some() { level.max(ground + SHOWN_ABOVE_GROUND_M) } else { level };
+            // Lift only vertices wholly inside wet cells; bank-straddling sub-cell vertices must
+            // keep the real water level so shore triangles clip flat against steep canal banks.
+            let level = if all_wet { level.max(ground + SHOWN_ABOVE_GROUND_M) } else { level };
             let depth = if level.is_finite() { level - ground } else { -1.0 };
             let edge = depth.min((field.wet.bilinear(x, y) - WET_EDGE) * EDGE_M);
             let (wx, wz) = ((x + GRID_OFFSET - s.height.width() as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - s.height.height() as f32 / 2.0) * CELL_SIZE);
@@ -599,4 +608,40 @@ fn update_water_chunks(
     }
     *settled = Some(stamps);
     backlog.water = rebuilt;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canal_water_mesh_stays_flat_and_never_climbs_steep_banks() {
+        let mut s = SimState::new(1);
+        let w = s.height.width();
+        let (cx, cy) = (0usize, 0usize);
+        // Clear chunk (0, 0) to flat dry hillside at 12.0 m, then carve a 1-cell canal at x = 8
+        // with bed 9.5 m and water depth 0.4 m (true water surface = 9.9 m).
+        for y in 0..CHUNK + 4 {
+            for x in 0..CHUNK + 4 {
+                s.height[y * w + x] = 12.0;
+                s.water.depth[y * w + x] = 0.0;
+                s.water.dam_height[y * w + x] = 0.0;
+                s.water.canal[y * w + x] = false;
+                s.world.river[y * w + x] = false;
+            }
+        }
+        for y in 4..12 {
+            s.height[y * w + 8] = 9.5;
+            s.water.depth[y * w + 8] = 0.4;
+            s.water.canal[y * w + 8] = true;
+        }
+
+        let mesh = build_water_mesh(&s, cx, cy, 1).expect("canal water mesh");
+        let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions").as_float3().expect("float3");
+        assert!(!positions.is_empty());
+        let max_y = positions.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+        // Water surface is 9.9 m + SURFACE_LIFT (0.01 m) = 9.91 m; bank-climbing bug used to push
+        // vertices above 11 m.
+        assert!(max_y < 9.95, "canal water mesh climbed up the dry banks to y={max_y:.3} m (surface is 9.91 m)");
+    }
 }

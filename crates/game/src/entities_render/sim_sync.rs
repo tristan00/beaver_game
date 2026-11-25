@@ -17,9 +17,19 @@ pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) 
     p.0 = clock.map_or(0.0, |c| c.pending_days());
 }
 
+#[derive(Clone, Copy)]
+struct MotionSample {
+    t: f64,
+    xz: Vec2,
+    y: f32,
+    /// Ground-relative lift on land; `None` on water/canals/locks so steep underwater
+    /// banks never pull a floating beaver or raft below or above the water surface.
+    ground_lift: Option<f32>,
+}
+
 #[derive(Component, Default)]
 pub struct Motion {
-    samples: std::collections::VecDeque<(f64, Vec2, f32)>,
+    samples: std::collections::VecDeque<MotionSample>,
     /// The next few cells of the beaver's planned path, after the latest sample.
     ahead: Vec<Vec2>,
     instance: u64,
@@ -42,12 +52,22 @@ fn spread(id: u64, game: bool) -> Vec3 {
     Vec3::new(a.cos(), 0.0, a.sin()) * SPREAD
 }
 
+/// Lateral spread for a beaver on `cell`: suppressed in narrow canals and lock chambers so
+/// swimmers and rafts stay centered in the channel rather than clipping into the banks.
+fn spread_in(sim: &sim::SimState, cell: sim::water::Cell, id: u64, game: bool) -> Vec3 {
+    if matches!(sim.nav.surface_at(cell), Some(sim::nav::Surface::Canal | sim::nav::Surface::Lock)) {
+        return Vec3::ZERO;
+    }
+    spread(id, game)
+}
+
 impl Motion {
-    fn record(&mut self, t: f64, xz: Vec2, lift: f32) {
+    fn record(&mut self, t: f64, xz: Vec2, y: f32, ground_lift: Option<f32>) {
+        let sample = MotionSample { t, xz, y, ground_lift };
         match self.samples.back_mut() {
-            Some(b) if b.0 == t => *b = (t, xz, lift),
-            Some(b) if b.0 > t => return,
-            _ => self.samples.push_back((t, xz, lift)),
+            Some(b) if b.t == t => *b = sample,
+            Some(b) if b.t > t => return,
+            _ => self.samples.push_back(sample),
         }
         while self.samples.len() > 512 {
             self.samples.pop_front();
@@ -57,7 +77,8 @@ impl Motion {
     /// Record a batch of cells all sharing one sim step ending at `end`, spacing them
     /// strictly monotonically across `(step_start, end]` by their travel cost so multiple
     /// waypoints never collide at `end` and get overwritten.
-    fn record_step(&mut self, sim: &sim::SimState, offset: Vec2, ground: &impl Fn(Vec2) -> f32, step_start: f64, end: f64, cells: &[(sim::water::Cell, sim::nav::Gait)], mut prev: Vec2) -> Vec2 {
+    #[allow(clippy::too_many_arguments)]
+    fn record_step(&mut self, sim: &sim::SimState, id: u64, game: bool, ground: &impl Fn(Vec2) -> f32, step_start: f64, end: f64, cells: &[(sim::water::Cell, sim::nav::Gait)], mut prev: Vec2) -> Vec2 {
         if cells.is_empty() {
             return prev;
         }
@@ -65,7 +86,7 @@ impl Motion {
         let mut weights = Vec::with_capacity(cells.len());
         let mut total_w = 0.0f64;
         for &(cell, gait) in cells {
-            let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + offset;
+            let next = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)) + spread_in(sim, cell, id, game).xz();
             let dist = prev.distance(next) / crate::terrain_render::CELL_SIZE;
             let w = if dist > 1e-4 { (dist * gait_cost(gait)) as f64 } else { 1.0 };
             total_w += w;
@@ -77,13 +98,15 @@ impl Motion {
         for (i, &(cell, next, _)) in pts.iter().enumerate() {
             let frac = if total_w > 0.0 { weights[i] / total_w } else { (i + 1) as f64 / pts.len() as f64 };
             let t = if i + 1 == pts.len() { end } else { step_start + span * frac };
-            self.record(t, next, stand_y(sim, cell) - ground(next));
+            let y = stand_y(sim, cell);
+            let lift = (!on_water(sim, cell)).then(|| y - ground(next));
+            self.record(t, next, y, lift);
         }
         prev
     }
 
     fn observe(&mut self, sim: &sim::SimState, ag: &sim::agents::Agent, game: bool) {
-        let offset = spread(ag.id.0, game);
+        let offset = spread_in(sim, ag.cell, ag.id.0, game);
         let p = agent_world_pos(sim, ag, 0.0) + offset;
         let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
         if self.instance != sim.instance {
@@ -92,7 +115,8 @@ impl Motion {
             self.instance = sim.instance;
         }
         if self.observed_time.is_some_and(|t| t >= sim.time_days) { return; }
-        if let (Some(previous), Some(&(_, mut point, _))) = (self.observed_time, self.samples.back()) {
+        if let (Some(previous), Some(last)) = (self.observed_time, self.samples.back().copied()) {
+            let mut point = last.xz;
             // A trail is the last step's cells. Seen only every few steps (at speed), the way
             // since comes from the history the sim keeps, grouped by step so every waypoint
             // keeps its own timestamp and destination pauses are preserved.
@@ -104,7 +128,7 @@ impl Motion {
                     if let Some(cur_end) = batch_end {
                         if (end - cur_end).abs() > 1e-9 {
                             let step_start = prev_t.max(cur_end - sim::STEP_DAYS as f64);
-                            point = self.record_step(sim, offset.xz(), &ground, step_start, cur_end, &batch, point);
+                            point = self.record_step(sim, ag.id.0, game, &ground, step_start, cur_end, &batch, point);
                             prev_t = cur_end;
                             batch.clear();
                             batch_end = Some(end);
@@ -116,34 +140,39 @@ impl Motion {
                 }
                 if let Some(cur_end) = batch_end {
                     let step_start = prev_t.max(cur_end - sim::STEP_DAYS as f64);
-                    self.record_step(sim, offset.xz(), &ground, step_start, cur_end, &batch, point);
+                    self.record_step(sim, ag.id.0, game, &ground, step_start, cur_end, &batch, point);
                 }
             } else if !ag.trail.is_empty() {
-                self.record_step(sim, offset.xz(), &ground, previous, sim.time_days, &ag.trail, point);
+                self.record_step(sim, ag.id.0, game, &ground, previous, sim.time_days, &ag.trail, point);
             }
         }
-        self.record(sim.time_days, p.xz(), p.y - ground(p.xz()));
+        let lift = (!on_water(sim, ag.cell)).then(|| p.y - ground(p.xz()));
+        self.record(sim.time_days, p.xz(), p.y, lift);
         self.observed_time = Some(sim.time_days);
         self.ahead = ag.path.as_ref().map_or(Vec::new(), |path| {
-            path.steps.iter().take(4).map(|&(c, _)| cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + offset.xz()).collect()
+            path.steps.iter().take(4).map(|&(c, _)| cell_xz(sim, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + spread_in(sim, c, ag.id.0, game).xz()).collect()
         });
     }
 
     /// Where the record puts the beaver at `t` (straight lines between cell centres), its
-    /// height, and whether it is moving.
-    fn raw_at(&self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
+    /// world elevation, optional ground-relative lift (land only), and whether it is moving.
+    fn raw_at(&self, t: f64) -> Option<(Vec2, f32, Option<f32>, Option<Vec2>)> {
         let first = *self.samples.front()?;
-        let Some(k) = self.samples.iter().position(|s| s.0 > t) else {
+        let Some(k) = self.samples.iter().position(|s| s.t > t) else {
             let last = *self.samples.back()?;
-            return Some((last.1, last.2, None));
+            return Some((last.xz, last.y, last.ground_lift, None));
         };
         if k == 0 {
-            return Some((first.1, first.2, None));
+            return Some((first.xz, first.y, first.ground_lift, None));
         }
         let (a, b) = (self.samples[k - 1], self.samples[k]);
-        let u = (((t - a.0) / (b.0 - a.0).max(1e-9)) as f32).clamp(0.0, 1.0);
-        let chord = b.1 - a.1;
-        Some((a.1.lerp(b.1, u), a.2 + (b.2 - a.2) * u, (chord.length() > 1e-3).then_some(chord)))
+        let u = (((t - a.t) / (b.t - a.t).max(1e-9)) as f32).clamp(0.0, 1.0);
+        let chord = b.xz - a.xz;
+        let lift = match (a.ground_lift, b.ground_lift) {
+            (Some(la), Some(lb)) => Some(la + (lb - la) * u),
+            _ => None,
+        };
+        Some((a.xz.lerp(b.xz, u), a.y + (b.y - a.y) * u, lift, (chord.length() > 1e-3).then_some(chord)))
     }
 
     /// Where the beaver is drawn at `t`. Paths run cell to cell in four directions, so a
@@ -152,24 +181,24 @@ impl Motion {
     /// which straightens staircases and rounds corners. The window narrows to nothing at
     /// route ends, destination pauses, and turnaround points, so a beaver visibly reaches
     /// every destination even when playing back many steps ahead at fast speeds.
-    fn at(&mut self, t: f64, smooth_cells: f32) -> Option<(Vec2, f32, Option<Vec2>)> {
+    fn at(&mut self, t: f64, smooth_cells: f32) -> Option<(Vec2, f32, Option<f32>, Option<Vec2>)> {
         // Keep enough history behind for the smoothing window.
-        while self.samples.len() > 16 && self.samples[10].0 <= t {
+        while self.samples.len() > 16 && self.samples[10].t <= t {
             self.samples.pop_front();
         }
-        let (raw, lift, moving) = self.raw_at(t)?;
+        let (raw, y, lift, moving) = self.raw_at(t)?;
         // Caught up with the latest step but still under way: keep to the smoothed route.
         let last = *self.samples.back()?;
         let moving = moving.or_else(|| {
             let next = self.ahead.first().copied()?;
-            (t >= last.0 && next.distance(last.1) > 1e-3).then_some(next - last.1)
+            (t >= last.t && next.distance(last.xz) > 1e-3).then_some(next - last.xz)
         });
-        let Some(heading) = moving else { return Some((raw, lift, None)) };
+        let Some(heading) = moving else { return Some((raw, y, lift, None)) };
         if smooth_cells < 1e-3 {
-            return Some((raw, lift, Some(heading)));
+            return Some((raw, y, lift, Some(heading)));
         }
         // The route as a polyline: recorded points, then the plan ahead.
-        let pts: Vec<Vec2> = self.samples.iter().map(|s| s.1).chain(self.ahead.iter().copied()).collect();
+        let pts: Vec<Vec2> = self.samples.iter().map(|s| s.xz).chain(self.ahead.iter().copied()).collect();
         let mut cum = Vec::with_capacity(pts.len());
         let mut d = 0.0;
         for (i, p) in pts.iter().enumerate() {
@@ -179,7 +208,7 @@ impl Motion {
             cum.push(d);
         }
         // Distance travelled at `t`: along the recorded segment it is on.
-        let k = self.samples.iter().position(|s| s.0 > t).unwrap_or(self.samples.len() - 1).max(1);
+        let k = self.samples.iter().position(|s| s.t > t).unwrap_or(self.samples.len() - 1).max(1);
         let s_t = cum[k - 1] + pts[k - 1].distance(raw);
         let end = *cum.last()?;
 
@@ -207,7 +236,7 @@ impl Motion {
 
         let h = smooth_cells.min(s_t - lo_bound).min(hi_bound - s_t).max(0.0);
         if h < 1e-3 {
-            return Some((raw, lift, Some(heading)));
+            return Some((raw, y, lift, Some(heading)));
         }
         let point_at = |s: f32| {
             let i = cum.partition_point(|&c| c < s).clamp(1, pts.len() - 1);
@@ -226,7 +255,7 @@ impl Motion {
         }
         let pos = sum / (hi - lo);
         let dir = point_at(hi) - point_at(lo);
-        Some((pos, lift, Some(if dir.length() > 1e-4 { dir } else { heading })))
+        Some((pos, y, lift, Some(if dir.length() > 1e-4 { dir } else { heading })))
     }
 }
 
@@ -332,12 +361,16 @@ pub(super) fn sync_sim_beavers(
             continue;
         };
         seen.insert(sprite.id);
-        let p = agent_world_pos(s, ag, 0.0) + spread(sprite.id, clock.is_some());
+        let p = agent_world_pos(s, ag, 0.0) + spread_in(s, ag.cell, sprite.id, clock.is_some());
         let ground = |xz: Vec2| height_at(&s.height, xz.x, xz.y);
         motion.observe(s, ag, clock.is_some());
         let mut heading = match motion.at(now, smooth_cells) {
-            Some((xz, lift, dir)) => {
-                tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
+            Some((xz, y, ground_lift, dir)) => {
+                let y = match ground_lift {
+                    Some(lift) => ground(xz) + lift,
+                    None => y,
+                };
+                tr.translation = Vec3::new(xz.x, y, xz.y);
                 dir
             }
             None => {
@@ -447,7 +480,7 @@ pub(super) fn sync_sim_beavers(
         let yaw = facing_of(s, ag).unwrap_or(0.0);
         let mut motion = Motion::default();
         motion.observe(s, ag, clock.is_some());
-        let at = agent_world_pos(s, ag, 0.0) + spread(id.0, clock.is_some());
+        let at = agent_world_pos(s, ag, 0.0) + spread_in(s, ag.cell, id.0, clock.is_some());
         let mut e = commands.spawn((
             SimBeaver,
             motion,
@@ -1563,36 +1596,36 @@ mod tests {
         // Simulate an out-and-back trip where the beaver walks from x=0 to x=4,
         // pauses/works at x=4, and walks back to x=0, all already recorded before playback.
         for i in 0..=4 {
-            motion.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0);
+            motion.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0, Some(0.0));
         }
         // Dwell at destination x=4 for one step.
-        motion.record(0.05, Vec2::new(4.0, 0.0), 0.0);
+        motion.record(0.05, Vec2::new(4.0, 0.0), 0.0, Some(0.0));
         // Walk back to x=0.
         for i in 1..=4 {
-            motion.record(0.05 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0);
+            motion.record(0.05 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0, Some(0.0));
         }
 
         // At arrival (t = 0.04) and during dwell (t = 0.045), beaver must reach x = 4.0 cleanly.
-        let (at_arrive, _, _) = motion.at(0.04, SMOOTH_CELLS).expect("sample at arrival");
+        let (at_arrive, _, _, _) = motion.at(0.04, SMOOTH_CELLS).expect("sample at arrival");
         assert!((at_arrive.x - 4.0).abs() < 0.02, "beaver cut short of destination: x={}", at_arrive.x);
 
         // Also test instant reversal (no dwell step at all) at x=4:
         let mut instant = Motion::default();
         for i in 0..=4 {
-            instant.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0);
+            instant.record(i as f64 * 0.01, Vec2::new(i as f32, 0.0), 0.0, Some(0.0));
         }
         for i in 1..=4 {
-            instant.record(0.04 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0);
+            instant.record(0.04 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0, Some(0.0));
         }
-        let (at_turn, _, _) = instant.at(0.04, SMOOTH_CELLS).expect("sample at turnaround");
+        let (at_turn, _, _, _) = instant.at(0.04, SMOOTH_CELLS).expect("sample at turnaround");
         assert!((at_turn.x - 4.0).abs() < 0.02, "beaver skipped turnaround destination: x={}", at_turn.x);
 
         // With no smoothing (120x/180x), a corner is drawn exactly, not rounded off.
         let mut corner = Motion::default();
-        corner.record(0.00, Vec2::new(0.0, 0.0), 0.0);
-        corner.record(0.01, Vec2::new(2.0, 0.0), 0.0);
-        corner.record(0.02, Vec2::new(2.0, 2.0), 0.0);
-        let (at_corner, _, _) = corner.at(0.01, 0.0).expect("sample at corner");
+        corner.record(0.00, Vec2::new(0.0, 0.0), 0.0, Some(0.0));
+        corner.record(0.01, Vec2::new(2.0, 0.0), 0.0, Some(0.0));
+        corner.record(0.02, Vec2::new(2.0, 2.0), 0.0, Some(0.0));
+        let (at_corner, _, _, _) = corner.at(0.01, 0.0).expect("sample at corner");
         assert!((at_corner - Vec2::new(2.0, 0.0)).length() < 1e-4, "unsmoothed path must hit the corner exactly");
     }
 
@@ -1602,17 +1635,68 @@ mod tests {
         let mut motion = Motion::default();
         let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
         let start = cell_xz(&sim, (2.5, 2.5));
-        motion.record(0.0, start, 0.0);
+        motion.record(0.0, start, 0.0, Some(0.0));
         let cells = [
             ((3, 2), sim::nav::Gait::Walk),
             ((4, 2), sim::nav::Gait::Walk),
             ((5, 2), sim::nav::Gait::Walk),
             ((5, 3), sim::nav::Gait::Walk),
         ];
-        motion.record_step(&sim, Vec2::ZERO, &ground, 0.0, sim::STEP_DAYS as f64, &cells, start);
+        motion.record_step(&sim, 1, false, &ground, 0.0, sim::STEP_DAYS as f64, &cells, start);
         assert_eq!(motion.samples.len(), 5, "all 4 waypoints plus start must be preserved");
         for w in motion.samples.as_slices().0.windows(2) {
-            assert!(w[1].0 > w[0].0, "timestamps must be strictly increasing");
+            assert!(w[1].t > w[0].t, "timestamps must be strictly increasing");
+        }
+    }
+
+    #[test]
+    fn canal_raft_hauler_stays_at_water_surface_on_diagonal_steep_canal() {
+        let mut sim = sim::SimState::new(1);
+        let w = sim.height.width();
+        let canal_cells = [(10usize, 10usize), (11, 10), (11, 11), (12, 11), (12, 12)];
+        // Steep 3 m cut into a hillside at 12.0 m: canal bed 9.0 m, water surface 10.5 m.
+        for y in 8..=14 {
+            for x in 8..=14 {
+                sim.height[y * w + x] = 12.0;
+                sim.water.depth[y * w + x] = 0.0;
+                sim.water.canal[y * w + x] = false;
+                sim.nav.set((x, y), sim::nav::Surface::Land);
+            }
+        }
+        for &(x, y) in &canal_cells {
+            sim.height[y * w + x] = 9.0;
+            sim.water.depth[y * w + x] = 1.5;
+            sim.water.canal[y * w + x] = true;
+            sim.nav.set((x, y), sim::nav::Surface::Canal);
+        }
+
+        // Verify stand_y sits on the water surface (10.5 m), not on the submerged bed (9.0 m).
+        for &c in &canal_cells {
+            let y = stand_y(&sim, c);
+            assert!((y - 10.5).abs() < 1e-3, "canal stand_y at {c:?} was {y:.3}, expected 10.500");
+        }
+
+        // Simulate Motion recording the diagonal canal traversal with game spread enabled
+        // and full 1x path smoothing (SMOOTH_CELLS).
+        let mut motion = Motion::default();
+        let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
+        let start = cell_xz(&sim, (10.5, 10.5));
+        motion.record(0.0, start, stand_y(&sim, canal_cells[0]), None);
+        let step_cells: Vec<_> = canal_cells[1..].iter().map(|&c| (c, sim::nav::Gait::Swim)).collect();
+        motion.record_step(&sim, 7, true, &ground, 0.0, sim::STEP_DAYS as f64, &step_cells, start);
+
+        // Every sampled point along the smoothed trajectory must stay at the 10.5 m water surface
+        // (neither sinking under water nor flying up onto the 12.0 m banks).
+        for k in 0..=20 {
+            let t = sim::STEP_DAYS as f64 * (k as f64 / 20.0);
+            let (xz, y, lift, _) = motion.at(t, SMOOTH_CELLS).expect("canal sample");
+            assert!(lift.is_none(), "canal motion should use world water elevation, not ground-relative lift");
+            assert!((y - 10.5).abs() < 1e-3, "beaver/raft height drifted to {y:.3} m at t={t:.5} (expected 10.5 m)");
+            // Centered in canal: no lateral spread offset applied on canal cells.
+            let end = cell_xz(&sim, (12.5, 12.5));
+            if k == 20 {
+                assert!(xz.distance(end) < 1e-3, "canal end should have zero spread offset");
+            }
         }
     }
 }

@@ -15,12 +15,22 @@ pub fn cell_xz(sim: &SimState, c: (f32, f32)) -> Vec2 {
     Vec2::new((c.0 - w / 2.0) * CELL, (c.1 - h / 2.0) * CELL)
 }
 
+/// Whether a beaver on `cell` rides on the water's (or ice's) surface rather than the bare ground.
+pub fn on_water(sim: &SimState, cell: (usize, usize)) -> bool {
+    matches!(sim.nav.surface_at(cell), Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance | Surface::Lock))
+        || sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M)
+}
+
 fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
         Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
-        Some(Surface::Water | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
-        // In a lock's chamber: half way up its gate, where the chamber water stands on average.
-        Some(Surface::Lock) => sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5,
+        Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
+        // In a lock's chamber: water depth, or half way up its gate where the gate holds back a drop.
+        Some(Surface::Lock) => {
+            let depth = sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0);
+            let gate = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5;
+            depth.max(gate)
+        }
         // On ice, on top of it.
         _ if sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) + 0.02,
         // A dry river cell is drawn with its channel cut; walk on the drawn bed.
@@ -66,8 +76,14 @@ fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     }
     let to = (next.0 as f32 + 0.5, next.1 as f32 + 0.5);
     let xz = cell_xz(sim, (here.0 + (to.0 - here.0) * frac, here.1 + (to.1 - here.1) * frac));
-    let (l0, l1) = (lift_in(sim, ag.cell), lift_in(sim, next));
-    Vec3::new(xz.x, height_at(&sim.height, xz.x, xz.y) + l0 + (l1 - l0) * frac, xz.y)
+    let y = if on_water(sim, ag.cell) || on_water(sim, next) {
+        let (y0, y1) = (stand_y(sim, ag.cell), stand_y(sim, next));
+        y0 + (y1 - y0) * frac
+    } else {
+        let (l0, l1) = (lift_in(sim, ag.cell), lift_in(sim, next));
+        height_at(&sim.height, xz.x, xz.y) + l0 + (l1 - l0) * frac
+    };
+    Vec3::new(xz.x, y, xz.y)
 }
 
 pub fn moving_gait(ag: &Agent) -> Gait {
@@ -87,7 +103,7 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     if matches!(ag.task, Task::DamWork { .. }) {
         return Pose::Work;
     }
-    if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water)) {
+    if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water | Surface::Canal | Surface::Lock)) {
         return Pose::Swim;
     }
     match &ag.task {
@@ -116,11 +132,12 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
 }
 
 pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
-    if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water)) {
+    let wet = |c| matches!(sim.nav.surface_at(c), Some(Surface::Water | Surface::Canal | Surface::Lock));
+    if wet(ag.cell) {
         return true;
     }
     match ag.path.as_ref().and_then(|p| p.steps.first()) {
-        Some(&(n, _)) => ag.step_frac >= 0.5 && matches!(sim.nav.surface_at(n), Some(Surface::Water)),
+        Some(&(n, _)) => ag.step_frac >= 0.5 && wet(n),
         None => false,
     }
 }
@@ -145,5 +162,47 @@ pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
             toward((b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0))
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canal_surface_floats_beaver_and_shows_swim_and_wake() {
+        let mut sim = SimState::new(1);
+        let w = sim.height.width();
+        let c = (10usize, 10usize);
+        sim.height[c.1 * w + c.0] = 8.0;
+        sim.water.depth[c.1 * w + c.0] = 1.4;
+        sim.water.canal[c.1 * w + c.0] = true;
+        sim.nav.set(c, Surface::Canal);
+
+        assert!((stand_y(&sim, c) - 9.4).abs() < 1e-3, "beaver in canal must float at bed + depth = 9.4 m, got {}", stand_y(&sim, c));
+
+        let ag = Agent {
+            id: sim::colony::BeaverId(1),
+            cell: c,
+            step_frac: 0.0,
+            gait: Gait::Swim,
+            task: Task::Idle,
+            assignment: None,
+            move_state: sim::agents::MoveState::None,
+            load: None,
+            path: None,
+            inside: false,
+            stuck_ticks: 0,
+            speed: 1.0,
+            trail: Vec::new(),
+            history: std::collections::VecDeque::new(),
+            next_work_probe: 0.0,
+            next_home_probe: 0.0,
+            next_retarget: 0.0,
+            next_meal_probe: 0.0,
+            source: None,
+        };
+        assert_eq!(pose_of(&sim, &ag), Pose::Swim, "beaver on canal should use swim pose");
+        assert!(is_wet(&sim, &ag), "beaver on canal should be wet so its wake renders");
     }
 }
