@@ -12,7 +12,7 @@ Double-click **beaver_colony.exe** to start playing.
 
 ![](docs/pictures/1.png)
 
-![](docs/pictures/2.png)
+![](docs/pictures/2-breeze.png)
 
 ![](docs/pictures/3.png)
 
