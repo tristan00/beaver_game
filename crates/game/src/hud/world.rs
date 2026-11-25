@@ -127,7 +127,7 @@ pub fn building_centre(b: &sim::buildings::Building) -> (f32, f32) {
     (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0)
 }
 
-/// The nearest wild animal the fog does not hide that the ray passes through, roughly by its
+/// The nearest wild animal the fog does not hide that the ray goes through, roughly by its
 /// body, and how far along the ray it is.
 fn animal_on_ray(s: &sim::SimState, ray: Ray3d) -> Option<(u32, f32)> {
     use sim::wildlife::Kind;
@@ -161,7 +161,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
     }
-    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind == sim::resources::ResourceKind::RiverClay) {
+    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind == sim::resources::ResourceKind::RiverMud) {
         return Thing::Resource(r.id);
     }
     if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 1.6 * 1.6) {
@@ -209,9 +209,9 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 }
             }
             if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty()) {
-                let filled = pl.slots.iter().filter(|x| x.worker.is_some()).count();
+                let filled = pl.slots.iter().filter(|x| x.beaver.is_some()).count();
                 let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                tip.push(TipLine::new("Workers", format!("{filled}{seats}")).icon(role_icon(pl.slots[0].role), INK));
+                tip.push(TipLine::new("Beavers", format!("{filled}{seats}")).icon(role_icon(pl.slots[0].role), INK));
             }
             if let Some(f) = s.output.of(id) {
                 for (g, r) in f.rates() {
@@ -425,11 +425,11 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         let selected = matches!(sel, Selection::Site(id) if id == b.id);
         let mut icon: Option<(Icon, Color, &str)> = None;
         if let Some(pl) = s.work.place(b.id) {
-            let empty = pl.slots.iter().filter(|x| x.worker.is_none()).count();
+            let empty = pl.slots.iter().filter(|x| x.beaver.is_none()).count();
             if pl.is_open_site() && selected && !pl.paused && empty == pl.slots.len() && !pl.slots.is_empty() {
                 icon = Some((Icon::RoleBuilder, WARN, "No builder"));
-            } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.worker).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
-                icon = Some((Icon::Blocked, BAD, "Workers can't get there"));
+            } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.beaver).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
+                icon = Some((Icon::Blocked, BAD, "Beavers can't get there"));
             }
         }
         if b.is_complete() && s.buildings.stranded(b, &s.water.depth) {
@@ -535,7 +535,7 @@ pub fn pond_levels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale:
         ui.bold(if even { "0 m".to_string() } else { format!("{} m", num(dz.abs())) }, 12.0, INK);
         v.children = ui.nodes;
         v.skin(Skin::Plate);
-        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" })).pass();
+        v.tip(Tip::name(if pointed.is_some() { "Pond level, against the water pointed at" } else { "Pond level, against the lowest pond" })).click_through();
         v
     }).collect()
 }
@@ -591,7 +591,7 @@ fn draw_contours(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (usize, usize), r:
     let depth = |x: usize, y: usize| s.water.depth.get(x, y).copied().unwrap_or(0.0);
     let line = Color::srgba(0.05, 0.18, 0.35, 0.55);
     let (near, max) = crate::terrain_render::flood_depths();
-    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9)), (sim::harbor::RAFT_DEPTH, line), (near, line), (max, line)];
+    let mut levels = vec![(crate::terrain_render::SHORE_DEPTH, Color::srgba(1.0, 1.0, 1.0, 0.9)), (sim::raft_landing::RAFT_DEPTH, line), (near, line), (max, line)];
     levels.extend(crate::terrain_render::DEPTH_BANDS.iter().map(|b| b.0).filter(|&d| d.is_finite() && d < near).map(|d| (d, line)));
     let point = |x: f32, y: f32| {
         let mut v = cell_world(&s.height, (x, y));
@@ -1124,7 +1124,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             _ => Vec::new(),
         };
         // Whatever the pointer is over gets the same white mark: a ring round a spot of ground,
-        // a plant, tree, clay bed, pebbles, beaver or lodge; an outline round a building.
+        // a plant, tree, mud bed, pebbles, beaver or lodge; an outline round a building.
         let hover_col = Color::WHITE.with_alpha(0.8);
         let at_ground = |x: f32, y: f32| cell_world(h, (x, y)).with_y(height_at(h, x, y) + 0.15);
         match thing.0 {
@@ -1393,6 +1393,17 @@ fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d
         }
         if hud.dam_cells.contains(&c.cell) {
             cell_outline(g, h, c.cell, Some(top(c.cell) + 0.12), SELECT);
+        }
+    }
+    // Placing a gate or lock: every cell of the line it can go on is lit; the rest stay dim.
+    if let Some((_, o)) = hud.opening.filter(|p| p.0 == id) {
+        for c in &line {
+            if super::works::opening_fits(s, id, *c, o).is_ok() {
+                cell_outline(g, h, *c, Some(top(*c) + 0.1), GOOD);
+                cell_outline(g, h, *c, Some(top(*c) + 0.14), GOOD.with_alpha(0.6));
+            } else {
+                cell_outline(g, h, *c, Some(top(*c) + 0.1), Color::WHITE.with_alpha(0.15));
+            }
         }
     }
     for end in [line.first(), line.last()].into_iter().flatten() {

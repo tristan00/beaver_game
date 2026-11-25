@@ -10,14 +10,14 @@ Date: 2026-11-22. Code base: commit `ebab563` plus the uncommitted work in the t
 1. **Telemark**: the best mix of challenge and dam opportunities. It has 17 distinct dam sites (3 within 60 cells of camp). Its designed dam is the cheapest (224 sticks) and more than doubles the open water (947 to 2,159 wet cells). Food is scarce and 67% of trees are conifers, so the player has real decisions to make. It also looks like a believable Nordic conifer valley.
 2. **Algonquin**: the richest and most forgiving map. It has the most water (13.9% of the map), the most trees, food, mud and pebbles near camp, and the best colony results (pop 10, about 125 days of food at year end). But its showpiece dam is slow: 460 sticks and about 185 days to fill. It also delivers only 56% of the pond its preview promises.
 3. **Voyageurs**: the most beaver-like scenery (a braided wetland) and the most buildable shoreline. But **the designed dam is 303 cells from camp and unexplored**, so it is refused at start. There are no dam sites within 120 cells, and the colony does best without a dam. The game's core mechanic is missing on this map.
-4. **Bavarian Forest**: the camp sits in a cleared meadow with only 63 trees within 40 cells. It has the slowest economy (warehouse finished on day 238), no immigrants under autoplay, local tree cover falling from 63 to 12–24 trees, and a tiny designed pond (341 m², 0.7 m rise). The lidar terrain also shows roads, embankments and building pads.
+4. **Bavarian Forest**: the camp sits in a cleared meadow with only 63 trees within 40 cells. It has the slowest economy (stick pile finished on day 238), no immigrants under autoplay, local tree cover falling from 63 to 12–24 trees, and a tiny designed pond (341 m², 0.7 m rise). The lidar terrain also shows roads, embankments and building pads.
 
 **Most important findings**
 
-1. **Hands-off play dies the same way on every map.** All 8 beavers die of Cold (4 on day 325.6, 4 on day 347.9) on all four maps. Food never ran out, and nothing is ever built because nobody places a shelter. Without a player the map makes no difference at all.
+1. **Hands-off play dies the same way on every map.** All 8 beavers die of Cold (4 on day 325.6, 4 on day 347.9) on all four maps. Food never ran out, and nothing is ever built because nobody places a lodge. Without a player the map makes no difference at all.
 2. **The planned first dams are taller than a one-row dam can be built.** `HEIGHT_PER_ROW = 1.0 m`, but the start planner proposes 1.5 m (Algonquin) and 1.2 m (Telemark, Voyageurs). Those dams stop at 87% and 93% built. The ponds reach 2,276 m² instead of the 4,051 m² previewed, and 1,294 m² instead of 2,365 m².
-3. **Drawing the designed dam on day 0 leaves the family homeless for months.** The dam takes every stick (100 in the starting pile; the dam needs 224–460). The first shelter was finished on day 203 (Algonquin), 255 (Bavarian) and 148 (Telemark), compared with day 20–48 when the shelter comes first.
-4. **Most map differences come from what lies near the camp, not from the map as a whole.** Tree density (471–506 trees per hectare), tree cover (4.7–5.1% of cells), clay deposits (exactly 8 per map) and pebble beds (375–423) are nearly the same on every map. Food plants and trees within 40 cells of camp, though, range from 128 to 451 shoots and 63 to 197 trees. Those numbers predict the order the colonies grew in.
+3. **Drawing the designed dam on day 0 leaves the family homeless for months.** The dam takes every stick (100 in the starting pile; the dam needs 224–460). The first lodge was finished on day 203 (Algonquin), 255 (Bavarian) and 148 (Telemark), compared with day 20–48 when the lodge comes first.
+4. **Most map differences come from what lies near the camp, not from the map as a whole.** Tree density (471–506 trees per hectare), tree cover (4.7–5.1% of cells), mud deposits (exactly 8 per map) and pebble beds (375–423) are nearly the same on every map. Food plants and trees within 40 cells of camp, though, range from 128 to 451 shoots and 63 to 197 trees. Those numbers predict the order the colonies grew in.
 5. **The second half of the year has little to do.** Attentive autoplay logs 68–157 days with the "Idle" alert. All buildings finish by about day 230 (day 287 on Bavarian), and after that no map offers a new goal.
 
 ---
@@ -107,7 +107,7 @@ What this means for play:
 
 The species mixes are realistic for each region: maple and pine in Algonquin, aspen in the Minnesota boreal fringe, a spruce and beech mountain forest in Bavaria, and pine and spruce in Norway. Density, though, is essentially fixed by the generator (471–506 trees per hectare everywhere). The land cover layer moves trees around the map but barely changes how many there are. Telemark's 67% conifers matter for play, because conifers give no bark food. Bavarian's camp clearing matters even more: by year end the colony had cut the trees within 40 cells down to 12–24, and the "ForestFalling" alert appeared.
 
-### 1.6 Food, clay, mud and pebbles
+### 1.6 Food, mud, mud and pebbles
 
 | | Algonquin | Voyageurs | Bavarian | Telemark |
 |---|---|---|---|---|
@@ -116,19 +116,19 @@ The species mixes are realistic for each region: maple and pine in Algonquin, as
 | Plant food within 30 / 60 / 100 cells | 1,820 / 4,326 / 6,951 | 1,981 / 4,676 / 7,112 | 1,309 / 3,878 / 7,364 | **560** / 1,841 / 4,249 |
 | Water lilies after a year (map / within 40) | **466** / 19 | 112 / 13 | 70 / 7 | 44 / 6 |
 | Mud banks: count, nearest, within 40 | 160, 12 m, **42** | 111, 11 m, 3 | 153, 28 m, **2** | 136, 9 m, 23 |
-| River clay: count, nearest | 8, 52 m | 8, 27 m | 8, 8 m | 8, 21 m |
+| River mud: count, nearest | 8, 52 m | 8, 27 m | 8, 8 m | 8, 21 m |
 | Pebble beds: count, nearest, within 40 | 419, 20 m, 49 | 423, 41 m, 0 | 382, 48 m, 0 | 375, 24 m, 18 |
 
 Water lilies are seeded only after the water settles, so the counts above come from the end of the year. Land shoots double over the first spring (Algonquin: 2,398 to 5,402).
 
-What this means for play: Algonquin's camp has everything nearby. Telemark's camp is food-poor, with 31% of Algonquin's plant food within 30 cells. Bavarian's camp lacks both mud and trees. Every map has exactly 8 river-clay deposits, and pebble counts are nearly the same everywhere. These materials do not set the maps apart.
+What this means for play: Algonquin's camp has everything nearby. Telemark's camp is food-poor, with 31% of Algonquin's plant food within 30 cells. Bavarian's camp lacks both mud and trees. Every map has exactly 8 river-mud deposits, and pebble counts are nearly the same everywhere. These materials do not set the maps apart.
 
 ### 1.7 Room to build
 
 | | Algonquin | Voyageurs | Bavarian | Telemark |
 |---|---|---|---|---|
-| Valid shelter spots within 30 cells of camp | 1,065 | 978 | 433 | **365** |
-| Valid shelter spots map-wide (every 2nd cell) | **10,430** | 2,998 | 1,626 | 951 |
+| Valid lodge spots within 30 cells of camp | 1,065 | 978 | 433 | **365** |
+| Valid lodge spots map-wide (every 2nd cell) | **10,430** | 2,998 | 1,626 | 951 |
 | Dry, clear land under 15% slope within 8 m of water | 7.3% | **11.7%** | 5.8% | 5.3% |
 | Same, within 40 cells of camp | 1,879 | 2,391 | 1,438 | 1,318 |
 | Site score at camp (verdict) | 0.72 (Excellent) | 0.77 (Excellent) | 0.74 (Excellent) | 0.77 (Excellent) |
@@ -142,15 +142,15 @@ All four camps score "Excellent", even though the colonies on them grow very dif
 A year is 360 days (four 90-day seasons, `calendar.rs`). Every run covers days 0–360 from the designed camp. The four strategies:
 
 - **Hands-off**: `policy handsoff`. The colony is settled and then left alone (automatic job staffing stays on).
-- **Attentive**: `policy attentive`. The built-in autoplayer places a shelter, the dam (designed, or one near camp), warehouse, larder, forester, logistics and extra shelters, and applies the top alert's fix.
-- **Expansion**: a fixed script with no reactions to alerts. It draws the designed dam and a shelter on day 0, then places a warehouse (day 5), larder (12), forester (25) and shelters (60, 120).
-- **Planned**: a fixed script, shelter first. It places a shelter and adds a builder on day 0, then a warehouse (day 3), larder (10), designed dam plus one more logger (30), forester (45), the best canal from the canal search (60), and shelters (90, 150).
+- **Attentive**: `policy attentive`. The built-in autoplayer places a lodge, the dam (designed, or one near camp), stick pile, food cache, forester, haul mound and extra lodges, and applies the top alert's fix.
+- **Expansion**: a fixed script with no reactions to alerts. It draws the designed dam and a lodge on day 0, then places a stick pile (day 5), food cache (12), forester (25) and lodges (60, 120).
+- **Planned**: a fixed script, lodge first. It places a lodge and adds a builder on day 0, then a stick pile (day 3), food cache (10), designed dam plus one more feller (30), forester (45), the best canal from the canal search (60), and lodges (90, 150).
 
 ### 2.1 Results at day 360
 
-Abbreviations: "Home" is the day the first shelter was finished, "Ware" the day the warehouse was finished, "Homeless" the number of days some beaver had no home, "Food" the stock at year end as days of current need, "Dam" how much of the designed dam was built.
+Abbreviations: "Home" is the day the first lodge was finished, "Ware" the day the stick pile was finished, "Homeless" the number of days some beaver had no home, "Food" the stock at year end as days of current need, "Dam" how much of the designed dam was built.
 
-| Map | Strategy | Pop | Births | Deaths | Immigr. | Food (days) | Min food | Homeless | Home / Ware | Dam / pond | Sticks / Clay |
+| Map | Strategy | Pop | Births | Deaths | Immigr. | Food (days) | Min food | Homeless | Home / Ware | Dam / pond | Sticks / Mud |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | Algonquin | hands-off | **0** (day 348) | 4 | 8 Cold | 0 | 55.9 (–) | 13.8 | 348 | – / – | – | 100 / 30 |
 | | attentive | 10 | 4 | 0 | 2 | 109 (125) | 14.7 | 21 | 21 / 65 | 87% / 2,271 | 50 / 36 |
@@ -171,13 +171,13 @@ Abbreviations: "Home" is the day the first shelter was finished, "Ware" the day 
 
 Notes:
 
-- No run ever ran out of food. The lowest food stock in every run (13.8–14.7) was the starting larder itself, and food need was 0.63–0.88 a day. "Sticks 250" means the store was full.
+- No run ever ran out of food. The lowest food stock in every run (13.8–14.7) was the starting food cache itself, and food need was 0.63–0.88 a day. "Sticks 250" means the store was full.
 - All kits were born on day 47, four per run. Every death was from Cold.
 - **Attentive build order:**
-  - Algonquin: dam on day 0, shelter 21, warehouse 65, larder 147, shelter 187, forester 215, logistics 224.
-  - Voyageurs: shelter 23, warehouse 31, larder 45, forester 62, logistics 65, shelters 116 and 132.
-  - Bavarian: dam on day 0, shelter 48, warehouse 238, shelter 264, larder 275, forester 282, logistics 287.
-  - Telemark: dam on day 0, shelter 48, warehouse 171, shelter 196, larder 213, forester 224, logistics 225.
+  - Algonquin: dam on day 0, lodge 21, stick pile 65, food cache 147, lodge 187, forester 215, haul mound 224.
+  - Voyageurs: lodge 23, stick pile 31, food cache 45, forester 62, haul mound 65, lodges 116 and 132.
+  - Bavarian: dam on day 0, lodge 48, stick pile 238, lodge 264, food cache 275, forester 282, haul mound 287.
+  - Telemark: dam on day 0, lodge 48, stick pile 171, lodge 196, food cache 213, forester 224, haul mound 225.
 - **Days with each alert, attentive runs**:
   - Algonquin: Idle 113, Stranger 17, NoBuilders 6, WinterFood 6.
   - Voyageurs: Idle 157, Stranger 16.
@@ -187,18 +187,18 @@ Notes:
 
 ### 2.2 Same strategy on different maps
 
-**Hands-off makes every map the same.** All four collapse on day 347.9: four births on day 47, four Cold deaths on day 325.6 and four more on day 347.9. Food stays above 13.8, and the starting 100 sticks and 30 clay are never touched. The automatic staffing gathers food but never builds a home. The map makes no difference, because the colony dies of a rule (no shelter, so cold kills) long before terrain or resources matter.
+**Hands-off makes every map the same.** All four collapse on day 347.9: four births on day 47, four Cold deaths on day 325.6 and four more on day 347.9. Food stays above 13.8, and the starting 100 sticks and 30 mud are never touched. The automatic staffing gathers food but never builds a home. The map makes no difference, because the colony dies of a rule (no lodge, so cold kills) long before terrain or resources matter.
 
 **Attentive autoplay** survives on every map. It reveals the maps' economies:
 
-- **Voyageurs grows fastest** (warehouse on day 31) because it never builds a dam. All the sticks go into buildings. The metrics explain this: no dam site within 120 cells, and the designed dam 303 cells away and unexplored.
-- **Algonquin** builds its 460-stick dam before most of the town (warehouse on day 65, larder 147). It still ends with the most food (125 days), thanks to 392 shoots and 197 trees within 40 cells of camp.
-- **Telemark** takes longer (warehouse on day 171). With 128 shoots within 40 cells, foraging takes more of the workforce. It still ends at pop 10 with 108 days of food.
-- **Bavarian is the slowest by far** (warehouse on day 238). It is the only map without immigrants (pop 8): strangers came for 29 days but were not taken in. The metrics explain this. Only 63 trees lie within 40 cells, so sticks run low: the stock fell to 18.8 between days 120 and 210. The nearest mud bank is 28 m away, with only 2 within 40 cells.
+- **Voyageurs grows fastest** (stick pile on day 31) because it never builds a dam. All the sticks go into buildings. The metrics explain this: no dam site within 120 cells, and the designed dam 303 cells away and unexplored.
+- **Algonquin** builds its 460-stick dam before most of the town (stick pile on day 65, food cache 147). It still ends with the most food (125 days), thanks to 392 shoots and 197 trees within 40 cells of camp.
+- **Telemark** takes longer (stick pile on day 171). With 128 shoots within 40 cells, foraging takes more of the workforce. It still ends at pop 10 with 108 days of food.
+- **Bavarian is the slowest by far** (stick pile on day 238). It is the only map without immigrants (pop 8): strangers came for 29 days but were not taken in. The metrics explain this. Only 63 trees lie within 40 cells, so sticks run low: the stock fell to 18.8 between days 120 and 210. The nearest mud bank is 28 m away, with only 2 within 40 cells.
 
-**Expansion (dam on day 0, no reaction to alerts)** shows the cost of the designed dam. On the three maps where the dam could be drawn, the 100 starting sticks went straight into it (the dam costs 224–460 sticks). Then a single builder and logger worked for months, and the first shelter was finished on day 148 (Telemark), 203 (Algonquin) and 255 (Bavarian). The more the dam costs and the fewer trees near camp, the longer the wait. Algonquin and Bavarian lost their immigrants (pop 8), which matches the 203 and 255 homeless days. Voyageurs was unaffected only because its dam was refused.
+**Expansion (dam on day 0, no reaction to alerts)** shows the cost of the designed dam. On the three maps where the dam could be drawn, the 100 starting sticks went straight into it (the dam costs 224–460 sticks). Then a single builder and feller worked for months, and the first lodge was finished on day 148 (Telemark), 203 (Algonquin) and 255 (Bavarian). The more the dam costs and the fewer trees near camp, the longer the wait. Algonquin and Bavarian lost their immigrants (pop 8), which matches the 203 and 255 homeless days. Voyageurs was unaffected only because its dam was refused.
 
-**Planned (shelter first, dam on day 30, one more builder and logger, canal on day 60)** gave the best result on every map: pop 10 everywhere, 112–127 days of food, and the store full of sticks. Moving the dam 30 days later cost nothing. The ponds ended the same size as when the dam was drawn on day 0, because the one-row height cap, not time, limits them. The canals were dug on all four maps (19–26 cells). On Algonquin and Bavarian they filled (25 of 26 cells wet, 0.20–0.26 m deep). On Voyageurs and Telemark they stayed almost dry (2 and 1 wet cells). None of them measurably changed the outcome, as the canal search predicted (no route reaches 20 trees). Bavarian benefits most from planning: its warehouse was done by day 21 instead of 238, and population rose from 8 to 10.
+**Planned (lodge first, dam on day 30, one more builder and feller, canal on day 60)** gave the best result on every map: pop 10 everywhere, 112–127 days of food, and the store full of sticks. Moving the dam 30 days later cost nothing. The ponds ended the same size as when the dam was drawn on day 0, because the one-row height cap, not time, limits them. The canals were dug on all four maps (19–26 cells). On Algonquin and Bavarian they filled (25 of 26 cells wet, 0.20–0.26 m deep). On Voyageurs and Telemark they stayed almost dry (2 and 1 wet cells). None of them measurably changed the outcome, as the canal search predicted (no route reaches 20 trees). Bavarian benefits most from planning: its stick pile was done by day 21 instead of 238, and population rose from 8 to 10.
 
 ### 2.3 Collapses
 
@@ -256,7 +256,7 @@ The images are of three kinds:
   - Rectangular building pads sit in the north-east.
   - The map's only lake is a triangle dammed by that straight embankment.
   - The camp is in a large cleared meadow, which is real land use but empty-looking in game.
-- The cuttings and pads are invisible in the 3D view, so the ground looks smooth while the water and paths follow invisible straight lines.
+- The cuts and pads are invisible in the 3D view, so the ground looks smooth while the water and paths follow invisible straight lines.
 
 ### Telemark
 
@@ -295,7 +295,7 @@ The images are of three kinds:
 
 **Weaknesses**
 - The designed dam is 1.2 m tall but stops at 93% built under the 1.0 m one-row cap. The pond is 1,294 m², not the 2,365 m² previewed.
-- The fewest shelter spots: 365 near camp, 951 map-wide.
+- The fewest lodge spots: 365 near camp, 951 map-wide.
 - The "HighAndDry" alert was up for 28 days in the expansion and planned runs.
 
 **Fixes**
@@ -317,7 +317,7 @@ The images are of three kinds:
 
 **Fixes**
 - Offer a cheaper first dam. The same crossing at 0.8 m height (19 cells, 39 cells from camp) still makes a 1,649 m² pond, which is more than the 1.5 m design delivers once capped. There are 3 sites within 60 cells.
-- Warn when a dam drawn before the first shelter will use up every stick.
+- Warn when a dam drawn before the first lodge will use up every stick.
 
 ### Voyageurs (rank 3)
 
@@ -329,7 +329,7 @@ The images are of three kinds:
 **Weaknesses**
 - The designed dam is 303 cells away and unexplored, so it is refused at start.
 - No dam site within 120 cells; attentive autoplay retried the unreachable designed dam 35 times and never built one.
-- The year passes with 157 Idle days.
+- The year goes by with 157 Idle days.
 - Speckled puddles in the marsh.
 
 **Fixes**
@@ -341,7 +341,7 @@ The images are of three kinds:
 **Strengths**
 - The highest relief and the best spruce and beech mountain forest.
 - The busiest colony (Idle on only 68 days).
-- The planned strategy shows that good play pays most here: warehouse on day 21 instead of 238, pop 8 to 10.
+- The planned strategy shows that good play pays most here: stick pile on day 21 instead of 238, pop 8 to 10.
 
 **Weaknesses**
 - The camp has 63 trees within 40 cells, and 12–24 remain at year end.
@@ -352,15 +352,15 @@ The images are of three kinds:
 
 **Fixes**
 - Move the camp to the forest edge in the south-west, or add riparian trees around the clearing.
-- Allow a start dam further from camp. The other sites make 485–584 m² ponds, and 5 of the 6 pass the start-dam fill and visibility test, but only one lies within 120 cells of camp.
-- Flatten road embankments and pads in the height data, or explain them as old logging roads.
+- Allow a start dam further from camp. The other sites make 485–584 m² ponds, and 5 of the 6 meet the start-dam fill and visibility test, but only one lies within 120 cells of camp.
+- Flatten road embankments and pads in the height data, or explain them as old felling roads.
 
 ### Changes for every map
 
-1. **Give the hands-off colony a way through its first winter.** Automatic staffing could place a first shelter. As things stand, every map's hands-off outcome is set by the rules, not the map.
+1. **Give the hands-off colony a way through its first winter.** Automatic staffing could place a first lodge. As things stand, every map's hands-off outcome is set by the rules, not the map.
 2. **Keep start dams to one row (≤ 1.0 m), or preview the pond as built.** Two of the three buildable designed dams overpromise by about 45%.
 3. **Make site scoring include the dam.** Score distance to the planned dam and the trees within reach, so the four "Excellent" camps stop hiding a 4× spread in nearby trees and a dam 303 cells away.
-4. **Let land cover change tree density, not just where trees stand.** Density is fixed at 470–506 per hectare and river clay at 8 deposits on every map. Varying them would give each map its own economy.
+4. **Let land cover change tree density, not just where trees stand.** Density is fixed at 470–506 per hectare and river mud at 8 deposits on every map. Varying them would give each map its own economy.
 5. **Add goals for the second half of the year.** All four colonies run out of things to do after about day 230. Candidates: a second dam, canal routes that unlock far groves, or wetland growth that rewards a larger pond.
 
 ---
@@ -388,7 +388,7 @@ Bevy keeps updating and rendering an invisible window, and `Screenshot::primary_
 **Checks.**
 - A watcher polled the game's windows and the foreground window every 100 ms throughout each test run. In every run (a `game_shot`-style screenshot, the 12 report screenshots, a `--script --report-dir` run, and a `BC_PERF` benchmark) the game had no visible window and the foreground window never changed. The only window flagged was winit's own helper window (class "Winit Thread Event Target"). Winit creates it in every app, interactive play included. It is a 16×16 layered, transparent, non-activating tool window that never appears on screen.
 - Screenshots come out at 1600×900 with normal content.
-- `cargo check --workspace --all-targets` passes, with one warning in `crates/sim/src/perf_bench.rs` (another session's new file, not this change).
-- `cargo test -p sim --lib` passes: 90 tests, 0 failures.
+- `cargo check --workspace --all-targets` succeeds, with one warning in `crates/sim/src/perf_bench.rs` (another session's new file, not this change).
+- `cargo test -p sim --lib` succeeds: 90 tests, 0 failures.
 - All builds used a separate target directory.
 - Nothing was committed.

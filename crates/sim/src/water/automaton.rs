@@ -2,7 +2,7 @@
 //! Each tick the wet cells are swept from the highest water surface down (Gauss-Seidel), so
 //! water runs the length of a channel in one tick. A sender solves its own end level
 //! implicitly against Manning/critical conveyance on its faces, never drops below a receiver's
-//! surface, and only fills a receiver that cannot pass water on (a hollow, or the cell that fed
+//! surface, and only fills a receiver that cannot hand water on (a hollow, or the cell that fed
 //! it this tick) up to its own level. Connected water that is deep and nearly flat is one pool:
 //! it holds one level, takes in what reaches it and lets out what crosses its rim, so ponds and
 //! lakes stay flat and still. Cells that receive water after their turn get a second sweep;
@@ -88,7 +88,7 @@ struct Pool {
     dirty: bool,
     /// Times the pool has been swept this tick.
     visits: u8,
-    /// Some member can pass water out of the pool (a lower non-member neighbour or open edge).
+    /// Some member can let water out of the pool (a lower non-member neighbour or open edge).
     outlet: bool,
     /// Members on the pool's rim, as a range of `rim`.
     rim_start: usize,
@@ -492,7 +492,7 @@ impl Automaton {
         self.pools[p].dirty = false;
     }
 
-    /// Whether cell j could pass water on this tick (an outlet at or below it).
+    /// Whether cell j could hand water on this tick (an outlet at or below it).
     fn drains(&self, j: usize, from: usize) -> bool {
         if self.open[j] != 0 {
             return true;

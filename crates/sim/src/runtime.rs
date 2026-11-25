@@ -24,14 +24,14 @@ pub struct Snapshot {
     pub results: Vec<CommandResult>,
 }
 
-pub struct Worker {
+pub struct SimThread {
     input: mpsc::Sender<Input>,
     spares: mpsc::Sender<SimState>,
     output: Mutex<mpsc::Receiver<Snapshot>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
-impl Worker {
+impl SimThread {
     pub fn spawn(mut state: SimState) -> Self {
         state.client_commands = None;
         state.colony.events.clear();
@@ -121,14 +121,14 @@ impl Worker {
                     }
                 }
             }
-        }).expect("start simulation worker");
+        }).expect("start simulation sim_thread");
         Self { input, spares, output: Mutex::new(output), thread: Some(thread) }
     }
     pub fn command(&self, sequence: u64, command: Command) -> Result<(), String> {
-        self.input.send(Input::Command(sequence, command)).map_err(|_| "simulation worker stopped".into())
+        self.input.send(Input::Command(sequence, command)).map_err(|_| "simulation sim_thread stopped".into())
     }
     pub fn clock(&self, paused: bool, days_per_second: f64) -> Result<(), String> {
-        self.input.send(Input::Clock { paused, days_per_second }).map_err(|_| "simulation worker stopped".into())
+        self.input.send(Input::Clock { paused, days_per_second }).map_err(|_| "simulation sim_thread stopped".into())
     }
     pub fn poll(&self) -> Option<Snapshot> { self.output.lock().unwrap().try_recv().ok() }
     /// Hand back a world the interface no longer needs (the snapshot before the latest): the
@@ -136,7 +136,7 @@ impl Worker {
     pub fn recycle(&self, old: SimState) { let _ = self.spares.send(old); }
 }
 
-impl Drop for Worker {
+impl Drop for SimThread {
     fn drop(&mut self) {
         let _ = self.input.send(Input::Stop);
         // Dropping a world must not wait for a costly in-flight step on the UI thread.
@@ -151,15 +151,15 @@ mod tests {
     fn commands_are_acknowledged_in_order_while_paused() {
         let initial = SimState::new(1);
         let initial_day = initial.time_days;
-        let worker = Worker::spawn(initial);
-        worker.command(1, Command::Assign { who: Vec::new(), to: None }).unwrap();
-        worker.command(2, Command::Assign { who: Vec::new(), to: None }).unwrap();
-        worker.command(3, Command::AddWorker { building: crate::buildings::BuildingId(999) }).unwrap();
+        let sim_thread = SimThread::spawn(initial);
+        sim_thread.command(1, Command::Assign { who: Vec::new(), to: None }).unwrap();
+        sim_thread.command(2, Command::Assign { who: Vec::new(), to: None }).unwrap();
+        sim_thread.command(3, Command::AddBeaver { building: crate::buildings::BuildingId(999) }).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut results = Vec::new();
         loop {
-            assert!(Instant::now() < deadline, "worker did not publish queued commands");
-            if let Some(snapshot) = worker.poll() {
+            assert!(Instant::now() < deadline, "sim_thread did not publish queued commands");
+            if let Some(snapshot) = sim_thread.poll() {
                 results.extend(snapshot.results);
                 if snapshot.acknowledged == 3 {
                     assert_eq!(snapshot.state.time_days, initial_day);

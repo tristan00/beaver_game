@@ -1,13 +1,13 @@
-//! Harbors and rafts. A finished Harbor keeps `RAFTS_PER_HARBOR` rafts moored at its
+//! Raft landings and rafts. A finished Raft landing keeps `RAFTS_PER_RAFT_LANDING` rafts moored at its
 //! waterfront and lets gates be upgraded into locks (see `locks`).
 //!
 //! A hauler with at least two loads of a good to move between two stores that both stand on
 //! raft water (at least `RAFT_DEPTH` deep), joined by it, takes a free raft: it fetches the
 //! raft, pushes it to the first store, loads up to `RAFT_LOADS` loads, pushes it to the
-//! second, unloads, and takes it back to its harbor. A raft goes at `RAFT_PACE` of a
-//! swimmer's speed (with the current, as a swimmer does) and passes dams only through locks;
+//! second, unloads, and takes it back to its raft landing. A raft goes at `RAFT_PACE` of a
+//! swimmer's speed (with the current, as a swimmer does) and crosses dams only through locks;
 //! it carries far more than a beaver, so over any distance it moves goods faster.
-include!(concat!(env!("OUT_DIR"), "/harbor_constants.rs"));
+include!(concat!(env!("OUT_DIR"), "/raft_landing_constants.rs"));
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -21,7 +21,7 @@ use crate::SimState;
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Raft {
     pub id: u32,
-    pub harbor: BuildingId,
+    pub raft_landing: BuildingId,
     /// Where it floats: moored, or wherever its hauler has pushed it.
     pub cell: Cell,
     /// The hauler using it, if any.
@@ -119,7 +119,7 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
             if !raft_water(sim, n) {
                 continue;
             }
-            // No cutting a corner past a bank, except into or out of a lock: on a diagonal dam
+            // No shortcut across a corner past a bank, except into or out of a lock: on a diagonal dam
             // the water either side of a lock meets it only at its corners.
             if dx != 0 && dy != 0 && !corner_ok(sim, c, n) {
                 continue;
@@ -194,30 +194,30 @@ fn label_regions(sim: &mut SimState) {
     sim.fleet.regions = regions;
 }
 
-/// Keep each finished harbor's rafts: new ones moored at its docks, those of a harbor that
+/// Keep each finished raft landing's rafts: new ones moored at its docks, those of a raft landing that
 /// is gone taken away, and any whose hauler has stopped using it let go.
 pub fn step(sim: &mut SimState) {
     let day = sim.time_days.floor() as i64;
-    let any = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Harbor);
+    let any = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::RaftLanding);
     if any && sim.fleet.regions_day != Some(day) {
         label_regions(sim);
         sim.fleet.regions_day = Some(day);
     }
-    let harbors: Vec<(BuildingId, Vec<Cell>)> = sim
+    let raft_landings: Vec<(BuildingId, Vec<Cell>)> = sim
         .buildings
         .buildings
         .iter()
-        .filter(|b| b.kind == BuildingKind::Harbor && sim.finished(b))
+        .filter(|b| b.kind == BuildingKind::RaftLanding && sim.finished(b))
         .map(|b| (b.id, docks(sim, b)))
         .collect();
-    sim.fleet.rafts.retain(|b| harbors.iter().any(|h| h.0 == b.harbor));
-    for (id, docks) in &harbors {
-        let have = sim.fleet.rafts.iter().filter(|b| b.harbor == *id).count();
-        for k in have..RAFTS_PER_HARBOR {
+    sim.fleet.rafts.retain(|b| raft_landings.iter().any(|h| h.0 == b.raft_landing));
+    for (id, docks) in &raft_landings {
+        let have = sim.fleet.rafts.iter().filter(|b| b.raft_landing == *id).count();
+        for k in have..RAFTS_PER_RAFT_LANDING {
             let Some(&cell) = docks.get(k % docks.len().max(1)) else { break };
             let n = sim.fleet.next;
             sim.fleet.next += 1;
-            sim.fleet.rafts.push(Raft { id: n, harbor: *id, cell, hauler: None });
+            sim.fleet.rafts.push(Raft { id: n, raft_landing: *id, cell, hauler: None });
         }
     }
     let using: Vec<(u32, BeaverId)> = sim.fleet.rafts.iter().filter_map(|b| b.hauler.map(|h| (b.id, h))).collect();
@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// A long channel of deep water (rows 30 to 34) with stores on its bank at both ends, a
-    /// harbor between them, and a logistics building with one hauler.
+    /// raft landing between them, and a haul mound with one hauler.
     fn waterway() -> (SimState, BuildingId, BuildingId, crate::colony::BeaverId) {
         let mut s = SimState::new(1);
         s.colony.found((40.0, 22.0), &crate::colony::RiverLand::default()).unwrap();
@@ -267,10 +267,10 @@ mod tests {
                 *s.water.depth.get_mut(x, y).unwrap() = 1.0;
             }
         }
-        let a = put(&mut s, 1, K::Warehouse, (10, 27));
-        let b = put(&mut s, 2, K::Warehouse, (90, 27));
-        put(&mut s, 3, K::Harbor, (45, 27));
-        let l = put(&mut s, 4, K::Logistics, (40, 20));
+        let a = put(&mut s, 1, K::StickPile, (10, 27));
+        let b = put(&mut s, 2, K::StickPile, (90, 27));
+        put(&mut s, 3, K::RaftLanding, (45, 27));
+        let l = put(&mut s, 4, K::HaulMound, (40, 20));
         s.buildings.update_capacity(crate::buildings::Terrain { depth: &s.water.depth });
         s.buildings.stores.put_at(a, Good::Sticks, 60.0).unwrap();
         s.nav = NavGrid::new(n, n);
@@ -300,7 +300,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(s.fleet.rafts.len(), RAFTS_PER_HARBOR, "the harbor's rafts are moored");
+        assert_eq!(s.fleet.rafts.len(), RAFTS_PER_RAFT_LANDING, "the raft landing's rafts are moored");
         assert!(used_raft, "the hauler never took a raft");
         assert!(biggest > 2.5 * crate::agents::load_size(Good::Sticks), "a raft took only {biggest}");
         assert!(s.work.stock_of(b, Good::Sticks) >= 2.0 * crate::agents::load_size(Good::Sticks), "the far store got {}", s.work.stock_of(b, Good::Sticks));
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raft_stays_on_deep_water_and_passes_a_dam_only_by_its_lock() {
+    fn a_raft_stays_on_deep_water_and_crosses_a_dam_only_by_its_lock() {
         let (mut s, _, _, _) = waterway();
         // A dam across the channel at x 60.
         for y in 30..35 {
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raft_passes_a_lock_in_a_diagonal_dam() {
+    fn a_raft_goes_through_a_lock_in_a_diagonal_dam() {
         let (mut s, _, _, _) = waterway();
         for y in 20..46 {
             for x in 40..80 {

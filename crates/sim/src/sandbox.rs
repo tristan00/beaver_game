@@ -179,7 +179,7 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn passed(&self) -> bool {
+    pub fn all_ok(&self) -> bool {
         self.checks.iter().all(|c| c.1)
     }
 }
@@ -362,7 +362,7 @@ pub fn run_script(text: &str) -> Result<(SimState, Report), String> {
                     other => return Err(err(format!("unknown operator '{other}'"))),
                 };
                 let name = format!("{} {op} {want} (is {have:.4})", w[1..w.len() - 2].join(" "));
-                report.lines.push(say(s, format!("{} {name}", if ok { "PASS" } else { "FAIL" })));
+                report.lines.push(say(s, format!("{} {name}", if ok { "OK" } else { "FAIL" })));
                 report.checks.push((name, ok));
             }
             "dump" => {

@@ -3,7 +3,7 @@
 //! surface). Each has the look a player can learn: sedge a low arching tussock, reed canary
 //! grass taller with plumes, meadowsweet frothy cream heads, Joe-Pye weed tall pink domes, wild
 //! raspberry arching canes hung with red berries, horsetail a brush of jointed stems, cattail
-//! straps and brown heads, arrowhead arrow leaves and white flowers, yellow pond lily notched
+//! straps and brown heads, arrowhead arrow leaves and white flowers, yellow pond lily cleft
 //! pads and yellow balls, white water lily round pads and white stars, pondweed a raft of
 //! small leaves. They green up in spring, flower in summer, turn in autumn, and stand dead
 //! and pale in winter (the water plants die back under the ice).
@@ -67,16 +67,16 @@ fn blade(mb: &mut Mb, base: Vec3, out: Vec3, h: f32, w: f32, arch: f32, lo: [f32
     }
 }
 
-/// A floating pad: a disc on the water with a notch cut to its middle.
-fn pad(mb: &mut Mb, c: Vec3, r: f32, yaw: f32, notch: f32, col: [f32; 3], tilt: f32) {
+/// A floating pad: a disc on the water with a slit cut to its middle.
+fn pad(mb: &mut Mb, c: Vec3, r: f32, yaw: f32, slit: f32, col: [f32; 3], tilt: f32) {
     let n = 12;
     let at = |a: f32| {
         let d = v(a.cos(), 0.0, a.sin());
         c + d * r + Vec3::Y * (tilt * r * d.dot(v(yaw.cos(), 0.0, yaw.sin())).max(0.0))
     };
     for i in 0..n {
-        let a0 = yaw + notch * 0.5 + (TAU - notch) * i as f32 / n as f32;
-        let a1 = yaw + notch * 0.5 + (TAU - notch) * (i + 1) as f32 / n as f32;
+        let a0 = yaw + slit * 0.5 + (TAU - slit) * i as f32 / n as f32;
+        let a1 = yaw + slit * 0.5 + (TAU - slit) * (i + 1) as f32 / n as f32;
         let shade = mix(col, hex(0xffffff), 0.05 * (i % 2) as f32);
         mb.quad2([c, at(a0), at(a1), c], shade);
     }

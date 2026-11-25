@@ -45,25 +45,6 @@ fn years(days: f64) -> String {
     span(days)
 }
 
-fn job_icon(j: Job) -> Icon {
-    match j {
-        Job::Forager => Icon::RoleForager,
-        Job::Logger => Icon::RoleLogger,
-        Job::Builder => Icon::RoleBuilder,
-        Job::Digger => Icon::RoleMudDigger,
-        Job::Hauler => Icon::RoleHauler,
-    }
-}
-
-fn job_name(j: Job) -> &'static str {
-    match j {
-        Job::Forager => "Foraging (also forestry)",
-        Job::Logger => "Logging",
-        Job::Builder => "Building (also repairs)",
-        Job::Digger => "Digging clay and pebbles",
-        Job::Hauler => "Hauling",
-    }
-}
 
 fn cause(c: DeathCause) -> &'static str {
     match c {
@@ -102,12 +83,12 @@ fn heading(u: &mut Ui, icon: Icon, words: &str) {
     });
 }
 
-/// A labelled bar: icon, name, notches and the number.
+/// A labelled bar: icon, name, ticks and the number.
 fn meter(u: &mut Ui, icon: Icon, col: Color, name: &str, v: f32, tip: Tip) {
     u.row(8.0, |r| {
         r.icon(icon, 15.0, col);
         r.text(name.to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
-        r.notches(v.clamp(0.0, 1.0), 10, 160.0, 9.0, level(v));
+        r.ticks(v.clamp(0.0, 1.0), 10, 160.0, 9.0, level(v));
         r.spacer();
         r.bold(format!("{:.0}", v * 100.0), 12.0, INK);
     })
@@ -379,20 +360,176 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     }
 }
 
-fn skills(u: &mut Ui, b: &Beaver) {
+fn skills(c: &Ctx, u: &mut Ui, b: &Beaver) {
     heading(u, Icon::Jobs, "Skills");
-    // Hauling is walking, which no skill speeds.
-    for j in Job::ALL.into_iter().filter(|j| *j != Job::Hauler) {
+    let rec = c.s.deeds.get(b.id);
+    for j in Job::ALL {
         let v = b.skills[j.index()];
+        let mut tip = Tip::name(job_name(j)).with_value(format!("{:.0}", v * 100.0));
+        if job_speeds(j) {
+            tip = tip.line("Work", format!("×{:.2}", sim::agents::work_factors(b, j).skill_x));
+        }
+        if let Some(d) = rec.map(|r| r.days[j.index()] as f64).filter(|d| *d >= 1.0) {
+            tip = tip.line("Time at it", years(d));
+        }
         u.row(8.0, |r| {
             r.icon(job_icon(j), 15.0, INK);
-            r.text(job_name(j).to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(170.0));
-            r.notches(v.clamp(0.0, 1.0), 10, 120.0, 9.0, GOOD);
+            r.text(job_name(j).to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
+            r.ticks(v.clamp(0.0, 1.0), 10, 120.0, 9.0, GOOD);
             r.spacer();
             r.bold(format!("{:.0}", v * 100.0), 12.0, INK);
         })
-        .tip(Tip::name(job_name(j)).with_value(format!("{:.0}", v * 100.0)).line("Work", format!("×{:.2}", sim::agents::work_factors(b, j).skill_x)));
+        .tip(tip);
     }
+}
+
+/// Its life's work: a chip for each thing it has done, the detail in the tip.
+fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
+    use sim::buildings::Good;
+    let s = c.s;
+    let Some(r) = s.deeds.get(id) else { return };
+    let km = |cells: f32| format!("{:.1} km", cells * s.water.cell_m / 1000.0);
+    let n = |v: f32| format!("{}", v.round() as i64);
+    let mut chips: Vec<(Icon, Color, String, Tip)> = Vec::new();
+    if r.walked >= 1.0 {
+        chips.push((Icon::Walk, INK, km(r.walked), Tip::name("Walked")));
+    }
+    if r.swum >= 1.0 {
+        chips.push((Icon::Drop, WATER, km(r.swum), Tip::name("Swum")));
+    }
+    let felled: u32 = r.felled.values().sum();
+    if felled > 0 {
+        let mut t = Tip::name("Trees felled");
+        for (sp, k) in &r.felled {
+            t = t.line(sp.name(), format!("{k}"));
+        }
+        if r.great_trees > 0 {
+            t = t.line("Great old trees", format!("{}", r.great_trees));
+        }
+        chips.push((Icon::Tree, GOOD, format!("{felled}"), t));
+    }
+    let food = r.gathered[Good::Food.index()];
+    if food >= 1.0 {
+        let mut t = Tip::name("Food gathered");
+        for (p, f) in &r.harvested {
+            t = t.line(p.name(), n(*f));
+        }
+        if r.bark >= 1.0 {
+            t = t.line("Bark", n(r.bark));
+        }
+        if r.winter_food >= 1.0 {
+            t = t.line("In winter", n(r.winter_food));
+        }
+        chips.push((good_icon(Good::Food), good_color(Good::Food), n(food), t));
+    }
+    for g in [Good::Sticks, Good::Mud, Good::Pebbles] {
+        let v = r.gathered[g.index()];
+        if v >= 1.0 {
+            chips.push((good_icon(g), good_color(g), n(v), Tip::name(match g { Good::Sticks => "Sticks gathered", Good::Mud => "Mud dug", _ => "Pebbles gathered" })));
+        }
+    }
+    // Carried on foot, by what and where to.
+    let carried: f32 = r.carried.values().sum();
+    if carried >= 1.0 {
+        let mut t = Tip::name("Carried");
+        let mut rows: Vec<(&(Good, sim::buildings::BuildingKind), &f32)> = r.carried.iter().collect();
+        rows.sort_by(|a, b| b.1.total_cmp(a.1));
+        for ((g, k), v) in rows.into_iter().take(8) {
+            t = t.line(format!("{} → {}", good_name(*g), k.spec().name), n(*v));
+        }
+        chips.push((Icon::Haul, INK, n(carried), t));
+    }
+    let rafted = r.rafted_total();
+    if rafted >= 1.0 {
+        let mut t = Tip::name("Moved by raft");
+        for g in Good::ALL.into_iter().filter(|g| r.rafted[g.index()] >= 1.0) {
+            t = t.line(good_name(g), n(r.rafted[g.index()]));
+        }
+        chips.push((Icon::Raft, WATER, n(rafted), t));
+    }
+    // A structure by its name: a dam by its pond's, a lodge by its family's.
+    let structure = |b: sim::buildings::BuildingId, kind: Option<sim::buildings::BuildingKind>| -> String {
+        if let Some(p) = sim::names::pond_name(s, b) {
+            return p.to_string();
+        }
+        let family = s.work.homes.get(&b).and_then(|l| s.colony.lodges.iter().find(|x| x.id == *l)).and_then(|l| s.colony.family(l.family));
+        match (family, kind) {
+            (Some(f), _) => f.name.clone(),
+            (None, Some(k)) => k.spec().name.to_string(),
+            (None, None) => "Gone".to_string(),
+        }
+    };
+    if r.dam_loads > 0 {
+        let mut t = Tip::name("Dam loads packed");
+        let mut dams: Vec<_> = r.works.iter().filter(|(_, w)| w.kind == Some(sim::buildings::BuildingKind::Dam) && w.loads > 0).collect();
+        dams.sort_by(|a, b| b.1.loads.cmp(&a.1.loads));
+        for (b, w) in dams.into_iter().take(6) {
+            t = t.line(structure(*b, w.kind), format!("{}", w.loads));
+        }
+        chips.push((Icon::Dam, MUD, format!("{}", r.dam_loads), t));
+    }
+    if r.canal_cells > 0 {
+        chips.push((Icon::Canal, WATER, format!("{}", r.canal_cells), Tip::name("Canal cells dug")));
+    }
+    if r.gates > 0 {
+        chips.push((Icon::Lock, INK, format!("{}", r.gates), Tip::name("Gates set")));
+    }
+    let built: u32 = r.built.iter().filter(|(k, _)| !k.is_waterworks()).map(|(_, v)| v).sum();
+    if built > 0 {
+        let mut t = Tip::name("Buildings raised");
+        for (k, v) in r.built.iter().filter(|(k, _)| !k.is_waterworks()) {
+            t = t.line(k.spec().name, format!("{v}"));
+        }
+        chips.push((Icon::Building, MUD, format!("{built}"), t));
+    }
+    if r.mended >= 1.0 {
+        let mut t = Tip::name("Mending done");
+        if r.leaks > 0 {
+            t = t.line("Leaks stopped", format!("{}", r.leaks));
+        }
+        let mut fixed: Vec<_> = r.works.iter().filter(|(_, w)| w.repairs >= 0.5).collect();
+        fixed.sort_by(|a, b| b.1.repairs.total_cmp(&a.1.repairs));
+        for (b, w) in fixed.into_iter().take(6) {
+            t = t.line(structure(*b, w.kind), n(w.repairs));
+        }
+        chips.push((Icon::Hammer, INK, n(r.mended), t));
+    }
+    if r.planted > 0 {
+        let mut t = Tip::name("Saplings planted");
+        if r.grown > 0 {
+            t = t.line("Grown into trees", format!("{}", r.grown));
+        }
+        chips.push((Icon::Sapling, GOOD, format!("{}", r.planted), t));
+    }
+    if r.seedlings > 0 {
+        chips.push((Icon::Plant, GOOD, format!("{}", r.seedlings), Tip::name("Seedlings collected")));
+    }
+    if r.wolves > 0 {
+        let mut t = Tip::name("Wolves spotted");
+        if r.warned > 0 {
+            t = t.line("Beavers warned", format!("{}", r.warned));
+        }
+        chips.push((Icon::Wolf, BAD, format!("{}", r.wolves), t));
+    }
+    let (born, raised) = sim::deeds::kits(s, id);
+    if born > 0 {
+        chips.push((Icon::Kit, FUR, format!("{born}"), Tip::name("Kits").line("Grew up", format!("{raised}"))));
+    }
+    if chips.is_empty() {
+        return;
+    }
+    u.rule();
+    heading(u, Icon::Hourglass, "Life's work");
+    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(14.0), row_gap: Val::Px(8.0), ..default() }, |g| {
+        for (icon, col, value, tip) in chips {
+            g.row(4.0, |x| {
+                x.icon(icon, 15.0, col);
+                x.bold(value, 12.0, INK);
+            })
+            .style(|n| n.min_width = Val::Px(64.0))
+            .tip(tip);
+        }
+    });
 }
 
 fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
@@ -451,7 +588,7 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
             // Who: name, sex, age, stage, and how long it may live.
             u.row(14.0, |r| {
                 r.col(4.0, |x| {
-                    x.bold(name_of(s, id), 20.0, INK);
+                    x.bold(full_name(s, id, &name_of(s, id)), 20.0, INK);
                     match b {
                         Some(b) => {
                             let sex = if b.sex == sim::colony::Sex::Male { "Male" } else { "Female" };
@@ -488,6 +625,7 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                             u.text("No longer in the colony".to_string(), 13.0, MUTED);
                         }
                     }
+                    records(c, u, id);
                 });
                 col(cols, &|u| {
                     if let Some(b) = b {
@@ -498,7 +636,7 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                 });
                 col(cols, &|u| {
                     if let Some(b) = b {
-                        skills(u, b);
+                        skills(c, u, b);
                         u.rule();
                     }
                     chronology(c, u, life);

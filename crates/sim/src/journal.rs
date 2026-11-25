@@ -294,10 +294,10 @@ fn buildings(sim: &SimState, j: &mut Journal) {
 fn colony_brief(sim: &SimState) -> String {
     let stores = &sim.buildings.stores;
     format!(
-        "colony[pop={} season={:?} food={:.1} food_need_per_day={:.2} food_days_left={:.1} sticks={:.1} clay={:.1} pebbles={:.1} saplings={:.1} lodges={}]",
+        "colony[pop={} season={:?} food={:.1} food_need_per_day={:.2} food_days_left={:.1} sticks={:.1} mud={:.1} pebbles={:.1} saplings={:.1} lodges={}]",
         sim.colony.population(), crate::calendar::Season::at(sim.time_days), stores.amount(Good::Food),
         crate::hud::food_need_per_day(sim), crate::hud::food_days_left(sim), stores.amount(Good::Sticks),
-        stores.amount(Good::Clay), stores.amount(Good::Pebbles), stores.amount(Good::Saplings), sim.colony.lodges.len()
+        stores.amount(Good::Mud), stores.amount(Good::Pebbles), stores.amount(Good::Saplings), sim.colony.lodges.len()
     )
 }
 

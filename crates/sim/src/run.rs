@@ -71,11 +71,11 @@ mod tests {
     #[test]
     fn a_building_is_counted_once_when_finished() {
         let mut s = SimState::new(1);
-        let before = s.run.built_of(BuildingKind::Warehouse);
-        s.buildings.buildings.push(Building { id: BuildingId(900), kind: BuildingKind::Warehouse, pos: (5, 5), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        let before = s.run.built_of(BuildingKind::StickPile);
+        s.buildings.buildings.push(Building { id: BuildingId(900), kind: BuildingKind::StickPile, pos: (5, 5), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         close_day(&mut s, 10.0);
         close_day(&mut s, 4.0);
-        assert_eq!(s.run.built_of(BuildingKind::Warehouse), before + 1);
+        assert_eq!(s.run.built_of(BuildingKind::StickPile), before + 1);
         assert_eq!(s.run.peak_water, 10.0);
     }
 

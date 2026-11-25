@@ -9,16 +9,16 @@ mod access_tests {
     #[test]
     fn occupied_buildings_keep_a_walkable_setback() {
         let mut b=Buildings::default();let d=Grid::new(24,24,0.5);let t=Terrain{depth:&d};
-        b.add_complete(BuildingKind::Warehouse,(5,5),t).unwrap();
-        assert!(b.check_ground(BuildingKind::Warehouse,(8,5),t).is_err());
-        assert!(b.check_ground(BuildingKind::Warehouse,(9,5),t).is_ok());
+        b.add_complete(BuildingKind::StickPile,(5,5),t).unwrap();
+        assert!(b.check_ground(BuildingKind::StickPile,(8,5),t).is_err());
+        assert!(b.check_ground(BuildingKind::StickPile,(9,5),t).is_ok());
     }
 
     #[test]
     fn a_building_too_deep_under_water_is_out_of_use() {
         let mut b = Buildings::default();
         let mut d = Grid::new(24, 24, 0.5);
-        let id = b.add_complete(BuildingKind::Warehouse, (5, 5), Terrain { depth: &d }).unwrap();
+        let id = b.add_complete(BuildingKind::StickPile, (5, 5), Terrain { depth: &d }).unwrap();
         let bd = b.building(id).unwrap().clone();
         assert!(!flooded(&bd, &d) && !b.unusable(&bd, &d), "half a metre is fine");
         for y in 5..8 {
@@ -30,15 +30,15 @@ mod access_tests {
         b.update_capacity(Terrain { depth: &d });
         assert_eq!(b.stores.capacity(Good::Sticks), BASE_CAPACITY, "a flooded store holds nothing");
         let deep = Grid::new(24, 24, MAX_BUILDING_DEPTH + 0.5);
-        assert!(b.can_place_site(BuildingKind::Warehouse, (14, 14), Terrain { depth: &deep }).is_err(), "nor can one be put there");
+        assert!(b.can_place_site(BuildingKind::StickPile, (14, 14), Terrain { depth: &deep }).is_err(), "nor can one be put there");
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum Good { Food, Sticks, Clay, Pebbles, Saplings }
+pub enum Good { Food, Sticks, Mud, Pebbles, Saplings }
 
 impl Good {
-    pub const ALL: [Good; 5] = [Good::Food, Good::Sticks, Good::Clay, Good::Pebbles, Good::Saplings];
+    pub const ALL: [Good; 5] = [Good::Food, Good::Sticks, Good::Mud, Good::Pebbles, Good::Saplings];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -147,6 +147,11 @@ impl Stores {
     /// Book material actually delivered to a site, including freshly gathered loads.
     /// Carried materials are outside stored inventory, so no capacity is involved.
     pub(crate) fn book_site_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>) {
+        self.book_delivery(good, amount, fresh, Use::Sites);
+    }
+    /// Book goods left where work uses them (a site, a gate, a building being mended): gone from
+    /// the stores, and newly made if they came straight from whoever gathered them.
+    pub(crate) fn book_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>, use_: Use) {
         if let Some(who) = fresh {
             self.tick_produced[good.index()] += amount;
             self.produced_total[good.index()] += amount;
@@ -154,7 +159,7 @@ impl Stores {
         }
         self.tick_consumed[good.index()] += amount;
         self.consumed_total[good.index()] += amount;
-        self.consumed_by[Use::Sites.index()][good.index()] += amount;
+        self.consumed_by[use_.index()][good.index()] += amount;
     }
     /// Book carried goods used up away from any store, such as a sapling planted.
     pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
@@ -287,15 +292,15 @@ impl Stores {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum BuildingKind {
     Dam,
-    Shelter,
-    Warehouse,
+    Lodge,
+    StickPile,
     Canal,
-    Larder,
-    Toolshed,
+    FoodCache,
+    PebbleHeap,
     Forester,
-    Logistics,
+    HaulMound,
     Lookout,
-    Harbor,
+    RaftLanding,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -314,7 +319,7 @@ impl BuildingKind {
         matches!(self, BuildingKind::Dam | BuildingKind::Canal)
     }
 
-    pub const ALL: [BuildingKind; 10] = [BuildingKind::Dam, BuildingKind::Shelter, BuildingKind::Warehouse, BuildingKind::Canal, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics, BuildingKind::Lookout, BuildingKind::Harbor];
+    pub const ALL: [BuildingKind; 10] = [BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::StickPile, BuildingKind::Canal, BuildingKind::FoodCache, BuildingKind::PebbleHeap, BuildingKind::Forester, BuildingKind::HaulMound, BuildingKind::Lookout, BuildingKind::RaftLanding];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -344,7 +349,7 @@ pub struct Building {
 impl Building {
     pub fn operational(&self) -> bool { self.is_complete() && self.condition > MIN_OPERATIONAL_CONDITION }
     pub fn durability(&self) -> f32 {
-        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Shelter { LODGE_REINFORCEMENT_FACTOR } else { REINFORCEMENT_FACTOR }
+        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Lodge { LODGE_REINFORCEMENT_FACTOR } else { REINFORCEMENT_FACTOR }
     }
     pub fn is_complete(&self) -> bool {
         self.status == Status::Complete
@@ -474,9 +479,9 @@ impl Buildings {
         if self.buildings.iter().any(|b| b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
         }
-        // A shelter's door is one cell outside its 3x3 footprint. Reserve it from
+        // A lodge's door is one cell outside its 3x3 footprint. Reserve it from
         // the moment the site is placed, in both placement orders. Dams may
-        // share it; an interior of another shelter may not.
+        // share it; an interior of another lodge may not.
         let solid = |k: BuildingKind| !k.is_waterworks();
         // Keep a continuous access lane around occupied structures. Reserving
         // only a lodge door still allowed later buildings to enclose its whole
@@ -485,10 +490,10 @@ impl Buildings {
             b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
             return Err(BuildError::BadTerrain("leave one cell between buildings for access"));
         }
-        if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Shelter && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
+        if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
             return Err(BuildError::Blocked);
         }
-        if kind == BuildingKind::Shelter {
+        if kind == BuildingKind::Lodge {
             let door = crate::nav::lodge_entrance(pos);
             if !terrain.depth.in_bounds(door.0, door.1) { return Err(BuildError::OutOfBounds); }
             if self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|c| c == door)) {
@@ -505,10 +510,10 @@ impl Buildings {
                 && !self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|p| p == c));
             // Reserve an approach to homes as well as the doorway itself.
             // Otherwise a final building can seal a burrow's only access cell
-            // or surround a lodge entrance while passing footprint checks.
+            // or surround a lodge entrance while meeting footprint checks.
             for (home, at) in self.buildings.iter().map(|b| (b.kind, b.pos)).chain(std::iter::once((kind, pos))) {
                 let access = match home {
-                    BuildingKind::Shelter => {
+                    BuildingKind::Lodge => {
                         let door = crate::nav::lodge_entrance(at);
                         if !cells.iter().any(|c| c.0.abs_diff(door.0) + c.1.abs_diff(door.1) <= 1) { continue; }
                         open(door) && neighbours(door).any(open)

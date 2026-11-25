@@ -1,10 +1,10 @@
-//! Locks. Once a Harbor stands, a built gate can be upgraded into a lock: a pair of gates with
+//! Locks. Once a Raft landing stands, a built gate can be upgraded into a lock: a pair of gates with
 //! a chamber between. A swimming beaver or a raft goes in, the gate behind it shuts, the
 //! chamber fills or drains to the level on the far side, and the gate ahead opens; so it gets
 //! past, either way, while the gate keeps holding the water as set.
 //!
-//! The upgrade is a gate change a builder makes in one visit, bringing `LOCK_STICKS` and
-//! `LOCK_CLAY`. Locks are kept apart from the gates they upgrade (and saved after the world,
+//! The upgrade is builders' work at the gate, done as `LOCK_STICKS` and `LOCK_MUD` are
+//! brought there (see `gates::work`). Locks are kept apart from the gates they upgrade (and saved after the world,
 //! see `save`), so older saves load.
 include!(concat!(env!("OUT_DIR"), "/locks_constants.rs"));
 
@@ -32,9 +32,9 @@ fn invalid(m: impl Into<String>) -> SimError {
     SimError::InvalidCommand(m.into())
 }
 
-/// Locks (and rafts) need a finished Harbor.
+/// Locks (and rafts) need a finished Raft landing.
 pub fn unlocked(sim: &SimState) -> bool {
-    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Harbor && sim.finished(b))
+    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::RaftLanding && sim.finished(b))
 }
 
 /// The gate a lock is made from: its cell and, on a widened dam, the dam cell behind it in every
@@ -61,7 +61,7 @@ pub fn lock_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
 }
 
 /// The cells under a built lock's walls, either side of its lane from end to end of the walls
-/// (which run on past the gates): nothing passes through them, so the only way through or
+/// (which run on past the gates): nothing goes through them, so the only way through or
 /// into the chamber is along the lane.
 pub fn wall_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
     let Some(f) = frame(sim, l) else { return Vec::new() };
@@ -85,7 +85,7 @@ fn lane(f: &Frame) -> f32 {
 }
 
 /// The cells within `reach` of a lock's middle, either way along, whose middles (along, across
-/// its flow) pass `keep`.
+/// its flow) let `keep` through.
 fn cells_where(sim: &SimState, f: &Frame, reach: f32, keep: impl Fn(f32, f32) -> bool) -> Vec<Cell> {
     let r = reach.ceil() as i64 + 2;
     let (cx, cy) = (f.centre.0.floor() as i64, f.centre.1.floor() as i64);
@@ -202,10 +202,10 @@ fn gate_built(sim: &SimState, building: BuildingId, cell: Cell) -> Option<bool> 
 }
 
 /// Order a lock at a gate, or straight on a built dam cell: the cell is made a gate at the same
-/// time, and the builder who comes builds the gate and then the lock in one visit.
+/// time, and builders build the gate and then the lock.
 pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(), SimError> {
     if !unlocked(sim) {
-        return Err(invalid("locks need a finished Harbor"));
+        return Err(invalid("locks need a finished Raft landing"));
     }
     if sim.locks.at.contains_key(&cell) {
         return Err(invalid("that gate is already a lock"));
@@ -218,7 +218,7 @@ pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(),
     if gate.is_none() {
         crate::dams::add_gate(sim, building, cell)?;
     }
-    // A canal's gate not built yet is built on the same visit.
+    // A canal's gate not built yet is built first.
     if let Some(k) = crate::canals::canal_mut(sim, building).ok().filter(|k| !k.gate.built && k.gate.pending.is_none()) {
         k.gate.pending = Some(k.gate.setting);
     }
@@ -226,20 +226,14 @@ pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(),
     Ok(())
 }
 
-/// A builder's visit: build the ordered lock, using its sticks and clay from the stores.
-pub fn build(sim: &mut SimState, cell: Cell) -> Result<(), SimError> {
-    if !pending(sim, cell) {
-        return Ok(());
-    }
-    if !crate::gates::has_goods(sim, Good::Sticks, LOCK_STICKS) || !crate::gates::has_goods(sim, Good::Clay, LOCK_CLAY) {
-        return Err(invalid("the lock needs sticks and clay"));
-    }
-    crate::gates::take_goods(sim, cell, Good::Sticks, LOCK_STICKS);
-    crate::gates::take_goods(sim, cell, Good::Clay, LOCK_CLAY);
+/// What a lock uses, brought to its gate.
+pub const COST: [(Good, f32); 2] = [(Good::Sticks, LOCK_STICKS), (Good::Mud, LOCK_MUD)];
+
+/// The lock ordered at a gate is finished (see `gates::work`).
+pub fn build(sim: &mut SimState, cell: Cell) {
     if let Some(l) = sim.locks.at.get_mut(&cell) {
         l.built = true;
     }
-    Ok(())
 }
 
 /// Drop locks whose gate is gone (the dam or canal removed).
@@ -255,11 +249,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_gate_becomes_a_lock_only_with_a_harbor_and_once_built() {
+    fn a_gate_becomes_a_lock_only_with_a_raft_landing_and_once_built() {
         let mut s = SimState::new(1);
         let (k, cell) = (BuildingId(5), (3, 4));
-        assert!(order(&mut s, k, cell).is_err(), "no harbor");
-        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(9), kind: BuildingKind::Harbor, pos: (20, 20), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        assert!(order(&mut s, k, cell).is_err(), "no raft landing");
+        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(9), kind: BuildingKind::RaftLanding, pos: (20, 20), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         assert!(unlocked(&s));
         assert!(order(&mut s, k, cell).is_err(), "no gate there");
     }

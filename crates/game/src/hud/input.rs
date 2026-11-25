@@ -41,6 +41,11 @@ pub(super) fn hotkeys(
     mut flow: ResMut<Flow>,
     menu: Res<MenuOpen>,
 ) {
+    // A colony just settled opens on its welcome card, once.
+    if flow.welcome {
+        flow.welcome = false;
+        hud.welcome = true;
+    }
     if typing.0 || menu.0 {
         return;
     }
@@ -52,7 +57,7 @@ pub(super) fn hotkeys(
     }
     if keys.just_pressed(KeyCode::Tab) {
         let open = hud.colony.is_some() && hud.page().is_none();
-        hud.open_book(if open { None } else { Some(ColonyTab::Population) }, None);
+        hud.open_book(if open { None } else { Some(ColonyTab::Jobs) }, None);
     }
     if keys.just_pressed(KeyCode::KeyL) && !ctrl {
         let open = hud.ledger.is_some();
@@ -68,14 +73,14 @@ pub(super) fn hotkeys(
         let tools = [
             (KeyCode::KeyZ, Tool::Dam),
             (KeyCode::KeyV, Tool::Canal),
-            (KeyCode::KeyX, Tool::Building(BuildingKind::Shelter)),
-            (KeyCode::KeyC, Tool::Building(BuildingKind::Warehouse)),
-            (KeyCode::KeyB, Tool::Building(BuildingKind::Larder)),
-            (KeyCode::KeyN, Tool::Building(BuildingKind::Toolshed)),
+            (KeyCode::KeyX, Tool::Building(BuildingKind::Lodge)),
+            (KeyCode::KeyC, Tool::Building(BuildingKind::StickPile)),
+            (KeyCode::KeyB, Tool::Building(BuildingKind::FoodCache)),
+            (KeyCode::KeyN, Tool::Building(BuildingKind::PebbleHeap)),
             (KeyCode::KeyF, Tool::Building(BuildingKind::Forester)),
-            (KeyCode::KeyH, Tool::Building(BuildingKind::Logistics)),
+            (KeyCode::KeyH, Tool::Building(BuildingKind::HaulMound)),
             (KeyCode::KeyO, Tool::Building(BuildingKind::Lookout)),
-            (KeyCode::KeyP, Tool::Building(BuildingKind::Harbor)),
+            (KeyCode::KeyP, Tool::Building(BuildingKind::RaftLanding)),
             (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
             (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
         ];
@@ -96,7 +101,11 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         // Esc always lets go of the camera: a glide to a notice ends where it is.
         flow.focus = None;
-        if hud.tool != Tool::None {
+        if hud.welcome {
+            hud.welcome = false;
+        } else if hud.opening.is_some() {
+            hud.opening = None;
+        } else if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
         } else if hud.page().is_some() {
             hud.page_back();
@@ -202,6 +211,40 @@ pub(super) fn world_input(
     }
     if over.0 {
         return;
+    }
+    if mouse.just_pressed(MouseButton::Right) && hud.opening.is_some() {
+        hud.opening = None;
+        return;
+    }
+    // Placing a gate or lock: a click on a lit cell of the dam places it (shift: keep placing).
+    if let Some((dam, o)) = hud.opening {
+        if mouse.just_released(MouseButton::Left) {
+            let on_dam = snap.0.or(hover.0).filter(|c| sim::dams::dam(&sim.0, dam).is_some_and(|d| d.line().any(|x| x.cell == *c)));
+            match on_dam {
+                Some(cell) => match super::works::opening_fits(&sim.0, dam, cell, o) {
+                    Ok(()) => {
+                        let c = match o {
+                            super::Opening::Gate => sim::Command::AddDamGate { dam, cell },
+                            super::Opening::Lock => sim::Command::UpgradeLock { building: dam, cell },
+                        };
+                        match sim.0.apply(c) {
+                            Ok(_) => {
+                                hud.gate_sel = Some((dam, cell));
+                                if !shift {
+                                    hud.opening = None;
+                                }
+                            }
+                            Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+                        }
+                    }
+                    Err(e) => hud.refuse(e, now),
+                },
+                None => hud.opening = None,
+            }
+        }
+        if mouse.pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+            return;
+        }
     }
     if mouse.just_pressed(MouseButton::Right) {
         if matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.corners.len() > usize::from(hud.extending.is_some()) {
@@ -522,9 +565,9 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     };
     let wanted: &[R] = match h {
         Harvest::Cut => &[R::Tree],
-        Harvest::Gather => &[R::Plant, R::MudBank, R::RiverClay],
+        Harvest::Gather => &[R::Plant, R::MudBank, R::RiverMud],
     };
-    let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverClay));
+    let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverMud));
     let at_click = s.resources.at(a).find(|r| wanted.contains(&r.kind)).map(|r| r.kind);
     let Some(kind) = at_click.or_else(|| wanted.iter().copied().find(|k| here(*k))) else {
         hud.say(Some((if h == Harvest::Cut { Icon::Tree } else { Icon::Plant }, BAD)), Some((Icon::Cross, BAD)), "", now);

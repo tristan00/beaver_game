@@ -18,6 +18,8 @@ pub struct Ctx<'a> {
     pub sel: Selection,
     pub lens: MapLens,
     pub hover: Option<Cell>,
+    /// The cell of the selected dam or canal under the pointer.
+    pub works_cell: Option<Cell>,
     pub problems: &'a [Problem],
     pub minimap: Option<&'a super::minimap::MinimapImage>,
     /// What the beaver details page shows as its portrait.
@@ -138,12 +140,12 @@ fn headcount_tip(s: &sim::SimState) -> Tip {
     t.push(TipLine::new("Working", format!("{}", h.working)).icon(Icon::Jobs, INK));
     t.push(TipLine::new("Free", format!("{}", h.free)).icon(Icon::Idle, if h.free > 0 { WARN } else { INK }));
     t.push(TipLine::new("Kits", format!("{}", h.kits)).icon(Icon::Kit, MUTED));
-    // Finished shelters nobody lives in: room for a new family.
+    // Finished lodges nobody lives in: room for a new family.
     let empty = s.buildings.buildings.iter()
-        .filter(|b| b.kind == BuildingKind::Shelter && b.is_complete())
+        .filter(|b| b.kind == BuildingKind::Lodge && b.is_complete())
         .filter(|b| s.work.homes.get(&b.id).is_none_or(|home| !s.colony.beavers.iter().any(|bv| bv.lodge == Some(*home))))
         .count();
-    t.push(TipLine::new("Empty shelters", format!("{empty}")).icon(building_icon(BuildingKind::Shelter), INK));
+    t.push(TipLine::new("Empty lodges", format!("{empty}")).icon(building_icon(BuildingKind::Lodge), INK));
     let b = sim::hud::headcount_breakdown(s);
     let mut more = Tip::name("Beavers");
     for l in breakdown_lines(s, &b, false) {
@@ -176,7 +178,7 @@ pub fn idle_reason_word(r: sim::jobs::IdleReason) -> &'static str {
     }
 }
 
-/// Top left: is there enough? Sticks, clay and food as counts, then beavers.
+/// Top left: is there enough? Sticks, mud and food as counts, then beavers.
 pub fn strip(c: &Ctx) -> Vec<VNode> {
     let s = c.s;
     let stores = &s.buildings.stores;
@@ -184,7 +186,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
     let free: Vec<_> = idle.iter().filter(|(_, r)| *r != sim::jobs::IdleReason::Resting).collect();
     vec![panel_row(Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)), ..abs(Some(12.0), None, Some(10.0), None) }, 16.0, |u| {
         // Pebbles and saplings only once the colony has some.
-        for g in [Good::Sticks, Good::Clay, Good::Food, Good::Pebbles, Good::Saplings] {
+        for g in [Good::Sticks, Good::Mud, Good::Food, Good::Pebbles, Good::Saplings] {
             let have = stores.amount(g);
             if matches!(g, Good::Pebbles | Good::Saplings) && have < 0.5 {
                 continue;
@@ -298,6 +300,10 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             x.row(5.0, |r| {
                 r.pebble(Icon::Pause, 13.0, HudAction::Pause, if clock.paused { Peb::On } else { Peb::Idle }).tip(Tip::name("Pause").key("Space"));
                 for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
+                    // The fastest shows only with dev speed on in Settings.
+                    if !sp.allowed() {
+                        continue;
+                    }
                     let on = !clock.paused && clock.speed == sp;
                     r.pebble(icon, 13.0, HudAction::Speed(sp), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(format!("Speed {key}")).key(key));
                 }
@@ -311,14 +317,14 @@ fn no_work_name(role: sim::jobs::RoleKind) -> &'static str {
     use sim::jobs::RoleKind::*;
     match role {
         Forager => "No work for foragers",
-        Logger => "No work for loggers",
-        MudDigger => "No work for clay diggers",
+        Feller => "No work for fellers",
+        MudDigger => "No work for mud diggers",
         Builder => "No work for builders",
         Hauler => "No work for haulers",
-        Forester => "No work for foresters",
-        Maintainer => "No work for maintainers",
-        Guard => "No work for guards",
-        PebbleCollector => "No work for pebble collectors",
+        Planter => "No work for planters",
+        Mender => "No work for menders",
+        Sentry => "No work for sentries",
+        Pebbler => "No work for pebblers",
     }
 }
 
@@ -339,12 +345,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::WeakDam => (vec![(Icon::Dam, INK)], format!("{:.0}%", v), "Dam weakening"),
         ProblemKind::Maintenance => (vec![(Icon::Hammer, WARN)], format!("{:.0}%",v), "Building needs repair"),
         ProblemKind::DamFailed => (vec![(Icon::Dam, INK), (Icon::Cross, BAD)], String::new(), "Dam failed"),
-        ProblemKind::LoggingAreaRunningOut => (vec![(Icon::LoggingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Logging area running out"),
+        ProblemKind::FellingAreaRunningOut => (vec![(Icon::FellingCamp, INK), (Icon::Tree, WARN)], format!("{}", v as i64), "Felling area running out"),
         ProblemKind::ForestFalling => (vec![(Icon::Tree, INK), (Icon::Down, WARN)], format!("-{:.0}%", v), "Forest falling"),
         ProblemKind::CanalDry => (vec![(Icon::Canal, INK), (Icon::Drop, WARN)], String::new(), "Canal dry"),
         ProblemKind::CanalSilting => (vec![(Icon::Canal, INK), (Icon::Down, WARN)], format!("{:.0}%", v), "Canal silting"),
         ProblemKind::PondDraining => (vec![(Icon::Dam, INK), (Icon::Flood, WARN)], format!("-{:.0}cm", v), "Pond draining"),
         ProblemKind::Wolf => (vec![(Icon::Wolf, BAD)], String::new(), "Wolf"),
+        ProblemKind::NoFreeLodge => (vec![(Icon::Lodge, INK), (Icon::Warn, WARN)], format!("{}", v as i64), "No free lodge"),
         ProblemKind::GroundFrozen => {
             let icon = match p.subject {
                 Some(Subject::Role(role)) => role_kind_icon(role),
@@ -366,11 +373,11 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::WaitingFor => {
             let g = match p.subject {
                 Some(Subject::Good(g)) => g,
-                _ => Good::Clay,
+                _ => Good::Mud,
             };
             let name = match g {
                 Good::Sticks => "Builders waiting for sticks",
-                Good::Clay => "Builders waiting for clay",
+                Good::Mud => "Builders waiting for mud",
                 Good::Food => "Builders waiting for food",
                 Good::Pebbles => "Builders waiting for pebbles",
                 Good::Saplings => "Builders waiting for saplings",
@@ -380,14 +387,14 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::Flooded => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
-                _ => sim::buildings::BuildingKind::Shelter,
+                _ => sim::buildings::BuildingKind::Lodge,
             };
             (vec![(super::words::building_icon(k), INK), (Icon::Flood, BAD)], format!("{}", v as i64), "Flooded")
         }
         ProblemKind::HighAndDry => {
             let k = match p.subject {
                 Some(Subject::Building(k)) => k,
-                _ => sim::buildings::BuildingKind::Shelter,
+                _ => sim::buildings::BuildingKind::Lodge,
             };
             (vec![(super::words::building_icon(k), INK), (Icon::Down, WARN)], format!("{}", v as i64), "High and dry")
         }
@@ -407,13 +414,13 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
 
 fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
     match f {
-        Fix::AddWorkers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} workers"))),
-        Fix::Gather { kind: sim::resources::ResourceKind::Plant, n } => Some((Icon::Food, format!("+{n}"), format!("Send {n} workers to gather food"))),
+        Fix::AddBeavers { n, .. } => Some((Icon::Plus, format!("{n}"), format!("Add {n} beavers"))),
+        Fix::Gather { kind: sim::resources::ResourceKind::Plant, n } => Some((Icon::Food, format!("+{n}"), format!("Send {n} beavers to gather food"))),
         Fix::Gather { kind, n } => Some((resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase()))),
         Fix::Place(k) => Some((building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase()))),
-        Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Staff the sites".into())),
+        Fix::StaffSites => Some((Icon::RoleBuilder, "+".into(), "Add builders".into())),
         Fix::OpenDam { .. } => Some((Icon::Dam, String::new(), "Open the dam".into())),
-        Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and maintainers".into())),
+        Fix::RepairBuilding { .. } => Some((Icon::Hammer, "Repair".into(), "Repair with materials and menders".into())),
         Fix::PutToWork { role, n } => Some((role_kind_icon(*role), format!("+{n}"), format!("{n} to {}", role_kind_name(*role).to_lowercase()))),
         Fix::OpenJobs => Some((Icon::Jobs, String::new(), "Open jobs".into())),
         Fix::Accept(_) => Some((Icon::Check, String::new(), "Welcome".into())),
@@ -558,9 +565,9 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
         }
         u.rule().style(|n| n.width = Val::Px(28.0));
         let open = c.hud.colony.is_some();
-        u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Population) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony book").key("Tab"));
+        u.pebble(Icon::Colony, 17.0, HudAction::Colony(if open { None } else { Some(ColonyTab::Jobs) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony").key("Tab"));
         let open = c.hud.ledger.is_some();
-        u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony ledger").key("L"));
+        u.pebble(Icon::Ledger, 17.0, HudAction::Ledger(if open { None } else { Some(LedgerTab::Charts) }), if open { Peb::On } else { Peb::Idle }).tip(Tip::name("Territory").key("L"));
     })];
     rail
 }
@@ -599,9 +606,9 @@ fn item_tip(kind: BuildingKind) -> Tip {
     for (g, a) in item_cost(kind) {
         t.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)).sub());
     }
-    // What digging one gives back: the clay from its spoil.
+    // What digging one gives back: the mud from its spoil.
     if kind == BuildingKind::Canal {
-        t.push(TipLine::new(good_name(Good::Clay), "+").icon(good_icon(Good::Clay), good_color(Good::Clay)).color(GOOD).sub());
+        t.push(TipLine::new(good_name(Good::Mud), "+").icon(good_icon(Good::Mud), good_color(Good::Mud)).color(GOOD).sub());
     }
     t
 }
@@ -610,7 +617,7 @@ fn item_tip(kind: BuildingKind) -> Tip {
 pub fn bottom(c: &Ctx) -> Vec<VNode> {
     let hud = c.hud;
     vec![centred(12.0, panel_row(Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)), ..default() }, 7.0, |u| {
-        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Shelter, "X"), (BuildingKind::Warehouse, "C"), (BuildingKind::Larder, "B"), (BuildingKind::Toolshed, "N"), (BuildingKind::Forester, "F"), (BuildingKind::Logistics, "H"), (BuildingKind::Lookout, "O"), (BuildingKind::Harbor, "P")].into_iter().enumerate() {
+        for (i, (kind, key)) in [(BuildingKind::Dam, "Z"), (BuildingKind::Canal, "V"), (BuildingKind::Lodge, "X"), (BuildingKind::StickPile, "C"), (BuildingKind::FoodCache, "B"), (BuildingKind::PebbleHeap, "N"), (BuildingKind::Forester, "F"), (BuildingKind::HaulMound, "H"), (BuildingKind::Lookout, "O"), (BuildingKind::RaftLanding, "P")].into_iter().enumerate() {
             if i == 2 {
                 // Waterworks first, as a pair; the drop-down buildings after a groove.
                 u.add(VNode::new(Node { width: Val::Px(2.0), height: Val::Px(30.0), margin: UiRect::horizontal(Val::Px(3.0)), ..default() })).bg(GROOVE);
@@ -714,7 +721,7 @@ pub fn cursor_tag(c: &Ctx) -> Vec<VNode> {
 
 /// The dam's cost and confirm, on the map: it follows the cursor while a run is
 /// being dragged, then hangs from the line's last corner with a check and a cross.
-/// While a canal is drawn: labour, clay from the spoil, the share that floats a load, and
+/// While a canal is drawn: labour, mud from the spoil, the share that floats a load, and
 /// (once the line is set) build and drop.
 pub fn canal_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
     let extending = c.hud.extending.is_some();
@@ -750,10 +757,10 @@ pub fn canal_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                 })
                 .tip(Tip::titled(Some((Icon::Beaver, INK)), "Digging").line("Beaver-days", num(p.labour_days())));
                 r.row(4.0, |x| {
-                    x.icon(good_icon(Good::Clay), 17.0, good_color(Good::Clay));
-                    x.bold(format!("+{}", p.clay().round() as i64), 14.0, INK);
+                    x.icon(good_icon(Good::Mud), 17.0, good_color(Good::Mud));
+                    x.bold(format!("+{}", p.mud().round() as i64), 14.0, INK);
                 })
-                .tip(Tip::titled(Some((good_icon(Good::Clay), good_color(Good::Clay))), "Clay from the spoil"));
+                .tip(Tip::titled(Some((good_icon(Good::Mud), good_color(Good::Mud))), "Mud from the spoil"));
                 r.row(4.0, |x| {
                     x.icon(Icon::Logs, 17.0, WATER);
                     x.bold(format!("{:.0}%", p.floatable_share() * 100.0), 14.0, INK);
@@ -974,7 +981,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
 pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, String, Vec<Good>, Color)> {
     let b = s.buildings.building(id)?;
     let place = s.work.place(id);
-    let empty = place.map_or(0, |pl| pl.slots.iter().filter(|sl| sl.worker.is_none()).count());
+    let empty = place.map_or(0, |pl| pl.slots.iter().filter(|sl| sl.beaver.is_none()).count());
     let slots = place.map_or(0, |pl| pl.slots.len());
     if place.is_some_and(|p|p.paused) {return Some((Some(Icon::Pause),"Paused".into(),vec![],MUTED));}
     if let Some(site)=place.and_then(|p|p.site.as_ref()) {

@@ -10,31 +10,31 @@ use crate::{SimError, SimState};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum RoleKind {
     Forager,
-    Logger,
+    Feller,
     MudDigger,
     Builder,
     Hauler,
     /// Collects seedlings and plants the woods round its store.
-    Forester,
+    Planter,
     /// Repairs and refits buildings and keeps dams and canals in order.
-    Maintainer,
+    Mender,
     /// Keeps watch at a lookout.
-    Guard,
+    Sentry,
     /// Gathers pebbles (a digger's skill, its own row on the board).
-    PebbleCollector,
+    Pebbler,
 }
 
 impl RoleKind {
     pub const ALL: [RoleKind; 9] = [
         RoleKind::Forager,
-        RoleKind::Logger,
+        RoleKind::Feller,
         RoleKind::MudDigger,
         RoleKind::Builder,
         RoleKind::Hauler,
-        RoleKind::Forester,
-        RoleKind::Maintainer,
-        RoleKind::Guard,
-        RoleKind::PebbleCollector,
+        RoleKind::Planter,
+        RoleKind::Mender,
+        RoleKind::Sentry,
+        RoleKind::Pebbler,
     ];
     pub const DEFAULT_ORDER: [RoleKind; 9] = DEFAULT_ROLE_ORDER;
 }
@@ -47,7 +47,7 @@ pub fn stock_target(sim: &SimState, good: Good) -> f32 {
     let reserve = match good {
         Good::Food => crate::hud::food_need_per_day(sim) * FOOD_RESERVE_DAYS,
         Good::Sticks => STICKS_RESERVE_BASE + sim.buildings.buildings.len() as f32 * STICKS_RESERVE_PER_BUILDING,
-        Good::Clay => CLAY_RESERVE_BASE + sim.buildings.buildings.len() as f32 * CLAY_RESERVE_PER_BUILDING,
+        Good::Mud => MUD_RESERVE_BASE + sim.buildings.buildings.len() as f32 * MUD_RESERVE_PER_BUILDING,
         Good::Pebbles => PEBBLE_RESERVE,
         Good::Saplings => crate::agents::SAPLING_STOCK,
     };
@@ -64,33 +64,33 @@ pub fn role_kind(r: Role) -> RoleKind {
         Role::Collect(k) => gather_role(k),
         Role::Build => RoleKind::Builder,
         Role::Haul => RoleKind::Hauler,
-        Role::Plant | Role::Forest => RoleKind::Forester,
-        Role::Maintain => RoleKind::Maintainer,
-        Role::Guard => RoleKind::Guard,
+        Role::Plant | Role::Forest => RoleKind::Planter,
+        Role::Mend => RoleKind::Mender,
+        Role::Sentry => RoleKind::Sentry,
     }
 }
 
 pub fn gather_role(k: ResourceKind) -> RoleKind {
     match k {
         ResourceKind::Plant | ResourceKind::WaterPlant => RoleKind::Forager,
-        ResourceKind::Tree | ResourceKind::Felled => RoleKind::Logger,
+        ResourceKind::Tree | ResourceKind::Felled => RoleKind::Feller,
         ResourceKind::MudBank => RoleKind::MudDigger,
-        ResourceKind::RiverClay => RoleKind::MudDigger,
-        ResourceKind::Pebbles => RoleKind::PebbleCollector,
+        ResourceKind::RiverMud => RoleKind::MudDigger,
+        ResourceKind::Pebbles => RoleKind::Pebbler,
     }
 }
 
 pub fn colony_job(r: RoleKind) -> Option<Job> {
     match r {
         RoleKind::Forager => Some(Job::Forager),
-        RoleKind::Logger => Some(Job::Logger),
+        RoleKind::Feller => Some(Job::Feller),
         RoleKind::MudDigger => Some(Job::Digger),
         RoleKind::Builder => Some(Job::Builder),
         RoleKind::Hauler => Some(Job::Hauler),
-        RoleKind::Forester => Some(Job::Forager),
-        RoleKind::Maintainer => Some(Job::Builder),
-        RoleKind::Guard => None,
-        RoleKind::PebbleCollector => Some(Job::Digger),
+        RoleKind::Planter => Some(Job::Planter),
+        RoleKind::Mender => Some(Job::Mender),
+        RoleKind::Sentry => Some(Job::Sentry),
+        RoleKind::Pebbler => Some(Job::Pebbler),
     }
 }
 
@@ -100,7 +100,7 @@ pub(crate) fn assignment_role(sim: &SimState, a: Assignment) -> Option<RoleKind>
         Assignment::Area(k, _) => Some(gather_role(k)),
         Assignment::Slot(b, i) => sim.work.place(b)?.slots.get(i).map(|s| role_kind(s.role)),
         Assignment::Go(_) => None,
-        Assignment::Maintain => Some(RoleKind::Maintainer),
+        Assignment::Mend => Some(RoleKind::Mender),
     }
 }
 
@@ -121,8 +121,8 @@ pub struct RoleRow {
     pub filled: usize,
     pub slots: usize,
     pub output_per_day: Vec<(Good, f32)>,
-    /// The beavers filling it: slot workers first, then those on orders.
-    pub workers: Vec<BeaverId>,
+    /// The beavers filling it: slot beavers first, then those on orders.
+    pub beavers: Vec<BeaverId>,
 }
 
 fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplace> {
@@ -138,7 +138,7 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
         .map(|role| {
             let (mut filled, mut slots) = (0, 0);
             let mut out: Vec<(Good, f32)> = Vec::new();
-            let mut workers: Vec<BeaverId> = Vec::new();
+            let mut beavers: Vec<BeaverId> = Vec::new();
             for p in working_places(sim).filter(|p| !p.paused) {
                 let mine = p.slots.iter().filter(|s| role_kind(s.role) == role && !s.off);
                 let mut n = mine.clone().count();
@@ -150,8 +150,8 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
                     n = p.builders() + usize::from(crate::agents::takes_builders(sim, p));
                 }
                 slots += n;
-                filled += mine.clone().filter(|s| s.worker.is_some()).count();
-                workers.extend(mine.filter_map(|s| s.worker));
+                filled += mine.clone().filter(|s| s.beaver.is_some()).count();
+                beavers.extend(mine.filter_map(|s| s.beaver));
                 for (g, r) in sim.output.of(p.building).map(|f| f.rates()).unwrap_or_default() {
                     match out.iter_mut().find(|e| e.0 == g) {
                         Some(e) => e.1 += r,
@@ -168,13 +168,13 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
                 .map(|b| b.id)
                 .collect();
             let ordered = on_orders.len();
-            workers.extend(on_orders);
+            beavers.extend(on_orders);
             out.sort_by(|a, b| b.1.total_cmp(&a.1));
-            RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out, workers }
+            RoleRow { role, filled: filled + ordered, slots: slots + ordered, output_per_day: out, beavers }
         })
         // Gathering needs no building: its rows are always there, so the first beaver can be sent;
-        // pebbles only once a finished toolshed gives the tools for them.
-        .filter(|r| r.slots > 0 || r.filled > 0 || (gather_kind(r.role).is_some() && (r.role != RoleKind::PebbleCollector || crate::agents::has_toolshed(sim))) || r.role == RoleKind::Maintainer)
+        // pebbles only once a finished pebble heap gives the tools for them.
+        .filter(|r| r.slots > 0 || r.filled > 0 || (gather_kind(r.role).is_some() && (r.role != RoleKind::Pebbler || crate::agents::has_pebble_heap(sim))) || r.role == RoleKind::Mender)
         .collect()
 }
 
@@ -189,7 +189,7 @@ pub struct Headcount {
 pub fn headcount(sim: &SimState) -> Headcount {
     let mut h = Headcount { working: 0, free: 0, kits: 0, total: sim.colony.population() };
     for b in &sim.colony.beavers {
-        // Kits here are the ones still too young to work; older kits count as workers.
+        // Kits here are the ones still too young to work; older kits count as beavers.
         if !b.can_work() {
             h.kits += 1;
         } else if is_busy(sim, b.id) {
@@ -213,12 +213,63 @@ pub enum IdleReason {
 
 fn open_slots(sim: &SimState, b: &crate::colony::Beaver) -> Vec<(BuildingId, usize)> {
     working_places(sim)
-        .filter(|p| !p.paused && (p.filled() < p.max_workers || p.open_ended()) && b.can_work())
+        .filter(|p| !p.paused && (p.filled() < p.max_beavers || p.open_ended()) && b.can_work())
         .filter_map(|p| {
             let builders_here = crate::agents::takes_builders(sim, p);
             p.open_seat(|r| builders_here || r != Role::Build).map(|(i, _)| (p.building, i))
         })
         .collect()
+}
+
+/// Why a beaver holding a job is not doing it now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Its site (a building, or the dam) is short of this good and none is to be had.
+    Good(Good),
+    /// The beds and banks it digs are frozen in.
+    Frozen,
+    /// The stores have no room for what it gathers.
+    StoreFull(Good),
+    /// Its workplace is paused.
+    Paused,
+    /// Nothing it can reach to do just now.
+    NoWork,
+}
+
+/// Why a beaver with a job is not at work: none while it works, carries, rests or eats, or
+/// has no job. The one answer the inspector, the colony table and the alerts all give.
+pub fn waiting(sim: &SimState, id: BeaverId) -> Option<Wait> {
+    let b = sim.colony.beaver(id)?;
+    if !b.can_work() || b.resting {
+        return None;
+    }
+    let a = sim.agents.get(id)?;
+    if !matches!(a.task, crate::agents::Task::Idle | crate::agents::Task::Rest) || a.load.is_some() {
+        return None;
+    }
+    let role = role_of(sim, id)?;
+    if let Some(p) = sim.work.slot_of(id).and_then(|(b, _, _)| sim.work.place(b)) {
+        if p.paused {
+            return Some(Wait::Paused);
+        }
+        if let Some(g) = crate::agents::site_waits_on(sim, p) {
+            return Some(Wait::Good(g));
+        }
+        // A dam with cells still to pack, and no sticks to pack them with.
+        let dam = sim.buildings.building(p.building).is_some_and(|b| b.dam.is_some());
+        if dam && crate::dams::has_work_for(sim, p.building, false) && sim.buildings.stores.amount(Good::Sticks) < crate::dams::sticks_per_step().min(crate::agents::LOAD_SIZE) {
+            return Some(Wait::Good(Good::Sticks));
+        }
+    }
+    if crate::agents::frozen(sim) && matches!(role, RoleKind::MudDigger | RoleKind::Pebbler) {
+        return Some(Wait::Frozen);
+    }
+    if let Some(g) = crate::hud::gathered_good(role).filter(|g| sim.buildings.stores.space(*g) <= crate::work::EPS) {
+        return Some(Wait::StoreFull(g));
+    }
+    // Finding no work, a beaver goes home to wait (`Task::Rest`); one still idle out here is
+    // between two tasks, unless there is no home to go to.
+    (a.task == crate::agents::Task::Rest || !crate::agents::has_lodge(sim)).then_some(Wait::NoWork)
 }
 
 pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
@@ -235,7 +286,7 @@ pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
                     .work
                     .places
                     .iter()
-                    .any(|p| p.paused && b.can_work() && p.slots.iter().any(|s| s.worker.is_none()));
+                    .any(|p| p.paused && b.can_work() && p.slots.iter().any(|s| s.beaver.is_none()));
                 return Some((id, if paused { IdleReason::Paused } else { IdleReason::NoOpenSlot }));
             }
             let mut places: Vec<BuildingId> = open.iter().map(|o| o.0).collect();
@@ -286,7 +337,7 @@ fn empty_slot(sim: &SimState, b: BuildingId, role: Option<RoleKind>) -> Option<(
     Some((i, r, bd.pos))
 }
 
-pub fn add_worker_preview(sim: &SimState, b: BuildingId) -> Option<AddPreview> {
+pub fn add_beaver_preview(sim: &SimState, b: BuildingId) -> Option<AddPreview> {
     let (_, _, at) = empty_slot(sim, b, None)?;
     pick(sim, at).map(|p| p.0)
 }
@@ -319,67 +370,67 @@ pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who:
     sim.work.assign(b, slot, who).map_err(|e| invalid(format!("{e:?}")))?;
     sim.agents.assign(who, None);
     let p = sim.work.place_mut(b).map_err(|e| invalid(format!("{e:?}")))?;
-    p.max_workers = p.max_workers.max(p.filled());
+    p.max_beavers = p.max_beavers.max(p.filled());
     Ok(())
 }
 
 fn workplace_error(sim: &SimState, b: BuildingId) -> SimError {
     match sim.work.place(b) {
-        None => invalid(format!("building {} has no worker slots", b.0)),
+        None => invalid(format!("building {} has no beaver slots", b.0)),
         Some(p) if p.paused => invalid(format!("building {} is paused", b.0)),
         Some(_) if sim.buildings.building(b).is_some_and(|bd| crate::buildings::flooded(bd, &sim.water.depth)) => invalid(format!("building {} is flooded: too deep", b.0)),
         Some(_) if sim.buildings.building(b).is_some_and(|bd| sim.buildings.unusable(bd, &sim.water.depth)) => invalid(format!("building {} is high and dry: no water", b.0)),
         Some(p) if p.filled() == p.slots.len() => invalid(format!("building {} has no free slot", b.0)),
-        Some(_) => invalid(format!("building {} takes no workers now", b.0)),
+        Some(_) => invalid(format!("building {} takes no beavers now", b.0)),
     }
 }
 
-pub(crate) fn add_worker(sim: &mut SimState, b: BuildingId) -> Result<(), SimError> {
+pub(crate) fn add_beaver(sim: &mut SimState, b: BuildingId) -> Result<(), SimError> {
     let (slot, _, at) = empty_slot(sim, b, None).ok_or_else(|| workplace_error(sim, b))?;
     let (pv, _) = pick(sim, at).ok_or_else(|| invalid("no beaver is free to take the job"))?;
     place_by_hand(sim, b, slot, pv.who)
 }
 
 fn free_last(sim: &mut SimState, b: BuildingId, role: Option<RoleKind>) -> Result<BeaverId, SimError> {
-    let p = sim.work.place(b).ok_or_else(|| invalid(format!("building {} has no worker slots", b.0)))?;
+    let p = sim.work.place(b).ok_or_else(|| invalid(format!("building {} has no beaver slots", b.0)))?;
     let i = p
         .slots
         .iter()
-        .rposition(|s| s.worker.is_some() && role.is_none_or(|r| role_kind(s.role) == r))
-        .ok_or_else(|| invalid(format!("building {} has no worker to remove", b.0)))?;
-    let who = p.slots[i].worker.expect("filled");
+        .rposition(|s| s.beaver.is_some() && role.is_none_or(|r| role_kind(s.role) == r))
+        .ok_or_else(|| invalid(format!("building {} has no beaver to remove", b.0)))?;
+    let who = p.slots[i].beaver.expect("filled");
     sim.work.unassign(b, i).map_err(|e| invalid(format!("{e:?}")))?;
     let p = sim.work.place_mut(b).map_err(|e| invalid(format!("{e:?}")))?;
-    p.max_workers = p.filled();
+    p.max_beavers = p.filled();
     Ok(who)
 }
 
-pub(crate) fn remove_worker(sim: &mut SimState, b: BuildingId) -> Result<(), SimError> {
+pub(crate) fn remove_beaver(sim: &mut SimState, b: BuildingId) -> Result<(), SimError> {
     free_last(sim, b, None).map(|_| ())
 }
 
 pub(crate) fn set_priority(sim: &mut SimState, b: BuildingId, priority: Priority) -> Result<(), SimError> {
-    sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no worker slots", b.0)))?.priority = priority;
+    sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no beaver slots", b.0)))?.priority = priority;
     Ok(())
 }
 
-/// Switch one worker slot on or off; switching off sends its worker away.
+/// Switch one beaver slot on or off; switching off sends its beaver away.
 pub(crate) fn set_slot_off(sim: &mut SimState, b: BuildingId, slot: usize, off: bool) -> Result<(), SimError> {
-    let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no worker slots", b.0)))?;
+    let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no beaver slots", b.0)))?;
     let s = p.slots.get_mut(slot).ok_or_else(|| invalid("SlotOutOfRange"))?;
     s.off = off;
     if off {
-        s.worker = None;
+        s.beaver = None;
     }
     Ok(())
 }
 
 pub(crate) fn set_paused(sim: &mut SimState, b: BuildingId, paused: bool) -> Result<(), SimError> {
-    let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no worker slots", b.0)))?;
+    let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no beaver slots", b.0)))?;
     p.paused = paused;
     if paused {
         for s in &mut p.slots {
-            s.worker = None;
+            s.beaver = None;
         }
     }
     Ok(())
@@ -397,7 +448,7 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: RoleKind, delta: i32) -> Res
                 .work
                 .places
                 .iter()
-                .filter(|p| p.slots.iter().any(|s| s.worker.is_some() && role_kind(s.role) == role))
+                .filter(|p| p.slots.iter().any(|s| s.beaver.is_some() && role_kind(s.role) == role))
                 .min_by_key(|p| (p.priority, std::cmp::Reverse(p.building)))
                 .map(|p| p.building);
             match from {
@@ -416,9 +467,9 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: RoleKind, delta: i32) -> Res
 fn gather_kind(role: RoleKind) -> Option<ResourceKind> {
     match role {
         RoleKind::Forager => Some(ResourceKind::Plant),
-        RoleKind::Logger => Some(ResourceKind::Tree),
+        RoleKind::Feller => Some(ResourceKind::Tree),
         RoleKind::MudDigger => Some(ResourceKind::MudBank),
-        RoleKind::PebbleCollector => Some(ResourceKind::Pebbles),
+        RoleKind::Pebbler => Some(ResourceKind::Pebbles),
         _ => None,
     }
 }
@@ -443,8 +494,8 @@ fn call_in(sim: &mut SimState, role: RoleKind) -> Result<(), SimError> {
 
 /// Who would be sent out for one more on a gathering role, and where: the nearest free beaver.
 fn send_out_who(sim: &SimState, role: RoleKind) -> Option<(BeaverId, Assignment)> {
-    let (home, assignment) = if role == RoleKind::Maintainer {
-        (crate::agents::home_area(sim).map_or((0, 0), |h| h.0), Assignment::Maintain)
+    let (home, assignment) = if role == RoleKind::Mender {
+        (crate::agents::home_area(sim).map_or((0, 0), |h| h.0), Assignment::Mend)
     } else {
         let kind = gather_kind(role)?;
         let (home, area) = crate::agents::home_area(sim)?;

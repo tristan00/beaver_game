@@ -257,6 +257,13 @@ fn volume_keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut vols: ResMu
     }
 }
 
+/// Game days between two wolf sounds (a sighting's growl, the lookouts' tail slaps).
+const WOLF_SOUND_DAYS: f64 = 30.0;
+
+/// The wolf cues seen so far (sightings, slaps), those let through to be heard, and the game
+/// day the last was heard.
+type WolfSound = (((u32, u32), (u32, u32)), Option<f64>);
+
 fn update_mix(
     time: Res<Time>,
     mut since: Local<f32>,
@@ -267,6 +274,7 @@ fn update_mix(
     slaps: Option<Res<crate::entities_render::AlarmSlaps>>,
     floods: Option<Res<crate::hud::Floods>>,
     wolves: Option<Res<crate::hud::WolfCues>>,
+    mut wolf_sound: Local<WolfSound>,
 ) {
     let _p = ::sim::prof::scope("game/update mix");
     *since += time.delta_secs();
@@ -276,8 +284,22 @@ fn update_mix(
     }
     *since = 0.0;
     let snap = mix::snapshot(&SimWorld { sim: &sim.0 }, orbit.target.x, orbit.target.z, orbit.distance);
-    let (alarm_slaps, alarm_amp) = slaps.map_or((0, 0.0), |s| (s.count, s.amp));
-    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: wolves.as_ref().map_or(0, |w| w.sighted), wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
+    let (slapped, alarm_amp) = slaps.map_or((0, 0.0), |s| (s.count, s.amp));
+    let sighted = wolves.as_ref().map_or(0, |w| w.sighted);
+    // A wolf sighted (the growl) and the lookouts' alarm (tail slaps) sound at most once in
+    // `WOLF_SOUND_DAYS` of game time; the slaps still show, unheard.
+    let (heard, last) = &mut *wolf_sound;
+    let (seen_before, slaps_before) = heard.0;
+    if sighted != seen_before || slapped != slaps_before {
+        let now = sim.0.time_days;
+        let quiet = last.is_none_or(|t| now < t || now - t >= WOLF_SOUND_DAYS);
+        if quiet {
+            heard.1 = (heard.1 .0.wrapping_add((sighted != seen_before) as u32), heard.1 .1.wrapping_add((slapped != slaps_before) as u32));
+            *last = Some(now);
+        }
+        heard.0 = (sighted, slapped);
+    }
+    let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps: heard.1 .1, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: heard.1 .0, wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
 }
 

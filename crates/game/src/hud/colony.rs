@@ -1,21 +1,23 @@
-//! The colony book: a drawer beside the map that never covers the pond.
-//! Beavers are tokens, amounts are notches, and words live in tooltips.
+//! The colony (Tab): everything about the beavers — the families in their lodges, the work,
+//! every beaver in a table, and this run. The first two are a drawer beside the map that
+//! never covers the pond; the table and the run are wider pages (drawn in `ledger`).
+//! Beavers are tokens, amounts are ticks, and words live in tooltips.
 use super::panels::{good_tip, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
 use super::{ColonyTab, HudAction};
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::{BuildingKind, Good};
+use sim::buildings::Good;
 use sim::jobs::RoleKind;
 
 pub const DRAWER_W: f32 = 380.0;
 
 const TABS: [(ColonyTab, Icon, &str); 4] = [
-    (ColonyTab::Population, Icon::Beaver, "Beavers"),
     (ColonyTab::Jobs, Icon::Hammer, "Work"),
-    (ColonyTab::Water, Icon::Drop, "Water"),
-    (ColonyTab::Goods, Icon::Warehouse, "Stores"),
+    (ColonyTab::Population, Icon::Home, "Families"),
+    (ColonyTab::Beavers, Icon::Beaver, "Beavers"),
+    (ColonyTab::Run, Icon::Hourglass, "This run"),
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
@@ -29,7 +31,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.colony else { return Vec::new() };
     let mut ui = Ui::default();
     ui.node(
-        Node { width: Val::Px(DRAWER_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
+        Node { width: Val::Px(if matches!(tab, ColonyTab::Beavers | ColonyTab::Run) { super::ledger::LEDGER_W } else { DRAWER_W }), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             u.row(6.0, |r| {
                 for (t, icon, name) in TABS {
@@ -37,14 +39,17 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                     r.pebble(icon, 16.0, HudAction::Colony(Some(t)), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
                 }
                 r.spacer();
+                if tab == ColonyTab::Run {
+                    super::ledger::span_chips(c, r);
+                }
                 r.close_button(HudAction::Colony(None), true);
             });
             u.rule();
             match tab {
                 ColonyTab::Population => beavers(c, u),
                 ColonyTab::Jobs => work(c, u),
-                ColonyTab::Water => water(c, u),
-                ColonyTab::Goods => stores(c, u),
+                ColonyTab::Beavers => super::ledger::beavers(c, u),
+                ColonyTab::Run => super::ledger::run(c, u),
             }
         },
     );
@@ -121,7 +126,7 @@ fn work(c: &Ctx, u: &mut Ui) {
             r.icon(role_kind_icon(role), 20.0, MUTED).tip(Tip::name(role_kind_name(role)));
             r.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(6.0), row_gap: Val::Px(4.0), width: Val::Px(220.0), align_items: AlignItems::Center, ..default() }, |t| {
                 for i in 0..row.slots.min(12) {
-                    match row.workers.get(i).and_then(|id| s.colony.beaver(*id)) {
+                    match row.beavers.get(i).and_then(|id| s.colony.beaver(*id)) {
                         Some(b) => {
                             t.token(Icon::Beaver, 18.0, None).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()));
                         }
@@ -135,7 +140,7 @@ fn work(c: &Ctx, u: &mut Ui) {
                 }
             });
             r.spacer();
-            if matches!(role, RoleKind::Forager | RoleKind::Logger | RoleKind::MudDigger | RoleKind::PebbleCollector | RoleKind::Forester) {
+            if matches!(role, RoleKind::Forager | RoleKind::Feller | RoleKind::MudDigger | RoleKind::Pebbler | RoleKind::Planter) {
                 // Each click tightens the limit a step, then lifts it.
                 let now = s.work.shore_limits.get(&role).copied();
                 let next = match now {
@@ -158,49 +163,16 @@ fn work(c: &Ctx, u: &mut Ui) {
     }
 }
 
-/// Every dam: its condition, how full its pond is, and work still to do.
-fn water(c: &Ctx, u: &mut Ui) {
-    let s = c.s;
-    let mut any = false;
-    for b in s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam) {
-        let Some(d) = b.dam.as_deref() else { continue };
-        any = true;
-        let health = sim::dams::health(s, d);
-        let fill = d.pond.as_ref().map_or(0.0, |p| ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0));
-        u.row(10.0, |r| {
-            r.icon(Icon::Dam, 20.0, MUD);
-            r.pips(health, if health < 0.5 { BAD } else if health < sim::dams::REPAIR_BELOW { WARN } else { GOOD }).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)));
-            r.notches(fill, 8, 110.0, 12.0, WATER).tip(Tip::name("Pond").with_value(format!("{:.0}%", fill * 100.0)));
-            r.spacer();
-            let left = sim::dams::loads_left(s, b.id);
-            if left > 0 {
-                r.row(3.0, |x| {
-                    x.icon(good_icon(Good::Sticks), 14.0, good_color(Good::Sticks));
-                    x.bold(format!("{left}"), 13.0, INK);
-                })
-                .tip(Tip::name("Loads still to carry"));
-            }
-            r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
-        });
-    }
-    if !any {
-        u.row(6.0, |r| {
-            r.icon(Icon::Dam, 20.0, MUTED);
-            r.bold("0", 14.0, MUTED);
-        })
-        .tip(Tip::name("No dams yet").line("Z, then draw across the water", ""));
-    }
-}
 
-/// Each store as notches of its capacity, with the last sixty days beside it.
-fn stores(c: &Ctx, u: &mut Ui) {
+/// Each store as ticks of its capacity, with the last sixty days beside it.
+pub(super) fn stores(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let st = &s.buildings.stores;
     for g in Good::ALL {
         let (have, cap) = (st.amount(g), st.capacity(g));
         u.row(10.0, |r| {
             r.icon(good_icon(g), 20.0, good_color(g));
-            r.notches(if cap > 0.0 { have / cap } else { 0.0 }, 10, 150.0, 12.0, ACCENT);
+            r.ticks(if cap > 0.0 { have / cap } else { 0.0 }, 10, 150.0, 12.0, ACCENT);
             r.bold(format!("{}", have.round() as i64), 14.0, INK);
             r.spacer();
             let hist: Vec<f32> = s.ledger.days.iter().rev().take(60).rev().map(|d| d.stock[g.index()]).collect();

@@ -1,6 +1,7 @@
-//! Repairs are mended on the spot by maintainers, who draw the materials from the stores as
-//! they work; a repair order only marks a building to be mended first. Clay reinforcement and
-//! pebble facing are refits: paid work through the normal material-delivery and labour system.
+//! Repairs are mended on the spot by menders, who bring the materials a load at a time
+//! (see `supply`) and use them as they work; a repair order only marks a building to be
+//! mended first. Mud reinforcement and pebble facing are refits: paid work through the normal
+//! material-delivery and labour system.
 include!(concat!(env!("OUT_DIR"), "/maintenance_constants.rs"));
 use std::collections::BTreeMap;
 use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K, Good}, work::{Priority, Workplace}, SimError, SimState};
@@ -22,12 +23,12 @@ pub struct Maintenance {
 }
 
 pub fn can_reinforce(kind: K) -> bool {
-    matches!(kind, K::Shelter | K::Warehouse | K::Larder)
+    matches!(kind, K::Lodge | K::StickPile | K::FoodCache)
 }
 
 /// Dams and buildings can be faced with pebbles; canals cannot.
 pub fn can_pebble(kind: K) -> bool {
-    matches!(kind, K::Dam | K::Shelter | K::Warehouse | K::Larder)
+    matches!(kind, K::Dam | K::Lodge | K::StickPile | K::FoodCache)
 }
 
 pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
@@ -39,14 +40,14 @@ pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
             (vec![(Good::Pebbles,(n*PEBBLE_DAM_PER_CELL).ceil())],(n*PEBBLE_DAM_LABOUR_PER_CELL).max(1.0))
         }
         Refit::Pebbles => (vec![(Good::Pebbles,(area*PEBBLE_PER_CELL).ceil())],area*PEBBLE_LABOUR_PER_CELL),
-        Refit::Reinforce if b.kind == K::Shelter => (vec![(Good::Sticks,LODGE_REINFORCE_STICKS),(Good::Clay,LODGE_REINFORCE_CLAY)],LODGE_REINFORCE_LABOUR),
+        Refit::Reinforce if b.kind == K::Lodge => (vec![(Good::Sticks,LODGE_REINFORCE_STICKS),(Good::Mud,LODGE_REINFORCE_MUD)],LODGE_REINFORCE_LABOUR),
 
-        Refit::Reinforce => (vec![(Good::Sticks,REINFORCE_STICKS_PER_CELL*area),(Good::Clay,(area/REINFORCE_CLAY_AREA_DIVISOR).ceil())],REINFORCE_BASE_LABOUR+area*REINFORCE_LABOUR_PER_CELL),
+        Refit::Reinforce => (vec![(Good::Sticks,REINFORCE_STICKS_PER_CELL*area),(Good::Mud,(area/REINFORCE_MUD_AREA_DIVISOR).ceil())],REINFORCE_BASE_LABOUR+area*REINFORCE_LABOUR_PER_CELL),
         Refit::Repair => {
             let damage = (1.0-b.condition).clamp(0.0,1.0);
             let mut materials: Vec<_> = b.kind.spec().cost.iter().map(|&(g,a)|(g,(a*damage*REPAIR_MATERIAL_SHARE).ceil())).filter(|v|v.1>0.0).collect();
             if materials.is_empty() { materials.push((Good::Sticks,REPAIR_MIN_STICKS)); }
-            if b.reinforced { materials.push((Good::Clay,(area*damage*REINFORCED_REPAIR_CLAY_PER_CELL).ceil().max(1.0))); }
+            if b.reinforced { materials.push((Good::Mud,(area*damage*REINFORCED_REPAIR_MUD_PER_CELL).ceil().max(1.0))); }
             (materials, (b.kind.spec().work*damage*REPAIR_LABOUR_SHARE).max(REPAIR_MIN_LABOUR))
         }
     }
@@ -56,17 +57,17 @@ pub fn quoted_cost(_s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32
     cost(b,kind)
 }
 
-/// What mending costs for each whole unit of condition put back: the materials, drawn from the
-/// stores as the work goes, and the labour.
+/// What mending costs for each whole unit of condition put back: the materials, brought to the
+/// building as the work goes, and the labour.
 pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
     let (w,h) = b.kind.spec().footprint;
     let mut materials: Vec<Amount> = b.kind.spec().cost.iter().map(|&(g,a)|(g,a*REPAIR_MATERIAL_SHARE)).filter(|v|v.1>0.0).collect();
     if materials.is_empty() { materials.push((Good::Sticks,REPAIR_MIN_STICKS)); }
-    if b.reinforced { materials.push((Good::Clay,(w*h) as f32*REINFORCED_REPAIR_CLAY_PER_CELL)); }
+    if b.reinforced { materials.push((Good::Mud,(w*h) as f32*REINFORCED_REPAIR_MUD_PER_CELL)); }
     (materials, (b.kind.spec().work*REPAIR_LABOUR_SHARE).max(REPAIR_MIN_LABOUR))
 }
 
-/// Buildings maintainers mend: finished buildings (not dams or canals, which have their own
+/// Buildings menders mend: finished buildings (not dams or canals, which have their own
 /// upkeep) that are worn below `AUTO_REPAIR_BELOW`, marked for repair, or already being mended,
 /// until they are whole again.
 pub fn needs_mending(s: &SimState, b: &Building) -> bool {
@@ -76,16 +77,30 @@ pub fn needs_mending(s: &SimState, b: &Building) -> bool {
             || s.agents.maint_targets.values().any(|&t| t == b.id))
 }
 
-/// Put back `labour` worth of condition, drawing the materials for it from the stores.
-/// Returns false when the stores are short of something it needs.
+/// How much condition a mender's visit is worth bringing materials for: it starts work once
+/// this much (or the whole repair, if less) can be done with what has been brought.
+const MEND_BATCH: f32 = 0.05;
+
+/// Whether enough has been brought to a building being mended to start on it.
+pub fn mend_ready(s: &SimState, id: BuildingId) -> bool {
+    let Some(b) = s.buildings.building(id).filter(|b| needs_mending(s, b)) else { return false };
+    let spot = crate::supply::Spot { building: id, cell: b.pos };
+    let (materials, _) = mend_rates(b);
+    let step = (1.0 - b.condition).clamp(0.0, MEND_BATCH);
+    materials.iter().all(|&(g, a)| crate::supply::delivered(s, spot, g) + 1e-4 >= a * step)
+}
+
+/// Put back `labour` worth of condition, using the materials brought to the building: as much
+/// as they cover. Returns false when they cover none.
 pub fn mend(s: &mut SimState, id: BuildingId, labour: f32) -> bool {
     let Some(b) = s.buildings.building(id) else { return false };
+    let spot = crate::supply::Spot { building: id, cell: b.pos };
     let (materials, per_unit) = mend_rates(b);
-    let gain = (labour / per_unit).min(1.0 - b.condition).max(0.0);
-    if materials.iter().any(|&(g,a)| s.buildings.stores.amount(g) < a*gain) { return false; }
-    for (g,a) in materials {
-        let _ = s.buildings.stores.withdraw_for(g, a*gain, crate::buildings::Use::Repairs);
-    }
+    let covered = materials.iter().map(|&(g, a)| crate::supply::delivered(s, spot, g) / a.max(1e-6)).fold(f32::INFINITY, f32::min);
+    let gain = (labour / per_unit).min(1.0 - b.condition).min(covered).max(0.0);
+    if gain <= 1e-6 { return false; }
+    let used: Vec<Amount> = materials.iter().map(|&(g, a)| (g, a * gain)).collect();
+    if !crate::supply::take(s, spot, &used) { return false; }
     let Some(b) = s.buildings.buildings.iter_mut().find(|b|b.id==id) else { return false };
     b.condition += gain;
     if b.condition >= 1.0 - 1e-4 {
@@ -99,7 +114,7 @@ pub fn mend(s: &mut SimState, id: BuildingId, labour: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Shelter,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam: None, canal: None}}
+    fn lodge()->Building {Building{id:BuildingId(1),kind:K::Lodge,pos:(25,25),status:crate::buildings::Status::Complete,output:0.0,condition:0.7,reinforced:false,dam: None, canal: None}}
     #[test]
     fn a_repair_order_only_marks_the_building_and_refits_are_seatless_sites() {
         let mut s=SimState::new(1);let b=lodge();let id=b.id;s.work.add_complete(&b).unwrap();s.buildings.buildings.push(b);
@@ -114,7 +129,7 @@ mod tests {
     #[test]
     fn a_building_worn_to_nothing_falls_apart_and_leaves_its_goods() {
         let mut s=SimState::new(1);
-        let mut store=lodge();store.id=BuildingId(7);store.kind=K::Warehouse;store.pos=(40,25);store.condition=1e-6;
+        let mut store=lodge();store.id=BuildingId(7);store.kind=K::StickPile;store.pos=(40,25);store.condition=1e-6;
         s.work.add_complete(&store).unwrap();s.buildings.buildings.push(store);
         s.buildings.stores.inventory.put(BuildingId(7),Good::Sticks,None,12.0);
         step(&mut s,1.0);
@@ -179,16 +194,16 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     let b = s.buildings.building(id).ok_or_else(||bad("no such building"))?;
     if s.maintenance.jobs.contains_key(&id) { return Err(bad("this building already has maintenance queued")); }
     if !b.is_complete() { return Err(bad("finish construction first")); }
-    if b.kind==K::Dam && kind != Refit::Pebbles {return Err(bad("dams are kept up by maintainers cell by cell"));}
+    if b.kind==K::Dam && kind != Refit::Pebbles {return Err(bad("dams are kept up by menders cell by cell"));}
     if kind == Refit::Pebbles {
         if !can_pebble(b.kind) {return Err(bad("this structure cannot be faced with pebbles"));}
         if s.buildings.pebbled.contains(&id) {return Err(bad("already faced with pebbles"));}
     } else if kind == Refit::Reinforce {
-        if !can_reinforce(b.kind) {return Err(bad("this structure cannot be clay-reinforced"));}
-        if b.reinforced {return Err(bad("already clay-reinforced"));}
+        if !can_reinforce(b.kind) {return Err(bad("this structure cannot be mud-reinforced"));}
+        if b.reinforced {return Err(bad("already mud-reinforced"));}
     } else if b.condition >= REPAIR_CONDITION_THRESHOLD {return Err(bad("this building does not need repairs"));}
     if kind == Refit::Repair {
-        // Mended first by the maintainers; the building keeps working meanwhile.
+        // Mended first by the menders; the building keeps working meanwhile.
         let previous = Workplace::new(id, b.kind, Vec::new(), None, None);
         s.maintenance.jobs.insert(id,Job{kind,previous});
         return Ok(());
@@ -219,7 +234,7 @@ fn restore(s: &mut SimState, id: BuildingId, mut previous: Workplace) {
     let crew=s.work.crew(id);
     s.work.places.retain(|p|p.building!=id);
     previous.site=None;
-    for slot in &mut previous.slots {slot.worker=None;}
+    for slot in &mut previous.slots {slot.beaver=None;}
     release(s,id);
     s.work.places.push(previous);
     s.work.keep_crew(id,crew);
@@ -266,7 +281,7 @@ fn unsite_old_repairs(s: &mut SimState) {
 }
 
 /// What wears a building down each day: the base rate for its kind, times the cold and a
-/// flooding, divided by clay reinforcement and pebble facing. Every factor is 1 when it does
+/// flooding, divided by mud reinforcement and pebble facing. Every factor is 1 when it does
 /// not apply. Dams wear cell by cell in the water model instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wear { pub base: f32, pub cold: f32, pub flooded: f32, pub reinforced: f32, pub pebbled: f32 }
@@ -284,7 +299,7 @@ pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
     }
     let cold=crate::weather::cold(s.water.sky.at(s.time_days).temp_c);
     Some(Wear {
-        base: if b.kind==K::Shelter {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY},
+        base: if b.kind==K::Lodge {HOME_WEAR_PER_DAY} else {BUILDING_WEAR_PER_DAY},
         cold: 1.0+COLD_WEAR_SCALE*cold,
         // Too deep under water, a building wears away fast.
         flooded: if crate::buildings::flooded(b,&s.water.depth) {FLOODED_WEAR_SCALE} else {1.0},

@@ -31,7 +31,7 @@ fn parse_kind(s: &str) -> Result<BuildingKind, String> {
 }
 
 fn parse_resource_kind(s: &str) -> Result<ResourceKind, String> {
-    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::RiverClay, ResourceKind::Pebbles, ResourceKind::WaterPlant]
+    [ResourceKind::Tree, ResourceKind::Felled, ResourceKind::Plant, ResourceKind::MudBank, ResourceKind::RiverMud, ResourceKind::Pebbles, ResourceKind::WaterPlant]
         .into_iter()
         .find(|k| format!("{k:?}").eq_ignore_ascii_case(s))
         .ok_or_else(|| format!("unknown resource '{s}'"))
@@ -51,7 +51,7 @@ pub fn to_line(c: &Command) -> String {
         Command::BuildDam { cells: v, height } => format!("build-dam {height} {}", cells(v)),
         Command::PlaceDam { cells: v } => format!("dam {}", cells(v)),
         Command::GrowDam { dam, growth, cells: v } => format!("grow-dam {} {growth:?} {}", dam.0, cells(v)),
-        Command::SetDamMaintain { dam, on } => format!("dam-maintain {} {}", dam.0, if *on { "on" } else { "off" }),
+        Command::SetDamUpkeep { dam, on } => format!("dam-upkeep {} {}", dam.0, if *on { "on" } else { "off" }),
         Command::RepairBuilding { building } => format!("repair {}",building.0),
         Command::ReinforceBuilding { building } => format!("reinforce {}",building.0),
         Command::PebbleBuilding { building } => format!("pebble {}", building.0),
@@ -61,13 +61,14 @@ pub fn to_line(c: &Command) -> String {
         Command::DigCanal { cells: v, depth } => format!("dig-canal {depth} {}", cells(v)),
         Command::PlaceCanal { cells: v } => format!("canal {}", cells(v)),
         Command::GrowCanal { canal, growth, cells: v } => format!("grow-canal {} {growth:?} {}", canal.0, cells(v)),
-        Command::SetCanalMaintain { canal, on } => format!("canal-maintain {} {}", canal.0, if *on { "on" } else { "off" }),
+        Command::SetCanalUpkeep { canal, on } => format!("canal-upkeep {} {}", canal.0, if *on { "on" } else { "off" }),
         Command::AddDamGate { dam, cell } => format!("dam-gate {} {},{}", dam.0, cell.0, cell.1),
         Command::SetGate { building, cell, setting } => match setting {
             crate::gates::GateSetting::Level(e) => format!("gate {} {},{} level {e}", building.0, cell.0, cell.1),
             s => format!("gate {} {},{} {}", building.0, cell.0, cell.1, s.name()),
         },
         Command::UpgradeLock { building, cell } => format!("lock {} {},{}", building.0, cell.0, cell.1),
+        Command::RemoveGate { building, cell } => format!("ungate {} {},{}", building.0, cell.0, cell.1),
         Command::Assign { who, to } => {
             let to = match to {
                 None => "none".to_string(),
@@ -75,15 +76,15 @@ pub fn to_line(c: &Command) -> String {
                 Some(Assignment::Area(k, a)) => format!("area {k:?} {} {} {} {}", a.min.0, a.min.1, a.max.0, a.max.1),
                 Some(Assignment::Slot(b, s)) => format!("slot {} {s}", b.0),
                 Some(Assignment::Go(c)) => format!("go {} {}", c.0, c.1),
-                Some(Assignment::Maintain) => "maintain".to_string(),
+                Some(Assignment::Mend) => "upkeep".to_string(),
             };
             format!("assign {} {to}", ids(who))
         }
         Command::PlaceSite { kind, pos } => format!("place {} {} {}", kind_name(*kind), pos.0, pos.1),
         Command::FillSlot { building, slot, who } => format!("fill {} {slot} {}", building.0, who.0),
         Command::EmptySlot { building, slot } => format!("empty {} {slot}", building.0),
-        Command::AddWorker { building } => format!("add-worker {}", building.0),
-        Command::RemoveWorker { building } => format!("remove-worker {}", building.0),
+        Command::AddBeaver { building } => format!("add-beaver {}", building.0),
+        Command::RemoveBeaver { building } => format!("remove-beaver {}", building.0),
         Command::SetPriority { building, priority } => format!("priority {} {priority:?}", building.0),
         Command::SetPaused { building, paused } => format!("pause {} {}", building.0, if *paused { "on" } else { "off" }),
         Command::AdjustRole { role, delta } => format!("role {role:?} {delta}"),
@@ -134,7 +135,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 .ok_or("grow-dam takes raise, widen or extend")?,
             cells: parse_cells(&t[3..])?,
         },
-        "dam-maintain" => Command::SetDamMaintain { dam: b(1)?, on: on(2)? },
+        "dam-upkeep" => Command::SetDamUpkeep { dam: b(1)?, on: on(2)? },
         "repair" => Command::RepairBuilding { building: b(1)? },
         "reinforce" => Command::ReinforceBuilding { building: b(1)? },
         "pebble" => Command::PebbleBuilding { building: b(1)? },
@@ -151,8 +152,9 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 .ok_or("grow-canal takes deepen, widen or extend")?,
             cells: parse_cells(&t[3..])?,
         },
-        "canal-maintain" => Command::SetCanalMaintain { canal: b(1)?, on: on(2)? },
+        "canal-upkeep" => Command::SetCanalUpkeep { canal: b(1)?, on: on(2)? },
         "dam-gate" => Command::AddDamGate { dam: b(1)?, cell: parse_cells(&t[2..3])?.first().copied().ok_or("missing cell")? },
+        "ungate" => Command::RemoveGate { building: b(1)?, cell: parse_cells(&t[2..3.min(t.len())])?.first().copied().ok_or("missing cell")? },
         "lock" => Command::UpgradeLock { building: b(1)?, cell: parse_cells(&t[2..3.min(t.len())])?.first().copied().ok_or("missing cell")? },
         "gate" => Command::SetGate {
             building: b(1)?,
@@ -176,7 +178,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 )),
                 Some("slot") => Some(Assignment::Slot(b(3)?, num(t.get(4), "slot")?)),
                 Some("go") => Some(Assignment::Go((num(t.get(3), "x")?, num(t.get(4), "y")?))),
-                Some("maintain") => Some(Assignment::Maintain),
+                Some("upkeep") => Some(Assignment::Mend),
                 other => return Err(format!("unknown assignment {other:?}")),
             };
             Command::Assign { who, to }
@@ -184,8 +186,8 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "place" => Command::PlaceSite { kind: parse_kind(t.get(1).ok_or("missing kind")?)?, pos: (num(t.get(2), "x")?, num(t.get(3), "y")?) },
         "fill" => Command::FillSlot { building: b(1)?, slot: num(t.get(2), "slot")?, who: BeaverId(num(t.get(3), "beaver")?) },
         "empty" => Command::EmptySlot { building: b(1)?, slot: num(t.get(2), "slot")? },
-        "add-worker" => Command::AddWorker { building: b(1)? },
-        "remove-worker" => Command::RemoveWorker { building: b(1)? },
+        "add-beaver" => Command::AddBeaver { building: b(1)? },
+        "remove-beaver" => Command::RemoveBeaver { building: b(1)? },
         "priority" => Command::SetPriority {
             building: b(1)?,
             priority: match t.get(2).map(|s| s.to_ascii_lowercase()).as_deref() {
@@ -287,7 +289,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    pub fn passed(&self) -> bool {
+    pub fn all_ok(&self) -> bool {
         self.checks.iter().all(|c| c.1)
     }
 }
@@ -412,7 +414,7 @@ impl Runner {
         let s = &self.s;
         let st = &s.buildings.stores;
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | clay {:>4.1} sticks {:>4.1} | built {} sites {} dry {} | rafts {} carried {:.0} | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | mud {:>4.1} sticks {:>4.1} | built {} sites {} dry {} | rafts {} carried {:.0} | mature trees {} | alerts {}",
             s.time_days,
             crate::calendar::Date::at(s.time_days).season.name(),
             s.colony.population(),
@@ -423,7 +425,7 @@ impl Runner {
             s.ledger.out_per_day(Good::Food),
             crate::hud::food_need_per_day(s),
             crate::jobs::jobs_board(s).iter().filter(|r| r.filled > 0).map(|r| format!("{:?}{}", r.role, r.filled)).collect::<Vec<_>>().join(","),
-            st.amount(Good::Clay),
+            st.amount(Good::Mud),
             st.amount(Good::Sticks),
             s.buildings.buildings.iter().filter(|b| b.is_complete()).count(),
             s.buildings.buildings.iter().filter(|b| !b.is_complete()).count(),
@@ -502,7 +504,7 @@ pub fn metric(s: &SimState, st: &Stats, name: &str) -> Option<f64> {
         "births" => st.births as f64,
         "food" => g(Good::Food),
         "sticks" => g(Good::Sticks),
-        "clay" | "mud" => g(Good::Clay),
+        "mud" => g(Good::Mud),
         "buildings" => s.buildings.buildings.iter().filter(|b| b.is_complete()).count() as f64,
         "sites" => s.buildings.buildings.iter().filter(|b| !b.is_complete()).count() as f64,
         "homeless" => s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count() as f64,

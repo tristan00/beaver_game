@@ -468,7 +468,7 @@ fn refresh_flood_plan(sim: &mut SimState) {
     }
     let kept = LAST.with(|last| last.borrow().as_ref().filter(|(k, _)| *k == keys).map(|(_, plan)| plan.clone()));
     sim.forestry.flood_plan = kept.unwrap_or_else(|| {
-        // Sorted first, the set is built in one pass instead of cell by cell.
+        // Sorted first, the set is built in one sweep instead of cell by cell.
         let mut cells: Vec<Cell> = ponds.iter().flat_map(|g| g.flooded.iter().copied()).collect();
         cells.sort_unstable();
         let plan = std::sync::Arc::new(cells.into_iter().collect::<BTreeSet<Cell>>());
@@ -662,7 +662,7 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
     for y in area.min.1..=area.max.1.min(n.saturating_sub(1)) {
         for x in area.min.0..=area.max.0.min(n.saturating_sub(1)) {
             let c = (x, y);
-            if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Forester, c) {
+            if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Planter, c) {
                 continue;
             }
             let key = (-((ground_growth(sim, c) * 3.0).round() as i32), lot(c), c);
@@ -697,7 +697,7 @@ pub fn seedling_species(sim: &SimState, c: Cell) -> Option<Tree> {
         .map(|k| k.3)
 }
 
-/// A sapling of no known species is a cutting of the nearest food tree; with none about, a willow.
+/// A sapling of no known species takes the species of the nearest food tree; with none about, a willow.
 pub fn planting_species(sim: &SimState, c: Cell) -> Tree {
     sim.resources
         .items()

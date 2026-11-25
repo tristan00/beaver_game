@@ -17,10 +17,10 @@ pub fn holders(sim: &SimState, good: Good) -> Vec<BuildingId> {
     out
 }
 
-/// A logistics building has its haulers balancing the stores (from when it is finished, until
+/// A haul mound has its haulers balancing the stores (from when it is finished, until
 /// switched off).
 pub fn balancing(sim: &SimState) -> bool {
-    sim.buildings.buildings.iter().any(|b| b.kind == crate::buildings::BuildingKind::Logistics && b.is_complete() && sim.work.balanced.contains(&b.id))
+    sim.buildings.buildings.iter().any(|b| b.kind == crate::buildings::BuildingKind::HaulMound && b.is_complete() && sim.work.balanced.contains(&b.id))
 }
 
 fn open_store(sim: &SimState, b: &Building) -> bool {
@@ -72,7 +72,7 @@ pub fn retire_fills(sim: &mut SimState) {
     }
 }
 
-/// The next load that evens out the stores, when a logistics building's haulers balance.
+/// The next load that evens out the stores, when a haul mound's haulers balance.
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
     if !balancing(sim) {
         return None;
@@ -133,31 +133,31 @@ mod tests {
     }
 
     #[test]
-    fn haulers_fill_a_store_on_order_and_balance_through_a_logistics_building() {
+    fn haulers_fill_a_store_on_order_and_balance_through_a_haul_mound_building() {
         let mut s = SimState::new(1);
-        let a = put(&mut s, 1, K::Warehouse, (10, 10));
-        let b = put(&mut s, 2, K::Warehouse, (20, 10));
+        let a = put(&mut s, 1, K::StickPile, (10, 10));
+        let b = put(&mut s, 2, K::StickPile, (20, 10));
         s.buildings.update_capacity(crate::buildings::Terrain { depth: &s.water.depth });
         s.buildings.stores.put_at(a, Good::Sticks, 60.0).unwrap();
         assert_eq!(fill_move(&s), None, "nothing to fill until asked");
         s.apply(Command::FillStore { store: b, on: true }).unwrap();
         assert_eq!(fill_move(&s), Some((a, b, Good::Sticks)));
-        let cap = K::Warehouse.spec().capacity;
+        let cap = K::StickPile.spec().capacity;
         s.buildings.stores.put_at(b, Good::Sticks, cap).unwrap();
-        s.buildings.stores.put_at(b, Good::Clay, cap).unwrap();
+        s.buildings.stores.put_at(b, Good::Mud, cap).unwrap();
         retire_fills(&mut s);
         assert!(s.work.fills.is_empty(), "a full store's order is done");
-        assert!(s.apply(Command::SetBalance { building: a, on: true }).is_err(), "only a logistics building balances");
+        assert!(s.apply(Command::SetBalance { building: a, on: true }).is_err(), "only a haul mound balances");
         assert_eq!(balance_move(&s, None), None);
-        let l = put(&mut s, 3, K::Logistics, (30, 10));
-        assert!(s.work.place(l).unwrap().slots.iter().all(|sl| sl.role == crate::work::Role::Haul), "haulers work from logistics");
-        assert!(s.work.place(a).unwrap().slots.is_empty(), "a warehouse needs nobody");
-        assert!(balancing(&s), "a finished logistics building balances from the start");
+        let l = put(&mut s, 3, K::HaulMound, (30, 10));
+        assert!(s.work.place(l).unwrap().slots.iter().all(|sl| sl.role == crate::work::Role::Haul), "haulers work from haul mound");
+        assert!(s.work.place(a).unwrap().slots.is_empty(), "a stick pile needs nobody");
+        assert!(balancing(&s), "a finished haul mound balances from the start");
         s.apply(Command::SetBalance { building: l, on: false }).unwrap();
         assert!(!balancing(&s), "until switched off");
         assert_eq!(balance_move(&s, None), None);
         s.apply(Command::SetBalance { building: l, on: true }).unwrap();
         assert!(balancing(&s));
-        assert_eq!(balance_move(&s, None).map(|m| m.2), Some(Good::Clay), "the most uneven good moves first");
+        assert_eq!(balance_move(&s, None).map(|m| m.2), Some(Good::Mud), "the most uneven good moves first");
     }
 }

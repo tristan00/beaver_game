@@ -290,7 +290,7 @@ mod motion_tests {
         motion.observe(&sim, &agent, false);
         let corner = cell_xz(&sim, (5.5, 2.5));
         let closest = (0..=60).map(|k| motion.raw_at(sim.time_days * k as f64 / 60.0).unwrap().0.distance(corner)).fold(f32::MAX, f32::min);
-        assert!(closest < 0.05, "it passes the corner, not across it: {closest}");
+        assert!(closest < 0.05, "it goes round the corner, not across it: {closest}");
     }
 
     #[test]
@@ -385,7 +385,7 @@ pub(super) fn sync_sim_beavers(
     render: Res<super::RenderClock>,
     slaps: Res<super::TailSlapTimes>,
     time: Res<Time>,
-    mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion, &mut LodgeDive, &mut super::harbor::LockGlide, Option<&Newborn>), With<SimBeaver>>,
+    mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion, &mut LodgeDive, &mut super::raft_landing::LockGlide, Option<&Newborn>), With<SimBeaver>>,
     mut seen: Local<HashSet<u64>>,
 ) {
     use super::scene::Pose;
@@ -406,7 +406,7 @@ pub(super) fn sync_sim_beavers(
         let &(_, fam, at) = idle.iter().find(|x| x.0 == id)?;
         idle.iter().filter(|x| x.0 != id && x.1 == fam && x.2.0.abs_diff(at.0).max(x.2.1.abs_diff(at.1)) <= 1).map(|x| x.2).next()
     };
-    let chambers = super::harbor::chambers(s);
+    let chambers = super::raft_landing::chambers(s);
     for (e, mut tr, mut sprite, mut vis, mut motion, mut dive, mut glide, newborn) in &mut q {
         let id = sim::colony::BeaverId(sprite.id);
         let Some((ag, age)) = find_agent(s, id) else {
@@ -429,14 +429,14 @@ pub(super) fn sync_sim_beavers(
         };
         // In a lock's working it waits, rides the chamber and swims out as the lock goes, at the
         // moment shown.
-        if let Some((at, yaw)) = super::harbor::lock_pose(s, ag, (now - s.time_days) as f32, tr.translation) {
+        if let Some((at, yaw)) = super::raft_landing::lock_pose(s, ag, (now - s.time_days) as f32, tr.translation) {
             tr.translation = at;
             if let Some(yaw) = yaw {
                 heading = Some(Vec2::new(yaw.sin(), yaw.cos()));
             }
         }
         // Glided over any jump by a lock.
-        let at = super::harbor::glide(&mut glide, &chambers, tr.translation, time.delta_secs());
+        let at = super::raft_landing::glide(&mut glide, &chambers, tr.translation, time.delta_secs());
         tr.translation = at;
         let fleeing = s.agents.fleeing.contains(&id);
         sprite.pose = if heading.is_some() {
@@ -451,7 +451,7 @@ pub(super) fn sync_sim_beavers(
         sprite.load = if matches!(ag.task, sim::agents::Task::Raft { .. }) { None } else { load_of(ag) };
         sprite.wet = is_wet(s, ag);
         let want = heading.map(|d| d.x.atan2(d.y)).or_else(|| facing_of(s, ag)).unwrap_or(sprite.yaw);
-        sprite.yaw = super::harbor::turn(&mut glide, want, time.delta_secs());
+        sprite.yaw = super::raft_landing::turn(&mut glide, want, time.delta_secs());
         let face = |at: Vec3, to: (f32, f32)| {
             let w = cell_xz(s, to);
             (w.x - at.x).atan2(w.y - at.z)
@@ -533,7 +533,7 @@ pub(super) fn sync_sim_beavers(
         let mut e = commands.spawn((
             SimBeaver,
             motion,
-            super::harbor::LockGlide::default(),
+            super::raft_landing::LockGlide::default(),
             BeaverSprite { id: id.0, pose: pose_of(s, ag), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, id), features: s.colony.looks_of(id) },
             LodgeDive { inside: ag.inside, since: -100.0, at },
             Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(age) * super::looks_size(&s.colony.looks_of(id)))),
@@ -605,8 +605,8 @@ pub enum ResSig {
     /// Pebbles: the water level in tenths for a gravel bar in a stream (none on land), and the
     /// quarters left.
     Pebbles(Option<i16>, u8),
-    /// Clay: a river's seam or a bank's heap, and the eighths left.
-    Clay(bool, u8),
+    /// Mud: a river's seam or a bank's heap, and the eighths left.
+    Mud(bool, u8),
 }
 
 /// Drawn by the water's level: water plants, and gravel bars in the streams.
@@ -632,7 +632,7 @@ pub fn res_sig(r: &sim::resources::Resource, depth: f32) -> ResSig {
     match r.look() {
         Look::Tree(stage, step) => ResSig::Tree(stage as u8 * 16 + step),
         Look::Felled(logs, branches) => ResSig::Felled(logs, branches),
-        Look::Clay(q) => ResSig::Clay(r.kind == ResourceKind::RiverClay, q),
+        Look::Mud(q) => ResSig::Mud(r.kind == ResourceKind::RiverMud, q),
         Look::Plant(q) => ResSig::Plant(r.plant.map_or(u8::MAX, |p| p as u8), q),
         Look::Pebbles(q) => ResSig::Pebbles(r.wet.then(|| (depth * 10.0).round() as i16), q),
         Look::WaterPlant(q) => ResSig::Floating(r.plant.map_or(u8::MAX, |p| p as u8), q, (depth * 10.0).round() as i16),
@@ -736,9 +736,9 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
             let i = (q.clamp(1, 4) - 1) as usize;
             (if stream.is_some() { models.gravel_bars[i].clone() } else { models.pebble_heaps[i].clone() }, Vec3::splat(0.9 + 0.2 * hash01(c.0, c.1, 29)), Extra::None)
         }
-        ResSig::Clay(river, q) => {
+        ResSig::Mud(river, q) => {
             let s = (0.5 + 0.5 * q as f32 / 8.0) * (0.95 + 0.15 * hash01(c.0, c.1, 31));
-            (if river { models.river_clay.clone() } else { models.clay_heap.clone() }, Vec3::splat(s), Extra::None)
+            (if river { models.river_mud.clone() } else { models.mud_heap.clone() }, Vec3::splat(s), Extra::None)
         }
     }
 }
@@ -768,7 +768,7 @@ fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<Standar
     else if r.kind == ResourceKind::Tree {
         let variant = (hash01(r.cell.0, r.cell.1, 17) * 4.0) as usize;
         models.tree_tints[variant.min(3)].clone()
-    } else if matches!(r.kind, ResourceKind::MudBank | ResourceKind::RiverClay) { models.wet.clone() }
+    } else if matches!(r.kind, ResourceKind::MudBank | ResourceKind::RiverMud) { models.wet.clone() }
     else { models.white.clone() }
 }
 
@@ -970,14 +970,14 @@ fn boulder_transform(sim: &sim::SimState, b: &sim::resources::Boulder) -> Transf
 pub fn model_kind(k: BuildingKind) -> StructKind {
     match k {
         BuildingKind::Dam => StructKind::Dam,
-        BuildingKind::Shelter => StructKind::Lodge,
-        BuildingKind::Warehouse => StructKind::Warehouse,
-        BuildingKind::Larder => StructKind::Larder,
-        BuildingKind::Toolshed => StructKind::Toolshed,
+        BuildingKind::Lodge => StructKind::Lodge,
+        BuildingKind::StickPile => StructKind::StickPile,
+        BuildingKind::FoodCache => StructKind::FoodCache,
+        BuildingKind::PebbleHeap => StructKind::PebbleHeap,
         BuildingKind::Forester => StructKind::Forester,
-        BuildingKind::Logistics => StructKind::Logistics,
+        BuildingKind::HaulMound => StructKind::HaulMound,
         BuildingKind::Lookout => StructKind::Lookout,
-        BuildingKind::Harbor => StructKind::Harbor,
+        BuildingKind::RaftLanding => StructKind::RaftLanding,
         BuildingKind::Canal => StructKind::Canal,
     }
 }
@@ -1003,7 +1003,7 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
         state.generation=Some(generation);
     }
     let mut live=HashSet::new();
-    // Clay reinforcement and pebble facing, each its own ring round the footing.
+    // Mud reinforcement and pebble facing, each its own ring round the footing.
     let layers=s.buildings.buildings.iter().flat_map(|b|[(b,false,b.reinforced),(b,true,b.kind!=BuildingKind::Dam&&s.buildings.pebbled.contains(&b.id))]).filter(|l|l.2);
     for (b,pebbled,_) in layers {
         let key=(b.id,pebbled);
@@ -1056,7 +1056,7 @@ mod building_height_tests {
     #[test]
     fn a_rising_pond_lifts_a_building_and_a_falling_one_leaves_it() {
         let mut s = sim::SimState::new(1);
-        let b = sim::buildings::Building { id: BuildingId(1), kind: BuildingKind::Warehouse, pos: (10, 10), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+        let b = sim::buildings::Building { id: BuildingId(1), kind: BuildingKind::StickPile, pos: (10, 10), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
         let set_depth = |s: &mut sim::SimState, d: f32| {
             for c in b.cells().collect::<Vec<_>>() {
                 *s.water.depth.get_mut(c.0, c.1).unwrap() = d;
@@ -1178,7 +1178,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
             commands.entity(e).despawn();
         }
     }
-    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Shelter).map(|b| b.pos).collect();
+    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Lodge).map(|b| b.pos).collect();
     for l in &sim.colony.lodges {
         if lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
             continue;
@@ -1361,7 +1361,7 @@ fn dam_walls(sim: &sim::SimState) -> HashMap<(usize, usize), (DamCellVis, bool)>
         }
     }
     // A lock stands in place of its gate's wall: the wall stops either side of its chamber.
-    cells.retain(|c, _| !sim::locks::is_lock(sim, *c) && !super::harbor::in_chamber(sim, *c));
+    cells.retain(|c, _| !sim::locks::is_lock(sim, *c) && !super::raft_landing::in_chamber(sim, *c));
     // Each dam's rows are walls of their own; cells no dam owns (gates, leftovers) form theirs.
     let mut pieces: HashMap<(usize, usize), (Piece, Option<(i32, i32)>)> = HashMap::new();
     for d in sim.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()) {

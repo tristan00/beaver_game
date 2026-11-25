@@ -2,8 +2,36 @@ use bevy::prelude::*;
 use sim::starts::DamSite;
 use sim::SimState;
 
-/// The maps the start screen offers, in order.
-const MENU_MAPS: [&str; 4] = ["voyageurs_twin", "algonquin_mizzy", "agder_tarn", "voyageurs_forks"];
+/// The maps the start screen offers, in order, and how hard each is.
+const MENU_MAPS: [(&str, Difficulty); 4] = [
+    // Kabetogama Twin Creeks: a couple of spots that dam easily.
+    ("voyageurs_twin", Difficulty::Easy),
+    ("algonquin_mizzy", Difficulty::Medium),
+    ("agder_tarn", Difficulty::Medium),
+    ("voyageurs_forks", Difficulty::Hard),
+];
+
+/// How hard a map is to start on, shown on the start screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Difficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
+impl Difficulty {
+    pub fn label(self) -> &'static str {
+        match self {
+            Difficulty::Easy => "Easy",
+            Difficulty::Medium => "Medium",
+            Difficulty::Hard => "Hard",
+        }
+    }
+    /// 1 to 3, for the pips.
+    pub fn level(self) -> usize {
+        self as usize + 1
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapChoice {
@@ -21,7 +49,15 @@ impl MapChoice {
     /// The maps the start screen cycles through, in order. The others still load by id.
     pub fn menu() -> Vec<MapChoice> {
         let shipped = sim::maps::all();
-        MENU_MAPS.iter().filter(|id| shipped.iter().any(|m| m.id == **id)).map(|id| MapChoice::Real(id.to_string())).collect()
+        MENU_MAPS.iter().filter(|(id, _)| shipped.iter().any(|m| m.id == *id)).map(|(id, _)| MapChoice::Real(id.to_string())).collect()
+    }
+
+    /// How hard the map is, for those the start screen offers.
+    pub fn difficulty(&self) -> Option<Difficulty> {
+        match self {
+            MapChoice::Real(id) => MENU_MAPS.iter().find(|(m, _)| m == id).map(|(_, d)| *d),
+            MapChoice::Generated(_) => None,
+        }
     }
 
     pub fn build(&self) -> Result<(SimState, DamSite), String> {
@@ -67,7 +103,7 @@ impl Plugin for StatePlugin {
             let (out, sim, dam) = sim::script::run_to_state(&text, &|p| std::fs::read_to_string(root.join(p)).map_err(|e| e.to_string()))
                 .unwrap_or_else(|e| panic!("script {}: {e}", path.display()));
             for line in &out.lines { println!("script: {line}"); }
-            assert!(out.passed(), "colony script checks failed: {:?}", out.checks);
+            assert!(out.all_ok(), "colony script checks failed: {:?}", out.checks);
             if let Some(dir) = &cli.report_dir {
                 crate::report_capture::write_audit(dir, &sim, &out).expect("write scripted colony audit");
             }

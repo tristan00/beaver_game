@@ -15,7 +15,7 @@ const QUICK: &str = "quicksave.sav";
 const AUTO: &str = "autosave.sav";
 /// The game is autosaved once a game year, when the new year begins, and never sooner than
 /// this many real seconds of unpaused play after the last autosave (at the fastest speed a
-/// year passes in a minute).
+/// year goes by in a minute).
 const AUTOSAVE_SECONDS: f32 = 300.0;
 
 pub fn quick_path() -> PathBuf {

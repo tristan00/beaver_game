@@ -330,7 +330,7 @@ impl Flow {
         let mut left = seconds;
         while left > 1.0e-6 {
             // The storage/outflow solve is implicit. Use quarter-hour reaches
-            // and absorb the tiny f32 calendar residual in the same pass.
+            // and absorb the tiny f32 calendar residual in the same sweep.
             let dt = if left <= 900.001 { left } else { 900.0 };
             self.stamp += 1;
             let stamp = self.stamp;

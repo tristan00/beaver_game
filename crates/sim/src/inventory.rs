@@ -104,26 +104,26 @@ mod tests {
     #[test]
     fn snapshot_inventory_is_independent_and_its_views_stay_linked() {
         let mut owner = crate::SimState::new(1);
-        owner.buildings.stores.produce_at(BuildingId(1), Good::Clay, 10.0, Producer::Other).unwrap();
+        owner.buildings.stores.produce_at(BuildingId(1), Good::Mud, 10.0, Producer::Other).unwrap();
         let mut snapshot = owner.clone();
-        owner.buildings.stores.take_from(BuildingId(1), Good::Clay, 3.0);
-        snapshot.buildings.stores.take_from(BuildingId(1), Good::Clay, 1.0);
-        assert_eq!(owner.work.stock_of(BuildingId(1), Good::Clay), 7.0);
-        assert_eq!(snapshot.work.stock_of(BuildingId(1), Good::Clay), 9.0);
+        owner.buildings.stores.take_from(BuildingId(1), Good::Mud, 3.0);
+        snapshot.buildings.stores.take_from(BuildingId(1), Good::Mud, 1.0);
+        assert_eq!(owner.work.stock_of(BuildingId(1), Good::Mud), 7.0);
+        assert_eq!(snapshot.work.stock_of(BuildingId(1), Good::Mud), 9.0);
     }
 
     #[test]
-    fn meals_debit_physical_food_once_and_do_not_consume_clay() {
+    fn meals_debit_physical_food_once_and_do_not_consume_mud() {
         let mut sim = SimState::new(1);
         sim.colony.found((0.0, 3.0), &crate::colony::RiverLand::default()).unwrap();
         sim.buildings.stores.produce_at(BuildingId(1), Good::Food, 10.0, Producer::Other).unwrap();
-        sim.buildings.stores.produce_at(BuildingId(2), Good::Clay, 7.0, Producer::Other).unwrap();
+        sim.buildings.stores.produce_at(BuildingId(2), Good::Mud, 7.0, Producer::Other).unwrap();
         for beaver in &mut sim.colony.beavers { beaver.needs.food = 0.2; }
         sim.colony.step_with_stores(0.5, &crate::colony::RiverLand::default(), &mut sim.buildings.stores).unwrap();
         let food = sim.buildings.stores.amount(Good::Food);
         assert!(food < 10.0);
         assert!((food + sim.colony.eaten.iter().sum::<f32>() + sim.colony.spoiled - 10.0).abs() < 1e-5);
         assert_eq!(food, sim.work.stock_of(BuildingId(1), Good::Food));
-        assert_eq!(sim.work.stock_of(BuildingId(2), Good::Clay), 7.0);
+        assert_eq!(sim.work.stock_of(BuildingId(2), Good::Mud), 7.0);
     }
 }

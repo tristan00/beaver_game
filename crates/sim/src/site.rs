@@ -110,7 +110,7 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
     let near = |c: Cell, r: usize| c.0.abs_diff(cell.0) + c.1.abs_diff(cell.1) <= r;
     let plants: f32 = s.resources.items().iter().filter(|r| r.kind.is_food_plant() && near(r.cell, FOOD_REACH)).map(|r| r.max_amount).sum();
     let mud: f32 = s.resources.items().iter().filter(|r| r.kind == ResourceKind::MudBank && near(r.cell, FOOD_REACH)).map(|r| r.amount).sum();
-    let food = PLANT_FOOD_SCORE_WEIGHT * (plants / GOOD_PLANT_FOOD).min(1.0) + CLAY_FOOD_SCORE_WEIGHT * (mud / GOOD_MUD).min(1.0);
+    let food = PLANT_FOOD_SCORE_WEIGHT * (plants / GOOD_PLANT_FOOD).min(1.0) + MUD_FOOD_SCORE_WEIGHT * (mud / GOOD_MUD).min(1.0);
     SiteScore { water, trees, safety: SLOPE_SAFETY_WEIGHT * gentle + ELEVATION_SAFETY_WEIGHT * above, room, food }
 }
 

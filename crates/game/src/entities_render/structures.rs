@@ -234,10 +234,10 @@ pub fn decay(mb: &mut Mb, hx: f32, hz: f32) {
     }
 }
 
-/// A harbor: a plank pier on piles out over the water with mooring posts, a pole crane with a
+/// A raft landing: a plank pier on piles out over the water with mooring posts, a pole crane with a
 /// bundle swinging from its boom, and loads stacked waiting on the deck. Piles go in first,
 /// then the deck, then the crane and the loads.
-pub fn harbor(mb: &mut Mb, f: f32) {
+pub fn raft_landing(mb: &mut Mb, f: f32) {
     let (hx, hz) = (2.4f32, 2.2f32);
     let done = f >= 1.0;
     let mut r = Rng(8181);
@@ -333,7 +333,7 @@ pub(super) fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     }
 }
 
-/// Wet mud heaped up with lumps of clay worked into balls on top.
+/// Wet mud heaped up with lumps of mud worked into balls on top.
 pub(super) fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let (lo, hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
     let (rx, ry, rz) = (0.8, 0.25 + 0.9 * grow, 1.35);
@@ -350,7 +350,7 @@ pub(super) fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
         let e = r.range(0.35, 1.0);
         let p = c + v(a.cos() * rx * 0.75 * (1.0 - e * 0.5), ry * e, a.sin() * rz * 0.75 * (1.0 - e * 0.5));
         let s = r.range(0.17, 0.24);
-        // Clay is a warmer ochre than the mud it sits on.
+        // Mud is a warmer ochre than the mud it sits on.
         mb.ellipsoid_g(p, v(s, s * 0.85, s), hex(0x9A5E36), hex(0xC48A58), 8, 5);
     }
 }

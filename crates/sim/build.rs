@@ -54,10 +54,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pools: BTreeMap<String,Vec<String>> = BTreeMap::new();
     for row in db.prepare("SELECT pool,position,name FROM name_pool ORDER BY pool,position")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,String>(2)?)))? {
         let (pool,position,name) = row?;
-        assert!(matches!(pool.as_str(),"FIRST_NAMES"|"FAMILY_NAMES") && !name.is_empty());
+        // Keyed "litter/water", "landform/norway/still", "epithet/hauler/raft", "flora/Aspen"...
+        assert!(!pool.is_empty() && pool.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'/' || c == b'_'), "invalid name pool {pool}");
+        assert!(!name.trim().is_empty() && name.trim() == name, "invalid name in {pool}");
         let entries=pools.entry(pool).or_default();assert_eq!(position as usize,entries.len());entries.push(format!("{name:?}"));
     }
-    for (pool,names) in pools { constants.entry("colony".into()).or_default().push_str(&format!("pub const {pool}: [&str; {}] = [{}];\n",names.len(),names.join(","))); }
+    let pools: Vec<String> = pools.into_iter().map(|(pool,names)| format!("({pool:?}, &[{}])", names.join(","))).collect();
+    constants.entry("names".into()).or_default().push_str(&format!("pub const NAME_POOLS: &[(&str, &[&str])] = &[{}];\n", pools.join(",")));
 
     let mut arrays: BTreeMap<(String,String,String), Vec<String>> = BTreeMap::new();
     for row in db.prepare("SELECT module,name,type,position,value FROM constant_array ORDER BY module,name,position")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,f64>(4)?)))? {
@@ -81,11 +84,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for row in db.prepare("SELECT position,good,amount FROM starting_good ORDER BY position")?.query_map([], |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?)))? {
         let (position,good,amount) = row?;
         assert_eq!(position as usize,starting.len());
-        assert!(matches!(good.as_str(),"Food"|"Sticks"|"Clay"));
+        assert!(matches!(good.as_str(),"Food"|"Sticks"|"Mud"));
         starting.push(format!("(crate::buildings::Good::{good},{})",number(amount)));
     }
     constants.entry("starts".into()).or_default().push_str(&format!("pub const START_BUNDLE: [(crate::buildings::Good,f32); {}] = [{}];\n",starting.len(),starting.join(",")));
-    let roles = ["Forager","Logger","MudDigger","Builder","Hauler","Forester","Maintainer","Guard","PebbleCollector"];
+    let roles = ["Forager","Feller","MudDigger","Builder","Hauler","Planter","Mender","Sentry","Pebbler"];
     let mut order = Vec::new();
     for row in db.prepare("SELECT role,priority FROM role_policy ORDER BY priority")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))? {
         let (role,priority) = row?;
@@ -114,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut slots = Vec::new();
         for role in db.prepare("SELECT role FROM slot WHERE building=? ORDER BY position")?.query_map([id], |r| r.get::<_,String>(0))? {
             let role = role?;
-            assert!(matches!(role.as_str(), "Build" | "Haul" | "Forest" | "Guard" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)" | "Collect(ResourceKind::Pebbles)"), "invalid role {role}");
+            assert!(matches!(role.as_str(), "Build" | "Haul" | "Forest" | "Sentry" | "Collect(ResourceKind::Tree)" | "Collect(ResourceKind::Plant)" | "Collect(ResourceKind::MudBank)" | "Collect(ResourceKind::Pebbles)"), "invalid role {role}");
             slots.push(format!("Role::{role}"));
         }
         let area = area.map_or("None".into(), |a| { assert!(a > 0 && a <= 1024); format!("Some(({a},{a}))") });
@@ -211,7 +214,7 @@ fn amounts(db: &Connection, sql: &str, key: u32) -> rusqlite::Result<String> {
     let mut values = Vec::new();
     for row in db.prepare(sql)?.query_map([key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?)))? {
         let (good, amount) = row?;
-        assert!(matches!(good.as_str(), "Food" | "Sticks" | "Clay" | "Pebbles" | "Saplings"));
+        assert!(matches!(good.as_str(), "Food" | "Sticks" | "Mud" | "Pebbles" | "Saplings"));
         values.push(format!("(Good::{good},{})", number(amount)));
     }
     Ok(values.join(","))

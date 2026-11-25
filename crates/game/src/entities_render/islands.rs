@@ -1,6 +1,6 @@
 //! The colony's work buildings, built as beavers build: in the shallows where they are safe,
 //! of sticks, mud and stones, each on its own island heaped up out of the water as a lodge's
-//! base is (or, for the food store and the forester, in the water itself). `f` is how far
+//! base is (or, for the food cache and the forester, in the water itself). `f` is how far
 //! built, 0 to 1; each rises from a marked-out site as it is built. The origin is just above
 //! the water; the footing (`structures::footing`) reaches down to the bed. Mouths and slides
 //! face -z.
@@ -100,7 +100,7 @@ pub fn cache_island(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The food store, as beavers really keep winter food: a feed pile of leafy branches pushed
+/// The food cache, as beavers really keep winter food: a feed pile of leafy branches pushed
 /// into the shallows, butts stuck in the mud bed and tips standing out of the water.
 pub fn feed_pile(mb: &mut Mb, f: f32) {
     let mut r = Rng(22);
@@ -123,7 +123,7 @@ pub fn feed_pile(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The tool shed, as a stone cache: an island walled round with stacked stones, pebbles heaped
+/// The pebble heap, as a stone cache: an island walled round with stacked stones, pebbles heaped
 /// inside, peeled sticks and gnawed chips about its rim.
 pub fn stone_cache(mb: &mut Mb, f: f32) {
     let mut r = Rng(33);
@@ -158,7 +158,7 @@ pub fn stone_cache(mb: &mut Mb, f: f32) {
 }
 
 /// The forester, as willow shallows: a low ring of piled sticks and mud closing off a calm
-/// patch of shallow water, willow and aspen cuttings pushed into its bed to root, standing out
+/// patch of shallow water, willow and aspen stems pushed into its bed to root, standing out
 /// of the water in rows.
 pub fn willow_shallows(mb: &mut Mb, f: f32) {
     let mut r = Rng(44);
@@ -186,7 +186,7 @@ pub fn willow_shallows(mb: &mut Mb, f: f32) {
     }
 }
 
-/// Logistics, as a haul island: loads stacked on an island, a slick slide worn down its side
+/// Haul mound, as a haul island: loads stacked on an island, a slick slide worn down its side
 /// into the water and sticks laid across its top as skids.
 pub fn haul_island(mb: &mut Mb, f: f32) {
     let mut r = Rng(55);

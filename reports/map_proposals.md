@@ -7,7 +7,7 @@ Date: 2026-11-22. This builds on [map_audit.md](map_audit.md) and adds your thre
 
 ## Summary
 
-I searched 12 regions known for beavers for 512 m × 512 m windows. About 118,000 windows passed the hard filters. I built 17 of them as 1 m game maps. On each one I ran the game's water engine for a year, under the game's climate and under the place's own weather. I then screenshotted it in the game, and checked it against lidar detail and satellite imagery for roads that the maps leave out.
+I searched 12 regions known for beavers for 512 m × 512 m windows. About 118,000 windows met the hard filters. I built 17 of them as 1 m game maps. On each one I ran the game's water engine for a year, under the game's climate and under the place's own weather. I then screenshotted it in the game, and checked it against lidar detail and satellite imagery for roads that the maps leave out.
 
 Seven proposals are worth considering. All seven have:
 - streams that follow real mapped streams (95–100% within 25 m);
@@ -18,7 +18,7 @@ Seven proposals are worth considering. All seven have:
 | | Proposal | Place | Score /36 | In one line |
 |---|---|---|:-:|---|
 | **P1** | Kabetogama forks | Voyageurs NP, Minnesota | **31** | A real creek in an open meadow, with gentle valley sides and almost no puddles. The creek runs along the south of the map. Replaces today's Voyageurs (16). |
-| **P2** | Huntington fork | Adirondacks, New York | **28** | The best-shaped valley of all: a Y of two creeks with dams of every size near camp. It has an unmapped logging road that would have to be smoothed out. |
+| **P2** | Huntington fork | Adirondacks, New York | **28** | The best-shaped valley of all: a Y of two creeks with dams of every size near camp. It has an unmapped felling road that would have to be smoothed out. |
 | **P3** | Huntington beaver flow | Adirondacks, New York | **27** | A real chain of beaver ponds and meadows, with nothing man-made. The stream runs near the west edge. |
 | **P4** | Himmelsyna tarn | Agder, Norway | **26** | Bedrock ridges, mires and a tarn, 2 km from a 2020 record of an occupied lodge and a fresh dam. The alternative to Telemark (23). |
 | **P5** | Kabetogama twin creeks | Voyageurs NP, Minnesota | **27** | Visible beaver ponds and meadows on glacier-scoured ridges, and the most dam sites near camp. Some puddles, and the camp is 54 m from the edge. |
@@ -194,7 +194,7 @@ The audit's nine questions, plus your three new ones, each scored 0–3. For the
 - **What it is:**
   - Rugged bedrock ridges with mire valleys between them.
   - Two streams (0.2 and 0.6 km²) join and leave the map in two places.
-  - It is 2.2 km west of a [2020 record](https://www.gbif.org/occurrence/2985010339) of an occupied lodge, a large winter food store and a fresh dam.
+  - It is 2.2 km west of a [2020 record](https://www.gbif.org/occurrence/2985010339) of an occupied lodge, a large winter food cache and a fresh dam.
   - I first built the window 100 m further east (Himmelsyna), but its camp was 40 m from the edge; this one moved 100 m west.
 - **Strengths:**
   - Four mid-size dam sites, the nearest 45 m from camp.
@@ -390,7 +390,7 @@ What the engine change would be:
 2. **Ponds and lakes come only from 10 m land cover**, which misses narrow real ponds such as P4's tarn. OpenStreetMap water polygons would catch them.
 3. **Flat meadows turn into puddles** wherever the lidar has small hollows: Voyageurs today, the Algonquin station window, and P6's triangle patches.
 4. **Food is thinnest at the water's edge** on every map, current or proposed: 16–276 food trees/ha within 5 m, against 125–468 at 15–40 m.
-5. **OpenStreetMap misses roads that lidar shows.** That happened in P2. A window picker needs a lidar check for straight raised beds and cuttings.
+5. **OpenStreetMap misses roads that lidar shows.** That happened in P2. A window picker needs a lidar check for straight raised beds and cuts.
 
 ---
 

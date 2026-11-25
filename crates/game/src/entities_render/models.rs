@@ -317,13 +317,13 @@ pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
     Some(match kind {
         StructKind::Lodge => Mound(3.3),
         // Islands in the shallows, heaped up from the bed.
-        StructKind::Warehouse => Mound(2.6),
-        StructKind::Larder => Mound(1.5),
-        StructKind::Toolshed => Mound(1.6),
-        StructKind::Logistics => Mound(1.7),
+        StructKind::StickPile => Mound(2.6),
+        StructKind::FoodCache => Mound(1.5),
+        StructKind::PebbleHeap => Mound(1.6),
+        StructKind::HaulMound => Mound(1.7),
         StructKind::Lookout => Mound(1.5),
         StructKind::Forester => Ring(1.75),
-        StructKind::Harbor => Piles(2.9, 2.5),
+        StructKind::RaftLanding => Piles(2.9, 2.5),
         _ => return None,
     })
 }
@@ -336,13 +336,13 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
         StructKind::Lodge => lodge(&mut mb, f),
         StructKind::Dam => dam(&mut mb, len, f),
         StructKind::Canal => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
-        StructKind::Warehouse => islands::cache_island(&mut mb, f),
-        StructKind::Larder => islands::feed_pile(&mut mb, f),
-        StructKind::Toolshed => islands::stone_cache(&mut mb, f),
+        StructKind::StickPile => islands::cache_island(&mut mb, f),
+        StructKind::FoodCache => islands::feed_pile(&mut mb, f),
+        StructKind::PebbleHeap => islands::stone_cache(&mut mb, f),
         StructKind::Forester => islands::willow_shallows(&mut mb, f),
-        StructKind::Logistics => islands::haul_island(&mut mb, f),
+        StructKind::HaulMound => islands::haul_island(&mut mb, f),
         StructKind::Lookout => islands::watch_mound(&mut mb, f),
-        StructKind::Harbor => structures::harbor(&mut mb, f),
+        StructKind::RaftLanding => structures::raft_landing(&mut mb, f),
     }
     if let Some(fo) = footing_of(kind) {
         let (hx, hz) = match fo {
@@ -546,7 +546,7 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid(v(0.5, 0.16, -0.1), v(0.1, 0.03, 0.06), col(palette::LEAF_LIGHT));
             mb.ellipsoid(v(-0.5, 0.16, -0.02), v(0.1, 0.03, 0.06), col(palette::LEAF));
         }
-        Good::Clay => {
+        Good::Mud => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.2, 0.15, 0.17), col(palette::MUD_DARK), hex(0x80603f), 8, 5);
         }
         Good::Pebbles => {
@@ -577,7 +577,7 @@ pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
                 stick(&mut mb, v(-0.45, y, 0.0), v(0.45, y + 0.03, 0.02 * k as f32), 0.04, 0.3 * k as f32);
             }
         }
-        Good::Clay => {
+        Good::Mud => {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.26, 0.22, 0.22), col(palette::MUD_WET), col(palette::DAM_MUD), 9, 6);
             mb.ellipsoid(v(0.08, 0.13, 0.05), v(0.1, 0.06, 0.08), hex(0x6a4c33));
         }
@@ -634,7 +634,7 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
     let mut mb = Mb::new();
     match good {
         Good::Sticks => stick_pile(&mut mb, v(0.0, 0.0, 0.0), 0.4, 7, 11),
-        Good::Clay => {
+        Good::Mud => {
             for (x, z, r, h) in [(0.0f32, 0.0f32, 0.42f32, 0.2f32), (0.3, 0.22, 0.25, 0.14), (-0.28, 0.18, 0.22, 0.12)] {
                 mb.ellipsoid_g(v(x, 0.0, z), v(r, h, r * 0.85), col(palette::MUD_DARK), hex(0x80603f), 9, 5);
             }

@@ -1,4 +1,4 @@
-//! Synchronizes colony needs and families with physical stores, workers and homes.
+//! Synchronizes colony needs and families with physical stores, beavers and homes.
 use crate::{SimState, buildings, colony, grid, jobs, worldgen};
 
 impl SimState {
@@ -8,13 +8,13 @@ impl SimState {
     }
 
     pub(super) fn sync_homes(&mut self) {
-        use buildings::BuildingKind::Shelter;
+        use buildings::BuildingKind::Lodge;
         if self.colony.is_founded() {
             let new: Vec<(buildings::BuildingId, (f32, f32))> = self
                 .buildings
                 .buildings
                 .iter()
-                .filter(|b| b.kind == Shelter && b.is_complete() && !self.work.homes.contains_key(&b.id))
+                .filter(|b| b.kind == Lodge && b.is_complete() && !self.work.homes.contains_key(&b.id))
                 .map(|b| {
                     let (w, d) = b.kind.spec().footprint;
                     (b.id, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0))
@@ -24,7 +24,7 @@ impl SimState {
                 let home = self.colony.add_home(pos);
                 self.work.homes.insert(id, home);
                 if !self.colony.beavers.iter().any(|b| b.lodge == Some(home)) {
-                    // A family still camping where it arrived moves into the first shelter.
+                    // A family still camping where it arrived moves into the first lodge.
                     let built: std::collections::BTreeSet<_> = self.work.homes.values().copied().collect();
                     let previous = self.colony.lodges.iter().map(|l| l.id)
                         .find(|old| !built.contains(old) && self.colony.beavers.iter().any(|b| b.lodge == Some(*old)));
@@ -52,7 +52,7 @@ impl SimState {
             b.job = jobs.get(&b.id).map(|j| j.0);
             if let Some(a) = self.agents.get(b.id) {
                 b.pos = (a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5);
-                b.sheltered = a.inside;
+                b.in_lodge = a.inside;
             }
         }
         self.colony.slot_jobs = jobs;

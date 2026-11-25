@@ -1,14 +1,16 @@
-//! What the dam and canal panels share. Both are laid out the same way, top to bottom: header,
-//! the status line with its one fix, tabs, then Water, Work, Build (Dig), Gates and Upkeep.
+//! What the dam and canal panels share. Both are laid out the same way, top to bottom: header
+//! (history behind its hourglass), the side view with the state drawn on it and a chip for each
+//! gate and lock, the build buttons, the strip of the gate picked, and the footer.
 //! A button that can't be used now stays where it is, faded, and its tooltip says why.
 use super::panels::Ctx;
 use super::ui::*;
-use super::words::num;
-use super::{HudAction, REMOVE_ARM_SECS};
+use super::words::{good_icon, num};
+use super::{DamTab, HudAction, Opening, REMOVE_ARM_SECS};
 use crate::flow::Selection;
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::BuildingId;
+use crate::flow::Cell;
+use sim::buildings::{BuildingId, Good};
 use sim::GateSetting;
 
 pub const WOOD: Color = Color::srgb(0.95, 0.85, 0.66);
@@ -45,9 +47,10 @@ pub fn label_left_of(u: &mut Ui, right: f32, top: f32, text: String, col: Color,
     });
 }
 
-/// Name, condition, pin and close.
+/// Name, condition, history, pin and close.
 #[allow(clippy::too_many_arguments)]
 pub fn header(c: &Ctx, u: &mut Ui, id: BuildingId, title: &str, selected_here: bool, health: f32, tip: Tip, portrait: impl FnOnce(&mut Ui)) {
+    let history = c.hud.dam_tab == DamTab::History;
     let sel = Selection::Site(id);
     let pinned = c.hud.pinned.contains(&sel);
     u.row(10.0, |r| {
@@ -62,22 +65,13 @@ pub fn header(c: &Ctx, u: &mut Ui, id: BuildingId, title: &str, selected_here: b
         });
         r.spacer();
         r.row(4.0, |y| {
+            let next = if history { DamTab::Status } else { DamTab::History };
+            y.pebble(Icon::Hourglass, 11.0, HudAction::DamTab(next), if history { Peb::On } else { Peb::Bare }).tip(Tip::name(if history { "Back" } else { "History" }));
             y.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
             y.close_button(HudAction::ClosePanel(sel, selected_here), selected_here);
         })
         .style(|n| n.align_self = AlignSelf::FlexStart);
     });
-}
-
-/// The cells picked on this dam or canal: a quiet mark saying how to pick, or a button with
-/// the count that drops them.
-pub fn picks(u: &mut Ui, n: usize, what: &str) {
-    if n == 0 {
-        u.icon(Icon::Focus, 14.0, MUTED).tip(Tip::name("Pick cells").line(format!("Click a cell on the {what}"), "").line("Shift", "add more"));
-    } else {
-        let word = format!("{n} picked");
-        u.small_button(Some(Icon::Focus), Some(&word), Some(HudAction::ClearPicks), Tip::name("Unpick all"), Small::On);
-    }
 }
 
 fn setting_name(st: GateSetting) -> &'static str {
@@ -92,6 +86,7 @@ fn setting_name(st: GateSetting) -> &'static str {
 /// `ordered`: the gate stands in the works' list (a dam's), so its setting shows even before
 /// it is built. `usable`: why the settings can't be touched yet, if they can't.
 pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Gate, pond: Option<f32>, ordered: bool, usable: Result<(), &str>) {
+    let brought = supplied(s, id, g.cell);
     let wanted = g.wanted();
     let exists = ordered || g.built || g.pending.is_some();
     let level_at = match wanted {
@@ -110,10 +105,13 @@ pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::G
     };
     let row = u.row(5.0, |r| {
         r.icon(if lock { Icon::LockGates } else { Icon::Lock }, 15.0, col).tip(tip);
+        if let Some((got, need)) = brought {
+            r.bold(format!("{}/{}", got.floor() as i64, need.round() as i64), 12.0, WARN).tip(Tip::name("Brought").line("Of what it needs", ""));
+        }
         for setting in [GateSetting::Shut, GateSetting::Level(level_at), GateSetting::Open] {
             let on = exists && std::mem::discriminant(&wanted) == std::mem::discriminant(&setting);
             let tip = match setting {
-                GateSetting::Shut => Tip::name("Shut").line("No water passes", ""),
+                GateSetting::Shut => Tip::name("Shut").line("No water gets through", ""),
                 GateSetting::Level(_) => Tip::name("Level").line("Holds the pond at the sill", "").line("Sill", format!("{} m", num(g.sill_of(setting)))),
                 GateSetting::Open => Tip::name("Open").line("Lets the pond down", "").line("Floor", format!("{} m", num(g.floor))),
             };
@@ -128,6 +126,10 @@ pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::G
         }
         r.spacer();
         lock_button(r, s, id, g);
+        if exists {
+            let what = if lock || sim::locks::pending(s, g.cell) { "Remove the gate and its lock" } else { "Remove the gate" };
+            r.small_button(Some(Icon::Remove), None, Some(HudAction::RemoveGate(id, g.cell)), Tip::name(what).line("What was brought goes back", ""), Small::Danger);
+        }
     });
     row.node.padding = UiRect::axes(Val::Px(6.0), Val::Px(4.0));
     row.node.border_radius = BorderRadius::all(Val::Px(6.0));
@@ -160,7 +162,7 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
         return;
     }
     let why = if !locks::unlocked(s) {
-        Some("Needs a Harbor")
+        Some("Needs a raft landing")
     } else if !g.built {
         Some("Build the gate first")
     } else if locks::check_room(s, id, g.cell).is_err() {
@@ -168,17 +170,17 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
     } else {
         None
     };
-    let tip = what.line("Sticks", num(locks::LOCK_STICKS)).line("Clay", num(locks::LOCK_CLAY));
+    let tip = what.line("Sticks", num(locks::LOCK_STICKS)).line("Mud", num(locks::LOCK_MUD));
     match why {
         Some(w) => r.small_button(Some(Icon::LockGates), None, None, tip.line(w, ""), Small::Idle),
         None => r.small_button(Some(Icon::LockGates), None, Some(HudAction::UpgradeLock(id, g.cell)), tip, Small::Idle),
     };
 }
 
-/// Maintainers keep it up, or not.
-pub fn maintain_button(r: &mut Ui, on: bool, action: HudAction, what: &str, hint: bool) {
+/// Menders keep it up, or not.
+pub fn upkeep_button(r: &mut Ui, on: bool, action: HudAction, what: &str, hint: bool) {
     let look = if hint { Small::Hint } else if on { Small::On } else { Small::Idle };
-    r.small_button(Some(Icon::Hammer), Some("Maintain"), Some(action), Tip::name("Maintain").line(if on { "On" } else { "Off" }, "").line(what, ""), look);
+    r.small_button(Some(Icon::Hammer), Some("Mend"), Some(action), Tip::name("Mend").line(if on { "On" } else { "Off" }, "").line(what, ""), look);
 }
 
 pub fn pause_button(r: &mut Ui, s: &sim::SimState, id: BuildingId) {
@@ -211,4 +213,109 @@ pub fn remove_button(c: &Ctx, r: &mut Ui, id: BuildingId) {
 pub fn cap(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
+/// What has been brought to a gate for the work ordered there, against what it needs; None
+/// when it needs nothing brought.
+pub fn supplied(s: &sim::SimState, id: BuildingId, cell: Cell) -> Option<(f32, f32)> {
+    let spot = sim::supply::Spot { building: id, cell };
+    let needs = sim::supply::needs(s, spot);
+    let need: f32 = needs.iter().map(|a| a.1).sum();
+    let got: f32 = needs.iter().map(|&(g, a)| sim::supply::delivered(s, spot, g).min(a)).sum();
+    (need > 0.0).then_some((got, need))
+}
+
+/// Why a gate or lock can't go on this cell of a dam.
+pub fn opening_fits(s: &sim::SimState, id: BuildingId, cell: Cell, o: Opening) -> Result<(), String> {
+    let gate_here = sim::dams::dam(s, id).is_some_and(|d| d.gates.iter().any(|g| g.cell == cell));
+    match o {
+        Opening::Gate => sim::dams::plan_gate(s, id, cell).map(|_| ()).map_err(|e| cap(&e)),
+        Opening::Lock => {
+            if !sim::locks::unlocked(s) {
+                return Err("Needs a raft landing".into());
+            }
+            if s.locks.at.contains_key(&cell) {
+                return Err("Already a lock".into());
+            }
+            if !gate_here {
+                sim::dams::plan_gate(s, id, cell).map_err(|e| cap(&e))?;
+            }
+            sim::locks::check_room(s, id, cell).map_err(|_| "No room for a lock".to_string())
+        }
+    }
+}
+
+/// The build button for a gate or a lock on a dam: lit while it is being placed, faded with
+/// the reason when it fits nowhere on the dam.
+pub fn opening_button(c: &Ctx, r: &mut Ui, id: BuildingId, d: &sim::dams::Dam, o: Opening) {
+    let s = c.s;
+    let fits: Vec<Result<(), String>> = d.line().map(|x| opening_fits(s, id, x.cell, o)).collect();
+    let ok = fits.iter().any(|f| f.is_ok());
+    let why = fits.iter().find_map(|f| f.clone().err()).unwrap_or_else(|| "Build the dam first".into());
+    let on = c.hud.opening == Some((id, o));
+    let lock_sticks = sim::canals::GATE_STICKS + sim::locks::LOCK_STICKS;
+    let (icon, word, sticks, tip) = match o {
+        Opening::Gate => (Icon::Lock, "Gate", sim::canals::GATE_STICKS, Tip::name("Gate").line("Let water through here", "").line("Sticks", num(sim::canals::GATE_STICKS))),
+        Opening::Lock => (Icon::LockGates, "Lock", lock_sticks, Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(lock_sticks)).line("Mud", num(sim::locks::LOCK_MUD))),
+    };
+    let tip = if ok { tip.line("Click a lit cell", "").line("Shift", "place more").key("Esc") } else { tip.line(why, "") };
+    let action = (ok || on).then_some(HudAction::Opening(id, o));
+    r.big_button(BigButton { icon, word, cost: Some((good_icon(Good::Sticks), WOOD, format!("{}", sticks.round() as i64))), action, tip, hint: false, on });
+}
+
+/// A chip for each gate and lock over a side view: its height, or what has been brought for
+/// it; a click shows its settings and takes the camera there. Chips that don't fit merge
+/// into the last, with a count.
+pub fn chips(c: &Ctx, u: &mut Ui, id: BuildingId, gates: &[sim::gates::Gate], room: f32) {
+    let s = c.s;
+    const CHIP_W: f32 = 52.0;
+    let fit = ((room / (CHIP_W + 4.0)).floor() as usize).max(1);
+    let shown = if gates.len() > fit { fit - 1 } else { gates.len() };
+    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() }, |r| {
+        for g in &gates[..shown] {
+            let lock = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
+            let brought = supplied(s, id, g.cell);
+            let busy = s.agents.by_id.values().any(|a| matches!(a.task, sim::agents::Task::Gate { site, cell, .. } if site == id && cell == g.cell));
+            let (text, col) = match brought {
+                Some((got, need)) => (format!("{}/{}", got.floor() as i64, need.round() as i64), WARN),
+                None => (format!("{} m", num(g.sill() - g.floor)), INK),
+            };
+            let picked = c.hud.gate_sel == Some((id, g.cell));
+            let v = r.row(3.0, |x| {
+                x.icon(if lock { Icon::LockGates } else { Icon::Lock }, 12.0, col);
+                x.bold(text, 11.0, col);
+                if busy {
+                    x.icon(Icon::Beaver, 11.0, FUR);
+                }
+            });
+            v.node.height = Val::Px(22.0);
+            v.node.padding = UiRect::axes(Val::Px(6.0), Val::Px(0.0));
+            v.node.flex_shrink = 0.0;
+            v.skin(if picked { Skin::PebbleOn } else { Skin::Pebble });
+            let name = if lock { "Lock" } else { "Gate" };
+            let tip = match brought {
+                Some(_) => Tip::name(name).line("Brought", "of what it needs"),
+                None => Tip::name(name).line(setting_name(g.setting), format!("sill {} m", num(g.sill()))),
+            };
+            v.tip(tip).action(HudAction::GateChip(id, g.cell));
+        }
+        if gates.len() > shown {
+            let rest = &gates[shown..];
+            let v = r.row(3.0, |x| {
+                x.icon(Icon::Lock, 12.0, INK);
+                x.bold(format!("+{}", rest.len()), 11.0, INK);
+            });
+            v.node.height = Val::Px(22.0);
+            v.node.padding = UiRect::axes(Val::Px(6.0), Val::Px(0.0));
+            v.skin(Skin::Pebble);
+            v.tip(Tip::name(format!("{} more", rest.len())).line("Click", "the next one")).action(HudAction::GateChip(id, rest[0].cell));
+        }
+    });
+}
+
+/// The builders or diggers on the works, as a button to the jobs; marked when work waits for
+/// one.
+pub fn crew_button(r: &mut Ui, n: usize, icon: Icon, what: &str, hint: bool) {
+    let word = format!("{n}");
+    r.small_button(Some(icon), Some(&word), Some(HudAction::Colony(Some(super::ColonyTab::Jobs))), Tip::name(what).line("Open the jobs", ""), if hint { Small::Hint } else { Small::Idle });
 }

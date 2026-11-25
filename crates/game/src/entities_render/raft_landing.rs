@@ -1,6 +1,6 @@
-//! Harbors, rafts and locks: their models, the rafts moored at a harbor, and a lock working
-//! (gates sinking to open and rising to shut, the chamber filling or draining) while a beaver passes through it.
-//! `BC_GALLERY_WHAT=harbor` lines up a harbor's stages, a raft with each load and a lock on a
+//! Raft landings, rafts and locks: their models, the rafts moored at a raft landing, and a lock working
+//! (gates sinking to open and rising to shut, the chamber filling or draining) while a beaver goes through it.
+//! `BC_GALLERY_WHAT=raft landing` lines up a raft landing's stages, a raft with each load and a lock on a
 //! loop (see `gallery.rs`).
 use super::meshgen::{mix, Mb, Rng};
 use super::models::{col, stick, stick_c};
@@ -67,19 +67,19 @@ pub fn lock_walls_mesh(mb: &mut Mb) {
 }
 
 #[derive(Resource)]
-pub(super) struct HarborMeshes {
+pub(super) struct RaftLandingMeshes {
     pub raft: Handle<Mesh>,
     pub gate: Handle<Mesh>,
     pub walls: Handle<Mesh>,
 }
 
-pub(super) fn init_harbor_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+pub(super) fn init_raft_landing_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     let mut build = |f: &dyn Fn(&mut Mb)| {
         let mut mb = Mb::new();
         f(&mut mb);
         meshes.add(mb.build())
     };
-    commands.insert_resource(HarborMeshes {
+    commands.insert_resource(RaftLandingMeshes {
         raft: build(&raft_mesh),
         gate: build(&lock_gate_mesh),
         walls: build(&lock_walls_mesh),
@@ -101,10 +101,10 @@ pub(super) struct LockVis {
     pub floor: f32,
     /// How far open the gates at the low end and the high end are, 0 shut to 1 open.
     pub open: [f32; 2],
-    /// The chamber's water level now, and where it stood when the passage under way began.
+    /// The chamber's water level now, and where it stood when the trip under way began.
     pub level: f32,
     pub start_level: f32,
-    /// Who is passing now.
+    /// Who is in it now.
     pub occupant: Option<u64>,
     /// Frozen over, as the water either side is.
     pub iced: bool,
@@ -120,15 +120,15 @@ pub(super) struct LockVis {
 /// of the middle.
 const WIDTH: f32 = 1.6;
 
-/// Seconds a passage takes on the gallery's loop.
-const PASSAGE_S: f32 = 5.0;
+/// Seconds a trip takes on the gallery's loop.
+const TRIP_S: f32 = 5.0;
 /// Seconds a gate takes to drop shut behind a beaver that has left.
 const SHUT_S: f32 = 0.8;
 
 /// Spawn a lock's parts at `at` (the chamber's middle), the chamber running along `axis_yaw`
 /// with the low side at -z, `half` long either way from the middle, its floor at `floor`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn spawn_lock(commands: &mut Commands, hm: &HarborMeshes, m: &Models, at: Vec3, axis_yaw: f32, half: f32, floor: f32, low: f32, high: f32, looping: bool) -> Entity {
+pub(super) fn spawn_lock(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, at: Vec3, axis_yaw: f32, half: f32, floor: f32, low: f32, high: f32, looping: bool) -> Entity {
     // The walls stand a little above the high side's water: high enough to read as a lock,
     // low enough not to hide what is in it.
     let h = (high + 0.3 - floor).max(0.4);
@@ -151,7 +151,7 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-// The steps of a passage, as shares of the wait the simulation gives it (`nav::lock_wait`):
+// The steps of a trip, as shares of the wait the simulation gives it (`nav::lock_wait`):
 // the chamber levels to the near side while the swimmer waits at the shut gate; the gate
 // opens; it swims in; the gate shuts behind it; the chamber fills or drains to the far side's
 // level, lifting or lowering it; the far gate opens, and it swims out.
@@ -161,9 +161,9 @@ const ENTRY_SHUT: (f32, f32) = (0.52, 0.6);
 const FILL: (f32, f32) = (0.6, 0.85);
 const EXIT_OPEN: (f32, f32) = (0.85, 1.0);
 
-/// The gates (near end, far end) and the chamber's level `f` of the way through a passage:
+/// The gates (near end, far end) and the chamber's level `f` of the way through a trip:
 /// from `from` (where it stood) to `entry`, then to `exit`.
-fn passage_look(f: f32, from: f32, entry: f32, exit: f32) -> ([f32; 2], f32) {
+fn trip_look(f: f32, from: f32, entry: f32, exit: f32) -> ([f32; 2], f32) {
     let near = smooth(ENTRY_OPEN.0, ENTRY_OPEN.1, f) * (1.0 - smooth(ENTRY_SHUT.0, ENTRY_SHUT.1, f));
     let far = smooth(EXIT_OPEN.0, EXIT_OPEN.1, f);
     let level = if f < ENTRY_OPEN.0 { from + (entry - from) * smooth(0.0, ENTRY_OPEN.0, f) } else { entry + (exit - entry) * smooth(FILL.0, FILL.1, f) };
@@ -255,9 +255,9 @@ fn step_progress(s: &sim::SimState, ag: &sim::agents::Agent, next: (usize, usize
     ((ag.step_frac + pending_days * sim::agents::MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0)
 }
 
-/// The lock this beaver is passing and how far it has got, `pending_days` after the simulation
+/// The lock this beaver is going through and how far it has got, `pending_days` after the simulation
 /// last moved it (negative while the picture plays catching up).
-pub(super) fn passage<'a>(s: &'a sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(&'a sim::locks::Lock, Chamber, Stage)> {
+pub(super) fn trip<'a>(s: &'a sim::SimState, ag: &sim::agents::Agent, pending_days: f32) -> Option<(&'a sim::locks::Lock, Chamber, Stage)> {
     let steps = ag.path.as_ref().map(|p| p.steps.as_slice()).unwrap_or(&[]);
     let next = steps.first().map(|x| x.0);
     let dir = |a: (usize, usize), b: (usize, usize)| Vec2::new(b.0 as f32 - a.0 as f32, b.1 as f32 - a.1 as f32);
@@ -312,16 +312,16 @@ fn cell_mid(s: &sim::SimState, c: (usize, usize)) -> Vec2 {
 }
 
 /// Where a beaver is drawn by a lock, given where it would be drawn on its way (`base`), and
-/// the way it faces when the lock decides that. Passing, it waits at the shut gate, swims in
+/// the way it faces when the lock decides that. Going through, it waits at the shut gate, swims in
 /// when the gate sinks, rides the chamber's water up or down while the gates work, then swims
-/// on down the lane and out over the far gate. Near a lock and not passing, it keeps to the
+/// on down the lane and out over the far gate. Near a lock and not going through, it keeps to the
 /// lane's middle (`on_lane`). `None` away from every lock.
 pub(super) fn lock_pose(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32, base: Vec3) -> Option<(Vec3, Option<f32>)> {
     if s.locks.at.values().all(|l| !l.built) {
         return None;
     }
     let raft = with_raft(ag);
-    if let Some((l, ch, stage)) = passage(s, ag, pending_days) {
+    if let Some((l, ch, stage)) = trip(s, ag, pending_days) {
         let up = stage.up();
         let (entry, exit) = if up { (ch.low, ch.high) } else { (ch.high, ch.low) };
         let u = if up { ch.axis } else { -ch.axis };
@@ -435,20 +435,20 @@ pub(super) fn glide(g: &mut LockGlide, chs: &[Chamber], target: Vec3, dt: f32) -
     next
 }
 
-/// Gates and chamber on the gallery's loop: a passage up, then one down.
+/// Gates and chamber on the gallery's loop: a trip up, then one down.
 pub(super) fn animate_locks(time: Res<Time>, mut locks: Query<&mut LockVis>, mut parts: Query<&mut Transform, Without<LockVis>>) {
     let dt = time.delta_secs();
     for mut l in &mut locks {
         if !l.looping {
             continue;
         }
-        l.k += dt / PASSAGE_S;
+        l.k += dt / TRIP_S;
         if l.k >= 1.0 {
             l.k -= 1.0;
             l.up = !l.up;
         }
         let (entry, exit) = if l.up { (l.low, l.high) } else { (l.high, l.low) };
-        let (gates, level) = passage_look(l.k, entry, entry, exit);
+        let (gates, level) = trip_look(l.k, entry, entry, exit);
         l.open = if l.up { gates } else { [gates[1], gates[0]] };
         l.level = level;
         show(&l, &mut parts);
@@ -496,8 +496,8 @@ fn lock_frame(s: &sim::SimState, l: &sim::locks::Lock) -> Option<(f32, f32, f32,
     Some((dir.x.atan2(dir.y), low, high, floor, top))
 }
 
-/// Draw each built lock and work it as the beaver passing it goes: gates and chamber follow
-/// that beaver's passage (`passage`), so what is drawn is what the simulation is doing.
+/// Draw each built lock and work it as the beaver going through it goes: gates and chamber follow
+/// that beaver's trip (`trip`), so what is drawn is what the simulation is doing.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_locks(
     mut commands: Commands,
@@ -505,7 +505,7 @@ pub(super) fn sync_locks(
     clock: Option<Res<crate::sim_driver::SimClock>>,
     time: Res<Time>,
     models: Option<Res<Models>>,
-    hm: Option<Res<HarborMeshes>>,
+    hm: Option<Res<RaftLandingMeshes>>,
     mut st: Local<LockSync>,
     mut q: Query<&mut LockVis>,
     mut parts: Query<&mut Transform, Without<LockVis>>,
@@ -526,12 +526,12 @@ pub(super) fn sync_locks(
         }
         keep
     });
-    // Who is passing which lock, and how far. One works it at a time: someone leaving holds
+    // Who is going through which lock, and how far. One works it at a time: someone leaving holds
     // the far gate open before the next comes in.
-    let mut passing: HashMap<(usize, usize), (u64, Stage)> = HashMap::new();
+    let mut inside: HashMap<(usize, usize), (u64, Stage)> = HashMap::new();
     for ag in s.agents.by_id.values() {
-        if let Some((l, _, stage)) = passage(s, ag, pending) {
-            let e = passing.entry(l.cell).or_insert((ag.id.0, stage));
+        if let Some((l, _, stage)) = trip(s, ag, pending) {
+            let e = inside.entry(l.cell).or_insert((ag.id.0, stage));
             if matches!(stage, Stage::Leaving { .. }) && matches!(e.1, Stage::Entering { .. }) {
                 *e = (ag.id.0, stage);
             }
@@ -559,7 +559,7 @@ pub(super) fn sync_locks(
                 commands.entity(v.water).insert((Mesh3d(mesh), MeshMaterial3d(w.0.clone())));
             }
         }
-        match passing.get(&l.cell).copied() {
+        match inside.get(&l.cell).copied() {
             Some((who, stage)) => {
                 if v.occupant != Some(who) {
                     v.occupant = Some(who);
@@ -568,7 +568,7 @@ pub(super) fn sync_locks(
                 let up = stage.up();
                 let (entry, exit) = if up { (ch.low, ch.high) } else { (ch.high, ch.low) };
                 let (gates, level) = match stage {
-                    Stage::Entering { f, .. } => passage_look(f, v.start_level, entry, exit),
+                    Stage::Entering { f, .. } => trip_look(f, v.start_level, entry, exit),
                     Stage::Leaving { .. } => ([0.0, 1.0], exit),
                 };
                 v.open = if up { gates } else { [gates[1], gates[0]] };
@@ -599,7 +599,7 @@ pub(super) fn sync_rafts(
     mut commands: Commands,
     sim: Res<Sim>,
     models: Option<Res<Models>>,
-    hm: Option<Res<HarborMeshes>>,
+    hm: Option<Res<RaftLandingMeshes>>,
     clock: Res<RenderClock>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut st: Local<RaftSync>,
@@ -661,9 +661,9 @@ pub(super) fn sync_rafts(
 #[derive(Component)]
 pub(super) struct RaftMark;
 
-/// `BC_GALLERY_WHAT=harbor`: a raft with each load in a row, and a lock passing beavers up
+/// `BC_GALLERY_WHAT=raft landing`: a raft with each load in a row, and a lock taking beavers up
 /// and down on a loop beside them.
-pub(super) fn spawn_gallery(commands: &mut Commands, hm: &HarborMeshes, m: &Models, meshes: &mut Assets<Mesh>, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
+pub(super) fn spawn_gallery(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, meshes: &mut Assets<Mesh>, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
     let goods = sim::buildings::Good::ALL;
     for (i, g) in goods.into_iter().enumerate() {
         let x = centre.x + (i as f32 - (goods.len() as f32 - 1.0) / 2.0) * 1.8;

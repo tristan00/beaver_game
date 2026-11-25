@@ -1,6 +1,7 @@
-//! The colony ledger: the colony over time as charts, then pages of detail — every beaver in a
-//! table, every dam's water and upkeep, every building's state. Numbers and icons; the words
-//! are in tooltips.
+//! The territory (L): the land and the works — charts of the water, the woods and the goods
+//! over time, every dam's water and upkeep, every building's state, the stores. Also the
+//! colony's two wide pages, drawn here and shown in the colony (Tab): every beaver in a table,
+//! and this run. Numbers and icons; the words are in tooltips.
 use super::colony::{doing, token_px};
 use super::panels::{status_line, Ctx};
 use super::ui::*;
@@ -17,12 +18,11 @@ const ROWS: usize = 16;
 /// The most bars a chart draws: longer spans are averaged into this many.
 const BARS: usize = 60;
 
-const TABS: [(LedgerTab, Icon, &str); 5] = [
+const TABS: [(LedgerTab, Icon, &str); 4] = [
     (LedgerTab::Charts, Icon::Ledger, "Charts"),
-    (LedgerTab::Beavers, Icon::Beaver, "Beavers"),
     (LedgerTab::Dams, Icon::Dam, "Dams"),
     (LedgerTab::Buildings, Icon::Building, "Buildings"),
-    (LedgerTab::Run, Icon::Hourglass, "This run"),
+    (LedgerTab::Stores, Icon::StickPile, "Stores"),
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
@@ -37,20 +37,16 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                 }
                 r.spacer();
                 if tab == LedgerTab::Charts {
-                    for (sp, label, name) in [(Span::Season, "90d", "Last season"), (Span::Year, "1y", "Last year"), (Span::All, "All", "Everything")] {
-                        chip(r, label, c.hud.span == sp, HudAction::Span(sp)).tip(Tip::name(name));
-                    }
-                    r.add(VNode::new(Node { width: Val::Px(8.0), ..default() }));
+                    span_chips(c, r);
                 }
                 r.close_button(HudAction::Ledger(None), true);
             });
             u.rule();
             match tab {
                 LedgerTab::Charts => charts(c, u),
-                LedgerTab::Beavers => beavers(c, u),
                 LedgerTab::Dams => dams(c, u),
                 LedgerTab::Buildings => buildings(c, u),
-                LedgerTab::Run => run(c, u),
+                LedgerTab::Stores => super::colony::stores(c, u),
             }
         },
     );
@@ -164,7 +160,7 @@ fn vol(m3: f32) -> String {
     if m3 >= 10_000.0 { format!("{:.0}k", m3 / 1000.0) } else if m3 >= 1000.0 { format!("{:.1}k", m3 / 1000.0) } else { format!("{:.0}", m3) }
 }
 
-/// The colony over time, two charts a row: beavers, food, sticks, clay, water held, trees.
+/// The colony over time, two charts a row: beavers, food, sticks, mud, water held, trees.
 fn charts(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let last = s.ledger.colony.back();
@@ -176,13 +172,7 @@ fn charts(c: &Ctx, u: &mut Ui) {
         return;
     }
     u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
-        // Beavers: adults, and the young stacked above them.
-        let data = bars(c, |d| ((d.census.beavers - d.census.young) as f32, d.census.young as f32, 0.0));
-        let now = s.colony.population();
-        chart(g, Icon::Beaver, FUR, Color::srgb(0.9, 0.72, 0.5), "Beavers", format!("{now}"), INK, &data, false, |b| {
-            Tip::titled(Some((Icon::Beaver, FUR)), day_range(b)).line("Adults", num(b.a)).line("Young", num(b.b))
-        });
-        for g_ in [Good::Food, Good::Sticks, Good::Clay] {
+        for g_ in [Good::Food, Good::Sticks, Good::Mud] {
             let i = g_.index();
             let data = bars(c, |d| (d.produced[i], 0.0, d.consumed[i]));
             let (inn, out) = (s.ledger.in_per_day(g_), s.ledger.out_per_day(g_));
@@ -252,7 +242,8 @@ fn tiles(u: &mut Ui, f: impl FnOnce(&mut Ui)) {
 
 /// The whole run in numbers: the colony's lives, what it gathered, what went by raft, what it
 /// built and the most water it held.
-fn run(c: &Ctx, u: &mut Ui) {
+pub(super) fn run(c: &Ctx, u: &mut Ui) {
+    population_chart(c, u);
     let s = c.s;
     let (st, run) = (&s.colony.stats, &s.run);
     tiles(u, |r| {
@@ -298,17 +289,6 @@ fn job_of(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
     sim::jobs::role_of(s, b.id).and_then(sim::jobs::colony_job)
 }
 
-fn job_name(j: sim::colony::Job) -> &'static str {
-    use sim::colony::Job::*;
-    match j {
-        Forager => "Foraging",
-        Logger => "Logging",
-        Builder => "Building",
-        Digger => "Digging",
-        Hauler => "Hauling",
-    }
-}
-
 /// The job a beaver holds, in a word (free beavers too), for sorting by it.
 fn role_word(s: &sim::SimState, b: &Beaver) -> &'static str {
     sim::jobs::role_of(s, b.id).map_or("Free", role_kind_name)
@@ -317,11 +297,39 @@ fn role_word(s: &sim::SimState, b: &Beaver) -> &'static str {
 /// How far each page's long list can scroll: past this the page would show fewer rows than fit.
 pub fn scroll_max(s: &sim::SimState, tab: LedgerTab) -> usize {
     match tab {
-        LedgerTab::Beavers => s.colony.beavers.len().saturating_sub(ROWS),
         LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam && b.dam.is_some()).count().saturating_sub(4),
         LedgerTab::Buildings => s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).count().saturating_sub(ROWS),
-        LedgerTab::Charts | LedgerTab::Run => 0,
+        LedgerTab::Charts | LedgerTab::Stores => 0,
     }
+}
+
+/// How far the colony's beaver table scrolls.
+pub fn beavers_scroll_max(s: &sim::SimState) -> usize {
+    s.colony.beavers.len().saturating_sub(ROWS)
+}
+
+/// The span the charts look back over.
+pub(super) fn span_chips(c: &Ctx, r: &mut Ui) {
+    for (sp, label, name) in [(Span::Season, "90d", "Last season"), (Span::Year, "1y", "Last year"), (Span::All, "All", "Everything")] {
+        chip(r, label, c.hud.span == sp, HudAction::Span(sp)).tip(Tip::name(name));
+    }
+    r.add(VNode::new(Node { width: Val::Px(8.0), ..default() }));
+}
+
+/// The beavers over time: adults, and the young stacked above them.
+fn population_chart(c: &Ctx, u: &mut Ui) {
+    let s = c.s;
+    if s.ledger.colony.is_empty() {
+        return;
+    }
+    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
+        let data = bars(c, |d| ((d.census.beavers - d.census.young) as f32, d.census.young as f32, 0.0));
+        let now = s.colony.population();
+        chart(g, Icon::Beaver, FUR, Color::srgb(0.9, 0.72, 0.5), "Beavers", format!("{now}"), INK, &data, false, |b| {
+            Tip::titled(Some((Icon::Beaver, FUR)), day_range(b)).line("Adults", num(b.a)).line("Young", num(b.b))
+        });
+    });
+    u.rule();
 }
 
 fn factor_col(x: f32) -> Color {
@@ -333,9 +341,9 @@ fn times(x: f32) -> String {
 }
 
 /// The job a beaver works at a pace: one that work factors speed (not hauling, which is
-/// walking, nor guarding).
+/// walking, nor keeping watch).
 fn paced_job(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
-    job_of(s, b).filter(|j| *j != sim::colony::Job::Hauler).filter(|_| b.can_work())
+    job_of(s, b).filter(|j| job_speeds(*j)).filter(|_| b.can_work())
 }
 
 /// A beaver's pace at its job, and a tip with only the factors acting on it (not ×1).
@@ -352,9 +360,9 @@ pub(super) fn pace(s: &sim::SimState, b: &Beaver) -> Option<(f32, Tip)> {
 
 const COLS: [(Option<BeaverCol>, Icon, &str, f32); 12] = [
     (None, Icon::Beaver, "", 22.0),
-    (Some(BeaverCol::Name), Icon::Beaver, "Name", 92.0),
+    (Some(BeaverCol::Name), Icon::Beaver, "Name", 140.0),
     (Some(BeaverCol::Age), Icon::Hourglass, "Age (years)", 34.0),
-    (Some(BeaverCol::Family), Icon::Home, "Family", 78.0),
+    (Some(BeaverCol::Family), Icon::Home, "Family", 120.0),
     (Some(BeaverCol::Job), Icon::Jobs, "Job", 26.0),
     (Some(BeaverCol::Doing), Icon::Walk, "Doing now", 26.0),
     (Some(BeaverCol::Skill), Icon::Hammer, "Skill at this job", 64.0),
@@ -367,7 +375,7 @@ const COLS: [(Option<BeaverCol>, Icon, &str, f32); 12] = [
 
 /// Every beaver in a table: who, how old, which family, what it does, its skill at that and
 /// what speeds or slows it. A column's icon sorts by it; the wheel scrolls.
-fn beavers(c: &Ctx, u: &mut Ui) {
+pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let (col, desc) = c.hud.sort;
     let family = |b: &Beaver| s.colony.family(b.family).map(|f| f.name.clone()).unwrap_or_default();
@@ -458,7 +466,7 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
             t.token(Icon::Beaver, token_px(b.stage) * 0.75, Some(doing(s, b)));
         });
         r.node(cell(w(1)), |x| {
-            x.bold(b.name.clone(), 12.0, INK);
+            x.bold(full_name(s, b.id, &b.name), 12.0, INK);
         });
         r.node(cell(w(2)), |x| {
             x.text(format!("{:.1}", b.age_years()), 12.0, INK);
@@ -475,14 +483,14 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
             x.icon(icon, 15.0, icon_col);
         })
         .tip(Tip::name("Doing now").line(word, ""));
-        // Skill at the job held: notches and the share; every skill in the tooltip.
+        // Skill at the job held: ticks and the share; every skill in the tooltip.
         let mut skills = Tip::name("Skills");
-        for j in sim::colony::Job::ALL.into_iter().filter(|j| *j != sim::colony::Job::Hauler) {
+        for j in sim::colony::Job::ALL {
             skills.push(TipLine::new(job_name(j), format!("{:.0}%", b.skills[j.index()] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
         }
         r.node(cell(w(6)), |x| match wf {
             Some(wf) => {
-                x.notches(wf.skill, 5, 34.0, 8.0, ACCENT);
+                x.ticks(wf.skill, 5, 34.0, 8.0, ACCENT);
                 x.text(format!("{:.0}", wf.skill * 100.0), 11.0, INK);
             }
             None => {
@@ -490,7 +498,7 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
             }
         })
         .tip(skills);
-        // Kits too young to work, haulers and guards have no work pace to speak of.
+        // Kits too young to work, haulers and sentries have no work pace to speak of.
         let factors = wf.map(|wf| [wf.mood_x, wf.health_x, wf.rest_x, wf.age_x]);
         for (k, name) in ["Mood", "Health", "Rest", "Age"].into_iter().enumerate() {
             let f = factors.map(|f| f[k]);
@@ -594,8 +602,8 @@ fn dams(c: &Ctx, u: &mut Ui) {
                     if left > 0 {
                         stat(r, good_icon(Good::Sticks), good_color(Good::Sticks), format!("{left}"), INK, Tip::name("Loads still to carry"));
                     }
-                    let word = if d.maintain { "Kept in repair" } else { "Not kept in repair" };
-                    r.pebble(Icon::Hammer, 11.0, HudAction::DamMaintain(b.id, !d.maintain), if d.maintain { Peb::Good } else { Peb::Idle }).tip(Tip::name(word).line(if d.maintain { "Stop" } else { "Keep in repair" }, ""));
+                    let word = if d.upkeep { "Kept in repair" } else { "Not kept in repair" };
+                    r.pebble(Icon::Hammer, 11.0, HudAction::DamUpkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(word).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
                     r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
                 });
                 k.row(8.0, |r| {
@@ -608,9 +616,9 @@ fn dams(c: &Ctx, u: &mut Ui) {
                             let fill = ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0);
                             r.row(4.0, |x| {
                                 x.icon(Icon::Gauge, 15.0, WATER);
-                                x.notches(fill, 6, 48.0, 10.0, WATER);
+                                x.ticks(fill, 6, 48.0, 10.0, WATER);
                             })
-                            .tip(Tip::name("Pond").with_value(format!("{:.0}%", fill * 100.0)).line("Deepest", format!("{:.1} m", p.max_depth)).line("Full in", if p.days_to_full <= 0.0 { "Full".to_string() } else if p.days_to_full.is_finite() { days(p.days_to_full) } else { "Never".to_string() }));
+                            .tip(Tip::name(sim::names::pond_name(s, b.id).unwrap_or("Pond")).with_value(format!("{:.0}%", fill * 100.0)).line("Deepest", format!("{:.1} m", p.max_depth)).line("Full in", if p.days_to_full <= 0.0 { "Full".to_string() } else if p.days_to_full.is_finite() { days(p.days_to_full) } else { "Never".to_string() }));
                             // The level over the last week.
                             let h = &d.history;
                             let week = h.len().min(7);
@@ -668,7 +676,7 @@ fn dams(c: &Ctx, u: &mut Ui) {
 // Buildings
 
 /// Every building: its state, condition, the water it stands in against what it can, and its
-/// workers.
+/// beavers.
 fn buildings(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let mut list: Vec<_> = s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).collect();
@@ -684,7 +692,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
     let n = list.len();
     let first = c.hud.scroll.min(n.saturating_sub(ROWS));
     u.row(8.0, |r| {
-        for (icon, name, w) in [(Icon::Building, "Building", 150.0), (Icon::Check, "State", 110.0), (Icon::Health, "Condition", 80.0), (Icon::Drop, "Water it stands in, of the most it can", 140.0), (Icon::Beaver, "Workers", 60.0)] {
+        for (icon, name, w) in [(Icon::Building, "Building", 150.0), (Icon::Check, "State", 110.0), (Icon::Health, "Condition", 80.0), (Icon::Drop, "Water it stands in, of the most it can", 140.0), (Icon::Beaver, "Beavers", 60.0)] {
             r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| {
                 h.icon(icon, 14.0, MUTED);
             })
@@ -720,7 +728,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
                 })
                 .tip(Tip::name("Condition").with_value(format!("{:.0}%", b.condition * 100.0)));
                 r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| {
-                    x.notches(depth / max, 8, 80.0, 8.0, dcol);
+                    x.ticks(depth / max, 8, 80.0, 8.0, dcol);
                     x.text(format!("{:.2} m", depth), 11.0, dcol);
                 })
                 .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("At most", format!("{:.1} m", max)));

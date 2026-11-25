@@ -1,11 +1,13 @@
-//! The panel a dam opens. Laid out like the canal's (see `works`): header, what it is doing
-//! with the one fix, then Water (a side view: how far the pond is from spilling, how far it
-//! drops below the dam), Work, Build, Gates and Upkeep. Detail lives in tooltips.
+//! The panel a dam opens: the picture is the panel. A side cut through the dam shows the pond,
+//! the mound, how far the pond is from spilling and the drop below, with the dam's state and a
+//! chip for each gate and lock drawn on it. Under it the build buttons (Raise, Widen, Extend,
+//! Gate, Lock), the strip of the gate picked, and the footer (builders, Mend, Face, Pause,
+//! Remove). History is behind the hourglass in the header. Detail lives in tooltips.
 use super::panels::{Ctx, RIGHT_W};
 use super::ui::*;
 use super::words::*;
 use super::works::{self, abs_box, cap, dashes, label_left_of, DEEP, EARTH, SHALLOW, VIEW_W, WOOD};
-use super::{ColonyTab, DamTab, HudAction};
+use super::{DamTab, HudAction, Opening};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use bevy::prelude::*;
@@ -13,7 +15,13 @@ use sim::buildings::{BuildingId, Good};
 use sim::dams::{Dam, Spill};
 use sim::DamGrowth;
 
-const VIEW_H: f32 = 92.0;
+const VIEW_H: f32 = 124.0;
+/// Room over the picture for the state and the chips.
+const HEAD: f32 = 34.0;
+const FLOOR: f32 = 8.0;
+/// Where the mound stands across the picture.
+const MOUND_X: f32 = 118.0;
+const MOUND_W: f32 = 32.0;
 
 /// A small painted view of the dam: deep water behind, a stick wall, the stream below.
 fn portrait(p: &mut Ui, health: f32) {
@@ -28,15 +36,12 @@ fn portrait(p: &mut Ui, health: f32) {
     });
 }
 
-/// What can be done to the dam now, worked out once for the status line and the buttons.
+/// What can be done to the dam now, worked out once for the state and the buttons.
 struct Offers {
     picks: Vec<Cell>,
     raise: Result<f32, String>,
     widen: Result<f32, String>,
     extend: Result<f32, String>,
-    gate: Result<f32, String>,
-    /// The picked cell a lock would go on.
-    lock: Result<Cell, String>,
 }
 
 fn offers(c: &Ctx, id: BuildingId, d: &Dam) -> Offers {
@@ -44,27 +49,15 @@ fn offers(c: &Ctx, id: BuildingId, d: &Dam) -> Offers {
     let picks: Vec<Cell> = c.hud.dam_cells.iter().copied().filter(|p| d.cells.iter().any(|x| x.cell == *p)).collect();
     let cost = |plan: Result<sim::dams::Plan, String>| plan.map(|p| sim::dams::plan_cost(s, d, &p)).map_err(|e| cap(&e));
     let around = d.pond.as_ref().is_some_and(|p| matches!(p.spill, Spill::Around(_)));
-    let gate = match picks.as_slice() {
-        [cell] => sim::dams::plan_gate(s, id, *cell).map_err(|e| cap(&e)),
-        [] => Err("Pick a cell on the dam first".into()),
-        _ => Err("Pick just one cell".into()),
-    };
-    let lock = if !sim::locks::unlocked(s) {
-        Err("Needs a Harbor".into())
-    } else {
-        gate.clone().map(|_| picks[0])
-    };
     Offers {
         raise: cost(sim::dams::plan_raise(s, id, &picks)),
         widen: cost(sim::dams::plan_widen(s, id)),
         extend: if around { cost(sim::dams::plan_extend(s, id)) } else { Err("Water isn't getting round the ends".into()) },
-        gate,
-        lock,
         picks,
     }
 }
 
-/// The button the status line points at.
+/// The button the state points at, marked with the "!".
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fix {
     None,
@@ -72,31 +65,31 @@ enum Fix {
     Raise,
     Widen,
     Extend,
-    Maintain,
+    Upkeep,
 }
 
-/// What the dam as a whole is doing, its colour, why, and the one fix.
-fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (Icon, &'static str, Color, &'static str, Fix) {
+/// What the dam as a whole is doing, in a word, its colour, why, and the one fix.
+fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (&'static str, Color, &'static str, Fix) {
     let (builders, _) = sim::dams::crew(s, id);
     let building = sim::dams::has_work_for(s, id, false);
     if building && builders == 0 {
-        return (Icon::RoleBuilder, "No builders", BAD, "Work is waiting and no builder is on it", Fix::Assign);
+        return ("No builders", WARN, "Work is waiting and no builder is on it", Fix::Assign);
     }
     if building {
-        return (Icon::Hammer, "Building", WARN, "Builders are at work on it", Fix::None);
+        return ("Building", WARN, "Builders are at work on it", Fix::None);
     }
-    let worn = sim::dams::health(s, d) < sim::dams::REPAIR_BELOW && !d.maintain;
+    let worn = sim::dams::health(s, d) < sim::dams::REPAIR_BELOW && !d.upkeep;
     match d.pond.as_ref().map(|p| (p.spill, p.days_to_full)) {
-        None => (Icon::Hourglass, "No pond yet", MUTED, "The finished cells will start holding water", Fix::None),
+        None => ("No pond yet", MUTED, "The finished cells will start holding water", Fix::None),
         Some((Spill::Over(_), _)) => {
             let fix = if o.raise.is_ok() { Fix::Raise } else if o.widen.is_ok() { Fix::Widen } else { Fix::None };
-            (Icon::Crest, "Spilling over", WARN, "Water runs over the top and wears it", fix)
+            ("Spilling", WARN, "Water runs over the top and wears it", fix)
         }
-        Some((Spill::Around(_), _)) => (Icon::Extend, "Water going round", WARN, "Water gets round an end", if o.extend.is_ok() { Fix::Extend } else { Fix::None }),
-        _ if worn => (Icon::Hammer, "Wearing", WARN, "Cells are worn and nobody keeps it up", Fix::Maintain),
-        Some((_, days)) if days > 0.0 => (Icon::Up, "Filling", WATER, "The pond is still rising", Fix::None),
-        Some((Spill::Gate(_), _)) => (Icon::Lock, "Holding", GOOD, "Full, letting water out by its gate", Fix::None),
-        Some(_) => (Icon::Check, "Holding", GOOD, "Full", Fix::None),
+        Some((Spill::Around(_), _)) => ("Going round", WARN, "Water gets round an end", if o.extend.is_ok() { Fix::Extend } else { Fix::None }),
+        _ if worn => ("Wearing", WARN, "Cells are worn and nobody keeps it up", Fix::Upkeep),
+        Some((_, days)) if days > 0.0 => ("Filling", WATER, "The pond is still rising", Fix::None),
+        Some((Spill::Gate(_), _)) => ("Holding", GOOD, "Full, letting water out by its gate", Fix::None),
+        Some(_) => ("Holding", GOOD, "Full", Fix::None),
     }
 }
 
@@ -119,108 +112,158 @@ fn condition_tip(s: &sim::SimState, d: &Dam, health: f32) -> Tip {
     tip.line("Rows", format!("{}", d.rows)).line("Height limit", format!("{} m", num(d.cap())))
 }
 
-/// The pond from the side: water behind the dam, the dam, the water below; how much more the
-/// pond can rise before it spills, and how far it stands above the water below.
-fn water(c: &Ctx, u: &mut Ui, d: &Dam) {
+/// What the side cut goes through.
+enum Through {
+    /// A cell a gate or lock is being placed on: whether it fits there.
+    Placing(Result<(), String>),
+    /// The gate picked.
+    Gate(sim::gates::Gate),
+    /// The lowest finished cell of the crest: where the dam would spill first.
+    Lowest,
+}
+
+/// The cell the side cut is drawn through: the one being placed on, else the gate picked, else
+/// the lowest finished cell of the crest.
+fn through(c: &Ctx, id: BuildingId, d: &Dam) -> Option<(Cell, Through)> {
     let s = c.s;
-    u.section("Water", |_| {});
-    let Some(p) = d.pond.as_ref() else {
-        u.icon(Icon::Hourglass, 15.0, MUTED).tip(Tip::name("No pond yet").line("The finished cells will start holding water", ""));
-        return;
-    };
-    let level = p.level;
-    let room = sim::dams::freeboard(s, d);
-    let fall = sim::dams::drop(s, d);
-    let crest = room.map_or(level, |r| level + r.max(0.0));
-    let below = fall.map(|f| level - f);
-    let low = p.bottom.min(below.unwrap_or(p.bottom)) - 0.1;
-    let high = crest.max(level);
-    const HEAD: f32 = 22.0;
-    const FLOOR: f32 = 8.0;
-    let px = (VIEW_H - HEAD - FLOOR) / (high - low).max(0.3);
-    let y = |v: f32| HEAD + (high - v) * px;
-    let ground = y(low);
-    let spilling = room.is_some_and(|r| r <= 0.02);
-    let depth = level - p.bottom;
-    let mut pond_tip = Tip::name("Pond").line("Depth", format!("{} m", num(depth))).line("Full at", format!("{} m", num(p.full_level - p.bottom))).line("Area", format!("{} cells", p.area));
-    if p.days_to_full > 0.0 {
-        pond_tip = pond_tip.line("Full in", days(p.days_to_full));
+    let on_line = |cell: Cell| d.line().any(|x| x.cell == cell);
+    if let (Some((dam, o)), Some(cell)) = (c.hud.opening, c.works_cell) {
+        if dam == id && on_line(cell) {
+            return Some((cell, Through::Placing(works::opening_fits(s, id, cell, o))));
+        }
     }
+    if let Some((_, cell)) = c.hud.gate_sel.filter(|g| g.0 == id) {
+        if let Some(g) = d.gates.iter().find(|g| g.cell == cell) {
+            return Some((cell, Through::Gate(*g)));
+        }
+    }
+    let top = |cell: Cell| s.height.get(cell.0, cell.1).copied().unwrap_or(0.0) + sim::dams::built(s, cell);
+    let lowest = d.line().filter(|x| !sim::dams::is_gate(d, x.cell) && sim::dams::built(s, x.cell) > 0.0).min_by(|a, b| top(a.cell).total_cmp(&top(b.cell))).map(|x| x.cell);
+    let cell = lowest.or_else(|| d.line().nth(d.line().count() / 2).map(|x| x.cell))?;
+    Some((cell, Through::Lowest))
+}
+
+/// The side cut: water behind the dam, the dam at one of its cells, the water below; how much
+/// more the pond can rise there before it spills, and how far it stands above the water below.
+/// The state is written over it, and a chip for each gate and lock.
+fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &str), picks: usize) {
+    let s = c.s;
+    let Some((cell, what)) = through(c, id, d) else { return };
+    let ground = s.height.get(cell.0, cell.1).copied().unwrap_or(0.0);
+    let gate = match &what {
+        Through::Gate(g) if g.built => Some(*g),
+        _ => None,
+    };
+    // A built gate's cell stands at its sill; the mound either side stands at the gate's top.
+    let crest = gate.map_or(ground + sim::dams::built(s, cell), |g| g.top);
+    let pond = d.pond.as_ref();
+    let level = pond.map(|p| p.level);
+    let fall = sim::dams::drop(s, d);
+    let below = match (level, fall) {
+        (Some(l), Some(f)) => Some(l - f),
+        _ => None,
+    };
+    let bottom = pond.map_or(ground, |p| p.bottom);
+    let low = bottom.min(below.unwrap_or(bottom)).min(ground) - 0.1;
+    let high = crest.max(level.unwrap_or(crest)).max(low + 0.3);
+    let px = (VIEW_H - HEAD - FLOOR) / (high - low);
+    let y = |v: f32| HEAD + (high - v) * px;
+    let earth = y(low);
+    let pond_tip = pond.map(|p| {
+        let mut t = Tip::name(sim::names::pond_name(s, id).unwrap_or("Pond")).line("Depth", format!("{} m", num(p.level - p.bottom))).line("Full at", format!("{} m", num(p.full_level - p.bottom))).line("Area", format!("{} cells", p.area));
+        if p.days_to_full > 0.0 {
+            t = t.line("Full in", days(p.days_to_full));
+        }
+        let out = match p.spill {
+            Spill::Over(_) => "over the top",
+            Spill::Around(_) => "round an end",
+            Spill::Gate(_) => "by its gate",
+            Spill::None => "seeping",
+        };
+        t.line("Water in", format!("{}/d", num(p.inflow))).line("Water out", format!("{}/d {out}", num(p.outflow)))
+    });
     u.node(Node { width: Val::Px(VIEW_W), height: Val::Px(VIEW_H), overflow: Overflow::clip(), border_radius: BorderRadius::all(Val::Px(5.0)), ..default() }, |v| {
-        v.add(VNode::new(abs_box(0.0, ground, VIEW_W, VIEW_H - ground))).bg(EARTH);
-        v.add(VNode::new(abs_box(0.0, y(level), 118.0, ground - y(level)))).bg(DEEP).tip(pond_tip);
+        v.add(VNode::new(abs_box(0.0, earth, VIEW_W, VIEW_H - earth))).bg(EARTH);
+        if let (Some(l), Some(tip)) = (level, pond_tip) {
+            v.add(VNode::new(abs_box(0.0, y(l), MOUND_X, earth - y(l)))).bg(DEEP).tip(tip);
+        }
         if let Some(b) = below {
-            v.add(VNode::new(abs_box(150.0, y(b), VIEW_W - 150.0, ground - y(b)))).bg(SHALLOW.with_alpha(0.8));
+            v.add(VNode::new(abs_box(MOUND_X + MOUND_W, y(b), VIEW_W - MOUND_X - MOUND_W, earth - y(b)))).bg(SHALLOW.with_alpha(0.8));
         }
-        let wall = v.add(VNode::new(Node { border_radius: BorderRadius::top(Val::Px(4.0)), ..abs_box(118.0, y(crest), 32.0, ground - y(crest)) }));
-        wall.bg = MUD;
+        let worn = sim::dams::built(s, cell) > 0.0 && sim::dams::integrity(s, cell) < sim::dams::REPAIR_BELOW;
+        if crest > ground + 0.01 {
+            let wall = v.add(VNode::new(Node { border_radius: BorderRadius::top(Val::Px(4.0)), ..abs_box(MOUND_X, y(crest), MOUND_W, earth - y(crest)) }));
+            wall.bg = if worn { BAD.with_alpha(0.7) } else { MUD };
+        }
+        // A gate: the gap down to its sill, its board, and the water going through.
+        if let Some(g) = gate {
+            let sill = g.sill();
+            v.add(VNode::new(abs_box(MOUND_X + 8.0, y(crest), MOUND_W - 16.0, y(sill) - y(crest)))).bg(FAINT);
+            v.add(VNode::new(abs_box(MOUND_X + 6.0, y(sill) - 2.0, MOUND_W - 12.0, 3.0))).bg(WOOD);
+            if level.is_some_and(|l| l > sill + 0.02) {
+                v.add(VNode::new(abs_box(MOUND_X + MOUND_W - 8.0, y(sill) - 1.0, 4.0, below.map_or(earth, y) - y(sill) + 1.0))).bg(WATER.with_alpha(0.8));
+            }
+        }
+        // Placing: the gate it would be, outlined; or why it can't go here.
+        if let Through::Placing(fit) = &what {
+            let col = if fit.is_ok() { SELECT } else { BAD };
+            let outline = v.add(VNode::new(Node { border: UiRect::all(Val::Px(1.5)), ..abs_box(MOUND_X + 6.0, y(crest), MOUND_W - 12.0, earth - y(crest)) }));
+            outline.border = Some(BorderColor::all(col));
+            if let Err(why) = fit {
+                v.node(abs_box(6.0, earth - 18.0, MOUND_X + 60.0, 16.0), |l| {
+                    l.bold(why.clone(), 12.0, BAD);
+                });
+            }
+        }
+        let spilling = level.is_some_and(|l| gate.is_none() && crest - l <= 0.02);
         if spilling {
-            v.add(VNode::new(abs_box(116.0, y(crest) - 3.0, 36.0, 3.0))).bg(WATER);
-            v.add(VNode::new(abs_box(150.0, y(crest) - 1.0, 4.0, below.map_or(ground, y) - y(crest) + 1.0))).bg(WATER.with_alpha(0.8));
+            v.add(VNode::new(abs_box(MOUND_X - 2.0, y(crest) - 3.0, MOUND_W + 4.0, 3.0))).bg(WATER);
+            v.add(VNode::new(abs_box(MOUND_X + MOUND_W, y(crest) - 1.0, 4.0, below.map_or(earth, y) - y(crest) + 1.0))).bg(WATER.with_alpha(0.8));
         }
-        if depth > 0.3 && ground - y(level) > 20.0 {
-            v.node(abs_box(6.0, ground - 18.0, 100.0, 16.0), |l| {
-                l.bold(format!("{} m deep", num(depth)), 12.0, INK);
-            });
-        }
-        if let Some(r) = room {
-            let tip = Tip::name("Room to rise").line("Before water runs over the lowest part of the top", "");
-            if spilling {
-                label_left_of(v, 112.0, (y(crest) - 18.0).max(2.0), "0 m to spill".into(), WARN, tip);
-            } else {
-                v.add(VNode::new(abs_box(110.0, y(crest), 1.5, y(level) - y(crest)))).bg(INK);
-                v.add(VNode::new(abs_box(106.0, y(crest), 9.0, 1.5))).bg(INK);
-                label_left_of(v, 104.0, (y(crest) - 18.0).max(2.0), format!("{:.1} m to spill", r), INK, tip);
+        if let Some(l) = level {
+            let top_y = (y(crest).min(y(l)) - 18.0).max(HEAD - 2.0);
+            match gate {
+                Some(g) => {
+                    let over = l - g.sill();
+                    let (text, tip) = if over > 0.0 { (format!("{:.1} m over sill", over), Tip::name("Over the sill").line("Water goes through", "")) } else { ("Below sill".to_string(), Tip::name("Below the sill").line("Nothing goes through", "")) };
+                    label_left_of(v, MOUND_X - 6.0, top_y, text, INK, tip);
+                }
+                None if spilling => label_left_of(v, MOUND_X - 6.0, top_y, "0 m to spill".into(), WARN, Tip::name("Spilling").line("Water runs over the top here", "")),
+                None => {
+                    v.add(VNode::new(abs_box(MOUND_X - 8.0, y(crest), 1.5, y(l) - y(crest)))).bg(INK);
+                    v.add(VNode::new(abs_box(MOUND_X - 12.0, y(crest), 9.0, 1.5))).bg(INK);
+                    let tip = Tip::name("Room to rise").line(if matches!(what, Through::Lowest) { "At the lowest part of the top" } else { "At this cell" }, "");
+                    label_left_of(v, MOUND_X - 14.0, top_y, format!("{:.1} m to spill", crest - l), INK, tip);
+                }
+            }
+            if let (Some(f), Some(b)) = (fall, below) {
+                dashes(v, MOUND_X + MOUND_W + 2.0, VIEW_W - 30.0, y(l), WATER.with_alpha(0.7));
+                if f > 0.02 {
+                    let x = VIEW_W - 26.0;
+                    v.add(VNode::new(abs_box(x, y(l), 1.5, y(b) - y(l)))).bg(INK);
+                    v.add(VNode::new(abs_box(x - 4.0, y(l), 9.0, 1.5))).bg(INK);
+                    v.add(VNode::new(abs_box(x - 4.0, y(b) - 1.5, 9.0, 1.5))).bg(INK);
+                    label_left_of(v, x - 6.0, ((y(l) + y(b)) / 2.0 - 8.0).max(HEAD), format!("{:.1} m drop", f), INK, Tip::name("Drop").line("From the pond down to the water below", ""));
+                }
             }
         }
-        if let (Some(f), Some(b)) = (fall, below) {
-            dashes(v, 152.0, 262.0, y(level), WATER.with_alpha(0.7));
-            if f > 0.02 {
-                v.add(VNode::new(abs_box(266.0, y(level), 1.5, y(b) - y(level)))).bg(INK);
-                v.add(VNode::new(abs_box(262.0, y(level), 9.0, 1.5))).bg(INK);
-                v.add(VNode::new(abs_box(262.0, y(b) - 1.5, 9.0, 1.5))).bg(INK);
-                label_left_of(v, 260.0, ((y(level) + y(b)) / 2.0 - 8.0).max(2.0), format!("{:.1} m drop", f), INK, Tip::name("Drop").line("From the pond down to the water below the dam", ""));
+        // The state, and the picked cells if any.
+        v.node(Node { position_type: PositionType::Absolute, left: Val::Px(8.0), top: Val::Px(6.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), align_items: AlignItems::Center, ..default() }, |r| {
+            r.bold(state.0, 13.0, state.1).tip(Tip::name(state.0).line(state.2, ""));
+            if picks > 0 {
+                let word = format!("{picks} picked");
+                r.small_button(Some(Icon::Focus), Some(&word), Some(HudAction::ClearPicks), Tip::name("Unpick all"), Small::On).style(|n| n.height = Val::Px(22.0));
             }
+        });
+        if !d.gates.is_empty() {
+            let room = VIEW_W - if picks > 0 { 200.0 } else { 110.0 };
+            v.node(Node { position_type: PositionType::Absolute, right: Val::Px(6.0), top: Val::Px(5.0), ..default() }, |r| works::chips(c, r, id, &d.gates, room));
         }
     })
     .bg(FAINT);
-    let (out_word, out_col) = match p.spill {
-        Spill::Over(_) => ("over the top", WARN),
-        Spill::Around(_) => ("round an end", WARN),
-        Spill::Gate(_) => ("by its gate", INK),
-        Spill::None => ("seeping", INK),
-    };
-    u.row(14.0, |r| {
-        r.stat(Icon::Upstream, WATER, format!("{}/d", num(p.inflow)), None, INK, Tip::name("Water in").line("Per day", ""));
-        r.stat(Icon::Push, WATER, format!("{}/d", num(p.outflow)), Some(out_word), out_col, Tip::name("Water out").line(cap(out_word), "").line("Spill, seepage and evaporation", "per day"));
-        r.spacer();
-        if p.days_to_full > 0.0 {
-            r.stat(Icon::Up, WATER, days(p.days_to_full), Some("to full"), INK, Tip::name("Still rising").line("Full in", days(p.days_to_full)));
-        } else {
-            r.stat(Icon::Check, GOOD, "Full", None, GOOD, Tip::name("As high as it will get"));
-        }
-    });
 }
 
-/// Builders here, loads coming, loads left; and the way to the jobs.
-fn work(c: &Ctx, u: &mut Ui, id: BuildingId, fix: Fix) {
-    let s = c.s;
-    let (builders, loads) = sim::dams::crew(s, id);
-    let left = sim::dams::loads_left(s, id);
-    let waiting = sim::dams::has_work_for(s, id, false);
-    u.section("Work", |r| {
-        r.small_button(Some(Icon::Jobs), Some("Assign"), Some(HudAction::Colony(Some(ColonyTab::Jobs))), Tip::name("Builders").line("Open the jobs", ""), if fix == Fix::Assign { Small::Hint } else { Small::Idle });
-    });
-    let short = builders == 0 && waiting;
-    u.row(14.0, |r| {
-        r.stat(Icon::RoleBuilder, if short { BAD } else { INK }, format!("{builders}"), None, if short { BAD } else { INK }, Tip::name("Builders here"));
-        r.stat(good_icon(Good::Sticks), WOOD, format!("{loads}"), Some("coming"), INK, Tip::name("Loads on the way"));
-        r.stat(Icon::Site, MUTED, format!("{left}"), Some("to carry"), INK, Tip::name("Loads still to carry").line("Sticks", num(left as f32 * sim::dams::sticks_per_step())));
-    });
-}
-
-fn build(u: &mut Ui, id: BuildingId, o: &Offers, fix: Fix) {
-    u.section("Build", |_| {});
+fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
     let picked = !o.picks.is_empty();
     u.row(6.0, |r| {
         let rows: [(Icon, &str, DamGrowth, &Result<f32, String>, &str, Fix); 3] = [
@@ -235,30 +278,9 @@ fn build(u: &mut Ui, id: BuildingId, o: &Offers, fix: Fix) {
             };
             r.big_button(BigButton { icon, word, cost, action, tip, hint: fix == f, on: false });
         }
+        works::opening_button(c, r, id, d, Opening::Gate);
+        works::opening_button(c, r, id, d, Opening::Lock);
     });
-}
-
-fn gates(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers) {
-    let s = c.s;
-    u.section("Gates", |r| works::picks(r, o.picks.len(), "dam"));
-    u.row(6.0, |r| {
-        let (cost, action, tip) = match &o.gate {
-            Ok(c) => (sticks(*c), Some(HudAction::AddDamGate(id)), Tip::name("Gate").line("Let water through here", "").line("Sticks", num(*c))),
-            Err(e) => (sticks(sim::canals::GATE_STICKS), None, Tip::name("Gate").line("Let water through here", "").line(e.clone(), "")),
-        };
-        r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost, action, tip, hint: false, on: false });
-        let lock_sticks = sim::canals::GATE_STICKS + sim::locks::LOCK_STICKS;
-        let what = Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(lock_sticks)).line("Clay", num(sim::locks::LOCK_CLAY));
-        let (action, tip) = match &o.lock {
-            Ok(cell) => (Some(HudAction::UpgradeLock(id, *cell)), what),
-            Err(e) => (None, what.line(e.clone(), "")),
-        };
-        r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: sticks(lock_sticks), action, tip, hint: false, on: false });
-    });
-    let pond = d.pond.as_ref().map(|p| p.level);
-    for g in &d.gates {
-        works::gate_row(u, s, id, g, pond, true, Ok(()));
-    }
 }
 
 /// Face it with pebbles: then it wears more slowly.
@@ -282,10 +304,11 @@ fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     }
 }
 
-fn upkeep(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
-    u.section("Upkeep", |_| {});
+fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
+    let (builders, _) = sim::dams::crew(c.s, id);
     u.row(6.0, |r| {
-        works::maintain_button(r, d.maintain, HudAction::DamMaintain(id, !d.maintain), "Maintainers repair worn cells", fix == Fix::Maintain);
+        works::crew_button(r, builders, Icon::RoleBuilder, "Builders here", fix == Fix::Assign);
+        works::upkeep_button(r, d.upkeep, HudAction::DamUpkeep(id, !d.upkeep), "Menders repair worn cells", fix == Fix::Upkeep);
         face_button(c.s, r, id);
         works::pause_button(r, c.s, id);
         r.spacer();
@@ -323,32 +346,21 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
     let s = c.s;
     let health = sim::dams::health(s, d);
     let o = offers(c, id, d);
-    let (icon, text, col, why, fix) = status(s, id, d, &o);
+    let (word, col, why, fix) = status(s, id, d, &o);
     let selected_here = c.sel == Selection::Site(id) || matches!(c.sel, Selection::Cell(cell) if d.cells.iter().any(|x| x.cell == cell));
-    let fix_button = match fix {
-        Fix::None => None,
-        Fix::Assign => Some(("Assign", HudAction::Colony(Some(ColonyTab::Jobs)), Tip::name("Builders").line("Open the jobs", ""))),
-        Fix::Raise => Some(("Raise", HudAction::GrowDam(id, DamGrowth::Raise), Tip::name("Raise").line("Sticks", o.raise.as_ref().map(|c| num(*c)).unwrap_or_default()))),
-        Fix::Widen => Some(("Widen", HudAction::GrowDam(id, DamGrowth::Widen), Tip::name("Widen").line("Sticks", o.widen.as_ref().map(|c| num(*c)).unwrap_or_default()))),
-        Fix::Extend => Some(("Extend", HudAction::GrowDam(id, DamGrowth::Extend), Tip::name("Extend").line("Sticks", o.extend.as_ref().map(|c| num(*c)).unwrap_or_default()))),
-        Fix::Maintain => Some(("Maintain", HudAction::DamMaintain(id, true), Tip::name("Maintain").line("Maintainers repair worn cells", ""))),
-    };
-    let tab = c.hud.dam_tab;
     let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), ..default() }, |u| {
-        works::header(c, u, id, "Dam", selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
-        u.status_line(icon, text, col, Tip::name(text).line(why, ""), fix_button);
-        u.tabs(&[(Icon::Drop, "Now", HudAction::DamTab(DamTab::Status), tab == DamTab::Status), (Icon::Hourglass, "History", HudAction::DamTab(DamTab::History), tab == DamTab::History)]);
-        match tab {
-            DamTab::Status => {
-                water(c, u, d);
-                work(c, u, id, fix);
-                build(u, id, &o, fix);
-                gates(c, u, id, d, &o);
-                upkeep(c, u, id, d, fix);
-            }
-            DamTab::History => history(u, d),
+    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
+        works::header(c, u, id, sim::names::pond_name(s, id).unwrap_or("Dam"), selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
+        if c.hud.dam_tab == DamTab::History {
+            history(u, d);
+            return;
         }
+        side_cut(c, u, id, d, (word, col, why), o.picks.len());
+        build(c, u, id, d, &o, fix);
+        if let Some(g) = c.hud.gate_sel.filter(|g| g.0 == id).and_then(|(_, cell)| d.gates.iter().find(|g| g.cell == cell)) {
+            works::gate_row(u, s, id, g, d.pond.as_ref().map(|p| p.level), true, Ok(()));
+        }
+        footer(c, u, id, d, fix);
     });
     let mut v = ui.nodes.pop().expect("panel node");
     panel(&mut v);

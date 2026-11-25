@@ -12,7 +12,7 @@
 //! Each step pushes the source discharge down the drainage graph in topological order.
 //! A reach cell holds the channel storage of Manning normal flow for its discharge, so a
 //! rising flow fills the channel first and its front moves at the water speed. Water that
-//! reaches a depression fills it; a full depression passes its excess to its sibling or,
+//! reaches a depression fills it; a full depression sends its excess to its sibling or,
 //! when both are full, to the merged parent. Roots spill over their crest by the weir law.
 use super::{Water, edge_bed, neighbours8};
 use std::collections::BinaryHeap;
@@ -37,7 +37,7 @@ const SLOPE_CELLS: usize = 6;
 const ROUGHNESS: f64 = 1.75;
 /// Rim cells within this of the spill level form the weir crest (m).
 const RIM_TOL: f32 = 0.02;
-/// Widest weir a spill concentrates into (m); overflow finds the low notch.
+/// Widest weir a spill concentrates into (m); overflow finds the low gap.
 pub(crate) const WEIR_MAX_M: usize = 2;
 /// Depth above which stranded water is held as a draining pool after a rebuild (m).
 const POOL_MIN: f32 = 0.08;
@@ -48,7 +48,7 @@ const POOL_END: f64 = 0.01;
 /// Reach storage below this is dry (m³).
 const DRY_M3: f64 = 1.0e-7;
 
-/// Overflows one depression may pass on in a step before it holds the rest (cycle guard).
+/// Overflows one depression may send on in a step before it holds the rest (cycle sentry).
 const LOOP_LIMIT: u32 = 16;
 
 const NONE: u32 = u32::MAX;
@@ -451,7 +451,7 @@ impl Equilibrium {
     }
 
     /// The list of top lake `t`'s cells in map order, good for level `l`: its own cells up to
-    /// a little above the level, and everything in the depressions merged under it. Passes
+    /// a little above the level, and everything in the depressions merged under it. Sends
     /// over a whole lake run along the map's rows this way, instead of jumping from cell to
     /// cell in order of bed height. Made again when the lake outgrows it or falls well below.
     fn lake_order(&mut self, t: usize, l: f64) -> usize {
@@ -885,10 +885,10 @@ impl Equilibrium {
                 continue;
             }
             let mut t = deps[d].target as usize;
-            let mut guard = 0;
-            while own_of[t] == NONE && d8[t] != NONE && guard < nn {
+            let mut sentry = 0;
+            while own_of[t] == NONE && d8[t] != NONE && sentry < nn {
                 t = d8[t] as usize;
-                guard += 1;
+                sentry += 1;
             }
             deps[d].target = t as u32;
         }
@@ -1374,7 +1374,7 @@ impl Equilibrium {
             }
             return;
         }
-        // A reach: hold the channel storage of normal flow, pass on the rest.
+        // A reach: hold the channel storage of normal flow, send on the rest.
         let i_rate = self.iacc[c];
         let wd = Self::width(i_rate);
         let hn = Self::normal_depth(i_rate, wd, self.slope[c] as f64, manning);
@@ -1470,7 +1470,7 @@ impl Equilibrium {
         }
         let pool = &self.pools[p];
         let total = pool.vol + pool.fwd;
-        // What the outlet weir passes in this step with `v` left in the pool.
+        // What the outlet weir lets out in this step with `v` left in the pool.
         let k = super::WEIR as f64 * POOL_WEIR_M * dt;
         let spill = |v: f64| {
             let head = (Self::pool_level(pool, v) - pool.crest).max(0.0);

@@ -1,6 +1,6 @@
 //! A model gallery for iterating on beavers and buildings: `BC_GALLERY=dist,yaw,pitch[,dz,dx]`
 //! lines up every building stage and every beaver pose on the flattest dry ground of the map
-//! and aims the camera there. `BC_SELECT_HOME=1` opens the first family's inspector. `BC_GALLERY_WHAT=build|beaver|wolf|wild|life|harbor|all` picks the rows and
+//! and aims the camera there. `BC_SELECT_HOME=1` opens the first family's inspector. `BC_GALLERY_WHAT=build|beaver|wolf|wild|life|raft landing|all` picks the rows and
 //! `BC_GALLERY_POSE=n` shows a single pose (`BC_GALLERY_LOAD=n` gives every pose that load).
 //! `BC_GALLERY_WHAT=life` lines up the life poses (running, handling, mending, watch, courting,
 //! grooming, caught, dead) and, behind, every look (hungry, cold, hurt, worn out, old, unhappy,
@@ -29,7 +29,7 @@ pub(super) fn spawn_gallery(
     models: Option<Res<super::Models>>,
     wolf_meshes: Option<Res<super::wolf::WolfMeshes>>,
     wild_meshes: Option<Res<super::wildlife::WildMeshes>>,
-    harbor_meshes: Option<Res<super::harbor::HarborMeshes>>,
+    raft_landing_meshes: Option<Res<super::raft_landing::RaftLandingMeshes>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut orbit: ResMut<crate::camera::OrbitCamera>,
     mut done: Local<bool>,
@@ -70,7 +70,7 @@ pub(super) fn spawn_gallery(
     let white = m.white.clone();
     if what == "all" || what == "build" {
         let stages: Vec<u8> = (0..=models::STAGES).chain([models::DRY_STAGE]).collect();
-        for (row, kind) in [StructKind::Lodge, StructKind::Warehouse, StructKind::Larder, StructKind::Toolshed, StructKind::Forester, StructKind::Logistics, StructKind::Lookout, StructKind::Harbor].into_iter().enumerate() {
+        for (row, kind) in [StructKind::Lodge, StructKind::StickPile, StructKind::FoodCache, StructKind::PebbleHeap, StructKind::Forester, StructKind::HaulMound, StructKind::Lookout, StructKind::RaftLanding].into_iter().enumerate() {
             for (i, &stage) in stages.iter().enumerate() {
                 let (x, z) = (cx + (i as f32 - stages.len() as f32 / 2.0) * 4.0, cz - 3.0 - row as f32 * 4.5);
                 let base = (0..9).map(|k| ground(x + (k % 3) as f32 - 1.0, z + (k / 3) as f32 - 1.0)).fold(f32::MIN, f32::max);
@@ -99,7 +99,7 @@ pub(super) fn spawn_gallery(
         }
     }
     // Food plants (across) in spring, summer, autumn and winter (rows, nearest first); behind
-    // them the boulders, pebble heaps and gravel bars by quarters left, and the two clays.
+    // them the boulders, pebble heaps and gravel bars by quarters left, and the two muds.
     if what == "res" {
         let place = |commands: &mut Commands, mesh: Handle<Mesh>, mat: &Handle<StandardMaterial>, x: f32, z: f32, s: f32| {
             commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::from_xyz(x, ground(x, z), z).with_scale(Vec3::splat(s))));
@@ -117,11 +117,11 @@ pub(super) fn spawn_gallery(
             place(&mut commands, m.pebble_heaps[q].clone(), &white, cx - 6.0 + q as f32 * 1.4, cz - 11.0, 1.0);
             place(&mut commands, m.gravel_bars[q].clone(), &white, cx + 1.0 + q as f32 * 1.4, cz - 11.0, 1.0);
         }
-        place(&mut commands, m.clay_heap.clone(), &m.wet, cx - 2.0, cz - 13.0, 1.0);
-        place(&mut commands, m.river_clay.clone(), &m.wet, cx + 1.0, cz - 13.0, 1.0);
+        place(&mut commands, m.mud_heap.clone(), &m.wet, cx - 2.0, cz - 13.0, 1.0);
+        place(&mut commands, m.river_mud.clone(), &m.wet, cx + 1.0, cz - 13.0, 1.0);
     }
-    if let (true, Some(hm)) = (what == "harbor", harbor_meshes.as_deref()) {
-        super::harbor::spawn_gallery(&mut commands, hm, &m, &mut meshes, Vec3::new(cx, 0.0, cz), ground);
+    if let (true, Some(hm)) = (what == "raft_landing", raft_landing_meshes.as_deref()) {
+        super::raft_landing::spawn_gallery(&mut commands, hm, &m, &mut meshes, Vec3::new(cx, 0.0, cz), ground);
     }
     if let (true, Some(wm)) = (what == "wild", wild_meshes.as_deref()) {
         super::wildlife::spawn_gallery(&mut commands, wm, &m, Vec3::new(cx, 0.0, cz), ground);
@@ -248,6 +248,17 @@ pub(super) fn shuffle_gallery(time: Res<Time>, clock: Res<super::RenderClock>, m
     }
 }
 
+/// `BC_WELCOME=1`: show the guidance card a newly settled colony gets, for screenshots.
+pub(super) fn show_welcome(hud: Option<ResMut<crate::hud::HudState>>, mut done: Local<bool>) {
+    if *done || std::env::var_os("BC_WELCOME").is_none() {
+        return;
+    }
+    if let Some(mut hud) = hud {
+        hud.welcome = true;
+        *done = true;
+    }
+}
+
 /// `BC_SELECT_HOME=1`: keep the first family's home selected, for screenshots of its inspector;
 /// with `BC_DETAILS=1` too, its family page is opened (`BC_SELECT_HOME=2` for the second lodge...).
 pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
@@ -275,12 +286,21 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
 /// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
 /// `BC_LEDGER=page` keeps that page of the colony ledger open.
 pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, mut hud: Option<ResMut<crate::hud::HudState>>) {
-    // `BC_LEDGER=charts|beavers|dams|buildings|run`: that page of the ledger stays open.
+    // `BC_LEDGER=charts|dams|buildings|stores`: that page of the territory stays open;
+    // `=beavers|run`: that page of the colony.
     if let (Some(page), Some(h)) = (std::env::var("BC_LEDGER").ok(), hud.as_mut()) {
-        use crate::hud::LedgerTab::*;
-        let want = match page.as_str() { "beavers" => Beavers, "dams" => Dams, "buildings" => Buildings, "run" => Run, _ => Charts };
-        if h.ledger != Some(want) {
-            h.ledger = Some(want);
+        use crate::hud::{ColonyTab, LedgerTab};
+        let (colony, ledger) = match page.as_str() {
+            "beavers" => (Some(ColonyTab::Beavers), None),
+            "run" => (Some(ColonyTab::Run), None),
+            "dams" => (None, Some(LedgerTab::Dams)),
+            "buildings" => (None, Some(LedgerTab::Buildings)),
+            "stores" => (None, Some(LedgerTab::Stores)),
+            _ => (None, Some(LedgerTab::Charts)),
+        };
+        if h.ledger != ledger || h.colony != colony {
+            h.ledger = ledger;
+            h.colony = colony;
         }
     }
     let Some(mut sel) = sel else { return };

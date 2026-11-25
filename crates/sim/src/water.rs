@@ -120,7 +120,7 @@ const FACE_DRY: f32 = 1.0e-4;
 /// Depth above which a cell's bed turns to bare sediment (m).
 const RIVERBED_WET: f32 = 0.005;
 /// Water deeper than this before and after a step has crossed none of the depths anything
-/// waits on (wading, the riverbed, the shore), and `publish` passes it by.
+/// waits on (wading, the riverbed, the shore), and `publish` skips it.
 const SHALLOW: f32 = if crate::buildings::WET_DEPTH > 0.03 { crate::buildings::WET_DEPTH } else { 0.03 };
 const _: () = assert!(RIVERBED_WET <= SHALLOW);
 
@@ -381,7 +381,7 @@ pub struct Water {
     dam_cells: Vec<u32>,
     ice_any: bool,
     since_environment: f64,
-    /// Cells whose riverbed is still turning to silt or back to turf; `None` until a full pass
+    /// Cells whose riverbed is still turning to silt or back to turf; `None` until a full sweep
     /// lists them. Every other cell is at rest: bare under water or in a canal, turf when dry.
     #[serde(skip)]
     bed_live: Option<Vec<u32>>,
@@ -811,6 +811,22 @@ impl Water {
         Ok(())
     }
 
+    /// A gate taken off a dam: the cell keeps its height as an ordinary dam cell, which
+    /// overtopping wears and builders raise back to the dam's height.
+    pub fn unset_gate(&mut self, cell: Cell) -> Result<(), WaterError> {
+        let i = self.check(cell.0, cell.1)?;
+        if !self.gate.as_slice()[i] {
+            return Ok(());
+        }
+        self.gate[i] = false;
+        self.ground_now = true;
+        self.revision = self.revision.wrapping_add(1);
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
+        self.topology_dirty = true;
+        Ok(())
+    }
+
     /// Silt settles back into a dug canal cell; it stops being a canal once filled to `ground`.
     pub fn silt_canal(&mut self, height: &mut HeightGrid, cell: Cell, amount: f32, ground: f32) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
@@ -1022,7 +1038,7 @@ impl Water {
         };
         let resting = |bed: f32, canal: bool, h: f32| bed == if canal || h > RIVERBED_WET { 1.0 } else { 0.0 };
         if !self.h_published {
-            // Depths moved without passing through `publish`: nothing was woken.
+            // Depths moved without going through `publish`: nothing was woken.
             self.bed_live = None;
         }
         let canal = self.canal.as_slice();
@@ -1394,7 +1410,7 @@ impl StillPond {
         }
         let crest = idx.iter().map(|&i| bed[i]).fold(f32::INFINITY, f32::min);
         let dams = water.dam_height.as_slice();
-        let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
+        let sill = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
         let drains_to = |i: usize| neighbours8(n, i).filter(|&j| terrain[j] < terrain[i]).min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]).then(a.cmp(&b)));
         // Which side of the line is downstream, from the water it crosses: where its current
         // runs, else the side its water stands lower. The ground's slope alone can't say: on
@@ -1451,7 +1467,7 @@ impl StillPond {
                     break;
                 }
                 for m in neighbours8(n, i).filter(|&m| !is_new[m]) {
-                    let nl = l.max(pass(i, m));
+                    let nl = l.max(sill(i, m));
                     if nl < best[m] {
                         best[m] = nl;
                         saddle[m] = if nl > l { m } else { saddle[i] };
@@ -1471,7 +1487,7 @@ impl StillPond {
         while let Some(i) = stack.pop() {
             flooded.push(i);
             for m in neighbours8(n, i) {
-                if !seen[m] && !is_new[m] && pass(i, m) < level {
+                if !seen[m] && !is_new[m] && sill(i, m) < level {
                     seen[m] = true;
                     stack.push(m);
                 }
@@ -1488,7 +1504,7 @@ impl StillPond {
         let water = &state.water;
         let (n, bed, is_new, level) = (self.n, &self.bed, &self.is_new, self.level);
         let dams = water.dam_height.as_slice();
-        let pass = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
+        let sill = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
         let flow_level = level + head.max(0.0);
         let flooded = &self.flooded;
         let mut flow = flooded.clone();
@@ -1507,7 +1523,7 @@ impl StillPond {
             let mut stack = flow.clone();
             while let Some(i) = stack.pop() {
                 for m in neighbours8(n, i) {
-                    if !seen[m] && !is_new[m] && bed[m] >= level && pass(i, m) < flow_level {
+                    if !seen[m] && !is_new[m] && bed[m] >= level && sill(i, m) < flow_level {
                         seen[m] = true;
                         flow.push(m);
                         stack.push(m);

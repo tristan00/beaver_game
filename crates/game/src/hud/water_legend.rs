@@ -36,7 +36,7 @@ pub fn legend(node: Node) -> Option<VNode> {
         let n = tr::DEPTH_BANDS.len() as u8;
         for band in 0..=n + 2 {
             let edge = match band {
-                0 => Some(sim::harbor::RAFT_DEPTH),
+                0 => Some(sim::raft_landing::RAFT_DEPTH),
                 b if b <= n => Some(tr::DEPTH_BANDS[b as usize - 1].0.min(near)),
                 b if b == n + 1 => Some(max),
                 _ => None,

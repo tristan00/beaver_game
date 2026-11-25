@@ -436,7 +436,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     }
     let (mut pos, mut col, mut uv, mut uv1) = (vec![], vec![], vec![], vec![]);
     // A lock's chamber holds its own water (drawn with the lock), not the pond's.
-    let holes = crate::entities_render::harbor::chamber_holes(s);
+    let holes = crate::entities_render::raft_landing::chamber_holes(s);
     let in_hole = |t: &[WV; 3]| {
         let c = Vec2::new(t[0].p[0] + t[1].p[0] + t[2].p[0], t[0].p[2] + t[1].p[2] + t[2].p[2]) / 3.0;
         holes.iter().any(|&(m, a, half, w)| (c - m).dot(a).abs() < half && (c - m).dot(a.perp()).abs() < w)

@@ -44,7 +44,7 @@ pub enum Pose {
     Climb,
     /// Building: pressing mud into place.
     Work,
-    /// Scooping mud or clay out of a bank.
+    /// Scooping mud or mud out of a bank.
     Dig,
     /// Sitting up, eating a plant.
     Forage,
@@ -55,7 +55,7 @@ pub enum Pose {
     Handle,
     /// Mending: patting fresh mud on, tamping it with the tail.
     Mend,
-    /// A guard on watch: sitting up tall, looking about.
+    /// A sentry on watch: sitting up tall, looking about.
     Watch,
     /// A new pair meeting at their lodge: nose to nose.
     Court,
@@ -74,13 +74,13 @@ pub enum StructKind {
     Lodge,
     Dam,
     Canal,
-    Warehouse,
-    Larder,
-    Toolshed,
+    StickPile,
+    FoodCache,
+    PebbleHeap,
     Forester,
-    Logistics,
+    HaulMound,
     Lookout,
-    Harbor,
+    RaftLanding,
 }
 
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
@@ -99,7 +99,7 @@ pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
 
 pub fn lodge_view(sim: &SimState) -> (Vec3, f32) {
     let cell = sim.buildings.buildings.iter()
-        .find(|b| b.kind == sim::buildings::BuildingKind::Shelter)
+        .find(|b| b.kind == sim::buildings::BuildingKind::Lodge)
         .map(|b| b.pos)
         .unwrap_or((sim.world.size / 2, sim.world.size / 2));
     let xz = super::sim_view::cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));

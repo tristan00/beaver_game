@@ -61,7 +61,7 @@ pub struct Pond {
 pub struct Dam {
     pub cells: Vec<DamCell>,
     pub rows: u8,
-    pub maintain: bool,
+    pub upkeep: bool,
     /// Cells turned into gates (see `gates`); packing leaves them alone.
     pub gates: Vec<crate::gates::Gate>,
     pub downstream: (i32, i32),
@@ -139,7 +139,7 @@ fn dam_mut(sim: &mut SimState, id: BuildingId) -> Result<&mut Dam, SimError> {
 
 /// The cells a gate at `cell` stands in: its own on the line and, on a widened dam, the dam
 /// cell behind it in every row, so the gate runs right through the dam and the rows behind
-/// never hold back what it lets pass.
+/// never hold back what it lets through.
 pub fn gate_cells(d: &Dam, cell: Cell) -> Vec<Cell> {
     let mut out = vec![cell];
     for k in 1..d.rows as i64 {
@@ -178,17 +178,17 @@ fn cell_work(sim: &SimState, d: &Dam, c: &DamCell) -> bool {
         return false;
     }
     let h = built(sim, c.cell);
-    h < c.target - EPS || (d.maintain && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW)
+    h < c.target - EPS || (d.upkeep && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW)
 }
 
-/// Builders raise cells to their target; maintainers re-pack finished cells that have worn.
+/// Builders raise cells to their target; menders re-pack finished cells that have worn.
 fn cell_task(sim: &SimState, d: &Dam, c: &DamCell, upkeep: bool) -> bool {
     if is_gate(d, c.cell) {
         return false;
     }
     let h = built(sim, c.cell);
     if upkeep {
-        d.maintain && h > 0.0 && h >= c.target - EPS && integrity(sim, c.cell) < REPAIR_BELOW
+        d.upkeep && h > 0.0 && h >= c.target - EPS && integrity(sim, c.cell) < REPAIR_BELOW
     } else {
         h < c.target - EPS
     }
@@ -198,7 +198,7 @@ pub fn cell_needs_work(sim: &SimState, id: BuildingId, cell: Cell, upkeep: bool)
     dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| c.cell == cell && cell_task(sim, d, c, upkeep)))
 }
 
-/// Work for this dam's builders (`upkeep` false: raising, gates) or maintainers (re-packing).
+/// Work for this dam's builders (`upkeep` false: raising, gates) or menders (re-packing).
 pub fn has_work_for(sim: &SimState, id: BuildingId, upkeep: bool) -> bool {
     dam(sim, id).is_some_and(|d| d.cells.iter().any(|c| cell_task(sim, d, c, upkeep)) || (!upkeep && d.gates.iter().any(|g| !g.built || g.pending.is_some() || crate::locks::pending(sim, g.cell))))
 }
@@ -283,7 +283,7 @@ fn row_spans(cells: &[DamCell]) -> Vec<f32> {
     out
 }
 
-/// Loads still to carry, including one per worn cell being maintained.
+/// Loads still to carry, including one per worn cell being kept up.
 pub fn loads_left(sim: &SimState, id: BuildingId) -> usize {
     let Some(d) = dam(sim, id) else { return 0 };
     let spans = row_spans(&d.cells);
@@ -293,7 +293,7 @@ pub fn loads_left(sim: &SimState, id: BuildingId) -> usize {
         .filter(|(c, _)| !is_gate(d, c.cell))
         .map(|(c, span)| {
             let raise = loads_for(sim, c.cell, c.target, span);
-            if raise == 0 && d.maintain && built(sim, c.cell) > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW { 1 } else { raise }
+            if raise == 0 && d.upkeep && built(sim, c.cell) > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW { 1 } else { raise }
         })
         .sum()
 }
@@ -395,7 +395,7 @@ pub fn water_for_dam(sim: &SimState, c: Cell) -> bool {
         || sim.world.lake.get(c.0, c.1).copied().unwrap_or(false)
 }
 
-/// Whether a dam line crosses water: stands on some, or passes corner to corner between two
+/// Whether a dam line crosses water: stands on some, or runs corner to corner between two
 /// of its cells where water runs, as a slanting line does across a creek that slants the other
 /// way (the two cross at a corner, sharing no cell, and the dam still holds it).
 pub fn line_crosses_water(sim: &SimState, cells: &[Cell]) -> bool {
@@ -453,7 +453,7 @@ pub fn place(sim: &mut SimState, cells: &[Cell]) -> Result<BuildingId, SimError>
     let dam = Dam {
         cells: cells.iter().zip(&targets).map(|(&cell, &target)| DamCell { cell, target, row: 0 }).collect(),
         rows: 1,
-        maintain: true,
+        upkeep: true,
         gates: Vec::new(),
         downstream: downstream(sim, cells),
         history: VecDeque::new(),
@@ -615,8 +615,8 @@ pub(crate) fn refresh_durability(sim: &mut SimState, id: BuildingId) {
     }
 }
 
-pub fn set_maintain(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> {
-    dam_mut(sim, id)?.maintain = on;
+pub fn set_upkeep(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> {
+    dam_mut(sim, id)?.upkeep = on;
     Ok(())
 }
 
@@ -826,9 +826,17 @@ pub fn set_gate(sim: &mut SimState, id: BuildingId, cell: Cell, setting: crate::
     Ok(())
 }
 
-/// A gate waiting to be built or turned, not already claimed.
+/// Take the gate at `cell` out of the dam's list (see `gates::remove`).
+pub(crate) fn drop_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
+    let d = dam_mut(sim, id)?;
+    d.gates.retain(|g| g.cell != cell);
+    d.pond_day = f64::NEG_INFINITY;
+    Ok(())
+}
+
+/// A gate a builder can work on now (some of its materials there), not already claimed.
 pub fn gate_job(sim: &SimState, id: BuildingId, taken: &[Cell]) -> Option<Cell> {
-    dam(sim, id)?.gates.iter().find(|g| (!g.built || g.pending.is_some() || crate::locks::pending(sim, g.cell)) && !taken.contains(&g.cell)).map(|g| g.cell)
+    dam(sim, id)?.gates.iter().find(|g| crate::gates::visit_ready(sim, id, g) && !taken.contains(&g.cell)).map(|g| g.cell)
 }
 
 pub fn gates_claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> {
@@ -838,21 +846,16 @@ pub fn gates_claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Ce
     }).collect()
 }
 
-/// One builder visit to a gate: build it (using its sticks) or make the asked-for change.
+/// A gate's building or turning is finished (see `gates::work`): it stands, set as asked.
 pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
-    let g = *dam(sim, id).and_then(|d| d.gates.iter().find(|g| g.cell == cell)).ok_or_else(|| invalid("no gate there"))?;
-    if !g.built && !crate::gates::take_sticks(sim, cell, crate::canals::GATE_STICKS) {
-        return Err(invalid("the gate needs sticks"));
-    }
     let d = dam_mut(sim, id)?;
-    let gate = d.gates.iter_mut().find(|g| g.cell == cell).expect("found above");
+    let gate = d.gates.iter_mut().find(|g| g.cell == cell).ok_or_else(|| invalid("no gate there"))?;
     gate.built = true;
     if let Some(s) = gate.pending.take() {
         gate.setting = s;
     }
     d.pond_day = f64::NEG_INFINITY;
-    apply_gate(sim, id, cell)?;
-    crate::locks::build(sim, cell)
+    apply_gate(sim, id, cell)
 }
 
 /// Beavers working on this dam and loads on their way to it.
@@ -949,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn builders_raise_dams_and_maintainers_repack_worn_cells() {
+    fn builders_raise_dams_and_menders_repack_worn_cells() {
         let (mut s, line) = flat_river();
         let id = place(&mut s, &line).unwrap();
         assert!(has_work_for(&s, id, false) && !has_work_for(&s, id, true), "a new dam is builders' work");
@@ -958,12 +961,12 @@ mod tests {
         }
         assert!(!has_work_for(&s, id, false) && !has_work_for(&s, id, true), "a sound, finished dam needs nobody");
         *s.water.dam_integrity.get_mut(line[2].0, line[2].1).unwrap() = REPAIR_BELOW / 2.0;
-        assert!(has_work_for(&s, id, true) && !has_work_for(&s, id, false), "a worn cell is maintainers' work");
+        assert!(has_work_for(&s, id, true) && !has_work_for(&s, id, false), "a worn cell is menders' work");
         assert_eq!(next_cell(&s, id, line[0], &[], true), Some(line[2]));
         pack(&mut s, id, line[2], sticks_per_step());
         assert!(!has_work_for(&s, id, true), "re-packing restores the cell");
         let slots = &s.work.place(id).unwrap().slots;
-        assert!(slots.iter().any(|sl| sl.role == crate::work::Role::Build) && slots.iter().all(|sl| sl.role != crate::work::Role::Maintain), "maintainers need no seat");
+        assert!(slots.iter().any(|sl| sl.role == crate::work::Role::Build) && slots.iter().all(|sl| sl.role != crate::work::Role::Mend), "menders need no seat");
     }
 
     #[test]
@@ -1081,6 +1084,7 @@ mod gate_tests {
         s.buildings.stores.put_at(crate::agents::SUPPLIES, Good::Sticks, 50.0).unwrap();
         let gate = (64, y0);
         add_gate(&mut s, id, gate).unwrap();
+        crate::supply::bring_all(&mut s, crate::supply::Spot { building: id, cell: gate });
         work_gate(&mut s, id, gate).unwrap();
         let want = setting(ground(&s, gate));
         set_gate(&mut s, id, gate, want).unwrap();
@@ -1116,5 +1120,19 @@ mod gate_tests {
         apply_plan(&mut s, id, p).unwrap();
         let top = dam(&s, id).unwrap().gates[0].top;
         assert!(top > g.top + 0.4, "Shut stands at the raised crest: {top} after {}", g.top);
+    }
+
+    #[test]
+    fn a_removed_gate_is_dam_again_and_builders_raise_it_back() {
+        let (_, g, mut s, id) = pond_behind(2, |_| GateSetting::Open);
+        crate::locks::order(&mut s, id, g.cell).ok();
+        crate::gates::remove(&mut s, id, g.cell).unwrap();
+        let d = dam(&s, id).unwrap();
+        assert!(d.gates.is_empty());
+        assert!(!s.locks.at.contains_key(&g.cell));
+        let through = gate_cells(d, g.cell);
+        assert!(through.iter().all(|&c| !s.water.gate.get(c.0, c.1).copied().unwrap_or(true)), "no cell is a gate any more");
+        assert!(cell_needs_work(&s, id, g.cell, false), "builders raise the opened cell back to the dam's height");
+        assert!(crate::gates::remove(&mut s, id, g.cell).is_err());
     }
 }

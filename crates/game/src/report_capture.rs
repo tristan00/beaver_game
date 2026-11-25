@@ -26,14 +26,14 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
             b.mother.map_or(0,|v|v.0), b.father.map_or(0,|v|v.0), b.mate.map_or(0,|v|v.0), b.lodge.map_or(0,|v|v.0),
             b.pregnancy.as_ref().map_or(-1.0,|p|p.due_day), b.pregnancy.as_ref().map_or(0,|p|p.litter)).unwrap();
     }
-    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,stranded,condition,reinforced,active_site,workers,stuck_workers\n");
+    let mut buildings = String::from("id,kind,complete,x,y,wet_cells,cells,stranded,condition,reinforced,active_site,beavers,stuck_beavers\n");
     for b in &s.buildings.buildings {
         let cells: Vec<_> = b.cells().collect();
         let wet = cells.iter().filter(|&&(x,y)| s.water.depth.get(x,y).is_some_and(|&d|d >= 0.02)).count();
         let place=s.work.place(b.id);
         let active=place.is_some_and(|p|p.site.is_some());
         if b.is_complete() && active && !s.maintenance.jobs.contains_key(&b.id){violations.push(format!("finished building {} retains construction record",b.id.0));}
-        let stuck=place.map_or(0,|p|p.slots.iter().filter_map(|slot|slot.worker).filter(|id|s.agents.get(*id).is_some_and(|a|a.stuck_ticks>96)).count());
+        let stuck=place.map_or(0,|p|p.slots.iter().filter_map(|slot|slot.beaver).filter(|id|s.agents.get(*id).is_some_and(|a|a.stuck_ticks>96)).count());
         writeln!(buildings, "{},{:?},{},{},{},{},{},{},{:.3},{},{},{},{}", b.id.0, b.kind, b.is_complete(), b.pos.0, b.pos.1,
             wet, cells.len(), s.buildings.stranded(b,&s.water.depth),b.condition,b.reinforced,active,place.map_or(0,|p|p.filled()),stuck).unwrap();
     }
@@ -70,7 +70,7 @@ impl Plugin for ReportCapturePlugin {
 }
 
 /// The views a report saves, one per HUD state worth checking by eye.
-const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-book-beavers.png", "04-book-work.png", "05-book-water.png", "06-downstream.png", "07-beaver.png", "08-shelter.png", "09-dam-drawing.png", "10-dam-refused.png", "11-dam-closeup.png", "12-warehouse.png", "13-dam-panel.png", "14-book-stores.png", "15-wide.png", "16-dam-dragging.png"];
+const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-book-beavers.png", "04-book-work.png", "05-book-water.png", "06-downstream.png", "07-beaver.png", "08-lodge.png", "09-dam-drawing.png", "10-dam-refused.png", "11-dam-closeup.png", "12-stick_pile.png", "13-dam-panel.png", "14-book-stores.png", "15-wide.png", "16-dam-dragging.png"];
 
 /// A line straight across the water a few cells upstream of the first dam,
 /// reaching one dry cell onto each bank, for the drawing views.
@@ -109,9 +109,9 @@ fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usiz
     None
 }
 
-/// A short line on dry ground beside the first shelter: the refused case.
+/// A short line on dry ground beside the first lodge: the refused case.
 fn dry_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
-    let home = s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Shelter)?.pos;
+    let home = s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Lodge)?.pos;
     for r in 6..30usize {
         for (sx, sy) in [(1i64, 1i64), (-1, 1), (1, -1), (-1, -1)] {
             let at = |o: usize| ((home.0 as i64 + sx * (r + o) as i64).max(0) as usize, (home.1 as i64 + sy * r as i64).max(0) as usize);
@@ -142,7 +142,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                     clock.set_speed(crate::sim_driver::Speed::X3);
                     hud.colony = None;
                     canopy.0 = false;
-                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind==sim::buildings::BuildingKind::Shelter) {
+                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind==sim::buildings::BuildingKind::Lodge) {
                         orbit.target=crate::flow::cell_world(&sim.0.height,(home.pos.0 as f32,home.pos.1 as f32));
                         orbit.distance=90.0;
                     }
@@ -164,13 +164,14 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0 && shot != 14;
-        hud.colony = match shot { 2 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), 4 => Some(ColonyTab::Water), 13 => Some(ColonyTab::Goods), _ => None };
+        hud.colony = match shot { 2 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), _ => None };
+        hud.ledger = match shot { 4 => Some(crate::hud::LedgerTab::Dams), 13 => Some(crate::hud::LedgerTab::Stores), _ => None };
         *lens = if shot == 1 { MapLens::Water } else { MapLens::World };
         *selection = Selection::None;
         hud.set_tool_for_report(crate::hud::Tool::None);
         let s = &sim.0;
         let kind = |k: sim::buildings::BuildingKind| s.buildings.buildings.iter().find(|b| b.kind == k);
-        let homes: Vec<_> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Shelter).collect();
+        let homes: Vec<_> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Lodge).collect();
         let dam = s.buildings.buildings.iter().filter(|b| b.kind == sim::buildings::BuildingKind::Dam).max_by_key(|b| b.pos.1);
         let mut focus = homes.first().map(|b| b.pos);
         let mut distance = 65.0;
@@ -214,7 +215,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                 }
             }
             11 => {
-                if let Some(b) = kind(sim::buildings::BuildingKind::Warehouse) {
+                if let Some(b) = kind(sim::buildings::BuildingKind::StickPile) {
                     *selection = Selection::Site(b.id);
                     focus = Some(b.pos);
                 }

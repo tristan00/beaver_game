@@ -40,14 +40,14 @@ pub fn role_color(r: Option<RoleKind>) -> Color {
     let Some(r) = r else { return FREE };
     match r {
         RoleKind::Forager => Color::srgb(0.45, 0.85, 0.25),
-        RoleKind::Logger => Color::srgb(0.95, 0.55, 0.15),
+        RoleKind::Feller => Color::srgb(0.95, 0.55, 0.15),
         RoleKind::MudDigger => Color::srgb(0.75, 0.45, 0.3),
         RoleKind::Builder => Color::srgb(1.0, 0.88, 0.2),
         RoleKind::Hauler => Color::srgb(0.25, 0.65, 1.0),
-        RoleKind::Forester => Color::srgb(0.1, 0.6, 0.35),
-        RoleKind::Maintainer => Color::srgb(0.85, 0.35, 0.85),
-        RoleKind::Guard => Color::srgb(0.95, 0.25, 0.25),
-        RoleKind::PebbleCollector => Color::srgb(0.6, 0.75, 0.8),
+        RoleKind::Planter => Color::srgb(0.1, 0.6, 0.35),
+        RoleKind::Mender => Color::srgb(0.85, 0.35, 0.85),
+        RoleKind::Sentry => Color::srgb(0.95, 0.25, 0.25),
+        RoleKind::Pebbler => Color::srgb(0.6, 0.75, 0.8),
     }
 }
 

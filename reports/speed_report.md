@@ -66,15 +66,15 @@ before any change.
 | **Beavers** (see next table) | **8.1** | **9.4** | 96 | 84 us |
 | **Dams: measuring each pond** | **7.8** | **35.5** | 1.2 | 6.6 ms |
 | **Session log** (journal) | **6.1** | **6.7** | 288 | 21 us |
-| **Trees** (daily pass) | **4.5** | **23.1** | 1 | 4.5 ms |
+| **Trees** (daily sweep) | **4.5** | **23.1** | 1 | 4.5 ms |
 | - Forest cover for the ecology | 1.2 | 1.6 | 1 | 1.2 ms |
 | - Ground kept moist by water | 1.1 | 4.3 | 1 | 1.1 ms |
 | - Cells the dam will flood (nothing sown there) | 1.5 | 16.6 | 1 | 1.5 ms |
 | - Growing, dying and seeding each tree | 0.5 | 0.6 | 1 | 0.5 ms |
-| **Food plants and clay beds** (17,000 sources each step) | **4.4** | **4.5** | 96 | 45 us |
+| **Food plants and mud beds** (17,000 sources each step) | **4.4** | **4.5** | 96 | 45 us |
 | **Ecology** | **3.1** | **2.9** | 96 | 33 us |
 | **Colony events** | **3.1** | **3.2** | 96 | 32 us |
-| **Wetland** (daily pass) | **3.1** | **3.9** | 1 | 3.1 ms |
+| **Wetland** (daily sweep) | **3.1** | **3.9** | 1 | 3.1 ms |
 | **Colony** (needs, health, births, jobs) | **1.1** | **1.1** | 96 | 12 us |
 | Fog, buildings, upkeep, canals, wolves, mood, ledger, stores | 0.2 | 0.2 | 96 | 2 us |
 
@@ -116,8 +116,8 @@ Inside those steps:
 | Rebuilding the map's drainage | every time a dam cell is raised | 68 ms | 68 ms |
 | Measuring a dam's pond | once a day for each dam | 6.6 ms, about 16 ms on the first day after the ground changes | 30 ms |
 | Snapshot for the interface | about 25 times a second | 4.3 ms | 8.3 ms |
-| Trees, daily pass | once a day | 4.5 ms | 21 to 23 ms |
-| Wetland, daily pass | once a day | 3.1 ms | 3.9 ms |
+| Trees, daily sweep | once a day | 4.5 ms | 21 to 23 ms |
+| Wetland, daily sweep | once a day | 3.1 ms | 3.9 ms |
 
 ## What was changed
 
@@ -134,12 +134,12 @@ In order of what they saved on the autosave:
    until terrain or a dam changes. 36 to 8 ms a day.
 4. **The forestry's flood plan** ran the whole dam estimate to get one list of cells, then
    built an ordered set cell by cell. It now takes just the still pond, builds the set in one
-   pass and keeps it while nothing changes. 17 to 1.5 ms a day.
+   sweep and keeps it while nothing changes. 17 to 1.5 ms a day.
 5. **Riverbed turning to silt or turf** visited all 262,144 cells every step. Only cells still
    changing are visited now. 15 to 0.2 ms a day.
-6. **Moist ground and forest cover** used nested scans; both are single passes now. 6 to 2.3 ms
+6. **Moist ground and forest cover** used nested scans; both are single sweeps now. 6 to 2.3 ms
    a day.
-7. **Pond passes** (depths, weather) run along the map's rows instead of in order of bed
+7. **Pond sweeps** (depths, weather) run along the map's rows instead of in order of bed
    height, and still water skips the square roots when published. About 10 ms a day.
 8. The water router sorts the step's known work once instead of pushing it through a heap.
 
@@ -154,7 +154,7 @@ In order of what they saved on the autosave:
   population and buildings at each month's end. For the side-by-side runs these two were put
   into the old code as well; with them in both, the worlds matched bit for bit, so they are
   the only difference.
-- All tests pass: 94 in the simulation, 15 in the game.
+- All tests succeed: 94 in the simulation, 15 in the game.
 - Old saves still load. Your autosave was only read, never written.
 
 ## What still costs most, and what would cut it
@@ -210,7 +210,7 @@ What the simulation reports:
 - **Trees, plants and deposits.** A list of those added, removed, or that came to look
   different (`resources.changes()`). `Resource::look()` is the simulation's own account of how
   one looks, and the game now draws from it. The list of sources is private to the simulation,
-  so every change to one passes through a method that notes it.
+  so every change to one goes through a method that notes it.
 
 What the game does with them:
 
@@ -249,14 +249,14 @@ Top speed:
 So the gain is at normal speed, where the map stops being remade for changes nobody can see.
 At top speed nothing is gained on balance:
 
-- The water is remade more, not less. Before, the pass spent most of its 2 ms a frame hashing
+- The water is remade more, not less. Before, the sweep spent most of its 2 ms a frame hashing
   chunks and ran out before it had remade those that needed it; now it spends that time
   remaking them, so the water on screen is less far behind. It stays inside the same 2 ms.
 - The ground is remade for the season, as before: every chunk each three game days, ten chunks
   a frame.
 - The simulation thread does 6 ms a day more: 1.3 comparing cover with what was last told, 1.25
   doing the same for water before each snapshot, 1.1 in publishing depths, 0.6 on plants and
-  clay beds, the rest scattered. It is at 87% of its 167 ms instead of 84%.
+  mud beds, the rest scattered. It is at 87% of its 167 ms instead of 84%.
 
 ### Why so much was being remade
 
@@ -296,7 +296,7 @@ At top speed nothing is gained on balance:
 ## Other changes asked for
 
 - **Autosave** is now once a game year, when the new year begins, and never sooner than five
-  minutes of play after the last one (at top speed a year passes in a minute). Saving on the
+  minutes of play after the last one (at top speed a year goes by in a minute). Saving on the
   way out and Ctrl+S are as before.
 - **Python and the database** are not part of the running game. The Python scripts are
   screenshot and map tools, and the SQLite file is read once, when the game is built, to

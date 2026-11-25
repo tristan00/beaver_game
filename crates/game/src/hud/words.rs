@@ -10,7 +10,7 @@ use sim::jobs::{self, RoleKind};
 pub fn good_name(g: Good) -> &'static str {
     match g {
         Good::Sticks => "Sticks",
-        Good::Clay => "Clay",
+        Good::Mud => "Mud",
         Good::Food => "Food",
         Good::Pebbles => "Pebbles",
         Good::Saplings => "Saplings",
@@ -20,7 +20,7 @@ pub fn good_name(g: Good) -> &'static str {
 pub fn good_icon(g: Good) -> Icon {
     match g {
         Good::Sticks => Icon::Sticks,
-        Good::Clay => Icon::Mud,
+        Good::Mud => Icon::Mud,
         Good::Food => Icon::Food,
         Good::Pebbles => Icon::Pebbles,
         Good::Saplings => Icon::Sapling,
@@ -30,7 +30,7 @@ pub fn good_icon(g: Good) -> Icon {
 pub fn good_color(g: Good) -> Color {
     match g {
         Good::Sticks => Color::srgb(0.88, 0.76, 0.52),
-        Good::Clay => Color::srgb(0.66, 0.6, 0.42),
+        Good::Mud => Color::srgb(0.66, 0.6, 0.42),
         Good::Food => Color::srgb(0.9, 0.42, 0.5),
         Good::Pebbles => Color::srgb(0.7, 0.71, 0.74),
         Good::Saplings => Color::srgb(0.52, 0.8, 0.42),
@@ -41,15 +41,15 @@ pub fn building_icon(k: BuildingKind) -> Icon {
     use BuildingKind::*;
     match k {
         Dam => Icon::Dam,
-        Shelter => Icon::Lodge,
-        Warehouse => Icon::Warehouse,
+        Lodge => Icon::Lodge,
+        StickPile => Icon::StickPile,
         Canal => Icon::Canal,
-        Larder => Icon::Larder,
-        Toolshed => Icon::Toolshed,
+        FoodCache => Icon::FoodCache,
+        PebbleHeap => Icon::PebbleHeap,
         Forester => Icon::Forester,
-        Logistics => Icon::Logistics,
+        HaulMound => Icon::HaulMound,
         Lookout => Icon::Lookout,
-        Harbor => Icon::Harbor,
+        RaftLanding => Icon::RaftLanding,
     }
 }
 
@@ -111,7 +111,7 @@ pub fn resource_icon(k: ResourceKind) -> Icon {
         ResourceKind::Plant => Icon::Plant,
         ResourceKind::WaterPlant => Icon::WaterPlant,
         ResourceKind::MudBank => Icon::MudBank,
-        ResourceKind::RiverClay => Icon::MudBank,
+        ResourceKind::RiverMud => Icon::MudBank,
         ResourceKind::Pebbles => Icon::Pebbles,
     }
 }
@@ -122,8 +122,8 @@ pub fn resource_name(k: ResourceKind) -> &'static str {
         ResourceKind::Felled => "Felled tree",
         ResourceKind::Plant => "Food plants",
         ResourceKind::WaterPlant => "Water plants",
-        ResourceKind::MudBank => "Clay deposit",
-        ResourceKind::RiverClay => "River clay",
+        ResourceKind::MudBank => "Mud bank",
+        ResourceKind::RiverMud => "River mud",
         ResourceKind::Pebbles => "Pebbles",
     }
 }
@@ -189,12 +189,9 @@ pub fn sim_error(m: &str) -> String {
     let l = m.to_lowercase();
     let table: &[(&str, &str)] = &[
         ("in the way", "Needs lock"),
-        ("two different docks", "Same dock"),
         ("at least one good", "No goods"),
         ("no water joins", "No water"),
-        ("cannot reach the first dock", "Unreachable"),
         ("deep enough", "Too shallow"),
-        ("not a finished dock", "Needs dock"),
         ("lock is built on a dam", "Needs dam"),
         ("is too high", "Too high"),
         ("already that high", "Built"),
@@ -222,14 +219,14 @@ pub fn sim_error(m: &str) -> String {
 fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
     match role {
         RoleKind::Forager => (Icon::RoleForager, "Forager"),
-        RoleKind::Logger => (Icon::RoleLogger, "Logger"),
-        RoleKind::MudDigger => (Icon::RoleMudDigger, "Clay digger"),
+        RoleKind::Feller => (Icon::RoleFeller, "Feller"),
+        RoleKind::MudDigger => (Icon::RoleMudDigger, "Mud digger"),
         RoleKind::Builder => (Icon::RoleBuilder, "Builder"),
         RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
-        RoleKind::Forester => (Icon::RoleForester, "Forester"),
-        RoleKind::Maintainer => (Icon::RoleMaintainer, "Maintainer"),
-        RoleKind::Guard => (Icon::RoleGuard, "Guard"),
-        RoleKind::PebbleCollector => (Icon::Pebbles, "Pebble collector"),
+        RoleKind::Planter => (Icon::RolePlanter, "Planter"),
+        RoleKind::Mender => (Icon::RoleMender, "Mender"),
+        RoleKind::Sentry => (Icon::RoleSentry, "Sentry"),
+        RoleKind::Pebbler => (Icon::Pebbles, "Pebbler"),
     }
 }
 
@@ -243,7 +240,49 @@ pub fn role_icon(role: Role) -> Icon {
 }
 pub fn role_name(role: Role) -> &'static str {
     match role {
-        Role::Collect(ResourceKind::Pebbles) => "Pebble collector",
+        Role::Collect(ResourceKind::Pebbles) => "Pebbler",
         r => role_kind_name(jobs::role_kind(r)),
     }
+}
+
+/// A skill: the icon and the name of the work it is for.
+pub fn job_icon(j: sim::colony::Job) -> Icon {
+    use sim::colony::Job::*;
+    match j {
+        Forager => Icon::RoleForager,
+        Feller => Icon::RoleFeller,
+        Builder => Icon::RoleBuilder,
+        Digger => Icon::RoleMudDigger,
+        Hauler => Icon::RoleHauler,
+        Planter => Icon::RolePlanter,
+        Mender => Icon::RoleMender,
+        Sentry => Icon::RoleSentry,
+        Pebbler => Icon::Pebbles,
+    }
+}
+
+pub fn job_name(j: sim::colony::Job) -> &'static str {
+    use sim::colony::Job::*;
+    match j {
+        Forager => "Foraging",
+        Feller => "Felling",
+        Builder => "Building",
+        Digger => "Mud digging",
+        Hauler => "Hauling",
+        Planter => "Planting",
+        Mender => "Mending",
+        Sentry => "Keeping watch",
+        Pebbler => "Pebbling",
+    }
+}
+
+/// Whether a skill makes the work go faster (hauling is walking, and a watch is kept, not
+/// worked).
+pub fn job_speeds(j: sim::colony::Job) -> bool {
+    !matches!(j, sim::colony::Job::Hauler | sim::colony::Job::Sentry)
+}
+
+/// A beaver's name with its epithet, if it has earned one.
+pub fn full_name(s: &sim::SimState, id: sim::colony::BeaverId, name: &str) -> String {
+    sim::deeds::full_name(s, id, name)
 }

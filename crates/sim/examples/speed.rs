@@ -1,9 +1,9 @@
 //! How long a month of colony takes to simulate, and where the time goes.
 //!
 //! `speed copy [MAP|SAVE]` prints what copying each part of the world for a snapshot costs.
-//! `speed [MAP] [MONTHS] [worker]` plays the map's designed start with the attentive caretaker
+//! `speed [MAP] [MONTHS] [sim_thread]` plays the map's designed start with the attentive caretaker
 //! and prints, for every 30 days, the real seconds spent and the share of each part of a step.
-//! With `worker` the colony runs on the game's own simulation thread at the fastest game speed,
+//! With `sim_thread` the colony runs on the game's own simulation thread at the fastest game speed,
 //! snapshots included, which is what a player waits for.
 use sim::{Command, SimState, StepTimings, STEP_DAYS};
 use std::time::Instant;
@@ -85,10 +85,10 @@ fn direct(map: &str, months: u32) {
     }
 }
 
-fn worker(map: &str, months: u32) {
+fn sim_thread(map: &str, months: u32) {
     let s = start(map);
-    let worker = sim::runtime::Worker::spawn(s.clone());
-    worker.clock(false, TOP_DAYS_PER_SECOND).expect("clock");
+    let sim_thread = sim::runtime::SimThread::spawn(s.clone());
+    sim_thread.clock(false, TOP_DAYS_PER_SECOND).expect("clock");
     let mut local = s;
     let (mut month_start, mut next_month) = (Instant::now(), MONTH_DAYS);
     let (mut snapshots, mut total) = (0u32, 0.0);
@@ -96,10 +96,10 @@ fn worker(map: &str, months: u32) {
     while local.time_days < end {
         // The interface takes a snapshot each frame.
         std::thread::sleep(std::time::Duration::from_millis(16));
-        let Some(snapshot) = worker.poll() else { continue };
+        let Some(snapshot) = sim_thread.poll() else { continue };
         snapshots += 1;
         let old = std::mem::replace(&mut local, snapshot.state);
-        worker.recycle(old);
+        sim_thread.recycle(old);
         if local.time_days >= next_month {
             let secs = month_start.elapsed().as_secs_f64();
             total += secs;
@@ -159,5 +159,5 @@ fn main() {
     }
     let map = args.first().map_or("algonquin", |s| s.as_str());
     let months: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(12);
-    if args.get(2).is_some_and(|a| a == "worker") { worker(map, months) } else { direct(map, months) }
+    if args.get(2).is_some_and(|a| a == "sim_thread") { sim_thread(map, months) } else { direct(map, months) }
 }

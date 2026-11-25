@@ -106,8 +106,8 @@ fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str
             None => (Icon::Hammer, GOOD, "Gatherer", None),
         },
         Some(Assignment::Area(kind, _)) => gatherer(kind),
-        Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Worker", Some(bid)),
-        Some(Assignment::Maintain) => (role_icon(Role::Maintain), GOOD, role_name(Role::Maintain), None),
+        Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Working here", Some(bid)),
+        Some(Assignment::Mend) => (role_icon(Role::Mend), GOOD, role_name(Role::Mend), None),
         Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
         None => (Icon::Idle, ACCENT, "Free", None),
     }
@@ -123,29 +123,47 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
     if b.resting {
         return (Icon::Idle, REST, "Resting");
     }
+    // A job it is not doing just now: why, never the job's name as if it were at it.
+    if let Some(w) = sim::jobs::waiting(s, b.id) {
+        use sim::buildings::Good;
+        use sim::jobs::Wait;
+        return match w {
+            Wait::Good(g) => (good_icon(g), WARN, match g {
+                Good::Sticks => "Waiting for sticks",
+                Good::Mud => "Waiting for mud",
+                Good::Food => "Waiting for food",
+                Good::Pebbles => "Waiting for pebbles",
+                Good::Saplings => "Waiting for saplings",
+            }),
+            Wait::Frozen => (Icon::Winter, WARN, "Ground frozen"),
+            Wait::StoreFull(g) => (good_icon(g), WARN, "Stores full"),
+            Wait::Paused => (Icon::Pause, WARN, "Job paused"),
+            Wait::NoWork => (Icon::Idle, WARN, "No work"),
+        };
+    }
     match s.agents.get(b.id).map(|a| &a.task) {
         Some(Task::Collect { target, .. }) => match s.resources.get(*target).map(|r| r.kind) {
-            Some(ResourceKind::Tree) => (Icon::RoleLogger, GOOD, "Felling a tree"),
-            Some(ResourceKind::Felled) => (Icon::RoleLogger, GOOD, "Cutting sticks"),
-            Some(ResourceKind::MudBank | ResourceKind::RiverClay) => (Icon::RoleMudDigger, GOOD, "Digging clay"),
+            Some(ResourceKind::Tree) => (Icon::RoleFeller, GOOD, "Felling a tree"),
+            Some(ResourceKind::Felled) => (Icon::RoleFeller, GOOD, "Gnawing sticks"),
+            Some(ResourceKind::MudBank | ResourceKind::RiverMud) => (Icon::RoleMudDigger, GOOD, "Digging mud"),
             Some(ResourceKind::Pebbles) => (Icon::Pebbles, GOOD, "Collecting pebbles"),
             Some(ResourceKind::Plant | ResourceKind::WaterPlant) => (Icon::RoleForager, GOOD, "Foraging"),
             None => (Icon::Walk, GOOD, "Going to gather"),
         },
-        Some(Task::Carry { .. } | Task::Fetch { .. } | Task::Haul { .. } | Task::Pick { .. }) => (Icon::Haul, GOOD, "Hauling"),
+        Some(Task::Carry { .. } | Task::Fetch { .. } | Task::Haul { .. } | Task::Pick { .. } | Task::Supply { .. }) => (Icon::Haul, GOOD, "Hauling"),
         Some(Task::Eat { .. }) => (Icon::Food, GOOD, "Eating"),
         Some(Task::Build { .. }) => (Icon::RoleBuilder, GOOD, "Building"),
-        Some(Task::Mend { .. }) => (Icon::RoleMaintainer, GOOD, "Repairing"),
+        Some(Task::Mend { .. }) => (Icon::RoleMender, GOOD, "Repairing"),
         Some(Task::DamWork { .. }) => (Icon::Dam, GOOD, "Building the dam"),
         Some(Task::Dig { .. }) => (Icon::Canal, GOOD, "Digging a canal"),
         Some(Task::Gate { .. }) => (Icon::Dam, GOOD, "Setting a gate"),
         Some(Task::Seed { .. }) => (Icon::Sapling, GOOD, "Collecting seedlings"),
         Some(Task::Plant { .. }) => (Icon::Sapling, GOOD, "Planting"),
-        // Home but not tired: its job has nothing for it to do just now.
-        Some(Task::Rest) if !b.resting => (Icon::Idle, WARN, "No work: waiting at home"),
+        // Home with no job: free for one.
+        Some(Task::Rest) if sim::jobs::role_of(s, b.id).is_none() => (Icon::Idle, ACCENT, "Free"),
         Some(Task::Rest) => (Icon::Idle, REST, "Resting"),
-        Some(Task::Watch { .. }) => (Icon::RoleGuard, GOOD, "On watch"),
-        Some(Task::Raft { .. }) => (Icon::Raft, GOOD, "Barging"),
+        Some(Task::Watch { .. }) => (Icon::RoleSentry, GOOD, "On watch"),
+        Some(Task::Raft { .. }) => (Icon::Raft, GOOD, "Rafting"),
         Some(Task::Idle) | None => match s.work.slot_of(b.id) {
             Some((_, _, role)) => (role_icon(role), GOOD, role_name(role)),
             None if s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) => (Icon::Walk, GOOD, "On an order"),
@@ -200,7 +218,7 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
     u.row(8.0, |r| {
         if let Some(job) = s.maintenance.jobs.get(&id) {
             let what = match job.kind {
-                sim::maintenance::Refit::Reinforce => "Reinforcing with clay",
+                sim::maintenance::Refit::Reinforce => "Reinforcing with mud",
                 sim::maintenance::Refit::Pebbles => "Facing with pebbles",
                 sim::maintenance::Refit::Repair => "Repairing",
             };
@@ -216,11 +234,11 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
             r.pebble(Icon::Hammer, 15.0, HudAction::RepairBuilding(id), if b.condition < 0.55 { Peb::Primary } else { Peb::Good }).tip(tip);
         }
         if !b.reinforced && sim::maintenance::can_reinforce(b.kind) {
-            let mut tip = Tip::name("Reinforce with clay").line("Lasts", if b.kind == BuildingKind::Shelter { "1.75×" } else { "1.5×" });
+            let mut tip = Tip::name("Reinforce with mud").line("Lasts", if b.kind == BuildingKind::Lodge { "1.75×" } else { "1.5×" });
             for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Reinforce).0 {
                 tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
             }
-            r.pebble(good_icon(Good::Clay), 15.0, HudAction::ReinforceBuilding(id), Peb::Idle).tip(tip);
+            r.pebble(good_icon(Good::Mud), 15.0, HudAction::ReinforceBuilding(id), Peb::Idle).tip(tip);
         }
         if !s.buildings.pebbled.contains(&id) && sim::maintenance::can_pebble(b.kind) {
             let mut tip = Tip::name("Face with pebbles").line("Lasts", format!("{}×", num(sim::buildings::PEBBLE_FACTOR)));
@@ -232,7 +250,7 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
     });
 }
 
-/// A building still going up: the work done in notches, and what it waits for.
+/// A building still going up: the work done in ticks, and what it waits for.
 fn site_rows(c: &Ctx, u: &mut Ui, id: BuildingId) -> bool {
     let s = c.s;
     let Some(site) = s.work.place(id).and_then(|pl| pl.site.as_ref()) else { return false };
@@ -241,7 +259,7 @@ fn site_rows(c: &Ctx, u: &mut Ui, id: BuildingId) -> bool {
     }
     u.row(8.0, |r| {
         r.icon(Icon::Hammer, 16.0, MUTED);
-        r.notches(site.fraction(), 10, 200.0, 12.0, ACCENT);
+        r.ticks(site.fraction(), 10, 200.0, 12.0, ACCENT);
         r.spacer();
         cancel_build(r, s, id);
     })
@@ -272,19 +290,19 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     let sel = Selection::Site(id);
     let home = s.work.homes.get(&id).and_then(|h| s.colony.lodges.iter().find(|l| l.id == *h));
     let name = match (b.kind, home) {
-        (BuildingKind::Shelter, Some(l)) => s.colony.family(l.family).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone()),
+        (BuildingKind::Lodge, Some(l)) => s.colony.family(l.family).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone()),
         _ => b.kind.spec().name.to_string(),
     };
     let made = match (s.buildings.pebbled.contains(&id), b.reinforced) {
         (true, _) => "Pebble faced",
-        (false, true) => "Clay reinforced",
-        _ => "Timber",
+        (false, true) => "Mud reinforced",
+        _ => "Sticks",
     };
     let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(made, format!("{:.0}%", b.condition * 100.0));
     // Wear: the daily rate, then only the factors acting on it now.
     if let Some(w) = sim::maintenance::wear(s, b) {
         tip = tip.line("Wear", format!("{:.2}%/day", w.per_day() * 100.0)).line("Base", format!("{:.2}%/day", w.base * 100.0));
-        for (label, f, op) in [("Cold", w.cold, "×"), ("Flooded", w.flooded, "×"), ("Clay reinforced", w.reinforced, "÷"), ("Pebble faced", w.pebbled, "÷")] {
+        for (label, f, op) in [("Cold", w.cold, "×"), ("Flooded", w.flooded, "×"), ("Mud reinforced", w.reinforced, "÷"), ("Pebble faced", w.pebbled, "÷")] {
             if (f - 1.0).abs() > 0.005 {
                 tip = tip.line(label, format!("{op}{f:.2}"));
             }
@@ -294,7 +312,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     frame(c, sel, building_icon(b.kind), MUD, name, cond, tip, |u| {
         let building = site_rows(c, u, id);
         match b.kind {
-            BuildingKind::Shelter => {
+            BuildingKind::Lodge => {
                 if let Some(l) = home {
                     let residents: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().filter(|x| x.lodge == Some(l.id)).collect();
                     family_rows(c, u, &residents, sim::colony::LODGE_CAPACITY);
@@ -302,7 +320,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     u.empty_token(22.0).tip(Tip::name("No family yet"));
                 }
             }
-            BuildingKind::Larder if b.is_complete() => {
+            BuildingKind::FoodCache if b.is_complete() => {
                 stock_rows(s, u, id, b.kind);
                 fill_row(s, u, id);
             }
@@ -311,10 +329,10 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 fill_row(s, u, id);
                 if let Some(pl) = s.work.place(id) {
                     for (i, sl) in pl.slots.iter().enumerate() {
-                        let (name, does) = ("Forester", "Collects seedlings and plants them");
+                        let (name, does) = ("Planter", "Collects seedlings and plants them");
                         u.row(8.0, |r| {
                             r.icon(role_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name).line(does, ""));
-                            match sl.worker.and_then(|w| s.colony.beaver(w)) {
+                            match sl.beaver.and_then(|w| s.colony.beaver(w)) {
                                 Some(bv) => {
                                     r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(name, ""));
                                 }
@@ -329,8 +347,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     }
                 }
             }
-            BuildingKind::Warehouse | BuildingKind::Toolshed | BuildingKind::Logistics if b.is_complete() => {
-                if b.kind == BuildingKind::Logistics {
+            BuildingKind::StickPile | BuildingKind::PebbleHeap | BuildingKind::HaulMound if b.is_complete() => {
+                if b.kind == BuildingKind::HaulMound {
                     let on = s.work.balanced.contains(&id);
                     u.row(8.0, |r| {
                         r.icon(Icon::Haul, 18.0, if on { GOOD } else { MUTED }).tip(Tip::name("Balance stores").line("Haulers even out every store", ""));
@@ -346,7 +364,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     u.rule();
                     u.row(8.0, |r| {
                         for sl in &pl.slots {
-                            match sl.worker.and_then(|w| s.colony.beaver(w)) {
+                            match sl.beaver.and_then(|w| s.colony.beaver(w)) {
                                 Some(bv) => {
                                     let t = Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(role_name(sl.role), "");
                                     r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(t);
@@ -357,8 +375,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                             }
                         }
                         r.spacer();
-                        r.pebble(Icon::Minus, 10.0, HudAction::RemoveWorker(id), Peb::Idle).tip(Tip::name("Free a worker"));
-                        r.pebble(Icon::Plus, 10.0, HudAction::AddWorker(id), Peb::Idle).tip(super::add_worker_tip(s, id));
+                        r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), Peb::Idle).tip(Tip::name("Free a beaver"));
+                        r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), Peb::Idle).tip(super::add_beaver_tip(s, id));
                     });
                 }
             }
@@ -381,14 +399,14 @@ fn fill_row(s: &sim::SimState, u: &mut Ui, id: BuildingId) {
     });
 }
 
-/// One row per good the store keeps: notches of its room, and the count.
+/// One row per good the store keeps: ticks of its room, and the count.
 fn stock_rows(s: &sim::SimState, u: &mut Ui, id: BuildingId, kind: BuildingKind) {
     let cap = kind.spec().capacity.max(1.0);
     for g in Good::ALL.into_iter().filter(|&g| sim::agents::accepts(kind, g)) {
         let have = s.work.stock_of(id, g);
         u.row(10.0, |r| {
             r.icon(good_icon(g), 18.0, good_color(g));
-            r.notches(have / cap, 8, 170.0, 12.0, ACCENT);
+            r.ticks(have / cap, 8, 170.0, 12.0, ACCENT);
             r.spacer();
             r.bold(format!("{}", have.round() as i64), 14.0, INK);
         })
@@ -402,8 +420,9 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
     let Some(b) = s.colony.beaver(id) else {
         return frame(c, sel, Icon::Beaver, MUTED, "-".into(), None, Tip::name("Gone"), |_| {});
     };
-    let tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line("Age", span(b.age_days as f64)).line("Health", format!("{:.0}", b.health * 100.0));
-    frame(c, sel, Icon::Beaver, FUR, b.name.clone(), Some(b.health), tip, |u| {
+    let name = full_name(s, id, &b.name);
+    let tip = Tip::titled(Some((stage_icon(b.stage), INK)), name.clone()).line("Age", span(b.age_days as f64)).line("Health", format!("{:.0}", b.health * 100.0));
+    frame(c, sel, Icon::Beaver, FUR, name, Some(b.health), tip, |u| {
         // Its job, big and named, with the workplace; what it is doing this moment; its load.
         let (job_icon, job_col, job_name, place) = job(s, b);
         let (now_icon, now_col, now_name) = activity(s, b);
@@ -495,7 +514,7 @@ fn yield_row(u: &mut Ui, sticks: f32, food: f32, tip: Tip) {
     .tip(tip);
 }
 
-/// A tree, a felled trunk, or a patch of food or clay on the map.
+/// A tree, a felled trunk, or a patch of food or mud on the map.
 fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
     use sim::forestry::{self, TreeStage};
     use sim::resources::ResourceKind;
@@ -535,7 +554,7 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                     }
                     u.row(8.0, |x| {
                         x.icon(Icon::Hourglass, 16.0, MUTED);
-                        x.notches((r.age_days - from) / (to - from), 10, 170.0, 12.0, GOOD);
+                        x.ticks((r.age_days - from) / (to - from), 10, 170.0, 12.0, GOOD);
                         x.spacer();
                         x.bold(days(left), 13.0, INK);
                     })
@@ -577,11 +596,11 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                     match drown {
                         Some(d) => {
                             x.icon(Icon::Flood, 16.0, BAD);
-                            x.notches(d, 10, 170.0, 12.0, BAD);
+                            x.ticks(d, 10, 170.0, 12.0, BAD);
                         }
                         None => {
                             x.icon(Icon::Drop, 16.0, WATER);
-                            x.notches((depth / limit).min(1.0), 10, 170.0, 12.0, WATER);
+                            x.ticks((depth / limit).min(1.0), 10, 170.0, 12.0, WATER);
                         }
                     }
                     x.spacer();
@@ -606,7 +625,7 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
             let good = match r.kind {
                 k if k.is_food_plant() => Good::Food,
                 ResourceKind::Pebbles => Good::Pebbles,
-                _ => Good::Clay,
+                _ => Good::Mud,
             };
             // What refills it a day now.
             let mut amount = Tip::name(good_name(good)).with_value(format!("{} / {}", num(r.amount), num(r.max_amount)));
@@ -619,14 +638,14 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                 } else if (growth - 1.0).abs() > 0.005 {
                     amount = amount.line("Season", format!("×{growth:.2}"));
                 }
-            } else if r.kind == ResourceKind::RiverClay {
-                amount = if r.wet { amount.line("A day", format!("+{:.2}", sim::resources::RIVER_CLAY_PER_DAY)) } else { amount.line("Not flowing", "×0") };
+            } else if r.kind == ResourceKind::RiverMud {
+                amount = if r.wet { amount.line("A day", format!("+{:.2}", sim::resources::RIVER_MUD_PER_DAY)) } else { amount.line("Not flowing", "×0") };
             }
             let name = r.plant.map_or(resource_name(r.kind), |p| p.name());
             Some(frame(c, sel, resource_icon(r.kind), good_color(good), name.to_string(), None, Tip::name(name), |u| {
                 u.row(8.0, |x| {
                     x.icon(good_icon(good), 16.0, good_color(good));
-                    x.notches(r.amount / r.max_amount.max(0.01), 10, 170.0, 12.0, ACCENT);
+                    x.ticks(r.amount / r.max_amount.max(0.01), 10, 170.0, 12.0, ACCENT);
                     x.spacer();
                     x.bold(num(r.amount), 13.0, INK);
                 })

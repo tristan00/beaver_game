@@ -23,7 +23,7 @@ pub fn is_shore(sim: &SimState, c: Cell) -> bool {
 /// Water running slower than `k` times what a plant can root in.
 fn slow(sim: &SimState, c: Cell, k: f32) -> bool {
     let (vx, vy) = sim.water.velocity.get(c.0, c.1).copied().unwrap_or((0.0, 0.0));
-    vx.hypot(vy) < CLAY_MIN_VELOCITY * 10.0 * k
+    vx.hypot(vy) < MUD_MIN_VELOCITY * 10.0 * k
 }
 
 /// Water a plant can root in: deep enough to stay wet, not so deep it drowns, barely flowing.
@@ -179,12 +179,12 @@ fn draw(seed: u64, day: u64, i: usize) -> f32 {
     ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
-fn river_clay_active(water: &crate::water::Water, (x,y): Cell) -> bool {
+fn river_mud_active(water: &crate::water::Water, (x,y): Cell) -> bool {
     [(x,y),(x.wrapping_sub(1),y),(x+1,y),(x,y.wrapping_sub(1)),(x,y+1)].iter().any(|&(x,y)| {
         let depth=water.depth.get(x,y).copied().unwrap_or(0.0);
         let ice=if water.ice.in_bounds(x,y) {water.ice_cover(x,y)} else {1.0};
         let velocity=water.velocity.get(x,y).copied().unwrap_or((0.0,0.0));
-        depth>=WET_DEPTH && ice<CLAY_MAX_ICE && velocity.0.hypot(velocity.1)>CLAY_MIN_VELOCITY
+        depth>=WET_DEPTH && ice<MUD_MAX_ICE && velocity.0.hypot(velocity.1)>MUD_MIN_VELOCITY
     })
 }
 
@@ -225,8 +225,8 @@ pub fn step(sim: &mut SimState, day: u64) {
             r.wet = w;
         }
     });
-    let flowing: Vec<_> = sim.resources.items().iter().filter(|r|r.kind==ResourceKind::RiverClay)
-        .map(|r|(r.id,river_clay_active(&sim.water,r.cell))).collect();
+    let flowing: Vec<_> = sim.resources.items().iter().filter(|r|r.kind==ResourceKind::RiverMud)
+        .map(|r|(r.id,river_mud_active(&sim.water,r.cell))).collect();
     for (id,wet) in flowing {if let Ok(r)=sim.resources.get_mut(id) {r.wet=wet;}}
     let growth = crate::calendar::vegetation_growth(day as f64 - 0.5);
     if growth == 0.0 { return; }
@@ -348,17 +348,17 @@ mod tests {
         assert!(left > 0.3 * 10.0, "cattail keeps its rhizomes through the winter: {left}");
     }
     #[test]
-    fn river_clay_needs_adjacent_unfrozen_flow() {
+    fn river_mud_needs_adjacent_unfrozen_flow() {
         let mut water=crate::water::Water::new(4);
         let bank=(0,1);
         *water.velocity.get_mut(1,1).unwrap()=(0.01,0.0);
-        assert!(!river_clay_active(&water,bank));
+        assert!(!river_mud_active(&water,bank));
         *water.depth.get_mut(1,1).unwrap()=0.1;
-        assert!(river_clay_active(&water,bank));
+        assert!(river_mud_active(&water,bank));
         *water.ice.get_mut(1,1).unwrap()=0.5;
-        assert!(!river_clay_active(&water,bank));
+        assert!(!river_mud_active(&water,bank));
         *water.ice.get_mut(1,1).unwrap()=0.0;
         *water.velocity.get_mut(1,1).unwrap()=(0.0,0.0);
-        assert!(!river_clay_active(&water,bank));
+        assert!(!river_mud_active(&water,bank));
     }
 }

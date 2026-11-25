@@ -15,8 +15,10 @@ mod ledger;
 mod panels;
 mod paths;
 mod water_legend;
+mod welcome;
 mod ui;
 mod words;
+pub(crate) use words::job_icon;
 mod works;
 mod world;
 
@@ -40,7 +42,7 @@ use sim::jobs::RoleKind;
 use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
 use words::*;
 
-pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, TIMBER, WATER};
+pub(crate) use ui::{font, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, BARK, WARN, WATER};
 
 pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) {
     p.spawn((Text::new(s.into()), font(size, false), TextColor(color)));
@@ -72,7 +74,7 @@ pub enum Tool {
     Dam,
     /// Draw a canal: from water, over land.
     Canal,
-    /// Send beavers to gather (food or clay) or cut trees: click a spot or drag an area.
+    /// Send beavers to gather (food or mud) or cut trees: click a spot or drag an area.
     Harvest(Harvest),
 }
 
@@ -80,6 +82,14 @@ pub enum Tool {
 pub enum Harvest {
     Gather,
     Cut,
+}
+
+/// What is being placed on a dam from its panel: its cells light up on the map, a click on
+/// one places it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Gate,
+    Lock,
 }
 
 /// The dam panel's two pages.
@@ -91,21 +101,21 @@ pub enum DamTab {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The colony's pages (Tab): everything about the beavers.
 pub enum ColonyTab {
     Population,
     Jobs,
-    Goods,
-    Water,
+    Beavers,
+    Run,
 }
 
-/// The colony ledger's pages.
+/// The territory's pages (L): everything about the land and the works.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LedgerTab {
     Charts,
-    Beavers,
     Dams,
     Buildings,
-    Run,
+    Stores,
 }
 
 /// How far back the ledger's charts look.
@@ -170,6 +180,10 @@ pub struct HudState {
     /// Cells picked in the dam panel's cross-section; raises apply to them only.
     pub dam_cells: Vec<Cell>,
     pub dam_tab: DamTab,
+    /// A gate or lock being placed on this dam (see `Opening`).
+    pub opening: Option<(BuildingId, Opening)>,
+    /// The gate or lock whose settings its dam's or canal's panel shows.
+    pub gate_sel: Option<(BuildingId, Cell)>,
     /// A dam or canal whose Remove was clicked once, and when: a second click removes it.
     pub remove_armed: Option<(BuildingId, f32)>,
     /// The selected dam's suggested growth, ghosted on the map: (dam, day, cells).
@@ -196,6 +210,8 @@ pub struct HudState {
     pub peek: Option<BeaverId>,
     /// The journal, bottom right: a few lines, or many.
     pub journal_open: bool,
+    /// The one guidance card, shown when a new colony settles until it is closed.
+    pub welcome: bool,
     /// The buildings the drawn dam would drown, worked out for this line from the engine's answer.
     pub drowned: Option<(Vec<Cell>, Vec<BuildingId>)>,
     undo: Vec<UndoItem>,
@@ -279,6 +295,8 @@ impl Default for HudState {
             extending: None,
             dam_cells: Vec::new(),
             dam_tab: DamTab::Status,
+            opening: None,
+            gate_sel: None,
             remove_armed: None,
             dam_ghost: None,
             msg: None,
@@ -290,6 +308,7 @@ impl Default for HudState {
             scroll: 0,
             peek: None,
             journal_open: false,
+            welcome: false,
             drowned: None,
             undo: Vec::new(),
             selected: Vec::new(),
@@ -358,7 +377,7 @@ impl HudState {
     /// Open the colony book or the ledger: they replace any full page.
     pub(crate) fn open_book(&mut self, colony: Option<ColonyTab>, ledger: Option<LedgerTab>) {
         self.close_pages();
-        if ledger != self.ledger {
+        if ledger != self.ledger || colony != self.colony {
             self.scroll = 0;
         }
         self.colony = colony;
@@ -473,18 +492,15 @@ impl Notices {
     }
 }
 
-/// How long after a wolf was announced a beaver spotting it again is news.
-const WOLF_AGAIN_DAYS: f64 = 7.0;
-
-/// A beaver (or a lookout's guard) spots a wolf: say so, then not again for that wolf for a
-/// week, however often it slips in and out of sight.
+/// A beaver (or a lookout's sentry) spots a wolf: say so once for that wolf, however often it
+/// slips in and out of sight while it is about.
 fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<Vec<(u64, f64)>>) {
     let s = &sim.0;
     if notices.1 != s.time_days {
         notices.1 = s.time_days;
     }
     let now = s.time_days;
-    told.retain(|(k, at)| s.predators.wolf(*k).is_some() && now >= *at && now - *at < WOLF_AGAIN_DAYS);
+    told.retain(|(k, at)| s.predators.wolf(*k).is_some() && now >= *at);
     for w in sim::predators::seen(s) {
         if !told.iter().any(|(k, _)| *k == w.key()) {
             told.push((w.key(), now));
@@ -565,13 +581,14 @@ pub(crate) fn scroll_max(s: &sim::SimState, hud: &HudState) -> usize {
         (Some(id), _, _) => s.lives.of.get(&id).map_or(0, |l| l.entries.len().saturating_sub(life::ROWS)),
         (None, Some(l), _) => family::tree_len(s, l),
         (None, None, Some(tab)) => ledger::scroll_max(s, tab),
+        (None, None, None) if hud.colony == Some(ColonyTab::Beavers) => ledger::beavers_scroll_max(s),
         _ => 0,
     }
 }
 
 /// The mouse wheel over a long list in the ledger scrolls it.
 fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Query<(&ui::TagComp, &bevy::ui::RelativeCursorPosition)>, sim: Res<Sim>, mut hud: ResMut<HudState>) {
-    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.details.is_none() && hud.lodge_page.is_none()) {
+    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.details.is_none() && hud.lodge_page.is_none() && hud.colony != Some(ColonyTab::Beavers)) {
         return;
     }
     let over = q.iter().any(|(t, r)| t.0 == Tag::Scroll && r.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5));
@@ -681,9 +698,10 @@ enum Panel {
     Journal,
     Cursor,
     Markers,
+    Welcome,
 }
 
-const SLOW_PANELS: [Panel; 9] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Journal, Panel::Right];
+const SLOW_PANELS: [Panel; 10] = [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Colony, Panel::Journal, Panel::Right, Panel::Welcome];
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
@@ -702,13 +720,17 @@ pub enum HudAction {
     Pick(BuildingKind),
     CancelTool,
     GrowDam(BuildingId, sim::DamGrowth),
-    DamMaintain(BuildingId, bool),
-    /// Make the picked dam cell a gate.
-    AddDamGate(BuildingId),
+    DamUpkeep(BuildingId, bool),
+    /// Start placing a gate or lock on a dam, or stop if it is already being placed.
+    Opening(BuildingId, Opening),
+    /// Show this gate's settings in its panel, and take the camera to it.
+    GateChip(BuildingId, Cell),
+    /// Take a gate (and its lock) off its dam or canal.
+    RemoveGate(BuildingId, Cell),
     SetGate(BuildingId, Cell, sim::GateSetting),
     UpgradeLock(BuildingId, Cell),
     GrowCanal(BuildingId, sim::CanalGrowth),
-    CanalMaintain(BuildingId, bool),
+    CanalUpkeep(BuildingId, bool),
     DamCell(Cell),
     DamTab(DamTab),
     ConfirmLine,
@@ -730,18 +752,18 @@ pub enum HudAction {
     SelectBuilding(BuildingId),
     Follow(BeaverId),
     FreeBeaver(BeaverId),
-    AddWorker(BuildingId),
+    AddBeaver(BuildingId),
     /// Open or close a top-centre badge to read it.
     Badge(String),
     /// Have haulers fill this store to the brim, or stop.
     FillStore(BuildingId, bool),
-    /// A logistics building's haulers balance the stores, or stop.
+    /// A haul mound's haulers balance the stores, or stop.
     Balance(BuildingId, bool),
     /// Cancel a building site, or take a dam or canal away altogether.
     CancelBuild(BuildingId),
-    RemoveWorker(BuildingId),
+    RemoveBeaver(BuildingId),
     RoleAdjust(RoleKind, i32),
-    /// Keep a role's workers within this many cells of water (None: anywhere).
+    /// Keep a role's beavers within this many cells of water (None: anywhere).
     ShoreLimit(RoleKind, Option<u16>),
     Paused(BuildingId, bool),
     RepairBuilding(BuildingId),
@@ -754,6 +776,8 @@ pub enum HudAction {
     ClearPicks,
     /// Back to the full page this one was opened from.
     PageBack,
+    /// Close the guidance card shown when the colony settled.
+    CloseWelcome,
     /// Close a dam or canal panel: unpin it, and deselect it too if it is the selection.
     ClosePanel(Selection, bool),
     /// Take a dam or canal away: the first click arms it, a second within a few seconds acts.
@@ -886,7 +910,7 @@ fn settle_dam_line(time: Res<Time>, sim: Res<crate::state::Sim>, mut hud: ResMut
 }
 
 fn spawn_hosts(mut commands: Commands) {
-    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Journal, Panel::Colony, Panel::Right, Panel::Cursor].into_iter().enumerate() {
+    for (i, p) in [Panel::Markers, Panel::Strip, Panel::Calendar, Panel::Rail, Panel::Minimap, Panel::Bottom, Panel::Journal, Panel::Colony, Panel::Right, Panel::Cursor, Panel::Welcome].into_iter().enumerate() {
         commands.spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(0.0), right: Val::Px(0.0), top: Val::Px(0.0), bottom: Val::Px(0.0), ..default() },
             GlobalZIndex(10 + i as i32),
@@ -907,9 +931,9 @@ pub(crate) fn settle_error(e: crate::flow::SettleError) -> &'static str {
     }
 }
 
-pub(crate) fn add_worker_tip(s: &sim::SimState, b: BuildingId) -> Tip {
-    let mut t = Tip::name("Add a worker");
-    if let Some(p) = sim::jobs::add_worker_preview(s, b) {
+pub(crate) fn add_beaver_tip(s: &sim::SimState, b: BuildingId) -> Tip {
+    let mut t = Tip::name("Add a beaver");
+    if let Some(p) = sim::jobs::add_beaver_preview(s, b) {
         let who = s.colony.beaver(p.who).map(|x| x.name.clone()).unwrap_or_default();
         t.push(TipLine::new(who, "Free").icon(Icon::Idle, INK));
     }
@@ -932,7 +956,7 @@ fn refresh_panels(
     (minimap, portrait): (Option<Res<MinimapImage>>, Option<Res<crate::entities_render::portrait::PortraitImage>>),
     menu: Res<MenuOpen>,
     flow: Res<Flow>,
-    (cursor, mut last, notices): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>),
+    (cursor, mut last, notices, snap): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>, Res<world::WorksSnap>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh panels");
@@ -960,6 +984,10 @@ fn refresh_panels(
         }
     }
     update_drowned(s, &mut hud);
+    // Placing a gate or lock stops once its dam is no longer the one selected.
+    if hud.opening.is_some_and(|(id, _)| *sel != Selection::Site(id) || sim::dams::dam(s, id).is_none()) {
+        hud.opening = None;
+    }
     if let Selection::Site(id) = *sel {
         if let Some(d) = sim::dams::dam(s, id) {
             let day = s.time_days.floor();
@@ -980,6 +1008,7 @@ fn refresh_panels(
         sel: *sel,
         lens: *lens,
         hover: hover.0,
+        works_cell: snap.0,
         problems: &problems,
         minimap: minimap.as_deref(),
         portrait: portrait.as_deref(),
@@ -1012,6 +1041,7 @@ fn refresh_panels(
             Panel::Colony if ctx.hud.ledger.is_some() => ledger::screen(&ctx),
             Panel::Colony => colony::screen(&ctx),
             Panel::Journal => journal::screen(&ctx),
+            Panel::Welcome => welcome::screen(&ctx),
             _ => continue,
         };
         ui::reconcile(&mut commands, &icons, e, &mut m, tree, 0);
@@ -1053,7 +1083,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
                 let tree = if hud.tool == Tool::Canal {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {

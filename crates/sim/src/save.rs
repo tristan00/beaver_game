@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bumped by hand when the save layout changes in a way decoding would not catch.
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 const MAGIC: [u8; 8] = *b"BEAVSAVE";
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,10 +56,10 @@ struct Extras3 {
     locks: crate::locks::Locks,
 }
 
-/// Added after `Extras3`, written after it: the harbors' rafts.
+/// Added after `Extras3`, written after it: the raft landings' rafts.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extras4 {
-    fleet: crate::harbor::Fleet,
+    fleet: crate::raft_landing::Fleet,
 }
 
 /// Added after `Extras4`, written after it: wild animals.

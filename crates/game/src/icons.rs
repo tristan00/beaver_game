@@ -22,8 +22,8 @@ macro_rules! icons {
 icons! {
     Food, Logs, Sticks, Mud,
     Dam, Lodge, Canal, Lock,
-    Warehouse, LoggingCamp,
-    RoleForager, RoleLogger, RoleMudDigger, RoleBuilder, RoleHauler,
+    StickPile, FellingCamp,
+    RoleForager, RoleFeller, RoleMudDigger, RoleBuilder, RoleHauler,
     ViewWater, ViewForest,
     ViewElevation, ViewDeposits,
     Idle, Unstaffed, Blocked, Full, Warn, Urgent, Up, Down,
@@ -35,8 +35,8 @@ icons! {
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Upstream, Gauge,
     Widen, Extend,
-    Pebbles, Sapling, Larder, RoleForester, Toolshed, Forester, WaterPlant, RoleMaintainer, Logistics,
-    Wolf, Ledger, Journal, Lookout, RoleGuard, Harbor, LockGates, Raft,
+    Pebbles, Sapling, FoodCache, RolePlanter, PebbleHeap, Forester, WaterPlant, RoleMender, HaulMound,
+    Wolf, Ledger, Journal, Lookout, RoleSentry, RaftLanding, LockGates, Raft,
     Deer, Rabbit, Bird,
     Cloud, Rain, Storm, Blizzard,
     Remove, Next,
@@ -608,7 +608,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(40.0, 59.0, 44.0, 3.0, 1.0, 5.0));
             c.add(seg(4.0, 56.0, 60.0, 56.0, 4.5));
         }
-        Warehouse => {
+        StickPile => {
             c.add(poly(&[(4.0, 26.0), (32.0, 8.0), (60.0, 26.0), (56.0, 26.0), (56.0, 58.0), (8.0, 58.0), (8.0, 26.0)]).grow(1.0));
             c.cut(rect_c(18.0, 32.0, 46.0, 62.0, 2.0));
             c.add(
@@ -616,25 +616,25 @@ fn draw(icon: Icon, c: &mut Canvas) {
                     .and(rect_c(18.0, 32.0, 46.0, 58.0, 0.0)),
             );
         }
-        LoggingCamp => {
+        FellingCamp => {
             c.add(poly(&[(17.0, 34.0), (47.0, 34.0), (49.0, 50.0), (58.0, 57.0), (6.0, 57.0), (15.0, 50.0)]).grow(1.0));
             c.knock(ellipse(32.0, 33.0, 16.0, 5.5));
             c.part(37.0, 22.0, 0.6, 35.0, 3.0, axe);
         }
 
         RoleForager => role(c, 0.0, berries),
-        RoleLogger => role(c, 35.0, axe),
+        RoleFeller => role(c, 35.0, axe),
         RoleMudDigger => role(c, 30.0, shovel),
         RoleBuilder => role(c, -35.0, hammer),
-        RoleMaintainer => role(c, 35.0, wrench),
-        Logistics => {
+        RoleMender => role(c, 35.0, wrench),
+        HaulMound => {
             c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));
             c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
             c.cut_part(32.0, 47.0, 0.42, 0.0, 0.0, crate_box);
         }
         RoleHauler => role(c, 0.0, crate_box),
-        RoleGuard => role(c, 0.0, eye),
-        Harbor => {
+        RoleSentry => role(c, 0.0, eye),
+        RaftLanding => {
             // A pier on piles over waves, a crane pole with its boom.
             c.add(rect_c(6.0, 30.0, 46.0, 36.0, 2.0));
             c.add(seg(12.0, 36.0, 12.0, 50.0, 4.0).or(seg(28.0, 36.0, 28.0, 50.0, 4.0)).or(seg(42.0, 36.0, 42.0, 50.0, 4.0)));
@@ -827,12 +827,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(seg(44.0, 25.0, 50.0, 40.0, 2.6).or(seg(14.0, 44.0, 22.0, 39.0, 2.4)));
         }
         Sapling => sapling(c),
-        Larder => {
+        FoodCache => {
             c.add(poly(&[(4.0, 28.0), (32.0, 8.0), (60.0, 28.0)]).grow(1.5));
             c.add(rect_c(9.0, 32.0, 55.0, 58.0, 3.0));
             c.cut_part(32.0, 46.0, 0.42, 0.0, 0.0, berries);
         }
-        RoleForester => role(c, 0.0, sapling),
+        RolePlanter => role(c, 0.0, sapling),
         Wolf => {
             c.add(tri_rounded(&[(12.0, 3.0), (28.0, 17.0), (11.0, 27.0)]).or(tri_rounded(&[(52.0, 3.0), (36.0, 17.0), (53.0, 27.0)])));
             c.add(poly(&[(9.0, 22.0), (22.0, 14.0), (42.0, 14.0), (55.0, 22.0), (51.0, 38.0), (38.0, 58.0), (26.0, 58.0), (13.0, 38.0)]).grow(1.0));
@@ -868,13 +868,13 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
             c.cut_part(32.0, 47.0, 0.42, 0.0, 0.0, sapling);
         }
-        Toolshed => {
+        PebbleHeap => {
             c.add(poly(&[(4.0, 30.0), (32.0, 10.0), (60.0, 30.0)]).grow(1.5));
             c.add(rect_c(9.0, 34.0, 55.0, 58.0, 3.0));
             c.cut_part(32.0, 46.0, 0.36, -40.0, 0.0, hammer);
         }
         WaterPlant => {
-            // A notched lily pad with a flower standing on it.
+            // A cleft lily pad with a flower standing on it.
             c.add(ellipse(31.0, 45.0, 28.0, 14.0));
             c.cut(poly(&[(31.0, 45.0), (60.0, 36.0), (60.0, 52.0)]));
             c.knock(poly(&[(14.0, 30.0), (20.0, 12.0), (27.0, 24.0), (32.0, 6.0), (37.0, 24.0), (44.0, 12.0), (50.0, 30.0), (32.0, 38.0)]).grow(1.0));

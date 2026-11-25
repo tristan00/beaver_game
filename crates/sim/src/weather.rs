@@ -54,7 +54,7 @@ pub struct Now {
 }
 
 impl Now {
-    /// Ground too hard to dig mud or clay from.
+    /// Ground too hard to dig mud or mud from.
     pub fn ground_frozen(&self) -> bool {
         self.ground_c < FROZEN_GROUND_C
     }

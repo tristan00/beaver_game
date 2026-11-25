@@ -149,6 +149,8 @@ pub struct Flow {
     pub generation: u32,
     pub settled_at: Option<f32>,
     pub lodge_cell: Option<Cell>,
+    /// A new colony has just settled: the HUD shows its one welcome card.
+    pub welcome: bool,
 }
 
 impl Flow {
@@ -163,6 +165,7 @@ impl Flow {
             generation: 0,
             settled_at: None,
             lodge_cell: None,
+            welcome: false,
         }
     }
 
@@ -191,6 +194,9 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
     can_settle(sim, cell).map_err(|e| format!("{e:?}"))?;
     sim.apply(sim::Command::Settle { cell }).map_err(|e| e.to_string())?;
     after_settle(sim, flow, cell);
+    // Every new campaign settles here, by Play or by the player's own pick: it opens on the
+    // welcome card.
+    flow.welcome = true;
     Ok(())
 }
 
@@ -269,6 +275,17 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
             E::Departed { id } => notices.push_at(vec![(Icon::Beaver, MUTED), (Icon::Back, MUTED)], format!("{} left", name_of(&names, s, *id)), now, None),
             E::Immigrated { id } => notices.push_at(vec![(Icon::Beaver, GOOD), (Icon::Plus, GOOD)], format!("{} joined", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
             E::LeftHome { id, .. } => notices.push_at(vec![(Icon::Adult, INK), (Icon::Home, INK)], format!("{} moved out", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
+            // An epithet earned: the beaver by its new name, with the work it was earned in.
+            E::Epithet { id } => {
+                if let (Some(b), Some(e)) = (s.colony.beaver(*id), s.deeds.get(*id).and_then(|r| r.epithet.as_ref())) {
+                    // A greater epithet replacing one held: the old name, and the new beside it.
+                    let (icons, text) = match &e.was {
+                        Some(was) => (vec![(crate::hud::job_icon(e.job), GOOD), (Icon::Up, GOOD)], format!("{} {was} → {}", b.name, e.word)),
+                        None => (vec![(crate::hud::job_icon(e.job), GOOD)], format!("{} {}", b.name, e.word)),
+                    };
+                    notices.push_at(icons, text, now, Some(NoticeAt::Beaver(*id)));
+                }
+            }
             E::NewFamily { family, a, .. } => {
                 let name = s.colony.family(*family).map(|f| f.name.clone()).unwrap_or_default();
                 notices.push_at(vec![(Icon::Home, GOOD)], format!("{name} family"), now, Some(NoticeAt::Beaver(*a)));

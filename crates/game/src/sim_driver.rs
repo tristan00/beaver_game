@@ -40,7 +40,50 @@ impl Default for SimClock {
     }
 }
 
+/// Whether the fastest speed (`Speed::X3`) may be used: off unless the player turns on dev
+/// speed in Settings, since it runs too fast to follow. Kept between games in a small file
+/// beside the saves.
+static DEV_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+const DEV_SPEED_FILE: &str = "dev_speed.txt";
+
+fn dev_speed_path() -> std::path::PathBuf {
+    std::path::Path::new(crate::savegame::SAVE_DIR).join(DEV_SPEED_FILE)
+}
+
+pub fn dev_speed() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    match DEV_SPEED.load(Relaxed) {
+        2 => {
+            let on = std::fs::read_to_string(dev_speed_path()).is_ok_and(|t| t.trim() == "on");
+            DEV_SPEED.store(on as u8, Relaxed);
+            on
+        }
+        v => v == 1,
+    }
+}
+
+pub fn set_dev_speed(on: bool) {
+    DEV_SPEED.store(on as u8, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(crate::savegame::SAVE_DIR);
+    let _ = std::fs::write(dev_speed_path(), if on { "on
+" } else { "off
+" });
+}
+
+impl Speed {
+    /// Whether the player may pick this speed now.
+    pub fn allowed(self) -> bool {
+        self != Speed::X3 || dev_speed()
+    }
+}
+
 impl SimClock {
+    /// The speed asked for, unless it is the fastest and dev speed is off.
+    pub fn pick_speed(&mut self, s: Speed) {
+        if s.allowed() {
+            self.set_speed(s);
+        }
+    }
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
         self.acc_days = 0.0;
@@ -96,7 +139,7 @@ pub struct SimDriverPlugin;
 
 impl Plugin for SimDriverPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SimClock>().init_resource::<SimulationWorker>()
+        app.init_resource::<SimClock>().init_resource::<SimulationThread>()
             .add_systems(First, receive_sim)
             .add_systems(Update, (time_keys, step_sim).chain())
             .add_systems(Last, send_commands);
@@ -117,25 +160,29 @@ fn time_keys(
     }
     for (k, s) in [(KeyCode::Digit1, Speed::X1), (KeyCode::Digit2, Speed::X2), (KeyCode::Digit3, Speed::X3)] {
         if keys.just_pressed(k) {
-            clock.set_speed(s);
+            clock.pick_speed(s);
         }
+    }
+    // Dev speed turned off while running at it: down to the fastest left.
+    if !clock.speed.allowed() {
+        clock.set_speed(Speed::X2);
     }
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct SimulationWorker {
-    worker: Option<sim::runtime::Worker>,
+pub(crate) struct SimulationThread {
+    sim_thread: Option<sim::runtime::SimThread>,
     instance: u64,
     next_sequence: u64,
     pending: Vec<(u64, sim::Command)>,
     clock: Option<(bool, Speed)>,
 }
 
-fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
     let _p = ::sim::prof::scope("game/receive sim");
-    if worker.instance != sim.0.instance { return; }
-    let Some(snapshot) = worker.worker.as_ref().and_then(|w| w.poll()) else { return; };
-    worker.pending.retain(|(sequence, _)| *sequence > snapshot.acknowledged);
+    if sim_thread.instance != sim.0.instance { return; }
+    let Some(snapshot) = sim_thread.sim_thread.as_ref().and_then(|w| w.poll()) else { return; };
+    sim_thread.pending.retain(|(sequence, _)| *sequence > snapshot.acknowledged);
     for result in snapshot.results {
         if let Err(error) = result.result {
             error!("command {} failed on simulation owner: {}", result.sequence, error);
@@ -144,18 +191,18 @@ fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut c
     let events = std::mem::take(&mut sim.0.colony.events);
     // The simulation reports fog as newly seen once; keep it until the fog is redrawn.
     let fog_seen = sim.0.fog.dirty;
-    // The world it replaces goes back to the worker, which copies the next snapshot into it.
+    // The world it replaces goes back to the sim_thread, which copies the next snapshot into it.
     let old = std::mem::replace(&mut sim.0, snapshot.state);
-    if let Some(owner) = &worker.worker { owner.recycle(old); }
+    if let Some(owner) = &sim_thread.sim_thread { owner.recycle(old); }
     for event in events.into_iter().rev() { sim.0.colony.events.push_front(event); }
     sim.0.fog.dirty |= fog_seen;
     // Reapply only commands newer than the received snapshot. They remain in
-    // the worker's queue and are not transmitted twice. What they change here is a guess
+    // the sim_thread's queue and are not transmitted twice. What they change here is a guess
     // until the simulation has applied them itself.
-    if !worker.pending.is_empty() {
+    if !sim_thread.pending.is_empty() {
         sim.0.guess_ahead();
     }
-    for (_, command) in &worker.pending {
+    for (_, command) in &sim_thread.pending {
         let events = sim.0.colony.events.clone();
         let _ = sim.0.apply(command.clone());
         sim.0.colony.events = events;
@@ -164,43 +211,43 @@ fn receive_sim(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut c
     if sim.0.colony.is_collapsed() { clock.paused = true; }
 }
 
-fn send_commands(mut worker: ResMut<SimulationWorker>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
-    if worker.instance != sim.0.instance { return; }
+fn send_commands(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+    if sim_thread.instance != sim.0.instance { return; }
     // Only touch the world when there is something to send: a write marks it changed, and
     // everything drawn from it would then redo its work every frame.
     if sim.0.client_commands.as_ref().is_none_or(|c| c.is_empty()) { return; }
     let commands = sim.0.client_commands.as_mut().map(std::mem::take).unwrap_or_default();
     for command in commands {
-        worker.next_sequence += 1;
-        let sequence = worker.next_sequence;
-        if let Some(owner) = &worker.worker {
+        sim_thread.next_sequence += 1;
+        let sequence = sim_thread.next_sequence;
+        if let Some(owner) = &sim_thread.sim_thread {
             if let Err(error) = owner.command(sequence, command.clone()) { error!("{error}"); clock.paused = true; }
         }
-        worker.pending.push((sequence, command));
+        sim_thread.pending.push((sequence, command));
     }
 }
 
-pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>, mut worker: ResMut<SimulationWorker>) {
+pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>, mut sim_thread: ResMut<SimulationThread>) {
     // Keep the existing standalone water sandbox and deterministic screenshot
     // runner on their original scheduling path.
     if sim.0.sandbox || cli.screenshot.is_some() {
         synchronous_step(&time, &mut clock, &mut sim);
         return;
     }
-    if worker.instance != sim.0.instance || worker.worker.is_none() {
-        worker.worker = Some(sim::runtime::Worker::spawn(sim.0.clone()));
-        worker.instance = sim.0.instance;
-        worker.next_sequence = 0;
-        worker.pending.clear();
-        worker.clock = None;
+    if sim_thread.instance != sim.0.instance || sim_thread.sim_thread.is_none() {
+        sim_thread.sim_thread = Some(sim::runtime::SimThread::spawn(sim.0.clone()));
+        sim_thread.instance = sim.0.instance;
+        sim_thread.next_sequence = 0;
+        sim_thread.pending.clear();
+        sim_thread.clock = None;
         clock.presentation_days = Some(sim.0.time_days);
         sim.0.client_commands = Some(Vec::new());
     }
     let setting = (clock.paused, clock.speed);
-    if worker.clock != Some(setting) {
+    if sim_thread.clock != Some(setting) {
         let rate = BASE_DAYS_PER_SECOND as f64 * clock.speed.multiplier() as f64;
-        if let Err(error) = worker.worker.as_ref().unwrap().clock(clock.paused, rate) { error!("{error}"); clock.paused = true; }
-        worker.clock = Some(setting);
+        if let Err(error) = sim_thread.sim_thread.as_ref().unwrap().clock(clock.paused, rate) { error!("{error}"); clock.paused = true; }
+        sim_thread.clock = Some(setting);
     }
     clock.advance_presentation(time.delta_secs_f64(), sim.0.time_days);
 }

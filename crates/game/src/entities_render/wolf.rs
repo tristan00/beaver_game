@@ -252,7 +252,7 @@ struct Splash {
 const SLAP_EVERY: f32 = 2.5;
 const SPLASH_SECS: f32 = 1.4;
 
-/// While a lookout sees the wolf, its guard slaps its tail on the water beside it every
+/// While a lookout sees the wolf, its sentry slaps its tail on the water beside it every
 /// `SLAP_EVERY` seconds: a ring of spray spreads and fades there, and a slap sounds.
 fn tail_slaps(
     mut commands: Commands,
@@ -292,8 +292,8 @@ fn tail_slaps(
         }
         *due = now + SLAP_EVERY;
         let Some(at) = slap_spot(s, id) else { continue };
-        if let Some(guard) = s.work.place(id).and_then(|p| p.slots.iter().find_map(|sl| sl.worker)) {
-            slap_times.0.insert(guard.0, render.0);
+        if let Some(sentry) = s.work.place(id).and_then(|p| p.slots.iter().find_map(|sl| sl.beaver)) {
+            slap_times.0.insert(sentry.0, render.0);
         }
         let mesh = ring.get_or_insert_with(|| {
             let mut mb = Mb::new();
@@ -310,12 +310,12 @@ fn tail_slaps(
     }
 }
 
-/// Where a lookout's guard slaps: on the water nearest the guard (or the lookout), at the
+/// Where a lookout's sentry slaps: on the water nearest the sentry (or the lookout), at the
 /// water's surface.
 fn slap_spot(s: &sim::SimState, id: sim::buildings::BuildingId) -> Option<Vec3> {
     let b = s.buildings.building(id)?;
-    let guard = s.work.place(id)?.slots.iter().find_map(|sl| sl.worker).and_then(|w| s.agents.get(w));
-    let from = guard.map_or(b.pos, |a| a.cell);
+    let sentry = s.work.place(id)?.slots.iter().find_map(|sl| sl.beaver).and_then(|w| s.agents.get(w));
+    let from = sentry.map_or(b.pos, |a| a.cell);
     let wet = |c: (usize, usize)| s.water.depth.get(c.0, c.1).is_some_and(|d| *d > 0.05);
     let mut best: Option<((usize, usize), usize)> = None;
     for dy in -5i32..=5 {
@@ -384,8 +384,8 @@ fn force_wolf(mut sim: ResMut<Sim>, mut done: Local<bool>) {
     info!("BC_WOLF: a wolf is on the map");
 }
 
-/// `BC_LOOKOUT=DIST[,PITCH[,YAW]]`: once the colony is founded, put up a finished shelter and lookout by the
-/// first beaver, seat a guard, aim the camera there and move any wolf into the lookout's sight
+/// `BC_LOOKOUT=DIST[,PITCH[,YAW]]`: once the colony is founded, put up a finished lodge and lookout by the
+/// first beaver, seat a sentry, aim the camera there and move any wolf into the lookout's sight
 /// (for screenshots, with `BC_WOLF`).
 fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCamera>, mut stage: Local<u8>) {
     use sim::buildings::BuildingKind;
@@ -405,12 +405,12 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
     };
     match *stage {
         0 => {
-            if !s.has_building(BuildingKind::Shelter) {
-                build(s, BuildingKind::Shelter);
+            if !s.has_building(BuildingKind::Lodge) {
+                build(s, BuildingKind::Lodge);
             }
             *stage = 1;
         }
-        1 if s.has_building(BuildingKind::Shelter) => {
+        1 if s.has_building(BuildingKind::Lodge) => {
             if build(s, BuildingKind::Lookout).is_some() {
                 *stage = 2;
             } else {
@@ -420,7 +420,7 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
         }
         2 => {
             let Some(b) = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::Lookout && b.is_complete()).map(|b| (b.id, sim::predators::lookout_centre(b))) else { return };
-            let _ = s.apply(sim::Command::AddWorker { building: b.0 });
+            let _ = s.apply(sim::Command::AddBeaver { building: b.0 });
             let xz = cell_xz(s, b.1);
             orbit.target = Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y), xz.y);
             let cam: Vec<f32> = std::env::var("BC_LOOKOUT").unwrap_or_default().split(',').filter_map(|t| t.trim().parse().ok()).collect();

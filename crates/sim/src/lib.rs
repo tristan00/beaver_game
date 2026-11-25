@@ -14,8 +14,10 @@ pub mod catalogue;
 pub mod colony;
 pub mod canals;
 pub mod dams;
+pub mod deeds;
+pub mod names;
 pub mod gates;
-pub mod harbor;
+pub mod raft_landing;
 pub mod locks;
 pub mod wildlife;
 pub mod lives;
@@ -49,6 +51,7 @@ pub mod site;
 pub mod society;
 pub mod starts;
 pub mod stock;
+pub mod supply;
 pub mod trace;
 pub mod trees;
 
@@ -134,9 +137,9 @@ pub struct SimState {
     /// Gates upgraded into locks (saved after the world; see `save`).
     #[serde(skip)]
     pub locks: locks::Locks,
-    /// Each harbor's rafts (saved after the world; see `save`).
+    /// Each raft landing's rafts (saved after the world; see `save`).
     #[serde(skip)]
-    pub fleet: harbor::Fleet,
+    pub fleet: raft_landing::Fleet,
     /// Rabbits, deer and birds (saved after the world; see `save`).
     #[serde(skip)]
     pub wildlife: wildlife::Wildlife,
@@ -146,6 +149,12 @@ pub struct SimState {
     /// The run's tallies (saved after the world; see `save`).
     #[serde(skip)]
     pub run: run::RunStats,
+    /// Ponds' names.
+    pub names: names::Names,
+    /// Each beaver's life's work and epithet.
+    pub deeds: deeds::Deeds,
+    /// Materials brought to gates, locks and buildings being mended.
+    pub supplies: supply::Supplies,
     pub sandbox: bool,
     #[serde(skip)]
     pub step_timings: StepTimings,
@@ -154,7 +163,7 @@ pub struct SimState {
     pub journal: journal::Journal,
 }
 
-/// A number no other world in this run has: the interface restarts its worker when it changes.
+/// A number no other world in this run has: the interface restarts its beaver when it changes.
 pub fn next_instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -197,10 +206,13 @@ impl SimState {
             forestry: forestry::Forestry::new(seed),
             predators: predators::Predators::new(seed),
             locks: locks::Locks::default(),
-            fleet: harbor::Fleet::default(),
+            fleet: raft_landing::Fleet::default(),
             wildlife: wildlife::Wildlife::new(seed),
             lives: lives::Lives::default(),
             run: run::RunStats::default(),
+            names: names::Names::default(),
+            deeds: deeds::Deeds::default(),
+            supplies: supply::Supplies::default(),
             sandbox: false,
             step_timings: StepTimings::default(),
             journal: journal::Journal::default(),
@@ -258,6 +270,7 @@ impl SimState {
             { let _p = prof::scope("step/colony/jobs"); self.derive_colony_jobs(); }
             let land = WorldLand { world: &self.world, depth: &self.water.depth };
             { let _p = prof::scope("step/colony/beavers"); self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?; }
+            { let _p = prof::scope("step/colony/names"); names::step(self); }
             let _p = prof::scope("step/journal");
             journal::scan(self, "colony");
         }
@@ -292,12 +305,13 @@ impl SimState {
         { let _p = prof::scope("step/dams"); dams::step(self); }
         { let _p = prof::scope("step/canals"); canals::step(self, dt_days); }
         { let _p = prof::scope("step/locks"); locks::tidy(self); }
-        { let _p = prof::scope("step/harbor"); harbor::step(self); }
+        { let _p = prof::scope("step/raft_landing"); raft_landing::step(self); }
         lap(&mut t.shipping_s);
         { let _p = prof::scope("step/fog"); self.explore(); }
         lap(&mut t.fog_s);
         { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &mut self.colony); }
         { let _p = prof::scope("step/events"); self.step_events(dt_days); }
+        { let _p = prof::scope("step/deeds"); deeds::step(self, dt_days); names::step(self); }
         {
             let _p = prof::scope("step/journal");
             journal::scan(self, "agents");
@@ -379,6 +393,9 @@ impl Clone for SimState {
             wildlife: self.wildlife.clone(),
             lives: self.lives.clone(),
             run: self.run.clone(),
+            names: self.names.clone(),
+            deeds: self.deeds.clone(),
+            supplies: self.supplies.clone(),
             sandbox: self.sandbox.clone(),
             step_timings: self.step_timings.clone(),
             journal: self.journal.clone(),
@@ -393,7 +410,7 @@ impl Clone for SimState {
         let Self {
             seed, instance, client_commands, time_days, height, world, water, ecology, colony, buildings, events, nav,
             resources, agents, work, maintenance, society, ledger, output, fog, steps, recorder, forestry, predators,
-            locks, fleet, wildlife, lives, run, sandbox, step_timings, journal,
+            locks, fleet, wildlife, lives, run, names, deeds, supplies, sandbox, step_timings, journal,
         } = src;
         self.seed = *seed;
         self.instance = *instance;
@@ -424,6 +441,9 @@ impl Clone for SimState {
         self.wildlife.clone_from(wildlife);
         self.lives.clone_from(lives);
         self.run.clone_from(run);
+        self.names.clone_from(names);
+        self.deeds.clone_from(deeds);
+        self.supplies.clone_from(supplies);
         self.sandbox = *sandbox;
         self.step_timings = *step_timings;
         self.journal.clone_from(journal);

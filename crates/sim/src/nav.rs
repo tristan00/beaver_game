@@ -18,12 +18,12 @@ pub enum Surface {
     Thicket,
     LodgeEntrance,
     LodgeInside,
-    /// A gate upgraded into a lock: swum through, one passage at a time (see `locks`).
+    /// A gate upgraded into a lock: swum through, one beaver at a time (see `locks`).
     Lock,
 }
 
 pub fn shared(s: Surface) -> bool {
-    // Beavers can pass one another. Treating a resting beaver as a solid,
+    // Beavers can slip past one another. Treating a resting beaver as a solid,
     // one-metre roadblock made routes fail and repeatedly search the whole map.
     // Buildings and terrain still enforce all static traversal rules.
     s != Surface::Solid
@@ -169,7 +169,7 @@ fn octile(dx: usize, dy: usize, min: u32) -> u32 {
 /// cost at full pace: the gate opens, the swimmer comes in, the gate shuts behind it and the
 /// chamber fills or drains to the far side's level before the far gate opens.
 pub fn lock_wait(from: Surface, to: Surface) -> f32 {
-    if to == Surface::Lock && from != Surface::Lock { crate::locks::LOCK_PASS_DAYS * crate::agents::MOVE_COST_PER_DAY } else { 0.0 }
+    if to == Surface::Lock && from != Surface::Lock { crate::locks::LOCK_WAIT_DAYS * crate::agents::MOVE_COST_PER_DAY } else { 0.0 }
 }
 
 pub fn step_length(from: Cell, to: Cell) -> f32 {
@@ -409,7 +409,7 @@ impl NavGrid {
         for b in &sim.buildings.buildings {
             match b.kind {
                 BuildingKind::Dam | BuildingKind::Canal=>{}
-                BuildingKind::Shelter if b.is_complete()=>{
+                BuildingKind::Lodge if b.is_complete()=>{
                     self.add_lodge(b.pos);
                     for (x,y) in b.cells().chain(std::iter::once(lodge_entrance(b.pos))) {
                         let i=y*w+x;
@@ -421,7 +421,7 @@ impl NavGrid {
             }
         }
         // A lock is swum through, whatever the water there, right through a widened dam, and
-        // only down its lane: nothing passes through its walls.
+        // only down its lane: nothing goes through its walls.
         for l in sim.locks.at.values().filter(|l|l.built) {
             for c in crate::locks::wall_cells(sim,l) {
                 let i=c.1*w+c.0;
@@ -640,7 +640,7 @@ impl NavGrid {
                     (y + 1 < h && x > 0).then(|| i + w - 1),
                     (y + 1 < h && x + 1 < w).then(|| i + w + 1),
                 ];
-                // A diagonal step needs both cells beside it open (no cutting a corner past
+                // A diagonal step needs both cells beside it open (no shortcut across a corner past
                 // a wall, a building or a lodge), and never leads into or out of a lodge.
                 let open = |k: usize| Self::step_cost(surf[k]).is_some() && !blocked(k) && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
                 for j in nbrs.into_iter().flatten() {

@@ -382,11 +382,11 @@ fn lens_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource
     shown_deposits(s).filter(move |_| on)
 }
 
-/// A deposit worth outlining on the bed in the water lens: water plants, clay and pebbles
+/// A deposit worth outlining on the bed in the water lens: water plants, mud and pebbles
 /// that lie under water.
 pub fn underwater_deposit(s: &SimState, r: &sim::resources::Resource) -> bool {
     use sim::resources::ResourceKind::*;
-    matches!(r.kind, WaterPlant | RiverClay | MudBank | Pebbles) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
+    matches!(r.kind, WaterPlant | RiverMud | MudBank | Pebbles) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
 }
 
 /// The deposits lens: one saturated colour per kind, none grey or blue, so they stand
@@ -398,7 +398,7 @@ pub fn deposit_color(k: sim::resources::ResourceKind) -> Rgb {
         Felled => [0.92, 0.16, 0.12],
         Plant => [0.62, 0.90, 0.16],
         MudBank => [0.80, 0.46, 0.14],
-        RiverClay => [0.86, 0.22, 0.70],
+        RiverMud => [0.86, 0.22, 0.70],
         Pebbles => [1.0, 0.90, 0.10],
         WaterPlant => [1.0, 1.0, 1.0],
     }
@@ -713,7 +713,7 @@ pub fn water_band(depth: f32) -> u8 {
     if depth >= near {
         return DEPTH_BANDS.len() as u8 + 1;
     }
-    if depth < sim::harbor::RAFT_DEPTH {
+    if depth < sim::raft_landing::RAFT_DEPTH {
         return 0;
     }
     1 + DEPTH_BANDS.iter().position(|b| depth < b.0).unwrap_or(DEPTH_BANDS.len() - 1) as u8

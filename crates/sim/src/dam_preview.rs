@@ -260,7 +260,7 @@ mod tests {
         let n = s.height.width();
         let dry = |s: &crate::SimState, x: usize, y: usize| (0..3).all(|dy| (0..3).all(|dx| s.water.depth.get(x + dx, y + dy).is_some_and(|&d| d < 0.01)));
         let pos = (4..n - 4).flat_map(|y| (4..n - 4).map(move |x| (x, y))).find(|&(x, y)| dry(&s, x, y)).expect("dry ground");
-        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(77), kind: BuildingKind::Shelter, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
+        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(77), kind: BuildingKind::Lodge, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         let over = |depth: f32| move |x: usize, y: usize| if (pos.0..pos.0 + 3).contains(&x) && (pos.1..pos.1 + 3).contains(&y) { depth } else { 0.0 };
         assert!(drowned_by(&s, over(0.5)).is_empty(), "shallow water is a beaver's home");
         assert_eq!(drowned_by(&s, over(crate::buildings::MAX_BUILDING_DEPTH + 0.3)), vec![BuildingId(77)]);

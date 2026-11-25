@@ -4,8 +4,8 @@
 //! of its lodge with the wolf within its own sight (`BEAVER_SIGHT`) drops what it was doing,
 //! runs for the nearest water and waits there till the wolf is out of sight; the wolf never
 //! follows into water. A beaver the wolf sees on land within `WOLF_SIGHT` is charged, and a
-//! caught beaver dies in one short kill. A lookout with its guard at the post sees farther
-//! (`LOOKOUT_SIGHT`, more than the wolf's own); while it sees the wolf, the guard slaps its tail
+//! caught beaver dies in one short kill. A lookout with its sentry at the post sees farther
+//! (`LOOKOUT_SIGHT`, more than the wolf's own); while it sees the wolf, the sentry slaps its tail
 //! on the water and every beaver within that range runs as if it saw the wolf itself.
 //! Kill or miss, the wolf wanders on and hunts again until its visit is over, then walks off
 //! the map. Beavers working far over land meet wolves; those near water get away.
@@ -54,7 +54,7 @@ pub struct Wolf {
     path: Vec<Cell>,
     /// No new roaming route is looked for before this day (after a search found no way on).
     rest_until: f64,
-    /// A beaver out of its lodge, or a lookout's guard, sees this wolf this step: only then
+    /// A beaver out of its lodge, or a lookout's sentry, sees this wolf this step: only then
     /// does the player see where it is. Worked out every step, so not saved.
     #[serde(skip)]
     pub seen: bool,
@@ -115,7 +115,7 @@ pub struct Predators {
     pub chance_per_day: f32,
     pub visits: u32,
     pub kills: u32,
-    /// Lookouts whose guard sees a wolf now, slapping the alarm. Worked out every step, so
+    /// Lookouts whose sentry sees a wolf now, slapping the alarm. Worked out every step, so
     /// not saved.
     #[serde(skip)]
     pub alarms: Vec<crate::buildings::BuildingId>,
@@ -127,7 +127,7 @@ pub struct Predators {
     /// Wild animals it gave up on, likewise.
     #[serde(skip)]
     given_up_animals: Vec<(u32, f64)>,
-    /// A beaver out of its lodge, or a lookout's guard, sees some wolf this step.
+    /// A beaver out of its lodge, or a lookout's sentry, sees some wolf this step.
     #[serde(skip)]
     pub in_sight: bool,
 }
@@ -177,7 +177,7 @@ pub(crate) fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
 
 const ROOT2: f32 = std::f32::consts::SQRT_2;
 
-/// A land-only route (8 directions, no corner cutting) to a cell `goal` accepts, searching
+/// A land-only route (8 directions, no shortcuts across corners) to a cell `goal` accepts, searching
 /// at most `max_nodes` cells. The route leaves out the start.
 fn land_path(sim: &SimState, from: Cell, goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> f32, max_nodes: usize) -> Option<Vec<Cell>> {
     land_search(sim, from, goal, heur, max_nodes, false)
@@ -354,10 +354,38 @@ fn look(sim: &mut SimState) {
     } else {
         sim.buildings.buildings.iter().filter(|b| on_watch(sim, b)).map(|b| (b.id, lookout_centre(b))).collect()
     };
-    let alarms = watching.iter().filter(|(_, at)| wolves.iter().any(|w| dist(*at, w.pos) <= LOOKOUT_SIGHT)).map(|l| l.0).collect();
+    let alarms: Vec<crate::buildings::BuildingId> = watching.iter().filter(|(_, at)| wolves.iter().any(|w| dist(*at, w.pos) <= LOOKOUT_SIGHT)).map(|l| l.0).collect();
+    let sentries = |id: crate::buildings::BuildingId| -> Vec<crate::colony::BeaverId> {
+        sim.work.place(id).map(|p| p.slots.iter().filter(|s| s.role == crate::work::Role::Sentry).filter_map(|s| s.beaver).collect()).unwrap_or_default()
+    };
+    // For the records: who has each wolf in sight (beavers seeing it, and the sentries of the
+    // lookouts in range), each wolf counted once for each beaver however often it is seen.
+    // The beavers out in a lookout's range, warned by its alarm.
+    let in_range = |id: crate::buildings::BuildingId| -> u32 {
+        sim.buildings.building(id).map_or(0, |b| {
+            let at = lookout_centre(b);
+            sim.agents.by_id.values().filter(|a| !a.inside && dist(at, centre(a.cell)) <= LOOKOUT_SIGHT).count() as u32
+        })
+    };
+    let mut spotted: Vec<(crate::colony::BeaverId, u64, u32)> = Vec::new();
     for wolf in &mut wolves {
         let by_lookout = watching.iter().any(|(_, at)| dist(*at, wolf.pos) <= LOOKOUT_SIGHT);
         spot(sim, wolf, by_lookout);
+        if wolf.seen {
+            let key = wolf.key();
+            spotted.extend(sim.agents.by_id.values().filter(|a| sees(a, wolf)).map(|a| (a.id, key, 0)));
+            for (id, _) in watching.iter().filter(|(_, at)| dist(*at, wolf.pos) <= LOOKOUT_SIGHT) {
+                let n = in_range(*id);
+                spotted.extend(sentries(*id).into_iter().map(|g| (g, key, n)));
+            }
+        }
+    }
+    // Each wolf counted once for each beaver however often it is seen; a sentry's warning
+    // counted the first time it sees that wolf.
+    for (id, key, warned) in spotted {
+        if sim.deeds.spotted(id, key) && warned > 0 {
+            sim.deeds.of(id).warned += warned;
+        }
     }
     let now = sim.time_days;
     let p = &mut sim.predators;
@@ -373,16 +401,16 @@ pub fn lookout_centre(b: &crate::buildings::Building) -> (f32, f32) {
     (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0)
 }
 
-/// A finished lookout with its guard at the post (within `GUARD_POST_REACH` of it, in water
+/// A finished lookout with its sentry at the post (within `SENTRY_POST_REACH` of it, in water
 /// or on land, not in a lodge).
 pub fn on_watch(sim: &SimState, b: &crate::buildings::Building) -> bool {
     if b.kind != crate::buildings::BuildingKind::Lookout || !b.is_complete() {
         return false;
     }
-    let reach = GUARD_POST_REACH as usize;
+    let reach = SENTRY_POST_REACH as usize;
     let at_post = |a: &Agent| !a.inside && b.cells().any(|c| c.0.abs_diff(a.cell.0).max(c.1.abs_diff(a.cell.1)) <= reach);
     sim.work.place(b.id).is_some_and(|p| {
-        p.slots.iter().any(|s| s.role == crate::work::Role::Guard && s.worker.and_then(|w| sim.agents.get(w)).is_some_and(at_post))
+        p.slots.iter().any(|s| s.role == crate::work::Role::Sentry && s.beaver.and_then(|w| sim.agents.get(w)).is_some_and(at_post))
     })
 }
 
@@ -449,7 +477,7 @@ fn walk(sim: &SimState, wolf: &mut Wolf, budget: f32) -> f32 {
     walk_route(sim, &mut wolf.pos, &mut wolf.heading, &mut wolf.path, budget)
 }
 
-/// Walks `budget` cells along `path` from `pos` (on land), cutting straight past cells it can
+/// Walks `budget` cells along `path` from `pos` (on land), going straight past cells it can
 /// (see `walk`); turns `heading` the way it went. Returns how far it went.
 pub(crate) fn walk_route(sim: &SimState, pos: &mut (f32, f32), heading: &mut f32, path: &mut Vec<Cell>, budget: f32) -> f32 {
     let far = path.iter().take(STRAIGHTEN_AHEAD + 1).rposition(|&c| clear_line(sim, *pos, centre(c)));
@@ -940,15 +968,15 @@ mod tests {
     #[test]
     fn a_manned_lookout_warns_beavers_in_its_range() {
         let (mut s, who) = setup(Some(64), (60, 60));
-        // A finished lookout 20 cells off, and a guard beside it.
+        // A finished lookout 20 cells off, and a sentry beside it.
         let id = crate::buildings::BuildingId(77);
         let pos = (60, 80);
         s.buildings.buildings.push(crate::buildings::Building { id, kind: crate::buildings::BuildingKind::Lookout, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
         s.work.add_site(id, crate::buildings::BuildingKind::Lookout, &[], 1.0).unwrap();
         s.work.add_labour(id, 1.0).unwrap();
-        s.work.finish_site(id, &[crate::work::Role::Guard], None).unwrap();
-        let guard = s.colony.beavers[1].id;
-        s.agents.spawn(guard, (pos.0, pos.1 - 1));
+        s.work.finish_site(id, &[crate::work::Role::Sentry], None).unwrap();
+        let sentry = s.colony.beavers[1].id;
+        s.agents.spawn(sentry, (pos.0, pos.1 - 1));
         // The wolf, out of the beaver's sight and the wolf's own, but in the lookout's.
         let lookout = lookout_centre(s.buildings.building(id).unwrap());
         let at = (lookout.0 as usize, lookout.1 as usize + LOOKOUT_SIGHT as usize - 4);
@@ -957,15 +985,15 @@ mod tests {
         s.predators.wolves.first_mut().unwrap().rest_until = f64::MAX;
         step(&mut s, crate::STEP_DAYS);
         assert!(s.predators.alarms.is_empty(), "nobody keeps watch");
-        s.work.assign(id, 0, guard).unwrap();
+        s.work.assign(id, 0, sentry).unwrap();
         step(&mut s, crate::STEP_DAYS);
-        assert_eq!(s.predators.alarms, vec![id], "the guard sees the wolf");
+        assert_eq!(s.predators.alarms, vec![id], "the sentry sees the wolf");
         assert!(s.predators.spotted);
         let mut a = s.agents.by_id.remove(&who).unwrap();
         assert!(flee(&mut s, &mut a, crate::STEP_DAYS), "the warned beaver carries on working");
         s.agents.by_id.insert(who, a);
-        // Away from its post the guard sees nothing.
-        s.agents.by_id.get_mut(&guard).unwrap().cell = (pos.0, pos.1 - 20);
+        // Away from its post the sentry sees nothing.
+        s.agents.by_id.get_mut(&sentry).unwrap().cell = (pos.0, pos.1 - 20);
         step(&mut s, crate::STEP_DAYS);
         assert!(s.predators.alarms.is_empty());
     }

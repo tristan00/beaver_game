@@ -1,11 +1,13 @@
-//! The panel a canal opens. Laid out like the dam's (see `works`): header, what it is doing
-//! with the one fix, then Water (every cell from the intake, with the pond level, the depth a
-//! raft needs and the cells too shallow for one), Work, Dig, Gate and Upkeep.
+//! The panel a canal opens, laid out like the dam's (see `works`): the picture is the panel.
+//! Its profile shows every cell from the intake, with the pond level, the depth a raft needs
+//! and the cells too shallow for one, and the canal's state and its gate's chip drawn on it.
+//! Under it Deepen, Widen, Extend, Gate and Lock, the gate's strip, and the footer (diggers,
+//! Mend, Pause, Remove). History is behind the hourglass in the header.
 use super::panels::{Ctx, RIGHT_W};
 use super::ui::*;
 use super::words::*;
 use super::works::{self, cap, dashes, DEEP, EARTH, SHALLOW, VIEW_W, WOOD};
-use super::{ColonyTab, DamTab, HudAction};
+use super::{DamTab, HudAction};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use bevy::prelude::*;
@@ -14,8 +16,8 @@ use sim::canals::{Canal, CanalGrowth};
 use sim::GateSetting;
 
 const PROFILE_H: f32 = 64.0;
-/// Room above the profile for its two readings.
-const HEAD: f32 = 18.0;
+/// Room above the profile for the state, the gate's chip and two readings.
+const HEAD: f32 = 46.0;
 /// The pond's own column at the left of the profile.
 const POND_W: f32 = 18.0;
 
@@ -39,34 +41,33 @@ enum Fix {
     None,
     Assign,
     Deepen,
-    OpenGate,
-    Maintain,
+    Upkeep,
 }
 
-/// What the canal is doing, its colour, why, and the one fix.
-fn status(s: &sim::SimState, id: BuildingId, k: &Canal, deepen_ok: bool) -> (Icon, &'static str, Color, &'static str, Fix) {
-    let crew = sim::canals::crew(s, id);
+/// What the canal is doing, in a word, its colour, why, and the one fix.
+fn status(s: &sim::SimState, id: BuildingId, k: &Canal, deepen_ok: bool) -> (&'static str, Color, &'static str, Fix) {
     let waiting = sim::canals::has_work_for(s, id, false);
+    let crew = sim::canals::crew(s, id);
     if waiting && crew == 0 {
-        return (Icon::RoleBuilder, "No diggers", BAD, "Work is waiting and nobody is on it", Fix::Assign);
+        return ("No diggers", WARN, "Work is waiting and nobody is on it", Fix::Assign);
     }
     if waiting {
-        return (Icon::Hammer, "Digging", WARN, "Diggers are at work on it", Fix::None);
+        return ("Digging", WARN, "Diggers are at work on it", Fix::None);
     }
     match k.status.as_ref() {
-        None => (Icon::Hourglass, "No water yet", MUTED, "It fills once the intake is dug", Fix::None),
-        Some(st) if st.wet == 0 && k.gate.built && k.gate.setting == GateSetting::Shut => (Icon::Lock, "Gate shut", MUTED, "No water passes the gate", Fix::OpenGate),
-        Some(st) if st.wet == 0 => (Icon::Drop, "Dry", WARN, "No water reaches it", Fix::None),
-        Some(st) if st.floatable_share() < 0.5 => (Icon::Raft, "Too shallow for rafts", WARN, "Most cells are too shallow to float a load", if deepen_ok { Fix::Deepen } else { Fix::None }),
-        Some(st) if st.silted > 0 && !k.maintain => (Icon::Down, "Silting", WARN, "Silt is filling it and nobody clears it", Fix::Maintain),
-        Some(_) => (Icon::Check, "Flowing", GOOD, "Water runs through it", Fix::None),
+        None => ("No water yet", MUTED, "It fills once the intake is dug", Fix::None),
+        Some(st) if st.wet == 0 && k.gate.built && k.gate.setting == GateSetting::Shut => ("Gate shut", MUTED, "No water gets past the gate", Fix::None),
+        Some(st) if st.wet == 0 => ("Dry", WARN, "No water reaches it", Fix::None),
+        Some(st) if st.floatable_share() < 0.5 => ("Too shallow", WARN, "Most cells are too shallow to float a load", if deepen_ok { Fix::Deepen } else { Fix::None }),
+        Some(st) if st.silted > 0 && !k.upkeep => ("Silting", WARN, "Silt is filling it and nobody clears it", Fix::Upkeep),
+        Some(_) => ("Flowing", GOOD, "Water runs through it", Fix::None),
     }
 }
 
 /// Every cell along the route from the intake: ground, bed, water, the depth a raft needs
 /// (the short dashes) and, marked, the wet cells too shallow for one. The pond stands at the
 /// left, its level dashed across.
-fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
+fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, state: (&str, Color, Tip), picks: usize) {
     let s = c.s;
     let route: Vec<&sim::canals::CanalCell> = k.route().collect();
     if route.is_empty() {
@@ -164,56 +165,29 @@ fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
                 Some(_) => ("Below sill".to_string(), Tip::name("Below the gate").line("The pond is lower than the gate's sill: nothing gets in", "")),
                 None => ("No gate".to_string(), Tip::name("No gate yet").line("Water runs in freely", "")),
             };
-            w.node(works::abs_box(POND_W + 6.0, 1.0, 160.0, 16.0), |x| {
+            w.node(works::abs_box(POND_W + 6.0, 26.0, 160.0, 16.0), |x| {
                 x.bold(text, 12.0, INK).tip(tip);
             });
             if let Some(f) = sim::canals::end_drop(s, k) {
-                works::label_left_of(w, VIEW_W - 6.0, 1.0, format!("{:.1} m drop", f), INK, Tip::name("Drop").line("From the pond down to the water at the far end", ""));
+                works::label_left_of(w, VIEW_W - 6.0, 26.0, format!("{:.1} m drop", f), INK, Tip::name("Drop").line("From the pond down to the water at the far end", ""));
             }
+        }
+        w.node(Node { position_type: PositionType::Absolute, left: Val::Px(8.0), top: Val::Px(6.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), align_items: AlignItems::Center, ..default() }, |r| {
+            r.bold(state.0, 13.0, state.1).tip(state.2);
+            if picks > 0 {
+                let word = format!("{picks} picked");
+                r.small_button(Some(Icon::Focus), Some(&word), Some(HudAction::ClearPicks), Tip::name("Unpick all"), Small::On).style(|n| n.height = Val::Px(22.0));
+            }
+        });
+        if k.gate.built || k.gate.pending.is_some() {
+            w.node(Node { position_type: PositionType::Absolute, right: Val::Px(6.0), top: Val::Px(5.0), ..default() }, |r| works::chips(c, r, id, std::slice::from_ref(&k.gate), 100.0));
         }
     })
     .bg(FAINT);
 }
 
-fn water(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
-    u.section("Water", |_| {});
-    profile(c, u, id, k);
-    let Some(st) = k.status.as_ref() else {
-        u.icon(Icon::Hourglass, 15.0, MUTED).tip(Tip::name("No water yet").line("It fills once the intake is dug", ""));
-        return;
-    };
-    let share = st.floatable_share();
-    u.row(14.0, |r| {
-        r.stat(Icon::Raft, WATER, format!("{:.0}%", share * 100.0), Some("floats"), if share >= 0.5 { INK } else { WARN }, Tip::name("Floats a raft").line("Cells deep enough", format!("{} / {}", st.floatable, st.cells)).line("Wet", format!("{}", st.wet)).line("Dug", format!("{}", st.dug)));
-        if st.inflow > 0.0 || st.outflow > 0.0 {
-            r.stat(Icon::Upstream, WATER, format!("{}/d", num(st.inflow)), None, INK, Tip::name("Water in").line("At the gate, per day", ""));
-            r.stat(Icon::Push, WATER, format!("{}/d", num(st.outflow)), None, INK, Tip::name("Water out").line("At the far end, per day", ""));
-        }
-        r.spacer();
-        r.stat(Icon::Extend, MUTED, format!("{}", k.route().count()), None, INK, Tip::name("Length").line("Cells", ""));
-    });
-}
-
-fn work(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
+fn build(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, picks: &[Cell], fix: Fix) {
     let s = c.s;
-    let crew = sim::canals::crew(s, id);
-    let left = sim::canals::visits_left(s, id);
-    let waiting = sim::canals::has_work_for(s, id, false);
-    let clay: f32 = s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::MudBank && k.cells.iter().any(|x| x.cell.0.abs_diff(r.cell.0) <= 1 && x.cell.1.abs_diff(r.cell.1) <= 1)).map(|r| r.amount).sum();
-    u.section("Work", |r| {
-        r.small_button(Some(Icon::Jobs), Some("Assign"), Some(HudAction::Colony(Some(ColonyTab::Jobs))), Tip::name("Diggers").line("Open the jobs", ""), if fix == Fix::Assign { Small::Hint } else { Small::Idle });
-    });
-    let short = crew == 0 && waiting;
-    u.row(14.0, |r| {
-        r.stat(Icon::Beaver, if short { BAD } else { FUR }, format!("{crew}"), None, if short { BAD } else { INK }, Tip::name("Diggers here"));
-        r.stat(Icon::Site, MUTED, format!("{left}"), Some("to dig"), INK, Tip::name("Visits still to make").line("Beaver-days", num(sim::canals::dig_days(left))));
-        r.stat(good_icon(Good::Clay), good_color(Good::Clay), format!("{}", clay.round() as i64), Some("clay"), INK, Tip::name("Clay on the banks").line("Gatherers bring it in", ""));
-    });
-}
-
-fn dig(c: &Ctx, u: &mut Ui, id: BuildingId, picks: &[Cell], fix: Fix) {
-    let s = c.s;
-    u.section("Dig", |r| works::picks(r, picks.len(), "canal"));
     let picked = !picks.is_empty();
     u.row(6.0, |r| {
         for (icon, word, growth, what) in [
@@ -229,20 +203,47 @@ fn dig(c: &Ctx, u: &mut Ui, id: BuildingId, picks: &[Cell], fix: Fix) {
         }
         let drawing = c.hud.extending == Some(id);
         r.big_button(BigButton { icon: Icon::Extend, word: "Extend", cost: None, action: Some(HudAction::GrowCanal(id, CanalGrowth::Extend)), tip: Tip::name("Extend").line("Drag on from the open end", "").line("Click", "add a corner"), hint: false, on: drawing });
+        gate_buttons(s, r, id, k);
     });
 }
 
-fn gate(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal) {
-    let s = c.s;
-    u.section("Gate", |_| {});
-    let usable = if k.gate.built || sim::canals::gates_unlocked(s) { Ok(()) } else { Err("Needs Logistics") };
-    works::gate_row(u, s, id, &k.gate, k.status.as_ref().map(|st| st.source_level), false, usable);
+/// The canal's one gate stands at its intake: Gate orders it, Lock makes it a lock. Once
+/// ordered, the button stays lit and takes the camera there.
+fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
+    let g = &k.gate;
+    let stick = |n: f32| Some((good_icon(Good::Sticks), WOOD, format!("{}", n.round() as i64)));
+    let gate_tip = Tip::name("Gate").line("Sets how much water gets in", "").line("Sticks", num(sim::canals::GATE_STICKS));
+    let gate_there = g.built || g.pending.is_some();
+    let (action, tip) = if gate_there {
+        (Some(HudAction::GateChip(id, g.cell)), gate_tip.line("Ordered", ""))
+    } else if !sim::canals::gates_unlocked(s) {
+        (None, gate_tip.line("Needs a haul mound", ""))
+    } else {
+        (Some(HudAction::SetGate(id, g.cell, GateSetting::Shut)), gate_tip)
+    };
+    r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost: stick(sim::canals::GATE_STICKS), action, tip, hint: false, on: gate_there });
+    let lock_there = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
+    let sticks = sim::locks::LOCK_STICKS + if gate_there { 0.0 } else { sim::canals::GATE_STICKS };
+    let lock_tip = Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(sticks)).line("Mud", num(sim::locks::LOCK_MUD));
+    let (action, tip) = if lock_there {
+        (Some(HudAction::GateChip(id, g.cell)), lock_tip.line("Ordered", ""))
+    } else if !sim::locks::unlocked(s) {
+        (None, lock_tip.line("Needs a raft landing", ""))
+    } else if !gate_there && !sim::canals::gates_unlocked(s) {
+        (None, lock_tip.line("Needs a haul mound", ""))
+    } else if sim::locks::check_room(s, id, g.cell).is_err() {
+        (None, lock_tip.line("No room for a lock", ""))
+    } else {
+        (Some(HudAction::UpgradeLock(id, g.cell)), lock_tip)
+    };
+    r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: stick(sticks), action, tip, hint: false, on: lock_there });
 }
 
-fn upkeep(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
-    u.section("Upkeep", |_| {});
+fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
+    let crew = sim::canals::crew(c.s, id);
     u.row(6.0, |r| {
-        works::maintain_button(r, k.maintain, HudAction::CanalMaintain(id, !k.maintain), "Maintainers clear silt", fix == Fix::Maintain);
+        works::crew_button(r, crew, Icon::Beaver, "Diggers here", fix == Fix::Assign);
+        works::upkeep_button(r, k.upkeep, HudAction::CanalUpkeep(id, !k.upkeep), "Menders clear silt", fix == Fix::Upkeep);
         works::pause_button(r, c.s, id);
         r.spacer();
         works::remove_button(c, r, id);
@@ -281,31 +282,26 @@ pub fn canal_panel(c: &Ctx, id: BuildingId, k: &Canal) -> VNode {
     let dry = k.status.as_ref().is_none_or(|st| st.wet == 0);
     let picks: Vec<Cell> = c.hud.dam_cells.iter().copied().filter(|p| k.cells.iter().any(|x| x.cell == *p)).collect();
     let deepen_ok = sim::canals::growth_labour(s, id, CanalGrowth::Deepen, &picks).is_ok();
-    let (icon, text, col, why, fix) = status(s, id, k, deepen_ok);
-    let fix_button = match fix {
-        Fix::None => None,
-        Fix::Assign => Some(("Assign", HudAction::Colony(Some(ColonyTab::Jobs)), Tip::name("Diggers").line("Open the jobs", ""))),
-        Fix::Deepen => Some(("Deepen", HudAction::GrowCanal(id, CanalGrowth::Deepen), Tip::name("Deepen").line("A step deeper", ""))),
-        Fix::OpenGate => Some(("Open", HudAction::SetGate(id, k.gate.cell, GateSetting::Open), Tip::name("Open the gate"))),
-        Fix::Maintain => Some(("Maintain", HudAction::CanalMaintain(id, true), Tip::name("Maintain").line("Maintainers clear silt", ""))),
-    };
+    let (word, col, why, fix) = status(s, id, k, deepen_ok);
+    let mut state_tip = Tip::name(word).line(why, "");
+    if let Some(st) = k.status.as_ref() {
+        state_tip = state_tip.line("Floats a raft", format!("{} / {} cells", st.floatable, st.cells)).line("Water in", format!("{}/d", num(st.inflow))).line("Water out", format!("{}/d", num(st.outflow)));
+    }
     let silted = k.status.as_ref().map_or(0, |st| st.silted);
-    let tab = c.hud.dam_tab;
     let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), ..default() }, |u| {
+    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
         works::header(c, u, id, "Canal", c.sel == Selection::Site(id), health, Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{silted}")), |p| portrait(p, dry));
-        u.status_line(icon, text, col, Tip::name(text).line(why, ""), fix_button);
-        u.tabs(&[(Icon::Drop, "Now", HudAction::DamTab(DamTab::Status), tab == DamTab::Status), (Icon::Hourglass, "History", HudAction::DamTab(DamTab::History), tab == DamTab::History)]);
-        match tab {
-            DamTab::Status => {
-                water(c, u, id, k);
-                work(c, u, id, k, fix);
-                dig(c, u, id, &picks, fix);
-                gate(c, u, id, k);
-                upkeep(c, u, id, k, fix);
-            }
-            DamTab::History => history(u, k),
+        if c.hud.dam_tab == DamTab::History {
+            history(u, k);
+            return;
         }
+        profile(c, u, id, k, (word, col, state_tip), picks.len());
+        build(c, u, id, k, &picks, fix);
+        if k.gate.built || k.gate.pending.is_some() {
+            let usable = if k.gate.built || sim::canals::gates_unlocked(s) { Ok(()) } else { Err("Needs a haul mound") };
+            works::gate_row(u, s, id, &k.gate, k.status.as_ref().map(|st| st.source_level), false, usable);
+        }
+        footer(c, u, id, k, fix);
     });
     let mut v = ui.nodes.pop().expect("panel node");
     panel(&mut v);

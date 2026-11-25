@@ -10,7 +10,7 @@ use crate::{SimError, SimState};
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GateSetting {
     Shut,
-    /// Hold the water at this elevation (metres): only what rises above it passes.
+    /// Hold the water at this elevation (metres): only what rises above it flows on.
     Level(f32),
     Open,
 }
@@ -85,40 +85,117 @@ pub fn request(g: &mut Gate, setting: GateSetting) -> Result<(), SimError> {
     Ok(())
 }
 
-/// Use sticks from the colony's nearest stores; nothing is taken unless all are there.
-pub fn take_sticks(sim: &mut SimState, near: Cell, amount: f32) -> bool {
-    take_goods(sim, near, crate::buildings::Good::Sticks, amount)
+/// The piece of work at a gate, done in this order: build the gate, turn a built one as asked,
+/// build the lock ordered on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece {
+    Build,
+    Turn,
+    Lock,
 }
 
-/// Whether the colony's stores hold this much of a good.
-pub fn has_goods(sim: &SimState, good: crate::buildings::Good, amount: f32) -> bool {
-    crate::stock::holders(sim, good).iter().map(|&id| sim.work.stock_of(id, good)).sum::<f32>() + 1e-4 >= amount
+/// The work at a gate now, if any.
+pub fn piece(sim: &SimState, building: crate::buildings::BuildingId, g: &Gate) -> Option<Piece> {
+    if !g.built {
+        // A dam's gate is wanted once placed; a canal's once a setting is asked for.
+        let wanted = crate::canals::canal(sim, building).is_none() || g.pending.is_some();
+        return wanted.then_some(Piece::Build);
+    }
+    if g.pending.is_some() {
+        return Some(Piece::Turn);
+    }
+    crate::locks::pending(sim, g.cell).then_some(Piece::Lock)
 }
 
-/// Use a good from the colony's nearest stores; nothing is taken unless all of it is there.
-pub fn take_goods(sim: &mut SimState, near: Cell, good: crate::buildings::Good, amount: f32) -> bool {
-    use crate::buildings::Use;
-    let mut holders = crate::stock::holders(sim, good);
-    if !has_goods(sim, good, amount) {
-        return false;
+const GATE_COST: [crate::buildings::Amount; 1] = [(crate::buildings::Good::Sticks, crate::canals::GATE_STICKS)];
+
+/// What a piece uses, brought to the gate, and the labour it takes.
+pub fn cost(p: Piece) -> (&'static [crate::buildings::Amount], f32) {
+    match p {
+        Piece::Build => (&GATE_COST, crate::canals::GATE_WORK),
+        Piece::Turn => (&[], crate::canals::GATE_WORK),
+        Piece::Lock => (&crate::locks::COST, crate::canals::GATE_WORK),
     }
-    let dist = |sim: &SimState, id| {
-        if id == crate::agents::SUPPLIES {
-            sim.work.supplies.map_or(usize::MAX, |p: Cell| near.0.abs_diff(p.0) + near.1.abs_diff(p.1))
-        } else {
-            sim.buildings.building(id).map_or(usize::MAX, |b| crate::stock::dist(near, b))
+}
+
+/// How much of a piece's labour can be done with what has been brought so far: work keeps
+/// pace with deliveries, as on a building site.
+fn labour_room(sim: &SimState, spot: crate::supply::Spot, p: Piece) -> f32 {
+    let (materials, labour) = cost(p);
+    let need: f32 = materials.iter().map(|a| a.1).sum();
+    let got: f32 = materials.iter().map(|&(g, a)| crate::supply::delivered(sim, spot, g).min(a)).sum();
+    let share = if need > 0.0 { (got / need).min(1.0) } else { 1.0 };
+    labour * share
+}
+
+/// Whether a builder at this gate has work it can do now: some of the piece's materials are
+/// there and not yet worked in, or it needs none. A visit is never handed out to stand idle.
+pub fn visit_ready(sim: &SimState, building: crate::buildings::BuildingId, g: &Gate) -> bool {
+    let spot = crate::supply::Spot { building, cell: g.cell };
+    piece(sim, building, g).is_some_and(|p| crate::supply::labour(sim, spot) < labour_room(sim, spot, p) - 1e-3)
+}
+
+/// A builder's work at a gate: `amount` of labour, as far as what has been brought allows.
+/// When the piece's labour is all done and its materials all there, it is finished: the
+/// materials are used, and the gate is built or turned, or the lock built. Returns the piece
+/// finished.
+pub fn work(sim: &mut SimState, building: crate::buildings::BuildingId, cell: Cell, amount: f32) -> Result<Option<Piece>, SimError> {
+    let g = gate_of(sim, building, cell).ok_or_else(|| SimError::InvalidCommand("no gate there".into()))?;
+    let p = piece(sim, building, &g).ok_or_else(|| SimError::InvalidCommand("nothing to do at the gate".into()))?;
+    let spot = crate::supply::Spot { building, cell };
+    let done = (crate::supply::labour(sim, spot) + amount).min(labour_room(sim, spot, p));
+    crate::supply::set_labour(sim, spot, done);
+    let (materials, labour) = cost(p);
+    if done + 1e-3 < labour || !crate::supply::take(sim, spot, materials) {
+        return Ok(None);
+    }
+    crate::supply::set_labour(sim, spot, 0.0);
+    match p {
+        Piece::Build | Piece::Turn if crate::canals::canal(sim, building).is_some() => crate::canals::turn_gate(sim, building)?,
+        Piece::Build | Piece::Turn => crate::dams::work_gate(sim, building, cell)?,
+        Piece::Lock => crate::locks::build(sim, cell),
+    }
+    Ok(Some(p))
+}
+
+/// The gate of a dam or canal at a cell.
+pub fn gate_of(sim: &SimState, building: crate::buildings::BuildingId, cell: Cell) -> Option<Gate> {
+    match (crate::canals::canal(sim, building), crate::dams::dam(sim, building)) {
+        (Some(k), _) => Some(k.gate).filter(|g| g.cell == cell),
+        (_, Some(d)) => d.gates.iter().find(|g| g.cell == cell).copied(),
+        _ => None,
+    }
+}
+
+/// Take a gate off its dam or canal, and the lock on it with it. A dam's gate cells become
+/// ordinary dam cells again (builders raise them back to the dam's height); a canal's intake
+/// runs free. What was brought for it goes back to the stores (see `supply::tidy`).
+pub fn remove(sim: &mut SimState, building: crate::buildings::BuildingId, cell: Cell) -> Result<(), SimError> {
+    let bad = |m: &str| SimError::InvalidCommand(m.into());
+    gate_of(sim, building, cell).ok_or_else(|| bad("no gate there"))?;
+    if let Some(k) = crate::canals::canal(sim, building) {
+        let cells = crate::canals::gate_cells(k);
+        let k = crate::canals::canal_mut(sim, building)?;
+        k.gate.built = false;
+        k.gate.pending = None;
+        k.gate.setting = GateSetting::Shut;
+        for c in cells {
+            sim.water.clear_structure(c).map_err(|e| bad(&format!("{e:?}")))?;
         }
-    };
-    holders.sort_by_key(|&id| (dist(sim, id), id));
-    let mut left = amount;
-    for id in holders {
-        if left <= 1e-4 {
-            break;
-        }
-        let here = sim.work.stock_of(id, good).min(left);
-        if here > 0.0 {
-            left -= sim.buildings.stores.consume_from(id, good, here, Use::Sites);
+    } else {
+        let d = crate::dams::dam(sim, building).ok_or_else(|| bad("no such dam"))?;
+        let cells = crate::dams::gate_cells(d, cell);
+        crate::dams::drop_gate(sim, building, cell)?;
+        for c in cells {
+            sim.water.unset_gate(c).map_err(|e| bad(&format!("{e:?}")))?;
         }
     }
-    left <= 1e-3
+    sim.locks.at.remove(&cell);
+    crate::supply::tidy(sim);
+    Ok(())
+}
+
+/// `visit_ready` for the gate of a dam or canal at a cell.
+pub fn ready_at(sim: &SimState, building: crate::buildings::BuildingId, cell: Cell) -> bool {
+    gate_of(sim, building, cell).is_some_and(|g| visit_ready(sim, building, &g))
 }

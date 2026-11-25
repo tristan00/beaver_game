@@ -46,10 +46,10 @@ pub fn is_moving(ag: &Agent) -> bool {
 }
 
 /// Where a beaver is drawn: on its way from cell to cell, or wherever it is in a lock's working
-/// (`harbor::lock_pose`).
+/// (`raft landing::lock_pose`).
 pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let base = agent_cells_pos(sim, ag, pending_days);
-    super::harbor::lock_pose(sim, ag, pending_days, base).map_or(base, |p| p.0)
+    super::raft_landing::lock_pose(sim, ag, pending_days, base).map_or(base, |p| p.0)
 }
 
 fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
@@ -93,7 +93,7 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     match &ag.task {
         Task::Collect { target, .. } => match sim.resources.get(*target).map(|r| r.kind) {
             Some(ResourceKind::Tree | ResourceKind::Felled) => Pose::Gnaw,
-            Some(ResourceKind::MudBank | ResourceKind::RiverClay | ResourceKind::Pebbles) => Pose::Dig,
+            Some(ResourceKind::MudBank | ResourceKind::RiverMud | ResourceKind::Pebbles) => Pose::Dig,
             Some(ResourceKind::Plant | ResourceKind::WaterPlant) => Pose::Forage,
             None => Pose::Work,
         },
@@ -104,7 +104,7 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
         Task::Dig { .. } => Pose::Dig,
         Task::Gate { .. } => Pose::Work,
         Task::Eat { .. } => Pose::Forage,
-        Task::Pick { .. } | Task::Fetch { .. } | Task::Carry { .. } | Task::Haul { .. } => Pose::Handle,
+        Task::Pick { .. } | Task::Fetch { .. } | Task::Carry { .. } | Task::Haul { .. } | Task::Supply { .. } => Pose::Handle,
         Task::Watch { .. } => Pose::Watch,
         // Loading and unloading a raft; otherwise holding it in the water.
         Task::Raft { leg: 2 | 4, .. } => Pose::Handle,

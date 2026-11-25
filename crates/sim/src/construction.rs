@@ -12,30 +12,30 @@ mod placement_tests {
         let mut sim = SimState::new(1);
         sim.work.supplies = Some((5, 5));
         let before = sim.buildings.buildings.len();
-        let error = sim.check_site(BuildingKind::Shelter, (5, 5)).unwrap_err();
+        let error = sim.check_site(BuildingKind::Lodge, (5, 5)).unwrap_err();
         assert_eq!(error, BuildError::SupplyPile);
-        let command = crate::Command::PlaceSite { kind: BuildingKind::Shelter, pos: (5, 5) };
+        let command = crate::Command::PlaceSite { kind: BuildingKind::Lodge, pos: (5, 5) };
         assert_eq!(sim.apply(command), Err(SimError::InvalidCommand(error.to_string())));
         assert_eq!(sim.buildings.buildings.len(), before);
         assert!(sim.work.places.is_empty());
     }
 
-    /// A shelter, a dam and a canal can be built from day 1; the rest wait for what unlocks them.
+    /// A lodge, a dam and a canal can be built from day 1; the rest wait for what unlocks them.
     #[test]
     fn buildings_unlock_once_their_prerequisite_is_finished() {
         let mut sim = SimState::new(1);
-        for k in [BuildingKind::Shelter, BuildingKind::Dam, BuildingKind::Canal] {
+        for k in [BuildingKind::Lodge, BuildingKind::Dam, BuildingKind::Canal] {
             assert_eq!(sim.unlocked(k), Ok(()), "{k:?} is open from the start");
         }
-        for k in [BuildingKind::Warehouse, BuildingKind::Larder, BuildingKind::Toolshed, BuildingKind::Forester, BuildingKind::Logistics, BuildingKind::Lookout] {
+        for k in [BuildingKind::StickPile, BuildingKind::FoodCache, BuildingKind::PebbleHeap, BuildingKind::Forester, BuildingKind::HaulMound, BuildingKind::Lookout] {
             assert!(matches!(sim.unlocked(k), Err(BuildError::Locked(_))), "{k:?} is locked at the start");
         }
-        let shelter = |status| buildings::Building { id: buildings::BuildingId(1), kind: BuildingKind::Shelter, pos: (5, 5), status, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
-        sim.buildings.buildings.push(shelter(buildings::Status::Site));
-        assert_eq!(sim.unlocked(BuildingKind::Warehouse), Err(BuildError::Locked(BuildingKind::Shelter)), "a shelter site is not enough");
-        sim.buildings.buildings[0] = shelter(buildings::Status::Complete);
-        assert_eq!(sim.unlocked(BuildingKind::Warehouse), Ok(()));
-        assert_eq!(sim.unlocked(BuildingKind::Toolshed), Err(BuildError::Locked(BuildingKind::Warehouse)), "one step at a time");
+        let lodge = |status| buildings::Building { id: buildings::BuildingId(1), kind: BuildingKind::Lodge, pos: (5, 5), status, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+        sim.buildings.buildings.push(lodge(buildings::Status::Site));
+        assert_eq!(sim.unlocked(BuildingKind::StickPile), Err(BuildError::Locked(BuildingKind::Lodge)), "a lodge site is not enough");
+        sim.buildings.buildings[0] = lodge(buildings::Status::Complete);
+        assert_eq!(sim.unlocked(BuildingKind::StickPile), Ok(()));
+        assert_eq!(sim.unlocked(BuildingKind::PebbleHeap), Err(BuildError::Locked(BuildingKind::StickPile)), "one step at a time");
     }
 }
 
@@ -125,7 +125,7 @@ impl SimState {
                 }
             }
         }
-        self.release_workers(id);
+        self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         self.output.forget(id);
         Ok(refunded)
@@ -147,7 +147,7 @@ impl SimState {
     }
 
     /// A finished building worn to nothing falls apart: what it held is left lying where it
-    /// stood, its workers and residents go, and the ground is free again.
+    /// stood, its beavers and residents go, and the ground is free again.
     pub(crate) fn wreck(&mut self, id: buildings::BuildingId) {
         let Some(b) = self.buildings.building(id) else { return };
         let (kind, pos) = (b.kind, b.pos);
@@ -178,14 +178,14 @@ impl SimState {
         self.forestry.cut_rules.remove(&id);
         self.buildings.water_bound.remove(&id);
         self.buildings.pebbled.remove(&id);
-        self.release_workers(id);
+        self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         self.buildings.wrecked.insert(id);
         self.output.forget(id);
         crate::trace::event(format!("BUILDING_WRECKED {} id={} kind={kind:?}", crate::trace::sim_stamp(), id.0));
     }
 
-    fn release_workers(&mut self, id: buildings::BuildingId) {
+    fn release_beavers(&mut self, id: buildings::BuildingId) {
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
                 ag.assignment = None;

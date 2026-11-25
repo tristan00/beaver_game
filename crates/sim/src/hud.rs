@@ -11,7 +11,7 @@ pub const MAX_PROBLEMS: usize = 4;
 pub const FOOD_WARN_DAYS: f32 = 20.0;
 pub const FULL_SHARE: f32 = 0.98;
 pub const WEAK_DAM: f32 = 0.6;
-pub const FIX_WORKERS: usize = 2;
+pub const FIX_BEAVERS: usize = 2;
 pub const FOOD_GATHER_RADIUS: usize = 80;
 /// Food for one winter: a whole calendar season.
 pub const WINTER_RESERVE_DAYS: f32 = crate::calendar::SEASON_DAYS as f32;
@@ -28,7 +28,7 @@ mod repair_alert_tests {
         assert!(food_runout_days(100.0,1.0,2.0,0.01).is_infinite());
     }
     #[test]
-    fn emergency_food_response_scales_with_workers() {
+    fn emergency_food_response_scales_with_beavers() {
         let mut s=SimState::new(1);
         s.colony.found((5.0,5.0),&crate::grid::Grid::new(8,8,0.0)).unwrap();
         s.resources.clear();s.resources.add(ResourceKind::Plant,(35,35),4.0);
@@ -207,7 +207,7 @@ pub enum Severity {
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Fix {
-    AddWorkers { building: BuildingId, n: usize },
+    AddBeavers { building: BuildingId, n: usize },
     Gather { kind: ResourceKind, n: usize },
     Place(BuildingKind),
     StaffSites,
@@ -232,7 +232,7 @@ pub enum ProblemKind {
     Maintenance,
     DamFailed,
     Stranger,
-    LoggingAreaRunningOut,
+    FellingAreaRunningOut,
     ForestFalling,
     HighAndDry,
     /// A building stands in water deeper than beavers build for.
@@ -251,6 +251,9 @@ pub enum ProblemKind {
     GroundFrozen,
     /// Every builder waiting at a site that needs a good nobody has or is bringing (the subject).
     WaitingFor,
+    /// No lodge stands empty, and a beaver needs one: one without a home, or one grown and
+    /// ready to leave its parents' lodge.
+    NoFreeLodge,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -301,11 +304,11 @@ fn gatherers(sim: &SimState, n: usize) -> Vec<BeaverId> {
 
 fn food_fix(sim: &SimState) -> Fix {
     // Extra staff in an exhausted work area cannot resolve a food shortage.
-    // Send available workers to food in the wider emergency gathering area.
+    // Send available beavers to food in the wider emergency gathering area.
     // A fixed pair is too small to respond to a mature colony's winter deficit.
     // The player explicitly moves a quarter of the workforce.
-    let workers=sim.colony.beavers.iter().filter(|b|b.can_work()).count();
-    let n = gatherers(sim, workers.div_ceil(4).max(FIX_WORKERS)).len();
+    let beavers=sim.colony.beavers.iter().filter(|b|b.can_work()).count();
+    let n = gatherers(sim, beavers.div_ceil(4).max(FIX_BEAVERS)).len();
     if let Some(home) = colony_cell(sim).filter(|_|n>0) {
         let r=FOOD_GATHER_RADIUS;
         let area=crate::work::Area{min:(home.0.saturating_sub(r),home.1.saturating_sub(r)),max:(home.0+r,home.1+r)};
@@ -324,13 +327,13 @@ fn winter_food_problem(sim:&SimState)->Option<Problem> {
     if need<=0.0 || stock>=target {return None;}
     let capacity=sim.buildings.stores.capacity(Good::Food);
     let gathering=food_fix(sim);
-    let building_cache=sim.buildings.buildings.iter().any(|b|b.kind==BuildingKind::Warehouse&&!b.is_complete());
+    let building_cache=sim.buildings.buildings.iter().any(|b|b.kind==BuildingKind::StickPile&&!b.is_complete());
     let add_cache=capacity<target && !building_cache;
     Some(Problem {
         kind:ProblemKind::WinterFood,severity:Severity::Warning,value:stock/need,
         cause:Breakdown::new(stock/need,vec![row("Stored food",stock,Source::None),row("Storage capacity",capacity,Source::None),row("Winter reserve goal",target,Source::None),row("Daily appetite",need,Source::None)]),
         subject:Some(Subject::Good(Good::Food)),
-        fix:if add_cache {place_fix(sim,BuildingKind::Warehouse)} else {gathering},
+        fix:if add_cache {place_fix(sim,BuildingKind::StickPile)} else {gathering},
         alt_fix:if add_cache&&gathering!=Fix::Focus {Some(gathering)} else {None},focus:colony_cell(sim),
     })
 }
@@ -338,18 +341,17 @@ fn winter_food_problem(sim:&SimState)->Option<Problem> {
 /// A beaver in a job, fit to work and not tired, waiting at home because its job has nothing
 /// for it (what its card shows as 'No work').
 fn waiting_for_work(sim: &SimState, id: BeaverId) -> bool {
-    sim.colony.beaver(id).is_some_and(|b| b.can_work() && !b.resting)
-        && sim.agents.get(id).is_some_and(|a| a.task == Task::Rest && a.load.is_none())
+    crate::jobs::waiting(sim, id).is_some()
 }
 
 /// The good a gathering role brings in.
-fn gathered_good(role: crate::jobs::RoleKind) -> Option<Good> {
+pub(crate) fn gathered_good(role: crate::jobs::RoleKind) -> Option<Good> {
     use crate::jobs::RoleKind as R;
     match role {
         R::Forager => Some(Good::Food),
-        R::Logger => Some(Good::Sticks),
-        R::MudDigger => Some(Good::Clay),
-        R::PebbleCollector => Some(Good::Pebbles),
+        R::Feller => Some(Good::Sticks),
+        R::MudDigger => Some(Good::Mud),
+        R::Pebbler => Some(Good::Pebbles),
         _ => None,
     }
 }
@@ -368,13 +370,13 @@ fn good_word(g: Good) -> &'static str {
     match g {
         Good::Food => "food",
         Good::Sticks => "sticks",
-        Good::Clay => "clay",
+        Good::Mud => "mud",
         Good::Pebbles => "pebbles",
         Good::Saplings => "saplings",
     }
 }
 
-/// One alert for each job whose workers are all waiting with nothing to do. Gatherers held
+/// One alert for each job whose beavers are all waiting with nothing to do. Gatherers held
 /// back by a full store are left to the full-store alert.
 fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
     for role in crate::jobs::RoleKind::DEFAULT_ORDER {
@@ -395,7 +397,7 @@ fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
         if role == crate::jobs::RoleKind::Builder {
             let waits: Vec<Option<Good>> = fit
                 .iter()
-                .map(|b| sim.work.slot_of(b.id).and_then(|(site, _, _)| sim.work.place(site)).and_then(|p| crate::agents::site_waits_on(sim, p)))
+                .map(|b| match crate::jobs::waiting(sim, b.id) { Some(crate::jobs::Wait::Good(g)) => Some(g), _ => None })
                 .collect();
             let most = Good::ALL.into_iter().map(|g| (waits.iter().filter(|w| **w == Some(g)).count(), g)).max_by_key(|x| x.0);
             if let (true, Some((_, g))) = (waits.iter().all(Option::is_some), most) {
@@ -414,7 +416,7 @@ fn no_work_problems(sim: &SimState, out: &mut Vec<Problem>) {
             }
         }
         // Diggers wait out frozen ground: their beds and banks are frozen in.
-        let frozen = crate::agents::frozen(sim) && matches!(role, crate::jobs::RoleKind::MudDigger | crate::jobs::RoleKind::PebbleCollector);
+        let frozen = crate::agents::frozen(sim) && matches!(role, crate::jobs::RoleKind::MudDigger | crate::jobs::RoleKind::Pebbler);
         let rows = fit.iter().map(|b| row(if frozen { "Ground frozen" } else { "No work" }, 1.0, Source::Beaver(b.id))).collect();
         out.push(Problem {
             kind: if frozen { ProblemKind::GroundFrozen } else { ProblemKind::NoWork },
@@ -493,8 +495,8 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     }
 
     let dry: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| sim.buildings.stranded(b, &sim.water.depth)).collect();
-    if let Some(first) = dry.iter().find(|b| b.kind == BuildingKind::Shelter).or(dry.first()) {
-        let home = first.kind == BuildingKind::Shelter;
+    if let Some(first) = dry.iter().find(|b| b.kind == BuildingKind::Lodge).or(dry.first()) {
+        let home = first.kind == BuildingKind::Lodge;
         let rows = dry.iter().map(|b| row("High and dry", 1.0, building_source(sim, b.id))).collect();
         out.push(Problem {
             kind: ProblemKind::HighAndDry,
@@ -509,7 +511,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     }
 
     let drowned: Vec<&crate::buildings::Building> = sim.buildings.buildings.iter().filter(|b| crate::buildings::flooded(b, &sim.water.depth)).collect();
-    if let Some(first) = drowned.iter().find(|b| b.kind == BuildingKind::Shelter).or(drowned.first()) {
+    if let Some(first) = drowned.iter().find(|b| b.kind == BuildingKind::Lodge).or(drowned.first()) {
         let rows = drowned.iter().map(|b| row("Under water (m)", crate::buildings::flood_depth(b, &sim.water.depth), building_source(sim, b.id))).collect();
         out.push(Problem {
             kind: ProblemKind::Flooded,
@@ -527,11 +529,11 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         .work
         .places
         .iter()
-        .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.slots.iter().all(|s| s.worker.is_none()) && !crate::agents::site_stalled(sim, p))
+        .filter(|p| crate::agents::is_site(sim, p) && !p.paused && p.slots.iter().all(|s| s.beaver.is_none()) && !crate::agents::site_stalled(sim, p))
         .map(|p| p.building)
         .collect();
     if let Some(&first) = stalled.first() {
-        let can_staff = stalled.iter().any(|&b| crate::jobs::add_worker_preview(sim, b).is_some());
+        let can_staff = stalled.iter().any(|&b| crate::jobs::add_beaver_preview(sim, b).is_some());
         let rows = stalled.iter().map(|&b| row(building_name(sim, b), sim.work.progress(b).unwrap_or(0.0), Source::Building(b))).collect();
         out.push(Problem {
             kind: ProblemKind::NoBuilders,
@@ -545,7 +547,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         });
     }
 
-    let busy_fix = |f: &Fix| matches!(f, Fix::AddWorkers { .. } | Fix::Gather { .. } | Fix::StaffSites);
+    let busy_fix = |f: &Fix| matches!(f, Fix::AddBeavers { .. } | Fix::Gather { .. } | Fix::StaffSites);
     if !idle.is_empty() && !out.iter().any(|p| busy_fix(&p.fix)) {
         let reasons = crate::jobs::idle_reasons(sim);
         let rows = reasons
@@ -568,7 +570,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 .iter()
                 .filter(|p| !p.paused && (crate::agents::is_site(sim, p) || sim.buildings.building(p.building).is_some_and(|b| b.is_complete())))
                 .flat_map(|p| p.slots.iter())
-                .filter(|s| s.worker.is_none() && crate::jobs::role_kind(s.role) == role)
+                .filter(|s| s.beaver.is_none() && crate::jobs::role_kind(s.role) == role)
                 .count();
             (slots > 0 && crate::jobs::role_add_preview(sim, role).is_some()).then_some((role, slots))
         });
@@ -597,12 +599,16 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
                 value: (have / cap * 100.0).round(),
                 cause: Breakdown::new((have / cap * 100.0).round(), rows),
                 subject: Some(Subject::Good(g)),
-                fix: place_fix(sim, BuildingKind::Warehouse),
+                fix: place_fix(sim, BuildingKind::StickPile),
                 alt_fix: None,
                 focus: colony_cell(sim),
             });
             break;
         }
+    }
+
+    if let Some(p) = no_free_lodge(sim) {
+        out.push(p);
     }
 
     if let Some((then, now)) = crate::forestry::forest_trend(sim) {
@@ -655,6 +661,42 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
     out
 }
 
+/// No lodge stands empty while a beaver needs one: a homeless beaver, or a grown one still in
+/// its parents' lodge that cannot move out or start a family without one. Quiet while a new
+/// lodge is going up.
+fn no_free_lodge(sim: &SimState) -> Option<Problem> {
+    let c = &sim.colony;
+    let empty = c.lodges.iter().any(|l| !c.beavers.iter().any(|b| b.lodge == Some(l.id)));
+    let going_up = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && !b.is_complete());
+    if empty || going_up {
+        return None;
+    }
+    let with_parent = |b: &crate::colony::Beaver| {
+        b.lodge.is_some() && [b.mother, b.father].into_iter().flatten().any(|p| c.beaver(p).is_some_and(|p| p.lodge == b.lodge))
+    };
+    let homeless: Vec<&crate::colony::Beaver> = c.beavers.iter().filter(|b| b.lodge.is_none()).collect();
+    let leaving: Vec<&crate::colony::Beaver> = c.beavers.iter()
+        .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.age_years() >= crate::colony::LEAVE_HOME_AGE_YEARS && with_parent(b))
+        .collect();
+    let n = homeless.len() + leaving.len();
+    if n == 0 {
+        return None;
+    }
+    let rows = homeless.iter().map(|b| row("No home", 1.0, Source::Beaver(b.id)))
+        .chain(leaving.iter().map(|b| row("Ready to leave home", 1.0, Source::Beaver(b.id))))
+        .collect();
+    Some(Problem {
+        kind: ProblemKind::NoFreeLodge,
+        severity: Severity::Warning,
+        value: n as f32,
+        cause: Breakdown::new(n as f32, rows),
+        subject: Some(Subject::Building(BuildingKind::Lodge)),
+        fix: place_fix(sim, BuildingKind::Lodge),
+        alt_fix: None,
+        focus: colony_cell(sim),
+    })
+}
+
 /// Build `kind`, or, while it is locked, the building that unlocks it.
 fn place_fix(sim: &SimState, mut kind: BuildingKind) -> Fix {
     while let Err(crate::buildings::BuildError::Locked(need)) = sim.unlocked(kind) {
@@ -669,9 +711,9 @@ fn place_fix(sim: &SimState, mut kind: BuildingKind) -> Fix {
 pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
     let err = |e: crate::SimError| e.to_string();
     match fix {
-        Fix::AddWorkers { building, n } => {
+        Fix::AddBeavers { building, n } => {
             for k in 0..n.max(1) {
-                if let Err(e) = sim.apply(Command::AddWorker { building }) {
+                if let Err(e) = sim.apply(Command::AddBeaver { building }) {
                     return if k == 0 { Err(err(e)) } else { Ok(()) };
                 }
             }
@@ -699,7 +741,7 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
             let sites: Vec<BuildingId> = sites.into_iter().map(|(_, b)| b).collect();
             let mut placed = 0;
             for b in sites {
-                while sim.work.place(b).is_some_and(|p| p.filled() < p.slots.len()) && sim.apply(Command::AddWorker { building: b }).is_ok() {
+                while sim.work.place(b).is_some_and(|p| p.filled() < p.slots.len()) && sim.apply(Command::AddBeaver { building: b }).is_ok() {
                     placed += 1;
                 }
             }
@@ -728,7 +770,7 @@ fn canal_problems(sim: &SimState, out: &mut Vec<Problem>) {
                 cause: Breakdown::new(0.0, vec![row("Floats a load", 0.0, Source::Building(b.id))]),
                 subject: Some(Subject::Building(BuildingKind::Canal)), fix: Fix::OpenDam { dam: b.id }, alt_fix: None, focus: at });
         }
-        if !k.maintain && s.silted * 4 >= s.cells.max(1) {
+        if !k.upkeep && s.silted * 4 >= s.cells.max(1) {
             let v = (s.silted as f32 / s.cells.max(1) as f32 * 100.0).round();
             out.push(Problem { kind: ProblemKind::CanalSilting, severity: Severity::Warning, value: v,
                 cause: Breakdown::new(v, vec![row("Silted cells", s.silted as f32, Source::Building(b.id))]),

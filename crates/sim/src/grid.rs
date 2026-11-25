@@ -288,7 +288,7 @@ impl<T> Grid<T> {
         &mut self.tiles
     }
 
-    /// Every cell, with the means to say which were written: for a pass that visits many
+    /// Every cell, with the means to say which were written: for a sweep that visits many
     /// cells and changes few. A cell written without telling `Marks` is not seen as changed.
     pub(crate) fn cells_and_marks(&mut self) -> (&mut [T], Marks<'_>) {
         self.revision = self.revision.wrapping_add(1);
@@ -345,7 +345,7 @@ mod tile_tests {
         g[8 * 48 + 18] = 3.0;
         let moved: Vec<usize> = (0..9).filter(|&t| stamps(&g)[t] != before[t]).collect();
         assert_eq!(moved, vec![0, 1, 5, 6]);
-        // A pass over every cell says which it changed.
+        // A sweep over every cell says which it changed.
         let at = stamps(&g);
         let (cells, mut marks) = g.cells_and_marks();
         cells[0] = 5.0;
@@ -376,7 +376,7 @@ mod tile_tests {
                 redrawn[t] += (stamps(&g)[t] != before[t]) as usize;
             }
         }
-        // The slow cells pass a whole step of 0.1 twice; the fast one, every other time, and
+        // The slow cells cross a whole step of 0.1 twice; the fast one, every other time, and
         // is told of in both tiles that read it (its own, and the one whose edge it stands by).
         assert_eq!(redrawn, [2, 2, 2, 5, 5, 2, 2, 2, 2]);
     }

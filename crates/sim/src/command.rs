@@ -18,12 +18,12 @@ pub enum Command {
     PlaceDam { cells: Vec<water::Cell> },
     /// Grow a dam; `cells` narrows a raise to those cells.
     GrowDam { dam: buildings::BuildingId, growth: DamGrowth, cells: Vec<water::Cell> },
-    SetDamMaintain { dam: buildings::BuildingId, on: bool },
+    SetDamUpkeep { dam: buildings::BuildingId, on: bool },
     RepairBuilding { building: buildings::BuildingId },
     ReinforceBuilding { building: buildings::BuildingId },
     /// Face a dam or building with pebbles so it wears and erodes more slowly.
     PebbleBuilding { building: buildings::BuildingId },
-    /// Switch one worker slot on or off.
+    /// Switch one beaver slot on or off.
     SetSlotOff { building: buildings::BuildingId, slot: usize, off: bool },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
@@ -32,19 +32,21 @@ pub enum Command {
     PlaceCanal { cells: Vec<water::Cell> },
     /// Grow a canal; `cells` narrows Deepen and Widen to those cells, or is the route Extend adds.
     GrowCanal { canal: buildings::BuildingId, growth: canals::CanalGrowth, cells: Vec<water::Cell> },
-    SetCanalMaintain { canal: buildings::BuildingId, on: bool },
+    SetCanalUpkeep { canal: buildings::BuildingId, on: bool },
     /// Make a dam cell a gate.
     AddDamGate { dam: buildings::BuildingId, cell: water::Cell },
     /// Ask for a gate setting on a dam or canal; a builder makes the change.
     SetGate { building: buildings::BuildingId, cell: water::Cell, setting: gates::GateSetting },
-    /// Upgrade a built gate into a lock (needs a finished Harbor); a builder visits to build it.
+    /// Upgrade a built gate into a lock (needs a finished Raft landing); a builder visits to build it.
     UpgradeLock { building: buildings::BuildingId, cell: water::Cell },
+    /// Take a gate (and any lock on it) off a dam or canal; what was brought for it goes back.
+    RemoveGate { building: buildings::BuildingId, cell: water::Cell },
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
     EmptySlot { building: buildings::BuildingId, slot: usize },
-    AddWorker { building: buildings::BuildingId },
-    RemoveWorker { building: buildings::BuildingId },
+    AddBeaver { building: buildings::BuildingId },
+    RemoveBeaver { building: buildings::BuildingId },
     SetPriority { building: buildings::BuildingId, priority: work::Priority },
     SetPaused { building: buildings::BuildingId, paused: bool },
     AdjustRole { role: jobs::RoleKind, delta: i32 },
@@ -57,7 +59,7 @@ pub enum Command {
     CancelSite { building: buildings::BuildingId },
     /// Stop a repair, reinforcing or pebble facing, leaving the building itself standing.
     CancelMaintenance { building: buildings::BuildingId },
-    /// Keep a role's workers within `cells` of water (None: no limit).
+    /// Keep a role's beavers within `cells` of water (None: no limit).
     SetShoreLimit { role: jobs::RoleKind, cells: Option<u16> },
 }
 
@@ -115,7 +117,7 @@ mod tests {
 impl SimState {
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         // Preserve synchronous input feedback on a presentation snapshot. Only
-        // the worker advances time; successful local commands are replayed there
+        // the beaver advances time; successful local commands are replayed there
         // in order and acknowledged before their predictions are retired.
         let predicted = self.client_commands.is_some().then(|| cmd.clone());
         let events = predicted.as_ref().map(|_| self.colony.events.clone());
@@ -123,6 +125,8 @@ impl SimState {
         let diagnostic = crate::trace::enabled().then(|| format!("{cmd:?}"));
         let logged = self.recorder.is_some().then(|| cmd.clone());
         let res = self.apply_inner(cmd);
+        // Beavers and families a command brought in (the founders, a newcomer) get their names.
+        crate::names::step(self);
         if let Some(command) = diagnostic {
             crate::trace::event(format!("COMMAND step={} day={:.4} {command} RESULT={res:?}", self.steps, self.time_days));
         }
@@ -159,7 +163,7 @@ impl SimState {
                 };
                 dams::apply_plan(self, dam, plan.map_err(SimError::InvalidCommand)?)
             }
-            Command::SetDamMaintain { dam, on } => dams::set_maintain(self, dam, on),
+            Command::SetDamUpkeep { dam, on } => dams::set_upkeep(self, dam, on),
             Command::RepairBuilding { building } => maintenance::order(self, building, maintenance::Refit::Repair),
             Command::ReinforceBuilding { building } => maintenance::order(self, building, maintenance::Refit::Reinforce),
             Command::PebbleBuilding { building } => maintenance::order(self, building, maintenance::Refit::Pebbles),
@@ -171,7 +175,7 @@ impl SimState {
             }
             Command::PlaceCanal { cells } => canals::place(self, &cells).map(|_| ()),
             Command::GrowCanal { canal, growth, cells } => canals::grow(self, canal, growth, &cells),
-            Command::SetCanalMaintain { canal, on } => canals::set_maintain(self, canal, on),
+            Command::SetCanalUpkeep { canal, on } => canals::set_upkeep(self, canal, on),
             Command::AddDamGate { dam, cell } => dams::add_gate(self, dam, cell),
             Command::SetGate { building, cell, setting } => {
                 if canals::canal(self, building).is_some() {
@@ -184,6 +188,7 @@ impl SimState {
                 }
             }
             Command::UpgradeLock { building, cell } => crate::locks::order(self, building, cell),
+            Command::RemoveGate { building, cell } => crate::gates::remove(self, building, cell),
             Command::Assign { who, to } => {
                 if let Some(kit) = who.iter().find(|id| to.is_some() && !matches!(to, Some(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| !b.can_work())) {
                     return Err(SimError::InvalidCommand(format!("beaver {} is too young to work", kit.0)));
@@ -230,7 +235,7 @@ impl SimState {
                     .and_then(|p| match p.slots.get(slot) {
                         None if slot == p.slots.len() && p.open_ended() => Ok(()),
                         None => Err(work::WorkError::SlotOutOfRange),
-                        Some(s) if s.worker.is_some() => Err(work::WorkError::SlotTaken),
+                        Some(s) if s.beaver.is_some() => Err(work::WorkError::SlotTaken),
                         Some(_) => Ok(()),
                     })
                     .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
@@ -239,12 +244,12 @@ impl SimState {
             Command::EmptySlot { building, slot } => {
                 self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
                 if let Ok(p) = self.work.place_mut(building) {
-                    p.max_workers = p.max_workers.min(p.filled());
+                    p.max_beavers = p.max_beavers.min(p.filled());
                 }
                 Ok(())
             }
-            Command::AddWorker { building } => jobs::add_worker(self, building),
-            Command::RemoveWorker { building } => jobs::remove_worker(self, building),
+            Command::AddBeaver { building } => jobs::add_beaver(self, building),
+            Command::RemoveBeaver { building } => jobs::remove_beaver(self, building),
             Command::SetPriority { building, priority } => jobs::set_priority(self, building, priority),
             Command::SetPaused { building, paused } => jobs::set_paused(self, building, paused),
             Command::AdjustRole { role, delta } => jobs::adjust_role(self, role, delta),
@@ -262,9 +267,9 @@ impl SimState {
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
             Command::CancelMaintenance { building } => crate::maintenance::cancel(self, building).map(|_| ()),
             Command::SetBalance { building, on } => {
-                let logistics = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind == buildings::BuildingKind::Logistics);
-                if !logistics {
-                    return Err(SimError::InvalidCommand(format!("building {} is not a finished logistics building", building.0)));
+                let haul_mound = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind == buildings::BuildingKind::HaulMound);
+                if !haul_mound {
+                    return Err(SimError::InvalidCommand(format!("building {} is not a finished haul mound", building.0)));
                 }
                 if on {
                     self.work.balanced.insert(building);

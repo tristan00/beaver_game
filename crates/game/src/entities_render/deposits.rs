@@ -1,5 +1,5 @@
-//! Rock and clay: the boulders of rocky outcrops (scenery, never gathered), the pebbles that
-//! are the resource (heaps of small mixed stones on land, gravel bars in the streams), and clay
+//! Rock and mud: the boulders of rocky outcrops (scenery, never gathered), the pebbles that
+//! are the resource (heaps of small mixed stones on land, gravel bars in the streams), and mud
 //! (wet heaps on the banks, slick grey seams where a river lays it down).
 use super::meshgen::{hex, mix, Mb, Rng};
 use bevy::prelude::*;
@@ -132,16 +132,16 @@ pub fn gravel_bar_mesh(q: u8) -> Mesh {
     mb.build()
 }
 
-/// A clay deposit on the bank: a wet, glistening heap of grey-brown clay over a dark puddle of
-/// slick mud, a scoop dug out of one side showing the paler clay inside, and a few lumps rolled
-/// ready to carry. Wet clay reads apart from the dark earth and from the dams' mud.
-pub fn clay_heap_mesh() -> Mesh {
+/// A mud deposit on the bank: a wet, glistening heap of grey-brown mud over a dark puddle of
+/// slick mud, a scoop dug out of one side showing the paler mud inside, and a few lumps rolled
+/// ready to carry. Wet mud reads apart from the dark earth and from the dams' mud.
+pub fn mud_heap_mesh() -> Mesh {
     let mut mb = Mb::new();
     let mut r = Rng(6060);
-    let (wet, clay, pale) = (hex(0x3A2E26), hex(0x645244), hex(0x8E7C66));
+    let (wet, mud, pale) = (hex(0x3A2E26), hex(0x645244), hex(0x8E7C66));
     // The slick puddle round it.
     let start = mb.len();
-    mb.ellipsoid_g(v(0.0, -0.02, 0.0), v(0.62, 0.05, 0.5), wet, mix(wet, clay, 0.3), 14, 4);
+    mb.ellipsoid_g(v(0.0, -0.02, 0.0), v(0.62, 0.05, 0.5), wet, mix(wet, mud, 0.3), 14, 4);
     mb.displace(start, |p| {
         let a = p.z.atan2(p.x);
         let k = 1.0 + 0.12 * (3.0 * a + 0.7).sin() + 0.06 * (7.0 * a).cos();
@@ -149,7 +149,7 @@ pub fn clay_heap_mesh() -> Mesh {
     });
     // The heap.
     let start = mb.len();
-    mb.ellipsoid_g(v(0.05, 0.02, 0.0), v(0.42, 0.26, 0.34), clay, pale, 14, 8);
+    mb.ellipsoid_g(v(0.05, 0.02, 0.0), v(0.42, 0.26, 0.34), mud, pale, 14, 8);
     mb.displace(start, |p| {
         let q = p - v(0.05, 0.02, 0.0);
         let a = q.z.atan2(q.x);
@@ -169,14 +169,14 @@ pub fn clay_heap_mesh() -> Mesh {
     for k in 0..3 {
         let a = 3.6 + k as f32 * 0.5;
         let s = r.range(0.07, 0.09);
-        mb.ellipsoid_g(v(a.cos() * 0.5, s * 0.8, a.sin() * 0.45), v(s, s * 0.85, s), clay, mix(clay, pale, 0.6), 8, 5);
+        mb.ellipsoid_g(v(a.cos() * 0.5, s * 0.8, a.sin() * 0.45), v(s, s * 0.85, s), mud, mix(mud, pale, 0.6), 8, 5);
     }
     mb.build()
 }
 
-/// River clay: a smooth, slick grey seam the current lays along the bank, its edge dark with
+/// River mud: a smooth, slick grey seam the current lays along the bank, its edge dark with
 /// water, showing grey and ochre layers where it is cut.
-pub fn river_clay_mesh() -> Mesh {
+pub fn river_mud_mesh() -> Mesh {
     let mut mb = Mb::new();
     let (grey, slick, ochre) = (hex(0x6E7274), hex(0xA2A6A4), hex(0xA0804E));
     let start = mb.len();

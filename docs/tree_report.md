@@ -100,9 +100,9 @@ Felling gives logs and branches (both become **sticks**) and bark (**food**). Sa
 | Spruce | 2.9 / 0 | 7.2 / 0 | 5.8 / 0 | 2.25 | 1.8 |
 | Beech | 3.6 / 0.25 | 8.8 / 0.5 | 7.2 / 0.25 | 3 | 2.5 |
 
-Felling days assume one beaver at full effort (1.3 work a day). Mood, health, rest and logging skill change it.
+Felling days assume one beaver at full effort (1.3 work a day). Mood, health, rest and felling skill change it.
 
-Old trees give fewer sticks and less food than mature ones. Mature is the stage to cut, and that is the default cutting rule.
+Old trees give fewer sticks and less food than mature ones. Mature is the stage to cut, and that is the default felling rule.
 
 ## Survival
 
@@ -140,7 +140,7 @@ No growth, no spreading. Drowning and rotting continue.
 - Mature trees drown after 30 flooded days × the species' flood tolerance; it was 60.
 - Dead trees standing in water fall after 10 days; before, they stood in the pond for 2 years.
 - New maps start with no tree in water deeper than its species stands. That removed about 100 trees from Algonquin's river edges.
-- Clicking a tree, a felled trunk, food plants or clay now opens an inspector card:
+- Clicking a tree, a felled trunk, food plants or mud now opens an inspector card:
   - species, with condition pips while the tree is drowning;
   - days to its next stage;
   - what felling it now gives;

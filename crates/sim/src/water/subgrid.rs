@@ -7,7 +7,7 @@
 //! advection and implicit Manning friction, capped at critical flow.
 //!
 //! Each step, faces submerged on both sides use Casulli's frozen upwind depth (linear in the
-//! levels); faces whose downstream side is below the sill pass what the upstream head drives,
+//! levels); faces whose downstream side is below the sill carry what the upstream head drives,
 //! implicitly. Submerged faces join regions into clusters, solved upstream first: one region
 //! by safeguarded Newton, larger clusters by Newton with two-level preconditioned CG, and
 //! flat ones (lakes, ponds) as a single reservoir level. Volumes are then updated from the
@@ -21,7 +21,7 @@ const C: usize = 4;
 const DT: f64 = 900.0;
 /// Share of last step's velocity carried into the next (local inertia; 0 = diffusive wave).
 const INERTIA: f64 = 0.0;
-/// Calendar time is banked until this much has passed, then stepped (s).
+/// Calendar time is banked until this much has gone by, then stepped (s).
 const BANK_S: f64 = 900.0;
 /// Gravity (m/s²).
 const GRAV: f64 = 9.81;
@@ -43,8 +43,8 @@ const AGG_MIN: usize = 48;
 const AGG: usize = 8;
 /// Most aggregates (the coarse matrix is dense).
 const AGG_MAX: usize = 160;
-/// Extra passes re-solving clusters that got inflow after they were solved (free-face cycles).
-const REDO_PASSES: usize = 6;
+/// Extra rounds re-solving clusters that got inflow after they were solved (free-face cycles).
+const REDO_ROUNDS: usize = 6;
 /// Clusters of at least this many regions may be solved as one reservoir.
 const POOL_MIN: usize = 16;
 /// ... when their levels agree within this (m).
@@ -55,8 +55,8 @@ const SPILL_MIN: f64 = 0.005;
 const TOWER: f64 = 0.25;
 /// Largest head used in the free-face law (a safety bound, m).
 const H_CAP: f64 = 5.0;
-/// Most passes of the outflow limiter (chains of draining regions need one pass per link).
-const LIMIT_PASSES: usize = 200;
+/// Most rounds of the outflow limiter (chains of draining regions need one round per link).
+const LIMIT_ROUNDS: usize = 200;
 /// Most spill moves per step.
 const SPILL_MOVES: usize = 20000;
 /// Blocks within this many blocks of a dam are resolved cell by cell.
@@ -147,7 +147,7 @@ pub(super) struct Subgrid {
     af_b: Vec<f64>,
     af_dn: Vec<f64>,
     af_kind: Vec<u8>,
-    af_passed: Vec<u8>,
+    af_done: Vec<u8>,
     cl_pool: Vec<bool>,
     uf: Vec<u32>,
     cl_of: Vec<u32>,
@@ -777,7 +777,7 @@ impl Subgrid {
         let wfac = 1.0 / w.cell_m as f64;
         // Classify faces. Submerged faces (water above the lowest sill on both sides, so the
         // level difference is below the upwind depth) use Casulli's frozen upwind depth and
-        // become linear. Free faces pass what the upstream head drives, implicitly.
+        // become linear. Free faces carry what the upstream head drives, implicitly.
         let nfa = self.af.len();
         self.af_loc.clear();
         self.af_g.clear();
@@ -787,8 +787,8 @@ impl Subgrid {
         }
         self.af_kind.clear();
         self.af_kind.resize(nfa, DEAD);
-        self.af_passed.clear();
-        self.af_passed.resize(nfa, 0);
+        self.af_done.clear();
+        self.af_done.resize(nfa, 0);
         for k in 0..nfa {
             let f = self.af[k] as usize;
             let (a, b) = self.face_lr[f];
@@ -959,7 +959,7 @@ impl Subgrid {
                 let xu = if kind == FREE_L { self.eta[a as usize] } else { self.eta[b as usize] };
                 let (q, _) = self.free_flux(k, xu, wfac, false);
                 self.inflow_known[dn as usize] += dt * q;
-                self.af_passed[k] = 1;
+                self.af_done[k] = 1;
             }
         }
         // Upstream-first order of clusters along free faces (Kahn). When only cycles remain,
@@ -1005,9 +1005,9 @@ impl Subgrid {
             head += 1;
             done[c] = true;
             self.solve_cluster(c, dt, w);
-            self.pass_free(c, dt, wfac, &mut indeg, &mut queued, &mut order, &done, &mut dirty, &mut redo);
+            self.solve_free(c, dt, wfac, &mut indeg, &mut queued, &mut order, &done, &mut dirty, &mut redo);
         }
-        for _ in 0..REDO_PASSES {
+        for _ in 0..REDO_ROUNDS {
             if redo.is_empty() {
                 break;
             }
@@ -1017,7 +1017,7 @@ impl Subgrid {
             }
             for &c in &list {
                 self.solve_cluster(c as usize, dt, w);
-                self.pass_free(c as usize, dt, wfac, &mut indeg, &mut queued, &mut order, &done, &mut dirty, &mut redo);
+                self.solve_free(c as usize, dt, wfac, &mut indeg, &mut queued, &mut order, &done, &mut dirty, &mut redo);
             }
         }
     }
@@ -1059,9 +1059,9 @@ impl Subgrid {
     }
 
     /// Hands cluster c's free outflow to the clusters below it. The flow already handed
-    /// over is kept in af_q, so a cluster solved again only passes on the change.
+    /// over is kept in af_q, so a cluster solved again only hands on the change.
     #[allow(clippy::too_many_arguments)]
-    fn pass_free(&mut self, c: usize, dt: f64, wfac: f64, indeg: &mut [u32], queued: &mut [bool], order: &mut Vec<u32>, done: &[bool], dirty: &mut [bool], redo: &mut Vec<u32>) {
+    fn solve_free(&mut self, c: usize, dt: f64, wfac: f64, indeg: &mut [u32], queued: &mut [bool], order: &mut Vec<u32>, done: &[bool], dirty: &mut [bool], redo: &mut Vec<u32>) {
         for fi in self.clf_start[c]..self.clf_start[c + 1] {
             let k = self.clf[fi as usize] as usize;
             let kind = self.af_kind[k];
@@ -1073,11 +1073,11 @@ impl Subgrid {
                 continue;
             }
             let (q, _) = self.free_flux(k, self.x[up as usize], wfac, false);
-            let first = self.af_passed[k] == 0;
+            let first = self.af_done[k] == 0;
             let change = q - self.af_q[k];
             self.inflow_known[dn as usize] += dt * change;
             self.af_q[k] = q;
-            self.af_passed[k] = 1;
+            self.af_done[k] = 1;
             let cd = self.cl_of[dn as usize] as usize;
             if first {
                 indeg[cd] -= 1;
@@ -1564,7 +1564,7 @@ impl Subgrid {
             self.theta[li] = 1.0;
         }
         let th = |t: &[f64], l: u32| if l == NONE { 1.0 } else { t[l as usize] };
-        for pass in 0..LIMIT_PASSES {
+        for round in 0..LIMIT_ROUNDS {
             for li in 0..m {
                 self.inflow[li] = 0.0;
                 self.outflow[li] = dt * self.qout[li] * self.theta[li];
@@ -1580,7 +1580,7 @@ impl Subgrid {
                     self.inflow[to as usize] += amt;
                 }
             }
-            if pass + 1 == LIMIT_PASSES {
+            if round + 1 == LIMIT_ROUNDS {
                 break;
             }
             let mut changed = false;

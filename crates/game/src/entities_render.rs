@@ -2,7 +2,7 @@ mod deposits;
 mod effects;
 mod islands;
 mod gallery;
-pub(crate) mod harbor;
+pub(crate) mod raft_landing;
 mod meshgen;
 mod models;
 mod plants;
@@ -54,6 +54,7 @@ impl Plugin for EntitiesRenderPlugin {
             .add_plugins(wildlife::WildlifePlugin)
             .add_plugins(portrait::PortraitPlugin)
             .add_systems(Startup, init_models)
+            .add_systems(Update, gallery::show_welcome)
             .add_systems(
                 Update,
                 (
@@ -83,8 +84,8 @@ impl Plugin for EntitiesRenderPlugin {
             )
             .add_systems(Update, (effects::grow, effects::puffs, effects::falls).chain().after(topple_trees))
             .add_systems(Update, update_plant_season.after(update_tree_lod))
-            .add_systems(Startup, harbor::init_harbor_meshes)
-            .add_systems(Update, (harbor::sync_locks, harbor::sync_rafts, harbor::animate_locks).chain().after(sim_sync::sync_sim_dams));
+            .add_systems(Startup, raft_landing::init_raft_landing_meshes)
+            .add_systems(Update, (raft_landing::sync_locks, raft_landing::sync_rafts, raft_landing::animate_locks).chain().after(sim_sync::sync_sim_dams));
     }
 }
 
@@ -144,9 +145,9 @@ struct Models {
     pebble_heaps: Vec<Handle<Mesh>>,
     gravel_bars: Vec<Handle<Mesh>>,
     boulders: Vec<Handle<Mesh>>,
-    clay_heap: Handle<Mesh>,
-    river_clay: Handle<Mesh>,
-    /// Wet clay's slick sheen.
+    mud_heap: Handle<Mesh>,
+    river_mud: Handle<Mesh>,
+    /// Wet mud's slick sheen.
     wet: Handle<StandardMaterial>,
     far: Handle<Mesh>,
     wake: Handle<Mesh>,
@@ -306,7 +307,7 @@ pub fn age_scale_days(age_days: f32) -> f32 {
     }
 }
 
-/// Clay and food are hugged to the chest; sticks are carried in the teeth.
+/// Mud and food are hugged to the chest; sticks are carried in the teeth.
 fn held_in_paws(good: sim::buildings::Good) -> bool {
     good != sim::buildings::Good::Sticks
 }
@@ -383,8 +384,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         pebble_heaps: (1..=4).map(|q| meshes.add(deposits::pebble_heap_mesh(q))).collect(),
         gravel_bars: (1..=4).map(|q| meshes.add(deposits::gravel_bar_mesh(q))).collect(),
         boulders: (0..deposits::BOULDER_VARIANTS).map(|v| meshes.add(deposits::boulder_mesh(v))).collect(),
-        clay_heap: meshes.add(deposits::clay_heap_mesh()),
-        river_clay: meshes.add(deposits::river_clay_mesh()),
+        mud_heap: meshes.add(deposits::mud_heap_mesh()),
+        river_mud: meshes.add(deposits::river_mud_mesh()),
         wet: materials.add(StandardMaterial { base_color: Color::linear_rgb(ENTITY_GAIN, ENTITY_GAIN, ENTITY_GAIN), perceptual_roughness: 0.32, reflectance: 0.3, ..default() }),
         far,
         wake,
@@ -1015,7 +1016,7 @@ fn animate_beavers(
         let working_mud = matches!(rig.cur, Pose::Work | Pose::Dig);
         let foraging = rig.cur == Pose::Forage;
         let mouth_good = if foraging { Some(Good::Food) } else { good.filter(|_| !hug) };
-        let paws_good = if hug { good } else if working_mud { Some(Good::Clay) } else { None };
+        let paws_good = if hug { good } else if working_mud { Some(Good::Mud) } else { None };
         if rig.shown != (mouth_good, paws_good) {
             rig.shown = (mouth_good, paws_good);
             for (e, g, set) in [(rig.mouth, mouth_good, &models.loads), (rig.paws, paws_good, &models.paw_loads)] {

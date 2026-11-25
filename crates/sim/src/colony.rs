@@ -85,12 +85,12 @@ mod health_tests {
     use super::*;
 
     #[test]
-    fn assigned_work_trains_skills_without_creating_resources_or_moving_workers() {
+    fn assigned_work_trains_skills_without_creating_resources_or_moving_beavers() {
         let mut c = Colony::default();
         let land = RiverLand::default();
         c.found((0.0, 3.0), &land).unwrap();
-        let worker = c.beavers[0].id;
-        c.slot_jobs.insert(worker, (Job::Forager, true));
+        let beaver = c.beavers[0].id;
+        c.slot_jobs.insert(beaver, (Job::Forager, true));
         let before = (c.food, c.wood, c.beavers[0].pos);
         let skill = c.beavers[0].skill(Job::Forager);
         let plan = c.plan_work(0.5, &land);
@@ -107,7 +107,7 @@ mod health_tests {
     fn work_safety_never_damages_health() {
         let mut c = Colony::default();
         c.found((0.0, 3.0), &RiverLand::default()).unwrap();
-        let work = Work { job: Job::Logger, units: 1.0,
+        let work = Work { job: Job::Feller, units: 1.0,
             eval: SiteEval { land_len: 100.0, water_dist: MAX_WATER_SCAN } };
         let plan = vec![Some(work); c.beavers.len()];
         let initial = c.beavers.iter().map(|b| (b.health,b.harm)).collect::<Vec<_>>();
@@ -194,14 +194,18 @@ impl Stage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Job {
     Forager,
-    Logger,
+    Feller,
     Builder,
     Digger,
     Hauler,
+    Planter,
+    Mender,
+    Sentry,
+    Pebbler,
 }
 
 impl Job {
-    pub const ALL: [Job; 5] = [Job::Forager, Job::Logger, Job::Builder, Job::Digger, Job::Hauler];
+    pub const ALL: [Job; 9] = [Job::Forager, Job::Feller, Job::Builder, Job::Digger, Job::Hauler, Job::Planter, Job::Mender, Job::Sentry, Job::Pebbler];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -341,7 +345,7 @@ pub struct Beaver {
     pub resting: bool,
     /// In its lodge now, out of the wind (from where its body is; not saved).
     #[serde(skip)]
-    pub sheltered: bool,
+    pub in_lodge: bool,
     pub last_birth_year: i64,
     pub pregnancy: Option<Pregnancy>,
     low_mood_days: f32,
@@ -400,6 +404,8 @@ pub enum Event {
     Collapsed(CollapseReport),
     /// A grown young beaver that found no mate moved out of its parents' lodge into an empty one.
     LeftHome { id: BeaverId, lodge: LodgeId },
+    /// A beaver earned an epithet, or a greater one (see `deeds`).
+    Epithet { id: BeaverId },
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -487,7 +493,7 @@ impl Default for Colony {
 /// How much of the cold keeps off a beaver: little out in the open, more inside its lodge the
 /// better the lodge.
 fn insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
-    if b.sheltered { lodge_insulation(lodges, b) } else { OPEN_INSULATION }
+    if b.in_lodge { lodge_insulation(lodges, b) } else { OPEN_INSULATION }
 }
 
 /// How well a beaver's lodge keeps the cold out, which is also how well it sleeps there.
@@ -498,7 +504,7 @@ fn lodge_insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
 
 /// Rest gained a day (lost when negative) for the share of the day worked and how well it sleeps.
 fn rest_per_day(worked: f32, sleep: f32) -> f32 {
-    -TIRE_RATE * worked + SHELTER_REST_RATE * (1.0 - worked) * sleep
+    -TIRE_RATE * worked + LODGE_REST_RATE * (1.0 - worked) * sleep
 }
 
 fn warmth_target(cold: f32, insulation: f32) -> f32 {
@@ -760,7 +766,7 @@ impl Colony {
             let job = self.slot_jobs.get(&b.id)
                 .filter(|(_, working)| *working && b.can_work() && !b.resting)?.0;
             // Travel and production belong to physical agents. The colony tracks
-            // the resulting workload, skills and needs at each worker's position.
+            // the resulting workload, skills and needs at each beaver's position.
             let eval = SiteEval { land_len: if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 },
                 water_dist: land.water_distance(b.pos.0, b.pos.1) };
             let units = dt * WORK_FRACTION * b.work_weight()
@@ -979,7 +985,7 @@ impl Colony {
         let temp = self.sky.at(self.time_days).temp_c;
         for (id, why) in who {
             if let Some(b) = self.beaver(*id) {
-                crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_store={:.1} | {}", self.time_days, self.food, crate::journal::describe(b)));
+                crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_cache={:.1} | {}", self.time_days, self.food, crate::journal::describe(b)));
             }
         }
     }
@@ -1061,7 +1067,7 @@ impl Colony {
         } else if room < MIN_LITTER as usize {
             Err("Lodge full")
         } else if self.food < daily_food * BIRTH_MIN_FOOD_DAYS {
-            Err("Food stores too low")
+            Err("Food caches too low")
         } else {
             Ok(())
         })
@@ -1289,8 +1295,8 @@ impl Colony {
     fn new_family(&mut self) -> FamilyId {
         let id = FamilyId(self.next_id);
         self.next_id += 1;
-        let name = FAMILY_NAMES[self.range(FAMILY_NAMES.len() as u32) as usize].to_string();
-        self.families.push(Family { id, name });
+        // Named after its lodge's place once the world is at hand (see `names`).
+        self.families.push(Family { id, name: String::new() });
         id
     }
 
@@ -1314,7 +1320,8 @@ impl Colony {
     ) -> BeaverId {
         let id = BeaverId(self.next_id);
         self.next_id += 1;
-        let name = FIRST_NAMES[self.range(FIRST_NAMES.len() as u32) as usize].to_string();
+        // Named with its litter once the world is at hand (see `names`).
+        let name = String::new();
         let mut skills = [0.0; Job::ALL.len()];
         if age_days >= ADULT_DAYS {
             for s in skills.iter_mut() {
@@ -1341,7 +1348,7 @@ impl Colony {
             pos,
             stage: Stage::of_age_days(age_days),
             resting: false,
-            sheltered: false,
+            in_lodge: false,
             last_birth_year: -1,
             pregnancy: None,
             low_mood_days: 0.0,
@@ -1385,6 +1392,11 @@ impl Colony {
                 v.mate = Some(y);
             }
         }
+    }
+
+    /// Note something that happened outside the colony's own step (an epithet earned).
+    pub(crate) fn note(&mut self, event: Event) {
+        self.log(event);
     }
 
     fn log(&mut self, event: Event) {

@@ -2,7 +2,7 @@
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
 use crate::flow::{Flow, Selection};
-use crate::hud::{self, MenuOpen, ACCENT, FAINT, INK, MUTED, PANEL, TIMBER};
+use crate::hud::{self, MenuOpen, ACCENT, BAD, FAINT, GOOD, INK, MUTED, PANEL, BARK, WARN};
 use crate::icons::{icon_node, Icon, Icons};
 use crate::sim_driver::SimClock;
 use crate::state::{CurrentMap, MapChoice, PlannedDam, Sim};
@@ -71,6 +71,7 @@ enum MenuAction {
     Scale(f32),
     Water(sim::water::EngineKind),
     Fahrenheit(bool),
+    DevSpeed(bool),
     Volume(crate::audio::Channel, f32),
     Ask(Ask),
     Confirm(bool),
@@ -163,7 +164,7 @@ fn menu_keys(
         Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open || h.order_mode.is_some() || h.help);
+            let busy = hud.as_ref().is_some_and(|h| h.welcome || h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open || h.order_mode.is_some() || h.help);
             if !busy && *sel == Selection::None {
                 menu.saved = None;
                 menu.was_paused = clock.paused;
@@ -290,6 +291,7 @@ fn menu_actions(
                 scale.0 = s;
             }
             MenuAction::Fahrenheit(on) => set_fahrenheit(on),
+            MenuAction::DevSpeed(on) => crate::sim_driver::set_dev_speed(on),
             MenuAction::Volume(ch, v) => commands.queue(move |w: &mut World| {
                 if let Some(mut vols) = w.get_resource_mut::<crate::audio::AudioVolumes>() {
                     vols.set(ch, v);
@@ -508,7 +510,7 @@ fn rebuild_menu(
         border_radius: BorderRadius::all(Val::Px(9.0)),
         ..default()
     };
-    let border = BorderColor { top: TIMBER, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
+    let border = BorderColor { top: BARK, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
     commands.entity(e).with_children(|r| {
         r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| {
             if menu.loading {
@@ -545,6 +547,9 @@ fn start_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, curren
         });
         button(r, ">", MenuAction::MapNext, FAINT, false);
     });
+    if let Some(d) = menu.map.difficulty() {
+        difficulty(p, d);
+    }
     if let MapChoice::Real(id) = &menu.map {
         map_stats(p, icons, id);
     }
@@ -589,6 +594,22 @@ fn load_screen(p: &mut ChildSpawnerCommands, menu: &Menu) {
         });
     }
     wide(p, "Back", MenuAction::Back, FAINT);
+}
+
+/// The map's difficulty, over its details: pips filled to its level and the word, in its colour.
+fn difficulty(p: &mut ChildSpawnerCommands, d: crate::state::Difficulty) {
+    use crate::state::Difficulty;
+    let col = match d {
+        Difficulty::Easy => GOOD,
+        Difficulty::Medium => WARN,
+        Difficulty::Hard => BAD,
+    };
+    p.spawn((Node { justify_content: JustifyContent::Center, ..hud::row(6.0) }, hud::hover_tip("Difficulty"))).with_children(|r| {
+        for i in 0..3 {
+            r.spawn((Node { width: Val::Px(16.0), height: Val::Px(7.0), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() }, BackgroundColor(if i < d.level() { col } else { Color::srgba(1.0, 1.0, 1.0, 0.12) })));
+        }
+        hud::bold(r, d.label(), 13.0, col);
+    });
 }
 
 /// A row of icon + value pairs; hovering one names it.
@@ -690,6 +711,12 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         button(r, "°C", MenuAction::Fahrenheit(false), FAINT, !f);
         button(r, "°F", MenuAction::Fahrenheit(true), FAINT, f);
     });
+    hud::bold(p, "Dev speed", 12.0, MUTED);
+    p.spawn(hud::row(6.0)).with_children(|r| {
+        let on = crate::sim_driver::dev_speed();
+        button(r, "Off", MenuAction::DevSpeed(false), FAINT, !on);
+        button(r, "On", MenuAction::DevSpeed(true), FAINT, on);
+    });
     hud::bold(p, "Water", 12.0, MUTED);
     p.spawn(hud::row(6.0)).with_children(|r| {
         for kind in sim::water::EngineKind::ALL {
@@ -704,16 +731,17 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         ("Pan", "WASD / arrows"),
         ("Rotate", "Q E / middle drag"),
         ("Zoom", "Wheel"),
-        ("Dam, shelter, warehouse", "Z X C"),
+        ("Dam, lodge, stick pile", "Z X C"),
         ("Gather, cut trees", "G T"),
         ("Build the dam", "Enter"),
         ("Undo", "Ctrl+Z"),
         ("Water, forest, height", "F1 F2 F3"),
         ("Peek water", "Alt"),
         ("Tree canopies", "F8"),
-        ("Colony book", "Tab"),
+        ("Colony", "Tab"),
+        ("Territory", "L"),
         ("Next free beaver", "I"),
-        ("Pause, speed", "Space, 1 2 3"),
+        ("Pause, speed", if crate::sim_driver::dev_speed() { "Space, 1 2 3" } else { "Space, 1 2" }),
         ("Volume: all, alerts, water", "- =  ; '  , ."),
         ("Mute", "M"),
         ("Menu", "Esc"),

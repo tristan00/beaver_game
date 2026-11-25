@@ -21,7 +21,7 @@ pub enum Skin {
     PebbleOn,
     /// The one main action: solid amber.
     PebblePrimary,
-    /// A button whose action keeps something sound (repair, maintain).
+    /// A button whose action keeps something sound (repair, upkeep).
     PebbleGood,
     /// An alert that needs the player now.
     TokenBad,
@@ -64,7 +64,7 @@ type Rgba = [f32; 4];
 
 const PANEL: Rgba = [0.106, 0.09, 0.075, 0.95];
 const PEB: Rgba = [0.227, 0.18, 0.145, 0.96];
-const TIMBER: Rgba = [0.59, 0.41, 0.24, 1.0];
+const BARK: Rgba = [0.59, 0.41, 0.24, 1.0];
 const ACCENT: Rgba = [0.91, 0.52, 0.23, 1.0];
 const ACCENT_DARK: Rgba = [0.55, 0.28, 0.1, 1.0];
 const GOOD: Rgba = [0.39, 0.79, 0.55, 1.0];
@@ -150,10 +150,10 @@ fn season_ring(size: u32) -> Vec<Rgba> {
 
 fn texture(skin: Skin) -> (u32, Vec<Rgba>) {
     match skin {
-        Skin::Plate => (40, carved(40, 8.0, PANEL, TIMBER, 2.0, true)),
+        Skin::Plate => (40, carved(40, 8.0, PANEL, BARK, 2.0, true)),
         Skin::PlateBad => (40, carved(40, 8.0, PANEL, BAD, 2.0, true)),
         Skin::PlateAccent => (40, carved(40, 8.0, PANEL, ACCENT, 2.0, true)),
-        Skin::Pebble => (32, carved(32, 9.0, PEB, TIMBER, 1.5, false)),
+        Skin::Pebble => (32, carved(32, 9.0, PEB, BARK, 1.5, false)),
         Skin::PebbleOn => (32, carved(32, 9.0, PEB, ACCENT, 2.5, false)),
         Skin::PebblePrimary => (32, carved(32, 9.0, ACCENT, ACCENT_DARK, 1.5, false)),
         Skin::PebbleGood => (32, carved(32, 9.0, PEB, GOOD, 2.0, false)),
@@ -187,6 +187,6 @@ mod tests {
         let mid = px[((n / 2) * n + n / 2) as usize];
         assert!(mid[3] > 0.9, "the middle is solid");
         let edge = px[((n / 2) * n + 1) as usize];
-        assert!(edge[0] > 0.4, "the edge is timber");
+        assert!(edge[0] > 0.4, "the edge is bark");
     }
 }

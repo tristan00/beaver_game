@@ -92,6 +92,7 @@ pub(super) fn button_actions(
     mut flow: ResMut<Flow>,
     mut sel: ResMut<Selection>,
     mut lens: ResMut<MapLens>,
+    orbit: Res<crate::camera::OrbitCamera>,
 ) {
     let now = time.elapsed_secs();
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -138,7 +139,7 @@ pub(super) fn button_actions(
                 hud.set_changed();
             }
             HudAction::Speed(sp) => {
-                clock.set_speed(sp);
+                clock.pick_speed(sp);
                 hud.set_changed();
             }
             HudAction::Pick(kind) if s.unlocked(kind).is_err() => {}
@@ -158,11 +159,34 @@ pub(super) fn button_actions(
                 cmd(s, &mut hud, sim::Command::GrowDam { dam, growth, cells }, now);
                 hud.dam_ghost = None;
             }
-            HudAction::DamMaintain(dam, on) => cmd(s, &mut hud, sim::Command::SetDamMaintain { dam, on }, now),
-            HudAction::AddDamGate(dam) => {
-                if let Some(&cell) = picks_on(s, dam, &hud.dam_cells).first() {
-                    cmd(s, &mut hud, sim::Command::AddDamGate { dam, cell }, now);
+            HudAction::DamUpkeep(dam, on) => cmd(s, &mut hud, sim::Command::SetDamUpkeep { dam, on }, now),
+            HudAction::Opening(dam, o) => {
+                if hud.opening == Some((dam, o)) {
+                    hud.opening = None;
+                } else {
+                    hud.set_tool(Tool::None);
+                    hud.opening = Some((dam, o));
                     hud.dam_cells.clear();
+                    *sel = Selection::Site(dam);
+                    hud.selected.clear();
+                    // Bring the dam into view if it is far from where the camera looks.
+                    if let Some(mid) = sim::dams::dam(s, dam).and_then(|d| d.line().nth(d.line().count() / 2).map(|c| c.cell)) {
+                        let (vx, vy) = crate::flow::world_cell(&s.height, orbit.target);
+                        if (vx as f32 - mid.0 as f32).hypot(vy as f32 - mid.1 as f32) > 24.0 {
+                            flow.focus = Some(cell_world(&s.height, (mid.0 as f32, mid.1 as f32)));
+                        }
+                    }
+                }
+            }
+            HudAction::GateChip(building, cell) => {
+                hud.gate_sel = if hud.gate_sel == Some((building, cell)) { None } else { Some((building, cell)) };
+                hud.opening = None;
+                flow.focus = Some(cell_world(&s.height, (cell.0 as f32, cell.1 as f32)));
+            }
+            HudAction::RemoveGate(building, cell) => {
+                cmd(s, &mut hud, sim::Command::RemoveGate { building, cell }, now);
+                if hud.gate_sel == Some((building, cell)) {
+                    hud.gate_sel = None;
                 }
             }
             HudAction::SetGate(building, cell, setting) => cmd(s, &mut hud, sim::Command::SetGate { building, cell, setting }, now),
@@ -170,7 +194,7 @@ pub(super) fn button_actions(
                 cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell }, now);
                 hud.dam_cells.retain(|c| *c != cell);
             }
-            HudAction::CanalMaintain(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalMaintain { canal, on }, now),
+            HudAction::CanalUpkeep(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalUpkeep { canal, on }, now),
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {
                     // Draw on from the open end: the player drags (or clicks corners) the new
@@ -220,6 +244,7 @@ pub(super) fn button_actions(
                 None => hud.close_pages(),
             },
             HudAction::PageBack => hud.page_back(),
+            HudAction::CloseWelcome => hud.welcome = false,
             HudAction::Kin(f) => {
                 hud.kin = f;
             }
@@ -274,11 +299,11 @@ pub(super) fn button_actions(
             }
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
             HudAction::FreeBeaver(id) => free_beaver(s, &mut hud, id, now),
-            HudAction::AddWorker(building) => cmd(s, &mut hud, sim::Command::AddWorker { building }, now),
+            HudAction::AddBeaver(building) => cmd(s, &mut hud, sim::Command::AddBeaver { building }, now),
             HudAction::Badge(key) => hud.open_badge = if hud.open_badge.as_ref() == Some(&key) { None } else { Some(key) },
             HudAction::FillStore(store, on) => cmd(s, &mut hud, sim::Command::FillStore { store, on }, now),
             HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
-            HudAction::RemoveWorker(building) => cmd(s, &mut hud, sim::Command::RemoveWorker { building }, now),
+            HudAction::RemoveBeaver(building) => cmd(s, &mut hud, sim::Command::RemoveBeaver { building }, now),
             HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
             HudAction::ShoreLimit(role, cells) => cmd(s, &mut hud, sim::Command::SetShoreLimit { role, cells }, now),
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
