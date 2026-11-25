@@ -105,6 +105,10 @@ pub(super) fn staple(g: Good) -> bool {
 pub fn good_tip(s: &sim::SimState, g: Good) -> Tip {
     let st = &s.buildings.stores;
     let mut t = Tip::titled(Some((good_icon(g), good_color(g))), g.name()).with_value(format!("{}/{}", st.amount(g).round() as i64, st.capacity(g).round() as i64));
+    if st.capacity(g) <= 0.0 {
+        let hint = BuildingKind::store_for(g).map_or_else(|| "Build a store".into(), |k| format!("Build a {}", k.name().to_lowercase()));
+        t.push(TipLine::new("No place to store goods", hint).icon(Icon::Warn, BAD).color(BAD));
+    }
     if g == Good::food() { t.push(TipLine::new("Spoils", format!("{:.1}%/d", sim::colony::FOOD_SPOILAGE * 100.0))); }
     if !s.ledger.has_data() {
         t.push(TipLine::new("Per day", "-"));
@@ -329,6 +333,7 @@ fn alert_face(s: &sim::SimState, p: &Problem) -> (Vec<(Icon, Color)>, String, &'
         ProblemKind::WinterFood => (vec![(Icon::Winter,MUTED),(crate::hud::words::good_icon(sim::buildings::Good::food()),good_color(Good::food()))],format!("{} / {}d",days(v),sim::calendar::SEASON_DAYS as i64),"Prepare food for winter"),
         ProblemKind::Idle => (vec![(Icon::Idle, WARN)], format!("{}", v as i64), "Free beavers"),
         ProblemKind::NoBuilders => (vec![(Icon::Site, INK), (crate::hud::words::job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), MUTED)], format!("{}", v as i64), "Sites without builders"),
+        ProblemKind::NoStorage => (vec![(Icon::Warn, BAD)], String::new(), "No place to store goods"),
         ProblemKind::StoreFull => {
             let g = match p.subject {
                 Some(Subject::Good(g)) => g,

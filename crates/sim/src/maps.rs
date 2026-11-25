@@ -1,7 +1,7 @@
 use crate::worldgen::{self, World};
 use std::fmt;
 
-const FILES: [(&str, &[u8]); 11] = [
+static FILES: [(&str, &[u8]); 11] = [
     ("algonquin", include_bytes!("../maps/algonquin.map")),
     ("voyageurs", include_bytes!("../maps/voyageurs.map")),
     ("bavarian", include_bytes!("../maps/bavarian.map")),

@@ -11,7 +11,7 @@ use std::{cell::RefCell, collections::BTreeMap, path::{Path, PathBuf}, sync::Onc
 static CONTENT: OnceLock<Content> = OnceLock::new();
 
 /// Built-in content tables compiled into the binary so the executable runs standalone anywhere.
-const EMBEDDED: [(&str, &str); 8] = [
+static EMBEDDED: [(&str, &str); 8] = [
     ("buildings.toml", include_str!("../content/buildings.toml")),
     ("flora.toml", include_str!("../content/flora.toml")),
     ("goods.toml", include_str!("../content/goods.toml")),

@@ -200,6 +200,7 @@ pub enum ProblemKind {
     WinterFood,
     Idle,
     NoBuilders,
+    NoStorage,
     StoreFull,
     WeakDam,
     Maintenance,
@@ -548,6 +549,36 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
 
     no_work_problems(sim, &mut out);
 
+    // Warn loudly when the colony has no finished store for staple goods (sticks/mud or food).
+    let mut missing_stores: Vec<BuildingKind> = Vec::new();
+    for g in [crate::dams::material(), Good::food()] {
+        if sim.buildings.stores.capacity(g) <= crate::work::EPS {
+            if let Some(k) = BuildingKind::store_for(g) {
+                if !missing_stores.contains(&k) {
+                    missing_stores.push(k);
+                }
+            }
+        }
+    }
+    if !missing_stores.is_empty() {
+        let rows = missing_stores
+            .iter()
+            .map(|k| row(k.name(), 0.0, Source::None))
+            .collect();
+        let fix = place_fix(sim, missing_stores[0]);
+        let alt_fix = missing_stores.get(1).map(|&k| place_fix(sim, k));
+        out.push(Problem {
+            kind: ProblemKind::NoStorage,
+            severity: Severity::Urgent,
+            value: missing_stores.len() as f32,
+            cause: Breakdown::new(0.0, rows),
+            subject: Some(Subject::Building(missing_stores[0])),
+            fix,
+            alt_fix,
+            focus: colony_cell(sim),
+        });
+    }
+
     for g in Good::all() {
         let (have, cap) = (sim.buildings.stores.amount(g), sim.buildings.stores.capacity(g));
         let arriving = sim.ledger.in_per_day(g);
@@ -749,5 +780,56 @@ fn canal_problems(sim: &SimState, out: &mut Vec<Problem>) {
                 cause: Breakdown::new(v, vec![row("Fell today (cm)", v, Source::Building(b.id))]),
                 subject: Some(Subject::Building(BuildingKind::dam())), fix: Fix::OpenDam { dam: b.id }, alt_fix: None, focus: Some(b.pos) });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DryLand;
+    impl crate::colony::Landscape for DryLand {
+        fn is_water(&self, _: f32, _: f32) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn no_storage_before_stores_built_has_zero_capacity_and_urgent_warning() {
+        let mut sim = SimState::new(1);
+        let cell = (sim.world.size / 2, sim.world.size / 2);
+        sim.colony.found((cell.0 as f32, cell.1 as f32), &DryLand).expect("found");
+        for g in Good::all() {
+            assert_eq!(sim.buildings.stores.capacity(g), 0.0, "no phantom base capacity before stores exist");
+        }
+        let probs = problems(&sim);
+        let no_store = probs.iter().find(|p| p.kind == ProblemKind::NoStorage).expect("NoStorage warning expected");
+        assert_eq!(no_store.severity, Severity::Urgent);
+
+        for x in cell.0..cell.0 + 4 {
+            for y in cell.1..cell.1 + 4 {
+                if let Some(v) = sim.water.depth.get_mut(x, y) {
+                    *v = 0.25;
+                }
+            }
+        }
+        for (i, key) in ["StickPile", "FoodCache"].into_iter().enumerate() {
+            let kind = BuildingKind::of(key);
+            sim.buildings.buildings.push(crate::buildings::Building {
+                id: BuildingId(100 + i as u64),
+                kind,
+                pos: (cell.0 + i * 2, cell.1),
+                status: crate::buildings::Status::Complete,
+                output: 0.0,
+                condition: 1.0,
+                reinforced: false,
+                dam: None,
+                canal: None,
+            });
+        }
+        sim.buildings.update_capacity(crate::buildings::Terrain { depth: &sim.water.depth });
+        assert!(sim.buildings.stores.capacity(Good::food()) > 0.0);
+        assert!(sim.buildings.stores.capacity(crate::dams::material()) > 0.0);
+        assert!(!problems(&sim).iter().any(|p| p.kind == ProblemKind::NoStorage));
     }
 }

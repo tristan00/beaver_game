@@ -198,7 +198,7 @@ pub fn waiting(sim: &SimState, id: BeaverId) -> Option<Wait> {
     if crate::agents::frozen(sim) && frozen_out(role) {
         return Some(Wait::Frozen);
     }
-    if let Some(g) = crate::hud::gathered_good(role).filter(|g| sim.buildings.stores.space(*g) <= crate::work::EPS) {
+    if let Some(g) = crate::hud::gathered_good(role).filter(|g| sim.buildings.stores.capacity(*g) > crate::work::EPS && sim.buildings.stores.space(*g) <= crate::work::EPS) {
         return Some(Wait::StoreFull(g));
     }
     // Finding no work, a beaver goes home to wait (`Task::Rest`); one still idle out here is

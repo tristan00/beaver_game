@@ -15,12 +15,12 @@ use std::time::Duration;
 
 // Field recordings, all CC0 from freesound.org (see `audio/SOURCES.md`), stored at the rate
 // the game plays so starting them is only decoding.
-const BROOK: &[u8] = include_bytes!("../audio/brook.ogg");
-const RIVER: &[u8] = include_bytes!("../audio/river.ogg");
-const SLAPS: [&[u8]; 3] = [include_bytes!("../audio/slap_1.ogg"), include_bytes!("../audio/slap_2.ogg"), include_bytes!("../audio/slap_3.ogg")];
-const FLOOD: &[u8] = include_bytes!("../audio/flood.ogg");
-const GROWL: &[u8] = include_bytes!("../audio/growl.ogg");
-const HOWL: &[u8] = include_bytes!("../audio/howl.ogg");
+static BROOK: &[u8] = include_bytes!("../audio/brook.ogg");
+static RIVER: &[u8] = include_bytes!("../audio/river.ogg");
+static SLAPS: [&[u8]; 3] = [include_bytes!("../audio/slap_1.ogg"), include_bytes!("../audio/slap_2.ogg"), include_bytes!("../audio/slap_3.ogg")];
+static FLOOD: &[u8] = include_bytes!("../audio/flood.ogg");
+static GROWL: &[u8] = include_bytes!("../audio/growl.ogg");
+static HOWL: &[u8] = include_bytes!("../audio/howl.ogg");
 
 /// The player's volumes, kept between games in a small file beside the saves.
 #[derive(Resource, Clone, Copy, Debug)]

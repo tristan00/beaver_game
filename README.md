@@ -4,7 +4,7 @@ A beaver colony builder and river simulation. Dam streams, flood valleys into po
 
 ## How to Play
 
-Double-click **beaver_colony.exe** to start playing. No installation or extra files are needed.
+Double-click **beaver_colony.exe** to start playing.
 
 ---
 
@@ -31,10 +31,10 @@ Double-click **beaver_colony.exe** to start playing. No installation or extra fi
 | **Dam** | Freeform line | Sticks & mud per cell | None | — | Open (Builders) | Holds back water to form ponds and raise water levels; can be raised, widened, extended, reinforced, pebble-faced, or fitted with gates. |
 | **Canal** | Freeform line | Digging labour | None | — | Open (Builders) | Cuts channels to route water or connect ponds for swimming and rafts; can be deepened, widened, extended, or fitted with gates and locks. |
 | **Lodge** | 3×3 (water) | 20 Sticks, 12 Mud | None | Houses 1 family | — | Family home where beavers rest, shelter from bitter weather, and raise kits. |
-| **Stick pile** | 2×2 (water) | 6 Sticks, 2 Mud | None | 400 Sticks | — | Stores sticks gathered by fellers. |
-| **Food cache** | 2×2 (water) | 6 Sticks, 2 Mud | None | 400 Food | — | Stores food plants and bark for the colony, especially over winter. |
-| **Pebble heap** | 2×2 (water) | 4 Sticks, 2 Mud | None | 400 Pebbles | 1 Pebbler | Stores river pebbles and provides a Pebbler seat. |
-| **Forester** | 2×2 (water) | 12 Sticks, 6 Mud | Food cache | 40 Seedlings | 1 Planter | Replants trees within its work area (25×25) and stores seedlings. |
+| **Stick pile** | 2×2 (water) | 6 Sticks, 2 Mud | None | 300 Sticks, 300 Mud | — | Stores sticks and mud gathered by fellers and mud diggers. |
+| **Food cache** | 2×2 (water) | 6 Sticks, 2 Mud | None | 300 Food | — | Stores food plants and bark for the colony, especially over winter. |
+| **Pebble heap** | 2×2 (water) | 4 Sticks, 2 Mud | None | 120 Pebbles | 1 Pebbler | Stores river pebbles and provides a Pebbler seat. |
+| **Forester** | 2×2 (water) | 12 Sticks, 6 Mud | Food cache | 80 Seedlings | 1 Planter | Replants trees within its work area (25×25) and stores seedlings. |
 | **Haul mound** | 2×2 (water) | 10 Sticks, 4 Mud | Stick pile | — | 3 Haulers | Coordinates haulers to balance stores, fulfill haul orders, and run rafts. |
 | **Lookout** | 2×2 (water) | 10 Sticks, 4 Mud | None | — | 1 Sentry | Watch post where a Sentry watches for danger from far away and warns the colony. |
 | **Raft landing** | 2×2 (water) | 20 Sticks, 4 Mud | Haul mound | 1 Raft | — | Launches a log raft so Haulers can carry bulk loads across connected water and locks. |
