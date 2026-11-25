@@ -8,6 +8,22 @@ Double-click **beaver_colony.exe** to start playing.
 
 ---
 
+## Game pictures
+
+![](docs/pictures/1.png)
+
+![](docs/pictures/2.png)
+
+![](docs/pictures/3.png)
+
+![](docs/pictures/4.png)
+
+![](docs/pictures/5.png)
+
+![](docs/pictures/6.png)
+
+---
+
 ## Roles & Jobs
 
 | Role | Max Slots | Workplace | What They Do |
