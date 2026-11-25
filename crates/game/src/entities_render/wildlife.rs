@@ -556,8 +556,7 @@ fn drive(
             track.follow(s, &a.track, 60.0);
             track.record_with(s.instance, s.time_days, here, 60.0);
             let (aim, going) = track.at(now).unwrap_or((here, None));
-            let smoothing = clock.as_ref().map_or(1.0, |c| c.speed.smoothing());
-            let k = crate::sim_driver::ease_k(dt, 10.0, smoothing);
+            let k = 1.0 - (-dt * 10.0).exp();
             let xz = match b.shown {
                 Some(p) if p.distance(aim) < 6.0 => p.lerp(aim, k),
                 _ => aim,
@@ -568,7 +567,7 @@ fn drive(
             b.last = Some(xz);
             b.speed += (raw - b.speed) * (1.0 - (-dt * 6.0).exp());
             let want = Quat::from_rotation_y(going.map_or(a.heading, |d| d.x.atan2(d.y)));
-            tr.rotation = tr.rotation.slerp(want, crate::sim_driver::ease_k(dt, 8.0, smoothing));
+            tr.rotation = tr.rotation.slerp(want, 1.0 - (-dt * 8.0).exp());
             (b.speed, a.doing, false, None)
         } else {
             continue;
