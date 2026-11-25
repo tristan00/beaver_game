@@ -2075,7 +2075,6 @@ impl Subgrid {
     }
 }
 
-
 impl super::WaterEngine for Subgrid {
     fn prepare(&mut self, w: &mut Water, sync: bool) { Subgrid::prepare(self, w, sync) }
     fn advance(&mut self, w: &mut Water, seconds: f64) { Subgrid::advance(self, w, seconds) }

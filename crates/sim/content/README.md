@@ -1,38 +1,33 @@
-# Gameplay data
+# Game content
 
-`game.sqlite3` is the source for gameplay constants and all building
-definitions. `build.rs` reads and validates the database, then generates Rust
-declarations in Cargo's `OUT_DIR`. Database edits require a rebuild; no database
-queries run during simulation steps.
+The `.toml` files here are the game's content: every good, kind of resource, job, building, tree
+and food plant is a row, so a change to the content shows in `git diff` like any other change.
+The game reads them when it starts (`sim::content`): an edit needs a restart, not a rebuild. Set
+`BEAVER_CONTENT` to another folder to load other content. The tuning numbers are in
+`../tuning.toml` and are compiled in by `build.rs` (an edit there needs a rebuild).
 
-| Table | Contents |
+| File | Contents |
 | --- | --- |
-| `gameplay_constant` | Named scalar gameplay constants, grouped by simulation module |
-| `constant_reference` | Derived constants and their dependencies |
-| `constant_array`, `constant_range` | Ordered values and inclusive ranges |
-| `building`, `cost`, `slot` | Building footprints, terrain requirements, costs, labour, staffing and capacity |
-| `starting_good` | Initial material supplies |
-| `role_policy` | Order of the job rows in the colony panel |
-| `name_pool` | Word pools for names, keyed by `pool`: `litter/<theme>` (a litter's first names), `flora/<species>` (a tree or plant as a name), `landform/<region>/<still\|stream\|wet\|slope>` and `compound/<region>` (family and pond names, by the map's region), `colour/…`, `feature/…`, `count`, `position`; `epithet/<job>[/<how>]` (tier 1 epithets) and `epithet2/<job>/<job>` (tier 2, jobs in the game's order). Every epithet is "the" + a word, and no word is in two pools. The epithet skill and each job's tier 2 milestone are `gameplay_constant`s under `deeds`. |
-| `tree_species` | Each tree's growth, yield and flood tolerance. `growth` is set so a tree on ordinary ground turns mature (full logs, starts seeding) at half its real seed-bearing age, per the USDA *Silvics of North America*: aspen and willow 10 years, birch 15, alder 4 (red alder), pine 20 (eastern white pine), spruce 30, maple and beech 40. A tree ages `growth` days a day outside winter; mature is 1080 days. |
+| `goods.toml` | What a new colony starts with, and goods: load, pace, floats, edible, carries a tree species, looks |
+| `buildings.toml` | Gate and lock materials, and buildings: footprint, cost, seats (jobs), stores, refits, how each is built, home, rafts, wear, looks, hotkey, menu place |
+| `resources.toml` | Gather groups, the kinds the world's making puts down, and kinds of resource: behaviour, yields, the job that gathers it, rate, tools, looks |
+| `jobs.toml` | Jobs: duty, names, skill, colony panel place, shore limit, icon, path colour |
+| `trees.toml`, `plants.toml` | Species: growth and yield (`spec`) and drawing (`look`, colours as `0xrrggbb`) |
+| `flora.toml` | Each map's tree mix and food plants (`default` for maps without their own) |
+| `names.toml` | Word pools for names |
 
-| `plant_species` | Each food plant beavers eat: its `habitat` (`Upland` moist open ground, `Meadow` wet ground, `Shore` the waterline out to `max_depth`, `Water` between `min_depth` and `max_depth`), the most `food` it holds, and per day in full growing season how much it `regrow`s, the chance it `creep`s by its roots into a neighbouring cell and the chance its `seed` takes root up to `SEED_REACH` cells off. `keep` is the share of its food it holds through winter in roots, rhizomes or canes (cattail, arrowhead and lily rhizomes, raspberry canes: what beavers dig for in winter). |
-| `plant_flora` | How common each food plant is on each map, from the map region's real wetlands: Joe-Pye weed only in North America, meadowsweet only in Europe, little cattail or arrowhead in Norway. Every map and `default` need one, with a plant for every habitat. |
+## Rules
 
-For example, change how many sticks a gate needs using SQLite:
+1. **Code never names a content item.** It asks a row about its traits: what a building stores,
+   which job gathers a resource, which good is edible.
+2. **If code needs to tell items apart, add a column**, not a `match` on an item.
+3. **A few mechanics need their own code**, and a row picks one: a resource's `behaviour` (tree,
+   felled tree, food plant, deposit), a job's `duty`, a building's `built_as` (site, dam, canal).
+4. **`key` is stable and goes in saves; `name` is shown and can change freely.** Rows name other
+   rows by key (`cost = [["Sticks", 4.0]]`, `role = "Feller"`).
+5. **Looks are rows too.** Icons, colours and models are named by id; the game keeps a drawing
+   routine for each model id.
 
-```sql
-UPDATE gameplay_constant SET value = 8
-WHERE module = 'canals' AND name = 'GATE_STICKS';
-```
-
-Then run `cargo build --offline --release -p game` from the repository root.
-Keep cost `position` values in their intended delivery order.
-
-HUD, renderer, terrain generation,
-and water-engine definitions remain in their existing code. Implementation
-constants such as numeric tolerances, identifiers, enum membership, precision
-scales, simulation timesteps and test fixtures also remain in Rust.
-
-Validation: `cargo test --offline -p sim --lib` and
-`cargo check --offline --workspace --all-targets`.
+Every file in the folder is read and added together, so a mod can add rows in a file of its own.
+The loader rejects unknown fields, duplicate keys and rows naming missing rows, with the file and
+line.

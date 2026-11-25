@@ -11,6 +11,8 @@ use crate::state::Sim;
 use bevy::prelude::*;
 use sim::predators::WolfState;
 use std::f32::consts::{PI, TAU};
+use crate::seasonal::smooth as smooth01;
+use super::meshgen::v;
 
 /// World size of one model unit: the model is about two and a half units nose to tail.
 const WOLF_SIZE: f32 = 0.55;
@@ -76,15 +78,6 @@ struct SimWolf(u64);
 struct GalleryWolf {
     pace: f32,
     kill: bool,
-}
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 {
-    Vec3::new(x, y, z)
-}
-
-fn smooth01(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Grizzled grey: a dark saddle along the back, tawny flanks, a cream belly and throat.
@@ -397,7 +390,7 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
     let build = |s: &mut sim::SimState, kind: BuildingKind| -> Option<sim::buildings::BuildingId> {
         let pos = (3..40usize).flat_map(|r| (0..=2 * r).flat_map(move |i| [(near.0 + i - r, near.1 - r), (near.0 + i - r, near.1 + r), (near.0 - r, near.1 + i - r), (near.0 + r, near.1 + i - r)])).find(|&p| s.check_site(kind, p).is_ok())?;
         let id = s.place_site(kind, pos).ok()?;
-        for &(g, a) in kind.spec().cost {
+        for &(g, a) in &kind.spec().cost {
             let _ = s.work.deliver(id, g, a);
         }
         let _ = s.work.add_labour(id, kind.spec().work);
@@ -405,13 +398,13 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
     };
     match *stage {
         0 => {
-            if !s.has_building(BuildingKind::Lodge) {
-                build(s, BuildingKind::Lodge);
+            if !s.has_building(BuildingKind::home()) {
+                build(s, BuildingKind::home());
             }
             *stage = 1;
         }
-        1 if s.has_building(BuildingKind::Lodge) => {
-            if build(s, BuildingKind::Lookout).is_some() {
+        1 if s.has_building(BuildingKind::home()) => {
+            if BuildingKind::all().find(|k| k.watches()).and_then(|k| build(s, k)).is_some() {
                 *stage = 2;
             } else {
                 warn!("BC_LOOKOUT: no site for a lookout");
@@ -419,7 +412,7 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
             }
         }
         2 => {
-            let Some(b) = s.buildings.buildings.iter().find(|b| b.kind == BuildingKind::Lookout && b.is_complete()).map(|b| (b.id, sim::predators::lookout_centre(b))) else { return };
+            let Some(b) = s.buildings.buildings.iter().find(|b| b.kind.watches() && b.is_complete()).map(|b| (b.id, sim::predators::lookout_centre(b))) else { return };
             let _ = s.apply(sim::Command::AddBeaver { building: b.0 });
             let xz = cell_xz(s, b.1);
             orbit.target = Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y), xz.y);

@@ -1,0 +1,73 @@
+# Food plants: habitat (Upland moist open ground, Meadow wet ground, Shore the waterline out to max_depth, Water
+# between min_depth and max_depth), the most food it holds, and a day in full growing season how much it regrows,
+# the chance it creeps by its roots into a neighbouring cell and that its seed takes root further off. keep is the
+# share of its food it holds through winter in roots, rhizomes or canes. look: a drawing style (model: sedge,
+# canary_grass, forb, raspberry, horsetail, cattail, arrowhead, lily, pondweed) and, for a forb, its height and
+# colours (0xrrggbb); variant is a forb's flat-topped head or a lily's white flower.
+
+[[plant]]
+key = "Sedge"
+name = "Sedge"
+spec = { habitat = "Shore", food = 6.0, regrow = 0.4, creep = 0.03, seed = 0.002, keep = 0.15, min_depth = 0.0, max_depth = 0.15 }
+look = { model = "sedge" }
+
+[[plant]]
+key = "CanaryGrass"
+name = "Reed canary grass"
+spec = { habitat = "Meadow", food = 5.0, regrow = 0.55, creep = 0.035, seed = 0.003, keep = 0.05, min_depth = 0.0, max_depth = 0.1 }
+look = { model = "canary_grass" }
+
+[[plant]]
+key = "Meadowsweet"
+name = "Meadowsweet"
+spec = { habitat = "Meadow", food = 6.0, regrow = 0.35, creep = 0.02, seed = 0.004, keep = 0.05, min_depth = 0.0, max_depth = 0.05 }
+look = { model = "forb", height = 0.62, stem = 0x6a7a48, leaf = [0x3e6e34, 0x6e9a54], flower = 0xf4ecd0 }
+
+[[plant]]
+key = "JoePye"
+name = "Joe-Pye weed"
+spec = { habitat = "Meadow", food = 6.0, regrow = 0.35, creep = 0.015, seed = 0.005, keep = 0.05, min_depth = 0.0, max_depth = 0.05 }
+look = { model = "forb", height = 0.85, stem = 0x7a4a5a, leaf = [0x4a7a3a, 0x7aa45a], flower = 0xc87aa8, variant = true }
+
+[[plant]]
+key = "Raspberry"
+name = "Wild raspberry"
+spec = { habitat = "Upland", food = 8.0, regrow = 0.25, creep = 0.01, seed = 0.002, keep = 0.35, min_depth = 0.0, max_depth = 0.0 }
+look = { model = "raspberry" }
+
+[[plant]]
+key = "Horsetail"
+name = "Water horsetail"
+spec = { habitat = "Shore", food = 4.0, regrow = 0.45, creep = 0.04, seed = 0.0005, keep = 0.1, min_depth = 0.0, max_depth = 0.3 }
+look = { model = "horsetail" }
+
+[[plant]]
+key = "Cattail"
+name = "Cattail"
+spec = { habitat = "Shore", food = 10.0, regrow = 0.45, creep = 0.035, seed = 0.003, keep = 0.5, min_depth = 0.0, max_depth = 0.5 }
+look = { model = "cattail" }
+
+[[plant]]
+key = "Arrowhead"
+name = "Arrowhead"
+spec = { habitat = "Water", food = 9.0, regrow = 0.4, creep = 0.012, seed = 0.0015, keep = 0.4, min_depth = 0.05, max_depth = 0.5 }
+look = { model = "arrowhead" }
+
+[[plant]]
+key = "YellowLily"
+name = "Yellow pond lily"
+spec = { habitat = "Water", food = 16.0, regrow = 0.6, creep = 0.01, seed = 0.0008, keep = 0.55, min_depth = 0.4, max_depth = 2.5 }
+look = { model = "lily" }
+
+[[plant]]
+key = "WhiteLily"
+name = "White water lily"
+spec = { habitat = "Water", food = 14.0, regrow = 0.55, creep = 0.008, seed = 0.0008, keep = 0.45, min_depth = 0.3, max_depth = 2.0 }
+look = { model = "lily", variant = true }
+
+[[plant]]
+key = "Pondweed"
+name = "Pondweed"
+flow = 4.0  # bears water this much faster than other water plants
+spec = { habitat = "Water", food = 9.0, regrow = 0.9, creep = 0.02, seed = 0.0015, keep = 0.15, min_depth = 0.3, max_depth = 2.2 }
+look = { model = "pondweed" }

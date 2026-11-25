@@ -1,0 +1,196 @@
+# Buildings. `work` is the labour to build one; `area` its work area (cells across and along); `requires` a building that
+# must stand finished first. built_as: Site (dropped as a site, the default), Dam or Canal (drawn as a line of cells;
+# one of each). home: houses a family, behind a door kept clear. docks_rafts: rafts load and unload at it. wear:
+# condition lost a day, before weather and water. A building with a Sentry seat keeps watch; one with Hauler seats evens
+# out the stores. Looks: model (a model id in the game), footing (mound, ring or piles, half-size across and along),
+# icon, the key that picks it to build, its place in the build menu, and whether its area is drawn round.
+# slots: the seats it has, each a job. stores: the goods it holds.
+# refits: Facing, Reinforce and ReinforcedRepair (the extra a reinforced building's repair takes): materials as a
+# fixed `cost` and `per_cell` of the building (a dam: per dam cell, each rounded up), labour (+ labour_per_cell, at
+# least min_labour), and how many times longer it lasts (lasts).
+
+repair_fallback = [["Sticks", 1.0]]  # what repairing a building that cost nothing takes
+works = { gate = [["Sticks", 6.0]], lock = [["Sticks", 12.0], ["Mud", 4.0]], gate_needs = "HaulMound", lock_needs = "RaftLanding" }  # works that are not buildings: a gate, making one a lock, and the building each needs finished first
+
+[[building]]
+key = "Dam"
+name = "Dam"
+footprint = [1, 1]
+site = "TouchesWater"
+work = 0.2
+cost = [["Sticks", 4.0]]
+slots = ["Builder", "Builder", "Builder"]
+built_as = "Dam"
+wear = 0.00065
+model = "dam"
+icon = "Dam"
+hotkey = "Z"
+menu = 0
+refits.Facing = { per_cell = [["Pebbles", 2.0]], labour_per_cell = 0.5, min_labour = 1.0, lasts = 2.5 }
+
+[[building]]
+key = "Lodge"
+name = "Lodge"
+footprint = [3, 3]
+site = "TouchesWater"
+work = 10.0
+cost = [["Sticks", 18.0], ["Mud", 8.0]]
+home = true
+wear = 0.001
+model = "lodge"
+footing = "mound"
+footing_size = [3.3, 3.3]
+icon = "Lodge"
+hotkey = "X"
+menu = 2
+refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
+refits.Reinforce = { cost = [["Sticks", 18.0], ["Mud", 8.0]], labour = 8.0, lasts = 1.75 }
+refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+
+[[building]]
+key = "StickPile"
+name = "Stick pile"
+footprint = [3, 3]
+site = "TouchesWater"
+work = 8.0
+capacity = 300.0
+requires = "Lodge"
+cost = [["Sticks", 16.0], ["Mud", 5.0]]
+stores = ["Sticks", "Mud"]
+wear = 0.00065
+model = "cache_island"
+footing = "mound"
+footing_size = [2.6, 2.6]
+icon = "StickPile"
+hotkey = "C"
+menu = 3
+refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
+refits.Reinforce = { per_cell = [["Sticks", 2.0], ["Mud", 0.25]], labour = 4.0, labour_per_cell = 0.4, lasts = 1.5 }
+refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+
+[[building]]
+key = "Canal"
+name = "Canal"
+footprint = [1, 1]
+site = "TouchesWater"
+work = 0.15
+slots = ["Builder", "Builder", "Builder"]
+built_as = "Canal"
+wear = 0.00065
+model = "canal"
+icon = "Canal"
+hotkey = "V"
+menu = 1
+
+[[building]]
+key = "FoodCache"
+name = "Food cache"
+footprint = [3, 3]
+site = "TouchesWater"
+work = 8.0
+capacity = 300.0
+requires = "Lodge"
+cost = [["Sticks", 14.0], ["Mud", 4.0]]
+stores = ["Food"]
+wear = 0.00065
+model = "feed_pile"
+footing = "mound"
+footing_size = [1.5, 1.5]
+icon = "FoodCache"
+hotkey = "B"
+menu = 4
+refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
+refits.Reinforce = { per_cell = [["Sticks", 2.0], ["Mud", 0.25]], labour = 4.0, labour_per_cell = 0.4, lasts = 1.5 }
+refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+
+[[building]]
+key = "PebbleHeap"
+name = "Pebble heap"
+footprint = [2, 2]
+site = "TouchesWater"
+work = 6.0
+capacity = 120.0
+area = [121, 121]
+requires = "StickPile"
+cost = [["Sticks", 12.0], ["Mud", 3.0]]
+slots = ["Pebbler"]
+stores = ["Pebbles"]
+wear = 0.00065
+model = "stone_cache"
+footing = "mound"
+footing_size = [1.6, 1.6]
+icon = "PebbleHeap"
+hotkey = "N"
+menu = 5
+
+[[building]]
+key = "Forester"
+name = "Forester"
+footprint = [2, 2]
+site = "TouchesWater"
+work = 6.0
+capacity = 80.0
+area = [91, 91]
+requires = "FoodCache"
+cost = [["Sticks", 10.0], ["Mud", 2.0]]
+slots = ["Planter"]
+stores = ["Saplings"]
+wear = 0.00065
+model = "willow_shallows"
+footing = "ring"
+footing_size = [1.75, 1.75]
+icon = "Forester"
+hotkey = "F"
+menu = 6
+round_area = true
+
+[[building]]
+key = "HaulMound"
+name = "Haul mound"
+footprint = [2, 2]
+site = "TouchesWater"
+work = 6.0
+requires = "StickPile"
+cost = [["Sticks", 10.0], ["Mud", 3.0]]
+slots = ["Hauler", "Hauler", "Hauler"]
+wear = 0.00065
+model = "haul_island"
+footing = "mound"
+footing_size = [1.7, 1.7]
+icon = "HaulMound"
+hotkey = "H"
+menu = 7
+
+[[building]]
+key = "Lookout"
+name = "Lookout"
+footprint = [2, 2]
+site = "TouchesWater"
+work = 6.0
+requires = "Lodge"
+cost = [["Sticks", 12.0], ["Mud", 2.0]]
+slots = ["Sentry"]
+wear = 0.00065
+model = "watch_mound"
+footing = "mound"
+footing_size = [1.5, 1.5]
+icon = "Lookout"
+hotkey = "O"
+menu = 8
+
+[[building]]
+key = "RaftLanding"
+name = "Raft landing"
+footprint = [3, 3]
+site = "TouchesWater"
+work = 10.0
+requires = "HaulMound"
+cost = [["Sticks", 22.0], ["Mud", 6.0]]
+docks_rafts = true
+wear = 0.00065
+model = "raft_landing"
+footing = "piles"
+footing_size = [2.9, 2.5]
+icon = "RaftLanding"
+hotkey = "P"
+menu = 9

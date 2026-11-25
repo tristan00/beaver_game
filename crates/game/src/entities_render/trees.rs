@@ -8,38 +8,20 @@
 //! tall bare trunk under flat tufts; spruce a dark, narrow spire of drooping boughs.
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::models::Season;
-use super::scene::Species;
+use super::scene::TreeStyle;
+use sim::trees::Tree;
 use crate::palette::{self, pack};
 use bevy::prelude::*;
 use std::f32::consts::TAU;
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
+use crate::seasonal::smooth as smooth01;
+use super::meshgen::v;
 
 const INK: u32 = pack(palette::INK);
 
-fn smooth01(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 const FOLIAGE_SATURATION: f32 = 1.22;
 
-/// Leaf colour through the year (spring, summer, autumn, late autumn), each a shade and a light.
-fn keys(sp: Species) -> [(u32, u32); 4] {
-    match sp {
-        Species::Aspen => [(0x86B35A, 0xC0DB86), (0x689A4C, 0xA6C676), (0xD6A42C, 0xF4D25A), (0xA88A44, 0xCDB070)],
-        Species::Birch => [(0x95C064, 0xCBE494), (0x70A250, 0xACCD7A), (0xD9B43E, 0xF4D872), (0xB0924E, 0xD4B878)],
-        Species::Willow => [(0xA2C866, 0xD6EA96), (0x82AC5A, 0xBAD688), (0xC4B446, 0xE4D676), (0xA49650, 0xC6BA78)],
-        Species::Alder => [(0x6A9C50, 0x9EC278), (0x3E7240, 0x6C9A5A), (0x587A3E, 0x86985A), (0x6A6440, 0x8C8458)],
-        Species::Maple => [(0x74A452, 0xA8C878), (0x4C8644, 0x84B062), (0xC8442A, 0xF08A3A), (0x92563A, 0xBC8458)],
-        Species::Beech => [(0x8CBE5C, 0xC4E08A), (0x5C9048, 0x92BA6A), (0xB0602A, 0xD88E44), (0xA8845A, 0xCCAE80)],
-        Species::Pine => [(0x4C7C5C, 0x86AE86), (0x467858, 0x80AA82), (0x4A7658, 0x84A882), (0x4C6E58, 0x86A28A)],
-        Species::Spruce => [(0x2E5E46, 0x5E8E6C), (0x2A5A44, 0x5A8A68), (0x2C5A46, 0x5A8868), (0x2E5648, 0x5C8470)],
-    }
-}
-
-fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
-    let k = keys(sp);
+fn foliage(t: Tree, s: Season) -> ([f32; 3], [f32; 3]) {
+    let k = t.row().look.leaves;
     let dark = k.map(|(a, _)| palette::rgb(a));
     let light = k.map(|(_, b)| palette::rgb(b));
     // A little richer than the keys: under the strong ambient light, crowns at the keys'
@@ -54,16 +36,11 @@ fn foliage(sp: Species, s: Season) -> ([f32; 3], [f32; 3]) {
 
 /// How much of a full crown is in leaf, and how much of that is last year's dead leaves (beech
 /// keeps its leaves, brown, until spring).
-fn leaf_cover(sp: Species, phase: f32) -> (f32, f32) {
+fn leaf_cover(t: Tree, phase: f32) -> (f32, f32) {
+    const KEPT: f32 = 0.45;
     let l = crate::seasonal::leaves(phase);
-    match sp {
-        Species::Pine | Species::Spruce => (1.0, 0.0),
-        Species::Beech => {
-            const KEPT: f32 = 0.45;
-            (l.max(KEPT), smooth01(KEPT, 0.08, l))
-        }
-        _ => (l, 0.0),
-    }
+    let look = &t.row().look;
+    if look.evergreen { (1.0, 0.0) } else if look.keeps_leaves { (l.max(KEPT), smooth01(KEPT, 0.08, l)) } else { (l, 0.0) }
 }
 
 /// A species' build: bark, trunk, and the crown its branches carry.
@@ -85,19 +62,11 @@ struct Shape {
     seed: u32,
 }
 
-fn shape(sp: Species) -> Shape {
-    let s = |bark, foot, trunk_r, fork: f32, centre: f32, radius: Vec3, tips, clump, flat, droop, limb, seed| Shape {
-        bark, foot, trunk_r, fork: v(0.0, fork, 0.0), centre: v(0.0, centre, 0.0), radius, tips, clump, flat, droop, limb, seed,
-    };
-    match sp {
-        Species::Aspen => s(0xDAD8C0, 0x5E5A4E, 0.16, 2.9, 3.95, v(0.85, 1.3, 0.85), 14, 0.46, 0.9, 0.0, 0.06, 3),
-        Species::Birch => s(0xEFEBE2, 0x3A3631, 0.13, 2.6, 3.65, v(1.15, 1.2, 1.0), 16, 0.42, 0.85, 0.35, 0.05, 11),
-        Species::Willow => s(0x6A5A42, 0x4A3E2E, 0.3, 2.3, 3.0, v(1.75, 0.95, 1.75), 14, 0.5, 0.8, 0.2, 0.1, 9),
-        Species::Alder => s(0x77716A, 0x55504A, 0.12, 1.7, 2.8, v(1.3, 1.15, 1.3), 14, 0.5, 0.9, 0.0, 0.06, 21),
-        Species::Maple => s(0x6E5C4C, 0x4E4034, 0.24, 1.8, 3.35, v(1.75, 1.4, 1.75), 18, 0.62, 0.85, 0.0, 0.12, 7),
-        Species::Beech => s(0xA9A79E, 0x7E7C74, 0.28, 1.4, 2.75, v(2.05, 1.2, 2.05), 18, 0.62, 0.6, 0.1, 0.13, 17),
-        Species::Pine => s(0xB06A40, 0x5A4434, 0.2, 2.4, 4.0, v(1.3, 1.6, 1.3), 0, 0.0, 1.0, 0.0, 0.06, 5),
-        Species::Spruce => s(0x6A5040, 0x4E3C30, 0.2, 0.9, 3.4, v(1.3, 3.0, 1.3), 0, 0.0, 1.0, 0.0, 0.05, 23),
+fn shape(t: Tree) -> Shape {
+    let l = &t.row().look;
+    Shape {
+        bark: l.bark, foot: l.foot, trunk_r: l.trunk_r, fork: v(0.0, l.fork, 0.0), centre: v(0.0, l.centre, 0.0), radius: Vec3::from(l.radius),
+        tips: l.tips, clump: l.clump, flat: l.flat, droop: l.droop, limb: l.limb, seed: l.seed,
     }
 }
 
@@ -274,47 +243,48 @@ fn birch_dashes(mb: &mut Mb, a: Vec3, b: Vec3, r0: f32, r1: f32, n: usize, seed:
 }
 
 /// The stems a species grows from the ground: (foot, top, foot radius, top radius).
-fn stems(sp: Species, sh: &Shape) -> Vec<(Vec3, Vec3, f32, f32)> {
+fn stems(style: TreeStyle, sh: &Shape) -> Vec<(Vec3, Vec3, f32, f32)> {
     let r = sh.trunk_r;
-    match sp {
-        Species::Birch => vec![(v(-0.14, 0.0, 0.05), v(-0.5, 4.1, 0.2), r, r * 0.35), (v(0.14, 0.0, -0.05), v(0.42, 3.8, -0.25), r * 0.9, r * 0.35)],
-        Species::Alder => (0..3)
+    match style {
+        TreeStyle::Twin => vec![(v(-0.14, 0.0, 0.05), v(-0.5, 4.1, 0.2), r, r * 0.35), (v(0.14, 0.0, -0.05), v(0.42, 3.8, -0.25), r * 0.9, r * 0.35)],
+        TreeStyle::Clump => (0..3)
             .map(|k| {
                 let a = k as f32 * TAU / 3.0 + 0.4;
                 (v(a.cos() * 0.1, 0.0, a.sin() * 0.1), v(a.cos() * 0.6, 3.1 - 0.25 * k as f32, a.sin() * 0.6), r, r * 0.4)
             })
             .collect(),
-        Species::Willow => vec![(v(0.0, 0.0, 0.0), v(0.25, 1.35, 0.0), r, r * 0.75)],
-        Species::Aspen => vec![(Vec3::ZERO, v(0.04, 4.5, 0.0), r, r * 0.35)],
+        TreeStyle::Weeping => vec![(v(0.0, 0.0, 0.0), v(0.25, 1.35, 0.0), r, r * 0.75)],
+        TreeStyle::Slim => vec![(Vec3::ZERO, v(0.04, 4.5, 0.0), r, r * 0.35)],
         _ => vec![(Vec3::ZERO, sh.fork + v(0.0, 0.25, 0.0), r, r * 0.65)],
     }
 }
 
-fn broadleaf(mb: &mut Mb, sp: Species, sh: &Shape, phase: f32, dark: [f32; 3], light: [f32; 3], lod: u8) {
+fn broadleaf(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light: [f32; 3], lod: u8) {
     let (bark, foot) = (hex(sh.bark), hex(sh.foot));
-    let (leaves, dead) = leaf_cover(sp, phase);
+    let style = TreeStyle::of(t);
+    let (leaves, dead) = leaf_cover(t, phase);
     let (dark, light) = if dead > 0.0 { (mix(dark, hex(0x8E6E4A), dead), mix(light, hex(0xB89A70), dead)) } else { (dark, light) };
     let detail = lod == 0;
     let seg = if detail { 8 } else { 5 };
-    let stems = stems(sp, sh);
-    if detail && !matches!(sp, Species::Alder | Species::Birch) {
+    let stems = stems(style, sh);
+    if detail && !matches!(style, TreeStyle::Clump | TreeStyle::Twin) {
         root_flare(mb, Vec3::ZERO, sh.trunk_r, mix(foot, bark, 0.4));
     }
-    let foot_h = match sp { Species::Birch => 0.55, Species::Aspen => 0.7, _ => 0.4 };
+    let foot_h = match style { TreeStyle::Twin => 0.55, TreeStyle::Slim => 0.7, _ => 0.4 };
     let used: &[_] = if detail { &stems } else { &stems[..1.min(stems.len())] };
     for &(a, b, r0, r1) in used {
         stem(mb, a, b, r0, r1, foot, bark, foot_h, seg);
-        if detail && sp == Species::Birch {
+        if detail && style == TreeStyle::Twin {
             birch_dashes(mb, a, b, r0, r1, 14, (b.x * 100.0).abs() as u32 + 3);
         }
     }
-    if detail && sp == Species::Aspen {
+    if detail && style == TreeStyle::Slim {
         bark_eyes(mb, 4.4, sh.trunk_r, sh.trunk_r * 0.35, 10, 11);
     }
-    let mut forks: Vec<Vec3> = match sp {
+    let mut forks: Vec<Vec3> = match style {
         // Limbs leave each stem part way up.
-        Species::Birch | Species::Alder => used.iter().map(|&(a, b, ..)| a.lerp(b, 0.62)).collect(),
-        Species::Willow => {
+        TreeStyle::Twin | TreeStyle::Clump => used.iter().map(|&(a, b, ..)| a.lerp(b, 0.62)).collect(),
+        TreeStyle::Weeping => {
             let top = stems[0].1;
             let leaders = [(top, v(-0.5, 2.35, 0.35)), (top, v(0.75, 2.45, -0.3))];
             for (a, b) in leaders {
@@ -328,9 +298,9 @@ fn broadleaf(mb: &mut Mb, sp: Species, sh: &Shape, phase: f32, dark: [f32; 3], l
         forks.push(sh.fork);
     }
     let tips = crown(mb, sh, &forks, leaves, mix(bark, foot, 0.3), dark, light, detail);
-    match sp {
-        Species::Willow => willow_strands(mb, sh, &tips, leaves, dark, light, detail),
-        Species::Maple if detail => {
+    match style {
+        TreeStyle::Weeping => willow_strands(mb, sh, &tips, leaves, dark, light, detail),
+        TreeStyle::Dome if detail => {
             let bloom = crate::seasonal::bloom(phase) * (1.0 - smooth01(0.4, 0.8, leaves));
             if bloom > 0.1 {
                 // Red flowers on bare twigs before the leaves.
@@ -345,7 +315,7 @@ fn broadleaf(mb: &mut Mb, sp: Species, sh: &Shape, phase: f32, dark: [f32; 3], l
             }
         }
         // Last year's cones and this year's catkins hang on the bare twigs.
-        Species::Alder if detail && leaves < 0.5 => {
+        TreeStyle::Clump if detail && leaves < 0.5 => {
             let mut r = Rng(29);
             for &(t, _) in &tips {
                 for _ in 0..3 {
@@ -429,26 +399,26 @@ fn spruce(mb: &mut Mb, sh: &Shape, dark: [f32; 3], light: [f32; 3], snow: f32, l
     mb.cyl(v(0.0, height - 0.3, 0.0), v(0.0, height + 0.5, 0.0), 0.06, 0.01, under, top, 4);
 }
 
-pub fn tree_mesh(sp: Species, season: Season, lod: u8) -> Mesh {
+pub fn tree_mesh(t: Tree, season: Season, lod: u8) -> Mesh {
     let mut mb = Mb::new();
-    let sh = shape(sp);
-    let (dark, light) = foliage(sp, season);
+    let sh = shape(t);
+    let (dark, light) = foliage(t, season);
     let phase = season.phase();
     let snow = crate::seasonal::snow(phase);
-    match (sp, lod) {
-        (Species::Pine, l) if l < 2 => pine(&mut mb, &sh, dark, light, snow, l),
-        (Species::Spruce, l) => spruce(&mut mb, &sh, dark, light, snow, l),
-        (_, l) if l < 2 => broadleaf(&mut mb, sp, &sh, phase, dark, light, l),
-        _ => far_tree(&mut mb, sp, &sh, phase, dark, light, snow),
+    match (TreeStyle::of(t), lod) {
+        (TreeStyle::Tufted, l) if l < 2 => pine(&mut mb, &sh, dark, light, snow, l),
+        (TreeStyle::Spire, l) => spruce(&mut mb, &sh, dark, light, snow, l),
+        (_, l) if l < 2 => broadleaf(&mut mb, t, &sh, phase, dark, light, l),
+        _ => far_tree(&mut mb, t, &sh, phase, dark, light, snow),
     }
     mb.build()
 }
 
 /// The far view: a stem and one lumpy crown (or a bare stem with its main limbs).
-fn far_tree(mb: &mut Mb, sp: Species, sh: &Shape, phase: f32, dark: [f32; 3], light: [f32; 3], snow: f32) {
+fn far_tree(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light: [f32; 3], snow: f32) {
     let (bark, foot) = (hex(sh.bark), hex(sh.foot));
-    let (leaves, dead) = leaf_cover(sp, phase);
-    if sp == Species::Pine {
+    let (leaves, dead) = leaf_cover(t, phase);
+    if TreeStyle::of(t) == TreeStyle::Tufted {
         let top = mix(light, hex(0xE6EEF0), snow * 0.6);
         mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 5.3, 0.0), sh.trunk_r, 0.06, foot, bark, 4);
         for (y, r) in [(3.1f32, 1.25f32), (4.3, 0.95), (5.2, 0.55)] {
@@ -470,9 +440,9 @@ fn far_tree(mb: &mut Mb, sp: Species, sh: &Shape, phase: f32, dark: [f32; 3], li
 }
 
 /// What shows of a tree cut away so a beaver or a site behind it can be seen: a dark stump.
-pub fn tree_cutaway_mesh(sp: Species) -> Mesh {
+pub fn tree_cutaway_mesh(t: Tree) -> Mesh {
     let mut mb = Mb::new();
-    let sh = shape(sp);
+    let sh = shape(t);
     let trunk = mix(hex(sh.bark), hex(0x3e3024), 0.75);
     root_flare(&mut mb, Vec3::ZERO, sh.trunk_r, trunk);
     mb.cyl(v(0.0, -0.1, 0.0), v(0.0, 0.55, 0.0), sh.trunk_r, sh.trunk_r * 0.6, trunk, trunk, 7);

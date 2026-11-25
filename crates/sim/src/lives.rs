@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::colony::{BeaverId, DeathCause, LodgeId, Sex, Stage};
-use crate::jobs::RoleKind;
+use crate::jobs::Job;
 use crate::SimState;
 
 /// Days between looks.
@@ -21,7 +21,7 @@ pub enum What {
     Joined,
     Grew(Stage),
     /// Took up a job; `None` is left free.
-    Job(Option<RoleKind>),
+    Job(Option<Job>),
     /// Paired with a partner; `None` is the partner lost.
     Partner(Option<BeaverId>),
     Moved(Option<LodgeId>),
@@ -38,7 +38,7 @@ pub struct Entry {
 /// What was true of a beaver at the last look.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Seen {
-    job: Option<RoleKind>,
+    job: Option<Job>,
     lodge: Option<LodgeId>,
     partner: Option<BeaverId>,
     stage: Stage,
@@ -79,9 +79,9 @@ pub struct Lives {
 }
 
 /// The job a beaver holds: its seat's role, or the role of the order it is on.
-pub fn job_of(sim: &SimState, id: BeaverId) -> Option<RoleKind> {
+pub fn job_of(sim: &SimState, id: BeaverId) -> Option<Job> {
     if let Some((_, _, role)) = sim.work.slot_of(id) {
-        return Some(crate::jobs::role_kind(role));
+        return Some(role);
     }
     sim.agents.get(id).and_then(|a| a.assignment).and_then(|a| crate::jobs::assignment_role(sim, a))
 }
@@ -143,4 +143,3 @@ pub fn step(sim: &mut SimState) {
     }
     sim.lives = lives;
 }
-

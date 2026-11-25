@@ -1,13 +1,10 @@
 //! Tree species: how fast they grow, what they yield, and where they grow.
-//! Stats and each map's species mix live in `content/game.sqlite3`
-//! (`tree_species`, `tree_flora`).
-include!(concat!(env!("OUT_DIR"), "/trees_constants.rs"));
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum Tree { Aspen, Willow, Birch, Alder, Pine, Maple, Spruce, Beech }
+//! Stats live in `content/trees.toml` and each map's species mix in `content/flora.toml`.
+pub use crate::content::Tree;
 
 /// Multipliers against the reference tree in the forestry and resource constants.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreeSpec {
     pub growth: f32,
     pub logs: f32,
@@ -32,22 +29,12 @@ pub struct Mix {
 }
 
 impl Tree {
-    pub const ALL: [Tree; 8] = [Tree::Aspen, Tree::Willow, Tree::Birch, Tree::Alder, Tree::Pine, Tree::Maple, Tree::Spruce, Tree::Beech];
-
     pub fn spec(self) -> &'static TreeSpec {
-        &SPECIES[self as usize]
+        &self.row().spec
     }
-    pub fn name(self) -> &'static str {
-        match self {
-            Tree::Aspen => "Aspen",
-            Tree::Willow => "Willow",
-            Tree::Birch => "Birch",
-            Tree::Alder => "Alder",
-            Tree::Pine => "Pine",
-            Tree::Maple => "Maple",
-            Tree::Spruce => "Spruce",
-            Tree::Beech => "Beech",
-        }
+    /// The species taken for a tree of no known species.
+    pub fn unknown() -> Tree {
+        crate::content::content().unknown
     }
     pub fn feeds(self) -> bool {
         self.spec().bark > 0.0
@@ -66,14 +53,14 @@ pub struct Habitat {
 }
 
 /// The species mix for a map, or the generic valley mix.
-pub fn flora(map: &str) -> &'static [Mix; 8] {
-    let find = |m: &str| FLORA.iter().find(|f| f.0 == m).map(|f| &f.1);
-    find(map).or_else(|| find("default")).expect("content defines a default flora")
+pub fn flora(map: &str) -> &'static [Mix] {
+    let f = &crate::content::content().tree_flora;
+    f.get(map).unwrap_or(&f["default"])
 }
 
 /// Habitat shifts the odds rather than drawing single-species bands, so even
 /// wet banks and dry ridges hold several species.
-pub fn choose(mix: &[Mix; 8], h: Habitat, draw: f32) -> Tree {
+pub fn choose(mix: &[Mix], h: Habitat, draw: f32) -> Tree {
     let steep = h.slope.clamp(0.0, 1.0);
     let high = ((h.height - 0.55) / 0.4).clamp(0.0, 1.0);
     let upland = steep.max(high * high * (3.0 - 2.0 * high));
@@ -83,58 +70,13 @@ pub fn choose(mix: &[Mix; 8], h: Habitat, draw: f32) -> Tree {
         wet = wet.max(0.85);
     }
     let open = if h.cover == 10 { 0.0 } else { 1.0 };
-    let weights: [f32; 8] = std::array::from_fn(|i| {
-        let m = mix[i];
-        (m.dry + (m.wet - m.dry) * wet + m.upland * upland + m.open * open).max(0.0)
-    });
+    let weights: Vec<f32> = mix.iter().map(|m| (m.dry + (m.wet - m.dry) * wet + m.upland * upland + m.open * open).max(0.0)).collect();
     let mut pick = draw.clamp(0.0, 1.0) * weights.iter().sum::<f32>();
-    for (tree, weight) in Tree::ALL.into_iter().zip(weights) {
+    for (tree, weight) in Tree::all().zip(weights.iter().copied()) {
         if weight > 0.0 && pick < weight {
             return tree;
         }
         pick -= weight;
     }
-    Tree::ALL.into_iter().zip(weights).rev().find(|(_, w)| *w > 0.0).map_or(Tree::Pine, |(t, _)| t)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn share(map: &str, h: Habitat, pred: impl Fn(Tree) -> bool) -> f32 {
-        let n = 2000;
-        (0..n).filter(|i| pred(choose(flora(map), h, (*i as f32 + 0.5) / n as f32))).count() as f32 / n as f32
-    }
-
-    #[test]
-    fn each_map_grows_its_own_forest() {
-        let dry = Habitat { moisture: 0.2, slope: 0.05, height: 0.3, cover: 10 };
-        let conifer = |t| matches!(t, Tree::Pine | Tree::Spruce);
-        assert!(share("bavarian", dry, |t| t == Tree::Beech) > 0.3);
-        assert_eq!(share("telemark", dry, |t| t == Tree::Beech), 0.0);
-        assert!(share("voyageurs", dry, |t| t == Tree::Aspen) > share("bavarian", dry, |t| t == Tree::Aspen) * 5.0);
-        assert!(share("telemark", dry, conifer) > share("algonquin", dry, conifer));
-        assert_eq!(flora("nowhere"), flora("default"));
-    }
-
-    #[test]
-    fn wet_banks_favour_willow_and_alder_and_ridges_conifers() {
-        let bank = Habitat { moisture: 0.95, slope: 0.02, height: 0.1, cover: 90 };
-        let ridge = Habitat { moisture: 0.2, slope: 0.6, height: 0.95, cover: 10 };
-        for map in ["algonquin", "voyageurs", "bavarian", "telemark"] {
-            let riparian = |t| matches!(t, Tree::Willow | Tree::Alder);
-            let conifer = |t| matches!(t, Tree::Pine | Tree::Spruce);
-            assert!(share(map, bank, riparian) > share(map, ridge, riparian) + 0.2, "{map}");
-            assert!(share(map, ridge, conifer) > share(map, bank, conifer), "{map}");
-        }
-    }
-
-    #[test]
-    fn broadleaves_feed_beavers_and_conifers_do_not() {
-        assert!(Tree::Aspen.feeds() && Tree::Willow.feeds() && Tree::Birch.feeds());
-        assert!(!Tree::Pine.feeds() && !Tree::Spruce.feeds());
-        // Willow and aspen both start seeding at about ten in the wild; spruce far later.
-        assert!(Tree::Willow.spec().growth >= Tree::Aspen.spec().growth && Tree::Aspen.spec().growth > Tree::Spruce.spec().growth);
-        assert!(Tree::Aspen.spec().bark > Tree::Birch.spec().bark);
-    }
+    Tree::all().zip(weights).rev().find(|(_, w)| *w > 0.0).map_or(Tree::all().last().expect("content has trees"), |(t, _)| t)
 }

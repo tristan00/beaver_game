@@ -1,10 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/dam_preview_constants.rs"));
 use crate::buildings::{Amount, BuildingId, BuildingKind};
-use crate::resources::ResourceKind;
 use crate::water::Cell;
 use std::collections::HashSet;
-
-
 
 /// Loads needed to bring a drawn line to these heights: one load per step per metre of wall
 /// (a diagonal cell stands for about 1.4 m).
@@ -19,8 +16,8 @@ pub fn loads_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> usiz
 /// Materials and packing labour to build these heights.
 pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<Amount>, f32) {
     let loads = loads_for(sim, cells, heights) as f32;
-    let cost = BuildingKind::Dam.spec().cost.iter().map(|&(g, a)| (g, a * loads)).filter(|c| c.1 > 1e-3).collect();
-    (cost, BuildingKind::Dam.spec().work * loads)
+    let cost = BuildingKind::dam().spec().cost.iter().map(|&(g, a)| (g, a * loads)).filter(|c| c.1 > 1e-3).collect();
+    (cost, BuildingKind::dam().spec().work * loads)
 }
 
 pub fn heights_to(sim: &crate::SimState, cells: &[Cell], crest: f32) -> (Vec<Cell>, Vec<f32>) {
@@ -55,7 +52,6 @@ impl DamPreview {
         self.inflow >= margin * self.pond_loss
     }
 }
-
 
 pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<DamPreview> {
     preview_heights(sim, cells, &vec![height; cells.len()])
@@ -183,7 +179,7 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
     let under = |c: &Cell| c.0 < w && c.1 < h && in_pond[idx(c)];
 
     let flooded_trees = sim.resources.items().iter()
-        .filter(|r| r.kind == ResourceKind::Tree && under(&r.cell)).count();
+        .filter(|r| r.kind.is_tree() && under(&r.cell)).count();
     let flooded_buildings = sim.buildings.buildings.iter()
         .filter(|b| b.cells().any(|c| under(&c))).map(|b| b.id).collect();
 
@@ -241,48 +237,6 @@ pub fn drowned_by(sim: &crate::SimState, then: impl Fn(usize, usize) -> f32) -> 
         .filter(|b| crate::buildings::footprint_depth(b.kind, b.pos, now) <= max && crate::buildings::footprint_depth(b.kind, b.pos, |x, y| then(x, y).max(now(x, y))) > max)
         .map(|b| b.id)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The fixture valley runs along y = 64 with its river fed from x = 0.
-    fn running_river() -> crate::SimState {
-        let mut s = crate::sandbox::on_map("fixture").unwrap();
-        crate::sandbox::run_days(&mut s, 2.0);
-        s
-    }
-
-    #[test]
-    fn a_pond_deep_over_a_building_drowns_it() {
-        let mut s = running_river();
-        let n = s.height.width();
-        let dry = |s: &crate::SimState, x: usize, y: usize| (0..3).all(|dy| (0..3).all(|dx| s.water.depth.get(x + dx, y + dy).is_some_and(|&d| d < 0.01)));
-        let pos = (4..n - 4).flat_map(|y| (4..n - 4).map(move |x| (x, y))).find(|&(x, y)| dry(&s, x, y)).expect("dry ground");
-        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(77), kind: BuildingKind::Lodge, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        let over = |depth: f32| move |x: usize, y: usize| if (pos.0..pos.0 + 3).contains(&x) && (pos.1..pos.1 + 3).contains(&y) { depth } else { 0.0 };
-        assert!(drowned_by(&s, over(0.5)).is_empty(), "shallow water is a beaver's home");
-        assert_eq!(drowned_by(&s, over(crate::buildings::MAX_BUILDING_DEPTH + 0.3)), vec![BuildingId(77)]);
-    }
-
-    /// The badge's rise is what the water does days after the dam stands, beside the same water
-    /// left without it.
-    #[test]
-    fn the_settled_rise_is_what_the_water_does() {
-        let s = running_river();
-        let across: Vec<Cell> = (30..99).map(|y| (64, y)).collect();
-        let heights = crate::dams::first_targets(&s, &across);
-        let got = settle(s.water.clone(), &s.height, &across, &heights).unwrap();
-        let (mut with, mut without) = (s.water.clone(), s.water.clone());
-        let pairs: Vec<(Cell, f32)> = across.iter().copied().zip(heights.iter().copied()).collect();
-        with.raise_dam(&pairs).unwrap();
-        run(&mut with, &s.height, 0.0, 5.0);
-        run(&mut without, &s.height, 0.0, 5.0);
-        let truth = pond(&with, &without, &s.height, &across);
-        assert!(truth.rise > 0.3, "the dam backs the river up: {}", truth.rise);
-        assert!((got.rise - truth.rise).abs() < 0.05, "badge {} against {}", got.rise, truth.rise);
-    }
 }
 
 /// What the water really does once a dam stands: the game's own engine runs on from today

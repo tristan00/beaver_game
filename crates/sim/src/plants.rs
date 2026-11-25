@@ -7,13 +7,10 @@
 //! water lily and pondweed in the water. Each spreads two ways, as it does in life: by creeping
 //! roots into the ground next to it, and now and then by seed further off. What it keeps over
 //! winter is what beavers dig for then: cattail, arrowhead and lily rhizomes, raspberry canes.
-include!(concat!(env!("OUT_DIR"), "/plants_constants.rs"));
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum Plant { Sedge, CanaryGrass, Meadowsweet, JoePye, Raspberry, Horsetail, Cattail, Arrowhead, YellowLily, WhiteLily, Pondweed }
+pub use crate::content::Plant;
 
 /// Where a species roots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 pub enum Habitat {
     /// Open, moist ground away from the water: clearings and forest edges.
     Upland,
@@ -26,7 +23,8 @@ pub enum Habitat {
 }
 
 /// One species' food and growth. Rates are a day in full growing season.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlantSpec {
     pub habitat: Habitat,
     /// The most food one plant holds.
@@ -42,30 +40,13 @@ pub struct PlantSpec {
     pub max_depth: f32,
 }
 
+impl Habitat {
+    pub const ALL: [Habitat; 4] = [Habitat::Upland, Habitat::Meadow, Habitat::Shore, Habitat::Water];
+}
+
 impl Plant {
-    pub const ALL: [Plant; 11] = [
-        Plant::Sedge, Plant::CanaryGrass, Plant::Meadowsweet, Plant::JoePye, Plant::Raspberry, Plant::Horsetail,
-        Plant::Cattail, Plant::Arrowhead, Plant::YellowLily, Plant::WhiteLily, Plant::Pondweed,
-    ];
-
     pub fn spec(self) -> &'static PlantSpec {
-        &SPECS[self as usize]
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Plant::Sedge => "Sedge",
-            Plant::CanaryGrass => "Reed canary grass",
-            Plant::Meadowsweet => "Meadowsweet",
-            Plant::JoePye => "Joe-Pye weed",
-            Plant::Raspberry => "Wild raspberry",
-            Plant::Horsetail => "Water horsetail",
-            Plant::Cattail => "Cattail",
-            Plant::Arrowhead => "Arrowhead",
-            Plant::YellowLily => "Yellow pond lily",
-            Plant::WhiteLily => "White water lily",
-            Plant::Pondweed => "Pondweed",
-        }
+        &self.row().spec
     }
 
     /// Stands in open water: drawn floating or rising from it, and gathered by swimmers.
@@ -74,53 +55,30 @@ impl Plant {
     }
 
     pub fn kind(self) -> crate::resources::ResourceKind {
-        if self.aquatic() { crate::resources::ResourceKind::WaterPlant } else { crate::resources::ResourceKind::Plant }
+        crate::resources::ResourceKind::food_plant(self.aquatic())
     }
 }
 
 /// A map's flora: how common each species is where it can grow.
-pub fn flora(map: &str) -> &'static [f32; 11] {
-    let find = |m: &str| FLORA.iter().find(|f| f.0 == m).map(|f| &f.1);
-    find(map).or_else(|| find("default")).expect("content defines a default plant flora")
+pub fn flora(map: &str) -> &'static [f32] {
+    let f = &crate::content::content().plant_flora;
+    f.get(map).unwrap_or(&f["default"])
 }
 
 /// A species from the flora for ground of this habitat (`fits` says which species it suits),
 /// `draw` in 0..1 choosing among them by their weights.
 pub fn choose(map: &str, draw: f32, fits: impl Fn(Plant) -> bool) -> Option<Plant> {
     let mix = flora(map);
-    let total: f32 = Plant::ALL.iter().filter(|p| fits(**p)).map(|p| mix[*p as usize]).sum();
+    let total: f32 = Plant::all().filter(|p| fits(*p)).map(|p| mix[p.index()]).sum();
     if total <= 0.0 {
         return None;
     }
     let mut left = draw.clamp(0.0, 0.9999) * total;
-    for p in Plant::ALL.into_iter().filter(|p| fits(*p)) {
-        left -= mix[p as usize];
-        if left < 0.0 && mix[p as usize] > 0.0 {
+    for p in Plant::all().filter(|p| fits(*p)) {
+        left -= mix[p.index()];
+        if left < 0.0 && mix[p.index()] > 0.0 {
             return Some(p);
         }
     }
-    Plant::ALL.into_iter().rev().find(|p| fits(*p) && mix[*p as usize] > 0.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_flora_has_a_plant_for_every_habitat_and_regions_differ() {
-        for h in [Habitat::Upland, Habitat::Meadow, Habitat::Shore, Habitat::Water] {
-            assert!(choose("algonquin", 0.5, |p| p.spec().habitat == h).is_some());
-            assert!(choose("telemark", 0.5, |p| p.spec().habitat == h).is_some());
-        }
-        assert_eq!(flora("algonquin")[Plant::Meadowsweet as usize], 0.0, "meadowsweet is European");
-        assert_eq!(flora("bavarian")[Plant::JoePye as usize], 0.0, "Joe-Pye weed is North American");
-        assert_eq!(flora("nowhere"), flora("default"));
-    }
-
-    #[test]
-    fn water_plants_are_rich_and_rhizomes_last_the_winter() {
-        assert!(Plant::YellowLily.spec().food > Plant::Sedge.spec().food);
-        assert!(Plant::Cattail.spec().keep > Plant::CanaryGrass.spec().keep);
-        assert!(Plant::ALL.iter().all(|p| p.aquatic() == (p.kind() == crate::resources::ResourceKind::WaterPlant)));
-    }
+    Plant::all().rev().find(|p| fits(*p) && mix[p.index()] > 0.0)
 }

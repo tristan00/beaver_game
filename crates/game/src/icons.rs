@@ -15,6 +15,10 @@ macro_rules! icons {
         impl Icon {
             pub const ALL: &'static [Icon] = &[$(Icon::$name),*];
             pub fn index(self) -> usize { self as usize }
+            /// The icon a content row names.
+            pub fn named(name: &str) -> Option<Icon> {
+                match name { $(stringify!($name) => Some(Icon::$name),)* _ => None }
+            }
         }
     };
 }
@@ -432,8 +436,6 @@ fn shovel(c: &mut Canvas) {
     c.add(seg(23.0, 7.0, 41.0, 7.0, 6.5));
     c.add(poly(&[(20.0, 30.0), (44.0, 30.0), (44.0, 45.0), (32.0, 57.0), (20.0, 45.0)]).grow(2.0));
 }
-
-
 
 fn berries(c: &mut Canvas) {
     c.add(circle(21.0, 44.0, 12.0));
@@ -991,4 +993,3 @@ fn draw(icon: Icon, c: &mut Canvas) {
         }
     }
 }
-

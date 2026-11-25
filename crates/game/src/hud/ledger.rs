@@ -18,12 +18,14 @@ const ROWS: usize = 16;
 /// The most bars a chart draws: longer spans are averaged into this many.
 const BARS: usize = 60;
 
-const TABS: [(LedgerTab, Icon, &str); 4] = [
+fn tabs() -> [(LedgerTab, Icon, &'static str); 4] {
+    [
     (LedgerTab::Charts, Icon::Ledger, "Charts"),
-    (LedgerTab::Dams, Icon::Dam, "Dams"),
+    (LedgerTab::Dams, crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), "Dams"),
     (LedgerTab::Buildings, Icon::Building, "Buildings"),
-    (LedgerTab::Stores, Icon::StickPile, "Stores"),
-];
+    (LedgerTab::Stores, crate::hud::words::building_icon(sim::buildings::BuildingKind::store_for(sim::dams::material()).unwrap_or(sim::buildings::BuildingKind::home())), "Stores"),
+    ]
+}
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.ledger else { return Vec::new() };
@@ -32,7 +34,7 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
         Node { width: Val::Px(LEDGER_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             u.row(6.0, |r| {
-                for (t, icon, name) in TABS {
+                for (t, icon, name) in tabs() {
                     r.pebble(icon, 16.0, HudAction::Ledger(Some(t)), if t == tab { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
                 }
                 r.spacer();
@@ -172,13 +174,13 @@ fn charts(c: &Ctx, u: &mut Ui) {
         return;
     }
     u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
-        for g_ in [Good::Food, Good::Sticks, Good::Mud] {
-            let i = g_.index();
+        for g_ in Good::all().filter(|&g| super::panels::staple(g)) {
+            let i = g_;
             let data = bars(c, |d| (d.produced[i], 0.0, d.consumed[i]));
             let (inn, out) = (s.ledger.in_per_day(g_), s.ledger.out_per_day(g_));
             let net = inn - out;
             let value = format!("{}/d", signed(net));
-            chart(g, good_icon(g_), good_color(g_), good_color(g_), good_name(g_), value, if net < -0.05 { BAD } else if net > 0.05 { GOOD } else { INK }, &data, true, |b| {
+            chart(g, good_icon(g_), good_color(g_), good_color(g_), g_.name(), value, if net < -0.05 { BAD } else if net > 0.05 { GOOD } else { INK }, &data, true, |b| {
                 Tip::titled(Some((good_icon(g_), good_color(g_))), day_range(b)).line("Made per day", num(b.a)).line("Used per day", num(b.down))
             });
         }
@@ -200,19 +202,19 @@ fn charts(c: &Ctx, u: &mut Ui) {
             })
             .collect();
         let trees = last.map_or(0, |d| d.census.trees);
-        chart(g, Icon::Tree, GOOD, Color::srgb(0.75, 0.92, 0.55), "Trees standing, and planted", format!("{trees}  +{}", s.ledger.planted), INK, &data, false, |b| {
-            Tip::titled(Some((Icon::Tree, GOOD)), day_range(b)).line("Standing", num(b.a)).line("Planted", format!("{}", b.b as i64)).line("Planted in all", format!("{}", s.ledger.planted))
+        chart(g, crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()), GOOD, Color::srgb(0.75, 0.92, 0.55), "Trees standing, and planted", format!("{trees}  +{}", s.ledger.planted), INK, &data, false, |b| {
+            Tip::titled(Some((crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()), GOOD)), day_range(b)).line("Standing", num(b.a)).line("Planted", format!("{}", b.b as i64)).line("Planted in all", format!("{}", s.ledger.planted))
         });
     });
     // What the stores hold of each good, against what they can hold.
     u.rule();
     u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
-        for g_ in Good::ALL {
-            let i = g_.index();
+        for g_ in Good::all() {
+            let i = g_;
             let data = bars(c, |d| (d.stock[i], 0.0, 0.0));
             let stores = &s.buildings.stores;
             let value = format!("{}/{}", vol(stores.amount(g_)), vol(stores.capacity(g_)));
-            let name = format!("{} in stores", good_name(g_));
+            let name = format!("{} in stores", g_.name());
             chart(g, good_icon(g_), good_color(g_), good_color(g_), &name, value, INK, &data, false, |b| {
                 Tip::titled(Some((good_icon(g_), good_color(g_))), day_range(b)).line("Stored", num(b.a))
             });
@@ -256,25 +258,25 @@ pub(super) fn run(c: &Ctx, u: &mut Ui) {
     });
     u.rule();
     tiles(u, |r| {
-        for g in Good::ALL {
-            tile(r, good_icon(g), good_color(g), vol(s.buildings.stores.produced_total[g.index()]), &format!("{} gathered", good_name(g)));
+        for g in Good::all() {
+            tile(r, good_icon(g), good_color(g), vol(s.buildings.stores.produced_total[g]), &format!("{} gathered", g.name()));
         }
-        tile(r, Icon::Plant, GOOD, format!("{}", s.ledger.planted), "Saplings planted");
+        tile(r, crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)), GOOD, format!("{}", s.ledger.planted), "Saplings planted");
     });
     u.rule();
     tiles(u, |r| {
         tile(r, Icon::Raft, WATER, format!("{}", run.raft_trips), "Raft loads delivered");
-        for g in Good::ALL {
-            let a = run.raftd[g.index()];
+        for g in Good::all() {
+            let a = run.raftd[g];
             if a > 0.0 {
-                tile(r, good_icon(g), good_color(g), vol(a), &format!("{} moved by raft", good_name(g)));
+                tile(r, good_icon(g), good_color(g), vol(a), &format!("{} moved by raft", g.name()));
             }
         }
     });
     u.rule();
     tiles(u, |r| {
-        for k in BuildingKind::ALL {
-            tile(r, building_icon(k), INK, format!("{}", run.built_of(k)), &format!("{} built", k.spec().name));
+        for k in BuildingKind::all() {
+            tile(r, building_icon(k), INK, format!("{}", run.built_of(k)), &format!("{} built", k.spec().name.as_str()));
         }
         tile(r, Icon::Lock, INK, format!("{}", run.locks), "Locks built");
         tile(r, Icon::Drop, WATER, vol(run.peak_water), "Most water held behind dams (m³)");
@@ -286,18 +288,18 @@ pub(super) fn run(c: &Ctx, u: &mut Ui) {
 
 /// The job a beaver's skill and pace are read for: the work it holds now.
 fn job_of(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
-    sim::jobs::role_of(s, b.id).and_then(sim::jobs::colony_job)
+    sim::jobs::role_of(s, b.id)
 }
 
 /// The job a beaver holds, in a word (free beavers too), for sorting by it.
 fn role_word(s: &sim::SimState, b: &Beaver) -> &'static str {
-    sim::jobs::role_of(s, b.id).map_or("Free", role_kind_name)
+    sim::jobs::role_of(s, b.id).map_or("Free", |j| j.name())
 }
 
 /// How far each page's long list can scroll: past this the page would show fewer rows than fit.
 pub fn scroll_max(s: &sim::SimState, tab: LedgerTab) -> usize {
     match tab {
-        LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam && b.dam.is_some()).count().saturating_sub(4),
+        LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind.is_dam() && b.dam.is_some()).count().saturating_sub(4),
         LedgerTab::Buildings => s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).count().saturating_sub(ROWS),
         LedgerTab::Charts | LedgerTab::Stores => 0,
     }
@@ -343,7 +345,7 @@ fn times(x: f32) -> String {
 /// The job a beaver works at a pace: one that work factors speed (not hauling, which is
 /// walking, nor keeping watch).
 fn paced_job(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
-    job_of(s, b).filter(|j| job_speeds(*j)).filter(|_| b.can_work())
+    job_of(s, b).filter(|j| j.row().skill_speeds).filter(|_| b.can_work())
 }
 
 /// A beaver's pace at its job, and a tip with only the factors acting on it (not ×1).
@@ -383,7 +385,7 @@ pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
     let key_f = |b: &Beaver| -> f32 {
         match col {
             BeaverCol::Age => b.age_days,
-            BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j.index()]),
+            BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j]),
             BeaverCol::Pace => paced_job(s, b).map_or(-1.0, |j| sim::agents::work_factors(b, j).total()),
             _ => 0.0,
         }
@@ -476,17 +478,17 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
         });
         let role = sim::jobs::role_of(s, b.id);
         r.node(cell(w(4)), |x| {
-            x.icon(role.map_or(Icon::Idle, role_kind_icon), 15.0, if role.is_some() { INK } else { ACCENT });
+            x.icon(role.map_or(Icon::Idle, job_icon), 15.0, if role.is_some() { INK } else { ACCENT });
         })
-        .tip(Tip::name("Job").line(role.map_or("Free", role_kind_name), ""));
+        .tip(Tip::name("Job").line(role.map_or("Free", |j| j.name()), ""));
         r.node(cell(w(5)), |x| {
             x.icon(icon, 15.0, icon_col);
         })
         .tip(Tip::name("Doing now").line(word, ""));
         // Skill at the job held: ticks and the share; every skill in the tooltip.
         let mut skills = Tip::name("Skills");
-        for j in sim::colony::Job::ALL {
-            skills.push(TipLine::new(job_name(j), format!("{:.0}%", b.skills[j.index()] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
+        for j in sim::colony::Job::all() {
+            skills.push(TipLine::new(j.row().skill.as_str(), format!("{:.0}%", b.skills[j] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
         }
         r.node(cell(w(6)), |x| match wf {
             Some(wf) => {
@@ -567,10 +569,10 @@ fn stat(r: &mut Ui, icon: Icon, col: Color, value: String, value_col: Color, tip
 fn dams(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let cell_area = s.water.cell_m * s.water.cell_m;
-    let list: Vec<_> = s.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Dam && b.dam.is_some()).collect();
+    let list: Vec<_> = s.buildings.buildings.iter().filter(|b| b.kind.is_dam() && b.dam.is_some()).collect();
     if list.is_empty() {
         u.row(6.0, |r| {
-            r.icon(Icon::Dam, 20.0, MUTED);
+            r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), 20.0, MUTED);
             r.bold("0", 14.0, MUTED);
         })
         .tip(Tip::name("No dams yet").key("Z"));
@@ -594,13 +596,13 @@ fn dams(c: &Ctx, u: &mut Ui) {
             let target = if d.cells.is_empty() { 0.0 } else { d.cells.iter().map(|c| c.target).sum::<f32>() / d.cells.len() as f32 };
             cards.col(6.0, |k| {
                 k.row(10.0, |r| {
-                    r.icon(Icon::Dam, 18.0, MUD);
+                    r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), 18.0, MUD);
                     r.bold(format!("{}", i + 1), 14.0, INK);
                     r.pips(health, if health < 0.5 { BAD } else if health < sim::dams::REPAIR_BELOW { WARN } else { GOOD }).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
                     r.spacer();
                     let left = sim::dams::loads_left(s, b.id);
                     if left > 0 {
-                        stat(r, good_icon(Good::Sticks), good_color(Good::Sticks), format!("{left}"), INK, Tip::name("Loads still to carry"));
+                        stat(r, good_icon(sim::dams::material()), good_color(sim::dams::material()), format!("{left}"), INK, Tip::name("Loads still to carry"));
                     }
                     let word = if d.upkeep { "Kept in repair" } else { "Not kept in repair" };
                     r.pebble(Icon::Hammer, 11.0, HudAction::DamUpkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(word).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
@@ -708,7 +710,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
             let row = rows.row(8.0, |r| {
                 r.node(Node { width: Val::Px(150.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(6.0) }, |x| {
                     x.icon(building_icon(b.kind), 16.0, INK);
-                    x.text(b.kind.spec().name, 12.0, INK);
+                    x.text(b.kind.spec().name.as_str(), 12.0, INK);
                 });
                 r.node(Node { width: Val::Px(110.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(4.0) }, |x| {
                     if let Some((icon, word, goods, col)) = status_line(s, b.id) {

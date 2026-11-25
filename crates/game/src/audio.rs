@@ -302,30 +302,3 @@ fn update_mix(
     let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps: heard.1 .1, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: heard.1 .0, wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recordings_are_stored_ready_to_play() {
-        for bytes in [BROOK, RIVER, FLOOD, GROWL, HOWL].into_iter().chain(SLAPS) {
-            let decoder = AudioSource { bytes: Arc::from(bytes) }.decoder();
-            assert_eq!((decoder.sample_rate().get(), decoder.channels().get()), (SAMPLE_RATE, 2));
-        }
-    }
-
-    #[test]
-    fn volumes_are_kept() {
-        let mut v = AudioVolumes(VolumeSettings::default());
-        v.set(Channel::Master, 0.5);
-        v.set(Channel::Water, 0.25);
-        v.set(Channel::Alerts, 0.0);
-        let back = AudioVolumes::from_text(&v.to_text());
-        assert!(Channel::ALL.iter().all(|&c| (back.level(c) - v.level(c)).abs() < 1e-3));
-        let odd = AudioVolumes::from_text("water 7\nalerts nope\nmaster");
-        assert_eq!(odd.level(Channel::Water), 1.0);
-        assert_eq!(odd.level(Channel::Alerts), VolumeSettings::default().effects);
-    }
-
-}

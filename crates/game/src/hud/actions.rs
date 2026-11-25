@@ -66,7 +66,7 @@ pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, now: f32) {
         match item {
             UndoItem::Site(id) => {
                 let Some(kind) = sim.buildings.building(id).map(|b| b.kind) else { continue };
-                let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::ALL.iter().map(|g| (*g, sim.buildings.stores.amount(*g))).collect();
+                let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::all().map(|g| (g, sim.buildings.stores.amount(g))).collect();
                 match sim.apply(sim::Command::CancelSite { building: id }).map(|_| stock.iter().map(|(g, a)| (*g, sim.buildings.stores.amount(*g) - a)).collect::<Vec<_>>()) {
                     Ok(back) => {
                         let refund = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| format!("+{}", a.1.round() as i64));
@@ -102,7 +102,7 @@ pub(super) fn button_actions(
         let s = &mut sim.0;
         match a {
             HudAction::Fix(fix, at) => match fix {
-                Fix::Place(kind) => hud.set_tool(match kind { BuildingKind::Dam => Tool::Dam, BuildingKind::Canal => Tool::Canal, k => Tool::Building(k) }),
+                Fix::Place(kind) => hud.set_tool(Tool::of(kind)),
                 Fix::OpenJobs => hud.open_book(Some(ColonyTab::Jobs), None),
                 Fix::OpenDam { dam } => {
                     *sel = Selection::Site(dam);
@@ -144,11 +144,7 @@ pub(super) fn button_actions(
             }
             HudAction::Pick(kind) if s.unlocked(kind).is_err() => {}
             HudAction::Pick(kind) => {
-                let t = match kind {
-                    BuildingKind::Dam => Tool::Dam,
-                    BuildingKind::Canal => Tool::Canal,
-                    k => Tool::Building(k),
-                };
+                let t = Tool::of(kind);
                 let next = if hud.tool == t { Tool::None } else { t };
                 hud.set_tool(next);
                 *sel = Selection::None;

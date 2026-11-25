@@ -511,4 +511,3 @@ pub fn fixture(seed: u64) -> World {
     let real = RealMap { cell_m: 1.0, inflows: &[(0, 64, 0.5)], cover: Some(&cover), flora: "default" };
     from_heights(seed, n, raw, &real).expect("the fixture valley is a valid world")
 }
-

@@ -70,26 +70,15 @@ pub(super) fn hotkeys(
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
     }
     if !ctrl {
-        let tools = [
-            (KeyCode::KeyZ, Tool::Dam),
-            (KeyCode::KeyV, Tool::Canal),
-            (KeyCode::KeyX, Tool::Building(BuildingKind::Lodge)),
-            (KeyCode::KeyC, Tool::Building(BuildingKind::StickPile)),
-            (KeyCode::KeyB, Tool::Building(BuildingKind::FoodCache)),
-            (KeyCode::KeyN, Tool::Building(BuildingKind::PebbleHeap)),
-            (KeyCode::KeyF, Tool::Building(BuildingKind::Forester)),
-            (KeyCode::KeyH, Tool::Building(BuildingKind::HaulMound)),
-            (KeyCode::KeyO, Tool::Building(BuildingKind::Lookout)),
-            (KeyCode::KeyP, Tool::Building(BuildingKind::RaftLanding)),
-            (KeyCode::KeyG, Tool::Harvest(Harvest::Gather)),
-            (KeyCode::KeyT, Tool::Harvest(Harvest::Cut)),
-        ];
+        // Each building's key from its row, then the harvest tools.
+        let mut tools: Vec<(KeyCode, Tool)> = BuildingKind::all().filter_map(|k| Some((letter(k.row().hotkey.as_deref()?)?, Tool::of(k)))).collect();
+        tools.extend([(KeyCode::KeyG, Tool::Harvest(Harvest::Gather)), (KeyCode::KeyT, Tool::Harvest(Harvest::Cut))]);
         for (k, t) in tools {
             let locked = match t {
-                Tool::Dam => sim.0.unlocked(BuildingKind::Dam).is_err(),
-                Tool::Canal => sim.0.unlocked(BuildingKind::Canal).is_err(),
+                Tool::Dam => sim.0.unlocked(BuildingKind::dam()).is_err(),
+                Tool::Canal => sim.0.unlocked(BuildingKind::canal()).is_err(),
                 Tool::Building(b) => sim.0.unlocked(b).is_err(),
-                _ => false,
+                Tool::Harvest(_) | Tool::None => false,
             };
             if keys.just_pressed(k) && !locked {
                 let next = if hud.tool == t { Tool::None } else { t };
@@ -515,7 +504,6 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
     }
 }
 
-
 /// The end of the selected dam under the pointer: grabbing it starts an extension.
 /// The dam end at or next to `cell`, on the dam under the pointer or else the selected one.
 /// Whether `cell` is on the line of dam or canal `id` (a cell the panels let you pick).
@@ -563,14 +551,15 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     } else {
         sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
     };
-    let wanted: &[R] = match h {
-        Harvest::Cut => &[R::Tree],
-        Harvest::Gather => &[R::Plant, R::MudBank, R::RiverMud],
-    };
-    let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k == R::RiverMud));
+    // Cutting takes trees; gathering what grows or lies on land and needs no tools.
+    let wanted: Vec<R> = R::all().filter(|k| match h {
+        Harvest::Cut => k.is_tree(),
+        Harvest::Gather => !k.is_tree() && !k.is_felled() && !k.aquatic() && k.row().needs.is_none(),
+    }).collect();
+    let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k.flowing()));
     let at_click = s.resources.at(a).find(|r| wanted.contains(&r.kind)).map(|r| r.kind);
     let Some(kind) = at_click.or_else(|| wanted.iter().copied().find(|k| here(*k))) else {
-        hud.say(Some((if h == Harvest::Cut { Icon::Tree } else { Icon::Plant }, BAD)), Some((Icon::Cross, BAD)), "", now);
+        hud.say(Some((if h == Harvest::Cut { crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()) } else { crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)) }, BAD)), Some((Icon::Cross, BAD)), "", now);
         return;
     };
     match s.apply(sim::Command::Assign { who: who.clone(), to: Some(sim::agents::Assignment::Area(kind, area)) }) {
@@ -582,3 +571,10 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     }
 }
 
+/// The key for a letter a content row names.
+fn letter(s: &str) -> Option<KeyCode> {
+    use KeyCode::*;
+    const KEYS: [KeyCode; 26] = [KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ];
+    let c = s.chars().next()?.to_ascii_uppercase();
+    c.is_ascii_uppercase().then(|| KEYS[(c as u8 - b'A') as usize])
+}

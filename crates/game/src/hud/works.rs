@@ -4,13 +4,13 @@
 //! A button that can't be used now stays where it is, faded, and its tooltip says why.
 use super::panels::Ctx;
 use super::ui::*;
-use super::words::{good_icon, num};
+use super::words::num;
 use super::{DamTab, HudAction, Opening, REMOVE_ARM_SECS};
 use crate::flow::Selection;
 use crate::icons::Icon;
 use bevy::prelude::*;
 use crate::flow::Cell;
-use sim::buildings::{BuildingId, Good};
+use sim::buildings::BuildingId;
 use sim::GateSetting;
 
 pub const WOOD: Color = Color::srgb(0.95, 0.85, 0.66);
@@ -101,7 +101,7 @@ pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::G
     } else if exists {
         (WARN, Tip::name("Not built yet").line("A builder brings its sticks", "").line("Then", setting_name(wanted)))
     } else {
-        (MUTED, Tip::name("No gate yet").line("Pick a setting to build one", "").line("Sticks", num(sim::canals::GATE_STICKS)))
+        (MUTED, super::words::cost_lines(Tip::name("No gate yet").line("Pick a setting to build one", ""), &sim::content::content().works.gate))
     };
     let row = u.row(5.0, |r| {
         r.icon(if lock { Icon::LockGates } else { Icon::Lock }, 15.0, col).tip(tip);
@@ -170,7 +170,7 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
     } else {
         None
     };
-    let tip = what.line("Sticks", num(locks::LOCK_STICKS)).line("Mud", num(locks::LOCK_MUD));
+    let tip = super::words::cost_lines(what, &sim::content::content().works.lock);
     match why {
         Some(w) => r.small_button(Some(Icon::LockGates), None, None, tip.line(w, ""), Small::Idle),
         None => r.small_button(Some(Icon::LockGates), None, Some(HudAction::UpgradeLock(id, g.cell)), tip, Small::Idle),
@@ -253,14 +253,15 @@ pub fn opening_button(c: &Ctx, r: &mut Ui, id: BuildingId, d: &sim::dams::Dam, o
     let ok = fits.iter().any(|f| f.is_ok());
     let why = fits.iter().find_map(|f| f.clone().err()).unwrap_or_else(|| "Build the dam first".into());
     let on = c.hud.opening == Some((id, o));
-    let lock_sticks = sim::canals::GATE_STICKS + sim::locks::LOCK_STICKS;
-    let (icon, word, sticks, tip) = match o {
-        Opening::Gate => (Icon::Lock, "Gate", sim::canals::GATE_STICKS, Tip::name("Gate").line("Let water through here", "").line("Sticks", num(sim::canals::GATE_STICKS))),
-        Opening::Lock => (Icon::LockGates, "Lock", lock_sticks, Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(lock_sticks)).line("Mud", num(sim::locks::LOCK_MUD))),
+    let w = &sim::content::content().works;
+    let (icon, word, cost, tip) = match o {
+        Opening::Gate => (Icon::Lock, "Gate", w.gate.clone(), Tip::name("Gate").line("Let water through here", "")),
+        Opening::Lock => (Icon::LockGates, "Lock", super::words::cost_sum(&w.gate, &w.lock), Tip::name("Lock").line("A gate beavers and rafts get past", "")),
     };
+    let tip = super::words::cost_lines(tip, &cost);
     let tip = if ok { tip.line("Click a lit cell", "").line("Shift", "place more").key("Esc") } else { tip.line(why, "") };
     let action = (ok || on).then_some(HudAction::Opening(id, o));
-    r.big_button(BigButton { icon, word, cost: Some((good_icon(Good::Sticks), WOOD, format!("{}", sticks.round() as i64))), action, tip, hint: false, on });
+    r.big_button(BigButton { icon, word, cost: super::words::cost_chip(&cost), action, tip, hint: false, on });
 }
 
 /// A chip for each gate and lock over a side view: its height, or what has been brought for

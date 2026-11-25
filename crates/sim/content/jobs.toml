@@ -1,0 +1,109 @@
+# Jobs. duty: what the job does: Gather (the kinds of resource whose `role` is this job), Build, Haul, Forest (collect
+# seedlings and plant them round a forester), Watch (keep watch at a lookout) or Mend (repair buildings and keep dams
+# and canals in order, without a seat); one job does each duty but Gather.
+# name: the job, plural: its beavers; skill: the skill it builds, in words. priority: its place on the colony panel, first first.
+# shore_limit: the player may keep it near the water. skill_speeds: skill makes it go faster (hauling is walking, and a
+# watch is kept, not worked). icon, and path_colour (sRGB) for its beavers' paths. Epithet pools are keyed by the job's
+# key in lower case (names.toml).
+
+[[job]]
+key = "Forager"
+name = "Forager"
+plural = "foragers"
+skill = "Foraging"
+duty = "Gather"
+priority = 1
+shore_limit = true
+skill_speeds = true
+icon = "RoleForager"
+path_colour = [0.45, 0.85, 0.25]
+
+[[job]]
+key = "Feller"
+name = "Feller"
+plural = "fellers"
+skill = "Felling"
+duty = "Gather"
+priority = 2
+shore_limit = true
+skill_speeds = true
+icon = "RoleFeller"
+path_colour = [0.95, 0.55, 0.15]
+
+[[job]]
+key = "Builder"
+name = "Builder"
+plural = "builders"
+skill = "Building"
+duty = "Build"
+priority = 0
+skill_speeds = true
+icon = "RoleBuilder"
+path_colour = [1.0, 0.88, 0.2]
+
+[[job]]
+key = "MudDigger"
+name = "Mud digger"
+plural = "mud diggers"
+skill = "Mud digging"
+duty = "Gather"
+priority = 4
+shore_limit = true
+skill_speeds = true
+icon = "RoleMudDigger"
+path_colour = [0.75, 0.45, 0.3]
+
+[[job]]
+key = "Hauler"
+name = "Hauler"
+plural = "haulers"
+skill = "Hauling"
+duty = "Haul"
+priority = 3
+icon = "RoleHauler"
+path_colour = [0.25, 0.65, 1.0]
+
+[[job]]
+key = "Planter"
+name = "Planter"
+plural = "planters"
+skill = "Planting"
+duty = "Forest"
+priority = 5
+shore_limit = true
+skill_speeds = true
+icon = "RolePlanter"
+path_colour = [0.1, 0.6, 0.35]
+
+[[job]]
+key = "Mender"
+name = "Mender"
+plural = "menders"
+skill = "Mending"
+duty = "Mend"
+priority = 6
+skill_speeds = true
+icon = "RoleMender"
+path_colour = [0.85, 0.35, 0.85]
+
+[[job]]
+key = "Sentry"
+name = "Sentry"
+plural = "sentries"
+skill = "Keeping watch"
+duty = "Watch"
+priority = 7
+icon = "RoleSentry"
+path_colour = [0.95, 0.25, 0.25]
+
+[[job]]
+key = "Pebbler"
+name = "Pebbler"
+plural = "pebblers"
+skill = "Pebbling"
+duty = "Gather"
+priority = 8
+shore_limit = true
+skill_speeds = true
+icon = "Pebbles"
+path_colour = [0.6, 0.75, 0.8]

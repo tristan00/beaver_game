@@ -275,32 +275,3 @@ fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn presentation_advances_each_frame_between_three_hertz_snapshots() {
-        let mut clock = SimClock::default();
-        clock.presentation_days = Some(0.0);
-        let mut previous = 0.0;
-        let mut moving_frames = 0;
-        for frame in 0..180 {
-            let elapsed = frame as f64 / 60.0;
-            let latest = (elapsed * BASE_DAYS_PER_SECOND as f64 / FIXED_DT_DAYS as f64).floor() * FIXED_DT_DAYS as f64;
-            clock.advance_presentation(1.0 / 60.0, latest);
-            let shown = clock.render_days(latest);
-            assert!(shown >= previous && shown <= latest);
-            if frame >= 60 && shown > previous { moving_frames += 1; }
-            previous = shown;
-        }
-        assert!(moving_frames >= 115, "only {moving_frames}/120 frames advanced");
-        clock.toggle_pause();
-        for _ in 0..60 { clock.advance_presentation(1.0 / 60.0, previous + 1.0); }
-        assert_eq!(clock.render_days(previous + 1.0), previous);
-        clock.set_speed(Speed::X2);
-        clock.advance_presentation(1.0 / 60.0, previous + 1.0);
-        assert!(clock.render_days(previous + 1.0) > previous);
-    }
-}

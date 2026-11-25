@@ -9,7 +9,6 @@ use super::{ColonyTab, HudAction};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::Good;
-use sim::jobs::RoleKind;
 
 pub const DRAWER_W: f32 = 380.0;
 
@@ -123,7 +122,7 @@ fn work(c: &Ctx, u: &mut Ui) {
     for row in sim::jobs::jobs_board(s) {
         let role = row.role;
         u.row(8.0, |r| {
-            r.icon(role_kind_icon(role), 20.0, MUTED).tip(Tip::name(role_kind_name(role)));
+            r.icon(job_icon(role), 20.0, MUTED).tip(Tip::name(role.name()));
             r.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(6.0), row_gap: Val::Px(4.0), width: Val::Px(220.0), align_items: AlignItems::Center, ..default() }, |t| {
                 for i in 0..row.slots.min(12) {
                     match row.beavers.get(i).and_then(|id| s.colony.beaver(*id)) {
@@ -140,7 +139,7 @@ fn work(c: &Ctx, u: &mut Ui) {
                 }
             });
             r.spacer();
-            if matches!(role, RoleKind::Forager | RoleKind::Feller | RoleKind::MudDigger | RoleKind::Pebbler | RoleKind::Planter) {
+            if role.row().shore_limit {
                 // Each click tightens the limit a step, then lifts it.
                 let now = s.work.shore_limits.get(&role).copied();
                 let next = match now {
@@ -163,19 +162,18 @@ fn work(c: &Ctx, u: &mut Ui) {
     }
 }
 
-
 /// Each store as ticks of its capacity, with the last sixty days beside it.
 pub(super) fn stores(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let st = &s.buildings.stores;
-    for g in Good::ALL {
+    for g in Good::all() {
         let (have, cap) = (st.amount(g), st.capacity(g));
         u.row(10.0, |r| {
             r.icon(good_icon(g), 20.0, good_color(g));
             r.ticks(if cap > 0.0 { have / cap } else { 0.0 }, 10, 150.0, 12.0, ACCENT);
             r.bold(format!("{}", have.round() as i64), 14.0, INK);
             r.spacer();
-            let hist: Vec<f32> = s.ledger.days.iter().rev().take(60).rev().map(|d| d.stock[g.index()]).collect();
+            let hist: Vec<f32> = s.ledger.days.iter().rev().take(60).rev().map(|d| d.stock[g]).collect();
             let top = hist.iter().copied().fold(1.0f32, f32::max);
             r.node(Node { height: Val::Px(20.0), align_items: AlignItems::FlexEnd, ..row_node(1.0) }, |sp| {
                 for v in &hist {

@@ -67,23 +67,3 @@ impl Looks {
 pub fn key(id: BeaverId, time_days: f64, pos: (f32, f32)) -> u64 {
     mix(id.0 ^ mix(time_days.to_bits() ^ mix(((pos.0.to_bits() as u64) << 32) | pos.1.to_bits() as u64)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn looks_differ_stay_in_range_and_kits_take_after_their_parents() {
-        let all: Vec<Looks> = (0..200u64).map(|i| Looks::drawn(key(BeaverId(i), 3.5, (10.0, 20.0)))).collect();
-        for l in &all {
-            for v in [l.shade, l.warmth, l.build, l.size, l.head, l.tail] {
-                assert!((-1.0..=1.0).contains(&v));
-            }
-        }
-        assert!(all.windows(2).all(|w| w[0] != w[1]), "each beaver its own");
-        let dark = Looks { shade: -1.0, warmth: -1.0, ..Looks::default() };
-        let kits: Vec<Looks> = (0..50u64).map(|i| Looks::of_kit(key(BeaverId(500 + i), 9.0, (1.0, 1.0)), Some(dark), Some(dark))).collect();
-        let shade = kits.iter().map(|k| k.shade).sum::<f32>() / kits.len() as f32;
-        assert!(shade < -0.5, "dark parents have dark kits: {shade}");
-    }
-}

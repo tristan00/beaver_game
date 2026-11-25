@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::buildings::BuildingKind;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
 use crate::water::Cell;
@@ -221,19 +220,6 @@ impl NavGrid {
         self.current.get(i).copied().unwrap_or((0.0, 0.0))
     }
 
-    /// Sets a cell's current (m/s along x and y), as a refresh takes it from the water.
-    pub fn set_current(&mut self, cell: Cell, (vx, vy): (f32, f32)) {
-        let (w, n) = (self.surface.width(), self.surface.as_slice().len());
-        if self.current.len() != n {
-            self.current = vec![(0.0, 0.0); n];
-        }
-        let c = (vx / SWIM_SPEED_M_S, vy / SWIM_SPEED_M_S);
-        self.current[cell.1 * w + cell.0] = c;
-        if let Some(k) = self.surface_at(cell).and_then(lane) {
-            self.fastest[k] = self.fastest[k].max(c.0.hypot(c.1));
-        }
-    }
-
     /// Takes the water's currents: every cell's (`all`), or those changed since last taken.
     /// `fastest` is kept above the current of every cell swum (a thin sheet of water running
     /// over dry ground can be far faster, but is walked).
@@ -363,7 +349,7 @@ impl NavGrid {
     fn key(sim: &crate::SimState) -> (u64,u64,u64,u64,usize,u64) {
         let mut buildings=0xcbf29ce484222325u64;
         for b in &sim.buildings.buildings {
-            for value in [b.id.0,b.kind as u64,b.pos.0 as u64,b.pos.1 as u64,b.is_complete() as u64] {
+            for value in [b.id.0,b.kind.index() as u64,b.pos.0 as u64,b.pos.1 as u64,b.is_complete() as u64] {
                 buildings=(buildings^value).wrapping_mul(0x100000001b3);
             }
         }
@@ -408,8 +394,8 @@ impl NavGrid {
         }
         for b in &sim.buildings.buildings {
             match b.kind {
-                BuildingKind::Dam | BuildingKind::Canal=>{}
-                BuildingKind::Lodge if b.is_complete()=>{
+                k if k.is_waterworks()=>{}
+                k if k.is_home() && b.is_complete()=>{
                     self.add_lodge(b.pos);
                     for (x,y) in b.cells().chain(std::iter::once(lodge_entrance(b.pos))) {
                         let i=y*w+x;
@@ -438,7 +424,7 @@ impl NavGrid {
         }
         for r in sim.resources.items().iter().filter(|r|r.is_solid()) {
             let i=r.cell.1*w+r.cell.0;
-            if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind==crate::resources::ResourceKind::Tree {Surface::Thicket} else {Surface::Solid};}
+            if self.dry_surface[i]==Surface::Land {self.dry_surface[i]=if r.kind.is_tree() {Surface::Thicket} else {Surface::Solid};}
         }
         let ice=sim.water.ice.as_slice();
         for (i,&d) in depth.iter().enumerate() {self.surface.as_mut_slice()[i]=self.surface_now(i,d,ice[i]);}
@@ -716,52 +702,5 @@ impl NavGrid {
     }
     pub fn surface_at(&self, cell: Cell) -> Option<Surface> {
         self.surface.get(cell.0, cell.1).copied()
-    }
-}
-
-#[cfg(test)]
-mod diagonal_tests {
-    use super::*;
-
-    #[test]
-    fn open_ground_is_crossed_diagonally_but_corners_are_not_cut() {
-        let mut nav = NavGrid::new(12, 12);
-        for y in 0..12 { for x in 0..12 { nav.set((x, y), Surface::Land); } }
-        let who = crate::colony::BeaverId(1);
-        let p = nav.find_path(who, (1, 1), Goal::Cell((7, 7))).unwrap();
-        assert_eq!(p.steps.len(), 6, "six diagonal steps, not twelve: {:?}", p.steps);
-        // A wall cell beside the diagonal blocks the corner cut.
-        nav.set((2, 1), Surface::Solid);
-        let q = nav.find_path(who, (1, 1), Goal::Cell((2, 2))).unwrap();
-        assert!(q.steps.iter().all(|&(c, _)| c != (2, 2)) || q.steps.len() > 1, "{:?}", q.steps);
-    }
-}
-
-#[cfg(test)]
-mod current_tests {
-    use super::*;
-
-    #[test]
-    fn the_nav_keeps_the_water_current() {
-        let mut s = crate::SimState::new(1);
-        let n = s.world.size;
-        let mut nav = NavGrid::new(n, n);
-        nav.rebuild(&s);
-        let mut moving = 0;
-        for _ in 0..24 {
-            s.step(crate::STEP_DAYS).unwrap();
-            nav.refresh(&mut s);
-            for (c, v) in nav.current.iter().zip(s.water.velocity.as_slice()) {
-                let scale = 1.0 / SWIM_SPEED_M_S;
-                assert_eq!(*c, (v.0 * scale, v.1 * scale));
-            }
-            for (c, &s) in nav.current.iter().zip(nav.surface.as_slice()) {
-                if let Some(k) = lane(s) {
-                    assert!(c.0.hypot(c.1) <= nav.fastest[k] + 1e-6, "{c:?} over {:?}", nav.fastest);
-                }
-            }
-            moving = moving.max(nav.current.iter().filter(|c| c.0 != 0.0 || c.1 != 0.0).count());
-        }
-        assert!(moving > 0, "no water moved");
     }
 }

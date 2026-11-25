@@ -82,4 +82,3 @@ fn breach_under_cursor(
         }
     }
 }
-

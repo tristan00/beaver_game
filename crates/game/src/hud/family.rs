@@ -247,7 +247,7 @@ fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]
 pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
     let s = c.s;
     let l = s.colony.lodges.iter().find(|l| l.id == lodge);
-    let fam = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| "Lodge".to_string(), |f| f.name.clone());
+    let fam = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| f.name.clone());
     let home = residents(s, lodge);
     let tree = draw(s, &home);
     let mut ui = Ui::default();
@@ -255,7 +255,7 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
         Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
         |u| {
             u.row(14.0, |r| {
-                r.portrait(Icon::Lodge, MUD);
+                r.portrait(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD);
                 r.col(6.0, |x| {
                     x.bold(format!("{fam} family"), 20.0, INK);
                     if let Some(l) = l {
@@ -271,7 +271,7 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                 // Who lives here.
                 cols.node(Node { width: Val::Px(300.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| {
                     u.row(8.0, |r| {
-                        r.icon(Icon::Lodge, 16.0, MUD);
+                        r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), 16.0, MUD);
                         r.bold(format!("Living here · {} / {}", home.len(), sim::colony::LODGE_CAPACITY), 14.0, INK);
                     });
                     for &id in &home {
@@ -282,7 +282,7 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                             r.text(about(s, id), 11.0, MUTED);
                             r.spacer();
                             if let Some(j) = sim::lives::job_of(s, id) {
-                                r.icon(role_kind_icon(j), 13.0, INK).tip(Tip::name(role_kind_name(j)));
+                                r.icon(job_icon(j), 13.0, INK).tip(Tip::name(j.name()));
                             }
                             r.icon(Icon::Next, 10.0, MUTED);
                         })

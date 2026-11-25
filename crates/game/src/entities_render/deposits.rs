@@ -4,8 +4,7 @@
 use super::meshgen::{hex, mix, Mb, Rng};
 use bevy::prelude::*;
 use std::f32::consts::TAU;
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
+use super::meshgen::v;
 
 /// Shapes of boulder the outcrops pick from.
 pub const BOULDER_VARIANTS: usize = 8;

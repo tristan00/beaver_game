@@ -1,0 +1,173 @@
+# Tree species: multipliers against the reference tree. growth is set so a tree on ordinary ground turns
+# mature at half its real seed-bearing age (USDA Silvics of North America): aspen and willow 10 years, birch 15,
+# alder 4 (red alder), pine 20 (eastern white pine), spruce 30, maple and beech 40. Mature is 1080 days.
+# look: a drawing style (model: slim, twin, weeping, clump, dome, spread, tufted, spire), its build, colours
+# as 0xrrggbb, and leaves as [shade, light] for spring, summer, autumn and late autumn.
+
+unknown = "Aspen"  # taken for a tree of no known species
+sapling = "Willow"  # planted where no tree that feeds stands near
+
+[[tree]]
+key = "Aspen"
+name = "Aspen"
+pale = true
+spec = { growth = 0.8, logs = 1.0, branches = 1.0, bark = 2.0, fell_work = 0.8, flood = 1.0, max_depth = 0.15 }
+[tree.look]
+model = "slim"
+bark = 0xdad8c0
+foot = 0x5e5a4e
+trunk_r = 0.16
+fork = 2.9
+centre = 3.95
+radius = [0.85, 1.3, 0.85]
+tips = 14
+clump = 0.46
+flat = 0.9
+droop = 0.0
+limb = 0.06
+seed = 3
+leaves = [[0x86b35a, 0xc0db86], [0x689a4c, 0xa6c676], [0xd6a42c, 0xf4d25a], [0xa88a44, 0xcdb070]]
+
+[[tree]]
+key = "Willow"
+name = "Willow"
+spec = { growth = 0.8, logs = 0.35, branches = 1.5, bark = 1.75, fell_work = 0.5, flood = 3.0, max_depth = 0.6 }
+[tree.look]
+model = "weeping"
+bark = 0x6a5a42
+foot = 0x4a3e2e
+trunk_r = 0.3
+fork = 2.3
+centre = 3.0
+radius = [1.75, 0.95, 1.75]
+tips = 14
+clump = 0.5
+flat = 0.8
+droop = 0.2
+limb = 0.1
+seed = 9
+leaves = [[0xa2c866, 0xd6ea96], [0x82ac5a, 0xbad688], [0xc4b446, 0xe4d676], [0xa49650, 0xc6ba78]]
+
+[[tree]]
+key = "Birch"
+name = "Birch"
+pale = true
+spec = { growth = 0.5333, logs = 0.9, branches = 1.0, bark = 0.75, fell_work = 0.9, flood = 1.0, max_depth = 0.2 }
+[tree.look]
+model = "twin"
+bark = 0xefebe2
+foot = 0x3a3631
+trunk_r = 0.13
+fork = 2.6
+centre = 3.65
+radius = [1.15, 1.2, 1.0]
+tips = 16
+clump = 0.42
+flat = 0.85
+droop = 0.35
+limb = 0.05
+seed = 11
+leaves = [[0x95c064, 0xcbe494], [0x70a250, 0xaccd7a], [0xd9b43e, 0xf4d872], [0xb0924e, 0xd4b878]]
+
+[[tree]]
+key = "Alder"
+name = "Alder"
+spec = { growth = 2.0, logs = 0.8, branches = 1.0, bark = 0.5, fell_work = 0.8, flood = 2.5, max_depth = 0.5 }
+[tree.look]
+model = "clump"
+bark = 0x77716a
+foot = 0x55504a
+trunk_r = 0.12
+fork = 1.7
+centre = 2.8
+radius = [1.3, 1.15, 1.3]
+tips = 14
+clump = 0.5
+flat = 0.9
+droop = 0.0
+limb = 0.06
+seed = 21
+leaves = [[0x6a9c50, 0x9ec278], [0x3e7240, 0x6c9a5a], [0x587a3e, 0x86985a], [0x6a6440, 0x8c8458]]
+
+[[tree]]
+key = "Pine"
+name = "Pine"
+spec = { growth = 0.4, logs = 1.35, branches = 0.75, bark = 0.0, fell_work = 1.2, flood = 0.6, max_depth = 0.1 }
+[tree.look]
+model = "tufted"
+bark = 0xb06a40
+foot = 0x5a4434
+trunk_r = 0.2
+fork = 2.4
+centre = 4.0
+radius = [1.3, 1.6, 1.3]
+tips = 0
+clump = 0.0
+flat = 1.0
+droop = 0.0
+limb = 0.06
+seed = 5
+leaves = [[0x4c7c5c, 0x86ae86], [0x467858, 0x80aa82], [0x4a7658, 0x84a882], [0x4c6e58, 0x86a28a]]
+evergreen = true
+
+[[tree]]
+key = "Maple"
+name = "Maple"
+spec = { growth = 0.2, logs = 1.2, branches = 1.0, bark = 1.0, fell_work = 1.3, flood = 0.8, max_depth = 0.15 }
+[tree.look]
+model = "dome"
+bark = 0x6e5c4c
+foot = 0x4e4034
+trunk_r = 0.24
+fork = 1.8
+centre = 3.35
+radius = [1.75, 1.4, 1.75]
+tips = 18
+clump = 0.62
+flat = 0.85
+droop = 0.0
+limb = 0.12
+seed = 7
+leaves = [[0x74a452, 0xa8c878], [0x4c8644, 0x84b062], [0xc8442a, 0xf08a3a], [0x92563a, 0xbc8458]]
+
+[[tree]]
+key = "Spruce"
+name = "Spruce"
+spec = { growth = 0.2667, logs = 1.4, branches = 0.75, bark = 0.0, fell_work = 1.2, flood = 0.6, max_depth = 0.15 }
+[tree.look]
+model = "spire"
+bark = 0x6a5040
+foot = 0x4e3c30
+trunk_r = 0.2
+fork = 0.9
+centre = 3.4
+radius = [1.3, 3.0, 1.3]
+tips = 0
+clump = 0.0
+flat = 1.0
+droop = 0.0
+limb = 0.05
+seed = 23
+leaves = [[0x2e5e46, 0x5e8e6c], [0x2a5a44, 0x5a8a68], [0x2c5a46, 0x5a8868], [0x2e5648, 0x5c8470]]
+evergreen = true
+
+[[tree]]
+key = "Beech"
+name = "Beech"
+spec = { growth = 0.2, logs = 1.6, branches = 1.0, bark = 0.25, fell_work = 1.6, flood = 0.5, max_depth = 0.1 }
+[tree.look]
+model = "spread"
+bark = 0xa9a79e
+foot = 0x7e7c74
+trunk_r = 0.28
+fork = 1.4
+centre = 2.75
+radius = [2.05, 1.2, 2.05]
+tips = 18
+clump = 0.62
+flat = 0.6
+droop = 0.1
+limb = 0.13
+seed = 17
+leaves = [[0x8cbe5c, 0xc4e08a], [0x5c9048, 0x92ba6a], [0xb0602a, 0xd88e44], [0xa8845a, 0xccae80]]
+keeps_leaves = true

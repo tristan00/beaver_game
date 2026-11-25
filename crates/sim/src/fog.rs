@@ -71,4 +71,3 @@ impl Fog {
 pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
     move |x, y| world.height.in_bounds(x, y)
 }
-

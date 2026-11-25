@@ -11,7 +11,7 @@ use super::{DamTab, HudAction};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::{BuildingId, Good};
+use sim::buildings::BuildingId;
 use sim::canals::{Canal, CanalGrowth};
 use sim::GateSetting;
 
@@ -211,8 +211,8 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, picks: &[Cell], fix: Fi
 /// ordered, the button stays lit and takes the camera there.
 fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
     let g = &k.gate;
-    let stick = |n: f32| Some((good_icon(Good::Sticks), WOOD, format!("{}", n.round() as i64)));
-    let gate_tip = Tip::name("Gate").line("Sets how much water gets in", "").line("Sticks", num(sim::canals::GATE_STICKS));
+    let works = sim::content::content();
+    let gate_tip = cost_lines(Tip::name("Gate").line("Sets how much water gets in", ""), &works.works.gate);
     let gate_there = g.built || g.pending.is_some();
     let (action, tip) = if gate_there {
         (Some(HudAction::GateChip(id, g.cell)), gate_tip.line("Ordered", ""))
@@ -221,10 +221,10 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
     } else {
         (Some(HudAction::SetGate(id, g.cell, GateSetting::Shut)), gate_tip)
     };
-    r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost: stick(sim::canals::GATE_STICKS), action, tip, hint: false, on: gate_there });
+    r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost: cost_chip(&works.works.gate), action, tip, hint: false, on: gate_there });
     let lock_there = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
-    let sticks = sim::locks::LOCK_STICKS + if gate_there { 0.0 } else { sim::canals::GATE_STICKS };
-    let lock_tip = Tip::name("Lock").line("A gate beavers and rafts get past", "").line("Sticks", num(sticks)).line("Mud", num(sim::locks::LOCK_MUD));
+    let lock_cost = if gate_there { works.works.lock.clone() } else { cost_sum(&works.works.gate, &works.works.lock) };
+    let lock_tip = cost_lines(Tip::name("Lock").line("A gate beavers and rafts get past", ""), &lock_cost);
     let (action, tip) = if lock_there {
         (Some(HudAction::GateChip(id, g.cell)), lock_tip.line("Ordered", ""))
     } else if !sim::locks::unlocked(s) {
@@ -236,7 +236,7 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
     } else {
         (Some(HudAction::UpgradeLock(id, g.cell)), lock_tip)
     };
-    r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: stick(sticks), action, tip, hint: false, on: lock_there });
+    r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: cost_chip(&lock_cost), action, tip, hint: false, on: lock_there });
 }
 
 fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
@@ -290,7 +290,7 @@ pub fn canal_panel(c: &Ctx, id: BuildingId, k: &Canal) -> VNode {
     let silted = k.status.as_ref().map_or(0, |st| st.silted);
     let mut ui = Ui::default();
     ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        works::header(c, u, id, "Canal", c.sel == Selection::Site(id), health, Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{silted}")), |p| portrait(p, dry));
+        works::header(c, u, id, sim::buildings::BuildingKind::canal().name(), c.sel == Selection::Site(id), health, Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{silted}")), |p| portrait(p, dry));
         if c.hud.dam_tab == DamTab::History {
             history(u, k);
             return;

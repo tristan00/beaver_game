@@ -1,0 +1,232 @@
+# Each map's flora: trees as [dry, wet, upland, open] shares, food plants by how common.
+# Every map and `default` need one.
+
+[flora.adirondacks_fork]
+trees.Aspen = [0.15, 0.12, 0.0, 0.1]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.12, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.2, 0.02, 0.15, 0.0]
+trees.Maple = [0.35, 0.1, 0.05, 0.0]
+trees.Spruce = [0.04, 0.15, 0.05, 0.0]
+trees.Beech = [0.1, 0.0, 0.05, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.5
+plants.JoePye = 0.6
+plants.Raspberry = 1.0
+plants.Horsetail = 0.4
+plants.Cattail = 0.8
+plants.Arrowhead = 0.5
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.8
+plants.Pondweed = 0.8
+
+[flora.adirondacks_huntington]
+trees.Aspen = [0.15, 0.12, 0.0, 0.1]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.12, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.2, 0.02, 0.15, 0.0]
+trees.Maple = [0.35, 0.1, 0.05, 0.0]
+trees.Spruce = [0.04, 0.15, 0.05, 0.0]
+trees.Beech = [0.1, 0.0, 0.05, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.5
+plants.JoePye = 0.6
+plants.Raspberry = 1.0
+plants.Horsetail = 0.4
+plants.Cattail = 0.8
+plants.Arrowhead = 0.5
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.8
+plants.Pondweed = 0.8
+
+[flora.agder_tarn]
+trees.Aspen = [0.08, 0.04, 0.0, 0.08]
+trees.Willow = [0.01, 0.15, 0.0, 0.1]
+trees.Birch = [0.2, 0.15, 0.05, 0.15]
+trees.Alder = [0.02, 0.18, 0.0, 0.05]
+trees.Pine = [0.35, 0.03, 0.25, 0.05]
+trees.Spruce = [0.3, 0.4, 0.05, 0.0]
+plants.Sedge = 1.3
+plants.CanaryGrass = 0.4
+plants.Meadowsweet = 0.8
+plants.Raspberry = 0.7
+plants.Horsetail = 0.8
+plants.Cattail = 0.3
+plants.Arrowhead = 0.15
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.6
+plants.Pondweed = 0.9
+
+[flora.algonquin]
+trees.Aspen = [0.15, 0.12, 0.0, 0.1]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.12, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.2, 0.02, 0.15, 0.0]
+trees.Maple = [0.35, 0.1, 0.05, 0.0]
+trees.Spruce = [0.04, 0.15, 0.05, 0.0]
+trees.Beech = [0.1, 0.0, 0.05, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.5
+plants.JoePye = 0.6
+plants.Raspberry = 1.0
+plants.Horsetail = 0.4
+plants.Cattail = 0.8
+plants.Arrowhead = 0.5
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.8
+plants.Pondweed = 0.8
+
+[flora.algonquin_mizzy]
+trees.Aspen = [0.15, 0.12, 0.0, 0.1]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.12, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.2, 0.02, 0.15, 0.0]
+trees.Maple = [0.35, 0.1, 0.05, 0.0]
+trees.Spruce = [0.04, 0.15, 0.05, 0.0]
+trees.Beech = [0.1, 0.0, 0.05, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.5
+plants.JoePye = 0.6
+plants.Raspberry = 1.0
+plants.Horsetail = 0.4
+plants.Cattail = 0.8
+plants.Arrowhead = 0.5
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.8
+plants.Pondweed = 0.8
+
+[flora.bavarian]
+trees.Aspen = [0.03, 0.02, 0.0, 0.05]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.04, 0.04, 0.02, 0.1]
+trees.Alder = [0.02, 0.22, 0.0, 0.05]
+trees.Pine = [0.03, 0.0, 0.05, 0.0]
+trees.Maple = [0.1, 0.02, 0.0, 0.0]
+trees.Spruce = [0.4, 0.3, 0.3, 0.0]
+trees.Beech = [0.35, 0.05, 0.0, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.6
+plants.Meadowsweet = 1.0
+plants.Raspberry = 0.9
+plants.Horsetail = 0.6
+plants.Cattail = 0.6
+plants.Arrowhead = 0.4
+plants.YellowLily = 0.8
+plants.WhiteLily = 0.6
+plants.Pondweed = 0.8
+
+[flora.bavarian_lusen]
+trees.Aspen = [0.03, 0.02, 0.0, 0.05]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.04, 0.04, 0.02, 0.1]
+trees.Alder = [0.02, 0.22, 0.0, 0.05]
+trees.Pine = [0.03, 0.0, 0.05, 0.0]
+trees.Maple = [0.1, 0.02, 0.0, 0.0]
+trees.Spruce = [0.4, 0.3, 0.3, 0.0]
+trees.Beech = [0.35, 0.05, 0.0, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.6
+plants.Meadowsweet = 1.0
+plants.Raspberry = 0.9
+plants.Horsetail = 0.6
+plants.Cattail = 0.6
+plants.Arrowhead = 0.4
+plants.YellowLily = 0.8
+plants.WhiteLily = 0.6
+plants.Pondweed = 0.8
+
+[flora.default]
+trees.Aspen = [0.22, 0.25, 0.0, 0.1]
+trees.Willow = [0.025, 0.28, 0.0, 0.2]
+trees.Birch = [0.25, 0.18, 0.0, 0.15]
+trees.Alder = [0.1, 0.22, 0.0, 0.1]
+trees.Pine = [0.405, 0.07, 0.2, 0.0]
+plants.Sedge = 1.0
+plants.CanaryGrass = 0.5
+plants.JoePye = 0.6
+plants.Raspberry = 1.0
+plants.Horsetail = 0.4
+plants.Cattail = 0.8
+plants.Arrowhead = 0.5
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.8
+plants.Pondweed = 0.8
+
+[flora.telemark]
+trees.Aspen = [0.08, 0.04, 0.0, 0.08]
+trees.Willow = [0.01, 0.15, 0.0, 0.1]
+trees.Birch = [0.2, 0.15, 0.05, 0.15]
+trees.Alder = [0.02, 0.18, 0.0, 0.05]
+trees.Pine = [0.35, 0.03, 0.25, 0.05]
+trees.Spruce = [0.3, 0.4, 0.05, 0.0]
+plants.Sedge = 1.3
+plants.CanaryGrass = 0.4
+plants.Meadowsweet = 0.8
+plants.Raspberry = 0.7
+plants.Horsetail = 0.8
+plants.Cattail = 0.3
+plants.Arrowhead = 0.15
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.6
+plants.Pondweed = 0.9
+
+[flora.voyageurs]
+trees.Aspen = [0.35, 0.15, 0.0, 0.15]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.18, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.25, 0.02, 0.2, 0.0]
+trees.Maple = [0.05, 0.03, 0.0, 0.0]
+trees.Spruce = [0.05, 0.2, 0.05, 0.0]
+plants.Sedge = 1.2
+plants.CanaryGrass = 0.4
+plants.JoePye = 0.3
+plants.Raspberry = 0.8
+plants.Horsetail = 0.6
+plants.Cattail = 0.7
+plants.Arrowhead = 0.4
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.7
+plants.Pondweed = 1.0
+
+[flora.voyageurs_forks]
+trees.Aspen = [0.35, 0.15, 0.0, 0.15]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.18, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.25, 0.02, 0.2, 0.0]
+trees.Maple = [0.05, 0.03, 0.0, 0.0]
+trees.Spruce = [0.05, 0.2, 0.05, 0.0]
+plants.Sedge = 1.2
+plants.CanaryGrass = 0.4
+plants.JoePye = 0.3
+plants.Raspberry = 0.8
+plants.Horsetail = 0.6
+plants.Cattail = 0.7
+plants.Arrowhead = 0.4
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.7
+plants.Pondweed = 1.0
+
+[flora.voyageurs_twin]
+trees.Aspen = [0.35, 0.15, 0.0, 0.15]
+trees.Willow = [0.01, 0.2, 0.0, 0.1]
+trees.Birch = [0.18, 0.08, 0.05, 0.1]
+trees.Alder = [0.03, 0.2, 0.0, 0.05]
+trees.Pine = [0.25, 0.02, 0.2, 0.0]
+trees.Maple = [0.05, 0.03, 0.0, 0.0]
+trees.Spruce = [0.05, 0.2, 0.05, 0.0]
+plants.Sedge = 1.2
+plants.CanaryGrass = 0.4
+plants.JoePye = 0.3
+plants.Raspberry = 0.8
+plants.Horsetail = 0.6
+plants.Cattail = 0.7
+plants.Arrowhead = 0.4
+plants.YellowLily = 1.0
+plants.WhiteLily = 0.7
+plants.Pondweed = 1.0

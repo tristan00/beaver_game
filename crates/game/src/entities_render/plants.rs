@@ -12,13 +12,8 @@ use super::models::Season;
 use bevy::prelude::*;
 use sim::plants::Plant;
 use std::f32::consts::TAU;
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
-
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
+use crate::seasonal::smooth;
+use super::meshgen::v;
 
 /// Where a plant is in its year: how green it is, flowering, turning, dead, snowed on.
 #[derive(Clone, Copy)]
@@ -335,19 +330,19 @@ fn pondweed(mb: &mut Mb, y: Year, r: &mut Rng) {
 pub fn plant_mesh(p: Plant, season: Season) -> Mesh {
     let mut mb = Mb::new();
     let y = year(season.phase());
-    let mut r = Rng(p as u32 * 977 + 31);
-    match p {
-        Plant::Sedge => sedge(&mut mb, y, &mut r),
-        Plant::CanaryGrass => canary_grass(&mut mb, y, &mut r),
-        Plant::Meadowsweet => forb(&mut mb, y, &mut r, 0.62, 0x6A7A48, (0x3E6E34, 0x6E9A54), 0xF4ECD0, false),
-        Plant::JoePye => forb(&mut mb, y, &mut r, 0.85, 0x7A4A5A, (0x4A7A3A, 0x7AA45A), 0xC87AA8, true),
-        Plant::Raspberry => raspberry(&mut mb, y, &mut r),
-        Plant::Horsetail => horsetail(&mut mb, y, &mut r),
-        Plant::Cattail => cattail(&mut mb, y, &mut r),
-        Plant::Arrowhead => arrowhead(&mut mb, y, &mut r),
-        Plant::YellowLily => lily(&mut mb, y, &mut r, false),
-        Plant::WhiteLily => lily(&mut mb, y, &mut r, true),
-        Plant::Pondweed => pondweed(&mut mb, y, &mut r),
+    let mut r = Rng(p.index() as u32 * 977 + 31);
+    let l = &p.row().look;
+    match l.model.as_str() {
+        "sedge" => sedge(&mut mb, y, &mut r),
+        "canary_grass" => canary_grass(&mut mb, y, &mut r),
+        "forb" => forb(&mut mb, y, &mut r, l.height, l.stem, l.leaf, l.flower, l.variant),
+        "raspberry" => raspberry(&mut mb, y, &mut r),
+        "horsetail" => horsetail(&mut mb, y, &mut r),
+        "cattail" => cattail(&mut mb, y, &mut r),
+        "arrowhead" => arrowhead(&mut mb, y, &mut r),
+        "lily" => lily(&mut mb, y, &mut r, l.variant),
+        "pondweed" => pondweed(&mut mb, y, &mut r),
+        m => panic!("plant {}: no plant model {m}", p.key()),
     }
     if mb.len() == 0 {
         mb.ellipsoid(v(0.0, -0.12, 0.0), v(0.05, 0.02, 0.05), hex(0x3A4A30));

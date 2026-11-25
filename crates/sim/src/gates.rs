@@ -107,14 +107,12 @@ pub fn piece(sim: &SimState, building: crate::buildings::BuildingId, g: &Gate) -
     crate::locks::pending(sim, g.cell).then_some(Piece::Lock)
 }
 
-const GATE_COST: [crate::buildings::Amount; 1] = [(crate::buildings::Good::Sticks, crate::canals::GATE_STICKS)];
-
 /// What a piece uses, brought to the gate, and the labour it takes.
 pub fn cost(p: Piece) -> (&'static [crate::buildings::Amount], f32) {
     match p {
-        Piece::Build => (&GATE_COST, crate::canals::GATE_WORK),
+        Piece::Build => (&crate::content::content().works.gate, crate::canals::GATE_WORK),
         Piece::Turn => (&[], crate::canals::GATE_WORK),
-        Piece::Lock => (&crate::locks::COST, crate::canals::GATE_WORK),
+        Piece::Lock => (&crate::content::content().works.lock, crate::canals::GATE_WORK),
     }
 }
 

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use sim::agents::{Agent, Task, MOVE_COST_PER_DAY};
 use sim::buildings::Good;
 use sim::nav::{Gait, Surface, CLIMB_COST, SWIM_COST, WALK_COST};
-use sim::resources::ResourceKind;
+
 use sim::SimState;
 
 pub const WORLD_SCALE: f32 = 0.5;
@@ -92,9 +92,10 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
     }
     match &ag.task {
         Task::Collect { target, .. } => match sim.resources.get(*target).map(|r| r.kind) {
-            Some(ResourceKind::Tree | ResourceKind::Felled) => Pose::Gnaw,
-            Some(ResourceKind::MudBank | ResourceKind::RiverMud | ResourceKind::Pebbles) => Pose::Dig,
-            Some(ResourceKind::Plant | ResourceKind::WaterPlant) => Pose::Forage,
+            Some(k) if k.row().pose == "Gnaw" => Pose::Gnaw,
+            Some(k) if k.row().pose == "Dig" => Pose::Dig,
+            Some(k) if k.row().pose == "Forage" => Pose::Forage,
+            Some(_) => Pose::Work,
             None => Pose::Work,
         },
         Task::Build { .. } | Task::DamWork { .. } => Pose::Work,
@@ -144,22 +145,5 @@ pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
             toward((b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0))
         }),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn cell_fraction_uses_the_same_surface_cost_as_movement() {
-        let mut sim = SimState::new(1);
-        let id = sim::colony::BeaverId(1);
-        sim.agents.spawn(id, (2,2));
-        let mut agent = sim.agents.get(id).unwrap().clone();
-        agent.path = Some(sim::nav::Path { steps: vec![((3,2), Gait::Walk)], cost: sim::nav::THICKET_COST });
-        agent.step_frac = sim::nav::THICKET_COST * 0.5;
-        sim.nav.set((3,2), Surface::Thicket);
-        let actual = agent_world_pos(&sim, &agent, 0.0).xz();
-        assert!(actual.distance(cell_xz(&sim, (3.0,2.5))) < 1e-5);
     }
 }

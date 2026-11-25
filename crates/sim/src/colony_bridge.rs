@@ -3,18 +3,16 @@ use crate::{SimState, buildings, colony, grid, jobs, worldgen};
 
 impl SimState {
     pub(super) fn refresh_store_view(&mut self) {
-        self.colony.food = self.buildings.stores.amount(buildings::Good::Food);
-        self.colony.wood = self.buildings.stores.amount(buildings::Good::Sticks);
+        self.colony.food = self.buildings.stores.amount(buildings::Good::food());
     }
 
     pub(super) fn sync_homes(&mut self) {
-        use buildings::BuildingKind::Lodge;
         if self.colony.is_founded() {
             let new: Vec<(buildings::BuildingId, (f32, f32))> = self
                 .buildings
                 .buildings
                 .iter()
-                .filter(|b| b.kind == Lodge && b.is_complete() && !self.work.homes.contains_key(&b.id))
+                .filter(|b| b.kind.is_home() && b.is_complete() && !self.work.homes.contains_key(&b.id))
                 .map(|b| {
                     let (w, d) = b.kind.spec().footprint;
                     (b.id, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0))

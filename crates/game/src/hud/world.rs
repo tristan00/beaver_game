@@ -10,7 +10,7 @@ use crate::icons::Icon;
 use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use sim::buildings::{BuildingId, BuildingKind, Good};
+use sim::buildings::{BuildingId, Good};
 use sim::colony::{BeaverId, LodgeId};
 use sim::resources::ResourceId;
 
@@ -161,7 +161,7 @@ pub fn pick(s: &sim::SimState, cell: Cell, p: (f32, f32)) -> Thing {
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) {
         return Thing::Building(b.id);
     }
-    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind == sim::resources::ResourceKind::RiverMud) {
+    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) {
         return Thing::Resource(r.id);
     }
     if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 1.6 * 1.6) {
@@ -177,13 +177,13 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             let mut tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone());
             // Its job, then what it is doing about it now.
             if let Some((_, _, role)) = s.work.slot_of(id) {
-                tip.push(TipLine::new(role_name(role), "").icon(role_icon(role), INK));
+                tip.push(TipLine::new(role.name(), "").icon(job_icon(role), INK));
             }
             let (icon, col, doing) = super::inspect::activity(s, b);
             tip.push(TipLine::new(doing, "").icon(icon, col));
             if let Some(a) = s.agents.get(id) {
                 if let Some(l) = &a.load {
-                    tip.push(TipLine::new(good_name(l.good), num(l.amount)).icon(good_icon(l.good), good_color(l.good)));
+                    tip.push(TipLine::new(l.good.name(), num(l.amount)).icon(good_icon(l.good), good_color(l.good)));
                     let walk = sim::agents::travel_pace(&s.nav, a);
                     if (walk - 1.0).abs() > 0.005 {
                         tip.push(TipLine::new("Walk", format!("×{walk:.2}")).icon(Icon::Walk, MUTED));
@@ -197,7 +197,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         }
         Thing::Building(id) => {
             let Some(b) = s.buildings.building(id) else { return Tip::default() };
-            let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name);
+            let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str());
             if let Some((icon, words, goods, col)) = status_line(s, id) {
                 let mut l = TipLine::new(words, "").color(col);
                 if let Some(i) = icon {
@@ -205,65 +205,65 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 }
                 tip.push(l);
                 for g in goods {
-                    tip.push(TipLine::new(good_name(g), "").icon(good_icon(g), good_color(g)).sub());
+                    tip.push(TipLine::new(g.name(), "").icon(good_icon(g), good_color(g)).sub());
                 }
             }
             if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty()) {
                 let filled = pl.slots.iter().filter(|x| x.beaver.is_some()).count();
                 let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                tip.push(TipLine::new("Beavers", format!("{filled}{seats}")).icon(role_icon(pl.slots[0].role), INK));
+                tip.push(TipLine::new("Beavers", format!("{filled}{seats}")).icon(job_icon(pl.slots[0].role), INK));
             }
             if let Some(f) = s.output.of(id) {
                 for (g, r) in f.rates() {
-                    tip.push(TipLine::new(good_name(g), format!("{}/d", num(r))).icon(good_icon(g), good_color(g)).color(GOOD));
+                    tip.push(TipLine::new(g.name(), format!("{}/d", num(r))).icon(good_icon(g), good_color(g)).color(GOOD));
                 }
             }
             tip
         }
         Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return Tip::default() };
-            use sim::resources::ResourceKind;
+
             let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), r.plant.map(|p| p.name()).or(r.species.map(|t| t.name())).unwrap_or(resource_name(r.kind)));
             // Trees: age, chewing left, and what felling gives; trunks: what is left to haul.
             let yields = match r.kind {
-                ResourceKind::Tree => {
+                k if k.is_tree() => {
                     tip.push(TipLine::new("Age", days(r.age_days)).icon(Icon::Hourglass, MUTED));
                     tip.push(TipLine::new("Fell work", num(r.amount)).icon(Icon::Hammer, MUTED));
                     r.species.and_then(|sp| r.stage()?.fell_yield(sp))
                 }
-                ResourceKind::Felled => Some((r.amount, r.branches, r.bark)),
+                k if k.is_felled() => Some((r.amount, r.branches, r.bark)),
                 _ => {
                     tip = tip.with_value(num(r.amount));
                     None
                 }
             };
             if let Some((logs, branches, bark)) = yields {
-                for (name, icon, col, v) in [("Sticks", Icon::Sticks, good_color(Good::Sticks), logs + branches), ("Bark", Icon::Food, good_color(Good::Food), bark)] {
+                for (name, icon, col, v) in [(sim::resources::ResourceKind::felled().yields()[0].name(), good_icon(sim::resources::ResourceKind::felled().yields()[0]), good_color(sim::resources::ResourceKind::felled().yields()[0]), logs + branches), ("Bark", good_icon(Good::food()), good_color(Good::food()), bark)] {
                     if v > 0.0 {
                         tip.push(TipLine::new(name, num(v)).icon(icon, col));
                     }
                 }
             }
             // The area of a building that works this kind of thing, not just any area over it.
-            let works = |p: &sim::work::Workplace| p.slots.iter().any(|sl| match sl.role {
-                sim::work::Role::Collect(k) => k.gather_sources().contains(&r.kind),
-                sim::work::Role::Forest => r.kind == ResourceKind::Tree,
+            let works = |p: &sim::work::Workplace| p.slots.iter().any(|sl| match sl.role.duty() {
+                sim::content::Duty::Gather => sim::jobs::gather_kind(sl.role).is_some_and(|k| k.gather_sources().contains(&r.kind)),
+                sim::content::Duty::Forest => r.kind.is_tree(),
                 _ => false,
             });
             if let Some(p) = s.work.places.iter().find(|p| p.area.is_some_and(|a| a.contains(r.cell)) && works(p)) {
                 if let Some(b) = s.buildings.building(p.building) {
-                    tip.push(TipLine::new(format!("{}'s area", b.kind.spec().name), "").icon(Icon::Area, MUTED));
+                    tip.push(TipLine::new(format!("{}'s area", b.kind.spec().name.as_str()), "").icon(Icon::Area, MUTED));
                 }
             }
             if let Some(&(who, _)) = s.forestry.planted.get(&rid) {
                 let name = s.colony.beaver(who).map_or_else(|| "a beaver now gone".to_string(), |b| b.name.clone());
-                tip.push(TipLine::new("Planted by", name).icon(Icon::Sapling, GOOD));
+                tip.push(TipLine::new("Planted by", name).icon(crate::hud::words::good_icon(sim::buildings::Good::seedling()), GOOD));
             }
             tip
         }
         Thing::Lodge(id) => {
             let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
-            Tip::titled(Some((Icon::Lodge, INK)), "Lodge").line("Residents", format!("{n}"))
+            Tip::titled(Some((crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), INK)), sim::buildings::BuildingKind::home().name()).line("Residents", format!("{n}"))
         }
         Thing::Wolf(_) => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
         Thing::Animal(id) => {
@@ -354,10 +354,10 @@ pub fn world_hover(
     if let (Some((c, _)), Some(pile)) = (p, sim.0.work.supplies) {
         if c == pile && hud.tool == Tool::None && matches!(t, Some(Thing::Cell(_))) {
             let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
-            for g in Good::ALL {
+            for g in Good::all() {
                 let a = sim.0.work.stock_of(sim::agents::SUPPLIES, g);
                 if a > 0.05 {
-                    tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+                    tip.push(TipLine::new(g.name(), num(a)).icon(good_icon(g), good_color(g)));
                 }
             }
             tips.world = Some((u64::MAX, tip));
@@ -369,7 +369,7 @@ pub fn world_hover(
         if let (Some(first), Tool::None, Some(Thing::Cell(_))) = (here.first(), hud.tool, t) {
             let mut tip = Tip::titled(Some((good_icon(first.good), good_color(first.good))), "On the ground");
             for q in &here {
-                tip.push(TipLine::new(good_name(q.good), num(q.amount)).icon(good_icon(q.good), good_color(q.good)));
+                tip.push(TipLine::new(q.good.name(), num(q.amount)).icon(good_icon(q.good), good_color(q.good)));
             }
             let left = here.iter().map(|q| q.days_left(sim.0.time_days)).fold(f64::INFINITY, f64::min);
             tip.push(TipLine::new("Rots in", format!("{left:.0} d")));
@@ -421,13 +421,13 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         v.action(act).tip(super::panels::alert_tip_in(s, p)).pin();
         out.push(v);
     }
-    for b in s.buildings.buildings.iter().filter(|b| b.kind != BuildingKind::Dam) {
+    for b in s.buildings.buildings.iter().filter(|b| !b.kind.is_dam()) {
         let selected = matches!(sel, Selection::Site(id) if id == b.id);
         let mut icon: Option<(Icon, Color, &str)> = None;
         if let Some(pl) = s.work.place(b.id) {
             let empty = pl.slots.iter().filter(|x| x.beaver.is_none()).count();
             if pl.is_open_site() && selected && !pl.paused && empty == pl.slots.len() && !pl.slots.is_empty() {
-                icon = Some((Icon::RoleBuilder, WARN, "No builder"));
+                icon = Some((crate::hud::words::job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), WARN, "No builder"));
             } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.beaver).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
                 icon = Some((Icon::Blocked, BAD, "Beavers can't get there"));
             }
@@ -444,7 +444,7 @@ pub fn markers(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32
         }
         if let (Some((i, c, words)), Some(pos)) = (icon, place(building_centre(b), 2.2)) {
             let mut v = pin(pos, i, c, Skin::Pebble, 28.0);
-            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name).line(words, "")).pin();
+            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str()).line(words, "")).pin();
             out.push(v);
         }
     }
@@ -674,7 +674,6 @@ pub fn stage_color(st: sim::forestry::TreeStage) -> Color {
     }
 }
 
-
 const FOREST_DOT_LIFT: f32 = 2.6;
 
 fn tree_dot(g: &mut Gizmos, h: &sim::grid::HeightGrid, c: Cell, st: sim::forestry::TreeStage) {
@@ -761,12 +760,12 @@ fn sight_circle(g: &mut Gizmos, h: &sim::grid::HeightGrid, at: (f32, f32), r: f3
 fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) -> Vec<(f32, f32)> {
     let mut out: Vec<(f32, f32)> = Vec::new();
     for id in [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }].into_iter().flatten() {
-        if let Some(b) = s.buildings.building(id).filter(|b| b.kind == BuildingKind::Lookout) {
+        if let Some(b) = s.buildings.building(id).filter(|b| b.kind.watches()) {
             out.push(sim::predators::lookout_centre(b));
         }
     }
-    if let (Tool::Building(BuildingKind::Lookout), Some(c)) = (hud.tool, hover) {
-        let b = sim::buildings::Building { id: BuildingId(0), kind: BuildingKind::Lookout, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
+    if let (Tool::Building(kind), Some(c)) = (hud.tool, hover) && kind.watches() {
+        let b = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
         out.push(sim::predators::lookout_centre(&b));
     }
     out.dedup();
@@ -1075,7 +1074,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         // Near the view, outline each deposit's cell (on the surface when under water, where
         // the terrain tint is hidden). Trees stand out on their own.
         let (r, tx, ty) = (40usize, tx.max(0.0) as usize, ty.max(0.0) as usize);
-        let near = |d: &&sim::resources::Resource| d.kind != sim::resources::ResourceKind::Tree && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r;
+        let near = |d: &&sim::resources::Resource| !d.kind.is_tree() && d.cell.0.abs_diff(tx) <= r && d.cell.1.abs_diff(ty) <= r;
         for d in crate::terrain_render::shown_deposits(s).filter(near) {
             let depth = s.water.depth.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0);
             let top = (depth > 0.03).then(|| h.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0) + depth);
@@ -1097,7 +1096,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 cell_outline(&mut g, h, c, None, SELECT);
             }
             if let Some(a) = s.work.place(id).and_then(|p| p.area) {
-                if b.kind == sim::buildings::BuildingKind::Forester { round_outline(&mut g, h, a, SELECT) } else { area_outline(&mut g, h, a, SELECT) }
+                if b.kind.row().round_area { round_outline(&mut g, h, a, SELECT) } else { area_outline(&mut g, h, a, SELECT) }
             }
         }
     }
@@ -1130,7 +1129,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         match thing.0 {
             Some(Thing::Resource(id)) => {
                 if let Some(r) = s.resources.get(id) {
-                    let big = matches!(r.kind, sim::resources::ResourceKind::Tree | sim::resources::ResourceKind::Felled);
+                    let big = r.kind.is_tree() || r.kind.is_felled();
                     ring(&mut g, at_ground(r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5), if big { 0.6 } else { 0.45 }, hover_col);
                 }
             }
@@ -1176,7 +1175,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 let probe = sim::buildings::Building { id: BuildingId(0), kind, pos: c, status: sim::buildings::Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
                 if let Some(a) = sim::catalogue::work_area(&probe) {
                     let area_col = Color::WHITE.with_alpha(0.6);
-                    if kind == sim::buildings::BuildingKind::Forester { round_outline(&mut g, h, a, area_col) } else { area_outline(&mut g, h, a, area_col) }
+                    if kind.row().round_area { round_outline(&mut g, h, a, area_col) } else { area_outline(&mut g, h, a, area_col) }
                 }
                 for c in &pv.cells {
                     cell_outline(&mut g, h, *c, None, col);

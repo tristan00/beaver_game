@@ -5,8 +5,7 @@
 use crate::agents::{Assignment, Task};
 use crate::buildings::{BuildingId, Good};
 use crate::colony::{Beaver, BeaverId, Event, Job};
-use crate::jobs::RoleKind;
-use crate::work::Role;
+
 use crate::resources::ResourceKind;
 use crate::{trace, SimState};
 use std::collections::{BTreeMap, HashMap};
@@ -21,7 +20,7 @@ const MAP_POLL_DAYS: f64 = 0.25;
 /// line is written out only when this changes, so most steps compare a few words, not strings.
 type TaskSig = (std::mem::Discriminant<Task>, bool, Option<Good>);
 /// What a job line is made of.
-type JobSig = (Option<Job>, Option<Job>, Option<(BuildingId, usize, Role)>, Option<Assignment>, Option<RoleKind>);
+type JobSig = (Option<Job>, Option<Job>, Option<(BuildingId, usize, Job)>, Option<Assignment>, Option<Job>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Journal {
@@ -293,11 +292,11 @@ fn buildings(sim: &SimState, j: &mut Journal) {
 
 fn colony_brief(sim: &SimState) -> String {
     let stores = &sim.buildings.stores;
+    let goods: String = Good::all().map(|g| format!(" {}={:.1}", g.key().to_lowercase(), stores.amount(g))).collect();
     format!(
-        "colony[pop={} season={:?} food={:.1} food_need_per_day={:.2} food_days_left={:.1} sticks={:.1} mud={:.1} pebbles={:.1} saplings={:.1} lodges={}]",
-        sim.colony.population(), crate::calendar::Season::at(sim.time_days), stores.amount(Good::Food),
-        crate::hud::food_need_per_day(sim), crate::hud::food_days_left(sim), stores.amount(Good::Sticks),
-        stores.amount(Good::Mud), stores.amount(Good::Pebbles), stores.amount(Good::Saplings), sim.colony.lodges.len()
+        "colony[pop={} season={:?} food_need_per_day={:.2} food_days_left={:.1}{goods} lodges={}]",
+        sim.colony.population(), crate::calendar::Season::at(sim.time_days),
+        crate::hud::food_need_per_day(sim), crate::hud::food_days_left(sim), sim.colony.lodges.len()
     )
 }
 
@@ -335,7 +334,7 @@ fn map(sim: &SimState) {
         sim.colony.stats.immigrants, sim.colony.stats.peak_population, sim.colony.families.len(), sim.colony.spoiled, sim.colony.eaten));
     let stores = &sim.buildings.stores;
     let mut goods = String::new();
-    for g in Good::ALL {
+    for g in Good::all() {
         let _ = write!(goods, " {g:?}={:.1}/{:.0}", stores.amount(g), stores.capacity(g));
     }
     trace::event(format!("POLL_STORES {s}{goods}"));
@@ -366,7 +365,7 @@ fn map(sim: &SimState) {
             }
         };
         e.0 += 1;
-        e.1 += if r.kind == ResourceKind::Felled { r.amount + r.branches + r.bark } else { r.amount };
+        e.1 += if r.kind.is_felled() { r.amount + r.branches + r.bark } else { r.amount };
         e.2 += r.wet as usize;
     }
     let mut kinds: Vec<(String, (usize, f32, usize))> = kinds.into_iter().map(|(k, e)| (format!("{k:?}"), e)).collect();

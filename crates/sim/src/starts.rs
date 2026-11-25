@@ -30,17 +30,6 @@ struct RiverPlan {
     height: f32,
 }
 
-pub fn dam_near(sim: &SimState, camp: Cell, radius: usize) -> Option<(Vec<Cell>, f32)> {
-    dam_candidates(sim, Some((camp, radius + MAX_DAM_CELLS / 2)), 32)
-        .into_iter()
-        .filter(|(_, cells, _)| {
-            let mid = cells[cells.len() / 2];
-            dist2(mid, camp) <= radius * radius && cells.iter().all(|&c| sim.fog.explored(c))
-        })
-        .map(|(_, cells, h)| (cells, h))
-        .min_by_key(|(_, h)| (*h > crate::dam_preview::DEFAULT_HEIGHT + 1e-3) as u8)
-}
-
 fn dam_candidates(sim: &SimState, around: Option<(Cell, usize)>, limit: usize) -> Vec<(f32, Vec<Cell>, f32)> {
     let size = sim.world.size;
     let is_river = |x: usize, y: usize| sim.world.river.get(x, y).copied().unwrap_or(false);
@@ -249,7 +238,7 @@ fn camp_fits(sim: &SimState, c: Cell, pond: &std::collections::HashSet<Cell>, tr
 }
 
 fn trees(sim: &SimState) -> Vec<Cell> {
-    sim.resources.items().iter().filter(|r| r.kind == crate::resources::ResourceKind::Tree).map(|r| r.cell).collect()
+    sim.resources.items().iter().filter(|r| r.kind.is_tree()).map(|r| r.cell).collect()
 }
 
 fn cells_by_distance(sim: &SimState, from: Cell, r: usize) -> Vec<Cell> {
@@ -402,11 +391,10 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
             b.pos = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
         }
     }
-    for (g, a) in START_BUNDLE {
+    for &(g, a) in &crate::content::content().start {
         sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
     }
-    sim.colony.food = sim.buildings.stores.amount(crate::buildings::Good::Food);
-    sim.colony.wood = sim.buildings.stores.amount(crate::buildings::Good::Sticks);
+    sim.colony.food = sim.buildings.stores.amount(crate::buildings::Good::food());
     sim.work.supplies = Some(supplies);
     {
         let allowed = crate::fog::open_at(&sim.world);
@@ -453,7 +441,7 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
 pub(crate) fn mud_near(sim: &SimState, camp: Cell) -> f32 {
     let r = START_MUD_REACH;
     sim.resources.items().iter()
-        .filter(|x| x.kind == crate::resources::ResourceKind::MudBank && dist2(x.cell, camp) <= r * r)
+        .filter(|x| x.kind == crate::content::content().roles.bank_mud && dist2(x.cell, camp) <= r * r)
         .map(|x| x.amount)
         .sum()
 }
@@ -483,7 +471,7 @@ fn mud_near_camp(sim: &mut SimState, camp: Cell, dam: &[Cell], height: f32) {
             break;
         }
         if placed.iter().all(|&p| dist2(p, c) >= START_MUD_SPACING * START_MUD_SPACING) {
-            sim.resources.add(crate::resources::ResourceKind::MudBank, c, crate::resources::MUD_AMOUNT);
+            sim.resources.add(crate::content::content().roles.bank_mud, c, crate::resources::MUD_AMOUNT);
             placed.push(c);
             have += crate::resources::MUD_AMOUNT;
         }

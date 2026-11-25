@@ -288,4 +288,3 @@ fn drive_screenshot(
         }
     }
 }
-

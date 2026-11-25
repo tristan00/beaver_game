@@ -5,7 +5,7 @@
 //! `BC_GALLERY_WHAT=life` lines up the life poses (running, handling, mending, watch, courting,
 //! grooming, caught, dead) and, behind, every look (hungry, cold, hurt, worn out, old, unhappy,
 //! pregnant, a tail slap, a dive), the one-off ones on a loop. See `tools/gallery_shot.sh`.
-use super::scene::{height_at, Pose, StructKind};
+use super::scene::{height_at, Pose};
 use super::{models, BeaverSprite};
 use bevy::prelude::*;
 
@@ -70,7 +70,7 @@ pub(super) fn spawn_gallery(
     let white = m.white.clone();
     if what == "all" || what == "build" {
         let stages: Vec<u8> = (0..=models::STAGES).chain([models::DRY_STAGE]).collect();
-        for (row, kind) in [StructKind::Lodge, StructKind::StickPile, StructKind::FoodCache, StructKind::PebbleHeap, StructKind::Forester, StructKind::HaulMound, StructKind::Lookout, StructKind::RaftLanding].into_iter().enumerate() {
+        for (row, kind) in sim::buildings::BuildingKind::all().filter(|k| !k.is_waterworks()).enumerate() {
             for (i, &stage) in stages.iter().enumerate() {
                 let (x, z) = (cx + (i as f32 - stages.len() as f32 / 2.0) * 4.0, cz - 3.0 - row as f32 * 4.5);
                 let base = (0..9).map(|k| ground(x + (k % 3) as f32 - 1.0, z + (k / 3) as f32 - 1.0)).fold(f32::MIN, f32::max);
@@ -91,7 +91,7 @@ pub(super) fn spawn_gallery(
     if what == "trees" {
         let tree = super::sim_sync::TREE_SCALE;
         for (row, phase) in [0.125f32, 0.375, 0.6, 0.875].into_iter().enumerate() {
-            for (i, sp) in super::scene::Species::ALL.into_iter().enumerate() {
+            for (i, sp) in sim::trees::Tree::all().enumerate() {
                 let (x, z) = (cx + (i as f32 - 3.5) * 9.0, cz - row as f32 * 11.0);
                 let mesh = m.tree(sp, models::Season::at(phase), 0);
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(m.tree_tints[0].clone()), Transform::from_xyz(x, ground(x, z) - 0.05, z).with_scale(Vec3::splat(tree))));
@@ -105,7 +105,7 @@ pub(super) fn spawn_gallery(
             commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::from_xyz(x, ground(x, z), z).with_scale(Vec3::splat(s))));
         };
         for (row, phase) in [0.125f32, 0.4, 0.62, 0.875].into_iter().enumerate() {
-            for (i, p) in sim::plants::Plant::ALL.into_iter().enumerate() {
+            for (i, p) in sim::plants::Plant::all().enumerate() {
                 let (x, z) = (cx + (i as f32 - 5.0) * 1.3, cz - row as f32 * 1.6);
                 place(&mut commands, m.plant(p, models::Season::at(phase)), &white, x, z, 1.0);
             }
@@ -206,13 +206,13 @@ pub(super) fn spawn_gallery(
                 continue;
             }
             let x = if only.is_some() { cx } else { cx + (i as f32 - POSES.len() as f32 / 2.0) * 1.4 };
-            let good = std::env::var("BC_GALLERY_LOAD").ok().and_then(|v| v.parse::<usize>().ok()).and_then(|i| sim::buildings::Good::ALL.get(i).copied());
+            let good = std::env::var("BC_GALLERY_LOAD").ok().and_then(|v| v.parse::<usize>().ok()).and_then(|i| sim::buildings::Good::all().nth(i));
             // With a load picked, every pose carries it; otherwise only the carrier does.
-            let load = if pose == Pose::Carry { Some(good.unwrap_or(sim::buildings::Good::Sticks)) } else { good };
+            let load = if pose == Pose::Carry { Some(good.unwrap_or(sim::dams::material())) } else { good };
             spawn(i as u64 + 1, pose, load, x, cz + 1.5, 1.0);
         }
         if only.is_none() {
-            for (i, g) in sim::buildings::Good::ALL.into_iter().enumerate() {
+            for (i, g) in sim::buildings::Good::all().enumerate() {
                 spawn(20 + i as u64, Pose::Carry, Some(g), cx + (i as f32 - 1.0) * 1.6, cz + 4.0, 1.0);
             }
             for (i, stage) in [sim::colony::Stage::Kit, sim::colony::Stage::Yearling, sim::colony::Stage::Adult].into_iter().enumerate() {
@@ -324,7 +324,7 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     } else if pick.is_some() {
         s.colony.beavers.iter().find(|b| b.can_work() && (s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()))).map(|b| crate::flow::Selection::Beaver(b.id))
     } else if std::env::var_os("BC_SELECT_LOOKOUT").is_some() {
-        s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Lookout).map(|b| crate::flow::Selection::Site(b.id))
+        s.buildings.buildings.iter().find(|b| b.kind.watches()).map(|b| crate::flow::Selection::Site(b.id))
     } else {
         None
     };

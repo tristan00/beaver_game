@@ -7,7 +7,6 @@ use crate::resources::{ResourceKind, PLANT_MAX, WATER_PLANT_MAX, WET_MOISTURE};
 use crate::water::Cell;
 use crate::SimState;
 
-
 pub fn is_shore(sim: &SimState, c: Cell) -> bool {
     let d = &sim.water.depth;
     let Some(&here) = d.get(c.0, c.1) else { return false };
@@ -43,7 +42,7 @@ pub fn suits(sim: &SimState, p: Plant, c: Cell) -> bool {
         return false;
     }
     match spec.habitat {
-        Habitat::Water => depth >= spec.min_depth.max(WET_DEPTH) && depth <= spec.max_depth && slow(sim, c, if p == Plant::Pondweed { POND_WEED_FLOW } else { 1.0 }),
+        Habitat::Water => depth >= spec.min_depth.max(WET_DEPTH) && depth <= spec.max_depth && slow(sim, c, p.row().flow),
         Habitat::Shore => is_shore(sim, c) && depth <= spec.max_depth,
         Habitat::Meadow => depth < WET_DEPTH && (moisture >= WET_MOISTURE || is_shore(sim, c)),
         Habitat::Upland => depth < WET_DEPTH && (UPLAND_MOISTURE..WET_MOISTURE).contains(&moisture) && !is_shore(sim, c),
@@ -53,7 +52,7 @@ pub fn suits(sim: &SimState, p: Plant, c: Cell) -> bool {
 /// The habitat the map gives a cell before any water has settled, for plants set out with the
 /// world.
 fn ground_class(sim: &SimState, c: Cell, kind: ResourceKind) -> Habitat {
-    if kind == ResourceKind::WaterPlant {
+    if kind.aquatic() {
         Habitat::Water
     } else if crate::resources::is_bank(&sim.world, c) {
         Habitat::Shore
@@ -199,8 +198,8 @@ pub fn step(sim: &mut SimState, day: u64) {
         .filter(|(_, r)| {
             let depth = sim.water.depth.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0);
             match r.kind {
-                ResourceKind::Plant => depth > DROWN.max(r.plant.map_or(0.0, |p| p.spec().max_depth + 0.3)),
-                ResourceKind::WaterPlant => depth > WATER_PLANT_DEEP.max(r.plant.map_or(0.0, |p| p.spec().max_depth + 0.5)),
+                k if k.is_food_plant() && !k.aquatic() => depth > DROWN.max(r.plant.map_or(0.0, |p| p.spec().max_depth + 0.3)),
+                k if k.is_food_plant() => depth > WATER_PLANT_DEEP.max(r.plant.map_or(0.0, |p| p.spec().max_depth + 0.5)),
                 _ => false,
             }
         })
@@ -214,8 +213,8 @@ pub fn step(sim: &mut SimState, day: u64) {
     // A plant grows only while it stands in its habitat.
     let wet: Vec<bool> = sim.resources.items().iter().map(|r| match (r.kind, r.plant) {
         (_, Some(p)) => suits(sim, p, r.cell),
-        (ResourceKind::Plant, None) => is_shore(sim, r.cell) || sim.world.moisture.get(r.cell.0, r.cell.1).is_some_and(|&m| m >= WET_MOISTURE),
-        (ResourceKind::WaterPlant, None) => in_still_water(sim, r.cell),
+        (k, None) if k.is_food_plant() && !k.aquatic() => is_shore(sim, r.cell) || sim.world.moisture.get(r.cell.0, r.cell.1).is_some_and(|&m| m >= WET_MOISTURE),
+        (k, None) if k.is_food_plant() => in_still_water(sim, r.cell),
         _ => false,
     }).collect();
     let mut wet = wet.into_iter();
@@ -225,7 +224,7 @@ pub fn step(sim: &mut SimState, day: u64) {
             r.wet = w;
         }
     });
-    let flowing: Vec<_> = sim.resources.items().iter().filter(|r|r.kind==ResourceKind::RiverMud)
+    let flowing: Vec<_> = sim.resources.items().iter().filter(|r|r.kind.flowing())
         .map(|r|(r.id,river_mud_active(&sim.water,r.cell))).collect();
     for (id,wet) in flowing {if let Ok(r)=sim.resources.get_mut(id) {r.wet=wet;}}
     let growth = crate::calendar::vegetation_growth(day as f64 - 0.5);
@@ -234,10 +233,8 @@ pub fn step(sim: &mut SimState, day: u64) {
     let mut plants = vec![0u8; n * n];
     let mut lilies = vec![0u8; n * n];
     for r in sim.resources.items().iter() {
-        match r.kind {
-            ResourceKind::Plant => plants[r.cell.1 * n + r.cell.0] = 1,
-            ResourceKind::WaterPlant => lilies[r.cell.1 * n + r.cell.0] = 1,
-            _ => {}
+        if r.kind.is_food_plant() {
+            if r.kind.aquatic() { lilies[r.cell.1 * n + r.cell.0] = 1 } else { plants[r.cell.1 * n + r.cell.0] = 1 }
         }
     }
     // Water plants stand in looser beds than shore plants: few, but rich.
@@ -306,59 +303,5 @@ pub fn step(sim: &mut SimState, day: u64) {
     }
     for (c, p) in new {
         add_plant(sim, c, p, sprout_share(p));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn water_plants_are_rich_and_grow_only_in_still_shallows() {
-        assert!(WATER_PLANT_MAX > PLANT_MAX);
-        let mut w = crate::resources::ResourceWorld::default();
-        let id = w.add(ResourceKind::WaterPlant, (2, 2), WATER_PLANT_MAX);
-        assert_eq!(w.take(id, 2.0), Some((crate::buildings::Good::Food, 2.0)));
-        w.get_mut(id).unwrap().wet = true;
-        w.step(10.0, 150.0).unwrap();
-        assert!(w.get(id).unwrap().amount > WATER_PLANT_MAX - 2.0, "regrows while it stands in water");
-        let mut sim = SimState::new(1);
-        let c = (5, 5);
-        *sim.water.depth.get_mut(c.0, c.1).unwrap() = 1.0;
-        *sim.water.velocity.get_mut(c.0, c.1).unwrap() = (0.0, 0.0);
-        assert!(in_still_water(&sim, c));
-        assert!(suits(&sim, Plant::YellowLily, c) && !suits(&sim, Plant::Arrowhead, c), "lilies root a metre down, arrowhead only in the shallows");
-        *sim.water.depth.get_mut(c.0, c.1).unwrap() = WATER_PLANT_DEEP + 0.5;
-        assert!(!in_still_water(&sim, c), "too deep");
-        *sim.water.depth.get_mut(c.0, c.1).unwrap() = 1.0;
-        *sim.water.velocity.get_mut(c.0, c.1).unwrap() = (0.5, 0.0);
-        assert!(!in_still_water(&sim, c), "flowing");
-    }
-    #[test]
-    fn plants_get_their_maps_species_and_keep_their_roots_over_winter() {
-        let mut sim = SimState::new(1);
-        set_flora(&mut sim, "telemark");
-        let plants: Vec<_> = sim.resources.items().iter().filter(|r| r.kind.is_food_plant()).collect();
-        assert!(!plants.is_empty());
-        assert!(plants.iter().all(|r| r.plant.is_some_and(|p| p != Plant::JoePye && p.kind() == r.kind)), "Norway grows no Joe-Pye weed");
-        let mut w = crate::resources::ResourceWorld::default();
-        let id = w.add(ResourceKind::Plant, (2, 2), 10.0);
-        w.get_mut(id).unwrap().plant = Some(Plant::Cattail);
-        w.step(60.0, 340.0).unwrap();
-        let left = w.get(id).unwrap().amount;
-        assert!(left > 0.3 * 10.0, "cattail keeps its rhizomes through the winter: {left}");
-    }
-    #[test]
-    fn river_mud_needs_adjacent_unfrozen_flow() {
-        let mut water=crate::water::Water::new(4);
-        let bank=(0,1);
-        *water.velocity.get_mut(1,1).unwrap()=(0.01,0.0);
-        assert!(!river_mud_active(&water,bank));
-        *water.depth.get_mut(1,1).unwrap()=0.1;
-        assert!(river_mud_active(&water,bank));
-        *water.ice.get_mut(1,1).unwrap()=0.5;
-        assert!(!river_mud_active(&water,bank));
-        *water.ice.get_mut(1,1).unwrap()=0.0;
-        *water.velocity.get_mut(1,1).unwrap()=(0.0,0.0);
-        assert!(!river_mud_active(&water,bank));
     }
 }

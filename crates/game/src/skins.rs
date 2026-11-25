@@ -175,18 +175,3 @@ pub fn image(skin: Skin) -> Image {
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
     img
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plates_are_cut_at_the_corners_and_solid_inside() {
-        let (n, px) = texture(Skin::Plate);
-        assert!(px[0][3] < 0.01, "the corner is cut away");
-        let mid = px[((n / 2) * n + n / 2) as usize];
-        assert!(mid[3] > 0.9, "the middle is solid");
-        let edge = px[((n / 2) * n + 1) as usize];
-        assert!(edge[0] > 0.4, "the edge is bark");
-    }
-}

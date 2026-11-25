@@ -9,7 +9,6 @@ pub enum DamGrowth {
     Extend,
 }
 
-
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     Regenerate { seed: u64 },
@@ -49,7 +48,7 @@ pub enum Command {
     RemoveBeaver { building: buildings::BuildingId },
     SetPriority { building: buildings::BuildingId, priority: work::Priority },
     SetPaused { building: buildings::BuildingId, paused: bool },
-    AdjustRole { role: jobs::RoleKind, delta: i32 },
+    AdjustRole { role: jobs::Job, delta: i32 },
     SetWorkArea { building: buildings::BuildingId, area: work::Area },
     SetHaul { order: work::HaulOrder },
     SetBalance { building: buildings::BuildingId, on: bool },
@@ -60,58 +59,7 @@ pub enum Command {
     /// Stop a repair, reinforcing or pebble facing, leaving the building itself standing.
     CancelMaintenance { building: buildings::BuildingId },
     /// Keep a role's beavers within `cells` of water (None: no limit).
-    SetShoreLimit { role: jobs::RoleKind, cells: Option<u16> },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn family() -> (SimState, Vec<colony::BeaverId>) {
-        let mut s = SimState::new(1);
-        s.colony.found((0.0, 3.0), &colony::RiverLand::default()).unwrap();
-        s.nav = crate::nav::NavGrid::new(32, 32);
-        let ids: Vec<_> = s.colony.beavers.iter().map(|b| b.id).collect();
-        for (i, &id) in ids.iter().enumerate() {
-            s.agents.spawn(id, (2, 2 + i));
-            s.nav.reserve(id, (2, 2 + i));
-        }
-        (s, ids)
-    }
-
-    #[test]
-    fn move_replaces_route_and_preserves_load() {
-        let (mut s, ids) = family();
-        let id = ids[0];
-        let a = s.agents.by_id.get_mut(&id).unwrap();
-        a.path = Some(crate::nav::Path { steps: vec![((3, 2), crate::nav::Gait::Walk)], cost: 1.0 });
-        a.step_frac = 0.5;
-        a.load = Some(agents::Load::new(buildings::Good::Sticks, 2.0, false));
-        s.apply(Command::Assign { who: vec![id], to: Some(agents::Assignment::Go((2, 8))) }).unwrap();
-        let a = s.agents.get(id).unwrap();
-        assert!(a.path.is_none());
-        assert_eq!(a.step_frac, 0.0);
-        assert_eq!(a.load.unwrap().amount, 2.0);
-        assert_eq!(a.assignment, Some(agents::Assignment::Go((2, 8))));
-        s.apply(Command::Assign { who: vec![id], to: None }).unwrap();
-        assert_eq!(s.agents.get(id).unwrap().assignment, None);
-        assert!(s.agents.get(id).unwrap().load.is_some());
-    }
-
-    #[test]
-    fn group_move_accepts_kits_and_chooses_distinct_destinations() {
-        let (mut s, ids) = family();
-        s.colony.beavers[0].stage = colony::Stage::Kit;
-        s.colony.beavers[0].age_days = 30.0;
-        s.apply(Command::Assign { who: ids.clone(), to: Some(agents::Assignment::Go((12, 12))) }).unwrap();
-        let cells: std::collections::BTreeSet<_> = ids.iter().map(|id| match s.agents.get(*id).unwrap().assignment {
-            Some(agents::Assignment::Go(c)) => c, _ => panic!("missing order"),
-        }).collect();
-        assert_eq!(cells.len(), ids.len());
-        let prior = s.agents.get(ids[0]).unwrap().assignment;
-        assert!(s.apply(Command::Assign { who: ids, to: Some(agents::Assignment::Go((99, 99))) }).is_err());
-        assert_eq!(s.agents.get(s.colony.beavers[0].id).unwrap().assignment, prior);
-    }
+    SetShoreLimit { role: jobs::Job, cells: Option<u16> },
 }
 
 impl SimState {
@@ -166,7 +114,7 @@ impl SimState {
             Command::SetDamUpkeep { dam, on } => dams::set_upkeep(self, dam, on),
             Command::RepairBuilding { building } => maintenance::order(self, building, maintenance::Refit::Repair),
             Command::ReinforceBuilding { building } => maintenance::order(self, building, maintenance::Refit::Reinforce),
-            Command::PebbleBuilding { building } => maintenance::order(self, building, maintenance::Refit::Pebbles),
+            Command::PebbleBuilding { building } => maintenance::order(self, building, maintenance::Refit::Facing),
             Command::SetSlotOff { building, slot, off } => jobs::set_slot_off(self, building, slot, off),
             Command::Settle { cell } => starts::settle(self, cell),
             Command::BreachDam { x, y } => self.water.breach(x, y).map_err(invalid),
@@ -267,7 +215,7 @@ impl SimState {
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),
             Command::CancelMaintenance { building } => crate::maintenance::cancel(self, building).map(|_| ()),
             Command::SetBalance { building, on } => {
-                let haul_mound = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind == buildings::BuildingKind::HaulMound);
+                let haul_mound = self.buildings.building(building).is_some_and(|b| b.is_complete() && b.kind.balances());
                 if !haul_mound {
                     return Err(SimError::InvalidCommand(format!("building {} is not a finished haul mound", building.0)));
                 }

@@ -189,13 +189,13 @@ fn floor(s: &sim::SimState, p: Vec3) -> f32 {
 /// What stands up from the ground near the beaver, and how high: buildings, dams, trees, felled
 /// logs and piles of goods.
 fn things_near(s: &sim::SimState, at: (usize, usize)) -> std::collections::HashMap<(usize, usize), f32> {
-    use sim::resources::ResourceKind;
+
     let near = |c: (usize, usize)| c.0.abs_diff(at.0) <= 4 && c.1.abs_diff(at.1) <= 4;
     let mut out = std::collections::HashMap::new();
     for r in s.resources.items().iter().filter(|r| near(r.cell)) {
         let h = match r.kind {
-            ResourceKind::Tree if r.has_yield() => 4.0,
-            ResourceKind::Felled => 0.9,
+            k if k.is_tree() && r.has_yield() => 4.0,
+            k if k.is_felled() => 0.9,
             _ => continue,
         };
         out.insert(r.cell, h);

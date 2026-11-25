@@ -33,8 +33,6 @@ pub enum SettleError {
     NoRoom,
 }
 
-
-
 fn wet(s: &SimState, c: Cell) -> bool {
     s.world.river.get(c.0, c.1) == Some(&true) || s.world.lake.get(c.0, c.1) == Some(&true) || s.water.depth.get(c.0, c.1).is_some_and(|d| *d > crate::buildings::WET_DEPTH)
 }
@@ -106,10 +104,9 @@ pub fn score(s: &SimState, cell: Cell) -> SiteScore {
     let above = if river_low == f32::MAX { 1.0 } else { ((world.surface.get(cell.0, cell.1).copied().unwrap_or(0.0) - river_low) / SAFE_ELEVATION_RANGE).clamp(0.0, 1.0) };
     let edge = cell.0.min(cell.1).min(world.size - 1 - cell.0).min(world.size - 1 - cell.1);
     let room = if edge < EDGE_CLEARANCE { 0.0 } else { room(s, cell).0 };
-    use crate::resources::ResourceKind;
     let near = |c: Cell, r: usize| c.0.abs_diff(cell.0) + c.1.abs_diff(cell.1) <= r;
     let plants: f32 = s.resources.items().iter().filter(|r| r.kind.is_food_plant() && near(r.cell, FOOD_REACH)).map(|r| r.max_amount).sum();
-    let mud: f32 = s.resources.items().iter().filter(|r| r.kind == ResourceKind::MudBank && near(r.cell, FOOD_REACH)).map(|r| r.amount).sum();
+    let mud: f32 = s.resources.items().iter().filter(|r| r.kind == crate::content::content().roles.bank_mud && near(r.cell, FOOD_REACH)).map(|r| r.amount).sum();
     let food = PLANT_FOOD_SCORE_WEIGHT * (plants / GOOD_PLANT_FOOD).min(1.0) + MUD_FOOD_SCORE_WEIGHT * (mud / GOOD_MUD).min(1.0);
     SiteScore { water, trees, safety: SLOPE_SAFETY_WEIGHT * gentle + ELEVATION_SAFETY_WEIGHT * above, room, food }
 }

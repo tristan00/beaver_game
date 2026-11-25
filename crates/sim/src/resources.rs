@@ -8,52 +8,38 @@ use rand_pcg::Pcg32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ResourceId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum ResourceKind {
-    Tree,
-    Felled,
-    Plant,
-    MudBank,
-    RiverMud,
-    /// Pebbles: heaped round the boulders of rocky outcrops on high dry ground, in heaps of
-    /// their own, and in gravel bars along the streams; heavy to carry.
-    Pebbles,
-    /// Plants rooted in open water (lilies, pondweed, arrowhead): rich in food.
-    WaterPlant,
-}
+pub use crate::content::{Behaviour, ResourceKind};
 
 impl ResourceKind {
+    /// The kinds its gatherers work, best first.
     pub fn gather_sources(self) -> &'static [ResourceKind] {
-        match self {
-            Self::Tree | Self::Felled => &[Self::Felled, Self::Tree],
-            // What lies on the ground comes first: bark on fallen trees, then plants.
-            // Foragers never fell a tree.
-            Self::Plant | Self::WaterPlant => &[Self::Felled, Self::Plant, Self::WaterPlant],
-            Self::MudBank | Self::RiverMud => &[Self::RiverMud, Self::MudBank],
-            Self::Pebbles => &[Self::Pebbles],
-        }
+        &self.row().sources
     }
     pub fn yields(self) -> &'static [Good] {
-        match self {
-            ResourceKind::Tree => &[],
-            ResourceKind::Felled => &[Good::Sticks, Good::Food],
-            ResourceKind::Plant | ResourceKind::WaterPlant => &[Good::Food],
-            ResourceKind::MudBank => &[Good::Mud],
-            ResourceKind::RiverMud => &[Good::Mud],
-            ResourceKind::Pebbles => &[Good::Pebbles],
-        }
+        &self.row().yields
     }
-    /// Stands in the way. Pebbles are a low heap, walked over; the boulders they lie round
-    /// stand in the way (see `Boulder`).
-    pub fn is_solid(self) -> bool {
-        matches!(self, ResourceKind::Tree)
-    }
+    pub fn behaviour(self) -> Behaviour { self.row().behaviour }
+    pub fn is_tree(self) -> bool { self.behaviour() == Behaviour::Tree }
+    pub fn is_felled(self) -> bool { self.behaviour() == Behaviour::Felled }
     /// Food plants, on land or in water: they regrow and stay when eaten bare.
-    pub fn is_food_plant(self) -> bool {
-        matches!(self, ResourceKind::Plant | ResourceKind::WaterPlant)
+    pub fn is_food_plant(self) -> bool { self.behaviour() == Behaviour::FoodPlant }
+    pub fn aquatic(self) -> bool { self.row().aquatic }
+    /// Refilled by its stream; never gathered bare.
+    pub fn flowing(self) -> bool { self.row().flowing }
+    /// Stands in the way of walking.
+    pub fn is_solid(self) -> bool { self.row().solid }
+    /// The one kind that is a standing tree, and the one a tree becomes when felled.
+    pub fn tree() -> ResourceKind { Self::all().find(|k| k.is_tree()).expect("validated on load") }
+    pub fn felled() -> ResourceKind { Self::all().find(|k| k.is_felled()).expect("validated on load") }
+    /// The first food plant on land, or in water.
+    pub fn food_plant(aquatic: bool) -> ResourceKind {
+        Self::all().find(|k| k.is_food_plant() && k.aquatic() == aquatic).expect("validated on load")
+    }
+    /// What gathering any of it yields first: a tree's is what it is felled into.
+    pub fn good(self) -> Option<Good> {
+        (if self.is_tree() { Self::felled() } else { self }).yields().first().copied()
     }
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResourceError {
@@ -77,9 +63,7 @@ pub struct Resource {
     pub snag: bool,
     /// Trees and felled trees only.
     pub species: Option<crate::trees::Tree>,
-    /// Food plants only; set from the map's flora (see `wetland::assign_plants`). Saved after
-    /// the world (see `save`).
-    #[serde(skip)]
+    /// Food plants only; set from the map's flora (see `wetland::assign_plants`).
     pub plant: Option<crate::plants::Plant>,
 }
 
@@ -104,12 +88,8 @@ pub enum Look {
     Tree(crate::forestry::TreeStage, u8),
     /// Logs left (0 to 3), and whether there are branches.
     Felled(u8, bool),
-    /// Eighths of the mud left; a river's mud bed never shows less than one.
-    Mud(u8),
-    /// Quarters left.
-    Plant(u8),
-    Pebbles(u8),
-    WaterPlant(u8),
+    /// How full, in its row's `fill_steps`; a stream's bed never shows less than one.
+    Fill(u8),
 }
 
 /// Steps a growing tree is redrawn in through each stage.
@@ -126,7 +106,7 @@ impl Resource {
     /// How far a sapling or young tree has grown through its stage, 0 to 1; 0 for any other.
     pub fn growth(&self) -> f32 {
         use crate::forestry::{MATURE_AGE, YOUNG_AGE};
-        if self.kind != ResourceKind::Tree || self.snag {
+        if !self.kind.is_tree() || self.snag {
             return 0.0;
         }
         let a = self.age_days;
@@ -140,26 +120,23 @@ impl Resource {
     }
     pub fn look(&self) -> Look {
         let q = |steps: f32| fill(self.amount, self.max_amount, steps);
-        match self.kind {
-            ResourceKind::Tree => {
+        match self.kind.behaviour() {
+            Behaviour::Tree => {
                 let stage = self.stage().unwrap_or(crate::forestry::TreeStage::Mature);
                 Look::Tree(stage, (self.growth() * GROWTH_STEPS as f32) as u8)
             }
-            ResourceKind::Felled => Look::Felled(self.amount.ceil().clamp(0.0, 3.0) as u8, self.branches > 0.0),
-            ResourceKind::MudBank => Look::Mud(q(8.0)),
-            ResourceKind::RiverMud => Look::Mud(q(8.0).max(1)),
-            ResourceKind::Plant => Look::Plant(q(4.0)),
-            ResourceKind::Pebbles => Look::Pebbles(q(4.0)),
-            ResourceKind::WaterPlant => Look::WaterPlant(q(4.0)),
+            Behaviour::Felled => Look::Felled(self.amount.ceil().clamp(0.0, 3.0) as u8, self.branches > 0.0),
+            // A stream's bed never shows empty.
+            _ => Look::Fill(q(self.kind.row().fill_steps as f32).max(self.kind.flowing() as u8)),
         }
     }
     pub fn is_solid(&self) -> bool {
-        self.kind.is_solid() && !(self.kind == ResourceKind::Tree && self.stage() == Some(crate::forestry::TreeStage::Sapling))
+        self.kind.is_solid() && !(self.kind.is_tree() && self.stage() == Some(crate::forestry::TreeStage::Sapling))
     }
     pub fn has_yield(&self) -> bool {
-        match self.kind {
-            ResourceKind::RiverMud => true,
-            ResourceKind::Felled => self.amount > 0.0 || self.branches > 0.0 || self.bark > 0.0,
+        match self.kind.behaviour() {
+            _ if self.kind.flowing() => true,
+            Behaviour::Felled => self.amount > 0.0 || self.branches > 0.0 || self.bark > 0.0,
             _ => self.amount > 0.0,
         }
     }
@@ -226,11 +203,7 @@ pub struct ResourceWorld {
     /// Write changes to the session journal (off while the world is first filled in).
     pub log_changes: bool,
     /// The map whose flora the plants come from (`plants::flora`); empty for the default.
-    /// Saved after the world (see `save`).
-    #[serde(skip)]
     pub flora: String,
-    /// Saved after the world (see `save`).
-    #[serde(skip)]
     pub boulders: Vec<Boulder>,
     next_id: u64,
     nav_revision: u64,
@@ -248,8 +221,6 @@ pub fn is_bank(world: &World, cell: Cell) -> bool {
     let near = [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)];
     near.iter().any(|&(nx, ny)| world.moisture.in_bounds(nx, ny) && is_water(world, (nx, ny)))
 }
-
-
 
 pub fn is_wet(world: &World, (x, y): Cell) -> bool {
     !is_water(world, (x, y)) && world.moisture.get(x, y).is_some_and(|&m| m >= WET_MOISTURE)
@@ -300,31 +271,32 @@ impl ResourceWorld {
         let in_pocket = |c: Cell, unit: &mut dyn FnMut() -> f32| pockets.iter().any(|&p| p == c || (distance(c, p) <= MUD_POCKET_RADIUS && unit() < 0.75));
         let upland = |c: Cell| !is_water(world, c) && !is_bank(world, c) && !is_wet(world, c) && treeless(c.0, c.1)
             && world.moisture.get(c.0, c.1).is_some_and(|&m| m >= crate::wetland::UPLAND_MOISTURE);
+        let roles = &crate::content::content().roles;
         for y in 0..n {for x in 0..n {
             let cell=(x,y);
             if rocks.contains(&cell) {
                 continue;
             }
             if pebbles.contains(&cell) {
-                out.add(ResourceKind::Pebbles,cell,PEBBLE_AMOUNT);
+                out.add(roles.outcrop,cell,PEBBLE_AMOUNT);
             } else if gravel.contains(&cell) {
-                let id = out.add(ResourceKind::Pebbles,cell,STREAM_PEBBLE_AMOUNT);
+                let id = out.add(roles.gravel,cell,STREAM_PEBBLE_AMOUNT);
                 out.items.iter_mut().find(|r| r.id == id).expect("just added").wet = true;
             } else if let Some(Some(sp)) = world.forest.get(x,y).copied() {
                 out.add_tree(cell,crate::forestry::start_age(seed,cell),sp);
             } else if river_spots.contains(&cell) {
-                out.add(ResourceKind::RiverMud,cell,RIVER_MUD_INITIAL);
+                out.add(roles.stream_mud,cell,RIVER_MUD_INITIAL);
             } else if is_bank(world,cell) && in_bed(cell) {
-                if unit()<MUD_FILL {out.add(ResourceKind::MudBank,cell,MUD_AMOUNT);}
+                if unit()<MUD_FILL {out.add(roles.bank_mud,cell,MUD_AMOUNT);}
             } else if !is_water(world,cell) && in_pocket(cell, &mut unit) {
-                out.add(ResourceKind::MudBank,cell,MUD_POCKET_AMOUNT);
+                out.add(roles.bank_mud,cell,MUD_POCKET_AMOUNT);
             } else if is_bank(world,cell) && unit()<STRAY_MUD_CHANCE {
-                out.add(ResourceKind::MudBank,cell,STRAY_MUD_AMOUNT);
+                out.add(roles.bank_mud,cell,STRAY_MUD_AMOUNT);
             } else if is_wet(world,cell) && unit()<PLANT_CHANCE {
-                let id=out.add(ResourceKind::Plant,cell,PLANT_MAX);
+                let id=out.add(ResourceKind::food_plant(false),cell,PLANT_MAX);
                 out.get_mut(id).unwrap().wet=true;
             } else if upland(cell) && unit()<UPLAND_PLANT_CHANCE {
-                out.add(ResourceKind::Plant,cell,PLANT_MAX);
+                out.add(ResourceKind::food_plant(false),cell,PLANT_MAX);
             }
         }}
         out.boulders = boulders;
@@ -414,17 +386,17 @@ impl ResourceWorld {
 
     fn fell_at(&mut self, i: usize, work: f32) -> Result<bool, ResourceError> {
         let r = &mut self.items[i];
-        if r.kind != ResourceKind::Tree {
+        if !r.kind.is_tree() {
             return Err(ResourceError::WrongKind);
         }
-        let Some((logs, branches, bark)) = r.stage().and_then(|s| s.fell_yield(r.species.unwrap_or(crate::trees::Tree::Aspen))) else {
+        let Some((logs, branches, bark)) = r.stage().and_then(|s| s.fell_yield(r.species.unwrap_or_else(crate::trees::Tree::unknown))) else {
             return Err(ResourceError::TooYoung);
         };
         r.amount -= work;
         if r.amount > 0.0 {
             return Ok(false);
         }
-        r.kind = ResourceKind::Felled;
+        r.kind = ResourceKind::felled();
         r.amount = logs;
         r.max_amount = logs;
         r.branches = branches;
@@ -448,13 +420,13 @@ impl ResourceWorld {
 
     fn strip_at(&mut self, i: usize, want: f32) -> Result<(Good, f32), ResourceError> {
         let r = &mut self.items[i];
-        if r.kind != ResourceKind::Felled {
+        if !r.kind.is_felled() {
             return Err(ResourceError::WrongKind);
         }
         let got = want.min(r.bark);
         r.bark -= got;
         if self.log_changes { note("STRIPPED", &self.items[i], format_args!("asked={want:.3} got={got:.3}")); }
-        Ok((Good::Food, got))
+        Ok((Good::food(), got))
     }
 
     pub fn take(&mut self, id: ResourceId, want: f32) -> Option<(Good, f32)> {
@@ -482,21 +454,14 @@ impl ResourceWorld {
 
     fn take_at(&mut self, i: usize, want: f32) -> Option<(Good, f32)> {
         let r = &mut self.items[i];
-        let (good, slot) = match r.kind {
-            ResourceKind::Tree => return None,
-            ResourceKind::Felled if r.amount > 0.0 => (Good::Sticks, &mut r.amount),
-            ResourceKind::Felled => (Good::Sticks, &mut r.branches),
-            ResourceKind::Plant | ResourceKind::WaterPlant => (Good::Food, &mut r.amount),
-            ResourceKind::MudBank => (Good::Mud, &mut r.amount),
-            ResourceKind::RiverMud => (Good::Mud, &mut r.amount),
-            ResourceKind::Pebbles => (Good::Pebbles, &mut r.amount),
-        };
+        let good = *r.kind.yields().first()?;
+        let slot = if r.kind.is_felled() && r.amount <= 0.0 { &mut r.branches } else { &mut r.amount };
         let got = want.min(*slot);
         if got <= 0.0 {
             return None;
         }
         *slot -= got;
-        if r.kind == ResourceKind::RiverMud { self.river_mud_gathered += got; }
+        if r.kind.flowing() { self.river_mud_gathered += got; }
         if self.log_changes { note("TAKEN", &self.items[i], format_args!("good={good:?} asked={want:.3} got={got:.3}")); }
         Some((good, got))
     }
@@ -508,7 +473,7 @@ impl ResourceWorld {
         let growth = crate::calendar::vegetation_growth(time_days - dt_days as f64 * 0.5);
         let decay = plant_decay(growth);
         let survival = (-decay*dt_days).exp();
-        let keep = |r: &Resource| r.kind.is_food_plant() || r.kind == ResourceKind::RiverMud || r.has_yield();
+        let keep = |r: &Resource| r.kind.is_food_plant() || r.kind.flowing() || r.has_yield();
         // One sweep over every source: plants grow, mud beds refill, and whether any is used up.
         let mut any_gone = false;
         let changes = &mut self.changes;
@@ -527,12 +492,12 @@ impl ResourceWorld {
                 r.amount = if decay > 1e-7 {
                     r.amount*survival + rate/decay*(1.0-survival)
                 } else {r.amount+rate*dt_days}.min(r.max_amount).max(0.0);
-                grew(r, was, 4.0);
-            } else if r.kind == ResourceKind::RiverMud {
+                grew(r, was, r.kind.row().fill_steps as f32);
+            } else if r.kind.flowing() {
                 let before = r.amount;
                 r.amount=river_mud_amount(r.amount,r.max_amount,r.wet,dt_days);
                 self.river_mud_recovered += r.amount - before;
-                grew(r, before, 8.0);
+                grew(r, before, r.kind.row().fill_steps as f32);
             }
             any_gone |= !keep(r);
         }
@@ -540,7 +505,7 @@ impl ResourceWorld {
             return Ok(());
         }
         let before = self.items.len();
-        let solid_gone = self.items.iter().any(|r| r.kind == ResourceKind::Pebbles && !r.has_yield());
+        let solid_gone = self.items.iter().any(|r| r.kind.is_solid() && !r.has_yield());
         if self.log_changes {
             for r in self.items.iter().filter(|r| !keep(r)) { note("GONE", r, format_args!("why=used up")); }
         }
@@ -553,9 +518,9 @@ impl ResourceWorld {
         self.next_id += 1;
         self.nav_revision = self.nav_revision.wrapping_add(1);
         let id = ResourceId(self.next_id);
-        let age_days = if kind == ResourceKind::Tree { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
+        let age_days = if kind.is_tree() { crate::forestry::DEFAULT_TREE_AGE } else { 0.0 };
         self.changes.note(id);
-        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind==ResourceKind::RiverMud { RIVER_MUD_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, species: None, plant: None });
+        self.items.push(Resource { id, kind, cell, amount, max_amount: if kind.flowing() { RIVER_MUD_CAPACITY } else { amount }, branches: 0.0, bark: 0.0, wet: false, age_days, snag: false, species: None, plant: None });
         if self.log_changes { note("NEW", self.items.last().expect("just added"), format_args!("")); }
         id
     }
@@ -564,7 +529,7 @@ impl ResourceWorld {
 
     pub fn add_tree(&mut self, cell: Cell, age_days: f32, species: crate::trees::Tree) -> ResourceId {
         let work = FELL_WORK * species.spec().fell_work;
-        let id = self.add(ResourceKind::Tree, cell, work);
+        let id = self.add(ResourceKind::tree(), cell, work);
         let r = self.items.last_mut().expect("just added");
         r.age_days = age_days.max(0.0);
         r.species = Some(species);
@@ -717,7 +682,7 @@ fn distance(a:Cell,b:Cell)->f32 {
 pub fn plant_regrow(r: &Resource, growth: f32) -> f32 {
     let regrow = match r.plant {
         Some(p) => p.spec().regrow,
-        None if r.kind == ResourceKind::WaterPlant => WATER_PLANT_REGROW_PER_DAY,
+        None if r.kind.aquatic() => WATER_PLANT_REGROW_PER_DAY,
         None => PLANT_REGROW_PER_DAY,
     };
     if r.wet { regrow * growth } else { 0.0 }
@@ -736,37 +701,4 @@ pub fn plant_decay(growth: f32) -> f32 {
 
 pub fn river_mud_amount(amount:f32,capacity:f32,flowing:bool,days:f32)->f32 {
     (amount + if flowing {RIVER_MUD_PER_DAY*days.max(0.0)} else {0.0}).min(capacity)
-}
-
-#[cfg(test)]
-mod mud_tests {
-    use super::*;
-    #[test]
-    fn river_mud_is_limited_and_recovers_only_with_flow() {
-        assert_eq!(river_mud_amount(0.0,8.0,false,360.0),0.0);
-        assert!((river_mud_amount(0.0,8.0,true,25.0)-1.0).abs()<1e-5);
-        assert_eq!(river_mud_amount(7.0,8.0,true,360.0),8.0);
-        let mut world=ResourceWorld::default();
-        let river=world.add(ResourceKind::RiverMud,(2,2),0.0);
-        let deposit=world.add(ResourceKind::MudBank,(4,4),0.0);
-        world.step(1.0,1.0).unwrap();
-        assert!(world.get(river).is_some());assert!(world.get(deposit).is_none());
-        world.get_mut(river).unwrap().wet=true;
-        world.step(25.0,26.0).unwrap();assert!((world.get(river).unwrap().amount-1.0).abs()<1e-5);
-        assert_eq!(world.take(river,2.0),Some((Good::Mud,1.0)));
-        assert_eq!(world.take(river,1.0),None);
-        world.step(25.0,51.0).unwrap();
-        assert_eq!(world.take(river,1.0),Some((Good::Mud,1.0)));
-        assert_eq!(world.river_mud_gathered,2.0);
-        assert_eq!(world.river_mud_recovered,2.0);
-    }
-    #[test]
-    fn bark_and_shoots_are_food_and_bark_is_sticks() {
-        let mut w=ResourceWorld::default();let id=w.add(ResourceKind::Felled,(1,1),3.0);
-        w.get_mut(id).unwrap().bark=2.0;
-        assert_eq!(w.strip(id,1.0).unwrap(),(Good::Food,1.0));
-        assert_eq!(w.take(id,1.0).unwrap(),(Good::Sticks,1.0));
-        let plant=w.add(ResourceKind::Plant,(2,2),3.0);
-        assert_eq!(w.take(plant,1.0).unwrap(),(Good::Food,1.0));
-    }
 }

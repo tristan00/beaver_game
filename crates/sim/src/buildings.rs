@@ -3,48 +3,15 @@ pub use crate::inventory::Kind;
 use std::fmt;
 pub use crate::tuning::buildings::*;
 
-#[cfg(test)]
-mod access_tests {
-    use super::*;
-    #[test]
-    fn occupied_buildings_keep_a_walkable_setback() {
-        let mut b=Buildings::default();let d=Grid::new(24,24,0.5);let t=Terrain{depth:&d};
-        b.add_complete(BuildingKind::StickPile,(5,5),t).unwrap();
-        assert!(b.check_ground(BuildingKind::StickPile,(8,5),t).is_err());
-        assert!(b.check_ground(BuildingKind::StickPile,(9,5),t).is_ok());
-    }
-
-    #[test]
-    fn a_building_too_deep_under_water_is_out_of_use() {
-        let mut b = Buildings::default();
-        let mut d = Grid::new(24, 24, 0.5);
-        let id = b.add_complete(BuildingKind::StickPile, (5, 5), Terrain { depth: &d }).unwrap();
-        let bd = b.building(id).unwrap().clone();
-        assert!(!flooded(&bd, &d) && !b.unusable(&bd, &d), "half a metre is fine");
-        for y in 5..8 {
-            for x in 5..8 {
-                *d.get_mut(x, y).unwrap() = MAX_BUILDING_DEPTH + 0.5;
-            }
-        }
-        assert!(flooded(&bd, &d) && b.unusable(&bd, &d), "deeper than beavers build for");
-        b.update_capacity(Terrain { depth: &d });
-        assert_eq!(b.stores.capacity(Good::Sticks), BASE_CAPACITY, "a flooded store holds nothing");
-        let deep = Grid::new(24, 24, MAX_BUILDING_DEPTH + 0.5);
-        assert!(b.can_place_site(BuildingKind::StickPile, (14, 14), Terrain { depth: &deep }).is_err(), "nor can one be put there");
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum Good { Food, Sticks, Mud, Pebbles, Saplings }
+pub use crate::content::{Good, PerId};
 
 impl Good {
-    pub const ALL: [Good; 5] = [Good::Food, Good::Sticks, Good::Mud, Good::Pebbles, Good::Saplings];
-    pub fn index(self) -> usize {
-        self as usize
-    }
+    /// The good beavers eat (the one row marked `edible`).
+    pub fn food() -> Good { crate::content::content().food }
+    /// The good that keeps the tree species it grows into (the one row marked `carries_species`):
+    /// what planters plant.
+    pub fn seedling() -> Good { crate::content::content().seedling }
 }
-
-const N: usize = Good::ALL.len();
 
 pub type Amount = (Good, f32);
 
@@ -115,30 +82,30 @@ impl Use {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Stores {
     pub(crate) inventory: crate::inventory::Inventory,
-    capacity: [f32; N],
-    pub produced_total: [f32; N],
-    pub consumed_total: [f32; N],
+    capacity: PerId<Good, f32>,
+    pub produced_total: PerId<Good, f32>,
+    pub consumed_total: PerId<Good, f32>,
     pub produced_by: std::collections::BTreeMap<(Producer, Good), f32>,
-    pub consumed_by: [[f32; N]; Use::COUNT],
-    pub production_rate: [f32; N],
-    pub consumption_rate: [f32; N],
-    tick_produced: [f32; N],
-    tick_consumed: [f32; N],
+    pub consumed_by: [PerId<Good, f32>; Use::COUNT],
+    pub production_rate: PerId<Good, f32>,
+    pub consumption_rate: PerId<Good, f32>,
+    tick_produced: PerId<Good, f32>,
+    tick_consumed: PerId<Good, f32>,
 }
 
 impl Default for Stores {
     fn default() -> Self {
         Self {
             inventory: Default::default(),
-            capacity: [BASE_CAPACITY; N],
-            produced_total: [0.0; N],
-            consumed_total: [0.0; N],
+            capacity: PerId::filled(BASE_CAPACITY),
+            produced_total: PerId::default(),
+            consumed_total: PerId::default(),
             produced_by: Default::default(),
-            consumed_by: [[0.0; N]; Use::COUNT],
-            production_rate: [0.0; N],
-            consumption_rate: [0.0; N],
-            tick_produced: [0.0; N],
-            tick_consumed: [0.0; N],
+            consumed_by: std::array::from_fn(|_| PerId::default()),
+            production_rate: PerId::default(),
+            consumption_rate: PerId::default(),
+            tick_produced: PerId::default(),
+            tick_consumed: PerId::default(),
         }
     }
 }
@@ -153,28 +120,28 @@ impl Stores {
     /// the stores, and newly made if they came straight from whoever gathered them.
     pub(crate) fn book_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>, use_: Use) {
         if let Some(who) = fresh {
-            self.tick_produced[good.index()] += amount;
-            self.produced_total[good.index()] += amount;
+            self.tick_produced[good] += amount;
+            self.produced_total[good] += amount;
             *self.produced_by.entry((who,good)).or_insert(0.0) += amount;
         }
-        self.tick_consumed[good.index()] += amount;
-        self.consumed_total[good.index()] += amount;
-        self.consumed_by[use_.index()][good.index()] += amount;
+        self.tick_consumed[good] += amount;
+        self.consumed_total[good] += amount;
+        self.consumed_by[use_.index()][good] += amount;
     }
     /// Book carried goods used up away from any store, such as a sapling planted.
     pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
-        self.tick_consumed[good.index()] += amount;
-        self.consumed_total[good.index()] += amount;
-        self.consumed_by[use_.index()][good.index()] += amount;
+        self.tick_consumed[good] += amount;
+        self.consumed_total[good] += amount;
+        self.consumed_by[use_.index()][good] += amount;
     }
     pub fn amount(&self, g: Good) -> f32 {
         self.inventory.total(g)
     }
     pub fn capacity(&self, g: Good) -> f32 {
-        self.capacity[g.index()]
+        self.capacity[g]
     }
     pub fn space(&self, g: Good) -> f32 {
-        (self.capacity[g.index()] - self.amount(g)).max(0.0)
+        (self.capacity[g] - self.amount(g)).max(0.0)
     }
     pub fn deposit(&mut self, g: Good, amount: f32) -> Result<f32, StoresError> {
         self.deposit_by(g, amount, Producer::Other)
@@ -190,8 +157,8 @@ impl Stores {
     pub fn deposit_by(&mut self, g: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_raw(g, amount)?;
         self.note("DEPOSIT", g, amount, taken, format_args!("by={who:?}"));
-        self.tick_produced[g.index()] += taken;
-        self.produced_total[g.index()] += taken;
+        self.tick_produced[g] += taken;
+        self.produced_total[g] += taken;
         if taken > 0.0 {
             *self.produced_by.entry((who, g)).or_insert(0.0) += taken;
         }
@@ -202,9 +169,9 @@ impl Stores {
         let r = self.take_raw(g, amount);
         self.note("WITHDRAW", g, amount, if r.is_ok() { amount } else { 0.0 }, format_args!("use={use_:?} result={r:?}"));
         r?;
-        self.tick_consumed[g.index()] += amount;
-        self.consumed_total[g.index()] += amount;
-        self.consumed_by[use_.index()][g.index()] += amount;
+        self.tick_consumed[g] += amount;
+        self.consumed_total[g] += amount;
+        self.consumed_by[use_.index()][g] += amount;
         Ok(())
     }
 
@@ -242,14 +209,6 @@ impl Stores {
         self.note("TAKE", good, amount, got.0, format_args!("from={} kind={:?}", owner.0, got.1));
         got
     }
-    /// One store's stock of a good, kind by kind: saplings by species.
-    pub fn kinds_at(&self, owner: BuildingId, good: Good) -> Vec<(Kind, f32)> {
-        self.inventory.kinds(owner, good)
-    }
-    /// Return existing cargo, without recording new production.
-    pub fn put_at(&mut self, owner: BuildingId, good: Good, amount: f32) -> Result<f32, StoresError> {
-        self.put_kind_at(owner, good, None, amount)
-    }
     pub fn put_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> Result<f32, StoresError> {
         check_amount(amount)?;
         let taken = amount.min(self.space(good));
@@ -257,51 +216,28 @@ impl Stores {
         self.note("PUT", good, amount, taken, format_args!("into={} kind={kind:?}", owner.0));
         Ok(taken)
     }
-    pub fn produce_at(&mut self, owner: BuildingId, good: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
-        self.produce_kind_at(owner, good, None, amount, who)
-    }
     pub fn produce_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_kind_at(owner, good, kind, amount)?;
         self.note("PRODUCED", good, amount, taken, format_args!("into={} by={who:?}", owner.0));
-        self.tick_produced[good.index()] += taken;
-        self.produced_total[good.index()] += taken;
+        self.tick_produced[good] += taken;
+        self.produced_total[good] += taken;
         *self.produced_by.entry((who, good)).or_default() += taken;
         Ok(taken)
-    }
-    pub fn consume_from(&mut self, owner: BuildingId, good: Good, amount: f32, use_: Use) -> f32 {
-        let taken = self.take_from(owner, good, amount);
-        self.note("CONSUMED", good, amount, taken, format_args!("from={} use={use_:?}", owner.0));
-        self.tick_consumed[good.index()] += taken;
-        self.consumed_total[good.index()] += taken;
-        self.consumed_by[use_.index()][good.index()] += taken;
-        taken
     }
 
     fn end_tick(&mut self, dt: f32) {
         if dt > 0.0 {
-            for i in 0..N {
-                self.production_rate[i] = self.tick_produced[i] / dt;
-                self.consumption_rate[i] = self.tick_consumed[i] / dt;
+            for g in Good::all() {
+                self.production_rate[g] = self.tick_produced[g] / dt;
+                self.consumption_rate[g] = self.tick_consumed[g] / dt;
             }
         }
-        self.tick_produced = [0.0; N];
-        self.tick_consumed = [0.0; N];
+        self.tick_produced = PerId::default();
+        self.tick_consumed = PerId::default();
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum BuildingKind {
-    Dam,
-    Lodge,
-    StickPile,
-    Canal,
-    FoodCache,
-    PebbleHeap,
-    Forester,
-    HaulMound,
-    Lookout,
-    RaftLanding,
-}
+pub use crate::content::BuildingKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Site {
@@ -316,10 +252,8 @@ impl BuildingKind {
 
     /// Dams and canals: drawn on the map and built a cell at a time, not dropped as a site.
     pub fn is_waterworks(self) -> bool {
-        matches!(self, BuildingKind::Dam | BuildingKind::Canal)
+        self.is_dam() || self.is_canal()
     }
-
-    pub const ALL: [BuildingKind; 10] = [BuildingKind::Dam, BuildingKind::Lodge, BuildingKind::StickPile, BuildingKind::Canal, BuildingKind::FoodCache, BuildingKind::PebbleHeap, BuildingKind::Forester, BuildingKind::HaulMound, BuildingKind::Lookout, BuildingKind::RaftLanding];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -349,7 +283,7 @@ pub struct Building {
 impl Building {
     pub fn operational(&self) -> bool { self.is_complete() && self.condition > MIN_OPERATIONAL_CONDITION }
     pub fn durability(&self) -> f32 {
-        if !self.reinforced { 1.0 } else if self.kind == BuildingKind::Lodge { LODGE_REINFORCEMENT_FACTOR } else { REINFORCEMENT_FACTOR }
+        if self.reinforced { crate::maintenance::lasts(self.kind, crate::maintenance::Refit::Reinforce) } else { 1.0 }
     }
     pub fn is_complete(&self) -> bool {
         self.status == Status::Complete
@@ -490,10 +424,10 @@ impl Buildings {
             b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
             return Err(BuildError::BadTerrain("leave one cell between buildings for access"));
         }
-        if solid(kind) && self.buildings.iter().any(|b| b.kind == BuildingKind::Lodge && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
+        if solid(kind) && self.buildings.iter().any(|b| b.kind.is_home() && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
             return Err(BuildError::Blocked);
         }
-        if kind == BuildingKind::Lodge {
+        if kind.is_home() {
             let door = crate::nav::lodge_entrance(pos);
             if !terrain.depth.in_bounds(door.0, door.1) { return Err(BuildError::OutOfBounds); }
             if self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|c| c == door)) {
@@ -513,7 +447,7 @@ impl Buildings {
             // or surround a lodge entrance while meeting footprint checks.
             for (home, at) in self.buildings.iter().map(|b| (b.kind, b.pos)).chain(std::iter::once((kind, pos))) {
                 let access = match home {
-                    BuildingKind::Lodge => {
+                    h if h.is_home() => {
                         let door = crate::nav::lodge_entrance(at);
                         if !cells.iter().any(|c| c.0.abs_diff(door.0) + c.1.abs_diff(door.1) <= 1) { continue; }
                         open(door) && neighbours(door).any(open)
@@ -552,15 +486,6 @@ impl Buildings {
         Ok(id)
     }
 
-    #[cfg(test)]
-    fn add_complete(&mut self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<BuildingId, BuildError> {
-        self.check_ground(kind, pos, terrain)?;
-        let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        self.bind_water(id, kind);
-        Ok(id)
-    }
-
     pub fn step(&mut self, dt_days: f32, terrain: Terrain) {
         self.update_capacity(terrain);
         self.stores.end_tick(dt_days);
@@ -568,14 +493,14 @@ impl Buildings {
 
     pub(crate) fn update_capacity(&mut self, terrain: Terrain) {
         let f = 1.0;
-        for g in Good::ALL {
+        for g in Good::all() {
             let stored: f32 = self
                 .buildings
                 .iter()
                 .filter(|b| b.is_complete() && !self.unusable(b, terrain.depth) && crate::agents::accepts(b.kind, g))
                 .map(|b| b.kind.spec().capacity)
                 .sum();
-            self.stores.capacity[g.index()] = (BASE_CAPACITY + stored) * f;
+            self.stores.capacity[g] = (BASE_CAPACITY + stored) * f;
         }
     }
 

@@ -10,8 +10,7 @@ use super::structures::{dam_cell, pebble_cairn, stick_crib, DamStage};
 use crate::palette;
 use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
+use super::meshgen::v;
 
 /// How far a building's later parts have got, once `from` of the work is done.
 fn after(f: f32, from: f32) -> f32 {

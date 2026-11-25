@@ -4,53 +4,58 @@ use bevy::prelude::Color;
 use sim::buildings::{BuildingKind, Good};
 use sim::calendar::Season;
 use sim::resources::ResourceKind;
-use sim::work::Role;
-use sim::jobs::{self, RoleKind};
+use sim::jobs::Job;
 
-pub fn good_name(g: Good) -> &'static str {
-    match g {
-        Good::Sticks => "Sticks",
-        Good::Mud => "Mud",
-        Good::Food => "Food",
-        Good::Pebbles => "Pebbles",
-        Good::Saplings => "Saplings",
-    }
+/// A good's icon and colour, as its row gives them.
+pub fn good_icon(g: Good) -> Icon {
+    Icon::named(&g.row().icon).unwrap_or_else(|| panic!("good {}: no icon {}", g.key(), g.row().icon))
 }
 
-pub fn good_icon(g: Good) -> Icon {
-    match g {
-        Good::Sticks => Icon::Sticks,
-        Good::Mud => Icon::Mud,
-        Good::Food => Icon::Food,
-        Good::Pebbles => Icon::Pebbles,
-        Good::Saplings => Icon::Sapling,
+/// A cost as tooltip lines, one per good.
+pub fn cost_lines(mut t: crate::hud::ui::Tip, cost: &[(Good, f32)]) -> crate::hud::ui::Tip {
+    for &(g, a) in cost {
+        t = t.line(g.name(), num(a));
     }
+    t
+}
+
+/// A cost as a button's chip: its first good's icon and the whole amount.
+pub fn cost_chip(cost: &[(Good, f32)]) -> Option<(Icon, Color, String)> {
+    let g = cost.first()?.0;
+    Some((good_icon(g), good_color(g), format!("{}", cost.iter().map(|c| c.1).sum::<f32>().round() as i64)))
+}
+
+/// Two costs added together, good by good.
+pub fn cost_sum(a: &[(Good, f32)], b: &[(Good, f32)]) -> Vec<(Good, f32)> {
+    let mut out = a.to_vec();
+    for &(g, x) in b {
+        match out.iter_mut().find(|c| c.0 == g) {
+            Some(c) => c.1 += x,
+            None => out.push((g, x)),
+        }
+    }
+    out
+}
+
+/// "<prefix> <word in lower case>", made once for each pair.
+pub fn phrase(prefix: &'static str, word: &'static str) -> &'static str {
+    use std::{collections::HashMap, sync::Mutex};
+    static MADE: Mutex<Option<HashMap<(&'static str, &'static str), &'static str>>> = Mutex::new(None);
+    let mut made = MADE.lock().expect("phrases");
+    made.get_or_insert_with(HashMap::new).entry((prefix, word)).or_insert_with(|| Box::leak(format!("{prefix} {}", word.to_lowercase()).into_boxed_str()))
+}
+
+pub fn good_phrase(prefix: &'static str, g: Good) -> &'static str {
+    phrase(prefix, g.name())
 }
 
 pub fn good_color(g: Good) -> Color {
-    match g {
-        Good::Sticks => Color::srgb(0.88, 0.76, 0.52),
-        Good::Mud => Color::srgb(0.66, 0.6, 0.42),
-        Good::Food => Color::srgb(0.9, 0.42, 0.5),
-        Good::Pebbles => Color::srgb(0.7, 0.71, 0.74),
-        Good::Saplings => Color::srgb(0.52, 0.8, 0.42),
-    }
+    let [r, gr, b] = g.row().colour;
+    Color::srgb(r, gr, b)
 }
 
 pub fn building_icon(k: BuildingKind) -> Icon {
-    use BuildingKind::*;
-    match k {
-        Dam => Icon::Dam,
-        Lodge => Icon::Lodge,
-        StickPile => Icon::StickPile,
-        Canal => Icon::Canal,
-        FoodCache => Icon::FoodCache,
-        PebbleHeap => Icon::PebbleHeap,
-        Forester => Icon::Forester,
-        HaulMound => Icon::HaulMound,
-        Lookout => Icon::Lookout,
-        RaftLanding => Icon::RaftLanding,
-    }
+    Icon::named(&k.row().icon).unwrap_or_else(|| panic!("building {}: no icon {}", k.key(), k.row().icon))
 }
 
 /// The button that cancels a building site, or takes a whole dam or canal away (which stay
@@ -94,9 +99,9 @@ pub fn animal_doing(a: &sim::wildlife::Animal) -> (Icon, &'static str) {
     match a.doing {
         Doing::Wander => (Icon::Walk, "Wandering"),
         Doing::Feed { food, .. } | Doing::Digest { food, .. } => match food {
-            Food::Plant(_) => (Icon::Plant, "Eating a plant"),
-            Food::Sapling(_) => (Icon::Sapling, "Eating a sapling"),
-            Food::Pile(_) => (Icon::Food, "Eating dropped food"),
+            Food::Plant(_) => (crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)), "Eating a plant"),
+            Food::Sapling(_) => (crate::hud::words::good_icon(sim::buildings::Good::seedling()), "Eating a sapling"),
+            Food::Pile(_) => (crate::hud::words::good_icon(sim::buildings::Good::food()), "Eating dropped food"),
         },
         Doing::Rest { .. } => (Icon::Idle, "Resting"),
         Doing::Flee => (Icon::Fast2, "Fleeing"),
@@ -106,26 +111,11 @@ pub fn animal_doing(a: &sim::wildlife::Animal) -> (Icon, &'static str) {
 }
 
 pub fn resource_icon(k: ResourceKind) -> Icon {
-    match k {
-        ResourceKind::Tree | ResourceKind::Felled => Icon::Tree,
-        ResourceKind::Plant => Icon::Plant,
-        ResourceKind::WaterPlant => Icon::WaterPlant,
-        ResourceKind::MudBank => Icon::MudBank,
-        ResourceKind::RiverMud => Icon::MudBank,
-        ResourceKind::Pebbles => Icon::Pebbles,
-    }
+    Icon::named(&k.row().icon).unwrap_or_else(|| panic!("resource {}: no icon {}", k.key(), k.row().icon))
 }
 
 pub fn resource_name(k: ResourceKind) -> &'static str {
-    match k {
-        ResourceKind::Tree => "Tree",
-        ResourceKind::Felled => "Felled tree",
-        ResourceKind::Plant => "Food plants",
-        ResourceKind::WaterPlant => "Water plants",
-        ResourceKind::MudBank => "Mud bank",
-        ResourceKind::RiverMud => "River mud",
-        ResourceKind::Pebbles => "Pebbles",
-    }
+    k.name()
 }
 
 pub fn season_icon(s: Season) -> Icon {
@@ -216,70 +206,9 @@ pub fn sim_error(m: &str) -> String {
     table.iter().find(|(k, _)| l.contains(k)).map(|(_, v)| (*v).to_string()).unwrap_or_else(|| "Refused".into())
 }
 
-fn role_presentation(role: RoleKind) -> (Icon, &'static str) {
-    match role {
-        RoleKind::Forager => (Icon::RoleForager, "Forager"),
-        RoleKind::Feller => (Icon::RoleFeller, "Feller"),
-        RoleKind::MudDigger => (Icon::RoleMudDigger, "Mud digger"),
-        RoleKind::Builder => (Icon::RoleBuilder, "Builder"),
-        RoleKind::Hauler => (Icon::RoleHauler, "Hauler"),
-        RoleKind::Planter => (Icon::RolePlanter, "Planter"),
-        RoleKind::Mender => (Icon::RoleMender, "Mender"),
-        RoleKind::Sentry => (Icon::RoleSentry, "Sentry"),
-        RoleKind::Pebbler => (Icon::Pebbles, "Pebbler"),
-    }
-}
-
-pub fn role_kind_icon(role: RoleKind) -> Icon { role_presentation(role).0 }
-pub fn role_kind_name(role: RoleKind) -> &'static str { role_presentation(role).1 }
-pub fn role_icon(role: Role) -> Icon {
-    match role {
-        Role::Collect(ResourceKind::Pebbles) => Icon::Pebbles,
-        r => role_kind_icon(jobs::role_kind(r)),
-    }
-}
-pub fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::Collect(ResourceKind::Pebbles) => "Pebbler",
-        r => role_kind_name(jobs::role_kind(r)),
-    }
-}
-
-/// A skill: the icon and the name of the work it is for.
-pub fn job_icon(j: sim::colony::Job) -> Icon {
-    use sim::colony::Job::*;
-    match j {
-        Forager => Icon::RoleForager,
-        Feller => Icon::RoleFeller,
-        Builder => Icon::RoleBuilder,
-        Digger => Icon::RoleMudDigger,
-        Hauler => Icon::RoleHauler,
-        Planter => Icon::RolePlanter,
-        Mender => Icon::RoleMender,
-        Sentry => Icon::RoleSentry,
-        Pebbler => Icon::Pebbles,
-    }
-}
-
-pub fn job_name(j: sim::colony::Job) -> &'static str {
-    use sim::colony::Job::*;
-    match j {
-        Forager => "Foraging",
-        Feller => "Felling",
-        Builder => "Building",
-        Digger => "Mud digging",
-        Hauler => "Hauling",
-        Planter => "Planting",
-        Mender => "Mending",
-        Sentry => "Keeping watch",
-        Pebbler => "Pebbling",
-    }
-}
-
-/// Whether a skill makes the work go faster (hauling is walking, and a watch is kept, not
-/// worked).
-pub fn job_speeds(j: sim::colony::Job) -> bool {
-    !matches!(j, sim::colony::Job::Hauler | sim::colony::Job::Sentry)
+/// A job's icon, as its row names it.
+pub fn job_icon(j: Job) -> Icon {
+    Icon::named(&j.row().icon).unwrap_or_else(|| panic!("job {}: no icon {}", j.key(), j.row().icon))
 }
 
 /// A beaver's name with its epithet, if it has earned one.

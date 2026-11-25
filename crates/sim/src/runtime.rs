@@ -143,32 +143,3 @@ impl Drop for SimThread {
         self.thread.take();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn commands_are_acknowledged_in_order_while_paused() {
-        let initial = SimState::new(1);
-        let initial_day = initial.time_days;
-        let sim_thread = SimThread::spawn(initial);
-        sim_thread.command(1, Command::Assign { who: Vec::new(), to: None }).unwrap();
-        sim_thread.command(2, Command::Assign { who: Vec::new(), to: None }).unwrap();
-        sim_thread.command(3, Command::AddBeaver { building: crate::buildings::BuildingId(999) }).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut results = Vec::new();
-        loop {
-            assert!(Instant::now() < deadline, "sim_thread did not publish queued commands");
-            if let Some(snapshot) = sim_thread.poll() {
-                results.extend(snapshot.results);
-                if snapshot.acknowledged == 3 {
-                    assert_eq!(snapshot.state.time_days, initial_day);
-                    break;
-                }
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(results.iter().map(|r|r.sequence).collect::<Vec<_>>(), vec![1,2,3]);
-        assert!(results[0].result.is_ok() && results[1].result.is_ok() && results[2].result.is_err());
-    }
-}

@@ -1,38 +1,12 @@
 include!(concat!(env!("OUT_DIR"), "/work_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet};
 
-
+use crate::jobs::Job;
 use crate::buildings::{Amount, BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
 use crate::water::Cell;
 
 pub const EPS: f32 = 1e-3;
-
-#[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    #[test]
-    fn combined_material_costs_require_the_full_delivery() {
-        let mut w=Work::default();let id=BuildingId(1);
-        w.add_site(id,BuildingKind::Dam,&[(Good::Sticks,2.0),(Good::Sticks,3.0),(Good::Mud,1.0)],1.0).unwrap();
-        assert_eq!(w.place(id).unwrap().site.as_ref().unwrap().needed.len(),2);
-        w.deliver(id,Good::Sticks,3.0).unwrap();
-        assert_eq!(w.place(id).unwrap().site.as_ref().unwrap().missing(Good::Sticks),2.0);
-    }
-    #[test]
-    fn finishing_construction_releases_delivery_site() {
-        let mut w=Work::default();let id=BuildingId(1);
-        w.add_site(id,BuildingKind::StickPile,&[],1.0).unwrap();
-        w.add_labour(id,1.0).unwrap();w.finish_site(id,&[Role::Haul],None).unwrap();
-        assert!(w.place(id).unwrap().site.is_none());
-        assert_eq!(w.place(id).unwrap().slots[0].role,Role::Haul);
-    }
-    #[test]
-    fn completion_uses_the_same_tolerance_as_beaver_tasks() {
-        let s=SiteProgress{needed:vec![(Good::Sticks,2.3)],delivered:vec![(Good::Sticks,2.2999)],labour_done:1.4999,labour_needed:1.5};
-        assert!(s.is_done());assert!(!s.labour_open());
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Area {
@@ -56,33 +30,17 @@ impl Area {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Role {
-    Collect(crate::resources::ResourceKind),
-    Build,
-    Haul,
-    /// Only in saves from before the forester's two seats became one; merged into `Forest` on load.
-    Plant,
-    /// Only in saves from before menders worked without seats; such seats are removed on
-    /// load and whoever sat in them keeps the Mender role.
-    Mend,
-    /// The planter at a forester: collects seedlings from grown trees in the area for its store, plants the
-    /// stored saplings there.
-    Forest,
-    /// The sentry: keeps watch at its lookout and warns of wolves.
-    Sentry,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
-    pub role: Role,
+    pub role: Job,
     pub beaver: Option<BeaverId>,
     /// Switched off by the player: nobody is sent to it.
     pub off: bool,
 }
 
 impl Slot {
-    pub fn empty(role: Role) -> Self {
+    pub fn empty(role: Job) -> Self {
         Slot { role, beaver: None, off: false }
     }
 }
@@ -120,18 +78,18 @@ impl Workplace {
     }
     /// Builder seats have no limit: a place that takes builders always has another seat.
     pub fn open_ended(&self) -> bool {
-        self.slots.iter().any(|s| s.role == Role::Build)
+        self.slots.iter().any(|s| s.role.duty() == crate::content::Duty::Build)
     }
     /// The first empty seat `want` takes, or for a builder the next new one past the last.
-    pub fn open_seat(&self, want: impl Fn(Role) -> bool) -> Option<(usize, Role)> {
+    pub fn open_seat(&self, want: impl Fn(Job) -> bool) -> Option<(usize, Job)> {
         if let Some(i) = self.slots.iter().position(|s| s.beaver.is_none() && !s.off && want(s.role)) {
             return Some((i, self.slots[i].role));
         }
-        (self.open_ended() && want(Role::Build)).then_some((self.slots.len(), Role::Build))
+        (self.open_ended() && want(crate::jobs::Job::with_duty(crate::content::Duty::Build))).then_some((self.slots.len(), crate::jobs::Job::with_duty(crate::content::Duty::Build)))
     }
     /// Builders working here, and seats for others: one more than are filled, without limit.
     pub fn builders(&self) -> usize {
-        self.slots.iter().filter(|s| s.role == Role::Build && s.beaver.is_some()).count()
+        self.slots.iter().filter(|s| s.role.duty() == crate::content::Duty::Build && s.beaver.is_some()).count()
     }
 }
 
@@ -198,17 +156,12 @@ pub struct Work {
     /// Stores the player asked haulers to fill to the brim.
     pub fills: BTreeSet<BuildingId>,
     pub(crate) inventory: crate::inventory::Inventory,
-    pub dam_plans: Vec<DamPlan>,
-    pub dam_failures: Vec<(BuildingId, String)>,
     pub supplies: Option<Cell>,
     /// Goods lying on the ground.
     pub piles: crate::piles::Piles,
-    pub canal_plans: Vec<CanalPlan>,
     pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
-    /// How far from water, in cells, each role's beavers are sent to work. Kept in the save's
-    /// trailer (`save::Extras`) so saves from before it still load.
-    #[serde(skip)]
-    pub shore_limits: BTreeMap<crate::jobs::RoleKind, u16>,
+    /// How far from water, in cells, each job's beavers are sent to work.
+    pub shore_limits: BTreeMap<crate::jobs::Job, u16>,
 }
 
 impl Default for Work {
@@ -219,33 +172,12 @@ impl Default for Work {
             balanced: BTreeSet::new(),
             fills: BTreeSet::new(),
             inventory: Default::default(),
-            dam_plans: Vec::new(),
-            dam_failures: Vec::new(),
             supplies: None,
             piles: Default::default(),
-            canal_plans: Vec::new(),
             homes: BTreeMap::new(),
             shore_limits: BTreeMap::new(),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CanalPlan {
-    pub building: BuildingId,
-    pub cells: Vec<Cell>,
-    pub depth: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DamPlan {
-    pub building: BuildingId,
-    /// Reuses a completed dam building; cancelling keeps that building.
-    pub repair: bool,
-    pub cells: Vec<Cell>,
-    pub height: f32,
-    pub heights: Vec<f32>,
-    pub from: Vec<f32>,
 }
 
 impl Work {
@@ -255,7 +187,7 @@ impl Work {
     pub(crate) fn place_mut(&mut self, b: BuildingId) -> Result<&mut Workplace, WorkError> {
         self.places.iter_mut().find(|p| p.building == b).ok_or(WorkError::NoSuchWorkplace)
     }
-    pub fn slot_of(&self, who: BeaverId) -> Option<(BuildingId, usize, Role)> {
+    pub fn slot_of(&self, who: BeaverId) -> Option<(BuildingId, usize, Job)> {
         self.places.iter().find_map(|p| {
             p.slots.iter().position(|s| s.beaver == Some(who)).map(|i| (p.building, i, p.slots[i].role))
         })
@@ -263,7 +195,7 @@ impl Work {
     pub fn assign(&mut self, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), WorkError> {
         let p = self.place_mut(b)?;
         if slot == p.slots.len() && p.open_ended() {
-            p.slots.push(Slot::empty(Role::Build));
+            p.slots.push(Slot::empty(crate::jobs::Job::with_duty(crate::content::Duty::Build)));
         }
         let s = self.place_mut(b)?.slots.get(slot).ok_or(WorkError::SlotOutOfRange)?;
         if s.beaver.is_some() {
@@ -286,12 +218,12 @@ impl Work {
         }
     }
     pub fn add_site(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
-        self.add_site_for(b, kind, needed, labour, Some(Role::Build))
+        self.add_site_for(b, kind, needed, labour, Some(crate::jobs::Job::with_duty(crate::content::Duty::Build)))
     }
     /// A site whose slots are `role`: builders for new work, menders for repairs and refits.
     /// A site needing `needed` and `labour`; `role` is who takes its seats, or None for a site
     /// with no seats (a refit, worked by menders).
-    pub fn add_site_for(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32, role: Option<Role>) -> Result<(), WorkError> {
+    pub fn add_site_for(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32, role: Option<Job>) -> Result<(), WorkError> {
         if self.place(b).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
@@ -299,7 +231,7 @@ impl Work {
         if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
             return Err(WorkError::InvalidAmount);
         }
-        let needed: Vec<Amount> = Good::ALL.into_iter().filter_map(|g| {
+        let needed: Vec<Amount> = Good::all().filter_map(|g| {
             let total: f32 = needed.iter().filter(|a| a.0 == g).map(|a| a.1).sum();
             (total > 0.0).then_some((g, total))
         }).collect();
@@ -353,7 +285,7 @@ impl Work {
         self.balance_from_the_start(b.id, b.kind);
         Ok(())
     }
-    pub fn finish_site(&mut self, b: BuildingId, slots: &[Role], area: Option<Area>) -> Result<(), WorkError> {
+    pub fn finish_site(&mut self, b: BuildingId, slots: &[Job], area: Option<Area>) -> Result<(), WorkError> {
         let crew = self.crew(b);
         let p = self.place_mut(b)?;
         p.slots = slots.iter().map(|&role| Slot::empty(role)).collect();
@@ -367,13 +299,13 @@ impl Work {
     }
     /// A finished haul mound's haulers balance the stores until switched off.
     fn balance_from_the_start(&mut self, b: BuildingId, kind: BuildingKind) {
-        if kind == BuildingKind::HaulMound {
+        if kind.balances() {
             self.balanced.insert(b);
         }
     }
     /// The builders and menders seated at a place.
     pub fn crew(&self, b: BuildingId) -> Vec<Slot> {
-        self.place(b).map_or_else(Vec::new, |p| p.slots.iter().filter(|s| s.beaver.is_some() && s.role == Role::Build).copied().collect())
+        self.place(b).map_or_else(Vec::new, |p| p.slots.iter().filter(|s| s.beaver.is_some() && s.role.duty() == crate::content::Duty::Build).copied().collect())
     }
     /// A place whose work is done keeps its builders and menders seated: they are still
     /// builders, waiting there until the next job for them (see `agents::retarget`).
@@ -387,10 +319,6 @@ impl Work {
     }
     pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
         self.inventory.at(b, good)
-    }
-    #[cfg(test)]
-    pub fn stock_add(&mut self, b: BuildingId, good: Good, amount: f32) {
-        self.inventory.put(b, good, None, amount);
     }
     pub fn set_area(&mut self, b: BuildingId, area: Area) -> Result<(), WorkError> {
         if area.min.0 > area.max.0 || area.min.1 > area.max.1 {

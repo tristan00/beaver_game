@@ -124,4 +124,3 @@ fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<MainCa
         }
     }
 }
-

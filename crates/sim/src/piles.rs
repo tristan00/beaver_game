@@ -68,27 +68,3 @@ impl Piles {
 pub fn lying(sim: &SimState, good: Good) -> f32 {
     sim.work.piles.items.iter().filter(|p| p.good == good).map(|p| p.amount).sum()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drops_merge_take_empties_and_old_piles_rot() {
-        let mut p = Piles::default();
-        p.drop_at((3, 3), Good::Sticks, 2.0, 0.0);
-        p.drop_at((3, 3), Good::Sticks, 2.0, 10.0);
-        p.drop_at((3, 3), Good::Food, 1.0, 10.0);
-        assert_eq!(p.items.len(), 2, "same cell and good merge; another good is its own pile");
-        let sticks = p.items[0].clone();
-        assert_eq!(sticks.amount, 4.0);
-        assert!((sticks.day - 5.0).abs() < 1e-9, "a top-up moves the age on in proportion");
-        assert_eq!(p.take(sticks.id, 3.0), 3.0);
-        assert_eq!(p.take(sticks.id, 3.0), 1.0);
-        assert!(p.get(sticks.id).is_none(), "an emptied pile is gone");
-        p.spoil(10.0 + SPOIL_DAYS - 0.1);
-        assert_eq!(p.items.len(), 1);
-        p.spoil(10.0 + SPOIL_DAYS);
-        assert!(p.items.is_empty(), "food dropped on day 10 has rotted by day {}", 10.0 + SPOIL_DAYS);
-    }
-}

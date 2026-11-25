@@ -8,6 +8,7 @@ rand_core = "0.10"
 rand_pcg = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 postcard = { version = "1", features = ["use-std"] }
+toml = "1"
 
 [build-dependencies]
-rusqlite = { version = "=0.38.0", features = ["bundled"] }
+toml = "1"

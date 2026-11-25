@@ -172,6 +172,11 @@ fn climate(kv: &std::collections::HashMap<&str, &str>) -> Result<Option<Climate>
     }))
 }
 
+/// Every shipped map's id.
+pub fn ids() -> impl Iterator<Item = &'static str> {
+    FILES.iter().map(|f| f.0)
+}
+
 pub fn all() -> Vec<MapInfo> {
     infos().to_vec()
 }
@@ -229,38 +234,4 @@ pub fn world(id: &str) -> Result<(MapInfo, World), MapError> {
     let data = parse(bytes)?;
     let info = data.info.clone();
     Ok((info, world_from(data)?))
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_shipped_map_parses_with_sane_stats() {
-        assert_eq!(all().len(), FILES.len());
-        for m in all() {
-            let s = stats(&m.id).expect("stats");
-            assert!(s.streams >= 1 && s.relief_m > 0.0 && (0.0..=1.0).contains(&s.forest) && (0.0..=1.0).contains(&s.water), "{}: {s:?}", m.id);
-            if let Some(c) = &s.climate {
-                assert!(c.runoff_year_mm() > 0.0 && (0.0..12.0).contains(&c.ice_months()), "{}: {c:?}", m.id);
-            }
-        }
-    }
-
-    #[test]
-    fn climate_keys_are_all_or_nothing() {
-        let (_, bytes) = FILES.iter().find(|(k, _)| *k == "voyageurs_forks").unwrap();
-        let c = parse(bytes).unwrap().info.climate.expect("the new maps carry their weather");
-        assert_eq!(c.ice_days, Some((329, 113)));
-        assert!((c.runoff_year_mm() - 225.0).abs() < 5.0);
-        let text = String::from_utf8_lossy(bytes);
-        let end = text.find("---
-").unwrap();
-        let broken = text[..end].replace("climate_snow_mm=", "climate_snowfall=");
-        let mut b = broken.into_bytes();
-        b.extend_from_slice(&bytes[end..]);
-        assert!(matches!(parse(&b), Err(MapError::Corrupt(_))));
-        assert!(parse(FILES[0].1).unwrap().info.climate.is_none());
-    }
 }

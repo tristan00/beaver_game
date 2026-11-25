@@ -1,33 +1,33 @@
 use super::ui::*;
-use super::words::{role_kind_icon, role_kind_name};
+use super::words::{job_icon};
 use crate::icons::Icon;
 use crate::flow::{cell_world, height_at};
 use bevy::prelude::*;
-use sim::jobs::RoleKind;
+use sim::jobs::Job;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Whether the paths view is on screen (set by `sync_lens`, which may show another view over it).
 pub static SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// The one role whose paths are shown, picked in the legend: `ALL_ROLES` for every path, `FREE`
-/// for free beavers', otherwise the role's place in `RoleKind::ALL`.
+/// for free beavers', otherwise the job's index.
 static ONLY: AtomicU8 = AtomicU8::new(ALL_ROLES);
 const ALL_ROLES: u8 = u8::MAX;
 const FREE_ROLE: u8 = u8::MAX - 1;
 
-fn code(r: Option<RoleKind>) -> u8 {
-    r.map_or(FREE_ROLE, |r| RoleKind::ALL.iter().position(|k| *k == r).unwrap_or(0) as u8)
+fn code(r: Option<Job>) -> u8 {
+    r.map_or(FREE_ROLE, |r| r.index() as u8)
 }
 
 /// Show only this role's paths, or every path again if it is the one shown.
-pub fn toggle_only(r: Option<RoleKind>) {
+pub fn toggle_only(r: Option<Job>) {
     let c = code(r);
     let now = ONLY.load(Ordering::Relaxed);
     ONLY.store(if now == c { ALL_ROLES } else { c }, Ordering::Relaxed);
 }
 
 /// Whether this role's paths are drawn.
-fn shown(r: Option<RoleKind>) -> bool {
+fn shown(r: Option<Job>) -> bool {
     let only = ONLY.load(Ordering::Relaxed);
     only == ALL_ROLES || only == code(r)
 }
@@ -36,19 +36,11 @@ const LIFT: f32 = 0.18;
 const WIDTH: f32 = 3.0;
 const FREE: Color = Color::srgb(0.6, 0.55, 0.7);
 
-pub fn role_color(r: Option<RoleKind>) -> Color {
-    let Some(r) = r else { return FREE };
-    match r {
-        RoleKind::Forager => Color::srgb(0.45, 0.85, 0.25),
-        RoleKind::Feller => Color::srgb(0.95, 0.55, 0.15),
-        RoleKind::MudDigger => Color::srgb(0.75, 0.45, 0.3),
-        RoleKind::Builder => Color::srgb(1.0, 0.88, 0.2),
-        RoleKind::Hauler => Color::srgb(0.25, 0.65, 1.0),
-        RoleKind::Planter => Color::srgb(0.1, 0.6, 0.35),
-        RoleKind::Mender => Color::srgb(0.85, 0.35, 0.85),
-        RoleKind::Sentry => Color::srgb(0.95, 0.25, 0.25),
-        RoleKind::Pebbler => Color::srgb(0.6, 0.75, 0.8),
-    }
+pub fn role_color(r: Option<Job>) -> Color {
+    r.map_or(FREE, |r| {
+        let [red, g, b] = r.row().path_colour;
+        Color::srgb(red, g, b)
+    })
 }
 
 /// The paths' own line width, thicker than the other overlays'.
@@ -60,7 +52,7 @@ pub fn setup(app: &mut App) {
 }
 
 /// Each beaver's path still to walk, with its role.
-fn walking(s: &sim::SimState) -> impl Iterator<Item = (&sim::agents::Agent, Option<RoleKind>)> {
+fn walking(s: &sim::SimState) -> impl Iterator<Item = (&sim::agents::Agent, Option<Job>)> {
     s.agents.by_id.values().filter(|a| a.path.as_ref().is_some_and(|p| !p.steps.is_empty())).map(|a| (a, sim::jobs::role_of(s, a.id)))
 }
 
@@ -100,9 +92,9 @@ pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
     if !SHOWN.load(Ordering::Relaxed) {
         return None;
     }
-    let walking_now: Vec<Option<RoleKind>> = walking(s).map(|(_, r)| r).collect();
+    let walking_now: Vec<Option<Job>> = walking(s).map(|(_, r)| r).collect();
     let picked = ONLY.load(Ordering::Relaxed) != ALL_ROLES;
-    let roles = RoleKind::ALL.iter().map(|r| Some(*r)).chain(std::iter::once(None));
+    let roles = Job::all().map(Some).chain(std::iter::once(None));
     let mut ui = Ui::default();
     ui.node(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(8.0), padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), ..node }, |u| {
         u.icon(Icon::Walk, 14.0, INK).tip(Tip::name("Paths").key("F5"));
@@ -112,11 +104,11 @@ pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
             let swatch = if on { role_color(r) } else { role_color(r).with_alpha(0.25) };
             let ink = if !on { FAINT.with_alpha(0.5) } else if busy { INK } else { MUTED };
             u.col(2.0, |x| {
-                x.icon(r.map_or(Icon::Idle, role_kind_icon), 14.0, ink);
+                x.icon(r.map_or(Icon::Idle, job_icon), 14.0, ink);
                 x.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(if picked && on { 5.0 } else { 3.0 }), ..default() })).bg(swatch);
             })
             .style(|n| n.align_items = AlignItems::Center)
-            .tip(Tip::name(r.map_or("Free", role_kind_name)).line(if picked && on { "Show all" } else { "Show only these" }, ""))
+            .tip(Tip::name(r.map_or("Free", |j| j.name())).line(if picked && on { "Show all" } else { "Show only these" }, ""))
             .action(super::HudAction::PathsOnly(r));
         }
     });

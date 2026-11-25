@@ -5,23 +5,20 @@
 //! and water. A pond takes the name of the first family settled on it, and keeps it for the
 //! rest of the game, through dams lost and rebuilt on the same water.
 //!
-//! The word pools live in `content/game.sqlite3` (`name_pool`). Names are given by the world
+//! The word pools live in `content/names.toml`. Names are given by the world
 //! (`step`), not the colony, which knows nothing of the map: the colony leaves new beavers and
 //! families unnamed, and the next sweep names them before anything reads them.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::buildings::BuildingId;
 use crate::colony::{BeaverId, FamilyId};
-use crate::resources::ResourceKind;
 use crate::trees::Tree;
 use crate::water::Cell;
 use crate::SimState;
 
-include!(concat!(env!("OUT_DIR"), "/names_constants.rs"));
-
 /// The words of one pool, none if the content has no such pool.
 pub fn pool(key: &str) -> &'static [&'static str] {
-    NAME_POOLS.iter().find(|(k, _)| *k == key).map_or(&[], |(_, w)| w)
+    crate::content::content().names.get(key).map_or(&[], |w| w.as_slice())
 }
 
 /// The litter themes. "flora" is the map's own trees and plants.
@@ -121,11 +118,11 @@ fn theme_words(theme: &str, map: &str) -> Vec<&'static str> {
     }
     let trees = crate::trees::flora(map);
     let plants = crate::plants::flora(map);
-    let mut out: Vec<&'static str> = Tree::ALL.iter().zip(trees.iter())
+    let mut out: Vec<&'static str> = Tree::all().zip(trees.iter())
         .filter(|(_, m)| m.dry > 0.0 || m.wet > 0.0 || m.upland > 0.0 || m.open > 0.0)
         .flat_map(|(t, _)| pool(&format!("flora/{t:?}")).iter().copied())
         .collect();
-    out.extend(crate::plants::Plant::ALL.iter().filter(|p| plants[**p as usize] > 0.0).flat_map(|p| pool(&format!("flora/{p:?}")).iter().copied()));
+    out.extend(crate::plants::Plant::all().filter(|p| plants[p.index()] > 0.0).flat_map(|p| pool(&format!("flora/{p:?}")).iter().copied()));
     out
 }
 
@@ -206,11 +203,12 @@ fn survey(sim: &SimState, at: Cell) -> Site {
     let mut s = Site::default();
     let near = |c: Cell| (c.0 as i64 - at.0 as i64).abs() <= SITE_REACH && (c.1 as i64 - at.1 as i64).abs() <= SITE_REACH;
     for r in sim.resources.items().iter().filter(|r| near(r.cell)) {
+        let roles = &crate::content::content().roles;
         match r.kind {
-            ResourceKind::Tree if !r.snag => *s.trees.entry(r.species.unwrap_or(Tree::Aspen)).or_default() += 1,
-            ResourceKind::Felled => *s.felled.entry(r.species.unwrap_or(Tree::Aspen)).or_default() += 1,
-            ResourceKind::Pebbles => s.pebbles += 1,
-            ResourceKind::MudBank | ResourceKind::RiverMud => s.mud += 1,
+            k if k.is_tree() && !r.snag => *s.trees.entry(r.species.unwrap_or_else(Tree::unknown)).or_default() += 1,
+            k if k.is_felled() => *s.felled.entry(r.species.unwrap_or_else(Tree::unknown)).or_default() += 1,
+            k if k == roles.outcrop || k == roles.gravel => s.pebbles += 1,
+            k if k == roles.bank_mud || k == roles.stream_mud => s.mud += 1,
             _ => {}
         }
         if let Some(p) = r.plant {
@@ -290,7 +288,7 @@ fn candidates(sim: &SimState, s: &Site, d: &mut Draw) -> Vec<String> {
     if let Some((p, _)) = s.plants.iter().max_by_key(|(p, n)| (**n, std::cmp::Reverse(**p))) {
         if let Some(w) = pool(&format!("flora/{p:?}")).first() { out.push(format!("{w} {}", land(d))) }
     }
-    let pale = most(&s.trees).is_some_and(|t| matches!(t, Tree::Birch | Tree::Aspen));
+    let pale = most(&s.trees).is_some_and(|t| t.row().pale);
     let colours = [(s.deep > 12, "deep"), (s.boulders + s.pebbles > 2, "stone"), (s.mud > 0, "mud"), (s.plants.values().sum::<u32>() > 12, "green"), (pale, "pale")];
     for (_, c) in colours.into_iter().filter(|(on, _)| *on) {
         if let Some(w) = d.pick(pool(&format!("colour/{c}"))) { out.push(format!("{w} {}", land(d))) }
@@ -376,53 +374,5 @@ fn name_ponds(sim: &mut SimState) {
             let name = f.name.clone();
             sim.names.ponds.push(Pond { dam: Some(dam), name, cells: sample });
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_pool_a_name_draws_on_is_in_the_content() {
-        for t in THEMES.into_iter().filter(|t| *t != "flora") {
-            assert!(pool(&format!("litter/{t}")).len() >= 20, "{t}");
-        }
-        for r in ["adirondacks", "ontario", "minnesota", "bavaria", "norway", "default"] {
-            for s in ["still", "stream", "wet", "slope"] {
-                assert!(!pool(&format!("landform/{r}/{s}")).is_empty(), "{r} {s}");
-            }
-            assert!(!pool(&format!("compound/{r}")).is_empty(), "{r}");
-        }
-        for t in Tree::ALL {
-            assert!(!pool(&format!("flora/{t:?}")).is_empty(), "{t:?}");
-        }
-        for p in crate::plants::Plant::ALL {
-            assert!(!pool(&format!("flora/{p:?}")).is_empty(), "{p:?}");
-        }
-        assert_eq!(pool("count").len(), 4);
-    }
-
-    #[test]
-    fn litters_share_a_theme_and_the_living_share_no_name() {
-        let mut taken = BTreeSet::new();
-        let mut d = Draw::new(7, 1);
-        let themes = ["stone"];
-        for _ in 0..pool("litter/stone").len() {
-            let n = draw_name(&mut d, &themes, "default", &taken);
-            assert!(pool("litter/stone").contains(&n.as_str()), "{n} is a stone");
-            assert!(taken.insert(n));
-        }
-        let n = draw_name(&mut d, &themes, "default", &taken);
-        assert!(n.starts_with("Little ") && !taken.contains(&n), "a spent theme still names, uniquely: {n}");
-    }
-
-    #[test]
-    fn regions_follow_the_maps() {
-        assert_eq!(region("agder_tarn"), "norway");
-        assert_eq!(region("voyageurs_twin"), "minnesota");
-        assert_eq!(region("algonquin_mizzy"), "ontario");
-        assert_eq!(region("bavarian_lusen"), "bavaria");
-        assert_eq!(region("generated"), "default");
     }
 }

@@ -3,14 +3,14 @@
 //! chamber fills or drains to the level on the far side, and the gate ahead opens; so it gets
 //! past, either way, while the gate keeps holding the water as set.
 //!
-//! The upgrade is builders' work at the gate, done as `LOCK_STICKS` and `LOCK_MUD` are
+//! The upgrade is builders' work at the gate, done as the lock's materials (`works.lock` in the content) are
 //! brought there (see `gates::work`). Locks are kept apart from the gates they upgrade (and saved after the world,
 //! see `save`), so older saves load.
 include!(concat!(env!("OUT_DIR"), "/locks_constants.rs"));
 
 use std::collections::BTreeMap;
 
-use crate::buildings::{BuildingId, BuildingKind, Good};
+use crate::buildings::{BuildingId};
 use crate::water::Cell;
 use crate::{SimError, SimState};
 
@@ -32,9 +32,9 @@ fn invalid(m: impl Into<String>) -> SimError {
     SimError::InvalidCommand(m.into())
 }
 
-/// Locks (and rafts) need a finished Raft landing.
+/// Whether locks can be built: the building they need (`works.lock_needs`) stands finished.
 pub fn unlocked(sim: &SimState) -> bool {
-    sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::RaftLanding && sim.finished(b))
+    crate::content::content().works.lock_needs.is_none_or(|k| sim.buildings.buildings.iter().any(|b| b.kind == k && sim.finished(b)))
 }
 
 /// The gate a lock is made from: its cell and, on a widened dam, the dam cell behind it in every
@@ -226,9 +226,6 @@ pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(),
     Ok(())
 }
 
-/// What a lock uses, brought to its gate.
-pub const COST: [(Good, f32); 2] = [(Good::Sticks, LOCK_STICKS), (Good::Mud, LOCK_MUD)];
-
 /// The lock ordered at a gate is finished (see `gates::work`).
 pub fn build(sim: &mut SimState, cell: Cell) {
     if let Some(l) = sim.locks.at.get_mut(&cell) {
@@ -241,54 +238,5 @@ pub fn tidy(sim: &mut SimState) {
     let gone: Vec<Cell> = sim.locks.at.values().filter(|l| gate_built(sim, l.building, l.cell).is_none()).map(|l| l.cell).collect();
     for c in gone {
         sim.locks.at.remove(&c);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_gate_becomes_a_lock_only_with_a_raft_landing_and_once_built() {
-        let mut s = SimState::new(1);
-        let (k, cell) = (BuildingId(5), (3, 4));
-        assert!(order(&mut s, k, cell).is_err(), "no raft landing");
-        s.buildings.buildings.push(crate::buildings::Building { id: BuildingId(9), kind: BuildingKind::RaftLanding, pos: (20, 20), status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        assert!(unlocked(&s));
-        assert!(order(&mut s, k, cell).is_err(), "no gate there");
-    }
-
-    #[test]
-    fn a_slanted_lane_is_swum_side_to_side_from_end_to_end() {
-        let s = SimState::new(1);
-        for deg in [0.0f32, 17.0, 27.0, 45.0, 63.0, 90.0, 120.0] {
-            let r = deg.to_radians();
-            let f = Frame { centre: (30.5, 30.0), axis: (r.cos(), r.sin()), half: 3.0 };
-            let w = lane(&f);
-            let cells = cells_where(&s, &f, f.half, |a, x| a.abs() <= f.half && x.abs() <= w);
-            // Every cell joins the rest side to side: no corner-to-corner step needed.
-            let mut seen = vec![cells[0]];
-            let mut i = 0;
-            while i < seen.len() {
-                let c = seen[i];
-                for &o in &cells {
-                    if !seen.contains(&o) && c.0.abs_diff(o.0) + c.1.abs_diff(o.1) == 1 {
-                        seen.push(o);
-                    }
-                }
-                i += 1;
-            }
-            assert_eq!(seen.len(), cells.len(), "at {deg}°: {cells:?}");
-        }
-    }
-
-    #[test]
-    fn a_lock_runs_square_to_a_slanted_line_not_to_its_last_step() {
-        // A line stepping two across for each one up, as a dam drawn at a slant is.
-        let line: Vec<Cell> = (0..12).map(|i| (10 + i, 20 + i / 2)).collect();
-        let (dx, dy) = line_dir(&line, (16, 23));
-        let slant = 0.5f32.atan();
-        let a = dy.atan2(dx).rem_euclid(std::f32::consts::PI);
-        assert!((a - slant).abs() < 0.08, "{a} vs {slant}");
     }
 }

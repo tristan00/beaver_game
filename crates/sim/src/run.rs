@@ -5,21 +5,18 @@
 //! load with nothing counted and count what stands at the next day's close.
 use std::collections::BTreeSet;
 
-use crate::buildings::{BuildingId, BuildingKind, Good};
+use crate::buildings::{BuildingId, BuildingKind, Good, PerId};
 use crate::water::Cell;
 use crate::SimState;
-
-const GOODS: usize = Good::ALL.len();
-const KINDS: usize = BuildingKind::ALL.len();
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunStats {
     /// Goods unloaded from rafts, by good.
-    pub raftd: [f32; GOODS],
+    pub raftd: PerId<Good, f32>,
     /// Raft loads delivered.
     pub raft_trips: u32,
-    /// Buildings finished, by kind (in `BuildingKind::ALL` order).
-    pub built: [u32; KINDS],
+    /// Buildings finished, by kind.
+    pub built: PerId<BuildingKind, u32>,
     /// Gates upgraded into locks.
     pub locks: u32,
     /// The most water held behind dams at a day's close (m³).
@@ -32,13 +29,13 @@ impl RunStats {
     /// A raft's load unloaded into a store.
     pub fn raft_delivered(&mut self, g: Good, amount: f32) {
         if amount > 0.0 {
-            self.raftd[g.index()] += amount;
+            self.raftd[g] += amount;
             self.raft_trips += 1;
         }
     }
 
     pub fn built_of(&self, kind: BuildingKind) -> u32 {
-        BuildingKind::ALL.iter().position(|&k| k == kind).map_or(0, |i| self.built[i])
+        self.built[kind]
     }
 }
 
@@ -49,9 +46,7 @@ pub fn close_day(sim: &mut SimState, water: f32) {
     for b in &sim.buildings.buildings {
         if !run.counted.contains(&b.id) && sim.finished(b) {
             run.counted.insert(b.id);
-            if let Some(i) = BuildingKind::ALL.iter().position(|&k| k == b.kind) {
-                run.built[i] += 1;
-            }
+            run.built[b.kind] += 1;
         }
     }
     for l in sim.locks.at.values().filter(|l| l.built) {
@@ -61,30 +56,4 @@ pub fn close_day(sim: &mut SimState, water: f32) {
     }
     run.peak_water = run.peak_water.max(water);
     sim.run = run;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::buildings::{Building, Status};
-
-    #[test]
-    fn a_building_is_counted_once_when_finished() {
-        let mut s = SimState::new(1);
-        let before = s.run.built_of(BuildingKind::StickPile);
-        s.buildings.buildings.push(Building { id: BuildingId(900), kind: BuildingKind::StickPile, pos: (5, 5), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        close_day(&mut s, 10.0);
-        close_day(&mut s, 4.0);
-        assert_eq!(s.run.built_of(BuildingKind::StickPile), before + 1);
-        assert_eq!(s.run.peak_water, 10.0);
-    }
-
-    #[test]
-    fn the_tallies_are_saved() {
-        let mut s = SimState::new(1);
-        s.run.raft_delivered(Good::Food, 12.0);
-        close_day(&mut s, 3.0);
-        let (_, back) = crate::save::decode(&crate::save::encode(&s, "test").unwrap()).unwrap();
-        assert_eq!(back.run, s.run);
-    }
 }

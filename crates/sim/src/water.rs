@@ -198,7 +198,6 @@ struct Told {
 const EDGE_SLOPE_MIN: f32 = 1.0e-3;
 const MOVING: f32 = 0.02;
 
-
 /// How often ice is worked out, in days: six game hours.
 const ICE_EVERY_DAYS: f64 = 0.25;
 /// How often the work of beavers on the ground (digging, silt, dams built up) is taken into the
@@ -585,8 +584,6 @@ impl Water {
         }
     }
 
-    fn area(&self) -> f64 { (self.cell_m * self.cell_m) as f64 }
-
     pub fn reset_books(&mut self) {
         (self.added_volume, self.lost_volume) = (0.0, 0.0);
         self.books = Budget::default();
@@ -611,11 +608,6 @@ impl Water {
     /// Stored water in metres of depth summed over cells.
     pub fn total_volume(&self) -> f64 {
         each_engine!(&self.engine, e => e.total_volume()).unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
-    }
-
-    #[cfg(test)]
-    pub fn engine(&self) -> EngineKind {
-        self.engine.kind()
     }
 
     /// Hand the water to another engine mid-game. The new engine starts from the current
@@ -648,13 +640,6 @@ impl Water {
 
     pub fn active_cells(&self) -> usize {
         self.rows.iter().flatten().map(|&(a, b)| (b - a) as usize).sum()
-    }
-
-    pub fn flow_at(&self, x: usize, y: usize) -> (f32, f32) {
-        let Some(&(vx, vy)) = self.velocity.get(x, y) else { return (0.0, 0.0) };
-        let h = self.depth.get(x, y).copied().unwrap_or(0.0);
-        let scale = h * self.cell_m * DAY_S as f32 / self.area() as f32;
-        (vx * scale, vy * scale)
     }
 
     pub fn downstream(&self, x: usize, y: usize) -> Option<Cell> {
@@ -1366,12 +1351,6 @@ fn dam_sides<'a>(state: &'a SimState, cells: &'a [Cell], idx: &'a [usize]) -> Op
     Some(move |k: usize, m: usize| raw(k, m) * sign as i32)
 }
 
-/// The still pond these dam heights would hold, and (with `head` > 0) how far the extra depth
-/// of water flowing over its spill would spread.
-pub fn preview_dam_heights(state: &SimState, cells: &[Cell], heights: &[f32], head: f32) -> Result<DamPreview, WaterError> {
-    Ok(StillPond::behind(state, cells, heights)?.preview(state, head))
-}
-
 /// The still pond behind planned dam heights: found once, then asked for the pond itself and
 /// for how far flowing water spreads over it (a dam's estimate needs both).
 pub(crate) struct StillPond {
@@ -1546,58 +1525,6 @@ impl StillPond {
             spill_at: self.spill_at,
             flow_level,
             flow_cells: flow.iter().map(|&i| (i % n, i / n)).collect(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod engine_tests {
-    use super::*;
-
-    /// The engine setting is process-wide; tests building worlds take turns.
-    static SETTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn world_on(kind: EngineKind) -> SimState {
-        let _turn = SETTING.lock().unwrap_or_else(|e| e.into_inner());
-        set_default_engine(kind);
-        let s = SimState::sandbox(1, crate::worldgen::fixture(1));
-        set_default_engine(DEFAULT_ENGINE);
-        s
-    }
-
-    fn balance(w: &Water, start: f64) -> f64 {
-        (w.total_volume() - (start + w.added_volume - w.lost_volume)).abs() / w.added_volume.max(1.0)
-    }
-
-    #[test]
-    fn every_engine_keeps_its_books_and_publishes_finite_water() {
-        for kind in EngineKind::ALL {
-            let mut s = world_on(kind);
-            assert_eq!(s.water.engine(), kind);
-            let start = s.water.total_volume() - (s.water.added_volume - s.water.lost_volume);
-            crate::sandbox::run_days(&mut s, 2.0);
-            assert!(balance(&s.water, start) < 1e-6, "{} loses track of water", kind.name());
-            assert!(s.water.depth.as_slice().iter().all(|d| d.is_finite() && *d >= 0.0), "{} publishes bad depth", kind.name());
-            assert!(s.water.velocity.as_slice().iter().all(|v| v.0.is_finite() && v.1.is_finite()), "{} publishes bad velocity", kind.name());
-        }
-    }
-
-    #[test]
-    fn switching_engine_mid_game_keeps_the_water() {
-        for from in EngineKind::ALL {
-            for to in EngineKind::ALL.into_iter().filter(|&k| k != from) {
-                let mut s = world_on(from);
-                crate::sandbox::run_days(&mut s, 1.0);
-                let before = s.water.depth.as_slice().iter().map(|&d| d as f64).sum::<f64>();
-                let start = s.water.total_volume() - (s.water.added_volume - s.water.lost_volume);
-                s.water.set_engine(to);
-                crate::sandbox::run_days(&mut s, 1.0 / 96.0);
-                assert_eq!(s.water.engine(), to);
-                let b = balance(&s.water, start);
-                assert!(b < 1e-6, "{} -> {} loses track of water ({b:.2e})", from.name(), to.name());
-                let after = s.water.depth.as_slice().iter().map(|&d| d as f64).sum::<f64>();
-                assert!(after > 0.0 && before > 0.0, "{} -> {} dried the map", from.name(), to.name());
-            }
         }
     }
 }

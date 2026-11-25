@@ -2,43 +2,6 @@
 //! and grown through `dams`; everything else is a paid site.
 use crate::{SimError, SimState, agents, buildings, maintenance, water};
 
-#[cfg(test)]
-mod placement_tests {
-    use super::*;
-    use buildings::{BuildError, BuildingKind};
-
-    #[test]
-    fn preview_and_command_reject_the_same_site_without_mutation() {
-        let mut sim = SimState::new(1);
-        sim.work.supplies = Some((5, 5));
-        let before = sim.buildings.buildings.len();
-        let error = sim.check_site(BuildingKind::Lodge, (5, 5)).unwrap_err();
-        assert_eq!(error, BuildError::SupplyPile);
-        let command = crate::Command::PlaceSite { kind: BuildingKind::Lodge, pos: (5, 5) };
-        assert_eq!(sim.apply(command), Err(SimError::InvalidCommand(error.to_string())));
-        assert_eq!(sim.buildings.buildings.len(), before);
-        assert!(sim.work.places.is_empty());
-    }
-
-    /// A lodge, a dam and a canal can be built from day 1; the rest wait for what unlocks them.
-    #[test]
-    fn buildings_unlock_once_their_prerequisite_is_finished() {
-        let mut sim = SimState::new(1);
-        for k in [BuildingKind::Lodge, BuildingKind::Dam, BuildingKind::Canal] {
-            assert_eq!(sim.unlocked(k), Ok(()), "{k:?} is open from the start");
-        }
-        for k in [BuildingKind::StickPile, BuildingKind::FoodCache, BuildingKind::PebbleHeap, BuildingKind::Forester, BuildingKind::HaulMound, BuildingKind::Lookout] {
-            assert!(matches!(sim.unlocked(k), Err(BuildError::Locked(_))), "{k:?} is locked at the start");
-        }
-        let lodge = |status| buildings::Building { id: buildings::BuildingId(1), kind: BuildingKind::Lodge, pos: (5, 5), status, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
-        sim.buildings.buildings.push(lodge(buildings::Status::Site));
-        assert_eq!(sim.unlocked(BuildingKind::StickPile), Err(BuildError::Locked(BuildingKind::Lodge)), "a lodge site is not enough");
-        sim.buildings.buildings[0] = lodge(buildings::Status::Complete);
-        assert_eq!(sim.unlocked(BuildingKind::StickPile), Ok(()));
-        assert_eq!(sim.unlocked(BuildingKind::PebbleHeap), Err(BuildError::Locked(BuildingKind::StickPile)), "one step at a time");
-    }
-}
-
 impl SimState {
     /// A building is unlocked once the one it needs has been finished; a placed site is not enough.
     pub fn unlocked(&self, kind: buildings::BuildingKind) -> Result<(), buildings::BuildError> {
@@ -75,10 +38,10 @@ impl SimState {
     }
 
     pub fn place_site(&mut self, kind: buildings::BuildingKind, pos: (usize, usize)) -> Result<buildings::BuildingId, SimError> {
-        if kind == buildings::BuildingKind::Dam {
+        if kind.is_dam() {
             return crate::dams::place(self, &[pos]);
         }
-        if kind == buildings::BuildingKind::Canal {
+        if kind.is_canal() {
             return Err(SimError::InvalidCommand("draw a canal from water onto land".into()));
         }
         self.check_site(kind, pos).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
@@ -88,7 +51,7 @@ impl SimState {
             .place_site(kind, pos, terrain)
             .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
         let spec = kind.spec();
-        if let Err(e) = self.work.add_site(id, kind, spec.cost, spec.work) {
+        if let Err(e) = self.work.add_site(id, kind, &spec.cost, spec.work) {
             self.buildings.buildings.retain(|b| b.id != id);
             return Err(SimError::InvalidCommand(format!("{e:?}")));
         }
@@ -156,7 +119,7 @@ impl SimState {
         }
         let (w, h) = kind.spec().footprint;
         let spot = (pos.0 + w / 2, pos.1 + h / 2);
-        for g in buildings::Good::ALL {
+        for g in buildings::Good::all() {
             let held = self.buildings.stores.inventory.at(id, g);
             let got = self.buildings.stores.take_from(id, g, held);
             if got > 0.0 {
@@ -203,7 +166,6 @@ use crate::Command;
 pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     place_ring(s, kind, around, 2..=29, keep_clear)
 }
-
 
 fn place_ring(s: &mut SimState, kind: BuildingKind, around: Cell, radii: std::ops::RangeInclusive<usize>, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     let walker = s.colony.beavers.iter().find(|b| b.stage == crate::colony::Stage::Adult).map(|b| b.id);

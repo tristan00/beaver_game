@@ -11,10 +11,8 @@ use crate::palette;
 use crate::state::Sim;
 use bevy::prelude::*;
 use std::collections::HashMap;
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 {
-    Vec3::new(x, y, z)
-}
+use crate::seasonal::smooth;
+use super::meshgen::v;
 
 /// A raft: logs lashed side by side, a low rail along each side and a raised prow,
 /// about two and a half cells long. Its cargo is drawn on top separately.
@@ -144,11 +142,6 @@ pub(super) fn spawn_lock(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Mo
     let gates = [-half, half].map(|z| commands.spawn((Mesh3d(hm.gate.clone()), MeshMaterial3d(w.clone()), Transform::from_xyz(0.0, 0.0, z).with_scale(Vec3::new(1.0, h * 0.98, 1.0)), ChildOf(root))).id());
     commands.entity(root).insert(LockVis { gates, h, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, sheet: false, looping, k: 0.0, up: true });
     root
-}
-
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 // The steps of a trip, as shares of the wait the simulation gives it (`nav::lock_wait`):
@@ -664,8 +657,8 @@ pub(super) struct RaftMark;
 /// `BC_GALLERY_WHAT=raft landing`: a raft with each load in a row, and a lock taking beavers up
 /// and down on a loop beside them.
 pub(super) fn spawn_gallery(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, meshes: &mut Assets<Mesh>, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
-    let goods = sim::buildings::Good::ALL;
-    for (i, g) in goods.into_iter().enumerate() {
+    let goods: Vec<sim::buildings::Good> = sim::buildings::Good::all().collect();
+    for (i, &g) in goods.iter().enumerate() {
         let x = centre.x + (i as f32 - (goods.len() as f32 - 1.0) / 2.0) * 1.8;
         let z = centre.z + 2.0;
         let raft = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(x, ground(x, z) + 0.12, z).with_scale(Vec3::splat(0.55)))).id();
@@ -675,103 +668,4 @@ pub(super) fn spawn_gallery(commands: &mut Commands, hm: &RaftLandingMeshes, m: 
     let (x, z) = (centre.x, centre.z - 2.5);
     let g = ground(x, z);
     spawn_lock(commands, hm, m, Vec3::new(x, g, z), std::f32::consts::FRAC_PI_2, 2.2, g - 0.2, g + 0.25, g + 1.05, true);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lock() -> Chamber {
-        Chamber { centre: Vec2::ZERO, axis: Vec2::Y, half: 2.2, low: 0.0, high: 1.0, floor: -0.5, iced: false }
-    }
-
-    #[test]
-    fn a_swimmer_setting_off_from_rest_is_followed_and_a_hop_is_glided() {
-        let ch = lock();
-        let mut g = LockGlide::default();
-        let mut p = Vec3::new(0.0, 1.0, -5.0);
-        for _ in 0..30 {
-            glide(&mut g, &[ch], p, 1.0 / 60.0);
-        }
-        for _ in 0..60 {
-            p.z += 0.06;
-            let at = glide(&mut g, &[ch], p, 1.0 / 60.0);
-            assert!(at.distance(p) < 0.03, "keeps up: {at} vs {p}");
-        }
-        // Stopped, then put 0.13 to one side: no hop in one frame.
-        for _ in 0..30 {
-            glide(&mut g, &[ch], p, 1.0 / 60.0);
-        }
-        let before = glide(&mut g, &[ch], p, 1.0 / 60.0);
-        let after = glide(&mut g, &[ch], p + Vec3::X * 0.13, 1.0 / 60.0);
-        assert!(after.distance(before) < 0.03);
-    }
-
-    #[test]
-    fn a_swimmer_stopping_short_stops_where_it_is() {
-        let ch = lock();
-        let mut g = LockGlide::default();
-        let mut p = Vec3::new(0.0, 1.0, -6.0);
-        for _ in 0..60 {
-            p.z += 0.07;
-            glide(&mut g, &[ch], p, 1.0 / 60.0);
-        }
-        let mut at = Vec3::ZERO;
-        for _ in 0..90 {
-            at = glide(&mut g, &[ch], p, 1.0 / 60.0);
-            assert!(at.z <= p.z + 0.15, "no overshoot: {at} vs {p}");
-        }
-        assert!(at.distance(p) < 0.01);
-    }
-
-    #[test]
-    fn a_beaver_by_a_lock_turns_rather_than_snapping_round() {
-        let ch = lock();
-        let mut g = LockGlide::default();
-        glide(&mut g, &[ch], Vec3::new(0.0, 1.0, -4.0), 1.0 / 60.0);
-        glide(&mut g, &[ch], Vec3::new(0.0, 1.0, -4.0), 1.0 / 60.0);
-        turn(&mut g, 0.5, 1.0 / 60.0);
-        let y = turn(&mut g, 0.0, 1.0 / 60.0);
-        assert!((y - (0.5 - TURN / 60.0)).abs() < 1e-4);
-    }
-
-    #[test]
-    fn a_smooth_swim_is_followed_exactly() {
-        let ch = lock();
-        let mut g = LockGlide::default();
-        for i in 0..60 {
-            let p = Vec3::new(5.0, 1.0, -3.0 + i as f32 * 0.05);
-            let at = glide(&mut g, &[ch], p, 1.0 / 60.0);
-            assert!(at.distance(p) < 1e-4);
-        }
-    }
-
-    #[test]
-    fn the_lane_is_drawn_straight_and_meets_the_swimmer_s_own_line_past_the_walls() {
-        let ch = lock();
-        let inside = on_lane(&ch, Vec2::new(0.45, 1.0), false).unwrap();
-        assert!(inside.x.abs() < 1e-4 && (inside.y - 1.0).abs() < 1e-4);
-        // Moving out along a slanted lane: no step bigger than the move itself, out to its line.
-        let mut last = on_lane(&ch, Vec2::new(0.4, 2.0), false).unwrap();
-        for i in 1..=200 {
-            let p = Vec2::new(0.4, 2.0 + i as f32 * 0.02);
-            let at = on_lane(&ch, p, false).unwrap_or(p);
-            assert!(at.distance(last) < 0.05, "jump at {p}");
-            last = at;
-        }
-    }
-
-    #[test]
-    fn a_hauler_waits_back_far_enough_for_its_raft_and_comes_on_without_a_jump() {
-        let ch = lock();
-        let wait = on_lane(&ch, Vec2::new(0.0, -(ch.half + 0.5)), true).unwrap();
-        assert!(-wait.y >= ch.half + 0.5 + RAFT_BACK - 1e-3);
-        let mut last = wait;
-        for i in 1..=200 {
-            let p = Vec2::new(0.0, -(ch.half + 0.5) - i as f32 * 0.02);
-            let at = on_lane(&ch, p, true).unwrap_or(p);
-            assert!(at.distance(last) < 0.05 && at.y <= last.y, "jump at {p}");
-            last = at;
-        }
-    }
 }

@@ -10,7 +10,7 @@ fn main() {
     while let Some(s) = p.next_state() {
         if first {
             first = false;
-            let _ = p.send(&sim::Command::AdjustRole { role: sim::jobs::RoleKind::Forager, delta: 2 });
+            let _ = p.send(&sim::Command::AdjustRole { role: sim::jobs::Job::gathering(sim::resources::ResourceKind::food_plant(false)), delta: 2 });
         }
         if s.time_days >= next_report {
             let c = s.census();

@@ -164,7 +164,7 @@ fn menu_keys(
         Some(Screen::Settings) | Some(Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
         None => {
-            let busy = hud.as_ref().is_some_and(|h| h.welcome || h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open || h.order_mode.is_some() || h.help);
+            let busy = hud.as_ref().is_some_and(|h| h.welcome || h.tool != hud::Tool::None || h.colony.is_some() || h.ledger.is_some() || h.page().is_some() || h.open_badge.is_some() || h.journal_open);
             if !busy && *sel == Selection::None {
                 menu.saved = None;
                 menu.was_paused = clock.paused;

@@ -1,21 +1,18 @@
 include!(concat!(env!("OUT_DIR"), "/output_constants.rs"));
-use crate::buildings::{BuildingId, Good};
+use crate::buildings::{BuildingId, Good, PerId};
 use std::collections::BTreeMap;
 
-
-const N: usize = Good::ALL.len();
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Flow {
-    pub per_day: [f32; N],
-    pub total: [f32; N],
+    pub per_day: PerId<Good, f32>,
+    pub total: PerId<Good, f32>,
     pub age_days: f32,
-    pending: [f32; N],
+    pending: PerId<Good, f32>,
 }
 
 impl Flow {
     pub fn rates(&self) -> Vec<(Good, f32)> {
-        let mut v: Vec<(Good, f32)> = Good::ALL.iter().map(|g| (*g, self.per_day[g.index()])).filter(|(_, r)| *r > 0.01).collect();
+        let mut v: Vec<(Good, f32)> = Good::all().map(|g| (g, self.per_day[g])).filter(|(_, r)| *r > 0.01).collect();
         v.sort_by(|a, b| b.1.total_cmp(&a.1));
         v
     }
@@ -33,8 +30,8 @@ impl Output {
             return;
         }
         let f = self.by.entry(b).or_default();
-        f.pending[good.index()] += amount;
-        f.total[good.index()] += amount;
+        f.pending[good] += amount;
+        f.total[good] += amount;
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -43,9 +40,9 @@ impl Output {
         }
         let k = 1.0 - (-dt / SMOOTH_DAYS).exp();
         for f in self.by.values_mut() {
-            for i in 0..N {
-                f.per_day[i] += (f.pending[i] / dt - f.per_day[i]) * k;
-                f.pending[i] = 0.0;
+            for g in Good::all() {
+                f.per_day[g] += (f.pending[g] / dt - f.per_day[g]) * k;
+                f.pending[g] = 0.0;
             }
             f.age_days += dt;
         }
@@ -59,4 +56,3 @@ impl Output {
         self.by.remove(&b);
     }
 }
-

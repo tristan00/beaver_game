@@ -168,7 +168,7 @@ const FOOD_BUCKET: usize = 16;
 
 impl FoodIndex {
     fn refresh(&mut self, sim: &SimState) {
-        use crate::resources::ResourceKind;
+
         let day = sim.time_days.floor() as i64;
         if self.day == Some(day) {
             return;
@@ -180,8 +180,8 @@ impl FoodIndex {
         self.buckets.resize(self.across * self.across, Vec::new());
         for r in sim.resources.items() {
             let sapling = match r.kind {
-                ResourceKind::Plant => false,
-                ResourceKind::Tree if r.stage() == Some(crate::forestry::TreeStage::Sapling) => true,
+                k if k.is_food_plant() && !k.aquatic() => false,
+                k if k.is_tree() && r.stage() == Some(crate::forestry::TreeStage::Sapling) => true,
                 _ => continue,
             };
             let b = (r.cell.1 / FOOD_BUCKET).min(self.across - 1) * self.across + (r.cell.0 / FOOD_BUCKET).min(self.across - 1);
@@ -263,14 +263,14 @@ fn away(sim: &SimState, wl: &mut Wildlife, a: &Animal, from: (f32, f32), far: f3
 /// beavers left lying on the ground), picked at random from what grows within `SEARCH_RADIUS`, outside the
 /// colony's berth unless the food is left out on the ground.
 fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Food)> {
-    use crate::resources::ResourceKind;
+
     let berth = berth(sim);
     let n = sim.nav.surface.width();
     let r = SEARCH_RADIUS as f32;
     // Food the beavers gathered and left lying, not carried to a store: any of them go for
     // it, even close to the colony.
     if wl.unit() < PILE_CHANCE {
-        let pile = sim.work.piles.items.iter().filter(|p| p.good == crate::buildings::Good::Food && dist(centre(p.cell), a.pos) <= r * 2.0).min_by(|x, y| dist(centre(x.cell), a.pos).total_cmp(&dist(centre(y.cell), a.pos)));
+        let pile = sim.work.piles.items.iter().filter(|p| p.good == crate::buildings::Good::food() && dist(centre(p.cell), a.pos) <= r * 2.0).min_by(|x, y| dist(centre(x.cell), a.pos).total_cmp(&dist(centre(y.cell), a.pos)));
         if let Some(p) = pile {
             return Some((p.cell, Food::Pile(p.id)));
         }
@@ -302,7 +302,7 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
             continue;
         }
         match sim.resources.get(id) {
-            Some(res) if !sapling && res.kind == ResourceKind::Plant && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
+            Some(res) if !sapling && res.kind.is_food_plant() && !res.kind.aquatic() && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
             Some(res) if sapling && res.stage() == Some(crate::forestry::TreeStage::Sapling) => return Some((c, Food::Sapling(id))),
             _ => {}
         }
@@ -592,25 +592,5 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
             }
         }
         Doing::Caught => {}
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deer_go_for_food_the_beavers_left_lying() {
-        let mut s = SimState::new(1);
-        let mut wl = Wildlife::new(7);
-        let deer = Animal { id: 1, kind: Kind::Deer, pos: (20.5, 20.5), heading: 0.0, pace: 0.0, doing: Doing::Wander, leave_by: 100.0, path: Vec::new(), next_look: 0.0, track: Track::default() };
-        s.work.piles.drop_at((24, 20), crate::buildings::Good::Food, 3.0, 0.0);
-        assert!((0..200).any(|_| matches!(find_food(&s, &mut wl, &deer), Some((_, Food::Pile(_))))));
-    }
-
-    #[test]
-    fn there_are_three_times_the_deer_and_rabbits() {
-        assert_eq!((Kind::Deer.count(), Kind::Rabbit.count()), (15, 36));
     }
 }

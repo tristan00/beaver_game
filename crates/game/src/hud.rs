@@ -17,7 +17,7 @@ mod paths;
 mod water_legend;
 mod welcome;
 mod ui;
-mod words;
+pub(crate) mod words;
 pub(crate) use words::job_icon;
 mod works;
 mod world;
@@ -38,7 +38,7 @@ use sim::buildings::{BuildingId, BuildingKind};
 use sim::colony::BeaverId;
 use sim::dam_preview::DamPreview;
 use sim::hud::Fix;
-use sim::jobs::RoleKind;
+use sim::jobs::Job;
 use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
 use words::*;
 
@@ -76,6 +76,13 @@ pub enum Tool {
     Canal,
     /// Send beavers to gather (food or mud) or cut trees: click a spot or drag an area.
     Harvest(Harvest),
+}
+
+impl Tool {
+    /// The tool a kind of building is placed with: a dam or canal is drawn as a line.
+    pub fn of(kind: BuildingKind) -> Tool {
+        if kind.is_dam() { Tool::Dam } else if kind.is_canal() { Tool::Canal } else { Tool::Building(kind) }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +165,7 @@ pub struct Msg {
 pub use crate::build_logic::LinePlan;
 pub(crate) use world::{HoverPoint, HoverThing};
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct HudState {
     /// The top-centre badge opened by a click, showing its words.
     pub open_badge: Option<String>,
@@ -219,15 +226,12 @@ pub struct HudState {
     pub follow: Option<BeaverId>,
     // Compatibility with the current menu, renderer and input recorder. This
     // HUD uses contextual orders and has no separate order or help screen.
-    pub order_mode: Option<()>,
-    pub help: bool,
     consume_left_release: bool,
     pub pinned: Vec<Selection>,
     box_from: Option<Vec2>,
     box_done: Option<(Vec2, Vec2)>,
     frame_req: Option<Vec3>,
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UndoItem {
@@ -276,53 +280,6 @@ pub fn reset_for_new_game(world: &mut World) {
     }
 }
 
-impl Default for HudState {
-    fn default() -> Self {
-        HudState {
-            details: None,
-            lodge_page: None,
-            kin: kin::KinFilter::All,
-            back: Vec::new(),
-            open_badge: None,
-            tool: Tool::None,
-            drag_from: None,
-            grab: None,
-            corners: Vec::new(),
-            line: Vec::new(),
-            plan: None,
-            settled: None,
-            canal_plan: None,
-            extending: None,
-            dam_cells: Vec::new(),
-            dam_tab: DamTab::Status,
-            opening: None,
-            gate_sel: None,
-            remove_armed: None,
-            dam_ghost: None,
-            msg: None,
-            idle_cursor: 0,
-            colony: None,
-            ledger: None,
-            span: Span::All,
-            sort: (BeaverCol::Family, false),
-            scroll: 0,
-            peek: None,
-            journal_open: false,
-            welcome: false,
-            drowned: None,
-            undo: Vec::new(),
-            selected: Vec::new(),
-            follow: None,
-            order_mode: None,
-            help: false,
-            consume_left_release: false,
-            pinned: Vec::new(),
-            box_from: None,
-            box_done: None,
-            frame_req: None,
-        }
-    }
-}
 
 impl HudState {
     pub(crate) fn swallow_click(&mut self) { self.consume_left_release = true; }
@@ -528,13 +485,13 @@ fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>
         let t = time.elapsed_secs();
         for (id, (kind, done, _)) in &now {
             if *done && before.get(id).is_some_and(|b| !b.1) {
-                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Check, GOOD)], format!("{} built", kind.spec().name), t, Some(NoticeAt::Building(*id)));
+                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Check, GOOD)], format!("{} built", kind.spec().name.as_str()), t, Some(NoticeAt::Building(*id)));
             }
         }
         for (id, (kind, done, pos)) in before {
             if *done && !now.contains_key(id) {
                 let how = if s.buildings.wrecked.contains(id) { "fell apart" } else { "lost" };
-                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Cross, BAD)], format!("{} {how}", kind.spec().name), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
+                notices.push_at(vec![(building_icon(*kind), INK), (Icon::Cross, BAD)], format!("{} {how}", kind.spec().name.as_str()), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
             }
         }
     }
@@ -556,7 +513,7 @@ fn notice_floods(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, m
         let (before, told) = was.2.get(&b.id).copied().unwrap_or((flooded || fresh, f64::NEG_INFINITY));
         let mut told_at = told;
         if flooded && !before && s.time_days - told >= AGAIN_DAYS {
-            notices.push_at(vec![(building_icon(b.kind), INK), (Icon::Flood, BAD)], format!("{} flooded", b.kind.spec().name), time.elapsed_secs(), Some(NoticeAt::Building(b.id)));
+            notices.push_at(vec![(building_icon(b.kind), INK), (Icon::Flood, BAD)], format!("{} flooded", b.kind.spec().name.as_str()), time.elapsed_secs(), Some(NoticeAt::Building(b.id)));
             told_at = s.time_days;
             floods.0 = floods.0.wrapping_add(1);
         }
@@ -669,7 +626,6 @@ fn collect_new_pops(now: f32, cursor: &CursorUi, hud: &mut HudState, sim: &Sim, 
     w.ready = true;
 }
 
-
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
 
@@ -737,7 +693,7 @@ pub enum HudAction {
     SetLens(MapLens),
     /// Show only this role's paths (`None`: free beavers'), or every path again if it is the
     /// one shown already.
-    PathsOnly(Option<RoleKind>),
+    PathsOnly(Option<Job>),
     Colony(Option<ColonyTab>),
     Ledger(Option<LedgerTab>),
     Span(Span),
@@ -762,9 +718,9 @@ pub enum HudAction {
     /// Cancel a building site, or take a dam or canal away altogether.
     CancelBuild(BuildingId),
     RemoveBeaver(BuildingId),
-    RoleAdjust(RoleKind, i32),
+    RoleAdjust(Job, i32),
     /// Keep a role's beavers within this many cells of water (None: anywhere).
-    ShoreLimit(RoleKind, Option<u16>),
+    ShoreLimit(Job, Option<u16>),
     Paused(BuildingId, bool),
     RepairBuilding(BuildingId),
     ReinforceBuilding(BuildingId),
@@ -802,7 +758,8 @@ fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_ui_font).init_resource::<Notices>();
+        // Read by the colony's flow too, so they exist even when the HUD is not drawn.
+        app.add_systems(Startup, load_ui_font).init_resource::<Notices>().init_resource::<WolfCues>();
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() {
             return;
         }
@@ -818,7 +775,6 @@ impl Plugin for HudPlugin {
             .init_resource::<Tips>()
             .init_resource::<Pops>()
             .init_resource::<Floods>()
-            .init_resource::<WolfCues>()
             .add_systems(Update, (notice_wolf, notice_buildings, notice_floods))
             .init_resource::<LastProblems>()
             .init_resource::<world::HoverThing>()
@@ -855,7 +811,7 @@ impl DamLook {
     fn new(s: &sim::SimState, water: sim::dam_preview::Settled) -> Self {
         let dry: Vec<Cell> = water.flooded.iter().copied().filter(|&(x, y)| !build_logic::is_wet(s, x, y)).collect();
         let dry_set: std::collections::HashSet<Cell> = dry.iter().copied().collect();
-        let trees = s.resources.items().iter().filter(|r| r.kind == sim::resources::ResourceKind::Tree && r.amount > 0.0 && dry_set.contains(&r.cell)).map(|r| r.cell).collect();
+        let trees = s.resources.items().iter().filter(|r| r.kind.is_tree() && r.amount > 0.0 && dry_set.contains(&r.cell)).map(|r| r.cell).collect();
         DamLook { water, new_wet: dry.len(), trees }
     }
 }
@@ -1175,4 +1131,3 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
     paths::SHOWN.store(shown == MapLens::Paths, std::sync::atomic::Ordering::Relaxed);
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }
-

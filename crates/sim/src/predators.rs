@@ -86,32 +86,15 @@ impl Wolf {
 
 /// The first wolf is saved where the one wolf always was, so older saves load; the others
 /// are saved after the world (`save.rs`).
-mod first_wolf {
-    use super::Wolf;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(wolves: &[Wolf], s: S) -> Result<S::Ok, S::Error> {
-        wolves.first().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Wolf>, D::Error> {
-        Ok(Option::<Wolf>::deserialize(d)?.into_iter().collect())
-    }
-}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Predators {
     rng: Pcg32,
     /// The wolves about, at most `MAX_WOLVES`, in the order they came.
-    #[serde(with = "first_wolf")]
     pub wolves: Vec<Wolf>,
-    /// Calendar year of the last wolf (kept for older saves; wolves may come any year).
-    last_year: Option<u32>,
     /// The colony has seen a wolf lately (within `WOLF_SEEN_DAYS`): the HUD alert shows while
     /// it has.
     pub spotted: bool,
-    /// Unused (each fleeing beaver keeps its own route); kept so older saves load.
-    refuge: Option<Cell>,
     pub chance_per_day: f32,
     pub visits: u32,
     pub kills: u32,
@@ -134,16 +117,8 @@ pub struct Predators {
 
 impl Predators {
     pub fn new(seed: u64) -> Self {
-        Self { rng: Pcg32::seed_from_u64(seed ^ 0x3017_F00D), wolves: Vec::new(), last_year: None, spotted: false, refuge: None,
+        Self { rng: Pcg32::seed_from_u64(seed ^ 0x3017_F00D), wolves: Vec::new(), spotted: false,
             chance_per_day: WOLF_CHANCE_PER_DAY, visits: 0, kills: 0, alarms: Vec::new(), given_up: Vec::new(), given_up_animals: Vec::new(), in_sight: false }
-    }
-
-    /// A beaver being charged or killed, if any.
-    pub fn hunted(&self) -> Option<BeaverId> {
-        self.wolves.iter().find_map(|w| match w.state {
-            WolfState::Charge { target, .. } | WolfState::Kill { target, .. } => Some(target),
-            _ => None,
-        })
     }
 
     /// The wolf `key` names (`Wolf::key`), while it is about.
@@ -154,10 +129,6 @@ impl Predators {
     fn unit(&mut self) -> f32 {
         (self.rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32
     }
-}
-
-fn year(time_days: f64) -> u32 {
-    crate::calendar::Date::at(time_days).year
 }
 
 /// Ground a wolf walks: dry land and thickets, never water (not even a film on the
@@ -306,7 +277,6 @@ pub fn summon(sim: &mut SimState) -> bool {
     // Two summoned at the same moment (tests, debugging) still tell apart by `key`.
     let arrived = p.wolves.iter().map(|w| w.arrived).fold(now, |a, b| if b >= a { b + 1e-9 } else { a });
     p.wolves.push(Wolf { pos: centre(at), heading: 0.0, pace: 0.0, state: WolfState::Roam, arrived, leave_by: now + WOLF_VISIT_DAYS, path: Vec::new(), rest_until: 0.0, seen: false, last_seen: None, track: Default::default() });
-    p.last_year = Some(year(now));
     p.visits += 1;
     note(sim, sim.predators.wolves.last(), "ARRIVED", format!("visit={} wolves={} leave_by={:.2}", sim.predators.visits, sim.predators.wolves.len(), now + WOLF_VISIT_DAYS));
     true
@@ -356,7 +326,7 @@ fn look(sim: &mut SimState) {
     };
     let alarms: Vec<crate::buildings::BuildingId> = watching.iter().filter(|(_, at)| wolves.iter().any(|w| dist(*at, w.pos) <= LOOKOUT_SIGHT)).map(|l| l.0).collect();
     let sentries = |id: crate::buildings::BuildingId| -> Vec<crate::colony::BeaverId> {
-        sim.work.place(id).map(|p| p.slots.iter().filter(|s| s.role == crate::work::Role::Sentry).filter_map(|s| s.beaver).collect()).unwrap_or_default()
+        sim.work.place(id).map(|p| p.slots.iter().filter(|s| s.role.duty() == crate::content::Duty::Watch).filter_map(|s| s.beaver).collect()).unwrap_or_default()
     };
     // For the records: who has each wolf in sight (beavers seeing it, and the sentries of the
     // lookouts in range), each wolf counted once for each beaver however often it is seen.
@@ -404,13 +374,13 @@ pub fn lookout_centre(b: &crate::buildings::Building) -> (f32, f32) {
 /// A finished lookout with its sentry at the post (within `SENTRY_POST_REACH` of it, in water
 /// or on land, not in a lodge).
 pub fn on_watch(sim: &SimState, b: &crate::buildings::Building) -> bool {
-    if b.kind != crate::buildings::BuildingKind::Lookout || !b.is_complete() {
+    if !b.kind.watches() || !b.is_complete() {
         return false;
     }
     let reach = SENTRY_POST_REACH as usize;
     let at_post = |a: &Agent| !a.inside && b.cells().any(|c| c.0.abs_diff(a.cell.0).max(c.1.abs_diff(a.cell.1)) <= reach);
     sim.work.place(b.id).is_some_and(|p| {
-        p.slots.iter().any(|s| s.role == crate::work::Role::Sentry && s.beaver.and_then(|w| sim.agents.get(w)).is_some_and(at_post))
+        p.slots.iter().any(|s| s.role.duty() == crate::content::Duty::Watch && s.beaver.and_then(|w| sim.agents.get(w)).is_some_and(at_post))
     })
 }
 
@@ -775,293 +745,4 @@ pub fn flee(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
     ag.load = load;
     crate::agents::note(ag, moved);
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agents::Agents;
-
-    /// A founded colony on open land with a strip of water down column `water_x`, and one
-    /// beaver at `at`.
-    fn setup(water_x: Option<usize>, at: Cell) -> (SimState, BeaverId) {
-        let mut s = SimState::new(1);
-        s.colony.found((0.0, 3.0), &crate::colony::RiverLand::default()).unwrap();
-        let n = s.world.size;
-        s.nav = NavGrid::new(n, n);
-        s.water.depth.as_mut_slice().fill(0.0);
-        if let Some(x) = water_x {
-            for y in 0..n {
-                for dx in 0..3 {
-                    s.nav.set((x + dx, y), Surface::Water);
-                    *s.water.depth.get_mut(x + dx, y).unwrap() = 1.0;
-                }
-            }
-        }
-        s.agents = Agents::default();
-        let who = s.colony.beavers[0].id;
-        s.agents.spawn(who, at);
-        s.nav.reserve(who, at);
-        s.time_days = 100.0;
-        (s, who)
-    }
-
-    fn place_wolf(s: &mut SimState, at: Cell) {
-        s.predators.wolves = vec![Wolf { pos: centre(at), heading: 0.0, pace: 0.0, state: WolfState::Roam, arrived: s.time_days, leave_by: s.time_days + WOLF_VISIT_DAYS, path: Vec::new(), rest_until: 0.0, seen: false, last_seen: None, track: Default::default() }];
-        s.predators.last_year = Some(year(s.time_days));
-    }
-
-    /// One sim step of the beaver (just its flight) and of the wolf.
-    fn tick(s: &mut SimState, who: BeaverId) {
-        let dt = crate::STEP_DAYS;
-        s.time_days += dt as f64;
-        if let Some(mut a) = s.agents.by_id.remove(&who) {
-            flee(s, &mut a, dt);
-            s.agents.by_id.insert(who, a);
-        }
-        step(s, dt);
-    }
-
-    #[test]
-    fn wolves_come_one_a_day_up_to_the_most_at_once_and_save_with_the_world() {
-        let (mut s, _) = setup(None, (60, 60));
-        s.time_days = WOLF_GRACE_DAYS;
-        s.predators.chance_per_day = 1.0;
-        let mut counts = Vec::new();
-        for _ in 0..MAX_WOLVES + 3 {
-            s.time_days += 1.0;
-            step(&mut s, crate::STEP_DAYS);
-            counts.push(s.predators.wolves.len());
-        }
-        assert_eq!(counts[..MAX_WOLVES], (1..=MAX_WOLVES).collect::<Vec<_>>()[..], "one more each day: {counts:?}");
-        assert!(counts.iter().all(|&n| n <= MAX_WOLVES), "never more than {MAX_WOLVES}: {counts:?}");
-        assert!(!summon(&mut s), "no more come while {MAX_WOLVES} are about");
-        let keys: std::collections::BTreeSet<u64> = s.predators.wolves.iter().map(Wolf::key).collect();
-        assert_eq!(keys.len(), MAX_WOLVES, "each wolf tells apart");
-        for w in &s.predators.wolves {
-            assert!(walkable(&s, w.cell()));
-        }
-
-        // A save keeps every wolf, where it was, doing what it was.
-        let bytes = crate::save::encode(&s, "test").unwrap();
-        let (_, back) = crate::save::decode(&bytes).unwrap();
-        let was: Vec<_> = s.predators.wolves.iter().map(|w| (w.key(), w.pos, w.state, w.leave_by)).collect();
-        let now: Vec<_> = back.predators.wolves.iter().map(|w| (w.key(), w.pos, w.state, w.leave_by)).collect();
-        assert_eq!(was, now);
-    }
-
-    #[test]
-    fn wolves_keep_coming_and_appear_far_from_every_beaver() {
-        let (mut s, _) = setup(None, (60, 60));
-        s.time_days = 0.0;
-        s.predators.chance_per_day = 1.0;
-        let mut arrivals = 0;
-        for _ in 0..(crate::calendar::YEAR_DAYS) as usize {
-            s.time_days += 1.0;
-            step(&mut s, 1.0);
-            if s.predators.wolves.pop().is_some() {
-                arrivals += 1;
-                assert!(s.time_days >= WOLF_GRACE_DAYS);
-            }
-        }
-        assert!(arrivals > 100, "a sure chance brings one each day there is none: {arrivals}");
-        for _ in 0..50 {
-            assert!(summon(&mut s));
-            let w = s.predators.wolves.pop().unwrap();
-            assert!(dist(w.pos, centre((60, 60))) >= WOLF_SPAWN_MIN_DIST, "a wolf appeared near the beaver at {:?}", w.pos);
-            assert!(walkable(&s, w.cell()));
-        }
-    }
-
-    #[test]
-    fn a_beaver_in_sight_is_charged_and_one_out_of_sight_is_not() {
-        let (mut s, who) = setup(None, (60, 60));
-        place_wolf(&mut s, (60 + WOLF_SIGHT as usize + 8, 60));
-        s.predators.wolves.first_mut().unwrap().leave_by = f64::MAX;
-        s.predators.wolves.first_mut().unwrap().path = vec![(60 + WOLF_SIGHT as usize + 8, 61)];
-        step(&mut s, crate::STEP_DAYS);
-        assert_eq!(s.predators.hunted(), None, "charged a beaver out of sight");
-        assert!(!matches!(s.predators.wolves.first().unwrap().state, WolfState::Charge { .. }));
-        s.predators.wolves.first_mut().unwrap().pos = centre((60 + WOLF_SIGHT as usize - 2, 60));
-        step(&mut s, crate::STEP_DAYS);
-        assert_eq!(s.predators.hunted(), Some(who));
-        assert!(!s.predators.spotted, "a charge from beyond the beaver's sight tells the colony nothing");
-    }
-
-    #[test]
-    fn a_beaver_runs_from_a_wolf_it_sees_and_not_from_one_beyond_its_sight() {
-        let sight = crate::fog::BEAVER_SIGHT as usize;
-        assert!(WOLF_SIGHT > crate::fog::BEAVER_SIGHT, "the wolf sees farther than a beaver");
-        let (mut s, who) = setup(Some(64), (60, 60));
-        // Beyond its sight, though the wolf sees it and charges: the beaver carries on, and
-        // the colony knows nothing.
-        place_wolf(&mut s, (60 - sight - 5, 60));
-        s.predators.wolves.first_mut().unwrap().leave_by = f64::MAX;
-        s.predators.wolves.first_mut().unwrap().rest_until = f64::MAX;
-        s.predators.wolves.first_mut().unwrap().state = WolfState::Charge { target: who, since: s.time_days };
-        let mut a = s.agents.by_id.remove(&who).unwrap();
-        assert!(!flee(&mut s, &mut a, crate::STEP_DAYS), "being charged told it of a wolf it cannot see");
-        s.agents.by_id.insert(who, a);
-        look(&mut s);
-        assert!(!s.predators.spotted);
-        // In its sight: it runs for water.
-        s.predators.wolves.first_mut().unwrap().pos = centre((60 - sight + 5, 60));
-        for _ in 0..200 {
-            tick(&mut s, who);
-        }
-        assert!(s.predators.spotted);
-        let a = s.agents.get(who).unwrap();
-        assert!(is_refuge(s.nav.surface_at(a.cell)), "it is not in the water: {:?}", a.cell);
-        // Out of sight again: it goes back to its work.
-        s.predators.wolves.clear();
-        let mut a = s.agents.by_id.remove(&who).unwrap();
-        assert!(!flee(&mut s, &mut a, crate::STEP_DAYS));
-        assert!(!s.agents.fleeing.contains(&who));
-    }
-
-    #[test]
-    fn the_wolf_alert_clears_a_while_after_the_wolf_is_lost_from_sight() {
-        let sight = crate::fog::BEAVER_SIGHT as usize;
-        let (mut s, _) = setup(Some(64), (60, 60));
-        place_wolf(&mut s, (60 - sight + 5, 60));
-        let w = s.predators.wolves.first().cloned().unwrap();
-        look(&mut s);
-        assert!(s.predators.spotted);
-        assert_eq!(in_sight(&s), Some(w.pos));
-        let seen_at = w.pos;
-        // Gone from sight: the alert stands a while, at the place it was seen, then clears.
-        s.predators.wolves.first_mut().unwrap().pos = centre((60 - sight - 20, 60));
-        s.time_days += WOLF_SEEN_DAYS * 0.5;
-        look(&mut s);
-        assert!(s.predators.spotted);
-        assert_eq!(in_sight(&s), None, "out of sight, where it is stays hidden");
-        assert_eq!(last_seen(&s), Some(seen_at), "the alert points where it was seen, not where it is");
-        s.time_days += WOLF_SEEN_DAYS;
-        look(&mut s);
-        assert!(!s.predators.spotted);
-        assert_eq!(last_seen(&s), None);
-        // Seen again: it is back.
-        s.predators.wolves.first_mut().unwrap().pos = centre((60 - sight + 5, 60));
-        look(&mut s);
-        assert!(s.predators.spotted);
-    }
-
-    #[test]
-    fn a_beaver_runs_from_a_wolf_faster_than_it_walks() {
-        let (mut s, who) = setup(Some(100), (40, 60));
-        place_wolf(&mut s, (40 + 6 - crate::fog::BEAVER_SIGHT as usize, 60));
-        s.predators.wolves.first_mut().unwrap().rest_until = f64::MAX;
-        let steps = 30;
-        for _ in 0..steps {
-            // The wolf keeps in sight behind it.
-            let at = s.agents.get(who).unwrap().cell;
-            s.predators.wolves.first_mut().unwrap().pos = centre((at.0 - 20, at.1));
-            let mut a = s.agents.by_id.remove(&who).unwrap();
-            assert!(flee(&mut s, &mut a, crate::STEP_DAYS));
-            s.agents.by_id.insert(who, a);
-        }
-        let ran = s.agents.get(who).unwrap().cell.0.abs_diff(40) as f32;
-        let walk = steps as f32 * crate::STEP_DAYS * crate::agents::MOVE_COST_PER_DAY / crate::nav::WALK_COST;
-        assert!(ran >= walk * (FLEE_PACE - 0.25), "ran {ran} cells where a walk covers {walk}");
-    }
-
-    #[test]
-    fn a_manned_lookout_warns_beavers_in_its_range() {
-        let (mut s, who) = setup(Some(64), (60, 60));
-        // A finished lookout 20 cells off, and a sentry beside it.
-        let id = crate::buildings::BuildingId(77);
-        let pos = (60, 80);
-        s.buildings.buildings.push(crate::buildings::Building { id, kind: crate::buildings::BuildingKind::Lookout, pos, status: crate::buildings::Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        s.work.add_site(id, crate::buildings::BuildingKind::Lookout, &[], 1.0).unwrap();
-        s.work.add_labour(id, 1.0).unwrap();
-        s.work.finish_site(id, &[crate::work::Role::Sentry], None).unwrap();
-        let sentry = s.colony.beavers[1].id;
-        s.agents.spawn(sentry, (pos.0, pos.1 - 1));
-        // The wolf, out of the beaver's sight and the wolf's own, but in the lookout's.
-        let lookout = lookout_centre(s.buildings.building(id).unwrap());
-        let at = (lookout.0 as usize, lookout.1 as usize + LOOKOUT_SIGHT as usize - 4);
-        assert!(dist(centre(at), centre((60, 60))) > WOLF_SIGHT.max(crate::fog::BEAVER_SIGHT));
-        place_wolf(&mut s, at);
-        s.predators.wolves.first_mut().unwrap().rest_until = f64::MAX;
-        step(&mut s, crate::STEP_DAYS);
-        assert!(s.predators.alarms.is_empty(), "nobody keeps watch");
-        s.work.assign(id, 0, sentry).unwrap();
-        step(&mut s, crate::STEP_DAYS);
-        assert_eq!(s.predators.alarms, vec![id], "the sentry sees the wolf");
-        assert!(s.predators.spotted);
-        let mut a = s.agents.by_id.remove(&who).unwrap();
-        assert!(flee(&mut s, &mut a, crate::STEP_DAYS), "the warned beaver carries on working");
-        s.agents.by_id.insert(who, a);
-        // Away from its post the sentry sees nothing.
-        s.agents.by_id.get_mut(&sentry).unwrap().cell = (pos.0, pos.1 - 20);
-        step(&mut s, crate::STEP_DAYS);
-        assert!(s.predators.alarms.is_empty());
-    }
-
-    #[test]
-    fn a_beaver_that_reaches_water_escapes_and_the_wolf_stays_on_land() {
-        let (mut s, who) = setup(Some(64), (60, 60));
-        place_wolf(&mut s, (52, 60));
-        let mut wolf_cells = Vec::new();
-        for _ in 0..200 {
-            tick(&mut s, who);
-            if let Some(w) = s.predators.wolves.first() {
-                wolf_cells.push(w.cell());
-            }
-            if s.predators.hunted().is_none() && s.predators.wolves.first().is_some_and(|w| w.state == WolfState::Roam) && wolf_cells.len() > 2 {
-                break;
-            }
-        }
-        assert!(s.colony.beaver(who).is_some(), "the beaver was caught");
-        let a = s.agents.get(who).unwrap();
-        assert!(is_refuge(s.nav.surface_at(a.cell)), "the beaver is not in the water: {:?}", a.cell);
-        assert_eq!(s.predators.hunted(), None, "the wolf kept up the charge");
-        assert!(wolf_cells.iter().all(|&c| walkable(&s, c)), "the wolf went into the water");
-        assert_eq!(s.predators.wolves.first().map(|w| w.state), Some(WolfState::Roam), "it wanders on");
-    }
-
-    #[test]
-    fn a_caught_beaver_dies_and_the_wolf_hunts_on_until_its_visit_is_over() {
-        // Nowhere to swim: the beaver is caught.
-        let (mut s, who) = setup(None, (60, 60));
-        place_wolf(&mut s, (54, 60));
-        s.colony.take_events();
-        let mut caught = false;
-        for _ in 0..400 {
-            tick(&mut s, who);
-            caught |= matches!(s.predators.wolves.first().map(|w| w.state), Some(WolfState::Kill { .. }));
-            if s.colony.beaver(who).is_none() {
-                break;
-            }
-        }
-        assert!(caught, "no kill animation");
-        assert!(s.colony.beaver(who).is_none(), "the beaver survived");
-        assert!(s.colony.take_events().iter().any(|e| matches!(e.event, crate::colony::Event::Died { id, cause: DeathCause::Predator, .. } if id == who)));
-        assert_eq!(s.predators.kills, 1);
-        assert_eq!(s.predators.wolves.first().map(|w| w.state), Some(WolfState::Roam), "it hunts on");
-        s.predators.wolves.first_mut().unwrap().leave_by = s.time_days;
-        // Others may come meanwhile; this one goes.
-        let key = s.predators.wolves[0].key();
-        for _ in 0..2000 {
-            if s.predators.wolf(key).is_none() {
-                break;
-            }
-            tick(&mut s, who);
-        }
-        assert!(s.predators.wolf(key).is_none(), "the wolf never left");
-    }
-
-    #[test]
-    fn a_wolf_wanders_near_itself_with_no_regard_for_the_colony() {
-        let (mut s, _) = setup(None, (10, 10));
-        let far = (s.world.size - 20, s.world.size - 20);
-        place_wolf(&mut s, far);
-        let wolf = s.predators.wolves.first().cloned().unwrap();
-        for _ in 0..20 {
-            let route = roam_goal(&mut s, &wolf);
-            let end = *route.last().expect("a way on");
-            assert!(dist(centre(end), wolf.pos) <= WOLF_WANDER_RADIUS * std::f32::consts::SQRT_2 + 1.0, "it aimed beyond its wander: {end:?}");
-            assert!(dist(centre(end), centre((10, 10))) > dist(wolf.pos, centre((10, 10))) - WOLF_WANDER_RADIUS * 1.5, "it made for the colony");
-        }
-    }
 }

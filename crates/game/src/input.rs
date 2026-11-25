@@ -96,4 +96,3 @@ fn orbit_input(
         *orbit = next;
     }
 }
-

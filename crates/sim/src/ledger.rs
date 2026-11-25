@@ -1,31 +1,29 @@
 include!(concat!(env!("OUT_DIR"), "/ledger_constants.rs"));
-use crate::buildings::{Good, Producer, Stores, Use};
+use crate::buildings::{Good, PerId, Producer, Stores, Use};
 use std::collections::{BTreeMap, VecDeque};
-
-const N: usize = Good::ALL.len();
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DaySample {
     pub day: u64,
-    pub produced: [f32; N],
-    pub consumed: [f32; N],
-    pub stock: [f32; N],
+    pub produced: PerId<Good, f32>,
+    pub consumed: PerId<Good, f32>,
+    pub stock: PerId<Good, f32>,
     pub produced_by: Vec<(Producer, Good, f32)>,
-    pub consumed_by: [[f32; N]; Use::COUNT],
+    pub consumed_by: [PerId<Good, f32>; Use::COUNT],
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Open {
     day: u64,
-    produced: [f32; N],
-    consumed: [f32; N],
+    produced: PerId<Good, f32>,
+    consumed: PerId<Good, f32>,
     produced_by: BTreeMap<(Producer, Good), f32>,
-    consumed_by: [[f32; N]; Use::COUNT],
+    consumed_by: [PerId<Good, f32>; Use::COUNT],
 }
 
 impl Open {
     fn at(day: u64, s: &Stores) -> Self {
-        Open { day, produced: s.produced_total, consumed: s.consumed_total, produced_by: s.produced_by.clone(), consumed_by: s.consumed_by }
+        Open { day, produced: s.produced_total.clone(), consumed: s.consumed_total.clone(), produced_by: s.produced_by.clone(), consumed_by: s.consumed_by.clone() }
     }
 }
 
@@ -51,9 +49,9 @@ pub struct Census {
 pub struct ColonyDay {
     pub day: u64,
     pub census: Census,
-    pub produced: [f32; N],
-    pub consumed: [f32; N],
-    pub stock: [f32; N],
+    pub produced: PerId<Good, f32>,
+    pub consumed: PerId<Good, f32>,
+    pub stock: PerId<Good, f32>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -85,23 +83,23 @@ impl Ledger {
         let census = census();
         let day = open.day;
         let span = (today - day) as f32;
-        let stock: [f32; N] = std::array::from_fn(|i| stores.amount(Good::ALL[i]));
-        let produced: [f32; N] = std::array::from_fn(|i| (stores.produced_total[i] - open.produced[i]).max(0.0) / span);
-        let consumed: [f32; N] = std::array::from_fn(|i| (stores.consumed_total[i] - open.consumed[i]).max(0.0) / span);
+        let stock: PerId<Good, f32> = PerId::from_fn(|g| stores.amount(g));
+        let produced: PerId<Good, f32> = PerId::from_fn(|g| (stores.produced_total[g] - open.produced[g]).max(0.0) / span);
+        let consumed: PerId<Good, f32> = PerId::from_fn(|g| (stores.consumed_total[g] - open.consumed[g]).max(0.0) / span);
         let produced_by: Vec<(Producer, Good, f32)> = stores
             .produced_by
             .iter()
             .map(|(&(p, g), &total)| (p, g, (total - open.produced_by.get(&(p, g)).copied().unwrap_or(0.0)).max(0.0) / span))
             .filter(|e| e.2 > 0.0)
             .collect();
-        let consumed_by: [[f32; N]; Use::COUNT] =
-            std::array::from_fn(|u| std::array::from_fn(|i| (stores.consumed_by[u][i] - open.consumed_by[u][i]).max(0.0) / span));
+        let consumed_by: [PerId<Good, f32>; Use::COUNT] =
+            std::array::from_fn(|u| PerId::from_fn(|g| (stores.consumed_by[u][g] - open.consumed_by[u][g]).max(0.0) / span));
         for d in day..today {
-            self.days.push_back(DaySample { day: d, produced, consumed, stock, produced_by: produced_by.clone(), consumed_by });
+            self.days.push_back(DaySample { day: d, produced: produced.clone(), consumed: consumed.clone(), stock: stock.clone(), produced_by: produced_by.clone(), consumed_by: consumed_by.clone() });
             if self.days.len() > HISTORY_DAYS {
                 self.days.pop_front();
             }
-            self.colony.push_back(ColonyDay { day: d, census, produced, consumed, stock });
+            self.colony.push_back(ColonyDay { day: d, census, produced: produced.clone(), consumed: consumed.clone(), stock: stock.clone() });
             if self.colony.len() > COLONY_DAYS {
                 self.colony.pop_front();
             }
@@ -125,7 +123,7 @@ impl Ledger {
     }
 
     pub fn out_for(&self, g: Good, use_: Use) -> f32 {
-        self.mean(|d| d.consumed_by[use_.index()][g.index()])
+        self.mean(|d| d.consumed_by[use_.index()][g])
     }
 
     fn mean(&self, f: impl Fn(&DaySample) -> f32) -> f32 {
@@ -137,11 +135,11 @@ impl Ledger {
     }
 
     pub fn in_per_day(&self, g: Good) -> f32 {
-        self.mean(|d| d.produced[g.index()])
+        self.mean(|d| d.produced[g])
     }
 
     pub fn out_per_day(&self, g: Good) -> f32 {
-        self.mean(|d| d.consumed[g.index()])
+        self.mean(|d| d.consumed[g])
     }
 
     pub fn net_per_day(&self, g: Good) -> f32 {
@@ -157,4 +155,3 @@ impl Ledger {
         !self.days.is_empty()
     }
 }
-

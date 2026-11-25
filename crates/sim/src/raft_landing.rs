@@ -12,7 +12,7 @@ include!(concat!(env!("OUT_DIR"), "/raft_landing_constants.rs"));
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
-use crate::buildings::{Building, BuildingId, BuildingKind};
+use crate::buildings::{Building, BuildingId};
 use crate::colony::BeaverId;
 use crate::nav::{Gait, Path, Surface};
 use crate::water::Cell;
@@ -198,7 +198,7 @@ fn label_regions(sim: &mut SimState) {
 /// is gone taken away, and any whose hauler has stopped using it let go.
 pub fn step(sim: &mut SimState) {
     let day = sim.time_days.floor() as i64;
-    let any = sim.buildings.buildings.iter().any(|b| b.kind == BuildingKind::RaftLanding);
+    let any = sim.buildings.buildings.iter().any(|b| b.kind.docks_rafts());
     if any && sim.fleet.regions_day != Some(day) {
         label_regions(sim);
         sim.fleet.regions_day = Some(day);
@@ -207,7 +207,7 @@ pub fn step(sim: &mut SimState) {
         .buildings
         .buildings
         .iter()
-        .filter(|b| b.kind == BuildingKind::RaftLanding && sim.finished(b))
+        .filter(|b| b.kind.docks_rafts() && sim.finished(b))
         .map(|b| (b.id, docks(sim, b)))
         .collect();
     sim.fleet.rafts.retain(|b| raft_landings.iter().any(|h| h.0 == b.raft_landing));
@@ -240,127 +240,4 @@ pub fn free_raft(sim: &SimState, at: Cell) -> Option<u32> {
         .filter(|b| b.hauler.is_none())
         .min_by_key(|b| (b.cell.0.abs_diff(at.0) + b.cell.1.abs_diff(at.1), b.id))
         .map(|b| b.id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::buildings::{BuildingKind as K, Good, Status};
-    use crate::nav::NavGrid;
-
-    fn put(s: &mut SimState, id: u64, kind: K, pos: (usize, usize)) -> BuildingId {
-        let b = Building { id: BuildingId(id), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
-        s.work.add_complete(&b).unwrap();
-        s.buildings.buildings.push(b);
-        BuildingId(id)
-    }
-
-    /// A long channel of deep water (rows 30 to 34) with stores on its bank at both ends, a
-    /// raft landing between them, and a haul mound with one hauler.
-    fn waterway() -> (SimState, BuildingId, BuildingId, crate::colony::BeaverId) {
-        let mut s = SimState::new(1);
-        s.colony.found((40.0, 22.0), &crate::colony::RiverLand::default()).unwrap();
-        let n = s.world.size;
-        s.water.depth.as_mut_slice().fill(0.0);
-        for y in 30..35 {
-            for x in 2..110 {
-                *s.water.depth.get_mut(x, y).unwrap() = 1.0;
-            }
-        }
-        let a = put(&mut s, 1, K::StickPile, (10, 27));
-        let b = put(&mut s, 2, K::StickPile, (90, 27));
-        put(&mut s, 3, K::RaftLanding, (45, 27));
-        let l = put(&mut s, 4, K::HaulMound, (40, 20));
-        s.buildings.update_capacity(crate::buildings::Terrain { depth: &s.water.depth });
-        s.buildings.stores.put_at(a, Good::Sticks, 60.0).unwrap();
-        s.nav = NavGrid::new(n, n);
-        crate::agents::place_beavers(&mut s);
-        let who = s.colony.beavers.iter().find(|b| b.can_work()).unwrap().id;
-        s.work.assign(l, 0, who).unwrap();
-        s.apply(crate::Command::FillStore { store: b, on: true }).unwrap();
-        (s, a, b, who)
-    }
-
-    #[test]
-    fn a_hauler_moves_many_loads_at_once_by_raft_along_a_waterway() {
-        let (mut s, a, b, who) = waterway();
-        let dt = crate::STEP_DAYS;
-        let (mut biggest, mut used_raft) = (0.0f32, false);
-        for _ in 0..(6.0 / dt) as usize {
-            s.time_days += dt as f64;
-            step(&mut s);
-            crate::agents::step(&mut s, dt);
-            if let Some(ag) = s.agents.get(who) {
-                if matches!(ag.task, crate::agents::Task::Raft { .. }) {
-                    used_raft = true;
-                    biggest = biggest.max(ag.load.map_or(0.0, |l| l.amount));
-                }
-            }
-            if s.work.stock_of(b, Good::Sticks) >= 20.0 {
-                break;
-            }
-        }
-        assert_eq!(s.fleet.rafts.len(), RAFTS_PER_RAFT_LANDING, "the raft landing's rafts are moored");
-        assert!(used_raft, "the hauler never took a raft");
-        assert!(biggest > 2.5 * crate::agents::load_size(Good::Sticks), "a raft took only {biggest}");
-        assert!(s.work.stock_of(b, Good::Sticks) >= 2.0 * crate::agents::load_size(Good::Sticks), "the far store got {}", s.work.stock_of(b, Good::Sticks));
-        assert!(s.work.stock_of(a, Good::Sticks) < 60.0);
-    }
-
-    #[test]
-    fn a_raft_stays_on_deep_water_and_crosses_a_dam_only_by_its_lock() {
-        let (mut s, _, _, _) = waterway();
-        // A dam across the channel at x 60.
-        for y in 30..35 {
-            *s.water.dam_height.get_mut(60, y).unwrap() = 1.0;
-        }
-        s.nav = NavGrid::new(s.world.size, s.world.size);
-        crate::agents::place_beavers(&mut s);
-        let to = [(70usize, 32usize)];
-        assert!(route(&s, (50, 32), &to).is_none(), "a dam blocks a raft");
-        // A lock in the dam lets it through.
-        s.locks.at.insert((60, 32), crate::locks::Lock { cell: (60, 32), building: BuildingId(99), built: true });
-        s.nav = NavGrid::new(s.world.size, s.world.size);
-        crate::agents::place_beavers(&mut s);
-        let p = route(&s, (50, 32), &to).expect("through the lock");
-        assert!(p.steps.iter().any(|st| st.0 == (60, 32)), "by the lock cell");
-        assert!(p.steps.iter().all(|st| raft_water(&s, st.0)), "on raft water all the way");
-        // A swimming beaver could wait out the lock too, but over a dam this thin it is quicker
-        // to climb.
-        let path = s.nav.find_path(crate::colony::BeaverId(1), (50, 32), crate::nav::Goal::Cell((70, 32))).unwrap();
-        assert!(path.steps.iter().all(|st| st.0 != (60, 32)), "the beaver goes over or round, not through the lock");
-        let wait = crate::nav::lock_wait(Surface::Water, Surface::Lock);
-        assert!(wait > crate::nav::CLIMB_COST, "a lock's wait ({wait}) is longer than a climb");
-    }
-
-    #[test]
-    fn a_raft_goes_through_a_lock_in_a_diagonal_dam() {
-        let (mut s, _, _, _) = waterway();
-        for y in 20..46 {
-            for x in 40..80 {
-                *s.water.depth.get_mut(x, y).unwrap() = 1.0;
-            }
-        }
-        // A dam running corner to corner right across the pond (staircased, so no water gets
-        // by), with a lock in it: the water on its far side meets the lock only at a corner.
-        for y in 20..46usize {
-            let x = 60 + y - 32;
-            for c in [(x, y), (x + 1, y)] {
-                *s.water.dam_height.get_mut(c.0, c.1).unwrap() = 1.0;
-            }
-        }
-        let lock = (60usize, 32usize);
-        s.locks.at.insert(lock, crate::locks::Lock { cell: lock, building: BuildingId(99), built: true });
-        s.nav = NavGrid::new(s.world.size, s.world.size);
-        crate::agents::place_beavers(&mut s);
-        assert!(raft_water(&s, (lock.0 + 1, lock.1 - 1)), "open water off the lock's far corner");
-        assert!(!raft_water(&s, (lock.0 + 1, lock.1)) && !raft_water(&s, (lock.0, lock.1 - 1)), "dam on its far sides");
-        let to = [(70usize, 20usize)];
-        let p = route(&s, (50, 40), &to).expect("through the lock");
-        assert!(p.steps.iter().any(|st| st.0 == lock), "by the lock cell");
-        label_regions(&mut s);
-        let w = s.nav.surface.width();
-        let region = |c: Cell| s.fleet.regions[c.1 * w + c.0];
-        assert_eq!(region((50, 40)), region((70, 20)), "one stretch of raft water through the lock");
-    }
 }

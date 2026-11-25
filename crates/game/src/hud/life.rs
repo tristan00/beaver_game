@@ -24,7 +24,7 @@ const COL_MAX: f32 = 430.0;
 pub(super) fn page_name(s: &sim::SimState, p: Page) -> String {
     match p {
         Page::Beaver(id) => name_of(s, id),
-        Page::Lodge(l) => s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map_or_else(|| "Lodge".to_string(), |f| format!("{} family", f.name)),
+        Page::Lodge(l) => s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| format!("{} family", f.name)),
     }
 }
 
@@ -36,7 +36,6 @@ pub(super) fn page_controls(c: &Ctx, r: &mut Ui, close: HudAction) {
     r.close_button(close, c.hud.back.is_empty());
 }
 
-
 fn when(day: f64) -> String {
     date(day)
 }
@@ -44,7 +43,6 @@ fn when(day: f64) -> String {
 fn years(days: f64) -> String {
     span(days)
 }
-
 
 fn cause(c: DeathCause) -> &'static str {
     match c {
@@ -155,7 +153,7 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     let mood = factor(Tip::name("Mood").line("Toward", pts(r.mood_to)), "Health", r.mood_health);
     meter(u, mi, mc, "Mood", b.mood, factor(mood, "Work", sim::society::work_speed(b.mood)));
     let n = &b.needs;
-    let food = Tip::name("Food").line("Hunger", per_day(-r.hunger)).line("Eats below", pts(r.eat_below));
+    let food = Tip::name(sim::buildings::Good::food().name()).line("Hunger", per_day(-r.hunger)).line("Eats below", pts(r.eat_below));
     let mut rest = factor(Tip::name("Rest").line("Now", per_day(r.rest)), "Sleep", r.sleep);
     if r.resting {
         rest = rest.line("Resting", "");
@@ -175,7 +173,7 @@ fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     }
     let company = Tip::name("Company").line("Toward", pts(r.social_to)).line("Lodge-mates", format!("{}", r.mates));
     for (icon, col, name, v, tip) in [
-        (Icon::Food, good_color(sim::buildings::Good::Food), "Food", n.food, food),
+        (crate::hud::words::good_icon(sim::buildings::Good::food()), good_color(sim::buildings::Good::food()), sim::buildings::Good::food().name(), n.food, food),
         (Icon::Idle, REST, "Rest", n.rest, rest),
         (Icon::Winter, MUTED, "Warmth", n.warmth, warmth),
         (Icon::Home, MUD, "Safety", n.safety, safety),
@@ -205,7 +203,7 @@ fn work(c: &Ctx, u: &mut Ui, b: &Beaver) {
     let (ai, ac, doing) = super::inspect::activity(s, b);
     fact(u, ai, ac, "Now", doing.to_string());
     let job = sim::lives::job_of(s, b.id);
-    fact(u, job.map_or(Icon::Idle, role_kind_icon), INK, "Job", job.map_or("Free".to_string(), |r| role_kind_name(r).to_string()));
+    fact(u, job.map_or(Icon::Idle, job_icon), INK, "Job", job.map_or("Free".to_string(), |r| r.name().to_string()));
     if let Some((pace, tip)) = super::ledger::pace(s, b) {
         u.row(8.0, |r| {
             r.icon(Icon::Fast2, 15.0, INK);
@@ -230,7 +228,7 @@ fn work(c: &Ctx, u: &mut Ui, b: &Beaver) {
             u.row(8.0, |r| {
                 r.icon(good_icon(l.good), 15.0, good_color(l.good));
                 r.text("Carrying".to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
-                r.text(format!("{} {}", num(l.amount), good_name(l.good)), 12.0, INK);
+                r.text(format!("{} {}", num(l.amount), l.good.name()), 12.0, INK);
             })
             .tip(factor(Tip::name("Carrying"), "Walk", sim::agents::travel_pace(&s.nav, a)));
         }
@@ -275,8 +273,8 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         r.bold("Family".to_string(), 14.0, INK);
         r.spacer();
         match b.and_then(|b| b.lodge) {
-            Some(l) => r.small_button(Some(Icon::Lodge), Some("Family tree"), Some(HudAction::LodgePage(Some(l))), Tip::name("Family page").line("Who lives in its lodge, and the family tree", ""), Small::Idle),
-            None => r.small_button(Some(Icon::Lodge), Some("Family tree"), None, Tip::name("Family page").line("No home: a family page belongs to a lodge", ""), Small::Idle),
+            Some(l) => r.small_button(Some(crate::hud::words::building_icon(sim::buildings::BuildingKind::home())), Some("Family tree"), Some(HudAction::LodgePage(Some(l))), Tip::name("Family page").line("Who lives in its lodge, and the family tree", ""), Small::Idle),
+            None => r.small_button(Some(crate::hud::words::building_icon(sim::buildings::BuildingKind::home())), Some("Family tree"), None, Tip::name("Family page").line("No home: a family page belongs to a lodge", ""), Small::Idle),
         };
     });
     let all = kin::everyone(s);
@@ -345,11 +343,11 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         kin_row(u, s, o, word, litter, litter_tip(s, &all, theirs), format!("{}{since}{home}", about(s, o)));
     }
     u.rule();
-    heading(u, Icon::Lodge, "Home");
+    heading(u, crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), "Home");
     match b.and_then(|b| b.lodge).and_then(|l| s.colony.lodges.iter().find(|x| x.id == l)) {
         Some(l) => {
             let fam = s.colony.family(l.family).map(|f| f.name.clone()).unwrap_or_default();
-            fact(u, Icon::Lodge, MUD, "Lodge", fam);
+            fact(u, crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD, sim::buildings::BuildingKind::home().name(), fam);
             if let Some(d) = life.and_then(|l| l.home_since()) {
                 fact(u, Icon::Hourglass, MUTED, "Since", when(d));
             }
@@ -363,18 +361,18 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
 fn skills(c: &Ctx, u: &mut Ui, b: &Beaver) {
     heading(u, Icon::Jobs, "Skills");
     let rec = c.s.deeds.get(b.id);
-    for j in Job::ALL {
-        let v = b.skills[j.index()];
-        let mut tip = Tip::name(job_name(j)).with_value(format!("{:.0}", v * 100.0));
-        if job_speeds(j) {
+    for j in Job::all() {
+        let v = b.skills[j];
+        let mut tip = Tip::name(j.row().skill.as_str()).with_value(format!("{:.0}", v * 100.0));
+        if j.row().skill_speeds {
             tip = tip.line("Work", format!("×{:.2}", sim::agents::work_factors(b, j).skill_x));
         }
-        if let Some(d) = rec.map(|r| r.days[j.index()] as f64).filter(|d| *d >= 1.0) {
+        if let Some(d) = rec.map(|r| r.days[j] as f64).filter(|d| *d >= 1.0) {
             tip = tip.line("Time at it", years(d));
         }
         u.row(8.0, |r| {
             r.icon(job_icon(j), 15.0, INK);
-            r.text(job_name(j).to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
+            r.text(j.row().skill.as_str().to_string(), 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
             r.ticks(v.clamp(0.0, 1.0), 10, 120.0, 9.0, GOOD);
             r.spacer();
             r.bold(format!("{:.0}", v * 100.0), 12.0, INK);
@@ -406,9 +404,9 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
         if r.great_trees > 0 {
             t = t.line("Great old trees", format!("{}", r.great_trees));
         }
-        chips.push((Icon::Tree, GOOD, format!("{felled}"), t));
+        chips.push((crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()), GOOD, format!("{felled}"), t));
     }
-    let food = r.gathered[Good::Food.index()];
+    let food = r.gathered[Good::food()];
     if food >= 1.0 {
         let mut t = Tip::name("Food gathered");
         for (p, f) in &r.harvested {
@@ -420,12 +418,12 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
         if r.winter_food >= 1.0 {
             t = t.line("In winter", n(r.winter_food));
         }
-        chips.push((good_icon(Good::Food), good_color(Good::Food), n(food), t));
+        chips.push((good_icon(Good::food()), good_color(Good::food()), n(food), t));
     }
-    for g in [Good::Sticks, Good::Mud, Good::Pebbles] {
-        let v = r.gathered[g.index()];
+    for g in Good::all().filter(|g| !g.row().edible) {
+        let v = r.gathered[g];
         if v >= 1.0 {
-            chips.push((good_icon(g), good_color(g), n(v), Tip::name(match g { Good::Sticks => "Sticks gathered", Good::Mud => "Mud dug", _ => "Pebbles gathered" })));
+            chips.push((good_icon(g), good_color(g), n(v), Tip::name(format!("{} gathered", g.name()))));
         }
     }
     // Carried on foot, by what and where to.
@@ -435,15 +433,15 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
         let mut rows: Vec<(&(Good, sim::buildings::BuildingKind), &f32)> = r.carried.iter().collect();
         rows.sort_by(|a, b| b.1.total_cmp(a.1));
         for ((g, k), v) in rows.into_iter().take(8) {
-            t = t.line(format!("{} → {}", good_name(*g), k.spec().name), n(*v));
+            t = t.line(format!("{} → {}", g.name(), k.spec().name.as_str()), n(*v));
         }
         chips.push((Icon::Haul, INK, n(carried), t));
     }
     let rafted = r.rafted_total();
     if rafted >= 1.0 {
         let mut t = Tip::name("Moved by raft");
-        for g in Good::ALL.into_iter().filter(|g| r.rafted[g.index()] >= 1.0) {
-            t = t.line(good_name(g), n(r.rafted[g.index()]));
+        for g in Good::all().filter(|&g| r.rafted[g] >= 1.0) {
+            t = t.line(g.name(), n(r.rafted[g]));
         }
         chips.push((Icon::Raft, WATER, n(rafted), t));
     }
@@ -461,15 +459,15 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
     };
     if r.dam_loads > 0 {
         let mut t = Tip::name("Dam loads packed");
-        let mut dams: Vec<_> = r.works.iter().filter(|(_, w)| w.kind == Some(sim::buildings::BuildingKind::Dam) && w.loads > 0).collect();
+        let mut dams: Vec<_> = r.works.iter().filter(|(_, w)| w.kind == Some(sim::buildings::BuildingKind::dam()) && w.loads > 0).collect();
         dams.sort_by(|a, b| b.1.loads.cmp(&a.1.loads));
         for (b, w) in dams.into_iter().take(6) {
             t = t.line(structure(*b, w.kind), format!("{}", w.loads));
         }
-        chips.push((Icon::Dam, MUD, format!("{}", r.dam_loads), t));
+        chips.push((crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), MUD, format!("{}", r.dam_loads), t));
     }
     if r.canal_cells > 0 {
-        chips.push((Icon::Canal, WATER, format!("{}", r.canal_cells), Tip::name("Canal cells dug")));
+        chips.push((crate::hud::words::building_icon(sim::buildings::BuildingKind::canal()), WATER, format!("{}", r.canal_cells), Tip::name("Canal cells dug")));
     }
     if r.gates > 0 {
         chips.push((Icon::Lock, INK, format!("{}", r.gates), Tip::name("Gates set")));
@@ -478,7 +476,7 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
     if built > 0 {
         let mut t = Tip::name("Buildings raised");
         for (k, v) in r.built.iter().filter(|(k, _)| !k.is_waterworks()) {
-            t = t.line(k.spec().name, format!("{v}"));
+            t = t.line(k.spec().name.as_str(), format!("{v}"));
         }
         chips.push((Icon::Building, MUD, format!("{built}"), t));
     }
@@ -499,10 +497,10 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
         if r.grown > 0 {
             t = t.line("Grown into trees", format!("{}", r.grown));
         }
-        chips.push((Icon::Sapling, GOOD, format!("{}", r.planted), t));
+        chips.push((crate::hud::words::good_icon(sim::buildings::Good::seedling()), GOOD, format!("{}", r.planted), t));
     }
     if r.seedlings > 0 {
-        chips.push((Icon::Plant, GOOD, format!("{}", r.seedlings), Tip::name("Seedlings collected")));
+        chips.push((crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)), GOOD, format!("{}", r.seedlings), Tip::name("Seedlings collected")));
     }
     if r.wolves > 0 {
         let mut t = Tip::name("Wolves spotted");
@@ -554,15 +552,15 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
             }
             What::Joined => (Icon::Beaver, GOOD, "Joined the colony as a newcomer".into()),
             What::Grew(st) => (stage_icon(st), INK, format!("Grew up: {}", stage_word(st).to_lowercase())),
-            What::Job(Some(r)) => (role_kind_icon(r), INK, format!("Became a {}", role_kind_name(r).to_lowercase())),
+            What::Job(Some(r)) => (job_icon(r), INK, format!("Became a {}", r.name().to_lowercase())),
             What::Job(None) => (Icon::Idle, ACCENT, "Left free of work".into()),
             What::Partner(Some(p)) => (Icon::MoodGood, GOOD, format!("Paired with {}", name_of(s, p))),
             What::Partner(None) => (Icon::MoodBad, MUTED, format!("Lost {her} partner")),
             What::Moved(Some(l)) => {
                 let fam = s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map(|f| f.name.clone()).unwrap_or_else(|| "a lodge".into());
-                (Icon::Lodge, MUD, format!("Moved into the {fam} lodge"))
+                (crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD, format!("Moved into the {fam} lodge"))
             }
-            What::Moved(None) => (Icon::Lodge, MUTED, format!("Left {her} lodge")),
+            What::Moved(None) => (crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUTED, format!("Left {her} lodge")),
             What::Died(cause_of) => (Icon::Cross, BAD, format!("Died of {}", cause(cause_of))),
             What::Left => (Icon::Walk, MUTED, "Left the colony".into()),
         };

@@ -1,10 +1,8 @@
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::{islands, structures};
-use super::scene::StructKind;
+use sim::buildings::BuildingKind;
 use bevy::prelude::*;
 use std::f32::consts::TAU;
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
 
 pub const HEAD_PIVOT: Vec3 = Vec3::new(0.0, 0.85, 0.62);
 pub const TAIL_PIVOT: Vec3 = Vec3::new(0.0, 0.36, -0.6);
@@ -15,6 +13,8 @@ pub const CHEST_HOLD: Vec3 = Vec3::new(0.0, 0.45, 0.85);
 pub const MOUTH: Vec3 = Vec3::new(0.0, -0.28, 0.72);
 
 use crate::palette::{self, pack};
+use crate::seasonal::smooth as smooth01;
+use super::meshgen::v;
 const FUR: u32 = pack(palette::FUR);
 const FUR_DARK: u32 = pack(palette::FUR_DARK);
 const FUR_LIGHT: u32 = pack(palette::FUR_LIGHT);
@@ -32,11 +32,6 @@ fn fur_paint(n: Vec3, old: [f32; 3]) -> [f32; 3] {
     let up = n.y;
     let c = if up > 0.0 { mix(side, back, smooth01(0.1, 0.8, up)) } else { mix(side, belly, smooth01(0.05, 0.6, -up)) };
     mix(old, c, 0.85)
-}
-
-fn smooth01(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 pub fn beaver_body(mb: &mut Mb, o: Vec3) { beaver_body_d(mb, o, true) }
@@ -312,37 +307,35 @@ pub(super) fn branch(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, leaf: [f32; 3], seed
     }
 }
 
-pub fn footing_of(kind: StructKind) -> Option<structures::Footing> {
+/// A building's footing, as its row gives it.
+pub fn footing_of(kind: BuildingKind) -> Option<structures::Footing> {
     use structures::Footing::*;
-    Some(match kind {
-        StructKind::Lodge => Mound(3.3),
-        // Islands in the shallows, heaped up from the bed.
-        StructKind::StickPile => Mound(2.6),
-        StructKind::FoodCache => Mound(1.5),
-        StructKind::PebbleHeap => Mound(1.6),
-        StructKind::HaulMound => Mound(1.7),
-        StructKind::Lookout => Mound(1.5),
-        StructKind::Forester => Ring(1.75),
-        StructKind::RaftLanding => Piles(2.9, 2.5),
-        _ => return None,
+    let row = kind.row();
+    let (x, z) = row.footing_size;
+    Some(match row.footing.as_deref()? {
+        "mound" => Mound(x),
+        "ring" => Ring(x),
+        "piles" => Piles(x, z),
+        f => panic!("building {}: no footing {f}", kind.key()),
     })
 }
 
-pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
+pub fn struct_mesh(kind: BuildingKind, len: f32, stage: u8) -> Mesh {
     let mut mb = Mb::new();
     let dry = stage == DRY_STAGE;
     let f = if dry { 1.0 } else { stage.min(STAGES) as f32 / STAGES as f32 };
-    match kind {
-        StructKind::Lodge => lodge(&mut mb, f),
-        StructKind::Dam => dam(&mut mb, len, f),
-        StructKind::Canal => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
-        StructKind::StickPile => islands::cache_island(&mut mb, f),
-        StructKind::FoodCache => islands::feed_pile(&mut mb, f),
-        StructKind::PebbleHeap => islands::stone_cache(&mut mb, f),
-        StructKind::Forester => islands::willow_shallows(&mut mb, f),
-        StructKind::HaulMound => islands::haul_island(&mut mb, f),
-        StructKind::Lookout => islands::watch_mound(&mut mb, f),
-        StructKind::RaftLanding => structures::raft_landing(&mut mb, f),
+    match kind.row().model.as_str() {
+        "lodge" => lodge(&mut mb, f),
+        "dam" => dam(&mut mb, len, f),
+        "canal" => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
+        "cache_island" => islands::cache_island(&mut mb, f),
+        "feed_pile" => islands::feed_pile(&mut mb, f),
+        "stone_cache" => islands::stone_cache(&mut mb, f),
+        "willow_shallows" => islands::willow_shallows(&mut mb, f),
+        "haul_island" => islands::haul_island(&mut mb, f),
+        "watch_mound" => islands::watch_mound(&mut mb, f),
+        "raft_landing" => structures::raft_landing(&mut mb, f),
+        m => panic!("building {}: no model {m}", kind.key()),
     }
     if let Some(fo) = footing_of(kind) {
         let (hx, hz) = match fo {
@@ -360,7 +353,7 @@ pub fn struct_mesh(kind: StructKind, len: f32, stage: u8) -> Mesh {
     mb.build()
 }
 
-pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
+pub fn reinforcement_mesh(kind: BuildingKind) -> Mesh {
     let mut mb = Mb::new();
     let (dark, light) = (col(palette::MUD_DARK), col(palette::DAM_MUD));
     let stone = (hex(0x77777c), hex(0xb7b5b2));
@@ -396,7 +389,7 @@ pub fn reinforcement_mesh(kind: StructKind) -> Mesh {
 }
 
 /// Grey pebbles set shoulder to shoulder round the footing.
-pub fn pebble_facing_mesh(kind: StructKind) -> Mesh {
+pub fn pebble_facing_mesh(kind: BuildingKind) -> Mesh {
     let mut mb = Mb::new();
     let (dark, light) = (hex(0x6e6e74), hex(0xc2c0bc));
     let mut r = Rng(77);
@@ -535,10 +528,9 @@ fn canal(mb: &mut Mb, len: f32, stage: u8) {
 
 /// What a beaver carries in its teeth, centred on the mouth.
 pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
-    use sim::buildings::Good;
     let mut mb = Mb::new();
-    match good {
-        Good::Sticks => {
+    match good.row().model.as_str() {
+        "sticks" => {
             for (i, dy) in [-0.02f32, 0.05, 0.12].iter().enumerate() {
                 let k = i as f32 - 1.0;
                 stick(&mut mb, v(-0.55, 0.04 + dy, -0.06 + k * 0.05), v(0.55, 0.08 + dy, -0.06 - k * 0.07), 0.035, 0.3 + 0.3 * i as f32);
@@ -546,47 +538,47 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid(v(0.5, 0.16, -0.1), v(0.1, 0.03, 0.06), col(palette::LEAF_LIGHT));
             mb.ellipsoid(v(-0.5, 0.16, -0.02), v(0.1, 0.03, 0.06), col(palette::LEAF));
         }
-        Good::Mud => {
+        "mud" => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.2, 0.15, 0.17), col(palette::MUD_DARK), hex(0x80603f), 8, 5);
         }
-        Good::Pebbles => {
+        "pebbles" => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.18, 0.13, 0.15), hex(0x66666b), hex(0xb5b3ae), 7, 5);
         }
         // A rooted sapling held by the stem, leaves up.
-        Good::Saplings => sapling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
+        "saplings" => sapling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
         // A leafy sprig held crosswise.
-        Good::Food => {
+        "food" => {
             stick_c(&mut mb, v(-0.4, 0.0, 0.0), v(0.4, 0.05, 0.02), 0.025, hex(0x6f8a3a));
             for k in 0..5 {
                 let x = -0.35 + k as f32 * 0.175;
                 mb.ellipsoid_r(v(x, 0.06, 0.04 * (k % 2) as f32), v(0.12, 0.03, 0.07), Quat::from_rotation_y(0.5 * (k as f32 - 2.0)), mix(col(palette::LEAF), col(palette::LEAF_LIGHT), 0.25 * (k % 3) as f32));
             }
         }
+        m => panic!("good {}: no model {m}", good.key()),
     }
     mb.build()
 }
 
 /// What a beaver hugs in its forepaws, centred on the hold point.
 pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
-    use sim::buildings::Good;
     let mut mb = Mb::new();
-    match good {
-        Good::Sticks => {
+    match good.row().model.as_str() {
+        "sticks" => {
             for k in 0..3 {
                 let y = k as f32 * 0.07 - 0.07;
                 stick(&mut mb, v(-0.45, y, 0.0), v(0.45, y + 0.03, 0.02 * k as f32), 0.04, 0.3 * k as f32);
             }
         }
-        Good::Mud => {
+        "mud" => {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.26, 0.22, 0.22), col(palette::MUD_WET), col(palette::DAM_MUD), 9, 6);
             mb.ellipsoid(v(0.08, 0.13, 0.05), v(0.1, 0.06, 0.08), hex(0x6a4c33));
         }
-        Good::Pebbles => {
+        "pebbles" => {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.27, 0.2, 0.22), hex(0x5f5f64), hex(0xbab8b3), 8, 5);
         }
         // Held slanted across the chest so the leaves stand clear of the head.
-        Good::Saplings => sapling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
-        Good::Food => {
+        "saplings" => sapling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
+        "food" => {
             for k in 0..3 {
                 let a = (k as f32 - 1.0) * 0.35;
                 let d = v(a.sin(), 0.25, a.cos() * 0.3).normalize() * 0.4;
@@ -594,6 +586,7 @@ pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
                 mb.ellipsoid_g(d * 0.85, v(0.16, 0.1, 0.14), col(palette::LEAF), col(palette::LEAF_LIGHT), 7, 4);
             }
         }
+        m => panic!("good {}: no model {m}", good.key()),
     }
     mb.build()
 }
@@ -630,22 +623,21 @@ fn stump_low() -> Mb {
 
 /// Goods lying on the ground, about one load's worth; scaled with the amount.
 pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
-    use sim::buildings::Good;
     let mut mb = Mb::new();
-    match good {
-        Good::Sticks => stick_pile(&mut mb, v(0.0, 0.0, 0.0), 0.4, 7, 11),
-        Good::Mud => {
+    match good.row().model.as_str() {
+        "sticks" => stick_pile(&mut mb, v(0.0, 0.0, 0.0), 0.4, 7, 11),
+        "mud" => {
             for (x, z, r, h) in [(0.0f32, 0.0f32, 0.42f32, 0.2f32), (0.3, 0.22, 0.25, 0.14), (-0.28, 0.18, 0.22, 0.12)] {
                 mb.ellipsoid_g(v(x, 0.0, z), v(r, h, r * 0.85), col(palette::MUD_DARK), hex(0x80603f), 9, 5);
             }
         }
-        Good::Pebbles => {
+        "pebbles" => {
             for (k, (x, z)) in [(0.0f32, 0.0f32), (0.22, 0.12), (-0.2, 0.15), (0.05, -0.22), (-0.15, -0.12)].into_iter().enumerate() {
                 let r = 0.14 + 0.03 * (k % 2) as f32;
                 mb.ellipsoid_g(v(x, r * 0.6, z), v(r, r * 0.75, r * 0.9), hex(0x66666b), hex(0xb5b3ae), 7, 5);
             }
         }
-        Good::Saplings => {
+        "saplings" => {
             for k in 0..3 {
                 let x = -0.2 + 0.2 * k as f32;
                 sapling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
@@ -654,7 +646,7 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
         // A cache of cut food left on the ground, made to read apart from a growing plant: a patch
         // of trodden earth, cut branches laid crosswise (peeled white and in their bark), curls
         // of stripped bark, and bundled greens heaped in a mound on top.
-        Good::Food => {
+        "food" => {
             mb.disc(v(0.0, 0.015, 0.0), 0.56, 0.5, mix(col(palette::MUD_DARK), col(palette::BARK), 0.3), 14);
             let mut r = Rng(77);
             for k in 0..6 {
@@ -673,6 +665,7 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
                 mb.ellipsoid_g(v(x, y, z), v(0.18 * k, 0.11 * k, 0.15 * k), dark, col(palette::LEAF_LIGHT), 7, 5);
             }
         }
+        m => panic!("good {}: no model {m}", good.key()),
     }
     mb.build()
 }

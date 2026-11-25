@@ -6,7 +6,6 @@ use bevy::prelude::*;
 use sim::colony::{BeaverId, LodgeId};
 use sim::grid::HeightGrid;
 use sim::worldgen::World;
-use std::collections::VecDeque;
 
 pub type Cell = (usize, usize);
 
@@ -142,13 +141,9 @@ pub use sim::site::{can_settle, score as site_hint, SettleError};
 pub struct Flow {
     pub phase: Phase,
     pub focus: Option<Vec3>,
-    pub message: String,
-    pub log: VecDeque<String>,
-    pub history: Vec<(f64, usize, f32)>,
     pub real_secs: f32,
     pub generation: u32,
     pub settled_at: Option<f32>,
-    pub lodge_cell: Option<Cell>,
     /// A new colony has just settled: the HUD shows its one welcome card.
     pub welcome: bool,
 }
@@ -158,21 +153,10 @@ impl Flow {
         Flow {
             phase: Phase::Scouting,
             focus: None,
-            message: String::new(),
-            log: VecDeque::new(),
-            history: Vec::new(),
             real_secs: 0.0,
             generation: 0,
             settled_at: None,
-            lodge_cell: None,
             welcome: false,
-        }
-    }
-
-    pub fn push_log(&mut self, s: impl Into<String>) {
-        self.log.push_back(s.into());
-        while self.log.len() > 40 {
-            self.log.pop_front();
         }
     }
 
@@ -204,13 +188,9 @@ pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     let pos = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
     flow.fire(FlowEvent::Settle);
     flow.settled_at = Some(flow.real_secs);
-    flow.lodge_cell = Some(cell);
     let n = sim.colony.beavers.len().max(1) as f32;
     let centre = sim.colony.beavers.iter().fold((0.0, 0.0), |p, b| (p.0 + b.pos.0 / n, p.1 + b.pos.1 / n));
     flow.focus = Some(cell_world(&sim.height, if n > 0.0 { centre } else { pos }));
-    let name = sim.colony.families.first().map(|f| f.name.clone()).unwrap_or_default();
-    flow.push_log(format!("The {name} family settled at ({}, {})", cell.0, cell.1));
-    flow.message.clear();
 }
 
 pub struct FlowPlugin;
@@ -222,7 +202,7 @@ impl Plugin for FlowPlugin {
             .init_resource::<Selection>()
             .add_systems(
                 Update,
-                (advance_flow, watch_collapse, sample_history, ease_camera)
+                (advance_flow, watch_collapse, ease_camera)
                     .chain(),
             );
     }
@@ -251,14 +231,13 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
         s.colony.beaver(id).map(|b| b.name.clone()).or_else(|| names.get(&id.0).cloned()).unwrap_or_default()
     };
     for e in &events {
-        flow.push_log(format!("day {:.0}: {:?}", e.day, e.event));
         use sim::colony::Event as E;
         let s = &sim.0;
         match &e.event {
             E::Died { id, cause, at } => {
                 use sim::colony::DeathCause as C;
                 let (icon, why) = match cause {
-                    C::Starvation => (Icon::Food, "starved"),
+                    C::Starvation => (crate::hud::words::good_icon(sim::buildings::Good::food()), "starved"),
                     C::Cold => (Icon::Winter, "froze"),
                     C::Injury => (Icon::Health, "died of injury"),
                     C::Exhaustion => (Icon::Hourglass, "worked to death"),
@@ -299,21 +278,6 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
     if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
         flow.fire(FlowEvent::Collapse);
         clock.paused = true;
-        flow.push_log("The colony collapsed");
-    }
-}
-
-fn sample_history(sim: Res<Sim>, mut flow: ResMut<Flow>) {
-    let _p = ::sim::prof::scope("game/sample history");
-    if !sim.0.colony.is_founded() {
-        return;
-    }
-    let day = sim.0.time_days;
-    if flow.history.last().is_none_or(|h| day - h.0 >= 5.0) {
-        flow.history.push((day, sim.0.colony.population(), sim.0.colony.food));
-        if flow.history.len() > 400 {
-            flow.history.remove(0);
-        }
     }
 }
 
@@ -339,4 +303,3 @@ pub fn ease_step(orbit: OrbitCamera, focus: Vec3, k: f32, settled: bool) -> (Orb
     }
     (next, arrived)
 }
-

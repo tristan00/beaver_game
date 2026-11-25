@@ -3,7 +3,6 @@ use sim::buildings::{Amount, BuildingKind, WET_DEPTH};
 use sim::water::Cell;
 use sim::{Command, SimState};
 
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceError {
     OutOfBounds,
@@ -148,7 +147,7 @@ pub fn emit(sim: &mut SimState, order: &BuildOrder) -> Result<String, PlaceError
         BuildOrder::Building { kind, pos } => {
             check_building(sim, *kind, *pos)?;
             sim.apply(Command::PlaceSite { kind: *kind, pos: *pos }).map_err(|e| PlaceError::Sim(e.to_string()))?;
-            Ok(format!("{} ordered at ({}, {})", kind.spec().name, pos.0, pos.1))
+            Ok(format!("{} ordered at ({}, {})", kind.spec().name.as_str(), pos.0, pos.1))
         }
         BuildOrder::Dam { cells } => {
             check_dam(sim, cells)?;
@@ -212,4 +211,3 @@ pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings
     }
     out
 }
-

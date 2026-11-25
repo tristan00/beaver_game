@@ -50,10 +50,6 @@ impl Plugin for TerrainRenderPlugin {
 }
 
 use crate::palette::{self as pal, mix, rgb, Rgb};
-fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
 pub fn lin(c: Rgb, a: f32) -> [f32; 4] {
     let l = Color::srgb(c[0], c[1], c[2]).to_linear();
     [l.red, l.green, l.blue, a]
@@ -90,6 +86,7 @@ const AMBIENT: [Rgb; 4] = [[0.98, 0.95, 0.99], [0.98, 0.95, 0.99], [1.0, 0.92, 0
 pub const AMBIENT_LUX: f32 = 4_400.0;
 
 use crate::seasonal::blend as cyc;
+use crate::seasonal::smooth;
 
 impl Palette {
     pub fn at(phase: f32) -> Palette {
@@ -385,23 +382,13 @@ fn lens_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource
 /// A deposit worth outlining on the bed in the water lens: water plants, mud and pebbles
 /// that lie under water.
 pub fn underwater_deposit(s: &SimState, r: &sim::resources::Resource) -> bool {
-    use sim::resources::ResourceKind::*;
-    matches!(r.kind, WaterPlant | RiverMud | MudBank | Pebbles) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
+    (r.kind.aquatic() || r.kind.behaviour() == sim::resources::Behaviour::Deposit) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
 }
 
 /// The deposits lens: one saturated colour per kind, none grey or blue, so they stand
 /// apart from the lens's grey land and blue-grey water.
 pub fn deposit_color(k: sim::resources::ResourceKind) -> Rgb {
-    use sim::resources::ResourceKind::*;
-    match k {
-        Tree => [0.10, 0.42, 0.16],
-        Felled => [0.92, 0.16, 0.12],
-        Plant => [0.62, 0.90, 0.16],
-        MudBank => [0.80, 0.46, 0.14],
-        RiverMud => [0.86, 0.22, 0.70],
-        Pebbles => [1.0, 0.90, 0.10],
-        WaterPlant => [1.0, 1.0, 1.0],
-    }
+    k.row().lens_colour
 }
 
 /// Deposits that still hold something, as the deposits lens shows them.
@@ -417,7 +404,7 @@ fn deposit_hashes(s: &SimState, cols: usize, rows: usize) -> Vec<u64> {
     }
     let mut out = vec![0u64; cols * rows];
     for r in lens_deposits(s) {
-        let v = (r.cell.0 as u64) | (r.cell.1 as u64) << 20 | (r.kind as u64) << 40;
+        let v = (r.cell.0 as u64) | (r.cell.1 as u64) << 20 | (r.kind.index() as u64) << 40;
         let v = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ v >> 7;
         // A cell on a chunk's low edge is also the last colour sample of the chunk before it.
         let span = |c: usize, n: usize| {
@@ -1191,4 +1178,3 @@ fn frame_log(
         }
     }
 }
-

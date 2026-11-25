@@ -12,6 +12,8 @@ use crate::state::Sim;
 use bevy::prelude::*;
 use sim::wildlife::{Doing, Food, Kind};
 use std::f32::consts::{PI, TAU};
+use crate::seasonal::smooth as smooth01;
+use super::meshgen::v;
 
 const DEER_SIZE: f32 = 1.0;
 const RABBIT_SIZE: f32 = 0.32;
@@ -116,15 +118,6 @@ pub(super) struct GalleryBeast {
     doing: Doing,
     alt: f32,
     dead: bool,
-}
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 {
-    Vec3::new(x, y, z)
-}
-
-fn smooth01(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 fn ax(a: f32) -> Quat {

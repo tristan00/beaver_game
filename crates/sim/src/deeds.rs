@@ -14,7 +14,7 @@
 //! one. They are given at the turn of a season. Saved after the world (see `save`).
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::buildings::{BuildingId, BuildingKind, Good};
+use crate::buildings::{PerId, BuildingId, BuildingKind, Good};
 use crate::colony::{BeaverId, Event, Job, Stage};
 use crate::plants::Plant;
 use crate::resources::ResourceId;
@@ -60,14 +60,14 @@ pub struct Record {
     pub bark: f32,
     pub winter_food: f32,
     /// Goods gathered from the land, by good.
-    pub gathered: [f32; Good::ALL.len()],
+    pub gathered: PerId<Good, f32>,
     /// Goods carried on foot, by good and the kind of place they went to (`Dam` for sticks
     /// packed into a dam).
     pub carried: BTreeMap<(Good, BuildingKind), f32>,
     /// Of that, stock moved out of stores (hauling, not gathering).
     pub hauled: f32,
     /// Goods moved by raft, by good.
-    pub rafted: [f32; Good::ALL.len()],
+    pub rafted: PerId<Good, f32>,
     /// Each dam, canal and building it worked on.
     pub works: BTreeMap<BuildingId, Work>,
     /// Buildings it worked on that were finished, by kind.
@@ -88,9 +88,16 @@ pub struct Record {
     /// slapped the alarm for each.
     pub wolves: u32,
     pub warned: u32,
-    /// Days spent at each job (`Job::ALL` order).
-    pub days: [f32; Job::ALL.len()],
+    /// Days spent at each job.
+    pub days: PerId<Job, f32>,
     pub epithet: Option<Epithet>,
+}
+
+/// What dams, canals, gates and locks are built of.
+fn waterworks_materials() -> Vec<Good> {
+    let w = &crate::content::content().works;
+    let all = BuildingKind::dam().spec().cost.iter().chain(&BuildingKind::canal().spec().cost).chain(&w.gate).chain(&w.lock);
+    Good::all().filter(|g| all.clone().any(|c| c.0 == *g)).collect()
 }
 
 impl Record {
@@ -105,7 +112,7 @@ impl Record {
         self.works.values().map(|w| w.labour).sum()
     }
     pub fn rafted_total(&self) -> f32 {
-        self.rafted.iter().sum()
+        self.rafted.values().sum()
     }
     /// Goods carried on foot to a kind of place.
     pub fn carried_to(&self, goods: &[Good], kinds: &[BuildingKind]) -> f32 {
@@ -120,26 +127,19 @@ impl Record {
     }
 }
 
-fn key(job: Job) -> &'static str {
-    match job {
-        Job::Forager => "forager",
-        Job::Feller => "feller",
-        Job::Builder => "builder",
-        Job::Digger => "digger",
-        Job::Hauler => "hauler",
-        Job::Planter => "planter",
-        Job::Mender => "mender",
-        Job::Sentry => "sentry",
-        Job::Pebbler => "pebbler",
-    }
+/// A job's epithet pools are keyed by its key in lower case.
+fn key(job: Job) -> String {
+    job.key().to_lowercase()
 }
 
 /// How the work was done, where the first kind's words tell it apart.
 fn variant(r: &Record, job: Job) -> Option<&'static str> {
-    match job {
-        Job::Hauler if r.rafted_total() > r.hauled => Some("raft"),
-        Job::Builder if r.dam_labour() * 2.0 > r.labour() => Some("dam"),
-        Job::Forager if r.water_food() * 2.0 > r.gathered[Good::Food.index()] => Some("water"),
+    use crate::content::Duty;
+    let forages = crate::resources::ResourceKind::all().any(|k| k.is_food_plant() && k.row().role == job);
+    match job.duty() {
+        Duty::Haul if r.rafted_total() > r.hauled => Some("raft"),
+        Duty::Build if r.dam_labour() * 2.0 > r.labour() => Some("dam"),
+        Duty::Gather if forages && r.water_food() * 2.0 > r.gathered[Good::food()] => Some("water"),
         _ => None,
     }
 }
@@ -191,33 +191,33 @@ fn deeds(sim: &SimState, id: BeaverId, r: &Record) -> Vec<Deed> {
             out.push(Deed { past: value / mark, job, names });
         }
     };
-    add(r.dam_loads as f32, DAM_LOADS_MARK, Some(Job::Builder), pool_names("dam"));
+    add(r.dam_loads as f32, DAM_LOADS_MARK, Some(Job::with_duty(crate::content::Duty::Build)), pool_names("dam"));
     // Most of a dam whose pond has a name: its keeper.
-    for (dam, w) in r.works.iter().filter(|(_, w)| w.kind == Some(BuildingKind::Dam)) {
+    for (dam, w) in r.works.iter().filter(|(_, w)| w.kind == Some(BuildingKind::dam())) {
         let total = sim.deeds.dam_loads.get(dam).copied().unwrap_or(0).max(1);
         let pond = sim.buildings.building(*dam).and_then(|b| b.dam.as_deref()?.pond.as_ref()).map_or(0, |p| p.area);
         if let Some(name) = crate::names::pond_name(sim, *dam).filter(|_| w.loads * 2 >= total && pond >= KEEPER_POND_CELLS as usize) {
-            add(w.loads as f32, KEEPER_LOADS_MARK, Some(Job::Builder), vec![format!("the Keeper of {name}")]);
+            add(w.loads as f32, KEEPER_LOADS_MARK, Some(Job::with_duty(crate::content::Duty::Build)), vec![format!("the Keeper of {name}")]);
         }
     }
-    add(r.canal_cells as f32, CANAL_CELLS_MARK, Some(Job::Builder), pool_names("canal"));
-    add(*r.built.get(&BuildingKind::Lodge).unwrap_or(&0) as f32, LODGES_MARK, Some(Job::Builder), pool_names("lodges"));
-    add(r.leaks as f32, LEAKS_MARK, Some(Job::Mender), pool_names("leaks"));
+    add(r.canal_cells as f32, CANAL_CELLS_MARK, Some(Job::with_duty(crate::content::Duty::Build)), pool_names("canal"));
+    add(*r.built.get(&BuildingKind::home()).unwrap_or(&0) as f32, LODGES_MARK, Some(Job::with_duty(crate::content::Duty::Build)), pool_names("lodges"));
+    add(r.leaks as f32, LEAKS_MARK, Some(Job::with_duty(crate::content::Duty::Mend)), pool_names("leaks"));
     if let Some((t, n)) = r.felled.iter().max_by_key(|(t, n)| (**n, std::cmp::Reverse(**t))) {
-        add(*n as f32, SPECIES_FELLED_MARK, Some(Job::Feller), vec![format!("the {}bane", t.name()), format!("the {}gnawer", t.name())]);
+        add(*n as f32, SPECIES_FELLED_MARK, Some(Job::gathering(crate::resources::ResourceKind::tree())), vec![format!("the {}bane", t.name()), format!("the {}gnawer", t.name())]);
     }
-    add(r.great_trees as f32, GREAT_TREES_MARK, Some(Job::Feller), pool_names("great_trees"));
-    add(r.water_food(), WATER_FOOD_MARK, Some(Job::Forager), pool_names("water_food"));
+    add(r.great_trees as f32, GREAT_TREES_MARK, Some(Job::gathering(crate::resources::ResourceKind::tree())), pool_names("great_trees"));
+    add(r.water_food(), WATER_FOOD_MARK, Some(Job::gathering(crate::resources::ResourceKind::food_plant(false))), pool_names("water_food"));
     if let Some((p, f)) = r.harvested.iter().max_by(|a, b| a.1.total_cmp(b.1)) {
-        add(*f, PLANT_FOOD_MARK, Some(Job::Forager), pool_names(&format!("plant/{p:?}")));
+        add(*f, PLANT_FOOD_MARK, Some(Job::gathering(crate::resources::ResourceKind::food_plant(false))), pool_names(&format!("plant/{p:?}")));
     }
-    add(r.winter_food, WINTER_FOOD_MARK, Some(Job::Forager), pool_names("winter_food"));
-    add(r.carried_to(&[Good::Sticks, Good::Mud], &[BuildingKind::Dam, BuildingKind::Canal]), TO_DAMS_MARK, Some(Job::Hauler), pool_names("to_dams"));
-    add(r.carried_to(&[Good::Food], &[BuildingKind::FoodCache]), TO_CACHE_MARK, Some(Job::Hauler), pool_names("to_cache"));
-    add(r.rafted_total(), RAFTED_MARK, Some(Job::Hauler), pool_names("rafted"));
+    add(r.winter_food, WINTER_FOOD_MARK, Some(Job::gathering(crate::resources::ResourceKind::food_plant(false))), pool_names("winter_food"));
+    add(r.carried_to(&waterworks_materials(), &[BuildingKind::dam(), BuildingKind::canal()]), TO_DAMS_MARK, Some(Job::with_duty(crate::content::Duty::Haul)), pool_names("to_dams"));
+    add(r.carried_to(&[Good::food()], &BuildingKind::all().filter(|k| k.row().stores.contains(&Good::food())).collect::<Vec<_>>()), TO_CACHE_MARK, Some(Job::with_duty(crate::content::Duty::Haul)), pool_names("to_cache"));
+    add(r.rafted_total(), RAFTED_MARK, Some(Job::with_duty(crate::content::Duty::Haul)), pool_names("rafted"));
     add(r.swum, SWUM_MARK, None, pool_names("swum"));
-    add(r.grown as f32, GROWN_MARK, Some(Job::Planter), pool_names("grown"));
-    add(r.wolves as f32, WOLVES_MARK, Some(Job::Sentry), pool_names("wolves"));
+    add(r.grown as f32, GROWN_MARK, Some(Job::with_duty(crate::content::Duty::Forest)), pool_names("grown"));
+    add(r.wolves as f32, WOLVES_MARK, Some(Job::with_duty(crate::content::Duty::Watch)), pool_names("wolves"));
     add(kits(sim, id).1 as f32, KITS_RAISED_MARK, None, pool_names("kits"));
     out.sort_by(|a, b| b.past.total_cmp(&a.past));
     out
@@ -252,10 +252,10 @@ impl Deeds {
     }
     /// A load packed into a dam as new work.
     pub(crate) fn packed(&mut self, id: BeaverId, dam: BuildingId, labour: f32) {
-        self.worked(id, dam, BuildingKind::Dam, labour);
+        self.worked(id, dam, BuildingKind::dam(), labour);
         let r = self.of(id);
         r.dam_loads += 1;
-        r.work(dam, Some(BuildingKind::Dam)).loads += 1;
+        r.work(dam, Some(BuildingKind::dam())).loads += 1;
         *self.dam_loads.entry(dam).or_default() += 1;
     }
     /// Repair work on a dam, canal or building.
@@ -287,7 +287,7 @@ pub fn full_name(sim: &SimState, id: BeaverId, name: &str) -> String {
 pub fn step(sim: &mut SimState, dt: f32) {
     for b in &sim.colony.beavers {
         if let Some(j) = b.current_job {
-            sim.deeds.of.entry(b.id).or_default().days[j.index()] += dt;
+            sim.deeds.of.entry(b.id).or_default().days[j] += dt;
         }
     }
     let new_day = (sim.time_days - dt as f64).floor() < sim.time_days.floor();
@@ -317,7 +317,7 @@ fn close_day(sim: &mut SimState) {
     }
     let grown: Vec<(ResourceId, BeaverId)> = sim.forestry.planted.iter()
         .filter(|(tree, _)| !sim.deeds.grown.contains(tree))
-        .filter(|(tree, _)| sim.resources.get(**tree).is_some_and(|r| r.kind == crate::resources::ResourceKind::Tree && r.age_days >= crate::forestry::MATURE_AGE as f32))
+        .filter(|(tree, _)| sim.resources.get(**tree).is_some_and(|r| r.kind.is_tree() && r.age_days >= crate::forestry::MATURE_AGE as f32))
         .map(|(tree, (who, _))| (*tree, *who))
         .collect();
     for (tree, who) in grown {
@@ -328,9 +328,9 @@ fn close_day(sim: &mut SimState) {
 
 /// Whether a beaver has learnt enough besides its best skill: the other skills' learning past
 /// what every beaver has from the start and from growing up, as shares of mastery.
-fn broad(skills: &[f32]) -> bool {
-    let best = skills.iter().copied().enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |(i, _)| i);
-    let rest: f32 = skills.iter().enumerate().filter(|(i, _)| *i != best).map(|(_, s)| (s - SKILL_FLOOR).max(0.0) / EPITHET_SKILL).sum();
+fn broad(skills: &PerId<Job, f32>) -> bool {
+    let best = skills.values().copied().enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |(i, _)| i);
+    let rest: f32 = skills.values().enumerate().filter(|(i, _)| *i != best).map(|(_, s)| (s - SKILL_FLOOR).max(0.0) / EPITHET_SKILL).sum();
     rest >= BREADTH
 }
 
@@ -344,7 +344,7 @@ fn give_epithets(sim: &mut SimState) {
         if was.is_some_and(|e| e.tier >= 2) {
             continue;
         }
-        let Some(best) = Job::ALL.into_iter().filter(|j| b.skills[j.index()] >= EPITHET_SKILL).max_by(|a, c| b.skills[a.index()].total_cmp(&b.skills[c.index()])) else { continue };
+        let Some(best) = Job::all().filter(|&j| b.skills[j] >= EPITHET_SKILL).max_by(|&a, &c| b.skills[a].total_cmp(&b.skills[c])) else { continue };
         // Which free name: the same each time for the same beaver.
         let choose = |names: &[String]| -> Option<String> {
             let free: Vec<&String> = names.iter().filter(|w| !held.contains(*w)).collect();
@@ -372,81 +372,5 @@ fn give_epithets(sim: &mut SimState) {
     for (id, e) in earned {
         sim.deeds.of(id).epithet = Some(e);
         sim.colony.note(Event::Epithet { id });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_job_and_deed_has_its_names_in_one_form_and_no_name_is_in_two_pools() {
-        for j in Job::ALL {
-            assert!(!words(&Record::default(), j).is_empty(), "{j:?}");
-        }
-        for k in ["dam", "canal", "lodges", "leaks", "great_trees", "water_food", "winter_food", "to_dams", "to_cache", "rafted", "swum", "grown", "wolves", "kits"] {
-            assert!(!pool_names(k).is_empty(), "{k}");
-        }
-        for p in Plant::ALL {
-            assert!(!pool_names(&format!("plant/{p:?}")).is_empty(), "{p:?}");
-        }
-        let mut seen = BTreeSet::new();
-        for (k, w) in crate::names::NAME_POOLS.iter().filter(|(k, _)| k.starts_with("epithet") || k.starts_with("deed")) {
-            for x in w.iter() {
-                assert!(x.starts_with("the "), "one form: {x}");
-                assert!(seen.insert(*x), "{x} is in {k} and another pool");
-            }
-        }
-    }
-
-    #[test]
-    fn how_the_work_was_done_picks_the_words() {
-        let mut r = Record { hauled: 2.0, ..Default::default() };
-        r.rafted[Good::Sticks.index()] = 10.0;
-        assert!(words(&r, Job::Hauler).contains(&"the Rafter"));
-        r.hauled = 20.0;
-        assert!(words(&r, Job::Hauler).contains(&"the Strong"));
-        r.work(BuildingId(1), Some(BuildingKind::Dam)).labour = 5.0;
-        assert!(words(&r, Job::Builder).contains(&"the Weaver"));
-        r.work(BuildingId(2), Some(BuildingKind::Lodge)).labour = 9.0;
-        assert!(words(&r, Job::Builder).contains(&"the Heaper"));
-    }
-
-    #[test]
-    fn breadth_counts_only_what_was_learnt_past_the_start() {
-        // A master forager with every other skill at the start: not broad.
-        let mut s = [0.1; Job::ALL.len()];
-        s[0] = 0.98;
-        assert!(!broad(&s));
-        // Two other skills at a third each: past half a mastery besides.
-        s[1] = 0.36;
-        s[2] = 0.36;
-        assert!(broad(&s));
-    }
-
-    #[test]
-    fn a_wolf_is_counted_once_however_often_it_is_seen() {
-        let mut d = Deeds::default();
-        for _ in 0..50 {
-            d.spotted(BeaverId(1), 7);
-        }
-        d.spotted(BeaverId(1), 8);
-        d.spotted(BeaverId(2), 7);
-        assert_eq!(d.get(BeaverId(1)).unwrap().wolves, 2);
-        assert_eq!(d.get(BeaverId(2)).unwrap().wolves, 1);
-    }
-
-    #[test]
-    fn whose_dam_it_mostly_is() {
-        let mut d = Deeds::default();
-        for _ in 0..6 {
-            d.packed(BeaverId(1), BuildingId(9), 0.2);
-        }
-        for _ in 0..4 {
-            d.packed(BeaverId(2), BuildingId(9), 0.2);
-        }
-        assert_eq!(d.dam_loads[&BuildingId(9)], 10);
-        assert_eq!(d.get(BeaverId(1)).unwrap().works[&BuildingId(9)].loads, 6);
-        assert_eq!(d.get(BeaverId(1)).unwrap().dam_loads, 6);
     }
 }

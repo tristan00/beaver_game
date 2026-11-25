@@ -1,0 +1,134 @@
+# Kinds of resource beavers gather. behaviour: Tree (grows, is felled into the Felled kind, seeds), Felled (logs, then
+# branches, and bark foragers strip for food), FoodPlant (regrows, spreads, dies back) or Deposit (dug until gone; a
+# `flowing` one is refilled by its stream and never gathered bare).
+# yields: the goods gathering it gives. aquatic: grows in open water. freezes: closed while the ground is frozen.
+# group: what gatherers of it work (see [groups]); role: the job that gathers it; gatherers: how many at once;
+# gather_rate: a day for one beaver of ordinary skill; needs: a building whose tools must stand finished; solid: in the
+# way of walking. Looks: fill_steps it is drawn in, the words for gathering it, icon, its colour on the deposits lens
+# (sRGB), model and pose.
+
+# Each group's kinds, best first: a gatherer takes the nearest of the best kind about, kinds in one list alike.
+groups = { wood = [["Felled"], ["Tree"]], food = [["Felled"], ["Plant", "WaterPlant"]], mud = [["RiverMud", "MudBank"]], pebbles = [["Pebbles"]] }
+
+# The kinds the world's making puts down: pebble outcrops and stream gravel, a stream's mud, banks and pockets of mud,
+# and a canal's spoil.
+roles = { outcrop = "Pebbles", gravel = "Pebbles", stream_mud = "RiverMud", bank_mud = "MudBank", spoil = "MudBank" }
+
+[[resource]]
+key = "Tree"
+name = "Tree"
+behaviour = "Tree"
+group = "wood"
+role = "Feller"
+gatherers = 1
+gather_rate = 4.5
+solid = true
+fill_steps = 4
+doing = "Felling a tree"
+icon = "Tree"
+lens_colour = [0.10, 0.42, 0.16]
+model = "tree"
+pose = "Gnaw"
+
+[[resource]]
+key = "Felled"
+name = "Felled tree"
+behaviour = "Felled"
+yields = ["Sticks", "Food"]
+group = "wood"
+role = "Feller"
+gatherers = 2
+gather_rate = 4.5
+fill_steps = 4
+doing = "Gnawing sticks"
+icon = "Tree"
+lens_colour = [0.92, 0.16, 0.12]
+model = "felled"
+pose = "Gnaw"
+
+[[resource]]
+key = "Plant"
+name = "Food plants"
+behaviour = "FoodPlant"
+yields = ["Food"]
+group = "food"
+role = "Forager"
+gatherers = 1
+gather_rate = 3.0
+fill_steps = 4
+doing = "Foraging"
+icon = "Plant"
+lens_colour = [0.62, 0.90, 0.16]
+model = "plant"
+pose = "Forage"
+
+[[resource]]
+key = "MudBank"
+name = "Mud bank"
+behaviour = "Deposit"
+yields = ["Mud"]
+freezes = true
+group = "mud"
+role = "MudDigger"
+gatherers = 2
+gather_rate = 4.5
+fill_steps = 8
+doing = "Digging mud"
+icon = "MudBank"
+lens_colour = [0.80, 0.46, 0.14]
+model = "mud"
+pose = "Dig"
+
+[[resource]]
+key = "RiverMud"
+name = "River mud"
+behaviour = "Deposit"
+yields = ["Mud"]
+flowing = true
+freezes = true
+group = "mud"
+role = "MudDigger"
+gatherers = 2
+gather_rate = 4.5
+fill_steps = 8
+doing = "Digging mud"
+icon = "MudBank"
+lens_colour = [0.86, 0.22, 0.70]
+model = "mud"
+pose = "Dig"
+
+[[resource]]
+key = "Pebbles"
+name = "Pebbles"
+behaviour = "Deposit"
+yields = ["Pebbles"]
+freezes = true
+group = "pebbles"
+role = "Pebbler"
+gatherers = 2
+gather_rate = 2.0
+needs = "PebbleHeap"
+fill_steps = 4
+doing = "Collecting pebbles"
+icon = "Pebbles"
+lens_colour = [1.0, 0.90, 0.10]
+model = "pebbles"
+pose = "Dig"
+
+[[resource]]
+key = "WaterPlant"
+name = "Water plants"
+behaviour = "FoodPlant"
+yields = ["Food"]
+aquatic = true
+freezes = true
+group = "food"
+role = "Forager"
+gatherers = 1
+gather_rate = 3.0
+fill_steps = 4
+doing = "Foraging"
+icon = "WaterPlant"
+lens_colour = [1.0, 1.0, 1.0]
+model = "water_plant"
+pose = "Forage"

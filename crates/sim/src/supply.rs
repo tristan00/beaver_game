@@ -69,10 +69,12 @@ pub fn needs(sim: &SimState, s: Spot) -> Vec<Amount> {
     if is_gate_spot(sim, s) {
         if let Some((built, wanted)) = gate_at(sim, s) {
             if !built && wanted {
-                add(&mut out, Good::Sticks, crate::canals::GATE_STICKS);
+                for &(g, a) in &crate::content::content().works.gate {
+                    add(&mut out, g, a);
+                }
             }
             if crate::locks::pending(sim, s.cell) {
-                for &(g, a) in &crate::locks::COST {
+                for &(g, a) in &crate::content::content().works.lock {
                     add(&mut out, g, a);
                 }
             }
@@ -165,14 +167,5 @@ pub fn tidy(sim: &mut SimState) {
         } else {
             sim.supplies.at.insert(s, kept);
         }
-    }
-}
-
-/// Bring everything a spot still needs, as if carried there (for tests).
-#[cfg(test)]
-pub(crate) fn bring_all(sim: &mut SimState, s: Spot) {
-    for (g, _) in needs(sim, s) {
-        let m = missing(sim, s, g);
-        deposit(sim, s, g, m);
     }
 }

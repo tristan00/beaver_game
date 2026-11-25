@@ -1,6 +1,6 @@
 # Trees
 
-Every number here comes from `crates/sim/content/game.sqlite3` (`tree_species`, `tree_flora`, `gameplay_constant`) and from the worlds the game generates. Species counts are a census of each map as generated, before founding.
+Every number here comes from `crates/sim/content/trees.toml`, `flora.toml` and `crates/sim/tuning.toml` and from the worlds the game generates. Species counts are a census of each map as generated, before founding.
 
 ## The eight species
 

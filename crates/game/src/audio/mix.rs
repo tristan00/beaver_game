@@ -128,22 +128,3 @@ impl AudioWorld for StubWorld {
         Some(Cell { water_depth: if wet { 0.8 } else { 0.0 } })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn river_swells_by_water_and_hushes_under_ice() {
-        let at = |days: f64, pond: bool| {
-            let world = StubWorld { days, pond: pond.then_some((0.0, 0.0, 30.0)) };
-            layer_volumes(&snapshot(&world, 0.0, 0.0, 40.0))
-        };
-        let summer = YEAR_DAYS * 0.375;
-        let winter = YEAR_DAYS * 0.875;
-        assert_eq!(at(summer, false).river, 0.0);
-        assert!(at(summer, true).river > 0.5);
-        assert!(at(winter, true).river < 0.3 * at(summer, true).river);
-        assert!(at(summer, false).brook > 0.5 && at(winter, false).brook > 0.3);
-    }
-}

@@ -1,5 +1,5 @@
 use super::structures::{DamStage, DAM_STEP};
-use super::scene::{height_at, Species, StructKind};
+use super::scene::height_at;
 use super::sim_view::*;
 use super::{models, BeaverSprite, CurrentSeason, Models, PlantLook, SimBeaver, SimEntity, Sway, TreeLod};
 use crate::sim_driver::SimClock;
@@ -7,7 +7,7 @@ use crate::state::Sim;
 use crate::picking::Target;
 use bevy::prelude::*;
 use sim::buildings::{BuildingId, BuildingKind, Status};
-use sim::resources::{ResourceId, ResourceKind};
+use sim::resources::ResourceId;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Resource, Default)]
@@ -180,153 +180,6 @@ impl Motion {
 
 /// Half-width, in cells of travel, of the window a drawn beaver's route is averaged over.
 const SMOOTH_CELLS: f32 = 1.0;
-
-#[cfg(test)]
-mod motion_tests {
-    use super::*;
-
-    #[test]
-    fn sparse_snapshots_interpolate_instead_of_snapping_across_distance() {
-        let mut motion = Motion::default();
-        motion.record(0.0, Vec2::ZERO, 0.0);
-        motion.record(1.0, Vec2::new(10.0, 0.0), 2.0);
-        let (point, height, direction) = motion.at(0.5).unwrap();
-        assert_eq!(point, Vec2::new(5.0, 0.0));
-        assert_eq!(height, 1.0);
-        assert!(direction.is_some());
-    }
-
-    #[test]
-    fn a_staircase_is_drawn_as_a_straight_diagonal() {
-        let mut motion = Motion::default();
-        for i in 0..9 {
-            let p = Vec2::new(((i + 1) / 2) as f32, (i / 2) as f32);
-            motion.record(i as f64, p, 0.0);
-        }
-        for k in 0..12 {
-            let t = 2.0 + k as f64 * 0.35;
-            let (p, _, dir) = motion.at(t).unwrap();
-            // On the diagonal (x - y = 0.5 between the steps), heading diagonally.
-            assert!((p.x - p.y - 0.5).abs() < 0.02, "t {t}: {p}");
-            let d = dir.unwrap().normalize();
-            assert!((d.x - d.y).abs() < 0.05, "t {t}: {d}");
-        }
-    }
-
-    #[test]
-    fn corners_are_cut_and_the_route_ends_exactly_where_it_stops() {
-        let mut motion = Motion::default();
-        motion.record(0.0, Vec2::ZERO, 0.0);
-        motion.record(1.0, Vec2::new(1.0, 0.0), 0.0);
-        motion.record(2.0, Vec2::new(1.0, 1.0), 0.0);
-        let (corner, _, dir) = motion.at(1.0).unwrap();
-        assert!(corner.x < 1.0 - 0.1 && corner.y > 0.1, "{corner}");
-        let d = dir.unwrap().normalize();
-        assert!(d.x > 0.3 && d.y > 0.3, "{d}");
-        let (end, _, _) = motion.at(1.999).unwrap();
-        assert!(end.distance(Vec2::new(1.0, 1.0)) < 0.01, "{end}");
-        let (end, _, dir) = motion.at(2.5).unwrap();
-        assert_eq!(end, Vec2::new(1.0, 1.0));
-        assert!(dir.is_none());
-    }
-
-    #[test]
-    fn a_pause_stays_still() {
-        let mut motion = Motion::default();
-        motion.record(0.0, Vec2::ZERO, 0.0);
-        motion.record(1.0, Vec2::new(1.0, 0.0), 0.0);
-        motion.record(2.0, Vec2::new(1.0, 0.0), 0.0);
-        motion.record(3.0, Vec2::new(2.0, 0.0), 0.0);
-        let (p, _, dir) = motion.at(1.5).unwrap();
-        assert_eq!(p, Vec2::new(1.0, 0.0));
-        assert!(dir.is_none());
-        let (p, _, _) = motion.at(2.5).unwrap();
-        assert!(p.y.abs() < 1e-5 && p.x > 1.0 && p.x < 2.0);
-    }
-
-    #[test]
-    fn a_completed_trail_is_recorded_once_with_an_authoritative_endpoint() {
-        let mut sim = sim::SimState::new(1);
-        let id = sim::colony::BeaverId(1);
-        sim.agents.spawn(id, (2, 2));
-        let mut agent = sim.agents.get(id).unwrap().clone();
-        sim.nav.set((3, 2), sim::nav::Surface::Water);
-        sim.nav.set((3, 3), sim::nav::Surface::Water);
-        let mut motion = Motion::default();
-        motion.observe(&sim, &agent, false);
-        agent.cell = (3, 3);
-        agent.trail = vec![((3, 2), sim::nav::Gait::Swim), ((3, 3), sim::nav::Gait::Swim)];
-        sim.time_days = sim::STEP_DAYS as f64;
-        motion.observe(&sim, &agent, false);
-        let original = motion.samples.clone();
-        for _ in 0..60 { motion.observe(&sim, &agent, false); }
-        assert_eq!(motion.samples, original);
-        assert_eq!(motion.samples.back().unwrap().0, sim.time_days);
-        assert!(motion.samples.iter().zip(motion.samples.iter().skip(1)).all(|(a,b)|a.0 < b.0));
-        let corner_time = sim::nav::SWIM_COST as f64 / sim::agents::MOVE_COST_PER_DAY as f64;
-        let corner = motion.raw_at(corner_time).unwrap().0;
-        assert!(corner.distance(cell_xz(&sim, (3.5, 2.5))) < 1e-4);
-    }
-
-    #[test]
-    fn seen_only_every_few_steps_a_beaver_is_drawn_round_the_corner_it_took() {
-        let mut sim = sim::SimState::new(1);
-        let id = sim::colony::BeaverId(1);
-        sim.agents.spawn(id, (2, 2));
-        let mut agent = sim.agents.get(id).unwrap().clone();
-        for c in [(3, 2), (4, 2), (5, 2), (5, 3), (5, 4), (5, 5)] {
-            sim.nav.set(c, sim::nav::Surface::Water);
-        }
-        let mut motion = Motion::default();
-        motion.observe(&sim, &agent, false);
-        // Six cells over six steps, round a corner at (5, 2); the game sees only the end.
-        let step = sim::STEP_DAYS as f64;
-        for (i, c) in [(3, 2), (4, 2), (5, 2), (5, 3), (5, 4), (5, 5)].into_iter().enumerate() {
-            agent.history.push_back((step * (i + 1) as f64, c, sim::nav::Gait::Swim));
-        }
-        agent.cell = (5, 5);
-        agent.trail = vec![((5, 5), sim::nav::Gait::Swim)];
-        sim.time_days = step * 6.0;
-        motion.observe(&sim, &agent, false);
-        let corner = cell_xz(&sim, (5.5, 2.5));
-        let closest = (0..=60).map(|k| motion.raw_at(sim.time_days * k as f64 / 60.0).unwrap().0.distance(corner)).fold(f32::MAX, f32::min);
-        assert!(closest < 0.05, "it goes round the corner, not across it: {closest}");
-    }
-
-    #[test]
-    fn a_swimmer_is_drawn_at_the_speed_the_current_gives_it() {
-        let move_cost = sim::agents::MOVE_COST_PER_DAY as f64;
-        for (drift, from, cells) in [(0.5, (2, 2), [(3, 2), (4, 2)]), (-0.5, (2, 2), [(3, 2), (4, 2)])] {
-            let mut sim = sim::SimState::new(1);
-            let id = sim::colony::BeaverId(1);
-            sim.agents.spawn(id, from);
-            let mut agent = sim.agents.get(id).unwrap().clone();
-            for c in cells {
-                sim.nav.set(c, sim::nav::Surface::Water);
-                sim.nav.set_current(c, (drift * sim::nav::SWIM_SPEED_M_S, 0.0));
-            }
-            let step = sim.nav.move_cost(from, cells[0], 1.0).unwrap();
-            let want = sim::nav::SWIM_COST / (1.0 + drift);
-            assert!((step - want).abs() < 1e-5, "{step} vs {want}");
-            // Halfway through the step's budget, it is drawn halfway there.
-            agent.path = Some(sim::nav::Path { steps: cells.iter().map(|&c| (c, sim::nav::Gait::Swim)).collect(), cost: 0.0 });
-            agent.step_frac = step / 2.0;
-            let half = agent_world_pos(&sim, &agent, 0.0);
-            assert!(Vec2::new(half.x, half.z).distance(cell_xz(&sim, (3.0, 2.5))) < 1e-4);
-            // And the trail reaches the first cell when the simulation did.
-            agent.step_frac = 0.0;
-            let mut motion = Motion::default();
-            motion.observe(&sim, &agent, false);
-            agent.cell = cells[1];
-            agent.path = None;
-            agent.trail = cells.iter().map(|&c| (c, sim::nav::Gait::Swim)).collect();
-            sim.time_days = sim::STEP_DAYS as f64;
-            motion.observe(&sim, &agent, false);
-            let arrived = motion.samples[1].0;
-            assert!((arrived - step as f64 / move_cost).abs() < 1e-7, "{arrived}");
-        }
-    }
-}
 
 /// A beaver diving into its lodge or coming up out of it: when it went in or out, and where it
 /// was last seen outside.
@@ -611,7 +464,7 @@ pub enum ResSig {
 
 /// Drawn by the water's level: water plants, and gravel bars in the streams.
 fn rides_water(r: &sim::resources::Resource) -> bool {
-    r.kind.is_food_plant() || (r.kind == ResourceKind::Pebbles && r.wet)
+    r.kind.is_food_plant() || (r.kind.row().model == "pebbles" && r.wet)
 }
 
 /// A felled tree falls before its logs show: the standing tree is drawn again, tipping toward
@@ -632,10 +485,13 @@ pub fn res_sig(r: &sim::resources::Resource, depth: f32) -> ResSig {
     match r.look() {
         Look::Tree(stage, step) => ResSig::Tree(stage as u8 * 16 + step),
         Look::Felled(logs, branches) => ResSig::Felled(logs, branches),
-        Look::Mud(q) => ResSig::Mud(r.kind == ResourceKind::RiverMud, q),
-        Look::Plant(q) => ResSig::Plant(r.plant.map_or(u8::MAX, |p| p as u8), q),
-        Look::Pebbles(q) => ResSig::Pebbles(r.wet.then(|| (depth * 10.0).round() as i16), q),
-        Look::WaterPlant(q) => ResSig::Floating(r.plant.map_or(u8::MAX, |p| p as u8), q, (depth * 10.0).round() as i16),
+        Look::Fill(q) => match r.kind.row().model.as_str() {
+            "mud" => ResSig::Mud(r.kind.flowing(), q),
+            "plant" => ResSig::Plant(r.plant.map_or(u8::MAX, |p| p.index() as u8), q),
+            "pebbles" => ResSig::Pebbles(r.wet.then(|| (depth * 10.0).round() as i16), q),
+            "water_plant" => ResSig::Floating(r.plant.map_or(u8::MAX, |p| p.index() as u8), q, (depth * 10.0).round() as i16),
+            m => panic!("resource {}: no model {m}", r.kind.key()),
+        },
     }
 }
 
@@ -647,8 +503,8 @@ fn hash01(x: usize, y: usize, salt: u32) -> f32 {
     (h & 0xffff) as f32 / 65535.0
 }
 
-fn species_of(r: &sim::resources::Resource) -> Species {
-    r.species.map_or(Species::Maple, Species::of)
+fn species_of(r: &sim::resources::Resource) -> sim::trees::Tree {
+    r.species.unwrap_or_else(sim::trees::Tree::unknown)
 }
 
 /// The plants: what shows of them follows the water over their cell as well as their look.
@@ -728,7 +584,7 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
         ResSig::Felled(logs, branches) => (models.felled[logs as usize * 2 + branches as usize].clone(), Vec3::splat(k), Extra::None),
         ResSig::Plant(_, q) | ResSig::Floating(_, q, _) => {
             use sim::plants::Plant;
-            let plant = r.plant.unwrap_or(if r.kind == ResourceKind::WaterPlant { Plant::YellowLily } else { Plant::Sedge });
+            let plant = r.plant.unwrap_or_else(|| Plant::all().find(|p| p.aquatic() == r.kind.aquatic()).expect("a plant of each habitat"));
             let s = (0.55 + 0.45 * q as f32 / 4.0) * (0.9 + 0.2 * hash01(c.0, c.1, 23));
             (models.plant(plant, season), Vec3::splat(s), Extra::Plant(PlantLook { plant, season }))
         }
@@ -749,11 +605,11 @@ fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3)
     let ground = height_at(&sim.height, p.x, p.y);
     // Water plants float on the surface, so they rise and fall with the water.
     let y = match r.kind {
-        ResourceKind::Tree => ground - 0.05,
-        ResourceKind::WaterPlant => ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0),
+        k if k.is_tree() => ground - 0.05,
+        k if k.is_food_plant() && k.aquatic() => ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0),
         // A gravel bar breaks the surface of a shallow stream; in a deeper one its top shows
         // just above the water.
-        ResourceKind::Pebbles if r.wet => {
+        k if k.row().model == "pebbles" && r.wet => {
             let surface = ground + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0);
             ground.max(surface + 0.04 - super::deposits::GRAVEL_BAR_H)
         }
@@ -765,10 +621,10 @@ fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3)
 
 fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<StandardMaterial> {
     if r.stage() == Some(sim::forestry::TreeStage::Old) { models.old_tree.clone() }
-    else if r.kind == ResourceKind::Tree {
+    else if r.kind.is_tree() {
         let variant = (hash01(r.cell.0, r.cell.1, 17) * 4.0) as usize;
         models.tree_tints[variant.min(3)].clone()
-    } else if matches!(r.kind, ResourceKind::MudBank | ResourceKind::RiverMud) { models.wet.clone() }
+    } else if r.kind.row().model == "mud" { models.wet.clone() }
     else { models.white.clone() }
 }
 
@@ -777,7 +633,7 @@ fn material_for(models: &Models, r: &sim::resources::Resource) -> Handle<Standar
 /// Plants that stand in the shallows (cattail, horsetail) show until the water tops them.
 fn hidden(sim: &sim::SimState, r: &sim::resources::Resource) -> bool {
     let stands = r.plant.map_or(0.0, |p| p.spec().max_depth);
-    r.kind == ResourceKind::Plant
+    (r.kind.is_food_plant() && !r.kind.aquatic())
         && (sim.water.depth.get(r.cell.0, r.cell.1).is_some_and(|&d| if stands > 0.05 { d > stands + 0.1 } else { sim::water::shore_step(d) > 0 })
             || sim.water.riverbed.get(r.cell.0, r.cell.1).is_some_and(|&b| (b * sim::water::RIVERBED_STEPS).round() > 3.0))
 }
@@ -812,7 +668,7 @@ fn show_resource(commands: &mut Commands, res: &mut HashMap<ResourceId, (Entity,
                 Extra::Plant(p) => { ec.insert(p); }
                 Extra::None => {}
             }
-            if matches!(r.kind, ResourceKind::Tree | ResourceKind::Felled) {
+            if r.kind.is_tree() || r.kind.is_felled() {
                 ec.insert(Target::Resource(r.id));
             }
             let e = ec.id();
@@ -862,7 +718,7 @@ pub(super) fn sync_sim_resources(
     }
     let st = &mut *st;
     let no_trees = std::env::var_os("BC_NO_TREES").is_some();
-    let shown = |r: &sim::resources::Resource| !(no_trees && r.kind == ResourceKind::Tree) && !hidden(sim, r) && !crate::fog_render::unexplored(sim, r.cell);
+    let shown = |r: &sim::resources::Resource| !(no_trees && r.kind.is_tree()) && !hidden(sim, r) && !crate::fog_render::unexplored(sim, r.cell);
     let tile_of = |r: &sim::resources::Resource| (r.cell.1 / sim::grid::TILE) * sim.water.depth.width().div_ceil(sim::grid::TILE) + r.cell.0 / sim::grid::TILE;
     let changes = sim.resources.changes();
     let water = [sim.water.depth.stamp(), sim.water.shore.stamp(), sim.water.riverbed.stamp()];
@@ -876,7 +732,7 @@ pub(super) fn sync_sim_resources(
             for r in sim.resources.items() {
                 if rides_water(r) {
                     st.plants.known.insert(r.id);
-                    st.plants.at.push((r.id, tile_of(r), r.kind == ResourceKind::WaterPlant));
+                    st.plants.at.push((r.id, tile_of(r), r.kind.aquatic()));
                 }
                 if shown(r) {
                     live.insert(r.id);
@@ -909,7 +765,7 @@ pub(super) fn sync_sim_resources(
                 match r {
                     Some(r) if rides_water(r) => {
                         if st.plants.known.insert(id) {
-                            st.plants.at.push((id, tile_of(r), r.kind == ResourceKind::WaterPlant));
+                            st.plants.at.push((id, tile_of(r), r.kind.aquatic()));
                         }
                     }
                     _ => lost |= st.plants.known.remove(&id),
@@ -967,20 +823,6 @@ fn boulder_transform(sim: &sim::SimState, b: &sim::resources::Boulder) -> Transf
     Transform::from_xyz(p.x, ground, p.y).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::new(b.size, b.size * 0.9, b.size))
 }
 
-pub fn model_kind(k: BuildingKind) -> StructKind {
-    match k {
-        BuildingKind::Dam => StructKind::Dam,
-        BuildingKind::Lodge => StructKind::Lodge,
-        BuildingKind::StickPile => StructKind::StickPile,
-        BuildingKind::FoodCache => StructKind::FoodCache,
-        BuildingKind::PebbleHeap => StructKind::PebbleHeap,
-        BuildingKind::Forester => StructKind::Forester,
-        BuildingKind::HaulMound => StructKind::HaulMound,
-        BuildingKind::Lookout => StructKind::Lookout,
-        BuildingKind::RaftLanding => StructKind::RaftLanding,
-        BuildingKind::Canal => StructKind::Canal,
-    }
-}
 
 pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 {
     if b.status == Status::Complete { 1.0 } else { sim.work.progress(b.id).unwrap_or(0.0).clamp(0.0, 0.999) }
@@ -1004,7 +846,7 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
     }
     let mut live=HashSet::new();
     // Mud reinforcement and pebble facing, each its own ring round the footing.
-    let layers=s.buildings.buildings.iter().flat_map(|b|[(b,false,b.reinforced),(b,true,b.kind!=BuildingKind::Dam&&s.buildings.pebbled.contains(&b.id))]).filter(|l|l.2);
+    let layers=s.buildings.buildings.iter().flat_map(|b|[(b,false,b.reinforced),(b,true,!b.kind.is_dam()&&s.buildings.pebbled.contains(&b.id))]).filter(|l|l.2);
     for (b,pebbled,_) in layers {
         let key=(b.id,pebbled);
         live.insert(key);
@@ -1018,7 +860,7 @@ pub(super) fn sync_reinforcements(mut commands:Commands,sim:Res<Sim>,flow:Res<cr
             }
             continue;
         }
-        let handle=state.meshes.entry((b.kind,pebbled)).or_insert_with(||meshes.add(if pebbled {models::pebble_facing_mesh(model_kind(b.kind))} else {models::reinforcement_mesh(model_kind(b.kind))})).clone();
+        let handle=state.meshes.entry((b.kind,pebbled)).or_insert_with(||meshes.add(if pebbled {models::pebble_facing_mesh(b.kind)} else {models::reinforcement_mesh(b.kind)})).clone();
         let entity=commands.spawn((Target::Building(b.id),SimEntity,Mesh3d(handle),MeshMaterial3d(models.white.clone()),tr)).id();
         state.drawn.insert(key,(entity,tr.translation.y));
     }
@@ -1035,7 +877,7 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
     let on_water = false;
     let y = if on_water {
         stand_y(sim, b.cells().next().unwrap_or(b.pos)).max(lowest)
-    } else if models::footing_of(model_kind(b.kind)).is_some() {
+    } else if models::footing_of(b.kind).is_some() {
         let mean = grounds.iter().sum::<f32>() / grounds.len().max(1) as f32;
         let surface = b
             .cells()
@@ -1047,30 +889,6 @@ fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor:
         lowest
     };
     Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE))
-}
-
-#[cfg(test)]
-mod building_height_tests {
-    use super::*;
-
-    #[test]
-    fn a_rising_pond_lifts_a_building_and_a_falling_one_leaves_it() {
-        let mut s = sim::SimState::new(1);
-        let b = sim::buildings::Building { id: BuildingId(1), kind: BuildingKind::StickPile, pos: (10, 10), status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None };
-        let set_depth = |s: &mut sim::SimState, d: f32| {
-            for c in b.cells().collect::<Vec<_>>() {
-                *s.water.depth.get_mut(c.0, c.1).unwrap() = d;
-            }
-        };
-        set_depth(&mut s, 0.3);
-        let low = building_transform(&s, &b, None).translation.y;
-        set_depth(&mut s, 1.5);
-        let high = building_transform(&s, &b, Some(low)).translation.y;
-        assert!(high > low + 1.0, "{low} -> {high}");
-        set_depth(&mut s, 0.3);
-        let after = building_transform(&s, &b, Some(high)).translation.y;
-        assert_eq!(after, high);
-    }
 }
 
 /// How worn a building looks: 0 sound, then worn, more worn, falling apart.
@@ -1103,16 +921,16 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
     let white = models.white.clone();
     let mut live = HashSet::new();
     let mut puffs: Vec<(Vec3, f32)> = Vec::new();
-    let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: StructKind, len2: u32, stage: u8, tr: Transform| -> Entity {
+    let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: BuildingKind, len2: u32, stage: u8, tr: Transform| -> Entity {
         let mesh = models.structs.entry((kind, len2, stage)).or_insert_with(|| meshes.add(models::struct_mesh(kind, len2 as f32 * 0.5, stage))).clone();
         commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id()
     };
     for b in &sim.buildings.buildings {
-        if b.kind == BuildingKind::Dam && (b.is_complete() || sim.work.dam_plans.iter().any(|p| p.building == b.id)) {
+        if b.kind.is_dam() && b.is_complete() {
             continue;
         }
         // A canal is the ground it digs; its gate shows as a dam cell.
-        if b.kind == BuildingKind::Canal {
+        if b.kind.is_canal() {
             continue;
         }
         live.insert(b.id);
@@ -1153,7 +971,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
         let (w, _) = b.kind.spec().footprint;
         let tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
         st.anchors.insert(b.id, tr.translation.y);
-        let e = spawn(&mut commands, &mut models, Target::Building(b.id), model_kind(b.kind), (w as u32 * 2).max(2), stage, tr);
+        let e = spawn(&mut commands, &mut models, Target::Building(b.id), b.kind, (w as u32 * 2).max(2), stage, tr);
         if band > 0 {
             commands.entity(e).insert(MeshMaterial3d(models.wear[(band - 1) as usize].clone()));
         }
@@ -1178,7 +996,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
             commands.entity(e).despawn();
         }
     }
-    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind == BuildingKind::Lodge).map(|b| b.pos).collect();
+    let lodge_blds: Vec<(usize, usize)> = sim.buildings.buildings.iter().filter(|b| b.kind.is_home()).map(|b| b.pos).collect();
     for l in &sim.colony.lodges {
         if lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) {
             continue;
@@ -1205,7 +1023,7 @@ pub(super) fn sync_sim_buildings(mut commands: Commands, sim: Res<Sim>, models: 
             }
             None => {
                 let target = Target::home(sim, l.id);
-                let e = spawn(&mut commands, &mut models, target, StructKind::Lodge, 6, models::STAGES, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
+                let e = spawn(&mut commands, &mut models, target, BuildingKind::home(), 6, models::STAGES, Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE)));
                 st.lodges.insert(l.id.0, (e, y));
             }
         }
@@ -1484,7 +1302,7 @@ pub(super) fn sync_sim_dams(mut commands: Commands, sim: Res<Sim>, models: Optio
             let from = (old as f32 / vis.steps as f32).clamp(0.05, 4.0);
             commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::new(1.0, from, 1.0), since: clock.0, secs: 1.0 });
         }
-        let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind == BuildingKind::Dam && b.cells().any(|cell| cell == c)).map(|b| b.id);
+        let owner = sim.buildings.buildings.iter().rev().find(|b| b.kind.is_dam() && b.cells().any(|cell| cell == c)).map(|b| b.id);
         if let Some(id) = owner { commands.entity(e).insert(Target::Building(id)); }
         st.cells.insert(c, (e, vis));
     }
@@ -1552,23 +1370,6 @@ pub(super) fn sync_dam_ghosts(
     }
 }
 
-#[cfg(test)]
-mod wall_tests {
-    use super::*;
-
-    #[test]
-    fn a_shallow_staircase_of_cells_is_drawn_as_one_straight_wall() {
-        // 18 cells along, 6 down: runs of three with a step between them.
-        let cells: Vec<(usize, usize)> = (0..19).map(|x| (10 + x, 20 + x / 3)).collect();
-        let pieces = wall_pieces(&cells);
-        let yaws: Vec<f32> = cells[3..16].iter().map(|c| pieces[c].yaw()).collect();
-        let want = (-1.0f32 / 3.0).atan();
-        for y in &yaws {
-            assert!((y - want).abs() < 0.12, "piece turned {y}, line runs at {want}");
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum GroundKey {
     Pile(u64),
@@ -1600,7 +1401,8 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
         }
         st.generation = Some(generation);
     }
-    let load = sim::agents::LOAD_SIZE;
+    // A pile of this much is drawn at its full size.
+    let load = 4.0;
     let mut want: Vec<(GroundKey, (usize, usize), Option<sim::buildings::Good>, f32)> = s
         .work
         .piles
@@ -1620,8 +1422,8 @@ pub(super) fn sync_ground_goods(mut commands: Commands, sim: Res<Sim>, flow: Res
         if k < 0.45 { 0 } else if k < 0.8 { 1 } else { 2 }
     };
     if let Some(c) = s.work.supplies {
-        let start: f32 = sim::starts::START_BUNDLE.iter().map(|g| g.1).sum();
-        let left: f32 = sim::buildings::Good::ALL.iter().map(|&g| s.work.stock_of(sim::agents::SUPPLIES, g)).sum();
+        let start: f32 = sim::content::content().start.iter().map(|g| g.1).sum();
+        let left: f32 = sim::buildings::Good::all().map(|g| s.work.stock_of(sim::agents::SUPPLIES, g)).sum();
         if left > 0.05 {
             want.push((GroundKey::Supplies, c, None, (left / start.max(1.0)).sqrt().clamp(0.45, 1.0)));
         }

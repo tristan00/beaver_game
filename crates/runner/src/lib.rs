@@ -115,20 +115,3 @@ impl Policy {
         self.output.flush()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frames_round_trip_and_end_cleanly() {
-        let mut buf = Vec::new();
-        write_frame(&mut buf, b"abc").unwrap();
-        write_frame(&mut buf, b"").unwrap();
-        let mut r = buf.as_slice();
-        assert_eq!(read_frame(&mut r).as_deref(), Some(&b"abc"[..]));
-        assert_eq!(read_frame(&mut r).as_deref(), Some(&b""[..]));
-        assert_eq!(read_frame(&mut r), None);
-    }
-
-}

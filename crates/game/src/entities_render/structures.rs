@@ -3,8 +3,7 @@ use super::models::{branch, col, mud_lump, site_markers, stake, stick, stick_c, 
 use crate::palette;
 use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, TAU};
-
-fn v(x: f32, y: f32, z: f32) -> Vec3 { Vec3::new(x, y, z) }
+use super::meshgen::v;
 
 fn peeled() -> [f32; 3] { col(palette::PEELED) }
 

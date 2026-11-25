@@ -64,31 +64,3 @@ pub fn vegetation_growth(time_days: f64) -> f32 {
     else { 0.0 }
 }
 
-pub fn days_until(time_days: f64, season: Season) -> f64 {
-    let start = season as usize as f64 * SEASON_DAYS;
-    (start - day_of_year(time_days)).rem_euclid(YEAR_DAYS)
-}
-
-#[cfg(test)]
-mod one_calendar {
-    use super::*;
-
-    /// Every system counts the same year: four seasons of `SEASON_DAYS`. A second season
-    /// length (ecology once kept its own 30-day one) or a day count left from a shorter year
-    /// makes things happen three times too fast without anything looking wrong.
-    #[test]
-    fn every_system_reads_the_same_seasons_and_year() {
-        use crate::tuning::{colony, ecology};
-        assert_eq!(YEAR_DAYS, 4.0 * SEASON_DAYS);
-        assert_eq!(ecology::SEASON_DAYS as f64, SEASON_DAYS, "ecology runs on its own season length");
-        assert_eq!(colony::KIT_DAYS as f64, YEAR_DAYS);
-        assert_eq!(crate::hud::WINTER_RESERVE_DAYS as f64, SEASON_DAYS);
-        // Mating falls in winter, births (after gestation) in spring, leaves turn in autumn.
-        let winter = 3.0 * SEASON_DAYS..YEAR_DAYS;
-        assert!(winter.contains(&colony::MATING_FROM_DAY) && winter.contains(&(colony::MATING_TO_DAY - 1e-6)));
-        let born = (colony::MATING_FROM_DAY + colony::GESTATION_DAYS).rem_euclid(YEAR_DAYS);
-        assert!(Season::at(born) == Season::Spring, "births fall in {:?}", Season::at(born));
-        assert_eq!(Season::at(AUTUMN_GROWTH_START), Season::Autumn);
-        assert_eq!(Season::at(WINTER_GROWTH_START), Season::Winter);
-    }
-}

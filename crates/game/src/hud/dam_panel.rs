@@ -11,7 +11,7 @@ use super::{DamTab, HudAction, Opening};
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::buildings::{BuildingId, Good};
+use sim::buildings::BuildingId;
 use sim::dams::{Dam, Spill};
 use sim::DamGrowth;
 
@@ -94,7 +94,7 @@ fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (&'static s
 }
 
 fn sticks(c: f32) -> Option<(Icon, Color, String)> {
-    Some((good_icon(Good::Sticks), WOOD, format!("{}", c.round() as i64)))
+    cost_chip(&[(sim::dams::material(), c)])
 }
 
 fn condition_tip(s: &sim::SimState, d: &Dam, health: f32) -> Tip {
@@ -273,8 +273,8 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
         ];
         for (icon, word, growth, plan, what, f) in rows {
             let (cost, action, tip) = match plan {
-                Ok(c) => (sticks(*c), Some(HudAction::GrowDam(id, growth)), Tip::name(word).line(what, "").line("Sticks", num(*c))),
-                Err(e) => (Some((good_icon(Good::Sticks), WOOD, "-".into())), None, Tip::name(word).line(what, "").line(e.clone(), "")),
+                Ok(c) => (sticks(*c), Some(HudAction::GrowDam(id, growth)), Tip::name(word).line(what, "").line(sim::dams::material().name(), num(*c))),
+                Err(e) => (Some((good_icon(sim::dams::material()), good_color(sim::dams::material()), "-".into())), None, Tip::name(word).line(what, "").line(e.clone(), "")),
             };
             r.big_button(BigButton { icon, word, cost, action, tip, hint: fix == f, on: false });
         }
@@ -286,15 +286,15 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
 /// Face it with pebbles: then it wears more slowly.
 fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     let Some(b) = s.buildings.building(id) else { return };
-    let slower = format!("{}× slower", num(sim::buildings::PEBBLE_DAM_FACTOR));
+    let slower = format!("{}× slower", num(sim::maintenance::lasts(sim::buildings::BuildingKind::dam(), sim::maintenance::Refit::Facing)));
     if s.buildings.pebbled.contains(&id) {
         r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
     } else if s.maintenance.jobs.contains_key(&id) {
         r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::CancelMaintenance(id)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
     } else {
         let mut tip = Tip::name("Face with pebbles").line("Wears", slower);
-        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Pebbles).0 {
-            tip.push(TipLine::new(good_name(g), num(a)).icon(good_icon(g), good_color(g)));
+        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Facing).0 {
+            tip.push(TipLine::new(g.name(), num(a)).icon(good_icon(g), good_color(g)));
         }
         if b.is_complete() {
             r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::PebbleBuilding(id)), tip, Small::Idle);
@@ -307,7 +307,7 @@ fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
 fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
     let (builders, _) = sim::dams::crew(c.s, id);
     u.row(6.0, |r| {
-        works::crew_button(r, builders, Icon::RoleBuilder, "Builders here", fix == Fix::Assign);
+        works::crew_button(r, builders, crate::hud::words::job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), "Builders here", fix == Fix::Assign);
         works::upkeep_button(r, d.upkeep, HudAction::DamUpkeep(id, !d.upkeep), "Menders repair worn cells", fix == Fix::Upkeep);
         face_button(c.s, r, id);
         works::pause_button(r, c.s, id);
@@ -350,7 +350,7 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
     let selected_here = c.sel == Selection::Site(id) || matches!(c.sel, Selection::Cell(cell) if d.cells.iter().any(|x| x.cell == cell));
     let mut ui = Ui::default();
     ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        works::header(c, u, id, sim::names::pond_name(s, id).unwrap_or("Dam"), selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
+        works::header(c, u, id, sim::names::pond_name(s, id).unwrap_or(sim::buildings::BuildingKind::dam().name()), selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
         if c.hud.dam_tab == DamTab::History {
             history(u, d);
             return;

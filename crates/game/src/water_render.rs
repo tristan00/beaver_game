@@ -1,4 +1,4 @@
-use crate::camera::{MainCamera, OrbitCamera};
+use crate::camera::{MainCamera};
 use crate::state::Sim;
 use crate::terrain_render::*;
 use bevy::asset::RenderAssetUsages;
@@ -14,15 +14,12 @@ pub struct WaterRenderPlugin;
 #[derive(Component)]
 pub struct WaterSurface;
 
-#[derive(Component)]
-pub struct DemoObject;
-
 impl Plugin for WaterRenderPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "water.wesl");
         app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
             .init_resource::<WaterChunks>()
-            .add_systems(Startup, (demo_world.before(spawn_terrain), setup_water))
+            .add_systems(Startup, setup_water)
             .add_systems(Update, (update_water_chunks, update_water_style, hide_water_under_lens));
     }
 }
@@ -195,6 +192,7 @@ fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
 }
 
 use sim::water::SHOW_MIN_M;
+use crate::seasonal::smooth as smooth_step;
 const SURFACE_LIFT: f32 = 0.01;
 
 /// Water at one mesh vertex: the surface level, velocity and white water of the visibly wet
@@ -232,7 +230,6 @@ const FALL_KEEP_M: f32 = 0.25;
 /// centimetres deep is never hidden where the drawn ground, smoothed or coarser at a distance,
 /// stands a little higher than the simulated bed.
 const SHOWN_ABOVE_GROUND_M: f32 = 0.03;
-
 
 /// Where the surface drops this much between neighbouring vertices (a dam crest, a weir, a
 /// riffle) the water is drawn white, so a spill reads as a fall instead of a tilted pane.
@@ -520,11 +517,6 @@ pub fn pond_view(s: &SimState) -> Option<Vec3> {
     Some(Vec3::new(wx, at(&s.height, fx, fy) + at(&s.water.depth, fx, fy), wz))
 }
 
-fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 /// Rebuild the chunks whose water changed, found by the simulation's stamps as the terrain's
 /// are (`update_terrain_chunks`).
 #[allow(clippy::too_many_arguments)]
@@ -607,105 +599,4 @@ fn update_water_chunks(
     }
     *settled = Some(stamps);
     backlog.water = rebuilt;
-}
-
-fn demo_world(mut commands: Commands, mut sim: ResMut<Sim>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut orbit: ResMut<OrbitCamera>) {
-    if std::env::var("BEAVER_DEMO").is_err() {
-        return;
-    }
-    let s = &mut sim.0;
-    let Some((x, y, bed)) = carve_demo_lake(s) else { warn!("demo: world too small for a lake"); return };
-    let (wx, wz) = world_pos(s, x as i32, y as i32);
-    const SCALE: f32 = 1.6;
-    let pos = Vec3::new(wx, bed + 0.9 * SCALE, wz);
-    let body = materials.add(StandardMaterial { base_color: Color::srgb(crate::palette::FUR[0], crate::palette::FUR[1], crate::palette::FUR[2]), perceptual_roughness: 0.9, ..default() });
-    commands
-        .spawn((DemoObject, Transform::from_translation(pos).with_scale(Vec3::splat(SCALE)), Visibility::default()))
-        .with_children(|c| {
-            c.spawn((Mesh3d(meshes.add(Capsule3d::new(0.9, 1.4))), MeshMaterial3d(body.clone()), Transform::from_rotation(Quat::from_rotation_z(1.5))));
-            c.spawn((Mesh3d(meshes.add(Cuboid::new(1.6, 0.15, 0.9))), MeshMaterial3d(body.clone()), Transform::from_xyz(-1.9, -0.4, 0.0)));
-            c.spawn((Mesh3d(meshes.add(Sphere::new(0.35))), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.8, 0.2), ..default() })), Transform::from_xyz(1.5, 0.7, 0.0)));
-        });
-    match std::env::var("BEAVER_DEMO_CAM").as_deref() {
-        Ok("close") => *orbit = OrbitCamera { target: pos, yaw: 0.6, pitch: 0.9, distance: 18.0 },
-        Ok("mid") => *orbit = OrbitCamera { target: pos, yaw: orbit.yaw, pitch: orbit.pitch, distance: 45.0 },
-        _ => {}
-    }
-}
-
-pub const DEMO_DEPTH: f32 = 4.5;
-
-pub fn carve_demo_lake(s: &mut SimState) -> Option<(usize, usize, f32)> {
-    const R: f32 = 11.0;
-    let (w, d) = (s.height.width(), s.height.height());
-    let margin = R as usize + 3;
-    if w <= 2 * margin || d <= 2 * margin {
-        return None;
-    }
-    let mut sorted: Vec<f32> = s.height.as_slice().to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let level = sorted[sorted.len() * 22 / 100];
-    let h = |x: usize, y: usize| s.height.as_slice()[y * w + x];
-    let eye = crate::camera::preset("iso").map(|o| o.eye()).unwrap_or(Vec3::new(100.0, 100.0, 100.0));
-    let visible = |x: usize, y: usize| -> bool {
-        let (wx, wz) = world_pos(s, x as i32, y as i32);
-        let from = Vec3::new(wx, h(x, y) + 0.5, wz);
-        let dir = eye - from;
-        let steps = (dir.length() / 0.5) as usize;
-        (1..steps).all(|k| {
-            let p = from + dir * (k as f32 / steps as f32);
-            let (gx, gy) = (p.x / CELL_SIZE + w as f32 / 2.0, p.z / CELL_SIZE + d as f32 / 2.0);
-            if gx < 0.0 || gy < 0.0 || gx >= (w - 1) as f32 || gy >= (d - 1) as f32 {
-                return true;
-            }
-            p.y > h(gx.round() as usize, gy.round() as usize)
-        })
-    };
-    let mut best = (f32::MAX, w / 2, d / 2);
-    for y in (d / 4).max(margin)..(3 * d / 4).min(d - margin) {
-        for x in (w / 4).max(margin)..(3 * w / 4).min(w - margin) {
-            let mut avg = 0.0;
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (usize::MAX, 0), (0, usize::MAX)] {
-                avg += h(x.wrapping_add(dx), y.wrapping_add(dy)) / 5.0;
-            }
-            let dist = ((x as f32 - w as f32 / 2.0).powi(2) + (y as f32 - d as f32 / 2.0).powi(2)).sqrt();
-            let score = avg + dist * 0.08;
-            if score < best.0 && visible(x, y) {
-                best = (score, x, y);
-            }
-        }
-    }
-    let (_, sx, sy) = best;
-    let ring = |x: usize, y: usize| ((x as f32 - sx as f32).powi(2) + (y as f32 - sy as f32).powi(2)).sqrt();
-    let mut spill = f32::MAX;
-    let r = R as usize + 2;
-    for y in sy - r..=sy + r {
-        for x in sx - r..=sx + r {
-            if (R..R + 1.5).contains(&ring(x, y)) {
-                spill = spill.min(h(x, y));
-            }
-        }
-    }
-    let lake = spill.max(level);
-    let hs = s.height.as_mut_slice();
-    for y in sy - r..=sy + r {
-        for x in sx - r..=sx + r {
-            let t = ring(x, y) / R;
-            if t < 1.0 {
-                let bowl = lake - DEMO_DEPTH * (1.0 - t * t);
-                hs[y * w + x] = hs[y * w + x].min(bowl);
-            }
-        }
-    }
-    let wd = s.water.depth.as_mut_slice();
-    let channel = s.water.channel.as_mut_slice();
-    for (i, &hh) in s.height.as_slice().iter().enumerate() {
-        let (x, y) = (i % w, i / w);
-        let target = if ring(x, y) < R { lake } else { level };
-        if hh < target {
-            wd[i] = target - hh;
-            channel[i] = false;
-        }
-    }
-    Some((sx, sy, s.height.as_slice()[sy * w + sx]))
 }

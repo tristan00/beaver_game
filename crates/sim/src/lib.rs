@@ -11,6 +11,7 @@ pub mod agents;
 pub mod buildings;
 pub mod calendar;
 pub mod catalogue;
+pub mod content;
 pub mod colony;
 pub mod canals;
 pub mod dams;
@@ -63,7 +64,6 @@ pub mod work;
 pub mod worldgen;
 
 use std::fmt;
-
 
 pub use grid::Grid;
 
@@ -134,20 +134,15 @@ pub struct SimState {
     pub recorder: Option<Vec<(u64, Command)>>,
     pub forestry: forestry::Forestry,
     pub predators: predators::Predators,
-    /// Gates upgraded into locks (saved after the world; see `save`).
-    #[serde(skip)]
+    /// Gates upgraded into locks.
     pub locks: locks::Locks,
-    /// Each raft landing's rafts (saved after the world; see `save`).
-    #[serde(skip)]
+    /// Each raft landing's rafts.
     pub fleet: raft_landing::Fleet,
-    /// Rabbits, deer and birds (saved after the world; see `save`).
-    #[serde(skip)]
+    /// Rabbits, deer and birds.
     pub wildlife: wildlife::Wildlife,
-    /// Every beaver's life story (saved after the world; see `save`).
-    #[serde(skip)]
+    /// Every beaver's life story.
     pub lives: lives::Lives,
-    /// The run's tallies (saved after the world; see `save`).
-    #[serde(skip)]
+    /// The run's tallies.
     pub run: run::RunStats,
     /// Ponds' names.
     pub names: names::Names,
@@ -344,7 +339,7 @@ impl SimState {
             beavers: self.colony.beavers.len() as u16,
             young: self.colony.beavers.iter().filter(|b| b.is_young()).count() as u16,
             water: self.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum(),
-            trees: self.resources.items().iter().filter(|r| r.kind == resources::ResourceKind::Tree && !r.snag).count() as u32,
+            trees: self.resources.items().iter().filter(|r| r.kind.is_tree() && !r.snag).count() as u32,
             planted: self.ledger.planted,
         }
     }

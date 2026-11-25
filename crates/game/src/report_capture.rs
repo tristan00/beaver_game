@@ -111,7 +111,7 @@ fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usiz
 
 /// A short line on dry ground beside the first lodge: the refused case.
 fn dry_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
-    let home = s.buildings.buildings.iter().find(|b| b.kind == sim::buildings::BuildingKind::Lodge)?.pos;
+    let home = s.buildings.buildings.iter().find(|b| b.kind.is_home())?.pos;
     for r in 6..30usize {
         for (sx, sy) in [(1i64, 1i64), (-1, 1), (1, -1), (-1, -1)] {
             let at = |o: usize| ((home.0 as i64 + sx * (r + o) as i64).max(0) as usize, (home.1 as i64 + sy * r as i64).max(0) as usize);
@@ -142,7 +142,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                     clock.set_speed(crate::sim_driver::Speed::X3);
                     hud.colony = None;
                     canopy.0 = false;
-                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind==sim::buildings::BuildingKind::Lodge) {
+                    if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind.is_home()) {
                         orbit.target=crate::flow::cell_world(&sim.0.height,(home.pos.0 as f32,home.pos.1 as f32));
                         orbit.distance=90.0;
                     }
@@ -171,8 +171,8 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         hud.set_tool_for_report(crate::hud::Tool::None);
         let s = &sim.0;
         let kind = |k: sim::buildings::BuildingKind| s.buildings.buildings.iter().find(|b| b.kind == k);
-        let homes: Vec<_> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind == sim::buildings::BuildingKind::Lodge).collect();
-        let dam = s.buildings.buildings.iter().filter(|b| b.kind == sim::buildings::BuildingKind::Dam).max_by_key(|b| b.pos.1);
+        let homes: Vec<_> = s.buildings.buildings.iter().filter(|b| b.is_complete() && b.kind.is_home()).collect();
+        let dam = s.buildings.buildings.iter().filter(|b| b.kind.is_dam()).max_by_key(|b| b.pos.1);
         let mut focus = homes.first().map(|b| b.pos);
         let mut distance = 65.0;
         match shot {
@@ -215,7 +215,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                 }
             }
             11 => {
-                if let Some(b) = kind(sim::buildings::BuildingKind::StickPile) {
+                if let Some(b) = sim::buildings::BuildingKind::store_for(sim::dams::material()).and_then(kind) {
                     *selection = Selection::Site(b.id);
                     focus = Some(b.pos);
                 }

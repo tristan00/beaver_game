@@ -3,34 +3,35 @@ use bevy::prelude::*;
 use sim::grid::HeightGrid;
 use sim::SimState;
 
-/// One model per tree species the simulation grows.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum Species {
-    Aspen,
-    Birch,
-    Willow,
-    Alder,
-    Maple,
-    Beech,
-    Pine,
-    Spruce,
+/// The ways a tree is drawn; each species' row names one (`look.model`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TreeStyle {
+    /// A slim pale trunk with dark bark eyes under a small round crown.
+    Slim,
+    /// Two white stems banded black.
+    Twin,
+    /// A leaning trunk under a weeping curtain.
+    Weeping,
+    /// A shrubby clump of stems that hangs cones in winter.
+    Clump,
+    /// A broad dome that flowers red before its leaves.
+    Dome,
+    /// A low wide spread.
+    Spread,
+    /// A tall bare trunk under flat tufts of needles.
+    Tufted,
+    /// A narrow spire of drooping boughs.
+    Spire,
 }
 
-impl Species {
-    pub const ALL: [Species; 8] = [Species::Aspen, Species::Birch, Species::Willow, Species::Alder, Species::Maple, Species::Beech, Species::Pine, Species::Spruce];
-    pub fn index(self) -> usize { self as usize }
-    pub fn of(t: sim::trees::Tree) -> Self {
-        use sim::trees::Tree;
-        match t {
-            Tree::Aspen => Species::Aspen,
-            Tree::Birch => Species::Birch,
-            Tree::Willow => Species::Willow,
-            Tree::Alder => Species::Alder,
-            Tree::Maple => Species::Maple,
-            Tree::Beech => Species::Beech,
-            Tree::Pine => Species::Pine,
-            Tree::Spruce => Species::Spruce,
-        }
+impl TreeStyle {
+    pub fn named(model: &str) -> Option<TreeStyle> {
+        use TreeStyle::*;
+        [("slim", Slim), ("twin", Twin), ("weeping", Weeping), ("clump", Clump), ("dome", Dome), ("spread", Spread), ("tufted", Tufted), ("spire", Spire)]
+            .into_iter().find(|(n, _)| *n == model).map(|s| s.1)
+    }
+    pub fn of(t: sim::trees::Tree) -> TreeStyle {
+        Self::named(&t.row().look.model).unwrap_or_else(|| panic!("tree {}: no tree model {}", t.key(), t.row().look.model))
     }
 }
 
@@ -67,22 +68,6 @@ pub enum Pose {
     Dead,
 }
 
-// Models for retired buildings stay available for when the building list grows again.
-#[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum StructKind {
-    Lodge,
-    Dam,
-    Canal,
-    StickPile,
-    FoodCache,
-    PebbleHeap,
-    Forester,
-    HaulMound,
-    Lookout,
-    RaftLanding,
-}
-
 pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
     let (w, d) = (h.width(), h.height());
     // Grid values sit at cell centres (terrain_render::GRID_OFFSET).
@@ -99,7 +84,7 @@ pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
 
 pub fn lodge_view(sim: &SimState) -> (Vec3, f32) {
     let cell = sim.buildings.buildings.iter()
-        .find(|b| b.kind == sim::buildings::BuildingKind::Lodge)
+        .find(|b| b.kind.is_home())
         .map(|b| b.pos)
         .unwrap_or((sim.world.size / 2, sim.world.size / 2));
     let xz = super::sim_view::cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));

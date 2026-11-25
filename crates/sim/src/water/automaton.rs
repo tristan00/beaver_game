@@ -138,7 +138,6 @@ pub(super) struct Automaton {
     pending: f64,
 }
 
-
 #[inline]
 fn key(s: f64) -> u64 {
     let b = s.to_bits();

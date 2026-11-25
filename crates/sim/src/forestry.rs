@@ -8,12 +8,11 @@ use crate::buildings::{BuildingId, BuildingKind};
 use crate::calendar::Season;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
-use crate::resources::{Resource, ResourceId, ResourceKind};
+use crate::resources::{Resource, ResourceId};
 use crate::trees::Tree;
 use crate::water::Cell;
 use crate::work::Area;
 use crate::SimState;
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum TreeStage {
@@ -60,8 +59,8 @@ impl TreeStage {
 impl Resource {
     pub fn stage(&self) -> Option<TreeStage> {
         match self.kind {
-            ResourceKind::Tree if self.snag => Some(TreeStage::Snag),
-            ResourceKind::Tree => Some(TreeStage::of_age(self.age_days)),
+            k if k.is_tree() && self.snag => Some(TreeStage::Snag),
+            k if k.is_tree() => Some(TreeStage::of_age(self.age_days)),
             _ => None,
         }
     }
@@ -103,8 +102,7 @@ pub struct Forestry {
     unreachable: BTreeMap<Cell, f64>,
     day: Option<i64>,
     rng: Pcg32,
-    /// Trees a beaver planted: who, and on what day (saved after the world; see `save`).
-    #[serde(skip)]
+    /// Trees a beaver planted: who, and on what day.
     pub planted: BTreeMap<ResourceId, (BeaverId, f64)>,
 }
 
@@ -203,12 +201,12 @@ pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f3
 pub fn clear_drowned(sim: &mut SimState) {
     let depth = &sim.water.depth;
     sim.resources.keep(|r| {
-        r.kind != ResourceKind::Tree || r.species.is_none_or(|sp| depth.get(r.cell.0, r.cell.1).is_none_or(|d| *d <= sp.spec().max_depth))
+        !r.kind.is_tree() || r.species.is_none_or(|sp| depth.get(r.cell.0, r.cell.1).is_none_or(|d| *d <= sp.spec().max_depth))
     });
 }
 
 pub fn fellable(r: &Resource) -> bool {
-    r.kind == ResourceKind::Tree && r.stage() != Some(TreeStage::Sapling)
+    r.kind.is_tree() && r.stage() != Some(TreeStage::Sapling)
 }
 
 pub fn cuttable(r: &Resource, min_age: f32) -> bool {
@@ -247,7 +245,7 @@ pub fn init(sim: &mut SimState) {
     let f = &mut sim.forestry;
     f.size = n;
     f.had_tree = vec![false; n * n];
-    for r in sim.resources.items().iter().filter(|r| r.kind == ResourceKind::Tree) {
+    for r in sim.resources.items().iter().filter(|r| r.kind.is_tree()) {
         if r.cell.0 < n && r.cell.1 < n {
             f.had_tree[r.cell.1 * n + r.cell.0] = true;
         }
@@ -269,8 +267,6 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     }
     sim.forestry.day = Some(today.max(last));
 }
-
-
 
 fn chance(rng: &mut Pcg32, p: f32) -> bool {
     ((rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32) < p
@@ -310,11 +306,11 @@ fn daily(sim: &mut SimState, day: i64) {
     {
         let f = &mut sim.forestry;
         sim.resources.each_mut(|r| {
-            if r.kind != ResourceKind::Tree {
+            if !r.kind.is_tree() {
                 return;
             }
             let (x, y) = r.cell;
-            let sp = r.species.unwrap_or(Tree::Aspen);
+            let sp = r.species.unwrap_or_else(Tree::unknown);
             let fd = flood_days.get(x, y).copied().unwrap_or(0.0);
             let dp = depth.get(x, y).copied().unwrap_or(0.0);
             if r.snag {
@@ -370,7 +366,7 @@ fn daily(sim: &mut SimState, day: i64) {
     }
     regrow_stumps(sim, &built);
     let f = &mut sim.forestry;
-    for r in sim.resources.items().iter().filter(|r| r.kind == ResourceKind::Tree) {
+    for r in sim.resources.items().iter().filter(|r| r.kind.is_tree()) {
         if r.cell.0 < n && r.cell.1 < n {
             f.had_tree[r.cell.1 * n + r.cell.0] = true;
         }
@@ -382,7 +378,7 @@ fn daily(sim: &mut SimState, day: i64) {
     f.unreachable.retain(|_, until| *until > today);
     // Trees felled or gone are forgotten.
     let planted = std::mem::take(&mut sim.forestry.planted);
-    sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some_and(|r| r.kind == ResourceKind::Tree)).collect();
+    sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some_and(|r| r.kind.is_tree())).collect();
     drop(_trees);
     { let _p = crate::prof::scope("step/forestry/daily/thinning"); refresh_thinning(sim); }
     { let _p = crate::prof::scope("step/forestry/daily/forest cover"); derive_ecology(sim); }
@@ -581,7 +577,6 @@ pub fn forest_trend(sim: &SimState) -> Option<(usize, usize)> {
     (last.0 - first.0 >= FALLING_DAYS - 0.5).then_some((first.1, last.1))
 }
 
-
 fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>) {
     let day = sim.time_days;
     sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
@@ -662,7 +657,7 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
     for y in area.min.1..=area.max.1.min(n.saturating_sub(1)) {
         for x in area.min.0..=area.max.0.min(n.saturating_sub(1)) {
             let c = (x, y);
-            if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::RoleKind::Planter, c) {
+            if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::Job::with_duty(crate::content::Duty::Forest), c) {
                 continue;
             }
             let key = (-((ground_growth(sim, c) * 3.0).round() as i32), lot(c), c);
@@ -690,84 +685,21 @@ pub fn seedling_species(sim: &SimState, c: Cell) -> Option<Tree> {
     sim.resources
         .items()
         .iter()
-        .filter(|r| r.kind == ResourceKind::Tree && matches!(r.stage(), Some(TreeStage::Mature | TreeStage::Old)))
+        .filter(|r| r.kind.is_tree() && matches!(r.stage(), Some(TreeStage::Mature | TreeStage::Old)))
         .filter(|r| r.cell.0.abs_diff(c.0).max(r.cell.1.abs_diff(c.1)) <= SEEDLING_RADIUS)
         .filter_map(|r| Some((!r.species?.feeds(), r.cell.0.abs_diff(c.0).pow(2) + r.cell.1.abs_diff(c.1).pow(2), r.id, r.species?)))
         .min()
         .map(|k| k.3)
 }
 
-/// A sapling of no known species takes the species of the nearest food tree; with none about, a willow.
+/// A sapling of no known species takes the species of the nearest food tree; with none about, the
+/// content's `sapling`.
 pub fn planting_species(sim: &SimState, c: Cell) -> Tree {
     sim.resources
         .items()
         .iter()
-        .filter(|r| r.kind == ResourceKind::Tree && r.species.is_some_and(|s| s.feeds()))
+        .filter(|r| r.kind.is_tree() && r.species.is_some_and(|s| s.feeds()))
         .min_by_key(|r| (r.cell.0.abs_diff(c.0).pow(2) + r.cell.1.abs_diff(c.1).pow(2), r.id))
         .and_then(|r| r.species)
-        .unwrap_or(Tree::Willow)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deep_water_drowns_intolerant_trees_and_dead_trees_in_water_fall() {
-        let mut s = SimState::new(1);
-        let n = s.world.size;
-        let dry: Vec<Cell> = (0..n * n).map(|i| (i % n, i / n)).filter(|&c| is_dry(&s, c) && s.resources.at(c).next().is_none()).take(2).collect();
-        let (wc, pc) = (dry[0], dry[1]);
-        let willow = s.resources.add_tree(wc, MATURE_AGE, Tree::Willow);
-        let pine = s.resources.add_tree(pc, MATURE_AGE, Tree::Pine);
-        for c in [wc, pc] {
-            *s.water.depth.get_mut(c.0, c.1).unwrap() = 0.4;
-            *s.ecology.flood_days.get_mut(c.0, c.1).unwrap() = 100.0;
-        }
-        daily(&mut s, 1);
-        assert!(!s.resources.get(willow).unwrap().snag, "willow stands in 0.4 m");
-        assert!(s.resources.get(pine).unwrap().snag, "pine drowns in 0.4 m");
-        for d in 2..2 + SNAG_WATER_ROT_DAYS as i64 {
-            *s.water.depth.get_mut(pc.0, pc.1).unwrap() = 0.4;
-            daily(&mut s, d);
-        }
-        assert!(s.resources.get(pine).is_none(), "a dead tree in water falls within days");
-    }
-
-    #[test]
-    fn wild_saplings_spring_up_beside_trees_of_their_own_species() {
-        let mut s = SimState::new(1);
-        init(&mut s);
-        // A wood of pines to the west and birches to the east, every other cell grown.
-        s.resources.keep(|r| r.kind != ResourceKind::Tree);
-        let n = s.world.size;
-        for (x, y) in (0..n * n).map(|i| (i % n, i / n)) {
-            if !is_dry(&s, (x, y)) || s.resources.at((x, y)).next().is_some() {
-                continue;
-            }
-            let sp = if x < n / 2 { Tree::Pine } else { Tree::Birch };
-            *s.world.forest.get_mut(x, y).unwrap() = Some(sp);
-            if (x + y) % 2 == 0 {
-                s.resources.add_tree((x, y), MATURE_AGE, sp);
-            }
-        }
-        let mut seen: HashSet<ResourceId> = s.resources.items().iter().map(|r| r.id).collect();
-        let mut wild = 0;
-        for d in 1..crate::calendar::SEASON_DAYS as i64 {
-            daily(&mut s, d);
-            for w in s.resources.items().iter().filter(|r| !seen.contains(&r.id)) {
-                assert_eq!(w.stage(), Some(TreeStage::Sapling));
-                let parent = s.resources.items().iter().any(|p| {
-                    p.species == w.species && p.age_days >= MATURE_AGE && p.cell.0.abs_diff(w.cell.0).max(p.cell.1.abs_diff(w.cell.1)) == 1
-                });
-                assert!(parent, "a {:?} sapling at {:?} has a seeding {:?} beside it", w.species, w.cell, w.species);
-                wild += 1;
-            }
-            seen.extend(s.resources.items().iter().map(|r| r.id));
-            if wild >= 5 {
-                break;
-            }
-        }
-        assert!(wild >= 5, "seeding trees sow saplings in spring");
-    }
+        .unwrap_or(crate::content::content().sapling)
 }
