@@ -90,6 +90,10 @@ fn meter(u: &mut Ui, icon: Icon, col: Color, name: &str, v: f32, tip: Tip) {
         r.spacer();
         r.bold(format!("{:.0}", v * 100.0), 12.0, INK);
     })
+    .style(|n| {
+        n.width = Val::Percent(100.0);
+        n.padding = UiRect::vertical(Val::Px(2.0));
+    })
     .tip(tip);
 }
 
@@ -134,50 +138,173 @@ fn factor(t: Tip, label: &str, f: f32) -> Tip {
 
 const HARMS: [&str; 5] = ["Hunger", "Cold", "Injury", "Exhaustion", "Old age"];
 
+pub(super) fn health_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{EXHAUST_BELOW, FREEZE_BELOW, HEAL_ABOVE, OLD_AGE_YEARS, STARVE_BELOW, WORK_HEALTH_BASE, WORK_HEALTH_SCALE};
+    let mut tip = Tip::name("Health").with_value(pts(b.health));
+    let mut any_harm = false;
+    for (k, h) in r.harm.iter().enumerate().filter(|(_, h)| **h > 0.0) {
+        any_harm = true;
+        tip.push(TipLine::new(HARMS[k], per_day(-h)).color(BAD));
+    }
+    if r.heal > 0.0 && b.health < 0.999 {
+        tip.push(TipLine::new("Mending", per_day(r.heal)).color(GOOD));
+    } else if !any_harm && b.health >= 0.999 {
+        tip.push(TipLine::new("Status", "Full health").color(GOOD));
+    } else if r.harm[..4].iter().all(|&h| h == 0.0) && b.health < 0.999 {
+        tip.push(TipLine::new("Mends above", format!("Food & warmth {}", pts(HEAL_ABOVE))).color(WARN));
+    }
+    tip.push(
+        TipLine::new("Starves below", format!("Food {}", pts(STARVE_BELOW)))
+            .color(if b.needs.food < STARVE_BELOW { BAD } else { MUTED }),
+    );
+    tip.push(
+        TipLine::new("Freezes below", format!("Warmth {}", pts(FREEZE_BELOW)))
+            .color(if b.needs.warmth < FREEZE_BELOW { BAD } else { MUTED }),
+    );
+    tip.push(
+        TipLine::new("Exhausted below", format!("Rest {}", pts(EXHAUST_BELOW)))
+            .color(if b.needs.rest < EXHAUST_BELOW { BAD } else { MUTED }),
+    );
+    if r.old_age_death > 0.0 {
+        tip.push(TipLine::new("Old age", format!("{:.0}%/y death risk", (1.0 - (-r.old_age_death).exp()) * 100.0)).color(WARN));
+    } else {
+        tip.push(TipLine::new("Old age", format!("After {:.0}y", OLD_AGE_YEARS)).color(MUTED));
+    }
+    tip.line("Mood factor", format!("×{:.2}", r.mood_health))
+        .line("Work pace", format!("×{:.2}", WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health))
+}
+
+pub(super) fn mood_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{MOOD_FOOD_WEIGHT, MOOD_REST_WEIGHT, MOOD_SAFETY_WEIGHT, MOOD_SOCIAL_WEIGHT, MOOD_WARMTH_WEIGHT};
+    let n = &b.needs;
+    let share = |v: f32, w: f32| format!("{:.0} / {:.0}", v * w * 100.0, w * 100.0);
+    let mut tip = Tip::name("Mood")
+        .with_value(pts(b.mood))
+        .line("Target", pts(r.mood_to))
+        .line(format!("{} ({:.0}%)", sim::buildings::Good::food().name(), MOOD_FOOD_WEIGHT * 100.0), share(n.food, MOOD_FOOD_WEIGHT))
+        .line(format!("Warmth ({:.0}%)", MOOD_WARMTH_WEIGHT * 100.0), share(n.warmth, MOOD_WARMTH_WEIGHT))
+        .line(format!("Rest ({:.0}%)", MOOD_REST_WEIGHT * 100.0), share(n.rest, MOOD_REST_WEIGHT))
+        .line(format!("Safety ({:.0}%)", MOOD_SAFETY_WEIGHT * 100.0), share(n.safety, MOOD_SAFETY_WEIGHT))
+        .line(format!("Company ({:.0}%)", MOOD_SOCIAL_WEIGHT * 100.0), share(n.social, MOOD_SOCIAL_WEIGHT))
+        .line("Health factor", format!("×{:.2}", r.mood_health))
+        .line("Work pace", format!("×{:.2}", sim::society::work_speed(b.mood)));
+    if let Some(left) = r.leaves_in {
+        tip.push(TipLine::new("Leaves colony in", days(left)).color(BAD));
+    }
+    tip
+}
+
+pub(super) fn food_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{HEAL_ABOVE, MOOD_FOOD_WEIGHT, STARVE_BELOW};
+    let mut tip = Tip::name(sim::buildings::Good::food().name())
+        .with_value(pts(b.needs.food))
+        .line("Hunger", per_day(-r.hunger))
+        .line("Eats below", pts(r.eat_below));
+    tip.push(
+        TipLine::new("Starves below", pts(STARVE_BELOW))
+            .color(if b.needs.food < STARVE_BELOW { BAD } else { MUTED }),
+    );
+    tip.line("Mends health above", pts(HEAL_ABOVE))
+        .line("Mood weight", format!("{:.0}%", MOOD_FOOD_WEIGHT * 100.0))
+}
+
+pub(super) fn rest_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{EXHAUSTED_REST, EXHAUST_BELOW, MOOD_REST_WEIGHT, RESUME_WORK_REST};
+    let state = if r.resting {
+        "Resting off exhaustion"
+    } else if b.current_job.is_some() {
+        "Working"
+    } else {
+        "Idle"
+    };
+    let sleep = if b.lodge.is_some() {
+        format!("×{:.2} (lodge)", r.sleep)
+    } else {
+        format!("×{:.2} (no lodge)", r.sleep)
+    };
+    let mut tip = Tip::name("Rest")
+        .with_value(pts(b.needs.rest))
+        .line("Change", per_day(r.rest))
+        .line("State", state)
+        .line("Sleep quality", sleep)
+        .line("Rests below", format!("{} (to {})", pts(EXHAUSTED_REST), pts(RESUME_WORK_REST)));
+    tip.push(
+        TipLine::new("Exhausted below", pts(EXHAUST_BELOW))
+            .color(if b.needs.rest < EXHAUST_BELOW { BAD } else { MUTED }),
+    );
+    tip.line("Mood weight", format!("{:.0}%", MOOD_REST_WEIGHT * 100.0))
+}
+
+pub(super) fn warmth_tip(s: &sim::SimState, b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{FREEZE_BELOW, MOOD_WARMTH_WEIGHT};
+    let feels = crate::menu::degrees(s.water.sky.at(s.time_days).feels_c);
+    let shelter = if b.in_lodge {
+        format!("In lodge ({:.0}% insulated)", r.insulation * 100.0)
+    } else if b.lodge.is_some() {
+        format!("Outdoors ({:.0}%)", r.insulation * 100.0)
+    } else {
+        format!("No lodge ({:.0}%)", r.insulation * 100.0)
+    };
+    let mut tip = Tip::name("Warmth")
+        .with_value(pts(b.needs.warmth))
+        .line("Target", pts(r.warmth_to))
+        .line("Feels like", feels)
+        .line("Shelter", shelter);
+    tip.push(
+        TipLine::new("Freezes below", pts(FREEZE_BELOW))
+            .color(if b.needs.warmth < FREEZE_BELOW { BAD } else { MUTED }),
+    );
+    tip.line("Mood weight", format!("{:.0}%", MOOD_WARMTH_WEIGHT * 100.0))
+}
+
+pub(super) fn safety_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::MOOD_SAFETY_WEIGHT;
+    let mut tip = Tip::name("Safety")
+        .with_value(pts(b.needs.safety))
+        .line("Target", pts(r.safety_to));
+    if b.in_lodge {
+        tip = tip.line("Where", "Inside lodge");
+    } else if let Some((land, water)) = r.exposure {
+        if land > 0.0 {
+            tip = tip.line("Where", "Working on land").line("To water", format!("{} m", num(water)));
+        } else {
+            tip = tip.line("Where", "Working in water");
+        }
+    } else {
+        tip = tip.line("Where", "Not working");
+    }
+    tip.line("Mood weight", format!("{:.0}%", MOOD_SAFETY_WEIGHT * 100.0))
+}
+
+pub(super) fn company_tip(b: &Beaver, r: &sim::colony::Rates) -> Tip {
+    use sim::colony::{MOOD_SOCIAL_WEIGHT, SOCIAL_BASE, SOCIAL_MAX_MATES, SOCIAL_PER_MATE};
+    let mates = if b.lodge.is_some() {
+        format!("{} / {}", r.mates, SOCIAL_MAX_MATES)
+    } else {
+        "No lodge".to_string()
+    };
+    Tip::name("Company")
+        .with_value(pts(b.needs.social))
+        .line("Target", pts(r.social_to))
+        .line("Lodge-mates", mates)
+        .line("Per mate", format!("+{} (base {})", pts(SOCIAL_PER_MATE), pts(SOCIAL_BASE)))
+        .line("Mood weight", format!("{:.0}%", MOOD_SOCIAL_WEIGHT * 100.0))
+}
+
 fn condition(c: &Ctx, u: &mut Ui, b: &Beaver) {
     let s = c.s;
     let Some(r) = s.beaver_rates(b.id) else { return };
     heading(u, Icon::Health, "Condition");
-    let mut health = Tip::name("Health");
-    for (k, h) in r.harm.iter().enumerate().filter(|(_, h)| **h > 0.0) {
-        health = health.line(HARMS[k], per_day(-h));
-    }
-    if r.heal > 0.0 {
-        health = health.line("Mending", per_day(r.heal));
-    }
-    if r.old_age_death > 0.0 {
-        health = health.line("Death from age", format!("{:.0}%/y", (1.0 - (-r.old_age_death).exp()) * 100.0));
-    }
-    meter(u, Icon::Health, level(b.health), "Health", b.health, health);
+    meter(u, Icon::Health, level(b.health), "Health", b.health, health_tip(b, &r));
     let (mi, mc) = mood_icon(b.mood);
-    let mood = factor(Tip::name("Mood").line("Toward", pts(r.mood_to)), "Health", r.mood_health);
-    meter(u, mi, mc, "Mood", b.mood, factor(mood, "Work", sim::society::work_speed(b.mood)));
+    meter(u, mi, mc, "Mood", b.mood, mood_tip(b, &r));
     let n = &b.needs;
-    let food = Tip::name(sim::buildings::Good::food().name()).line("Hunger", per_day(-r.hunger)).line("Eats below", pts(r.eat_below));
-    let mut rest = factor(Tip::name("Rest").line("Now", per_day(r.rest)), "Sleep", r.sleep);
-    if r.resting {
-        rest = rest.line("Resting", "");
-    }
-    let mut warmth = Tip::name("Warmth").line("Toward", pts(r.warmth_to));
-    if r.cold > 0.005 {
-        warmth = warmth.line("Cold", pts(r.cold)).line("Lodge keeps out", format!("{:.0}%", r.insulation * 100.0));
-    }
-    let mut safety = Tip::name("Safety").line("Toward", pts(r.safety_to));
-    if let Some((land, water)) = r.exposure {
-        if land > 0.0 {
-            safety = safety.line("On land", "");
-        }
-        if water > 0.0 {
-            safety = safety.line("To water", format!("{} m", num(water)));
-        }
-    }
-    let company = Tip::name("Company").line("Toward", pts(r.social_to)).line("Lodge-mates", format!("{}", r.mates));
     for (icon, col, name, v, tip) in [
-        (crate::hud::words::good_icon(sim::buildings::Good::food()), good_color(sim::buildings::Good::food()), sim::buildings::Good::food().name(), n.food, food),
-        (Icon::Idle, REST, "Rest", n.rest, rest),
-        (Icon::Winter, MUTED, "Warmth", n.warmth, warmth),
-        (Icon::Home, MUD, "Safety", n.safety, safety),
-        (Icon::Beaver, FUR, "Company", n.social, company),
+        (crate::hud::words::good_icon(sim::buildings::Good::food()), good_color(sim::buildings::Good::food()), sim::buildings::Good::food().name(), n.food, food_tip(b, &r)),
+        (Icon::Idle, REST, "Rest", n.rest, rest_tip(b, &r)),
+        (Icon::Winter, MUTED, "Warmth", n.warmth, warmth_tip(s, b, &r)),
+        (Icon::Home, MUD, "Safety", n.safety, safety_tip(b, &r)),
+        (Icon::Beaver, FUR, "Company", n.social, company_tip(b, &r)),
     ] {
         meter(u, icon, col, name, v, tip);
     }
@@ -610,7 +737,21 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
             u.rule();
             u.row(28.0, |cols| {
                 let col = |cols: &mut Ui, f: &dyn Fn(&mut Ui)| {
-                    cols.node(Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_width: Val::Px(0.0), max_width: Val::Px(COL_MAX), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), overflow: Overflow::clip(), ..default() }, |u| f(u));
+                    cols.node(
+                        Node {
+                            flex_grow: 1.0,
+                            flex_basis: Val::Px(0.0),
+                            min_width: Val::Px(0.0),
+                            max_width: Val::Px(COL_MAX),
+                            height: Val::Percent(100.0),
+                            min_height: Val::Px(0.0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(7.0),
+                            ..default()
+                        },
+                        |u| f(u),
+                    )
+                    .scroll_y();
                 };
                 col(cols, &|u| {
                     // What it is doing right now, live.
@@ -640,7 +781,12 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                     chronology(c, u, life);
                 });
             })
-            .style(|n| n.align_items = AlignItems::FlexStart);
+            .style(|n| {
+                n.align_items = AlignItems::Stretch;
+                n.width = Val::Percent(100.0);
+                n.flex_grow = 1.0;
+                n.min_height = Val::Px(0.0);
+            });
         },
     )
     .tag(Tag::Scroll);
@@ -648,4 +794,32 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
     panel(&mut v);
     v.node.padding = UiRect::all(Val::Px(18.0));
     vec![page_area(v, true)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DryLand;
+    impl sim::colony::Landscape for DryLand {
+        fn is_water(&self, _: f32, _: f32) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn condition_tooltips_always_explain_factors() {
+        let mut sim = sim::SimState::new(1);
+        let cell = (sim.world.size / 2, sim.world.size / 2);
+        sim.colony.found((cell.0 as f32, cell.1 as f32), &DryLand).expect("found");
+        let b = sim.colony.beavers.first().expect("founder");
+        let r = sim.beaver_rates(b.id).expect("rates");
+        assert!(health_tip(b, &r).lines.len() >= 5, "health tooltip should list factors");
+        assert!(mood_tip(b, &r).lines.len() >= 7, "mood tooltip should break down all needs");
+        assert!(food_tip(b, &r).lines.len() >= 4, "food tooltip should explain food factors");
+        assert!(rest_tip(b, &r).lines.len() >= 5, "rest tooltip should explain rest factors");
+        assert!(warmth_tip(&sim, b, &r).lines.len() >= 4, "warmth tooltip should explain warmth factors");
+        assert!(safety_tip(b, &r).lines.len() >= 3, "safety tooltip should explain safety factors");
+        assert!(company_tip(b, &r).lines.len() >= 4, "company tooltip should explain company factors");
+    }
 }

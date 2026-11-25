@@ -442,12 +442,36 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         });
         u.rule();
         let n = &b.needs;
-        for (icon, col, name, v) in [(crate::hud::words::good_icon(sim::buildings::Good::food()), good_color(Good::food()), Good::food().name(), n.food), (Icon::Idle, REST, "Rest", n.rest), (Icon::Home, MUD, "Safety", n.safety)] {
+        let rates = s.beaver_rates(id);
+        for (icon, col, name, v, tip) in [
+            (
+                crate::hud::words::good_icon(sim::buildings::Good::food()),
+                good_color(Good::food()),
+                Good::food().name(),
+                n.food,
+                rates.as_ref().map_or_else(|| Tip::name(Good::food().name()).with_value(format!("{:.0}", n.food * 100.0)), |r| super::life::food_tip(b, r)),
+            ),
+            (
+                Icon::Idle,
+                REST,
+                "Rest",
+                n.rest,
+                rates.as_ref().map_or_else(|| Tip::name("Rest").with_value(format!("{:.0}", n.rest * 100.0)), |r| super::life::rest_tip(b, r)),
+            ),
+            (
+                Icon::Home,
+                MUD,
+                "Safety",
+                n.safety,
+                rates.as_ref().map_or_else(|| Tip::name("Safety").with_value(format!("{:.0}", n.safety * 100.0)), |r| super::life::safety_tip(b, r)),
+            ),
+        ] {
+            let _ = name;
             u.row(10.0, |r| {
                 r.icon(icon, 16.0, col);
                 r.pips(v, condition_colour(v));
             })
-            .tip(Tip::name(name).with_value(format!("{:.0}", v * 100.0)));
+            .tip(tip);
         }
         u.rule();
         u.row(8.0, |r| {

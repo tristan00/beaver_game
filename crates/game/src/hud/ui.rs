@@ -190,12 +190,14 @@ pub struct VNode {
     pub click_through: bool,
     /// A pin over the map: takes a left click, but a right click goes on to the map beneath.
     pub pin: bool,
+    /// Vertically scrollable viewport with a themed scrollbar when content overflows.
+    pub scroll_y: bool,
     pub children: Vec<VNode>,
 }
 
 impl VNode {
     pub fn new(node: Node) -> VNode {
-        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, peek: None, click_through: false, pin: false, children: Vec::new() }
+        VNode { node, bg: Color::NONE, border: None, kind: Kind::Box, skin: None, action: None, tip: None, solid: false, tag: Tag::None, depth: 0, peek: None, click_through: false, pin: false, scroll_y: false, children: Vec::new() }
     }
     pub fn skin(&mut self, s: Skin) -> &mut Self {
         self.skin = Some((s, Color::WHITE));
@@ -251,6 +253,12 @@ impl VNode {
         self.tag = t;
         self
     }
+    /// Vertically scrollable container with an automatic carved-bark scrollbar when overflowing.
+    pub fn scroll_y(&mut self) -> &mut Self {
+        self.scroll_y = true;
+        self.solid = true;
+        self
+    }
     pub fn style(&mut self, f: impl FnOnce(&mut Node)) -> &mut Self {
         f(&mut self.node);
         self
@@ -264,6 +272,7 @@ impl VNode {
             && self.interactive() == o.interactive()
             && self.click_through == o.click_through
             && self.pin == o.pin
+            && self.scroll_y == o.scroll_y
             && self.tag == o.tag
             && self.children.len() == o.children.len()
             && self.children.iter().zip(&o.children).all(|(a, b)| a.same_shape(b))
@@ -499,6 +508,38 @@ impl Ui {
         v.skin(Skin::Portrait);
         v
     }
+    /// A themed vertical scrollbar indicator for row-paged lists (`first`, `visible`, `total`).
+    pub fn slice_scrollbar(&mut self, first: usize, visible: usize, total: usize, height: f32) {
+        if total <= visible || height <= 1.0 {
+            return;
+        }
+        let w = super::scrollbar::TRACK_W;
+        let thumb = ((visible as f32 / total as f32) * height).clamp(24.0f32.min(height), height);
+        let at = (first as f32 / (total - visible) as f32).clamp(0.0, 1.0) * (height - thumb);
+        let track = self.node(
+            Node {
+                width: Val::Px(w),
+                height: Val::Px(height),
+                flex_direction: FlexDirection::Column,
+                flex_shrink: 0.0,
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(w * 0.5)),
+                ..default()
+            },
+            |bar| {
+                bar.add(VNode::new(Node { height: Val::Px(at), flex_shrink: 0.0, ..default() }));
+                bar.add(VNode::new(Node {
+                    width: Val::Px(w - 2.0),
+                    height: Val::Px(thumb),
+                    border_radius: BorderRadius::all(Val::Px((w - 2.0) * 0.5)),
+                    flex_shrink: 0.0,
+                    ..default()
+                }))
+                .bg(BARK.with_alpha(0.84));
+            },
+        );
+        track.bg(GROOVE).border(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)));
+    }
 }
 
 pub const FUR: Color = Color::srgb(0.73, 0.47, 0.25);
@@ -651,8 +692,40 @@ pub fn lift_hover(mut q: Query<(&Interaction, &Lift, &mut ImageNode), Or<(Change
     }
 }
 
+fn outer_scroll_node(n: &Node) -> Node {
+    let mut out = n.clone();
+    out.overflow = Overflow::clip();
+    out.flex_direction = FlexDirection::Column;
+    out.row_gap = Val::Px(0.0);
+    out.column_gap = Val::Px(0.0);
+    out.padding = UiRect::ZERO;
+    out
+}
+
+fn inner_scroll_node(n: &Node) -> Node {
+    let pad_r = match n.padding.right {
+        Val::Px(px) => px + 14.0,
+        _ => 14.0,
+    };
+    Node {
+        width: Val::Percent(100.0),
+        max_height: Val::Percent(100.0),
+        flex_grow: 1.0,
+        min_height: Val::Px(0.0),
+        flex_direction: n.flex_direction,
+        align_items: n.align_items,
+        justify_content: n.justify_content,
+        row_gap: n.row_gap,
+        column_gap: n.column_gap,
+        padding: UiRect { right: Val::Px(pad_r), ..n.padding },
+        overflow: Overflow::scroll_y(),
+        ..default()
+    }
+}
+
 fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> MountedNode {
-    let mut ec = p.spawn((v.node.clone(), BackgroundColor(v.bg), FocusPolicy::Pass));
+    let node = if v.scroll_y { outer_scroll_node(&v.node) } else { v.node.clone() };
+    let mut ec = p.spawn((node, BackgroundColor(v.bg), FocusPolicy::Pass));
     if let Some(b) = v.border {
         ec.insert(b);
     }
@@ -701,7 +774,25 @@ fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> Mounted
     }
     let e = ec.id();
     let mut children = Vec::new();
-    if !v.children.is_empty() {
+    if v.scroll_y {
+        ec.with_children(|cp| {
+            let vp = cp
+                .spawn((
+                    inner_scroll_node(&v.node),
+                    super::scrollbar::ScrollViewport,
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    FocusPolicy::Pass,
+                ))
+                .with_children(|vc| {
+                    for c in &v.children {
+                        children.push(spawn_tree(vc, icons, c));
+                    }
+                })
+                .id();
+            super::scrollbar::spawn_scrollbar(cp, vp, 2.0, 2.0, 2.0);
+        });
+    } else if !v.children.is_empty() {
         ec.with_children(|cp| {
             for c in &v.children {
                 children.push(spawn_tree(cp, icons, c));
@@ -714,7 +805,8 @@ fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> Mounted
 fn update_tree(cmd: &mut Commands, icons: &Icons, old: &VNode, new: &VNode, m: &MountedNode) {
     let mut ec = cmd.entity(m.e);
     if old.node != new.node && !matches!(new.kind, Kind::Icon { .. }) {
-        ec.insert(new.node.clone());
+        let node = if new.scroll_y { outer_scroll_node(&new.node) } else { new.node.clone() };
+        ec.insert(node);
     }
     if old.bg != new.bg {
         ec.insert(BackgroundColor(new.bg));

@@ -19,7 +19,7 @@ Double-click **beaver_colony.exe** to start playing. No installation or extra fi
 | **Mender** | Unlimited | None | Repairs worn buildings and dams, clears canal silt, and applies refits. |
 | **Hauler** | 3 per Haul mound | Haul mound | Moves goods between stores, balances store levels, and pushes rafts. |
 | **Planter** | 1 per Forester | Forester | Collects seedlings from mature trees and plants saplings in the Forester's area. |
-| **Sentry** | 1 per Lookout | Lookout | Watches for wolves at extended range and slaps tail to warn nearby beavers. |
+| **Sentry** | 1 per Lookout | Lookout | Watches for danger at extended range and slaps tail to warn nearby beavers. |
 | **Pebbler** | 1 per Pebble heap | Pebble heap | Collects river pebbles for pebble-facing dams and buildings (pauses when ground freezes). |
 
 ---
@@ -36,7 +36,7 @@ Double-click **beaver_colony.exe** to start playing. No installation or extra fi
 | **Pebble heap** | 2×2 (water) | 4 Sticks, 2 Mud | None | 400 Pebbles | 1 Pebbler | Stores river pebbles and provides a Pebbler seat. |
 | **Forester** | 2×2 (water) | 12 Sticks, 6 Mud | Food cache | 40 Seedlings | 1 Planter | Replants trees within its work area (25×25) and stores seedlings. |
 | **Haul mound** | 2×2 (water) | 10 Sticks, 4 Mud | Stick pile | — | 3 Haulers | Coordinates haulers to balance stores, fulfill haul orders, and run rafts. |
-| **Lookout** | 2×2 (water) | 10 Sticks, 4 Mud | None | — | 1 Sentry | Watch post where a Sentry spots wolves from far away and warns the colony. |
+| **Lookout** | 2×2 (water) | 10 Sticks, 4 Mud | None | — | 1 Sentry | Watch post where a Sentry watches for danger from far away and warns the colony. |
 | **Raft landing** | 2×2 (water) | 20 Sticks, 4 Mud | Haul mound | 1 Raft | — | Launches a log raft so Haulers can carry bulk loads across connected water and locks. |
 
 ### Waterworks Upgrades

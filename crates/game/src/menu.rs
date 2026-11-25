@@ -511,32 +511,51 @@ fn rebuild_menu(
     commands.entity(e).despawn_related::<Children>();
     let Some(screen) = menu.screen else { return };
     bg.0 = if screen == Screen::Start { Color::srgba(0.05, 0.04, 0.03, 0.25) } else { Color::srgba(0.05, 0.04, 0.03, 0.55) };
-    let card = Node {
+    let shell = Node {
         width: Val::Px(440.0),
         max_height: Val::Percent(92.0),
-        overflow: Overflow::scroll_y(),
+        overflow: Overflow::clip(),
         flex_direction: FlexDirection::Column,
-        row_gap: Val::Px(10.0),
-        padding: UiRect::all(Val::Px(22.0)),
         border: UiRect { top: Val::Px(3.0), ..UiRect::all(Val::Px(1.0)) },
         border_radius: BorderRadius::all(Val::Px(9.0)),
         ..default()
     };
+    let viewport = Node {
+        width: Val::Percent(100.0),
+        flex_grow: 1.0,
+        min_height: Val::Px(0.0),
+        overflow: Overflow::scroll_y(),
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(10.0),
+        padding: UiRect { right: Val::Px(26.0), ..UiRect::all(Val::Px(22.0)) },
+        ..default()
+    };
     let border = BorderColor { top: BARK, ..BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)) };
     commands.entity(e).with_children(|r| {
-        r.spawn((card, ScrollPosition::default(), bevy::ui::RelativeCursorPosition::default(), Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|p| {
-            if menu.loading {
-                hud::bold(p, "Preparing your valley...", 20.0, INK);
-                hud::text(p, menu.map.label(), 13.0, MUTED);
-                return;
-            }
-            if let Some(error) = &menu.load_error { hud::text(p, error, 13.0, hud::BAD); }
-            match screen {
-                Screen::Start => start_screen(p, &menu, &icons, &current.0),
-                Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
-                Screen::Settings => settings_screen(p, &menu, &icons, vols.as_deref()),
-                Screen::Load => load_screen(p, &menu),
-            }
+        r.spawn((shell, Interaction::default(), hud::Blocks, FocusPolicy::Block, BackgroundColor(PANEL), border)).with_children(|card| {
+            let vp = card
+                .spawn((
+                    viewport,
+                    hud::scrollbar::ScrollViewport,
+                    ScrollPosition::default(),
+                    bevy::ui::RelativeCursorPosition::default(),
+                ))
+                .with_children(|p| {
+                    if menu.loading {
+                        hud::bold(p, "Preparing your valley...", 20.0, INK);
+                        hud::text(p, menu.map.label(), 13.0, MUTED);
+                        return;
+                    }
+                    if let Some(error) = &menu.load_error { hud::text(p, error, 13.0, hud::BAD); }
+                    match screen {
+                        Screen::Start => start_screen(p, &menu, &icons, &current.0),
+                        Screen::Pause => pause_screen(p, &menu, &icons, &sim.0, &clock),
+                        Screen::Settings => settings_screen(p, &menu, &icons, vols.as_deref()),
+                        Screen::Load => load_screen(p, &menu),
+                    }
+                })
+                .id();
+            hud::scrollbar::spawn_scrollbar(card, vp, 12.0, 12.0, 6.0);
         });
     });
 }
@@ -693,9 +712,9 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         hud::bold(p, "Sound", 12.0, MUTED);
         for ch in crate::audio::Channel::ALL {
             let name = match ch {
-                crate::audio::Channel::Master => "All",
-                crate::audio::Channel::Water => "Water",
-                crate::audio::Channel::Alerts => "Alerts",
+                crate::audio::Channel::Master => "Master",
+                crate::audio::Channel::Effects => "Sound effects",
+                crate::audio::Channel::Ambience => "Ambience",
             };
             let now = vols.level(ch);
             let nearest = LEVELS.iter().copied().fold(LEVELS[0], |a, l| if (l - now).abs() < (a - now).abs() { l } else { a });
@@ -754,7 +773,7 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         ("Territory", "L"),
         ("Next free beaver", "I"),
         ("Pause, speed", if crate::sim_driver::dev_speed() { "Space, 1 2 3" } else { "Space, 1 2" }),
-        ("Volume: all, alerts, water", "- =  ; '  , ."),
+        ("Volume: master, effects, ambience", "- =  ; '  , ."),
         ("Mute", "M"),
         ("Menu", "Esc"),
     ] {

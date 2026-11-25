@@ -524,7 +524,7 @@ fn card_node(k: Ui, tip: Option<Tip>) -> VNode {
 
 pub fn right(c: &Ctx) -> Vec<VNode> {
     let bottom = super::journal::height(c) + 20.0;
-    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), overflow: Overflow::clip(), ..abs(None, Some(12.0), Some(84.0), Some(bottom)) });
+    let mut col = VNode::new(Node { width: Val::Px(RIGHT_W + 14.0), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: Val::Px(8.0), ..abs(None, Some(12.0), Some(84.0), Some(bottom)) });
     let mut ui = Ui::default();
     // A beaver pointed at in the colony book or ledger shows on its own.
     if let Some(id) = c.hud.peek.filter(|id| c.s.colony.beaver(*id).is_some()) {
@@ -545,6 +545,9 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
         return Vec::new();
     }
     col.children = ui.nodes;
+    col.scroll_y();
+    // Let clicks on empty space below cards still pass through to the map when not scrolling.
+    col.solid = false;
     vec![col]
 }
 

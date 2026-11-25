@@ -30,17 +30,25 @@ pub struct AudioVolumes(VolumeSettings);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Master,
-    Water,
-    Alerts,
+    Effects,
+    Ambience,
 }
 
 impl Channel {
-    pub const ALL: [Channel; 3] = [Channel::Master, Channel::Water, Channel::Alerts];
+    pub const ALL: [Channel; 3] = [Channel::Master, Channel::Effects, Channel::Ambience];
     fn key(self) -> &'static str {
         match self {
             Channel::Master => "master",
-            Channel::Water => "water",
-            Channel::Alerts => "alerts",
+            Channel::Effects => "effects",
+            Channel::Ambience => "ambience",
+        }
+    }
+    fn parse_key(key: &str) -> Option<Self> {
+        match key {
+            "master" => Some(Channel::Master),
+            "effects" | "alerts" => Some(Channel::Effects),
+            "ambience" | "water" => Some(Channel::Ambience),
+            _ => None,
         }
     }
 }
@@ -49,16 +57,16 @@ impl AudioVolumes {
     pub fn level(&self, ch: Channel) -> f32 {
         match ch {
             Channel::Master => self.0.master,
-            Channel::Water => self.0.ambience,
-            Channel::Alerts => self.0.effects,
+            Channel::Ambience => self.0.ambience,
+            Channel::Effects => self.0.effects,
         }
     }
     pub fn set(&mut self, ch: Channel, v: f32) {
         let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { return };
         match ch {
             Channel::Master => self.0.master = v,
-            Channel::Water => self.0.ambience = v,
-            Channel::Alerts => self.0.effects = v,
+            Channel::Ambience => self.0.ambience = v,
+            Channel::Effects => self.0.effects = v,
         }
     }
     fn to_text(self) -> String {
@@ -69,7 +77,7 @@ impl AudioVolumes {
         for line in text.lines() {
             let mut words = line.split_whitespace();
             let (Some(key), Some(Ok(level))) = (words.next(), words.next().map(str::parse::<f32>)) else { continue };
-            if let Some(&c) = Channel::ALL.iter().find(|c| c.key() == key) {
+            if let Some(c) = Channel::parse_key(key) {
                 v.set(c, level);
             }
         }
@@ -301,4 +309,25 @@ fn update_mix(
     }
     let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps: heard.1 .1, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: heard.1 .0, wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sound_settings_round_trip_effects_and_ambience() {
+        let mut vols = AudioVolumes(VolumeSettings::default());
+        vols.set(Channel::Master, 0.75);
+        vols.set(Channel::Effects, 0.50);
+        vols.set(Channel::Ambience, 0.25);
+        let parsed = AudioVolumes::from_text(&vols.to_text());
+        assert_eq!(parsed.level(Channel::Master), 0.75);
+        assert_eq!(parsed.level(Channel::Effects), 0.50);
+        assert_eq!(parsed.level(Channel::Ambience), 0.25);
+        // Backwards compatible with older sound.txt files.
+        let legacy = AudioVolumes::from_text("master 0.50\nwater 0.25\nalerts 0.75\n");
+        assert_eq!(legacy.level(Channel::Ambience), 0.25);
+        assert_eq!(legacy.level(Channel::Effects), 0.75);
+    }
 }

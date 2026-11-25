@@ -269,7 +269,7 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
             u.rule();
             u.row(28.0, |cols| {
                 // Who lives here.
-                cols.node(Node { width: Val::Px(300.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| {
+                cols.node(Node { width: Val::Px(300.0), height: Val::Percent(100.0), min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| {
                     u.row(8.0, |r| {
                         r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), 16.0, MUD);
                         r.bold(format!("Living here · {} / {}", home.len(), sim::colony::LODGE_CAPACITY), 14.0, INK);
@@ -292,7 +292,8 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                     if home.is_empty() {
                         u.text("Nobody lives here".to_string(), 12.0, MUTED);
                     }
-                });
+                })
+                .scroll_y();
                 // The family tree.
                 cols.node(Node { flex_grow: 1.0, align_self: AlignSelf::Stretch, flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), overflow: Overflow::clip(), ..default() }, |u| {
                     u.row(8.0, |r| {
@@ -303,32 +304,35 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                         u.text("No family known".to_string(), 12.0, MUTED);
                         return;
                     }
-                    let max = ((tree.size.y - VIEW_H) / STEP_PX).ceil().max(0.0);
-                    let shift = (c.hud.scroll as f32).min(max) * STEP_PX;
                     let canvas = Node {
                         width: Val::Px(tree.size.x),
                         height: Val::Px(tree.size.y),
-                        margin: UiRect::top(Val::Px(-shift)),
                         align_self: AlignSelf::Center,
                         flex_shrink: 0.0,
                         ..default()
                     };
-                    u.node(canvas, |t| {
-                        for w in &tree.wires {
-                            t.add(VNode::new(Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(w.min.x),
-                                top: Val::Px(w.min.y),
-                                width: Val::Px(w.width()),
-                                height: Val::Px(w.height()),
-                                ..default()
-                            }))
-                            .bg(WIRE_COL);
-                        }
-                        for &(id, at) in &tree.chips {
-                            chip(t, s, id, at, &home);
-                        }
-                    });
+                    u.node(
+                        Node { width: Val::Percent(100.0), flex_grow: 1.0, min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() },
+                        |wrap| {
+                            wrap.node(canvas, |t| {
+                                for w in &tree.wires {
+                                    t.add(VNode::new(Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(w.min.x),
+                                        top: Val::Px(w.min.y),
+                                        width: Val::Px(w.width()),
+                                        height: Val::Px(w.height()),
+                                        ..default()
+                                    }))
+                                    .bg(WIRE_COL);
+                                }
+                                for &(id, at) in &tree.chips {
+                                    chip(t, s, id, at, &home);
+                                }
+                            });
+                        },
+                    )
+                    .scroll_y();
                 });
             })
             .style(|n| {

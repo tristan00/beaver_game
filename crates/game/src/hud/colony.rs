@@ -44,12 +44,16 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                 r.close_button(HudAction::Colony(None), true);
             });
             u.rule();
-            match tab {
-                ColonyTab::Population => beavers(c, u),
-                ColonyTab::Jobs => work(c, u),
-                ColonyTab::Beavers => super::ledger::beavers(c, u),
-                ColonyTab::Run => super::ledger::run(c, u),
-            }
+            u.node(
+                Node { width: Val::Percent(100.0), flex_grow: 1.0, min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), ..default() },
+                |body| match tab {
+                    ColonyTab::Population => beavers(c, body),
+                    ColonyTab::Jobs => work(c, body),
+                    ColonyTab::Beavers => super::ledger::beavers(c, body),
+                    ColonyTab::Run => super::ledger::run(c, body),
+                },
+            )
+            .scroll_y();
         },
     );
     let mut v = ui.nodes.pop().unwrap();

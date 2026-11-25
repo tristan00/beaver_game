@@ -172,7 +172,7 @@ menu = 7
 [[building]]
 key = "Lookout"
 name = "Lookout"
-summary = "Watches for wolves"
+summary = "Watches for danger"
 footprint = [2, 2]
 site = "TouchesWater"
 work = 6.0

@@ -14,6 +14,7 @@ mod family;
 mod ledger;
 mod panels;
 mod paths;
+pub(crate) mod scrollbar;
 mod water_legend;
 mod welcome;
 mod ui;
@@ -782,13 +783,14 @@ impl Plugin for HudPlugin {
             .init_resource::<world::WorksSnap>()
             .init_resource::<elevation::Contours>()
             .init_resource::<DamSettle>()
+            .init_resource::<scrollbar::ScrollDrag>()
             .insert_resource(RefreshTimer(Timer::from_seconds(REFRESH_SECS, TimerMode::Repeating)))
             .add_systems(Startup, (spawn_hosts, ui::spawn_tip_hosts, setup_minimap))
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scroll_lists),
-                    (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay, world::lookout_range, paths::draw_paths),
+                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scroll_lists, scrollbar::scroll_wheel, scrollbar::scroll_drag),
+                    (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, scrollbar::sync_scrollbars, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay, world::lookout_range, paths::draw_paths),
                 )
                     .chain()
                     .in_set(HudSet),

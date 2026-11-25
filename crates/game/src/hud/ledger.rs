@@ -44,12 +44,16 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
                 r.close_button(HudAction::Ledger(None), true);
             });
             u.rule();
-            match tab {
-                LedgerTab::Charts => charts(c, u),
-                LedgerTab::Dams => dams(c, u),
-                LedgerTab::Buildings => buildings(c, u),
-                LedgerTab::Stores => super::colony::stores(c, u),
-            }
+            u.node(
+                Node { width: Val::Percent(100.0), flex_grow: 1.0, min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), ..default() },
+                |body| match tab {
+                    LedgerTab::Charts => charts(c, body),
+                    LedgerTab::Dams => dams(c, body),
+                    LedgerTab::Buildings => buildings(c, body),
+                    LedgerTab::Stores => super::colony::stores(c, body),
+                },
+            )
+            .scroll_y();
         },
     );
     let mut v = ui.nodes.pop().unwrap();
@@ -429,17 +433,7 @@ pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
                 beaver_row(c, rows, b, &family(b));
             }
         });
-        // A scroll bar when the list runs past the panel.
-        if n > ROWS {
-            let h = ROWS as f32 * 24.0;
-            let thumb = (ROWS as f32 / n as f32 * h).max(16.0);
-            let at = first as f32 / (n - ROWS) as f32 * (h - thumb);
-            body.node(Node { width: Val::Px(4.0), height: Val::Px(h), flex_direction: FlexDirection::Column, border_radius: BorderRadius::all(Val::Px(2.0)), ..default() }, |bar| {
-                bar.add(VNode::new(Node { height: Val::Px(at), ..default() }));
-                bar.add(VNode::new(Node { width: Val::Px(4.0), height: Val::Px(thumb), border_radius: BorderRadius::all(Val::Px(2.0)), ..default() })).bg(MUTED.with_alpha(0.7));
-            })
-            .bg(FAINT);
-        }
+        body.slice_scrollbar(first, ROWS, n, ROWS as f32 * 24.0);
     })
     .tag(Tag::Scroll)
     .solid();
@@ -585,8 +579,9 @@ fn dams(c: &Ctx, u: &mut Ui) {
     })
     .tip(Tip::name("Water held behind every dam"));
     let first = c.hud.scroll.min(list.len().saturating_sub(4));
-    u.col(8.0, |cards| {
-        for (i, b) in list.iter().enumerate().skip(first).take(4) {
+    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), width: Val::Percent(100.0), ..default() }, |wrap| {
+        wrap.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), flex_grow: 1.0, min_width: Val::Px(0.0), ..default() }, |cards| {
+            for (i, b) in list.iter().enumerate().skip(first).take(4) {
             let d = b.dam.as_deref().expect("dam");
             let health = sim::dams::health(s, d);
             let built: Vec<_> = d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0).collect();
@@ -660,9 +655,11 @@ fn dams(c: &Ctx, u: &mut Ui) {
                     .tip(Tip::name("Pond level").line("Days", format!("{}", h.len())).line("Range", format!("{:.2} m", hi - lo)));
                 }
             })
-            .style(|n| n.padding = UiRect::all(Val::Px(8.0)))
-            .bg(Color::srgba(0.0, 0.0, 0.0, 0.16));
-        }
+                .style(|n| n.padding = UiRect::all(Val::Px(8.0)))
+                .bg(Color::srgba(0.0, 0.0, 0.0, 0.16));
+            }
+        });
+        wrap.slice_scrollbar(first, 4, list.len(), 320.0);
     })
     .tag(Tag::Scroll)
     .solid();
@@ -703,49 +700,52 @@ fn buildings(c: &Ctx, u: &mut Ui) {
         }
     });
     u.rule();
-    u.col(2.0, |rows| {
-        for b in list.iter().skip(first).take(ROWS) {
-            let depth = sim::buildings::flood_depth(b, &s.water.depth);
-            let flooded = sim::buildings::flooded(b, &s.water.depth);
-            let dcol = if flooded { BAD } else if depth > 0.75 * max { WARN } else { WATER };
-            let row = rows.row(8.0, |r| {
-                r.node(Node { width: Val::Px(150.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(6.0) }, |x| {
-                    x.icon(building_icon(b.kind), 16.0, INK);
-                    x.text(b.kind.spec().name.as_str(), 12.0, INK);
-                });
-                r.node(Node { width: Val::Px(110.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(4.0) }, |x| {
-                    if let Some((icon, word, goods, col)) = status_line(s, b.id) {
-                        if let Some(i) = icon {
-                            x.icon(i, 13.0, col);
+    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), width: Val::Percent(100.0), ..default() }, |wrap| {
+        wrap.col(2.0, |rows| {
+            for b in list.iter().skip(first).take(ROWS) {
+                let depth = sim::buildings::flood_depth(b, &s.water.depth);
+                let flooded = sim::buildings::flooded(b, &s.water.depth);
+                let dcol = if flooded { BAD } else if depth > 0.75 * max { WARN } else { WATER };
+                let row = rows.row(8.0, |r| {
+                    r.node(Node { width: Val::Px(150.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(6.0) }, |x| {
+                        x.icon(building_icon(b.kind), 16.0, INK);
+                        x.text(b.kind.spec().name.as_str(), 12.0, INK);
+                    });
+                    r.node(Node { width: Val::Px(110.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(4.0) }, |x| {
+                        if let Some((icon, word, goods, col)) = status_line(s, b.id) {
+                            if let Some(i) = icon {
+                                x.icon(i, 13.0, col);
+                            }
+                            x.text(word, 11.0, col);
+                            for g in goods {
+                                x.icon(good_icon(g), 12.0, good_color(g));
+                            }
                         }
-                        x.text(word, 11.0, col);
-                        for g in goods {
-                            x.icon(good_icon(g), 12.0, good_color(g));
+                    });
+                    r.node(Node { width: Val::Px(80.0), flex_shrink: 0.0, ..row_node(2.0) }, |x| {
+                        if b.is_complete() {
+                            x.pips(b.condition, if b.condition < 0.35 { BAD } else if b.condition < 0.6 { WARN } else { GOOD });
                         }
-                    }
+                    })
+                    .tip(Tip::name("Condition").with_value(format!("{:.0}%", b.condition * 100.0)));
+                    r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| {
+                        x.ticks(depth / max, 8, 80.0, 8.0, dcol);
+                        x.text(format!("{:.2} m", depth), 11.0, dcol);
+                    })
+                    .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("At most", format!("{:.1} m", max)));
+                    r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
+                        if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
+                            x.icon(Icon::Beaver, 13.0, MUTED);
+                            let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
+                            x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
+                        }
+                    });
                 });
-                r.node(Node { width: Val::Px(80.0), flex_shrink: 0.0, ..row_node(2.0) }, |x| {
-                    if b.is_complete() {
-                        x.pips(b.condition, if b.condition < 0.35 { BAD } else if b.condition < 0.6 { WARN } else { GOOD });
-                    }
-                })
-                .tip(Tip::name("Condition").with_value(format!("{:.0}%", b.condition * 100.0)));
-                r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| {
-                    x.ticks(depth / max, 8, 80.0, 8.0, dcol);
-                    x.text(format!("{:.2} m", depth), 11.0, dcol);
-                })
-                .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("At most", format!("{:.1} m", max)));
-                r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
-                    if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
-                        x.icon(Icon::Beaver, 13.0, MUTED);
-                        let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                        x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
-                    }
-                });
-            });
-            row.node.height = Val::Px(22.0);
-            row.action(HudAction::SelectBuilding(b.id));
-        }
+                row.node.height = Val::Px(22.0);
+                row.action(HudAction::SelectBuilding(b.id));
+            }
+        });
+        wrap.slice_scrollbar(first, ROWS, n, ROWS as f32 * 24.0);
     })
     .tag(Tag::Scroll)
     .solid();
