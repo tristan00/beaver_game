@@ -8,7 +8,11 @@ Double-click **beaver_colony.exe** to start playing.
 
 ---
 
-## Game pictures
+## Game
+
+Beaver themed survival city builder focused on water management. 
+
+You are a beaver family that found its spot to start a colony. Water is your safety and your road. Plan out your dams and canals to build up an interconnected network of ponds and you will thrive. 
 
 ![](docs/pictures/1.png)
 
