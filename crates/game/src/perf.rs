@@ -38,6 +38,7 @@ fn start_speed(mut clock: ResMut<SimClock>, sim: Res<Sim>) {
         Ok("1") => Speed::X1,
         Ok("2") => Speed::X2,
         Ok("3") => Speed::X3,
+        Ok("4") => Speed::X4,
         _ => return,
     };
     if clock.paused || clock.speed != want {

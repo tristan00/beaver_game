@@ -566,7 +566,8 @@ fn sync_wolf(
         track.record(s.instance, s.time_days, here);
         let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
         let (aim, going) = track.at(now).unwrap_or((here, None));
-        let k = 1.0 - (-time.delta_secs() * 10.0).exp();
+        let smoothing = clock.as_ref().map_or(1.0, |c| c.speed.smoothing());
+        let k = crate::sim_driver::ease_k(time.delta_secs(), 10.0, smoothing);
         let xz = match track.shown {
             Some(p) if p.distance(aim) < 4.0 => p.lerp(aim, k),
             _ => aim,
@@ -578,7 +579,7 @@ fn sync_wolf(
         }
         // Face the way it is going; standing, the way the sim last turned it (at its prey).
         let want = Quat::from_rotation_y(going.map_or(wolf.heading, |d| d.x.atan2(d.y)));
-        tr.rotation = tr.rotation.slerp(want, 1.0 - (-time.delta_secs() * 8.0).exp());
+        tr.rotation = tr.rotation.slerp(want, crate::sim_driver::ease_k(time.delta_secs(), 8.0, smoothing));
     }
     // A wolf just come gets its body.
     for wolf in s.predators.wolves.iter().filter(|w| !shown.contains(&w.key())) {

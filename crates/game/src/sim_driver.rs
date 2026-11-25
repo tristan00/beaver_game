@@ -14,16 +14,36 @@ pub enum Speed {
     X1,
     X2,
     X3,
+    X4,
 }
 
 impl Speed {
     pub fn multiplier(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
-            Speed::X2 => 120.0,
-            Speed::X3 => 180.0,
+            Speed::X2 => 24.0,
+            Speed::X3 => 120.0,
+            Speed::X4 => 180.0,
         }
     }
+
+    /// How much of the 1x easing drawn motion keeps at this speed: the time constants of the
+    /// render-side easing (turning, following, pose blends, lock glides) are scaled by it.
+    /// Easing that runs in real seconds trails further behind the faster the colony runs and then
+    /// catches up like a rubber band, so 24x keeps a little and 120x/180x none.
+    pub fn smoothing(self) -> f32 {
+        match self {
+            Speed::X1 => 1.0,
+            Speed::X2 => 0.2,
+            Speed::X3 | Speed::X4 => 0.0,
+        }
+    }
+}
+
+/// The share of the way to its target an eased value moves in a frame of `dt` seconds, easing
+/// at `rate` a second at 1x, scaled by `smoothing` (`Speed::smoothing`): all the way at none.
+pub fn ease_k(dt: f32, rate: f32, smoothing: f32) -> f32 {
+    if smoothing <= 0.0 { 1.0 } else { 1.0 - (-dt * rate / smoothing).exp() }
 }
 
 #[derive(Resource, Debug)]
@@ -40,7 +60,7 @@ impl Default for SimClock {
     }
 }
 
-/// Whether the fastest speed (`Speed::X3`) may be used: off unless the player turns on dev
+/// Whether the dev speed (`Speed::X4`) may be used: off unless the player turns on dev
 /// speed in Settings, since it runs too fast to follow. Kept between games in a small file
 /// beside the saves.
 static DEV_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
@@ -73,7 +93,7 @@ pub fn set_dev_speed(on: bool) {
 impl Speed {
     /// Whether the player may pick this speed now.
     pub fn allowed(self) -> bool {
-        self != Speed::X3 || dev_speed()
+        self != Speed::X4 || dev_speed()
     }
 }
 
@@ -158,14 +178,19 @@ fn time_keys(
     if keys.just_pressed(KeyCode::Space) {
         clock.toggle_pause();
     }
-    for (k, s) in [(KeyCode::Digit1, Speed::X1), (KeyCode::Digit2, Speed::X2), (KeyCode::Digit3, Speed::X3)] {
+    for (k, s) in [
+        (KeyCode::Digit1, Speed::X1),
+        (KeyCode::Digit2, Speed::X2),
+        (KeyCode::Digit3, Speed::X3),
+        (KeyCode::Digit4, Speed::X4),
+    ] {
         if keys.just_pressed(k) {
             clock.pick_speed(s);
         }
     }
     // Dev speed turned off while running at it: down to the fastest left.
     if !clock.speed.allowed() {
-        clock.set_speed(Speed::X2);
+        clock.set_speed(Speed::X3);
     }
 }
 
@@ -273,5 +298,22 @@ fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
             clock.discard_backlog(dt);
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speeds_include_intermediate_and_preserve_fast_and_dev_tiers() {
+        assert_eq!(Speed::X1.multiplier(), 1.0);
+        assert!(Speed::X2.multiplier() > Speed::X1.multiplier() && Speed::X2.multiplier() < Speed::X3.multiplier());
+        assert_eq!(Speed::X3.multiplier(), 120.0);
+        assert_eq!(Speed::X4.multiplier(), 180.0);
+        // X1, X2, X3 are always available without needing dev speed.
+        assert!(Speed::X1.allowed());
+        assert!(Speed::X2.allowed());
+        assert!(Speed::X3.allowed());
     }
 }

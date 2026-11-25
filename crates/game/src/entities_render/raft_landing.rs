@@ -387,12 +387,14 @@ const GLIDE_S: f32 = 0.15;
 const TURN: f32 = 2.5;
 
 /// The way a beaver faces this frame, wanting to face `want`: near a lock it turns toward it
-/// at `TURN`, so neither it nor the raft ahead of it swings round in a frame.
-pub(super) fn turn(g: &mut LockGlide, want: f32, dt: f32) -> f32 {
-    let yaw = match g.yaw.filter(|_| g.near) {
+/// at `TURN`, so neither it nor the raft ahead of it swings round in a frame. Quicker at 24x and
+/// not at all at 120x/180x (`smoothing`, see `Speed::smoothing`).
+pub(super) fn turn(g: &mut LockGlide, want: f32, dt: f32, smoothing: f32) -> f32 {
+    let yaw = match g.yaw.filter(|_| g.near && smoothing > 0.0) {
         Some(y) => {
             let d = (want - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            y + d.clamp(-TURN * dt, TURN * dt)
+            let max = TURN / smoothing * dt;
+            y + d.clamp(-max, max)
         }
         None => want,
     };
@@ -402,8 +404,12 @@ pub(super) fn turn(g: &mut LockGlide, want: f32, dt: f32) -> f32 {
 
 /// Where a beaver is drawn this frame, given where it would be (`target`). Away from locks it is
 /// drawn where it is; near one, a jump in where it would be is glided over, and a smooth move
-/// is followed exactly.
-pub(super) fn glide(g: &mut LockGlide, chs: &[Chamber], target: Vec3, dt: f32) -> Vec3 {
+/// is followed exactly. Glided over quicker at 24x and not at all at 120x/180x (`smoothing`).
+pub(super) fn glide(g: &mut LockGlide, chs: &[Chamber], target: Vec3, dt: f32, smoothing: f32) -> Vec3 {
+    if smoothing <= 0.0 {
+        *g = LockGlide { shown: Some(target), last: Some(target), yaw: g.yaw, ..default() };
+        return target;
+    }
     let (Some(shown), Some(last)) = (g.shown, g.last) else {
         *g = LockGlide { shown: Some(target), last: Some(target), ..default() };
         return target;
@@ -422,7 +428,7 @@ pub(super) fn glide(g: &mut LockGlide, chs: &[Chamber], target: Vec3, dt: f32) -
         g.vel = target - last;
         return target;
     }
-    let k = 1.0 - (-dt / GLIDE_S).exp();
+    let k = crate::sim_driver::ease_k(dt, 1.0 / GLIDE_S, smoothing);
     // A smooth move is followed as it goes; a jump is glided over.
     let step = target - last;
     let jump = (step - g.vel).xz().length() > JUMP;

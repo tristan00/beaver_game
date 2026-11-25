@@ -152,7 +152,7 @@ impl Motion {
     /// which straightens staircases and rounds corners. The window narrows to nothing at
     /// route ends, destination pauses, and turnaround points, so a beaver visibly reaches
     /// every destination even when playing back many steps ahead at fast speeds.
-    fn at(&mut self, t: f64) -> Option<(Vec2, f32, Option<Vec2>)> {
+    fn at(&mut self, t: f64, smooth_cells: f32) -> Option<(Vec2, f32, Option<Vec2>)> {
         // Keep enough history behind for the smoothing window.
         while self.samples.len() > 16 && self.samples[10].0 <= t {
             self.samples.pop_front();
@@ -165,6 +165,9 @@ impl Motion {
             (t >= last.0 && next.distance(last.1) > 1e-3).then_some(next - last.1)
         });
         let Some(heading) = moving else { return Some((raw, lift, None)) };
+        if smooth_cells < 1e-3 {
+            return Some((raw, lift, Some(heading)));
+        }
         // The route as a polyline: recorded points, then the plan ahead.
         let pts: Vec<Vec2> = self.samples.iter().map(|s| s.1).chain(self.ahead.iter().copied()).collect();
         let mut cum = Vec::with_capacity(pts.len());
@@ -202,7 +205,7 @@ impl Motion {
             }
         }
 
-        let h = SMOOTH_CELLS.min(s_t - lo_bound).min(hi_bound - s_t).max(0.0);
+        let h = smooth_cells.min(s_t - lo_bound).min(hi_bound - s_t).max(0.0);
         if h < 1e-3 {
             return Some((raw, lift, Some(heading)));
         }
@@ -308,6 +311,19 @@ pub(super) fn sync_sim_beavers(
         let &(_, fam, at) = idle.iter().find(|x| x.0 == id)?;
         idle.iter().filter(|x| x.0 != id && x.1 == fam && x.2.0.abs_diff(at.0).max(x.2.1.abs_diff(at.1)) <= 1).map(|x| x.2).next()
     };
+    // Less path smoothing and a quicker lodge dive at 24x, none at 120x/180x, where smoothing
+    // would trail behind the colony and catch up like a rubber band.
+    let speed = clock.as_ref().map_or(crate::sim_driver::Speed::X1, |c| c.speed);
+    let smooth_cells = match speed {
+        crate::sim_driver::Speed::X1 => SMOOTH_CELLS,
+        crate::sim_driver::Speed::X2 => 0.2,
+        crate::sim_driver::Speed::X3 | crate::sim_driver::Speed::X4 => 0.0,
+    };
+    let dive_s = match speed {
+        crate::sim_driver::Speed::X1 => DIVE_S,
+        crate::sim_driver::Speed::X2 => 0.18,
+        crate::sim_driver::Speed::X3 | crate::sim_driver::Speed::X4 => 0.0,
+    };
     let chambers = super::raft_landing::chambers(s);
     for (e, mut tr, mut sprite, mut vis, mut motion, mut dive, mut glide, newborn) in &mut q {
         let id = sim::colony::BeaverId(sprite.id);
@@ -319,7 +335,7 @@ pub(super) fn sync_sim_beavers(
         let p = agent_world_pos(s, ag, 0.0) + spread(sprite.id, clock.is_some());
         let ground = |xz: Vec2| height_at(&s.height, xz.x, xz.y);
         motion.observe(s, ag, clock.is_some());
-        let mut heading = match motion.at(now) {
+        let mut heading = match motion.at(now, smooth_cells) {
             Some((xz, lift, dir)) => {
                 tr.translation = Vec3::new(xz.x, ground(xz) + lift, xz.y);
                 dir
@@ -338,7 +354,7 @@ pub(super) fn sync_sim_beavers(
             }
         }
         // Glided over any jump by a lock.
-        let at = super::raft_landing::glide(&mut glide, &chambers, tr.translation, time.delta_secs());
+        let at = super::raft_landing::glide(&mut glide, &chambers, tr.translation, time.delta_secs(), speed.smoothing());
         tr.translation = at;
         let fleeing = s.agents.fleeing.contains(&id);
         sprite.pose = if heading.is_some() {
@@ -353,7 +369,7 @@ pub(super) fn sync_sim_beavers(
         sprite.load = if matches!(ag.task, sim::agents::Task::Raft { .. }) { None } else { load_of(ag) };
         sprite.wet = is_wet(s, ag);
         let want = heading.map(|d| d.x.atan2(d.y)).or_else(|| facing_of(s, ag)).unwrap_or(sprite.yaw);
-        sprite.yaw = super::raft_landing::turn(&mut glide, want, time.delta_secs());
+        sprite.yaw = super::raft_landing::turn(&mut glide, want, time.delta_secs(), speed.smoothing());
         let face = |at: Vec3, to: (f32, f32)| {
             let w = cell_xz(s, to);
             (w.x - at.x).atan2(w.y - at.z)
@@ -391,9 +407,9 @@ pub(super) fn sync_sim_beavers(
         }
         let dt = t - dive.since;
         let shown = if ag.inside {
-            if dt < DIVE_S {
+            if dive_s > 0.0 && dt < dive_s {
                 tr.translation = dive.at;
-                look.sink = ramp(0.0, DIVE_S, dt);
+                look.sink = ramp(0.0, dive_s, dt);
                 sprite.pose = Pose::Swim;
                 true
             } else {
@@ -401,8 +417,8 @@ pub(super) fn sync_sim_beavers(
             }
         } else {
             dive.at = tr.translation;
-            if dt < DIVE_S {
-                look.sink = 1.0 - ramp(0.0, DIVE_S, dt);
+            if dive_s > 0.0 && dt < dive_s {
+                look.sink = 1.0 - ramp(0.0, dive_s, dt);
             }
             true
         };
@@ -1557,7 +1573,7 @@ mod tests {
         }
 
         // At arrival (t = 0.04) and during dwell (t = 0.045), beaver must reach x = 4.0 cleanly.
-        let (at_arrive, _, _) = motion.at(0.04).expect("sample at arrival");
+        let (at_arrive, _, _) = motion.at(0.04, SMOOTH_CELLS).expect("sample at arrival");
         assert!((at_arrive.x - 4.0).abs() < 0.02, "beaver cut short of destination: x={}", at_arrive.x);
 
         // Also test instant reversal (no dwell step at all) at x=4:
@@ -1568,8 +1584,16 @@ mod tests {
         for i in 1..=4 {
             instant.record(0.04 + i as f64 * 0.01, Vec2::new((4 - i) as f32, 0.0), 0.0);
         }
-        let (at_turn, _, _) = instant.at(0.04).expect("sample at turnaround");
+        let (at_turn, _, _) = instant.at(0.04, SMOOTH_CELLS).expect("sample at turnaround");
         assert!((at_turn.x - 4.0).abs() < 0.02, "beaver skipped turnaround destination: x={}", at_turn.x);
+
+        // With no smoothing (120x/180x), a corner is drawn exactly, not rounded off.
+        let mut corner = Motion::default();
+        corner.record(0.00, Vec2::new(0.0, 0.0), 0.0);
+        corner.record(0.01, Vec2::new(2.0, 0.0), 0.0);
+        corner.record(0.02, Vec2::new(2.0, 2.0), 0.0);
+        let (at_corner, _, _) = corner.at(0.01, 0.0).expect("sample at corner");
+        assert!((at_corner - Vec2::new(2.0, 0.0)).length() < 1e-4, "unsmoothed path must hit the corner exactly");
     }
 
     #[test]

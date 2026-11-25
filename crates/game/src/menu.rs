@@ -772,7 +772,7 @@ fn settings_screen(p: &mut ChildSpawnerCommands, menu: &Menu, icons: &Icons, vol
         ("Colony", "Tab"),
         ("Territory", "L"),
         ("Next free beaver", "I"),
-        ("Pause, speed", if crate::sim_driver::dev_speed() { "Space, 1 2 3" } else { "Space, 1 2" }),
+        ("Pause, speed", if crate::sim_driver::dev_speed() { "Space, 1 2 3 4" } else { "Space, 1 2 3" }),
         ("Volume: master, effects, ambience", "- =  ; '  , ."),
         ("Mute", "M"),
         ("Menu", "Esc"),

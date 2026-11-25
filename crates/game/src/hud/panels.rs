@@ -308,13 +308,18 @@ pub fn calendar(c: &Ctx) -> Vec<VNode> {
             });
             x.row(5.0, |r| {
                 r.pebble(Icon::Pause, 13.0, HudAction::Pause, if clock.paused { Peb::On } else { Peb::Idle }).tip(Tip::name("Pause").key("Space"));
-                for (sp, icon, key) in [(Speed::X1, Icon::Play, "1"), (Speed::X2, Icon::Fast2, "2"), (Speed::X3, Icon::Fast3, "3")] {
-                    // The fastest shows only with dev speed on in Settings.
+                for (sp, icon, key, name) in [
+                    (Speed::X1, Icon::Play, "1", "Normal speed"),
+                    (Speed::X2, Icon::Fast2, "2", "Faster"),
+                    (Speed::X3, Icon::Fast3, "3", "Fast"),
+                    (Speed::X4, Icon::Fast3, "4", "Dev speed"),
+                ] {
+                    // Dev speed shows only when turned on in Settings.
                     if !sp.allowed() {
                         continue;
                     }
                     let on = !clock.paused && clock.speed == sp;
-                    r.pebble(icon, 13.0, HudAction::Speed(sp), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(format!("Speed {key}")).key(key));
+                    r.pebble(icon, 13.0, HudAction::Speed(sp), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
                 }
             });
         });

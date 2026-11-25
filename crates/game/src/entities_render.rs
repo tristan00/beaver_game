@@ -905,6 +905,7 @@ pub(crate) fn shows_wake(pose: Pose, wet: bool) -> bool {
 fn animate_beavers(
     time: Res<Time>,
     clock: Res<RenderClock>,
+    sim_clock: Option<Res<crate::sim_driver::SimClock>>,
     models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>,
     focus: Res<portrait::PortraitFocus>,
@@ -917,7 +918,10 @@ fn animate_beavers(
     let Some(models) = models else { return };
     let cam_pos = cam.iter().next().map(|c| c.translation());
     let dt = time.delta_secs();
-    let turn = 1.0 - (-dt * 8.0).exp();
+    // Turning and pose changes ease less at 24x and not at all at 120x/180x, where easing in
+    // real seconds would trail behind the colony and catch up like a rubber band.
+    let smoothing = sim_clock.as_ref().map_or(1.0, |c| c.speed.smoothing());
+    let turn = crate::sim_driver::ease_k(dt, 8.0, smoothing);
     let ease = 1.0 - (-dt * 6.0).exp();
     let show = |v: &mut Query<&mut Visibility, Without<BeaverRig>>, e: Entity, on: bool| {
         if let Ok(mut v) = v.get_mut(e) {
@@ -961,9 +965,9 @@ fn animate_beavers(
         if pose != rig.cur {
             rig.prev = rig.cur;
             rig.cur = pose;
-            rig.blend = if rig.init { 0.0 } else { 1.0 };
+            rig.blend = if rig.init && smoothing > 0.0 { 0.0 } else { 1.0 };
         }
-        rig.blend = (rig.blend + dt * 5.0).min(1.0);
+        rig.blend = if smoothing > 0.0 { (rig.blend + dt * 5.0 / smoothing).min(1.0) } else { 1.0 };
         show(&mut vis, rig.wake, wet);
         show(&mut vis, rig.blob, !wet);
         if wet {
