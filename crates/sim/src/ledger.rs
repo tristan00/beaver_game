@@ -3,11 +3,7 @@ use crate::buildings::{Good, PerId, Producer, Stores, Use};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DaySample {
-    pub day: u64,
-    pub produced: PerId<Good, f32>,
-    pub consumed: PerId<Good, f32>,
-    pub stock: PerId<Good, f32>,
+pub struct DayBreakdown {
     pub produced_by: Vec<(Producer, Good, f32)>,
     pub consumed_by: [PerId<Good, f32>; Use::COUNT],
 }
@@ -44,7 +40,7 @@ pub struct Census {
     pub planted: u32,
 }
 
-/// One day of the colony's long record: its census and each good's flow and stock.
+/// One day of the colony's record: its census, each good's flow and stock, and (for recent days) per-producer/use breakdown.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColonyDay {
     pub day: u64,
@@ -52,13 +48,14 @@ pub struct ColonyDay {
     pub produced: PerId<Good, f32>,
     pub consumed: PerId<Good, f32>,
     pub stock: PerId<Good, f32>,
+    #[serde(default)]
+    pub breakdown: Option<DayBreakdown>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     open: Option<Open>,
-    pub days: VecDeque<DaySample>,
-    /// The long record, a day at a time, for the colony ledger's charts.
+    /// Daily colony record (census, stock, flows, and recent breakdowns).
     pub colony: VecDeque<ColonyDay>,
     /// Seedlings planted so far: trees, land plants and water plants (`inventory::SeedlingSort`).
     pub planted: [u32; 3],
@@ -77,43 +74,43 @@ impl Ledger {
             self.open = Some(Open::at(today, stores));
             return;
         };
-        if today <= open.day {
-            return;
-        }
+        if today <= open.day { return; }
         let census = census();
         let day = open.day;
         let span = (today - day) as f32;
         let stock: PerId<Good, f32> = PerId::from_fn(|g| stores.amount(g));
         let produced: PerId<Good, f32> = PerId::from_fn(|g| (stores.produced_total[g] - open.produced[g]).max(0.0) / span);
         let consumed: PerId<Good, f32> = PerId::from_fn(|g| (stores.consumed_total[g] - open.consumed[g]).max(0.0) / span);
-        let produced_by: Vec<(Producer, Good, f32)> = stores
-            .produced_by
-            .iter()
+        let produced_by: Vec<(Producer, Good, f32)> = stores.produced_by.iter()
             .map(|(&(p, g), &total)| (p, g, (total - open.produced_by.get(&(p, g)).copied().unwrap_or(0.0)).max(0.0) / span))
-            .filter(|e| e.2 > 0.0)
-            .collect();
+            .filter(|e| e.2 > 0.0).collect();
         let consumed_by: [PerId<Good, f32>; Use::COUNT] =
             std::array::from_fn(|u| PerId::from_fn(|g| (stores.consumed_by[u][g] - open.consumed_by[u][g]).max(0.0) / span));
+        let bd = DayBreakdown { produced_by, consumed_by };
+        let keep_old = RATE_DAYS.saturating_sub((today - day) as usize);
+        let drop_before = self.colony.len().saturating_sub(keep_old);
+        for old in self.colony.iter_mut().take(drop_before).rev() {
+            if old.breakdown.is_none() { break; }
+            old.breakdown = None;
+        }
         for d in day..today {
-            self.days.push_back(DaySample { day: d, produced: produced.clone(), consumed: consumed.clone(), stock: stock.clone(), produced_by: produced_by.clone(), consumed_by: consumed_by.clone() });
-            if self.days.len() > HISTORY_DAYS {
-                self.days.pop_front();
-            }
-            self.colony.push_back(ColonyDay { day: d, census, produced: produced.clone(), consumed: consumed.clone(), stock: stock.clone() });
-            if self.colony.len() > COLONY_DAYS {
-                self.colony.pop_front();
-            }
+            let keep_bd = today - d <= RATE_DAYS as u64;
+            self.colony.push_back(ColonyDay {
+                day: d, census, produced: produced.clone(), consumed: consumed.clone(), stock: stock.clone(),
+                breakdown: keep_bd.then(|| bd.clone()),
+            });
+            if self.colony.len() > COLONY_DAYS { self.colony.pop_front(); }
         }
         self.open = Some(Open::at(today, stores));
     }
 
     pub fn in_by(&self, g: Good) -> Vec<(Producer, f32)> {
-        let n = self.days.len().min(RATE_DAYS);
+        let n = self.colony.len().min(RATE_DAYS);
         let mut by: BTreeMap<Producer, f32> = BTreeMap::new();
-        for d in self.days.iter().rev().take(n) {
-            for &(p, pg, a) in &d.produced_by {
-                if pg == g {
-                    *by.entry(p).or_insert(0.0) += a / n as f32;
+        for d in self.colony.iter().rev().take(n) {
+            if let Some(bd) = &d.breakdown {
+                for &(p, pg, a) in &bd.produced_by {
+                    if pg == g { *by.entry(p).or_insert(0.0) += a / n as f32; }
                 }
             }
         }
@@ -123,15 +120,13 @@ impl Ledger {
     }
 
     pub fn building_rates(&self, b: crate::buildings::BuildingId) -> Vec<(Good, f32)> {
-        let n = self.days.len().min(RATE_DAYS);
-        if n == 0 {
-            return Vec::new();
-        }
+        let n = self.colony.len().min(RATE_DAYS);
+        if n == 0 { return Vec::new(); }
         let mut by: BTreeMap<Good, f32> = BTreeMap::new();
-        for d in self.days.iter().rev().take(n) {
-            for &(p, g, a) in &d.produced_by {
-                if p == Producer::Building(b) {
-                    *by.entry(g).or_insert(0.0) += a / n as f32;
+        for d in self.colony.iter().rev().take(n) {
+            if let Some(bd) = &d.breakdown {
+                for &(p, g, a) in &bd.produced_by {
+                    if p == Producer::Building(b) { *by.entry(g).or_insert(0.0) += a / n as f32; }
                 }
             }
         }
@@ -141,35 +136,23 @@ impl Ledger {
     }
 
     pub fn out_for(&self, g: Good, use_: Use) -> f32 {
-        self.mean(|d| d.consumed_by[use_.index()][g])
+        self.mean(|d| d.breakdown.as_ref().map_or(0.0, |bd| bd.consumed_by[use_.index()][g]))
     }
 
-    fn mean(&self, f: impl Fn(&DaySample) -> f32) -> f32 {
-        let n = self.days.len().min(RATE_DAYS);
-        if n == 0 {
-            return 0.0;
-        }
-        self.days.iter().rev().take(n).map(f).sum::<f32>() / n as f32
+    fn mean(&self, f: impl Fn(&ColonyDay) -> f32) -> f32 {
+        let n = self.colony.len().min(RATE_DAYS);
+        if n == 0 { return 0.0; }
+        self.colony.iter().rev().take(n).map(f).sum::<f32>() / n as f32
     }
 
-    pub fn in_per_day(&self, g: Good) -> f32 {
-        self.mean(|d| d.produced[g])
-    }
-
-    pub fn out_per_day(&self, g: Good) -> f32 {
-        self.mean(|d| d.consumed[g])
-    }
-
-    pub fn net_per_day(&self, g: Good) -> f32 {
-        self.in_per_day(g) - self.out_per_day(g)
-    }
+    pub fn in_per_day(&self, g: Good) -> f32 { self.mean(|d| d.produced[g]) }
+    pub fn out_per_day(&self, g: Good) -> f32 { self.mean(|d| d.consumed[g]) }
+    pub fn net_per_day(&self, g: Good) -> f32 { self.in_per_day(g) - self.out_per_day(g) }
 
     pub fn days_left(&self, g: Good, stock: f32) -> Option<f32> {
         let net = self.net_per_day(g);
         (net < -1e-3).then(|| (stock.max(0.0) / -net).max(0.0))
     }
 
-    pub fn has_data(&self) -> bool {
-        !self.days.is_empty()
-    }
+    pub fn has_data(&self) -> bool { !self.colony.is_empty() }
 }

@@ -171,7 +171,7 @@ pub(super) fn stores(c: &Ctx, u: &mut Ui) {
             r.ticks(if cap > 0.0 { have / cap } else { 0.0 }, 10, 150.0, 12.0, ACCENT);
             r.bold(format!("{}", have.round() as i64), 14.0, INK);
             r.spacer();
-            let hist: Vec<f32> = s.ledger.days.iter().rev().take(60).rev().map(|d| d.stock[g]).collect();
+            let hist: Vec<f32> = s.ledger.colony.iter().rev().take(60).rev().map(|d| d.stock[g]).collect();
             let top = hist.iter().copied().fold(1.0f32, f32::max);
             r.node(Node { height: Val::Px(20.0), align_items: AlignItems::FlexEnd, ..row_node(1.0) }, |sp| {
                 for v in &hist {

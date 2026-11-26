@@ -42,8 +42,8 @@ pub enum Selection {
     Beaver(BeaverId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
-    /// A wolf, by its `sim::predators::Wolf::key`.
-    Wolf(u64),
+    /// A wolf, by its id in `sim::predators`.
+    Wolf(u32),
     /// A wild animal, by its id in `sim::wildlife`.
     Animal(u32),
 }

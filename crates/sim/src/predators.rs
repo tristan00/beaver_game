@@ -17,18 +17,23 @@ use crate::SimState;
 const ROOT2: f32 = std::f32::consts::SQRT_2;
 const STRAIGHTEN_AHEAD: usize = 8;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Prey {
+    Beaver(BeaverId),
+    Animal(u32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WolfState {
     Roam,
-    Charge { target: BeaverId, since: f64 },
-    Kill { target: BeaverId, until: f64 },
+    Pursue { prey: Prey, since: f64 },
+    Attack { prey: Prey, until: f64 },
     Leave,
-    Hunt { animal: u32, since: f64 },
-    Feed { animal: u32, until: f64 },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Wolf {
+    pub id: u32,
     pub pos: (f32, f32),
     pub heading: f32,
     pub pace: f32,
@@ -46,7 +51,6 @@ impl Wolf {
     pub fn route_left(&self) -> usize { self.path.len() }
     pub fn rest_until(&self) -> f64 { self.rest_until }
     pub fn cell(&self) -> Cell { (self.pos.0.max(0.0) as usize, self.pos.1.max(0.0) as usize) }
-    pub fn key(&self) -> u64 { self.arrived.to_bits() }
     fn face(&mut self, to: (f32, f32)) {
         let d = (to.0 - self.pos.0, to.1 - self.pos.1);
         if d.0.abs() + d.1.abs() > 1e-4 { self.heading = d.0.atan2(d.1); }
@@ -56,26 +60,26 @@ impl Wolf {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Predators {
     rng: Pcg32,
+    next_id: u32,
     pub wolves: Vec<Wolf>,
     pub spotted: bool,
     pub chance_per_day: f32,
     pub visits: u32,
     pub kills: u32,
     #[serde(skip)] pub alarms: Vec<BuildingId>,
-    #[serde(skip)] given_up: Vec<(BeaverId, f64)>,
-    #[serde(skip)] given_up_animals: Vec<(u32, f64)>,
+    #[serde(skip)] given_up: Vec<(Prey, f64)>,
     #[serde(skip)] pub in_sight: bool,
 }
 
 impl Predators {
     pub fn new(seed: u64) -> Self {
         Self {
-            rng: Pcg32::seed_from_u64(seed ^ 0x3017_F00D), wolves: Vec::new(), spotted: false,
+            rng: Pcg32::seed_from_u64(seed ^ 0x3017_F00D), next_id: 1, wolves: Vec::new(), spotted: false,
             chance_per_day: WOLF_CHANCE_PER_DAY, visits: 0, kills: 0, alarms: Vec::new(),
-            given_up: Vec::new(), given_up_animals: Vec::new(), in_sight: false,
+            given_up: Vec::new(), in_sight: false,
         }
     }
-    pub fn wolf(&self, key: u64) -> Option<&Wolf> { self.wolves.iter().find(|w| w.key() == key) }
+    pub fn wolf(&self, id: u32) -> Option<&Wolf> { self.wolves.iter().find(|w| w.id == id) }
     fn unit(&mut self) -> f32 { (self.rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32 }
 }
 
@@ -175,18 +179,18 @@ pub fn summon(sim: &mut SimState) -> bool {
     let Some((_, at)) = pick else { return false };
     let now = sim.time_days;
     let p = &mut sim.predators;
-    let arrived = p.wolves.iter().map(|w| w.arrived).fold(now, |a, b| if b >= a { b + 1e-9 } else { a });
-    p.wolves.push(Wolf { pos: centre(at), heading: 0.0, pace: 0.0, state: WolfState::Roam, arrived, leave_by: now + WOLF_VISIT_DAYS, path: Vec::new(), rest_until: 0.0, seen: false, last_seen: None, track: Default::default() });
+    let id = p.next_id;
+    p.next_id += 1;
+    p.wolves.push(Wolf { id, pos: centre(at), heading: 0.0, pace: 0.0, state: WolfState::Roam, arrived: now, leave_by: now + WOLF_VISIT_DAYS, path: Vec::new(), rest_until: 0.0, seen: false, last_seen: None, track: Default::default() });
     p.visits += 1;
     note(sim, sim.predators.wolves.last(), "ARRIVED", format!("visit={} wolves={} leave_by={:.2}", sim.predators.visits, sim.predators.wolves.len(), now + WOLF_VISIT_DAYS));
     true
 }
 
-pub fn step(sim: &mut SimState, dt_days: f32) {
+pub fn step(sim: &mut SimState, dt_days: f32, new_day: bool) {
     if !sim.colony.is_founded() { return; }
-    let now = sim.time_days;
-    if sim.predators.wolves.len() < MAX_WOLVES && now >= WOLF_GRACE_DAYS
-        && now.floor() > (now - dt_days as f64).floor()
+    if sim.predators.wolves.len() < MAX_WOLVES && sim.time_days >= WOLF_GRACE_DAYS
+        && new_day
         && sim.predators.unit() < sim.predators.chance_per_day.max(WOLF_CHANCE_PER_DAY)
     {
         summon(sim);
@@ -227,22 +231,22 @@ fn look(sim: &mut SimState) {
         let (at, r) = (lookout_centre(b), lookout_sight(sim, b));
         sim.agents.by_id.values().filter(|a| !a.inside && dist(at, centre(a.cell)) <= r).count() as u32
     });
-    let mut spotted: Vec<(BeaverId, u64, u32)> = Vec::new();
+    let mut spotted: Vec<(BeaverId, u32, u32)> = Vec::new();
     for w in &mut wolves {
         let by_lookout = watching.iter().any(|(_, at, s)| dist(*at, w.pos) <= *s);
         w.seen = by_lookout || sim.agents.by_id.values().any(|a| sees(sim, a, w));
         if w.seen || (sim.predators.spotted && w.last_seen.is_none()) { w.last_seen = Some((w.pos, sim.time_days)); }
         if w.seen {
-            let key = w.key();
-            spotted.extend(sim.agents.by_id.values().filter(|a| sees(sim, a, w)).map(|a| (a.id, key, 0)));
+            let wid = w.id;
+            spotted.extend(sim.agents.by_id.values().filter(|a| sees(sim, a, w)).map(|a| (a.id, wid, 0)));
             for &(id, _, _) in watching.iter().filter(|(_, at, s)| dist(*at, w.pos) <= *s) {
                 let n = in_range(id);
-                spotted.extend(sentries(id).into_iter().map(|g| (g, key, n)));
+                spotted.extend(sentries(id).into_iter().map(|g| (g, wid, n)));
             }
         }
     }
-    for (id, key, warned) in spotted {
-        if sim.deeds.spotted(id, key) && warned > 0 { sim.deeds.of(id).warned += warned; }
+    for (id, wid, warned) in spotted {
+        if sim.deeds.spotted(id, wid) && warned > 0 { sim.deeds.of(id).warned += warned; }
     }
     let now = sim.time_days;
     let p = &mut sim.predators;
@@ -315,16 +319,30 @@ fn walk(sim: &SimState, w: &mut Wolf, speed: f32, dt: f32) {
     w.pace = walk_route(sim, &mut w.pos, &mut w.heading, &mut w.path, speed * dt) / dt.max(1e-6);
 }
 
-fn prey(sim: &SimState, wolf: &Wolf) -> Option<BeaverId> {
-    sim.agents.by_id.values()
-        .filter(|a| on_land(sim, a) && !sim.predators.given_up.iter().any(|&(id, u)| id == a.id && sim.time_days < u))
+fn find_prey(sim: &SimState, wolf: &Wolf) -> Option<Prey> {
+    if let Some(id) = sim.agents.by_id.values()
+        .filter(|a| on_land(sim, a) && !sim.predators.given_up.iter().any(|&(p, u)| p == Prey::Beaver(a.id) && sim.time_days < u))
         .map(|a| (dist(centre(a.cell), wolf.pos), a.id))
         .filter(|(d, _)| *d <= WOLF_SIGHT)
         .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))).map(|(_, id)| id)
+    {
+        return Some(Prey::Beaver(id));
+    }
+    let skip: Vec<u32> = sim.predators.given_up.iter().filter(|g| sim.time_days < g.1)
+        .filter_map(|g| match g.0 { Prey::Animal(id) => Some(id), _ => None }).collect();
+    crate::wildlife::prey_for_wolf(sim, wolf.pos, WOLF_SIGHT, &skip).map(Prey::Animal)
 }
 
-/// Shared pursuit step for both `WolfState::Charge` (beaver) and `WolfState::Hunt` (wildlife).
-/// Returns `Some(true)` if caught, `Some(false)` if still pursuing, `None` if given up.
+fn prey_pos(sim: &SimState, prey: Prey) -> Option<(f32, f32)> {
+    match prey {
+        Prey::Beaver(id) => sim.agents.get(id).filter(|a| on_land(sim, a)).map(|a| centre(a.cell)),
+        Prey::Animal(id) => sim.wildlife.get(id)
+            .filter(|a| !matches!(a.doing, crate::wildlife::Doing::Leave | crate::wildlife::Doing::Caught))
+            .filter(|a| walkable(sim, (a.pos.0.max(0.0) as usize, a.pos.1.max(0.0) as usize)))
+            .map(|a| a.pos),
+    }
+}
+
 fn pursue(sim: &SimState, wolf: &mut Wolf, dt: f32, since: f64, target_pos: Option<(f32, f32)>) -> Option<bool> {
     let p = target_pos.filter(|_| sim.time_days - since <= WOLF_CHARGE_DAYS)?;
     let cell = (p.0.max(0.0) as usize, p.1.max(0.0) as usize);
@@ -349,17 +367,10 @@ fn act(sim: &mut SimState, wolf: &mut Wolf, dt: f32) -> bool {
                 note(sim, Some(wolf), "LEAVING", format!("route_cells={}", wolf.path.len()));
                 return wolf.path.is_empty();
             }
-            if let Some(target) = prey(sim, wolf) {
-                note(sim, Some(wolf), "CHARGE", format!("target={}", target.0));
-                wolf.state = WolfState::Charge { target, since: now };
-                wolf.path.clear();
-                if let Some(a) = sim.agents.by_id.get_mut(&target) { (a.path, a.task) = (None, Task::Idle); }
-                return false;
-            }
-            let skip: Vec<u32> = sim.predators.given_up_animals.iter().filter(|g| now < g.1).map(|g| g.0).collect();
-            if let Some(animal) = crate::wildlife::prey_for_wolf(sim, wolf.pos, WOLF_SIGHT, &skip) {
-                note(sim, Some(wolf), "HUNT", format!("animal={animal}"));
-                (wolf.state, wolf.path) = (WolfState::Hunt { animal, since: now }, Vec::new());
+            if let Some(prey) = find_prey(sim, wolf) {
+                note(sim, Some(wolf), "PURSUE", format!("prey={prey:?}"));
+                (wolf.state, wolf.path) = (WolfState::Pursue { prey, since: now }, Vec::new());
+                if let Prey::Beaver(id) = prey && let Some(a) = sim.agents.by_id.get_mut(&id) { (a.path, a.task) = (None, Task::Idle); }
                 return false;
             }
             if wolf.path.is_empty() && now >= wolf.rest_until {
@@ -372,59 +383,40 @@ fn act(sim: &mut SimState, wolf: &mut Wolf, dt: f32) -> bool {
             walk(sim, wolf, WOLF_ROAM_PER_DAY, dt);
             false
         }
-        WolfState::Charge { target, since } => {
-            let pos = sim.agents.get(target).filter(|a| on_land(sim, a)).map(|a| centre(a.cell));
-            match pursue(sim, wolf, dt, since, pos) {
+        WolfState::Pursue { prey, since } => {
+            match pursue(sim, wolf, dt, since, prey_pos(sim, prey)) {
                 Some(true) => {
-                    note(sim, Some(wolf), "CAUGHT", format!("target={}", target.0));
-                    wolf.state = WolfState::Kill { target, until: now + WOLF_KILL_DAYS };
+                    note(sim, Some(wolf), "CAUGHT", format!("prey={prey:?}"));
+                    if let Prey::Animal(id) = prey { crate::wildlife::catch(sim, id); }
+                    wolf.state = WolfState::Attack { prey, until: now + WOLF_KILL_DAYS };
                 }
                 Some(false) => {}
                 None => {
-                    note(sim, Some(wolf), "GAVE_UP", format!("target={}", target.0));
-                    sim.predators.given_up.retain(|&(id, u)| id != target && now < u);
-                    sim.predators.given_up.push((target, now + WOLF_STUCK_WAIT_DAYS));
+                    note(sim, Some(wolf), "GAVE_UP", format!("prey={prey:?}"));
+                    sim.predators.given_up.retain(|&(p, u)| p != prey && now < u);
+                    sim.predators.given_up.push((prey, now + WOLF_STUCK_WAIT_DAYS));
                     (wolf.state, wolf.path) = (WolfState::Roam, Vec::new());
-                    if let Some(a) = sim.agents.by_id.get_mut(&target) { (a.path, a.task) = (None, Task::Idle); }
+                    if let Prey::Beaver(id) = prey && let Some(a) = sim.agents.by_id.get_mut(&id) { (a.path, a.task) = (None, Task::Idle); }
                 }
             }
             false
         }
-        WolfState::Hunt { animal, since } => {
-            let pos = sim.wildlife.get(animal)
-                .filter(|a| !matches!(a.doing, crate::wildlife::Doing::Leave | crate::wildlife::Doing::Caught))
-                .filter(|a| walkable(sim, (a.pos.0.max(0.0) as usize, a.pos.1.max(0.0) as usize)))
-                .map(|a| a.pos);
-            match pursue(sim, wolf, dt, since, pos) {
-                Some(true) => {
-                    note(sim, Some(wolf), "CAUGHT", format!("animal={animal}"));
-                    crate::wildlife::catch(sim, animal);
-                    wolf.state = WolfState::Feed { animal, until: now + WOLF_KILL_DAYS };
+        WolfState::Attack { prey, until } if now + 1e-9 >= until => {
+            match prey {
+                Prey::Beaver(id) => {
+                    let killed = sim.colony.kill(id, DeathCause::Predator);
+                    if killed { sim.predators.kills += 1; }
+                    note(sim, Some(wolf), "KILLED", format!("target={} killed={killed}", id.0));
                 }
-                Some(false) => {}
-                None => {
-                    note(sim, Some(wolf), "GAVE_UP", format!("animal={animal}"));
-                    sim.predators.given_up_animals.retain(|g| g.0 != animal && now < g.1);
-                    sim.predators.given_up_animals.push((animal, now + WOLF_STUCK_WAIT_DAYS));
-                    (wolf.state, wolf.path) = (WolfState::Roam, Vec::new());
+                Prey::Animal(id) => {
+                    crate::wildlife::kill(sim, id);
+                    note(sim, Some(wolf), "KILLED", format!("animal={id}"));
                 }
             }
-            false
-        }
-        WolfState::Kill { target, until } if now + 1e-9 >= until => {
-            let killed = sim.colony.kill(target, DeathCause::Predator);
-            if killed { sim.predators.kills += 1; }
-            note(sim, Some(wolf), "KILLED", format!("target={} killed={killed}", target.0));
             (wolf.state, wolf.path) = (WolfState::Roam, Vec::new());
             false
         }
-        WolfState::Feed { animal, until } if now + 1e-9 >= until => {
-            crate::wildlife::kill(sim, animal);
-            note(sim, Some(wolf), "KILLED", format!("animal={animal}"));
-            (wolf.state, wolf.path) = (WolfState::Roam, Vec::new());
-            false
-        }
-        WolfState::Kill { .. } | WolfState::Feed { .. } => false,
+        WolfState::Attack { .. } => false,
         WolfState::Leave => {
             if wolf.path.is_empty() { return true; }
             walk(sim, wolf, WOLF_ROAM_PER_DAY, dt);
@@ -478,7 +470,7 @@ fn sees(sim: &SimState, a: &Agent, wolf: &Wolf) -> bool {
 }
 
 pub fn flee(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
-    if sim.predators.wolves.iter().any(|w| matches!(w.state, WolfState::Kill { target, .. } if target == ag.id)) {
+    if sim.predators.wolves.iter().any(|w| matches!(w.state, WolfState::Attack { prey: Prey::Beaver(target), .. } if target == ag.id)) {
         ag.path = None;
         ag.trail.clear();
         return true;

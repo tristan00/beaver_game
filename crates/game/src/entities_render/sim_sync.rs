@@ -303,7 +303,7 @@ pub(super) fn sync_sim_beavers(
         sprite.wet = is_wet(s, ag);
         let want_yaw = heading.map(|d| d.x.atan2(d.y)).or_else(|| facing_of(s, ag)).unwrap_or(sprite.yaw);
         sprite.yaw = super::raft_landing::turn(&mut glide, want_yaw, time.delta_secs(), speed.smoothing());
-        if let Some(w) = s.predators.wolves.iter().find(|w| matches!(w.state, sim::predators::WolfState::Kill { target, .. } if target == id)) {
+        if let Some(w) = s.predators.wolves.iter().find(|w| matches!(w.state, sim::predators::WolfState::Attack { prey: sim::predators::Prey::Beaver(target), .. } if target == id)) {
             sprite.pose = Pose::Caught;
             sprite.yaw = face(tr.translation, w.pos);
         } else if heading.is_none() {

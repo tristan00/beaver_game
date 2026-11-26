@@ -19,7 +19,7 @@ use std::collections::{HashSet, VecDeque};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Thing {
     Beaver(BeaverId), Building(BuildingId), Resource(ResourceId),
-    Cell(Cell), Wolf(u64), Animal(u32),
+    Cell(Cell), Wolf(u32), Animal(u32),
 }
 
 impl Thing {
@@ -29,7 +29,7 @@ impl Thing {
             Thing::Building(b) => 2 << 60 | b.0 as u64,
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
-            Thing::Wolf(k) => (6 << 60) | (k & ((1 << 60) - 1)),
+            Thing::Wolf(id) => 6 << 60 | id as u64,
             Thing::Animal(id) => 7 << 60 | id as u64,
         }
     }
@@ -116,7 +116,7 @@ pub fn pick(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cell: Cell, p: (f32,
     if let Some((id, _)) = s.colony.beavers.iter().filter_map(|b| beaver_at(s, drawn, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.81).min_by(|a, b| a.1.total_cmp(&b.1)) {
         return Thing::Beaver(id);
     }
-    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.key()); }
+    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.id); }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) { return Thing::Building(b.id); }
     if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) { return Thing::Resource(r.id); }
     Thing::Cell(cell)
@@ -592,7 +592,7 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, drawn: Option<&BeaverDrawn>, hu
             dashed_ellipse(g, h, at, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::WHITE.with_alpha(0.75));
         }
     }
-    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.key()) || (w.seen && thing == Some(Thing::Wolf(w.key())))) {
+    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.id) || (w.seen && thing == Some(Thing::Wolf(w.id)))) {
         let r = sim::predators::WOLF_SIGHT;
         dashed_ellipse(g, h, w.pos, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::srgb(0.92, 0.36, 0.3));
     }

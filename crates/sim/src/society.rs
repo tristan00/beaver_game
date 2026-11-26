@@ -32,8 +32,8 @@ pub struct Society {
     next_id: u64,
     rng: u64,
     /// The year newcomers last came asking, and how many that year: as many a year at most as
-    /// may join (`MAX_IMMIGRANTS_PER_YEAR`). Not saved; a reload only risks one more that year.
-    #[serde(skip)]
+    /// may join (`MAX_IMMIGRANTS_PER_YEAR`).
+    #[serde(default)]
     asked: Option<(i64, u32)>,
 }
 

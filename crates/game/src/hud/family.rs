@@ -238,7 +238,8 @@ fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]
 pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
     let s = c.s;
     let l = s.buildings.building(lodge);
-    let fam = s.colony.lodge_family(lodge).and_then(|f| s.colony.family(f)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| f.name.clone());
+    let title = s.colony.lodge_family(lodge).and_then(|f| s.colony.family(f))
+        .map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| format!("{} family", f.name));
     let home = residents(s, lodge);
     let tree = draw(s, &home);
     Ui::full_page_shell(
@@ -246,7 +247,7 @@ pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
         |r| {
             r.portrait(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD);
             r.col(6.0, |x| {
-                x.bold(format!("{fam} family"), 20.0, INK);
+                x.bold(title, 20.0, INK);
                 if let Some(l) = l {
                     let cond = l.home_condition(&s.water.depth);
                     x.pips(cond, super::works::condition_colour(cond));

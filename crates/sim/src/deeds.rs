@@ -230,8 +230,8 @@ pub struct Deeds {
     crew: BTreeMap<BuildingId, BTreeSet<BeaverId>>,
     /// Loads packed into each dam by everyone, to tell whose dam it mostly is.
     pub dam_loads: BTreeMap<BuildingId, u32>,
-    /// Wolves each beaver has spotted (by the wolf's key), each counted once.
-    spotted: BTreeSet<(BeaverId, u64)>,
+    /// Wolves each beaver has spotted (by wolf id), each counted once.
+    spotted: BTreeSet<(BeaverId, u32)>,
     /// Planted trees already counted as grown.
     grown: BTreeSet<ResourceId>,
     /// The season epithets were last given in (seasons since the start).
@@ -265,7 +265,7 @@ impl Deeds {
         r.work(at, kind).repairs += labour;
     }
     /// A wolf in a beaver's sight: counted the first time only (true then).
-    pub(crate) fn spotted(&mut self, id: BeaverId, wolf: u64) -> bool {
+    pub(crate) fn spotted(&mut self, id: BeaverId, wolf: u32) -> bool {
         let new = self.spotted.insert((id, wolf));
         if new {
             self.of(id).wolves += 1;
@@ -284,13 +284,12 @@ pub fn full_name(sim: &SimState, id: BeaverId, name: &str) -> String {
 
 /// Each step: days at each job; at a day's close, buildings finished credited to their crews
 /// and planted trees grown credited to their planters; at a season's turn, epithets.
-pub fn step(sim: &mut SimState, dt: f32) {
+pub fn step(sim: &mut SimState, dt: f32, new_day: bool) {
     for b in &sim.colony.beavers {
         if let Some(j) = b.current_job {
             sim.deeds.of.entry(b.id).or_default().days[j] += dt;
         }
     }
-    let new_day = (sim.time_days - dt as f64).floor() < sim.time_days.floor();
     if new_day {
         close_day(sim);
     }

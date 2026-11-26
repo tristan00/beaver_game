@@ -78,6 +78,7 @@ impl SimState {
         } else if b.is_complete() {
             return Err(SimError::InvalidCommand(format!("{} is finished; only unfinished sites can be cancelled", b.kind.spec().name)));
         }
+        self.release_beavers(id);
         let mut refunded = Vec::new();
         if let Some(i) = self.work.places.iter().position(|p| p.building == id) {
             let place = self.work.places.remove(i);
@@ -88,7 +89,6 @@ impl SimState {
                 }
             }
         }
-        self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         Ok(refunded)
     }
@@ -133,11 +133,11 @@ impl SimState {
                 self.work.piles.drop_load(spot, g, got, self.time_days, true, sp);
             }
         }
+        self.release_beavers(id);
         self.work.places.retain(|p| p.building != id);
         self.work.balanced.remove(&id);
         self.work.fills.remove(&id);
         self.maintenance.mending.remove(&id);
-        self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         if kind.is_home() {
             for b in self.colony.beavers.iter_mut().filter(|b| b.lodge == Some(id)) {

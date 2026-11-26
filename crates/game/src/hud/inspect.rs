@@ -411,20 +411,20 @@ fn animal(c: &Ctx, id: u32) -> Option<VNode> {
     }))
 }
 
-fn wolf(c: &Ctx, key: u64) -> Option<VNode> {
-    use sim::predators::WolfState;
-    let (s, w) = (c.s, c.s.predators.wolf(key)?);
+fn wolf(c: &Ctx, id: u32) -> Option<VNode> {
+    use sim::predators::{Prey, WolfState};
+    let (s, w) = (c.s, c.s.predators.wolf(id)?);
     let beaver = |id| s.colony.beaver(id).map_or_else(|| "a beaver".into(), |b| b.name.clone());
     let prey = |id| s.wildlife.get(id).map_or("animal", |a| animal_name(a.kind)).to_lowercase();
     let (icon, col, doing) = match w.state {
         WolfState::Roam => (Icon::Walk, MUTED, "Roaming".into()),
-        WolfState::Charge { target, .. } => (Icon::Fast2, BAD, format!("Charging {}", beaver(target))),
-        WolfState::Kill { target, .. } => (Icon::Cross, BAD, format!("Killing {}", beaver(target))),
+        WolfState::Pursue { prey: Prey::Beaver(target), .. } => (Icon::Fast2, BAD, format!("Charging {}", beaver(target))),
+        WolfState::Attack { prey: Prey::Beaver(target), .. } => (Icon::Cross, BAD, format!("Killing {}", beaver(target))),
+        WolfState::Pursue { prey: Prey::Animal(animal), .. } => (Icon::Fast2, WARN, format!("Hunting a {}", prey(animal))),
+        WolfState::Attack { prey: Prey::Animal(animal), .. } => (good_icon(Good::food()), WARN, format!("Eating a {}", prey(animal))),
         WolfState::Leave => (Icon::Walk, MUTED, "Leaving".into()),
-        WolfState::Hunt { animal, .. } => (Icon::Fast2, WARN, format!("Hunting a {}", prey(animal))),
-        WolfState::Feed { animal, .. } => (good_icon(Good::food()), WARN, format!("Eating a {}", prey(animal))),
     };
-    Some(frame(c, Selection::Wolf(key), Icon::Wolf, BAD, "Wolf".into(), None, Tip::titled(Some((Icon::Wolf, BAD)), "Wolf").line("Hunts beavers on land", ""), |u| {
+    Some(frame(c, Selection::Wolf(id), Icon::Wolf, BAD, "Wolf".into(), None, Tip::titled(Some((Icon::Wolf, BAD)), "Wolf").line("Hunts beavers on land", ""), |u| {
         line(u, icon, col, doing, if w.pace > 0.0 { format!("{}/d", num(w.pace)) } else { String::new() });
         if w.state != WolfState::Leave { line(u, Icon::Hourglass, MUTED, "Leaves in", days((w.leave_by - s.time_days) as f32)).tip(Tip::name("Heads off the map")); }
         line(u, Icon::Focus, MUTED, "Sees", format!("{} cells", num(sim::predators::WOLF_SIGHT))).tip(Tip::name("Sight").line("Circle on the map", ""));

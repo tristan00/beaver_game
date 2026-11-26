@@ -449,14 +449,13 @@ pub fn note_tracks(sim: &mut SimState) {
     }
 }
 
-pub fn step(sim: &mut SimState, dt: f32) {
+pub fn step(sim: &mut SimState, dt: f32, new_day: bool) {
     if !sim.colony.is_founded() {
         return;
     }
     let now = sim.time_days;
     sim.wildlife.carcasses.retain(|c| now - c.died < CARCASS_DAYS);
     // Newcomers wander in from the edges while there are fewer than there should be.
-    let new_day = now.floor() > (now - dt as f64).floor();
     if new_day {
         for kind in Kind::ALL {
             let have = sim.wildlife.animals.iter().filter(|a| a.kind == kind).count();

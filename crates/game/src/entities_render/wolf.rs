@@ -135,7 +135,7 @@ struct WolfRig {
 }
 
 #[derive(Component)]
-struct SimWolf(u64);
+struct SimWolf(u32);
 
 #[derive(Component)]
 struct GalleryWolf { pace: f32, kill: bool }
@@ -230,10 +230,10 @@ fn init_wolf_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 #[derive(Resource, Default)]
-pub struct WolfDrawn(pub Vec<(u64, Vec3)>);
+pub struct WolfDrawn(pub Vec<(u32, Vec3)>);
 
 impl WolfDrawn {
-    pub fn at(&self, key: u64) -> Option<Vec3> { self.0.iter().find(|w| w.0 == key).map(|w| w.1) }
+    pub fn at(&self, id: u32) -> Option<Vec3> { self.0.iter().find(|w| w.0 == id).map(|w| w.1) }
 }
 
 #[derive(Resource, Default)]
@@ -362,7 +362,7 @@ fn select_wolf(sim: Res<Sim>, sel: Option<ResMut<crate::flow::Selection>>) {
     if std::env::var_os("BC_SELECT_WOLF").is_none() { return; }
     if let Some(mut sel) = sel {
         if !matches!(*sel, crate::flow::Selection::Wolf(k) if sim.0.predators.wolf(k).is_some()) {
-            *sel = crate::flow::Selection::Wolf(first.key());
+            *sel = crate::flow::Selection::Wolf(first.id);
         }
     }
 }
@@ -444,12 +444,12 @@ fn sync_wolf(
         let want = Quat::from_rotation_y(going.map_or(wolf.heading, |d| d.x.atan2(d.y)));
         tr.rotation = tr.rotation.slerp(want, crate::sim_driver::ease_k(dt, 8.0, smoothing));
     }
-    for wolf in s.predators.wolves.iter().filter(|w| !shown.contains(&w.key())) {
+    for wolf in s.predators.wolves.iter().filter(|w| !shown.contains(&w.id)) {
         let xz = cell_xz(s, wolf.pos);
         let root = spawn_rig(&mut commands, &wm, &m, Transform::from_translation(ground_pt(s, xz)).with_rotation(Quat::from_rotation_y(wolf.heading)));
         let mut track = WolfTrack::default();
         track.record(s.instance, s.time_days, xz);
-        commands.entity(root).insert((SimWolf(wolf.key()), track, Visibility::Inherited));
+        commands.entity(root).insert((SimWolf(wolf.id), track, Visibility::Inherited));
     }
 }
 
@@ -544,7 +544,7 @@ fn animate_wolf(
     for (mut rig, root, gallery, id) in &mut rigs {
         let (pace, killing) = match (gallery, id.and_then(|id| sim.0.predators.wolf(id.0))) {
             (Some(g), _) => (g.pace, g.kill),
-            (None, Some(w)) => (w.pace, matches!(w.state, WolfState::Kill { .. } | WolfState::Feed { .. })),
+            (None, Some(w)) => (w.pace, matches!(w.state, WolfState::Attack { .. })),
             (None, None) => continue,
         };
         let speed = pace * BASE_DAYS_PER_SECOND / WOLF_SIZE;

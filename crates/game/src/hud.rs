@@ -298,13 +298,14 @@ impl Notices {
     }
 }
 
-fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<Vec<(u64, f64)>>) {
+fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut cues: ResMut<WolfCues>, mut told: Local<(u64, Vec<(u32, f64)>)>) {
     let s = &sim.0;
     if notices.1 != s.time_days { notices.1 = s.time_days; }
-    told.retain(|(k, at)| s.predators.wolf(*k).is_some() && s.time_days >= *at);
+    if told.0 != s.instance { told.1.clear(); told.0 = s.instance; }
+    told.1.retain(|(id, at)| s.predators.wolf(*id).is_some() && s.time_days >= *at);
     for w in sim::predators::seen(s) {
-        if !told.iter().any(|(k, _)| *k == w.key()) {
-            told.push((w.key(), s.time_days));
+        if !told.1.iter().any(|(id, _)| *id == w.id) {
+            told.1.push((w.id, s.time_days));
             notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), Some(NoticeAt::Wolf(w.pos)));
             cues.sighted += 1;
         }
@@ -629,7 +630,7 @@ fn refresh_fast(
             _ => match cams.single() {
                 Ok((cam, gt)) => {
                     let mut tree = world::water_labels(s, cam, gt, scale.0, hover.0, &orbit, *lens);
-                    tree.extend(world::markers(s, beaver_drawn.as_deref(), cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.key()))));
+                    tree.extend(world::markers(s, beaver_drawn.as_deref(), cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.id))));
                     tree
                 }
                 Err(_) => Vec::new(),

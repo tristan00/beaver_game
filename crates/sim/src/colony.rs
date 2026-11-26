@@ -659,8 +659,4 @@ impl Colony {
         self.log(Event::Immigrated { id });
         Ok(id)
     }
-
-    pub fn add_immigrants(&mut self, n: u32, buildings: &[Building]) -> u32 {
-        (0..n).take_while(|_| self.admit_wanderer(true, buildings).is_ok()).count() as u32
-    }
 }

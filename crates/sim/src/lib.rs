@@ -23,7 +23,6 @@ pub mod looks;
 pub mod dam_preview;
 pub mod ecology;
 pub mod fog;
-pub mod events;
 pub mod forestry;
 pub mod grid;
 pub mod growth;
@@ -117,7 +116,6 @@ pub struct SimState {
     pub ecology: ecology::Ecology,
     pub colony: colony::Colony,
     pub buildings: buildings::Buildings,
-    pub events: events::Events,
     pub nav: nav::NavGrid,
     pub resources: resources::ResourceWorld,
     pub agents: agents::Agents,
@@ -180,10 +178,9 @@ impl SimState {
             height,
             world,
             water,
-            ecology: ecology::Ecology::seeded(size, seed),
+            ecology: ecology::Ecology::new(size),
             colony: Default::default(),
             buildings: Default::default(),
-            events: events::Events::new(seed),
             nav: nav::NavGrid::new(size, size),
             resources,
             agents: agents::Agents::default(),
@@ -281,7 +278,8 @@ impl SimState {
         lap(&mut t.buildings_s);
         { let _p = prof::scope("step/resources"); self.resources.step(dt_days, self.time_days).expect("dt validated above"); }
         let day = self.time_days.floor();
-        if day > (self.time_days - dt_days as f64).floor() {
+        let new_day = day > (self.time_days - dt_days as f64).floor();
+        if new_day {
             let _p = prof::scope("step/wetland");
             wetland::seed_water_plants(self);
             if self.colony.is_founded() {
@@ -291,8 +289,8 @@ impl SimState {
         { let _p = prof::scope("step/forestry"); forestry::step(self, dt_days); }
         lap(&mut t.other_s);
         { let _p = prof::scope("step/agents"); agents::step(self, dt_days); }
-        { let _p = prof::scope("step/predators"); predators::step(self, dt_days); }
-        { let _p = prof::scope("step/wildlife"); wildlife::step(self, dt_days); }
+        { let _p = prof::scope("step/predators"); predators::step(self, dt_days, new_day); }
+        { let _p = prof::scope("step/wildlife"); wildlife::step(self, dt_days, new_day); }
         wildlife::note_tracks(self);
         { let _p = prof::scope("step/lives"); lives::step(self); }
         lap(&mut t.agents_s);
@@ -303,13 +301,7 @@ impl SimState {
         { let _p = prof::scope("step/fog"); self.explore(); }
         lap(&mut t.fog_s);
         { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &mut self.colony, &self.buildings); }
-        {
-            let _p = prof::scope("step/events");
-            let wetland = self.ecology.wetland.as_slice();
-            let mean = wetland.iter().step_by(7).sum::<f32>() / wetland.iter().step_by(7).count().max(1) as f32;
-            self.events.step(dt_days, &mut self.colony, &mut self.buildings, mean);
-        }
-        { let _p = prof::scope("step/deeds"); deeds::step(self, dt_days); names::step(self); }
+        { let _p = prof::scope("step/deeds"); deeds::step(self, dt_days, new_day); names::step(self); }
         {
             let _p = prof::scope("step/journal");
             journal::scan(self, "agents");
@@ -406,7 +398,7 @@ macro_rules! impl_sim_clone {
 impl_sim_clone!(
     copy: [seed, instance, time_days, steps, sandbox, step_timings],
     clone: [
-        client_commands, height, world, water, ecology, colony, buildings, events, nav,
+        client_commands, height, world, water, ecology, colony, buildings, nav,
         resources, agents, work, maintenance, works, society, ledger, fog,
         recorder, forestry, predators, fleet, wildlife, lives, run, names,
         deeds, supplies, journal
