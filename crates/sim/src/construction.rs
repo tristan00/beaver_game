@@ -136,16 +136,15 @@ impl SimState {
         self.work.places.retain(|p| p.building != id);
         self.work.balanced.remove(&id);
         self.work.fills.remove(&id);
-        if let Some(home) = self.work.homes.remove(&id) {
-            for b in self.colony.beavers.iter_mut().filter(|b| b.lodge == Some(home)) {
-                b.lodge = None;
-            }
-            self.colony.lodges.retain(|l| l.id != home);
-            self.colony.house_homeless();
-        }
         self.maintenance.mending.remove(&id);
         self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
+        if kind.is_home() {
+            for b in self.colony.beavers.iter_mut().filter(|b| b.lodge == Some(id)) {
+                b.lodge = None;
+            }
+            self.colony.house_homeless(&self.buildings.buildings);
+        }
         self.buildings.wrecked.insert(id);
         crate::trace::event(format!("BUILDING_WRECKED {} id={} kind={kind:?}", crate::trace::sim_stamp(), id.0));
     }

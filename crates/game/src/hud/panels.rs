@@ -108,13 +108,13 @@ fn headcount_tip(s: &sim::SimState) -> Tip {
     t.push(TipLine::new("Working", format!("{}", h.working)).icon(Icon::Jobs, INK));
     t.push(TipLine::new("Free", format!("{}", h.free)).icon(Icon::Idle, if h.free > 0 { WARN } else { INK }));
     t.push(TipLine::new("Kits", format!("{}", h.kits)).icon(Icon::Kit, MUTED));
-    let empty = s.buildings.buildings.iter().filter(|b| b.kind.is_home() && b.is_complete())
-        .filter(|b| s.work.homes.get(&b.id).is_none_or(|home| !s.colony.beavers.iter().any(|bv| bv.lodge == Some(*home)))).count();
+    let empty = s.buildings.buildings.iter().filter(|b| b.is_home_ready())
+        .filter(|b| !s.colony.beavers.iter().any(|bv| bv.lodge == Some(b.id))).count();
     t.push(TipLine::new("Empty lodges", format!("{empty}")).icon(building_icon(BuildingKind::home()), INK));
     let mut more = Tip::name("Beavers");
     for l in breakdown_lines(s, &sim::hud::headcount_breakdown(s), false) { more.push(l); }
     t.push(TipLine::new("Housing", "").nested(more));
-    t.push(match s.society.newcomers(s.time_days, &s.colony) {
+    t.push(match s.society.newcomers(s.time_days, &s.colony, s.buildings.stores.amount(Good::food())) {
         Ok(n) => TipLine::new("Newcomers", format!("{}/y", num(n))),
         Err(why) => TipLine::new("Newcomers", why).color(MUTED),
     });
@@ -588,7 +588,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     }
     if let Some(site) = place.and_then(|p| p.site.as_ref()) {
         let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();
-        let stage = match s.maintenance.jobs.get(&id).map(|j| j.kind) {
+        let stage = match s.maintenance.jobs.get(&id).copied() {
             Some(sim::maintenance::Refit::Repair | sim::maintenance::Refit::ReinforcedRepair) => "Repairing",
             Some(sim::maintenance::Refit::Reinforce) => "Reinforcing",
             Some(sim::maintenance::Refit::Facing) => "Facing with pebbles",

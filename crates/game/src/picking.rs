@@ -6,16 +6,8 @@ use bevy::picking::mesh_picking::ray_cast::{Backfaces, ray_aabb_intersection_3d,
 pub enum Target {
     Building(sim::buildings::BuildingId),
     Beaver(sim::colony::BeaverId),
-    Lodge(sim::colony::LodgeId),
     /// A tree or felled trunk, picked by its model so its crown can be clicked.
     Resource(sim::resources::ResourceId),
-}
-
-impl Target {
-    pub fn home(sim: &sim::SimState, home: sim::colony::LodgeId) -> Self {
-        sim.work.homes.iter().find(|(_, id)| **id == home)
-            .map_or(Self::Lodge(home), |(&building, _)| Self::Building(building))
-    }
 }
 
 #[derive(SystemParam)]

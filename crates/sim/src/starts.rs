@@ -394,7 +394,6 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     for &(g, a) in &crate::content::content().start {
         sim.buildings.stores.deposit(g, a).map_err(|e| invalid(e.to_string()))?;
     }
-    sim.colony.food = sim.buildings.stores.amount(crate::buildings::Good::food());
     sim.work.supplies = Some(supplies);
     sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT);
     crate::agents::place_beavers(sim);

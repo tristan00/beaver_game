@@ -20,7 +20,7 @@ const MAP_POLL_DAYS: f64 = 0.25;
 /// line is written out only when this changes, so most steps compare a few words, not strings.
 type TaskSig = (std::mem::Discriminant<Task>, bool, Option<Good>);
 /// What a job line is made of.
-type JobSig = (Option<Job>, Option<Job>, Option<(BuildingId, usize, Job)>, Option<Assignment>, Option<Job>);
+type JobSig = (Option<Job>, Option<(BuildingId, usize, Job)>, Option<Assignment>, Option<Job>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Journal {
@@ -51,9 +51,9 @@ fn describe_into(out: &mut String, b: &Beaver) {
     let n = &b.needs;
     let h = b.harm();
     let _ = write!(out,
-        "id={} name={:?} sex={:?} age_days={:.1} stage={:?} health={:.3} harm[starve={:.3} cold={:.3} injury={:.3} exhaust={:.3} old={:.3}] needs[food={:.3} rest={:.3} warmth={:.3} safety={:.3} social={:.3}] mood={:.3} low_mood_days={:.1} resting={} job={:?} current_job={:?} lodge={:?} family={:?} mate={:?} pregnant={} pos=({:.1},{:.1})",
+        "id={} name={:?} sex={:?} age_days={:.1} stage={:?} health={:.3} harm[starve={:.3} cold={:.3} injury={:.3} exhaust={:.3} old={:.3}] needs[food={:.3} rest={:.3} warmth={:.3} safety={:.3} social={:.3}] mood={:.3} low_mood_days={:.1} resting={} current_job={:?} lodge={:?} family={:?} mate={:?} pregnant={} pos=({:.1},{:.1})",
         b.id.0, b.name, b.sex, b.age_days, b.stage, b.health, h[0], h[1], h[2], h[3], h[4],
-        n.food, n.rest, n.warmth, n.safety, n.social, b.mood, b.low_mood_days(), b.resting, b.job, b.current_job,
+        n.food, n.rest, n.warmth, n.safety, n.social, b.mood, b.low_mood_days(), b.resting, b.current_job,
         b.lodge.map(|l| l.0), b.family.0, b.mate.map(|m| m.0), b.pregnancy.is_some(), b.pos.0, b.pos.1
     );
 }
@@ -182,12 +182,12 @@ fn jobs(sim: &SimState, j: &mut Journal) {
         let slot = sim.work.slot_of(b.id);
         let order = sim.agents.get(b.id).and_then(|a| a.assignment);
         let role = crate::jobs::role_of(sim, b.id);
-        let sig = (b.job, b.current_job, slot, order, role);
+        let sig = (b.current_job, slot, order, role);
         if j.jobs.get(&b.id).is_some_and(|(was, _)| *was == sig) {
             continue;
         }
         let slot = slot.map(|(building, i, role)| format!("{}#{i}:{role:?}", building.0));
-        let now = format!("job={:?} current_job={:?} slot={slot:?} order={order:?} role={role:?}", b.job, b.current_job);
+        let now = format!("current_job={:?} slot={slot:?} order={order:?} role={role:?}", b.current_job);
         let before = j.jobs.insert(b.id, (sig, now.clone())).map(|(_, line)| line);
         if before.as_ref() != Some(&now) {
             let before = before.unwrap_or_else(|| "new".into());
@@ -293,10 +293,11 @@ fn buildings(sim: &SimState, j: &mut Journal) {
 fn colony_brief(sim: &SimState) -> String {
     let stores = &sim.buildings.stores;
     let goods: String = Good::all().map(|g| format!(" {}={:.1}", g.key().to_lowercase(), stores.amount(g))).collect();
+    let lodges = sim.buildings.buildings.iter().filter(|b| b.is_home_ready()).count();
     format!(
-        "colony[pop={} season={:?} food_need_per_day={:.2} food_days_left={:.1}{goods} lodges={}]",
+        "colony[pop={} season={:?} food_need_per_day={:.2} food_days_left={:.1}{goods} lodges={lodges}]",
         sim.colony.population(), crate::calendar::Season::at(sim.time_days),
-        crate::hud::food_need_per_day(sim), crate::hud::food_days_left(sim), sim.colony.lodges.len()
+        crate::hud::food_need_per_day(sim), crate::hud::food_days_left(sim)
     )
 }
 
@@ -329,9 +330,9 @@ pub fn poll(sim: &mut SimState) {
 }
 fn map(sim: &SimState) {
     let s = stamp(sim);
-    trace::event(format!("POLL_COLONY {s} {} births={} deaths={} departures={} immigrants={} peak={} families={} spoiled={:.1} eaten={:?}",
+    trace::event(format!("POLL_COLONY {s} {} births={} deaths={} departures={} immigrants={} peak={} families={}",
         colony_brief(sim), sim.colony.stats.births, sim.colony.stats.deaths, sim.colony.stats.departures,
-        sim.colony.stats.immigrants, sim.colony.stats.peak_population, sim.colony.families.len(), sim.colony.spoiled, sim.colony.eaten));
+        sim.colony.stats.immigrants, sim.colony.stats.peak_population, sim.colony.families.len()));
     let stores = &sim.buildings.stores;
     let mut goods = String::new();
     for g in Good::all() {
@@ -378,11 +379,10 @@ fn map(sim: &SimState) {
     for b in &sim.buildings.buildings {
         trace::event(format!("POLL_BUILDING {s} id={} {}", b.id.0, building_line(sim, b)));
     }
-    for l in &sim.colony.lodges {
+    for l in sim.buildings.buildings.iter().filter(|b| b.is_home_ready()) {
         let residents: Vec<u64> = sim.colony.beavers.iter().filter(|b| b.lodge == Some(l.id)).map(|b| b.id.0).collect();
-        let cell = (l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize);
-        let depth = sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0);
-        trace::event(format!("POLL_LODGE {s} id={} family={} pos=({:.1},{:.1}) condition={:.2} depth={depth:.2} residents={residents:?}", l.id.0, l.family.0, l.pos.0, l.pos.1, l.condition));
+        let depth = sim.water.depth.get(l.pos.0, l.pos.1).copied().unwrap_or(0.0);
+        trace::event(format!("POLL_LODGE {s} id={} family={} pos=({},{}) condition={:.2} depth={depth:.2} residents={residents:?}", l.id.0, sim.colony.lodge_family(l.id).map_or(0, |f| f.0), l.pos.0, l.pos.1, l.home_condition(&sim.water.depth)));
     }
     if sim.predators.wolves.is_empty() {
         trace::event(format!("POLL_WOLF {s} absent"));

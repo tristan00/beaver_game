@@ -405,7 +405,7 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 return;
             }
             let kind = r.kind;
-            match give(s, workers.clone(), Assignment::Resource(rid)) {
+            match give(s, workers.clone(), Assignment::Resource(rid, kind)) {
                 Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", workers.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }

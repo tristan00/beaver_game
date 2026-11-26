@@ -19,7 +19,7 @@ pub(super) fn page_name(s: &sim::SimState, p: Page) -> String {
     match p {
         Page::Beaver(id) => name_of(s, id),
         Page::Works(b) => super::costs::structure_name(s, b),
-        Page::Lodge(l) => s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| format!("{} family", f.name)),
+        Page::Lodge(l) => s.colony.lodge_family(l).and_then(|f| s.colony.family(f)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| format!("{} family", f.name)),
     }
 }
 
@@ -213,7 +213,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     });
     let all = kin::everyone(s);
     let mine = kin::litter(s, &all, id);
-    match s.colony.conception(id) {
+    match s.beaver_conception(id) {
         Some(Ok(p)) => fact(u, Icon::Kit, GOOD, "Conceiving", format!("{:.1}%/d", p * 100.0)),
         Some(Err(why)) => fact(u, Icon::Kit, MUTED, "No kits yet", why.into()),
         None => {}
@@ -265,9 +265,9 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
     }
     u.rule();
     u.heading(hi, "Home");
-    match b.and_then(|b| b.lodge).and_then(|l| s.colony.lodges.iter().find(|x| x.id == l)) {
+    match b.and_then(|b| b.lodge).and_then(|l| s.buildings.building(l)) {
         Some(l) => {
-            fact(u, hi, MUD, sim::buildings::BuildingKind::home().name(), s.colony.family(l.family).map(|f| f.name.clone()).unwrap_or_default());
+            fact(u, hi, MUD, sim::buildings::BuildingKind::home().name(), s.colony.lodge_family(l.id).and_then(|f| s.colony.family(f)).map(|f| f.name.clone()).unwrap_or_default());
             if let Some(d) = life.and_then(|l| l.home_since()) { fact(u, Icon::Hourglass, MUTED, "Since", date(d)); }
         }
         None => { u.text("No home", 12.0, MUTED); }
@@ -352,7 +352,7 @@ fn records(c: &Ctx, u: &mut Ui, id: BeaverId) {
     }
     let structure = |b: sim::buildings::BuildingId, kind: Option<BuildingKind>| -> String {
         if let Some(p) = sim::names::pond_name(s, b) { return p.into(); }
-        s.work.homes.get(&b).and_then(|l| s.colony.lodges.iter().find(|x| x.id == *l)).and_then(|l| s.colony.family(l.family))
+        s.colony.lodge_family(b).and_then(|f| s.colony.family(f))
             .map(|f| f.name.clone()).or_else(|| kind.map(|k| k.spec().name.to_string())).unwrap_or_else(|| "Gone".into())
     };
     if r.dam_loads > 0 {
@@ -419,7 +419,10 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
             What::Job(None) => (Icon::Idle, ACCENT, "Left free of work".into()),
             What::Partner(Some(p)) => (Icon::MoodGood, GOOD, format!("Paired with {}", name_of(s, p))),
             What::Partner(None) => (Icon::MoodBad, MUTED, format!("Lost {her} partner")),
-            What::Moved(Some(l)) => (hi, MUD, format!("Moved into the {} lodge", s.colony.lodges.iter().find(|x| x.id == l).and_then(|x| s.colony.family(x.family)).map_or("a", |f| f.name.as_str()))),
+            What::Moved(Some(l)) => (hi, MUD, match s.colony.lodge_family(l).and_then(|f| s.colony.family(f)) {
+                Some(f) => format!("Moved into the {} lodge", f.name),
+                None => "Moved into a lodge".into(),
+            }),
             What::Moved(None) => (hi, MUTED, format!("Left {her} lodge")),
             What::Died(cause_of) => (Icon::Cross, BAD, format!("Died of {}", cause(cause_of))),
             What::Left => (Icon::Walk, MUTED, "Left the colony".into()),

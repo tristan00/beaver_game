@@ -3,7 +3,9 @@ use std::fmt;
 
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
+use crate::buildings::{Building, BuildingId, Buildings, Good, Producer, Use};
 pub use crate::content::{Duty, Job};
+use crate::grid::Grid;
 pub use crate::tuning::colony::*;
 
 pub const DAYS_PER_YEAR: f64 = crate::calendar::YEAR_DAYS;
@@ -19,8 +21,6 @@ fn old_age_hazard(years: f32) -> f32 {
 pub struct BeaverId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FamilyId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct LodgeId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Sex { Male, Female }
@@ -67,7 +67,7 @@ pub trait Landscape {
     }
 }
 
-impl Landscape for crate::grid::Grid<f32> {
+impl Landscape for Grid<f32> {
     fn is_water(&self, x: f32, y: f32) -> bool {
         x >= 0.0 && y >= 0.0 && self.get(x as usize, y as usize).is_some_and(|d| *d > WATER_DEPTH)
     }
@@ -90,7 +90,7 @@ pub struct Beaver {
     pub id: BeaverId, pub name: String, pub age_days: f32, age_remainder: f64,
     pub sex: Sex, pub family: FamilyId, pub mother: Option<BeaverId>, pub father: Option<BeaverId>, pub mate: Option<BeaverId>,
     pub skills: crate::buildings::PerId<Job, f32>, pub experience: f32, pub needs: Needs, pub mood: f32, pub health: f32,
-    pub job: Option<Job>, pub current_job: Option<Job>, pub lodge: Option<LodgeId>, pub pos: (f32, f32),
+    pub current_job: Option<Job>, pub lodge: Option<BuildingId>, pub pos: (f32, f32),
     pub stage: Stage, pub resting: bool, #[serde(skip)] pub in_lodge: bool,
     pub last_birth_year: i64, pub pregnancy: Option<Pregnancy>, low_mood_days: f32, harm: [f32; 5],
 }
@@ -106,8 +106,6 @@ impl Beaver {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Family { pub id: FamilyId, pub name: String }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Lodge { pub id: LodgeId, pub family: FamilyId, pub pos: (f32, f32), pub condition: f32 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
@@ -116,9 +114,9 @@ pub enum Event {
     Died { id: BeaverId, cause: DeathCause, at: (f32, f32) },
     Departed { id: BeaverId },
     Immigrated { id: BeaverId },
-    NewFamily { family: FamilyId, lodge: LodgeId, a: BeaverId, b: BeaverId },
+    NewFamily { family: FamilyId, lodge: BuildingId, a: BeaverId, b: BeaverId },
     Collapsed(CollapseReport),
-    LeftHome { id: BeaverId, lodge: LodgeId },
+    LeftHome { id: BeaverId, lodge: BuildingId },
     Epithet { id: BeaverId },
 }
 
@@ -148,8 +146,6 @@ pub struct Colony {
     next_id: u64,
     pub beavers: Vec<Beaver>,
     pub families: Vec<Family>,
-    pub lodges: Vec<Lodge>,
-    pub food: f32,
     pub stats: Stats,
     pub immigration_by_year: BTreeMap<i64, u32>,
     pub ancestry: HashMap<BeaverId, (Option<BeaverId>, Option<BeaverId>)>,
@@ -157,19 +153,19 @@ pub struct Colony {
     pub events_dropped: u64,
     collapse: Option<CollapseReport>,
     founded: bool,
-    pub slot_jobs: HashMap<BeaverId, (Job, bool)>,
-    pub eaten: [f32; 4],
-    pub spoiled: f32,
     pub looks: BTreeMap<BeaverId, crate::looks::Looks>,
     #[serde(skip)] pub sky: crate::weather::Sky,
 }
 
 impl Default for Colony { fn default() -> Self { Self::new(0) } }
 
-fn lodge_insulation(lodges: &[Lodge], b: &Beaver) -> f32 {
-    b.lodge.and_then(|l| lodges.iter().find(|x| x.id == l)).map_or(OPEN_INSULATION, |l| OPEN_INSULATION + LODGE_INSULATION * l.condition)
+fn lodge_insulation(buildings: &[Building], depth: &Grid<f32>, b: &Beaver) -> f32 {
+    b.lodge.and_then(|id| buildings.iter().find(|x| x.id == id && x.is_home_ready()))
+        .map_or(OPEN_INSULATION, |l| OPEN_INSULATION + LODGE_INSULATION * l.home_condition(depth))
 }
-fn insulation(lodges: &[Lodge], b: &Beaver) -> f32 { if b.in_lodge { lodge_insulation(lodges, b) } else { OPEN_INSULATION } }
+fn insulation(buildings: &[Building], depth: &Grid<f32>, b: &Beaver) -> f32 {
+    if b.in_lodge { lodge_insulation(buildings, depth, b) } else { OPEN_INSULATION }
+}
 fn rest_per_day(b: &Beaver, worked: f32, sleep: f32) -> f32 { -TIRE_RATE * crate::growth::tire_x(b) * worked + LODGE_REST_RATE * (1.0 - worked) * sleep }
 fn warmth_target(cold: f32, ins: f32) -> f32 { 1.0 - cold * (1.0 - ins) }
 fn social_target(mates: usize) -> f32 { (SOCIAL_BASE + SOCIAL_PER_MATE * mates as f32).min(1.0) }
@@ -190,10 +186,10 @@ impl Colony {
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Pcg32::seed_from_u64(seed ^ 0xC0_10_4E), time_days: 0.0, next_id: 1,
-            beavers: Vec::new(), families: Vec::new(), lodges: Vec::new(), food: 0.0, stats: Stats::default(),
+            beavers: Vec::new(), families: Vec::new(), stats: Stats::default(),
             immigration_by_year: Default::default(), ancestry: HashMap::new(), events: VecDeque::new(),
-            events_dropped: 0, collapse: None, founded: false, slot_jobs: HashMap::new(),
-            eaten: [0.0; 4], spoiled: 0.0, looks: Default::default(), sky: Default::default(),
+            events_dropped: 0, collapse: None, founded: false,
+            looks: Default::default(), sky: Default::default(),
         }
     }
 
@@ -201,81 +197,90 @@ impl Colony {
     pub fn count_stage(&self, stage: Stage) -> usize { self.beavers.iter().filter(|b| b.stage == stage).count() }
     pub fn beaver(&self, id: BeaverId) -> Option<&Beaver> { self.beavers.iter().find(|b| b.id == id) }
     pub fn family(&self, id: FamilyId) -> Option<&Family> { self.families.iter().find(|f| f.id == id) }
+    pub fn lodge_family(&self, id: BuildingId) -> Option<FamilyId> { self.beavers.iter().find(|b| b.lodge == Some(id)).map(|b| b.family) }
     pub fn is_founded(&self) -> bool { self.founded }
     pub fn is_collapsed(&self) -> bool { self.collapse.is_some() }
     pub fn take_events(&mut self) -> Vec<LoggedEvent> { self.events.drain(..).collect() }
-    pub fn food_per_capita(&self) -> f32 { self.food / self.beavers.len().max(1) as f32 }
     pub(crate) fn lives_with_parent(&self, b: &Beaver) -> bool {
         b.lodge.is_some() && [b.mother, b.father].into_iter().flatten().any(|p| self.beaver(p).is_some_and(|p| p.lodge == b.lodge))
     }
 
-    fn lodge_occupancy(&self) -> HashMap<LodgeId, usize> {
+    fn lodge_occupancy(&self) -> HashMap<BuildingId, (usize, FamilyId)> {
         let mut occ = HashMap::new();
-        for b in &self.beavers { if let Some(l) = b.lodge { *occ.entry(l).or_insert(0) += 1; } }
+        for b in &self.beavers {
+            if let Some(l) = b.lodge {
+                occ.entry(l).and_modify(|e: &mut (usize, FamilyId)| e.0 += 1).or_insert((1, b.family));
+            }
+        }
         occ
     }
 
-    pub fn found(&mut self, pos: (f32, f32), land: &dyn Landscape) -> Result<FamilyId, ColonyError> {
+    pub fn arrive(&mut self, pos: (f32, f32), land: &dyn Landscape) -> Result<FamilyId, ColonyError> {
         if self.founded { return Err(ColonyError::AlreadyFounded); }
         if !(pos.0.is_finite() && pos.1.is_finite()) { return Err(ColonyError::Invalid("founding position must be finite".into())); }
         if land.is_water(pos.0, pos.1) { return Err(ColonyError::Invalid("founding position is in water".into())); }
         let (year, fam) = (DAYS_PER_YEAR as f32, self.new_family());
-        let lodge = self.new_lodge(fam, pos, FOUNDING_LODGE_CONDITION);
-        let father = self.spawn(Sex::Male, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
-        let mother = self.spawn(Sex::Female, FOUNDER_ADULT_AGE_YEARS * year, fam, Some(lodge), pos, None, None);
+        let father = self.spawn(Sex::Male, FOUNDER_ADULT_AGE_YEARS * year, fam, None, pos, None, None);
+        let mother = self.spawn(Sex::Female, FOUNDER_ADULT_AGE_YEARS * year, fam, None, pos, None, None);
         self.set_mates(father, mother);
         let litter = MIN_LITTER + self.range(LITTER_SPREAD);
         if let Some(m) = self.beavers.iter_mut().find(|b| b.id == mother) {
             m.pregnancy = Some(Pregnancy { father, conceived_day: -FOUNDER_PREGNANCY_DAYS, due_day: GESTATION_DAYS - FOUNDER_PREGNANCY_DAYS, litter });
         }
         for sex in [Sex::Male, Sex::Female] {
-            self.spawn(sex, FOUNDER_YEARLING_AGE_YEARS * year, fam, Some(lodge), pos, Some(father), Some(mother));
+            self.spawn(sex, FOUNDER_YEARLING_AGE_YEARS * year, fam, None, pos, Some(father), Some(mother));
         }
-        (self.food, self.founded, self.stats.peak_population) = (0.0, true, self.beavers.len());
+        (self.founded, self.stats.peak_population) = (true, self.beavers.len());
         Ok(fam)
     }
 
-    pub fn arrive(&mut self, pos: (f32, f32), land: &dyn Landscape) -> Result<FamilyId, ColonyError> {
-        let fam = self.found(pos, land)?;
-        self.lodges.clear();
-        for b in &mut self.beavers { b.lodge = None; }
-        Ok(fam)
-    }
-
-    pub fn add_home(&mut self, pos: (f32, f32)) -> LodgeId {
-        let fam = self.beavers.iter().find(|b| b.lodge.is_none()).map_or(FamilyId(0), |b| b.family);
-        let id = self.new_lodge(fam, pos, 1.0);
-        self.house_homeless();
-        id
-    }
-
-    pub fn house_homeless(&mut self) {
+    pub fn house_homeless(&mut self, buildings: &[Building]) {
         let mut occ = self.lodge_occupancy();
         for b in self.beavers.iter_mut().filter(|b| b.lodge.is_none()) {
-            let pick = self.lodges.iter_mut()
-                .filter(|l| { let n = occ.get(&l.id).copied().unwrap_or(0); (l.family == b.family || n == 0) && n < LODGE_CAPACITY })
-                .min_by_key(|l| (l.family != b.family, l.id));
+            let pick = buildings.iter()
+                .filter(|l| l.is_home_ready())
+                .filter(|l| match occ.get(&l.id) {
+                    Some(&(n, fam)) => fam == b.family && n < LODGE_CAPACITY,
+                    None => true,
+                })
+                .min_by_key(|l| (occ.get(&l.id).is_none(), l.id));
             if let Some(l) = pick {
-                (l.family, b.lodge) = (b.family, Some(l.id));
-                *occ.entry(l.id).or_insert(0) += 1;
+                b.lodge = Some(l.id);
+                occ.entry(l.id).and_modify(|e| e.0 += 1).or_insert((1, b.family));
             }
         }
     }
 
-    pub fn step_with_stores(&mut self, dt_days: f32, land: &dyn Landscape, stores: &mut crate::buildings::Stores) -> Result<(), ColonyError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_with_stores(
+        &mut self,
+        dt_days: f32,
+        land: &dyn Landscape,
+        buildings: &mut Buildings,
+        depth: &Grid<f32>,
+        piles: &mut crate::piles::Piles,
+        slot_jobs: &HashMap<BeaverId, (Job, bool)>,
+    ) -> Result<(), ColonyError> {
         if !dt_days.is_finite() || dt_days < 0.0 { return Err(ColonyError::InvalidDt(dt_days)); }
-        self.food = stores.amount(crate::buildings::Good::food());
         let mut left = dt_days;
-        while left > 0.0 { let dt = left.min(SUBSTEP_DAYS); self.tick(dt, land, stores); left -= dt; }
+        while left > 0.0 { let dt = left.min(SUBSTEP_DAYS); self.tick(dt, land, buildings, depth, piles, slot_jobs); left -= dt; }
         Ok(())
     }
 
-    fn tick(&mut self, dt: f32, land: &dyn Landscape, stores: &mut crate::buildings::Stores) {
+    fn tick(
+        &mut self,
+        dt: f32,
+        land: &dyn Landscape,
+        buildings: &mut Buildings,
+        depth: &Grid<f32>,
+        piles: &mut crate::piles::Piles,
+        slot_jobs: &HashMap<BeaverId, (Job, bool)>,
+    ) {
         self.time_days += dt as f64;
         if !self.founded { return; }
         let cold = crate::weather::cold(self.sky.at(self.time_days).feels_c);
-        self.adopt_orphans();
-        let plan = self.plan_work(dt, land);
+        self.adopt_orphans(&buildings.buildings, depth);
+        let plan = self.plan_work(dt, land, slot_jobs);
         for (b, work) in self.beavers.iter_mut().zip(&plan) {
             b.current_job = work.map(|w| w.job);
             if let Some(w) = work {
@@ -286,21 +291,21 @@ impl Colony {
             }
         }
         self.teach_young(dt);
-        self.update_needs(dt, cold, stores);
+        self.update_needs(dt, cold, buildings, depth, piles);
         self.age_and_stage(dt);
-        self.remove_dead(dt);
-        self.pair_and_disperse();
-        self.leave_home();
-        self.births(dt);
-        self.depart_unhappy();
+        self.remove_dead(dt, buildings.stores.amount(Good::food()));
+        self.pair_and_disperse(&buildings.buildings);
+        self.leave_home(&buildings.buildings);
+        self.births(dt, buildings, depth);
+        self.depart_unhappy(buildings.stores.amount(Good::food()));
         let live: HashSet<FamilyId> = self.beavers.iter().map(|b| b.family).collect();
         self.families.retain(|f| live.contains(&f.id));
         self.check_collapse();
     }
 
-    fn plan_work(&self, dt: f32, land: &dyn Landscape) -> Vec<Option<Work>> {
+    fn plan_work(&self, dt: f32, land: &dyn Landscape, slot_jobs: &HashMap<BeaverId, (Job, bool)>) -> Vec<Option<Work>> {
         self.beavers.iter().map(|b| {
-            let job = self.slot_jobs.get(&b.id).filter(|(_, w)| *w && b.can_work() && !b.resting)?.0;
+            let job = slot_jobs.get(&b.id).filter(|(_, w)| *w && b.can_work() && !b.resting)?.0;
             let units = dt * WORK_FRACTION * b.work_weight() * (WORK_REST_BASE + WORK_REST_SCALE * b.needs.rest)
                 * (WORK_HEALTH_BASE + WORK_HEALTH_SCALE * b.health) * crate::society::work_speed(b.mood);
             Some(Work { job, units, land_len: if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 }, water_dist: land.water_distance(b.pos.0, b.pos.1) })
@@ -319,10 +324,10 @@ impl Colony {
         }
     }
 
-    pub fn rates(&self, id: BeaverId, land: &dyn Landscape) -> Option<Rates> {
+    pub fn rates(&self, id: BeaverId, land: &dyn Landscape, buildings: &[Building], depth: &Grid<f32>) -> Option<Rates> {
         let b = self.beaver(id)?;
-        let (ins, cold) = (insulation(&self.lodges, b), crate::weather::cold(self.sky.at(self.time_days).feels_c));
-        let (worked, sleep) = (if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION }, lodge_insulation(&self.lodges, b).max(OPEN_REST));
+        let (ins, cold) = (insulation(buildings, depth, b), crate::weather::cold(self.sky.at(self.time_days).feels_c));
+        let (worked, sleep) = (if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION }, lodge_insulation(buildings, depth, b).max(OPEN_REST));
         let rest = rest_per_day(b, worked, sleep) + if b.resting { RESTING_RECOVERY * sleep } else { 0.0 };
         let exposure = b.current_job.map(|_| (if land.is_water(b.pos.0, b.pos.1) { 0.0 } else { 1.0 }, land.water_distance(b.pos.0, b.pos.1)));
         let mates = b.lodge.map_or(0, |l| self.beavers.iter().filter(|m| m.id != b.id && m.lodge == Some(l)).count()).min(SOCIAL_MAX_MATES);
@@ -338,21 +343,30 @@ impl Colony {
         })
     }
 
-    fn update_needs(&mut self, dt: f32, cold: f32, stores: &mut crate::buildings::Stores) {
-        use crate::buildings::{Good, Use};
+    fn update_needs(&mut self, dt: f32, cold: f32, buildings: &mut Buildings, depth: &Grid<f32>, piles: &mut crate::piles::Piles) {
         let occ = self.lodge_occupancy();
-        let eaten = &mut self.eaten;
+        let (blds, stores) = (&buildings.buildings, &mut buildings.stores);
         for b in &mut self.beavers {
-            let (ins, sleep) = (insulation(&self.lodges, b), lodge_insulation(&self.lodges, b).max(OPEN_REST));
+            let (ins, sleep) = (insulation(blds, depth, b), lodge_insulation(blds, depth, b).max(OPEN_REST));
             let worked = if b.current_job.is_some() { WORK_FRACTION } else { IDLE_FRACTION };
             let (rest_chg, hunger) = (rest_per_day(b, worked, sleep), HUNGER_PER_DAY * crate::growth::hunger_x(b));
             b.needs.food = (b.needs.food - hunger * dt).max(0.0);
             if b.needs.food < EAT_BELOW {
                 let w = b.stage.food_weight();
-                let take = ((1.0 - b.needs.food) * w).min(stores.amount(Good::food()));
-                stores.withdraw_for(Good::food(), take, Use::eaten_by(b.stage)).expect("limited to stock");
-                eaten[b.stage as usize] += take;
-                b.needs.food += take / w;
+                let need = (1.0 - b.needs.food) * w;
+                let use_kind = Use::eaten_by(b.stage);
+                let from_store = need.min(stores.amount(Good::food()));
+                if from_store > 0.0 {
+                    stores.withdraw_for(Good::food(), from_store, use_kind).expect("limited to stock");
+                }
+                let mut from_pile = 0.0;
+                if need - from_store > 1e-4 {
+                    let (booked, unbooked) = piles.take_good(Good::food(), need - from_store);
+                    if unbooked > 0.0 { stores.book_delivery(Good::food(), unbooked, Some(Producer::Other), use_kind); }
+                    if booked > 0.0 { stores.book_used(Good::food(), booked, use_kind); }
+                    from_pile = booked + unbooked;
+                }
+                b.needs.food = (b.needs.food + (from_store + from_pile) / w).min(1.0);
             }
             b.needs.rest = (b.needs.rest + rest_chg * dt).clamp(0.0, 1.0);
             if b.resting {
@@ -361,7 +375,7 @@ impl Colony {
             } else if b.needs.rest < EXHAUSTED_REST { b.resting = true; }
             b.needs.warmth += (warmth_target(cold, ins) - b.needs.warmth) * (WARMTH_RATE * dt).min(1.0);
             if b.current_job.is_none() { b.needs.safety += (IDLE_SAFETY.min(1.0) - b.needs.safety) * (SAFETY_RATE * dt).min(1.0); }
-            let mates = b.lodge.map_or(0, |l| occ.get(&l).copied().unwrap_or(1) - 1).min(SOCIAL_MAX_MATES);
+            let mates = b.lodge.map_or(0, |l| occ.get(&l).map_or(1, |e| e.0) - 1).min(SOCIAL_MAX_MATES);
             b.needs.social += (social_target(mates) - b.needs.social) * (SOCIAL_RATE * dt).min(1.0);
             let harm = harm_per_day(b);
             for (k, r) in harm.iter().enumerate() { b.harm[k] += r * dt; }
@@ -373,8 +387,6 @@ impl Colony {
         }
         let spoiled = (stores.amount(Good::food()) * FOOD_SPOILAGE * dt).min(stores.amount(Good::food()));
         stores.withdraw_for(Good::food(), spoiled, Use::Spoiled).expect("limited to stock");
-        self.spoiled += spoiled;
-        self.food = stores.amount(Good::food());
     }
 
     fn age_and_stage(&mut self, dt: f32) {
@@ -388,7 +400,7 @@ impl Colony {
         for (id, stage) in matured { self.log(Event::Matured { id, stage }); }
     }
 
-    fn remove_dead(&mut self, dt: f32) {
+    fn remove_dead(&mut self, dt: f32, food: f32) {
         let worn: Vec<bool> = self.beavers.iter().map(|b| b.age_years()).collect::<Vec<_>>().into_iter().map(|y| {
             let h = old_age_hazard(y);
             h > 0.0 && self.unit() < 1.0 - (-h * dt / DAYS_PER_YEAR as f32).exp()
@@ -400,7 +412,7 @@ impl Colony {
                 Some((b.id, HARM_CAUSES[k], b.pos))
             } else { None }
         }).collect();
-        self.trace_last_state("DYING", &dead.iter().map(|d| (d.0, format!("{:?}", d.1))).collect::<Vec<_>>());
+        self.trace_last_state("DYING", &dead.iter().map(|d| (d.0, format!("{:?}", d.1))).collect::<Vec<_>>(), food);
         self.stats.deaths += dead.len() as u32;
         self.remove_beavers(&dead.iter().map(|d| d.0).collect::<Vec<_>>());
         for (id, cause, at) in dead { self.log(Event::Died { id, cause, at }); }
@@ -408,27 +420,27 @@ impl Colony {
 
     pub fn kill(&mut self, id: BeaverId, cause: DeathCause) -> bool {
         let Some(at) = self.beaver(id).map(|b| b.pos) else { return false };
-        self.trace_last_state("DYING", &[(id, format!("{cause:?}"))]);
+        self.trace_last_state("DYING", &[(id, format!("{cause:?}"))], 0.0);
         self.stats.deaths += 1;
         self.remove_beavers(&[id]);
         self.log(Event::Died { id, cause, at });
         true
     }
 
-    fn depart_unhappy(&mut self) {
+    fn depart_unhappy(&mut self, food: f32) {
         let leaving: Vec<BeaverId> = self.beavers.iter().filter(|b| b.stage != Stage::Kit && b.low_mood_days >= DEPARTURE_BAD_MOOD_DAYS).map(|b| b.id).collect();
-        self.trace_last_state("DEPARTING", &leaving.iter().map(|&id| (id, "low mood".into())).collect::<Vec<_>>());
+        self.trace_last_state("DEPARTING", &leaving.iter().map(|&id| (id, "low mood".into())).collect::<Vec<_>>(), food);
         self.stats.departures += leaving.len() as u32;
         self.remove_beavers(&leaving);
         for id in leaving { self.log(Event::Departed { id }); }
     }
 
-    fn trace_last_state(&self, what: &str, who: &[(BeaverId, String)]) {
+    fn trace_last_state(&self, what: &str, who: &[(BeaverId, String)], food: f32) {
         if !crate::trace::enabled() { return; }
         let temp = self.sky.at(self.time_days).temp_c;
         for (id, why) in who {
             if let Some(b) = self.beaver(*id) {
-                crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_cache={:.1} | {}", self.time_days, self.food, crate::journal::describe(b)));
+                crate::trace::event(format!("{what} day={:.4} why={why} temperature={temp:.2} food_cache={food:.1} | {}", self.time_days, crate::journal::describe(b)));
             }
         }
     }
@@ -440,8 +452,8 @@ impl Colony {
         for b in self.beavers.iter_mut().filter(|b| b.mate.is_some_and(|m| set.contains(&m))) { b.mate = None; }
     }
 
-    fn adopt_orphans(&mut self) {
-        self.house_homeless();
+    fn adopt_orphans(&mut self, buildings: &[Building], depth: &Grid<f32>) {
+        self.house_homeless(buildings);
         let live: HashSet<_> = self.beavers.iter().map(|b| b.id).collect();
         let hosts: HashSet<_> = self.beavers.iter().filter(|b| b.stage == Stage::Adult).filter_map(|b| b.lodge).collect();
         let orphans: Vec<_> = self.beavers.iter()
@@ -449,10 +461,12 @@ impl Colony {
             .map(|b| b.id).collect();
         for id in orphans {
             if self.beaver(id).and_then(|b| b.lodge).is_some_and(|l| hosts.contains(&l)) { continue; }
-            let home = self.lodges.iter().filter(|l| hosts.contains(&l.id) && self.beavers.iter().filter(|b| b.lodge == Some(l.id)).count() < LODGE_CAPACITY)
-                .max_by(|a, b| a.condition.total_cmp(&b.condition)).cloned();
-            if let Some(h) = home && let Some(b) = self.beavers.iter_mut().find(|b| b.id == id) {
-                (b.family, b.lodge, b.pos) = (h.family, Some(h.id), h.pos);
+            let home = buildings.iter()
+                .filter(|l| l.is_home_ready() && hosts.contains(&l.id) && self.beavers.iter().filter(|b| b.lodge == Some(l.id)).count() < LODGE_CAPACITY)
+                .max_by(|a, b| a.home_condition(depth).total_cmp(&b.home_condition(depth)))
+                .and_then(|l| Some((l.id, self.lodge_family(l.id)?, l.centre())));
+            if let Some((hid, fam, pos)) = home && let Some(b) = self.beavers.iter_mut().find(|b| b.id == id) {
+                (b.family, b.lodge, b.pos) = (fam, Some(hid), pos);
             }
         }
     }
@@ -461,30 +475,31 @@ impl Colony {
         self.beavers.iter().map(|b| HUNGER_PER_DAY * crate::growth::hunger_x(b) * b.stage.food_weight()).sum()
     }
 
-    fn can_breed(&self, m: &Beaver) -> Option<Result<(), &'static str>> {
+    fn can_breed(&self, m: &Beaver, buildings: &Buildings, depth: &Grid<f32>) -> Option<Result<(), &'static str>> {
         if m.sex != Sex::Female || m.stage != Stage::Adult || m.age_years() >= MAX_BIRTH_AGE_YEARS || m.pregnancy.is_some() { return None; }
         let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
-        let lodge = self.lodges.iter().find(|l| Some(l.id) == m.lodge && l.family == m.family);
+        let lodge = m.lodge.and_then(|id| buildings.building(id)).filter(|l| l.is_home_ready());
         let mate = m.mate.and_then(|id| self.beaver(id)).filter(|f| f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult);
         let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == m.lodge).count());
         let daily_food = self.daily_food_need() + HUNGER_PER_DAY * MIN_LITTER as f32 * KIT_FOOD_WEIGHT;
+        let food = buildings.stores.amount(Good::food());
         Some(if m.last_birth_year == birth_year { Err("Had a litter this year") }
             else if m.health < BREED_MIN_HEALTH { Err("Too weak") }
             else if m.needs.food < BREED_MIN_FOOD { Err("Hungry") }
             else if lodge.is_none() { Err("No family lodge") }
-            else if lodge.is_some_and(|l| l.condition < BREED_MIN_HOME_CONDITION) { Err("Lodge needs repair") }
+            else if lodge.is_some_and(|l| l.home_condition(depth) < BREED_MIN_HOME_CONDITION) { Err("Lodge needs repair") }
             else if mate.is_none() { Err("No mate at home") }
             else if room < MIN_LITTER as usize { Err("Lodge full") }
-            else if self.food < daily_food * BIRTH_MIN_FOOD_DAYS { Err("Food caches too low") }
+            else if food < daily_food * BIRTH_MIN_FOOD_DAYS { Err("Food caches too low") }
             else { Ok(()) })
     }
 
-    pub fn conception(&self, id: BeaverId) -> Option<Result<f32, &'static str>> {
-        let ready = self.can_breed(self.beaver(id)?)?;
+    pub fn conception(&self, id: BeaverId, buildings: &Buildings, depth: &Grid<f32>) -> Option<Result<f32, &'static str>> {
+        let ready = self.can_breed(self.beaver(id)?, buildings, depth)?;
         Some(ready.and_then(|()| if (MATING_FROM_DAY..MATING_TO_DAY).contains(&day_of_year(self.time_days)) { Ok(CONCEPTION_CHANCE_PER_DAY) } else { Err("Out of season") }))
     }
 
-    fn births(&mut self, dt: f32) {
+    fn births(&mut self, dt: f32, buildings: &Buildings, depth: &Grid<f32>) {
         let due: Vec<_> = self.beavers.iter().filter_map(|m| m.pregnancy.as_ref().filter(|p| self.time_days >= p.due_day).map(|p| (m.id, m.family, m.lodge, m.pos, p.father, p.litter))).collect();
         for (mid, fam, lodge, pos, father, litter) in due {
             let mother = self.beavers.iter_mut().find(|b| b.id == mid).unwrap();
@@ -498,18 +513,21 @@ impl Colony {
         }
         self.stats.peak_population = self.stats.peak_population.max(self.beavers.len());
         if !(MATING_FROM_DAY..MATING_TO_DAY).contains(&day_of_year(self.time_days)) { return; }
-        let cands: Vec<_> = self.beavers.iter().filter(|m| self.can_breed(m) == Some(Ok(()))).map(|m| (m.id, m.mate.unwrap(), m.lodge)).collect();
+        let cands: Vec<_> = self.beavers.iter().filter(|m| self.can_breed(m, buildings, depth) == Some(Ok(()))).map(|m| (m.id, m.mate.unwrap(), m.lodge)).collect();
+        let food = buildings.stores.amount(Good::food());
         for (id, father, home) in cands {
             let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == home).count());
             if !self.chance(CONCEPTION_CHANCE_PER_DAY * dt) { continue; }
             let litter = (MIN_LITTER + self.range(LITTER_SPREAD)).min(room as u32);
-            crate::trace::event(format!("CONCEIVED day={:.4} mother={} father={father:?} litter={litter} due_day={:.2} lodge_room={room} food={:.1}", self.time_days, id.0, self.time_days + GESTATION_DAYS, self.food));
+            crate::trace::event(format!("CONCEIVED day={:.4} mother={} father={father:?} litter={litter} due_day={:.2} lodge_room={room} food={food:.1}", self.time_days, id.0, self.time_days + GESTATION_DAYS));
             self.beavers.iter_mut().find(|b| b.id == id).unwrap().pregnancy = Some(Pregnancy { father, conceived_day: self.time_days, due_day: self.time_days + GESTATION_DAYS, litter });
         }
     }
 
-    fn leave_home(&mut self) {
-        let mut empty: Vec<LodgeId> = self.lodges.iter().filter(|l| !self.beavers.iter().any(|b| b.lodge == Some(l.id))).map(|l| l.id).collect();
+    fn leave_home(&mut self, buildings: &[Building]) {
+        let mut empty: Vec<(BuildingId, (f32, f32))> = buildings.iter()
+            .filter(|l| l.is_home_ready() && !self.beavers.iter().any(|b| b.lodge == Some(l.id)))
+            .map(|l| (l.id, l.centre())).collect();
         if empty.is_empty() { return; }
         let mut leaving: Vec<_> = self.beavers.iter()
             .filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.age_years() >= LEAVE_HOME_AGE_YEARS && self.lives_with_parent(b))
@@ -517,11 +535,8 @@ impl Colony {
         leaving.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         empty.reverse();
         for (_, id) in leaving {
-            let Some(home) = empty.pop() else { break };
+            let Some((home, site)) = empty.pop() else { break };
             let fam = self.new_family();
-            let l = self.lodges.iter_mut().find(|l| l.id == home).unwrap();
-            (l.family, ) = (fam,);
-            let site = l.pos;
             let b = self.beavers.iter_mut().find(|b| b.id == id).unwrap();
             (b.family, b.lodge, b.pos) = (fam, Some(home), site);
             self.log(Event::LeftHome { id, lodge: home });
@@ -534,7 +549,7 @@ impl Colony {
         px.contains(&Some(b)) || py.contains(&Some(a)) || px.into_iter().flatten().any(|p| py.contains(&Some(p)))
     }
 
-    fn pair_and_disperse(&mut self) {
+    fn pair_and_disperse(&mut self, buildings: &[Building]) {
         let doy = day_of_year(self.time_days);
         if !(SPRING_START..SPRING_END).contains(&doy) && !(MATING_FROM_DAY..MATING_TO_DAY).contains(&doy) { return; }
         let mut eligible: Vec<_> = self.beavers.iter().filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.health >= PAIR_MIN_HEALTH).map(|b| (b.id, b.sex)).collect();
@@ -548,14 +563,14 @@ impl Colony {
             let reuse = [a, b].into_iter().find_map(|id| {
                 let own = self.beaver(id)?;
                 let home = own.lodge?;
-                self.lodges.iter().find(|l| l.id == home && l.family == own.family
-                    && self.beavers.iter().filter(|x| x.lodge == Some(home) && x.stage == Stage::Adult).all(|x| x.id == a || x.id == b)).map(|l| l.id)
+                let bld = buildings.iter().find(|l| l.is_home_ready() && l.id == home)?;
+                self.beavers.iter().filter(|x| x.lodge == Some(home) && x.stage == Stage::Adult).all(|x| x.id == a || x.id == b)
+                    .then(|| (home, own.family, bld.centre()))
             });
-            let Some(home) = reuse.or_else(|| self.lodges.iter().find(|l| !self.beavers.iter().any(|x| x.lodge == Some(l.id))).map(|l| l.id)) else { continue };
-            let fam = match reuse { Some(id) => self.lodges.iter().find(|l| l.id == id).unwrap().family, None => self.new_family() };
-            let l = self.lodges.iter_mut().find(|l| l.id == home).unwrap();
-            l.family = fam;
-            let site = l.pos;
+            let Some((home, fam, site)) = reuse.or_else(|| {
+                let l = buildings.iter().find(|l| l.is_home_ready() && !self.beavers.iter().any(|x| x.lodge == Some(l.id)))?;
+                Some((l.id, self.new_family(), l.centre()))
+            }) else { continue };
             for x in self.beavers.iter_mut().filter(|x| x.id == a || x.id == b || (x.stage != Stage::Adult && [x.mother, x.father].into_iter().flatten().any(|p| p == a || p == b))) {
                 (x.family, x.lodge, x.pos) = (fam, Some(home), site);
             }
@@ -581,17 +596,16 @@ impl Colony {
 
     fn fresh(&mut self) -> u64 { let id = self.next_id; self.next_id += 1; id }
     fn new_family(&mut self) -> FamilyId { let id = FamilyId(self.fresh()); self.families.push(Family { id, name: String::new() }); id }
-    fn new_lodge(&mut self, family: FamilyId, pos: (f32, f32), condition: f32) -> LodgeId { let id = LodgeId(self.fresh()); self.lodges.push(Lodge { id, family, pos, condition }); id }
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn(&mut self, sex: Sex, age_days: f32, family: FamilyId, lodge: Option<LodgeId>, pos: (f32, f32), father: Option<BeaverId>, mother: Option<BeaverId>) -> BeaverId {
+    fn spawn(&mut self, sex: Sex, age_days: f32, family: FamilyId, lodge: Option<BuildingId>, pos: (f32, f32), father: Option<BeaverId>, mother: Option<BeaverId>) -> BeaverId {
         let id = BeaverId(self.fresh());
         let mut skills: crate::buildings::PerId<Job, f32> = Default::default();
         if age_days >= ADULT_DAYS { for s in skills.values_mut() { *s = START_SKILL_MAX * self.unit(); } }
         let experience = crate::growth::START_EXPERIENCE_MAX * skills.values().sum::<f32>() / (skills.values().count().max(1) as f32 * START_SKILL_MAX);
         self.beavers.push(Beaver {
             id, name: String::new(), age_days, age_remainder: 0.0, sex, family, mother, father, mate: None,
-            skills, experience, needs: Needs::satisfied(), mood: START_MOOD, health: 1.0, job: None, current_job: None,
+            skills, experience, needs: Needs::satisfied(), mood: START_MOOD, health: 1.0, current_job: None,
             lodge, pos, stage: Stage::of_age_days(age_days), resting: false, in_lodge: false, last_birth_year: -1,
             pregnancy: None, low_mood_days: 0.0, harm: [0.0; 5],
         });
@@ -622,19 +636,17 @@ impl Colony {
     fn chance(&mut self, p: f32) -> bool { self.unit() < p }
     fn range(&mut self, n: u32) -> u32 { self.rng.next_u32() % n }
 
-    pub fn admit_wanderer(&mut self, adult: bool) -> Result<BeaverId, ColonyError> {
+    pub fn admit_wanderer(&mut self, adult: bool, buildings: &[Building]) -> Result<BeaverId, ColonyError> {
         if !self.founded { return Err(ColonyError::Invalid("colony is not founded".into())); }
         if self.migration_remaining() == 0 { return Err(ColonyError::Invalid(format!("annual migration limit reached ({MAX_IMMIGRANTS_PER_YEAR} a year)"))); }
         let waiting = adult.then(|| self.beavers.iter().find(|b| b.stage == Stage::Adult && b.mate.is_none()
             && b.lodge.is_some() && self.beavers.iter().filter(|x| x.lodge == b.lodge && x.stage == Stage::Adult).count() == 1).cloned()).flatten();
-        let empty = self.lodges.iter().find(|l| !self.beavers.iter().any(|b| b.lodge == Some(l.id))).cloned();
+        let empty = buildings.iter().find(|l| l.is_home_ready() && !self.beavers.iter().any(|b| b.lodge == Some(l.id))).map(|l| (l.id, l.centre()));
         let sex = if self.chance(MALE_SHARE) { Sex::Male } else { Sex::Female };
         let (home, fam, pos) = if let Some(b) = waiting {
             (b.lodge.unwrap(), b.family, b.pos)
-        } else if let Some(l) = empty {
-            let fam = self.new_family();
-            self.lodges.iter_mut().find(|h| h.id == l.id).unwrap().family = fam;
-            (l.id, fam, l.pos)
+        } else if let Some((lid, lpos)) = empty {
+            (lid, self.new_family(), lpos)
         } else {
             return Err(ColonyError::Invalid("a newcomer needs an empty family lodge or an unpaired adult's home".into()));
         };
@@ -648,7 +660,7 @@ impl Colony {
         Ok(id)
     }
 
-    pub fn add_immigrants(&mut self, n: u32) -> u32 {
-        (0..n).take_while(|_| self.admit_wanderer(true).is_ok()).count() as u32
+    pub fn add_immigrants(&mut self, n: u32, buildings: &[Building]) -> u32 {
+        (0..n).take_while(|_| self.admit_wanderer(true, buildings).is_ok()).count() as u32
     }
 }

@@ -80,6 +80,22 @@ pub struct SiteProgress {
 }
 
 impl SiteProgress {
+    pub fn new(needed: &[Amount], labour: f32) -> Result<Self, WorkError> {
+        let ok = |x: f32| x.is_finite() && x >= 0.0;
+        if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
+            return Err(WorkError::InvalidAmount);
+        }
+        let needed: Vec<Amount> = Good::all().filter_map(|g| {
+            let total: f32 = needed.iter().filter(|a| a.0 == g).map(|a| a.1).sum();
+            (total > 0.0).then_some((g, total))
+        }).collect();
+        Ok(SiteProgress {
+            delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
+            needed,
+            labour_done: 0.0,
+            labour_needed: labour,
+        })
+    }
     pub fn missing(&self, good: Good) -> f32 {
         let sum = |v: &[Amount]| v.iter().filter(|a| a.0 == good).map(|a| a.1).sum::<f32>();
         (sum(&self.needed) - sum(&self.delivered)).max(0.0)
@@ -125,7 +141,6 @@ pub struct Work {
     pub supplies: Option<Cell>,
     /// Goods lying on the ground.
     pub piles: crate::piles::Piles,
-    pub homes: BTreeMap<BuildingId, crate::colony::LodgeId>,
     /// How far from water, in cells, each job's beavers are sent to work.
     pub shore_limits: BTreeMap<crate::jobs::Job, u16>,
 }
@@ -168,22 +183,18 @@ impl Work {
         if self.place(b).is_some() {
             return Err(WorkError::AlreadyRegistered);
         }
-        let ok = |x: f32| x.is_finite() && x >= 0.0;
-        if !ok(labour) || needed.iter().any(|a| !ok(a.1)) {
-            return Err(WorkError::InvalidAmount);
-        }
-        let needed: Vec<Amount> = Good::all().filter_map(|g| {
-            let total: f32 = needed.iter().filter(|a| a.0 == g).map(|a| a.1).sum();
-            (total > 0.0).then_some((g, total))
-        }).collect();
-        let site = SiteProgress {
-            delivered: needed.iter().map(|a| (a.0, 0.0)).collect(),
-            needed,
-            labour_done: 0.0,
-            labour_needed: labour,
-        };
+        let site = SiteProgress::new(needed, labour)?;
         self.places.push(Workplace::new(b, kind, Vec::new(), None, Some(site)));
         Ok(())
+    }
+    /// Attach a refit site onto an existing workplace without replacing it.
+    pub fn start_site(&mut self, b: BuildingId, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
+        let site = SiteProgress::new(needed, labour)?;
+        self.place_mut(b)?.site = Some(site);
+        Ok(())
+    }
+    pub fn clear_site(&mut self, b: BuildingId) {
+        if let Ok(p) = self.place_mut(b) { p.site = None; }
     }
     fn site_mut(&mut self, b: BuildingId) -> Result<&mut SiteProgress, WorkError> {
         self.place_mut(b)?.site.as_mut().ok_or(WorkError::NotASite)

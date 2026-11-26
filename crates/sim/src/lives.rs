@@ -5,7 +5,8 @@
 //! dead too, so family links still lead somewhere. Saved after the world (see `save`).
 use std::collections::BTreeMap;
 
-use crate::colony::{BeaverId, DeathCause, LodgeId, Sex, Stage};
+use crate::buildings::BuildingId;
+use crate::colony::{BeaverId, DeathCause, Sex, Stage};
 use crate::jobs::Job;
 use crate::SimState;
 
@@ -24,7 +25,7 @@ pub enum What {
     Job(Option<Job>),
     /// Paired with a partner; `None` is the partner lost.
     Partner(Option<BeaverId>),
-    Moved(Option<LodgeId>),
+    Moved(Option<BuildingId>),
     Died(DeathCause),
     Left,
 }
@@ -39,7 +40,7 @@ pub struct Entry {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Seen {
     job: Option<Job>,
-    lodge: Option<LodgeId>,
+    lodge: Option<BuildingId>,
     partner: Option<BeaverId>,
     stage: Stage,
 }

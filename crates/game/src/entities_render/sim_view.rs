@@ -119,7 +119,7 @@ pub fn pose_of(sim: &SimState, ag: &Agent, moving: bool) -> Pose {
         Task::Work { kind: WorkKind::Build | WorkKind::Dam | WorkKind::Gate, .. } => Pose::Work,
         Task::Work { kind: WorkKind::Mend, .. } => Pose::Mend,
         Task::Work { kind: WorkKind::Dig, .. } | Task::Plant { .. } => Pose::Dig,
-        Task::Seed { .. } | Task::Eat { .. } => Pose::Forage,
+        Task::Seed { .. } => Pose::Forage,
         Task::Move { .. } => Pose::Handle,
         Task::Watch { .. } => Pose::Watch,
         Task::Raft { leg: 2 | 4, .. } => Pose::Handle,

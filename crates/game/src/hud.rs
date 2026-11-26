@@ -86,7 +86,7 @@ pub enum Span { Season, Year, #[default] All }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BeaverCol { #[default] Family, Name, Age, Job, Doing, Skill, Pace }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Beaver(BeaverId), Lodge(sim::colony::LodgeId), Works(BuildingId) }
+pub enum Page { Beaver(BeaverId), Lodge(BuildingId), Works(BuildingId) }
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Msg { pub icon: Option<(Icon, Color)>, pub icon2: Option<(Icon, Color)>, pub text: String }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -396,7 +396,7 @@ fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState
             .filter(|&c| sim::dams::built(s, c) > 0.0 && sim::dams::integrity(s, c) < sim::dams::REPAIR_BELOW).collect();
         if w.ready {
             for b in s.colony.beavers.iter().filter(|b| !w.beavers.contains(&b.id.0)) {
-                let at = s.colony.lodges.iter().find(|l| Some(l.id) == b.lodge).map_or(b.pos, |l| (l.pos.0 + 0.5, l.pos.1 + 0.5));
+                let at = b.lodge.and_then(|id| s.buildings.building(id)).map_or(b.pos, |l| l.centre());
                 pops.0.push(Pop { at: PopAt::Cell(at), icons: vec![(if b.stage == sim::colony::Stage::Kit { Icon::Kit } else { Icon::Adult }, GOOD)], text: "+1".into(), born: now });
             }
             for &c in worn.difference(&w.worn) {

@@ -1,8 +1,6 @@
-mod colony_bridge;
 mod command;
 mod construction;
 
-pub use colony_bridge::WorldLand;
 pub use command::{Command, DamGrowth};
 pub use canals::CanalGrowth;
 pub use gates::GateSetting;
@@ -259,9 +257,15 @@ impl SimState {
         lap(&mut t.ecology_s);
         {
             let _p = prof::scope("step/colony");
-            { let _p = prof::scope("step/colony/jobs"); self.derive_colony_jobs(); }
+            let slot_jobs = jobs::slot_jobs(self);
+            for b in self.colony.beavers.iter_mut() {
+                if let Some(a) = self.agents.get(b.id) {
+                    b.pos = (a.cell.0 as f32 + 0.5, a.cell.1 as f32 + 0.5);
+                    b.in_lodge = a.inside;
+                }
+            }
             let land = WorldLand { world: &self.world, depth: &self.water.depth };
-            { let _p = prof::scope("step/colony/beavers"); self.colony.step_with_stores(dt_days, &land, &mut self.buildings.stores).map_err(|_| SimError::InvalidDt(dt_days))?; }
+            { let _p = prof::scope("step/colony/beavers"); self.colony.step_with_stores(dt_days, &land, &mut self.buildings, &self.water.depth, &mut self.work.piles, &slot_jobs).map_err(|_| SimError::InvalidDt(dt_days))?; }
             { let _p = prof::scope("step/colony/names"); names::step(self); }
             let _p = prof::scope("step/journal");
             journal::scan(self, "colony");
@@ -271,7 +275,6 @@ impl SimState {
             let _p = prof::scope("step/buildings");
             let terrain = buildings::Terrain { depth: &self.water.depth };
             { let _p = prof::scope("step/buildings/step"); self.buildings.step(terrain); }
-            { let _p = prof::scope("step/buildings/homes"); self.sync_homes(); }
             let _p = prof::scope("step/buildings/maintenance");
             maintenance::step(self, dt_days);
         }
@@ -286,7 +289,6 @@ impl SimState {
             }
         }
         { let _p = prof::scope("step/forestry"); forestry::step(self, dt_days); }
-        { let _p = prof::scope("step/stores"); self.refresh_store_view(); }
         lap(&mut t.other_s);
         { let _p = prof::scope("step/agents"); agents::step(self, dt_days); }
         { let _p = prof::scope("step/predators"); predators::step(self, dt_days); }
@@ -300,8 +302,13 @@ impl SimState {
         lap(&mut t.shipping_s);
         { let _p = prof::scope("step/fog"); self.explore(); }
         lap(&mut t.fog_s);
-        { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &mut self.colony); }
-        { let _p = prof::scope("step/events"); self.step_events(dt_days); }
+        { let _p = prof::scope("step/society"); self.society.step(dt_days, self.time_days, &mut self.colony, &self.buildings); }
+        {
+            let _p = prof::scope("step/events");
+            let wetland = self.ecology.wetland.as_slice();
+            let mean = wetland.iter().step_by(7).sum::<f32>() / wetland.iter().step_by(7).count().max(1) as f32;
+            self.events.step(dt_days, &mut self.colony, &mut self.buildings, mean);
+        }
         { let _p = prof::scope("step/deeds"); deeds::step(self, dt_days); names::step(self); }
         {
             let _p = prof::scope("step/journal");
@@ -311,7 +318,6 @@ impl SimState {
 
         {
             let _p = prof::scope("step/ledger");
-            self.refresh_store_view();
             // Counting the colony walks every tree: only when a day closes.
             let closes = self.ledger.closes_day(self.time_days);
             let census = if closes { self.census() } else { ledger::Census::default() };
@@ -325,6 +331,16 @@ impl SimState {
         t.steps += 1;
         self.step_timings = t;
         Ok(())
+    }
+
+    /// What moves a beaver's needs, health and mood now, on this map (see `colony::Rates`).
+    pub fn beaver_rates(&self, id: colony::BeaverId) -> Option<colony::Rates> {
+        self.colony.rates(id, &WorldLand { world: &self.world, depth: &self.water.depth }, &self.buildings.buildings, &self.water.depth)
+    }
+
+    /// Whether a female beaver can conceive now (see `colony::Colony::conception`).
+    pub fn beaver_conception(&self, id: colony::BeaverId) -> Option<Result<f32, &'static str>> {
+        self.colony.conception(id, &self.buildings, &self.water.depth)
     }
 
     /// The colony counted now, for the ledger's long record.
@@ -352,6 +368,21 @@ impl SimState {
         }
     }
 
+}
+
+pub struct WorldLand<'a> {
+    pub world: &'a worldgen::World,
+    pub depth: &'a grid::Grid<f32>,
+}
+
+impl colony::Landscape for WorldLand<'_> {
+    fn is_water(&self, x: f32, y: f32) -> bool {
+        if !(x >= 0.0 && y >= 0.0) { return false; }
+        let (cx, cy) = (x as usize, y as usize);
+        self.world.river.get(cx, cy).copied().unwrap_or(false)
+            || self.world.lake.get(cx, cy).copied().unwrap_or(false)
+            || self.depth.get(cx, cy).is_some_and(|d| *d > 0.05)
+    }
 }
 
 fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }

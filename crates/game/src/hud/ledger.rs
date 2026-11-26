@@ -442,7 +442,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
                 r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| { x.ticks(depth / max, 8, 80.0, 8.0, dcol); x.text(format!("{depth:.2} m"), 11.0, dcol); })
                     .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{depth:.2} m")).line("At most", format!("{max:.1} m")));
                 r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
-                    if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
+                    if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty() && p.site.is_none()) {
                         x.icon(Icon::Beaver, 13.0, MUTED);
                         x.text(format!("{}/{}", pl.filled(), pl.slots.len()), 11.0, if pl.filled() == 0 { WARN } else { INK });
                     }

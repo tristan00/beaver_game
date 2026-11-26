@@ -272,14 +272,11 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
         return;
     }
     let nth = std::env::var("BC_SELECT_HOME").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
-    let (Some(mut sel), Some(l)) = (sel, sim.0.colony.lodges.get(nth)) else { return };
+    let (Some(mut sel), Some(l)) = (sel, sim.0.buildings.buildings.iter().filter(|b| b.is_home_ready()).nth(nth)) else { return };
     if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page != Some(crate::hud::Page::Lodge(l.id))) {
         hud.page = Some(crate::hud::Page::Lodge(l.id));
     }
-    let want = match crate::picking::Target::home(&sim.0, l.id) {
-        crate::picking::Target::Building(b) => crate::flow::Selection::Site(b),
-        _ => crate::flow::Selection::Lodge(l.id),
-    };
+    let want = crate::flow::Selection::Site(l.id);
     if *sel != want {
         *sel = want;
     }

@@ -47,7 +47,6 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
             })
         }
         Selection::Beaver(id) => Some(beaver(c, id)),
-        Selection::Lodge(id) => Some(lodge(c, id)),
         Selection::Cell(cell) => {
             let b = c.s.buildings.buildings.iter().find(|b| (b.dam.is_some() || b.canal.is_some()) && b.cells().any(|x| x == cell))?;
             match (b.dam.as_deref(), b.canal.as_deref()) {
@@ -70,8 +69,7 @@ pub(super) fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &
     let gatherer = |kind| { let j = sim::jobs::Job::gathering(kind); (job_icon(j), GOOD, j.name(), None) };
     let by_duty = |d| { let j = sim::jobs::Job::with_duty(d); (job_icon(j), GOOD, j.name()) };
     match s.agents.get(b.id).and_then(|a| a.assignment) {
-        Some(Assignment::Resource(r)) => s.resources.get(r).map_or((Icon::Hammer, GOOD, "Gatherer", None), |res| gatherer(res.kind)),
-        Some(Assignment::Area(kind, _)) => gatherer(kind),
+        Some(Assignment::Resource(_, kind) | Assignment::Area(kind, _)) => gatherer(kind),
         Some(Assignment::Mend(target)) => { let (i, c, n) = by_duty(sim::content::Duty::Mend); (i, c, n, target) }
         Some(Assignment::Build(target)) => { let (i, c, n) = by_duty(sim::content::Duty::Build); (i, c, n, target) }
         Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
@@ -97,7 +95,6 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
     match s.agents.get(b.id).map(|a| &a.task) {
         Some(Task::Collect { target, .. }) => s.resources.get(*target).map_or((Icon::Walk, GOOD, "Going to gather"), |r| (job_icon(sim::jobs::Job::gathering(r.kind)), GOOD, r.kind.row().doing.as_str())),
         Some(Task::Move { .. }) => (Icon::Haul, GOOD, "Hauling"),
-        Some(Task::Eat { .. }) => (good_icon(Good::food()), GOOD, "Eating"),
         Some(Task::Work { kind: WorkKind::Build, .. }) => (job_icon(sim::jobs::Job::with_duty(Duty::Build)), GOOD, "Building"),
         Some(Task::Work { kind: WorkKind::Mend, .. }) => (job_icon(sim::jobs::Job::with_duty(Duty::Mend)), GOOD, "Repairing"),
         Some(Task::Work { kind: WorkKind::Dam, .. }) => (building_icon(BuildingKind::dam()), GOOD, "Building the dam"),
@@ -151,8 +148,8 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
     let s = c.s;
     let Some(b) = s.buildings.building(id).filter(|b| b.is_complete()) else { return };
     u.row(8.0, |r| {
-        if let Some(job) = s.maintenance.jobs.get(&id) {
-            let what = match job.kind { Refit::Reinforce => "Reinforcing with mud", Refit::Facing => "Facing with pebbles", _ => "Repairing" };
+        if let Some(&kind) = s.maintenance.jobs.get(&id) {
+            let what = match kind { Refit::Reinforce => "Reinforcing with mud", Refit::Facing => "Facing with pebbles", _ => "Repairing" };
             r.icon(Icon::Hammer, 18.0, GOOD).tip(Tip::name(what));
             r.pebble(Icon::Undo, 12.0, HudAction::Refit(id, None), Peb::Idle).tip(Tip::name("Stop").line("Delivered materials come back", ""));
             return;
@@ -198,9 +195,12 @@ fn toggle_row(u: &mut Ui, icon: Icon, on: bool, tip: Tip, action: HudAction, off
 fn building(c: &Ctx, id: BuildingId) -> VNode {
     let s = c.s;
     let b = s.buildings.building(id).expect("building");
-    let home = s.work.homes.get(&id).and_then(|h| s.colony.lodges.iter().find(|l| l.id == *h));
-    let name = home.filter(|l| b.kind.is_home() && s.colony.beavers.iter().any(|x| x.lodge == Some(l.id)))
-        .and_then(|l| s.colony.family(l.family)).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone());
+    let residents: Vec<_> = if b.is_home_ready() { s.colony.beavers.iter().filter(|x| x.lodge == Some(id)).collect() } else { Vec::new() };
+    let name = if b.is_home_ready() {
+        s.colony.lodge_family(id).and_then(|f| s.colony.family(f)).map_or_else(|| b.kind.spec().name.to_string(), |f| f.name.clone())
+    } else {
+        b.kind.spec().name.to_string()
+    };
     let made = if b.pebbled { "Pebble faced" } else if b.reinforced { "Mud reinforced" } else { b.kind.spec().cost.first().map_or("", |c| c.0.name()) };
     let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str()).line(made, format!("{:.0}%", b.condition * 100.0));
     if let Some(w) = sim::maintenance::wear(s, b) {
@@ -212,9 +212,12 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
     frame(c, Selection::Site(id), building_icon(b.kind), MUD, name, b.is_complete().then_some(b.condition), tip, |u| {
         let building = site_rows(c, u, id);
         if b.kind.is_home() {
-            if let Some(l) = home {
-                let residents: Vec<_> = s.colony.beavers.iter().filter(|x| x.lodge == Some(l.id)).collect();
+            if b.is_complete() {
                 family_rows(c, u, &residents, sim::colony::LODGE_CAPACITY);
+                u.row(6.0, |r| {
+                    r.spacer();
+                    r.pebble(Icon::Journal, 13.0, HudAction::OpenPage(Some(super::Page::Lodge(id))), if c.hud.page == Some(super::Page::Lodge(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Family").line("Who lives here, and the family tree", ""));
+                });
             } else if !building { u.empty_token(22.0).tip(Tip::name("No family yet")); }
         }
         if !b.is_complete() { return; }
@@ -232,7 +235,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             let on = s.work.fills.contains(&id);
             toggle_row(u, Icon::Up, on, Tip::name("Fill").line("Haulers bring it from other stores", ""), HudAction::FillStore(id, !on), "Stop filling", "Fill");
         }
-        if let Some(pl) = s.work.place(id).filter(|pl| !pl.slots.is_empty() && !b.kind.is_waterworks()) {
+        if let Some(pl) = s.work.place(id).filter(|pl| !pl.slots.is_empty() && pl.site.is_none() && !b.kind.is_waterworks()) {
             if b.kind.seats(sim::content::Duty::Forest) {
                 for (i, sl) in pl.slots.iter().enumerate() {
                     let name = sl.role.name();
@@ -426,18 +429,4 @@ fn wolf(c: &Ctx, key: u64) -> Option<VNode> {
         if w.state != WolfState::Leave { line(u, Icon::Hourglass, MUTED, "Leaves in", days((w.leave_by - s.time_days) as f32)).tip(Tip::name("Heads off the map")); }
         line(u, Icon::Focus, MUTED, "Sees", format!("{} cells", num(sim::predators::WOLF_SIGHT))).tip(Tip::name("Sight").line("Circle on the map", ""));
     }))
-}
-
-fn lodge(c: &Ctx, id: sim::colony::LodgeId) -> VNode {
-    let s = c.s;
-    let l = s.colony.lodges.iter().find(|l| l.id == id);
-    let name = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| BuildingKind::home().name().into(), |f| f.name.clone());
-    frame(c, Selection::Lodge(id), building_icon(BuildingKind::home()), MUD, name, l.map(|l| l.condition), Tip::name(BuildingKind::home().name()), |u| {
-        let residents: Vec<_> = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).collect();
-        family_rows(c, u, &residents, sim::colony::LODGE_CAPACITY);
-        u.row(6.0, |r| {
-            r.spacer();
-            r.pebble(Icon::Journal, 13.0, HudAction::OpenPage(Some(super::Page::Lodge(id))), if c.hud.page == Some(super::Page::Lodge(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Family").line("Who lives here, and the family tree", ""));
-        });
-    })
 }

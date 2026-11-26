@@ -3,7 +3,7 @@ use crate::sim_driver::SimClock;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
-use sim::colony::{BeaverId, LodgeId};
+use sim::colony::BeaverId;
 use sim::grid::HeightGrid;
 use sim::worldgen::World;
 
@@ -40,7 +40,6 @@ pub enum Selection {
     None,
     Cell(Cell),
     Beaver(BeaverId),
-    Lodge(LodgeId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
     /// A wolf, by its `sim::predators::Wolf::key`.

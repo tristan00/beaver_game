@@ -53,7 +53,7 @@ pub fn to_line(c: &Command) -> String {
         Command::Assign { who, to, queue } => {
             let to = match to {
                 None => "none".into(),
-                Some(Assignment::Resource(r)) => format!("resource {}", r.0),
+                Some(Assignment::Resource(r, k)) => format!("resource {} {k:?}", r.0),
                 Some(Assignment::Area(k, a)) => format!("area {k:?} {} {} {} {}", a.min.0, a.min.1, a.max.0, a.max.1),
                 Some(Assignment::Work(b)) => format!("work {}", b.0),
                 Some(Assignment::Go(c)) => format!("go {} {}", c.0, c.1),
@@ -107,7 +107,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 .find(|g| t.get(2).is_some_and(|x| format!("{g:?}").eq_ignore_ascii_case(x))).ok_or("grow-dam takes raise, widen or extend")?,
             cells: parse_cells(&t[3..])?,
         },
-        "upkeep" | "dam-upkeep" | "canal-upkeep" => Command::SetUpkeep { building: b(1)?, on: on(2)? },
+        "upkeep" => Command::SetUpkeep { building: b(1)?, on: on(2)? },
         "repair" => Command::Refit { building: b(1)?, refit: Some(Refit::Repair) },
         "reinforce" => Command::Refit { building: b(1)?, refit: Some(Refit::Reinforce) },
         "pebble" => Command::Refit { building: b(1)?, refit: Some(Refit::Facing) },
@@ -139,9 +139,9 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let queue = head == "queue";
             let to = match t.get(2).copied() {
                 Some("none") if !queue => None,
-                Some("resource") => Some(Assignment::Resource(ResourceId(num(t.get(3), "resource id")?))),
+                Some("resource") => Some(Assignment::Resource(ResourceId(num(t.get(3), "resource id")?), parse_resource_kind(t.get(4).ok_or("missing kind")?)?)),
                 Some("area") => Some(Assignment::Area(parse_resource_kind(t.get(3).ok_or("missing kind")?)?, parse_area(&t, 4)?)),
-                Some("work" | "slot") => Some(Assignment::Work(b(3)?)),
+                Some("work") => Some(Assignment::Work(b(3)?)),
                 Some("go") => Some(Assignment::Go((num(t.get(3), "x")?, num(t.get(4), "y")?))),
                 Some("upkeep") => Some(Assignment::Mend(t.get(3).map(|_| b(3)).transpose()?)),
                 Some("build") => Some(Assignment::Build(t.get(3).map(|_| b(3)).transpose()?)),
@@ -151,8 +151,6 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         }
         "place" => Command::PlaceSite { kind: parse_kind(t.get(1).ok_or("missing kind")?)?, pos: (num(t.get(2), "x")?, num(t.get(3), "y")?) },
         "staff" => Command::StaffBuilding { building: b(1)?, delta: num(t.get(2), "delta")? },
-        "add-beaver" => Command::StaffBuilding { building: b(1)?, delta: 1 },
-        "remove-beaver" => Command::StaffBuilding { building: b(1)?, delta: -1 },
         "pause" => Command::SetPaused { building: b(1)?, paused: on(2)? },
         "shore" => Command::SetShoreLimit {
             role: parse_role(t.get(1).ok_or("missing role")?)?,
@@ -271,7 +269,7 @@ impl Runner {
     fn report_line(&mut self) {
         let (s, st) = (&self.s, &self.s.buildings.stores);
         let line = format!(
-            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | {} | built {} sites {} dry {} | rafts 0 carried 0 | mature trees {} | alerts {}",
+            "day {:>4.0} {:<6} pop {:>2} (kits {}) homeless {} | food {:>5.1} (+{:.1} -{:.1}/d need {:.1}) jobs {} | {} | built {} sites {} dry {} | mature trees {} | alerts {}",
             s.time_days, crate::calendar::Date::at(s.time_days).season.name(), s.colony.population(), s.colony.count_stage(Stage::Kit),
             s.colony.beavers.iter().filter(|b| b.lodge.is_none()).count(),
             st.amount(Good::food()), s.ledger.in_per_day(Good::food()), s.ledger.out_per_day(Good::food()), crate::hud::food_need_per_day(s),

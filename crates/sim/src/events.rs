@@ -20,7 +20,7 @@ impl Events {
         }
     }
 
-    pub fn step(&mut self, dt_days: f32, colony: &mut Colony, stores: &mut crate::buildings::Stores, wetland: f32) {
+    pub fn step(&mut self, dt_days: f32, colony: &mut Colony, buildings: &mut crate::buildings::Buildings, wetland: f32) {
         if !colony.is_founded() {
             self.time_days += dt_days as f64;
             return;
@@ -35,10 +35,10 @@ impl Events {
                 if self.time_days - day < WANDERER_TRAVEL_DAYS {
                     return true;
                 }
-                colony.add_immigrants(count);
-                let amount = (ARRIVAL_FOOD_COST * count as f32).min(stores.amount(crate::buildings::Good::food()));
+                colony.add_immigrants(count, &buildings.buildings);
+                let amount = (ARRIVAL_FOOD_COST * count as f32).min(buildings.stores.amount(crate::buildings::Good::food()));
                 crate::trace::event(format!("WANDERERS_ARRIVE day={:.4} count={count} set_off={day:.4} food_cost={amount:.1}", self.time_days));
-                stores.withdraw_for(crate::buildings::Good::food(), amount, crate::buildings::Use::Other).unwrap();
+                buildings.stores.withdraw_for(crate::buildings::Good::food(), amount, crate::buildings::Use::Other).unwrap();
                 false
             });
             let season = Season::at(self.time_days);
@@ -51,7 +51,7 @@ impl Events {
                 && self.unit() < FOOD_EVENT_CHANCE_PER_DAY * wetland * sub as f32
             {
                 let amount = (FOOD_EVENT_BASE + FOOD_EVENT_SPREAD * self.unit()) * (1.0 + wetland);
-                let got = stores.deposit(crate::buildings::Good::food(), amount).unwrap();
+                let got = buildings.stores.deposit(crate::buildings::Good::food(), amount).unwrap();
                 crate::trace::event(format!("FOOD_WINDFALL day={:.4} offered={amount:.1} stored={got:.1} wetland={wetland:.2}", self.time_days));
             }
         }

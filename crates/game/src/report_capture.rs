@@ -10,12 +10,13 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
     fs::create_dir_all(dir)?;
     let mut homes = String::from("home,family,members,adults,yearlings,kits,condition\n");
     let mut violations = Vec::new();
-    for l in &s.colony.lodges {
+    for l in s.buildings.buildings.iter().filter(|b| b.is_home_ready()) {
         let members: Vec<_> = s.colony.beavers.iter().filter(|b| b.lodge == Some(l.id)).collect();
-        if members.iter().any(|b| b.family != l.family) { violations.push(format!("mixed family in home {}", l.id.0)); }
-        writeln!(homes, "{},{},{},{},{},{},{:.3}", l.id.0, l.family.0, members.len(),
+        let fam = members.first().map(|b| b.family);
+        if let Some(fam) = fam && members.iter().any(|b| b.family != fam) { violations.push(format!("mixed family in home {}", l.id.0)); }
+        writeln!(homes, "{},{},{},{},{},{},{:.3}", l.id.0, fam.map_or(0, |f| f.0), members.len(),
             members.iter().filter(|b| b.stage == Stage::Adult).count(), members.iter().filter(|b| b.stage == Stage::Yearling).count(),
-            members.iter().filter(|b| b.stage == Stage::Kit).count(), l.condition).unwrap();
+            members.iter().filter(|b| b.stage == Stage::Kit).count(), l.home_condition(&s.water.depth)).unwrap();
     }
     let mut beavers = String::from("id,name,family,sex,age_days,mother,father,mate,home,pregnancy_due,litter\n");
     for b in &s.colony.beavers {
@@ -51,7 +52,7 @@ pub fn write_audit(dir: &std::path::Path, s: &sim::SimState, out: &sim::script::
     for (key,(days,n)) in &litters { if days.len()!=1 || !(2..=4).contains(n) { violations.push(format!("invalid annual litter {key:?}")); } }
     for (&year,&n) in &s.colony.immigration_by_year {if n>2 {violations.push(format!("migration allowance exceeded in year {}",year+1));}}
     let summary = format!("day={:.3}\npopulation={}\nfamilies={}\nbirths={}\ndeaths={}\nfood={:.3}\nfood_zero_days={}\nhomeless_days={}\nannual_litters={:?}\nviolations={:?}\ntimings={:?}\nimmigrants={}\nmigration_by_year={:?}\nrepairs={}\nreinforcements={}\ncanal_cells={}\n",
-        s.time_days, s.colony.population(), s.colony.families.len(), s.colony.stats.births, s.colony.stats.deaths, s.colony.food,
+        s.time_days, s.colony.population(), s.colony.families.len(), s.colony.stats.births, s.colony.stats.deaths, s.buildings.stores.amount(sim::buildings::Good::food()),
         out.stats.food_zero_days, out.stats.homeless_days, litters, violations, s.step_timings,s.colony.stats.immigrants,s.colony.immigration_by_year,
         s.maintenance.repairs_completed,s.maintenance.reinforcements_completed,s.water.canal.as_slice().iter().filter(|&&v|v).count());
     for (name, data) in [("summary.txt",summary),("homes.csv",homes),("beavers.csv",beavers),("buildings.csv",buildings),("events.txt",events),("run.txt",out.lines.join("\n"))] {

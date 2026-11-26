@@ -330,7 +330,7 @@ fn name_families(sim: &mut SimState) {
     let mut taken: BTreeSet<String> = sim.colony.families.iter().filter(|f| !f.name.is_empty()).map(|f| f.name.clone()).collect();
     let unnamed: Vec<FamilyId> = sim.colony.families.iter().filter(|f| f.name.is_empty()).map(|f| f.id).collect();
     for id in unnamed {
-        let at = sim.colony.lodges.iter().find(|l| l.family == id).map(|l| l.pos)
+        let at = sim.buildings.buildings.iter().find(|b| b.is_home_ready() && sim.colony.lodge_family(b.id) == Some(id)).map(|b| b.centre())
             .or_else(|| sim.colony.beavers.iter().find(|b| b.family == id).map(|b| b.pos))
             .unwrap_or((0.0, 0.0));
         let name = place_name(sim, (at.0.max(0.0) as usize, at.1.max(0.0) as usize), id.0, &taken);
@@ -377,9 +377,10 @@ fn name_ponds(sim: &mut SimState) {
             }))
         };
         // The first occupied lodge built on this pond gives it its family's name.
-        // Empty lodges carry a placeholder FamilyId(0) or a departed family, so ignore them.
-        let occupied = |id: crate::colony::LodgeId| sim.colony.beavers.iter().any(|b| b.lodge == Some(id));
-        let first = sim.colony.lodges.iter().filter(|l| occupied(l.id) && on(l.pos)).min_by_key(|l| (l.id, l.family)).map(|l| l.family);
+        let first = sim.buildings.buildings.iter()
+            .filter(|b| b.is_home_ready() && on(b.centre()))
+            .filter_map(|b| Some((b.id, sim.colony.lodge_family(b.id)?)))
+            .min_by_key(|&(id, fam)| (id, fam)).map(|(_, fam)| fam);
         if let Some(f) = first.and_then(|f| sim.colony.family(f)).filter(|f| !f.name.is_empty()) {
             let name = f.name.clone();
             sim.names.ponds.push(Pond { dam: Some(dam), name, cells: sample });

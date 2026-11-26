@@ -363,8 +363,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
 
 fn no_free_lodge(sim: &SimState) -> Option<Problem> {
     let c = &sim.colony;
-    if c.lodges.iter().any(|l| !c.beavers.iter().any(|b| b.lodge == Some(l.id)))
-        || sim.buildings.buildings.iter().any(|b| b.kind.is_home() && !b.is_complete())
+    if sim.buildings.buildings.iter().any(|b| b.kind.is_home() && (!b.is_complete() || !c.beavers.iter().any(|x| x.lodge == Some(b.id))))
     { return None; }
     let homeless: Vec<_> = c.beavers.iter().filter(|b| b.lodge.is_none()).collect();
     let leaving: Vec<_> = c.beavers.iter().filter(|b| b.stage == Stage::Adult && b.mate.is_none() && b.age_years() >= crate::colony::LEAVE_HOME_AGE_YEARS && c.lives_with_parent(b)).collect();

@@ -56,7 +56,7 @@ pub enum Dest { Store(BuildingId), Site(BuildingId), Dam(BuildingId), Spot(Spot)
 pub enum WorkKind { Build, Mend, Dam, Dig, Gate }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Assignment { Resource(ResourceId), Area(ResourceKind, Area), Work(BuildingId), Go(Cell), Mend(Option<BuildingId>), Build(Option<BuildingId>) }
+pub enum Assignment { Resource(ResourceId, ResourceKind), Area(ResourceKind, Area), Work(BuildingId), Go(Cell), Mend(Option<BuildingId>), Build(Option<BuildingId>) }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MoveState { #[default] None, Moving, Arrived, Blocked }
@@ -70,7 +70,6 @@ pub enum Task {
     Collect { target: ResourceId, progress: f32 },
     Seed { target: ResourceId, progress: f32 },
     Plant { store: BuildingId, cell: Cell, progress: f32 },
-    Eat { pile: u64 },
     Watch { lookout: BuildingId },
     Raft { raft: u32, from: BuildingId, to: BuildingId, good: Good, leg: u8 },
 }
@@ -94,7 +93,6 @@ pub struct Agent {
     #[serde(skip)] pub history: VecDeque<(f64, Cell, Gait)>,
     pub next_work_probe: f64,
     pub next_home_probe: f64,
-    #[serde(default)] pub next_meal_probe: f64,
     pub source: Option<ResourceId>,
     #[serde(default)] pub queue: VecDeque<Assignment>,
 }
@@ -112,7 +110,6 @@ pub struct Remains { pub bodies: Vec<Body>, pub leaving: Vec<(Agent, f32)> }
 pub struct Agents {
     pub by_id: BTreeMap<BeaverId, Agent>,
     pub unreachable: BTreeMap<ResourceId, f64>,
-    #[serde(skip)] pub order_kinds: BTreeMap<BeaverId, ResourceKind>,
     #[serde(skip)] pub(crate) shore: (f64, Vec<u16>),
     pub remains: Remains,
     #[serde(skip)] ages: BTreeMap<BeaverId, f32>,
@@ -133,7 +130,7 @@ impl Agents {
             id, cell, step_frac: 0.0, gait: Gait::Walk, task: Task::Idle, assignment: None,
             move_state: MoveState::None, load: None, path: None, inside: false, stuck_ticks: 0,
             load_ease: 0.0, speed: 1.0, trail: Vec::new(), history: VecDeque::new(),
-            next_work_probe: 0.0, next_home_probe: 0.0, next_meal_probe: 0.0,
+            next_work_probe: 0.0, next_home_probe: 0.0,
             source: None, queue: VecDeque::new(),
         });
     }
@@ -236,7 +233,6 @@ pub fn colony_home(sim: &SimState) -> Option<Cell> {
     BuildingKind::store_for(crate::dams::material()).and_then(built)
         .or_else(|| built(BuildingKind::home()))
         .or(sim.work.supplies)
-        .or_else(|| sim.colony.lodges.first().map(|l| (l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize)))
         .or_else(|| sim.colony.beavers.first().map(|b| (b.pos.0.max(0.0) as usize, b.pos.1.max(0.0) as usize)))
 }
 
@@ -265,7 +261,7 @@ pub(crate) fn has_good_source(sim: &SimState, good: Good) -> bool {
 
 pub(crate) fn is_site(sim: &SimState, p: &Workplace) -> bool {
     p.is_open_site() && sim.buildings.building(p.building).is_some_and(|b| {
-        !b.is_complete() || sim.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair)
+        !b.is_complete() || sim.maintenance.jobs.get(&b.id).is_some_and(|&r| r != crate::maintenance::Refit::Repair)
     })
 }
 
@@ -283,7 +279,7 @@ pub(crate) fn place_needs_menders(sim: &SimState, b: BuildingId) -> bool {
     if sim.work.place(b).is_some_and(|p| p.paused) { return false; }
     let Some(bd) = sim.buildings.building(b) else { return false };
     !sim.buildings.unusable(bd, &sim.water.depth) && (crate::maintenance::needs_mending(sim, bd)
-        || (sim.maintenance.jobs.get(&b).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair) && sim.work.place(b).is_some_and(|p| p.is_open_site()))
+        || (sim.maintenance.jobs.get(&b).is_some_and(|&r| r != crate::maintenance::Refit::Repair) && sim.work.place(b).is_some_and(|p| p.is_open_site()))
         || crate::dams::has_work_for(sim, b, true)
         || crate::canals::has_work_for(sim, b, true))
 }
@@ -322,7 +318,7 @@ pub(crate) fn site_waits_on(sim: &SimState, p: &Workplace) -> Option<Good> {
 pub(crate) fn gathering_available(sim: &SimState, a: Assignment) -> bool {
     let from = match a {
         Assignment::Area(_, area) => area.centre(),
-        Assignment::Resource(id) => sim.resources.get(id).map_or((0, 0), |r| r.cell),
+        Assignment::Resource(id, _) => sim.resources.get(id).map_or((0, 0), |r| r.cell),
         _ => (0, 0),
     };
     Gather::resolve(sim, a).is_some_and(|j| j.pick(sim, from).is_some())
@@ -378,7 +374,7 @@ pub(crate) fn start_order(sim: &mut SimState, ag: &mut Agent, order: Assignment)
             false
         }
         a => {
-            if matches!(a, Assignment::Resource(id) if sim.resources.get(id).is_none_or(|r| !gatherable(r) || !tools_at_hand(sim, r.kind))) { return false; }
+            if matches!(a, Assignment::Resource(id, _) if sim.resources.get(id).is_none_or(|r| !gatherable(r) || !tools_at_hand(sim, r.kind))) { return false; }
             if matches!(a, Assignment::Area(k, _) if !tools_at_hand(sim, k)) { return false; }
             if let Assignment::Mend(Some(b)) = a { mark_mending(sim, b); }
             sim.work.vacate(ag.id);
@@ -555,17 +551,15 @@ fn find_source(sim: &SimState, ag: &Agent, to: &[Cell], good: Good, want: f32) -
 }
 
 fn home_of(sim: &SimState, who: BeaverId) -> Option<&Building> {
-    let home = sim.colony.beaver(who)?.lodge?;
-    let (&b, _) = sim.work.homes.iter().find(|(_, h)| **h == home)?;
-    sim.buildings.building(b).filter(|b| b.is_complete())
+    let id = sim.colony.beaver(who)?.lodge?;
+    sim.buildings.building(id).filter(|b| b.is_complete())
 }
 
 fn route_home(sim: &SimState, who: BeaverId, from: Cell) -> Option<Path> {
     let cells = |b: &Building| b.cells().collect::<Vec<_>>();
     match home_of(sim, who) {
-        Some(b) if b.kind.is_home() => sim.nav.find_path_onto_any(who, from, &cells(b)),
-        Some(b) => sim.nav.find_path_beside_any(who, from, &cells(b)),
-        None => sim.buildings.buildings.iter().filter(|b| b.kind.is_home() && b.is_complete())
+        Some(b) => sim.nav.find_path_onto_any(who, from, &cells(b)),
+        None => sim.buildings.buildings.iter().filter(|b| b.is_home_ready())
             .filter_map(|b| sim.nav.find_path_onto_any(who, from, &cells(b)))
             .min_by(|a, b| a.cost.total_cmp(&b.cost)),
     }
@@ -785,7 +779,7 @@ fn drop_spots(sim: &SimState, good: Good, from: Cell) -> Vec<Cell> {
     let stores: Vec<Cell> = open_stores(sim, good).map(|b| { let (w, h) = b.kind.spec().footprint; (b.pos.0 + w / 2, b.pos.1 + h / 2) }).collect();
     if !stores.is_empty() { return stores; }
     if let Some(c) = sim.work.supplies { return vec![c]; }
-    let lodges: Vec<Cell> = sim.colony.lodges.iter().map(|l| (l.pos.0.max(0.0) as usize, l.pos.1.max(0.0) as usize)).collect();
+    let lodges: Vec<Cell> = sim.buildings.buildings.iter().filter(|b| b.is_home_ready()).map(|b| b.pos).collect();
     if lodges.is_empty() { vec![from] } else { lodges }
 }
 
@@ -795,7 +789,7 @@ impl Gather {
     fn resolve(sim: &SimState, a: Assignment) -> Option<Self> {
         let f = frozen(sim);
         match a {
-            Assignment::Resource(id) => sim.resources.get(id).filter(|r| gatherable(r) && tools_at_hand(sim, r.kind))
+            Assignment::Resource(id, _) => sim.resources.get(id).filter(|r| gatherable(r) && tools_at_hand(sim, r.kind))
                 .map(|_| Self { kinds: &[], area: None, only: Some(id), role: None, frozen: f }),
             Assignment::Area(kind, area) if tools_at_hand(sim, kind) => Some(Self {
                 kinds: kind.gather_sources(), area: Some(area), only: None, role: Some(crate::jobs::gather_role(kind)), frozen: f,
@@ -865,6 +859,9 @@ enum Duty { None, Collect(Gather), Build(BuildingId), Haul, Forest(Area), Mend(B
 /// The duty a beaver of `role` has at place `b` (sitting in `slot` there, for a seat-bound gatherer).
 /// `duty_of` asks it of the beaver's own place; the search for a new place asks it of each candidate.
 fn duty_at(sim: &SimState, b: BuildingId, slot: usize, role: JobDuty) -> Duty {
+    if matches!(role, JobDuty::Gather | JobDuty::Haul | JobDuty::Watch | JobDuty::Forest)
+        && sim.work.place(b).is_some_and(|p| p.site.is_some())
+    { return Duty::None; }
     match role {
         JobDuty::Build if place_needs_builders(sim, b) => Duty::Build(b),
         JobDuty::Mend if place_needs_menders(sim, b) => Duty::Mend(b),
@@ -1215,36 +1212,23 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     if crate::predators::flee(sim, ag, dt) { ag.source = None; return; }
     if let Some(Assignment::Go(to)) = ag.assignment { ag.source = None; step_go(sim, ag, dt, to); return; }
     if step_court(sim, ag, dt) || step_follow_parent(sim, ag, dt) { ag.source = None; return; }
-    // Hungry beaver seeks ground food when stores are empty.
-    if ag.load.is_none() && !matches!(ag.task, Task::Eat { .. }) && sim.time_days >= ag.next_meal_probe
-        && sim.colony.beaver(ag.id).is_some_and(|b| b.needs.food < crate::tuning::colony::EAT_BELOW)
-        && sim.buildings.stores.amount(Good::food()) <= WORK_EPS
-    {
-        ag.next_meal_probe = sim.time_days + crate::piles::MEAL_PROBE_DAYS;
-        let food = sim.work.piles.items.iter().filter(|p| p.good == Good::food() && !crate::predators::in_view(sim, p.cell)).map(|p| (p.id, vec![p.cell]));
-        if let Some((pile, _)) = nearest_by_route(sim, ag, &[], food) {
-            ag.path = None;
-            ag.task = Task::Eat { pile };
-        }
-    }
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
     let holed = sim.agents.holed_up && has_lodge(sim);
     let fit = can_work && !tired && !holed;
     let was_active = !matches!(ag.task, Task::Idle | Task::Rest);
     let duty = duty_of(sim, ag, fit);
     if (tired || holed) && ag.load.is_none() && !ag.inside
-        && !matches!(ag.task, Task::Rest | Task::Move { from: None, to: Dest::Store(_), .. } | Task::Eat { .. })
+        && !matches!(ag.task, Task::Rest | Task::Move { from: None, to: Dest::Store(_), .. })
         && (holed || !matches!(ag.task, Task::Watch { .. }))
     {
         ag.path = None;
         ag.task = Task::Rest;
     }
-    if let Some(Assignment::Resource(id)) = ag.assignment {
-        if let Some(r) = sim.resources.get(id) { sim.agents.order_kinds.insert(ag.id, r.kind); }
-    }
-    if matches!(duty, Duty::None) && can_work && !tired && matches!(ag.assignment, Some(Assignment::Resource(_))) && !advance_queue(sim, ag) {
-        let kind = sim.agents.order_kinds.get(&ag.id).copied();
-        ag.assignment = kind.and_then(|k| next_resource(sim, k, ag.cell, ORDER_REACH)).map(Assignment::Resource);
+    if matches!(duty, Duty::None) && can_work && !tired
+        && let Some(Assignment::Resource(_, kind)) = ag.assignment
+        && !advance_queue(sim, ag)
+    {
+        ag.assignment = next_resource(sim, kind, ag.cell, ORDER_REACH).map(|id| Assignment::Resource(id, kind));
         ag.task = carry_task(ag.load);
         ag.path = None;
     }
@@ -1265,7 +1249,6 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
         Task::Collect { target, .. } => step_collect(sim, ag, dt, &duty, target),
         Task::Plant { store, cell, progress } => step_plant(sim, ag, dt, &duty, store, cell, progress),
         Task::Seed { target, progress } => step_seed(sim, ag, dt, &duty, target, progress),
-        Task::Eat { pile } => step_eat(sim, ag, dt, pile),
         Task::Raft { raft, from, to, good, leg } => step_raft(sim, ag, dt, &duty, raft, from, to, good, leg),
         Task::Watch { lookout } => {
             if !matches!(duty, Duty::Sentry(b) if b == lookout) { ag.path = None; ag.task = Task::Idle; }
@@ -1433,22 +1416,6 @@ fn step_plant(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, store: B
     log_load(sim, ag, "PLANT", NO_STORE, Good::seedling(), load.amount, used, &format!("species={species:?} at=({},{})", cell.0, cell.1));
     sim.buildings.stores.book_used(Good::seedling(), used, Use::Other);
     ag.load = (load.amount - used > WORK_EPS).then_some(Load { amount: load.amount - used, ..load });
-    ag.task = Task::Idle;
-}
-
-fn step_eat(sim: &mut SimState, ag: &mut Agent, dt: f32, pile: u64) {
-    let Some(cell) = sim.work.piles.get(pile).filter(|p| p.good == Good::food()).map(|p| p.cell) else { ag.task = Task::Idle; return; };
-    match walk_beside(sim, ag, dt, &[cell]) {
-        None => { ag.task = Task::Idle; return; }
-        Some(false) => return,
-        Some(true) => {}
-    }
-    note(ag, true);
-    if let Some((w, stage, food)) = sim.colony.beaver(ag.id).map(|b| (b.stage.food_weight(), b.stage as usize, b.needs.food)) {
-        let got = sim.work.piles.take(pile, ((1.0 - food) * w).max(0.0));
-        if let Some(b) = sim.colony.beavers.iter_mut().find(|b| b.id == ag.id) { b.needs.food = (b.needs.food + got / w).min(1.0); }
-        sim.colony.eaten[stage] += got;
-    }
     ag.task = Task::Idle;
 }
 
@@ -1666,9 +1633,9 @@ fn tidy(sim: &mut SimState) {
     let standing: BTreeSet<BuildingId> = sim.buildings.buildings.iter().map(|b| b.id).collect();
     let mut freed = Vec::new();
     for p in &mut sim.work.places {
-        let refit = sim.maintenance.jobs.get(&p.building).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair);
+        let refit = sim.maintenance.jobs.get(&p.building).is_some_and(|&r| r != crate::maintenance::Refit::Repair);
         let ruined = sim.buildings.building(p.building).is_some_and(|b| b.is_complete() && !b.operational());
-        let closed = p.paused || (!refit && (dry.contains(&p.building) || ruined));
+        let closed = p.paused || refit || dry.contains(&p.building) || ruined;
         for s in &mut p.slots {
             if let Some(w) = s.beaver {
                 if !alive.contains(&w) || closed {
@@ -1721,7 +1688,7 @@ fn retarget_idle(sim: &mut SimState, ag: &mut Agent) -> bool {
         .filter(|&b| Some(b) != current && !sim.buildings.building(b).is_some_and(|x| sim.buildings.unusable(x, &sim.water.depth)) && reaches_place(sim, at, b))
         .filter_map(|b| {
             let slot = match seat {
-                Some((_, _, r)) => sim.work.place(b).filter(|p| place_open(sim, p))?.open_seat(|x| x == r)?.0,
+                Some((_, _, r)) => sim.work.place(b).filter(|p| place_open(sim, p) && p.site.is_none())?.open_seat(|x| x == r)?.0,
                 None => 0,
             };
             let has_work = next_task(sim, &duty_at(sim, b, slot, role), ag).is_some();

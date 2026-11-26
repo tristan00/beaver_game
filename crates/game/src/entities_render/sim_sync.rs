@@ -461,7 +461,6 @@ pub struct BuildingSync {
     time: f64,
     bld: SyncedMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
     wear: HashMap<BuildingId, (u8, f32, f32)>,
-    lodges: SyncedMap<u64, (Entity, f32)>,
 }
 
 pub fn stage_scale(st: sim::forestry::TreeStage) -> Vec3 {
@@ -727,11 +726,10 @@ pub(super) fn sync_sim_buildings(
     let Some(mut models) = models else { return };
     let (changed, epoch, sim) = (sim.is_changed(), (sim.0.seed, flow.map_or(0, |f| f.generation)), &sim.0);
     if st.bld.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
-        st.lodges.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn());
         anchors.0.clear();
         st.time = f64::NEG_INFINITY;
     }
-    if sim.time_days == st.time && !changed && !(st.bld.map.is_empty() && st.lodges.map.is_empty()) { return; }
+    if sim.time_days == st.time && !changed && !st.bld.map.is_empty() { return; }
     st.time = sim.time_days;
     let white = models.white.clone();
     let mut live = HashSet::new();
@@ -779,29 +777,6 @@ pub(super) fn sync_sim_buildings(
     }
     st.bld.retain_live(&live, &mut commands, |c, (e, _)| c.entity(e).despawn());
     anchors.0.retain(|id, _| live.contains(id));
-    let homes: HashSet<u64> = sim.colony.lodges.iter().map(|l| l.id.0).collect();
-    st.lodges.retain_live(&homes, &mut commands, |c, (e, _)| c.entity(e).despawn());
-    let lodge_blds: Vec<_> = sim.buildings.buildings.iter().filter(|b| b.kind.is_home()).map(|b| b.pos).collect();
-    for l in &sim.colony.lodges {
-        if lodge_blds.iter().any(|p| (p.0 as f32 + 1.5 - l.pos.0).abs() < 3.0 && (p.1 as f32 + 1.5 - l.pos.1).abs() < 3.0) { continue; }
-        let c = cell_xz(sim, l.pos);
-        let ground = (0..9).map(|i| height_at(&sim.height, c.x + (i % 3) as f32 - 1.0, c.y + (i / 3) as f32 - 1.0)).fold(f32::MAX, f32::min);
-        let (lx, ly) = (l.pos.0.floor() as i64, l.pos.1.floor() as i64);
-        let surface = (0..9).filter_map(|i| {
-            let (x, y) = (usize::try_from(lx + i % 3 - 1).ok()?, usize::try_from(ly + i / 3 - 1).ok()?);
-            Some(sim.height.get(x, y)? + sim.water.depth.get(x, y).copied().filter(|d| *d > 0.02)?)
-        }).fold(f32::MIN, f32::max);
-        let y = ground.max(surface + 0.08);
-        let tr = Transform::from_xyz(c.x, y, c.y).with_scale(Vec3::splat(BUILDING_SIZE));
-        match st.lodges.map.get(&l.id.0).copied() {
-            Some((e, was)) if y > was + 0.01 => { commands.entity(e).insert(tr); st.lodges.map.insert(l.id.0, (e, y)); }
-            Some(_) => {}
-            None => {
-                let e = spawn(&mut commands, &mut models, Target::home(sim, l.id), BuildingKind::home(), 6, models::STAGES, tr);
-                st.lodges.map.insert(l.id.0, (e, y));
-            }
-        }
-    }
     drop(spawn);
     for (at, size) in puffs { super::effects::puff(&mut commands, &mut meshes, &mut materials, &mut puff_mesh, at, size); }
 }

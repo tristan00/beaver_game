@@ -151,7 +151,7 @@ impl SimState {
                 Ok(())
             }
             Command::AnswerJoin { id, answer } => {
-                self.society.answer(id, answer, &mut self.colony).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
+                self.society.answer(id, answer, &mut self.colony, &self.buildings.buildings).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
         };
         if res.is_ok() { agents::wake_idle(self); }

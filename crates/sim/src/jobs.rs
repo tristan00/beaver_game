@@ -15,10 +15,9 @@ pub fn frozen_out(job: Job) -> bool {
 }
 fn is_seated_gather(role: Job) -> bool { role.duty() == Duty::Gather && BuildingKind::all().any(|k| k.spec().slots.contains(&role)) }
 
-pub(crate) fn assignment_role(sim: &SimState, a: Assignment) -> Option<Job> {
+pub(crate) fn assignment_role(_sim: &SimState, a: Assignment) -> Option<Job> {
     match a {
-        Assignment::Resource(id) => sim.resources.get(id).map(|r| gather_role(r.kind)),
-        Assignment::Area(k, _) => Some(gather_role(k)),
+        Assignment::Resource(_, k) | Assignment::Area(k, _) => Some(gather_role(k)),
         Assignment::Mend(_) => Some(Job::with_duty(Duty::Mend)),
         Assignment::Build(_) => Some(Job::with_duty(Duty::Build)),
         Assignment::Go(_) | Assignment::Work(_) => None,
@@ -50,6 +49,7 @@ pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
     Job::by_priority().into_iter().map(|role| {
         let (mut filled, mut slots, mut out, mut beavers) = (0, 0, Vec::<(Good, f32)>::new(), Vec::new());
         for p in working_places(sim) {
+            if p.site.is_some() { continue; }
             let mine = p.slots.iter().filter(|s| s.role == role && !s.off);
             let n = mine.clone().count();
             if n == 0 { continue; }
@@ -171,7 +171,7 @@ fn free_beaver_check(sim: &SimState) -> Result<(), String> {
 
 pub fn empty_slot(sim: &SimState, b: BuildingId, role: Option<Job>) -> Option<(usize, Job, Cell)> {
     let (p, bd) = (sim.work.place(b)?, sim.buildings.building(b)?);
-    if !crate::agents::place_open(sim, p) { return None; }
+    if !crate::agents::place_open(sim, p) || p.site.is_some() { return None; }
     let (i, r) = p.open_seat(|r| role.is_none_or(|want| r == want))?;
     Some((i, r, bd.pos))
 }
@@ -207,6 +207,7 @@ pub fn role_add_check(sim: &SimState, role: Job) -> Result<AddPreview, String> {
     let done: Vec<_> = bs.iter().copied().filter(|b| b.is_complete()).collect();
     if done.is_empty() { return Err(format!("{} still being built", bs[0].kind.name())); }
     if let Some(b) = done.iter().find(|b| sim.work.place(b.id).is_some_and(|p| p.paused)) { return Err(format!("{} paused", b.kind.name())); }
+    if let Some(b) = done.iter().find(|b| sim.work.place(b.id).is_some_and(|p| p.site.is_some())) { return Err(format!("{} under refit", b.kind.name())); }
     if let Some(b) = done.iter().find(|b| crate::buildings::flooded(b, &sim.water.depth)) { return Err(format!("{} flooded", b.kind.name())); }
     if let Some(b) = done.iter().find(|b| sim.buildings.stranded(b, &sim.water.depth)) { return Err(format!("{} high and dry", b.kind.name())); }
     if let Some(b) = done.iter().find(|b| !b.operational()) { return Err(format!("{} ruined", b.kind.name())); }
@@ -220,6 +221,7 @@ pub fn workplace_error_reason(sim: &SimState, b: BuildingId) -> String {
     let Some(bd) = sim.buildings.building(b) else { return "Building gone".into() };
     let Some(p) = sim.work.place(b) else { return "No worker slots".into() };
     if p.paused { "Workplace paused" }
+    else if p.site.is_some() { if bd.is_complete() { "Under refit" } else { "Under construction" } }
     else if crate::buildings::flooded(bd, &sim.water.depth) { "Building flooded" }
     else if sim.buildings.stranded(bd, &sim.water.depth) { "High and dry" }
     else if bd.is_complete() && !bd.operational() { "Building ruined" }
@@ -233,7 +235,7 @@ pub(crate) fn seat_in_workplace(sim: &mut SimState, b: BuildingId, slot: usize, 
     let able = sim.colony.beaver(who).map(|x| x.can_work()).ok_or_else(|| invalid("NoSuchBeaver"))?;
     if !able { return Err(invalid("NotAdult")); }
     let p = sim.work.place(b).ok_or_else(|| invalid(workplace_error_reason(sim, b)))?;
-    if !crate::agents::place_open(sim, p) { return Err(invalid(workplace_error_reason(sim, b))); }
+    if !crate::agents::place_open(sim, p) || p.site.is_some() { return Err(invalid(workplace_error_reason(sim, b))); }
     match p.slots.get(slot) {
         None => return Err(invalid("SlotOutOfRange")),
         Some(s) if s.beaver.is_some() => return Err(invalid("SlotTaken")),

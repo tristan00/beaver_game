@@ -278,6 +278,10 @@ impl Building {
             canal: None,
         }
     }
+    pub fn is_home_ready(&self) -> bool { self.kind.is_home() && self.is_complete() }
+    pub fn home_condition(&self, depth: &crate::grid::Grid<f32>) -> f32 {
+        if flooded(self, depth) { 0.0 } else { self.condition }
+    }
     pub fn work_area(&self) -> Option<crate::work::Area> {
         self.kind.work_area_at(self.cells().next().unwrap_or(self.pos))
     }

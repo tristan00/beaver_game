@@ -4,20 +4,14 @@
 //! material-delivery and labour system.
 include!(concat!(env!("OUT_DIR"), "/maintenance_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet};
-use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, work::Workplace, SimError, SimState};
+use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, SimError, SimState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Refit { Repair, Reinforce, Facing, ReinforcedRepair }
 
-/// Queued maintenance on one building. A refit turns the building's workplace into a site for
-/// its duration and keeps the workplace here to put back; a repair replaces nothing and keeps an
-/// empty one.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Job { pub kind: Refit, previous: Workplace }
-
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Maintenance {
-    pub jobs: BTreeMap<BuildingId, Job>,
+    pub jobs: BTreeMap<BuildingId, Refit>,
     /// Buildings currently being auto-mended past `AUTO_REPAIR_BELOW` up to `1.0`.
     pub mending: BTreeSet<BuildingId>,
     pub repairs_completed: u32,
@@ -74,7 +68,7 @@ pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
 pub fn needs_mending(s: &SimState, b: &Building) -> bool {
     b.is_complete() && !b.kind.is_waterworks() && b.condition < 1.0
         && (b.condition < AUTO_REPAIR_BELOW
-            || s.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind == Refit::Repair)
+            || s.maintenance.jobs.get(&b.id) == Some(&Refit::Repair)
             || s.maintenance.mending.contains(&b.id))
 }
 
@@ -108,7 +102,7 @@ pub fn mend(s: &mut SimState, id: BuildingId, labour: f32) -> bool {
         b.condition = 1.0;
         s.maintenance.repairs_completed += 1;
         s.maintenance.mending.remove(&id);
-        if s.maintenance.jobs.get(&id).is_some_and(|j| j.kind == Refit::Repair) { s.maintenance.jobs.remove(&id); }
+        if s.maintenance.jobs.get(&id) == Some(&Refit::Repair) { s.maintenance.jobs.remove(&id); }
         for ag in s.agents.by_id.values_mut() { ag.clear_target(id); }
     }
     true
@@ -129,51 +123,37 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     } else if b.condition >= REPAIR_CONDITION_THRESHOLD {return Err(bad("this building does not need repairs"));}
     if kind == Refit::Repair {
         // Mended first by the menders; the building keeps working meanwhile.
-        let previous = Workplace::new(id, b.kind, Vec::new(), None, None);
-        s.maintenance.jobs.insert(id,Job{kind,previous});
+        s.maintenance.jobs.insert(id, kind);
         return Ok(());
     }
-    let (materials,labour) = cost(b,kind);
-    let building_kind = b.kind;
-    let i = s.work.places.iter().position(|p|p.building==id).ok_or_else(||bad("missing workplace"))?;
-    let previous = s.work.places.remove(i);
-    if let Err(e) = s.work.add_site(id,building_kind,&materials,labour) {
-        s.work.places.push(previous);
-        return Err(bad(&format!("{e:?}")));
-    }
+    let (materials, labour) = cost(b, kind);
+    s.work.start_site(id, &materials, labour).map_err(|e| bad(&format!("{e:?}")))?;
     s.release_beavers(id);
-    s.maintenance.jobs.insert(id,Job{kind,previous});
+    s.maintenance.jobs.insert(id, kind);
     Ok(())
 }
 
-fn restore(s: &mut SimState, id: BuildingId, mut previous: Workplace) {
-    s.work.places.retain(|p|p.building!=id);
-    previous.site=None;
-    for slot in &mut previous.slots {slot.beaver=None;}
-    s.release_beavers(id);
-    s.work.places.push(previous);
-}
-
 pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
-    if s.maintenance.jobs.get(&id).is_none_or(|j| j.kind == Refit::Repair) {return false;}
+    if s.maintenance.jobs.get(&id).is_none_or(|&k| k == Refit::Repair) {return false;}
     if !s.work.place(id).and_then(|p|p.site.as_ref()).is_some_and(|p|p.is_done()) {return false;}
-    let Some(job) = s.maintenance.jobs.remove(&id) else {return false};
+    let Some(kind) = s.maintenance.jobs.remove(&id) else {return false};
     if let Some(b) = s.buildings.buildings.iter_mut().find(|b|b.id==id) {
-        match job.kind {
+        match kind {
             Refit::Reinforce => { b.reinforced=true; s.maintenance.reinforcements_completed+=1; }
             Refit::Repair | Refit::ReinforcedRepair => {}
             Refit::Facing => { b.pebbled = true; }
         }
     }
-    if job.kind==Refit::Facing { crate::dams::refresh_durability(s,id); }
-    restore(s,id,job.previous);
+    if kind==Refit::Facing { crate::dams::refresh_durability(s,id); }
+    s.work.clear_site(id);
+    s.release_beavers(id);
     true
 }
 
 pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError> {
-    let job = s.maintenance.jobs.remove(&id).ok_or_else(|| SimError::InvalidCommand("no maintenance queued".into()))?;
+    let kind = s.maintenance.jobs.remove(&id).ok_or_else(|| SimError::InvalidCommand("no maintenance queued".into()))?;
     s.maintenance.mending.remove(&id);
-    if job.kind == Refit::Repair {
+    if kind == Refit::Repair {
         for ag in s.agents.by_id.values_mut() { ag.clear_target(id); }
         crate::supply::tidy(s);
         return Ok(Vec::new());
@@ -181,7 +161,8 @@ pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError>
     let delivered = s.work.place(id).and_then(|p| p.site.as_ref()).map(|p| p.delivered.clone()).unwrap_or_default();
     let pos = s.buildings.building(id).map_or((0, 0), |b| b.pos);
     let refunds = delivered.into_iter().map(|(g, a)| (g, s.refund_or_drop(pos, g, a))).collect();
-    restore(s, id, job.previous);
+    s.work.clear_site(id);
+    s.release_beavers(id);
     Ok(refunds)
 }
 
@@ -225,13 +206,4 @@ pub fn step(s: &mut SimState, dt: f32) {
         .filter(|b| b.is_complete() && b.dam.is_none() && b.canal.is_none() && !b.kind.is_dam() && b.condition <= 0.0)
         .map(|b| b.id).collect();
     for id in wrecked { s.wreck(id); }
-    let depth=&s.water.depth;
-    for b in &s.buildings.buildings {
-        if !b.is_complete() {continue;}
-        if let Some(home)=s.work.homes.get(&b.id).copied() {
-            // A flooded lodge keeps no one warm.
-            let drowned=crate::buildings::flooded(b,depth);
-            if let Some(l)=s.colony.lodges.iter_mut().find(|l|l.id==home) {l.condition=if drowned {0.0} else {b.condition};}
-        }
-    }
 }

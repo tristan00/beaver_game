@@ -13,7 +13,8 @@ use super::words::*;
 use super::HudAction;
 use crate::icons::Icon;
 use bevy::prelude::*;
-use sim::colony::{BeaverId, LodgeId};
+use sim::buildings::BuildingId;
+use sim::colony::BeaverId;
 use std::collections::BTreeSet;
 
 /// One beaver in the tree.
@@ -41,7 +42,7 @@ struct Unit {
     leaves: Vec<BeaverId>,
 }
 
-fn residents(s: &sim::SimState, lodge: LodgeId) -> Vec<BeaverId> {
+fn residents(s: &sim::SimState, lodge: BuildingId) -> Vec<BeaverId> {
     let mut v: Vec<&sim::colony::Beaver> = s.colony.beavers.iter().filter(|b| b.lodge == Some(lodge)).collect();
     v.sort_by_key(|b| (std::cmp::Reverse(b.stage), b.id.0));
     v.into_iter().map(|b| b.id).collect()
@@ -234,10 +235,10 @@ fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]
     v.action(HudAction::OpenPage(Some(super::Page::Beaver(id)))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
 }
 
-pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
+pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
     let s = c.s;
-    let l = s.colony.lodges.iter().find(|l| l.id == lodge);
-    let fam = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| f.name.clone());
+    let l = s.buildings.building(lodge);
+    let fam = s.colony.lodge_family(lodge).and_then(|f| s.colony.family(f)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| f.name.clone());
     let home = residents(s, lodge);
     let tree = draw(s, &home);
     Ui::full_page_shell(
@@ -247,7 +248,8 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
             r.col(6.0, |x| {
                 x.bold(format!("{fam} family"), 20.0, INK);
                 if let Some(l) = l {
-                    x.pips(l.condition, super::works::condition_colour(l.condition));
+                    let cond = l.home_condition(&s.water.depth);
+                    x.pips(cond, super::works::condition_colour(cond));
                 }
             });
             r.spacer();

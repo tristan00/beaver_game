@@ -1,5 +1,5 @@
 //! Goods left on the ground. With no store to take them, gatherers drop what they gather
-//! where they are; builders pick it up for their work and hungry beavers come to eat it.
+//! where they are; builders pick it up for their work and hungry beavers eat from them when stores run dry.
 //! A pile rots away `SPOIL_DAYS` after it was dropped.
 include!(concat!(env!("OUT_DIR"), "/piles_constants.rs"));
 use crate::buildings::Good;
@@ -66,6 +66,21 @@ impl Piles {
             self.items.remove(i);
         }
         taken
+    }
+
+    /// Take up to `amount` of `good` across any piles lying on the ground.
+    /// Returns `(booked, unbooked)` amounts taken so callers can book ledger usage accurately.
+    pub fn take_good(&mut self, good: Good, mut want: f32) -> (f32, f32) {
+        let (mut booked, mut unbooked) = (0.0, 0.0);
+        for p in &mut self.items {
+            if p.good != good || want <= 1e-4 { continue; }
+            let take = want.min(p.amount).max(0.0);
+            p.amount -= take;
+            want -= take;
+            if p.booked { booked += take; } else { unbooked += take; }
+        }
+        self.items.retain(|p| p.amount > 1e-4);
+        (booked, unbooked)
     }
 
     /// Piles older than `SPOIL_DAYS` rot away.

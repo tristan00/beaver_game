@@ -12,13 +12,13 @@ use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use sim::buildings::{BuildingId, Good};
-use sim::colony::{BeaverId, LodgeId};
+use sim::colony::BeaverId;
 use sim::resources::ResourceId;
 use std::collections::{HashSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Thing {
-    Beaver(BeaverId), Building(BuildingId), Resource(ResourceId), Lodge(LodgeId),
+    Beaver(BeaverId), Building(BuildingId), Resource(ResourceId),
     Cell(Cell), Wolf(u64), Animal(u32),
 }
 
@@ -28,7 +28,6 @@ impl Thing {
             Thing::Beaver(b) => 1 << 60 | b.0,
             Thing::Building(b) => 2 << 60 | b.0 as u64,
             Thing::Resource(r) => 3 << 60 | r.0 as u64,
-            Thing::Lodge(l) => 4 << 60 | l.0,
             Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
             Thing::Wolf(k) => (6 << 60) | (k & ((1 << 60) - 1)),
             Thing::Animal(id) => 7 << 60 | id as u64,
@@ -39,7 +38,6 @@ impl Thing {
             Thing::Beaver(b) => Selection::Beaver(b),
             Thing::Building(b) => Selection::Site(b),
             Thing::Resource(r) => Selection::Tree(r),
-            Thing::Lodge(l) => Selection::Lodge(l),
             Thing::Cell(c) => Selection::Cell(c),
             Thing::Wolf(k) => Selection::Wolf(k),
             Thing::Animal(id) => Selection::Animal(id),
@@ -50,7 +48,7 @@ impl Thing {
 impl From<crate::picking::Target> for Thing {
     fn from(t: crate::picking::Target) -> Self {
         use crate::picking::Target;
-        match t { Target::Building(id) => Self::Building(id), Target::Beaver(id) => Self::Beaver(id), Target::Lodge(id) => Self::Lodge(id), Target::Resource(id) => Self::Resource(id) }
+        match t { Target::Building(id) => Self::Building(id), Target::Beaver(id) => Self::Beaver(id), Target::Resource(id) => Self::Resource(id) }
     }
 }
 
@@ -121,7 +119,6 @@ pub fn pick(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cell: Cell, p: (f32,
     if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.key()); }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) { return Thing::Building(b.id); }
     if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) { return Thing::Resource(r.id); }
-    if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 2.56) { return crate::picking::Target::home(s, l.id).into(); }
     Thing::Cell(cell)
 }
 
@@ -154,7 +151,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 tip.push(l);
                 for g in goods { tip.push(TipLine::new(g.name(), "").icon(good_icon(g), good_color(g)).sub()); }
             }
-            if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty()) {
+            if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty() && p.site.is_none()) {
                 tip.push(TipLine::new("Beavers", format!("{}/{}", pl.filled(), pl.slots.len())).icon(job_icon(pl.slots[0].role), INK));
             }
             for (g, r) in s.ledger.building_rates(id) {
@@ -193,10 +190,6 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 tip.push(TipLine::new("Planted by", name).icon(good_icon(Good::seedling()), GOOD));
             }
             tip
-        }
-        Thing::Lodge(id) => {
-            let n = s.colony.beavers.iter().filter(|b| b.lodge == Some(id)).count();
-            Tip::titled(Some((building_icon(sim::buildings::BuildingKind::home()), INK)), sim::buildings::BuildingKind::home().name()).line("Residents", format!("{n}"))
         }
         Thing::Wolf(_) => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
         Thing::Animal(id) => {
@@ -761,7 +754,6 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         match thing.0 {
             Some(Thing::Resource(id)) => if let Some(r) = s.resources.get(id) { ring(&mut g, cell_at(h, r.cell, 0.15), if r.kind.is_tree() || r.kind.is_felled() { 0.6 } else { 0.45 }, hover_col); }
             Some(Thing::Beaver(id)) => if let Some(w) = beaver_world(s, drawn.as_deref(), id) { ring(&mut g, w + Vec3::Y * 0.1, 0.45, hover_col); }
-            Some(Thing::Lodge(id)) => if let Some(l) = s.colony.lodges.iter().find(|l| l.id == id) { ring(&mut g, cell_world(h, l.pos).with_y(height_at(h, l.pos.0, l.pos.1) + 0.15), 1.1, hover_col); }
             Some(Thing::Building(id)) => if let Some(b) = s.buildings.building(id) { for c in b.cells() { cell_outline(&mut g, h, c, surface_y(s, c), hover_col); } }
             _ => if let (Some(c), Some(Thing::Cell(_))) = (hover.0, thing.1) { ring(&mut g, cell_at(h, c, 0.15), 0.4, hover_col); }
         }
@@ -974,7 +966,7 @@ fn order_cell(s: &sim::SimState, order: sim::agents::Assignment) -> Option<Cell>
     use sim::agents::Assignment;
     match order {
         Assignment::Go(c) => Some(c),
-        Assignment::Resource(id) => s.resources.get(id).map(|r| r.cell),
+        Assignment::Resource(id, _) => s.resources.get(id).map(|r| r.cell),
         Assignment::Area(_, a) => Some(((a.min.0 + a.max.0) / 2, (a.min.1 + a.max.1) / 2)),
         Assignment::Work(b) | Assignment::Build(Some(b)) | Assignment::Mend(Some(b)) => s.buildings.building(b).map(|b| b.pos),
         Assignment::Mend(None) | Assignment::Build(None) => None,
