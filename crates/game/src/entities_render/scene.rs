@@ -1,7 +1,7 @@
-use crate::terrain_render::CELL_SIZE as CELL;
 use bevy::prelude::*;
-use sim::grid::HeightGrid;
 use sim::SimState;
+
+pub use crate::flow::height_at_world as height_at;
 
 /// The ways a tree is drawn; each species' row names one (`look.model`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,20 +66,6 @@ pub enum Pose {
     Caught,
     /// Dead: fallen on its side, or curled up.
     Dead,
-}
-
-pub fn height_at(h: &HeightGrid, x: f32, z: f32) -> f32 {
-    let (w, d) = (h.width(), h.height());
-    // Grid values sit at cell centres (terrain_render::GRID_OFFSET).
-    let off = crate::terrain_render::GRID_OFFSET;
-    let gx = (x / CELL + w as f32 / 2.0 - off).clamp(0.0, w as f32 - 1.001);
-    let gz = (z / CELL + d as f32 / 2.0 - off).clamp(0.0, d as f32 - 1.001);
-    let (x0, z0) = (gx.floor() as usize, gz.floor() as usize);
-    let (fx, fz) = (gx - x0 as f32, gz - z0 as f32);
-    let at = |x: usize, z: usize| *h.get(x, z).unwrap_or(&0.0);
-    let top = at(x0, z0) + (at(x0 + 1, z0) - at(x0, z0)) * fx;
-    let bot = at(x0, z0 + 1) + (at(x0 + 1, z0 + 1) - at(x0, z0 + 1)) * fx;
-    top + (bot - top) * fz
 }
 
 pub fn lodge_view(sim: &SimState) -> (Vec3, f32) {

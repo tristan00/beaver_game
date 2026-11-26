@@ -88,9 +88,9 @@ const TURN: f32 = 2.5;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_lock(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, at: Vec3, axis_yaw: f32, half: f32, floor: f32, low: f32, high: f32, looping: bool) -> Entity {
     let h = (high + 0.3 - floor).max(0.4);
-    let root = commands.spawn((Transform::from_xyz(at.x, floor, at.z).with_rotation(Quat::from_rotation_y(axis_yaw)).with_scale(Vec3::new(WIDTH, 1.0, 1.0)), Visibility::Inherited, super::SimEntity)).id();
+    let root = commands.spawn((Transform::from_xyz(at.x, floor, at.z).with_rotation(Quat::from_rotation_y(axis_yaw)).with_scale(Vec3::new(WIDTH, 1.0, 1.0)), Visibility::Inherited)).id();
     commands.spawn((Mesh3d(hm.walls.clone()), MeshMaterial3d(m.white.clone()), Transform::from_scale(Vec3::new(1.0, h, half / 1.05)), ChildOf(root)));
-    let water = commands.spawn((Transform::from_xyz(0.0, low, 0.0), Visibility::Inherited, super::SimEntity, bevy::light::NotShadowCaster)).id();
+    let water = commands.spawn((Transform::from_xyz(0.0, low - floor, 0.0), Visibility::Inherited, ChildOf(root), bevy::light::NotShadowCaster)).id();
     let gates = [-half, half].map(|z| commands.spawn((Mesh3d(hm.gate.clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(0.0, 0.0, z).with_scale(Vec3::new(1.0, h * 0.98, 1.0)), ChildOf(root))).id());
     commands.entity(root).insert(LockVis { gates, h, water, low, high, floor, open: [0.0; 2], level: low, start_level: low, occupant: None, iced: false, sheet: false, looping, k: 0.0, up: true });
     root
@@ -283,7 +283,7 @@ fn show(l: &LockVis, parts: &mut Query<&mut Transform, Without<LockVis>>) {
     for (&e, &open) in l.gates.iter().zip(&l.open) {
         if let Ok(mut t) = parts.get_mut(e) { t.translation.y = -open * 1.05 * l.h; }
     }
-    if let Ok(mut t) = parts.get_mut(l.water) { t.translation.y = l.level.max(l.floor + 0.02) + 0.01; }
+    if let Ok(mut t) = parts.get_mut(l.water) { t.translation.y = l.level.max(l.floor + 0.02) + 0.01 - l.floor; }
 }
 
 #[derive(Default)]
@@ -298,12 +298,9 @@ pub(super) fn sync_locks(
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
     let s = &sim.0;
-    st.drawn.reset_if(s.instance, &mut commands, |c, e| { if let Ok(v) = q.get(e) { c.entity(v.water).despawn(); } c.entity(e).despawn(); });
+    st.drawn.reset_if(s.instance, &mut commands, |c, e| c.entity(e).despawn());
     let built: Vec<_> = sim::locks::built(s).collect();
-    st.drawn.retain_keys(|cell| built.iter().any(|l| l.cell == *cell), &mut commands, |c, e| {
-        if let Ok(v) = q.get(e) { c.entity(v.water).despawn(); }
-        c.entity(e).despawn();
-    });
+    st.drawn.retain_keys(|cell| built.iter().any(|l| l.cell == *cell), &mut commands, |c, e| c.entity(e).despawn());
     let pending = clock.as_ref().map_or(0.0, |c| (c.render_days(s.time_days) - s.time_days) as f32);
     let mut inside: HashMap<(usize, usize), (u64, Stage)> = HashMap::new();
     for ag in s.agents.by_id.values() {
@@ -325,9 +322,8 @@ pub(super) fn sync_locks(
         if v.iced != ch.iced || !v.sheet {
             v.iced = ch.iced;
             v.sheet = true;
-            let (a, p) = (ch.axis, ch.axis.perp() * 0.62 * WIDTH);
-            let corner = |k: f32, j: f32| { let c = ch.centre + a * ch.half * k + p * j; Vec3::new(c.x, 0.0, c.y) };
-            let mesh = meshes.add(crate::water_render::water_sheet([corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)], (ch.high - ch.floor).max(0.5), if ch.iced { 1.0 } else { 0.0 }));
+            let (hx, hz) = (0.62, ch.half);
+            let mesh = meshes.add(crate::water_render::water_sheet([Vec3::new(-hx, 0.0, -hz), Vec3::new(-hx, 0.0, hz), Vec3::new(hx, 0.0, hz), Vec3::new(hx, 0.0, -hz)], (ch.high - ch.floor).max(0.5), if ch.iced { 1.0 } else { 0.0 }));
             if let Some(w) = &water { commands.entity(v.water).insert((Mesh3d(mesh), MeshMaterial3d(w.0.clone()))); }
         }
         match inside.get(&l.cell).copied() {
@@ -357,10 +353,9 @@ pub(super) struct RaftSync { drawn: SyncedMap<u32, (Entity, Entity, Option<sim::
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_rafts(
     mut commands: Commands, sim: Res<Sim>, models: Option<Res<Models>>,
-    hm: Option<Res<RaftLandingMeshes>>, clock: Res<RenderClock>, mut meshes: ResMut<Assets<Mesh>>,
+    hm: Option<Res<RaftLandingMeshes>>, clock: Res<RenderClock>,
     mut st: Local<RaftSync>, beavers: Query<(&super::BeaverSprite, &Transform), Without<RaftMark>>,
     mut tr: Query<(&mut Transform, &mut Visibility), With<RaftMark>>,
-    mut heap_mesh: Local<HashMap<sim::buildings::Good, Handle<Mesh>>>,
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
     let despawn_raft = |c: &mut Commands, (e, h, _): (Entity, Entity, Option<sim::buildings::Good>)| { c.entity(e).despawn(); c.entity(h).despawn(); };
@@ -369,8 +364,8 @@ pub(super) fn sync_rafts(
     st.drawn.retain_keys(|id| s.fleet.get(*id).is_some(), &mut commands, despawn_raft);
     for b in &s.fleet.rafts {
         let entry = st.drawn.map.entry(b.id).or_insert_with(|| {
-            let e = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Inherited, RaftMark, super::SimEntity)).id();
-            let h = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Hidden, RaftMark, super::SimEntity)).id();
+            let e = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Inherited, RaftMark)).id();
+            let h = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::default(), Visibility::Hidden, RaftMark)).id();
             (e, h, None)
         });
         let (e, h) = (entry.0, entry.1);
@@ -392,8 +387,7 @@ pub(super) fn sync_rafts(
         if entry.2 != good {
             entry.2 = good;
             if let Some(g) = good {
-                let mesh = heap_mesh.entry(g).or_insert_with(|| meshes.add(super::models::heap_mesh(g))).clone();
-                commands.entity(h).insert(Mesh3d(mesh));
+                commands.entity(h).insert(Mesh3d(m.heaps[g.index()].clone()));
             }
         }
         if let Ok((mut t, mut v)) = tr.get_mut(h) {
@@ -406,13 +400,12 @@ pub(super) fn sync_rafts(
 #[derive(Component)]
 pub(super) struct RaftMark;
 
-pub(super) fn spawn_gallery(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, meshes: &mut Assets<Mesh>, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
+pub(super) fn spawn_gallery(commands: &mut Commands, hm: &RaftLandingMeshes, m: &Models, centre: Vec3, ground: impl Fn(f32, f32) -> f32) {
     let goods: Vec<_> = sim::buildings::Good::all().collect();
     for (i, &g) in goods.iter().enumerate() {
         let (x, z) = (centre.x + (i as f32 - (goods.len() as f32 - 1.0) / 2.0) * 1.8, centre.z + 2.0);
         let raft = commands.spawn((Mesh3d(hm.raft.clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(x, ground(x, z) + 0.12, z).with_scale(Vec3::splat(0.55)))).id();
-        let heap = meshes.add(super::models::heap_mesh(g));
-        commands.spawn((Mesh3d(heap), MeshMaterial3d(m.white.clone()), Transform::from_xyz(0.0, 0.18, -0.1).with_scale(Vec3::splat(1.3)), ChildOf(raft)));
+        commands.spawn((Mesh3d(m.heaps[g.index()].clone()), MeshMaterial3d(m.white.clone()), Transform::from_xyz(0.0, 0.18, -0.1).with_scale(Vec3::splat(1.3)), ChildOf(raft)));
     }
     let (x, z) = (centre.x, centre.z - 2.5);
     let g = ground(x, z);

@@ -407,6 +407,10 @@ fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState
 }
 
 pub struct HudPlugin;
+/// Effective lens shown on screen after `BC_LENS`, `Alt`, and dam/canal tool overrides.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveLens(pub MapLens);
+
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HudSet;
 
@@ -422,7 +426,7 @@ impl Plugin for HudPlugin {
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() { return; }
         paths::setup(app);
         app.init_resource::<HudState>().init_resource::<Hover>().init_resource::<PointerOverUi>()
-            .init_resource::<PointerOverPin>().init_resource::<CursorUi>().init_resource::<MapLens>()
+            .init_resource::<PointerOverPin>().init_resource::<CursorUi>().init_resource::<MapLens>().init_resource::<ActiveLens>()
             .init_resource::<MenuOpen>().init_resource::<Tips>()
             .init_resource::<Pops>().init_resource::<Floods>().init_resource::<LastProblems>()
             .init_resource::<elevation::Contours>().init_resource::<DamSettle>().init_resource::<scrollbar::ScrollDrag>()
@@ -509,7 +513,7 @@ pub(crate) fn add_beaver_tip(s: &sim::SimState, b: BuildingId) -> Tip {
 #[allow(clippy::too_many_arguments)]
 fn refresh_panels(
     mut commands: Commands, icons: Res<Icons>, time: Res<Time>, mut timer: ResMut<RefreshTimer>, sim: Res<Sim>,
-    mut hud: ResMut<HudState>, clock: Res<SimClock>, sel: Res<Selection>, hover: Res<Hover>, lens: Res<MapLens>,
+    mut hud: ResMut<HudState>, clock: Res<SimClock>, sel: Res<Selection>, hover: Res<Hover>, (lens, active_lens): (Res<MapLens>, Res<ActiveLens>),
     orbit: Res<crate::camera::OrbitCamera>, (minimap, portrait): (Option<Res<MinimapImage>>, Option<Res<crate::entities_render::portrait::PortraitImage>>),
     menu: Res<MenuOpen>, flow: Res<Flow>, (cursor, mut last, notices, mut last_hover): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>, Local<(Option<Cell>, Option<Cell>)>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
@@ -519,7 +523,7 @@ fn refresh_panels(
     let cur_hover = (hover.cell(), hover.works_cell);
     let hover_changed = hud.tool != Tool::None && *last_hover != cur_hover;
     *last_hover = cur_hover;
-    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || flow.is_changed() || hover_changed || notices.is_changed();
+    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || active_lens.is_changed() || menu.is_changed() || clock.is_changed() || flow.is_changed() || hover_changed || notices.is_changed();
     if !due && !changed { return; }
     let (now, s) = (time.elapsed_secs(), &sim.0);
     if hud.tool == Tool::Dam && !hud.line.is_empty() && hud.plan.as_ref().is_none_or(|p| p.line != hud.line) {
@@ -548,7 +552,7 @@ fn refresh_panels(
     let problems = sim::hud::problems(s);
     last.0 = problems.clone();
     let ctx = panels::Ctx {
-        s, hud: &hud, clock: &clock, sel: *sel, lens: *lens, hover: hover.cell(), works_cell: hover.works_cell, problems: &problems,
+        s, hud: &hud, clock: &clock, sel: *sel, lens: *lens, active_lens: active_lens.0, hover: hover.cell(), works_cell: hover.works_cell, problems: &problems,
         minimap: minimap.as_deref(), portrait: portrait.as_deref(), view_cell: crate::flow::world_cell(&s.height, orbit.target),
         cursor: cursor.0, journal: &notices.0, now, welcome: flow.welcome,
     };
@@ -603,7 +607,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.cell(), works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs(), welcome: false };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, active_lens: *lens, hover: hover.cell(), works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs(), welcome: false };
                 let mut tree = if matches!(hud.tool, Tool::Dam | Tool::Canal) {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
@@ -653,7 +657,7 @@ fn update_drowned(s: &sim::SimState, hud: &mut HudState) {
     hud.drowned = Some((key, sim::dam_preview::drowned_by(s, |x, y| depth.get(&(x, y)).copied().unwrap_or(0.0))));
 }
 
-fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>) {
+fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, mut active: ResMut<ActiveLens>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let shown = match std::env::var("BC_LENS").as_deref() {
         Ok("water") => MapLens::Water,
@@ -663,6 +667,6 @@ fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudSt
         _ if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) => MapLens::Water,
         _ => *lens,
     };
-    paths::SHOWN.store(shown == MapLens::Paths, std::sync::atomic::Ordering::Relaxed);
+    if active.0 != shown { active.0 = shown; }
     crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

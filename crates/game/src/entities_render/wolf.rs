@@ -239,11 +239,7 @@ impl WolfDrawn {
 #[derive(Resource, Default)]
 pub struct AlarmSlaps { pub count: u32, pub amp: f32 }
 
-#[derive(Component)]
-struct Splash { age: f32, mat: Handle<StandardMaterial> }
-
 const SLAP_EVERY: f32 = 2.5;
-const SPLASH_SECS: f32 = 1.4;
 
 #[allow(clippy::too_many_arguments)]
 fn tail_slaps(
@@ -251,16 +247,8 @@ fn tail_slaps(
     mut slaps: ResMut<AlarmSlaps>, render: Res<super::RenderClock>, mut slap_times: ResMut<super::TailSlapTimes>,
     mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>,
     mut ring: Local<Option<Handle<Mesh>>>, mut next: Local<HashMap<u64, f32>>,
-    mut splashes: Query<(Entity, &mut Splash, &mut Transform)>,
 ) {
-    let (dt, now) = (time.delta_secs(), time.elapsed_secs());
-    for (e, mut sp, mut tr) in &mut splashes {
-        sp.age += dt;
-        let k = (sp.age / SPLASH_SECS).min(1.0);
-        if k >= 1.0 { commands.entity(e).despawn(); materials.remove(&sp.mat); continue; }
-        tr.scale = Vec3::splat(0.3 + 3.2 * (1.0 - (1.0 - k) * (1.0 - k)));
-        if let Some(mut m) = materials.get_mut(&sp.mat) { m.base_color = Color::srgba(1.0, 1.0, 1.0, (1.0 - k) * (1.0 - k).sqrt()); }
-    }
+    let now = time.elapsed_secs();
     let s = &sim.0;
     next.retain(|id, _| s.predators.alarms.iter().any(|b| b.0 == *id));
     for &id in &s.predators.alarms {
@@ -276,8 +264,7 @@ fn tail_slaps(
             mb.lathe(Mat4::IDENTITY, &[(0.55, 0.0), (0.35, 0.0)], 32, [1.0; 3], [1.0; 3], false);
             mb.ellipsoid(v(0.0, 0.15, 0.0), v(0.2, 0.45, 0.2), [1.0; 3]);
         }));
-        let mat = materials.add(StandardMaterial { base_color: Color::WHITE, emissive: LinearRgba::rgb(1.2, 1.25, 1.25), alpha_mode: AlphaMode::Blend, unlit: true, double_sided: true, cull_mode: None, ..default() });
-        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::from_translation(at + Vec3::Y * 0.25).with_scale(Vec3::splat(0.3)), Splash { age: 0.0, mat }));
+        super::effects::splash(&mut commands, mesh.clone(), &mut materials, at + Vec3::Y * 0.25);
         slaps.count = slaps.count.wrapping_add(1);
         slaps.amp = (1.3 - orbit.target.distance(at) / 90.0).clamp(0.25, 1.2);
     }
@@ -425,17 +412,20 @@ impl WolfTrack {
 fn sync_wolf(
     mut commands: Commands, sim: Res<Sim>, time: Res<Time>, clock: Option<Res<crate::sim_driver::SimClock>>,
     meshes: Option<Res<WolfMeshes>>, models: Option<Res<Models>>, mut drawn: ResMut<WolfDrawn>,
+    mut epoch: Local<Option<u64>>,
     mut q: Query<(Entity, &SimWolf, &mut Transform, &mut WolfTrack, &mut Visibility), With<WolfRig>>,
 ) {
     let _p = ::sim::prof::scope("game/sync wolf");
     let (Some(wm), Some(m)) = (meshes, models) else { return };
     let (s, dt) = (&sim.0, time.delta_secs());
+    let fresh = *epoch != Some(s.instance);
+    *epoch = Some(s.instance);
     let smoothing = clock.as_ref().map_or(1.0, |c| c.speed.smoothing());
     let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
     drawn.0.clear();
     let mut shown = Vec::new();
     for (e, id, mut tr, mut track, mut vis) in &mut q {
-        let Some(wolf) = s.predators.wolf(id.0) else { commands.entity(e).despawn(); continue; };
+        let Some(wolf) = (!fresh).then(|| s.predators.wolf(id.0)).flatten() else { commands.entity(e).despawn(); continue; };
         shown.push(id.0);
         vis.set_if_neq(Visibility::Inherited);
         let (xz, going) = track.advance(s, &wolf.track, wolf.pos, 8.0, 4.0, now, dt, smoothing);

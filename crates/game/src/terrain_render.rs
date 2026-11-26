@@ -188,7 +188,7 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             v ^= (at(&s.water.dam_height, x, y).to_bits() as u64).rotate_left(9);
             if with_veg {
                 // Ground this deep under water is drawn as bed alone (`world_color`).
-                let vq = if d >= 0.03 { 0 } else { (at(&s.ecology.vegetation, x, y) * sim::ecology::COVER_STEPS).round() as i32 };
+                let vq = if d >= 0.03 { 0 } else { (at(&s.forestry.vegetation, x, y) * sim::forestry::COVER_STEPS).round() as i32 };
                 v ^= (vq as u32 as u64).rotate_left(17);
                 let bq = (at(&s.water.riverbed, x, y) * sim::water::RIVERBED_STEPS).round() as u64;
                 v ^= bq.rotate_left(41);
@@ -262,14 +262,14 @@ pub(crate) fn locks_hash(s: &SimState) -> u64 {
 /// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here,
 /// except in the water lens, which colours water by its depth.
 fn ground_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
-    let h = fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.ecology.vegetation, s.water.riverbed, s.water.canal), locks_hash(s));
+    let h = fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.forestry.vegetation, s.water.riverbed, s.water.canal), locks_hash(s));
     if map_lens() == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
 }
 
 /// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
 fn ground_stamps(s: &SimState) -> [(u64, u64); 8] {
     let depth = if map_lens() == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
-    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.ecology.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth, (locks_hash(s), 0)]
+    [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.forestry.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth, (locks_hash(s), 0)]
 }
 
 /// As `ground_stamp`, for the water's surface.
@@ -764,7 +764,7 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
     let depth = at(&s.water.depth, x, y);
     let (gx, gz) = smooth_gradient(s, x, y, 1);
     let slope = (gx * gx + gz * gz).sqrt();
-    let veg = at(&s.ecology.vegetation, x, y).clamp(0.0, 1.0);
+    let veg = at(&s.forestry.vegetation, x, y).clamp(0.0, 1.0);
     let (mut wet2, mut wet1) = (0.0, 0.0);
     for dy in -2..=2 {
         for dx in -2..=2 {

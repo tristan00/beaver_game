@@ -21,7 +21,6 @@ pub mod wildlife;
 pub mod lives;
 pub mod looks;
 pub mod dam_preview;
-pub mod ecology;
 pub mod fog;
 pub mod forestry;
 pub mod grid;
@@ -113,7 +112,6 @@ pub struct SimState {
     pub height: grid::HeightGrid,
     pub world: worldgen::World,
     pub water: water::Water,
-    pub ecology: ecology::Ecology,
     pub colony: colony::Colony,
     pub buildings: buildings::Buildings,
     pub nav: nav::NavGrid,
@@ -178,7 +176,6 @@ impl SimState {
             height,
             world,
             water,
-            ecology: ecology::Ecology::new(size),
             colony: Default::default(),
             buildings: Default::default(),
             nav: nav::NavGrid::new(size, size),
@@ -192,7 +189,7 @@ impl SimState {
             fog: fog::Fog::clear(size),
             steps: 0,
             recorder: None,
-            forestry: forestry::Forestry::new(seed),
+            forestry: forestry::Forestry::new(seed, size),
             predators: predators::Predators::new(seed),
             fleet: raft_landing::Fleet::default(),
             wildlife: wildlife::Wildlife::new(seed),
@@ -250,7 +247,7 @@ impl SimState {
         lap(&mut t.other_s);
         { let _p = prof::scope("step/water"); self.water.step(&self.height, dt_days); }
         lap(&mut t.water_s);
-        { let _p = prof::scope("step/ecology"); self.ecology.step(dt_days, &self.water.depth)?; }
+        { let _p = prof::scope("step/ecology"); self.forestry.step_flood_days(dt_days, &self.water.depth)?; }
         lap(&mut t.ecology_s);
         {
             let _p = prof::scope("step/colony");
@@ -398,7 +395,7 @@ macro_rules! impl_sim_clone {
 impl_sim_clone!(
     copy: [seed, instance, time_days, steps, sandbox, step_timings],
     clone: [
-        client_commands, height, world, water, ecology, colony, buildings, nav,
+        client_commands, height, world, water, colony, buildings, nav,
         resources, agents, work, maintenance, works, society, ledger, fog,
         recorder, forestry, predators, fleet, wildlife, lives, run, names,
         deeds, supplies, journal

@@ -6,14 +6,18 @@ use rand_pcg::Pcg32;
 
 use crate::calendar::Season;
 use crate::colony::BeaverId;
-use crate::grid::Grid;
+use crate::grid::{Grid, VegetationGrid, WaterGrid};
 use crate::resources::{Resource, ResourceId};
 use crate::inventory::Species;
 use crate::plants::Plant;
 use crate::trees::Tree;
 use crate::water::Cell;
 use crate::work::Area;
-use crate::SimState;
+use crate::{SimError, SimState};
+
+const FLOOD_GRID_EVERY_DAYS: f32 = 0.25;
+/// Plant cover is drawn in this many steps from bare to full.
+pub const COVER_STEPS: f32 = 64.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum TreeStage {
@@ -72,10 +76,16 @@ impl Resource {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Forestry {
     pub history: VecDeque<(f64, usize)>,
-    size: usize,
+    /// Tree cover density (written daily by `derive_ecology`), with tile change stamps for terrain rendering.
+    pub vegetation: VegetationGrid,
+    pub flood_days: Grid<f32>,
+    flood_pending_days: f32,
+    /// The cover each tile of `vegetation` reads, as it was when the tile was last stamped.
+    #[serde(skip)]
+    told: crate::grid::Own<crate::grid::Told<f32>>,
     /// Remade whole each day and only read in between, so a snapshot shares them.
     growth: std::sync::Arc<Vec<f32>>,
     flood_plan: std::sync::Arc<BTreeSet<Cell>>,
@@ -87,17 +97,19 @@ pub struct Forestry {
     pub planted: BTreeMap<ResourceId, (BeaverId, f64)>,
 }
 
-impl Default for Forestry {
-    fn default() -> Self {
-        Self::new(0)
-    }
-}
+crate::grid::clone_fields!(Forestry {
+    history, vegetation, flood_days, flood_pending_days, told,
+    growth, flood_plan, unreachable, day, rng, planted
+});
 
 impl Forestry {
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, size: usize) -> Self {
         Forestry {
             history: VecDeque::new(),
-            size: 0,
+            vegetation: Grid::new(size, size, 0.0),
+            flood_days: Grid::new(size, size, 0.0),
+            flood_pending_days: 0.0,
+            told: Default::default(),
             growth: Default::default(),
             flood_plan: Default::default(),
             unreachable: BTreeMap::new(),
@@ -107,6 +119,33 @@ impl Forestry {
         }
     }
 
+    pub fn set_forest(&mut self, density: &Grid<f32>) {
+        let n = self.vegetation.width();
+        if density.width() != n || density.height() != n { return; }
+        for (cell, &d) in self.vegetation.cells_and_marks().0.iter_mut().zip(density.as_slice()) {
+            *cell = d.clamp(0.0, 1.0);
+        }
+        self.told.0.note(&mut self.vegetation, None, |a, b| (a - b).abs() > 1.0 / COVER_STEPS);
+    }
+
+    pub fn step_flood_days(&mut self, dt_days: f32, water: &WaterGrid) -> Result<(), SimError> {
+        if !dt_days.is_finite() || dt_days < 0.0 {
+            return Err(SimError::InvalidDt(dt_days));
+        }
+        let n = self.vegetation.width();
+        if water.width() != n || water.height() != n {
+            return Err(SimError::InvalidCommand(format!(
+                "water grid {}x{} does not match forestry size {n}", water.width(), water.height())));
+        }
+        if dt_days == 0.0 { return Ok(()); }
+        self.flood_pending_days += dt_days;
+        if self.flood_pending_days < FLOOD_GRID_EVERY_DAYS { return Ok(()); }
+        let due = std::mem::take(&mut self.flood_pending_days);
+        for (fd, &depth) in self.flood_days.as_mut_slice().iter_mut().zip(water.as_slice()) {
+            *fd = if depth > crate::tuning::ecology::FLOOD_DEPTH { *fd + due } else { (*fd - crate::tuning::ecology::FLOOD_DAYS_DRAIN_RATE * due).max(0.0) };
+        }
+        Ok(())
+    }
 }
 
 pub fn start_age(seed: u64, cell: Cell) -> f32 {
@@ -146,13 +185,13 @@ pub fn drowning(sim: &SimState, r: &Resource) -> Option<f32> {
     if dp <= sp.spec().max_depth {
         return None;
     }
-    let fd = sim.ecology.flood_days.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0);
+    let fd = sim.forestry.flood_days.get(r.cell.0, r.cell.1).copied().unwrap_or(0.0);
     Some((fd / drown_days(stage, sp)).clamp(0.0, 1.0))
 }
 
 /// The ground's growth multiplier at a cell: faster near water, slower on dry ground.
 pub fn ground_growth(sim: &SimState, cell: Cell) -> f32 {
-    let n = sim.forestry.size;
+    let n = sim.forestry.vegetation.width();
     if cell.0 < n && cell.1 < n { sim.forestry.growth.get(cell.1 * n + cell.0).copied().unwrap_or(1.0) } else { 1.0 }
 }
 
@@ -188,14 +227,18 @@ pub fn cuttable(r: &Resource, min_age: f32) -> bool {
 pub fn init(sim: &mut SimState) {
     let n = sim.world.size;
     let f = &mut sim.forestry;
-    f.size = n;
+    if f.vegetation.width() != n || f.vegetation.height() != n {
+        f.vegetation = Grid::new(n, n, 0.0);
+        f.flood_days = Grid::new(n, n, 0.0);
+    }
     f.day = Some(sim.time_days.floor() as i64);
     refresh_growth(sim);
     derive_ecology(sim);
 }
 
 pub fn step(sim: &mut SimState, dt_days: f32) {
-    if sim.forestry.size != sim.world.size {
+    let n = sim.world.size;
+    if sim.forestry.growth.len() != n * n {
         init(sim);
     }
     let _ = dt_days;
@@ -240,7 +283,6 @@ fn daily(sim: &mut SimState, day: i64) {
     let mut occupied = occupied;
     let mut gone: HashSet<ResourceId> = HashSet::new();
     let mut seeds: Vec<(Cell, Tree)> = Vec::new();
-    let flood_days = &sim.ecology.flood_days;
     let depth = &sim.water.depth;
     {
         let f = &mut sim.forestry;
@@ -250,7 +292,7 @@ fn daily(sim: &mut SimState, day: i64) {
             }
             let (x, y) = r.cell;
             let sp = r.species.expect("a tree has a species");
-            let fd = flood_days.get(x, y).copied().unwrap_or(0.0);
+            let fd = f.flood_days.get(x, y).copied().unwrap_or(0.0);
             let dp = depth.get(x, y).copied().unwrap_or(0.0);
             if r.snag {
                 // A dead tree standing in water soon falls; on dry ground it stands for years.
@@ -297,7 +339,7 @@ fn daily(sim: &mut SimState, day: i64) {
     sim.resources.keep(|r| !gone.contains(&r.id));
     for (c, sp) in seeds {
         let free = !occupied.contains(&c) && !built.contains(&c) && sim.work.supplies != Some(c);
-        let flooded = sim.ecology.flood_days.get(c.0, c.1).is_some_and(|d| *d > 0.0);
+        let flooded = sim.forestry.flood_days.get(c.0, c.1).is_some_and(|d| *d > 0.0);
         if free && !flooded && can_hold_tree(sim, c) && is_dry(sim, c) && !sim.forestry.flood_plan.contains(&c) {
             sim.resources.add_tree(c, 0.0, sp);
             occupied.insert(c);
@@ -389,7 +431,7 @@ fn refresh_flood_plan(sim: &mut SimState) {
 }
 
 fn derive_ecology(sim: &mut SimState) {
-    let n = sim.ecology.size();
+    let n = sim.forestry.vegetation.width();
     if n == 0 {
         return;
     }
@@ -422,7 +464,7 @@ fn derive_ecology(sim: &mut SimState) {
             share[y * n + x] = sum / (tall * wide) as f32;
         }
     }
-    sim.ecology.set_forest(&g);
+    sim.forestry.set_forest(&g);
 }
 
 pub fn colony_mature_trees(sim: &SimState) -> Option<usize> {
@@ -482,7 +524,7 @@ fn plantable_ground(sim: &SimState, c: Cell) -> bool {
         && is_dry(sim, c)
         && sim.work.supplies != Some(c)
         && !sim.forestry.flood_plan.contains(&c)
-        && sim.ecology.flood_days.get(c.0, c.1).is_none_or(|d| *d <= 0.0)
+        && sim.forestry.flood_days.get(c.0, c.1).is_none_or(|d| *d <= 0.0)
         && sim.nav.surface_at(c) == Some(crate::nav::Surface::Land)
         && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)
 }

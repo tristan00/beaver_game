@@ -116,8 +116,6 @@ impl SimThread {
                     let snapshot = Snapshot { state: copy, acknowledged, results: results.clone() };
                     match publish.try_send(snapshot) {
                         Ok(()) => {
-                            // Told once: the next snapshot says what was seen after this one.
-                            state.fog.dirty = false;
                             state.colony.events.clear(); results.clear(); changed = false;
                             published = Instant::now();
                         }

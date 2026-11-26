@@ -7,7 +7,6 @@ pub const EXPLORED: f32 = 0.5;
 pub struct Fog {
     pub size: usize,
     pub seen: Vec<f32>,
-    pub dirty: bool,
     /// The cell each beaver last looked around from. Sight only ever clears fog, so looking
     /// again from the same cell changes nothing and is skipped.
     #[serde(skip)]
@@ -18,14 +17,14 @@ pub struct Fog {
     pub revision: u64,
 }
 
-crate::grid::clone_fields!(Fog { size, seen, dirty, sighted, revision });
+crate::grid::clone_fields!(Fog { size, seen, sighted, revision });
 
 impl Fog {
     pub fn unseen(size: usize) -> Fog {
-        Fog { size, seen: vec![0.0; size * size], dirty: true, sighted: Default::default(), revision: 0 }
+        Fog { size, seen: vec![0.0; size * size], sighted: Default::default(), revision: 0 }
     }
     pub fn clear(size: usize) -> Fog {
-        Fog { size, seen: vec![1.0; size * size], dirty: true, sighted: Default::default(), revision: 0 }
+        Fog { size, seen: vec![1.0; size * size], sighted: Default::default(), revision: 0 }
     }
     pub fn get(&self, c: Cell) -> f32 {
         if c.0 < self.size && c.1 < self.size { self.seen[c.1 * self.size + c.0] } else { 0.0 }
@@ -62,7 +61,6 @@ impl Fog {
                 }
             }
         }
-        self.dirty |= changed;
         self.revision += changed as u64;
         changed
     }

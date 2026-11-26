@@ -221,13 +221,10 @@ fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, m
         }
     }
     let events = std::mem::take(&mut sim.0.colony.events);
-    // The simulation reports fog as newly seen once; keep it until the fog is redrawn.
-    let fog_seen = sim.0.fog.dirty;
     // The world it replaces goes back to the sim_thread, which copies the next snapshot into it.
     let old = std::mem::replace(&mut sim.0, snapshot.state);
     if let Some(owner) = &sim_thread.sim_thread { owner.recycle(old); }
     for event in events.into_iter().rev() { sim.0.colony.events.push_front(event); }
-    sim.0.fog.dirty |= fog_seen;
     // Reapply only commands newer than the received snapshot. They remain in
     // the sim_thread's queue and are not transmitted twice. What they change here is a guess
     // until the simulation has applied them itself.

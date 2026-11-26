@@ -93,8 +93,8 @@ const WATER_DEEP_ALPHA: f32 = 0.93;
 #[derive(Resource, Clone)]
 pub struct SharedWater(pub Handle<WaterMaterial>);
 
-/// A flat sheet of water in the water surface's own look: corners in world space at height 0
-/// (lift it by its transform), `depth` metres deep, `ice` 0 open to 1 frozen over.
+/// A flat sheet of water in the water surface's own look: corners at height 0 in the mesh's
+/// coordinate space (positioned by its transform), `depth` metres deep, `ice` 0 open to 1 frozen.
 pub fn water_sheet(corners: [Vec3; 4], depth: f32, ice: f32) -> Mesh {
     let tri = [0usize, 1, 2, 0, 2, 3];
     let pos: Vec<[f32; 3]> = tri.iter().map(|&i| corners[i].to_array()).collect();
@@ -510,7 +510,7 @@ pub fn pond_view(s: &SimState) -> Option<Vec3> {
             let mut veg = 0.0;
             for dy in -8..=8 {
                 for dx in -8..=8 {
-                    veg += at(&s.ecology.vegetation, fx + dx, fy + dy).clamp(0.0, 1.0);
+                    veg += at(&s.forestry.vegetation, fx + dx, fy + dy).clamp(0.0, 1.0);
                 }
             }
             let centre = ((fx as f32 - cxm).powi(2) + (fy as f32 - cym).powi(2)).sqrt() / w as f32;

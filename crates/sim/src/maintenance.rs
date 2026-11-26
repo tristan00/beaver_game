@@ -203,7 +203,7 @@ pub fn step(s: &mut SimState, dt: f32) {
     }
     // Worn to nothing, a building falls apart. Dams and canals keep their own upkeep.
     let wrecked: Vec<BuildingId> = s.buildings.buildings.iter()
-        .filter(|b| b.is_complete() && b.dam.is_none() && b.canal.is_none() && !b.kind.is_dam() && b.condition <= 0.0)
+        .filter(|b| b.is_complete() && !b.kind.is_waterworks() && b.condition <= 0.0)
         .map(|b| b.id).collect();
     for id in wrecked { s.wreck(id); }
 }

@@ -159,10 +159,8 @@ fn main() {
         let busy_from = Instant::now();
         let in_window = s.time_days - start_day >= window_from - 1e-9;
         while let Ok(line) = cmd_rx.try_recv() {
-            let result = sim::script::parse_command(&line).and_then(|c| match c {
-                // River-sandbox tools: a new world, or dams and canals made and broken for nothing.
-                sim::Command::Regenerate { .. } | sim::Command::BuildDam { .. } | sim::Command::BreachDam { .. } | sim::Command::DigCanal { .. } => Err("not a player command".to_string()),
-                c => s.apply(c).map_err(|e| e.to_string()),
+            let result = sim::script::parse_command(&line).and_then(|c| {
+                if !c.is_player_command() { Err("not a player command".to_string()) } else { s.apply(c).map_err(|e| e.to_string()) }
             });
             match result {
                 Ok(()) => {

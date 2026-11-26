@@ -19,6 +19,7 @@ struct FogSheet;
 #[derive(Resource, Default)]
 struct FogState {
     instance: Option<u64>,
+    revision: u64,
     next: f32,
 }
 
@@ -44,7 +45,7 @@ impl Plugin for FogRenderPlugin {
 fn update_fog(
     mut commands: Commands,
     time: Res<Time>,
-    mut sim: ResMut<Sim>,
+    sim: Res<Sim>,
     mut state: ResMut<FogState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -56,11 +57,11 @@ fn update_fog(
     }
     let now = time.elapsed_secs();
     let fresh = state.instance != Some(sim.0.instance);
-    if !fresh && (!sim.0.fog.dirty || now < state.next) {
+    if !fresh && (state.revision == sim.0.fog.revision || now < state.next) {
         return;
     }
     state.next = now + REBUILD_SECS;
-    sim.0.fog.dirty = false;
+    state.revision = sim.0.fog.revision;
     let mesh = fog_mesh(&sim.0);
     if fresh {
         for (e, _) in &sheets {

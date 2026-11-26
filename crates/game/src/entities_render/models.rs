@@ -320,14 +320,12 @@ pub fn footing_of(kind: BuildingKind) -> Option<structures::Footing> {
     })
 }
 
-pub fn struct_mesh(kind: BuildingKind, len: f32, stage: u8) -> Mesh {
+pub fn struct_mesh(kind: BuildingKind, stage: u8) -> Mesh {
     let mut mb = Mb::new();
     let dry = stage == DRY_STAGE;
     let f = if dry { 1.0 } else { stage.min(STAGES) as f32 / STAGES as f32 };
     match kind.row().model.as_str() {
         "lodge" => lodge(&mut mb, f),
-        "dam" => dam(&mut mb, len, f),
-        "canal" => canal(&mut mb, len, if f >= 1.0 { 3 } else { 0 }),
         "cache_island" => islands::cache_island(&mut mb, f),
         "feed_pile" => islands::feed_pile(&mut mb, f),
         "stone_cache" => islands::stone_cache(&mut mb, f),
@@ -496,33 +494,6 @@ fn lodge(mb: &mut Mb, f: f32) {
         stick_pile(mb, v(-3.2, 0.0, 3.9), 0.8, 9, 17);
         mud_lump(mb, v(3.9, 0.15, 2.9), 1.4);
         mud_lump(mb, v(-4.2, 0.1, -1.2), 1.1);
-    }
-}
-
-fn dam(mb: &mut Mb, len: f32, f: f32) {
-    if f >= 1.0 {
-        structures::dam_cell(mb, 1.4, len, 0, structures::DamStage::Done);
-    } else {
-        structures::dam_cell(mb, 0.25 + 0.75 * f, len, 1, structures::DamStage::Rising);
-    }
-}
-
-fn canal(mb: &mut Mb, len: f32, stage: u8) {
-    let hl = len * 0.5;
-    let n = ((len / 1.0).ceil() as i32).max(2);
-    for s in [-1.0f32, 1.0] {
-        for i in 0..=n {
-            let x = -hl + len * i as f32 / n as f32;
-            mb.ellipsoid_g(v(x, 0.1, 1.35 * s), v(0.85, 0.5, 0.75), hex(0x5c4128), hex(0x7aa84a), 8, 5);
-        }
-    }
-    if stage == 3 {
-        mb.cuboid(v(0.0, 0.0, 0.0), v(hl + 0.05, 0.14, 1.0), Quat::IDENTITY, hex(0x2f7fb0), hex(0x58b8e6));
-    } else {
-        mb.cuboid(v(0.0, -0.05, 0.0), v(hl + 0.05, 0.1, 1.0), Quat::IDENTITY, hex(0x3d2a1a), hex(0x6a4a2e));
-        mud_lump(mb, v(-hl * 0.4, 0.35, 2.4), 1.3);
-        stake(mb, v(hl - 0.3, 0.0, -1.9), 1.2, true);
-        stake(mb, v(hl - 0.3, 0.0, 1.9), 1.2, true);
     }
 }
 

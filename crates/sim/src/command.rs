@@ -55,6 +55,13 @@ pub enum Command {
     SetShoreLimit { role: jobs::Job, cells: Option<u16> },
 }
 
+impl Command {
+    /// False for river-sandbox god tools that bypass colony play.
+    pub fn is_player_command(&self) -> bool {
+        !matches!(self, Command::Regenerate { .. } | Command::BuildDam { .. } | Command::BreachDam { .. } | Command::DigCanal { .. })
+    }
+}
+
 impl SimState {
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
         let predicted = self.client_commands.is_some().then(|| cmd.clone());

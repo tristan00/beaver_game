@@ -1,7 +1,7 @@
 use super::scene::height_at;
 use super::sim_view::*;
 use super::structures::{DamStage, DAM_STEP};
-use super::{models, BeaverSprite, CurrentSeason, Models, PlantLook, SimBeaver, SimEntity, Sway, TreeLod};
+use super::{models, BeaverSprite, Models, PlantLook, SimBeaver, Sway, TreeLod};
 use crate::picking::Target;
 use crate::sim_driver::SimClock;
 use crate::state::Sim;
@@ -10,13 +10,6 @@ use sim::buildings::{BuildingId, BuildingKind, Status};
 use sim::resources::ResourceId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
-
-#[derive(Resource, Default)]
-pub struct PendingDays(pub f32);
-
-pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) {
-    p.0 = clock.map_or(0.0, |c| c.pending_days());
-}
 
 /// Shared world-epoch + entity map used by all sim-to-Bevy sync systems.
 pub(super) struct SyncedMap<K, V> {
@@ -257,17 +250,19 @@ pub fn look_of(sim: &sim::SimState, id: sim::colony::BeaverId) -> super::Look {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_sim_beavers(
-    mut commands: Commands, sim: Res<Sim>, pending: Res<PendingDays>, clock: Option<Res<SimClock>>,
+    mut commands: Commands, sim: Res<Sim>, clock: Option<Res<SimClock>>,
     render: Res<super::RenderClock>, slaps: Res<super::TailSlapTimes>, time: Res<Time>,
     mut q: Query<(Entity, &mut Transform, &mut BeaverSprite, &mut Visibility, &mut Motion, &mut LodgeDive, &mut super::raft_landing::LockGlide, Option<&Newborn>), With<SimBeaver>>,
-    mut seen: Local<HashSet<u64>>, mut drawn: ResMut<super::BeaverDrawn>,
+    mut seen: Local<HashSet<u64>>, mut epoch: Local<Option<u64>>, mut drawn: ResMut<super::BeaverDrawn>,
 ) {
     use super::scene::Pose;
     let _p = ::sim::prof::scope("game/sync sim beavers");
     seen.clear();
     drawn.0.clear();
     let (s, t) = (&sim.0, render.0);
-    let now = clock.as_ref().map_or(s.time_days + pending.0 as f64, |c| c.render_days(s.time_days));
+    let fresh = *epoch != Some(s.instance);
+    *epoch = Some(s.instance);
+    let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
     let idle: Vec<_> = s.agents.by_id.values()
         .filter(|a| !a.inside && a.path.is_none() && matches!(a.task, sim::agents::Task::Idle | sim::agents::Task::Rest) && a.assignment.is_none() && s.work.slot_of(a.id).is_none())
         .filter_map(|a| s.colony.beaver(a.id).map(|b| (a.id, b.family, a.cell)))
@@ -282,7 +277,7 @@ pub(super) fn sync_sim_beavers(
     let face = |at: Vec3, to: (f32, f32)| { let w = cell_xz(s, to); (w.x - at.x).atan2(w.y - at.z) };
     for (e, mut tr, mut sprite, mut vis, mut motion, mut dive, mut glide, newborn) in &mut q {
         let id = sim::colony::BeaverId(sprite.id);
-        let Some((ag, age)) = find_agent(s, id) else { commands.entity(e).despawn(); continue; };
+        let Some((ag, age)) = (!fresh).then(|| find_agent(s, id)).flatten() else { commands.entity(e).despawn(); continue; };
         seen.insert(sprite.id);
         let p = agent_world_pos(s, ag, 0.0) + spread_in(s, ag.cell, sprite.id, clock.is_some());
         motion.observe(s, ag, clock.is_some());
@@ -362,11 +357,13 @@ pub(super) fn sync_sim_beavers(
 #[derive(Component)]
 pub struct BodySprite(u64);
 
-pub(super) fn sync_bodies(mut commands: Commands, sim: Res<Sim>, render: Res<super::RenderClock>, mut q: Query<(Entity, &BodySprite, &mut BeaverSprite)>) {
+pub(super) fn sync_bodies(mut commands: Commands, sim: Res<Sim>, render: Res<super::RenderClock>, mut epoch: Local<Option<u64>>, mut q: Query<(Entity, &BodySprite, &mut BeaverSprite)>) {
     let (s, bodies) = (&sim.0, &sim.0.agents.remains.bodies);
+    let fresh = *epoch != Some(s.instance);
+    *epoch = Some(s.instance);
     let mut have = HashSet::new();
     for (e, b, mut sprite) in &mut q {
-        match bodies.iter().find(|x| x.id.0 == b.0) {
+        match (!fresh).then(|| bodies.iter().find(|x| x.id.0 == b.0)).flatten() {
             Some(body) => {
                 sprite.look.fade = ramp(0.8, 1.0, ((s.time_days - body.died) / sim::agents::REMAINS_DAYS) as f32);
                 have.insert(b.0);
@@ -410,7 +407,7 @@ fn spawn_topple(commands: &mut Commands, models: &Models, sim: &sim::SimState, r
     let scale = stage_scale(sim::forestry::TreeStage::Mature) * TREE_SCALE * (0.8 + 0.4 * hash01(c.0, c.1, 5));
     let tr = res_transform(sim, r, scale);
     let variant = ((hash01(c.0, c.1, 17) * 4.0) as usize).min(3);
-    commands.spawn((SimEntity, Mesh3d(models.tree(r.species.expect("a tree has a species"), season, 0)), MeshMaterial3d(models.tree_tints[variant].clone()), tr, super::Topple { start: now, base: tr }));
+    commands.spawn((Mesh3d(models.tree(r.species.expect("a tree has a species"), season, 0)), MeshMaterial3d(models.tree_tints[variant].clone()), tr, super::Topple { start: now, base: tr }));
 }
 
 pub fn res_sig(r: &sim::resources::Resource, depth: f32) -> ResSig {
@@ -453,13 +450,11 @@ pub struct ResourceSync {
     rocks: Vec<Option<Entity>>,
 }
 
-#[derive(Resource, Default)]
-pub struct BuildingAnchors(pub HashMap<BuildingId, f32>);
-
 #[derive(Default)]
 pub struct BuildingSync {
     time: f64,
-    bld: SyncedMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
+    bld: SyncedMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8, bool, bool))>,
+    anchors: HashMap<BuildingId, f32>,
     wear: HashMap<BuildingId, (u8, f32, f32)>,
 }
 
@@ -552,7 +547,7 @@ fn show_resource(commands: &mut Commands, res: &mut HashMap<ResourceId, (Entity,
             e
         }
         None => {
-            let mut ec = commands.spawn((SimEntity, base));
+            let mut ec = commands.spawn(base);
             match extra {
                 Extra::Tree(l) => { ec.insert((l, Sway(tr.rotation))); }
                 Extra::Plant(p) => { ec.insert(p); }
@@ -576,12 +571,12 @@ fn plant_water(sim: &sim::SimState) -> Vec<(u64, u64)> {
 }
 
 pub(super) fn sync_sim_resources(
-    mut commands: Commands, sim: Res<Sim>, season: Res<CurrentSeason>, models: Option<Res<Models>>,
+    mut commands: Commands, sim: Res<Sim>, season: Res<crate::terrain_render::Season>, models: Option<Res<Models>>,
     mut st: Local<ResourceSync>, clock: Res<super::RenderClock>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim resources");
     let Some(models) = models else { return };
-    let sim = &sim.0;
+    let (sim, season) = (&sim.0, models::Season::at(season.phase));
     if st.res.reset_if(sim.instance, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
         for e in st.rocks.drain(..).flatten() { commands.entity(e).despawn(); }
         st.drawn = None;
@@ -599,7 +594,7 @@ pub(super) fn sync_sim_resources(
             let mut live = HashSet::with_capacity(sim.resources.items().len());
             for r in sim.resources.items() {
                 if rides_water(r) { st.plants.known.insert(r.id); st.plants.at.push((r.id, tile_of(r), r.kind.aquatic())); }
-                if shown(r) { live.insert(r.id); show_resource(&mut commands, &mut st.res.map, &models, sim, r, season.0, clock.0); }
+                if shown(r) { live.insert(r.id); show_resource(&mut commands, &mut st.res.map, &models, sim, r, season, clock.0); }
             }
             st.res.retain_live(&live, &mut commands, |c, (e, _)| c.entity(e).despawn());
             st.plants.tiles = plant_water(sim);
@@ -622,7 +617,7 @@ pub(super) fn sync_sim_resources(
                     _ => lost |= st.plants.known.remove(&id),
                 }
                 match r.filter(|r| shown(r)) {
-                    Some(r) => show_resource(&mut commands, &mut st.res.map, &models, sim, r, season.0, clock.0),
+                    Some(r) => show_resource(&mut commands, &mut st.res.map, &models, sim, r, season, clock.0),
                     None => if let Some((e, _)) = st.res.map.remove(&id) { commands.entity(e).despawn(); },
                 }
             }
@@ -631,7 +626,7 @@ pub(super) fn sync_sim_resources(
                 let _p = ::sim::prof::scope("game/sync sim resources/fog cleared");
                 for r in sim.resources.items() {
                     if !st.res.map.contains_key(&r.id) && shown(r) {
-                        show_resource(&mut commands, &mut st.res.map, &models, sim, r, season.0, clock.0);
+                        show_resource(&mut commands, &mut st.res.map, &models, sim, r, season, clock.0);
                     }
                 }
             }
@@ -645,7 +640,7 @@ pub(super) fn sync_sim_resources(
     if st.fog != sim.fog.revision {
         for (slot, b) in st.rocks.iter_mut().zip(&sim.resources.boulders) {
             if slot.is_none() && !crate::fog_render::unexplored(sim, b.cell) {
-                *slot = Some(commands.spawn((SimEntity, Mesh3d(models.boulders[b.seed as usize % models.boulders.len()].clone()), MeshMaterial3d(models.white.clone()), boulder_transform(sim, b))).id());
+                *slot = Some(commands.spawn((Mesh3d(models.boulders[b.seed as usize % models.boulders.len()].clone()), MeshMaterial3d(models.white.clone()), boulder_transform(sim, b))).id());
             }
         }
     }
@@ -663,39 +658,6 @@ fn boulder_transform(sim: &sim::SimState, b: &sim::resources::Boulder) -> Transf
 
 pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 {
     if b.status == Status::Complete { 1.0 } else { sim.work.progress(b.id).unwrap_or(0.0).clamp(0.0, 0.999) }
-}
-
-#[derive(Default)]
-pub struct ReinforcementSync {
-    drawn: SyncedMap<(BuildingId, bool), (Entity, f32)>,
-    meshes: HashMap<(BuildingKind, bool), Handle<Mesh>>,
-}
-
-pub(super) fn sync_reinforcements(
-    mut commands: Commands, sim: Res<Sim>, models: Option<Res<Models>>,
-    anchors: Res<BuildingAnchors>, mut meshes: ResMut<Assets<Mesh>>, mut state: Local<ReinforcementSync>,
-) {
-    let _p = ::sim::prof::scope("game/sync reinforcements");
-    let Some(models) = models else { return };
-    let s = &sim.0;
-    state.drawn.reset_if(s.instance, &mut commands, |c, (e, _)| c.entity(e).despawn());
-    let mut live = HashSet::new();
-    for (b, pebbled, _) in s.buildings.buildings.iter().flat_map(|b| [(b, false, b.reinforced), (b, true, !b.kind.is_dam() && b.pebbled)]).filter(|l| l.2) {
-        let key = (b.id, pebbled);
-        live.insert(key);
-        let tr = building_transform(s, b, anchors.0.get(&b.id).copied());
-        if let Some(&(e, y)) = state.drawn.map.get(&key) {
-            if (tr.translation.y - y).abs() > 0.01 {
-                commands.entity(e).insert(tr);
-                state.drawn.map.insert(key, (e, tr.translation.y));
-            }
-            continue;
-        }
-        let handle = state.meshes.entry((b.kind, pebbled)).or_insert_with(|| meshes.add(if pebbled { models::pebble_facing_mesh(b.kind) } else { models::reinforcement_mesh(b.kind) })).clone();
-        let e = commands.spawn((Target::Building(b.id), SimEntity, Mesh3d(handle), MeshMaterial3d(models.white.clone()), tr)).id();
-        state.drawn.map.insert(key, (e, tr.translation.y));
-    }
-    state.drawn.retain_live(&live, &mut commands, |c, (e, _)| c.entity(e).despawn());
 }
 
 fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor: Option<f32>) -> Transform {
@@ -720,13 +682,14 @@ fn wear_band(condition: f32) -> u8 {
 pub(super) fn sync_sim_buildings(
     mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>,
-    mut anchors: ResMut<BuildingAnchors>, clock: Res<super::RenderClock>, mut st: Local<BuildingSync>,
+    clock: Res<super::RenderClock>, mut st: Local<BuildingSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim buildings");
     let Some(mut models) = models else { return };
     let (changed, epoch, sim) = (sim.is_changed(), sim.0.instance, &sim.0);
     if st.bld.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
-        anchors.0.clear();
+        st.anchors.clear();
+        st.wear.clear();
         st.time = f64::NEG_INFINITY;
     }
     if sim.time_days == st.time && !changed && !st.bld.map.is_empty() { return; }
@@ -734,14 +697,10 @@ pub(super) fn sync_sim_buildings(
     let white = models.white.clone();
     let mut live = HashSet::new();
     let mut puffs = Vec::new();
-    let mut spawn = |commands: &mut Commands, models: &mut Models, target: Target, kind: BuildingKind, len2: u32, stage: u8, tr: Transform| {
-        let mesh = models.structs.entry((kind, len2, stage)).or_insert_with(|| meshes.add(models::struct_mesh(kind, len2 as f32 * 0.5, stage))).clone();
-        commands.spawn((target, SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id()
-    };
-    for b in sim.buildings.buildings.iter().filter(|b| !(b.kind.is_dam() && b.is_complete()) && !b.kind.is_canal()) {
+    for b in sim.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()) {
         live.insert(b.id);
         let stage = if sim.buildings.stranded(b, &sim.water.depth) { models::DRY_STAGE } else { models::stage_of(build_progress(sim, b)) };
-        let sig = (b.kind, b.pos, stage);
+        let sig = (b.kind, b.pos, stage, b.reinforced, b.pebbled);
         let band = if b.is_complete() { wear_band(b.condition) } else { 0 };
         let (was_band, was_cond, mut puffed) = st.wear.get(&b.id).copied().unwrap_or((band, b.condition, -100.0));
         let c = cell_xz(sim, b.centre());
@@ -751,24 +710,31 @@ pub(super) fn sync_sim_buildings(
         }
         st.wear.insert(b.id, (band, b.condition, puffed));
         let wear_mat = |models: &Models, b: u8| if b == 0 { white.clone() } else { models.wear[(b - 1) as usize].clone() };
+        let sag = 1.0 - 0.04 * band as f32;
         if let Some(&(e, _)) = st.bld.map.get(&b.id).filter(|(_, s)| *s == sig) {
-            let anchor = anchors.0.get(&b.id).copied();
-            let tr = building_transform(sim, b, anchor);
+            let anchor = st.anchors.get(&b.id).copied();
+            let mut tr = building_transform(sim, b, anchor);
+            tr.scale.y *= sag;
             if band != was_band {
-                let sag = 1.0 - 0.04 * band as f32;
-                commands.entity(e).insert((MeshMaterial3d(wear_mat(&models, band)), super::effects::Grow { base: tr.scale * Vec3::new(1.0, sag, 1.0), from: Vec3::new(1.0, (1.0 - 0.04 * was_band as f32) / sag, 1.0), since: clock.0, secs: 1.5 }));
+                commands.entity(e).insert((MeshMaterial3d(wear_mat(&models, band)), super::effects::Grow { base: tr.scale, from: Vec3::new(1.0, (1.0 - 0.04 * was_band as f32) / sag, 1.0), since: clock.0, secs: 1.5 }));
             }
             if tr.translation.y > anchor.unwrap_or(f32::MIN) + 0.01 {
                 commands.entity(e).insert(tr);
-                anchors.0.insert(b.id, tr.translation.y);
+                st.anchors.insert(b.id, tr.translation.y);
             }
             continue;
         }
         let replaced = st.bld.map.remove(&b.id).map(|(old, _)| commands.entity(old).despawn()).is_some();
-        let tr = building_transform(sim, b, anchors.0.get(&b.id).copied());
-        anchors.0.insert(b.id, tr.translation.y);
-        let e = spawn(&mut commands, &mut models, Target::Building(b.id), b.kind, (b.kind.spec().footprint.0 as u32 * 2).max(2), stage, tr);
-        if band > 0 { commands.entity(e).insert(MeshMaterial3d(wear_mat(&models, band))); }
+        let mut tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
+        st.anchors.insert(b.id, tr.translation.y);
+        tr.scale.y *= sag;
+        let mesh = models.structs.entry((b.kind, stage)).or_insert_with(|| meshes.add(models::struct_mesh(b.kind, stage))).clone();
+        let e = commands.spawn((Target::Building(b.id), Mesh3d(mesh), MeshMaterial3d(wear_mat(&models, band)), tr, Visibility::Inherited)).id();
+        for (pebbled, on) in [(false, b.reinforced), (true, b.pebbled)] {
+            if !on { continue; }
+            let handle = models.reinforcements.entry((b.kind, pebbled)).or_insert_with(|| meshes.add(if pebbled { models::pebble_facing_mesh(b.kind) } else { models::reinforcement_mesh(b.kind) })).clone();
+            commands.spawn((Target::Building(b.id), Mesh3d(handle), MeshMaterial3d(white.clone()), Transform::IDENTITY, ChildOf(e)));
+        }
         if replaced || (!b.is_complete() && stage == 0) {
             commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::new(1.02, 0.8, 1.02), since: clock.0, secs: 0.6 });
             puffs.push((tr.translation + Vec3::new(0.0, 0.3, 0.0), 1.8));
@@ -776,8 +742,8 @@ pub(super) fn sync_sim_buildings(
         st.bld.map.insert(b.id, (e, sig));
     }
     st.bld.retain_live(&live, &mut commands, |c, (e, _)| c.entity(e).despawn());
-    anchors.0.retain(|id, _| live.contains(id));
-    drop(spawn);
+    st.anchors.retain(|id, _| live.contains(id));
+    st.wear.retain(|id, _| live.contains(id));
     for (at, size) in puffs { super::effects::puff(&mut commands, &mut meshes, &mut materials, &mut puff_mesh, at, size); }
 }
 
@@ -905,7 +871,6 @@ pub struct DamSync {
     cells: SyncedMap<(usize, usize), (Entity, DamCellVis)>,
     walls: HashMap<(usize, usize), (DamCellVis, bool)>,
     key: Option<(((u64, u64), (u64, u64), u64), usize)>,
-    faced: HashMap<(u8, u32, u32, DamStage), Handle<Mesh>>,
 }
 
 fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn(f32) -> f32) -> Transform {
@@ -948,14 +913,13 @@ pub(super) fn sync_sim_dams(
     for (&c, &vis) in &want {
         if st.cells.map.contains_key(&c) { continue; }
         let variant = (hash01(c.0, c.1, 21) * 3.0) as u32 % 3;
-        let key = (vis.steps, vis.piece.len, variant, vis.stage);
-        let mesh = if vis.faced {
-            st.faced.entry(key).or_insert_with(|| meshes.add(super::structures::faced_dam_cell_mesh(vis.steps, vis.piece.len as f32 / 10.0, variant, vis.stage))).clone()
+        let mesh = models.dams.entry((vis.steps, vis.piece.len, variant, vis.stage, vis.faced)).or_insert_with(|| meshes.add(if vis.faced {
+            super::structures::faced_dam_cell_mesh(vis.steps, vis.piece.len as f32 / 10.0, variant, vis.stage)
         } else {
-            models.dams.entry(key).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(vis.steps, vis.piece.len as f32 / 10.0, variant, vis.stage))).clone()
-        };
+            super::structures::dam_cell_mesh(vis.steps, vis.piece.len as f32 / 10.0, variant, vis.stage)
+        })).clone();
         let tr = piece_transform(sim, &vis.piece, vis.flip, |g| g);
-        let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id();
+        let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), tr)).id();
         if let Some(&old) = was_steps.get(&c).filter(|&&o| o != vis.steps && vis.steps > 0) {
             commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::new(1.0, (old as f32 / vis.steps as f32).clamp(0.05, 4.0), 1.0), since: clock.0, secs: 1.0 });
         }
@@ -1000,10 +964,10 @@ pub(super) fn sync_dam_ghosts(
     }).clone();
     for (&c, &(steps, piece, flip, bad)) in &want {
         if st.cells.contains_key(&c) { continue; }
-        let mesh = models.dams.entry((steps, piece.len, 1, DamStage::Done)).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(steps, piece.len as f32 / 10.0, 1, DamStage::Done))).clone();
+        let mesh = models.dams.entry((steps, piece.len, 1, DamStage::Done, false)).or_insert_with(|| meshes.add(super::structures::dam_cell_mesh(steps, piece.len as f32 / 10.0, 1, DamStage::Done))).clone();
         let surface = sim.height.get(c.0, c.1).copied().unwrap_or(0.0) + sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
         let tr = piece_transform(sim, &piece, flip, |g| g.max(surface + 0.15 - steps as f32 * DAM_STEP));
-        let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(if bad { no.clone() } else { ok.clone() }), tr)).id();
+        let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(if bad { no.clone() } else { ok.clone() }), tr)).id();
         st.cells.insert(c, (e, (steps, piece, flip, bad)));
     }
 }
@@ -1014,7 +978,6 @@ enum GroundKey { Pile(u64), Supplies }
 #[derive(Default)]
 pub struct GroundSync {
     drawn: SyncedMap<GroundKey, (Entity, ((usize, usize), (u8, u8)))>,
-    meshes: HashMap<Option<sim::buildings::Good>, Handle<Mesh>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1052,7 +1015,7 @@ pub(super) fn sync_ground_goods(
                 commands.entity(e).insert(super::SetDown { until: clock.0 + 1.0 });
                 if let Some(g) = good {
                     let from = btr.translation + Vec3::Y * 0.8 * btr.scale.y + btr.rotation * Vec3::Z * 0.6 * btr.scale.z;
-                    commands.spawn((SimEntity, Mesh3d(models.loads[g.index()].clone()), MeshMaterial3d(models.white.clone()),
+                    commands.spawn((Mesh3d(models.loads[g.index()].clone()), MeshMaterial3d(models.white.clone()),
                         Transform::from_translation(from).with_scale(btr.scale * super::LOAD_LOOK),
                         super::effects::Fall { from, to: ground + Vec3::Y * 0.05, since: clock.0 + 0.3, secs: 0.35 }));
                 }
@@ -1060,7 +1023,7 @@ pub(super) fn sync_ground_goods(
             super::effects::puff(&mut commands, &mut meshes, &mut materials, &mut puff_mesh, ground, 0.7);
         }
         let tr = Transform::from_translation(ground).with_rotation(Quat::from_rotation_y(hash01(cell.0, cell.1, 23) * std::f32::consts::TAU)).with_scale(Vec3::splat(scale));
-        let mesh = st.meshes.entry(good).or_insert_with(|| meshes.add(match good { Some(g) => models::heap_mesh(g), None => models::supplies_mesh() })).clone();
+        let mesh = match good { Some(g) => models.heaps[g.index()].clone(), None => models.supplies.clone() };
         match st.drawn.map.get(&key) {
             Some(&(e, (_, (old_scale, _)))) => {
                 let from = (old_scale as f32 / 20.0 / scale.max(0.01)).clamp(0.2, 5.0);
@@ -1068,7 +1031,7 @@ pub(super) fn sync_ground_goods(
                 st.drawn.map.insert(key, (e, sig));
             }
             None => {
-                let e = commands.spawn((SimEntity, Mesh3d(mesh), MeshMaterial3d(mat), tr)).id();
+                let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat), tr)).id();
                 if dropped { commands.entity(e).insert(super::effects::Grow { base: tr.scale, from: Vec3::splat(0.05), since: clock.0 + 0.6, secs: 0.5 }); }
                 st.drawn.map.insert(key, (e, sig));
             }

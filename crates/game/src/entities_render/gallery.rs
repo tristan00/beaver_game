@@ -74,7 +74,7 @@ pub(super) fn spawn_gallery(
             for (i, &stage) in stages.iter().enumerate() {
                 let (x, z) = (cx + (i as f32 - stages.len() as f32 / 2.0) * 4.0, cz - 3.0 - row as f32 * 4.5);
                 let base = (0..9).map(|k| ground(x + (k % 3) as f32 - 1.0, z + (k / 3) as f32 - 1.0)).fold(f32::MIN, f32::max);
-                let mesh = meshes.add(models::struct_mesh(kind, 1.0, stage));
+                let mesh = meshes.add(models::struct_mesh(kind, stage));
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, base, z).with_scale(Vec3::splat(super::sim_sync::BUILDING_SIZE))));
             }
         }
@@ -127,7 +127,7 @@ pub(super) fn spawn_gallery(
         place(&mut commands, m.river_mud.clone(), &m.wet, cx + 1.0, cz - 13.0, 1.0);
     }
     if let (true, Some(hm)) = (what == "raft_landing", raft_landing_meshes.as_deref()) {
-        super::raft_landing::spawn_gallery(&mut commands, hm, &m, &mut meshes, Vec3::new(cx, 0.0, cz), ground);
+        super::raft_landing::spawn_gallery(&mut commands, hm, &m, Vec3::new(cx, 0.0, cz), ground);
     }
     if let (true, Some(wm)) = (what == "wild", wild_meshes.as_deref()) {
         super::wildlife::spawn_gallery(&mut commands, wm, &m, Vec3::new(cx, 0.0, cz), ground);
@@ -221,8 +221,8 @@ pub(super) fn spawn_gallery(
             for (i, g) in sim::buildings::Good::all().enumerate() {
                 spawn(20 + i as u64, Pose::Carry, Some(g), cx + (i as f32 - 1.0) * 1.6, cz + 4.0, 1.0);
             }
-            for (i, stage) in [sim::colony::Stage::Kit, sim::colony::Stage::Yearling, sim::colony::Stage::Adult].into_iter().enumerate() {
-                spawn(30 + i as u64, Pose::Idle, None, cx + 4.0 + i as f32 * 1.4, cz + 4.0, super::age_scale(stage));
+            for (i, age) in [sim::colony::KIT_DAYS * 0.5, (sim::colony::KIT_DAYS + sim::colony::ADULT_DAYS) * 0.5, sim::colony::ADULT_DAYS].into_iter().enumerate() {
+                spawn(30 + i as u64, Pose::Idle, None, cx + 4.0 + i as f32 * 1.4, cz + 4.0, super::age_scale_days(age));
             }
         }
     }

@@ -55,10 +55,7 @@ impl Plugin for EntitiesRenderPlugin {
         app.init_resource::<RenderClock>()
             .init_resource::<TailSlapTimes>()
             .init_resource::<effects::PuffMesh>()
-            .init_resource::<CurrentSeason>()
             .init_resource::<CanopyView>()
-            .init_resource::<sim_sync::PendingDays>()
-            .init_resource::<sim_sync::BuildingAnchors>()
             .init_resource::<BeaverDrawn>()
             .add_plugins((wolf::WolfPlugin, wildlife::WildlifePlugin, portrait::PortraitPlugin))
             .add_systems(Startup, (init_models, raft_landing::init_raft_landing_meshes))
@@ -66,9 +63,9 @@ impl Plugin for EntitiesRenderPlugin {
             .add_systems(
                 Update,
                 (
-                    update_clock_and_season, sim_sync::update_pending, sim_sync::sync_sim_beavers, sim_sync::sync_bodies,
+                    update_clock, sim_sync::sync_sim_beavers, sim_sync::sync_bodies,
                     sim_sync::sync_sim_resources, sim_sync::sync_sim_buildings, sim_sync::sync_sim_dams,
-                    sim_sync::sync_dam_ghosts, sim_sync::sync_reinforcements, sim_sync::sync_ground_goods,
+                    sim_sync::sync_dam_ghosts, sim_sync::sync_ground_goods,
                     gallery::spawn_gallery, gallery::shuffle_gallery, gallery::select_home, gallery::select_debug,
                     attach_rigs, animate_beavers, canopy_key, update_tree_lod, sway_trees, topple_trees,
                 ).chain().after(crate::terrain_render::update_season),
@@ -91,10 +88,6 @@ impl BeaverDrawn {
 
 #[derive(Resource, Default)]
 pub(crate) struct TailSlapTimes(pub HashMap<u64, f32>);
-
-#[derive(Resource)]
-struct CurrentSeason(Season);
-impl Default for CurrentSeason { fn default() -> Self { Self(Season::at(0.0)) } }
 
 #[derive(Resource)]
 pub(crate) struct CanopyView(pub bool);
@@ -126,6 +119,8 @@ struct Models {
     grey: Handle<Mesh>,
     loads: Vec<Handle<Mesh>>,
     paw_loads: Vec<Handle<Mesh>>,
+    heaps: Vec<Handle<Mesh>>,
+    supplies: Handle<Mesh>,
     felled: Vec<Handle<Mesh>>,
     plants: Vec<Handle<Mesh>>,
     pebble_heaps: Vec<Handle<Mesh>>,
@@ -137,8 +132,9 @@ struct Models {
     far: Handle<Mesh>,
     wake: Handle<Mesh>,
     blob: Handle<Mesh>,
-    structs: HashMap<(sim::buildings::BuildingKind, u32, u8), Handle<Mesh>>,
-    dams: HashMap<(u8, u32, u32, structures::DamStage), Handle<Mesh>>,
+    structs: HashMap<(sim::buildings::BuildingKind, u8), Handle<Mesh>>,
+    reinforcements: HashMap<(sim::buildings::BuildingKind, bool), Handle<Mesh>>,
+    dams: HashMap<(u8, u32, u32, structures::DamStage, bool), Handle<Mesh>>,
 }
 
 impl Models {
@@ -154,8 +150,6 @@ struct PlantLook { plant: sim::plants::Plant, season: Season }
 
 #[derive(Component)]
 struct Sway(Quat);
-#[derive(Component)]
-struct SimEntity;
 #[derive(Component)]
 struct SimBeaver;
 
@@ -202,10 +196,6 @@ pub(crate) struct BeaverRig {
     stride: f32, speed: f32, last_pos: Option<Vec3>,
 }
 
-pub fn age_scale(stage: sim::colony::Stage) -> f32 {
-    match stage { sim::colony::Stage::Kit => 0.68, sim::colony::Stage::Yearling => 0.8, sim::colony::Stage::Adult => 1.0 }
-}
-
 pub fn age_scale_days(age_days: f32) -> f32 {
     use sim::colony::{ADULT_DAYS, KIT_DAYS};
     if age_days < KIT_DAYS { 0.55 + 0.19 * (age_days / KIT_DAYS).clamp(0.0, 1.0) }
@@ -243,6 +233,8 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         blob: build_mesh(&mut meshes, models::blob_shadow),
         loads: sim::buildings::Good::all().map(|g| meshes.add(models::load_mesh(g))).collect(),
         paw_loads: sim::buildings::Good::all().map(|g| meshes.add(models::paw_load_mesh(g))).collect(),
+        heaps: sim::buildings::Good::all().map(|g| meshes.add(models::heap_mesh(g))).collect(),
+        supplies: meshes.add(models::supplies_mesh()),
         felled: (0..4u8).flat_map(|l| [false, true].map(|b| meshes.add(models::felled_mesh(l, b)))).collect(),
         plants: sim::plants::Plant::all().flat_map(|p| Season::all().map(move |s| (p, s))).map(|(p, s)| meshes.add(plants::plant_mesh(p, s))).collect(),
         pebble_heaps: (1..=4).map(|q| meshes.add(deposits::pebble_heap_mesh(q))).collect(),
@@ -251,15 +243,14 @@ fn init_models(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         mud_heap: meshes.add(deposits::mud_heap_mesh()),
         river_mud: meshes.add(deposits::river_mud_mesh()),
         structs: HashMap::new(),
+        reinforcements: HashMap::new(),
         dams: HashMap::new(),
     });
 }
 
-fn update_clock_and_season(time: Res<Time>, cli: Res<Cli>, visual: Res<crate::terrain_render::Season>, mut clock: ResMut<RenderClock>, mut season: ResMut<CurrentSeason>) {
+fn update_clock(time: Res<Time>, cli: Res<Cli>, mut clock: ResMut<RenderClock>) {
     let frozen = cli.screenshot.is_some() && std::env::var_os("BC_BURST").is_none() && std::env::var_os("BC_GALLERY").is_none();
     clock.0 = if frozen { std::env::var("BC_CLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(SCREENSHOT_CLOCK) } else { time.elapsed_secs() };
-    let next = Season::at(visual.phase);
-    if season.0 != next { season.0 = next; }
 }
 
 fn attach_rigs(mut commands: Commands, models: Option<Res<Models>>, mut mats: ResMut<Assets<StandardMaterial>>, q: Query<(Entity, &BeaverSprite), Without<BeaverRig>>) {

@@ -61,6 +61,11 @@ pub fn height_at(h: &HeightGrid, x: f32, y: f32) -> f32 {
     bilinear_at(h, x, y)
 }
 
+pub fn height_at_world(h: &HeightGrid, x: f32, z: f32) -> f32 {
+    let (cx, cy) = world_cell(h, Vec3::new(x, 0.0, z));
+    bilinear_at(h, cx, cy)
+}
+
 pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell, Vec3, f32)> {
     ray_level(origin, dir, h, |x, y| height_at(h, x, y))
 }

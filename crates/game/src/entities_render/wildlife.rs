@@ -379,19 +379,23 @@ fn carcass_key(c: &sim::wildlife::Carcass) -> u64 {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn drive(
     mut commands: Commands, sim: Res<Sim>, time: Res<Time>, clock: Option<Res<crate::sim_driver::SimClock>>,
-    meshes: Option<Res<WildMeshes>>, models: Option<Res<Models>>,
+    meshes: Option<Res<WildMeshes>>, models: Option<Res<Models>>, mut epoch: Local<Option<u64>>,
     mut beasts: Query<(Entity, &mut Beast, &mut Transform, &mut Visibility, Option<&mut WolfTrack>, Option<&Wild>, Option<&Carcass>, Option<&GalleryBeast>)>,
     mut parts: Query<&mut Transform, Without<Beast>>,
 ) {
     let _p = ::sim::prof::scope("game/wildlife");
     let (Some(wm), Some(m)) = (meshes, models) else { return };
     let (s, wl, dt, t) = (&sim.0, &sim.0.wildlife, time.delta_secs().clamp(1e-4, 0.1), time.elapsed_secs());
+    let fresh = *epoch != Some(s.instance);
+    *epoch = Some(s.instance);
     let smoothing = clock.as_ref().map_or(1.0, |c| c.speed.smoothing());
     let now = clock.as_ref().map_or(s.time_days, |c| c.render_days(s.time_days));
     let (mut seen, mut seen_dead) = (Vec::with_capacity(wl.animals.len()), Vec::with_capacity(wl.carcasses.len()));
     for (e, mut b, mut tr, mut vis, track, wild, carcass, gallery) in &mut beasts {
         let (speed, doing, dead, alt) = if let Some(g) = gallery {
             (g.speed, g.doing, g.dead, Some(g.alt))
+        } else if fresh {
+            commands.entity(e).despawn(); continue;
         } else if let Some(&Carcass(key)) = carcass {
             let Some(c) = wl.carcasses.iter().find(|c| carcass_key(c) == key) else { commands.entity(e).despawn(); continue; };
             seen_dead.push(key);

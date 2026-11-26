@@ -17,6 +17,7 @@ pub struct Ctx<'a> {
     pub clock: &'a SimClock,
     pub sel: Selection,
     pub lens: MapLens,
+    pub active_lens: MapLens,
     pub hover: Option<Cell>,
     pub works_cell: Option<Cell>,
     pub problems: &'a [Problem],
@@ -561,7 +562,7 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
         });
     })];
     let leg_at = abs(Some(12.0), None, Some(LEGEND_TOP), None);
-    out.extend(super::paths::legend(c.s, leg_at.clone()));
+    out.extend(super::paths::legend(c.s, c.active_lens, leg_at.clone()));
     out.extend(super::water_legend::legend(leg_at));
     out
 }

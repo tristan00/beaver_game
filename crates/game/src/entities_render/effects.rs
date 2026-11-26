@@ -13,12 +13,15 @@ pub struct Grow {
     pub secs: f32,
 }
 
-/// A puff of dust spreading and fading.
+/// A puff of dust or water splash spreading and fading.
 #[derive(Component)]
 pub struct Puff {
     age: f32,
     life: f32,
-    size: f32,
+    from: Vec3,
+    to: Vec3,
+    rise: f32,
+    color: [f32; 4],
     mat: Handle<StandardMaterial>,
 }
 
@@ -69,7 +72,15 @@ pub fn puff(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut 
         meshes.add(mb.build())
     }).clone();
     let mat = materials.add(StandardMaterial { base_color: Color::srgba(0.86, 0.8, 0.7, 0.6), alpha_mode: AlphaMode::Blend, unlit: true, ..default() });
-    commands.spawn((Mesh3d(m), MeshMaterial3d(mat.clone()), Transform::from_translation(at).with_scale(Vec3::splat(size * 0.3)), Puff { age: 0.0, life: 1.1, size, mat }));
+    let from = Vec3::splat(size * 0.3);
+    commands.spawn((Mesh3d(m), MeshMaterial3d(mat.clone()), Transform::from_translation(at).with_scale(from), Puff { age: 0.0, life: 1.1, from, to: Vec3::splat(size * 1.2), rise: 0.4, color: [0.86, 0.8, 0.7, 0.6], mat }));
+}
+
+/// An expanding water splash ring at `at` (tail-slap alarm).
+pub fn splash(commands: &mut Commands, mesh: Handle<Mesh>, materials: &mut Assets<StandardMaterial>, at: Vec3) {
+    let mat = materials.add(StandardMaterial { base_color: Color::WHITE, alpha_mode: AlphaMode::Blend, unlit: true, double_sided: true, cull_mode: None, ..default() });
+    let from = Vec3::splat(0.3);
+    commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::from_translation(at).with_scale(from), Puff { age: 0.0, life: 1.4, from, to: Vec3::new(3.5, 0.6, 3.5), rise: 0.0, color: [1.0, 1.0, 1.0, 1.0], mat }));
 }
 
 pub fn puffs(time: Res<Time>, mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>, mut q: Query<(Entity, &mut Puff, &mut Transform)>) {
@@ -82,10 +93,11 @@ pub fn puffs(time: Res<Time>, mut commands: Commands, mut materials: ResMut<Asse
             commands.entity(e).despawn();
             continue;
         }
-        tr.scale = Vec3::splat(p.size * (0.3 + 0.9 * (1.0 - (1.0 - k) * (1.0 - k))));
-        tr.translation.y += dt * 0.4;
+        tr.scale = p.from.lerp(p.to, 1.0 - (1.0 - k) * (1.0 - k));
+        tr.translation.y += dt * p.rise;
         if let Some(mut m) = materials.get_mut(&p.mat) {
-            m.base_color = Color::srgba(0.86, 0.8, 0.7, 0.6 * (1.0 - k));
+            let [r, g, b, a] = p.color;
+            m.base_color = Color::srgba(r, g, b, a * (1.0 - k));
         }
     }
 }

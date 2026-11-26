@@ -4,10 +4,7 @@ use crate::icons::Icon;
 use crate::flow::{cell_world, height_at};
 use bevy::prelude::*;
 use sim::jobs::Job;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-
-/// Whether the paths view is on screen (set by `sync_lens`, which may show another view over it).
-pub static SHOWN: AtomicBool = AtomicBool::new(false);
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// The one role whose paths are shown, picked in the legend: `ALL_ROLES` for every path, `FREE`
 /// for free beavers', otherwise the job's index.
@@ -57,8 +54,8 @@ fn walking(s: &sim::SimState) -> impl Iterator<Item = (&sim::agents::Agent, Opti
 }
 
 /// The paths view: every beaver's way still to go, in its role's colour, ringed where it ends.
-pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>) {
-    if !SHOWN.load(Ordering::Relaxed) {
+pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>, active: Res<super::ActiveLens>) {
+    if active.0 != super::MapLens::Paths {
         return;
     }
     let s = &sim.0;
@@ -88,8 +85,8 @@ pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>) {
 /// Over the lens rail while the paths view is on, in one row: every role's icon on its colour,
 /// each a button that shows only that role's paths (and every path again on a second click).
 /// Roles no one is walking for now are dimmed; the name is in the tooltip.
-pub fn legend(s: &sim::SimState, node: Node) -> Option<VNode> {
-    if !SHOWN.load(Ordering::Relaxed) {
+pub fn legend(s: &sim::SimState, active: super::MapLens, node: Node) -> Option<VNode> {
+    if active != super::MapLens::Paths {
         return None;
     }
     let walking_now: Vec<Option<Job>> = walking(s).map(|(_, r)| r).collect();
