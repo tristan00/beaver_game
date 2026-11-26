@@ -392,9 +392,9 @@ pub(super) fn world_input(
 /// clicked, then the nearest of its kind once it is used up. With `queue` (Shift held) the order
 /// waits behind the ones they already have, and starts once those are done.
 fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, queue: bool, now: f32) {
-    use sim::agents::{Assignment, Order};
+    use sim::agents::Assignment;
     let give = |s: &mut sim::SimState, who: Vec<BeaverId>, to: Assignment| {
-        if queue { s.apply(sim::Command::Queue { who, order: Order::Do(to) }) } else { s.apply(sim::Command::Assign { who, to: Some(to) }) }
+        s.apply(sim::Command::Assign { who, to: Some(to), queue })
     };
     match t {
         world::Thing::Resource(rid) => {
@@ -422,27 +422,9 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 hud.refuse("Too young", now);
                 return;
             }
-            if queue {
-                match s.apply(sim::Command::Queue { who: workers.clone(), order: Order::Work(b) }) {
-                    Ok(_) => hud.say(Some((Icon::Building, GOOD)), None, format!("{}", workers.len()), now),
-                    Err(e) => hud.refuse(sim_error(&e.to_string()), now),
-                }
-                return;
-            }
-            let mut placed = 0;
-            let mut last_err: Option<String> = None;
-            for &w in &workers {
-                let Some((slot, _, _)) = sim::jobs::empty_slot(s, b, None) else { break };
-                match s.apply(sim::Command::FillSlot { building: b, slot, who: w }) {
-                    Ok(_) => placed += 1,
-                    Err(e) => last_err = Some(sim_error(&e.to_string())),
-                }
-            }
-            if placed > 0 {
-                hud.say(Some((Icon::Building, GOOD)), None, format!("{placed}"), now);
-            } else {
-                let why = last_err.unwrap_or_else(|| sim::jobs::workplace_error_reason(s, b));
-                hud.refuse(why, now);
+            match give(s, workers.clone(), Assignment::Work(b)) {
+                Ok(_) => hud.say(Some((Icon::Building, GOOD)), None, format!("{}", workers.len()), now),
+                Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
         _ => {}
@@ -557,7 +539,7 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
         hud.say(Some((if h == Harvest::Cut { crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()) } else { crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)) }, BAD)), Some((Icon::Cross, BAD)), "", now);
         return;
     };
-    match s.apply(sim::Command::Assign { who: who.clone(), to: Some(sim::agents::Assignment::Area(kind, area)) }) {
+    match s.apply(sim::Command::Assign { who: who.clone(), to: Some(sim::agents::Assignment::Area(kind, area)), queue: false }) {
         Ok(_) => {
             hud.say(Some((resource_icon(kind), GOOD)), Some((Icon::Beaver, ui::FUR)), format!("{}", who.len()), now);
             hud.set_tool(Tool::None);

@@ -90,7 +90,6 @@ impl SimState {
         }
         self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
-        self.output.forget(id);
         Ok(refunded)
     }
 
@@ -135,7 +134,6 @@ impl SimState {
             }
         }
         self.work.places.retain(|p| p.building != id);
-        self.work.hauls.retain(|o| o.from != id && o.to != id);
         self.work.balanced.remove(&id);
         self.work.fills.remove(&id);
         if let Some(home) = self.work.homes.remove(&id) {
@@ -145,28 +143,22 @@ impl SimState {
             self.colony.lodges.retain(|l| l.id != home);
             self.colony.house_homeless();
         }
-        self.agents.maint_targets.retain(|_, t| *t != id);
+        self.maintenance.mending.remove(&id);
         self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         self.buildings.wrecked.insert(id);
-        self.output.forget(id);
         crate::trace::event(format!("BUILDING_WRECKED {} id={} kind={kind:?}", crate::trace::sim_stamp(), id.0));
     }
 
     pub(crate) fn release_beavers(&mut self, id: buildings::BuildingId) {
         let mut wake_ids: Vec<crate::colony::BeaverId> = Vec::new();
-        self.agents.build_targets.retain(|&w, t| if *t == id { wake_ids.push(w); false } else { true });
-        self.agents.maint_targets.retain(|&w, t| if *t == id { wake_ids.push(w); false } else { true });
         if let Some(p) = self.work.places.iter_mut().find(|p| p.building == id) {
             for s in &mut p.slots {
                 if let Some(w) = s.beaver.take() { wake_ids.push(w); }
             }
         }
         for ag in self.agents.by_id.values_mut() {
-            if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
-                ag.assignment = None;
-                wake_ids.push(ag.id);
-            }
+            if ag.clear_target(id) { wake_ids.push(ag.id); }
         }
         for w in wake_ids { agents::wake(self, w); }
     }

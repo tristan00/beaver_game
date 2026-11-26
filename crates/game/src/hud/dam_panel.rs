@@ -70,7 +70,7 @@ enum Fix {
 
 /// What the dam as a whole is doing, in a word, its colour, why, and the one fix.
 fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (&'static str, Color, &'static str, Fix) {
-    let (builders, _) = sim::dams::crew(s, id);
+    let builders = sim::agents::builders_on(s, id);
     let building = sim::dams::has_work_for(s, id, false);
     if building && builders == 0 {
         return ("No builders", WARN, "Work is waiting and no builder is on it", Fix::Assign);
@@ -290,14 +290,14 @@ fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     if b.pebbled {
         r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
     } else if s.maintenance.jobs.get(&id).is_some_and(|j| j.kind == sim::maintenance::Refit::Facing) {
-        r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::CancelMaintenance(id)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
+        r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::Refit(id, None)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
     } else {
         let mut tip = Tip::name("Face with pebbles").line("Wears", slower);
         for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Facing).0 {
             tip.push(TipLine::new(g.name(), num(a)).icon(good_icon(g), good_color(g)));
         }
         if b.is_complete() {
-            r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::PebbleBuilding(id)), tip, Small::Idle);
+            r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::Refit(id, Some(sim::maintenance::Refit::Facing))), tip, Small::Idle);
         } else {
             r.small_button(Some(Icon::Pebbles), Some("Face"), None, tip.line("Finish the dam first", ""), Small::Idle);
         }
@@ -305,10 +305,10 @@ fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
 }
 
 fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
-    let (builders, _) = sim::dams::crew(c.s, id);
+    let builders = sim::agents::builders_on(c.s, id);
     u.row(6.0, |r| {
         works::crew_button(r, builders, crate::hud::words::job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), "Builders here", fix == Fix::Assign);
-        works::upkeep_button(r, d.upkeep, HudAction::DamUpkeep(id, !d.upkeep), "Menders repair worn cells", fix == Fix::Upkeep);
+        works::upkeep_button(r, d.upkeep, HudAction::Upkeep(id, !d.upkeep), "Menders repair worn cells", fix == Fix::Upkeep);
         face_button(c.s, r, id);
         works::pause_button(r, c.s, id);
         r.spacer();

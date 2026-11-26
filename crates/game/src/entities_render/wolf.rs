@@ -343,7 +343,7 @@ fn force_lookout(mut sim: ResMut<Sim>, mut orbit: ResMut<crate::camera::OrbitCam
         }
         2 => {
             let Some(b) = s.buildings.buildings.iter().find(|b| b.kind.watches() && b.is_complete()).map(|b| (b.id, sim::predators::lookout_centre(b))) else { return };
-            let _ = s.apply(sim::Command::AddBeaver { building: b.0 });
+            let _ = s.apply(sim::Command::StaffBuilding { building: b.0, delta: 1 });
             orbit.target = ground_pt(s, cell_xz(s, b.1));
             let cam = env_floats("BC_LOOKOUT");
             orbit.distance = cam.first().copied().unwrap_or(90.0);

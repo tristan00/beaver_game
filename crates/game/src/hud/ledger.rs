@@ -335,7 +335,7 @@ fn dams(c: &Ctx, u: &mut Ui) {
                     r.spacer();
                     let left = sim::dams::loads_left(s, b.id);
                     if left > 0 { stat(r, good_icon(sim::dams::material()), good_color(sim::dams::material()), format!("{left}"), INK, Tip::name("Loads still to carry")); }
-                    r.pebble(Icon::Hammer, 11.0, HudAction::DamUpkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if d.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    r.pebble(Icon::Hammer, 11.0, HudAction::Upkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if d.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
                     super::costs::page_button(c, r, b.id);
                     r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
                 });
@@ -394,7 +394,7 @@ fn canals(c: &Ctx, u: &mut Ui) {
                     r.bold(format!("Canal {}", i + 1), 14.0, INK);
                     r.pips(health, super::works::condition_colour(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{}", st.map_or(0, |x| x.silted))));
                     r.spacer();
-                    r.pebble(Icon::Hammer, 11.0, HudAction::CanalUpkeep(b.id, !k.upkeep), if k.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if k.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if k.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    r.pebble(Icon::Hammer, 11.0, HudAction::Upkeep(b.id, !k.upkeep), if k.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if k.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if k.upkeep { "Stop" } else { "Keep in repair" }, ""));
                     super::costs::page_button(c, r, b.id);
                     r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
                 });
@@ -444,8 +444,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
                 r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
                     if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
                         x.icon(Icon::Beaver, 13.0, MUTED);
-                        let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                        x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
+                        x.text(format!("{}/{}", pl.filled(), pl.slots.len()), 11.0, if pl.filled() == 0 { WARN } else { INK });
                     }
                 });
             });

@@ -2,7 +2,7 @@
 include!(concat!(env!("OUT_DIR"), "/canals_constants.rs"));
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use crate::agents::{Task, WorkKind};
+use crate::agents::WorkKind;
 use crate::buildings::{Building, BuildingId, BuildingKind, Status};
 use crate::gates::{apply_across, cell_taken, check_cell_open, claimed_work, depth, finish_gate, ground, invalid, is_water as water_cell, push_history, surface, Gate, GateSetting};
 use crate::water::Cell;
@@ -331,7 +331,6 @@ pub fn growth_labour(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells:
     let (after, _) = plan_growth(sim, id, growth, cells)?;
     Ok(dig_days(total(&after).saturating_sub(before)))
 }
-pub fn set_upkeep(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> { canal_mut(sim, id)?.upkeep = on; Ok(()) }
 pub fn gates_unlocked(sim: &SimState) -> bool { crate::gates::unlocked(sim) }
 pub fn set_gate(sim: &mut SimState, id: BuildingId, setting: GateSetting) -> Result<(), SimError> {
     if canal(sim, id).is_some_and(|k| !k.gate.built) { crate::gates::check_unlocked(sim).map_err(invalid)?; }
@@ -401,8 +400,4 @@ fn measure(sim: &SimState, k: &Canal) -> CanalStatus {
 pub fn health(sim: &SimState, k: &Canal) -> f32 {
     let done: Vec<&CanalCell> = k.cells.iter().filter(|c| c.done).collect();
     if done.is_empty() { 1.0 } else { done.iter().filter(|c| ground(sim, c.cell) <= c.target + SILT_TOLERANCE).count() as f32 / done.len() as f32 }
-}
-
-pub fn crew(sim: &SimState, id: BuildingId) -> usize {
-    sim.agents.by_id.values().filter(|a| matches!(a.task, Task::Work { site, kind: WorkKind::Dig | WorkKind::Gate, .. } if site == id)).count()
 }

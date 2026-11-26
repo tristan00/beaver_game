@@ -140,7 +140,7 @@ pub(super) fn button_actions(
                 hud.dam_ghost = None;
                 hud.dam_cells.clear();
             }
-            HudAction::DamUpkeep(dam, on) => cmd(s, &mut hud, sim::Command::SetDamUpkeep { dam, on }, now),
+            HudAction::Upkeep(building, on) => cmd(s, &mut hud, sim::Command::SetUpkeep { building, on }, now),
             HudAction::Opening(dam, o) => {
                 if hud.opening == Some((dam, o)) {
                     hud.opening = None;
@@ -175,7 +175,6 @@ pub(super) fn button_actions(
                 cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell }, now);
                 hud.dam_cells.retain(|c| *c != cell);
             }
-            HudAction::CanalUpkeep(canal, on) => cmd(s, &mut hud, sim::Command::SetCanalUpkeep { canal, on }, now),
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {
                     // Draw on from the open end: the player drags (or clicks corners) the new
@@ -249,20 +248,16 @@ pub(super) fn button_actions(
             HudAction::SelectBeaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
             HudAction::SelectBuilding(id) => hud.select_building(s, &mut sel, &mut flow, id),
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
-            HudAction::FreeBeaver(id) => free_beaver(s, &mut hud, id, now),
-            HudAction::AddBeaver(building) => cmd(s, &mut hud, sim::Command::AddBeaver { building }, now),
+            HudAction::FreeBeaver(id) => cmd(s, &mut hud, sim::Command::Assign { who: vec![id], to: None, queue: false }, now),
+            HudAction::Staff(building, delta) => cmd(s, &mut hud, sim::Command::StaffBuilding { building, delta }, now),
             HudAction::Badge(key) => hud.open_badge = if hud.open_badge.as_ref() == Some(&key) { None } else { Some(key) },
             HudAction::FillStore(store, on) => cmd(s, &mut hud, sim::Command::FillStore { store, on }, now),
             HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
-            HudAction::RemoveBeaver(building) => cmd(s, &mut hud, sim::Command::RemoveBeaver { building }, now),
             HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
             HudAction::ShoreLimit(role, cells) => cmd(s, &mut hud, sim::Command::SetShoreLimit { role, cells }, now),
             HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
-            HudAction::RepairBuilding(building) => cmd(s, &mut hud, sim::Command::RepairBuilding { building }, now),
-            HudAction::ReinforceBuilding(building) => cmd(s, &mut hud, sim::Command::ReinforceBuilding { building }, now),
-            HudAction::PebbleBuilding(building) => cmd(s, &mut hud, sim::Command::PebbleBuilding { building }, now),
+            HudAction::Refit(building, refit) => cmd(s, &mut hud, sim::Command::Refit { building, refit }, now),
             HudAction::SlotOff(building, slot, off) => cmd(s, &mut hud, sim::Command::SetSlotOff { building, slot, off }, now),
-            HudAction::CancelMaintenance(building) => cmd(s, &mut hud, sim::Command::CancelMaintenance { building }, now),
             HudAction::ClearPicks => hud.dam_cells.clear(),
             HudAction::ClosePanel(p, selected) => {
                 hud.pinned.retain(|x| *x != p);
@@ -306,16 +301,6 @@ fn picks_on(s: &sim::SimState, id: sim::buildings::BuildingId, picks: &[Cell]) -
 
 fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command, now: f32) {
     if let Err(e) = s.apply(c) {
-        hud.refuse(sim_error(&e.to_string()), now);
-    }
-}
-
-fn free_beaver(s: &mut sim::SimState, hud: &mut HudState, id: BeaverId, now: f32) {
-    let res = match s.work.slot_of(id) {
-        Some((b, slot, _)) => s.apply(sim::Command::EmptySlot { building: b, slot }),
-        None => s.apply(sim::Command::Assign { who: vec![id], to: None }),
-    };
-    if let Err(e) = res {
         hud.refuse(sim_error(&e.to_string()), now);
     }
 }

@@ -50,19 +50,17 @@ pub enum Use {
     EatenKits,
     Spoiled,
     Sites,
-    Crafting,
     Repairs,
     Other,
 }
 
 impl Use {
-    pub const ALL: [Use; 8] = [
+    pub const ALL: [Use; 7] = [
         Use::EatenAdults,
         Use::EatenYearlings,
         Use::EatenKits,
         Use::Spoiled,
         Use::Sites,
-        Use::Crafting,
         Use::Repairs,
         Use::Other,
     ];
@@ -87,10 +85,6 @@ pub struct Stores {
     pub consumed_total: PerId<Good, f32>,
     pub produced_by: std::collections::BTreeMap<(Producer, Good), f32>,
     pub consumed_by: [PerId<Good, f32>; Use::COUNT],
-    pub production_rate: PerId<Good, f32>,
-    pub consumption_rate: PerId<Good, f32>,
-    tick_produced: PerId<Good, f32>,
-    tick_consumed: PerId<Good, f32>,
 }
 
 impl Default for Stores {
@@ -102,10 +96,6 @@ impl Default for Stores {
             consumed_total: PerId::default(),
             produced_by: Default::default(),
             consumed_by: std::array::from_fn(|_| PerId::default()),
-            production_rate: PerId::default(),
-            consumption_rate: PerId::default(),
-            tick_produced: PerId::default(),
-            tick_consumed: PerId::default(),
         }
     }
 }
@@ -115,17 +105,14 @@ impl Stores {
     /// the stores, and newly made if they came straight from whoever gathered them.
     pub(crate) fn book_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>, use_: Use) {
         if let Some(who) = fresh {
-            self.tick_produced[good] += amount;
             self.produced_total[good] += amount;
             *self.produced_by.entry((who,good)).or_insert(0.0) += amount;
         }
-        self.tick_consumed[good] += amount;
         self.consumed_total[good] += amount;
         self.consumed_by[use_.index()][good] += amount;
     }
     /// Book carried goods used up away from any store, such as a seedling planted.
     pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
-        self.tick_consumed[good] += amount;
         self.consumed_total[good] += amount;
         self.consumed_by[use_.index()][good] += amount;
     }
@@ -155,7 +142,6 @@ impl Stores {
     pub fn deposit_by(&mut self, g: Good, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_raw(g, amount)?;
         self.note("DEPOSIT", g, amount, taken, format_args!("by={who:?}"));
-        self.tick_produced[g] += taken;
         self.produced_total[g] += taken;
         if taken > 0.0 {
             *self.produced_by.entry((who, g)).or_insert(0.0) += taken;
@@ -167,7 +153,6 @@ impl Stores {
         let r = self.take_raw(g, amount);
         self.note("WITHDRAW", g, amount, if r.is_ok() { amount } else { 0.0 }, format_args!("use={use_:?} result={r:?}"));
         r?;
-        self.tick_consumed[g] += amount;
         self.consumed_total[g] += amount;
         self.consumed_by[use_.index()][g] += amount;
         Ok(())
@@ -227,40 +212,29 @@ impl Stores {
     pub fn produce_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32, who: Producer) -> Result<f32, StoresError> {
         let taken = self.put_kind_at(owner, good, kind, amount)?;
         self.note("PRODUCED", good, amount, taken, format_args!("into={} by={who:?}", owner.0));
-        self.tick_produced[good] += taken;
         self.produced_total[good] += taken;
         *self.produced_by.entry((who, good)).or_default() += taken;
         Ok(taken)
-    }
-
-    fn end_tick(&mut self, dt: f32) {
-        if dt > 0.0 {
-            for g in Good::all() {
-                self.production_rate[g] = self.tick_produced[g] / dt;
-                self.consumption_rate[g] = self.tick_consumed[g] / dt;
-            }
-        }
-        self.tick_produced = PerId::default();
-        self.tick_consumed = PerId::default();
     }
 }
 
 pub use crate::content::BuildingKind;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Site {
-    /// Part of the footprint stands in water at least `WET_DEPTH` deep.
-    TouchesWater,
-}
-
 impl BuildingKind {
     pub fn needs_water(self) -> bool {
-        self.spec().site == Site::TouchesWater && !self.is_waterworks()
+        !self.is_waterworks()
     }
 
     /// Dams and canals: drawn on the map and built a cell at a time, not dropped as a site.
     pub fn is_waterworks(self) -> bool {
         self.is_dam() || self.is_canal()
+    }
+
+    pub fn work_area_at(self, c: (usize, usize)) -> Option<crate::work::Area> {
+        self.spec().area.map(|(w, h)| crate::work::Area {
+            min: (c.0.saturating_sub(w / 2), c.1.saturating_sub(h / 2)),
+            max: (c.0 + w / 2, c.1 + h / 2),
+        })
     }
 }
 
@@ -279,7 +253,6 @@ pub struct Building {
     pub kind: BuildingKind,
     pub pos: (usize, usize),
     pub status: Status,
-    pub output: f32,
     pub condition: f32,
     pub reinforced: bool,
     pub pebbled: bool,
@@ -297,7 +270,6 @@ impl Building {
             kind,
             pos,
             status,
-            output: 0.0,
             condition: 1.0,
             reinforced: false,
             pebbled: false,
@@ -305,6 +277,9 @@ impl Building {
             dam: None,
             canal: None,
         }
+    }
+    pub fn work_area(&self) -> Option<crate::work::Area> {
+        self.kind.work_area_at(self.cells().next().unwrap_or(self.pos))
     }
     pub fn gates(&self) -> &[crate::gates::Gate] {
         if let Some(d) = self.dam.as_deref() {
@@ -443,7 +418,6 @@ impl Buildings {
     }
 
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
-        let spec = kind.spec();
         let cells = Self::footprint(kind, pos);
         if cells.iter().any(|&(x, y)| !terrain.depth.in_bounds(x, y)) {
             return Err(BuildError::OutOfBounds);
@@ -495,11 +469,8 @@ impl Buildings {
                 if !access { return Err(BuildError::BadTerrain("would block access to a home")); }
             }
         }
-        match spec.site {
-            Site::TouchesWater if !cells.iter().any(|&(x, y)| terrain.wet(x, y)) => {
-                return Err(BuildError::BadTerrain("needs water"));
-            }
-            _ => {}
+        if kind.needs_water() && !cells.iter().any(|&(x, y)| terrain.wet(x, y)) {
+            return Err(BuildError::BadTerrain("needs water"));
         }
         if solid(kind) && footprint_depth(kind, pos, |x, y| terrain.depth.get(x, y).copied().unwrap_or(0.0)) > MAX_BUILDING_DEPTH {
             return Err(BuildError::BadTerrain("too deep"));
@@ -525,9 +496,8 @@ impl Buildings {
         Ok(id)
     }
 
-    pub fn step(&mut self, dt_days: f32, terrain: Terrain) {
+    pub fn step(&mut self, terrain: Terrain) {
         self.update_capacity(terrain);
-        self.stores.end_tick(dt_days);
     }
 
     pub(crate) fn update_capacity(&mut self, terrain: Terrain) {

@@ -10,7 +10,6 @@ pub use gates::GateSetting;
 pub mod agents;
 pub mod buildings;
 pub mod calendar;
-pub mod catalogue;
 pub mod content;
 pub mod colony;
 pub mod canals;
@@ -41,7 +40,6 @@ pub mod maintenance;
 pub mod nav;
 pub mod predators;
 pub mod prof;
-pub mod output;
 pub mod piles;
 pub mod plants;
 pub mod resources;
@@ -131,7 +129,6 @@ pub struct SimState {
     pub works: works::Works,
     pub society: society::Society,
     pub ledger: ledger::Ledger,
-    pub output: output::Output,
     pub fog: fog::Fog,
     pub steps: u64,
     #[serde(skip)]
@@ -197,7 +194,6 @@ impl SimState {
             works: Default::default(),
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
-            output: output::Output::default(),
             fog: fog::Fog::clear(size),
             steps: 0,
             recorder: None,
@@ -274,7 +270,7 @@ impl SimState {
         {
             let _p = prof::scope("step/buildings");
             let terrain = buildings::Terrain { depth: &self.water.depth };
-            { let _p = prof::scope("step/buildings/step"); self.buildings.step(dt_days, terrain); }
+            { let _p = prof::scope("step/buildings/step"); self.buildings.step(terrain); }
             { let _p = prof::scope("step/buildings/homes"); self.sync_homes(); }
             let _p = prof::scope("step/buildings/maintenance");
             maintenance::step(self, dt_days);
@@ -315,7 +311,6 @@ impl SimState {
 
         {
             let _p = prof::scope("step/ledger");
-            self.output.step(dt_days);
             self.refresh_store_view();
             // Counting the colony walks every tree: only when a day closes.
             let closes = self.ledger.closes_day(self.time_days);
@@ -381,7 +376,7 @@ impl_sim_clone!(
     copy: [seed, instance, time_days, steps, sandbox, step_timings],
     clone: [
         client_commands, height, world, water, ecology, colony, buildings, events, nav,
-        resources, agents, work, maintenance, works, society, ledger, output, fog,
+        resources, agents, work, maintenance, works, society, ledger, fog,
         recorder, forestry, predators, fleet, wildlife, lives, run, names,
         deeds, supplies, journal
     ]

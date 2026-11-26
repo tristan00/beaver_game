@@ -2,7 +2,7 @@
 include!(concat!(env!("OUT_DIR"), "/dams_constants.rs"));
 use std::collections::{BTreeSet, HashSet, VecDeque};
 
-use crate::agents::{Dest, Task, WorkKind};
+use crate::agents::WorkKind;
 use crate::buildings::{Building, BuildingId, BuildingKind, Good, Status};
 use crate::colony::BeaverId;
 use crate::gates::{apply_across, check_cell_open, claimed_work, depth, finish_gate, ground, invalid, is_water, push_history, surface, Gate, GateSetting};
@@ -354,8 +354,6 @@ pub(crate) fn refresh_durability(sim: &mut SimState, id: BuildingId) {
     }
 }
 
-pub fn set_upkeep(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> { dam_mut(sim, id)?.upkeep = on; Ok(()) }
-
 fn live_pond(sim: &SimState, d: &Dam) -> Option<(f32, Vec<Cell>)> {
     let n = sim.height.width();
     let on_dam: HashSet<Cell> = d.cells.iter().map(|c| c.cell).collect();
@@ -508,12 +506,4 @@ pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), S
     finish_gate(g);
     d.pond_day = f64::NEG_INFINITY;
     apply_gate(sim, id, cell)
-}
-
-pub fn crew(sim: &SimState, id: BuildingId) -> (usize, usize) {
-    sim.agents.by_id.values().fold((0, 0), |(b, l), a| match a.task {
-        Task::Work { site, kind: WorkKind::Dam | WorkKind::Gate, .. } if site == id => (b + 1, l + usize::from(a.load.is_some())),
-        Task::Move { to: Dest::Dam(site), .. } if site == id => (b + 1, l),
-        _ => (b, l),
-    })
 }

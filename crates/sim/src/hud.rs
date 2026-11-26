@@ -55,7 +55,7 @@ pub fn good_in_breakdown(sim: &SimState, g: Good) -> Breakdown {
 pub fn good_out_breakdown(sim: &SimState, g: Good) -> Breakdown {
     let label = |u| match u {
         Use::EatenAdults => "Adults", Use::EatenYearlings => "Yearlings", Use::EatenKits => "Kits",
-        Use::Spoiled => "Spoiled", Use::Sites => "Building sites", Use::Crafting => "Crafting",
+        Use::Spoiled => "Spoiled", Use::Sites => "Building sites",
         Use::Repairs => "Repairs", Use::Other => "Other",
     };
     let rows = Use::ALL.iter().map(|&u| (u, sim.ledger.out_for(g, u))).filter(|(_, v)| *v > 1e-4).map(|(u, v)| row(label(u), -v, Source::None)).collect();
@@ -120,7 +120,6 @@ pub enum Severity { Urgent, Warning }
 pub enum Fix {
     Gather { kind: ResourceKind, n: usize },
     Place(BuildingKind),
-    StaffSites,
     OpenDam { dam: BuildingId },
     RepairBuilding { building: BuildingId },
     PutToWork { role: Job, n: usize },
@@ -249,7 +248,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         .filter(|b| b.is_complete() && !b.kind.is_waterworks() && b.condition < 0.55
             && !crate::buildings::flooded(b, &sim.water.depth)
             && !sim.maintenance.jobs.contains_key(&b.id)
-            && !sim.agents.maint_targets.values().any(|&t| t == b.id))
+            && crate::agents::menders_on(sim, b.id) == 0)
         .min_by(|a, b| a.condition.total_cmp(&b.condition))
     {
         let v = b.condition * 100.0;
@@ -271,20 +270,26 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
             Breakdown::new(drowned.len() as f32, rows), Some(Subject::Building(first.kind)), Fix::Focus, building_cell(sim, first.id)));
     }
 
-    let stalled: Vec<BuildingId> = sim.work.places.iter()
-        .filter(|p| crate::agents::place_needs_builders(sim, p.building)
-            && crate::agents::builders_on(sim, p.building) == 0
-            && !crate::agents::site_stalled(sim, p))
-        .map(|p| p.building).collect();
+    let free_roaming_builder = sim.agents.by_id.values().any(|a| a.assignment == Some(Assignment::Build(None)));
+    let stalled: Vec<BuildingId> = if free_roaming_builder {
+        Vec::new()
+    } else {
+        sim.work.places.iter()
+            .filter(|p| crate::agents::place_needs_builders(sim, p.building)
+                && crate::agents::site_workers(sim, p.building) == 0
+                && !crate::agents::place_stalled(sim, p))
+            .map(|p| p.building).collect()
+    };
     if let Some(&first) = stalled.first() {
-        let can_staff = stalled.iter().any(|&b| crate::jobs::add_beaver_preview(sim, b).is_some());
+        let build = Job::with_duty(crate::content::Duty::Build);
+        let can_staff = crate::jobs::role_add_preview(sim, build).is_some();
         let rows = stalled.iter().map(|&b| row(building_name(sim, b), sim.work.progress(b).unwrap_or(0.0), Source::Building(b))).collect();
         out.push(prob(ProblemKind::NoBuilders, Severity::Warning, stalled.len() as f32, Breakdown::new(stalled.len() as f32, rows),
             Some(Subject::Building(sim.buildings.building(first).map_or(BuildingKind::dam(), |b| b.kind))),
-            if can_staff { Fix::StaffSites } else { Fix::Focus }, building_cell(sim, first)));
+            if can_staff { Fix::PutToWork { role: build, n: (stalled.len() * 2).min(idle.len().max(1)) } } else { Fix::Focus }, building_cell(sim, first)));
     }
 
-    if !idle.is_empty() && !out.iter().any(|p| matches!(p.fix, Fix::Gather { .. } | Fix::StaffSites)) {
+    if !idle.is_empty() && !out.iter().any(|p| matches!(p.fix, Fix::Gather { .. } | Fix::PutToWork { .. })) {
         let rows = crate::jobs::idle_reasons(sim).into_iter().map(|(id, r)| row(match r {
             crate::jobs::IdleReason::NoOpenSlot => "No open slot",
             crate::jobs::IdleReason::Unreachable => "Unreachable",
@@ -387,24 +392,10 @@ pub fn apply_fix(sim: &mut SimState, fix: Fix) -> Result<(), String> {
             if who.is_empty() { return Err("no beaver is free to gather".into()); }
             let r = FOOD_GATHER_RADIUS;
             let area = crate::work::Area { min: (home.0.saturating_sub(r), home.1.saturating_sub(r)), max: (home.0 + r, home.1 + r) };
-            sim.apply(Command::Assign { who, to: Some(Assignment::Area(kind, area)) }).map_err(err)
-        }
-        Fix::StaffSites => {
-            let mut sites: Vec<_> = sim.work.places.iter()
-                .filter(|p| crate::agents::place_needs_builders(sim, p.building)
-                    && !crate::agents::site_stalled(sim, p)
-                    && (p.open_ended() || p.filled() < p.slots.len()))
-                .map(|p| (p.builders().min(1), p.building)).collect();
-            sites.sort();
-            let mut placed = 0;
-            for (_, b) in sites {
-                let cap = sim.work.place(b).map_or(0, |p| if p.open_ended() { 2 } else { p.slots.len() });
-                while sim.work.place(b).is_some_and(|p| p.builders() < cap) && sim.apply(Command::AddBeaver { building: b }).is_ok() { placed += 1; }
-            }
-            if placed == 0 { Err("no beaver is free to build".into()) } else { Ok(()) }
+            sim.apply(Command::Assign { who, to: Some(Assignment::Area(kind, area)), queue: false }).map_err(err)
         }
         Fix::PutToWork { role, n } => sim.apply(Command::AdjustRole { role, delta: n.max(1) as i32 }).map_err(err),
-        Fix::RepairBuilding { building } => sim.apply(Command::RepairBuilding { building }).map_err(err),
+        Fix::RepairBuilding { building } => sim.apply(Command::Refit { building, refit: Some(crate::maintenance::Refit::Repair) }).map_err(err),
         Fix::Accept(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::Accept }).map_err(err),
         Fix::Decline(id) => sim.apply(Command::AnswerJoin { id, answer: crate::society::Answer::TurnAway }).map_err(err),
         Fix::Place(_) | Fix::OpenJobs | Fix::Focus | Fix::OpenDam { .. } => Ok(()),

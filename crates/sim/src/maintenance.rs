@@ -3,8 +3,8 @@
 //! mended first. Mud reinforcement and pebble facing are refits: paid work through the normal
 //! material-delivery and labour system.
 include!(concat!(env!("OUT_DIR"), "/maintenance_constants.rs"));
-use std::collections::BTreeMap;
-use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, work::{Priority, Workplace}, SimError, SimState};
+use std::collections::{BTreeMap, BTreeSet};
+use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, work::Workplace, SimError, SimState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Refit { Repair, Reinforce, Facing, ReinforcedRepair }
@@ -18,6 +18,8 @@ pub struct Job { pub kind: Refit, previous: Workplace }
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Maintenance {
     pub jobs: BTreeMap<BuildingId, Job>,
+    /// Buildings currently being auto-mended past `AUTO_REPAIR_BELOW` up to `1.0`.
+    pub mending: BTreeSet<BuildingId>,
     pub repairs_completed: u32,
     pub reinforcements_completed: u32,
 }
@@ -70,10 +72,10 @@ pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
 /// upkeep) that are worn below `AUTO_REPAIR_BELOW`, marked for repair, or already being mended,
 /// until they are whole again.
 pub fn needs_mending(s: &SimState, b: &Building) -> bool {
-    b.is_complete() && b.dam.is_none() && b.canal.is_none() && b.condition < 1.0
+    b.is_complete() && !b.kind.is_waterworks() && b.condition < 1.0
         && (b.condition < AUTO_REPAIR_BELOW
             || s.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind == Refit::Repair)
-            || s.agents.maint_targets.values().any(|&t| t == b.id))
+            || s.maintenance.mending.contains(&b.id))
 }
 
 /// How much condition a mender's visit is worth bringing materials for: it starts work once
@@ -105,7 +107,9 @@ pub fn mend(s: &mut SimState, id: BuildingId, labour: f32) -> bool {
     if b.condition >= 1.0 - 1e-4 {
         b.condition = 1.0;
         s.maintenance.repairs_completed += 1;
+        s.maintenance.mending.remove(&id);
         if s.maintenance.jobs.get(&id).is_some_and(|j| j.kind == Refit::Repair) { s.maintenance.jobs.remove(&id); }
+        for ag in s.agents.by_id.values_mut() { ag.clear_target(id); }
     }
     true
 }
@@ -115,7 +119,7 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     let b = s.buildings.building(id).ok_or_else(||bad("no such building"))?;
     if s.maintenance.jobs.contains_key(&id) { return Err(bad("this building already has maintenance queued")); }
     if !b.is_complete() { return Err(bad("finish construction first")); }
-    if b.kind.is_dam() && kind != Refit::Facing {return Err(bad("dams are kept up by menders cell by cell"));}
+    if b.kind.is_waterworks() && kind != Refit::Facing {return Err(bad("dams and canals are kept up by menders cell by cell"));}
     if kind == Refit::Facing {
         if !can_pebble(b.kind) {return Err(bad("this structure cannot be faced with pebbles"));}
         if b.pebbled {return Err(bad("already faced with pebbles"));}
@@ -132,28 +136,22 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     let (materials,labour) = cost(b,kind);
     let building_kind = b.kind;
     let i = s.work.places.iter().position(|p|p.building==id).ok_or_else(||bad("missing workplace"))?;
-    // Builders already seated here (a dam's crew) stay on to do the refit.
-    let crew = s.work.crew(id);
     let previous = s.work.places.remove(i);
-    if let Err(e) = s.work.add_site_for(id,building_kind,&materials,labour,None) {
+    if let Err(e) = s.work.add_site(id,building_kind,&materials,labour) {
         s.work.places.push(previous);
         return Err(bad(&format!("{e:?}")));
     }
-    s.work.place_mut(id).unwrap().priority = Priority::High;
     s.release_beavers(id);
-    s.work.keep_crew(id,crew);
     s.maintenance.jobs.insert(id,Job{kind,previous});
     Ok(())
 }
 
 fn restore(s: &mut SimState, id: BuildingId, mut previous: Workplace) {
-    let crew=s.work.crew(id);
     s.work.places.retain(|p|p.building!=id);
     previous.site=None;
     for slot in &mut previous.slots {slot.beaver=None;}
     s.release_beavers(id);
     s.work.places.push(previous);
-    s.work.keep_crew(id,crew);
 }
 
 pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
@@ -174,8 +172,9 @@ pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
 
 pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError> {
     let job = s.maintenance.jobs.remove(&id).ok_or_else(|| SimError::InvalidCommand("no maintenance queued".into()))?;
+    s.maintenance.mending.remove(&id);
     if job.kind == Refit::Repair {
-        s.agents.maint_targets.retain(|_, t| *t != id);
+        for ag in s.agents.by_id.values_mut() { ag.clear_target(id); }
         crate::supply::tidy(s);
         return Ok(Vec::new());
     }
@@ -200,7 +199,7 @@ impl Wear {
 }
 
 pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
-    if !b.is_complete() || b.kind.is_dam() {
+    if !b.is_complete() || b.kind.is_waterworks() {
         return None;
     }
     let cold=crate::weather::cold(s.water.sky.at(s.time_days).temp_c);

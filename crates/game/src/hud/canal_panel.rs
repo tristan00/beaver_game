@@ -47,7 +47,7 @@ enum Fix {
 /// What the canal is doing, in a word, its colour, why, and the one fix.
 fn status(s: &sim::SimState, id: BuildingId, k: &Canal, deepen_ok: bool) -> (&'static str, Color, &'static str, Fix) {
     let waiting = sim::canals::has_work_for(s, id, false);
-    let crew = sim::canals::crew(s, id);
+    let crew = sim::agents::builders_on(s, id);
     if waiting && crew == 0 {
         return ("No diggers", WARN, "Work is waiting and nobody is on it", Fix::Assign);
     }
@@ -237,10 +237,10 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
 }
 
 fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
-    let crew = sim::canals::crew(c.s, id);
+    let crew = sim::agents::builders_on(c.s, id);
     u.row(6.0, |r| {
         works::crew_button(r, crew, Icon::Beaver, "Diggers here", fix == Fix::Assign);
-        works::upkeep_button(r, k.upkeep, HudAction::CanalUpkeep(id, !k.upkeep), "Menders clear silt", fix == Fix::Upkeep);
+        works::upkeep_button(r, k.upkeep, HudAction::Upkeep(id, !k.upkeep), "Menders clear silt", fix == Fix::Upkeep);
         works::pause_button(r, c.s, id);
         r.spacer();
         super::costs::page_button(c, r, id);

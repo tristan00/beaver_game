@@ -72,11 +72,10 @@ pub(super) fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &
     match s.agents.get(b.id).and_then(|a| a.assignment) {
         Some(Assignment::Resource(r)) => s.resources.get(r).map_or((Icon::Hammer, GOOD, "Gatherer", None), |res| gatherer(res.kind)),
         Some(Assignment::Area(kind, _)) => gatherer(kind),
-        Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Working here", Some(bid)),
-        Some(Assignment::Mend) => { let (i, c, n) = by_duty(sim::content::Duty::Mend); (i, c, n, s.agents.maint_targets.get(&b.id).copied()) }
-        Some(Assignment::Build) => { let (i, c, n) = by_duty(sim::content::Duty::Build); (i, c, n, s.agents.build_targets.get(&b.id).copied()) }
+        Some(Assignment::Mend(target)) => { let (i, c, n) = by_duty(sim::content::Duty::Mend); (i, c, n, target) }
+        Some(Assignment::Build(target)) => { let (i, c, n) = by_duty(sim::content::Duty::Build); (i, c, n, target) }
         Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
-        None => (Icon::Idle, ACCENT, "Free", None),
+        Some(Assignment::Work(_)) | None => (Icon::Idle, ACCENT, "Free", None),
     }
 }
 
@@ -155,18 +154,18 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
         if let Some(job) = s.maintenance.jobs.get(&id) {
             let what = match job.kind { Refit::Reinforce => "Reinforcing with mud", Refit::Facing => "Facing with pebbles", _ => "Repairing" };
             r.icon(Icon::Hammer, 18.0, GOOD).tip(Tip::name(what));
-            r.pebble(Icon::Undo, 12.0, HudAction::CancelMaintenance(id), Peb::Idle).tip(Tip::name("Stop").line("Delivered materials come back", ""));
+            r.pebble(Icon::Undo, 12.0, HudAction::Refit(id, None), Peb::Idle).tip(Tip::name("Stop").line("Delivered materials come back", ""));
             return;
         }
         if b.condition < 0.98 {
-            r.pebble(Icon::Hammer, 15.0, HudAction::RepairBuilding(id), if b.condition < 0.55 { Peb::Primary } else { Peb::Good }).tip(refit_tip(b, Refit::Repair, "Repair", false));
+            r.pebble(Icon::Hammer, 15.0, HudAction::Refit(id, Some(Refit::Repair)), if b.condition < 0.55 { Peb::Primary } else { Peb::Good }).tip(refit_tip(b, Refit::Repair, "Repair", false));
         }
         if !b.reinforced && maintenance::can_reinforce(b.kind) {
             let icon = maintenance::cost(b, Refit::Reinforce).0.last().map_or(Icon::Hammer, |c| good_icon(c.0));
-            r.pebble(icon, 15.0, HudAction::ReinforceBuilding(id), Peb::Idle).tip(refit_tip(b, Refit::Reinforce, "Reinforce with mud", true));
+            r.pebble(icon, 15.0, HudAction::Refit(id, Some(Refit::Reinforce)), Peb::Idle).tip(refit_tip(b, Refit::Reinforce, "Reinforce with mud", true));
         }
         if !b.pebbled && maintenance::can_pebble(b.kind) {
-            r.pebble(Icon::Pebbles, 15.0, HudAction::PebbleBuilding(id), Peb::Idle).tip(refit_tip(b, Refit::Facing, "Face with pebbles", true));
+            r.pebble(Icon::Pebbles, 15.0, HudAction::Refit(id, Some(Refit::Facing)), Peb::Idle).tip(refit_tip(b, Refit::Facing, "Face with pebbles", true));
         }
     });
 }
@@ -257,8 +256,8 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                         }
                     }
                     r.spacer();
-                    r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
-                    r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
+                    r.pebble(Icon::Minus, 10.0, HudAction::Staff(id, -1), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
+                    r.pebble(Icon::Plus, 10.0, HudAction::Staff(id, 1), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
                 });
             }
         }

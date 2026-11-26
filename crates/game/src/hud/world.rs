@@ -130,7 +130,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
         Thing::Beaver(id) => {
             let Some(b) = s.colony.beaver(id) else { return Tip::default() };
             let mut tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone());
-            if let Some((_, _, role)) = s.work.slot_of(id) { tip.push(TipLine::new(role.name(), "").icon(job_icon(role), INK)); }
+            if let Some(role) = sim::jobs::role_of(s, id) { tip.push(TipLine::new(role.name(), "").icon(job_icon(role), INK)); }
             let (icon, col, doing) = super::inspect::activity(s, b);
             tip.push(TipLine::new(doing, "").icon(icon, col));
             if let Some(a) = s.agents.get(id) {
@@ -155,11 +155,10 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
                 for g in goods { tip.push(TipLine::new(g.name(), "").icon(good_icon(g), good_color(g)).sub()); }
             }
             if let Some(pl) = s.work.place(id).filter(|p| !p.slots.is_empty()) {
-                let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                tip.push(TipLine::new("Beavers", format!("{}{seats}", pl.filled())).icon(job_icon(pl.slots[0].role), INK));
+                tip.push(TipLine::new("Beavers", format!("{}/{}", pl.filled(), pl.slots.len())).icon(job_icon(pl.slots[0].role), INK));
             }
-            if let Some(f) = s.output.of(id) {
-                for (g, r) in f.rates() { tip.push(TipLine::new(g.name(), format!("{}/d", num(r))).icon(good_icon(g), good_color(g)).color(GOOD)); }
+            for (g, r) in s.ledger.building_rates(id) {
+                tip.push(TipLine::new(g.name(), format!("{}/d", num(r))).icon(good_icon(g), good_color(g)).color(GOOD));
             }
             tip
         }
@@ -306,10 +305,12 @@ pub fn markers(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cam: &Camera, gt:
     }
     for b in s.buildings.buildings.iter().filter(|b| !b.kind.is_dam()) {
         let mut icon = s.work.place(b.id).and_then(|pl| {
-            let empty = pl.slots.iter().filter(|x| x.beaver.is_none()).count();
-            if pl.is_open_site() && sel == Selection::Site(b.id) && !pl.paused && empty == pl.slots.len() && !pl.slots.is_empty() {
+            let workers: Vec<BeaverId> = pl.slots.iter().filter_map(|s| s.beaver)
+                .chain(s.agents.by_id.values().filter(|a| a.work_target() == Some(b.id)).map(|a| a.id))
+                .collect();
+            if pl.is_open_site() && sel == Selection::Site(b.id) && !pl.paused && sim::agents::site_workers(s, b.id) == 0 {
                 Some((job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), WARN, "No builder"))
-            } else if !pl.paused && pl.filled() > 0 && pl.slots.iter().filter_map(|s| s.beaver).all(|id| s.agents.get(id).is_some_and(|a| a.stuck_ticks > 96)) {
+            } else if !pl.paused && !workers.is_empty() && workers.iter().all(|id| s.agents.get(*id).is_some_and(|a| a.stuck_ticks > 96)) {
                 Some((Icon::Blocked, BAD, "Beavers can't get there"))
             } else { None }
         });
@@ -769,7 +770,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             let Some(ag) = s.agents.get(id) else { continue };
             if let Some(sim::agents::Assignment::Go(to)) = ag.assignment { double_ring(&mut g, cell_at(h, to, 0.15), 0.4, 0.3, 0.0, ACCENT); }
             let queued = ACCENT.with_alpha(0.7);
-            let mut from = ag.assignment.and_then(|a| order_cell(s, sim::agents::Order::Do(a))).unwrap_or(ag.cell);
+            let mut from = ag.assignment.and_then(|a| order_cell(s, a)).unwrap_or(ag.cell);
             for &order in &ag.queue {
                 let Some(c) = order_cell(s, order) else { continue };
                 g.line(cell_at(h, from, 0.15), cell_at(h, c, 0.15), queued);
@@ -782,7 +783,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         Tool::None => {}
         Tool::Building(kind) => if let Some(c) = hover.0 {
             let pv = build_logic::site_preview(s, kind, c);
-            if let Some(a) = sim::catalogue::work_area_at(kind, pv.pos) { draw_work_area(&mut g, h, a, kind.row().round_area, Color::WHITE.with_alpha(0.6)); }
+            if let Some(a) = kind.work_area_at(pv.pos) { draw_work_area(&mut g, h, a, kind.row().round_area, Color::WHITE.with_alpha(0.6)); }
             for &c in &pv.cells {
                 cell_outline(&mut g, h, c, None, if pv.is_valid() { Color::WHITE } else { BAD });
                 if !pv.is_valid() {
@@ -969,13 +970,13 @@ pub fn cell_rows(s: &sim::SimState, (x, y): Cell) -> Vec<(Icon, Color, &'static 
     rows
 }
 
-fn order_cell(s: &sim::SimState, order: sim::agents::Order) -> Option<Cell> {
-    use sim::agents::{Assignment, Order};
+fn order_cell(s: &sim::SimState, order: sim::agents::Assignment) -> Option<Cell> {
+    use sim::agents::Assignment;
     match order {
-        Order::Do(Assignment::Go(c)) => Some(c),
-        Order::Do(Assignment::Resource(id)) => s.resources.get(id).map(|r| r.cell),
-        Order::Do(Assignment::Area(_, a)) => Some(((a.min.0 + a.max.0) / 2, (a.min.1 + a.max.1) / 2)),
-        Order::Do(Assignment::Slot(b, _)) | Order::Work(b) => s.buildings.building(b).map(|b| b.pos),
-        Order::Do(Assignment::Mend | Assignment::Build) => None,
+        Assignment::Go(c) => Some(c),
+        Assignment::Resource(id) => s.resources.get(id).map(|r| r.cell),
+        Assignment::Area(_, a) => Some(((a.min.0 + a.max.0) / 2, (a.min.1 + a.max.1) / 2)),
+        Assignment::Work(b) | Assignment::Build(Some(b)) | Assignment::Mend(Some(b)) => s.buildings.building(b).map(|b| b.pos),
+        Assignment::Mend(None) | Assignment::Build(None) => None,
     }
 }

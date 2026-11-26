@@ -122,6 +122,24 @@ impl Ledger {
         v
     }
 
+    pub fn building_rates(&self, b: crate::buildings::BuildingId) -> Vec<(Good, f32)> {
+        let n = self.days.len().min(RATE_DAYS);
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut by: BTreeMap<Good, f32> = BTreeMap::new();
+        for d in self.days.iter().rev().take(n) {
+            for &(p, g, a) in &d.produced_by {
+                if p == Producer::Building(b) {
+                    *by.entry(g).or_insert(0.0) += a / n as f32;
+                }
+            }
+        }
+        let mut v: Vec<(Good, f32)> = by.into_iter().filter(|(_, r)| *r > 0.01).collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
     pub fn out_for(&self, g: Good, use_: Use) -> f32 {
         self.mean(|d| d.consumed_by[use_.index()][g])
     }

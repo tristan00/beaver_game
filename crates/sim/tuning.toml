@@ -316,9 +316,6 @@ SWIM_SPEED_M_S = 0.75
 THICKET_COST = 2.5
 WALK_COST = 1.0
 
-[output.f32]
-SMOOTH_DAYS = 5.0
-
 [piles.f64]
 MEAL_PROBE_DAYS = 0.25
 SPOIL_DAYS = 90.0
@@ -530,6 +527,3 @@ SEARCH_RADIUS = 14
 
 [work.f32]
 LABOUR_PER_DAY = 0.75
-
-[work.usize]
-SITE_SLOTS = 2

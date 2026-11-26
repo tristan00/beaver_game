@@ -248,7 +248,6 @@ fn fix_face(f: &Fix) -> Option<(Icon, String, String)> {
         Fix::Gather { kind, n } if kind.is_food_plant() => (good_icon(Good::food()), format!("+{n}"), format!("Send {n} beavers to gather food")),
         Fix::Gather { kind, n } => (resource_icon(*kind), format!("+{n}"), format!("{n} gather {}", resource_name(*kind).to_lowercase())),
         Fix::Place(k) => (building_icon(*k), "+".into(), format!("Place {}", k.spec().name.to_lowercase())),
-        Fix::StaffSites => (job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), "+".into(), "Add builders".into()),
         Fix::OpenDam { .. } => (building_icon(BuildingKind::dam()), String::new(), "Open the dam".into()),
         Fix::RepairBuilding { .. } => (Icon::Hammer, "Repair".into(), "Repair with materials and menders".into()),
         Fix::PutToWork { role, n } => (job_icon(*role), format!("+{n}"), format!("{n} to {}", role.name().to_lowercase())),
@@ -596,7 +595,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
             None => "Building",
         };
         return Some(if !waiting.is_empty() && !site.labour_open() { (None, "Waiting".into(), waiting, WARN) }
-            else if sim::agents::builders_on(s, id) == 0 { (Some(job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build))), "No builders".into(), vec![], MUTED) }
+            else if sim::agents::site_workers(s, id) == 0 { (Some(job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build))), "No builders".into(), vec![], MUTED) }
             else { (Some(Icon::Hammer), stage.into(), vec![], GOOD) });
     }
     if b.is_complete() && !b.operational() { return Some((Some(Icon::Hammer), "Ruined".into(), vec![], BAD)); }

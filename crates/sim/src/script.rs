@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::agents::{Assignment, Order};
+use crate::agents::Assignment;
 use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::colony::{BeaverId, DeathCause, Event, Stage};
 use crate::jobs::Job;
+use crate::maintenance::Refit;
 use crate::resources::{ResourceId, ResourceKind};
 use crate::society::{Answer, RequestId};
 use crate::starts::DamSite;
 use crate::water::Cell;
-use crate::work::{Area, HaulOrder, Priority};
+use crate::work::Area;
 use crate::{Command, SimState, STEP_DAYS};
 
 fn cells_str(v: &[Cell]) -> String { v.iter().map(|c| format!("{},{}", c.0, c.1)).collect::<Vec<_>>().join(" ") }
@@ -24,9 +25,6 @@ fn parse_resource_kind(s: &str) -> Result<ResourceKind, String> {
 fn parse_role(s: &str) -> Result<Job, String> {
     Job::all().find(|k| k.key().eq_ignore_ascii_case(s)).ok_or_else(|| format!("unknown role '{s}'"))
 }
-fn parse_good(s: &str) -> Result<Good, String> {
-    Good::all().find(|k| format!("{k:?}").eq_ignore_ascii_case(s)).ok_or_else(|| format!("unknown good '{s}'"))
-}
 
 pub fn to_line(c: &Command) -> String {
     match c {
@@ -34,17 +32,17 @@ pub fn to_line(c: &Command) -> String {
         Command::BuildDam { cells: v, height } => format!("build-dam {height} {}", cells_str(v)),
         Command::PlaceDam { cells: v } => format!("dam {}", cells_str(v)),
         Command::GrowDam { dam, growth, cells: v } => format!("grow-dam {} {growth:?} {}", dam.0, cells_str(v)),
-        Command::SetDamUpkeep { dam, on } => format!("dam-upkeep {} {}", dam.0, flag(*on)),
-        Command::RepairBuilding { building } => format!("repair {}", building.0),
-        Command::ReinforceBuilding { building } => format!("reinforce {}", building.0),
-        Command::PebbleBuilding { building } => format!("pebble {}", building.0),
+        Command::SetUpkeep { building, on } => format!("upkeep {} {}", building.0, flag(*on)),
+        Command::Refit { building, refit: Some(Refit::Repair | Refit::ReinforcedRepair) } => format!("repair {}", building.0),
+        Command::Refit { building, refit: Some(Refit::Reinforce) } => format!("reinforce {}", building.0),
+        Command::Refit { building, refit: Some(Refit::Facing) } => format!("pebble {}", building.0),
+        Command::Refit { building, refit: None } => format!("cancel-refit {}", building.0),
         Command::SetSlotOff { building, slot, off } => format!("slot-off {} {slot} {}", building.0, flag(*off)),
         Command::Settle { cell: c } => format!("settle {} {}", c.0, c.1),
         Command::BreachDam { x, y } => format!("breach {x} {y}"),
         Command::DigCanal { cells: v, depth } => format!("dig-canal {depth} {}", cells_str(v)),
         Command::PlaceCanal { cells: v } => format!("canal {}", cells_str(v)),
         Command::GrowCanal { canal, growth, cells: v } => format!("grow-canal {} {growth:?} {}", canal.0, cells_str(v)),
-        Command::SetCanalUpkeep { canal, on } => format!("canal-upkeep {} {}", canal.0, flag(*on)),
         Command::AddDamGate { dam, cell } => format!("dam-gate {} {},{}", dam.0, cell.0, cell.1),
         Command::SetGate { building, cell, setting } => match setting {
             crate::gates::GateSetting::Level(e) => format!("gate {} {},{} level {e}", building.0, cell.0, cell.1),
@@ -52,41 +50,29 @@ pub fn to_line(c: &Command) -> String {
         },
         Command::UpgradeLock { building, cell } => format!("lock {} {},{}", building.0, cell.0, cell.1),
         Command::RemoveGate { building, cell } => format!("ungate {} {},{}", building.0, cell.0, cell.1),
-        Command::Assign { who, to } => {
+        Command::Assign { who, to, queue } => {
             let to = match to {
                 None => "none".into(),
                 Some(Assignment::Resource(r)) => format!("resource {}", r.0),
                 Some(Assignment::Area(k, a)) => format!("area {k:?} {} {} {} {}", a.min.0, a.min.1, a.max.0, a.max.1),
-                Some(Assignment::Slot(b, s)) => format!("slot {} {s}", b.0),
+                Some(Assignment::Work(b)) => format!("work {}", b.0),
                 Some(Assignment::Go(c)) => format!("go {} {}", c.0, c.1),
-                Some(Assignment::Mend) => "upkeep".into(),
-                Some(Assignment::Build) => "build".into(),
+                Some(Assignment::Mend(None)) => "upkeep".into(),
+                Some(Assignment::Mend(Some(b))) => format!("upkeep {}", b.0),
+                Some(Assignment::Build(None)) => "build".into(),
+                Some(Assignment::Build(Some(b))) => format!("build {}", b.0),
             };
-            format!("assign {} {to}", ids_str(who))
+            format!("{} {} {to}", if *queue { "queue" } else { "assign" }, ids_str(who))
         }
-        Command::Queue { who, order } => match order {
-            Order::Work(b) => format!("queue {} work {}", ids_str(who), b.0),
-            Order::Do(a) => {
-                let line = to_line(&Command::Assign { who: who.clone(), to: Some(*a) });
-                format!("queue{}", line.strip_prefix("assign").unwrap_or(&line))
-            }
-        },
         Command::PlaceSite { kind, pos } => format!("place {kind:?} {} {}", pos.0, pos.1),
-        Command::FillSlot { building, slot, who } => format!("fill {} {slot} {}", building.0, who.0),
-        Command::EmptySlot { building, slot } => format!("empty {} {slot}", building.0),
-        Command::AddBeaver { building } => format!("add-beaver {}", building.0),
-        Command::RemoveBeaver { building } => format!("remove-beaver {}", building.0),
-        Command::SetPriority { building, priority } => format!("priority {} {priority:?}", building.0),
+        Command::StaffBuilding { building, delta } => format!("staff {} {delta}", building.0),
         Command::SetPaused { building, paused } => format!("pause {} {}", building.0, flag(*paused)),
         Command::AdjustRole { role, delta } => format!("role {role:?} {delta}"),
         Command::SetShoreLimit { role, cells } => format!("shore {role:?} {}", cells.map_or("none".into(), |n| n.to_string())),
-        Command::SetWorkArea { building, area } => format!("work-area {} {} {} {} {}", building.0, area.min.0, area.min.1, area.max.0, area.max.1),
-        Command::SetHaul { order } => format!("haul {} {} {:?}", order.from.0, order.to.0, order.good),
         Command::SetBalance { building, on } => format!("balance {} {}", building.0, flag(*on)),
         Command::FillStore { store, on } => format!("fill-store {} {}", store.0, flag(*on)),
         Command::AnswerJoin { id, answer } => format!("answer {} {}", id.0, if *answer == Answer::Accept { "accept" } else { "decline" }),
         Command::CancelSite { building } => format!("cancel {}", building.0),
-        Command::CancelMaintenance { building } => format!("cancel-refit {}", building.0),
     }
 }
 
@@ -121,10 +107,11 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 .find(|g| t.get(2).is_some_and(|x| format!("{g:?}").eq_ignore_ascii_case(x))).ok_or("grow-dam takes raise, widen or extend")?,
             cells: parse_cells(&t[3..])?,
         },
-        "dam-upkeep" => Command::SetDamUpkeep { dam: b(1)?, on: on(2)? },
-        "repair" => Command::RepairBuilding { building: b(1)? },
-        "reinforce" => Command::ReinforceBuilding { building: b(1)? },
-        "pebble" => Command::PebbleBuilding { building: b(1)? },
+        "upkeep" | "dam-upkeep" | "canal-upkeep" => Command::SetUpkeep { building: b(1)?, on: on(2)? },
+        "repair" => Command::Refit { building: b(1)?, refit: Some(Refit::Repair) },
+        "reinforce" => Command::Refit { building: b(1)?, refit: Some(Refit::Reinforce) },
+        "pebble" => Command::Refit { building: b(1)?, refit: Some(Refit::Facing) },
+        "cancel-refit" => Command::Refit { building: b(1)?, refit: None },
         "slot-off" => Command::SetSlotOff { building: b(1)?, slot: num(t.get(2), "slot")?, off: on(3)? },
         "settle" => Command::Settle { cell: (num(t.get(1), "x")?, num(t.get(2), "y")?) },
         "breach" => Command::BreachDam { x: num(t.get(1), "x")?, y: num(t.get(2), "y")? },
@@ -136,7 +123,6 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 .find(|g| t.get(2).is_some_and(|x| format!("{g:?}").eq_ignore_ascii_case(x))).ok_or("grow-canal takes deepen, widen or extend")?,
             cells: parse_cells(&t[3..])?,
         },
-        "canal-upkeep" => Command::SetCanalUpkeep { canal: b(1)?, on: on(2)? },
         "dam-gate" => Command::AddDamGate { dam: b(1)?, cell: cell_at(2)? },
         "ungate" => Command::RemoveGate { building: b(1)?, cell: cell_at(2)? },
         "lock" => Command::UpgradeLock { building: b(1)?, cell: cell_at(2)? },
@@ -149,52 +135,37 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 o => return Err(format!("gate takes shut, open or level N, got {o:?}")),
             },
         },
-        "assign" => Command::Assign {
-            who: parse_beavers(t.get(1))?,
-            to: match t.get(2).copied() {
-                Some("none") => None,
+        "assign" | "queue" => {
+            let queue = head == "queue";
+            let to = match t.get(2).copied() {
+                Some("none") if !queue => None,
                 Some("resource") => Some(Assignment::Resource(ResourceId(num(t.get(3), "resource id")?))),
                 Some("area") => Some(Assignment::Area(parse_resource_kind(t.get(3).ok_or("missing kind")?)?, parse_area(&t, 4)?)),
-                Some("slot") => Some(Assignment::Slot(b(3)?, num(t.get(4), "slot")?)),
+                Some("work" | "slot") => Some(Assignment::Work(b(3)?)),
                 Some("go") => Some(Assignment::Go((num(t.get(3), "x")?, num(t.get(4), "y")?))),
-                Some("upkeep") => Some(Assignment::Mend),
-                Some("build") => Some(Assignment::Build),
+                Some("upkeep") => Some(Assignment::Mend(t.get(3).map(|_| b(3)).transpose()?)),
+                Some("build") => Some(Assignment::Build(t.get(3).map(|_| b(3)).transpose()?)),
                 o => return Err(format!("unknown assignment {o:?}")),
-            },
-        },
-        "queue" if t.get(2) == Some(&"work") => Command::Queue { who: parse_beavers(t.get(1))?, order: Order::Work(b(3)?) },
-        "queue" => match parse_command(&format!("assign{}", line.trim_start().strip_prefix("queue").unwrap_or("")))? {
-            Command::Assign { who, to: Some(a) } => Command::Queue { who, order: Order::Do(a) },
-            _ => return Err("queue needs an order".into()),
-        },
+            };
+            Command::Assign { who: parse_beavers(t.get(1))?, to, queue }
+        }
         "place" => Command::PlaceSite { kind: parse_kind(t.get(1).ok_or("missing kind")?)?, pos: (num(t.get(2), "x")?, num(t.get(3), "y")?) },
-        "fill" => Command::FillSlot { building: b(1)?, slot: num(t.get(2), "slot")?, who: BeaverId(num(t.get(3), "beaver")?) },
-        "empty" => Command::EmptySlot { building: b(1)?, slot: num(t.get(2), "slot")? },
-        "add-beaver" => Command::AddBeaver { building: b(1)? },
-        "remove-beaver" => Command::RemoveBeaver { building: b(1)? },
-        "priority" => Command::SetPriority {
-            building: b(1)?,
-            priority: match t.get(2).map(|s| s.to_ascii_lowercase()).as_deref() {
-                Some("low") => Priority::Low, Some("normal") => Priority::Normal, Some("high") => Priority::High,
-                o => return Err(format!("unknown priority {o:?}")),
-            },
-        },
+        "staff" => Command::StaffBuilding { building: b(1)?, delta: num(t.get(2), "delta")? },
+        "add-beaver" => Command::StaffBuilding { building: b(1)?, delta: 1 },
+        "remove-beaver" => Command::StaffBuilding { building: b(1)?, delta: -1 },
         "pause" => Command::SetPaused { building: b(1)?, paused: on(2)? },
         "shore" => Command::SetShoreLimit {
             role: parse_role(t.get(1).ok_or("missing role")?)?,
             cells: if t.get(2) == Some(&"none") { None } else { Some(num(t.get(2), "cells")?) },
         },
         "role" => Command::AdjustRole { role: parse_role(t.get(1).ok_or("missing role")?)?, delta: num(t.get(2), "delta")? },
-        "work-area" => Command::SetWorkArea { building: b(1)?, area: parse_area(&t, 2)? },
         "balance" => Command::SetBalance { building: b(1)?, on: on(2)? },
         "fill-store" => Command::FillStore { store: b(1)?, on: on(2)? },
-        "haul" => Command::SetHaul { order: HaulOrder { from: b(1)?, to: b(2)?, good: parse_good(t.get(3).ok_or("missing good")?)? } },
         "answer" => Command::AnswerJoin {
             id: RequestId(num(t.get(1), "request id")?),
             answer: match t.get(2).copied() { Some("accept") => Answer::Accept, Some("decline") => Answer::TurnAway, o => return Err(format!("want accept/decline, got {o:?}")) },
         },
         "cancel" => Command::CancelSite { building: b(1)? },
-        "cancel-refit" => Command::CancelMaintenance { building: b(1)? },
         other => return Err(format!("unknown command '{other}'")),
     })
 }

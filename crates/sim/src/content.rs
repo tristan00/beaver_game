@@ -1,7 +1,7 @@
 //! Game content: built into the binary by default, or overridden from a `content/` folder
 //! beside the executable, `crates/sim/content`, or `BEAVER_CONTENT`. Each row has a stable
 //! `key`, written in saves, and ids are positions in their table.
-use crate::buildings::{Amount, Site};
+use crate::buildings::Amount;
 use std::marker::PhantomData;
 use crate::plants::PlantSpec;
 use crate::trees::{Mix, TreeSpec};
@@ -296,7 +296,6 @@ pub struct Spec {
     /// Very short (2–4 word) description of what the building does.
     #[serde(default)] pub summary: String,
     pub footprint: (usize, usize),
-    pub site: Site,
     #[serde(default)] pub cost: Vec<Amount>,
     pub work: f32,
     #[serde(default)] pub slots: Vec<Job>,
