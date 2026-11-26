@@ -23,11 +23,15 @@ struct FogState {
     next: f32,
 }
 
+fn no_fog() -> bool {
+    static NO_FOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NO_FOG.get_or_init(|| std::env::var_os("BC_NO_FOG").is_some())
+}
+
 /// Whether `cell` is still hidden by the fog of war: nothing on it is drawn or can be pointed
 /// at (`BC_NO_FOG` lifts the fog for screenshots).
 pub fn unexplored(s: &sim::SimState, cell: (usize, usize)) -> bool {
-    static NO_FOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    !*NO_FOG.get_or_init(|| std::env::var_os("BC_NO_FOG").is_some()) && !s.fog.explored(cell)
+    !no_fog() && !s.fog.explored(cell)
 }
 
 pub struct FogRenderPlugin;
@@ -49,7 +53,7 @@ fn update_fog(
     sheets: Query<(Entity, &Mesh3d), With<FogSheet>>,
 ) {
     let _p = ::sim::prof::scope("game/update fog");
-    if std::env::var_os("BC_NO_FOG").is_some() {
+    if no_fog() {
         return;
     }
     let now = time.elapsed_secs();

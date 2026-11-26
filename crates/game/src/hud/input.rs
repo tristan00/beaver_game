@@ -90,30 +90,7 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         // Esc always lets go of the camera: a glide to a notice ends where it is.
         flow.focus = None;
-        if hud.welcome {
-            hud.welcome = false;
-        } else if hud.opening.is_some() {
-            hud.opening = None;
-        } else if hud.tool != Tool::None {
-            hud.set_tool(Tool::None);
-        } else if hud.page().is_some() {
-            hud.page_back();
-        } else if hud.colony.is_some() || hud.ledger.is_some() {
-            hud.colony = None;
-            hud.ledger = None;
-        } else if hud.open_badge.is_some() {
-            hud.open_badge = None;
-        } else if hud.journal_open {
-            hud.journal_open = false;
-        } else if hud.follow.is_some() {
-            hud.follow = None;
-        } else if *sel != Selection::None || !hud.selected.is_empty() {
-            *sel = Selection::None;
-            hud.selected.clear();
-            hud.follow = None;
-        } else if *lens != MapLens::World {
-            *lens = MapLens::World;
-        }
+        hud.dismiss_top(&mut sel, &mut lens);
     }
 }
 
@@ -124,11 +101,7 @@ pub(super) fn next_idle(s: &sim::SimState, hud: &mut HudState, sel: &mut Selecti
     }
     let i = hud.idle_cursor % idle.len();
     hud.idle_cursor = i + 1;
-    if let Some(b) = s.colony.beaver(idle[i]) {
-        flow.focus = Some(cell_world(&s.height, b.pos));
-        *sel = Selection::Beaver(b.id);
-        hud.selected = vec![b.id];
-    }
+    hud.select_beaver(s, sel, flow, idle[i]);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -415,7 +388,14 @@ pub(super) fn world_input(
     }
 }
 
-fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, one: bool, now: f32) {
+/// A right-click order for the selected beavers. On a tree, plant or deposit they work the one
+/// clicked, then the nearest of its kind once it is used up. With `queue` (Shift held) the order
+/// waits behind the ones they already have, and starts once those are done.
+fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, queue: bool, now: f32) {
+    use sim::agents::{Assignment, Order};
+    let give = |s: &mut sim::SimState, who: Vec<BeaverId>, to: Assignment| {
+        if queue { s.apply(sim::Command::Queue { who, order: Order::Do(to) }) } else { s.apply(sim::Command::Assign { who, to: Some(to) }) }
+    };
     match t {
         world::Thing::Resource(rid) => {
             let Some(r) = s.resources.get(rid) else { return };
@@ -424,23 +404,14 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
                 hud.refuse("Too young", now);
                 return;
             }
-            let to = if one {
-                sim::agents::Assignment::Resource(rid)
-            } else {
-                let rad = 6;
-                let max = s.world.size - 1;
-                let c = r.cell;
-                let area = sim::work::Area { min: (c.0.saturating_sub(rad), c.1.saturating_sub(rad)), max: ((c.0 + rad).min(max), (c.1 + rad).min(max)) };
-                sim::agents::Assignment::Area(r.kind, area)
-            };
             let kind = r.kind;
-            match s.apply(sim::Command::Assign { who: workers.clone(), to: Some(to) }) {
+            match give(s, workers.clone(), Assignment::Resource(rid)) {
                 Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", workers.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
         }
         world::Thing::Cell(c) => {
-            match s.apply(sim::Command::Assign { who: who.to_vec(), to: Some(sim::agents::Assignment::Go(c)) }) {
+            match give(s, who.to_vec(), Assignment::Go(c)) {
                 Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
                 Err(e) => hud.refuse(sim_error(&e.to_string()), now),
             }
@@ -449,6 +420,13 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             let workers: Vec<BeaverId> = who.iter().copied().filter(|id| s.colony.beaver(*id).is_some_and(|bv| bv.can_work())).collect();
             if workers.is_empty() {
                 hud.refuse("Too young", now);
+                return;
+            }
+            if queue {
+                match s.apply(sim::Command::Queue { who: workers.clone(), order: Order::Work(b) }) {
+                    Ok(_) => hud.say(Some((Icon::Building, GOOD)), None, format!("{}", workers.len()), now),
+                    Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+                }
                 return;
             }
             let mut placed = 0;
@@ -471,7 +449,7 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
 
 /// Every beaver inside the box dragged out on the map, kits too; with Shift held, added to
 /// those already selected.
-pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>) {
+pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>, drawn: Option<Res<crate::entities_render::BeaverDrawn>>) {
     let Some((a, b)) = hud.box_done.take() else { return };
     let Ok((cam, gt)) = cams.single() else { return };
     let (lo, hi) = (a.min(b), a.max(b));
@@ -481,7 +459,7 @@ pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(
         .colony
         .beavers
         .iter()
-        .filter(|bv| world::beaver_world(s, bv.id).and_then(|w| cam.world_to_viewport(gt, w).ok()).map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
+        .filter(|bv| world::beaver_world(s, drawn.as_deref(), bv.id).and_then(|w| cam.world_to_viewport(gt, w).ok()).map(|v| v / scale.0.max(0.01)).is_some_and(|v| v.x >= lo.x && v.x <= hi.x && v.y >= lo.y && v.y <= hi.y))
         .map(|bv| bv.id)
         .collect();
     if shift {
@@ -513,8 +491,8 @@ pub(super) fn frame_camera(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query
     }
 }
 
-pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<Flow>) {
-    if let Some(w) = hud.follow.and_then(|id| world::beaver_world(&sim.0, id)) {
+pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<Flow>, drawn: Option<Res<crate::entities_render::BeaverDrawn>>) {
+    if let Some(w) = hud.follow.and_then(|id| world::beaver_world(&sim.0, drawn.as_deref(), id)) {
         flow.focus = Some(w);
     }
 }
@@ -592,4 +570,173 @@ fn letter(s: &str) -> Option<KeyCode> {
     const KEYS: [KeyCode; 26] = [KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ];
     let c = s.chars().next()?.to_ascii_uppercase();
     c.is_ascii_uppercase().then(|| KEYS[(c as u8 - b'A') as usize])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim::agents::{Assignment, Task};
+
+    struct DryLand;
+    impl sim::colony::Landscape for DryLand {
+        fn is_water(&self, _: f32, _: f32) -> bool {
+            false
+        }
+    }
+
+    /// A colony with a working beaver, a plant right beside it and one a little further off.
+    fn colony_with_two_plants() -> (sim::SimState, BeaverId, sim::resources::ResourceId, sim::resources::ResourceId) {
+        let mut s = sim::SimState::new(1);
+        let c = (s.world.size / 2, s.world.size / 2);
+        s.colony.found((c.0 as f32, c.1 as f32), &DryLand).expect("found");
+        s.step(sim::STEP_DAYS).expect("step");
+        let id = s.colony.beavers.iter().find(|b| b.can_work()).expect("a working beaver").id;
+        let at = s.agents.get(id).expect("agent").cell;
+        let kind = sim::resources::ResourceKind::food_plant(false);
+        let near = s.resources.add(kind, (at.0 + 1, at.1), 10.0);
+        let far = s.resources.add(kind, (at.0, at.1 + 6), 10.0);
+        (s, id, near, far)
+    }
+
+    #[test]
+    fn right_clicking_a_plant_sends_the_beaver_to_that_plant() {
+        let (mut s, id, near, far) = colony_with_two_plants();
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(far), false, 0.0);
+        assert_eq!(s.agents.get(id).expect("agent").assignment, Some(Assignment::Resource(far)));
+        for _ in 0..5 {
+            s.step(sim::STEP_DAYS).expect("step");
+            if let Task::Collect { target, .. } = s.agents.get(id).expect("agent").task {
+                assert_eq!(target, far, "went to the plant beside it ({near:?}) instead of the one clicked");
+                return;
+            }
+        }
+        panic!("the beaver never set out for the plant: {:?}", s.agents.get(id).expect("agent").task);
+    }
+
+    fn walk_until(s: &mut sim::SimState, id: BeaverId, done: impl Fn(&sim::agents::Agent) -> bool) -> bool {
+        for _ in 0..400 {
+            s.step(sim::STEP_DAYS).expect("step");
+            if done(s.agents.get(id).expect("agent")) {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn shift_right_click_queues_a_walk_after_the_current_one() {
+        let (mut s, id, _, _) = colony_with_two_plants();
+        let at = s.agents.get(id).expect("agent").cell;
+        let (a, b) = ((at.0 + 3, at.1), (at.0 + 3, at.1 + 3));
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Cell(a), false, 0.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Cell(b), true, 0.0);
+        let ag = s.agents.get(id).expect("agent");
+        assert_eq!(ag.assignment, Some(Assignment::Go(a)), "the first order runs now");
+        assert_eq!(ag.queue.len(), 1, "the second waits");
+        assert!(walk_until(&mut s, id, |ag| ag.assignment == Some(Assignment::Go(b))), "never set out for the queued spot");
+        assert!(walk_until(&mut s, id, |ag| ag.cell == b), "never reached the queued spot");
+        assert!(s.agents.get(id).expect("agent").queue.is_empty());
+    }
+
+    #[test]
+    fn a_queued_plant_is_gathered_once_the_walk_is_done() {
+        let (mut s, id, _, far) = colony_with_two_plants();
+        let at = s.agents.get(id).expect("agent").cell;
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Cell((at.0 + 3, at.1)), false, 0.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(far), true, 0.0);
+        assert!(walk_until(&mut s, id, |ag| ag.assignment == Some(Assignment::Resource(far))), "never took up the queued plant");
+        assert!(walk_until(&mut s, id, |ag| matches!(ag.task, Task::Collect { target, .. } if target == far)), "never gathered the queued plant");
+    }
+
+    #[test]
+    fn shift_right_click_on_a_beaver_without_orders_starts_at_once() {
+        let (mut s, id, _, far) = colony_with_two_plants();
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(far), true, 0.0);
+        let ag = s.agents.get(id).expect("agent");
+        assert_eq!(ag.assignment, Some(Assignment::Resource(far)));
+        assert!(ag.queue.is_empty());
+    }
+
+    #[test]
+    fn a_plain_right_click_drops_the_queue() {
+        let (mut s, id, near, far) = colony_with_two_plants();
+        let at = s.agents.get(id).expect("agent").cell;
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Cell((at.0 + 3, at.1)), false, 0.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(far), true, 0.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(near), false, 0.0);
+        let ag = s.agents.get(id).expect("agent");
+        assert_eq!(ag.assignment, Some(Assignment::Resource(near)));
+        assert!(ag.queue.is_empty());
+    }
+
+    #[test]
+    fn queued_orders_survive_a_script_round_trip() {
+        for order in [sim::agents::Order::Do(Assignment::Go((3, 4))), sim::agents::Order::Do(Assignment::Resource(sim::resources::ResourceId(7))), sim::agents::Order::Work(sim::buildings::BuildingId(2))] {
+            let cmd = sim::Command::Queue { who: vec![BeaverId(1), BeaverId(2)], order };
+            assert_eq!(sim::script::parse_command(&sim::script::to_line(&cmd)), Ok(cmd));
+        }
+    }
+
+
+    #[test]
+    fn a_queued_walk_starts_once_the_plant_is_used_up() {
+        // The only plant left, nearly bare, so the order ends with it.
+        let (mut s, id, _, _) = colony_with_two_plants();
+        s.resources.clear();
+        let at = s.agents.get(id).expect("agent").cell;
+        let far = s.resources.add(sim::resources::ResourceKind::food_plant(false), (at.0, at.1 + 2), 0.2);
+        let then = (at.0 + 3, at.1);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(far), false, 0.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Cell(then), true, 0.0);
+        assert!(walk_until(&mut s, id, |ag| ag.assignment == Some(Assignment::Go(then))), "never moved on to the queued walk: {:?}", s.agents.get(id).map(|a| (&a.assignment, &a.task)));
+    }
+
+
+    #[test]
+    fn an_ordered_plant_with_little_left_is_still_gathered() {
+        // Too little on it for a beaver to set out for by itself, but this one was ordered.
+        let (mut s, id, _, _) = colony_with_two_plants();
+        s.resources.clear();
+        let at = s.agents.get(id).expect("agent").cell;
+        let plant = s.resources.add(sim::resources::ResourceKind::food_plant(false), (at.0, at.1 + 2), 1.0);
+        order(&mut s, &mut HudState::default(), &[id], world::Thing::Resource(plant), false, 0.0);
+        assert!(walk_until(&mut s, id, |ag| matches!(ag.task, Task::Collect { target, .. } if target == plant)), "stood idle beside the plant it was sent to");
+    }
+
+
+    /// A gatherer sent to an area, with no plant of its own to go back to.
+    fn area_gatherer_beside(kind: sim::resources::ResourceKind, amount: f32) -> (sim::SimState, BeaverId, sim::resources::ResourceId) {
+        let (mut s, id, _, _) = colony_with_two_plants();
+        s.resources.clear();
+        let at = s.agents.get(id).expect("agent").cell;
+        let r = s.resources.add(kind, (at.0, at.1 + 2), amount);
+        let area = sim::work::Area { min: (at.0.saturating_sub(6), at.1.saturating_sub(6)), max: (at.0 + 6, at.1 + 6) };
+        s.apply(sim::Command::Assign { who: vec![id], to: Some(Assignment::Area(kind, area)) }).expect("assign");
+        assert_eq!(s.agents.get(id).expect("agent").source, None);
+        (s, id, r)
+    }
+
+    /// No minimum keeps a part-eaten plant from being finished: a gatherer that did not start
+    /// it, or forgot it (eating, resting), still takes what is left.
+    #[test]
+    fn a_part_eaten_plant_is_finished_by_any_forager() {
+        let (mut s, id, plant) = area_gatherer_beside(sim::resources::ResourceKind::food_plant(false), 0.3);
+        assert!(walk_until(&mut s, id, |ag| matches!(ag.task, Task::Collect { target, .. } if target == plant)), "left a part-eaten plant unfinished");
+        for _ in 0..400 {
+            if s.resources.get(plant).is_none() {
+                return;
+            }
+            s.step(sim::STEP_DAYS).expect("step");
+        }
+        panic!("the plant was not picked to nothing: {:?}", s.resources.get(plant).map(|r| r.amount));
+    }
+
+    /// No minimum leaves the last of a mud bed in the river.
+    #[test]
+    fn the_last_of_a_river_mud_bed_is_dug() {
+        let mud = sim::resources::ResourceKind::all().find(|k| k.flowing()).expect("a flowing deposit");
+        let (mut s, id, bed) = area_gatherer_beside(mud, 0.2);
+        assert!(walk_until(&mut s, id, |ag| matches!(ag.task, Task::Collect { target, .. } if target == bed)), "left the last of the mud bed");
+    }
+
 }

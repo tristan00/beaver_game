@@ -79,8 +79,26 @@ const SANDBOX_DISTANCE: f32 = 100.0;
 const SCOUT_DISTANCE: f32 = 60.0;
 const SCOUT_PITCH: f32 = 1.0;
 
-pub fn install_game(
+fn install_valley(
     mut s: SimState,
+    dam: Option<sim::starts::DamSite>,
+    sim: &mut Sim,
+    planned: &mut PlannedDam,
+    flow: &mut Flow,
+    setup: impl FnOnce(&mut SimState, &mut Flow) -> Result<(), String>,
+) -> Result<(), String> {
+    start_recording(&mut s);
+    let mut next_flow = Flow::new(&s.world);
+    next_flow.generation = flow.generation + 1;
+    setup(&mut s, &mut next_flow)?;
+    sim.0 = s;
+    planned.0 = dam;
+    *flow = next_flow;
+    Ok(())
+}
+
+pub fn install_game(
+    s: SimState,
     dam: Option<sim::starts::DamSite>,
     sim: &mut Sim,
     planned: &mut PlannedDam,
@@ -90,19 +108,12 @@ pub fn install_game(
     sel: &mut Selection,
 ) -> Result<(), String> {
     let camp = dam.as_ref().map(|d| d.camp);
-    start_recording(&mut s);
-    let mut next_flow = Flow::new(&s.world);
-    next_flow.generation = flow.generation + 1;
-    begin_play(&mut s, &mut next_flow, clock, orbit, sel, camp)?;
-    sim.0 = s;
-    planned.0 = dam;
-    *flow = next_flow;
-    Ok(())
+    install_valley(s, dam, sim, planned, flow, |s, f| begin_play(s, f, clock, orbit, sel, camp))
 }
 
 /// Put a freshly built valley behind the start screen, unsettled, as a new game starts on it.
 pub fn install_preview(
-    mut s: SimState,
+    s: SimState,
     dam: Option<sim::starts::DamSite>,
     sim: &mut Sim,
     planned: &mut PlannedDam,
@@ -111,18 +122,16 @@ pub fn install_preview(
     orbit: &mut OrbitCamera,
     sel: &mut Selection,
 ) {
-    start_recording(&mut s);
-    let mut next_flow = Flow::new(&s.world);
-    next_flow.generation = flow.generation + 1;
-    if s.sandbox {
-        begin_sandbox(&s, &mut next_flow, clock, orbit, sel);
-    } else {
-        begin_scouting(&s, &mut next_flow, clock, orbit, sel, dam.as_ref().map(|d| d.camp));
-    }
-    clock.paused = true;
-    sim.0 = s;
-    planned.0 = dam;
-    *flow = next_flow;
+    let camp = dam.as_ref().map(|d| d.camp);
+    let _ = install_valley(s, dam, sim, planned, flow, |s, f| {
+        if s.sandbox {
+            begin_sandbox(s, f, clock, orbit, sel);
+        } else {
+            begin_scouting(s, f, clock, orbit, sel, camp);
+        }
+        clock.paused = true;
+        Ok(())
+    });
 }
 
 pub struct StartPlugin;

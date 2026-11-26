@@ -100,7 +100,7 @@ pub fn animal_doing(a: &sim::wildlife::Animal) -> (Icon, &'static str) {
         Doing::Wander => (Icon::Walk, "Wandering"),
         Doing::Feed { food, .. } | Doing::Digest { food, .. } => match food {
             Food::Plant(_) => (crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)), "Eating a plant"),
-            Food::Sapling(_) => (crate::hud::words::good_icon(sim::buildings::Good::seedling()), "Eating a sapling"),
+            Food::Seedling(_) => (crate::hud::words::good_icon(sim::buildings::Good::seedling()), "Eating a seedling"),
             Food::Pile(_) => (crate::hud::words::good_icon(sim::buildings::Good::food()), "Eating dropped food"),
         },
         Doing::Rest { .. } => (Icon::Idle, "Resting"),

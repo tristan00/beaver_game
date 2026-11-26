@@ -46,8 +46,8 @@ impl Channel {
     fn parse_key(key: &str) -> Option<Self> {
         match key {
             "master" => Some(Channel::Master),
-            "effects" | "alerts" => Some(Channel::Effects),
-            "ambience" | "water" => Some(Channel::Ambience),
+            "effects" => Some(Channel::Effects),
+            "ambience" => Some(Channel::Ambience),
             _ => None,
         }
     }
@@ -232,7 +232,17 @@ fn start_soundscape(mut commands: Commands, mut assets: ResMut<Assets<Soundscape
     commands.spawn((AudioPlayer(handle), PlaybackSettings::ONCE));
 }
 
-fn volume_keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut vols: ResMut<AudioVolumes>, mut muted: Local<Option<f32>>) {
+fn volume_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    menu: Option<Res<crate::hud::MenuOpen>>,
+    typing: Option<Res<crate::hud::TextCapture>>,
+    mut vols: ResMut<AudioVolumes>,
+    mut muted: Local<Option<f32>>,
+) {
+    if menu.is_some_and(|m| m.0) || typing.is_some_and(|t| t.0) {
+        return;
+    }
     if muted.is_some() && vols.0.master > 0.0 {
         // Turned back up some other way.
         *muted = None;
@@ -325,9 +335,5 @@ mod tests {
         assert_eq!(parsed.level(Channel::Master), 0.75);
         assert_eq!(parsed.level(Channel::Effects), 0.50);
         assert_eq!(parsed.level(Channel::Ambience), 0.25);
-        // Backwards compatible with older sound.txt files.
-        let legacy = AudioVolumes::from_text("master 0.50\nwater 0.25\nalerts 0.75\n");
-        assert_eq!(legacy.level(Channel::Ambience), 0.25);
-        assert_eq!(legacy.level(Channel::Effects), 0.75);
     }
 }

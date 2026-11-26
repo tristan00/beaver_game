@@ -30,10 +30,6 @@ const STACK: f32 = 4.0;
 const DROP: f32 = 34.0;
 /// The room the tree has: wider trees stack kits in taller columns.
 const TREE_W: f32 = 1080.0;
-/// The least room the tree has on screen, for how far the wheel can move it.
-const VIEW_H: f32 = 380.0;
-/// How far one step of the wheel moves the tree.
-const STEP_PX: f32 = 24.0;
 const WIRE: f32 = 2.0;
 const WIRE_COL: Color = Color::srgba(0.78, 0.66, 0.5, 0.55);
 
@@ -199,12 +195,6 @@ fn draw(s: &sim::SimState, home: &[BeaverId]) -> Drawing {
     out
 }
 
-/// How far the wheel can move a lodge's tree.
-pub fn tree_len(s: &sim::SimState, lodge: LodgeId) -> usize {
-    let h = draw(s, &residents(s, lodge)).size.y;
-    ((h - VIEW_H) / STEP_PX).ceil().max(0.0) as usize
-}
-
 /// A beaver in the tree: a link to its page. Solid while it lives, faint with a cross once gone,
 /// ringed when it lives here.
 fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]) {
@@ -241,7 +231,7 @@ fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]
         (true, false) => v.bg(Color::srgba(1.0, 1.0, 1.0, 0.08)).border(BorderColor::all(LINE)),
         (false, _) => v.border(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.1))),
     };
-    v.action(HudAction::BeaverDetails(Some(id))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
+    v.action(HudAction::OpenPage(Some(super::Page::Beaver(id)))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
 }
 
 pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
@@ -250,23 +240,20 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
     let fam = l.and_then(|l| s.colony.family(l.family)).map_or_else(|| sim::buildings::BuildingKind::home().name().to_string(), |f| f.name.clone());
     let home = residents(s, lodge);
     let tree = draw(s, &home);
-    let mut ui = Ui::default();
-    ui.node(
-        Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
+    Ui::full_page_shell(
+        false,
+        |r| {
+            r.portrait(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD);
+            r.col(6.0, |x| {
+                x.bold(format!("{fam} family"), 20.0, INK);
+                if let Some(l) = l {
+                    x.pips(l.condition, super::works::condition_colour(l.condition));
+                }
+            });
+            r.spacer();
+            super::life::page_controls(c, r, HudAction::OpenPage(None));
+        },
         |u| {
-            u.row(14.0, |r| {
-                r.portrait(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD);
-                r.col(6.0, |x| {
-                    x.bold(format!("{fam} family"), 20.0, INK);
-                    if let Some(l) = l {
-                        x.pips(l.condition, if l.condition < 0.35 { BAD } else if l.condition < 0.65 { WARN } else { GOOD });
-                    }
-                });
-                r.spacer();
-                super::life::page_controls(c, r, HudAction::LodgePage(None));
-            })
-            .style(|n| n.align_items = AlignItems::FlexStart);
-            u.rule();
             u.row(28.0, |cols| {
                 // Who lives here.
                 cols.node(Node { width: Val::Px(300.0), height: Val::Percent(100.0), min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| {
@@ -281,12 +268,12 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
                             r.bold(b.name.clone(), 12.0, INK);
                             r.text(about(s, id), 11.0, MUTED);
                             r.spacer();
-                            if let Some(j) = sim::lives::job_of(s, id) {
+                            if let Some(j) = sim::jobs::role_of(s, id) {
                                 r.icon(job_icon(j), 13.0, INK).tip(Tip::name(j.name()));
                             }
                             r.icon(Icon::Next, 10.0, MUTED);
                         })
-                        .action(HudAction::BeaverDetails(Some(id)))
+                        .action(HudAction::OpenPage(Some(super::Page::Beaver(id))))
                         .tip(Tip::name(b.name.clone()).line("Open their page", ""));
                     }
                     if home.is_empty() {
@@ -342,9 +329,4 @@ pub fn screen(c: &Ctx, lodge: LodgeId) -> Vec<VNode> {
             });
         },
     )
-    .tag(Tag::Scroll);
-    let mut v = ui.nodes.pop().unwrap();
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(18.0));
-    vec![page_area(v, true)]
 }

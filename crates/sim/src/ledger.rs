@@ -40,7 +40,7 @@ pub struct Census {
     pub water: f32,
     /// Living trees standing.
     pub trees: u32,
-    /// Saplings planted since the colony began.
+    /// Seedlings planted since the colony began.
     pub planted: u32,
 }
 
@@ -60,8 +60,8 @@ pub struct Ledger {
     pub days: VecDeque<DaySample>,
     /// The long record, a day at a time, for the colony ledger's charts.
     pub colony: VecDeque<ColonyDay>,
-    /// Saplings planted so far.
-    pub planted: u32,
+    /// Seedlings planted so far: trees, land plants and water plants (`inventory::SeedlingSort`).
+    pub planted: [u32; 3],
 }
 
 impl Ledger {

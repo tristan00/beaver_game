@@ -20,46 +20,35 @@ const TABS: [(ColonyTab, Icon, &str); 4] = [
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
-    // A beaver's story, opened from its card, takes the drawer.
-    if let Some(id) = c.hud.details {
-        return super::life::screen(c, id);
-    }
-    if let Some(l) = c.hud.lodge_page {
-        return super::family::screen(c, l);
+    if let Some(page) = c.hud.page {
+        return match page {
+            super::Page::Beaver(id) => super::life::screen(c, id),
+            super::Page::Lodge(l) => super::family::screen(c, l),
+            super::Page::Works(b) => super::costs::screen(c, b),
+        };
     }
     let Some(tab) = c.hud.colony else { return Vec::new() };
-    let mut ui = Ui::default();
-    ui.node(
-        Node { width: Val::Px(if matches!(tab, ColonyTab::Beavers | ColonyTab::Run) { super::ledger::LEDGER_W } else { DRAWER_W }), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
-        |u| {
-            u.row(6.0, |r| {
-                for (t, icon, name) in TABS {
-                    let on = t == tab;
-                    r.pebble(icon, 16.0, HudAction::Colony(Some(t)), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
-                }
-                r.spacer();
-                if tab == ColonyTab::Run {
-                    super::ledger::span_chips(c, r);
-                }
-                r.close_button(HudAction::Colony(None), true);
-            });
-            u.rule();
-            u.node(
-                Node { width: Val::Percent(100.0), flex_grow: 1.0, min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), ..default() },
-                |body| match tab {
-                    ColonyTab::Population => beavers(c, body),
-                    ColonyTab::Jobs => work(c, body),
-                    ColonyTab::Beavers => super::ledger::beavers(c, body),
-                    ColonyTab::Run => super::ledger::run(c, body),
-                },
-            )
-            .scroll_y();
+    let width = if matches!(tab, ColonyTab::Beavers | ColonyTab::Run) { super::ledger::LEDGER_W } else { DRAWER_W };
+    Ui::book_shell(
+        width,
+        |r| {
+            for (t, icon, name) in TABS {
+                let on = t == tab;
+                r.pebble(icon, 16.0, HudAction::Colony(Some(t)), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
+            }
+            r.spacer();
+            if tab == ColonyTab::Run {
+                super::ledger::span_chips(c, r);
+            }
+            r.close_button(HudAction::Colony(None), true);
         },
-    );
-    let mut v = ui.nodes.pop().unwrap();
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(14.0));
-    vec![page_area(v, false)]
+        |body| match tab {
+            ColonyTab::Population => beavers(c, body),
+            ColonyTab::Jobs => work(c, body),
+            ColonyTab::Beavers => super::ledger::beavers(c, body),
+            ColonyTab::Run => super::ledger::run(c, body),
+        },
+    )
 }
 
 /// The pip under a beaver token: green working, amber free, blue resting or too young.

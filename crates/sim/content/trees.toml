@@ -4,8 +4,6 @@
 # look: a drawing style (model: slim, twin, weeping, clump, dome, spread, tufted, spire), its build, colours
 # as 0xrrggbb, and leaves as [shade, light] for spring, summer, autumn and late autumn.
 
-unknown = "Aspen"  # taken for a tree of no known species
-sapling = "Willow"  # planted where no tree that feeds stands near
 
 [[tree]]
 key = "Aspen"

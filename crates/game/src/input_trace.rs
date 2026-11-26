@@ -26,12 +26,12 @@ impl Plugin for InputTracePlugin {
     }
 }
 
-fn captures() -> PathBuf {
+pub(crate) fn captures() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join("captures")
 }
 
 /// UTC date and time for file names, YYYYMMDD-HHMMSS.
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).

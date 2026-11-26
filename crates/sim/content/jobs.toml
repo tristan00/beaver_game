@@ -1,10 +1,11 @@
-# Jobs. duty: what the job does: Gather (the kinds of resource whose `role` is this job), Build, Haul, Forest (collect
-# seedlings and plant them round a forester), Watch (keep watch at a lookout) or Mend (repair buildings and keep dams
+# Jobs. duty: what the job does: Gather (the kinds of resource whose `role` is this job), Build, Haul, Forest (take
+# collect wild seedlings of trees and food plants to a seedling bed and plant them round it), Watch (keep watch at a lookout) or Mend (repair buildings and keep dams
 # and canals in order, without a seat); one job does each duty but Gather.
 # name: the job, plural: its beavers; skill: the skill it builds, in words. priority: its place on the colony panel, first first.
-# shore_limit: the player may keep it near the water. skill_speeds: skill makes it go faster (hauling is walking, and a
-# watch is kept, not worked). icon, and path_colour (sRGB) for its beavers' paths. Epithet pools are keyed by the job's
-# key in lower case (names.toml).
+# shore_limit: the player may keep it near the water. skill_trait: what its skill does for the beaver (Speed: works
+# this job faster; HeavyLoads, Sight, Steady, Healing: go with the beaver into any job; see `growth`), and
+# skill_effect, that in words. icon, and path_colour (sRGB) for its beavers' paths. Epithet pools are keyed by the
+# job's key in lower case (names.toml).
 
 [[job]]
 key = "Forager"
@@ -14,7 +15,8 @@ skill = "Foraging"
 duty = "Gather"
 priority = 1
 shore_limit = true
-skill_speeds = true
+skill_trait = "Speed"
+skill_effect = "Gathers food faster"
 icon = "RoleForager"
 path_colour = [0.45, 0.85, 0.25]
 
@@ -26,7 +28,8 @@ skill = "Felling"
 duty = "Gather"
 priority = 2
 shore_limit = true
-skill_speeds = true
+skill_trait = "Speed"
+skill_effect = "Fells trees faster"
 icon = "RoleFeller"
 path_colour = [0.95, 0.55, 0.15]
 
@@ -37,7 +40,8 @@ plural = "builders"
 skill = "Building"
 duty = "Build"
 priority = 0
-skill_speeds = true
+skill_trait = "Steady"
+skill_effect = "Tiredness slows its work less"
 icon = "RoleBuilder"
 path_colour = [1.0, 0.88, 0.2]
 
@@ -49,7 +53,8 @@ skill = "Mud digging"
 duty = "Gather"
 priority = 4
 shore_limit = true
-skill_speeds = true
+skill_trait = "Speed"
+skill_effect = "Digs mud faster"
 icon = "RoleMudDigger"
 path_colour = [0.75, 0.45, 0.3]
 
@@ -60,6 +65,8 @@ plural = "haulers"
 skill = "Hauling"
 duty = "Haul"
 priority = 3
+skill_trait = "HeavyLoads"
+skill_effect = "Heavy loads slow it down less"
 icon = "RoleHauler"
 path_colour = [0.25, 0.65, 1.0]
 
@@ -71,7 +78,8 @@ skill = "Planting"
 duty = "Forest"
 priority = 5
 shore_limit = true
-skill_speeds = true
+skill_trait = "Healing"
+skill_effect = "Heals faster"
 icon = "RolePlanter"
 path_colour = [0.1, 0.6, 0.35]
 
@@ -82,7 +90,8 @@ plural = "menders"
 skill = "Mending"
 duty = "Mend"
 priority = 6
-skill_speeds = true
+skill_trait = "Speed"
+skill_effect = "Mends faster"
 icon = "RoleMender"
 path_colour = [0.85, 0.35, 0.85]
 
@@ -93,6 +102,8 @@ plural = "sentries"
 skill = "Keeping watch"
 duty = "Watch"
 priority = 7
+skill_trait = "Sight"
+skill_effect = "Spots wolves from farther away"
 icon = "RoleSentry"
 path_colour = [0.95, 0.25, 0.25]
 
@@ -104,6 +115,7 @@ skill = "Pebbling"
 duty = "Gather"
 priority = 8
 shore_limit = true
-skill_speeds = true
+skill_trait = "Speed"
+skill_effect = "Gathers pebbles faster"
 icon = "RolePebbler"
 path_colour = [0.6, 0.75, 0.8]

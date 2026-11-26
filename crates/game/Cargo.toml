@@ -11,3 +11,7 @@ path = "src/main.rs"
 sim = { path = "../sim" }
 bevy = { version = "=0.20.1" }
 winit = { version = "0.30.13", default-features = false }
+
+# F11 video clips: H.264 MP4 through Windows Media Foundation.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }

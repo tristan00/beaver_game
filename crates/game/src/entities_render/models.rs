@@ -406,7 +406,7 @@ pub fn pebble_facing_mesh(kind: BuildingKind) -> Mesh {
     mb.build()
 }
 
-fn sapling_sprig(mb: &mut Mb, a: Vec3, b: Vec3) {
+fn seedling_sprig(mb: &mut Mb, a: Vec3, b: Vec3) {
     stick_c(mb, a, b, 0.03, hex(0x7a5a34));
     mb.ellipsoid_g(b, v(0.16, 0.12, 0.16), col(palette::LEAF), col(palette::LEAF_LIGHT), 7, 5);
     for (k, s) in [(0.55f32, 1.0f32), (0.75, -1.0)] {
@@ -544,8 +544,8 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
         "pebbles" => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.18, 0.13, 0.15), hex(0x66666b), hex(0xb5b3ae), 7, 5);
         }
-        // A rooted sapling held by the stem, leaves up.
-        "saplings" => sapling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
+        // A rooted seedling held by the stem, leaves up.
+        "seedlings" => seedling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
         // A leafy sprig held crosswise.
         "food" => {
             stick_c(&mut mb, v(-0.4, 0.0, 0.0), v(0.4, 0.05, 0.02), 0.025, hex(0x6f8a3a));
@@ -577,7 +577,7 @@ pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.27, 0.2, 0.22), hex(0x5f5f64), hex(0xbab8b3), 8, 5);
         }
         // Held slanted across the chest so the leaves stand clear of the head.
-        "saplings" => sapling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
+        "seedlings" => seedling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
         "food" => {
             for k in 0..3 {
                 let a = (k as f32 - 1.0) * 0.35;
@@ -637,10 +637,10 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
                 mb.ellipsoid_g(v(x, r * 0.6, z), v(r, r * 0.75, r * 0.9), hex(0x66666b), hex(0xb5b3ae), 7, 5);
             }
         }
-        "saplings" => {
+        "seedlings" => {
             for k in 0..3 {
                 let x = -0.2 + 0.2 * k as f32;
-                sapling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
+                seedling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
             }
         }
         // A cache of cut food left on the ground, made to read apart from a growing plant: a patch

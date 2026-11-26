@@ -203,6 +203,14 @@ pub(crate) struct SimulationThread {
     clock: Option<(bool, Speed)>,
 }
 
+impl SimulationThread {
+    pub(crate) fn set_water_engine(&self, kind: sim::water::EngineKind) {
+        if let Some(owner) = &self.sim_thread {
+            let _ = owner.set_water_engine(kind);
+        }
+    }
+}
+
 fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
     let _p = ::sim::prof::scope("game/receive sim");
     if sim_thread.instance != sim.0.instance { return; }

@@ -251,7 +251,7 @@ pub(crate) type View = (u8, u32);
 /// finishes building or is removed (cutting its chamber hole and lowering its chamber bed).
 pub(crate) fn locks_hash(s: &SimState) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for l in s.locks.at.values().filter(|l| l.built) {
+    for l in sim::locks::built(s) {
         h = fold(h, (l.cell.0 as u64) | ((l.cell.1 as u64) << 20) | ((l.building.0 as u64) << 40));
     }
     h
@@ -646,11 +646,14 @@ fn patch_noise(x: f32, y: f32, scale: f32, seed: i32) -> f32 {
     top + (bot - top) * ty
 }
 
-fn smooth_gradient(s: &SimState, x: i32, y: i32, st: i32) -> (f32, f32) {
-    let h = |dx: i32, dy: i32| at(&s.height, x + dx * st, y + dy * st);
+fn sobel_gradient(h: impl Fn(i32, i32) -> f32, st: i32) -> (f32, f32) {
     let gx = (h(1, -1) - h(-1, -1) + 2.0 * (h(1, 0) - h(-1, 0)) + h(1, 1) - h(-1, 1)) / 8.0;
     let gz = (h(-1, 1) - h(-1, -1) + 2.0 * (h(0, 1) - h(0, -1)) + h(1, 1) - h(1, -1)) / 8.0;
     (gx / (st as f32 * CELL_SIZE), gz / (st as f32 * CELL_SIZE))
+}
+
+fn smooth_gradient(s: &SimState, x: i32, y: i32, st: i32) -> (f32, f32) {
+    sobel_gradient(|dx, dy| at(&s.height, x + dx * st, y + dy * st), st)
 }
 
 fn slope_at(s: &SimState, x: i32, y: i32) -> f32 {
@@ -847,7 +850,7 @@ pub const RIVER_SUBDIVISIONS: usize = 2;
 pub fn canal_subdivisions(s: &SimState, cx: usize, cy: usize) -> usize {
     let (x0, y0) = ((cx * CHUNK).saturating_sub(2), (cy * CHUNK).saturating_sub(2));
     let (x1, y1) = (((cx + 1) * CHUNK + 3).min(s.height.width()), ((cy + 1) * CHUNK + 3).min(s.height.height()));
-    if s.locks.at.values().any(|l| l.built && l.cell.0 + 6 >= x0 && l.cell.0 <= x1 + 6 && l.cell.1 + 6 >= y0 && l.cell.1 <= y1 + 6) {
+    if sim::locks::built(s).any(|l| l.cell.0 + 6 >= x0 && l.cell.0 <= x1 + 6 && l.cell.1 + 6 >= y0 && l.cell.1 <= y1 + 6) {
         return 4;
     }
     let mut fine = 1;
@@ -920,7 +923,7 @@ pub struct GroundField {
 }
 
 impl GroundField {
-    pub fn new(s: &SimState, cx: usize, cy: usize) -> GroundField {
+    pub fn new(s: &SimState, cx: usize, cy: usize, canal: bool) -> GroundField {
         let half_dims = (s.height.width() as f32 / 2.0, s.height.height() as f32 / 2.0);
         let (wx0, wz0) = (((cx * CHUNK) as f32 + GRID_OFFSET - half_dims.0) * CELL_SIZE, ((cy * CHUNK) as f32 + GRID_OFFSET - half_dims.1) * CELL_SIZE);
         let (wx1, wz1) = (wx0 + CHUNK as f32 * CELL_SIZE, wz0 + CHUNK as f32 * CELL_SIZE);
@@ -934,7 +937,7 @@ impl GroundField {
         GroundField {
             height: Field::new(cx, cy, |x, y| at(&s.height, x, y)),
             mask: Field::new(cx, cy, |x, y| river_mask(s, x, y)),
-            canal: canal_subdivisions(s, cx, cy) == 4,
+            canal,
             half_dims,
             chambers,
         }
@@ -965,10 +968,7 @@ impl GroundField {
     }
 
     fn gradient(&self, x: i32, y: i32, st: i32) -> (f32, f32) {
-        let h = |dx: i32, dy: i32| self.at(x + dx * st, y + dy * st);
-        let gx = (h(1, -1) - h(-1, -1) + 2.0 * (h(1, 0) - h(-1, 0)) + h(1, 1) - h(-1, 1)) / 8.0;
-        let gz = (h(-1, 1) - h(-1, -1) + 2.0 * (h(0, 1) - h(0, -1)) + h(1, 1) - h(1, -1)) / 8.0;
-        (gx / (st as f32 * CELL_SIZE), gz / (st as f32 * CELL_SIZE))
+        sobel_gradient(|dx, dy| self.at(x + dx * st, y + dy * st), st)
     }
 }
 
@@ -1033,7 +1033,7 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
         }
     }
     let (mut pos, mut nor, mut col, mut uv) = (vec![], vec![], vec![], vec![]);
-    let field = GroundField::new(s, cx, cy);
+    let field = GroundField::new(s, cx, cy, subdivisions == 4);
     let mut vert = |x: f32, y: f32, drop: f32, shade: f32| {
         let (wx, wz) = ((x + GRID_OFFSET - w as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - d as f32 / 2.0) * CELL_SIZE);
         let h = if subdivisions > 1 { field.fine(s, x, y) } else { field.at(x as i32, y as i32) };
@@ -1055,21 +1055,21 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     }
     let mut idx: Vec<u32> = Vec::with_capacity(n * n * 6);
     let skirt = 2.5;
-    let edges: [(Box<dyn Fn(usize) -> (usize, usize)>, bool); 4] = [
-        (Box::new(|k| (k, 0)), false),
-        (Box::new(move |k| (k, n)), true),
-        (Box::new(|k| (0, k)), true),
-        (Box::new(move |k| (n, k)), false),
+    let edges: [(fn(usize, usize) -> (usize, usize), bool); 4] = [
+        (|k, _| (k, 0), false),
+        (|k, n| (k, n), true),
+        (|k, _| (0, k), true),
+        (|k, n| (n, k), false),
     ];
     for (e, (f, flip)) in edges.into_iter().enumerate() {
         let base = (side * side + e * (n + 1)) as u32;
         for k in 0..=n {
-            let (i, j) = f(k);
+            let (i, j) = f(k, n);
             vert(x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing, skirt, 0.78);
         }
         for k in 0..n {
-            let (i0, j0) = f(k);
-            let (i1, j1) = f(k + 1);
+            let (i0, j0) = f(k, n);
+            let (i1, j1) = f(k + 1, n);
             let (a, b) = ((j0 * side + i0) as u32, (j1 * side + i1) as u32);
             let (sa, sb) = (base + k as u32, base + k as u32 + 1);
             if flip {

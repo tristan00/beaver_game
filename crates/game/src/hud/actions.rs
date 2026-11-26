@@ -1,61 +1,38 @@
 //! Turns HUD actions into simulation commands and user feedback.
 use super::*;
 
-/// Build the drawn line: a new dam, or more cells on the dam being extended.
-/// Returns the dam, so its panel can open.
+/// Build the drawn line: a new dam or canal, or more cells on the one being extended.
+/// Returns the building id so its panel can open.
 pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32) -> Option<BuildingId> {
     if hud.line.is_empty() || !matches!(hud.tool, Tool::Dam | Tool::Canal) {
         return None;
     }
-    if hud.tool == Tool::Canal {
-        let cmd = match hud.extending {
-            Some(canal) => {
-                let end = sim::canals::canal(sim, canal).map(|k| k.end());
-                sim::Command::GrowCanal { canal, growth: sim::CanalGrowth::Extend, cells: hud.line.iter().copied().filter(|c| Some(*c) != end).collect() }
-            }
-            None => sim::Command::PlaceCanal { cells: hud.line.clone() },
-        };
-        let extending = hud.extending;
-        return match sim.apply(cmd) {
-            Ok(_) => {
-                let id = extending.or_else(|| sim.buildings.buildings.last().map(|b| b.id));
-                if extending.is_none() {
-                    hud.undo.extend(id.map(UndoItem::Site));
-                }
-                hud.finish_placement();
+    let extending = hud.extending;
+    let res: Result<(), String> = match (hud.tool, extending) {
+        (Tool::Canal, Some(canal)) => {
+            let end = sim::canals::canal(sim, canal).map(|k| k.end());
+            let cells = hud.line.iter().copied().filter(|c| Some(*c) != end).collect();
+            sim.apply(sim::Command::GrowCanal { canal, growth: sim::CanalGrowth::Extend, cells }).map(|_| ()).map_err(|e| sim_error(&e.to_string()))
+        }
+        (Tool::Canal, None) => sim.apply(sim::Command::PlaceCanal { cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
+        (Tool::Dam, Some(dam)) => sim.apply(sim::Command::GrowDam { dam, growth: sim::DamGrowth::Extend, cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
+        (Tool::Dam, None) => build_logic::emit(sim, &BuildOrder::Dam { cells: hud.line.clone() }).map(|_| ()).map_err(|e| place_error(&e)),
+        _ => return None,
+    };
+    match res {
+        Ok(()) => {
+            let id = extending.or_else(|| sim.buildings.buildings.last().map(|b| b.id));
+            if extending.is_none() {
+                hud.undo.extend(id.map(UndoItem::Site));
                 hud.dam_cells.clear();
-                id
-            }
-            Err(e) => {
-                hud.refuse(sim_error(&e.to_string()), now);
-                None
-            }
-        };
-    }
-    if let Some(dam) = hud.extending {
-        let cells: Vec<Cell> = hud.line.clone();
-        return match sim.apply(sim::Command::GrowDam { dam, growth: sim::DamGrowth::Extend, cells }) {
-            Ok(_) => {
-                hud.finish_placement();
+            } else {
                 hud.dam_ghost = None;
-                Some(dam)
             }
-            Err(e) => {
-                hud.refuse(sim_error(&e.to_string()), now);
-                None
-            }
-        };
-    }
-    match build_logic::emit(sim, &BuildOrder::Dam { cells: hud.line.clone() }) {
-        Ok(_) => {
-            let id = sim.buildings.buildings.last().map(|b| b.id);
-            hud.undo.extend(id.map(UndoItem::Site));
             hud.finish_placement();
-            hud.dam_cells.clear();
             id
         }
-        Err(e) => {
-            hud.refuse(place_error(&e), now);
+        Err(msg) => {
+            hud.refuse(msg, now);
             None
         }
     }
@@ -108,12 +85,12 @@ pub(super) fn button_actions(
                     *sel = Selection::Site(dam);
                     hud.selected.clear();
                     if let Some(c) = at {
-                        flow.focus = Some(cell_world(&s.height, (c.0 as f32, c.1 as f32)));
+                        flow.focus = Some(cell_world(&s.height, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)));
                     }
                 }
                 Fix::Focus => {
                     if let Some(c) = at {
-                        flow.focus = Some(cell_world(&s.height, (c.0 as f32, c.1 as f32)));
+                        flow.focus = Some(cell_world(&s.height, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)));
                     }
                 }
                 f => {
@@ -169,7 +146,7 @@ pub(super) fn button_actions(
                     if let Some(mid) = sim::dams::dam(s, dam).and_then(|d| d.line().nth(d.line().count() / 2).map(|c| c.cell)) {
                         let (vx, vy) = crate::flow::world_cell(&s.height, orbit.target);
                         if (vx as f32 - mid.0 as f32).hypot(vy as f32 - mid.1 as f32) > 24.0 {
-                            flow.focus = Some(cell_world(&s.height, (mid.0 as f32, mid.1 as f32)));
+                            flow.focus = Some(cell_world(&s.height, (mid.0 as f32 + 0.5, mid.1 as f32 + 0.5)));
                         }
                     }
                 }
@@ -177,7 +154,7 @@ pub(super) fn button_actions(
             HudAction::GateChip(building, cell) => {
                 hud.gate_sel = if hud.gate_sel == Some((building, cell)) { None } else { Some((building, cell)) };
                 hud.opening = None;
-                flow.focus = Some(cell_world(&s.height, (cell.0 as f32, cell.1 as f32)));
+                flow.focus = Some(cell_world(&s.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)));
             }
             HudAction::RemoveGate(building, cell) => {
                 cmd(s, &mut hud, sim::Command::RemoveGate { building, cell }, now);
@@ -231,12 +208,8 @@ pub(super) fn button_actions(
                 super::paths::toggle_only(r);
                 hud.set_changed();
             }
-            HudAction::BeaverDetails(who) => match who {
-                Some(id) => hud.open_page(super::Page::Beaver(id)),
-                None => hud.close_pages(),
-            },
-            HudAction::LodgePage(lodge) => match lodge {
-                Some(l) => hud.open_page(super::Page::Lodge(l)),
+            HudAction::OpenPage(p) => match p {
+                Some(p) => hud.open_page(p),
                 None => hud.close_pages(),
             },
             HudAction::PageBack => hud.page_back(),
@@ -257,42 +230,16 @@ pub(super) fn button_actions(
             }
             HudAction::Journal(open) => hud.journal_open = open,
             HudAction::GoTo(at) => match at {
-                NoticeAt::Beaver(id) if s.colony.beaver(id).is_some() => {
-                    *sel = Selection::Beaver(id);
-                    hud.selected = vec![id];
-                    if let Some(b) = s.colony.beaver(id) {
-                        flow.focus = Some(cell_world(&s.height, b.pos));
-                    }
-                }
-                NoticeAt::Building(id) if s.buildings.building(id).is_some() => {
-                    *sel = Selection::Site(id);
-                    hud.selected.clear();
-                    if let Some(b) = s.buildings.building(id) {
-                        flow.focus = Some(cell_world(&s.height, (b.pos.0 as f32, b.pos.1 as f32)));
-                    }
-                }
+                NoticeAt::Beaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
+                NoticeAt::Building(id) => hud.select_building(s, &mut sel, &mut flow, id),
                 NoticeAt::Spot(p) => flow.focus = Some(cell_world(&s.height, p)),
                 NoticeAt::Wolf(p) => {
                     let to = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)).unwrap_or(p);
                     flow.focus = Some(cell_world(&s.height, to));
                 }
-                _ => {}
             },
-            HudAction::SelectBeaver(id) => {
-                *sel = Selection::Beaver(id);
-                hud.selected = vec![id];
-                if let Some(b) = s.colony.beaver(id) {
-                    flow.focus = Some(cell_world(&s.height, b.pos));
-                }
-            }
-            HudAction::SelectBuilding(id) => {
-                *sel = Selection::Site(id);
-                hud.selected.clear();
-                hud.dam_cells.clear();
-                if let Some(b) = s.buildings.building(id) {
-                    flow.focus = Some(cell_world(&s.height, (b.pos.0 as f32, b.pos.1 as f32)));
-                }
-            }
+            HudAction::SelectBeaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
+            HudAction::SelectBuilding(id) => hud.select_building(s, &mut sel, &mut flow, id),
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
             HudAction::FreeBeaver(id) => free_beaver(s, &mut hud, id, now),
             HudAction::AddBeaver(building) => cmd(s, &mut hud, sim::Command::AddBeaver { building }, now),
@@ -312,10 +259,7 @@ pub(super) fn button_actions(
             HudAction::ClosePanel(p, selected) => {
                 hud.pinned.retain(|x| *x != p);
                 if selected {
-                    *sel = Selection::None;
-                    hud.selected.clear();
-                    hud.follow = None;
-                    hud.dam_cells.clear();
+                    hud.clear_selection(&mut sel);
                 }
             }
             HudAction::RemoveWorks(building) => {

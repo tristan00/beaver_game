@@ -3,7 +3,7 @@
 //! chip for each gate and lock drawn on it. Under it the build buttons (Raise, Widen, Extend,
 //! Gate, Lock), the strip of the gate picked, and the footer (builders, Mend, Face, Pause,
 //! Remove). History is behind the hourglass in the header. Detail lives in tooltips.
-use super::panels::{Ctx, RIGHT_W};
+use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
 use super::works::{self, abs_box, cap, dashes, label_left_of, DEEP, EARTH, SHALLOW, VIEW_W, WOOD};
@@ -287,7 +287,7 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
 fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     let Some(b) = s.buildings.building(id) else { return };
     let slower = format!("{}× slower", num(sim::maintenance::lasts(sim::buildings::BuildingKind::dam(), sim::maintenance::Refit::Facing)));
-    if s.buildings.pebbled.contains(&id) {
+    if b.pebbled {
         r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
     } else if s.maintenance.jobs.contains_key(&id) {
         r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::CancelMaintenance(id)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
@@ -312,6 +312,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
         face_button(c.s, r, id);
         works::pause_button(r, c.s, id);
         r.spacer();
+        super::costs::page_button(c, r, id);
         works::remove_button(c, r, id);
     });
 }
@@ -324,22 +325,10 @@ fn history(u: &mut Ui, d: &Dam) {
     let low = d.history.iter().map(|h| h.level).fold(f32::INFINITY, f32::min);
     let high = d.history.iter().map(|h| h.level).fold(f32::NEG_INFINITY, f32::max).max(low + 0.05);
     let flow_top = d.history.iter().map(|h| h.inflow.max(h.outflow)).fold(0.0, f32::max).max(1e-3);
-    let w = ((VIEW_W - 20.0) / sim::dams::HISTORY_DAYS as f32).floor().max(2.0);
-    let chart = |u: &mut Ui, icon: Icon, col: Color, name: &str, value: &dyn Fn(&sim::dams::DamDay) -> f32| {
-        u.row(6.0, |r| {
-            r.icon(icon, 13.0, col);
-            r.node(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::FlexEnd, height: Val::Px(36.0), column_gap: Val::Px(1.0), ..default() }, |b| {
-                for day in &d.history {
-                    let f = value(day).clamp(0.0, 1.0);
-                    b.add(VNode::new(Node { width: Val::Px(w - 1.0), height: Val::Px((f * 34.0).max(1.0)), ..default() })).bg(col);
-                }
-            });
-        })
-        .tip(Tip::name(name).line("Days", format!("{}", d.history.len())));
-    };
-    chart(u, Icon::Gauge, WATER, "Pond level", &|h| (h.level - low) / (high - low));
-    chart(u, Icon::Upstream, SHALLOW, "Water in", &|h| h.inflow / flow_top);
-    chart(u, Icon::Push, WARN, "Water out", &|h| h.outflow / flow_top);
+    let (n, max) = (d.history.len(), sim::dams::HISTORY_DAYS);
+    works::history_row(u, Icon::Gauge, WATER, "Pond level", n, max, d.history.iter().map(|h| (h.level - low) / (high - low)));
+    works::history_row(u, Icon::Upstream, SHALLOW, "Water in", n, max, d.history.iter().map(|h| h.inflow / flow_top));
+    works::history_row(u, Icon::Push, WARN, "Water out", n, max, d.history.iter().map(|h| h.outflow / flow_top));
 }
 
 pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
@@ -348,9 +337,8 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
     let o = offers(c, id, d);
     let (word, col, why, fix) = status(s, id, d, &o);
     let selected_here = c.sel == Selection::Site(id) || matches!(c.sel, Selection::Cell(cell) if d.cells.iter().any(|x| x.cell == cell));
-    let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        works::header(c, u, id, sim::names::pond_name(s, id).unwrap_or(sim::buildings::BuildingKind::dam().name()), selected_here, health, condition_tip(s, d, health), |p| portrait(p, health));
+    let title = sim::names::pond_name(s, id).unwrap_or(sim::buildings::BuildingKind::dam().name());
+    works::works_panel(c, id, title, selected_here, health, condition_tip(s, d, health), |p| portrait(p, health), |u| {
         if c.hud.dam_tab == DamTab::History {
             history(u, d);
             return;
@@ -360,10 +348,7 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
         if let Some(g) = c.hud.gate_sel.filter(|g| g.0 == id).and_then(|(_, cell)| d.gates.iter().find(|g| g.cell == cell)) {
             works::gate_row(u, s, id, g, d.pond.as_ref().map(|p| p.level), true, Ok(()));
         }
+        super::costs::upkeep_row(c, u, id);
         footer(c, u, id, d, fix);
-    });
-    let mut v = ui.nodes.pop().expect("panel node");
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(12.0));
-    v
+    })
 }

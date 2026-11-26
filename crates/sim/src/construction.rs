@@ -83,7 +83,7 @@ impl SimState {
             let place = self.work.places.remove(i);
             for &(g, a) in place.site.as_ref().map(|s| s.delivered.as_slice()).unwrap_or(&[]) {
                 if a > 0.0 {
-                    let put = self.buildings.stores.refund(g, a).map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+                    let put = self.refund_or_drop(self.buildings.building(id).map_or((0, 0), |b| b.pos), g, a);
                     refunded.push((g, put));
                 }
             }
@@ -105,8 +105,16 @@ impl SimState {
         for c in cells {
             self.water.clear_structure(c).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
         }
-        self.locks.at.retain(|_, l| l.building != id);
         Ok(())
+    }
+
+    /// Return `amount` of `good` to stores, dropping any overflow onto the ground at `cell`.
+    pub(crate) fn refund_or_drop(&mut self, cell: crate::water::Cell, good: buildings::Good, amount: f32) -> f32 {
+        let stored = self.buildings.stores.refund(good, amount).unwrap_or(0.0);
+        if amount - stored > crate::work::EPS {
+            self.work.piles.drop_at(cell, good, amount - stored, self.time_days);
+        }
+        stored
     }
 
     /// A finished building worn to nothing falls apart: what it held is left lying where it
@@ -138,9 +146,6 @@ impl SimState {
             self.colony.house_homeless();
         }
         self.agents.maint_targets.retain(|_, t| *t != id);
-        self.forestry.cut_rules.remove(&id);
-        self.buildings.water_bound.remove(&id);
-        self.buildings.pebbled.remove(&id);
         self.release_beavers(id);
         self.buildings.buildings.retain(|b| b.id != id);
         self.buildings.wrecked.insert(id);
@@ -148,7 +153,7 @@ impl SimState {
         crate::trace::event(format!("BUILDING_WRECKED {} id={} kind={kind:?}", crate::trace::sim_stamp(), id.0));
     }
 
-    fn release_beavers(&mut self, id: buildings::BuildingId) {
+    pub(crate) fn release_beavers(&mut self, id: buildings::BuildingId) {
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
                 ag.assignment = None;

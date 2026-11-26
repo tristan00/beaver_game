@@ -396,10 +396,7 @@ pub(crate) fn settle(sim: &mut SimState, cell: Cell) -> Result<(), crate::SimErr
     }
     sim.colony.food = sim.buildings.stores.amount(crate::buildings::Good::food());
     sim.work.supplies = Some(supplies);
-    {
-        let allowed = crate::fog::open_at(&sim.world);
-        sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT, &allowed);
-    }
+    sim.fog.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), crate::fog::SETTLE_SIGHT);
     crate::agents::place_beavers(sim);
     Ok(())
 }
@@ -429,10 +426,7 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
         }
     }
     sim.fog = crate::fog::Fog::unseen(sim.world.size);
-    {
-        let allowed = crate::fog::open_at(&sim.world);
-        sim.fog.reveal((plan.camp.0 as f32 + 0.5, plan.camp.1 as f32 + 0.5), crate::fog::ARRIVAL_SIGHT, &allowed);
-    }
+    sim.fog.reveal((plan.camp.0 as f32 + 0.5, plan.camp.1 as f32 + 0.5), crate::fog::ARRIVAL_SIGHT);
     mud_near_camp(&mut sim, plan.camp, &plan.dam, plan.height);
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }

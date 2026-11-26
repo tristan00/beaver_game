@@ -32,13 +32,6 @@ impl Tree {
     pub fn spec(self) -> &'static TreeSpec {
         &self.row().spec
     }
-    /// The species taken for a tree of no known species.
-    pub fn unknown() -> Tree {
-        crate::content::content().unknown
-    }
-    pub fn feeds(self) -> bool {
-        self.spec().bark > 0.0
-    }
 }
 
 /// Where a tree stands, as the world generator sees it.

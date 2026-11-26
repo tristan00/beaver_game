@@ -100,35 +100,39 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
         };
     }
     // Packing a dam cell is work, even standing in the stream.
-    if matches!(ag.task, Task::DamWork { .. }) {
+    if matches!(ag.task, Task::Work { kind: sim::agents::WorkKind::Dam, .. }) {
         return Pose::Work;
     }
     if matches!(sim.nav.surface_at(ag.cell), Some(Surface::Water | Surface::Canal | Surface::Lock)) {
         return Pose::Swim;
     }
+    use sim::agents::WorkKind;
     match &ag.task {
         Task::Collect { target, .. } => match sim.resources.get(*target).map(|r| r.kind) {
             Some(k) if k.row().pose == "Gnaw" => Pose::Gnaw,
             Some(k) if k.row().pose == "Dig" => Pose::Dig,
             Some(k) if k.row().pose == "Forage" => Pose::Forage,
-            Some(_) => Pose::Work,
-            None => Pose::Work,
+            _ => Pose::Work,
         },
-        Task::Build { .. } | Task::DamWork { .. } => Pose::Work,
-        Task::Mend { .. } => Pose::Mend,
-        Task::Seed { .. } => Pose::Forage,
-        Task::Plant { .. } => Pose::Dig,
-        Task::Dig { .. } => Pose::Dig,
-        Task::Gate { .. } => Pose::Work,
-        Task::Eat { .. } => Pose::Forage,
-        Task::Pick { .. } | Task::Fetch { .. } | Task::Carry { .. } | Task::Haul { .. } | Task::Supply { .. } => Pose::Handle,
+        Task::Work { kind: WorkKind::Build | WorkKind::Dam | WorkKind::Gate, .. } => Pose::Work,
+        Task::Work { kind: WorkKind::Mend, .. } => Pose::Mend,
+        Task::Work { kind: WorkKind::Dig, .. } | Task::Plant { .. } => Pose::Dig,
+        Task::Seed { .. } | Task::Eat { .. } => Pose::Forage,
+        Task::Move { .. } => Pose::Handle,
         Task::Watch { .. } => Pose::Watch,
-        // Loading and unloading a raft; otherwise holding it in the water.
         Task::Raft { leg: 2 | 4, .. } => Pose::Handle,
         Task::Raft { .. } => Pose::Swim,
         Task::Rest => Pose::Rest,
         Task::Idle => Pose::Idle,
     }
+}
+
+/// How far through its step to the next cell a beaver is, `pending_days` after the simulation
+/// last moved it.
+pub(super) fn step_progress(sim: &SimState, ag: &Agent, next: (usize, usize), pending_days: f32) -> f32 {
+    let pace = sim::agents::travel_pace(&sim.nav, ag);
+    let cost = sim.nav.move_cost(ag.cell, next, pace).unwrap_or(1.0).max(1e-3);
+    ((ag.step_frac + pending_days * sim::agents::MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0)
 }
 
 pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
@@ -137,7 +141,7 @@ pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
         return true;
     }
     match ag.path.as_ref().and_then(|p| p.steps.first()) {
-        Some(&(n, _)) => ag.step_frac >= 0.5 && wet(n),
+        Some(&(n, _)) => step_progress(sim, ag, n, 0.0) >= 0.5 && wet(n),
         None => false,
     }
 }
@@ -157,7 +161,7 @@ pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
     }
     match &ag.task {
         Task::Collect { target, .. } => sim.resources.get(*target).and_then(|r| toward((r.cell.0 as f32 + 0.5, r.cell.1 as f32 + 0.5))),
-        Task::Build { site: id } | Task::Mend { building: id } => sim.buildings.building(*id).and_then(|b| {
+        Task::Work { site, kind: sim::agents::WorkKind::Build | sim::agents::WorkKind::Mend, .. } => sim.buildings.building(*site).and_then(|b| {
             let (w, h) = b.kind.spec().footprint;
             toward((b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + h as f32 / 2.0))
         }),
@@ -193,6 +197,7 @@ mod tests {
             path: None,
             inside: false,
             stuck_ticks: 0,
+            load_ease: 0.0,
             speed: 1.0,
             trail: Vec::new(),
             history: std::collections::VecDeque::new(),
@@ -201,6 +206,7 @@ mod tests {
             next_retarget: 0.0,
             next_meal_probe: 0.0,
             source: None,
+            queue: Default::default(),
         };
         assert_eq!(pose_of(&sim, &ag), Pose::Swim, "beaver on canal should use swim pose");
         assert!(is_wet(&sim, &ag), "beaver on canal should be wet so its wake renders");

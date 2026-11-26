@@ -9,6 +9,7 @@ pub struct CommandResult { pub sequence: u64, pub result: Result<(), SimError> }
 enum Input {
     Command(u64, Command),
     Clock { paused: bool, days_per_second: f64 },
+    WaterEngine(crate::water::EngineKind),
     Stop,
 }
 
@@ -67,6 +68,10 @@ impl SimThread {
                         let result = state.apply(command);
                         acknowledged = sequence;
                         results.push(CommandResult { sequence, result });
+                        changed = true; true
+                    }
+                    Input::WaterEngine(kind) => {
+                        state.water.set_engine(kind);
                         changed = true; true
                     }
                 };
@@ -129,6 +134,9 @@ impl SimThread {
     }
     pub fn clock(&self, paused: bool, days_per_second: f64) -> Result<(), String> {
         self.input.send(Input::Clock { paused, days_per_second }).map_err(|_| "simulation sim_thread stopped".into())
+    }
+    pub fn set_water_engine(&self, kind: crate::water::EngineKind) -> Result<(), String> {
+        self.input.send(Input::WaterEngine(kind)).map_err(|_| "simulation sim_thread stopped".into())
     }
     pub fn poll(&self) -> Option<Snapshot> { self.output.lock().unwrap().try_recv().ok() }
     /// Hand back a world the interface no longer needs (the snapshot before the latest): the

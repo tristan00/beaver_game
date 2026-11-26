@@ -78,13 +78,19 @@ pub(super) fn spawn_gallery(
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, base, z).with_scale(Vec3::splat(super::sim_sync::BUILDING_SIZE))));
             }
         }
-        use super::structures::{dam_cell_mesh, DamStage};
+        use super::structures::{dam_cell_mesh, faced_dam_cell_mesh, DamStage};
         for (k, st) in [DamStage::Staked, DamStage::Rising, DamStage::Done].into_iter().enumerate() {
             for i in 0..4u8 {
                 let (x, z) = (cx - 8.0 + k as f32 * 6.0 + i as f32, cz - 40.0);
                 let mesh = meshes.add(dam_cell_mesh(4 + (i % 2) * 2, 1.35, i as u32, st));
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, ground(x, z), z)));
             }
+        }
+        // Behind them, a pebble-faced wall from one step high to twelve, its face toward the camera.
+        for (i, steps) in [1u8, 2, 4, 4, 6, 8, 8, 12].into_iter().enumerate() {
+            let (x, z) = (cx - 4.0 + i as f32, cz - 46.0);
+            let mesh = meshes.add(faced_dam_cell_mesh(steps, 1.35, i as u32 % 3, DamStage::Done));
+            commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, ground(x, z), z).with_rotation(Quat::from_rotation_y(std::f32::consts::PI))));
         }
     }
     // Every species (across) in spring, summer, autumn and winter (rows, nearest first).
@@ -267,8 +273,8 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
     }
     let nth = std::env::var("BC_SELECT_HOME").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
     let (Some(mut sel), Some(l)) = (sel, sim.0.colony.lodges.get(nth)) else { return };
-    if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.lodge_page != Some(l.id)) {
-        hud.lodge_page = Some(l.id);
+    if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page != Some(crate::hud::Page::Lodge(l.id))) {
+        hud.page = Some(crate::hud::Page::Lodge(l.id));
     }
     let want = match crate::picking::Target::home(&sim.0, l.id) {
         crate::picking::Target::Building(b) => crate::flow::Selection::Site(b),
@@ -286,7 +292,7 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
 /// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
 /// `BC_LEDGER=page` keeps that page of the colony ledger open.
 pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, mut hud: Option<ResMut<crate::hud::HudState>>) {
-    // `BC_LEDGER=charts|dams|buildings|stores`: that page of the territory stays open;
+    // `BC_LEDGER=charts|dams|buildings|stores|upkeep`: that page of the territory stays open;
     // `=beavers|run`: that page of the colony.
     if let (Some(page), Some(h)) = (std::env::var("BC_LEDGER").ok(), hud.as_mut()) {
         use crate::hud::{ColonyTab, LedgerTab};
@@ -294,8 +300,10 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
             "beavers" => (Some(ColonyTab::Beavers), None),
             "run" => (Some(ColonyTab::Run), None),
             "dams" => (None, Some(LedgerTab::Dams)),
+            "canals" => (None, Some(LedgerTab::Canals)),
             "buildings" => (None, Some(LedgerTab::Buildings)),
             "stores" => (None, Some(LedgerTab::Stores)),
+            "upkeep" => (None, Some(LedgerTab::Upkeep)),
             _ => (None, Some(LedgerTab::Charts)),
         };
         if h.ledger != ledger || h.colony != colony {
@@ -305,8 +313,12 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     }
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
-    // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel.
+    // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel; with
+    // `BC_DETAILS=1` too, its page is open.
     if let Some(id) = std::env::var("BC_SELECT_BUILDING").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(h) = hud.as_mut().filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page != Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)))) {
+            h.page = Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)));
+        }
         let want = crate::flow::Selection::Site(sim::buildings::BuildingId(id));
         if *sel != want {
             *sel = want;
@@ -332,8 +344,12 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
         *sel = w;
     }
     if let (Some(mut hud), Some(crate::flow::Selection::Beaver(id))) = (hud, want) {
-        if std::env::var_os("BC_DETAILS").is_some() && hud.details != Some(id) {
-            hud.details = Some(id);
+        // Picked as a click picks it, so its selection ring shows.
+        if hud.selected != [id] {
+            hud.selected = vec![id];
+        }
+        if std::env::var_os("BC_DETAILS").is_some() && hud.page != Some(crate::hud::Page::Beaver(id)) {
+            hud.page = Some(crate::hud::Page::Beaver(id));
         }
     }
 }

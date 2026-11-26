@@ -84,11 +84,11 @@ fn wall(cells: &[Cell], heights: &[f32]) -> Option<(Vec<Cell>, Vec<f32>)> {
 
 fn ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<Ground> {
     let still = crate::water::StillPond::behind(sim, cells, heights).ok()?;
-    let pond = still.preview(sim, 0.0);
     let (w, h) = (sim.height.width(), sim.height.height());
     let idx = |&(x, y): &Cell| y * w + x;
+    let flooded: Vec<Cell> = still.flooded_cells();
     let mut in_pond = vec![false; w * h];
-    pond.flooded_cells.iter().for_each(|c| in_pond[idx(c)] = true);
+    flooded.iter().for_each(|c| in_pond[idx(c)] = true);
     let terrain = sim.height.as_slice();
     let neighbours = |i: usize| {
         let (x, y) = (i % w, i / w);
@@ -99,7 +99,7 @@ fn ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<Grou
         .min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]));
     let mut seen = vec![false; w * h];
     let mut stack: Vec<usize> = cells.iter().map(idx).collect();
-    stack.extend(pond.flooded_cells.iter().map(idx));
+    stack.extend(flooded.iter().map(idx));
     for &i in &stack { seen[i] = true; }
     while let Some(i) = stack.pop() {
         for n in neighbours(i) {
@@ -109,7 +109,7 @@ fn ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<Grou
             }
         }
     }
-    Some(Ground { level: pond.level, crest: pond.crest, spill_at: pond.spill_at, flooded: pond.flooded_cells, in_pond, watershed: seen })
+    Some(Ground { level: still.level, crest: still.crest, spill_at: still.spill_at, flooded, in_pond, watershed: seen })
 }
 
 pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<DamPreview> {
@@ -195,7 +195,7 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
         .map(|s| s.rate * (1.0 + s.seasonality * (forcing.inflow - 1.0)).max(0.0)).sum();
 
     let cfg = &sim.water.config;
-    let (fed, ice) = (sim.water.fed.as_slice(), sim.water.ice.as_slice());
+    let (fed, ice) = (sim.world.lake.as_slice(), sim.water.ice.as_slice());
     let loss_at = |i: usize| if fed[i] { 0.0 } else { cfg.evaporation * forcing.evaporation * (1.0 - (ice[i] / crate::tuning::water::ICE_COVER_M).min(1.0)) + cfg.seepage };
     let in_pond: Vec<bool> = {
         let mut v = in_pond;

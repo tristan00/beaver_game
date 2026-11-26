@@ -279,21 +279,11 @@ impl fmt::Display for WaterError {
 }
 impl std::error::Error for WaterError {}
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DamPreview {
-    pub level: f32,
-    pub pond_area: usize,
-    pub volume: f32,
-    pub flooded_cells: Vec<Cell>,
-    pub flooded_trees: usize,
-    pub flooded_buildings: usize,
-    pub reaches_map_edge: bool,
-    pub crest: f32,
-    pub spill_at: Option<Cell>,
-    /// The level with `head` of flowing water on top, and the cells it covers: the still pond
-    /// plus the shallow fringe the extra depth reaches on its side of the dam.
-    pub flow_level: f32,
-    pub flow_cells: Vec<Cell>,
+/// Map an f32 to an order-preserving u32 key for integer priority queues.
+#[inline]
+pub(crate) fn ordered_f32(v: f32) -> u32 {
+    let b = v.to_bits();
+    if b & 0x8000_0000 == 0 { b ^ 0x8000_0000 } else { !b }
 }
 
 /// Where the water engine spends its time, accumulated since the last `reset_timings`.
@@ -336,8 +326,6 @@ pub struct Water {
     pub canal: Grid<bool>,
     /// Gate cells: a dam cell whose height the player sets (a sill). Gates don't erode.
     pub gate: Grid<bool>,
-    pub fed: Grid<bool>,
-    pub structures: Grid<bool>,
     pub closed_edge: Grid<bool>,
     pub width: Grid<f32>,
     pub channel: Grid<bool>,
@@ -410,7 +398,7 @@ pub struct Water {
     pub sky: crate::weather::Sky,
 }
 
-crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, fed, structures, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked, ground_now, sky });
+crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_height, dam_integrity, dam_durability, canal, gate, closed_edge, width, channel, riverbed, discharge, velocity, lake_level, sources, config, weather, time_days, added_volume, lost_volume, cell_m, physics_seconds, revision, nav_revision, topology_revision, nav_cells, nav_marked, steps_taken, timings, books, n, h, z, bed_version, qx, qy, src, source_key, source_cells, rows, topology_dirty, pub_rows, full_publish, dam_cells, ice_any, since_environment, bed_live, bed_marked, h_published, shore, told, current_cells, current_marked, ground_now, sky });
 
 const FORCING_EVERY_S: f64 = 300.0;
 
@@ -460,8 +448,6 @@ impl Water {
             dam_durability: Grid::new(size, size, 1.0),
             canal: Grid::new(size, size, false),
             gate: Grid::new(size, size, false),
-            fed: Grid::new(size, size, false),
-            structures: Grid::new(size, size, false),
             closed_edge: Grid::new(size, size, false),
             width: Grid::new(size, size, 0.0),
             channel: Grid::new(size, size, false),
@@ -523,9 +509,6 @@ impl Water {
             world.water_inputs.iter().filter(|i| i.kind == crate::worldgen::InputKind::Inflow).map(|i| (i.cell.0, i.cell.1, 1.0)).collect();
         for (c, closed) in w.closed_edge.as_mut_slice().iter_mut().zip(crate::worldgen::inflow_walls(n, world.cell_m, &inflows)) {
             *c = closed;
-        }
-        for (f, &l) in w.fed.as_mut_slice().iter_mut().zip(world.lake.as_slice()) {
-            *f = l;
         }
         w.lake_level = world.lake_level.clone();
         // Only the part of an external lake crossing the map boundary is a fixed
@@ -605,7 +588,7 @@ impl Water {
 
     pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, &self.sky) }
 
-    /// Stored water in metres of depth summed over cells.
+    /// Stored water in metres of depth summed over cells (or m³ for Equilibrium).
     pub fn total_volume(&self) -> f64 {
         each_engine!(&self.engine, e => e.total_volume()).unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
     }
@@ -616,11 +599,10 @@ impl Water {
         if kind == self.engine.kind() {
             return;
         }
-        // The new engine starts from the water on screen. Engines may store a little more or
-        // less than they draw (thin reaches, banked inflow), so book the difference here and
-        // the water budget stays exact across the switch.
+        let area = (self.cell_m * self.cell_m) as f64;
         let stored = self.total_volume();
-        let shown: f64 = self.h.iter().map(|&h| h as f64).sum();
+        let shown_m: f64 = self.h.iter().map(|&h| h as f64).sum();
+        let shown = if matches!(self.engine, Engine::Equilibrium(_)) { shown_m * area } else { shown_m };
         let change = shown - stored;
         if change >= 0.0 {
             self.books.sources += change;
@@ -1355,20 +1337,17 @@ fn dam_sides<'a>(state: &'a SimState, cells: &'a [Cell], idx: &'a [usize]) -> Op
 /// for how far flowing water spreads over it (a dam's estimate needs both).
 pub(crate) struct StillPond {
     n: usize,
-    /// Terrain plus dams, with the planned heights in place.
-    bed: Vec<f32>,
-    /// The planned dam's own cells.
-    is_new: Vec<bool>,
-    /// Cells the still pond covers, and where its flood started.
-    seen: Vec<bool>,
-    seeds: Vec<usize>,
     flooded: Vec<usize>,
-    level: f32,
-    crest: f32,
-    spill_at: Option<Cell>,
+    pub(crate) level: f32,
+    pub(crate) crest: f32,
+    pub(crate) spill_at: Option<Cell>,
 }
 
 impl StillPond {
+    pub(crate) fn flooded_cells(&self) -> Vec<Cell> {
+        self.flooded.iter().map(|&i| (i % self.n, i / self.n)).collect()
+    }
+
     pub(crate) fn behind(state: &SimState, cells: &[Cell], heights: &[f32]) -> Result<StillPond, WaterError> {
         let water = &state.water;
         let idx = water.check_cells(cells)?;
@@ -1476,55 +1455,6 @@ impl StillPond {
         // In map order from here on: every use wants it sorted.
         flooded.sort_unstable();
         drop(_p);
-        Ok(StillPond { n, bed, is_new, seen, seeds, flooded, level, crest, spill_at })
-    }
-
-    pub(crate) fn preview(&self, state: &SimState, head: f32) -> DamPreview {
-        let water = &state.water;
-        let (n, bed, is_new, level) = (self.n, &self.bed, &self.is_new, self.level);
-        let dams = water.dam_height.as_slice();
-        let sill = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
-        let flow_level = level + head.max(0.0);
-        let flooded = &self.flooded;
-        let mut flow = flooded.clone();
-        if head > 0.0 {
-            let mut seen = self.seen.clone();
-            // The water reaching the dam stands `head` deep even where no still pond forms (it
-            // runs straight round an end): start from the cells draining into the dam too.
-            for &m in &self.seeds {
-                if !seen[m] && bed[m] < flow_level {
-                    seen[m] = true;
-                    flow.push(m);
-                }
-            }
-            // Only up into the shallow fringe: cells below the still level that the still pond
-            // did not reach lie past a saddle, where the water runs away instead.
-            let mut stack = flow.clone();
-            while let Some(i) = stack.pop() {
-                for m in neighbours8(n, i) {
-                    if !seen[m] && !is_new[m] && bed[m] >= level && sill(i, m) < flow_level {
-                        seen[m] = true;
-                        flow.push(m);
-                        stack.push(m);
-                    }
-                }
-            }
-        }
-        flow.sort_unstable();
-        let veg = state.ecology.vegetation.as_slice();
-        let occ = water.structures.as_slice();
-        DamPreview {
-            level,
-            pond_area: flooded.len(),
-            volume: flooded.iter().map(|&i| level - bed[i]).sum(),
-            flooded_trees: flooded.iter().filter(|&&i| veg[i] > TREE_VEGETATION).count(),
-            flooded_buildings: flooded.iter().filter(|&&i| occ[i]).count(),
-            reaches_map_edge: flooded.iter().any(|&i| i % n == 0 || i % n == n - 1 || i / n == 0 || i / n == n - 1),
-            flooded_cells: flooded.iter().map(|&i| (i % n, i / n)).collect(),
-            crest: self.crest,
-            spill_at: self.spill_at,
-            flow_level,
-            flow_cells: flow.iter().map(|&i| (i % n, i / n)).collect(),
-        }
+        Ok(StillPond { n, flooded, level, crest, spill_at })
     }
 }

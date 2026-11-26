@@ -26,6 +26,39 @@ pub fn condition_colour(h: f32) -> Color {
     if h < 0.5 { BAD } else if h < 0.8 { WARN } else { GOOD }
 }
 
+/// One history sparkline row for a dam or canal panel.
+pub fn history_row(u: &mut Ui, icon: Icon, col: Color, name: &str, days: usize, max_days: usize, fracs: impl IntoIterator<Item = f32>) {
+    let w = ((VIEW_W - 20.0) / max_days as f32).floor().max(2.0);
+    u.row(6.0, |r| {
+        r.icon(icon, 13.0, col);
+        r.sparkline(fracs, w - 1.0, 36.0, col);
+    })
+    .tip(Tip::name(name).line("Days", format!("{days}")));
+}
+
+/// Standard right-hand panel shell shared by dams and canals.
+#[allow(clippy::too_many_arguments)]
+pub fn works_panel(
+    c: &Ctx,
+    id: BuildingId,
+    title: &str,
+    selected_here: bool,
+    health: f32,
+    cond_tip: Tip,
+    portrait: impl FnOnce(&mut Ui),
+    body: impl FnOnce(&mut Ui),
+) -> VNode {
+    let mut ui = Ui::default();
+    ui.node(Node { width: Val::Px(super::panels::RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
+        header(c, u, id, title, selected_here, health, cond_tip, portrait);
+        body(u);
+    });
+    let mut v = ui.nodes.pop().expect("panel node");
+    panel(&mut v);
+    v.node.padding = UiRect::all(Val::Px(12.0));
+    v
+}
+
 /// A box placed by its top left corner inside a side view.
 pub fn abs_box(left: f32, top: f32, w: f32, h: f32) -> Node {
     Node { position_type: PositionType::Absolute, left: Val::Px(left), top: Val::Px(top), width: Val::Px(w.max(0.0)), height: Val::Px(h.max(0.0)), ..default() }
@@ -234,7 +267,7 @@ pub fn opening_fits(s: &sim::SimState, id: BuildingId, cell: Cell, o: Opening) -
             if !sim::locks::unlocked(s) {
                 return Err("Needs a raft landing".into());
             }
-            if s.locks.at.contains_key(&cell) {
+            if sim::locks::has(s, cell) {
                 return Err("Already a lock".into());
             }
             if !gate_here {
@@ -276,7 +309,7 @@ pub fn chips(c: &Ctx, u: &mut Ui, id: BuildingId, gates: &[sim::gates::Gate], ro
         for g in &gates[..shown] {
             let lock = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
             let brought = supplied(s, id, g.cell);
-            let busy = s.agents.by_id.values().any(|a| matches!(a.task, sim::agents::Task::Gate { site, cell, .. } if site == id && cell == g.cell));
+            let busy = s.agents.by_id.values().any(|a| matches!(a.task, sim::agents::Task::Work { site, cell: Some(cell), kind: sim::agents::WorkKind::Gate, .. } if site == id && cell == g.cell));
             let (text, col) = match brought {
                 Some((got, need)) => (format!("{}/{}", got.floor() as i64, need.round() as i64), WARN),
                 None => (format!("{} m", num(g.sill() - g.floor)), INK),

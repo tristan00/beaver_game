@@ -18,6 +18,22 @@ pub enum DamStage {
     Done,
 }
 
+/// Half-width of a dam wall's crest.
+const WALL_CREST: f32 = 0.22;
+/// How deep a dam wall goes into the ground below its foot.
+const WALL_BURY: f32 = 0.45;
+
+/// How far out a dam wall `h` high reaches at its foot: upstream, downstream.
+fn wall_feet(h: f32) -> (f32, f32) {
+    (0.28 + 0.55 * h, 0.3 + 0.95 * h)
+}
+
+/// Half-width of a dam wall `h` high at height `t * h` on the side whose foot is `base` out:
+/// a slight belly, rounded into the crest.
+fn wall_face(h: f32, t: f32, base: f32) -> f32 {
+    base + (WALL_CREST - base) * t + 0.12 * h.min(1.5) * t * (1.0 - t)
+}
+
 /// One cell of dam wall, running along x. The upstream face (+z) is steep and plastered with
 /// mud; the downstream face (-z) is a long, low slope of sticks.
 pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
@@ -29,11 +45,10 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
     let site = stage == DamStage::Rising;
     let hl = len * 0.5;
     let h = h.max(0.1);
-    let wt = 0.22f32;
-    let (up_b, down_b) = (0.28 + 0.55 * h, 0.3 + 0.95 * h);
-    let bury = 0.45f32;
-    // Half-width at height t*h on each side: a slight belly, rounded into the crest.
-    let face = |t: f32, base: f32| base + (wt - base) * t + 0.12 * h.min(1.5) * t * (1.0 - t);
+    let wt = WALL_CREST;
+    let (up_b, down_b) = wall_feet(h);
+    let bury = WALL_BURY;
+    let face = |t: f32, base: f32| wall_face(h, t, base);
     let up = |t: f32| face(t, up_b);
     let down = |t: f32| face(t, down_b);
     let (mud_lo, mud_hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
@@ -118,6 +133,78 @@ pub fn dam_cell_mesh(steps: u8, len: f32, variant: u32, stage: DamStage) -> Mesh
     let mut mb = Mb::new();
     dam_cell(&mut mb, steps.max(1) as f32 * DAM_STEP, len, variant, stage);
     mb.build()
+}
+
+/// The same stretch of wall with its downstream face armoured in pebbles.
+pub fn faced_dam_cell_mesh(steps: u8, len: f32, variant: u32, stage: DamStage) -> Mesh {
+    let mut mb = Mb::new();
+    let h = steps.max(1) as f32 * DAM_STEP;
+    dam_cell(&mut mb, h, len, variant, stage);
+    if stage != DamStage::Staked {
+        pebble_face(&mut mb, h, len, variant);
+    }
+    mb.build()
+}
+
+/// Pebbles packed in courses up the downstream slope (-z) of a dam cell `h` high and `len`
+/// long, bedded half into its sticks and mud: big stones at the toe, smaller ones higher up,
+/// the odd gap where the sticks show through, and the crest left bare. The courses start
+/// below the foot, along the buried part of the wall, so where the bank falls away the
+/// stones still lie on the wall and never hang in the air.
+pub fn pebble_face(mb: &mut Mb, h: f32, len: f32, variant: u32) {
+    let h = h.max(0.1);
+    let hl = len * 0.5;
+    let (_, down_b) = wall_feet(h);
+    let top = if h < 0.4 { 0.7 } else { 0.82 };
+    // The slope in (out, up), out being -z: from the buried foot up to the last course.
+    let mut line = vec![Vec2::new(down_b + WALL_BURY * 0.6, -WALL_BURY)];
+    for k in 0..=12 {
+        let t = top * k as f32 / 12.0;
+        line.push(Vec2::new(wall_face(h, t, down_b), t * h));
+    }
+    let mut cum = vec![0.0f32; line.len()];
+    for i in 1..line.len() {
+        cum[i] = cum[i - 1] + line[i].distance(line[i - 1]);
+    }
+    let end = cum[line.len() - 1];
+    // A point that far up the slope, and the slope's direction there.
+    let at = |s: f32| {
+        let i = cum.partition_point(|&c| c < s).clamp(1, line.len() - 1);
+        let seg = (cum[i] - cum[i - 1]).max(1e-6);
+        (line[i - 1].lerp(line[i], ((s - cum[i - 1]) / seg).clamp(0.0, 1.0)), (line[i] - line[i - 1]) / seg)
+    };
+    let mut r = Rng(6007 + variant * 3301 + (h * 8.0) as u32 * 53);
+    let size = 0.085 + 0.02 * h.min(3.0);
+    let mud = col(palette::MUD_WET);
+    let mut s = cum[1] * 0.45;
+    let mut course = 0;
+    while s < end {
+        let up = s / end;
+        let k = size * (1.3 - 0.45 * up);
+        let (_, d) = at(s);
+        // Out of the slope: away from the wall and up.
+        let n = v(0.0, -d.x, -d.y).normalize_or(Vec3::Y);
+        let across = ((2.0 * hl) / (2.2 * k)).ceil().max(1.0) as usize;
+        let step = 2.0 * hl / across as f32;
+        let (count, shift) = if course % 2 == 0 { (across, 0.5) } else { (across + 1, 0.0) };
+        for i in 0..count {
+            // Gaps, never in the toe.
+            if course >= 2 && r.next() < 0.07 {
+                continue;
+            }
+            let x = -hl + (i as f32 + shift + r.range(-0.18, 0.18)) * step;
+            let (sp, _) = at(s + r.range(-0.15, 0.15) * k);
+            let thick = k * r.range(0.5, 0.7);
+            let c = v(x, sp.y, -sp.x) + n * thick * 0.35;
+            let rot = Quat::from_rotation_arc(Vec3::Y, n) * Quat::from_rotation_y(r.range(-0.4, 0.4)) * Quat::from_rotation_z(r.range(-0.15, 0.15));
+            let scale = v(k * r.range(1.15, 1.45), thick, k * r.range(0.9, 1.1));
+            // Washed grey and brown stones, muddier toward the foot.
+            let colour = mix(super::deposits::pebble_colour(&mut r, false), mud, 0.25 * (1.0 - up) + 0.05);
+            mb.ellipsoid_m(Mat4::from_rotation_translation(rot, c) * Mat4::from_scale(scale), 6, 3, mix(colour, hex(0x2E2A26), 0.35), colour);
+        }
+        s += k * 1.75;
+        course += 1;
+    }
 }
 
 pub const FOOTING_DEPTH: f32 = 4.2;
@@ -372,5 +459,30 @@ pub(super) fn food_heap(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
         let l = r.range(0.6, 1.1);
         let m = p + normal * 0.06;
         branch(mb, m - d * l * 0.5, m + d * l * 0.5, 0.05, leaf(i), 31 + i as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
+        mesh.try_attribute(Mesh::ATTRIBUTE_POSITION).ok().and_then(|a| a.as_float3()).expect("dam meshes have positions").to_vec()
+    }
+
+    #[test]
+    fn pebble_facing_lies_on_the_downstream_slope_and_stays_small() {
+        for steps in [1u8, 4, 8, 16] {
+            let h = steps as f32 * DAM_STEP;
+            let plain = positions(&dam_cell_mesh(steps, 1.35, 0, DamStage::Done));
+            let faced = positions(&faced_dam_cell_mesh(steps, 1.35, 0, DamStage::Done));
+            assert!(faced.len() > plain.len(), "{steps} steps: no pebbles");
+            let stones = &faced[plain.len()..];
+            assert!(stones.len() < 4000, "{steps} steps: {} pebble vertices", stones.len());
+            for p in stones {
+                assert!(p[2] < 0.1, "{steps} steps: a pebble on the upstream side at {p:?}");
+                assert!(p[1] > -0.8 && p[1] < h + 0.3, "{steps} steps: a pebble off the wall at {p:?}");
+            }
+        }
     }
 }

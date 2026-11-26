@@ -1,6 +1,5 @@
 include!(concat!(env!("OUT_DIR"), "/fog_constants.rs"));
 use crate::water::Cell;
-use crate::worldgen::World;
 
 pub const EXPLORED: f32 = 0.5;
 
@@ -35,15 +34,15 @@ impl Fog {
         self.get(c) >= EXPLORED
     }
     /// What a beaver at `cell` sees (`BEAVER_SIGHT` around the cell's centre).
-    pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell, allowed: &dyn Fn(usize, usize) -> bool) {
+    pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell) {
         if self.sighted.get(&who) == Some(&cell) {
             return;
         }
-        self.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), BEAVER_SIGHT, allowed);
+        self.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), BEAVER_SIGHT);
         self.sighted.insert(who, cell);
     }
 
-    pub fn reveal(&mut self, centre: (f32, f32), radius: f32, allowed: &dyn Fn(usize, usize) -> bool) -> bool {
+    pub fn reveal(&mut self, centre: (f32, f32), radius: f32) -> bool {
         if self.size == 0 {
             return false;
         }
@@ -56,7 +55,7 @@ impl Fog {
                 let dist = ((x as f32 - centre.0).powi(2) + (y as f32 - centre.1).powi(2)).sqrt();
                 let v = ((radius + 2.0 - dist) / 2.0).clamp(0.0, 1.0);
                 let i = y * self.size + x;
-                if v > self.seen[i] && allowed(x, y) {
+                if v > self.seen[i] {
                     self.seen[i] = v;
                     changed = true;
                 }
@@ -66,8 +65,4 @@ impl Fog {
         self.revision += changed as u64;
         changed
     }
-}
-
-pub fn open_at(world: &World) -> impl Fn(usize, usize) -> bool + '_ {
-    move |x, y| world.height.in_bounds(x, y)
 }

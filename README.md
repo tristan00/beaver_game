@@ -38,7 +38,7 @@ You are a beaver family that found its spot to start a colony. Water is your saf
 | **Mud digger** | Unlimited | None | Digs mud from mud banks and river mud deposits (pauses when ground freezes). |
 | **Mender** | Unlimited | None | Repairs worn buildings and dams, clears canal silt, and applies refits. |
 | **Hauler** | 3 per Haul mound | Haul mound | Moves goods between stores, balances store levels, and pushes rafts. |
-| **Planter** | 1 per Forester | Forester | Collects seedlings from mature trees and plants saplings in the Forester's area. |
+| **Planter** | 1 per Seedling bed | Seedling bed | Collects the wild seedlings of trees, land plants and water plants growing in the bed's area, keeping the three in balance, brings them to the bed, and plants each where it grows in the area. A planted seedling is not collected again. |
 | **Sentry** | 1 per Lookout | Lookout | Watches for danger at extended range and slaps tail to warn nearby beavers. |
 | **Pebbler** | 1 per Pebble heap | Pebble heap | Collects river pebbles for pebble-facing dams and buildings (pauses when ground freezes). |
 
@@ -54,7 +54,7 @@ You are a beaver family that found its spot to start a colony. Water is your saf
 | **Stick pile** | 2×2 (water) | 6 Sticks, 2 Mud | None | 300 Sticks, 300 Mud | — | Stores sticks and mud gathered by fellers and mud diggers. |
 | **Food cache** | 2×2 (water) | 6 Sticks, 2 Mud | None | 300 Food | — | Stores food plants and bark for the colony, especially over winter. |
 | **Pebble heap** | 2×2 (water) | 4 Sticks, 2 Mud | None | 120 Pebbles | 1 Pebbler | Stores river pebbles and provides a Pebbler seat. |
-| **Forester** | 2×2 (water) | 12 Sticks, 6 Mud | Food cache | 80 Seedlings | 1 Planter | Replants trees within its work area (25×25) and stores seedlings. |
+| **Seedling bed** | 2×2 (water) | 10 Sticks, 2 Mud | Food cache | 80 Seedlings | 1 Planter | Grows trees and food plants within its work area (91×91) and stores seedlings. |
 | **Haul mound** | 2×2 (water) | 10 Sticks, 4 Mud | Stick pile | — | 3 Haulers | Coordinates haulers to balance stores, fulfill haul orders, and run rafts. |
 | **Lookout** | 2×2 (water) | 10 Sticks, 4 Mud | None | — | 1 Sentry | Watch post where a Sentry watches for danger from far away and warns the colony. |
 | **Raft landing** | 2×2 (water) | 20 Sticks, 4 Mud | Haul mound | 1 Raft | — | Launches a log raft so Haulers can carry bulk loads across connected water and locks. |
@@ -115,7 +115,7 @@ Water plants grow in ponds and slow shallows, and become inaccessible when still
 | Animal | Role | Max on Map | Diet / Target | Behavior & Colony Interaction |
 | --- | --- | --- | --- | --- |
 | **Beaver** | Colonist | Unlimited | Food plants, water plants, tree bark | Your colonists. Live in family lodges, swim fast in water, flee wolves to water, and work assigned roles. |
-| **Rabbit** | Wildlife | 36 | Food plants, saplings, ground food piles | Grazes near the valley edges, bolts from both beavers and wolves, and is hunted by wolves. |
-| **Deer** | Wildlife | 15 | Food plants, saplings | Grazes across the valley; unafraid of beavers, flees wolves, and is hunted by wolves. |
+| **Rabbit** | Wildlife | 36 | Food plants, seedlings, ground food piles | Grazes near the valley edges, bolts from both beavers and wolves, and is hunted by wolves. |
+| **Deer** | Wildlife | 15 | Food plants, seedlings | Grazes across the valley; unafraid of beavers, flees wolves, and is hunted by wolves. |
 | **Bird** | Wildlife | 10 | Food plants, ground food piles | Roams and pecks at plants and dropped food; flies away from beavers and wolves. |
 | **Wolf** | Predator | 3 | Beavers on land, rabbits, deer | Hunts on land and never enters water. Beavers spotted far from water are at risk; Sentries at Lookouts spot wolves early and warn the colony. |

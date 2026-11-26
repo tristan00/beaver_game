@@ -154,14 +154,7 @@ impl Flow {
     fn rebuild(&mut self, w: &Water) {
         let n = w.n;
         let count = n * n;
-        let key = |z: f32| {
-            let b = z.to_bits();
-            if b & 0x8000_0000 == 0 {
-                b ^ 0x8000_0000
-            } else {
-                !b
-            }
-        };
+        let key = crate::water::ordered_f32;
         let mut queue = BinaryHeap::new();
         let mut spill = vec![f32::INFINITY; count];
         let mut rank = vec![NONE; count];

@@ -49,7 +49,7 @@ pub fn close_day(sim: &mut SimState, water: f32) {
             run.built[b.kind] += 1;
         }
     }
-    for l in sim.locks.at.values().filter(|l| l.built) {
+    for l in crate::locks::built(sim) {
         if run.counted_locks.insert(l.cell) {
             run.locks += 1;
         }

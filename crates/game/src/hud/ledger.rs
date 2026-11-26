@@ -1,7 +1,4 @@
-//! The territory (L): the land and the works — charts of the water, the woods and the goods
-//! over time, every dam's water and upkeep, every building's state, the stores. Also the
-//! colony's two wide pages, drawn here and shown in the colony (Tab): every beaver in a table,
-//! and this run. Numbers and icons; the words are in tooltips.
+//! The territory (L) and colony-wide tables: charts, dams, canals, buildings, beavers, and run stats.
 use super::colony::{doing, token_px};
 use super::panels::{status_line, Ctx};
 use super::ui::*;
@@ -13,99 +10,62 @@ use sim::buildings::{BuildingKind, Good};
 use sim::colony::Beaver;
 
 pub const LEDGER_W: f32 = 640.0;
-/// Rows of a long list shown at once; the wheel scrolls the rest.
 const ROWS: usize = 16;
-/// The most bars a chart draws: longer spans are averaged into this many.
 const BARS: usize = 60;
-
-fn tabs() -> [(LedgerTab, Icon, &'static str); 4] {
-    [
-    (LedgerTab::Charts, Icon::Ledger, "Charts"),
-    (LedgerTab::Dams, crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), "Dams"),
-    (LedgerTab::Buildings, Icon::Building, "Buildings"),
-    (LedgerTab::Stores, crate::hud::words::building_icon(sim::buildings::BuildingKind::store_for(sim::dams::material()).unwrap_or(sim::buildings::BuildingKind::home())), "Stores"),
-    ]
-}
+const CHART_W: f32 = 272.0;
+const CHART_H: f32 = 52.0;
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
     let Some(tab) = c.hud.ledger else { return Vec::new() };
-    let mut ui = Ui::default();
-    ui.node(
-        Node { width: Val::Px(LEDGER_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() },
-        |u| {
-            u.row(6.0, |r| {
-                for (t, icon, name) in tabs() {
-                    r.pebble(icon, 16.0, HudAction::Ledger(Some(t)), if t == tab { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
-                }
-                r.spacer();
-                if tab == LedgerTab::Charts {
-                    span_chips(c, r);
-                }
-                r.close_button(HudAction::Ledger(None), true);
-            });
-            u.rule();
-            u.node(
-                Node { width: Val::Percent(100.0), flex_grow: 1.0, min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), ..default() },
-                |body| match tab {
-                    LedgerTab::Charts => charts(c, body),
-                    LedgerTab::Dams => dams(c, body),
-                    LedgerTab::Buildings => buildings(c, body),
-                    LedgerTab::Stores => super::colony::stores(c, body),
-                },
-            )
-            .scroll_y();
+    let tabs = [
+        (LedgerTab::Charts, Icon::Ledger, "Charts"),
+        (LedgerTab::Dams, building_icon(BuildingKind::dam()), "Dams"),
+        (LedgerTab::Canals, building_icon(BuildingKind::canal()), "Canals"),
+        (LedgerTab::Buildings, Icon::Building, "Buildings"),
+        (LedgerTab::Stores, building_icon(BuildingKind::store_for(sim::dams::material()).unwrap_or(BuildingKind::home())), "Stores"),
+        (LedgerTab::Upkeep, Icon::Hammer, "Upkeep"),
+    ];
+    Ui::book_shell(
+        LEDGER_W,
+        |r| {
+            for (t, icon, name) in tabs { r.pebble(icon, 16.0, HudAction::Ledger(Some(t)), if t == tab { Peb::On } else { Peb::Idle }).tip(Tip::name(name)); }
+            r.spacer();
+            if matches!(tab, LedgerTab::Charts | LedgerTab::Dams | LedgerTab::Canals) { span_chips(c, r); }
+            r.close_button(HudAction::Ledger(None), true);
         },
-    );
-    let mut v = ui.nodes.pop().unwrap();
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(14.0));
-    vec![page_area(v, false)]
+        |body| match tab {
+            LedgerTab::Charts => charts(c, body),
+            LedgerTab::Dams => dams(c, body),
+            LedgerTab::Canals => canals(c, body),
+            LedgerTab::Buildings => buildings(c, body),
+            LedgerTab::Stores => super::colony::stores(c, body),
+            LedgerTab::Upkeep => super::costs::upkeep_tab(c, body),
+        },
+    )
 }
 
-/// A small button with a word on it.
 pub(super) fn chip<'a>(r: &'a mut Ui, label: &str, on: bool, a: HudAction) -> &'a mut VNode {
     let v = r.node(Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, |x| {
-        x.bold(label.to_string(), 11.0, if on { INK } else { MUTED });
+        x.bold(label, 11.0, if on { INK } else { MUTED });
     });
-    v.skin(if on { Skin::PebbleOn } else { Skin::Pebble });
-    v.action(a)
+    v.skin(if on { Skin::PebbleOn } else { Skin::Pebble }).action(a)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Charts
-
-/// One bar: `a` with `b` stacked on it above the line, `down` hanging below it.
 #[derive(Clone, Copy, Default)]
-struct Bar {
-    a: f32,
-    b: f32,
-    down: f32,
-    day0: u64,
-    day1: u64,
-}
+pub(super) struct Bar { pub(super) a: f32, pub(super) b: f32, pub(super) down: f32, pub(super) day0: u64, pub(super) day1: u64 }
 
-/// The record's days in the span, averaged into at most `BARS` bars by `f`.
 fn bars(c: &Ctx, f: impl Fn(&sim::ledger::ColonyDay) -> (f32, f32, f32)) -> Vec<Bar> {
     let days = &c.s.ledger.colony;
-    let span = match c.hud.span {
-        Span::Season => sim::calendar::SEASON_DAYS as usize,
-        Span::Year => sim::calendar::YEAR_DAYS as usize,
-        Span::All => days.len(),
-    };
+    let span = match c.hud.span { Span::Season => sim::calendar::SEASON_DAYS as usize, Span::Year => sim::calendar::YEAR_DAYS as usize, Span::All => days.len() };
     let take = span.min(days.len());
-    let from = days.len() - take;
-    let each = take.div_ceil(BARS).max(1);
-    let mut out = Vec::new();
-    let mut i = from;
+    let (mut i, each, mut out) = (days.len() - take, take.div_ceil(BARS).max(1), Vec::new());
     while i < days.len() {
         let end = (i + each).min(days.len());
         let n = (end - i) as f32;
         let mut bar = Bar { day0: days[i].day, day1: days[end - 1].day, ..default() };
         for d in days.range(i..end) {
             let (a, b, down) = f(d);
-            bar.a += a / n;
-            bar.b += b / n;
-            bar.down += down / n;
+            (bar.a, bar.b, bar.down) = (bar.a + a / n, bar.b + b / n, bar.down + down / n);
         }
         out.push(bar);
         i = end;
@@ -117,34 +77,20 @@ fn day_range(b: &Bar) -> String {
     if b.day0 == b.day1 { date(b.day0 as f64) } else { format!("{} – {}", date(b.day0 as f64), date(b.day1 as f64)) }
 }
 
-const CHART_W: f32 = 272.0;
-const CHART_H: f32 = 52.0;
-
-/// A chart card: its icon and the value now, then the bars. `mirrored` hangs `down` below a
-/// middle line; otherwise `b` stacks on `a`.
 #[allow(clippy::too_many_arguments)]
-fn chart(u: &mut Ui, icon: Icon, col: Color, col_b: Color, name: &str, value: String, value_col: Color, data: &[Bar], mirrored: bool, tip_of: impl Fn(&Bar) -> Tip) {
+pub(super) fn chart(u: &mut Ui, icon: Icon, col: Color, col_b: Color, name: &str, value: String, value_col: Color, data: &[Bar], mirrored: bool, tip_of: impl Fn(&Bar) -> Tip) {
     u.col(4.0, |card| {
-        card.row(6.0, |r| {
-            r.icon(icon, 16.0, col);
-            r.spacer();
-            r.bold(value, 13.0, value_col);
-        })
-        .tip(Tip::name(name));
+        card.row(6.0, |r| { r.icon(icon, 16.0, col); r.spacer(); r.bold(value, 13.0, value_col); }).tip(Tip::name(name));
         let top = data.iter().map(|b| b.a + b.b).fold(0.0f32, f32::max).max(1e-3);
         let bottom = data.iter().map(|b| b.down).fold(0.0f32, f32::max).max(1e-3);
         let (up_h, down_h) = if mirrored { (CHART_H / 2.0, CHART_H / 2.0) } else { (CHART_H, 0.0) };
         let n = data.len().max(1) as f32;
         let gap = if n > 40.0 { 1.0 } else { 2.0 };
         let w = ((CHART_W - gap * (n - 1.0)) / n).max(1.0);
-        card.node(Node { width: Val::Px(CHART_W), height: Val::Px(CHART_H), column_gap: Val::Px(gap), align_items: AlignItems::FlexStart, ..row_node(gap) }, |plot| {
-            if data.is_empty() {
-                plot.add(VNode::new(Node { width: Val::Px(CHART_W), height: Val::Px(1.0), margin: UiRect::top(Val::Px(up_h)), ..default() })).bg(LINE);
-            }
+        card.node(Node { width: Val::Px(CHART_W), height: Val::Px(CHART_H), align_items: AlignItems::FlexStart, ..row_node(gap) }, |plot| {
+            if data.is_empty() { plot.add(VNode::new(Node { width: Val::Px(CHART_W), height: Val::Px(1.0), margin: UiRect::top(Val::Px(up_h)), ..default() })).bg(LINE); }
             for b in data {
-                let ha = (b.a / top * up_h).max(if b.a > 0.0 { 1.0 } else { 0.0 });
-                let hb = (b.b / top * up_h).max(if b.b > 0.0 { 1.0 } else { 0.0 });
-                let hd = (b.down / bottom * down_h).max(if b.down > 0.0 { 1.0 } else { 0.0 });
+                let (ha, hb, hd) = ((b.a / top * up_h).max((b.a > 0.0) as u8 as f32), (b.b / top * up_h).max((b.b > 0.0) as u8 as f32), (b.down / bottom * down_h).max((b.down > 0.0) as u8 as f32));
                 plot.node(Node { width: Val::Px(w), height: Val::Px(CHART_H), flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..default() }, |bar| {
                     bar.add(VNode::new(Node { width: Val::Px(w), height: Val::Px((up_h - ha - hb).max(0.0)), ..default() }));
                     bar.add(VNode::new(Node { width: Val::Px(w), height: Val::Px(hb), ..default() })).bg(col_b);
@@ -153,168 +99,112 @@ fn chart(u: &mut Ui, icon: Icon, col: Color, col_b: Color, name: &str, value: St
                         bar.add(VNode::new(Node { width: Val::Px(w), height: Val::Px(1.0), ..default() })).bg(LINE);
                         bar.add(VNode::new(Node { width: Val::Px(w), height: Val::Px(hd), ..default() })).bg(BAD.with_alpha(0.75));
                     }
-                })
-                .tip(tip_of(b));
+                }).tip(tip_of(b));
             }
-        })
-        .bg(Color::srgba(0.0, 0.0, 0.0, 0.18));
+        }).bg(Color::srgba(0.0, 0.0, 0.0, 0.18));
     });
 }
 
 fn vol(m3: f32) -> String {
     let m3 = m3.max(0.0);
-    if m3 >= 10_000.0 { format!("{:.0}k", m3 / 1000.0) } else if m3 >= 1000.0 { format!("{:.1}k", m3 / 1000.0) } else { format!("{:.0}", m3) }
+    if m3 >= 10_000.0 { format!("{:.0}k", m3 / 1000.0) } else if m3 >= 1000.0 { format!("{:.1}k", m3 / 1000.0) } else { format!("{m3:.0}") }
 }
 
-/// The colony over time, two charts a row: beavers, food, sticks, mud, water held, trees.
+fn wrap_grid(u: &mut Ui, col_gap: f32, row_gap: f32, f: impl FnOnce(&mut Ui)) {
+    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(col_gap), row_gap: Val::Px(row_gap), ..default() }, f);
+}
+
 fn charts(c: &Ctx, u: &mut Ui) {
     let s = c.s;
-    let last = s.ledger.colony.back();
-    if last.is_none() {
-        u.row(6.0, |r| {
-            r.icon(Icon::Hourglass, 16.0, MUTED);
-        })
-        .tip(Tip::name("The first day is not over yet"));
+    let Some(last) = s.ledger.colony.back() else {
+        u.row(6.0, |r| { r.icon(Icon::Hourglass, 16.0, MUTED); }).tip(Tip::name("The first day is not over yet"));
         return;
-    }
-    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
+    };
+    wrap_grid(u, 16.0, 12.0, |g| {
         for g_ in Good::all().filter(|&g| super::panels::staple(g)) {
-            let i = g_;
-            let data = bars(c, |d| (d.produced[i], 0.0, d.consumed[i]));
-            let (inn, out) = (s.ledger.in_per_day(g_), s.ledger.out_per_day(g_));
-            let net = inn - out;
-            let value = format!("{}/d", signed(net));
-            chart(g, good_icon(g_), good_color(g_), good_color(g_), g_.name(), value, if net < -0.05 { BAD } else if net > 0.05 { GOOD } else { INK }, &data, true, |b| {
+            let net = s.ledger.in_per_day(g_) - s.ledger.out_per_day(g_);
+            chart(g, good_icon(g_), good_color(g_), good_color(g_), g_.name(), format!("{}/d", signed(net)), if net < -0.05 { BAD } else if net > 0.05 { GOOD } else { INK }, &bars(c, |d| (d.produced[g_], 0.0, d.consumed[g_])), true, |b| {
                 Tip::titled(Some((good_icon(g_), good_color(g_))), day_range(b)).line("Made per day", num(b.a)).line("Used per day", num(b.down))
             });
         }
-        let data = bars(c, |d| (d.census.water, 0.0, 0.0));
         let cell_area = s.water.cell_m * s.water.cell_m;
         let now: f32 = s.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum();
-        chart(g, Icon::Drop, WATER, WATER, "Water held behind dams (m³)", format!("{} m³", vol(now)), INK, &data, false, |b| {
+        chart(g, Icon::Drop, WATER, WATER, "Water held behind dams (m³)", format!("{} m³", vol(now)), INK, &bars(c, |d| (d.census.water, 0.0, 0.0)), false, |b| {
             Tip::titled(Some((Icon::Drop, WATER)), day_range(b)).line("Held", format!("{} m³", vol(b.a)))
         });
-        // Trees standing, and the saplings planted in each bar stacked on top.
-        let days = &s.ledger.colony;
-        let planted_by = |day: u64| days.iter().find(|d| d.day == day).map_or(0, |d| d.census.planted);
-        let data: Vec<Bar> = bars(c, |d| (d.census.trees as f32, 0.0, 0.0))
-            .into_iter()
-            .map(|mut b| {
-                let before = if b.day0 == 0 { 0 } else { planted_by(b.day0 - 1) };
-                b.b = planted_by(b.day1).saturating_sub(before) as f32;
-                b
-            })
-            .collect();
-        let trees = last.map_or(0, |d| d.census.trees);
-        chart(g, crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()), GOOD, Color::srgb(0.75, 0.92, 0.55), "Trees standing, and planted", format!("{trees}  +{}", s.ledger.planted), INK, &data, false, |b| {
-            Tip::titled(Some((crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()), GOOD)), day_range(b)).line("Standing", num(b.a)).line("Planted", format!("{}", b.b as i64)).line("Planted in all", format!("{}", s.ledger.planted))
+        let planted_by = |day: u64| s.ledger.colony.iter().find(|d| d.day == day).map_or(0, |d| d.census.planted);
+        let tree_data: Vec<Bar> = bars(c, |d| (d.census.trees as f32, 0.0, 0.0)).into_iter().map(|mut b| {
+            b.b = planted_by(b.day1).saturating_sub(if b.day0 == 0 { 0 } else { planted_by(b.day0 - 1) }) as f32;
+            b
+        }).collect();
+        let (ti, total_planted) = (resource_icon(sim::resources::ResourceKind::tree()), s.ledger.planted.iter().sum::<u32>());
+        chart(g, ti, GOOD, Color::srgb(0.75, 0.92, 0.55), "Trees standing, and planted", format!("{}  +{total_planted}", last.census.trees), INK, &tree_data, false, |b| {
+            Tip::titled(Some((ti, GOOD)), day_range(b)).line("Standing", num(b.a)).line("Planted", format!("{}", b.b as i64)).line("Planted in all", format!("{total_planted}"))
         });
     });
-    // What the stores hold of each good, against what they can hold.
     u.rule();
-    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
+    wrap_grid(u, 16.0, 12.0, |g| {
         for g_ in Good::all() {
-            let i = g_;
-            let data = bars(c, |d| (d.stock[i], 0.0, 0.0));
             let stores = &s.buildings.stores;
-            let value = format!("{}/{}", vol(stores.amount(g_)), vol(stores.capacity(g_)));
-            let name = format!("{} in stores", g_.name());
-            chart(g, good_icon(g_), good_color(g_), good_color(g_), &name, value, INK, &data, false, |b| {
+            chart(g, good_icon(g_), good_color(g_), good_color(g_), &format!("{} in stores", g_.name()), format!("{}/{}", vol(stores.amount(g_)), vol(stores.capacity(g_))), INK, &bars(c, |d| (d.stock[g_], 0.0, 0.0)), false, |b| {
                 Tip::titled(Some((good_icon(g_), good_color(g_))), day_range(b)).line("Stored", num(b.a))
             });
         }
     });
 }
 
-// ---------------------------------------------------------------------------------------------
-// This run
-
-/// A number under its icon; the words in its tip.
 fn tile(u: &mut Ui, icon: Icon, col: Color, value: String, name: &str) {
-    u.col(3.0, |t| {
-        t.icon(icon, 20.0, col);
-        t.bold(value, 14.0, INK);
-    })
-    .style(|n| {
-        n.width = Val::Px(62.0);
-        n.align_items = AlignItems::Center;
-    })
-    .tip(Tip::titled(Some((icon, col)), name));
+    u.col(3.0, |t| { t.icon(icon, 20.0, col); t.bold(value, 14.0, INK); })
+        .style(|n| { n.width = Val::Px(62.0); n.align_items = AlignItems::Center; })
+        .tip(Tip::titled(Some((icon, col)), name));
 }
 
-fn tiles(u: &mut Ui, f: impl FnOnce(&mut Ui)) {
-    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(8.0), row_gap: Val::Px(10.0), ..default() }, f);
-}
-
-/// The whole run in numbers: the colony's lives, what it gathered, what went by raft, what it
-/// built and the most water it held.
 pub(super) fn run(c: &Ctx, u: &mut Ui) {
-    population_chart(c, u);
     let s = c.s;
+    if !s.ledger.colony.is_empty() {
+        wrap_grid(u, 16.0, 12.0, |g| {
+            chart(g, Icon::Beaver, FUR, Color::srgb(0.9, 0.72, 0.5), "Beavers", format!("{}", s.colony.population()), INK, &bars(c, |d| ((d.census.beavers - d.census.young) as f32, d.census.young as f32, 0.0)), false, |b| {
+                Tip::titled(Some((Icon::Beaver, FUR)), day_range(b)).line("Adults", num(b.a)).line("Young", num(b.b))
+            });
+        });
+        u.rule();
+    }
     let (st, run) = (&s.colony.stats, &s.run);
-    tiles(u, |r| {
-        tile(r, Icon::Hourglass, MUTED, span(s.time_days), "Time");
-        tile(r, Icon::Kit, FUR, format!("{}", st.births), "Born in the colony");
-        tile(r, Icon::Walk, FUR, format!("{}", st.immigrants), "Came to join");
-        tile(r, Icon::Beaver, FUR, format!("{}", st.peak_population), "Most beavers at once");
-        tile(r, Icon::MoodBad, BAD, format!("{}", st.deaths), "Died");
-        tile(r, Icon::Back, MUTED, format!("{}", st.departures), "Left");
-    });
-    u.rule();
-    tiles(u, |r| {
-        for g in Good::all() {
-            tile(r, good_icon(g), good_color(g), vol(s.buildings.stores.produced_total[g]), &format!("{} gathered", g.name()));
+    wrap_grid(u, 8.0, 10.0, |r| {
+        for (i, col, v, name) in [(Icon::Hourglass, MUTED, span(s.time_days), "Time"), (Icon::Kit, FUR, format!("{}", st.births), "Born in the colony"), (Icon::Walk, FUR, format!("{}", st.immigrants), "Came to join"), (Icon::Beaver, FUR, format!("{}", st.peak_population), "Most beavers at once"), (Icon::MoodBad, BAD, format!("{}", st.deaths), "Died"), (Icon::Back, MUTED, format!("{}", st.departures), "Left")] {
+            tile(r, i, col, v, name);
         }
-        tile(r, crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)), GOOD, format!("{}", s.ledger.planted), "Saplings planted");
     });
     u.rule();
-    tiles(u, |r| {
+    wrap_grid(u, 8.0, 10.0, |r| {
+        for g in Good::all() { tile(r, good_icon(g), good_color(g), vol(s.buildings.stores.produced_total[g]), &format!("{} gathered", g.name())); }
+        tile(r, good_icon(Good::seedling()), GOOD, format!("{}", s.ledger.planted.iter().sum::<u32>()), "Seedlings planted");
+    });
+    u.rule();
+    wrap_grid(u, 8.0, 10.0, |r| {
         tile(r, Icon::Raft, WATER, format!("{}", run.raft_trips), "Raft loads delivered");
-        for g in Good::all() {
-            let a = run.raftd[g];
-            if a > 0.0 {
-                tile(r, good_icon(g), good_color(g), vol(a), &format!("{} moved by raft", g.name()));
-            }
-        }
+        for g in Good::all().filter(|&g| run.raftd[g] > 0.0) { tile(r, good_icon(g), good_color(g), vol(run.raftd[g]), &format!("{} moved by raft", g.name())); }
     });
     u.rule();
-    tiles(u, |r| {
-        for k in BuildingKind::all() {
-            tile(r, building_icon(k), INK, format!("{}", run.built_of(k)), &format!("{} built", k.spec().name.as_str()));
-        }
+    wrap_grid(u, 8.0, 10.0, |r| {
+        for k in BuildingKind::all() { tile(r, building_icon(k), INK, format!("{}", run.built_of(k)), &format!("{} built", k.spec().name.as_str())); }
         tile(r, Icon::Lock, INK, format!("{}", run.locks), "Locks built");
         tile(r, Icon::Drop, WATER, vol(run.peak_water), "Most water held behind dams (m³)");
     });
 }
 
-// ---------------------------------------------------------------------------------------------
-// Beavers
-
-/// The job a beaver's skill and pace are read for: the work it holds now.
-fn job_of(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
-    sim::jobs::role_of(s, b.id)
-}
-
-/// The job a beaver holds, in a word (free beavers too), for sorting by it.
-fn role_word(s: &sim::SimState, b: &Beaver) -> &'static str {
-    sim::jobs::role_of(s, b.id).map_or("Free", |j| j.name())
-}
-
-/// How far each page's long list can scroll: past this the page would show fewer rows than fit.
 pub fn scroll_max(s: &sim::SimState, tab: LedgerTab) -> usize {
     match tab {
         LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind.is_dam() && b.dam.is_some()).count().saturating_sub(4),
+        LedgerTab::Canals => s.buildings.buildings.iter().filter(|b| b.canal.is_some()).count().saturating_sub(4),
         LedgerTab::Buildings => s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).count().saturating_sub(ROWS),
+        LedgerTab::Upkeep => super::costs::scroll_max(s),
         LedgerTab::Charts | LedgerTab::Stores => 0,
     }
 }
 
-/// How far the colony's beaver table scrolls.
-pub fn beavers_scroll_max(s: &sim::SimState) -> usize {
-    s.colony.beavers.len().saturating_sub(ROWS)
-}
+pub fn beavers_scroll_max(s: &sim::SimState) -> usize { s.colony.beavers.len().saturating_sub(ROWS) }
 
-/// The span the charts look back over.
 pub(super) fn span_chips(c: &Ctx, r: &mut Ui) {
     for (sp, label, name) in [(Span::Season, "90d", "Last season"), (Span::Year, "1y", "Last year"), (Span::All, "All", "Everything")] {
         chip(r, label, c.hud.span == sp, HudAction::Span(sp)).tip(Tip::name(name));
@@ -322,308 +212,147 @@ pub(super) fn span_chips(c: &Ctx, r: &mut Ui) {
     r.add(VNode::new(Node { width: Val::Px(8.0), ..default() }));
 }
 
-/// The beavers over time: adults, and the young stacked above them.
-fn population_chart(c: &Ctx, u: &mut Ui) {
-    let s = c.s;
-    if s.ledger.colony.is_empty() {
-        return;
-    }
-    u.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(16.0), row_gap: Val::Px(12.0), ..default() }, |g| {
-        let data = bars(c, |d| ((d.census.beavers - d.census.young) as f32, d.census.young as f32, 0.0));
-        let now = s.colony.population();
-        chart(g, Icon::Beaver, FUR, Color::srgb(0.9, 0.72, 0.5), "Beavers", format!("{now}"), INK, &data, false, |b| {
-            Tip::titled(Some((Icon::Beaver, FUR)), day_range(b)).line("Adults", num(b.a)).line("Young", num(b.b))
-        });
-    });
-    u.rule();
-}
+fn factor_col(x: f32) -> Color { if x < 0.8 { BAD } else if x < 0.95 { WARN } else if x > 1.05 { GOOD } else { INK } }
+fn times(x: f32) -> String { format!("×{x:.2}") }
 
-fn factor_col(x: f32) -> Color {
-    if x < 0.8 { BAD } else if x < 0.95 { WARN } else if x > 1.05 { GOOD } else { INK }
-}
-
-fn times(x: f32) -> String {
-    format!("×{:.2}", x)
-}
-
-/// The job a beaver works at a pace: one that work factors speed (not hauling, which is
-/// walking, nor keeping watch).
 fn paced_job(s: &sim::SimState, b: &Beaver) -> Option<sim::colony::Job> {
-    job_of(s, b).filter(|j| j.row().skill_speeds).filter(|_| b.can_work())
+    sim::jobs::role_of(s, b.id).filter(|j| !matches!(j.duty(), sim::content::Duty::Haul | sim::content::Duty::Watch)).filter(|_| b.can_work())
 }
 
-/// A beaver's pace at its job, and a tip with only the factors acting on it (not ×1).
 pub(super) fn pace(s: &sim::SimState, b: &Beaver) -> Option<(f32, Tip)> {
     let wf = sim::agents::work_factors(b, paced_job(s, b)?);
     let mut tip = Tip::name("Pace").with_value(times(wf.total()));
     for (name, f) in [("Skill", wf.skill_x), ("Mood", wf.mood_x), ("Health", wf.health_x), ("Rest", wf.rest_x), ("Age", wf.age_x)] {
-        if (f - 1.0).abs() > 0.005 {
-            tip = tip.line(name, times(f));
-        }
+        if (f - 1.0).abs() > 0.005 { tip = tip.line(name, times(f)); }
     }
     Some((wf.total(), tip))
 }
 
 const COLS: [(Option<BeaverCol>, Icon, &str, f32); 12] = [
-    (None, Icon::Beaver, "", 22.0),
-    (Some(BeaverCol::Name), Icon::Beaver, "Name", 140.0),
-    (Some(BeaverCol::Age), Icon::Hourglass, "Age (years)", 34.0),
-    (Some(BeaverCol::Family), Icon::Home, "Family", 120.0),
-    (Some(BeaverCol::Job), Icon::Jobs, "Job", 26.0),
-    (Some(BeaverCol::Doing), Icon::Walk, "Doing now", 26.0),
-    (Some(BeaverCol::Skill), Icon::Hammer, "Skill at this job", 64.0),
-    (None, Icon::MoodGood, "Mood", 42.0),
-    (None, Icon::Health, "Health", 42.0),
-    (None, Icon::Idle, "Rest", 42.0),
-    (None, Icon::Kit, "Age: the young work at a share", 42.0),
-    (Some(BeaverCol::Pace), Icon::Fast2, "Pace: every factor together", 46.0),
+    (None, Icon::Beaver, "", 22.0), (Some(BeaverCol::Name), Icon::Beaver, "Name", 140.0), (Some(BeaverCol::Age), Icon::Hourglass, "Age (years)", 34.0),
+    (Some(BeaverCol::Family), Icon::Home, "Family", 120.0), (Some(BeaverCol::Job), Icon::Jobs, "Job", 26.0), (Some(BeaverCol::Doing), Icon::Walk, "Doing now", 26.0),
+    (Some(BeaverCol::Skill), Icon::Hammer, "Skill at this job", 64.0), (None, Icon::MoodGood, "Mood", 42.0), (None, Icon::Health, "Health", 42.0),
+    (None, Icon::Idle, "Rest", 42.0), (None, Icon::Kit, "Age: the young work at a share", 42.0), (Some(BeaverCol::Pace), Icon::Fast2, "Pace: every factor together", 46.0),
 ];
 
-/// Every beaver in a table: who, how old, which family, what it does, its skill at that and
-/// what speeds or slows it. A column's icon sorts by it; the wheel scrolls.
 pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
-    let s = c.s;
-    let (col, desc) = c.hud.sort;
+    let (s, (col, desc)) = (c.s, c.hud.sort);
     let family = |b: &Beaver| s.colony.family(b.family).map(|f| f.name.clone()).unwrap_or_default();
-    let mut list: Vec<&Beaver> = s.colony.beavers.iter().collect();
-    let key_f = |b: &Beaver| -> f32 {
-        match col {
-            BeaverCol::Age => b.age_days,
-            BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j]),
-            BeaverCol::Pace => paced_job(s, b).map_or(-1.0, |j| sim::agents::work_factors(b, j).total()),
-            _ => 0.0,
-        }
+    let role_word = |b: &Beaver| sim::jobs::role_of(s, b.id).map_or("Free", |j| j.name());
+    let key_f = |b: &Beaver| match col {
+        BeaverCol::Age => b.age_days,
+        BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j]),
+        BeaverCol::Pace => paced_job(s, b).map_or(-1.0, |j| sim::agents::work_factors(b, j).total()),
+        _ => 0.0,
     };
+    let mut list: Vec<&Beaver> = s.colony.beavers.iter().collect();
     list.sort_by(|a, b| {
         let o = match col {
             BeaverCol::Name => a.name.cmp(&b.name),
             BeaverCol::Family => family(a).cmp(&family(b)).then(b.age_days.total_cmp(&a.age_days)),
-            BeaverCol::Job => role_word(s, a).cmp(role_word(s, b)),
+            BeaverCol::Job => role_word(a).cmp(role_word(b)),
             BeaverCol::Doing => super::inspect::activity(s, a).2.cmp(super::inspect::activity(s, b).2),
             _ => key_f(a).total_cmp(&key_f(b)),
         };
-        let o = if desc { o.reverse() } else { o };
-        o.then(a.id.0.cmp(&b.id.0))
+        (if desc { o.reverse() } else { o }).then(a.id.0.cmp(&b.id.0))
     });
-    let n = list.len();
-    let first = c.hud.scroll.min(n.saturating_sub(ROWS));
-    // The header: a column's icon, and the sort.
+    let (n, first) = (list.len(), c.hud.scroll.min(list.len().saturating_sub(ROWS)));
     u.row(4.0, |r| {
         for (sort, icon, name, w) in COLS {
             let v = r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| {
-                if !name.is_empty() {
-                    h.icon(icon, 14.0, if sort == Some(col) { INK } else { MUTED });
-                }
-                if sort == Some(col) {
-                    h.icon(if desc { Icon::Down } else { Icon::Up }, 9.0, ACCENT);
-                }
+                if !name.is_empty() { h.icon(icon, 14.0, if sort == Some(col) { INK } else { MUTED }); }
+                if sort == Some(col) { h.icon(if desc { Icon::Down } else { Icon::Up }, 9.0, ACCENT); }
             });
-            if !name.is_empty() {
-                v.tip(Tip::name(name));
-            }
-            if let Some(k) = sort {
-                v.action(HudAction::Sort(k));
-            }
+            if !name.is_empty() { v.tip(Tip::name(name)); }
+            if let Some(k) = sort { v.action(HudAction::Sort(k)); }
         }
     });
     u.rule();
-    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), ..default() }, |body| {
-        body.col(2.0, |rows| {
-            for b in list.iter().skip(first).take(ROWS) {
-                beaver_row(c, rows, b, &family(b));
-            }
-        });
-        body.slice_scrollbar(first, ROWS, n, ROWS as f32 * 24.0);
-    })
-    .tag(Tag::Scroll)
-    .solid();
-    u.rule();
-    u.row(10.0, |r| {
-        r.icon(Icon::Beaver, 14.0, MUTED);
-        r.bold(format!("{n}"), 12.0, MUTED);
-        r.spacer();
-        if n > ROWS {
-            r.pebble(Icon::Up, 9.0, HudAction::Scroll(-(ROWS as i32)), if first == 0 { Peb::Faded } else { Peb::Idle });
-            r.pebble(Icon::Down, 9.0, HudAction::Scroll(ROWS as i32), if first + ROWS >= n { Peb::Faded } else { Peb::Idle });
-        }
+    u.paged_list(first, ROWS, n, ROWS as i32, ROWS as f32 * 24.0, 2.0, Some((Some(Icon::Beaver), true)), |rows| {
+        for b in list.iter().skip(first).take(ROWS) { beaver_row(c, rows, b, &family(b)); }
     });
 }
 
 fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
     let s = c.s;
-    let w = |i: usize| COLS[i].3;
-    let cell = |w: f32| Node { width: Val::Px(w), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(3.0) };
-    let job = job_of(s, b);
-    let (icon, icon_col, word) = super::inspect::activity(s, b);
-    let paced = pace(s, b);
-    let wf = paced_job(s, b).map(|j| sim::agents::work_factors(b, j));
+    let cell = |i: usize| Node { width: Val::Px(COLS[i].3), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(3.0) };
+    let (role, (icon, icon_col, word), paced, wf) = (sim::jobs::role_of(s, b.id), super::inspect::activity(s, b), pace(s, b), paced_job(s, b).map(|j| sim::agents::work_factors(b, j)));
     let row = u.row(4.0, |r| {
-        r.node(Node { justify_content: JustifyContent::Center, ..cell(w(0)) }, |t| {
-            t.token(Icon::Beaver, token_px(b.stage) * 0.75, Some(doing(s, b)));
-        });
-        r.node(cell(w(1)), |x| {
-            x.bold(full_name(s, b.id, &b.name), 12.0, INK);
-        });
-        r.node(cell(w(2)), |x| {
-            x.text(format!("{:.1}", b.age_years()), 12.0, INK);
-        });
-        r.node(cell(w(3)), |x| {
-            x.text(family.to_string(), 12.0, MUTED);
-        });
-        let role = sim::jobs::role_of(s, b.id);
-        r.node(cell(w(4)), |x| {
-            x.icon(role.map_or(Icon::Idle, job_icon), 15.0, if role.is_some() { INK } else { ACCENT });
-        })
-        .tip(Tip::name("Job").line(role.map_or("Free", |j| j.name()), ""));
-        r.node(cell(w(5)), |x| {
-            x.icon(icon, 15.0, icon_col);
-        })
-        .tip(Tip::name("Doing now").line(word, ""));
-        // Skill at the job held: ticks and the share; every skill in the tooltip.
+        r.node(Node { justify_content: JustifyContent::Center, ..cell(0) }, |t| { t.token(Icon::Beaver, token_px(b.stage) * 0.75, Some(doing(s, b))); });
+        r.node(cell(1), |x| { x.bold(full_name(s, b.id, &b.name), 12.0, INK); });
+        r.node(cell(2), |x| { x.text(format!("{:.1}", b.age_years()), 12.0, INK); });
+        r.node(cell(3), |x| { x.text(family, 12.0, MUTED); });
+        r.node(cell(4), |x| { x.icon(role.map_or(Icon::Idle, job_icon), 15.0, if role.is_some() { INK } else { ACCENT }); }).tip(Tip::name("Job").line(role.map_or("Free", |j| j.name()), ""));
+        r.node(cell(5), |x| { x.icon(icon, 15.0, icon_col); }).tip(Tip::name("Doing now").line(word, ""));
         let mut skills = Tip::name("Skills");
-        for j in sim::colony::Job::all() {
-            skills.push(TipLine::new(j.row().skill.as_str(), format!("{:.0}%", b.skills[j] * 100.0)).color(if Some(j) == job { ACCENT } else { INK }));
-        }
-        r.node(cell(w(6)), |x| match wf {
-            Some(wf) => {
-                x.ticks(wf.skill, 5, 34.0, 8.0, ACCENT);
-                x.text(format!("{:.0}", wf.skill * 100.0), 11.0, INK);
-            }
-            None => {
-                x.text("-", 12.0, MUTED);
-            }
-        })
-        .tip(skills);
-        // Kits too young to work, haulers and sentries have no work pace to speak of.
+        for j in sim::colony::Job::all() { skills.push(TipLine::new(j.row().skill.as_str(), format!("{:.0}%", b.skills[j] * 100.0)).color(if Some(j) == role { ACCENT } else { INK })); }
+        r.node(cell(6), |x| match wf {
+            Some(wf) => { x.ticks(wf.skill, 5, 34.0, 8.0, ACCENT); x.text(format!("{:.0}", wf.skill * 100.0), 11.0, INK); }
+            None => { x.text("-", 12.0, MUTED); }
+        }).tip(skills);
         let factors = wf.map(|wf| [wf.mood_x, wf.health_x, wf.rest_x, wf.age_x]);
         for (k, name) in ["Mood", "Health", "Rest", "Age"].into_iter().enumerate() {
             let f = factors.map(|f| f[k]);
-            let v = r.node(cell(w(7 + k)), |x| match f {
-                Some(f) => {
-                    x.text(times(f), 11.0, factor_col(f));
-                }
-                None => {
-                    x.text("-", 12.0, MUTED);
-                }
-            });
-            if let Some(f) = f {
-                v.tip(Tip::name(name).with_value(times(f)));
-            }
+            let v = r.node(cell(7 + k), |x| match f { Some(f) => { x.text(times(f), 11.0, factor_col(f)); } None => { x.text("-", 12.0, MUTED); } });
+            if let Some(f) = f { v.tip(Tip::name(name).with_value(times(f))); }
         }
-        let v = r.node(cell(w(11)), |x| match &paced {
-            Some((p, _)) => {
-                x.bold(times(*p), 12.0, factor_col(*p));
-            }
-            None => {
-                x.text("-", 12.0, MUTED);
-            }
-        });
-        if let Some((_, tip)) = paced {
-            v.tip(tip);
-        }
+        let v = r.node(cell(11), |x| match &paced { Some((p, _)) => { x.bold(times(*p), 12.0, factor_col(*p)); } None => { x.text("-", 12.0, MUTED); } });
+        if let Some((_, tip)) = paced { v.tip(tip); }
     });
     row.node.height = Val::Px(22.0);
-    row.peek(b.id);
-    row.action(HudAction::SelectBeaver(b.id));
-}
-
-// ---------------------------------------------------------------------------------------------
-// Dams
-
-/// The water level just downstream of a dam: the face its pond stands above.
-fn tail_level(s: &sim::SimState, d: &sim::dams::Dam) -> Option<f32> {
-    let n = s.height.width() as i32;
-    let on: std::collections::HashSet<(usize, usize)> = d.cells.iter().map(|c| c.cell).collect();
-    let levels: Vec<f32> = d
-        .cells
-        .iter()
-        .filter_map(|c| {
-            let (x, y) = (c.cell.0 as i32 + d.downstream.0, c.cell.1 as i32 + d.downstream.1);
-            if x < 0 || y < 0 || x >= n || y >= n || on.contains(&(x as usize, y as usize)) {
-                return None;
-            }
-            let (x, y) = (x as usize, y as usize);
-            Some(s.height.get(x, y).copied().unwrap_or(0.0) + s.water.depth.get(x, y).copied().unwrap_or(0.0))
-        })
-        .collect();
-    (!levels.is_empty()).then(|| levels.iter().copied().fold(f32::INFINITY, f32::min))
+    row.peek(b.id).action(HudAction::SelectBeaver(b.id));
 }
 
 fn stat(r: &mut Ui, icon: Icon, col: Color, value: String, value_col: Color, tip: Tip) {
-    r.row(4.0, |x| {
-        x.icon(icon, 15.0, col);
-        x.bold(value, 12.0, value_col);
-    })
-    .style(|n| n.min_width = Val::Px(76.0))
-    .tip(tip);
+    r.row(4.0, |x| { x.icon(icon, 15.0, col); x.bold(value, 12.0, value_col); }).style(|n| n.min_width = Val::Px(76.0)).tip(tip);
 }
 
-/// Each dam: what it holds and how high it lifts the water, how full its pond is and whether
-/// it is rising, and its upkeep.
+fn empty_badge(u: &mut Ui, icon: Icon, tip: Option<Tip>) {
+    let r = u.row(6.0, |r| { r.icon(icon, 20.0, MUTED); r.bold("0", 14.0, MUTED); });
+    if let Some(t) = tip { r.tip(t); }
+}
+
 fn dams(c: &Ctx, u: &mut Ui) {
-    let s = c.s;
-    let cell_area = s.water.cell_m * s.water.cell_m;
+    let (s, cell_area) = (c.s, c.s.water.cell_m * c.s.water.cell_m);
     let list: Vec<_> = s.buildings.buildings.iter().filter(|b| b.kind.is_dam() && b.dam.is_some()).collect();
-    if list.is_empty() {
-        u.row(6.0, |r| {
-            r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), 20.0, MUTED);
-            r.bold("0", 14.0, MUTED);
-        })
-        .tip(Tip::name("No dams yet").key("Z"));
-        return;
-    }
+    if list.is_empty() { empty_badge(u, building_icon(BuildingKind::dam()), Some(Tip::name("No dams yet").key("Z"))); return; }
     let total: f32 = list.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum();
-    u.row(10.0, |r| {
-        r.icon(Icon::Drop, 16.0, WATER);
-        r.bold(format!("{} m³", vol(total)), 14.0, INK);
-    })
-    .tip(Tip::name("Water held behind every dam"));
+    u.row(10.0, |r| { r.icon(Icon::Drop, 16.0, WATER); r.bold(format!("{} m³", vol(total)), 14.0, INK); }).tip(Tip::name("Water held behind every dam"));
     let first = c.hud.scroll.min(list.len().saturating_sub(4));
-    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), width: Val::Percent(100.0), ..default() }, |wrap| {
-        wrap.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), flex_grow: 1.0, min_width: Val::Px(0.0), ..default() }, |cards| {
-            for (i, b) in list.iter().enumerate().skip(first).take(4) {
+    u.paged_list(first, 4, list.len(), 1, 320.0, 8.0, Some((None, false)), |cards| {
+        for (i, b) in list.iter().enumerate().skip(first).take(4) {
             let d = b.dam.as_deref().expect("dam");
-            let health = sim::dams::health(s, d);
-            let built: Vec<_> = d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0).collect();
+            let (health, built) = (sim::dams::health(s, d), d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0).collect::<Vec<_>>());
             let weak = built.iter().filter(|c| sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count();
             let lowest = built.iter().map(|c| sim::dams::integrity(s, c.cell)).fold(1.0f32, f32::min);
             let height = if built.is_empty() { 0.0 } else { built.iter().map(|c| sim::dams::built(s, c.cell)).sum::<f32>() / built.len() as f32 };
             let target = if d.cells.is_empty() { 0.0 } else { d.cells.iter().map(|c| c.target).sum::<f32>() / d.cells.len() as f32 };
             cards.col(6.0, |k| {
                 k.row(10.0, |r| {
-                    r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::dam()), 18.0, MUD);
-                    let title = sim::names::pond_name(s, b.id).map_or_else(|| format!("Dam {}", i + 1), |n| n.to_string());
-                    r.bold(title, 14.0, INK);
-                    r.pips(health, if health < 0.5 { BAD } else if health < sim::dams::REPAIR_BELOW { WARN } else { GOOD }).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
+                    r.icon(building_icon(BuildingKind::dam()), 18.0, MUD);
+                    r.bold(sim::names::pond_name(s, b.id).map_or_else(|| format!("Dam {}", i + 1), |n| n.to_string()), 14.0, INK);
+                    r.pips(health, super::works::condition_colour(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
                     r.spacer();
                     let left = sim::dams::loads_left(s, b.id);
-                    if left > 0 {
-                        stat(r, good_icon(sim::dams::material()), good_color(sim::dams::material()), format!("{left}"), INK, Tip::name("Loads still to carry"));
-                    }
-                    let word = if d.upkeep { "Kept in repair" } else { "Not kept in repair" };
-                    r.pebble(Icon::Hammer, 11.0, HudAction::DamUpkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(word).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    if left > 0 { stat(r, good_icon(sim::dams::material()), good_color(sim::dams::material()), format!("{left}"), INK, Tip::name("Loads still to carry")); }
+                    r.pebble(Icon::Hammer, 11.0, HudAction::DamUpkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if d.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    super::costs::page_button(c, r, b.id);
                     r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
                 });
+                super::costs::upkeep_over(c, k, b.id, c.hud.span);
                 k.row(8.0, |r| {
                     match d.pond.as_ref() {
                         Some(p) => {
-                            let held = p.volume * cell_area;
-                            stat(r, Icon::Drop, WATER, vol(held), INK, Tip::name("Water held (m³)").line("Pond cells", format!("{}", p.area)));
-                            let rise = tail_level(s, d).map(|t| (p.level - t).max(0.0));
-                            stat(r, Icon::Rise, WATER, rise.map_or("-".into(), |r| format!("+{:.1} m", r)), INK, Tip::name("Level rise").line("Above the water below the dam", ""));
+                            stat(r, Icon::Drop, WATER, vol(p.volume * cell_area), INK, Tip::name("Water held (m³)").line("Pond cells", format!("{}", p.area)));
+                            stat(r, Icon::Rise, WATER, sim::dams::drop(s, d).map_or("-".into(), |r| format!("+{r:.1} m")), INK, Tip::name("Level rise").line("Above the water below the dam", ""));
                             let fill = ((p.level - p.bottom) / (p.full_level - p.bottom).max(0.01)).clamp(0.0, 1.0);
-                            r.row(4.0, |x| {
-                                x.icon(Icon::Gauge, 15.0, WATER);
-                                x.ticks(fill, 6, 48.0, 10.0, WATER);
-                            })
-                            .tip(Tip::name(sim::names::pond_name(s, b.id).unwrap_or("Pond")).with_value(format!("{:.0}%", fill * 100.0)).line("Deepest", format!("{:.1} m", p.max_depth)).line("Full in", if p.days_to_full <= 0.0 { "Full".to_string() } else if p.days_to_full.is_finite() { days(p.days_to_full) } else { "Never".to_string() }));
-                            // The level over the last week.
-                            let h = &d.history;
-                            let week = h.len().min(7);
+                            r.row(4.0, |x| { x.icon(Icon::Gauge, 15.0, WATER); x.ticks(fill, 6, 48.0, 10.0, WATER); })
+                                .tip(Tip::name(sim::names::pond_name(s, b.id).unwrap_or("Pond")).with_value(format!("{:.0}%", fill * 100.0)).line("Deepest", format!("{:.1} m", p.max_depth)).line("Full in", if p.days_to_full <= 0.0 { "Full".into() } else if p.days_to_full.is_finite() { days(p.days_to_full) } else { "Never".into() }));
+                            let week = d.history.len().min(7);
                             if week >= 2 {
-                                let dl = h[h.len() - 1].level - h[h.len() - week].level;
+                                let dl = d.history[d.history.len() - 1].level - d.history[d.history.len() - week].level;
                                 let col = if dl < -0.02 { BAD } else if dl > 0.02 { GOOD } else { INK };
-                                stat(r, if dl < 0.0 { Icon::Down } else { Icon::Up }, col, format!("{}{:.2}", if dl >= 0.0 { "+" } else { "" }, dl), col, Tip::name(format!("Level over {week} days (m)")));
+                                stat(r, if dl < 0.0 { Icon::Down } else { Icon::Up }, col, format!("{dl:+.2}"), col, Tip::name(format!("Level over {week} days (m)")));
                             }
                             let (icon, word) = match p.spill {
                                 sim::dams::Spill::None => (Icon::Check, "Holding"),
@@ -633,129 +362,95 @@ fn dams(c: &Ctx, u: &mut Ui) {
                             };
                             r.icon(icon, 15.0, if matches!(p.spill, sim::dams::Spill::Around(_)) { WARN } else { MUTED }).tip(Tip::name(word));
                         }
-                        None => {
-                            r.icon(Icon::Drop, 15.0, MUTED).tip(Tip::name("No pond yet"));
-                        }
+                        None => { r.icon(Icon::Drop, 15.0, MUTED).tip(Tip::name("No pond yet")); }
                     }
                     r.spacer();
-                    stat(r, Icon::Crest, MUD, format!("{:.1}/{:.1}", height, target), INK, Tip::name("Wall height (m)").line("Built / planned", "").line("Cells", format!("{}", d.cells.len())).line("Gates", format!("{}", d.gates.len())));
+                    stat(r, Icon::Crest, MUD, format!("{height:.1}/{target:.1}"), INK, Tip::name("Wall height (m)").line("Built / planned", "").line("Cells", format!("{}", d.cells.len())).line("Gates", format!("{}", d.gates.len())));
                 });
-                // The pond level over the record, as a strip.
-                let h = &d.history;
-                if h.len() >= 2 {
-                    let lo = h.iter().map(|x| x.level).fold(f32::INFINITY, f32::min);
-                    let hi = h.iter().map(|x| x.level).fold(f32::NEG_INFINITY, f32::max);
+                if d.history.len() >= 2 {
+                    let lo = d.history.iter().map(|x| x.level).fold(f32::INFINITY, f32::min);
+                    let hi = d.history.iter().map(|x| x.level).fold(f32::NEG_INFINITY, f32::max);
                     let span = (hi - lo).max(0.05);
-                    let w = ((LEDGER_W - 28.0) / h.len() as f32 - 1.0).max(1.0);
-                    k.node(Node { height: Val::Px(18.0), align_items: AlignItems::FlexEnd, ..row_node(1.0) }, |sp| {
-                        for x in h.iter() {
-                            sp.add(VNode::new(Node { width: Val::Px(w), height: Val::Px(((x.level - lo) / span * 16.0 + 2.0).max(1.0)), ..default() })).bg(WATER.with_alpha(0.6));
-                        }
-                    })
-                    .tip(Tip::name("Pond level").line("Days", format!("{}", h.len())).line("Range", format!("{:.2} m", hi - lo)));
+                    k.sparkline(d.history.iter().map(|x| (x.level - lo) / span), ((LEDGER_W - 28.0) / d.history.len() as f32 - 1.0).max(1.0), 18.0, WATER.with_alpha(0.6))
+                        .tip(Tip::name("Pond level").line("Days", format!("{}", d.history.len())).line("Range", format!("{:.2} m", hi - lo)));
                 }
-            })
-                .style(|n| n.padding = UiRect::all(Val::Px(8.0)))
-                .bg(Color::srgba(0.0, 0.0, 0.0, 0.16));
-            }
-        });
-        wrap.slice_scrollbar(first, 4, list.len(), 320.0);
-    })
-    .tag(Tag::Scroll)
-    .solid();
-    if list.len() > 4 {
-        u.row(8.0, |r| {
-            r.spacer();
-            r.pebble(Icon::Up, 9.0, HudAction::Scroll(-1), if first == 0 { Peb::Faded } else { Peb::Idle });
-            r.pebble(Icon::Down, 9.0, HudAction::Scroll(1), if first + 4 >= list.len() { Peb::Faded } else { Peb::Idle });
-        });
-    }
+            }).style(|n| n.padding = UiRect::all(Val::Px(8.0))).bg(Color::srgba(0.0, 0.0, 0.0, 0.16));
+        }
+    });
 }
 
-// ---------------------------------------------------------------------------------------------
-// Buildings
+fn canals(c: &Ctx, u: &mut Ui) {
+    let s = c.s;
+    let list: Vec<_> = s.buildings.buildings.iter().filter(|b| b.canal.is_some()).collect();
+    if list.is_empty() { empty_badge(u, building_icon(BuildingKind::canal()), Some(Tip::name("No canals yet"))); return; }
+    let first = c.hud.scroll.min(list.len().saturating_sub(4));
+    u.paged_list(first, 4, list.len(), 1, 320.0, 8.0, Some((None, false)), |cards| {
+        for (i, b) in list.iter().enumerate().skip(first).take(4) {
+            let k = b.canal.as_ref().expect("canal");
+            let (health, st) = (sim::canals::health(s, k), k.status.as_ref());
+            cards.col(6.0, |card| {
+                card.row(10.0, |r| {
+                    r.icon(building_icon(BuildingKind::canal()), 18.0, MUD);
+                    r.bold(format!("Canal {}", i + 1), 14.0, INK);
+                    r.pips(health, super::works::condition_colour(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{}", st.map_or(0, |x| x.silted))));
+                    r.spacer();
+                    r.pebble(Icon::Hammer, 11.0, HudAction::CanalUpkeep(b.id, !k.upkeep), if k.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if k.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if k.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    super::costs::page_button(c, r, b.id);
+                    r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
+                });
+                super::costs::upkeep_over(c, card, b.id, c.hud.span);
+                if let Some(st) = st {
+                    card.row(8.0, |r| {
+                        stat(r, Icon::Raft, WATER, format!("{}/{}", st.floatable, st.cells), INK, Tip::name("Cells that float a raft"));
+                        stat(r, Icon::Down, if st.silted > 0 { WARN } else { MUTED }, format!("{}", st.silted), INK, Tip::name("Silted cells"));
+                        stat(r, Icon::Upstream, WATER, format!("{}/d", num(st.inflow)), INK, Tip::name("Water in (m³ a day)"));
+                        stat(r, Icon::Push, WARN, format!("{}/d", num(st.outflow)), INK, Tip::name("Water out (m³ a day)"));
+                    });
+                }
+            }).style(|n| n.padding = UiRect::all(Val::Px(8.0))).bg(Color::srgba(0.0, 0.0, 0.0, 0.16));
+        }
+    });
+}
 
-/// Every building: its state, condition, the water it stands in against what it can, and its
-/// beavers.
 fn buildings(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let mut list: Vec<_> = s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).collect();
     list.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
-    if list.is_empty() {
-        u.row(6.0, |r| {
-            r.icon(Icon::Building, 20.0, MUTED);
-            r.bold("0", 14.0, MUTED);
-        });
-        return;
-    }
-    let max = sim::buildings::MAX_BUILDING_DEPTH;
-    let n = list.len();
-    let first = c.hud.scroll.min(n.saturating_sub(ROWS));
+    if list.is_empty() { empty_badge(u, Icon::Building, None); return; }
+    let (max, n, first) = (sim::buildings::MAX_BUILDING_DEPTH, list.len(), c.hud.scroll.min(list.len().saturating_sub(ROWS)));
     u.row(8.0, |r| {
         for (icon, name, w) in [(Icon::Building, "Building", 150.0), (Icon::Check, "State", 110.0), (Icon::Health, "Condition", 80.0), (Icon::Drop, "Water it stands in, of the most it can", 140.0), (Icon::Beaver, "Beavers", 60.0)] {
-            r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| {
-                h.icon(icon, 14.0, MUTED);
-            })
-            .tip(Tip::name(name));
+            r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| { h.icon(icon, 14.0, MUTED); }).tip(Tip::name(name));
         }
     });
     u.rule();
-    u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), width: Val::Percent(100.0), ..default() }, |wrap| {
-        wrap.col(2.0, |rows| {
-            for b in list.iter().skip(first).take(ROWS) {
-                let depth = sim::buildings::flood_depth(b, &s.water.depth);
-                let flooded = sim::buildings::flooded(b, &s.water.depth);
-                let dcol = if flooded { BAD } else if depth > 0.75 * max { WARN } else { WATER };
-                let row = rows.row(8.0, |r| {
-                    r.node(Node { width: Val::Px(150.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(6.0) }, |x| {
-                        x.icon(building_icon(b.kind), 16.0, INK);
-                        x.text(b.kind.spec().name.as_str(), 12.0, INK);
-                    });
-                    r.node(Node { width: Val::Px(110.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(4.0) }, |x| {
-                        if let Some((icon, word, goods, col)) = status_line(s, b.id) {
-                            if let Some(i) = icon {
-                                x.icon(i, 13.0, col);
-                            }
-                            x.text(word, 11.0, col);
-                            for g in goods {
-                                x.icon(good_icon(g), 12.0, good_color(g));
-                            }
-                        }
-                    });
-                    r.node(Node { width: Val::Px(80.0), flex_shrink: 0.0, ..row_node(2.0) }, |x| {
-                        if b.is_complete() {
-                            x.pips(b.condition, if b.condition < 0.35 { BAD } else if b.condition < 0.6 { WARN } else { GOOD });
-                        }
-                    })
-                    .tip(Tip::name("Condition").with_value(format!("{:.0}%", b.condition * 100.0)));
-                    r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| {
-                        x.ticks(depth / max, 8, 80.0, 8.0, dcol);
-                        x.text(format!("{:.2} m", depth), 11.0, dcol);
-                    })
-                    .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{:.2} m", depth)).line("At most", format!("{:.1} m", max)));
-                    r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
-                        if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
-                            x.icon(Icon::Beaver, 13.0, MUTED);
-                            let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
-                            x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
-                        }
-                    });
+    u.paged_list(first, ROWS, n, ROWS as i32, ROWS as f32 * 24.0, 2.0, Some((Some(Icon::Building), false)), |rows| {
+        for b in list.iter().skip(first).take(ROWS) {
+            let (depth, flooded) = (sim::buildings::flood_depth(b, &s.water.depth), sim::buildings::flooded(b, &s.water.depth));
+            let dcol = if flooded { BAD } else if depth > 0.75 * max { WARN } else { WATER };
+            let row = rows.row(8.0, |r| {
+                r.node(Node { width: Val::Px(150.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(6.0) }, |x| { x.icon(building_icon(b.kind), 16.0, INK); x.text(b.kind.spec().name.as_str(), 12.0, INK); });
+                r.node(Node { width: Val::Px(110.0), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(4.0) }, |x| {
+                    if let Some((icon, word, goods, col)) = status_line(s, b.id) {
+                        if let Some(i) = icon { x.icon(i, 13.0, col); }
+                        x.text(word, 11.0, col);
+                        for g in goods { x.icon(good_icon(g), 12.0, good_color(g)); }
+                    }
                 });
-                row.node.height = Val::Px(22.0);
-                row.action(HudAction::SelectBuilding(b.id));
-            }
-        });
-        wrap.slice_scrollbar(first, ROWS, n, ROWS as f32 * 24.0);
-    })
-    .tag(Tag::Scroll)
-    .solid();
-    if n > ROWS {
-        u.row(8.0, |r| {
-            r.icon(Icon::Building, 14.0, MUTED);
-            r.bold(format!("{n}"), 12.0, MUTED);
-            r.spacer();
-            r.pebble(Icon::Up, 9.0, HudAction::Scroll(-(ROWS as i32)), if first == 0 { Peb::Faded } else { Peb::Idle });
-            r.pebble(Icon::Down, 9.0, HudAction::Scroll(ROWS as i32), if first + ROWS >= n { Peb::Faded } else { Peb::Idle });
-        });
-    }
+                r.node(Node { width: Val::Px(80.0), flex_shrink: 0.0, ..row_node(2.0) }, |x| { if b.is_complete() { x.pips(b.condition, level_color(b.condition)); } })
+                    .tip(Tip::name("Condition").with_value(format!("{:.0}%", b.condition * 100.0)));
+                r.node(Node { width: Val::Px(140.0), flex_shrink: 0.0, ..row_node(4.0) }, |x| { x.ticks(depth / max, 8, 80.0, 8.0, dcol); x.text(format!("{depth:.2} m"), 11.0, dcol); })
+                    .tip(Tip::name(if flooded { "Flooded: out of use, wearing fast" } else { "Water" }).line("Here", format!("{depth:.2} m")).line("At most", format!("{max:.1} m")));
+                r.node(Node { width: Val::Px(60.0), flex_shrink: 0.0, ..row_node(3.0) }, |x| {
+                    if let Some(pl) = s.work.place(b.id).filter(|p| !p.slots.is_empty()) {
+                        x.icon(Icon::Beaver, 13.0, MUTED);
+                        let seats = if pl.open_ended() { String::new() } else { format!("/{}", pl.slots.len()) };
+                        x.text(format!("{}{seats}", pl.filled()), 11.0, if pl.filled() == 0 { WARN } else { INK });
+                    }
+                });
+            });
+            row.node.height = Val::Px(22.0);
+            row.action(HudAction::SelectBuilding(b.id));
+        }
+    });
 }

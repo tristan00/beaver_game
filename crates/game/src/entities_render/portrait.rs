@@ -88,7 +88,7 @@ fn choose(
     stand_in: Query<(Entity, &BeaverSprite), With<StandIn>>,
     mut cam: Query<(Entity, &mut Camera, Option<&RenderLayers>), With<PortraitCam>>,
 ) {
-    let want = hud.as_ref().and_then(|h| h.details).map(|id| id.0);
+    let want = hud.as_ref().and_then(|h| match h.page { Some(crate::hud::Page::Beaver(id)) => Some(id.0), _ => None });
     if focus.0 != want {
         focus.0 = want;
     }
@@ -153,10 +153,13 @@ impl Shot {
             Pose::Walk | Pose::Run | Pose::Climb => Shot { side: 0.35, dist: 3.0, up: 0.95, aim: 0.55, ahead: 0.0 },
             // Up on its hind legs, the load hugged to its chest.
             Pose::Carry => Shot { side: 0.35, dist: 3.4, up: 1.2, aim: 0.9, ahead: 0.0 },
+            // Sitting up tall, eating or on watch: framed high enough for its head.
+            Pose::Forage => Shot { side: 1.1, dist: 3.4, up: 1.2, aim: 0.9, ahead: 0.2 },
+            Pose::Watch => Shot { side: 0.6, dist: 3.4, up: 1.2, aim: 0.9, ahead: 0.0 },
             // Low over the water.
             Pose::Swim => Shot { side: 0.4, dist: 3.0, up: 0.7, aim: 0.25, ahead: 0.0 },
             // From the side, so what it works at shows in front of it.
-            Pose::Gnaw | Pose::Dig | Pose::Work | Pose::Mend | Pose::Handle | Pose::Forage => Shot { side: 1.1, dist: 3.0, up: 1.1, aim: 0.55, ahead: 0.35 },
+            Pose::Gnaw | Pose::Dig | Pose::Work | Pose::Mend | Pose::Handle => Shot { side: 1.1, dist: 3.0, up: 1.1, aim: 0.55, ahead: 0.35 },
             _ => Shot { side: 0.6, dist: 2.8, up: 1.0, aim: 0.5, ahead: 0.0 },
         }
     }

@@ -55,7 +55,6 @@ pub struct World {
     pub flow_to: Grid<Option<usize>>,
     pub flow_acc: Grid<u32>,
     pub river: Grid<bool>,
-    pub main_river: Grid<bool>,
     pub river_flow: Grid<f32>,
     pub lake: Grid<bool>,
     pub lake_level: Grid<f32>,
@@ -66,7 +65,7 @@ pub struct World {
     pub forest: Grid<Option<Tree>>,
 }
 
-crate::grid::clone_fields!(World { seed, size, cell_m, height, surface, flow_to, flow_acc, river, main_river, river_flow, lake, lake_level, pond, water_inputs, moisture, slope, forest });
+crate::grid::clone_fields!(World { seed, size, cell_m, height, surface, flow_to, flow_acc, river, river_flow, lake, lake_level, pond, water_inputs, moisture, slope, forest });
 
 impl World {
     pub fn downstream(&self, x: usize, y: usize) -> Option<(usize, usize)> {
@@ -329,26 +328,6 @@ fn accumulate(order: &[usize], flow: &[Option<usize>]) -> Vec<u32> {
     acc
 }
 
-fn main_stream(flow: &[Option<usize>], acc: &[u32], river: &[bool]) -> Vec<bool> {
-    let len = flow.len();
-    let mut main = vec![false; len];
-    let Some(outlet) = (0..len).filter(|&i| river[i] && flow[i].is_none_or(|t| !river[t])).max_by_key(|&i| (acc[i], Reverse(i))) else { return main };
-    let mut up: Vec<Vec<usize>> = vec![Vec::new(); len];
-    for i in (0..len).filter(|&i| river[i]) {
-        if let Some(t) = flow[i] {
-            up[t].push(i);
-        }
-    }
-    let mut cur = outlet;
-    loop {
-        main[cur] = true;
-        match up[cur].iter().copied().max_by_key(|&j| (acc[j], Reverse(j))) {
-            Some(j) => cur = j,
-            None => return main,
-        }
-    }
-}
-
 fn hash01(seed: u64, i: usize) -> f32 {
     let mut h = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     h ^= h >> 33;
@@ -435,7 +414,6 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
     if river.iter().filter(|r| **r).count() < 20 {
         return Err(fail("fewer than 20 river cells".into()));
     }
-    let main = main_stream(&flow, &acc, &river);
     let at = |x: isize, y: isize| surface[(y.clamp(0, n as isize - 1) as usize) * n + x.clamp(0, n as isize - 1) as usize];
     let slope: Vec<f32> = (0..n * n)
         .map(|i| {
@@ -486,7 +464,6 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         flow_to: grid_from(n, flow),
         flow_acc: grid_from(n, acc),
         river: grid_from(n, river),
-        main_river: grid_from(n, main),
         river_flow: grid_from(n, river_flow),
         lake: grid_from(n, lake),
         lake_level: grid_from(n, lake_level),

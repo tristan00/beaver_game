@@ -56,14 +56,14 @@ model = "pebbles"
 held_in_paws = true
 
 [[good]]
-key = "Saplings"
-name = "Saplings"
+key = "Seedlings"
+name = "Seedlings"
 load = 4.0
 pace = 0.5
 land_pace = 0.5
 floats = true
 carries_species = true
-icon = "Sapling"
+icon = "Seedling"
 colour = [0.52, 0.8, 0.42]
-model = "saplings"
+model = "seedlings"
 held_in_paws = true

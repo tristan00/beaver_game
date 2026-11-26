@@ -113,18 +113,3 @@ pub fn snapshot(world: &dyn AudioWorld, cam_x: f32, cam_z: f32, cam_distance: f3
     }
 }
 
-#[allow(dead_code)]
-pub struct StubWorld {
-    pub days: f64,
-    pub pond: Option<(f32, f32, f32)>,
-}
-
-impl AudioWorld for StubWorld {
-    fn time_days(&self) -> f64 {
-        self.days
-    }
-    fn cell(&self, x: f32, z: f32) -> Option<Cell> {
-        let wet = self.pond.is_some_and(|(cx, cz, r)| (x - cx).hypot(z - cz) < r);
-        Some(Cell { water_depth: if wet { 0.8 } else { 0.0 } })
-    }
-}

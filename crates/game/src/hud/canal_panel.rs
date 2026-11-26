@@ -3,7 +3,7 @@
 //! and the cells too shallow for one, and the canal's state and its gate's chip drawn on it.
 //! Under it Deepen, Widen, Extend, Gate and Lock, the gate's strip, and the footer (diggers,
 //! Mend, Pause, Remove). History is behind the hourglass in the header.
-use super::panels::{Ctx, RIGHT_W};
+use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
 use super::works::{self, cap, dashes, DEEP, EARTH, SHALLOW, VIEW_W, WOOD};
@@ -84,7 +84,7 @@ fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, state: (&str, Color, 
     let px = (PROFILE_H - 6.0) / (high - low);
     let float = sim::canals::FLOAT_DEPTH * px;
     let working: Vec<_> = s.agents.by_id.values().filter_map(|a| match a.task {
-        sim::agents::Task::Dig { site, cell, .. } | sim::agents::Task::Gate { site, cell, .. } if site == id => Some(cell),
+        sim::agents::Task::Work { site, cell: Some(cell), kind: sim::agents::WorkKind::Dig | sim::agents::WorkKind::Gate, .. } if site == id => Some(cell),
         _ => None,
     }).collect();
     let total_h = PROFILE_H + 4.0 + HEAD;
@@ -246,6 +246,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
         works::upkeep_button(r, k.upkeep, HudAction::CanalUpkeep(id, !k.upkeep), "Menders clear silt", fix == Fix::Upkeep);
         works::pause_button(r, c.s, id);
         r.spacer();
+        super::costs::page_button(c, r, id);
         works::remove_button(c, r, id);
     });
 }
@@ -257,23 +258,11 @@ fn history(u: &mut Ui, k: &Canal) {
     }
     let flow_top = k.history.iter().map(|h| h.inflow.max(h.outflow)).fold(0.0, f32::max).max(1e-3);
     let silt_top = k.history.iter().map(|h| h.silted).fold(0.0, f32::max).max(1.0);
-    let w = ((VIEW_W - 20.0) / sim::canals::HISTORY_DAYS as f32).floor().max(2.0);
-    let chart = |u: &mut Ui, icon: Icon, col: Color, name: &str, value: &dyn Fn(&sim::canals::CanalDay) -> f32| {
-        u.row(6.0, |r| {
-            r.icon(icon, 13.0, col);
-            r.node(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::FlexEnd, height: Val::Px(36.0), column_gap: Val::Px(1.0), ..default() }, |b| {
-                for day in &k.history {
-                    let f = value(day).clamp(0.0, 1.0);
-                    b.add(VNode::new(Node { width: Val::Px(w - 1.0), height: Val::Px((f * 34.0).max(1.0)), ..default() })).bg(col);
-                }
-            });
-        })
-        .tip(Tip::name(name).line("Days", format!("{}", k.history.len())));
-    };
-    chart(u, Icon::Raft, WATER, "Floats a raft", &|h| h.floatable);
-    chart(u, Icon::Upstream, SHALLOW, "Water in", &|h| h.inflow / flow_top);
-    chart(u, Icon::Push, WARN, "Water out", &|h| h.outflow / flow_top);
-    chart(u, Icon::Down, BAD, "Silted cells", &|h| h.silted / silt_top);
+    let (n, max) = (k.history.len(), sim::canals::HISTORY_DAYS);
+    works::history_row(u, Icon::Raft, WATER, "Floats a raft", n, max, k.history.iter().map(|h| h.floatable));
+    works::history_row(u, Icon::Upstream, SHALLOW, "Water in", n, max, k.history.iter().map(|h| h.inflow / flow_top));
+    works::history_row(u, Icon::Push, WARN, "Water out", n, max, k.history.iter().map(|h| h.outflow / flow_top));
+    works::history_row(u, Icon::Down, BAD, "Silted cells", n, max, k.history.iter().map(|h| h.silted / silt_top));
 }
 
 pub fn canal_panel(c: &Ctx, id: BuildingId, k: &Canal) -> VNode {
@@ -288,9 +277,8 @@ pub fn canal_panel(c: &Ctx, id: BuildingId, k: &Canal) -> VNode {
         state_tip = state_tip.line("Floats a raft", format!("{} / {} cells", st.floatable, st.cells)).line("Water in", format!("{}/d", num(st.inflow))).line("Water out", format!("{}/d", num(st.outflow)));
     }
     let silted = k.status.as_ref().map_or(0, |st| st.silted);
-    let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        works::header(c, u, id, sim::buildings::BuildingKind::canal().name(), c.sel == Selection::Site(id), health, Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{silted}")), |p| portrait(p, dry));
+    let cond_tip = Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{silted}"));
+    works::works_panel(c, id, sim::buildings::BuildingKind::canal().name(), c.sel == Selection::Site(id), health, cond_tip, |p| portrait(p, dry), |u| {
         if c.hud.dam_tab == DamTab::History {
             history(u, k);
             return;
@@ -301,10 +289,7 @@ pub fn canal_panel(c: &Ctx, id: BuildingId, k: &Canal) -> VNode {
             let usable = if k.gate.built || sim::canals::gates_unlocked(s) { Ok(()) } else { Err("Needs a haul mound") };
             works::gate_row(u, s, id, &k.gate, k.status.as_ref().map(|st| st.source_level), false, usable);
         }
+        super::costs::upkeep_row(c, u, id);
         footer(c, u, id, k, fix);
-    });
-    let mut v = ui.nodes.pop().expect("panel node");
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(12.0));
-    v
+    })
 }

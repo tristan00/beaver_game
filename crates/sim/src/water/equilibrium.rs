@@ -215,10 +215,7 @@ struct Pool {
     alive: bool,
 }
 
-fn ord(v: f32) -> u32 {
-    let b = v.to_bits();
-    if b & 0x8000_0000 == 0 { b ^ 0x8000_0000 } else { !b }
-}
+use crate::water::ordered_f32 as ord;
 
 fn hkey(v: f32, sec: u32) -> u64 {
     ((ord(v) as u64) << 32) | sec as u64

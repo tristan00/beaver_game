@@ -39,7 +39,7 @@ icons! {
     Hourglass, Walk, Tree, Plant, MudBank, Hammer, Crest, Rise, Flood, Push, Drop, Site,
     Building, Home, Upstream, Gauge,
     Widen, Extend,
-    Pebbles, Sapling, FoodCache, RolePlanter, PebbleHeap, Forester, WaterPlant, RoleMender, HaulMound,
+    Pebbles, Seedling, FoodCache, RolePlanter, PebbleHeap, SeedlingBed, WaterPlant, RoleMender, HaulMound,
     RolePebbler,
     Wolf, Ledger, Territory, Journal, Lookout, RoleSentry, RaftLanding, LockGates, Raft,
     Deer, Rabbit, Bird,
@@ -134,12 +134,13 @@ fn atlas_image() -> Image {
         (lw, lh, level) = (nw, nh, next);
     }
     let mut img = Image::new(
-        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        vec![0; (w * h * 4) as usize],
+        vec![0; 4],
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    img.texture_descriptor.size = Extent3d { width: w, height: h, depth_or_array_layers: 1 };
     img.texture_descriptor.mip_level_count = MIPS;
     img.data = Some(data);
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
@@ -194,9 +195,51 @@ fn union(shapes: Vec<S>) -> S {
     S::new(move |p| shapes.iter().map(|s| s.at(p)).fold(f32::MAX, f32::min))
 }
 
+pub(crate) fn sd_circle(p: Vec2, c: Vec2, r: f32) -> f32 {
+    (p - c).length() - r
+}
+
+pub(crate) fn sd_ellipse(p: Vec2, c: Vec2, r: Vec2, deg: f32) -> f32 {
+    let q = if deg == 0.0 { p - c } else { Vec2::from_angle(-deg.to_radians()).rotate(p - c) }.abs();
+    let k0 = (q / r).length();
+    let k1 = (q / (r * r)).length();
+    if k1 < 1e-6 { -r.x.min(r.y) } else { k0 * (k0 - 1.0) / k1 }
+}
+
+pub(crate) fn sd_round_rect(p: Vec2, c: Vec2, h: Vec2, r: f32) -> f32 {
+    let q = (p - c).abs() - h + Vec2::splat(r);
+    q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - r
+}
+
+pub(crate) fn sd_seg(p: Vec2, a: Vec2, b: Vec2, r: f32) -> f32 {
+    seg_dist(p, a, b) - r
+}
+
+pub(crate) fn sd_poly(p: Vec2, pts: &[Vec2]) -> f32 {
+    let n = pts.len();
+    let mut d = (p - pts[0]).length_squared();
+    let mut s = 1.0f32;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (vi, vj) = (pts[i], pts[j]);
+        let e = vj - vi;
+        let w = p - vi;
+        let b = w - e * (w.dot(e) / e.dot(e).max(1e-9)).clamp(0.0, 1.0);
+        d = d.min(b.dot(b));
+        let c0 = p.y >= vi.y;
+        let c1 = p.y < vj.y;
+        let c2 = e.x * w.y > e.y * w.x;
+        if (c0 && c1 && c2) || (!c0 && !c1 && !c2) {
+            s = -s;
+        }
+        j = i;
+    }
+    s * d.sqrt()
+}
+
 fn circle(cx: f32, cy: f32, r: f32) -> S {
     let c = v(cx, cy);
-    S::new(move |p| (p - c).length() - r)
+    S::new(move |p| sd_circle(p, c, r))
 }
 
 fn ring(cx: f32, cy: f32, r: f32, w: f32) -> S {
@@ -205,20 +248,12 @@ fn ring(cx: f32, cy: f32, r: f32, w: f32) -> S {
 
 fn ellipse(cx: f32, cy: f32, rx: f32, ry: f32) -> S {
     let (c, r) = (v(cx, cy), v(rx, ry));
-    S::new(move |p| {
-        let q = (p - c).abs();
-        let k0 = (q / r).length();
-        let k1 = (q / (r * r)).length();
-        if k1 < 1e-6 { -rx.min(ry) } else { k0 * (k0 - 1.0) / k1 }
-    })
+    S::new(move |p| sd_ellipse(p, c, r, 0.0))
 }
 
 fn rect(cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> S {
     let (c, h) = (v(cx, cy), v(hw, hh));
-    S::new(move |p| {
-        let q = (p - c).abs() - h + Vec2::splat(rad);
-        q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - rad
-    })
+    S::new(move |p| sd_round_rect(p, c, h, rad))
 }
 
 fn rect_c(x0: f32, y0: f32, x1: f32, y1: f32, rad: f32) -> S {
@@ -233,7 +268,7 @@ fn seg_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 
 fn seg(x0: f32, y0: f32, x1: f32, y1: f32, w: f32) -> S {
     let (a, b) = (v(x0, y0), v(x1, y1));
-    S::new(move |p| seg_dist(p, a, b) - w * 0.5)
+    S::new(move |p| sd_seg(p, a, b, w * 0.5))
 }
 
 fn polyline_v(pts: Vec<Vec2>, w: f32) -> S {
@@ -245,27 +280,7 @@ fn polyline(pts: &[(f32, f32)], w: f32) -> S {
 }
 
 fn poly_v(pts: Vec<Vec2>) -> S {
-    S::new(move |p| {
-        let n = pts.len();
-        let mut d = (p - pts[0]).length_squared();
-        let mut s = 1.0;
-        let mut j = n - 1;
-        for i in 0..n {
-            let (vi, vj) = (pts[i], pts[j]);
-            let e = vj - vi;
-            let w = p - vi;
-            let b = w - e * (w.dot(e) / e.dot(e).max(1e-9)).clamp(0.0, 1.0);
-            d = d.min(b.dot(b));
-            let c0 = p.y >= vi.y;
-            let c1 = p.y < vj.y;
-            let c2 = e.x * w.y > e.y * w.x;
-            if (c0 && c1 && c2) || (!c0 && !c1 && !c2) {
-                s = -s;
-            }
-            j = i;
-        }
-        s * d.sqrt()
-    })
+    S::new(move |p| sd_poly(p, &pts))
 }
 
 fn poly(pts: &[(f32, f32)]) -> S {
@@ -571,7 +586,14 @@ fn slash(c: &mut Canvas) {
     c.knock(seg(10.0, 10.0, 54.0, 54.0, W));
 }
 
-fn sapling(c: &mut Canvas) {
+/// A food plant: three leaves from one root.
+fn sprout(c: &mut Canvas) {
+    c.add(leaf((32.0, 57.0), (32.0, 6.0), 17.0));
+    c.knock(leaf((30.0, 57.0), (5.0, 26.0), 13.0));
+    c.knock(leaf((34.0, 57.0), (59.0, 26.0), 13.0));
+}
+
+fn seedling(c: &mut Canvas) {
     c.add(seg(32.0, 57.0, 32.0, 24.0, 5.5));
     c.add(leaf((31.0, 38.0), (8.0, 20.0), 14.0));
     c.add(leaf((33.0, 27.0), (56.0, 8.0), 15.0));
@@ -722,7 +744,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
         }
         ViewDeposits => {
             // Natural resources: a sprouting plant above river pebbles and a mud mound.
-            c.part(32.0, 19.0, 0.56, 0.0, 0.0, sapling);
+            c.part(32.0, 19.0, 0.56, 0.0, 0.0, seedling);
             c.part(18.0, 44.0, 0.48, 0.0, 0.0, pebbles_shape);
             c.part(45.0, 45.0, 0.48, 0.0, 2.5, mud_pile);
         }
@@ -877,14 +899,14 @@ fn draw(icon: Icon, c: &mut Canvas) {
         }
         Tree => round_tree(c),
         Pebbles => pebbles_shape(c),
-        Sapling => sapling(c),
+        Seedling => seedling(c),
         FoodCache => {
             // A waterside feed pile: berries and leafy twigs cached in shallow water.
             c.part(32.0, 25.0, 0.72, 0.0, 0.0, berries);
             c.knock(ellipse(32.0, 49.0, 24.0, 9.0).above(49.0));
             c.add(wave(6.0, 58.0, 56.0, 2.8, 2.0, 4.8));
         }
-        RolePlanter => role(c, 0.0, sapling),
+        RolePlanter => role(c, 0.0, seedling),
         Wolf => {
             c.add(tri_rounded(&[(12.0, 3.0), (28.0, 17.0), (11.0, 27.0)]).or(tri_rounded(&[(52.0, 3.0), (36.0, 17.0), (53.0, 27.0)])));
             c.add(poly(&[(9.0, 22.0), (22.0, 14.0), (42.0, 14.0), (55.0, 22.0), (51.0, 38.0), (38.0, 58.0), (26.0, 58.0), (13.0, 38.0)]).grow(1.0));
@@ -915,11 +937,11 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(qbez((16.0, 34.0), (30.0, 50.0), (42.0, 36.0), 3.0));
             c.cut(circle(47.0, 22.0, 2.2));
         }
-        Forester => {
-            // Willow shallows: sprouting saplings standing inside a shallow-water ring.
+        SeedlingBed => {
+            // A seedling bed: a tree seedling and a food-plant sprout inside a shallow-water ring.
             c.add(ellipse(32.0, 48.0, 25.0, 10.0).outline(4.8));
-            c.part(24.0, 26.0, 0.62, -6.0, 2.5, sapling);
-            c.part(42.0, 29.0, 0.54, 8.0, 2.5, sapling);
+            c.part(24.0, 26.0, 0.62, -6.0, 2.5, seedling);
+            c.part(42.0, 31.0, 0.5, 8.0, 2.5, sprout);
         }
         PebbleHeap => {
             // A stacked heap of smooth river pebbles on a shallow-water mound.
@@ -934,11 +956,7 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(poly(&[(31.0, 45.0), (60.0, 36.0), (60.0, 52.0)]));
             c.knock(poly(&[(14.0, 30.0), (20.0, 12.0), (27.0, 24.0), (32.0, 6.0), (37.0, 24.0), (44.0, 12.0), (50.0, 30.0), (32.0, 38.0)]).grow(1.0));
         }
-        Plant => {
-            c.add(leaf((32.0, 57.0), (32.0, 6.0), 17.0));
-            c.knock(leaf((30.0, 57.0), (5.0, 26.0), 13.0));
-            c.knock(leaf((34.0, 57.0), (59.0, 26.0), 13.0));
-        }
+        Plant => sprout(c),
         MudBank => {
             let mut pts = vec![v(60.0, 58.0), v(18.0, 58.0)];
             pts.extend(qbez_pts(v(18.0, 58.0), v(30.0, 18.0), v(60.0, 16.0), 16));

@@ -29,6 +29,7 @@ pub mod fog;
 pub mod events;
 pub mod forestry;
 pub mod grid;
+pub mod growth;
 pub mod hud;
 pub mod jobs;
 pub mod save;
@@ -61,6 +62,7 @@ pub mod water;
 pub mod weather;
 pub mod wetland;
 pub mod work;
+pub mod works;
 pub mod worldgen;
 
 use std::fmt;
@@ -125,6 +127,8 @@ pub struct SimState {
     pub agents: agents::Agents,
     pub work: work::Work,
     pub maintenance: maintenance::Maintenance,
+    /// What each structure has cost to build and keep up.
+    pub works: works::Works,
     pub society: society::Society,
     pub ledger: ledger::Ledger,
     pub output: output::Output,
@@ -134,8 +138,6 @@ pub struct SimState {
     pub recorder: Option<Vec<(u64, Command)>>,
     pub forestry: forestry::Forestry,
     pub predators: predators::Predators,
-    /// Gates upgraded into locks.
-    pub locks: locks::Locks,
     /// Each raft landing's rafts.
     pub fleet: raft_landing::Fleet,
     /// Rabbits, deer and birds.
@@ -192,6 +194,7 @@ impl SimState {
             agents: agents::Agents::default(),
             work: work::Work::default(),
             maintenance: Default::default(),
+            works: Default::default(),
             society: society::Society::default(),
             ledger: ledger::Ledger::default(),
             output: output::Output::default(),
@@ -200,7 +203,6 @@ impl SimState {
             recorder: None,
             forestry: forestry::Forestry::new(seed),
             predators: predators::Predators::new(seed),
-            locks: locks::Locks::default(),
             fleet: raft_landing::Fleet::default(),
             wildlife: wildlife::Wildlife::new(seed),
             lives: lives::Lives::default(),
@@ -213,7 +215,6 @@ impl SimState {
             journal: journal::Journal::default(),
         };
         sim.colony.sky = sim.water.sky;
-        sim.work.inventory = sim.buildings.stores.inventory.view();
         forestry::clear_drowned(&mut sim);
         forestry::init(&mut sim);
         sim.resources.log_changes = true;
@@ -299,7 +300,6 @@ impl SimState {
         lap(&mut t.agents_s);
         { let _p = prof::scope("step/dams"); dams::step(self); }
         { let _p = prof::scope("step/canals"); canals::step(self, dt_days); }
-        { let _p = prof::scope("step/locks"); locks::tidy(self); }
         { let _p = prof::scope("step/raft_landing"); raft_landing::step(self); }
         lap(&mut t.shipping_s);
         { let _p = prof::scope("step/fog"); self.explore(); }
@@ -340,15 +340,13 @@ impl SimState {
             young: self.colony.beavers.iter().filter(|b| b.is_young()).count() as u16,
             water: self.buildings.buildings.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum(),
             trees: self.resources.items().iter().filter(|r| r.kind.is_tree() && !r.snag).count() as u32,
-            planted: self.ledger.planted,
+            planted: self.ledger.planted.iter().sum(),
         }
     }
 
     fn explore(&mut self) {
-        let world = &self.world;
-        let allowed = fog::open_at(world);
         for a in self.agents.by_id.values().filter(|a| !a.inside) {
-            self.fog.sight(a.id, a.cell, &allowed);
+            self.fog.sight(a.id, a.cell);
         }
     }
 
@@ -356,92 +354,28 @@ impl SimState {
 
 fn invalid(e: water::WaterError) -> SimError { SimError::InvalidCommand(e.to_string()) }
 
-impl Clone for SimState {
-    fn clone(&self) -> Self {
-        let mut copy = Self {
-            seed: self.seed,
-            instance: self.instance,
-            client_commands: self.client_commands.clone(),
-            time_days: self.time_days.clone(),
-            height: self.height.clone(),
-            world: self.world.clone(),
-            water: self.water.clone(),
-            ecology: self.ecology.clone(),
-            colony: self.colony.clone(),
-            buildings: self.buildings.clone(),
-            events: self.events.clone(),
-            nav: self.nav.clone(),
-            resources: self.resources.clone(),
-            agents: self.agents.clone(),
-            work: self.work.clone(),
-            maintenance: self.maintenance.clone(),
-            society: self.society.clone(),
-            ledger: self.ledger.clone(),
-            output: self.output.clone(),
-            fog: self.fog.clone(),
-            steps: self.steps.clone(),
-            recorder: self.recorder.clone(),
-            forestry: self.forestry.clone(),
-            predators: self.predators.clone(),
-            locks: self.locks.clone(),
-            fleet: self.fleet.clone(),
-            wildlife: self.wildlife.clone(),
-            lives: self.lives.clone(),
-            run: self.run.clone(),
-            names: self.names.clone(),
-            deeds: self.deeds.clone(),
-            supplies: self.supplies.clone(),
-            sandbox: self.sandbox.clone(),
-            step_timings: self.step_timings.clone(),
-            journal: self.journal.clone(),
-        };
-        copy.work.inventory = copy.buildings.stores.inventory.view();
-        copy
-    }
-
-    /// As `clone`, but copying into this state's buffers: the simulation's snapshots reuse the
-    /// one the interface hands back, which is far cheaper than allocating a world each time.
-    fn clone_from(&mut self, src: &Self) {
-        let Self {
-            seed, instance, client_commands, time_days, height, world, water, ecology, colony, buildings, events, nav,
-            resources, agents, work, maintenance, society, ledger, output, fog, steps, recorder, forestry, predators,
-            locks, fleet, wildlife, lives, run, names, deeds, supplies, sandbox, step_timings, journal,
-        } = src;
-        self.seed = *seed;
-        self.instance = *instance;
-        self.client_commands.clone_from(client_commands);
-        self.time_days = *time_days;
-        self.height.clone_from(height);
-        self.world.clone_from(world);
-        self.water.clone_from(water);
-        self.ecology.clone_from(ecology);
-        self.colony.clone_from(colony);
-        self.buildings.clone_from(buildings);
-        self.events.clone_from(events);
-        self.nav.clone_from(nav);
-        self.resources.clone_from(resources);
-        self.agents.clone_from(agents);
-        self.work.clone_from(work);
-        self.maintenance.clone_from(maintenance);
-        self.society.clone_from(society);
-        self.ledger.clone_from(ledger);
-        self.output.clone_from(output);
-        self.fog.clone_from(fog);
-        self.steps = *steps;
-        self.recorder.clone_from(recorder);
-        self.forestry.clone_from(forestry);
-        self.predators.clone_from(predators);
-        self.locks.clone_from(locks);
-        self.fleet.clone_from(fleet);
-        self.wildlife.clone_from(wildlife);
-        self.lives.clone_from(lives);
-        self.run.clone_from(run);
-        self.names.clone_from(names);
-        self.deeds.clone_from(deeds);
-        self.supplies.clone_from(supplies);
-        self.sandbox = *sandbox;
-        self.step_timings = *step_timings;
-        self.journal.clone_from(journal);
-        self.work.inventory = self.buildings.stores.inventory.view();
-    }
+macro_rules! impl_sim_clone {
+    (copy: [$($c:ident),*], clone: [$($f:ident),*]) => {
+        impl Clone for SimState {
+            fn clone(&self) -> Self {
+                Self { $($c: self.$c,)* $($f: self.$f.clone(),)* }
+            }
+            /// Reuses snapshot buffers instead of reallocating the whole world each tick.
+            fn clone_from(&mut self, src: &Self) {
+                let Self { $($c,)* $($f,)* } = src;
+                $(self.$c = *$c;)*
+                $(self.$f.clone_from($f);)*
+            }
+        }
+    };
 }
+
+impl_sim_clone!(
+    copy: [seed, instance, time_days, steps, sandbox, step_timings],
+    clone: [
+        client_commands, height, world, water, ecology, colony, buildings, events, nav,
+        resources, agents, work, maintenance, works, society, ledger, output, fog,
+        recorder, forestry, predators, fleet, wildlife, lives, run, names,
+        deeds, supplies, journal
+    ]
+);

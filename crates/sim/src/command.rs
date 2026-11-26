@@ -1,5 +1,5 @@
 //! Player commands and their validation/dispatch boundary.
-use crate::{SimError, SimState, agents, buildings, canals, colony, dams, forestry, gates, invalid, jobs, maintenance, sandbox, society, starts, water, work};
+use crate::{SimError, SimState, agents, buildings, canals, colony, dams, gates, invalid, jobs, maintenance, sandbox, society, starts, water, work};
 
 /// How a dam grows when the player asks for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -40,7 +40,10 @@ pub enum Command {
     UpgradeLock { building: buildings::BuildingId, cell: water::Cell },
     /// Take a gate (and any lock on it) off a dam or canal; what was brought for it goes back.
     RemoveGate { building: buildings::BuildingId, cell: water::Cell },
+    /// Give these beavers an order now, dropping what they were doing and any queued orders.
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment> },
+    /// Add an order to the end of each beaver's queue; one with no order starts it now.
+    Queue { who: Vec<colony::BeaverId>, order: agents::Order },
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
     FillSlot { building: buildings::BuildingId, slot: usize, who: colony::BeaverId },
     EmptySlot { building: buildings::BuildingId, slot: usize },
@@ -125,16 +128,7 @@ impl SimState {
             Command::GrowCanal { canal, growth, cells } => canals::grow(self, canal, growth, &cells),
             Command::SetCanalUpkeep { canal, on } => canals::set_upkeep(self, canal, on),
             Command::AddDamGate { dam, cell } => dams::add_gate(self, dam, cell),
-            Command::SetGate { building, cell, setting } => {
-                if canals::canal(self, building).is_some() {
-                    if canals::canal(self, building).is_some_and(|k| k.gate.cell != cell) {
-                        return Err(SimError::InvalidCommand("no gate there".into()));
-                    }
-                    canals::set_gate(self, building, setting)
-                } else {
-                    dams::set_gate(self, building, cell, setting)
-                }
-            }
+            Command::SetGate { building, cell, setting } => gates::set_gate(self, building, cell, setting),
             Command::UpgradeLock { building, cell } => crate::locks::order(self, building, cell),
             Command::RemoveGate { building, cell } => crate::gates::remove(self, building, cell),
             Command::Assign { who, to } => {
@@ -153,14 +147,7 @@ impl SimState {
                         }
                         let from = self.agents.get(id).unwrap().cell;
                         let radius = (destinations.len() as usize + 1).min(8);
-                        let mut cells: Vec<_> = (target.1.saturating_sub(radius)..=target.1 + radius)
-                            .flat_map(|y| (target.0.saturating_sub(radius)..=target.0 + radius).map(move |x| (x, y)))
-                            .filter(|c| !destinations.contains(c)).collect();
-                        cells.sort_by_key(|c| (c.0.abs_diff(target.0).pow(2) + c.1.abs_diff(target.1).pow(2), *c));
-                        let Some(cell) = cells.into_iter().find(|&c| {
-                            self.nav.surface_at(c).is_some_and(|s| s != crate::nav::Surface::Solid)
-                                && self.nav.may_reach(from, [c])
-                        }) else {
+                        let Some(cell) = agents::go_cell(self, from, target, radius, &destinations) else {
                             return Err(SimError::InvalidCommand(format!("No reachable destination for beaver {}", id.0)));
                         };
                         destinations.insert(cell);
@@ -171,8 +158,38 @@ impl SimState {
                 for (id, assignment) in orders {
                     jobs::order(self, id, assignment);
                     self.agents.assign(id, assignment);
+                    if let Some(ag) = self.agents.by_id.get_mut(&id) {
+                        ag.queue.clear();
+                    }
                 }
                 Ok(())
+            }
+            Command::Queue { who, order } => {
+                if let Some(kit) = who.iter().find(|id| !matches!(order, agents::Order::Do(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| !b.can_work())) {
+                    return Err(SimError::InvalidCommand(format!("beaver {} is too young to work", kit.0)));
+                }
+                if let Some(id) = who.iter().find(|id| !self.agents.by_id.contains_key(id)) {
+                    return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
+                }
+                if let agents::Order::Do(agents::Assignment::Go(target)) = order {
+                    if self.nav.surface_at(target).is_none() {
+                        return Err(SimError::InvalidCommand("Move destination is outside the map".into()));
+                    }
+                }
+                let mut refused = None;
+                for id in who {
+                    let mut ag = self.agents.by_id.remove(&id).expect("checked above");
+                    if ag.assignment.is_some() || !ag.queue.is_empty() {
+                        ag.queue.push_back(order);
+                    } else if !agents::start_order(self, &mut ag, order) {
+                        refused = Some(id);
+                    }
+                    self.agents.by_id.insert(id, ag);
+                }
+                match refused {
+                    Some(id) => Err(SimError::InvalidCommand(format!("beaver {} cannot carry out {order:?}", id.0))),
+                    None => Ok(()),
+                }
             }
             Command::PlaceSite { kind, pos } => self.place_site(kind, pos).map(|_| ()),
             Command::FillSlot { building, slot, who } => {
@@ -187,7 +204,11 @@ impl SimState {
                         Some(_) => Ok(()),
                     })
                     .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
-                jobs::place_by_hand(self, building, slot, who)
+                jobs::place_by_hand(self, building, slot, who)?;
+                if let Some(ag) = self.agents.by_id.get_mut(&who) {
+                    ag.queue.clear();
+                }
+                Ok(())
             }
             Command::EmptySlot { building, slot } => {
                 self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
@@ -209,7 +230,6 @@ impl SimState {
                 Ok(())
             }
             Command::SetWorkArea { building, area } => {
-                forestry::check_area(self, building, &area)?;
                 self.work.set_area(building, area).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
             Command::CancelSite { building } => self.cancel_site(building).map(|_| ()),

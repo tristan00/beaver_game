@@ -187,10 +187,6 @@ const WET_EDGE: f32 = 0.3;
 /// Metres of outline margin per unit of wetness above WET_EDGE.
 const EDGE_M: f32 = 0.4;
 
-fn terrain_shown(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
-    terrain_sample(s, x, y, step)
-}
-
 use sim::water::SHOW_MIN_M;
 use crate::seasonal::smooth as smooth_step;
 const SURFACE_LIFT: f32 = 0.01;
@@ -377,7 +373,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     // Sample one vertex beyond the chunk on every side, so shorelines extrapolate across seams.
     let ext = side + 2;
     let field = WaterField::new(s, cx, cy);
-    let ground_field = GroundField::new(s, cx, cy);
+    let ground_field = GroundField::new(s, cx, cy, subdivisions == 4);
     let mut own = Vec::with_capacity(ext * ext);
     let mut any = false;
     for j in -1..=side as i32 {
@@ -423,7 +419,7 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
                     if k > 0.0 { (l / k, [vx / k, vy / k], 0.0, ice / k) } else { (f32::NEG_INFINITY, [0.0, 0.0], 0.0, 0.0) }
                 }
             };
-            let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_shown(s, x, y, step) };
+            let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_sample(s, x, y, step) };
             let ground = bare + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
             // Lift only vertices wholly inside wet cells; bank-straddling sub-cell vertices must
             // keep the real water level so shore triangles clip flat against steep canal banks.

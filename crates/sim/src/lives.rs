@@ -78,14 +78,6 @@ pub struct Lives {
     next_look: f64,
 }
 
-/// The job a beaver holds: its seat's role, or the role of the order it is on.
-pub fn job_of(sim: &SimState, id: BeaverId) -> Option<Job> {
-    if let Some((_, _, role)) = sim.work.slot_of(id) {
-        return Some(role);
-    }
-    sim.agents.get(id).and_then(|a| a.assignment).and_then(|a| crate::jobs::assignment_role(sim, a))
-}
-
 pub fn step(sim: &mut SimState) {
     if !sim.colony.is_founded() || sim.time_days < sim.lives.next_look {
         return;
@@ -95,7 +87,7 @@ pub fn step(sim: &mut SimState) {
     sim.lives.next_look = now + LOOK_DAYS;
     let mut lives = std::mem::take(&mut sim.lives);
     for b in &sim.colony.beavers {
-        let seen = Seen { job: job_of(sim, b.id), lodge: b.lodge, partner: b.mate, stage: b.stage };
+        let seen = Seen { job: crate::jobs::role_of(sim, b.id), lodge: b.lodge, partner: b.mate, stage: b.stage };
         let Some(life) = lives.of.get_mut(&b.id) else {
             // A new face: born here if young enough to have been born since the last look,
             // else a newcomer, or (at the very first look) already here.

@@ -1,6 +1,6 @@
 # Kinds of resource beavers gather. behaviour: Tree (grows, is felled into the Felled kind, seeds), Felled (logs, then
 # branches, and bark foragers strip for food), FoodPlant (regrows, spreads, dies back) or Deposit (dug until gone; a
-# `flowing` one is refilled by its stream and never gathered bare).
+# `flowing` one is refilled by its stream).
 # yields: the goods gathering it gives. aquatic: grows in open water. freezes: closed while the ground is frozen.
 # group: what gatherers of it work (see [groups]); role: the job that gathers it; gatherers: how many at once;
 # gather_rate: a day for one beaver of ordinary skill; needs: a building whose tools must stand finished; solid: in the

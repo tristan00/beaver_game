@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bumped by hand when the save layout changes in a way decoding would not catch.
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 10;
 const MAGIC: [u8; 8] = *b"BEAVSAVE";
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -38,7 +38,11 @@ fn header_for(sim: &SimState, map: &str) -> Header {
 
 /// The bytes of a save.
 pub fn encode(sim: &SimState, map: &str) -> Result<Vec<u8>, String> {
-    let head = postcard::to_stdvec(&header_for(sim, map)).map_err(|e| format!("could not write the header: {e}"))?;
+    encode_with_header(sim, &header_for(sim, map))
+}
+
+fn encode_with_header(sim: &SimState, header: &Header) -> Result<Vec<u8>, String> {
+    let head = postcard::to_stdvec(header).map_err(|e| format!("could not write the header: {e}"))?;
     let body = postcard::to_stdvec(sim).map_err(|e| format!("could not write the world: {e}"))?;
     let mut out = Vec::with_capacity(8 + 4 + head.len() + body.len());
     out.extend_from_slice(&MAGIC);
@@ -66,7 +70,6 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
     let (header, body) = split(bytes)?;
     let mut sim: SimState = postcard::from_bytes(body)
         .map_err(|e| format!("this save was made by a different build ({}) and cannot be read: {e}", header.version))?;
-    sim.work.inventory = sim.buildings.stores.inventory.view();
     // The weather is the place's, read from the world's seed.
     sim.water.sky = crate::weather::Sky::for_seed(sim.seed);
     sim.colony.sky = sim.water.sky;
@@ -76,7 +79,8 @@ pub fn decode(bytes: &[u8]) -> Result<(Header, SimState), String> {
 
 /// Write a save to `path`, through a temporary file renamed into place.
 pub fn save(sim: &SimState, map: &str, path: &Path) -> Result<Header, String> {
-    let bytes = encode(sim, map)?;
+    let header = header_for(sim, map);
+    let bytes = encode_with_header(sim, &header)?;
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     }
@@ -85,7 +89,7 @@ pub fn save(sim: &SimState, map: &str, path: &Path) -> Result<Header, String> {
     f.write_all(&bytes).and_then(|_| f.sync_all()).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
     drop(f);
     std::fs::rename(&tmp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))?;
-    Ok(header_for(sim, map))
+    Ok(header)
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {

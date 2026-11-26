@@ -83,7 +83,7 @@ fn stone(mb: &mut Mb, c: Vec3, s: f32, yaw: f32, col: [f32; 3], r: &mut Rng) {
 }
 
 /// The colours pebbles come in: grey, warm tan, rust, white quartz, slate.
-fn pebble_colour(r: &mut Rng, bleached: bool) -> [f32; 3] {
+pub(super) fn pebble_colour(r: &mut Rng, bleached: bool) -> [f32; 3] {
     let cols = [0x9A968E, 0xB8A890, 0x9A6A4A, 0xE6E0D6, 0x6E7680, 0x86827A, 0xC8BCA8];
     let c = hex(cols[(r.next() * cols.len() as f32) as usize % cols.len()]);
     if bleached { mix(c, hex(0xD8D4CC), 0.3) } else { c }

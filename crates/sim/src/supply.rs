@@ -50,10 +50,10 @@ fn is_gate_spot(sim: &SimState, s: Spot) -> bool {
 /// The gate at a spot: whether it is built, and whether it is wanted at all yet (a dam's gate
 /// is wanted once placed; a canal's once a setting is asked for).
 fn gate_at(sim: &SimState, s: Spot) -> Option<(bool, bool)> {
-    if let Some(k) = crate::canals::canal(sim, s.building) {
-        return (k.gate.cell == s.cell).then_some((k.gate.built, k.gate.pending.is_some()));
-    }
-    crate::dams::dam(sim, s.building)?.gates.iter().find(|g| g.cell == s.cell).map(|g| (g.built, true))
+    let b = sim.buildings.building(s.building)?;
+    let g = b.gates().iter().find(|g| g.cell == s.cell)?;
+    let wanted = b.canal.is_none() || g.pending.is_some();
+    Some((g.built, wanted))
 }
 
 fn add(out: &mut Vec<Amount>, good: Good, amount: f32) {
@@ -153,10 +153,7 @@ pub fn tidy(sim: &mut SimState) {
             let keep = need.iter().find(|n| n.0 == g).map_or(0.0, |n| n.1).min(a);
             let back = a - keep;
             if back > EPS {
-                let stored = sim.buildings.stores.refund(g, back).unwrap_or(0.0);
-                if back - stored > EPS {
-                    sim.work.piles.drop_at(s.cell, g, back - stored, sim.time_days);
-                }
+                sim.refund_or_drop(s.cell, g, back);
             }
             if keep > EPS {
                 kept.push((g, keep));

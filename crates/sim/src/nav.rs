@@ -76,40 +76,38 @@ pub enum Goal {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NavError {
-    NotHolder(Cell),
     NotAdjacent,
     OutOfBounds,
     Forbidden(Surface),
-    Occupied(Cell),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NavGrid {
     pub surface: Grid<Surface>,
-    pub reserved: Grid<Option<BeaverId>>,
     pub lodge: Grid<u32>,
+    #[serde(skip)]
     region: Vec<u32>,
+    #[serde(skip)]
     regions_ok: bool,
-    /// What the regions were last labelled from (each cell solid, open or part of a lodge, and the
-    /// lodges): relabel only when it differs. Water coming and going does not change regions.
+    #[serde(skip)]
     labelled: Vec<u8>,
+    #[serde(skip)]
     labelled_lodge: Vec<u32>,
+    #[serde(skip)]
     refresh_key: Option<(u64,u64,u64,u64,usize,u64)>,
+    #[serde(skip)]
     dry_surface: Vec<Surface>,
+    #[serde(skip)]
     wet_surface: Vec<Surface>,
-    /// Canal cells deep enough to float a load (refreshed with the daily rebuild).
+    #[serde(skip)]
     floating: Vec<bool>,
-    /// Each cell's water current along x and y, in swim speeds (m/s over `SWIM_SPEED_M_S`).
-    /// Taken from the water at every refresh, so not saved; none until the first.
     #[serde(skip)]
     current: Vec<(f32, f32)>,
-    /// No current swum along a canal (0) or other water (1) is faster than this, in swim
-    /// speeds: bounds how cheap a step can be.
     #[serde(skip)]
     fastest: [f32; 2],
 }
 
-crate::grid::clone_fields!(NavGrid { surface, reserved, lodge, region, regions_ok, labelled, labelled_lodge, refresh_key, dry_surface, wet_surface, floating, current, fastest });
+crate::grid::clone_fields!(NavGrid { surface, lodge, region, regions_ok, labelled, labelled_lodge, refresh_key, dry_surface, wet_surface, floating, current, fastest });
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Scratch {
@@ -187,7 +185,6 @@ impl NavGrid {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             surface: Grid::new(width, height, Surface::Land),
-            reserved: Grid::new(width, height, None),
             lodge: Grid::new(width, height, 0),
             region: Vec::new(),
             regions_ok: false,
@@ -353,7 +350,7 @@ impl NavGrid {
                 buildings=(buildings^value).wrapping_mul(0x100000001b3);
             }
         }
-        for l in sim.locks.at.values().filter(|l|l.built) {
+        for l in crate::locks::built(sim) {
             buildings=(buildings^((l.cell.0 as u64)<<32|l.cell.1 as u64)).wrapping_mul(0x100000001b3);
         }
         (sim.water.nav_revision,sim.water.topology_revision,buildings,sim.resources.nav_revision(),sim.resources.items().len(),sim.time_days.floor() as u64)
@@ -408,12 +405,12 @@ impl NavGrid {
         }
         // A lock is swum through, whatever the water there, right through a widened dam, and
         // only down its lane: nothing goes through its walls.
-        for l in sim.locks.at.values().filter(|l|l.built) {
-            for c in crate::locks::wall_cells(sim,l) {
+        for l in crate::locks::built(sim) {
+            for c in crate::locks::wall_cells(sim,&l) {
                 let i=c.1*w+c.0;
                 if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Solid;self.wet_surface[i]=Surface::Solid;}
             }
-            for c in crate::locks::lock_cells(sim,l) {
+            for c in crate::locks::lock_cells(sim,&l) {
                 let i=c.1*w+c.0;
                 if i<self.dry_surface.len() {self.dry_surface[i]=Surface::Lock;self.wet_surface[i]=Surface::Lock;}
             }
@@ -534,7 +531,7 @@ impl NavGrid {
             _ => {}
         }
         let connected = if beside { self.may_reach_beside(from, target) } else { from == target || self.may_reach(from, [target]) };
-        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, c);
+        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid);
         let open_end = if beside { self.neighbours(target).into_iter().flatten().any(free) } else { from == target || free(target) };
         if !connected || !open_end {
             return None;
@@ -552,7 +549,7 @@ impl NavGrid {
         if targets.is_empty() || !targets.iter().any(|&t| self.may_reach_beside(from, t)) {
             return None;
         }
-        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, c);
+        let free = |c: Cell| self.surface_at(c).is_some_and(|s| s != Surface::Solid);
         if !targets.iter().any(|&t| self.neighbours(t).into_iter().flatten().any(free)) {
             return None;
         }
@@ -573,7 +570,7 @@ impl NavGrid {
         if cells.contains(&from) {
             return Some(Path { steps: Vec::new(), cost: 0.0 });
         }
-        let free = |c: &&Cell| self.surface_at(**c).is_some_and(|s| s != Surface::Solid) && !self.held_by_other(who, **c);
+        let free = |c: &&Cell| self.surface_at(**c).is_some_and(|s| s != Surface::Solid);
         let ends: Vec<Cell> = cells.iter().filter(free).copied().collect();
         if ends.is_empty() || !self.may_reach(from, ends.iter().copied()) {
             return None;
@@ -589,14 +586,9 @@ impl NavGrid {
         self.search(who, from, |c| ends.contains(&c), heur)
     }
 
-    fn held_by_other(&self, who: BeaverId, c: Cell) -> bool {
-        !self.surface_at(c).is_some_and(shared) && matches!(self.reserved.get(c.0, c.1), Some(Some(o)) if *o != who)
-    }
-
-    fn search(&self, who: BeaverId, from: Cell, is_goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> u32) -> Option<Path> {
+    fn search(&self, _who: BeaverId, from: Cell, is_goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> u32) -> Option<Path> {
         let (w, h) = (self.surface.width(), self.surface.height());
         let surf = self.surface.as_slice();
-        let blocked = |i: usize| !shared(surf[i]) && matches!(self.reserved.as_slice()[i], Some(o) if o != who);
         let start = from.1 * w + from.0;
         let _p = crate::prof::scope("+path search");
 
@@ -626,21 +618,17 @@ impl NavGrid {
                     (y + 1 < h && x > 0).then(|| i + w - 1),
                     (y + 1 < h && x + 1 < w).then(|| i + w + 1),
                 ];
-                // A diagonal step needs both cells beside it open (no shortcut across a corner past
-                // a wall, a building or a lodge), and never leads into or out of a lodge.
-                let open = |k: usize| Self::step_cost(surf[k]).is_some() && !blocked(k) && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
+                let open = |k: usize| Self::step_cost(surf[k]).is_some() && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
                 for j in nbrs.into_iter().flatten() {
                     let Some((c, gait)) = Self::step_cost(surf[j]) else { continue };
                     let to = (j % w, j / w);
-                    if !self.can_step_surf(surf[i], surf[j], cur, to) || blocked(j) {
+                    if !self.can_step_surf(surf[i], surf[j], cur, to) {
                         continue;
                     }
                     let diagonal = to.0 != x && to.1 != y;
                     if diagonal && !(open(i) && open(j) && open(y * w + to.0) && open(to.1 * w + x)) {
                         continue;
                     }
-                    // Routes are timed: a swimmer goes faster with the current than against it
-                    // (as `cost_toward`, at full pace).
                     let len = if diagonal { std::f32::consts::SQRT_2 } else { 1.0 };
                     let c = if gait == Gait::Swim {
                         let v = self.current_of(j);
@@ -660,11 +648,7 @@ impl NavGrid {
         })
     }
 
-    pub fn advance(&mut self, who: BeaverId, from: Cell, to: Cell) -> Result<(), NavError> {
-        let from_shared = self.surface_at(from).is_some_and(shared);
-        if !from_shared && self.reserved.get(from.0, from.1).copied().flatten() != Some(who) {
-            return Err(NavError::NotHolder(from));
-        }
+    pub fn advance(&mut self, _who: BeaverId, from: Cell, to: Cell) -> Result<(), NavError> {
         if from == to || from.0.abs_diff(to.0) > 1 || from.1.abs_diff(to.1) > 1 {
             return Err(NavError::NotAdjacent);
         }
@@ -674,32 +658,9 @@ impl NavGrid {
         if !self.can_step_surf(a, b, from, to) {
             return Err(NavError::Forbidden(b));
         }
-        if !self.reserve(who, to) {
-            return Err(NavError::Occupied(to));
-        }
-        self.release(who, from);
         Ok(())
     }
 
-    pub fn reserve(&mut self, who: BeaverId, cell: Cell) -> bool {
-        if self.surface_at(cell).is_some_and(shared) {
-            return true;
-        }
-        match self.reserved.get_mut(cell.0, cell.1) {
-            Some(slot) if slot.is_none() || *slot == Some(who) => {
-                *slot = Some(who);
-                true
-            }
-            _ => false,
-        }
-    }
-    pub fn release(&mut self, who: BeaverId, cell: Cell) {
-        if let Some(slot) = self.reserved.get_mut(cell.0, cell.1) {
-            if *slot == Some(who) {
-                *slot = None;
-            }
-        }
-    }
     pub fn surface_at(&self, cell: Cell) -> Option<Surface> {
         self.surface.get(cell.0, cell.1).copied()
     }

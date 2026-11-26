@@ -128,7 +128,7 @@ impl Stores {
         self.consumed_total[good] += amount;
         self.consumed_by[use_.index()][good] += amount;
     }
-    /// Book carried goods used up away from any store, such as a sapling planted.
+    /// Book carried goods used up away from any store, such as a seedling planted.
     pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
         self.tick_consumed[good] += amount;
         self.consumed_total[good] += amount;
@@ -136,6 +136,9 @@ impl Stores {
     }
     pub fn amount(&self, g: Good) -> f32 {
         self.inventory.total(g)
+    }
+    pub fn stock_of(&self, b: BuildingId, g: Good) -> f32 {
+        self.inventory.at(b, g)
     }
     pub fn capacity(&self, g: Good) -> f32 {
         self.capacity[g]
@@ -203,10 +206,20 @@ impl Stores {
         self.note("TAKE", good, amount, got, format_args!("from={}", owner.0));
         got
     }
-    /// Take a load of one kind, such as saplings of one species, and say which kind.
+    /// One store's stock of a good, kind by kind (seedlings by species).
+    pub fn kinds_at(&self, owner: BuildingId, good: Good) -> Vec<(Kind, f32)> {
+        self.inventory.kinds(owner, good)
+    }
+    /// Take a load of one kind, such as seedlings of one species, and say which kind.
     pub fn take_kind_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> (f32, Kind) {
         let got = self.inventory.take_kind(owner, good, amount);
         self.note("TAKE", good, amount, got.0, format_args!("from={} kind={:?}", owner.0, got.1));
+        got
+    }
+    /// Take a load of this one kind, such as seedlings of one species.
+    pub fn take_this_kind_from(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> f32 {
+        let got = self.inventory.take_this(owner, good, kind, amount);
+        self.note("TAKE", good, amount, got, format_args!("from={} kind={kind:?}", owner.0));
         got
     }
     pub fn put_kind_at(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> Result<f32, StoresError> {
@@ -274,6 +287,8 @@ pub struct Building {
     pub output: f32,
     pub condition: f32,
     pub reinforced: bool,
+    pub pebbled: bool,
+    pub water_bound: bool,
     /// A dam owns its cells; every other building is its footprint.
     pub dam: Option<Box<crate::dams::Dam>>,
     /// A canal owns its cells, like a dam.
@@ -281,6 +296,43 @@ pub struct Building {
 }
 
 impl Building {
+    pub fn new(id: BuildingId, kind: BuildingKind, pos: (usize, usize), status: Status) -> Self {
+        Building {
+            id,
+            kind,
+            pos,
+            status,
+            output: 0.0,
+            condition: 1.0,
+            reinforced: false,
+            pebbled: false,
+            water_bound: false,
+            dam: None,
+            canal: None,
+        }
+    }
+    pub fn gates(&self) -> &[crate::gates::Gate] {
+        if let Some(d) = self.dam.as_deref() {
+            &d.gates
+        } else if let Some(k) = self.canal.as_deref() {
+            std::slice::from_ref(&k.gate)
+        } else {
+            &[]
+        }
+    }
+    pub fn gates_mut(&mut self) -> &mut [crate::gates::Gate] {
+        if let Some(d) = self.dam.as_deref_mut() {
+            &mut d.gates
+        } else if let Some(k) = self.canal.as_deref_mut() {
+            std::slice::from_mut(&mut k.gate)
+        } else {
+            &mut []
+        }
+    }
+    pub fn centre(&self) -> (f32, f32) {
+        let (w, h) = self.kind.spec().footprint;
+        (self.pos.0 as f32 + w as f32 / 2.0, self.pos.1 as f32 + h as f32 / 2.0)
+    }
     pub fn operational(&self) -> bool { self.is_complete() && self.condition > MIN_OPERATIONAL_CONDITION }
     pub fn durability(&self) -> f32 {
         if self.reinforced { crate::maintenance::lasts(self.kind, crate::maintenance::Refit::Reinforce) } else { 1.0 }
@@ -341,9 +393,6 @@ impl Terrain<'_> {
 pub struct Buildings {
     pub stores: Stores,
     pub buildings: Vec<Building>,
-    pub water_bound: std::collections::BTreeSet<BuildingId>,
-    /// Dams and buildings faced with pebbles.
-    pub pebbled: std::collections::BTreeSet<BuildingId>,
     /// Buildings that wore to nothing and fell apart, for the journal. Not saved.
     #[serde(skip)]
     pub wrecked: std::collections::BTreeSet<BuildingId>,
@@ -378,18 +427,12 @@ impl Buildings {
     }
 
     pub fn stranded(&self, b: &Building, depth: &Grid<f32>) -> bool {
-        if !b.is_complete() || !self.water_bound.contains(&b.id) {
+        if !b.is_complete() || !b.water_bound {
             return false;
         }
         let (w, h) = b.kind.spec().footprint;
         let (x0, y0) = (b.pos.0.saturating_sub(1), b.pos.1.saturating_sub(1));
         !(y0..=b.pos.1 + h).any(|y| (x0..=b.pos.0 + w).any(|x| depth.get(x, y).is_some_and(|&d| d >= KEEP_WET_DEPTH)))
-    }
-
-    fn bind_water(&mut self, id: BuildingId, kind: BuildingKind) {
-        if kind.needs_water() {
-            self.water_bound.insert(id);
-        }
     }
 
     pub fn building(&self, id: BuildingId) -> Option<&Building> {
@@ -401,7 +444,7 @@ impl Buildings {
     }
 
     pub fn footprint(kind: BuildingKind, pos: (usize, usize)) -> Vec<(usize, usize)> {
-        Building { id: BuildingId(0), kind, pos, status: Status::Complete, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None }.cells().collect()
+        Building::new(BuildingId(0), kind, pos, Status::Complete).cells().collect()
     }
 
     fn check_ground(&self, kind: BuildingKind, pos: (usize, usize), terrain: Terrain) -> Result<(), BuildError> {
@@ -481,8 +524,9 @@ impl Buildings {
     ) -> Result<BuildingId, BuildError> {
         self.check_ground(kind, pos, terrain)?;
         let id = BuildingId(self.fresh_id());
-        self.buildings.push(Building { id, kind, pos, status: Status::Site, output: 0.0, condition: 1.0, reinforced: false, dam: None, canal: None });
-        self.bind_water(id, kind);
+        let mut b = Building::new(id, kind, pos, Status::Site);
+        b.water_bound = kind.needs_water();
+        self.buildings.push(b);
         Ok(id)
     }
 

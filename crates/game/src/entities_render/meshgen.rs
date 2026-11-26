@@ -7,6 +7,12 @@ pub fn hex(rgb: u32) -> [f32; 3] {
     crate::palette::display_linear(crate::palette::rgb(rgb))
 }
 
+pub fn build_mesh(meshes: &mut Assets<Mesh>, f: impl FnOnce(&mut Mb)) -> Handle<Mesh> {
+    let mut mb = Mb::new();
+    f(&mut mb);
+    meshes.add(mb.build())
+}
+
 pub fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }

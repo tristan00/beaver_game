@@ -130,9 +130,9 @@ hotkey = "N"
 menu = 5
 
 [[building]]
-key = "Forester"
-name = "Forester"
-summary = "Plants new trees"
+key = "SeedlingBed"
+name = "Seedling bed"
+summary = "Grows trees and plants"
 footprint = [2, 2]
 site = "TouchesWater"
 work = 6.0
@@ -141,12 +141,12 @@ area = [91, 91]
 requires = "FoodCache"
 cost = [["Sticks", 10.0], ["Mud", 2.0]]
 slots = ["Planter"]
-stores = ["Saplings"]
+stores = ["Seedlings"]
 wear = 0.00065
 model = "willow_shallows"
 footing = "ring"
 footing_size = [1.75, 1.75]
-icon = "Forester"
+icon = "SeedlingBed"
 hotkey = "F"
 menu = 6
 round_area = true

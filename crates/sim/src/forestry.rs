@@ -4,11 +4,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
 
-use crate::buildings::{BuildingId, BuildingKind};
 use crate::calendar::Season;
 use crate::colony::BeaverId;
 use crate::grid::Grid;
 use crate::resources::{Resource, ResourceId};
+use crate::inventory::Species;
+use crate::plants::Plant;
 use crate::trees::Tree;
 use crate::water::Cell;
 use crate::work::Area;
@@ -16,7 +17,7 @@ use crate::SimState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum TreeStage {
-    Sapling,
+    Seedling,
     Young,
     Mature,
     Old,
@@ -24,11 +25,11 @@ pub enum TreeStage {
 }
 
 impl TreeStage {
-    pub const ALL: [TreeStage; 5] = [TreeStage::Sapling, TreeStage::Young, TreeStage::Mature, TreeStage::Old, TreeStage::Snag];
+    pub const ALL: [TreeStage; 5] = [TreeStage::Seedling, TreeStage::Young, TreeStage::Mature, TreeStage::Old, TreeStage::Snag];
 
     pub fn of_age(age: f32) -> TreeStage {
         if age < YOUNG_AGE {
-            TreeStage::Sapling
+            TreeStage::Seedling
         } else if age < MATURE_AGE {
             TreeStage::Young
         } else if age < OLD_AGE {
@@ -41,7 +42,7 @@ impl TreeStage {
     /// Logs, branches and bark (food) from felling a tree of this stage and species.
     pub fn fell_yield(self, species: Tree) -> Option<(f32, f32, f32)> {
         let (logs, branches, bark) = match self {
-            TreeStage::Sapling => return None,
+            TreeStage::Seedling => return None,
             TreeStage::Young => (YOUNG_LOGS, YOUNG_BRANCHES, YOUNG_BARK),
             TreeStage::Mature => (crate::resources::TREE_LOGS, crate::resources::TREE_BRANCHES, crate::resources::TREE_BARK),
             TreeStage::Old => (OLD_LOGS, OLD_BRANCHES, OLD_BARK),
@@ -64,45 +65,25 @@ impl Resource {
             _ => None,
         }
     }
-}
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum CutRule {
-    #[default]
-    MatureOnly,
-    Thin,
-    Coppice,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Deed {
-    pub day: f64,
-    pub cell: Cell,
-    pub kind: DeedKind,
-    pub by: Option<BuildingId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum DeedKind {
-    Felled,
+    /// A tiny plant in the world: a tree in its seedling stage, or a food plant's seedling.
+    pub fn is_seedling(&self) -> bool {
+        if self.kind.is_tree() { self.stage() == Some(TreeStage::Seedling) } else { self.kind.is_food_plant() && self.seedling }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Forestry {
-    pub cut_rules: BTreeMap<BuildingId, CutRule>,
-    pub deeds: VecDeque<Deed>,
     pub history: VecDeque<(f64, usize)>,
     size: usize,
-    had_tree: Vec<bool>,
     /// Remade whole each day and only read in between, so a snapshot shares them.
     growth: std::sync::Arc<Vec<f32>>,
     flood_plan: std::sync::Arc<BTreeSet<Cell>>,
-    stumps: Vec<(Cell, Tree)>,
-    thin_age: BTreeMap<BuildingId, f32>,
     unreachable: BTreeMap<Cell, f64>,
     day: Option<i64>,
     rng: Pcg32,
-    /// Trees a beaver planted: who, and on what day.
+    /// Trees and plants a beaver planted: who, and on what day. A planted seedling is not
+    /// collected again.
     pub planted: BTreeMap<ResourceId, (BeaverId, f64)>,
 }
 
@@ -115,24 +96,15 @@ impl Default for Forestry {
 impl Forestry {
     pub fn new(seed: u64) -> Self {
         Forestry {
-            cut_rules: BTreeMap::new(),
-            deeds: VecDeque::new(),
             history: VecDeque::new(),
             size: 0,
-            had_tree: Vec::new(),
             growth: Default::default(),
             flood_plan: Default::default(),
-            stumps: Vec::new(),
-            thin_age: BTreeMap::new(),
             unreachable: BTreeMap::new(),
             day: None,
             rng: Pcg32::seed_from_u64(seed ^ 0xF0E5_7E1D),
             planted: BTreeMap::new(),
         }
-    }
-
-    pub fn cut_rule(&self, b: BuildingId) -> CutRule {
-        self.cut_rules.get(&b).copied().unwrap_or_default()
     }
 
 }
@@ -159,7 +131,7 @@ pub fn start_age(seed: u64, cell: Cell) -> f32 {
 /// Days in floodwater deeper than the species stands before a tree of this stage drowns.
 pub fn drown_days(stage: TreeStage, species: Tree) -> f32 {
     let base = match stage {
-        TreeStage::Sapling => SAPLING_FLOOD_DAYS,
+        TreeStage::Seedling => SEEDLING_FLOOD_DAYS,
         TreeStage::Young => crate::tuning::ecology::DROWN_FLOOD_DAYS,
         TreeStage::Mature | TreeStage::Old | TreeStage::Snag => MATURE_DROWN_DAYS,
     };
@@ -188,7 +160,7 @@ pub fn ground_growth(sim: &SimState, cell: Cell) -> f32 {
 pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f32)> {
     let sp = r.species?;
     let (next, at) = match r.stage()? {
-        TreeStage::Sapling => (TreeStage::Young, YOUNG_AGE),
+        TreeStage::Seedling => (TreeStage::Young, YOUNG_AGE),
         TreeStage::Young => (TreeStage::Mature, MATURE_AGE),
         TreeStage::Mature => (TreeStage::Old, OLD_AGE),
         TreeStage::Old | TreeStage::Snag => return None,
@@ -206,50 +178,17 @@ pub fn clear_drowned(sim: &mut SimState) {
 }
 
 pub fn fellable(r: &Resource) -> bool {
-    r.kind.is_tree() && r.stage() != Some(TreeStage::Sapling)
+    r.kind.is_tree() && r.stage() != Some(TreeStage::Seedling)
 }
 
 pub fn cuttable(r: &Resource, min_age: f32) -> bool {
     fellable(r) && (r.snag || r.age_days >= min_age)
 }
 
-pub fn cut_min_age(sim: &SimState, camp: Option<BuildingId>) -> f32 {
-    let _ = (sim, camp);
-    MATURE_AGE
-}
-
-fn invalid(m: impl Into<String>) -> crate::SimError {
-    crate::SimError::InvalidCommand(m.into())
-}
-
-pub fn can_coppice(sim: &SimState) -> bool {
-    sim.sandbox
-}
-
-pub(crate) fn check_area(sim: &SimState, building: BuildingId, area: &Area) -> Result<(), crate::SimError> {
-    let limited = sim.buildings.building(building).is_some_and(|b| max_area(b.kind).is_some());
-    let (w, h) = (area.max.0.saturating_sub(area.min.0) + 1, area.max.1.saturating_sub(area.min.1) + 1);
-    if limited && (w > MAX_AREA || h > MAX_AREA) {
-        return Err(invalid(format!("InvalidArea: {w}x{h} is larger than {MAX_AREA}x{MAX_AREA}")));
-    }
-    Ok(())
-}
-
-pub fn max_area(kind: BuildingKind) -> Option<usize> {
-    let _ = kind;
-    None
-}
-
 pub fn init(sim: &mut SimState) {
     let n = sim.world.size;
     let f = &mut sim.forestry;
     f.size = n;
-    f.had_tree = vec![false; n * n];
-    for r in sim.resources.items().iter().filter(|r| r.kind.is_tree()) {
-        if r.cell.0 < n && r.cell.1 < n {
-            f.had_tree[r.cell.1 * n + r.cell.0] = true;
-        }
-    }
     f.day = Some(sim.time_days.floor() as i64);
     refresh_growth(sim);
     derive_ecology(sim);
@@ -310,7 +249,7 @@ fn daily(sim: &mut SimState, day: i64) {
                 return;
             }
             let (x, y) = r.cell;
-            let sp = r.species.unwrap_or_else(Tree::unknown);
+            let sp = r.species.expect("a tree has a species");
             let fd = flood_days.get(x, y).copied().unwrap_or(0.0);
             let dp = depth.get(x, y).copied().unwrap_or(0.0);
             if r.snag {
@@ -324,7 +263,7 @@ fn daily(sim: &mut SimState, day: i64) {
             }
             let stage = TreeStage::of_age(r.age_days);
             if dp > sp.spec().max_depth && fd >= drown_days(stage, sp) {
-                if matches!(stage, TreeStage::Sapling | TreeStage::Young) {
+                if matches!(stage, TreeStage::Seedling | TreeStage::Young) {
                     gone.insert(r.id);
                     crate::resources::note("DROWNED", r, format_args!("depth={dp:.2} flood_days={fd:.1}"));
                 } else {
@@ -364,39 +303,15 @@ fn daily(sim: &mut SimState, day: i64) {
             occupied.insert(c);
         }
     }
-    regrow_stumps(sim, &built);
     let f = &mut sim.forestry;
-    for r in sim.resources.items().iter().filter(|r| r.kind.is_tree()) {
-        if r.cell.0 < n && r.cell.1 < n {
-            f.had_tree[r.cell.1 * n + r.cell.0] = true;
-        }
-    }
     let today = day as f64;
-    while f.deeds.front().is_some_and(|d| d.day < today - STATS_DAYS) {
-        f.deeds.pop_front();
-    }
     f.unreachable.retain(|_, until| *until > today);
     // Trees felled or gone are forgotten.
     let planted = std::mem::take(&mut sim.forestry.planted);
-    sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some_and(|r| r.kind.is_tree())).collect();
+    sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some()).collect();
     drop(_trees);
-    { let _p = crate::prof::scope("step/forestry/daily/thinning"); refresh_thinning(sim); }
     { let _p = crate::prof::scope("step/forestry/daily/forest cover"); derive_ecology(sim); }
     record_history(sim, today);
-}
-
-fn regrow_stumps(sim: &mut SimState, built: &HashSet<Cell>) {
-    let stumps = std::mem::take(&mut sim.forestry.stumps);
-    for (c, sp) in stumps {
-        if built.contains(&c) {
-            continue;
-        }
-        if sim.resources.at(c).next().is_some() {
-            sim.forestry.stumps.push((c, sp));
-        } else {
-            sim.resources.add_tree(c, STUMP_AGE, sp);
-        }
-    }
 }
 
 fn refresh_growth(sim: &mut SimState) {
@@ -473,38 +388,6 @@ fn refresh_flood_plan(sim: &mut SimState) {
     });
 }
 
-fn refresh_thinning(sim: &mut SimState) {
-    let camps: Vec<(BuildingId, Area)> = sim
-        .forestry
-        .cut_rules
-        .iter()
-        .filter(|(_, r)| **r == CutRule::Thin)
-        .filter_map(|(b, _)| sim.work.place(*b).and_then(|p| p.area).map(|a| (*b, a)))
-        .collect();
-    let mut out = BTreeMap::new();
-    let n = sim.world.size;
-    for (b, a) in camps {
-        let cells = (a.min.0.min(n)..=a.max.0.min(n.saturating_sub(1))).count() * (a.min.1.min(n)..=a.max.1.min(n.saturating_sub(1))).count();
-        let mut ages: Vec<f32> = sim
-            .resources
-            .items()
-            .iter()
-            .filter(|r| a.contains(r.cell) && r.stage().is_some_and(TreeStage::is_grown))
-            .map(|r| r.age_days)
-            .collect();
-        let keep = cells.div_ceil(2);
-        let allow = ages.len().saturating_sub(keep);
-        let threshold = if allow == 0 {
-            f32::INFINITY
-        } else {
-            ages.sort_by(|x, y| y.total_cmp(x));
-            ages[allow - 1].max(YOUNG_AGE)
-        };
-        out.insert(b, threshold);
-    }
-    sim.forestry.thin_age = out;
-}
-
 fn derive_ecology(sim: &mut SimState) {
     let n = sim.ecology.size();
     if n == 0 {
@@ -577,21 +460,6 @@ pub fn forest_trend(sim: &SimState) -> Option<(usize, usize)> {
     (last.0 - first.0 >= FALLING_DAYS - 0.5).then_some((first.1, last.1))
 }
 
-fn record(sim: &mut SimState, cell: Cell, kind: DeedKind, by: Option<BuildingId>) {
-    let day = sim.time_days;
-    sim.forestry.deeds.push_back(Deed { day, cell, kind, by });
-}
-
-pub(crate) fn felled(sim: &mut SimState, who: BeaverId, cell: Cell, species: Tree) {
-    let camp = sim.work.slot_of(who).map(|s| s.0);
-    record(sim, cell, DeedKind::Felled, camp);
-    if let Some(b) = camp {
-        if sim.forestry.cut_rule(b) == CutRule::Coppice && can_coppice(sim) {
-            sim.forestry.stumps.push((cell, species));
-        }
-    }
-}
-
 fn planting_blocked(sim: &SimState) -> (HashSet<Cell>, HashSet<Cell>) {
     let occupied = sim.resources.taken_cells().collect();
     let mut near = HashSet::new();
@@ -611,7 +479,7 @@ fn plantable_with(sim: &SimState, c: Cell, occupied: &HashSet<Cell>, near: &Hash
     !occupied.contains(&c) && !near.contains(&c) && plantable_ground(sim, c)
 }
 
-/// The ground itself takes a sapling, whatever stands on or round it.
+/// The ground itself takes a seedling, whatever stands on or round it.
 fn plantable_ground(sim: &SimState, c: Cell) -> bool {
     let n = sim.world.size;
     // Planting on every other row and column keeps lanes open through the grown wood.
@@ -624,18 +492,36 @@ fn plantable_ground(sim: &SimState, c: Cell) -> bool {
         && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)
 }
 
-/// A sapling can still go here.
-pub fn plantable(sim: &SimState, c: Cell) -> bool {
+/// A seedling of this species can still go here (no species: a tree's).
+pub fn plantable(sim: &SimState, c: Cell, species: Option<Species>) -> bool {
     // One cell: what stands on it and the buildings round it, not the whole map's sets.
     let near_building = sim.buildings.buildings.iter().any(|b| b.cells().any(|k| k.0.abs_diff(c.0) <= 2 && k.1.abs_diff(c.1) <= 2));
-    !near_building && sim.resources.at(c).next().is_none() && plantable_ground(sim, c)
+    if near_building || sim.resources.at(c).next().is_some() {
+        return false;
+    }
+    match species {
+        Some(Species::Plant(p)) => plant_ground(sim, p, c) && !crate::wetland::Crowding::of(sim).crowded(p, c),
+        _ => plantable_ground(sim, c),
+    }
 }
 
-/// Where a forester puts the next sapling: anywhere in its area that grows well, picked at
-/// random so the planting spreads across the area instead of filling in beside the building.
-/// The ground's growth counts in broad bands only, so a slightly richer patch doesn't draw
-/// every sapling to it.
-pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Option<Cell> {
+/// The ground takes a food plant's seedling: where the plant grows (`wetland::suits`), and
+/// water plants not under ice.
+fn plant_ground(sim: &SimState, p: Plant, c: Cell) -> bool {
+    let n = sim.world.size;
+    c.0 < n && c.1 < n
+        && !(p.aquatic() && crate::agents::frozen(sim))
+        && sim.work.supplies != Some(c)
+        && crate::wetland::suits(sim, p, c)
+        && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)
+}
+
+/// Where a planter puts its next seedling: anywhere in its bed's area where that seedling grows,
+/// picked at random so the planting spreads across the area instead of filling in beside the
+/// building. Trees go where the ground grows them well (in broad bands only, so a slightly
+/// richer patch doesn't draw every seedling to it); food plants where their kind grows and isn't
+/// crowded, as when they spread.
+pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId, species: Option<Species>) -> Option<Cell> {
     let claimed: HashSet<Cell> = sim
         .agents
         .by_id
@@ -644,6 +530,8 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
         .filter_map(|a| match a.task { crate::agents::Task::Plant { cell, .. } => Some(cell), _ => None })
         .collect();
     let (occupied, near) = planting_blocked(sim);
+    let plant = match species { Some(Species::Plant(p)) => Some(p), _ => None };
+    let crowding = plant.map(|_| crate::wetland::Crowding::of(sim));
     let n = sim.world.size;
     // A fresh draw every few hours and for each planter, the same within one.
     let draw = (sim.time_days * 6.0).floor() as u64 ^ who.0.wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -660,11 +548,16 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId) -> Opti
             if claimed.contains(&c) || !area.reaches(c) || !crate::agents::within_shore(sim, crate::jobs::Job::with_duty(crate::content::Duty::Forest), c) {
                 continue;
             }
-            let key = (-((ground_growth(sim, c) * 3.0).round() as i32), lot(c), c);
+            let growth = if plant.is_some() { 0 } else { -((ground_growth(sim, c) * 3.0).round() as i32) };
+            let key = (growth, lot(c), c);
             if best.as_ref().is_some_and(|(k, _)| key >= *k) {
                 continue;
             }
-            if !plantable_with(sim, c, &occupied, &near) || !sim.nav.may_reach_beside(from, c) {
+            let fits = match (plant, &crowding) {
+                (Some(p), Some(crowd)) => !occupied.contains(&c) && !near.contains(&c) && plant_ground(sim, p, c) && !crowd.crowded(p, c),
+                _ => plantable_with(sim, c, &occupied, &near),
+            };
+            if !fits || !sim.nav.may_reach_beside(from, c) {
                 continue;
             }
             best = Some((key, c));
@@ -679,27 +572,3 @@ pub(crate) fn mark_unreachable(sim: &mut SimState, c: Cell) {
     sim.forestry.unreachable.insert(c, until);
 }
 
-/// The species of the seedlings a forager finds by a cell: those of the nearest seeding
-/// tree within `SEEDLING_RADIUS`, food trees first. None with no such tree about.
-pub fn seedling_species(sim: &SimState, c: Cell) -> Option<Tree> {
-    sim.resources
-        .items()
-        .iter()
-        .filter(|r| r.kind.is_tree() && matches!(r.stage(), Some(TreeStage::Mature | TreeStage::Old)))
-        .filter(|r| r.cell.0.abs_diff(c.0).max(r.cell.1.abs_diff(c.1)) <= SEEDLING_RADIUS)
-        .filter_map(|r| Some((!r.species?.feeds(), r.cell.0.abs_diff(c.0).pow(2) + r.cell.1.abs_diff(c.1).pow(2), r.id, r.species?)))
-        .min()
-        .map(|k| k.3)
-}
-
-/// A sapling of no known species takes the species of the nearest food tree; with none about, the
-/// content's `sapling`.
-pub fn planting_species(sim: &SimState, c: Cell) -> Tree {
-    sim.resources
-        .items()
-        .iter()
-        .filter(|r| r.kind.is_tree() && r.species.is_some_and(|s| s.feeds()))
-        .min_by_key(|r| (r.cell.0.abs_diff(c.0).pow(2) + r.cell.1.abs_diff(c.1).pow(2), r.id))
-        .and_then(|r| r.species)
-        .unwrap_or(crate::content::content().sapling)
-}

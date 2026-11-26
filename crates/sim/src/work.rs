@@ -18,7 +18,7 @@ impl Area {
     pub fn contains(&self, c: Cell) -> bool {
         c.0 >= self.min.0 && c.0 <= self.max.0 && c.1 >= self.min.1 && c.1 <= self.max.1
     }
-    /// Inside the circle that fits the area: a forester's reach.
+    /// Inside the circle that fits the area: a seedling bed's reach.
     pub fn reaches(&self, c: Cell) -> bool {
         let (rx, ry) = ((self.max.0 - self.min.0) as f32 / 2.0 + 0.5, (self.max.1 - self.min.1) as f32 / 2.0 + 0.5);
         let (cx, cy) = ((self.min.0 + self.max.0) as f32 / 2.0, (self.min.1 + self.max.1) as f32 / 2.0);
@@ -155,7 +155,6 @@ pub struct Work {
     pub balanced: BTreeSet<BuildingId>,
     /// Stores the player asked haulers to fill to the brim.
     pub fills: BTreeSet<BuildingId>,
-    pub(crate) inventory: crate::inventory::Inventory,
     pub supplies: Option<Cell>,
     /// Goods lying on the ground.
     pub piles: crate::piles::Piles,
@@ -171,7 +170,6 @@ impl Default for Work {
             hauls: Vec::new(),
             balanced: BTreeSet::new(),
             fills: BTreeSet::new(),
-            inventory: Default::default(),
             supplies: None,
             piles: Default::default(),
             homes: BTreeMap::new(),
@@ -316,9 +314,6 @@ impl Work {
                 p.slots.push(s);
             }
         }
-    }
-    pub fn stock_of(&self, b: BuildingId, good: Good) -> f32 {
-        self.inventory.at(b, good)
     }
     pub fn set_area(&mut self, b: BuildingId, area: Area) -> Result<(), WorkError> {
         if area.min.0 > area.max.0 || area.min.1 > area.max.1 {

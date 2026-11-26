@@ -46,6 +46,9 @@ fn orbit_input(
     mut orbit: ResMut<OrbitCamera>,
     (flow, hud): (Option<ResMut<crate::flow::Flow>>, Option<ResMut<crate::hud::HudState>>),
 ) {
+    if menu.as_ref().is_some_and(|m| m.0) {
+        return;
+    }
     let mut next = *orbit;
     let keys_free = !typing.0;
     if buttons.pressed(MouseButton::Middle) {
@@ -57,7 +60,7 @@ fn orbit_input(
     if keys_free && keys.pressed(KeyCode::KeyE) { next.yaw += spin; }
     let held = |a: KeyCode, b: KeyCode| (keys_free && (keys.pressed(a) || keys.pressed(b))) as i32 as f32;
     let (edge_fwd, edge_right) = match windows.single() {
-        Ok(w) if !menu.is_some_and(|m| m.0) && !buttons.pressed(MouseButton::Middle) => edge_pan(w),
+        Ok(w) if !buttons.pressed(MouseButton::Middle) => edge_pan(w),
         _ => (0.0, 0.0),
     };
     let forward = (held(KeyCode::KeyW, KeyCode::ArrowUp) - held(KeyCode::KeyS, KeyCode::ArrowDown) + edge_fwd).clamp(-1.0, 1.0);
@@ -84,7 +87,8 @@ fn orbit_input(
         let (cx, cy) = world_cell(h, next.target);
         next.target.y = height_at(h, cx, cy);
     }
-    if !over_ui.0 && !keys.pressed(KeyCode::ControlLeft) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !over_ui.0 && !ctrl {
         let lines = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / 40.0,

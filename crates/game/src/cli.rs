@@ -71,4 +71,13 @@ impl Cli {
         Ok(cli)
     }
 
+    /// Whether this invocation is driven by a script, report, or screenshot run.
+    pub fn is_scripted(&self) -> bool {
+        self.screenshot.is_some() || self.colony_script.is_some() || self.report_dir.is_some()
+    }
+
+    /// Whether this invocation is non-interactive (scripted, screenshot, report, or benchmark).
+    pub fn is_automated(&self) -> bool {
+        self.is_scripted() || std::env::var_os("BC_PERF").is_some()
+    }
 }

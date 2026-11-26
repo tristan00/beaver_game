@@ -15,6 +15,7 @@ mod input_trace;
 mod menu;
 mod palette;
 mod picking;
+mod recording;
 mod perf;
 mod report_capture;
 mod sandbox;
@@ -61,7 +62,7 @@ fn main() -> AppExit {
     };
     os_timer::high_resolution();
     // Screenshots, colony scripts, reports, the gallery (a screenshot) and benchmarks.
-    let automated = cli.screenshot.is_some() || cli.colony_script.is_some() || cli.report_dir.is_some() || std::env::var_os("BC_PERF").is_some();
+    let automated = cli.is_automated();
     let mut app = App::new();
     let mut tp = TaskPoolOptions::default();
     if let Some(n) = std::env::var("BEAVER_THREADS").ok().and_then(|v| v.parse::<usize>().ok()) {
@@ -111,6 +112,7 @@ fn main() -> AppExit {
         entities_render::EntitiesRenderPlugin,
         audio::AudioPlugin,
         screenshot::ScreenshotPlugin,
+        recording::RecordingPlugin,
         savegame::SaveGamePlugin,
     ));
     let exit = app.run();

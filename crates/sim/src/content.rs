@@ -451,6 +451,22 @@ pub struct Roles {
     pub spoil: ResourceKind,
 }
 
+/// What a job's skill does for a beaver. `Speed` is for its own job only; the others go with the
+/// beaver into whatever job it works (see `growth`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum SkillTrait {
+    /// Works its own job faster.
+    Speed,
+    /// Heavy loads slow it down less.
+    HeavyLoads,
+    /// Spots wolves from farther away.
+    Sight,
+    /// Tiredness slows its work less.
+    Steady,
+    /// Heals faster.
+    Healing,
+}
+
 /// The kind of work a job does; which job does it, and what it is called, is its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Duty {
@@ -458,7 +474,7 @@ pub enum Duty {
     Gather,
     Build,
     Haul,
-    /// Collects seedlings and plants them round a forester.
+    /// Collects wild seedlings of trees and food plants to a seedling bed and plants them round it.
     Forest,
     /// Keeps watch at a lookout.
     Watch,
@@ -480,8 +496,10 @@ pub struct JobRow {
     pub priority: u32,
     /// The player may keep it near the water.
     #[serde(default)] pub shore_limit: bool,
-    /// Skill makes it go faster.
-    #[serde(default)] pub skill_speeds: bool,
+    /// What its skill does for the beaver, in any job it works (see `growth`).
+    pub skill_trait: SkillTrait,
+    /// That, in words.
+    pub skill_effect: String,
     pub icon: String,
     /// The colour of its beavers' paths (sRGB).
     pub path_colour: [f32; 3],
@@ -493,13 +511,20 @@ impl Job {
     pub fn with_duty(d: Duty) -> Job {
         Job::all().find(|j| j.duty() == d).unwrap_or_else(|| panic!("no job does {d:?}"))
     }
+    /// Its skill makes it go faster at its own work.
+    pub fn skill_speeds(self) -> bool { self.row().skill_trait == SkillTrait::Speed }
+    /// The job whose skill gives a trait (`Speed` aside, one job gives each).
+    pub fn with_trait(t: SkillTrait) -> Option<Job> { Job::all().find(|j| j.row().skill_trait == t) }
     /// The job that gathers a kind of resource.
     pub fn gathering(k: ResourceKind) -> Job { k.row().role }
     /// Every job in the colony panel's order.
     pub fn by_priority() -> Vec<Job> {
-        let mut v: Vec<Job> = Job::all().collect();
-        v.sort_by_key(|j| j.row().priority);
-        v
+        static ORDER: std::sync::OnceLock<Vec<Job>> = std::sync::OnceLock::new();
+        ORDER.get_or_init(|| {
+            let mut v: Vec<Job> = Job::all().collect();
+            v.sort_by_key(|j| j.row().priority);
+            v
+        }).clone()
     }
 }
 
@@ -520,8 +545,6 @@ struct File {
     repair_fallback: Vec<Amount>,
     works: Option<Works>,
     start: Vec<Amount>,
-    unknown: Option<Tree>,
-    sapling: Option<Tree>,
     building: Vec<Spec>,
     resource: Vec<ResourceRow>,
     groups: BTreeMap<String, Vec<Vec<ResourceKind>>>,
@@ -544,9 +567,6 @@ pub struct Content {
     pub works: Works,
     /// What a new colony starts with.
     pub start: Vec<Amount>,
-    /// The species taken for a tree of no known species, and for a sapling with no food tree near.
-    pub unknown: Tree,
-    pub sapling: Tree,
     pub buildings: Vec<Spec>,
     pub resources: Vec<ResourceRow>,
     pub roles: Roles,
@@ -605,8 +625,6 @@ impl Content {
             c.repair_fallback.extend(f.repair_fallback);
             c.works = c.works.or(f.works);
             c.start.extend(f.start);
-            c.unknown = c.unknown.or(f.unknown);
-            c.sapling = c.sapling.or(f.sapling);
             c.building.extend(f.building);
             c.resource.extend(f.resource);
             c.groups.extend(f.groups);
@@ -684,7 +702,6 @@ impl Content {
             check(tree_flora.contains_key(*m), || format!("flora {m}: missing"))?;
         }
         Ok(Content {
-            unknown: c.unknown.ok_or("content: trees: no `unknown` species")?, sapling: c.sapling.ok_or("content: trees: no `sapling` species")?,
             goods: c.good, food, seedling, repair_fallback: c.repair_fallback, works: c.works.ok_or("content: buildings: no `works`")?, start: c.start, buildings: c.building, resources: c.resource, roles: c.roles.ok_or("content: resources: no `roles`")?, jobs: c.job, trees: c.tree, plants: c.plant, tree_flora, plant_flora,
             names: c.names.into_iter().map(|(k, v)| (k, v.into_iter().map(|w| &*Box::leak(w.into_boxed_str())).collect())).collect(),
         })

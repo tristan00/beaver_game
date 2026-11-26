@@ -116,12 +116,53 @@ pub fn set_flora(sim: &mut SimState, map: &str) {
     assign_plants(sim);
 }
 
-fn add_plant(sim: &mut SimState, c: Cell, p: Plant, share: f32) {
+fn add_plant(sim: &mut SimState, c: Cell, p: Plant, share: f32, seedling: bool) -> crate::resources::ResourceId {
     let id = sim.resources.add(p.kind(), c, p.spec().food);
     if let Ok(r) = sim.resources.get_mut(id) {
         r.plant = Some(p);
         r.amount = p.spec().food * share;
         r.wet = true;
+        r.seedling = seedling;
+    }
+    id
+}
+
+/// A planter's seedling of a food plant, put in the ground: a seedling, as one spread by seed.
+pub(crate) fn plant_sprout(sim: &mut SimState, c: Cell, p: Plant) -> crate::resources::ResourceId {
+    add_plant(sim, c, p, sprout_share(p), true)
+}
+
+/// Grown enough to spread: by its roots and seed, and to give a planter a seedling.
+pub fn spreads(r: &crate::resources::Resource) -> bool {
+    r.plant.is_some() && r.wet && r.amount >= 0.5 * r.max_amount
+}
+
+/// Where food plants stand now, to tell where another would crowd them (as spreading does).
+pub(crate) struct Crowding {
+    n: usize,
+    land: Vec<u8>,
+    water: Vec<u8>,
+}
+
+impl Crowding {
+    pub(crate) fn of(sim: &SimState) -> Self {
+        let n = sim.water.depth.width();
+        let (mut land, mut water) = (vec![0u8; n * n], vec![0u8; n * n]);
+        for r in sim.resources.items().iter().filter(|r| r.kind.is_food_plant() && r.cell.0 < n && r.cell.1 < n) {
+            if r.kind.aquatic() { water[r.cell.1 * n + r.cell.0] = 1 } else { land[r.cell.1 * n + r.cell.0] = 1 }
+        }
+        Self { n, land, water }
+    }
+    /// Too many plants of its kind about for one more of `p` here.
+    pub(crate) fn crowded(&self, p: Plant, c: Cell) -> bool {
+        let (grid, limit, r) = if p.aquatic() { (&self.water, WATER_CROWDED, WATER_CROWD_RADIUS) } else { (&self.land, CROWDED, SPROUT_CROWD_RADIUS) };
+        let mut k = 0;
+        for y in c.1.saturating_sub(r)..(c.1 + r + 1).min(self.n) {
+            for x in c.0.saturating_sub(r)..(c.0 + r + 1).min(self.n) {
+                k += grid[y * self.n + x] as usize;
+            }
+        }
+        k >= limit
     }
 }
 
@@ -167,7 +208,7 @@ pub fn seed_water_plants(sim: &mut SimState) {
         }
     }
     for (c, p) in beds {
-        add_plant(sim, c, p, 1.0);
+        add_plant(sim, c, p, 1.0, false);
     }
 }
 
@@ -230,28 +271,12 @@ pub fn step(sim: &mut SimState, day: u64) {
     let growth = crate::calendar::vegetation_growth(day as f64 - 0.5);
     if growth == 0.0 { return; }
     let mut taken: HashSet<Cell> = sim.resources.taken_cells().chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
-    let mut plants = vec![0u8; n * n];
-    let mut lilies = vec![0u8; n * n];
-    for r in sim.resources.items().iter() {
-        if r.kind.is_food_plant() {
-            if r.kind.aquatic() { lilies[r.cell.1 * n + r.cell.0] = 1 } else { plants[r.cell.1 * n + r.cell.0] = 1 }
-        }
-    }
-    // Water plants stand in looser beds than shore plants: few, but rich.
-    let crowd = |grid: &[u8], c: Cell, r: usize| {
-        let mut k = 0;
-        for y in c.1.saturating_sub(r)..(c.1 + r + 1).min(n) {
-            for x in c.0.saturating_sub(r)..(c.0 + r + 1).min(n) {
-                k += grid[y * n + x] as usize;
-            }
-        }
-        k
-    };
+    let mut crowding = Crowding::of(sim);
     let mut new: Vec<(Cell, Plant)> = Vec::new();
     // Grown plants spread: by their roots into the ground beside them, and now and then by seed
     // further off, wherever their kind grows and the ground is not already crowded.
     let parents: Vec<(Cell, Plant, u64)> = sim.resources.items().iter()
-        .filter(|r| r.wet && r.amount >= 0.5 * r.max_amount)
+        .filter(|r| spreads(r))
         .filter_map(|r| r.plant.map(|p| (r.cell, p, r.id.0)))
         .collect();
     for (c, p, id) in parents {
@@ -270,14 +295,10 @@ pub fn step(sim: &mut SimState, day: u64) {
             targets.push(((c.0 as i64 + dx) as usize, (c.1 as i64 + dy) as usize));
         }
         for t in targets {
-            if t.0 >= n || t.1 >= n || taken.contains(&t) || !suits(sim, p, t) {
+            if t.0 >= n || t.1 >= n || taken.contains(&t) || !suits(sim, p, t) || crowding.crowded(p, t) {
                 continue;
             }
-            let (grid, limit, r) = if p.aquatic() { (&mut lilies, WATER_CROWDED, WATER_CROWD_RADIUS) } else { (&mut plants, CROWDED, SPROUT_CROWD_RADIUS) };
-            if crowd(grid, t, r) >= limit {
-                continue;
-            }
-            grid[t.1 * n + t.0] = 1;
+            if p.aquatic() { crowding.water[t.1 * n + t.0] = 1; } else { crowding.land[t.1 * n + t.0] = 1; }
             taken.insert(t);
             new.push((t, p));
         }
@@ -291,17 +312,17 @@ pub fn step(sim: &mut SimState, day: u64) {
     for y in 0..n {
         for x in 0..n {
             let c = (x, y);
-            if draw(sim.seed, day, y * n + x + (1 << 40)) >= rooting || taken.contains(&c) || !in_still_water(sim, c) || !alone(&lilies, c) {
+            if draw(sim.seed, day, y * n + x + (1 << 40)) >= rooting || taken.contains(&c) || !in_still_water(sim, c) || !alone(&crowding.water, c) {
                 continue;
             }
             if let Some(p) = crate::plants::choose(flora(sim), draw(sim.seed, day, y * n + x + (1 << 41)), |p| p.aquatic() && suits(sim, p, c)) {
-                lilies[y * n + x] = 1;
+                crowding.water[y * n + x] = 1;
                 taken.insert(c);
                 new.push((c, p));
             }
         }
     }
     for (c, p) in new {
-        add_plant(sim, c, p, sprout_share(p));
+        add_plant(sim, c, p, sprout_share(p), true);
     }
 }

@@ -3,7 +3,7 @@
 //! than there are wolves.
 //!
 //! They are soft competition for the beavers' food: they graze the same food plants, deer and
-//! rabbits nibble saplings, and birds and rabbits pick at food left lying on the ground. They
+//! rabbits nibble seedlings, and birds and rabbits pick at food left lying on the ground. They
 //! keep away from the colony (the more it has built, the wider the berth: `AVOID_BASE` plus
 //! `AVOID_PER_BUILDING` a building), though a hungry one sometimes slips in for food left out.
 //! They bolt from wolves, and rabbits and birds from beavers too. A wolf hunts rabbits and
@@ -68,7 +68,7 @@ impl Kind {
 pub enum Doing {
     /// Ambling to somewhere new.
     Wander,
-    /// Eating where it stands until the day given: a plant, a sapling, or food on the ground.
+    /// Eating where it stands until the day given: a plant, a seedling, or food on the ground.
     Feed { food: Food, until: f64 },
     /// Sitting still a while.
     Rest { until: f64 },
@@ -86,7 +86,7 @@ pub enum Doing {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Food {
     Plant(crate::resources::ResourceId),
-    Sapling(crate::resources::ResourceId),
+    Seedling(crate::resources::ResourceId),
     Pile(u64),
 }
 
@@ -148,13 +148,13 @@ pub struct Wildlife {
     next_id: u32,
     /// Food eaten by wild animals, for the colony's books.
     pub eaten: f32,
-    pub saplings_eaten: u32,
-    /// Where the food plants and saplings are, by area, redrawn daily (see `FoodIndex`).
+    pub seedlings_eaten: u32,
+    /// Where the food plants and seedlings are, by area, redrawn daily (see `FoodIndex`).
     #[serde(skip)]
     food: FoodIndex,
 }
 
-/// Food plants and saplings bucketed by `FOOD_BUCKET`-cell squares, so an animal looks only
+/// Food plants and seedlings bucketed by `FOOD_BUCKET`-cell squares, so an animal looks only
 /// at what grows near it rather than at every source on the map. Rebuilt once a day; whether
 /// one still has food is checked when it is picked.
 #[derive(Clone, Debug, Default)]
@@ -179,13 +179,13 @@ impl FoodIndex {
         self.buckets.iter_mut().for_each(Vec::clear);
         self.buckets.resize(self.across * self.across, Vec::new());
         for r in sim.resources.items() {
-            let sapling = match r.kind {
+            let seedling = match r.kind {
                 k if k.is_food_plant() && !k.aquatic() => false,
-                k if k.is_tree() && r.stage() == Some(crate::forestry::TreeStage::Sapling) => true,
+                k if k.is_tree() && r.stage() == Some(crate::forestry::TreeStage::Seedling) => true,
                 _ => continue,
             };
             let b = (r.cell.1 / FOOD_BUCKET).min(self.across - 1) * self.across + (r.cell.0 / FOOD_BUCKET).min(self.across - 1);
-            self.buckets[b].push((r.cell, r.id, sapling));
+            self.buckets[b].push((r.cell, r.id, seedling));
         }
     }
 }
@@ -198,7 +198,7 @@ impl Default for Wildlife {
 
 impl Wildlife {
     pub fn new(seed: u64) -> Self {
-        Wildlife { rng: Pcg32::seed_from_u64(seed ^ 0x51D_D33F), animals: Vec::new(), carcasses: Vec::new(), next_id: 1, eaten: 0.0, saplings_eaten: 0, food: FoodIndex::default() }
+        Wildlife { rng: Pcg32::seed_from_u64(seed ^ 0x51D_D33F), animals: Vec::new(), carcasses: Vec::new(), next_id: 1, eaten: 0.0, seedlings_eaten: 0, food: FoodIndex::default() }
     }
     fn unit(&mut self) -> f32 {
         (self.rng.next_u32() >> 8) as f32 / (1u32 << 24) as f32
@@ -259,7 +259,7 @@ fn away(sim: &SimState, wl: &mut Wildlife, a: &Animal, from: (f32, f32), far: f3
     None
 }
 
-/// Somewhere to feed near the animal: a food plant (or, now and then, a sapling or food the
+/// Somewhere to feed near the animal: a food plant (or, now and then, a seedling or food the
 /// beavers left lying on the ground), picked at random from what grows within `SEARCH_RADIUS`, outside the
 /// colony's berth unless the food is left out on the ground.
 fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Food)> {
@@ -275,7 +275,7 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
             return Some((p.cell, Food::Pile(p.id)));
         }
     }
-    let saplings = a.kind != Kind::Bird && wl.unit() < SAPLING_CHANCE;
+    let seedlings = a.kind != Kind::Bird && wl.unit() < SEEDLING_CHANCE;
     let _ = n;
     // Everything of the right sort within reach, then a few of them at random, checked.
     let mut near: Vec<(Cell, crate::resources::ResourceId, bool)> = Vec::new();
@@ -288,7 +288,7 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
     for by in bucket(lo.1)..=bucket(hi.1) {
         for bx in bucket(lo.0)..=bucket(hi.0) {
             near.extend(wl.food.buckets[by * across + bx].iter().filter(|f| {
-                f.2 == saplings && (f.0 .0 as f32 + 0.5 - a.pos.0).abs() <= r && (f.0 .1 as f32 + 0.5 - a.pos.1).abs() <= r
+                f.2 == seedlings && (f.0 .0 as f32 + 0.5 - a.pos.0).abs() <= r && (f.0 .1 as f32 + 0.5 - a.pos.1).abs() <= r
             }));
         }
     }
@@ -297,13 +297,13 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
             break;
         }
         let k = (wl.unit() * near.len() as f32) as usize % near.len();
-        let (c, id, sapling) = near.swap_remove(k);
+        let (c, id, seedling) = near.swap_remove(k);
         if to_colony(sim, centre(c)) < berth || !walkable(sim, c) {
             continue;
         }
         match sim.resources.get(id) {
-            Some(res) if !sapling && res.kind.is_food_plant() && !res.kind.aquatic() && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
-            Some(res) if sapling && res.stage() == Some(crate::forestry::TreeStage::Sapling) => return Some((c, Food::Sapling(id))),
+            Some(res) if !seedling && res.kind.is_food_plant() && !res.kind.aquatic() && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
+            Some(res) if seedling && res.stage() == Some(crate::forestry::TreeStage::Seedling) => return Some((c, Food::Seedling(id))),
             _ => {}
         }
     }
@@ -378,7 +378,7 @@ fn edge_cell(sim: &SimState, wl: &mut Wildlife) -> Option<Cell> {
     None
 }
 
-fn eat(sim: &mut SimState, food: Food, amount: f32) -> f32 {
+fn eat(sim: &mut SimState, wl: &mut Wildlife, food: Food, amount: f32) -> f32 {
     match food {
         Food::Plant(id) => match sim.resources.get_mut(id) {
             Ok(r) if r.amount > 0.0 => {
@@ -390,12 +390,12 @@ fn eat(sim: &mut SimState, food: Food, amount: f32) -> f32 {
             _ => 0.0,
         },
         Food::Pile(id) => sim.work.piles.take(id, amount),
-        Food::Sapling(id) => {
-            // Nibbled to the ground: a sapling eaten is gone.
+        Food::Seedling(id) => {
+            // Nibbled to the ground: a seedling eaten is gone.
             let had = sim.resources.get(id).is_some();
             sim.resources.keep(|r| r.id != id);
             if had {
-                sim.wildlife.saplings_eaten += 1;
+                wl.seedlings_eaten += 1;
             }
             0.0
         }
@@ -406,7 +406,7 @@ fn food_left(sim: &SimState, food: Food) -> bool {
     match food {
         // Eaten until it dies (`eat` removes it once bare).
         Food::Plant(id) => sim.resources.get(id).is_some(),
-        Food::Sapling(id) => sim.resources.get(id).is_some(),
+        Food::Seedling(id) => sim.resources.get(id).is_some(),
         Food::Pile(id) => sim.work.piles.get(id).is_some_and(|p| p.amount > 0.05),
     }
 }
@@ -436,13 +436,6 @@ pub fn kill(sim: &mut SimState, id: u32) {
     if let Some(i) = sim.wildlife.animals.iter().position(|a| a.id == id) {
         let a = sim.wildlife.animals.remove(i);
         sim.wildlife.carcasses.push(Carcass { kind: a.kind, pos: a.pos, heading: a.heading, died: now });
-    }
-}
-
-/// A caught animal the wolf let go (its kill was cut short) runs on.
-pub fn release(sim: &mut SimState, id: u32) {
-    if let Some(a) = sim.wildlife.animals.iter_mut().find(|a| a.id == id && a.doing == Doing::Caught) {
-        a.doing = Doing::Flee;
     }
 }
 
@@ -495,11 +488,6 @@ pub fn step(sim: &mut SimState, dt: f32) {
     }
     animals.retain(|a| !gone.contains(&a.id));
     wl.animals = animals;
-    // Food the animals ate this step was taken straight from the plants and piles (`act`).
-    let eaten = std::mem::take(&mut sim.wildlife.eaten);
-    let saplings = std::mem::take(&mut sim.wildlife.saplings_eaten);
-    wl.eaten += eaten;
-    wl.saplings_eaten += saplings;
     sim.wildlife = wl;
 }
 
@@ -552,7 +540,7 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
                 a.pace = travel(sim, a, amble, dt) / dt.max(1e-6);
                 return;
             }
-            let got = eat(sim, food, a.kind.appetite() * dt);
+            let got = eat(sim, wl, food, a.kind.appetite() * dt);
             wl.eaten += got;
             if !food_left(sim, food) {
                 a.doing = Doing::Rest { until: now + REST_DAYS as f64 * (0.5 + wl.unit() as f64) };

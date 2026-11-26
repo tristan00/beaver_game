@@ -123,7 +123,7 @@ impl Plugin for SaveGamePlugin {
 
 /// Scripted, screenshot and benchmark runs never touch the player's saves.
 fn automated(cli: &crate::cli::Cli) -> bool {
-    cli.screenshot.is_some() || cli.colony_script.is_some() || cli.report_dir.is_some() || std::env::var_os("BC_PERF").is_some()
+    cli.is_automated()
 }
 
 fn playing(sim: &Sim) -> bool {

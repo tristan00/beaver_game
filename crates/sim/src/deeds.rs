@@ -2,7 +2,7 @@
 //! trees it felled, by species, and the great old ones among them; the plants it ate from, and
 //! what it found in winter; what it gathered, and where it carried it, on foot or by raft;
 //! each dam, canal and building it worked on and what it put into each; the leaks it stopped;
-//! the saplings it planted and those that grew into trees; each wolf it spotted; the days it
+//! the seedlings it planted and those that grew into trees; each wolf it spotted; the days it
 //! gave each job. Kept for the dead too.
 //!
 //! And its epithet, its one byname, always "the" and a word or a few: "the Muddy". The first
@@ -80,9 +80,9 @@ pub struct Record {
     pub mended: f32,
     pub leaks: u32,
     pub planted: u32,
-    /// Its planted saplings that have grown into mature trees.
+    /// Its planted seedlings that have grown into mature trees.
     pub grown: u32,
-    /// Seedlings collected from seeding trees.
+    /// Wild seedlings collected.
     pub seedlings: u32,
     /// Wolves spotted, each wolf once, and the beavers out in its lookout's range when it first
     /// slapped the alarm for each.

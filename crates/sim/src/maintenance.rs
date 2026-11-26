@@ -47,19 +47,10 @@ pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
     if kind != Refit::Repair {
         return spec.refits.get(&kind).map_or((Vec::new(), 0.0), |r| r.quote(cells(b)));
     }
-    let (w, h) = spec.footprint;
-    let area = (w * h) as f32;
     let damage = (1.0 - b.condition).clamp(0.0, 1.0);
-    let mut materials: Vec<_> = spec.cost.iter().map(|&(g, a)| (g, (a * damage * REPAIR_MATERIAL_SHARE).ceil())).filter(|v| v.1 > 0.0).collect();
-    if materials.is_empty() { materials.extend(crate::content::content().repair_fallback.iter().copied()); }
-    if b.reinforced && let Some(r) = spec.refits.get(&Refit::ReinforcedRepair) {
-        materials.extend(r.per_cell.iter().map(|&(g, a)| (g, (area * damage * a).ceil().max(1.0))));
-    }
-    (materials, (spec.work * damage * REPAIR_LABOUR_SHARE).max(REPAIR_MIN_LABOUR))
-}
-
-pub fn quoted_cost(_s: &SimState, b: &Building, kind: Refit) -> (Vec<Amount>,f32) {
-    cost(b,kind)
+    let (rates, per_unit) = mend_rates(b);
+    let materials = rates.into_iter().map(|(g, a)| (g, (a * damage).ceil().max(1.0))).collect();
+    (materials, (per_unit * damage).max(REPAIR_MIN_LABOUR))
 }
 
 /// What mending costs for each whole unit of condition put back: the materials, brought to the
@@ -127,7 +118,7 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     if b.kind.is_dam() && kind != Refit::Facing {return Err(bad("dams are kept up by menders cell by cell"));}
     if kind == Refit::Facing {
         if !can_pebble(b.kind) {return Err(bad("this structure cannot be faced with pebbles"));}
-        if s.buildings.pebbled.contains(&id) {return Err(bad("already faced with pebbles"));}
+        if b.pebbled {return Err(bad("already faced with pebbles"));}
     } else if kind == Refit::Reinforce {
         if !can_reinforce(b.kind) {return Err(bad("this structure cannot be mud-reinforced"));}
         if b.reinforced {return Err(bad("already mud-reinforced"));}
@@ -141,23 +132,18 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
     let (materials,labour) = cost(b,kind);
     let building_kind = b.kind;
     let i = s.work.places.iter().position(|p|p.building==id).ok_or_else(||bad("missing workplace"))?;
+    // Builders already seated here (a dam's crew) stay on to do the refit.
+    let crew = s.work.crew(id);
     let previous = s.work.places.remove(i);
     if let Err(e) = s.work.add_site_for(id,building_kind,&materials,labour,None) {
         s.work.places.push(previous);
         return Err(bad(&format!("{e:?}")));
     }
     s.work.place_mut(id).unwrap().priority = Priority::High;
-    release(s,id);
+    s.release_beavers(id);
+    s.work.keep_crew(id,crew);
     s.maintenance.jobs.insert(id,Job{kind,previous});
     Ok(())
-}
-
-fn release(s: &mut SimState, id: BuildingId) {
-    for a in s.agents.by_id.values_mut() {
-        if matches!(a.assignment,Some(crate::agents::Assignment::Slot(b,_)) if b==id) {
-            a.assignment=None;
-        }
-    }
 }
 
 fn restore(s: &mut SimState, id: BuildingId, mut previous: Workplace) {
@@ -165,7 +151,7 @@ fn restore(s: &mut SimState, id: BuildingId, mut previous: Workplace) {
     s.work.places.retain(|p|p.building!=id);
     previous.site=None;
     for slot in &mut previous.slots {slot.beaver=None;}
-    release(s,id);
+    s.release_beavers(id);
     s.work.places.push(previous);
     s.work.keep_crew(id,crew);
 }
@@ -178,7 +164,7 @@ pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
         match job.kind {
             Refit::Reinforce => { b.reinforced=true; s.maintenance.reinforcements_completed+=1; }
             Refit::Repair | Refit::ReinforcedRepair => {}
-            Refit::Facing => { s.buildings.pebbled.insert(id); }
+            Refit::Facing => { b.pebbled = true; }
         }
     }
     if job.kind==Refit::Facing { crate::dams::refresh_durability(s,id); }
@@ -190,8 +176,8 @@ pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError>
     let job=s.maintenance.jobs.remove(&id).ok_or_else(||SimError::InvalidCommand("no maintenance queued".into()))?;
     if job.kind == Refit::Repair { return Ok(Vec::new()); }
     let delivered=s.work.place(id).and_then(|p|p.site.as_ref()).map(|p|p.delivered.clone()).unwrap_or_default();
-    let mut refunds=Vec::new();
-    for (g,a) in delivered {let kept=s.buildings.stores.refund(g,a).map_err(|e|SimError::InvalidCommand(e.to_string()))?; refunds.push((g,kept));}
+    let pos = s.buildings.building(id).map_or((0, 0), |b| b.pos);
+    let refunds = delivered.into_iter().map(|(g, a)| (g, s.refund_or_drop(pos, g, a))).collect();
     restore(s,id,job.previous);
     Ok(refunds)
 }
@@ -220,7 +206,7 @@ pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
         // Too deep under water, a building wears away fast.
         flooded: if crate::buildings::flooded(b,&s.water.depth) {FLOODED_WEAR_SCALE} else {1.0},
         reinforced: b.durability(),
-        pebbled: if s.buildings.pebbled.contains(&b.id) {lasts(b.kind, Refit::Facing)} else {1.0},
+        pebbled: if b.pebbled { lasts(b.kind, Refit::Facing) } else { 1.0 },
     })
 }
 

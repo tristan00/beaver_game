@@ -212,8 +212,8 @@ fn survey(sim: &SimState, at: Cell) -> Site {
     for r in sim.resources.items().iter().filter(|r| near(r.cell)) {
         let roles = &crate::content::content().roles;
         match r.kind {
-            k if k.is_tree() && !r.snag => *s.trees.entry(r.species.unwrap_or_else(Tree::unknown)).or_default() += 1,
-            k if k.is_felled() => *s.felled.entry(r.species.unwrap_or_else(Tree::unknown)).or_default() += 1,
+            k if k.is_tree() && !r.snag => *s.trees.entry(r.species.expect("a tree has a species")).or_default() += 1,
+            k if k.is_felled() => *s.felled.entry(r.species.expect("a tree has a species")).or_default() += 1,
             k if k == roles.outcrop || k == roles.gravel => s.pebbles += 1,
             k if k == roles.bank_mud || k == roles.stream_mud => s.mud += 1,
             _ => {}

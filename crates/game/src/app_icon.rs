@@ -3,6 +3,7 @@
 //! Rasterized procedurally from signed distance fields so the runtime window/taskbar icon and
 //! embedded Windows `.ico` always match without shipping hand-edited bitmaps.
 
+use crate::icons::{sd_circle, sd_ellipse, sd_poly, sd_round_rect, sd_seg};
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -31,14 +32,14 @@ fn apply_window_icon(
         let Some(window) = winit_windows.get_window(entity) else {
             return false;
         };
-        let rgba32 = rasterize(32);
+        let rgba128 = rasterize(128);
+        let rgba32 = downsample(&rgba128, 128, 4);
         if let Ok(icon) = winit::window::Icon::from_rgba(rgba32, 32, 32) {
             window.set_window_icon(Some(icon));
         }
         #[cfg(windows)]
         {
             use winit::platform::windows::WindowExtWindows;
-            let rgba128 = rasterize(128);
             if let Ok(tb) = winit::window::Icon::from_rgba(rgba128, 128, 128) {
                 window.set_taskbar_icon(Some(tb));
             }
@@ -113,54 +114,33 @@ fn lerp_rgb(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1.0]
 }
 
-fn sd_round_rect(p: Vec2, c: Vec2, h: Vec2, r: f32) -> f32 {
-    let q = (p - c).abs() - h + Vec2::splat(r);
-    q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - r
-}
-
-fn sd_circle(p: Vec2, c: Vec2, r: f32) -> f32 {
-    (p - c).length() - r
-}
-
-fn sd_ellipse(p: Vec2, c: Vec2, r: Vec2, deg: f32) -> f32 {
-    let rot = Vec2::from_angle(-deg.to_radians()).rotate(p - c);
-    let q = rot.abs();
-    let k0 = (q / r).length();
-    let k1 = (q / (r * r)).length();
-    if k1 < 1e-6 {
-        -r.x.min(r.y)
-    } else {
-        k0 * (k0 - 1.0) / k1
-    }
-}
-
-fn sd_seg(p: Vec2, a: Vec2, b: Vec2, r: f32) -> f32 {
-    let pa = p - a;
-    let ba = b - a;
-    let t = (pa.dot(ba) / ba.dot(ba).max(1e-6)).clamp(0.0, 1.0);
-    (pa - ba * t).length() - r
-}
-
-fn sd_poly(p: Vec2, pts: &[Vec2]) -> f32 {
-    let n = pts.len();
-    let mut d = (p - pts[0]).length_squared();
-    let mut s = 1.0f32;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (vi, vj) = (pts[i], pts[j]);
-        let e = vj - vi;
-        let w = p - vi;
-        let b = w - e * (w.dot(e) / e.dot(e).max(1e-9)).clamp(0.0, 1.0);
-        d = d.min(b.dot(b));
-        let c0 = p.y >= vi.y;
-        let c1 = p.y < vj.y;
-        let c2 = e.x * w.y > e.y * w.x;
-        if (c0 && c1 && c2) || (!c0 && !c1 && !c2) {
-            s = -s;
+fn downsample(src: &[u8], size: u32, factor: u32) -> Vec<u8> {
+    let dst_size = size / factor;
+    let n = (factor * factor) as u32;
+    let mut out = vec![0u8; (dst_size * dst_size * 4) as usize];
+    for y in 0..dst_size {
+        for x in 0..dst_size {
+            let mut acc = [0u32; 4];
+            for sy in 0..factor {
+                for sx in 0..factor {
+                    let i = (((y * factor + sy) * size + x * factor + sx) * 4) as usize;
+                    let a = src[i + 3] as u32;
+                    acc[0] += src[i] as u32 * a;
+                    acc[1] += src[i + 1] as u32 * a;
+                    acc[2] += src[i + 2] as u32 * a;
+                    acc[3] += a;
+                }
+            }
+            let o = ((y * dst_size + x) * 4) as usize;
+            if acc[3] > 0 {
+                out[o] = ((acc[0] + acc[3] / 2) / acc[3]).min(255) as u8;
+                out[o + 1] = ((acc[1] + acc[3] / 2) / acc[3]).min(255) as u8;
+                out[o + 2] = ((acc[2] + acc[3] / 2) / acc[3]).min(255) as u8;
+                out[o + 3] = ((acc[3] + n / 2) / n).min(255) as u8;
+            }
         }
-        j = i;
     }
-    s * d.sqrt()
+    out
 }
 
 fn cov(d: f32) -> f32 {
