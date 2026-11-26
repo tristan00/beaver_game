@@ -457,13 +457,17 @@ impl Colony {
         }
     }
 
+    pub fn daily_food_need(&self) -> f32 {
+        self.beavers.iter().map(|b| HUNGER_PER_DAY * crate::growth::hunger_x(b) * b.stage.food_weight()).sum()
+    }
+
     fn can_breed(&self, m: &Beaver) -> Option<Result<(), &'static str>> {
         if m.sex != Sex::Female || m.stage != Stage::Adult || m.age_years() >= MAX_BIRTH_AGE_YEARS || m.pregnancy.is_some() { return None; }
         let birth_year = ((self.time_days + GESTATION_DAYS) / DAYS_PER_YEAR).floor() as i64;
         let lodge = self.lodges.iter().find(|l| Some(l.id) == m.lodge && l.family == m.family);
         let mate = m.mate.and_then(|id| self.beaver(id)).filter(|f| f.family == m.family && f.lodge == m.lodge && f.stage == Stage::Adult);
         let room = LODGE_CAPACITY.saturating_sub(self.beavers.iter().filter(|b| b.lodge == m.lodge).count());
-        let daily_food = HUNGER_PER_DAY * (self.beavers.iter().map(|b| b.stage.food_weight()).sum::<f32>() + MIN_LITTER as f32 * KIT_FOOD_WEIGHT);
+        let daily_food = self.daily_food_need() + HUNGER_PER_DAY * MIN_LITTER as f32 * KIT_FOOD_WEIGHT;
         Some(if m.last_birth_year == birth_year { Err("Had a litter this year") }
             else if m.health < BREED_MIN_HEALTH { Err("Too weak") }
             else if m.needs.food < BREED_MIN_FOOD { Err("Hungry") }

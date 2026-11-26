@@ -118,7 +118,7 @@ pub fn pick(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cell: Cell, p: (f32,
     if let Some((id, _)) = s.colony.beavers.iter().filter_map(|b| beaver_at(s, drawn, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.81).min_by(|a, b| a.1.total_cmp(&b.1)) {
         return Thing::Beaver(id);
     }
-    if let Some(w) = s.predators.wolves.iter().filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.key()); }
+    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.key()); }
     if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) { return Thing::Building(b.id); }
     if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) { return Thing::Resource(r.id); }
     if let Some(l) = s.colony.lodges.iter().find(|l| d2((l.pos.0 + 0.5, l.pos.1 + 0.5)) < 2.56) { return crate::picking::Target::home(s, l.id).into(); }
@@ -546,11 +546,12 @@ fn draw_work_area(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area,
     }
 }
 
-fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) -> Vec<(f32, f32)> {
-    let mut out: Vec<(f32, f32)> = [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }]
-        .into_iter().flatten().filter_map(|id| s.buildings.building(id).filter(|b| b.kind.watches()).map(sim::predators::lookout_centre)).collect();
+fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) -> Vec<((f32, f32), f32)> {
+    let mut out: Vec<((f32, f32), f32)> = [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }]
+        .into_iter().flatten().filter_map(|id| s.buildings.building(id).filter(|b| b.kind.watches()).map(|b| (sim::predators::lookout_centre(b), sim::predators::lookout_sight(s, b)))).collect();
     if let (Tool::Building(kind), Some(c)) = (hud.tool, hover) && kind.watches() {
-        out.push(sim::predators::lookout_centre(&sim::buildings::Building::new(BuildingId(0), kind, c, sim::buildings::Status::Site)));
+        let b = sim::buildings::Building::new(BuildingId(0), kind, build_logic::anchor(kind, c), sim::buildings::Status::Site);
+        out.push((sim::predators::lookout_centre(&b), sim::predators::LOOKOUT_SIGHT));
     }
     out.dedup();
     out
@@ -560,17 +561,17 @@ fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: S
 pub fn lookout_range(
     mut commands: Commands, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>,
     thing: Res<HoverThing>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>,
-    mut shown: Local<Option<(Entity, (i32, i32))>>,
+    mut shown: Local<Option<(Entity, (i32, i32, i32))>>,
 ) {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
     let s = &sim.0;
     let want = shown_lookouts(s, &hud, hover.0, *sel, thing.0).first().copied();
-    let key = want.map(|c| ((c.0 * 2.0) as i32, (c.1 * 2.0) as i32));
+    let key = want.map(|(c, r)| ((c.0 * 2.0) as i32, (c.1 * 2.0) as i32, (r * 4.0) as i32));
     if shown.map(|x| x.1) == key && (key.is_none() || shown.is_some()) { return; }
     if let Some((e, _)) = shown.take() { commands.entity(e).despawn(); }
-    let (Some(at), Some(key)) = (want, key) else { return };
-    let (h, r, rings, segs) = (&s.height, sim::predators::LOOKOUT_SIGHT, 24usize, 120usize);
+    let (Some((at, r)), Some(key)) = (want, key) else { return };
+    let (h, rings, segs) = (&s.height, 24usize, 120usize);
     let ground = |q: (f32, f32)| cell_world(h, q).with_y(height_at(h, q.0, q.1) + s.water.depth.get(q.0.max(0.0) as usize, q.1.max(0.0) as usize).copied().unwrap_or(0.0).max(0.0) + 0.3);
     let mut pos = vec![ground(at).to_array()];
     for i in 1..=rings {
@@ -593,16 +594,16 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, drawn: Option<&BeaverDrawn>, hu
     beavers.dedup();
     for b in beavers {
         if let Some(at) = beaver_at(s, drawn, b) {
-            let r = sim::fog::BEAVER_SIGHT;
+            let r = sim::predators::beaver_sight(s, b);
             dashed_ellipse(g, h, at, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::WHITE.with_alpha(0.75));
         }
     }
-    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.key()) || thing == Some(Thing::Wolf(w.key()))) {
+    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.key()) || (w.seen && thing == Some(Thing::Wolf(w.key())))) {
         let r = sim::predators::WOLF_SIGHT;
         dashed_ellipse(g, h, w.pos, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::srgb(0.92, 0.36, 0.3));
     }
-    for at in shown_lookouts(s, hud, hover, sel, thing) {
-        let (r, n) = (sim::predators::LOOKOUT_SIGHT, 360usize);
+    for (at, r) in shown_lookouts(s, hud, hover, sel, thing) {
+        let n = 360usize;
         let p = |i: usize, dr: f32| {
             let t = i as f32 / n as f32 * std::f32::consts::TAU;
             let q = (at.0 + (r + dr) * t.cos(), at.1 + (r + dr) * t.sin());
@@ -716,7 +717,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         draw_contours(&mut g, s, (utx, uty), r);
         for d in s.resources.items().iter().filter(|d| d.has_yield() && d.cell.0.abs_diff(utx) <= r && d.cell.1.abs_diff(uty) <= r && crate::terrain_render::underwater_deposit(s, d)) {
             let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
-            cell_outline(&mut g, h, d.cell, Some(bed_y(s, d.cell.0 as f32, d.cell.1 as f32)), Color::srgb(cr, cg, cb));
+            cell_outline(&mut g, h, d.cell, Some(bed_y(s, d.cell.0 as f32 + 0.5, d.cell.1 as f32 + 0.5)), Color::srgb(cr, cg, cb));
         }
         let [fr, fg, fb] = crate::terrain_render::FLOODED;
         for b in s.buildings.buildings.iter().filter(|b| sim::buildings::flooded(b, &s.water.depth)) { footprint_outline(&mut g, s, b, Color::srgb(fr, fg, fb)); }
@@ -740,6 +741,8 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         if let Some(b) = s.buildings.building(id) {
             if let Some(d) = b.dam.as_deref() {
                 draw_dam(&mut g, s, &hud, b.id, d);
+            } else if let Some(k) = b.canal.as_deref() {
+                draw_canal(&mut g, s, &hud, k);
             } else {
                 for c in b.cells() { cell_outline(&mut g, h, c, surface_y(s, c), SELECT); }
                 if let Some(a) = s.work.place(id).and_then(|p| p.area) { draw_work_area(&mut g, h, a, b.kind.row().round_area, SELECT); }
@@ -779,11 +782,11 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         Tool::None => {}
         Tool::Building(kind) => if let Some(c) = hover.0 {
             let pv = build_logic::site_preview(s, kind, c);
-            if let Some(a) = sim::catalogue::work_area_at(kind, c) { draw_work_area(&mut g, h, a, kind.row().round_area, Color::WHITE.with_alpha(0.6)); }
+            if let Some(a) = sim::catalogue::work_area_at(kind, pv.pos) { draw_work_area(&mut g, h, a, kind.row().round_area, Color::WHITE.with_alpha(0.6)); }
             for &c in &pv.cells {
                 cell_outline(&mut g, h, c, None, if pv.is_valid() { Color::WHITE } else { BAD });
                 if !pv.is_valid() {
-                    let p = |dx: f32, dz: f32| cell_world(h, (c.0 as f32 + dx, c.1 as f32 + dz)) + Vec3::Y * 0.1;
+                    let p = |dx: f32, dz: f32| cell_world(h, (c.0 as f32 + 0.5 + dx, c.1 as f32 + 0.5 + dz)) + Vec3::Y * 0.1;
                     g.line(p(-0.35, -0.35), p(0.35, 0.35), BAD);
                     g.line(p(0.35, -0.35), p(-0.35, 0.35), BAD);
                 }
@@ -806,7 +809,7 @@ fn shoreline(g: &mut Gizmos, h: &sim::grid::HeightGrid, cells: &[Cell], y: f32, 
     for &c in cells {
         for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
             if usize::try_from(c.0 as i64 + dx).ok().zip(usize::try_from(c.1 as i64 + dy).ok()).is_some_and(|n| set.contains(&n)) { continue; }
-            let ((cx, cz), (ox, oz)) = ((c.0 as f32 + dx as f32 * 0.5, c.1 as f32 + dy as f32 * 0.5), (dy as f32 * 0.5, dx as f32 * 0.5));
+            let ((cx, cz), (ox, oz)) = ((c.0 as f32 + 0.5 + dx as f32 * 0.5, c.1 as f32 + 0.5 + dy as f32 * 0.5), (dy as f32 * 0.5, dx as f32 * 0.5));
             g.line(cell_world(h, (cx - ox * 0.6, cz - oz * 0.6)).with_y(y), cell_world(h, (cx + ox * 0.2, cz + oz * 0.2)).with_y(y), col);
         }
     }
@@ -904,14 +907,25 @@ fn double_ring(g: &mut Gizmos, at: Vec3, r1: f32, r2: f32, dy: f32, col: Color) 
     ring(g, at + Vec3::Y * dy, r2, col);
 }
 
+fn draw_canal(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, k: &sim::canals::Canal) {
+    let h = &s.height;
+    for c in &k.cells {
+        let picked = hud.dam_cells.contains(&c.cell);
+        cell_outline(g, h, c.cell, Some(works_top(s, c.cell) + if picked { 0.12 } else { 0.04 }), if picked { SELECT } else { WATER.with_alpha(0.75) });
+    }
+    let end = k.end();
+    let at = cell_y(h, end, works_top(s, end) + 0.08);
+    for r in [0.34, 0.28, 0.12] { ring(g, at, r, ACCENT); }
+}
+
 fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d: &sim::dams::Dam) {
     let h = &s.height;
     let line: Vec<Cell> = d.line().map(|c| c.cell).collect();
     for w in line.windows(2) {
         for k in 0..4 {
             let off = Vec3::new(0.0, k as f32 * 0.04, (k as f32 - 1.5) * 0.06);
-            let a = cell_world(h, (w[0].0 as f32, w[0].1 as f32)).with_y(works_top(s, w[0])) + off;
-            let b = cell_world(h, (w[1].0 as f32, w[1].1 as f32)).with_y(works_top(s, w[1])) + off;
+            let a = cell_y(h, w[0], works_top(s, w[0])) + off;
+            let b = cell_y(h, w[1], works_top(s, w[1])) + off;
             g.line(a, b, ACCENT.with_alpha(0.85));
         }
     }

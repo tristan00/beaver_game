@@ -134,7 +134,7 @@ pub(crate) fn plant_sprout(sim: &mut SimState, c: Cell, p: Plant) -> crate::reso
 
 /// Grown enough to spread: by its roots and seed, and to give a planter a seedling.
 pub fn spreads(r: &crate::resources::Resource) -> bool {
-    r.plant.is_some() && r.wet && r.amount >= 0.5 * r.max_amount
+    r.plant.is_some() && !r.is_seedling() && r.wet && r.amount >= 0.5 * r.max_amount
 }
 
 /// Where food plants stand now, to tell where another would crowd them (as spreading does).
@@ -171,6 +171,13 @@ fn sprout_share(p: Plant) -> f32 {
     if p.aquatic() { WATER_PLANT_SPROUT_AMOUNT / WATER_PLANT_MAX } else { SPROUT_AMOUNT / PLANT_MAX }
 }
 
+fn taken_cells(sim: &SimState) -> HashSet<Cell> {
+    sim.resources.taken_cells()
+        .chain(sim.buildings.buildings.iter().flat_map(|b| b.cells()))
+        .chain(sim.work.supplies)
+        .collect()
+}
+
 /// The first water plants: a few small beds in still shallows along the shore, each a species
 /// that roots at its depth.
 pub fn seed_water_plants(sim: &mut SimState) {
@@ -179,7 +186,7 @@ pub fn seed_water_plants(sim: &mut SimState) {
     }
     sim.resources.water_plants_seeded = true;
     let n = sim.water.depth.width();
-    let mut taken: HashSet<Cell> = sim.resources.taken_cells().chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
+    let mut taken = taken_cells(sim);
     let mut placed: Vec<(Cell, Plant)> = Vec::new();
     for y in 1..n.saturating_sub(1) {
         for x in 1..n.saturating_sub(1) {
@@ -270,7 +277,7 @@ pub fn step(sim: &mut SimState, day: u64) {
     for (id,wet) in flowing {if let Ok(r)=sim.resources.get_mut(id) {r.wet=wet;}}
     let growth = crate::calendar::vegetation_growth(day as f64 - 0.5);
     if growth == 0.0 { return; }
-    let mut taken: HashSet<Cell> = sim.resources.taken_cells().chain(sim.buildings.buildings.iter().flat_map(|b| b.cells())).collect();
+    let mut taken = taken_cells(sim);
     let mut crowding = Crowding::of(sim);
     let mut new: Vec<(Cell, Plant)> = Vec::new();
     // Grown plants spread: by their roots into the ground beside them, and now and then by seed

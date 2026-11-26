@@ -173,12 +173,16 @@ pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
 }
 
 pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError> {
-    let job=s.maintenance.jobs.remove(&id).ok_or_else(||SimError::InvalidCommand("no maintenance queued".into()))?;
-    if job.kind == Refit::Repair { return Ok(Vec::new()); }
-    let delivered=s.work.place(id).and_then(|p|p.site.as_ref()).map(|p|p.delivered.clone()).unwrap_or_default();
+    let job = s.maintenance.jobs.remove(&id).ok_or_else(|| SimError::InvalidCommand("no maintenance queued".into()))?;
+    if job.kind == Refit::Repair {
+        s.agents.maint_targets.retain(|_, t| *t != id);
+        crate::supply::tidy(s);
+        return Ok(Vec::new());
+    }
+    let delivered = s.work.place(id).and_then(|p| p.site.as_ref()).map(|p| p.delivered.clone()).unwrap_or_default();
     let pos = s.buildings.building(id).map_or((0, 0), |b| b.pos);
     let refunds = delivered.into_iter().map(|(g, a)| (g, s.refund_or_drop(pos, g, a))).collect();
-    restore(s,id,job.previous);
+    restore(s, id, job.previous);
     Ok(refunds)
 }
 

@@ -11,7 +11,7 @@ pub struct Fog {
     /// The cell each beaver last looked around from. Sight only ever clears fog, so looking
     /// again from the same cell changes nothing and is skipped.
     #[serde(skip)]
-    sighted: std::collections::HashMap<crate::colony::BeaverId, Cell>,
+    sighted: std::collections::HashMap<crate::colony::BeaverId, (Cell, u16)>,
     /// Counts the times more ground was explored, so a viewer can tell when to look again at
     /// what the fog hid.
     #[serde(skip)]
@@ -33,13 +33,14 @@ impl Fog {
     pub fn explored(&self, c: Cell) -> bool {
         self.get(c) >= EXPLORED
     }
-    /// What a beaver at `cell` sees (`BEAVER_SIGHT` around the cell's centre).
-    pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell) {
-        if self.sighted.get(&who) == Some(&cell) {
+    /// What a beaver at `cell` sees (`radius` around the cell's centre).
+    pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell, radius: f32) {
+        let key = (cell, (radius * 10.0).round() as u16);
+        if self.sighted.get(&who) == Some(&key) {
             return;
         }
-        self.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), BEAVER_SIGHT);
-        self.sighted.insert(who, cell);
+        self.reveal((cell.0 as f32 + 0.5, cell.1 as f32 + 0.5), radius);
+        self.sighted.insert(who, key);
     }
 
     pub fn reveal(&mut self, centre: (f32, f32), radius: f32) -> bool {
@@ -52,7 +53,7 @@ impl Fog {
         let mut changed = false;
         for y in y0..=y1 {
             for x in x0..=x1 {
-                let dist = ((x as f32 - centre.0).powi(2) + (y as f32 - centre.1).powi(2)).sqrt();
+                let dist = ((x as f32 + 0.5 - centre.0).powi(2) + (y as f32 + 0.5 - centre.1).powi(2)).sqrt();
                 let v = ((radius + 2.0 - dist) / 2.0).clamp(0.0, 1.0);
                 let i = y * self.size + x;
                 if v > self.seen[i] {

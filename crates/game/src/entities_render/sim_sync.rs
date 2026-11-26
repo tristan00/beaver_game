@@ -298,17 +298,8 @@ pub(super) fn sync_sim_beavers(
             if let Some(yaw) = yaw { heading = Some(Vec2::new(yaw.sin(), yaw.cos())); }
         }
         tr.translation = super::raft_landing::glide(&mut glide, &chambers, tr.translation, time.delta_secs(), speed.smoothing());
-        let fleeing = s.agents.fleeing.contains(&id);
-        sprite.pose = if heading.is_some() {
-            match ag.gait {
-                sim::nav::Gait::Swim => Pose::Swim,
-                sim::nav::Gait::Climb => Pose::Climb,
-                sim::nav::Gait::Walk if fleeing => Pose::Run,
-                sim::nav::Gait::Walk if ag.load.is_some() => Pose::Carry,
-                sim::nav::Gait::Walk => Pose::Walk,
-            }
-        } else { pose_of(s, ag) };
-        sprite.load = if matches!(ag.task, sim::agents::Task::Raft { .. }) { None } else { load_of(ag) };
+        sprite.pose = pose_of(s, ag, heading.is_some() || is_moving(ag));
+        sprite.load = load_of(ag);
         sprite.wet = is_wet(s, ag);
         let want_yaw = heading.map(|d| d.x.atan2(d.y)).or_else(|| facing_of(s, ag)).unwrap_or(sprite.yaw);
         sprite.yaw = super::raft_landing::turn(&mut glide, want_yaw, time.delta_secs(), speed.smoothing());
@@ -359,7 +350,7 @@ pub(super) fn sync_sim_beavers(
         let features = s.colony.looks_of(ag.id);
         let mut e = commands.spawn((
             SimBeaver, motion, super::raft_landing::LockGlide::default(),
-            BeaverSprite { id: ag.id.0, pose: pose_of(s, ag), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, ag.id), features },
+            BeaverSprite { id: ag.id.0, pose: pose_of(s, ag, is_moving(ag)), load: load_of(ag), yaw, wet: is_wet(s, ag), look: look_of(s, ag.id), features },
             LodgeDive { inside: ag.inside, since: -100.0, at },
             Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::splat(BEAVER_SIZE * super::age_scale_days(age) * super::looks_size(&features))),
             if ag.inside { Visibility::Hidden } else { Visibility::Inherited },
@@ -462,11 +453,13 @@ pub struct ResourceSync {
     rocks: Vec<Option<Entity>>,
 }
 
+#[derive(Resource, Default)]
+pub struct BuildingAnchors(pub HashMap<BuildingId, f32>);
+
 #[derive(Default)]
 pub struct BuildingSync {
     time: f64,
     bld: SyncedMap<BuildingId, (Entity, (BuildingKind, (usize, usize), u8))>,
-    anchors: HashMap<BuildingId, f32>,
     wear: HashMap<BuildingId, (u8, f32, f32)>,
     lodges: SyncedMap<u64, (Entity, f32)>,
 }
@@ -681,7 +674,7 @@ pub struct ReinforcementSync {
 
 pub(super) fn sync_reinforcements(
     mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
-    mut meshes: ResMut<Assets<Mesh>>, mut state: Local<ReinforcementSync>,
+    anchors: Res<BuildingAnchors>, mut meshes: ResMut<Assets<Mesh>>, mut state: Local<ReinforcementSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync reinforcements");
     let Some(models) = models else { return };
@@ -691,9 +684,9 @@ pub(super) fn sync_reinforcements(
     for (b, pebbled, _) in s.buildings.buildings.iter().flat_map(|b| [(b, false, b.reinforced), (b, true, !b.kind.is_dam() && b.pebbled)]).filter(|l| l.2) {
         let key = (b.id, pebbled);
         live.insert(key);
-        let tr = building_transform(s, b, state.drawn.map.get(&key).map(|v| v.1));
+        let tr = building_transform(s, b, anchors.0.get(&b.id).copied());
         if let Some(&(e, y)) = state.drawn.map.get(&key) {
-            if tr.translation.y > y + 0.01 {
+            if (tr.translation.y - y).abs() > 0.01 {
                 commands.entity(e).insert(tr);
                 state.drawn.map.insert(key, (e, tr.translation.y));
             }
@@ -728,14 +721,14 @@ fn wear_band(condition: f32) -> u8 {
 pub(super) fn sync_sim_buildings(
     mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>,
-    clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<BuildingSync>,
+    mut anchors: ResMut<BuildingAnchors>, clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<BuildingSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim buildings");
     let Some(mut models) = models else { return };
     let (changed, epoch, sim) = (sim.is_changed(), (sim.0.seed, flow.map_or(0, |f| f.generation)), &sim.0);
     if st.bld.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
         st.lodges.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn());
-        st.anchors.clear();
+        anchors.0.clear();
         st.time = f64::NEG_INFINITY;
     }
     if sim.time_days == st.time && !changed && !(st.bld.map.is_empty() && st.lodges.map.is_empty()) { return; }
@@ -761,7 +754,7 @@ pub(super) fn sync_sim_buildings(
         st.wear.insert(b.id, (band, b.condition, puffed));
         let wear_mat = |models: &Models, b: u8| if b == 0 { white.clone() } else { models.wear[(b - 1) as usize].clone() };
         if let Some(&(e, _)) = st.bld.map.get(&b.id).filter(|(_, s)| *s == sig) {
-            let anchor = st.anchors.get(&b.id).copied();
+            let anchor = anchors.0.get(&b.id).copied();
             let tr = building_transform(sim, b, anchor);
             if band != was_band {
                 let sag = 1.0 - 0.04 * band as f32;
@@ -769,13 +762,13 @@ pub(super) fn sync_sim_buildings(
             }
             if tr.translation.y > anchor.unwrap_or(f32::MIN) + 0.01 {
                 commands.entity(e).insert(tr);
-                st.anchors.insert(b.id, tr.translation.y);
+                anchors.0.insert(b.id, tr.translation.y);
             }
             continue;
         }
         let replaced = st.bld.map.remove(&b.id).map(|(old, _)| commands.entity(old).despawn()).is_some();
-        let tr = building_transform(sim, b, st.anchors.get(&b.id).copied());
-        st.anchors.insert(b.id, tr.translation.y);
+        let tr = building_transform(sim, b, anchors.0.get(&b.id).copied());
+        anchors.0.insert(b.id, tr.translation.y);
         let e = spawn(&mut commands, &mut models, Target::Building(b.id), b.kind, (b.kind.spec().footprint.0 as u32 * 2).max(2), stage, tr);
         if band > 0 { commands.entity(e).insert(MeshMaterial3d(wear_mat(&models, band))); }
         if replaced || (!b.is_complete() && stage == 0) {
@@ -785,6 +778,7 @@ pub(super) fn sync_sim_buildings(
         st.bld.map.insert(b.id, (e, sig));
     }
     st.bld.retain_live(&live, &mut commands, |c, (e, _)| c.entity(e).despawn());
+    anchors.0.retain(|id, _| live.contains(id));
     let homes: HashSet<u64> = sim.colony.lodges.iter().map(|l| l.id.0).collect();
     st.lodges.retain_live(&homes, &mut commands, |c, (e, _)| c.entity(e).despawn());
     let lodge_blds: Vec<_> = sim.buildings.buildings.iter().filter(|b| b.kind.is_home()).map(|b| b.pos).collect();

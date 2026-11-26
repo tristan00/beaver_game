@@ -194,19 +194,10 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
         r.icon(Icon::LockGates, 15.0, WARN).tip(what.line("A builder will build it", ""));
         return;
     }
-    let why = if !locks::unlocked(s) {
-        Some("Needs a raft landing")
-    } else if !g.built {
-        Some("Build the gate first")
-    } else if locks::check_room(s, id, g.cell).is_err() {
-        Some("No room for a lock here")
-    } else {
-        None
-    };
-    let tip = super::words::cost_lines(what, &sim::content::content().works.lock);
-    match why {
-        Some(w) => r.small_button(Some(Icon::LockGates), None, None, tip.line(w, ""), Small::Idle),
-        None => r.small_button(Some(Icon::LockGates), None, Some(HudAction::UpgradeLock(id, g.cell)), tip, Small::Idle),
+    let tip = super::words::cost_lines(what, &locks::order_cost(s, id, g.cell));
+    match locks::check_order(s, id, g.cell) {
+        Ok(()) => r.small_button(Some(Icon::LockGates), None, Some(HudAction::UpgradeLock(id, g.cell)), tip, Small::Idle),
+        Err(why) => r.small_button(Some(Icon::LockGates), None, None, tip.line(cap(&why), ""), Small::Idle),
     };
 }
 
@@ -260,21 +251,9 @@ pub fn supplied(s: &sim::SimState, id: BuildingId, cell: Cell) -> Option<(f32, f
 
 /// Why a gate or lock can't go on this cell of a dam.
 pub fn opening_fits(s: &sim::SimState, id: BuildingId, cell: Cell, o: Opening) -> Result<(), String> {
-    let gate_here = sim::dams::dam(s, id).is_some_and(|d| d.gates.iter().any(|g| g.cell == cell));
     match o {
         Opening::Gate => sim::dams::plan_gate(s, id, cell).map(|_| ()).map_err(|e| cap(&e)),
-        Opening::Lock => {
-            if !sim::locks::unlocked(s) {
-                return Err("Needs a raft landing".into());
-            }
-            if sim::locks::has(s, cell) {
-                return Err("Already a lock".into());
-            }
-            if !gate_here {
-                sim::dams::plan_gate(s, id, cell).map_err(|e| cap(&e))?;
-            }
-            sim::locks::check_room(s, id, cell).map_err(|_| "No room for a lock".to_string())
-        }
+        Opening::Lock => sim::locks::check_order(s, id, cell).map_err(|e| cap(&e)),
     }
 }
 
@@ -307,7 +286,7 @@ pub fn chips(c: &Ctx, u: &mut Ui, id: BuildingId, gates: &[sim::gates::Gate], ro
     let shown = if gates.len() > fit { fit - 1 } else { gates.len() };
     u.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() }, |r| {
         for g in &gates[..shown] {
-            let lock = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
+            let lock = sim::locks::has(s, g.cell);
             let brought = supplied(s, id, g.cell);
             let busy = s.agents.by_id.values().any(|a| matches!(a.task, sim::agents::Task::Work { site, cell: Some(cell), kind: sim::agents::WorkKind::Gate, .. } if site == id && cell == g.cell));
             let (text, col) = match brought {

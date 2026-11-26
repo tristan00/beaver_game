@@ -31,7 +31,7 @@ pub use crate::build_logic::LinePlan;
 use actions::{button_actions, commit_line, undo_last};
 use input::{box_select, follow_beaver, frame_camera, hotkeys, hover_cell, next_idle, pointer_over_ui, track_cursor, world_input};
 use minimap::{minimap_click, setup_minimap, update_minimap, MinimapImage};
-use crate::build_logic::{self, BuildOrder};
+use crate::build_logic;
 use crate::camera::MainCamera;
 use crate::flow::{cell_world, Cell, Flow, Selection};
 use crate::icons::{Icon, Icons};
@@ -211,7 +211,7 @@ impl HudState {
     pub(crate) fn swallow_click(&mut self) { self.consume_left_release = true; }
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
-        (self.drag_from, self.plan, self.canal_plan, self.extending) = (None, None, None, None);
+        (self.drag_from, self.plan, self.canal_plan, self.extending, self.opening) = (None, None, None, None, None);
         self.line.clear();
         self.corners.clear();
     }
@@ -257,7 +257,7 @@ impl HudState {
         *sel = Selection::Site(id);
         self.selected.clear();
         self.dam_cells.clear();
-        flow.focus = Some(cell_world(&s.height, (b.pos.0 as f32 + 0.5, b.pos.1 as f32 + 0.5)));
+        flow.focus = Some(cell_world(&s.height, b.centre()));
     }
     pub(crate) fn open_page(&mut self, p: Page) {
         if let Some(now) = self.page().filter(|now| *now != p) {
@@ -311,13 +311,13 @@ fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut
     }
 }
 
-type BuildingsSeen = BTreeMap<BuildingId, (BuildingKind, bool, (usize, usize))>;
+type BuildingsSeen = BTreeMap<BuildingId, (BuildingKind, bool, (f32, f32))>;
 
 fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut was: Local<Option<(u64, BuildingsSeen)>>) {
     let s = &sim.0;
     if !s.is_running() { *was = None; return; }
     if !was.as_ref().is_none_or(|(i, b)| *i != s.instance || b.len() != s.buildings.buildings.len() || s.buildings.buildings.iter().any(|x| b.get(&x.id).is_none_or(|v| v.1 != x.is_complete()))) { return; }
-    let now: BuildingsSeen = s.buildings.buildings.iter().map(|b| (b.id, (b.kind, b.is_complete(), b.pos))).collect();
+    let now: BuildingsSeen = s.buildings.buildings.iter().map(|b| (b.id, (b.kind, b.is_complete(), b.centre()))).collect();
     if let Some((_, before)) = was.as_ref().filter(|(i, _)| *i == s.instance) {
         let t = time.elapsed_secs();
         for (&id, &(kind, done, _)) in &now {
@@ -328,7 +328,7 @@ fn notice_buildings(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>
         for (&id, &(kind, done, pos)) in before {
             if done && !now.contains_key(&id) {
                 let how = if s.buildings.wrecked.contains(&id) { "fell apart" } else { "lost" };
-                notices.push_at(vec![(building_icon(kind), INK), (Icon::Cross, BAD)], format!("{} {how}", kind.spec().name.as_str()), t, Some(NoticeAt::Spot((pos.0 as f32, pos.1 as f32))));
+                notices.push_at(vec![(building_icon(kind), INK), (Icon::Cross, BAD)], format!("{} {how}", kind.spec().name.as_str()), t, Some(NoticeAt::Spot(pos)));
             }
         }
     }
@@ -529,9 +529,14 @@ fn refresh_panels(
     if hud.tool == Tool::Dam && !hud.line.is_empty() && hud.plan.as_ref().is_none_or(|p| p.line != hud.line) {
         hud.plan = Some(build_logic::line_plan(s, &hud.line, hud.extending));
     }
-    if hud.tool == Tool::Canal && hud.line.len() > 1 && hud.extending.is_none() && hud.canal_plan.as_ref().is_none_or(|p| p.0 != hud.line) {
+    if hud.tool == Tool::Canal && hud.line.len() > 1 && hud.canal_plan.as_ref().is_none_or(|p| p.0 != hud.line) {
         let line = hud.line.clone();
-        hud.canal_plan = Some((line.clone(), sim::canals::plan(s, &line)));
+        let drawn = match hud.extending.and_then(|id| sim::canals::canal(s, id)) {
+            Some(k) if line.first() == Some(&k.end()) => &line[1..],
+            _ => &line[..],
+        };
+        let plan = sim::canals::plan_from(s, drawn, hud.extending);
+        hud.canal_plan = Some((line, plan));
     }
     update_drowned(s, &mut hud);
     if hud.opening.is_some_and(|(id, _)| *sel != Selection::Site(id) || sim::dams::dam(s, id).is_none()) { hud.opening = None; }

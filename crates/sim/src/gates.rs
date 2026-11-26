@@ -22,6 +22,27 @@ pub(crate) fn cell_taken(sim: &SimState, c: Cell, except: Option<BuildingId>, re
         || (reject_dam && sim.water.dam_height.get(c.0, c.1).is_some_and(|h| *h > 0.0))
         || crate::locks::reserved(sim, c, except)
 }
+pub(crate) fn check_cell_open(sim: &SimState, c: Cell, except: Option<BuildingId>, reject_dam: bool) -> Result<(), String> {
+    if !sim.water.depth.in_bounds(c.0, c.1) { return Err("off the map".into()); }
+    if !sim.sandbox && !sim.fog.explored(c) { return Err("Unexplored".into()); }
+    if sim.work.supplies == Some(c) { return Err("the supply pile is there".into()); }
+    if sim.resources.boulder_at(c) { return Err("a boulder is in the way".into()); }
+    if cell_taken(sim, c, except, reject_dam) { return Err("something is already built there".into()); }
+    Ok(())
+}
+pub fn unlocked(sim: &SimState) -> bool {
+    crate::content::content().works.gate_needs.is_none_or(|k| sim.buildings.buildings.iter().any(|b| b.kind == k && sim.finished(b)))
+}
+pub(crate) fn check_unlocked(sim: &SimState) -> Result<(), String> {
+    if unlocked(sim) { return Ok(()); }
+    let need = crate::content::content().works.gate_needs.map_or("haul mound", |k| k.name());
+    Err(format!("gates need a finished {}", need.to_lowercase()))
+}
+pub fn gate_cells(sim: &SimState, building: BuildingId, cell: Cell) -> Vec<Cell> {
+    if let Some(d) = crate::dams::dam(sim, building) { crate::dams::gate_cells(d, cell) }
+    else if let Some(k) = crate::canals::canal(sim, building) { crate::canals::gate_cells(k) }
+    else { vec![cell] }
+}
 pub(crate) fn claimed_work(sim: &SimState, id: BuildingId, except: BeaverId, kinds: &[WorkKind]) -> Vec<Cell> {
     sim.agents.by_id.values().filter(|a| a.id != except).filter_map(|a| match a.task {
         Task::Work { site, cell: Some(cell), kind, .. } if site == id && kinds.contains(&kind) => Some(cell),
@@ -149,14 +170,13 @@ pub fn set_gate(sim: &mut SimState, building: BuildingId, cell: Cell, setting: G
 
 pub fn remove(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(), SimError> {
     gate_of(sim, building, cell).ok_or_else(|| invalid("no gate there"))?;
-    if let Some(k) = crate::canals::canal(sim, building) {
-        let cells = crate::canals::gate_cells(k);
+    let cells = gate_cells(sim, building, cell);
+    if crate::canals::canal(sim, building).is_some() {
         let k = crate::canals::canal_mut(sim, building)?;
         (k.gate.built, k.gate.pending, k.gate.setting, k.gate.lock) = (false, None, GateSetting::Shut, LockState::None);
+        k.invalidate_status();
         for c in cells { sim.water.clear_structure(c).map_err(|e| invalid(format!("{e:?}")))?; }
     } else {
-        let d = crate::dams::dam(sim, building).ok_or_else(|| invalid("no such dam"))?;
-        let cells = crate::dams::gate_cells(d, cell);
         crate::dams::drop_gate(sim, building, cell)?;
         for c in cells { sim.water.unset_gate(c).map_err(|e| invalid(format!("{e:?}")))?; }
     }

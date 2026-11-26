@@ -47,10 +47,7 @@ pub fn unlocked(sim: &SimState) -> bool {
 }
 
 fn gate_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
-    match crate::dams::dam(sim, l.building) {
-        Some(d) => crate::dams::gate_cells(d, l.cell),
-        None => vec![l.cell],
-    }
+    crate::gates::gate_cells(sim, l.building, l.cell)
 }
 
 pub fn lock_cells(sim: &SimState, l: &Lock) -> Vec<Cell> {
@@ -159,10 +156,8 @@ pub fn reserved(sim: &SimState, c: Cell, except: Option<BuildingId>) -> bool {
 }
 
 pub fn check_room(sim: &SimState, building: BuildingId, cell: Cell) -> Result<(), String> {
-    let room = footprint(sim, &Lock { cell, building, built: false });
-    let other = |c: &Cell| sim.buildings.buildings.iter().any(|b| b.id != building && b.cells().any(|p| p == *c));
-    if room.iter().any(other) || sim.work.supplies.is_some_and(|p| room.contains(&p)) {
-        return Err("something is built where the lock would stand".into());
+    for c in footprint(sim, &Lock { cell, building, built: false }) {
+        crate::gates::check_cell_open(sim, c, Some(building), false)?;
     }
     Ok(())
 }
@@ -175,19 +170,36 @@ pub fn pending(sim: &SimState, c: Cell) -> bool {
     all(sim).any(|l| !l.built && l.cell == c)
 }
 
-pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(), SimError> {
+/// Combined material cost to order a lock at `(building, cell)` (includes gate cost if no gate is built yet).
+pub fn order_cost(sim: &SimState, building: BuildingId, cell: Cell) -> Vec<crate::buildings::Amount> {
+    let mut cost: Vec<crate::buildings::Amount> = crate::gates::cost(crate::gates::Piece::Lock).0.to_vec();
+    if crate::gates::gate_of(sim, building, cell).is_none_or(|g| !g.built) {
+        for &(g, a) in crate::gates::cost(crate::gates::Piece::Build).0 {
+            match cost.iter_mut().find(|c| c.0 == g) { Some(c) => c.1 += a, None => cost.push((g, a)) }
+        }
+    }
+    cost
+}
+
+/// Single eligibility check for ordering a lock on a dam or canal gate.
+pub fn check_order(sim: &SimState, building: BuildingId, cell: Cell) -> Result<(), String> {
     if !unlocked(sim) {
-        return Err(invalid("locks need a finished Raft landing"));
+        let need = crate::content::content().works.lock_needs.map_or("raft landing", |k| k.name());
+        return Err(format!("locks need a finished {}", need.to_lowercase()));
     }
-    if has(sim, cell) {
-        return Err(invalid("that gate is already a lock"));
+    if has(sim, cell) { return Err("that gate is already a lock".into()); }
+    match crate::gates::gate_of(sim, building, cell) {
+        None if crate::dams::dam(sim, building).is_some() => { crate::dams::plan_gate(sim, building, cell)?; }
+        None => return Err("no gate there".into()),
+        Some(g) if !g.built => crate::gates::check_unlocked(sim)?,
+        Some(_) => {}
     }
-    let gate = crate::gates::gate_of(sim, building, cell);
-    if gate.is_none() && crate::dams::dam(sim, building).is_none() {
-        return Err(invalid("no gate there"));
-    }
-    check_room(sim, building, cell).map_err(invalid)?;
-    if gate.is_none() {
+    check_room(sim, building, cell)
+}
+
+pub fn order(sim: &mut SimState, building: BuildingId, cell: Cell) -> Result<(), SimError> {
+    check_order(sim, building, cell).map_err(invalid)?;
+    if crate::gates::gate_of(sim, building, cell).is_none() {
         crate::dams::add_gate(sim, building, cell)?;
     }
     let b = sim.buildings.buildings.iter_mut().find(|b| b.id == building).ok_or_else(|| invalid("no such building"))?;

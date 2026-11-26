@@ -425,13 +425,8 @@ fn derive_ecology(sim: &mut SimState) {
     sim.ecology.set_forest(&g);
 }
 
-fn home(sim: &SimState) -> Option<Cell> {
-    let p = sim.colony.lodges.first().map(|l| l.pos).or(sim.colony.beavers.first().map(|b| b.pos))?;
-    Some((p.0.max(0.0) as usize, p.1.max(0.0) as usize))
-}
-
 pub fn colony_mature_trees(sim: &SimState) -> Option<usize> {
-    let h = home(sim)?;
+    let h = crate::agents::colony_home(sim)?;
     Some(
         sim.resources
             .items()
@@ -494,9 +489,10 @@ fn plantable_ground(sim: &SimState, c: Cell) -> bool {
 
 /// A seedling of this species can still go here (no species: a tree's).
 pub fn plantable(sim: &SimState, c: Cell, species: Option<Species>) -> bool {
-    // One cell: what stands on it and the buildings round it, not the whole map's sets.
     let near_building = sim.buildings.buildings.iter().any(|b| b.cells().any(|k| k.0.abs_diff(c.0) <= 2 && k.1.abs_diff(c.1) <= 2));
-    if near_building || sim.resources.at(c).next().is_some() {
+    if near_building || sim.resources.at(c).next().is_some() || sim.resources.boulder_at(c)
+        || !crate::agents::within_shore(sim, crate::jobs::Job::with_duty(crate::content::Duty::Forest), c)
+    {
         return false;
     }
     match species {
@@ -511,6 +507,7 @@ fn plant_ground(sim: &SimState, p: Plant, c: Cell) -> bool {
     let n = sim.world.size;
     c.0 < n && c.1 < n
         && !(p.aquatic() && crate::agents::frozen(sim))
+        && (p.aquatic() || !sim.forestry.flood_plan.contains(&c))
         && sim.work.supplies != Some(c)
         && crate::wetland::suits(sim, p, c)
         && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)

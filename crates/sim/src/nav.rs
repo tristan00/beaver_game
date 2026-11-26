@@ -257,6 +257,7 @@ impl NavGrid {
             Surface::Solid => 1u8,
             Surface::LodgeInside => 2,
             Surface::LodgeEntrance => 3,
+            Surface::Lock => 4,
             _ => 0,
         };
         let same = self.region.len() == self.labelled.len()
@@ -285,9 +286,22 @@ impl NavGrid {
             stack.push(start);
             while let Some(i) = stack.pop() {
                 let (x, y) = (i % w, i / w);
-                let nbrs = [(y > 0).then(|| i - w), (x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y + 1 < h).then(|| i + w)];
+                let nbrs = [
+                    (y > 0).then(|| i - w),
+                    (x > 0).then(|| i - 1),
+                    (x + 1 < w).then(|| i + 1),
+                    (y + 1 < h).then(|| i + w),
+                    (y > 0 && x > 0).then(|| i - w - 1),
+                    (y > 0 && x + 1 < w).then(|| i - w + 1),
+                    (y + 1 < h && x > 0).then(|| i + w - 1),
+                    (y + 1 < h && x + 1 < w).then(|| i + w + 1),
+                ];
                 for j in nbrs.into_iter().flatten() {
-                    if region[j] == 0 && self.can_step_surf(surf[i], surf[j], (x, y), (j % w, j / w)) {
+                    let to = (j % w, j / w);
+                    if region[j] == 0
+                        && self.can_step_surf(surf[i], surf[j], (x, y), to)
+                        && (to.0 == x || to.1 == y || self.can_step_diag(surf, w, i, j, (x, y), to))
+                    {
                         region[j] = next;
                         stack.push(j);
                     }
@@ -296,6 +310,26 @@ impl NavGrid {
         }
         self.region = region;
         self.regions_ok = true;
+    }
+
+    pub(crate) fn refresh_key(&self) -> Option<(u64, u64, u64, u64, usize, u64)> {
+        self.refresh_key
+    }
+
+    fn can_step_diag(&self, surf: &[Surface], w: usize, i: usize, j: usize, from: Cell, to: Cell) -> bool {
+        let open = |k: usize| Self::step_cost(surf[k]).is_some() && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
+        if !(open(i) && open(j)) {
+            return false;
+        }
+        // Matches `raft_landing::corner_ok`: on a diagonal dam, water meets a lock only at its corners.
+        surf[i] == Surface::Lock || surf[j] == Surface::Lock || (open(from.1 * w + to.0) && open(to.1 * w + from.0))
+    }
+
+    pub(crate) fn can_move_step(&self, from: Cell, to: Cell) -> bool {
+        let (w, surf) = (self.surface.width(), self.surface.as_slice());
+        let (Some(a), Some(b)) = (self.surface_at(from), self.surface_at(to)) else { return false };
+        if !self.can_step_surf(a, b, from, to) { return false; }
+        from.0 == to.0 || from.1 == to.1 || self.can_step_diag(surf, w, from.1 * w + from.0, to.1 * w + to.0, from, to)
     }
 
     fn region_of(&self, c: Cell) -> u32 {
@@ -618,7 +652,6 @@ impl NavGrid {
                     (y + 1 < h && x > 0).then(|| i + w - 1),
                     (y + 1 < h && x + 1 < w).then(|| i + w + 1),
                 ];
-                let open = |k: usize| Self::step_cost(surf[k]).is_some() && !matches!(surf[k], Surface::LodgeInside | Surface::LodgeEntrance);
                 for j in nbrs.into_iter().flatten() {
                     let Some((c, gait)) = Self::step_cost(surf[j]) else { continue };
                     let to = (j % w, j / w);
@@ -626,7 +659,7 @@ impl NavGrid {
                         continue;
                     }
                     let diagonal = to.0 != x && to.1 != y;
-                    if diagonal && !(open(i) && open(j) && open(y * w + to.0) && open(to.1 * w + x)) {
+                    if diagonal && !self.can_step_diag(surf, w, i, j, cur, to) {
                         continue;
                     }
                     let len = if diagonal { std::f32::consts::SQRT_2 } else { 1.0 };

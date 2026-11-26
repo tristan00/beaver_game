@@ -86,7 +86,7 @@ pub fn walkable(sim: &SimState, c: Cell) -> bool {
 pub(crate) fn centre(c: Cell) -> (f32, f32) { (c.0 as f32 + 0.5, c.1 as f32 + 0.5) }
 pub(crate) fn dist(a: (f32, f32), b: (f32, f32)) -> f32 { ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() }
 
-fn land_path(sim: &SimState, from: Cell, goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> f32, max_nodes: usize) -> Option<Vec<Cell>> {
+pub(crate) fn land_path(sim: &SimState, from: Cell, goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> f32, max_nodes: usize) -> Option<Vec<Cell>> {
     land_search(sim, from, goal, heur, max_nodes, false)
 }
 pub(crate) fn land_path_toward(sim: &SimState, from: Cell, goal: impl Fn(Cell) -> bool, heur: impl Fn(Cell) -> f32, max_nodes: usize) -> Vec<Cell> {
@@ -141,9 +141,7 @@ fn land_search(sim: &SimState, from: Cell, goal: impl Fn(Cell) -> bool, heur: im
 }
 
 fn on_land(sim: &SimState, a: &Agent) -> bool {
-    let iced = sim.water.ice.get(a.cell.0, a.cell.1).is_some_and(|&t| t >= crate::tuning::water::ICE_WALK_M);
-    let deep = sim.water.depth.get(a.cell.0, a.cell.1).is_some_and(|&d| d > WOLF_MAX_DEPTH);
-    !a.inside && !(iced && deep) && matches!(sim.nav.surface_at(a.cell), Some(Surface::Land | Surface::Thicket))
+    !a.inside && walkable(sim, a.cell)
 }
 
 pub(crate) fn path_within_reach(sim: &SimState, from: Cell, to: Cell, max_nodes: usize) -> Option<Vec<Cell>> {
@@ -151,7 +149,7 @@ pub(crate) fn path_within_reach(sim: &SimState, from: Cell, to: Cell, max_nodes:
     land_path(sim, from, |c| dist(centre(c), t) <= WOLF_CATCH, |c| (dist(centre(c), t) - WOLF_CATCH).max(0.0), max_nodes)
 }
 
-fn edge_gap(nav: &NavGrid, c: Cell) -> usize {
+pub(crate) fn edge_gap(nav: &NavGrid, c: Cell) -> usize {
     c.0.min(c.1).min(nav.surface.width() - 1 - c.0).min(nav.surface.height() - 1 - c.1)
 }
 
@@ -203,21 +201,31 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     look(sim);
 }
 
+pub fn beaver_sight(sim: &SimState, id: BeaverId) -> f32 {
+    crate::fog::BEAVER_SIGHT * sim.colony.beaver(id).map_or(1.0, crate::growth::sight_x)
+}
+
+pub fn lookout_sight(sim: &SimState, b: &Building) -> f32 {
+    let keen = sim.work.place(b.id)
+        .map(|p| p.slots.iter().filter(|s| s.role.duty() == crate::content::Duty::Watch)
+            .filter_map(|s| s.beaver.and_then(|g| sim.colony.beaver(g)))
+            .map(crate::growth::sight_x).fold(1.0f32, f32::max))
+        .unwrap_or(1.0);
+    LOOKOUT_SIGHT * keen
+}
+
 fn look(sim: &mut SimState) {
     let mut wolves = std::mem::take(&mut sim.predators.wolves);
     let sentries = |id: BuildingId| -> Vec<BeaverId> {
         sim.work.place(id).map(|p| p.slots.iter().filter(|s| s.role.duty() == crate::content::Duty::Watch).filter_map(|s| s.beaver).collect()).unwrap_or_default()
     };
     let watching: Vec<(BuildingId, (f32, f32), f32)> = if wolves.is_empty() { Vec::new() } else {
-        sim.buildings.buildings.iter().filter(|b| on_watch(sim, b)).map(|b| {
-            let keen = sentries(b.id).into_iter().filter_map(|g| sim.colony.beaver(g)).map(crate::growth::sight_x).fold(1.0, f32::max);
-            (b.id, lookout_centre(b), LOOKOUT_SIGHT * keen)
-        }).collect()
+        sim.buildings.buildings.iter().filter(|b| on_watch(sim, b)).map(|b| (b.id, lookout_centre(b), lookout_sight(sim, b))).collect()
     };
     let alarms: Vec<BuildingId> = watching.iter().filter(|(_, at, s)| wolves.iter().any(|w| dist(*at, w.pos) <= *s)).map(|l| l.0).collect();
     let in_range = |id: BuildingId| sim.buildings.building(id).map_or(0, |b| {
-        let at = lookout_centre(b);
-        sim.agents.by_id.values().filter(|a| !a.inside && dist(at, centre(a.cell)) <= LOOKOUT_SIGHT).count() as u32
+        let (at, r) = (lookout_centre(b), lookout_sight(sim, b));
+        sim.agents.by_id.values().filter(|a| !a.inside && dist(at, centre(a.cell)) <= r).count() as u32
     });
     let mut spotted: Vec<(BeaverId, u64, u32)> = Vec::new();
     for w in &mut wolves {
@@ -256,7 +264,8 @@ pub fn on_watch(sim: &SimState, b: &Building) -> bool {
 }
 
 fn warned(sim: &SimState, a: &Agent) -> bool {
-    !a.inside && sim.predators.alarms.iter().filter_map(|&id| sim.buildings.building(id)).any(|b| dist(lookout_centre(b), centre(a.cell)) <= LOOKOUT_SIGHT)
+    !a.inside && sim.predators.alarms.iter().filter_map(|&id| sim.buildings.building(id))
+        .any(|b| dist(lookout_centre(b), centre(a.cell)) <= lookout_sight(sim, b))
 }
 
 pub fn seen(sim: &SimState) -> impl Iterator<Item = &Wolf> { sim.predators.wolves.iter().filter(|w| w.seen) }
@@ -266,7 +275,8 @@ pub fn nearest_seen(sim: &SimState) -> Option<&Wolf> {
 }
 pub fn in_view(sim: &SimState, c: Cell) -> bool {
     seen(sim).any(|w| dist(w.pos, centre(c)) <= crate::fog::BEAVER_SIGHT)
-        || sim.predators.alarms.iter().filter_map(|&id| sim.buildings.building(id)).any(|b| dist(lookout_centre(b), centre(c)) <= LOOKOUT_SIGHT)
+        || sim.predators.alarms.iter().filter_map(|&id| sim.buildings.building(id))
+            .any(|b| dist(lookout_centre(b), centre(c)) <= lookout_sight(sim, b))
 }
 pub fn building_in_view(sim: &SimState, id: BuildingId) -> bool {
     if id == crate::agents::SUPPLIES { return sim.work.supplies.is_some_and(|c| in_view(sim, c)); }
@@ -381,7 +391,10 @@ fn act(sim: &mut SimState, wolf: &mut Wolf, dt: f32) -> bool {
             false
         }
         WolfState::Hunt { animal, since } => {
-            let pos = sim.wildlife.get(animal).filter(|a| a.doing != crate::wildlife::Doing::Leave).map(|a| a.pos);
+            let pos = sim.wildlife.get(animal)
+                .filter(|a| !matches!(a.doing, crate::wildlife::Doing::Leave | crate::wildlife::Doing::Caught))
+                .filter(|a| walkable(sim, (a.pos.0.max(0.0) as usize, a.pos.1.max(0.0) as usize)))
+                .map(|a| a.pos);
             match pursue(sim, wolf, dt, since, pos) {
                 Some(true) => {
                     note(sim, Some(wolf), "CAUGHT", format!("animal={animal}"));
@@ -436,21 +449,24 @@ fn roam_goal(sim: &mut SimState, wolf: &Wolf) -> Vec<Cell> {
     Vec::new()
 }
 
-fn is_refuge(s: Option<Surface>) -> bool { matches!(s, Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance | Surface::Lock)) }
+fn is_refuge(sim: &SimState, c: Cell) -> bool {
+    !walkable(sim, c) && matches!(sim.nav.surface_at(c), Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance | Surface::Lock | Surface::Land))
+}
 
-fn nearest_water(nav: &NavGrid, from: Cell) -> Option<Cell> {
-    let (w, h) = (nav.surface.width(), nav.surface.height());
+fn nearest_water(sim: &SimState, from: Cell) -> Option<Cell> {
+    let (w, h) = (sim.nav.surface.width(), sim.nav.surface.height());
     let (mut seen, mut queue) = (vec![false; w * h], VecDeque::from([from]));
     seen[from.1 * w + from.0] = true;
     while let Some(c) = queue.pop_front() {
-        if is_refuge(nav.surface_at(c)) { return Some(c); }
+        if is_refuge(sim, c) { return Some(c); }
         for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
             let (x, y) = (c.0 as i32 + dx, c.1 as i32 + dy);
             if x < 0 || y < 0 || x as usize >= w || y as usize >= h { continue; }
-            let i = y as usize * w + x as usize;
-            if !matches!(nav.surface.as_slice()[i], Surface::Solid | Surface::LodgeInside) && !seen[i] {
+            let to = (x as usize, y as usize);
+            let i = to.1 * w + to.0;
+            if !seen[i] && sim.nav.can_move_step(c, to) {
                 seen[i] = true;
-                queue.push_back((x as usize, y as usize));
+                queue.push_back(to);
             }
         }
     }
@@ -458,7 +474,7 @@ fn nearest_water(nav: &NavGrid, from: Cell) -> Option<Cell> {
 }
 
 fn sees(sim: &SimState, a: &Agent, wolf: &Wolf) -> bool {
-    !a.inside && dist(centre(a.cell), wolf.pos) <= crate::fog::BEAVER_SIGHT * sim.colony.beaver(a.id).map_or(1.0, crate::growth::sight_x)
+    !a.inside && dist(centre(a.cell), wolf.pos) <= beaver_sight(sim, a.id)
 }
 
 pub fn flee(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
@@ -480,9 +496,9 @@ pub fn flee(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
     if sim.agents.fleeing.insert(ag.id) { (ag.path, ag.task) = (None, Task::Idle); }
     if !matches!(ag.task, Task::Idle | Task::Rest) { return false; }
     ag.trail.clear();
-    if is_refuge(sim.nav.surface_at(ag.cell)) { (ag.path, ag.task) = (None, Task::Idle); return false; }
-    if !ag.path.as_ref().and_then(|p| p.steps.last()).is_some_and(|s| is_refuge(sim.nav.surface_at(s.0))) {
-        let Some(r) = nearest_water(&sim.nav, ag.cell) else { return false };
+    if is_refuge(sim, ag.cell) { (ag.path, ag.task) = (None, Task::Idle); return false; }
+    if !ag.path.as_ref().and_then(|p| p.steps.last()).is_some_and(|s| is_refuge(sim, s.0)) {
+        let Some(r) = nearest_water(sim, ag.cell) else { return false };
         ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(r));
     }
     let load = ag.load.take();

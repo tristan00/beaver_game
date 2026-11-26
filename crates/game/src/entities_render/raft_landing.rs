@@ -125,7 +125,7 @@ pub(super) fn chamber(s: &sim::SimState, l: &sim::locks::Lock) -> Option<Chamber
     };
     let level = |c: (usize, usize)| {
         let at = |g: &sim::Grid<f32>| g.get(c.0, c.1).copied().unwrap_or(0.0);
-        at(&s.height) + at(&s.water.dam_height) + at(&s.water.depth)
+        at(&s.height) + at(&s.water.depth).max(at(&s.water.dam_height))
     };
     let (a, b) = (level(beyond(flow, 1.0)), level(beyond(flow, -1.0)));
     let (axis, low, high) = if a >= b { (flow, b, a) } else { (-flow, a, b) };
@@ -188,11 +188,9 @@ fn on_lane(ch: &Chamber, p: Vec2, raft_back: bool) -> Option<Vec2> {
     Some(ch.centre + u * (a + a.signum() * back) + n * x2)
 }
 
-fn with_raft(ag: &sim::agents::Agent) -> bool { matches!(ag.task, sim::agents::Task::Raft { leg: 1 | 3 | 5, .. }) }
-
 pub(super) fn lock_pose(s: &sim::SimState, ag: &sim::agents::Agent, pending_days: f32, base: Vec3) -> Option<(Vec3, Option<f32>)> {
     sim::locks::built(s).next()?;
-    let raft = with_raft(ag);
+    let raft = super::sim_view::is_pushing_raft(ag);
     if let Some((l, ch, stage)) = trip(s, ag, pending_days) {
         let up = stage.up();
         let ((entry, exit), u) = (if up { (ch.low, ch.high) } else { (ch.high, ch.low) }, if up { ch.axis } else { -ch.axis });
@@ -383,7 +381,7 @@ pub(super) fn sync_rafts(
             Some((yaw, at)) => (at + Vec3::new(yaw.sin(), 0.0, yaw.cos()) * 0.8 + Vec3::Y * 0.05, yaw),
             None => {
                 let xz = cell_mid(s, b.cell);
-                let surface = s.height.get(b.cell.0, b.cell.1).copied().unwrap_or(0.0) + s.water.depth.get(b.cell.0, b.cell.1).copied().unwrap_or(0.0);
+                let surface = super::sim_view::stand_y(s, b.cell);
                 (Vec3::new(xz.x, surface + 0.02, xz.y), (b.id as f32 * 1.3).rem_euclid(std::f32::consts::TAU))
             }
         };

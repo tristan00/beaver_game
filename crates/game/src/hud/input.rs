@@ -149,7 +149,7 @@ pub(super) fn world_input(
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {
-        undo_last(&mut sim.0, &mut hud, now);
+        undo_last(&mut sim.0, &mut hud, &mut sel, now);
         return;
     }
     if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) {
@@ -340,14 +340,14 @@ pub(super) fn world_input(
         Tool::Building(kind) => {
             if mouse.just_pressed(MouseButton::Left) {
                 let p = build_logic::site_preview(&sim.0, kind, cell);
-                match build_logic::emit(&mut sim.0, &BuildOrder::Building { kind, pos: p.pos }) {
-                    Ok(_) => {
+                match build_logic::place_building(&mut sim.0, kind, p.pos) {
+                    Ok(()) => {
                         // Shift keeps the building in hand for the next spot.
                         if let Some(b) = sim.0.buildings.buildings.last() {
                             let id = b.id;
                             hud.undo.push(UndoItem::Site(id));
                             if !shift {
-                                hud.frame_req = Some(cell_world(&sim.0.height, (b.pos.0 as f32, b.pos.1 as f32)));
+                                hud.frame_req = Some(cell_world(&sim.0.height, b.centre()));
                                 hud.selected.clear();
                                 *sel = Selection::Site(id);
                             }
@@ -432,13 +432,15 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::
             let mut placed = 0;
             let mut last_err: Option<String> = None;
             for &w in &workers {
-                let Some(slot) = s.work.place(b).and_then(|p| p.open_seat(|_| true)).map(|x| x.0) else { break };
+                let Some((slot, _, _)) = sim::jobs::empty_slot(s, b, None) else { break };
                 match s.apply(sim::Command::FillSlot { building: b, slot, who: w }) {
                     Ok(_) => placed += 1,
                     Err(e) => last_err = Some(sim_error(&e.to_string())),
                 }
             }
-            if placed == 0 {
+            if placed > 0 {
+                hud.say(Some((Icon::Building, GOOD)), None, format!("{placed}"), now);
+            } else {
                 let why = last_err.unwrap_or_else(|| sim::jobs::workplace_error_reason(s, b));
                 hud.refuse(why, now);
             }

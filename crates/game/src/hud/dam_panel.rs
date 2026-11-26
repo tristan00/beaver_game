@@ -289,7 +289,7 @@ fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     let slower = format!("{}× slower", num(sim::maintenance::lasts(sim::buildings::BuildingKind::dam(), sim::maintenance::Refit::Facing)));
     if b.pebbled {
         r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
-    } else if s.maintenance.jobs.contains_key(&id) {
+    } else if s.maintenance.jobs.get(&id).is_some_and(|j| j.kind == sim::maintenance::Refit::Facing) {
         r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::CancelMaintenance(id)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
     } else {
         let mut tip = Tip::name("Face with pebbles").line("Wears", slower);

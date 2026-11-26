@@ -46,7 +46,8 @@ pub(super) fn ease_toward(w: &mut f32, on: bool, rate: f32, dt: f32) {
 }
 
 pub(super) fn ground_pt(s: &sim::SimState, xz: Vec2) -> Vec3 {
-    Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y), xz.y)
+    let c = crate::flow::world_cell(&s.height, Vec3::new(xz.x, 0.0, xz.y));
+    Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y) + super::sim_view::land_lift(s, c.0.floor() as i32, c.1.floor() as i32), xz.y)
 }
 
 pub(super) fn coat(p: Vec3, n: Vec3, top: [f32; 3], side: [f32; 3], under: [f32; 3], f: (f32, f32, f32), grain: f32) -> [f32; 3] {

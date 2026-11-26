@@ -98,7 +98,7 @@ impl SimState {
         if self.sandbox {
             return sandbox::apply(self, cmd);
         }
-        match cmd {
+        let res = match cmd {
             Command::Regenerate { seed } => {
                 *self = SimState::new(seed);
                 Ok(())
@@ -138,31 +138,34 @@ impl SimState {
                 if let Some(id) = who.iter().find(|id| !self.agents.by_id.contains_key(id)) {
                     return Err(SimError::InvalidCommand(format!("no agent {}", id.0)));
                 }
-                let mut orders = Vec::new();
-                let mut destinations = std::collections::BTreeSet::new();
-                for id in who {
-                    let assignment = if let Some(agents::Assignment::Go(target)) = to {
-                        if self.nav.surface_at(target).is_none() {
-                            return Err(SimError::InvalidCommand("Move destination is outside the map".into()));
-                        }
-                        let from = self.agents.get(id).unwrap().cell;
-                        let radius = (destinations.len() as usize + 1).min(8);
-                        let Some(cell) = agents::go_cell(self, from, target, radius, &destinations) else {
-                            return Err(SimError::InvalidCommand(format!("No reachable destination for beaver {}", id.0)));
-                        };
-                        destinations.insert(cell);
-                        Some(agents::Assignment::Go(cell))
-                    } else { to };
-                    orders.push((id, assignment));
-                }
-                for (id, assignment) in orders {
-                    jobs::order(self, id, assignment);
-                    self.agents.assign(id, assignment);
-                    if let Some(ag) = self.agents.by_id.get_mut(&id) {
-                        ag.queue.clear();
+                if let Some(agents::Assignment::Slot(building, slot)) = to {
+                    for id in who { jobs::place_by_hand(self, building, slot, id)?; }
+                    Ok(())
+                } else {
+                    let mut orders = Vec::new();
+                    let mut destinations = std::collections::BTreeSet::new();
+                    for id in who {
+                        let assignment = if let Some(agents::Assignment::Go(target)) = to {
+                            if self.nav.surface_at(target).is_none() {
+                                return Err(SimError::InvalidCommand("Move destination is outside the map".into()));
+                            }
+                            let from = self.agents.get(id).unwrap().cell;
+                            let radius = (destinations.len() as usize + 1).min(8);
+                            let Some(cell) = agents::go_cell(self, from, target, radius, &destinations) else {
+                                return Err(SimError::InvalidCommand(format!("No reachable destination for beaver {}", id.0)));
+                            };
+                            destinations.insert(cell);
+                            Some(agents::Assignment::Go(cell))
+                        } else { to };
+                        orders.push((id, assignment));
                     }
+                    for (id, assignment) in orders {
+                        jobs::order(self, id, assignment);
+                        self.agents.assign(id, assignment);
+                        if let Some(ag) = self.agents.by_id.get_mut(&id) { ag.queue.clear(); }
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
             Command::Queue { who, order } => {
                 if let Some(kit) = who.iter().find(|id| !matches!(order, agents::Order::Do(agents::Assignment::Go(_))) && self.colony.beaver(**id).is_some_and(|b| !b.can_work())) {
@@ -178,8 +181,9 @@ impl SimState {
                 }
                 let mut refused = None;
                 for id in who {
+                    let busy = jobs::is_busy(self, id);
                     let mut ag = self.agents.by_id.remove(&id).expect("checked above");
-                    if ag.assignment.is_some() || !ag.queue.is_empty() {
+                    if busy || !ag.queue.is_empty() {
                         ag.queue.push_back(order);
                     } else if !agents::start_order(self, &mut ag, order) {
                         refused = Some(id);
@@ -192,29 +196,12 @@ impl SimState {
                 }
             }
             Command::PlaceSite { kind, pos } => self.place_site(kind, pos).map(|_| ()),
-            Command::FillSlot { building, slot, who } => {
-                let able = self.colony.beaver(who).map(|b| b.can_work()).ok_or(work::WorkError::NoSuchBeaver);
-                able
-                    .and_then(|ok| if ok { Ok(()) } else { Err(work::WorkError::NotAdult) })
-                    .and_then(|()| self.work.place(building).ok_or(work::WorkError::NoSuchWorkplace))
-                    .and_then(|p| match p.slots.get(slot) {
-                        None if slot == p.slots.len() && p.open_ended() => Ok(()),
-                        None => Err(work::WorkError::SlotOutOfRange),
-                        Some(s) if s.beaver.is_some() => Err(work::WorkError::SlotTaken),
-                        Some(_) => Ok(()),
-                    })
-                    .map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
-                jobs::place_by_hand(self, building, slot, who)?;
-                if let Some(ag) = self.agents.by_id.get_mut(&who) {
-                    ag.queue.clear();
-                }
-                Ok(())
-            }
+            Command::FillSlot { building, slot, who } => jobs::place_by_hand(self, building, slot, who),
             Command::EmptySlot { building, slot } => {
+                let prev = self.work.place(building).and_then(|p| p.slots.get(slot)).and_then(|s| s.beaver);
                 self.work.unassign(building, slot).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
-                if let Ok(p) = self.work.place_mut(building) {
-                    p.max_beavers = p.max_beavers.min(p.filled());
-                }
+                if let Ok(p) = self.work.place_mut(building) { p.max_beavers = p.filled(); }
+                if let Some(who) = prev { self.agents.assign(who, None); }
                 Ok(())
             }
             Command::AddBeaver { building } => jobs::add_beaver(self, building),
@@ -271,6 +258,8 @@ impl SimState {
             Command::AnswerJoin { id, answer } => {
                 self.society.answer(id, answer, &mut self.colony).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))
             }
-        }
+        };
+        if res.is_ok() { agents::wake_idle(self); }
+        res
     }
 }

@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::agents::{Task, WorkKind};
 use crate::buildings::{Building, BuildingId, BuildingKind, Status};
-use crate::gates::{apply_across, cell_taken, claimed_work, depth, finish_gate, ground, invalid, is_water as water_cell, push_history, surface, Gate, GateSetting};
+use crate::gates::{apply_across, cell_taken, check_cell_open, claimed_work, depth, finish_gate, ground, invalid, is_water as water_cell, push_history, surface, Gate, GateSetting};
 use crate::water::Cell;
 use crate::{SimError, SimState};
 
@@ -42,6 +42,7 @@ impl Canal {
     pub fn route(&self) -> impl Iterator<Item = &CanalCell> { self.cells.iter().filter(|c| c.row == 0) }
     pub fn width(&self) -> u8 { self.cells.iter().map(|c| c.row + 1).max().unwrap_or(1) }
     pub fn end(&self) -> Cell { self.route().last().map_or(self.gate.cell, |c| c.cell) }
+    pub(crate) fn invalidate_status(&mut self) { self.status_day = f64::NEG_INFINITY; }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -88,7 +89,7 @@ fn profile(sim: &SimState, route: &[Cell], bed0: f32) -> Vec<f32> {
 
 pub fn plan(sim: &SimState, drawn: &[Cell]) -> Result<Plan, String> { plan_from(sim, drawn, None) }
 
-fn plan_from(sim: &SimState, drawn: &[Cell], extending: Option<BuildingId>) -> Result<Plan, String> {
+pub fn plan_from(sim: &SimState, drawn: &[Cell], extending: Option<BuildingId>) -> Result<Plan, String> {
     if drawn.len() < if extending.is_some() { 1 } else { 2 } { return Err("Draw from water onto land".into()); }
     if !drawn.windows(2).all(|w| w[0].0.abs_diff(w[1].0) + w[0].1.abs_diff(w[1].1) == 1) { return Err("A canal can't turn on a corner".into()); }
     let n = sim.height.width();
@@ -117,7 +118,7 @@ fn plan_from(sim: &SimState, drawn: &[Cell], extending: Option<BuildingId>) -> R
     let shift = route.len() - drawn.len();
     let (start, last) = (start + shift, last + shift);
     if route.len() > MAX_CELLS { return Err(format!("Too long (max {MAX_CELLS} cells)")); }
-    if let Some(c) = route.iter().find(|&&c| owned(sim, c, extending)) { return Err(format!("Something is already built at {},{}", c.0, c.1)); }
+    for &c in &route { check_cell_open(sim, c, extending, true)?; }
     let mut targets = vec![bed0; start];
     targets.extend(profile(sim, &route[start..=last], bed0));
     let mut bed = *targets.last().expect("one land cell");
@@ -264,16 +265,19 @@ fn spoil(sim: &mut SimState, cell: Cell, mud: f32) {
 }
 
 pub fn grow(sim: &mut SimState, id: BuildingId, growth: CanalGrowth, cells: &[Cell]) -> Result<(), SimError> {
-    let new = plan_growth(sim, id, growth, cells).map_err(invalid)?;
+    let (new, through) = plan_growth(sim, id, growth, cells).map_err(invalid)?;
     let k = canal_mut(sim, id)?;
     k.cells = new;
+    k.through |= through;
+    k.invalidate_status();
     if let Some(first) = k.cells.iter().find(|c| c.cell == k.gate.cell) { k.gate.floor = first.target; }
+    apply_gate(sim, id)?;
     Ok(())
 }
 
-pub fn plan_growth(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &[Cell]) -> Result<Vec<CanalCell>, String> {
+pub fn plan_growth(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &[Cell]) -> Result<(Vec<CanalCell>, bool), String> {
     let k = canal(sim, id).ok_or("no such canal")?;
-    let mut out = k.cells.clone();
+    let (mut out, mut through) = (k.cells.clone(), k.through);
     match growth {
         CanalGrowth::Deepen => {
             let mut any = false;
@@ -294,8 +298,7 @@ pub fn plan_growth(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &
                     let (px, py) = if dx.abs() >= dy.abs() { (0, dx.signum() * sign) } else { (-dy.signum() * sign, 0) };
                     let (x, y) = (c.cell.0 as i64 + px, c.cell.1 as i64 + py);
                     let n = (x as usize, y as usize);
-                    (x >= 0 && y >= 0 && n.0 < sim.height.width() && n.1 < sim.height.width()
-                        && !out.iter().any(|o| o.cell == n) && !is_water(sim, n) && !owned(sim, n, Some(id))).then_some((*c, n))
+                    (x >= 0 && y >= 0 && !out.iter().any(|o| o.cell == n) && !is_water(sim, n) && check_cell_open(sim, n, Some(id), true).is_ok()).then_some((*c, n))
                 }).collect()
             };
             let (left, right) = (side(1), side(-1));
@@ -314,24 +317,24 @@ pub fn plan_growth(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &
             let p = plan_from(sim, &drawn, Some(id))?;
             check(&p)?;
             if out.len() + p.cells.len() > MAX_CELLS * MAX_WIDTH { return Err(format!("Too long (max {MAX_CELLS} cells)")); }
+            through |= p.through;
             out.extend(p.cells);
         }
     }
-    Ok(out)
+    Ok((out, through))
 }
 
 pub fn dig_days(visits: usize) -> f32 { visits as f32 * DIG_WORK / crate::work::LABOUR_PER_DAY }
 pub fn growth_labour(sim: &SimState, id: BuildingId, growth: CanalGrowth, cells: &[Cell]) -> Result<f32, String> {
     let total = |v: &[CanalCell]| -> usize { v.iter().map(|c| visits_for(ground(sim, c.cell), c.target)).sum() };
     let before = canal(sim, id).map_or(0, |k| total(&k.cells));
-    Ok(dig_days(total(&plan_growth(sim, id, growth, cells)?).saturating_sub(before)))
+    let (after, _) = plan_growth(sim, id, growth, cells)?;
+    Ok(dig_days(total(&after).saturating_sub(before)))
 }
 pub fn set_upkeep(sim: &mut SimState, id: BuildingId, on: bool) -> Result<(), SimError> { canal_mut(sim, id)?.upkeep = on; Ok(()) }
-pub fn gates_unlocked(sim: &SimState) -> bool {
-    crate::content::content().works.gate_needs.is_none_or(|k| sim.buildings.buildings.iter().any(|b| b.kind == k && sim.finished(b)))
-}
+pub fn gates_unlocked(sim: &SimState) -> bool { crate::gates::unlocked(sim) }
 pub fn set_gate(sim: &mut SimState, id: BuildingId, setting: GateSetting) -> Result<(), SimError> {
-    if canal(sim, id).is_some_and(|k| !k.gate.built) && !gates_unlocked(sim) { return Err(invalid("pips need a finished haul mound")); }
+    if canal(sim, id).is_some_and(|k| !k.gate.built) { crate::gates::check_unlocked(sim).map_err(invalid)?; }
     crate::gates::request(&mut canal_mut(sim, id)?.gate, setting)
 }
 pub fn spoil_good() -> Option<crate::buildings::Good> { crate::content::content().roles.spoil.good() }

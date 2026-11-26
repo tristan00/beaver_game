@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use crate::agents::{Dest, Task, WorkKind};
 use crate::buildings::{Building, BuildingId, BuildingKind, Good, Status};
 use crate::colony::BeaverId;
-use crate::gates::{apply_across, cell_taken, claimed_work, depth, finish_gate, ground, invalid, is_water, push_history, surface, Gate, GateSetting};
+use crate::gates::{apply_across, check_cell_open, claimed_work, depth, finish_gate, ground, invalid, is_water, push_history, surface, Gate, GateSetting};
 use crate::water::Cell;
 use crate::{SimError, SimState};
 
@@ -79,6 +79,7 @@ pub fn gate_cells(d: &Dam, cell: Cell) -> Vec<Cell> {
 }
 
 pub fn is_gate(d: &Dam, c: Cell) -> bool { d.gates.iter().any(|g| g.built && gate_cells(d, g.cell).contains(&c)) }
+fn has_gate(d: &Dam, c: Cell) -> bool { d.gates.iter().any(|g| gate_cells(d, g.cell).contains(&c)) }
 
 fn apply_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimError> {
     let d = dam(sim, id).ok_or_else(|| invalid("no such dam"))?;
@@ -87,10 +88,10 @@ fn apply_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), SimE
 }
 
 fn cell_work(sim: &SimState, d: &Dam, c: &DamCell) -> bool {
-    !is_gate(d, c.cell) && { let h = built(sim, c.cell); h < c.target - EPS || (d.upkeep && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW) }
+    !has_gate(d, c.cell) && { let h = built(sim, c.cell); h < c.target - EPS || (d.upkeep && h > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW) }
 }
 fn cell_task(sim: &SimState, d: &Dam, c: &DamCell, upkeep: bool) -> bool {
-    !is_gate(d, c.cell) && {
+    !has_gate(d, c.cell) && {
         let h = built(sim, c.cell);
         if upkeep { d.upkeep && h > 0.0 && h >= c.target - EPS && integrity(sim, c.cell) < REPAIR_BELOW } else { h < c.target - EPS }
     }
@@ -165,13 +166,13 @@ fn row_spans(cells: &[DamCell]) -> Vec<f32> {
 
 pub fn loads_left(sim: &SimState, id: BuildingId) -> usize {
     let Some(d) = dam(sim, id) else { return 0 };
-    d.cells.iter().zip(row_spans(&d.cells)).filter(|(c, _)| !is_gate(d, c.cell)).map(|(c, span)| {
+    d.cells.iter().zip(row_spans(&d.cells)).filter(|(c, _)| !has_gate(d, c.cell)).map(|(c, span)| {
         let raise = loads_for(sim, c.cell, c.target, span);
         if raise == 0 && d.upkeep && built(sim, c.cell) > 0.0 && integrity(sim, c.cell) < REPAIR_BELOW { 1 } else { raise }
     }).sum()
 }
 
-pub fn claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> { claimed_work(sim, id, except, &[WorkKind::Dam]) }
+pub fn claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> { claimed_work(sim, id, except, &[WorkKind::Dam, WorkKind::Gate]) }
 pub fn gates_claimed(sim: &SimState, id: BuildingId, except: BeaverId) -> Vec<Cell> { claimed_work(sim, id, except, &[WorkKind::Gate]) }
 
 pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell], upkeep: bool) -> Option<Cell> {
@@ -186,15 +187,21 @@ pub fn next_cell(sim: &SimState, id: BuildingId, from: Cell, taken: &[Cell], upk
         .map(|c| c.cell)
 }
 
-pub(crate) fn pack(sim: &mut SimState, id: BuildingId, cell: Cell, sticks: f32) -> f32 {
+pub(crate) fn pack(sim: &mut SimState, id: BuildingId, cell: Cell, sticks: f32, fresh: Option<crate::buildings::Producer>, use_kind: crate::buildings::Use) -> f32 {
     let Some((target, rows, span)) = dam(sim, id).and_then(|d| d.cells.iter().find(|c| c.cell == cell).map(|c| (c.target, d.rows, span_in(&d.cells, cell)))) else { return 0.0 };
     let h = built(sim, cell);
     let share = (sticks / sticks_per_step()).clamp(0.0, 1.0);
     let next = if h < target - EPS { (h + STEP_HEIGHT * share / span.max(1.0)).min(target) } else { h };
     if next <= 0.0 || sim.water.raise_dam(&[(cell, next)]).is_err() { return 0.0; }
+    for t in sim.resources.at(cell).filter(|r| r.kind.is_tree()).map(|r| r.id).collect::<Vec<_>>() {
+        if sim.resources.fell(t, f32::MAX / 4.0).is_err() {
+            if let Some(r) = sim.resources.get(t) { crate::resources::note("GONE", r, format_args!("why=cleared for a dam")); }
+            sim.resources.keep(|r| r.id != t);
+        }
+    }
     let dur = rows as f32 * facing(sim, id);
     if let Some(v) = sim.water.dam_durability.get_mut(cell.0, cell.1) { *v = dur; }
-    sim.buildings.stores.book_site_delivery(material(), sticks, None);
+    sim.buildings.stores.book_delivery(material(), sticks, fresh, use_kind);
     if let Ok(d) = dam_mut(sim, id) { d.pond_day = f64::NEG_INFINITY; }
     sticks
 }
@@ -225,10 +232,7 @@ pub fn check_line(sim: &SimState, cells: &[Cell]) -> Result<(), String> {
     let mut seen = HashSet::new();
     let conn = cells.windows(2).all(|w| w[0].0.abs_diff(w[1].0).max(w[0].1.abs_diff(w[1].1)) == 1);
     if !cells.iter().all(|c| seen.insert(*c)) || !conn { return Err("the line must be one unbroken run of cells".into()); }
-    if cells.iter().any(|&(x, y)| !sim.water.depth.in_bounds(x, y)) { return Err("off the map".into()); }
-    if !sim.sandbox && cells.iter().any(|&c| !sim.fog.explored(c)) { return Err("Unexplored".into()); }
-    if sim.work.supplies.is_some_and(|p| cells.contains(&p)) { return Err("the supply pile is there".into()); }
-    if cells.iter().any(|&c| cell_taken(sim, c, None, false)) { return Err("something is already built there".into()); }
+    for &c in cells { check_cell_open(sim, c, None, false)?; }
     if !sim.sandbox && !line_crosses_water(sim, cells) { return Err("a dam must cross water".into()); }
     Ok(())
 }
@@ -286,7 +290,7 @@ pub fn plan_widen(sim: &SimState, id: BuildingId) -> Result<Plan, String> {
     let (n, mut cells) = (sim.height.width(), d.cells.clone());
     for c in d.line() {
         let Some(at) = offset(c.cell, d.downstream, d.rows as i32, n) else { continue };
-        if !cells.iter().any(|x| x.cell == at) && !cell_taken(sim, at, Some(id), false) {
+        if !cells.iter().any(|x| x.cell == at) && check_cell_open(sim, at, Some(id), false).is_ok() {
             cells.push(DamCell { cell: at, target: c.target.max(MIN_WALL), row: d.rows });
         }
     }
@@ -304,7 +308,7 @@ pub fn plan_extend(sim: &SimState, id: BuildingId) -> Result<Plan, String> {
         let Some(at) = crate::dam_preview::preview_heights(sim, &line, &heights).and_then(|p| p.spill_at) else { break };
         let near = line.iter().any(|c| c.0.abs_diff(at.0).max(c.1.abs_diff(at.1)) == 1);
         let h = (top - ground(sim, at)).clamp(0.0, d.cap());
-        if line.contains(&at) || !near || h <= EPS || cell_taken(sim, at, Some(id), false) { break; }
+        if line.contains(&at) || !near || h <= EPS || check_cell_open(sim, at, Some(id), false).is_err() { break; }
         cells.push(DamCell { cell: at, target: h, row: 0 });
     }
     if cells.len() == d.cells.len() { return Err("water is not getting around the ends".into()); }
@@ -317,7 +321,7 @@ pub fn plan_extend_to(sim: &SimState, id: BuildingId, drawn: &[Cell]) -> Result<
     for &at in drawn {
         if cells.iter().any(|c| c.cell == at) { continue; }
         if !cells.iter().any(|c| c.row == 0 && c.cell.0.abs_diff(at.0).max(c.cell.1.abs_diff(at.1)) == 1) { return Err("the new cells must run on from an end".into()); }
-        if cell_taken(sim, at, Some(id), false) { return Err("something is already built there".into()); }
+        check_cell_open(sim, at, Some(id), false)?;
         cells.push(DamCell { cell: at, target: (top - ground(sim, at)).clamp(MIN_WALL, d.cap().max(MIN_WALL)), row: 0 });
     }
     if cells.len() == d.cells.len() { return Err("draw past an end to extend".into()); }
@@ -450,6 +454,13 @@ pub fn wear(sim: &SimState, d: &Dam) -> Option<DamWear> {
     Some(DamWear { age: age / k, overtop: overtop / k, faced: faced / k, overtopped })
 }
 
+pub fn weakest_cell(sim: &SimState, d: &Dam) -> Option<(Cell, f32)> {
+    d.cells.iter()
+        .filter(|c| built(sim, c.cell) > 0.0 && !is_gate(d, c.cell))
+        .map(|c| (c.cell, integrity(sim, c.cell)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 pub fn health(sim: &SimState, d: &Dam) -> f32 {
     let b: Vec<f32> = d.cells.iter().filter(|c| built(sim, c.cell) > 0.0 && !is_gate(d, c.cell)).map(|c| integrity(sim, c.cell)).collect();
     if b.is_empty() { 1.0 } else { b.iter().sum::<f32>() / b.len() as f32 }
@@ -464,6 +475,7 @@ pub fn add_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), Si
 }
 
 pub fn plan_gate(sim: &SimState, id: BuildingId, cell: Cell) -> Result<f32, String> {
+    crate::gates::check_unlocked(sim)?;
     let d = dam(sim, id).ok_or("no such dam")?;
     if !d.line().any(|c| c.cell == cell) { return Err("pick a cell on the dam's line".into()); }
     if d.gates.iter().any(|g| g.cell == cell) { return Err("already a gate".into()); }
@@ -500,7 +512,7 @@ pub fn work_gate(sim: &mut SimState, id: BuildingId, cell: Cell) -> Result<(), S
 
 pub fn crew(sim: &SimState, id: BuildingId) -> (usize, usize) {
     sim.agents.by_id.values().fold((0, 0), |(b, l), a| match a.task {
-        Task::Work { site, kind: WorkKind::Dam, .. } if site == id => (b + 1, l + usize::from(a.load.is_some())),
+        Task::Work { site, kind: WorkKind::Dam | WorkKind::Gate, .. } if site == id => (b + 1, l + usize::from(a.load.is_some())),
         Task::Move { to: Dest::Dam(site), .. } if site == id => (b + 1, l),
         _ => (b, l),
     })

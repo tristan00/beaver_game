@@ -238,7 +238,7 @@ const COLS: [(Option<BeaverCol>, Icon, &str, f32); 12] = [
 pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
     let (s, (col, desc)) = (c.s, c.hud.sort);
     let family = |b: &Beaver| s.colony.family(b.family).map(|f| f.name.clone()).unwrap_or_default();
-    let role_word = |b: &Beaver| sim::jobs::role_of(s, b.id).map_or("Free", |j| j.name());
+    let role_word = |b: &Beaver| super::inspect::job(s, b).2;
     let key_f = |b: &Beaver| match col {
         BeaverCol::Age => b.age_days,
         BeaverCol::Skill => paced_job(s, b).map_or(-1.0, |j| b.skills[j]),
@@ -276,13 +276,13 @@ pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
 fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
     let s = c.s;
     let cell = |i: usize| Node { width: Val::Px(COLS[i].3), flex_shrink: 0.0, overflow: Overflow::clip(), ..row_node(3.0) };
-    let (role, (icon, icon_col, word), paced, wf) = (sim::jobs::role_of(s, b.id), super::inspect::activity(s, b), pace(s, b), paced_job(s, b).map(|j| sim::agents::work_factors(b, j)));
+    let (role, (job_i, job_col, job_name, _), (icon, icon_col, word), paced, wf) = (sim::jobs::role_of(s, b.id), super::inspect::job(s, b), super::inspect::activity(s, b), pace(s, b), paced_job(s, b).map(|j| sim::agents::work_factors(b, j)));
     let row = u.row(4.0, |r| {
         r.node(Node { justify_content: JustifyContent::Center, ..cell(0) }, |t| { t.token(Icon::Beaver, token_px(b.stage) * 0.75, Some(doing(s, b))); });
         r.node(cell(1), |x| { x.bold(full_name(s, b.id, &b.name), 12.0, INK); });
         r.node(cell(2), |x| { x.text(format!("{:.1}", b.age_years()), 12.0, INK); });
         r.node(cell(3), |x| { x.text(family, 12.0, MUTED); });
-        r.node(cell(4), |x| { x.icon(role.map_or(Icon::Idle, job_icon), 15.0, if role.is_some() { INK } else { ACCENT }); }).tip(Tip::name("Job").line(role.map_or("Free", |j| j.name()), ""));
+        r.node(cell(4), |x| { x.icon(job_i, 15.0, job_col); }).tip(Tip::name("Job").line(job_name, ""));
         r.node(cell(5), |x| { x.icon(icon, 15.0, icon_col); }).tip(Tip::name("Doing now").line(word, ""));
         let mut skills = Tip::name("Skills");
         for j in sim::colony::Job::all() { skills.push(TipLine::new(j.row().skill.as_str(), format!("{:.0}%", b.skills[j] * 100.0)).color(if Some(j) == role { ACCENT } else { INK })); }

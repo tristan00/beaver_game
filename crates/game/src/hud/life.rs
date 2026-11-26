@@ -174,12 +174,12 @@ fn work(c: &Ctx, u: &mut Ui, b: &Beaver) {
     u.heading(Icon::Hammer, "Work");
     let (ai, ac, doing) = super::inspect::activity(s, b);
     fact(u, ai, ac, "Now", doing.into());
-    let job = sim::jobs::role_of(s, b.id);
-    fact(u, job.map_or(Icon::Idle, job_icon), INK, "Job", job.map_or("Free".into(), |r| r.name().into()));
+    let (ji, _, jname, place) = super::inspect::job(s, b);
+    fact(u, ji, INK, "Job", jname.into());
     if let Some((pace, tip)) = super::ledger::pace(s, b) {
         u.row(8.0, |r| { r.icon(Icon::Fast2, 15.0, INK); r.text("Pace", 12.0, MUTED).style(|n| n.width = Val::Px(110.0)); r.text(format!("×{pace:.2}"), 12.0, INK); }).tip(tip);
     }
-    if let Some((bid, bb)) = s.work.slot_of(b.id).and_then(|x| Some((x.0, s.buildings.building(x.0)?))) {
+    if let Some((bid, bb)) = place.and_then(|x| Some((x, s.buildings.building(x)?))) {
         u.row(8.0, |r| {
             r.icon(building_icon(bb.kind), 15.0, INK);
             r.text("Works at", 12.0, MUTED).style(|n| n.width = Val::Px(110.0));

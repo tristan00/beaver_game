@@ -345,8 +345,15 @@ impl SimState {
     }
 
     fn explore(&mut self) {
-        for a in self.agents.by_id.values().filter(|a| !a.inside) {
-            self.fog.sight(a.id, a.cell);
+        let sights: Vec<_> = self.agents.by_id.values().filter(|a| !a.inside)
+            .map(|a| (a.id, a.cell, predators::beaver_sight(self, a.id))).collect();
+        for (id, cell, r) in sights {
+            self.fog.sight(id, cell, r);
+        }
+        let lookouts: Vec<_> = self.buildings.buildings.iter().filter(|b| predators::on_watch(self, b))
+            .map(|b| (predators::lookout_centre(b), predators::lookout_sight(self, b))).collect();
+        for (at, r) in lookouts {
+            self.fog.reveal(at, r);
         }
     }
 

@@ -136,25 +136,10 @@ pub fn line_cost(sim: &SimState, cells: &[Cell]) -> f32 {
     sim::dam_preview::loads_for(sim, cells, &h) as f32 * sim::dams::sticks_per_step()
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum BuildOrder {
-    Building { kind: BuildingKind, pos: Cell },
-    Dam { cells: Vec<Cell> },
-}
-
-pub fn emit(sim: &mut SimState, order: &BuildOrder) -> Result<String, PlaceError> {
-    match order {
-        BuildOrder::Building { kind, pos } => {
-            check_building(sim, *kind, *pos)?;
-            sim.apply(Command::PlaceSite { kind: *kind, pos: *pos }).map_err(|e| PlaceError::Sim(e.to_string()))?;
-            Ok(format!("{} ordered at ({}, {})", kind.spec().name.as_str(), pos.0, pos.1))
-        }
-        BuildOrder::Dam { cells } => {
-            check_dam(sim, cells)?;
-            sim.apply(Command::PlaceDam { cells: cells.clone() }).map_err(|e| PlaceError::Sim(e.to_string()))?;
-            Ok(format!("Dam of {} cells drawn", cells.len()))
-        }
-    }
+pub fn place_building(sim: &mut SimState, kind: BuildingKind, pos: Cell) -> Result<(), PlaceError> {
+    check_building(sim, kind, pos)?;
+    sim.apply(Command::PlaceSite { kind, pos }).map_err(|e| PlaceError::Sim(e.to_string()))?;
+    Ok(())
 }
 
 /// A drawn dam line worked out: its targets, the pond it would make, its cost,

@@ -12,7 +12,7 @@ use crate::nav::{Gait, Goal, NavGrid, Path, Surface};
 use crate::resources::{Behaviour, Resource, ResourceId, ResourceKind};
 use crate::supply::Spot;
 use crate::water::Cell;
-use crate::work::{Area, Slot, Workplace, EPS as WORK_EPS, LABOUR_PER_DAY};
+use crate::work::{Area, Workplace, EPS as WORK_EPS, LABOUR_PER_DAY};
 use crate::works::Spend;
 use crate::SimState;
 
@@ -21,9 +21,7 @@ const NO_STORE: BuildingId = BuildingId(0);
 pub const SUPPLIES: BuildingId = BuildingId(u64::MAX);
 const PILE_REACH: usize = 8;
 const ORDER_REACH: usize = 24;
-const RETARGET_STEPS: u64 = 4;
-const RETARGET_WAIT_DAYS: f64 = 1.0;
-const WORK_PROBE_DAYS: f64 = 1.0;
+const WORK_PROBE_DAYS: f64 = 0.125;
 const REPAIR_SWITCH: f32 = 0.2;
 const HISTORY_CELLS: usize = 256;
 
@@ -40,7 +38,7 @@ pub struct Load {
 }
 
 pub fn load_size(good: Good) -> f32 { good.row().load }
-fn load_cap(sim: &SimState, who: BeaverId, good: Good) -> f32 {
+pub(crate) fn load_cap(sim: &SimState, who: BeaverId, good: Good) -> f32 {
     load_size(good) * sim.colony.beaver(who).map_or(1.0, crate::growth::load_x)
 }
 
@@ -100,7 +98,6 @@ pub struct Agent {
     #[serde(skip)] pub history: VecDeque<(f64, Cell, Gait)>,
     pub next_work_probe: f64,
     pub next_home_probe: f64,
-    #[serde(skip)] pub next_retarget: f64,
     #[serde(default)] pub next_meal_probe: f64,
     pub source: Option<ResourceId>,
     #[serde(default)] pub queue: VecDeque<Order>,
@@ -142,7 +139,7 @@ impl Agents {
             id, cell, step_frac: 0.0, gait: Gait::Walk, task: Task::Idle, assignment: None,
             move_state: MoveState::None, load: None, path: None, inside: false, stuck_ticks: 0,
             load_ease: 0.0, speed: 1.0, trail: Vec::new(), history: VecDeque::new(),
-            next_work_probe: 0.0, next_home_probe: 0.0, next_retarget: 0.0, next_meal_probe: 0.0,
+            next_work_probe: 0.0, next_home_probe: 0.0, next_meal_probe: 0.0,
             source: None, queue: VecDeque::new(),
         });
     }
@@ -155,7 +152,7 @@ impl Agents {
 
 impl Agent {
     fn reset_for(&mut self, a: Option<Assignment>) {
-        (self.next_work_probe, self.next_home_probe, self.next_retarget, self.step_frac, self.stuck_ticks) = (0.0, 0.0, 0.0, 0.0, 0);
+        (self.next_work_probe, self.next_home_probe, self.step_frac, self.stuck_ticks) = (0.0, 0.0, 0.0, 0);
         self.assignment = a;
         self.path = None;
         self.trail.clear();
@@ -242,17 +239,52 @@ pub(crate) fn home_area(sim: &SimState) -> Option<(Cell, Area)> {
     Some((h, Area { min: (h.0.saturating_sub(r), h.1.saturating_sub(r)), max: (h.0 + r, h.1 + r) }))
 }
 
+pub(crate) fn wake(sim: &mut SimState, who: BeaverId) {
+    if let Some(ag) = sim.agents.by_id.get_mut(&who) { ag.next_work_probe = 0.0; }
+}
+
+pub(crate) fn wake_idle(sim: &mut SimState) {
+    for ag in sim.agents.by_id.values_mut() {
+        if matches!(ag.task, Task::Idle | Task::Rest) || matches!(ag.assignment, Some(Assignment::Build | Assignment::Mend)) {
+            ag.next_work_probe = 0.0;
+        }
+    }
+}
+
+pub(crate) fn has_good_source(sim: &SimState, good: Good) -> bool {
+    crate::stock::holders(sim, good).iter().any(|&h| sim.buildings.stores.stock_of(h, good) > WORK_EPS)
+        || sim.work.piles.items.iter().any(|p| p.good == good && p.amount > WORK_EPS && !crate::predators::in_view(sim, p.cell))
+}
+
 pub(crate) fn is_site(sim: &SimState, p: &Workplace) -> bool {
-    p.is_open_site() && sim.buildings.building(p.building).is_some_and(|b| !b.is_complete() || sim.maintenance.jobs.contains_key(&b.id))
+    p.is_open_site() && sim.buildings.building(p.building).is_some_and(|b| {
+        !b.is_complete() || sim.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair)
+    })
 }
+
+pub(crate) fn place_open(sim: &SimState, p: &Workplace) -> bool {
+    !p.paused && sim.buildings.building(p.building).is_some_and(|b| {
+        (b.operational() || is_site(sim, p)) && !sim.buildings.unusable(b, &sim.water.depth)
+    })
+}
+
 pub(crate) fn takes_builders(sim: &SimState, p: &Workplace) -> bool {
-    is_site(sim, p) || sim.maintenance.jobs.contains_key(&p.building) || sim.buildings.building(p.building).is_some_and(|b| b.kind.is_waterworks())
+    is_site(sim, p) || crate::dams::has_work_for(sim, p.building, false) || crate::canals::has_work_for(sim, p.building, false)
 }
+
+pub(crate) fn place_needs_builders(sim: &SimState, b: BuildingId) -> bool {
+    sim.work.place(b).is_some_and(|p| place_open(sim, p) && takes_builders(sim, p))
+}
+
+pub fn builders_on(sim: &SimState, b: BuildingId) -> usize {
+    sim.work.place(b).map_or(0, |p| p.builders())
+        + sim.agents.build_targets.values().filter(|&&t| t == b).count()
+}
+
 pub(crate) fn site_stalled(sim: &SimState, p: &Workplace) -> bool {
     p.site.as_ref().is_some_and(|s| !s.labour_open() && s.needed.iter().all(|n| {
         s.missing(n.0) <= WORK_EPS
-            || (promised(sim, Dest::Site(p.building), n.0, None) <= WORK_EPS
-                && crate::stock::holders(sim, n.0).iter().all(|&h| sim.buildings.stores.stock_of(h, n.0) <= WORK_EPS))
+            || (promised(sim, Dest::Site(p.building), n.0, None) <= WORK_EPS && !has_good_source(sim, n.0))
     }))
 }
 pub(crate) fn site_waits_on(sim: &SimState, p: &Workplace) -> Option<Good> {
@@ -260,14 +292,20 @@ pub(crate) fn site_waits_on(sim: &SimState, p: &Workplace) -> Option<Good> {
     site_stalled(sim, p).then(|| s.needed.iter().map(|n| n.0).find(|&g| s.missing(g) > WORK_EPS)).flatten()
 }
 pub(crate) fn gathering_available(sim: &SimState, a: Assignment) -> bool {
-    Gather::resolve(sim, a).is_some_and(|j| sim.resources.items().iter().any(|r| j.permits(r)))
+    let from = match a {
+        Assignment::Area(_, area) => area.centre(),
+        Assignment::Slot(b, _) => sim.work.place(b).and_then(|p| p.area).map_or((0, 0), |a| a.centre()),
+        Assignment::Resource(id) => sim.resources.get(id).map_or((0, 0), |r| r.cell),
+        _ => (0, 0),
+    };
+    Gather::resolve(sim, a).is_some_and(|j| j.pick(sim, from).is_some())
 }
 
 pub fn repair_need(sim: &SimState, b: BuildingId) -> f32 {
     if sim.maintenance.jobs.get(&b).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair) { return 0.05; }
     if let Some(d) = crate::dams::dam(sim, b) {
         if !crate::dams::has_work_for(sim, b, true) { return 0.0; }
-        let weakest = d.cells.iter().filter(|c| crate::dams::built(sim, c.cell) > 0.0).map(|c| crate::dams::integrity(sim, c.cell)).fold(1.0f32, f32::min);
+        let weakest = crate::dams::weakest_cell(sim, d).map_or(1.0, |(_, v)| v);
         return 1.0 - weakest;
     }
     if crate::canals::has_work_for(sim, b, true) { 0.4 } else { 0.0 }
@@ -296,8 +334,16 @@ pub(crate) fn start_order(sim: &mut SimState, ag: &mut Agent, order: Order) -> b
             ag.reset_for(Some(Assignment::Go(cell)));
             true
         }
+        Order::Do(Assignment::Slot(b, slot)) => {
+            if crate::jobs::seat_in_workplace(sim, b, slot, ag.id).is_err() { return false; }
+            ag.reset_for(None);
+            true
+        }
         Order::Do(a) => {
             if matches!(a, Assignment::Resource(id) if sim.resources.get(id).is_none_or(|r| !gatherable(r) || !tools_at_hand(sim, r.kind))) {
+                return false;
+            }
+            if matches!(a, Assignment::Area(k, _) if !tools_at_hand(sim, k)) {
                 return false;
             }
             crate::jobs::order(sim, ag.id, Some(a));
@@ -305,13 +351,8 @@ pub(crate) fn start_order(sim: &mut SimState, ag: &mut Agent, order: Order) -> b
             true
         }
         Order::Work(b) => {
-            let Some(p) = sim.work.place(b) else { return false };
-            let builders = takes_builders(sim, p);
-            let Some((slot, _)) = p.open_seat(|r| builders || r.duty() != JobDuty::Build) else { return false };
-            if sim.buildings.building(b).is_some_and(|bd| sim.buildings.unusable(bd, &sim.water.depth)) || sim.work.assign(b, slot, ag.id).is_err() {
-                return false;
-            }
-            if let Ok(p) = sim.work.place_mut(b) { p.max_beavers = p.max_beavers.max(p.filled()); }
+            let Some((slot, _, _)) = crate::jobs::empty_slot(sim, b, None) else { return false };
+            if crate::jobs::seat_in_workplace(sim, b, slot, ag.id).is_err() { return false; }
             ag.reset_for(None);
             true
         }
@@ -510,7 +551,7 @@ fn stow(sim: &mut SimState, owner: BuildingId, load: Load, who: Producer) -> Res
 
 fn drop_load(sim: &mut SimState, ag: &mut Agent, why: &str) {
     if let Some(load) = ag.load.take() {
-        sim.work.piles.drop_at(ag.cell, load.good, load.amount, sim.time_days);
+        sim.work.piles.drop_load(ag.cell, load.good, load.amount, sim.time_days, load.booked, load.species);
         log_load(sim, ag, "DROP_GROUND", NO_STORE, load.good, load.amount, load.amount, why);
     }
     ag.path = None;
@@ -531,9 +572,9 @@ fn promised(sim: &SimState, to: Dest, good: Good, except: Option<BeaverId>) -> f
     sim.agents.by_id.values().filter(|a| except != Some(a.id)).map(|a| match (&a.task, a.load) {
         (Task::Move { to: t, .. }, Some(l)) if *t == to && l.good == good => l.amount,
         (Task::Move { from: Some(Source::Pile(pid)), to: t, good: g, .. }, None) if *t == to && *g == good => {
-            sim.work.piles.get(*pid).filter(|p| p.good == good).map_or(0.0, |p| p.amount.min(load_size(good)))
+            sim.work.piles.get(*pid).filter(|p| p.good == good).map_or(0.0, |p| p.amount.min(load_cap(sim, a.id, good)))
         }
-        (Task::Move { to: t, good: g, .. }, None) if *t == to && *g == good => load_size(good),
+        (Task::Move { to: t, good: g, .. }, None) if *t == to && *g == good => load_cap(sim, a.id, good),
         _ => 0.0,
     }).sum()
 }
@@ -551,7 +592,7 @@ fn step_move(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Opt
                 crate::dams::sticks_per_step().min(cap), dam, "TAKE_FOR_DAM",
             ),
             Dest::Site(site) => {
-                let is_open = sim.work.place(site).is_some_and(|p| is_site(sim, p));
+                let is_open = sim.work.place(site).is_some_and(|p| !p.paused && is_site(sim, p));
                 let missing = sim.work.place(site).and_then(|p| p.site.as_ref()).map_or(0.0, |s| s.missing(good));
                 let out = missing - promised(sim, to, good, Some(ag.id));
                 let allowed = (matches!(duty, Duty::Build(b) if *b == site) || matches!(duty, Duty::Haul)) && is_open;
@@ -576,15 +617,15 @@ fn step_move(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Opt
             }
         };
         if !ok || want <= WORK_EPS { return abandon(ag); }
-        let (cells, booked) = match src {
+        let (cells, booked, pile_species) = match src {
             Source::Pile(pid) => match sim.work.piles.get(pid).filter(|p| p.good == good) {
-                Some(p) => (vec![p.cell], false),
+                Some(p) => (vec![p.cell], p.booked, p.species),
                 None => return abandon(ag),
             },
             Source::Store(id) => {
                 let ready = if id == SUPPLIES { sim.work.supplies.is_some() } else { sim.buildings.building(id).is_some_and(|b| b.is_complete()) };
                 if id == NO_STORE || !ready { return abandon(ag); }
-                (place_cells(sim, id), true)
+                (place_cells(sim, id), true, None)
             }
         };
         match walk_beside(sim, ag, dt, &cells) {
@@ -593,7 +634,7 @@ fn step_move(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Opt
             Some(true) => {}
         }
         let (got, species, at_id) = match src {
-            Source::Pile(pid) => (sim.work.piles.take(pid, want), None, target_id),
+            Source::Pile(pid) => (sim.work.piles.take(pid, want), pile_species, target_id),
             Source::Store(id) => {
                 let avail = want.min(sim.buildings.stores.stock_of(id, good));
                 let (g, k) = if avail > WORK_EPS { sim.buildings.stores.take_kind_from(id, good, avail) } else { (0.0, None) };
@@ -642,9 +683,10 @@ fn step_move(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Opt
             let put = sim.work.deliver(site, load.good, load.amount).unwrap_or(0.0);
             log_load(sim, ag, "DELIVER_SITE", site, load.good, load.amount, put, "");
             if put > 0.0 {
-                let src = producer(sim, ag);
-                sim.buildings.stores.book_site_delivery(load.good, put, (!load.booked).then_some(src));
-                crate::works::note(sim, site, spend_of(sim, ag.id, site), 0.0, Some((load.good, put)));
+                let (src, spend) = (producer(sim, ag), spend_of(sim, ag.id, site));
+                let use_kind = if spend == Spend::Upkeep { Use::Repairs } else { Use::Sites };
+                sim.buildings.stores.book_delivery(load.good, put, (!load.booked).then_some(src), use_kind);
+                crate::works::note(sim, site, spend, 0.0, Some((load.good, put)));
             }
             record_carry_deeds(sim, ag, site, load.good, put, load.booked);
             note(ag, true);
@@ -667,9 +709,10 @@ fn step_move(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, from: Opt
             let put = crate::supply::deposit(sim, spot, load.good, load.amount);
             log_load(sim, ag, "DELIVER_SPOT", spot.building, load.good, load.amount, put, &format!("cell=({},{})", spot.cell.0, spot.cell.1));
             if put > 0.0 {
-                let src = producer(sim, ag);
-                sim.buildings.stores.book_delivery(load.good, put, (!load.booked).then_some(src), if ww { Use::Sites } else { Use::Repairs });
-                crate::works::note(sim, spot.building, if ww { Spend::Build } else { Spend::Upkeep }, 0.0, Some((load.good, put)));
+                let (src, spend) = (producer(sim, ag), if ww { Spend::Build } else { Spend::Upkeep });
+                let use_kind = if spend == Spend::Upkeep { Use::Repairs } else { Use::Sites };
+                sim.buildings.stores.book_delivery(load.good, put, (!load.booked).then_some(src), use_kind);
+                crate::works::note(sim, spot.building, spend, 0.0, Some((load.good, put)));
             }
             record_carry_deeds(sim, ag, spot.building, load.good, put, load.booked);
             note(ag, true);
@@ -735,7 +778,7 @@ fn gatherable(r: &Resource) -> bool {
     }
 }
 
-fn worth_fetching(sim: &SimState, from: Cell, good: Good) -> bool {
+pub(crate) fn worth_fetching(sim: &SimState, from: Cell, good: Good) -> bool {
     sim.buildings.stores.space(good) > EPS || closest_store(sim, from, good).is_none() || site_short_of(sim, from, good).is_some()
 }
 
@@ -767,8 +810,8 @@ impl Gather {
                 kinds: kind.gather_sources(), area: Some(area), only: None, role: Some(crate::jobs::gather_role(kind)), frozen: f,
             }),
             Assignment::Slot(b, slot) => {
-                let p = sim.work.place(b)?;
-                let kind = crate::jobs::gather_kind(p.slots.get(slot)?.role)?;
+                let p = sim.work.place(b).filter(|p| !p.paused)?;
+                let kind = crate::jobs::gather_kind(p.slots.get(slot)?.role).filter(|&k| tools_at_hand(sim, k))?;
                 Some(Self { kinds: kind.gather_sources(), area: Some(p.area?), only: None, role: Some(crate::jobs::gather_role(kind)), frozen: f })
             }
             _ => None,
@@ -822,10 +865,6 @@ fn next_resource(sim: &SimState, kind: ResourceKind, from: Cell, reach: usize) -
 
 enum Duty { None, Collect(Gather), Build(BuildingId), Haul, Forest(Area), Mend(BuildingId), Sentry(BuildingId) }
 
-fn place_needs_builders(sim: &SimState, b: BuildingId) -> bool {
-    sim.work.place(b).is_some_and(|p| p.site.is_some() || (!p.paused && (crate::dams::has_work_for(sim, b, false) || crate::canals::has_work_for(sim, b, false))))
-}
-
 fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
     if !can_work { return Duty::None; }
     match sim.work.slot_of(ag.id) {
@@ -836,9 +875,10 @@ fn duty_of(sim: &SimState, ag: &Agent, can_work: bool) -> Duty {
         Some((b, i, r)) if r.duty() == JobDuty::Gather => Gather::resolve(sim, Assignment::Slot(b, i)).map_or(Duty::None, Duty::Collect),
         Some(_) => Duty::None,
         None if ag.assignment == Some(Assignment::Mend) => match sim.agents.maint_targets.get(&ag.id) {
-            Some(&b) if sim.buildings.building(b).is_some_and(|x| crate::maintenance::needs_mending(sim, x)) => Duty::Mend(b),
-            Some(&b) => Duty::Build(b),
-            None => Duty::None,
+            Some(&b) if !sim.work.place(b).is_some_and(|p| p.paused)
+                && sim.buildings.building(b).is_some_and(|x| crate::maintenance::needs_mending(sim, x)) => Duty::Mend(b),
+            Some(&b) if !sim.work.place(b).is_some_and(|p| p.paused) => Duty::Build(b),
+            _ => Duty::None,
         },
         None if ag.assignment == Some(Assignment::Build) => sim.agents.build_targets.get(&ag.id).copied().filter(|&b| place_needs_builders(sim, b)).map_or(Duty::None, Duty::Build),
         None => ag.assignment.and_then(|a| Gather::resolve(sim, a)).map_or(Duty::None, Duty::Collect),
@@ -887,10 +927,12 @@ fn site_fetch_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task>
 fn build_task(sim: &SimState, site: BuildingId, ag: &Agent) -> Option<Task> {
     let is_upkeep = upkeep(sim, ag.id);
     if is_dam(sim, site) && !sim.maintenance.jobs.contains_key(&site) {
-        if let Some(cell) = crate::dams::gate_job(sim, site, &crate::dams::gates_claimed(sim, site, ag.id)) {
-            return Some(Task::Work { site, cell: Some(cell), kind: WorkKind::Gate, progress: 0.0 });
+        if !is_upkeep {
+            if let Some(cell) = crate::dams::gate_job(sim, site, &crate::dams::gates_claimed(sim, site, ag.id)) {
+                return Some(Task::Work { site, cell: Some(cell), kind: WorkKind::Gate, progress: 0.0 });
+            }
+            if let Some(t) = supply_task(sim, ag, &gate_spots(sim, site)) { return Some(t); }
         }
-        if !is_upkeep && let Some(t) = supply_task(sim, ag, &gate_spots(sim, site)) { return Some(t); }
         let cell = crate::dams::next_cell(sim, site, ag.cell, &crate::dams::claimed(sim, site, ag.id), is_upkeep)?;
         let mat = crate::dams::material();
         if ag.load.is_some_and(|l| l.good == mat) {
@@ -1029,14 +1071,16 @@ fn step_work(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Bui
     // 1. Validate duty, target, and load.
     match kind {
         WorkKind::Mend => {
-            if !matches!(duty, Duty::Mend(b) if *b == site) || !sim.buildings.building(site).is_some_and(|b| crate::maintenance::needs_mending(sim, b)) {
+            if !matches!(duty, Duty::Mend(b) if *b == site)
+                || sim.work.place(site).is_some_and(|p| p.paused)
+                || !sim.buildings.building(site).is_some_and(|b| crate::maintenance::needs_mending(sim, b))
+            {
                 return abandon(ag);
             }
         }
         WorkKind::Build => {
             let open = matches!(duty, Duty::Build(b) if *b == site)
-                && sim.buildings.building(site).is_some_and(|b| !b.is_complete() || sim.maintenance.jobs.contains_key(&site))
-                && sim.work.place(site).and_then(|p| p.site.as_ref()).is_some_and(|s| s.labour_open());
+                && sim.work.place(site).is_some_and(|p| !p.paused && is_site(sim, p) && p.site.as_ref().is_some_and(|s| s.labour_open()));
             if !open { return abandon(ag); }
         }
         WorkKind::Dam => {
@@ -1104,11 +1148,13 @@ fn step_work(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Bui
             let p = progress + labour;
             if p + WORK_EPS < crate::dams::pack_labour() { ag.task = Task::Work { site, cell, kind, progress: p }; return; }
             let failing = crate::dams::built(sim, c) > 0.0 && crate::dams::integrity(sim, c) < crate::deeds::LEAK_INTEGRITY;
-            let used = crate::dams::pack(sim, site, c, load.amount);
+            let src = (!load.booked).then(|| producer(sim, ag));
+            let use_kind = if is_upkeep { Use::Repairs } else { Use::Sites };
+            let used = crate::dams::pack(sim, site, c, load.amount, src, use_kind);
             log_load(sim, ag, "PACK_DAM", site, load.good, load.amount, used, &format!("dam_cell=({},{})", c.0, c.1));
             if used > 0.0 {
                 crate::works::note(sim, site, spend, 0.0, Some((load.good, used)));
-                *sim.deeds.of(ag.id).carried.entry((crate::dams::material(), BuildingKind::dam())).or_default() += used;
+                record_carry_deeds(sim, ag, site, load.good, used, load.booked);
                 if is_upkeep {
                     sim.deeds.repaired(ag.id, site, Some(BuildingKind::dam()), crate::dams::pack_labour());
                     if failing { sim.deeds.of(ag.id).leaks += 1; }
@@ -1150,6 +1196,23 @@ fn step_work(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, site: Bui
     }
 }
 
+fn try_start_work(sim: &mut SimState, ag: &mut Agent, fit: bool, force: bool) -> bool {
+    if !fit { ag.next_work_probe = 0.0; return false; }
+    if !force && sim.time_days < ag.next_work_probe { return false; }
+    retarget_roaming(sim, ag);
+    let mut duty = duty_of(sim, ag, fit);
+    let mut task = next_task(sim, &duty, ag);
+    if task.is_none() && retarget_idle(sim, ag) {
+        duty = duty_of(sim, ag, fit);
+        task = next_task(sim, &duty, ag);
+    }
+    ag.next_work_probe = sim.time_days + WORK_PROBE_DAYS;
+    match task {
+        Some(t) => { ag.path = None; ag.task = t; true }
+        None => false,
+    }
+}
+
 fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     ag.trail.clear();
     if let Some(b) = sim.colony.beaver(ag.id) {
@@ -1173,7 +1236,15 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
     }
     let (can_work, tired) = sim.colony.beaver(ag.id).map_or((false, false), |b| (b.can_work(), b.resting));
     let holed = sim.agents.holed_up && has_lodge(sim);
-    let duty = duty_of(sim, ag, can_work && !tired && !holed);
+    let fit = can_work && !tired && !holed;
+    let was_active = !matches!(ag.task, Task::Idle | Task::Rest);
+    if was_active && fit && sim.time_days >= ag.next_work_probe
+        && sim.work.slot_of(ag.id).is_none() && matches!(ag.assignment, Some(Assignment::Build | Assignment::Mend))
+    {
+        retarget_roaming(sim, ag);
+        ag.next_work_probe = sim.time_days + WORK_PROBE_DAYS;
+    }
+    let duty = duty_of(sim, ag, fit);
     if (tired || holed) && ag.load.is_none() && !ag.inside
         && !matches!(ag.task, Task::Rest | Task::Move { from: None, to: Dest::Store(_), .. } | Task::Eat { .. })
         && (holed || !matches!(ag.task, Task::Watch { .. }))
@@ -1197,12 +1268,11 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
             ag.path = None;
             let keep = (matches!(duty, Duty::Build(b) if is_dam(sim, b) && !sim.maintenance.jobs.contains_key(&b)) && ag.load.is_some_and(|l| l.good == crate::dams::material()))
                 || (matches!(duty, Duty::Forest(..)) && ag.load.is_some_and(|l| l.good == Good::seedling()));
-            if keep && let Some(t) = next_task(sim, &duty, ag) { ag.task = t; }
+            if keep && try_start_work(sim, ag, fit, true) {}
             else if ag.load.is_some() { ag.task = carry_task(ag.load); }
-            else if let Some(t) = next_task(sim, &duty, ag) { ag.task = t; }
-            else if has_lodge(sim) { ag.task = Task::Rest; }
+            else if !try_start_work(sim, ag, fit, false) && has_lodge(sim) { ag.task = Task::Rest; }
         }
-        Task::Rest => step_rest(sim, ag, dt, &duty, can_work && !tired && !holed),
+        Task::Rest => step_rest(sim, ag, dt, fit),
         Task::Move { from, to, good, haul } => step_move(sim, ag, dt, &duty, from, to, good, haul),
         Task::Work { site, cell, kind, progress } => step_work(sim, ag, dt, &duty, site, cell, kind, progress),
         Task::Collect { target, .. } => step_collect(sim, ag, dt, &duty, target),
@@ -1217,6 +1287,7 @@ fn tick(sim: &mut SimState, ag: &mut Agent, dt: f32) {
             }
         }
     }
+    if was_active && matches!(ag.task, Task::Idle) { ag.next_work_probe = 0.0; }
 }
 
 fn step_go(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
@@ -1235,14 +1306,9 @@ fn step_go(sim: &mut SimState, ag: &mut Agent, dt: f32, to: Cell) {
     if ag.cell == to { finish(sim, ag, MoveState::Arrived); }
 }
 
-fn step_rest(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, fit: bool) {
-    let work = if !fit { ag.next_work_probe = 0.0; false }
-        else if sim.time_days >= ag.next_work_probe {
-            let found = next_task(sim, duty, ag).is_some();
-            if !found { ag.next_work_probe = sim.time_days + WORK_PROBE_DAYS; }
-            found
-        } else { false };
-    if ag.load.is_some() || work { ag.task = Task::Idle; return; }
+fn step_rest(sim: &mut SimState, ag: &mut Agent, dt: f32, fit: bool) {
+    if ag.load.is_some() { ag.path = None; ag.task = carry_task(ag.load); return; }
+    if try_start_work(sim, ag, fit, false) { return; }
     if ag.inside { ag.path = None; note(ag, true); return; }
     if ag.path.is_none() {
         if sim.time_days < ag.next_home_probe { return; }
@@ -1340,7 +1406,9 @@ fn step_seed(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, tree: Res
 fn step_plant(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, store: BuildingId, cell: Cell, progress: f32) {
     let Duty::Forest(area) = *duty else { return abandon(ag) };
     let Some(load) = ag.load.filter(|l| l.good == Good::seedling()) else {
-        if ag.load.is_some() || sim.buildings.building(store).is_none_or(|b| !b.is_complete() || !accepts(b.kind, Good::seedling())) {
+        let store_ok = sim.buildings.building(store).is_some_and(|b| b.is_complete() && accepts(b.kind, Good::seedling()) && !sim.buildings.unusable(b, &sim.water.depth))
+            && !crate::predators::building_in_view(sim, store);
+        if ag.load.is_some() || !store_ok {
             return abandon(ag);
         }
         match walk_beside(sim, ag, dt, &place_cells(sim, store)) {
@@ -1457,6 +1525,7 @@ fn step_raft(sim: &mut SimState, ag: &mut Agent, dt: f32, duty: &Duty, raft: u32
                 let taken = stow(sim, to, load, who).unwrap_or(0.0);
                 log_load(sim, ag, "DELIVER_RAFT", to, load.good, load.amount, taken, &format!("raft={raft}"));
                 sim.run.raft_delivered(load.good, taken);
+                record_carry_deeds(sim, ag, to, load.good, taken, true);
                 sim.deeds.of(ag.id).rafted[load.good] += taken;
                 ag.load = (load.amount - taken > WORK_EPS).then(|| Load { amount: load.amount - taken, ..load });
             }
@@ -1634,15 +1703,29 @@ fn tidy(sim: &mut SimState) {
     }
     let alive: BTreeSet<BeaverId> = sim.colony.beavers.iter().map(|b| b.id).collect();
     let dry: BTreeSet<BuildingId> = sim.buildings.buildings.iter().filter(|b| sim.buildings.unusable(b, &sim.water.depth)).map(|b| b.id).collect();
+    let mut freed = Vec::new();
     for p in &mut sim.work.places {
-        let refit = sim.maintenance.jobs.contains_key(&p.building);
+        let refit = sim.maintenance.jobs.get(&p.building).is_some_and(|j| j.kind != crate::maintenance::Refit::Repair);
         let ruined = sim.buildings.building(p.building).is_some_and(|b| b.is_complete() && !b.operational());
         let closed = p.paused || (!refit && (dry.contains(&p.building) || ruined));
         let done = finished.contains(&p.building);
         for s in &mut p.slots {
-            if s.beaver.is_some_and(|w| (closed && !(done && s.role.duty() == JobDuty::Build)) || !alive.contains(&w)) { s.beaver = None; }
+            if let Some(w) = s.beaver {
+                let evict = !alive.contains(&w) || p.paused || (closed && !(done && s.role.duty() == JobDuty::Build));
+                if evict { s.beaver = None; if alive.contains(&w) { freed.push(w); } }
+            }
         }
     }
+    for w in freed { wake(sim, w); }
+    let roaming = |id: BeaverId, a: Assignment| {
+        sim.colony.beaver(id).is_some_and(|b| b.can_work())
+            && sim.work.slot_of(id).is_none()
+            && sim.agents.get(id).is_some_and(|ag| ag.assignment == Some(a))
+    };
+    let keep_b: BTreeSet<BeaverId> = sim.agents.build_targets.keys().copied().filter(|&w| roaming(w, Assignment::Build)).collect();
+    let keep_m: BTreeSet<BeaverId> = sim.agents.maint_targets.keys().copied().filter(|&w| roaming(w, Assignment::Mend)).collect();
+    sim.agents.build_targets.retain(|w, _| keep_b.contains(w));
+    sim.agents.maint_targets.retain(|w, _| keep_m.contains(w));
     let standing: BTreeSet<BuildingId> = sim.buildings.buildings.iter().map(|b| b.id).collect();
     sim.work.balanced.retain(|b| standing.contains(b));
 }
@@ -1651,120 +1734,111 @@ fn reaches_place(sim: &SimState, from: Cell, b: BuildingId) -> bool {
     place_cells(sim, b).iter().any(|&c| sim.nav.may_reach_beside(from, c))
 }
 
-fn seat_has_work(sim: &SimState, b: BuildingId, role: Job) -> bool {
-    let Some(p) = sim.work.place(b) else { return false };
-    if p.paused { return true; }
-    match role.duty() {
-        JobDuty::Build => if p.site.is_some() && is_site(sim, p) { !site_stalled(sim, p) } else { crate::dams::has_work_for(sim, b, false) || crate::canals::has_work_for(sim, b, false) },
-        JobDuty::Gather => p.slots.iter().position(|s| s.role == role).and_then(|i| Gather::resolve(sim, Assignment::Slot(b, i)))
-            .is_some_and(|j| sim.resources.items().iter().any(|r| j.permits(r))),
-        _ => true,
+fn gather_seat_has_work(sim: &SimState, b: BuildingId, role: Job, from: Cell) -> bool {
+    sim.work.place(b).filter(|p| !p.paused)
+        .and_then(|p| p.slots.iter().position(|s| s.role == role))
+        .and_then(|i| Gather::resolve(sim, Assignment::Slot(b, i)))
+        .is_some_and(|j| j.pick(sim, from).is_some())
+}
+
+fn mend_ready_for(sim: &SimState, b: BuildingId, ag: &Agent) -> bool {
+    if sim.buildings.building(b).is_some_and(|x| crate::maintenance::needs_mending(sim, x)) {
+        crate::maintenance::mend_ready(sim, b)
+            || supply_task(sim, ag, &crate::supply::mend_spot(sim, b).into_iter().collect::<Vec<_>>()).is_some()
+    } else {
+        build_task(sim, b, ag).is_some()
     }
 }
 
-fn dispatch(sim: &mut SimState) {
-    let workers: Vec<(BeaverId, Cell)> = sim.colony.beavers.iter().filter(|b| b.can_work())
-        .filter_map(|b| sim.agents.get(b.id).map(|a| (b.id, a.cell))).collect();
-    let builders: Vec<_> = workers.iter().copied().filter(|&(id, _)| sim.work.slot_of(id).is_none() && sim.agents.get(id).is_some_and(|a| a.assignment == Some(Assignment::Build))).collect();
-    let menders: Vec<_> = workers.iter().copied().filter(|&(id, _)| is_mender(sim, id)).collect();
-    sim.agents.build_targets.retain(|w, _| builders.iter().any(|b| b.0 == *w));
-    sim.agents.maint_targets.retain(|w, _| menders.iter().any(|m| m.0 == *w));
-    let periodic = sim.steps % RETARGET_STEPS == 0;
+fn best_build_site(sim: &SimState, ag: &Agent, seated_from: Option<BuildingId>, min_rank: Option<(bool, crate::work::Priority)>) -> Option<(BuildingId, usize)> {
+    let (who, at, build_role) = (ag.id, ag.cell, Job::with_duty(JobDuty::Build));
+    let mut cands: Vec<_> = sim.work.places.iter()
+        .filter(|p| Some(p.building) != seated_from && place_needs_builders(sim, p.building) && reaches_place(sim, at, p.building))
+        .filter_map(|p| {
+            let slot = if seated_from.is_some() {
+                let reopen = !p.slots.iter().any(|s| s.role.duty() == JobDuty::Build);
+                p.open_seat(|r| r == build_role).map(|(j, _)| j).or(reopen.then_some(p.slots.len()))?
+            } else { 0 };
+            let ready = build_task(sim, p.building, ag).is_some();
+            if seated_from.is_some() && !ready { return None; }
+            if min_rank.is_some_and(|mr| (ready, p.priority) <= mr) { return None; }
+            let crowd = builders_on(sim, p.building) - usize::from(sim.agents.build_targets.get(&who) == Some(&p.building));
+            let pos = sim.buildings.building(p.building)?.pos;
+            Some(((std::cmp::Reverse(ready), std::cmp::Reverse(p.priority), crowd, dist2(pos, at), p.building), slot))
+        }).collect();
+    cands.sort_unstable();
+    cands.into_iter().next().map(|(k, j)| (k.4, j))
+}
 
-    // 1. Roaming builders.
-    if !builders.is_empty() && (periodic || builders.iter().any(|(w, _)| !sim.agents.build_targets.contains_key(w))) {
-        let places: Vec<_> = sim.work.places.iter()
-            .filter(|p| !p.paused && (is_site(sim, p) || (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.unusable(b, &sim.water.depth))
-                && (crate::dams::has_work_for(sim, p.building, false) || crate::canals::has_work_for(sim, p.building, false)))))
-            .filter_map(|p| Some((p.building, p.priority, sim.buildings.building(p.building)?.pos))).collect();
-        for (who, at) in builders {
-            let ready = |b| sim.agents.get(who).is_some_and(|a| build_task(sim, b, a).is_some());
-            let prio = |b| places.iter().find(|p| p.0 == b).map(|p| p.1);
-            let cur = sim.agents.build_targets.get(&who).copied().filter(|&b| prio(b).is_some() && reaches_place(sim, at, b));
-            let cur_rank = cur.map(|b| (ready(b), prio(b).unwrap()));
-            let crowd = |b| sim.work.place(b).map_or(0, |p| p.builders()) + sim.agents.build_targets.iter().filter(|(w, t)| **w != who && **t == b).count();
-            let best = places.iter().filter(|p| reaches_place(sim, at, p.0))
-                .map(|p| (p.0, ready(p.0), p.1, p.2))
-                .filter(|p| cur_rank.is_none_or(|(cr, cp)| (p.1, p.2) > (cr, cp)))
-                .min_by_key(|p| (std::cmp::Reverse(p.1), std::cmp::Reverse(p.2), crowd(p.0), dist2(p.3, at), p.0)).map(|p| p.0);
+fn retarget_roaming(sim: &mut SimState, ag: &Agent) {
+    if sim.work.slot_of(ag.id).is_some() { return; }
+    let (who, at) = (ag.id, ag.cell);
+    match ag.assignment {
+        Some(Assignment::Build) => {
+            let cur = sim.agents.build_targets.get(&who).copied().filter(|&b| place_needs_builders(sim, b) && reaches_place(sim, at, b));
+            let cur_rank = cur.and_then(|b| Some((build_task(sim, b, ag).is_some(), sim.work.place(b)?.priority)));
+            let best = best_build_site(sim, ag, None, cur_rank).map(|(b, _)| b);
             match best.or(cur) { Some(b) => { sim.agents.build_targets.insert(who, b); } None => { sim.agents.build_targets.remove(&who); } }
         }
-    }
-    if !periodic { return; }
-
-    // 2. Roaming menders.
-    if !menders.is_empty() {
-        let mut places: Vec<(BuildingId, f32, Cell)> = sim.work.places.iter().filter(|p| !p.paused)
-            .filter_map(|p| { let n = repair_need(sim, p.building); (n > 0.0).then_some((p.building, n, sim.buildings.building(p.building)?.pos)) })
-            .collect();
-        places.extend(sim.buildings.buildings.iter()
-            .filter(|b| crate::maintenance::needs_mending(sim, b) && !crate::buildings::flooded(b, &sim.water.depth))
-            .filter(|b| crate::maintenance::mend_rates(b).0.iter().all(|&(g, _)| sim.buildings.stores.amount(g) > WORK_EPS || crate::supply::delivered(sim, Spot { building: b.id, cell: b.pos }, g) > WORK_EPS))
-            .map(|b| (b.id, 1.0 - b.condition + if sim.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind == crate::maintenance::Refit::Repair) { 1.0 } else { 0.0 }, b.pos)));
-        for (who, at) in menders {
+        Some(Assignment::Mend) => {
+            let mut places: Vec<(BuildingId, f32, Cell)> = sim.work.places.iter().filter(|p| !p.paused)
+                .filter_map(|p| { let n = repair_need(sim, p.building); (n > 0.0).then_some((p.building, n, sim.buildings.building(p.building)?.pos)) })
+                .collect();
+            places.extend(sim.buildings.buildings.iter()
+                .filter(|b| crate::maintenance::needs_mending(sim, b) && !crate::buildings::flooded(b, &sim.water.depth) && !sim.work.place(b.id).is_some_and(|p| p.paused))
+                .map(|b| (b.id, 1.0 - b.condition + if sim.maintenance.jobs.get(&b.id).is_some_and(|j| j.kind == crate::maintenance::Refit::Repair) { 1.0 } else { 0.0 }, b.pos)));
+            let ready = |b| mend_ready_for(sim, b, ag);
             let need = |b| places.iter().find(|p| p.0 == b).map_or(0.0, |p| p.1);
-            let cur = sim.agents.maint_targets.get(&who).copied().filter(|&b| need(b) > 0.0 && reaches_place(sim, at, b));
+            let cur = sim.agents.maint_targets.get(&who).copied().filter(|&b| need(b) > 0.0 && reaches_place(sim, at, b) && ready(b));
             let crowd = |b| sim.agents.maint_targets.iter().filter(|(w, t)| **w != who && **t == b).count();
-            let best = places.iter().filter(|p| reaches_place(sim, at, p.0) && cur.is_none_or(|c| p.1 > need(c) + REPAIR_SWITCH))
+            let best = places.iter().filter(|p| reaches_place(sim, at, p.0) && ready(p.0) && cur.is_none_or(|c| p.1 > need(c) + REPAIR_SWITCH))
                 .min_by_key(|p| (std::cmp::Reverse((p.1 * 20.0) as i32), crowd(p.0), dist2(p.2, at), p.0)).map(|p| p.0);
             match best.or(cur) { Some(b) => { sim.agents.maint_targets.insert(who, b); } None => { sim.agents.maint_targets.remove(&who); } }
         }
+        _ => {}
     }
+}
 
-    // 3. Seated retargeting & area-gatherer shifting.
-    let wait = |sim: &mut SimState, who: BeaverId| { if let Some(a) = sim.agents.by_id.get_mut(&who) { a.next_retarget = sim.time_days + RETARGET_WAIT_DAYS; } };
-    let homeless = !has_lodge(sim);
-    for (who, at) in workers {
-        if sim.agents.get(who).is_some_and(|a| sim.time_days < a.next_retarget) { continue; }
-        match sim.work.slot_of(who) {
-            Some((from, _, role)) if matches!(role.duty(), JobDuty::Build | JobDuty::Gather) => {
-                let ag = sim.agents.get(who);
-                let busy = ag.is_some_and(|a| match a.task {
-                    Task::Work { site, .. } => site == from,
-                    Task::Move { to: Dest::Site(s) | Dest::Dam(s), .. } => s == from,
-                    _ => false,
-                });
-                if busy || ag.is_some_and(|a| !(a.task == Task::Rest || (homeless && a.task == Task::Idle))) { continue; }
-                let gives = |b| role.duty() != JobDuty::Build || ag.is_some_and(|a| build_task(sim, b, a).is_some());
-                if seat_has_work(sim, from, role) && reaches_place(sim, at, from) && (sim.work.place(from).is_some_and(|p| p.paused) || gives(from)) {
-                    if ag.is_some_and(|a| a.task == Task::Rest) { wait(sim, who); }
-                    continue;
-                }
-                let mut cands: Vec<_> = sim.work.places.iter().filter(|p| p.building != from && !p.paused)
-                    .filter(|p| sim.buildings.building(p.building).is_some_and(|b| (b.is_complete() || is_site(sim, p)) && !sim.buildings.unusable(b, &sim.water.depth)))
-                    .filter(|p| role.duty() != JobDuty::Build || takes_builders(sim, p))
-                    .filter_map(|p| {
-                        let reopen = role.duty() == JobDuty::Build && takes_builders(sim, p) && !p.slots.iter().any(|s| s.role.duty() == JobDuty::Build);
-                        let (j, r) = p.open_seat(|r| r == role).or(reopen.then_some((p.slots.len(), Job::with_duty(JobDuty::Build))))?;
-                        (seat_has_work(sim, p.building, r) && reaches_place(sim, at, p.building)).then(|| {
-                            let d = sim.buildings.building(p.building).map_or(usize::MAX, |bd| dist2(bd.pos, at));
-                            ((std::cmp::Reverse(p.priority), d, p.building), j)
-                        })
-                    }).collect();
-                cands.sort_unstable();
-                let Some((to, j)) = cands.into_iter().find(|(k, _)| gives(k.2)).map(|(k, j)| (k.2, j)) else { wait(sim, who); continue; };
-                if let Ok(p) = sim.work.place_mut(to) && j == p.slots.len() && !p.open_ended() { p.slots.push(Slot::empty(Job::with_duty(JobDuty::Build))); }
-                if sim.work.assign(to, j, who).is_ok() {
-                    if let Ok(p) = sim.work.place_mut(to) { p.max_beavers = p.max_beavers.max(p.filled()); }
-                    sim.agents.assign(who, None);
-                }
-            }
-            None => {
-                let Some(Assignment::Area(kind, area)) = sim.agents.get(who).and_then(|a| a.assignment) else { continue };
-                if gathering_available(sim, Assignment::Area(kind, area)) { continue; }
-                let Some(r) = next_resource(sim, kind, at, GATHER_RADIUS).and_then(|id| sim.resources.get(id)) else { wait(sim, who); continue; };
-                let ((hw, hh), n, c) = (((area.max.0 - area.min.0) / 2, (area.max.1 - area.min.1) / 2), sim.world.size, r.cell);
-                sim.agents.assign(who, Some(Assignment::Area(kind, Area { min: (c.0.saturating_sub(hw), c.1.saturating_sub(hh)), max: ((c.0 + hw).min(n - 1), (c.1 + hh).min(n - 1)) })));
-            }
-            _ => {}
+fn retarget_idle(sim: &mut SimState, ag: &mut Agent) -> bool {
+    let (who, at) = (ag.id, ag.cell);
+    match sim.work.slot_of(who) {
+        Some((from, _, role)) if role.duty() == JobDuty::Build => {
+            let Some((to, j)) = best_build_site(sim, ag, Some(from), None) else { return false };
+            if crate::jobs::seat_in_workplace(sim, to, j, who).is_ok() { ag.assignment = None; return true; }
+            false
         }
+        Some((from, _, role)) if role.duty() == JobDuty::Gather => {
+            if gather_seat_has_work(sim, from, role, at) && reaches_place(sim, at, from) { return false; }
+            let mut cands: Vec<_> = sim.work.places.iter().filter(|p| p.building != from && place_open(sim, p))
+                .filter_map(|p| {
+                    let (j, r) = p.open_seat(|r| r == role)?;
+                    (gather_seat_has_work(sim, p.building, r, at) && reaches_place(sim, at, p.building)).then(|| {
+                        let d = sim.buildings.building(p.building).map_or(usize::MAX, |bd| dist2(bd.pos, at));
+                        ((std::cmp::Reverse(p.priority), d, p.building), j)
+                    })
+                }).collect();
+            cands.sort_unstable();
+            let Some((to, j)) = cands.into_iter().next().map(|(k, j)| (k.2, j)) else { return false };
+            if crate::jobs::seat_in_workplace(sim, to, j, who).is_ok() { ag.assignment = None; return true; }
+            false
+        }
+        None => {
+            let Some(Assignment::Area(kind, area)) = ag.assignment else { return false };
+            if Gather::resolve(sim, Assignment::Area(kind, area)).is_some_and(|j| j.pick(sim, at).is_some()) { return false; }
+            let Some(r) = next_resource(sim, kind, at, GATHER_RADIUS).and_then(|id| sim.resources.get(id)) else { return false };
+            let ((hw, hh), n, c) = (((area.max.0 - area.min.0) / 2, (area.max.1 - area.min.1) / 2), sim.world.size, r.cell);
+            ag.assignment = Some(Assignment::Area(kind, Area { min: (c.0.saturating_sub(hw), c.1.saturating_sub(hh)), max: ((c.0 + hw).min(n - 1), (c.1 + hh).min(n - 1)) }));
+            true
+        }
+        _ => false,
     }
 }
 
 fn finish_sites(sim: &mut SimState) {
     let done: Vec<BuildingId> = sim.work.places.iter().filter(|p| p.site.as_ref().is_some_and(|s| s.is_done())).map(|p| p.building).collect();
+    let mut completed = false;
     for id in done {
-        if crate::maintenance::finish(sim, id) { continue; }
+        if crate::maintenance::finish(sim, id) { completed = true; continue; }
         let Some(cells) = sim.buildings.building(id).filter(|b| b.status == crate::buildings::Status::Site).map(|b| (b.kind.is_dam(), b.cells().collect::<Vec<_>>())) else { continue };
         if !cells.0 {
             let occ: Vec<_> = sim.agents.by_id.values().filter(|a| cells.1.contains(&a.cell)).map(|a| a.id).collect();
@@ -1796,7 +1870,9 @@ fn finish_sites(sim: &mut SimState) {
         b.status = crate::buildings::Status::Complete;
         let (area, def) = (crate::catalogue::work_area(b), b.kind.spec());
         sim.work.finish_site(id, &def.slots, area).expect("workplace exists");
+        completed = true;
     }
+    if completed { wake_idle(sim); }
 }
 
 pub fn step(sim: &mut SimState, dt_days: f32) {
@@ -1810,7 +1886,6 @@ pub fn step(sim: &mut SimState, dt_days: f32) {
     sim.agents.holed_up = if sky.bitter() { true } else if sky.feels_c > crate::weather::COME_OUT_FEELS_C { false } else { sim.agents.holed_up };
     sync_agents(sim);
     tidy(sim);
-    dispatch(sim);
     crate::supply::tidy(sim);
 
     for id in sim.agents.by_id.keys().copied().collect::<Vec<_>>() {

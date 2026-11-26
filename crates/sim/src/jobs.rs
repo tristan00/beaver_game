@@ -1,4 +1,4 @@
-use crate::agents::{is_site, Assignment};
+use crate::agents::Assignment;
 use crate::buildings::{BuildingId, BuildingKind, Good};
 use crate::colony::BeaverId;
 pub use crate::content::{Duty, Job};
@@ -39,7 +39,7 @@ pub fn is_busy(sim: &SimState, who: BeaverId) -> bool {
 pub struct RoleRow { pub role: Job, pub filled: usize, pub slots: usize, pub output_per_day: Vec<(Good, f32)>, pub beavers: Vec<BeaverId> }
 
 fn working_places(sim: &SimState) -> impl Iterator<Item = &crate::work::Workplace> {
-    sim.work.places.iter().filter(move |p| !p.paused && (sim.buildings.building(p.building).is_some_and(|b| b.operational() && !sim.buildings.unusable(b, &sim.water.depth)) || is_site(sim, p)))
+    sim.work.places.iter().filter(move |p| crate::agents::place_open(sim, p))
 }
 
 pub fn jobs_board(sim: &SimState) -> Vec<RoleRow> {
@@ -94,18 +94,26 @@ pub fn waiting(sim: &SimState, id: BeaverId) -> Option<Wait> {
     if !matches!(a.task, crate::agents::Task::Idle | crate::agents::Task::Rest) || a.load.is_some() { return None; }
     let role = role_of(sim, id)?;
     let place_id = sim.work.slot_of(id).map(|(b, _, _)| b)
-        .or_else(|| (a.assignment == Some(Assignment::Build)).then(|| sim.agents.build_targets.get(&id).copied()).flatten());
+        .or_else(|| (a.assignment == Some(Assignment::Build)).then(|| sim.agents.build_targets.get(&id).copied()).flatten())
+        .or_else(|| (a.assignment == Some(Assignment::Mend)).then(|| sim.agents.maint_targets.get(&id).copied()).flatten());
     if let Some(p) = place_id.and_then(|b| sim.work.place(b)) {
         if p.paused { return Some(Wait::Paused); }
         if let Some(g) = crate::agents::site_waits_on(sim, p) { return Some(Wait::Good(g)); }
         let mat = crate::dams::material();
+        let is_upkeep = sim.agents.maint_targets.contains_key(&id);
         if sim.buildings.building(p.building).is_some_and(|b| b.dam.is_some())
-            && crate::dams::has_work_for(sim, p.building, false)
-            && sim.buildings.stores.amount(mat) < crate::dams::sticks_per_step().min(crate::agents::load_size(mat))
+            && crate::dams::has_work_for(sim, p.building, is_upkeep)
+            && !crate::agents::has_good_source(sim, mat)
         { return Some(Wait::Good(mat)); }
+        if sim.buildings.building(p.building).is_some_and(|b| b.canal.is_some())
+            && crate::agents::frozen(sim)
+            && crate::canals::has_work_for(sim, p.building, is_upkeep)
+        { return Some(Wait::Frozen); }
     }
     if crate::agents::frozen(sim) && frozen_out(role) { return Some(Wait::Frozen); }
-    if let Some(g) = crate::hud::gathered_good(role).filter(|&g| sim.buildings.stores.capacity(g) > crate::work::EPS && sim.buildings.stores.space(g) <= crate::work::EPS) {
+    if let Some(g) = crate::hud::gathered_good(role)
+        .filter(|&g| sim.buildings.stores.capacity(g) > crate::work::EPS && !crate::agents::worth_fetching(sim, a.cell, g))
+    {
         return Some(Wait::StoreFull(g));
     }
     (a.task == crate::agents::Task::Rest || !crate::agents::has_lodge(sim)).then_some(Wait::NoWork)
@@ -116,15 +124,14 @@ pub fn idle_reasons(sim: &SimState) -> Vec<(BeaverId, IdleReason)> {
         let b = sim.colony.beaver(id)?;
         if b.resting { return Some((id, IdleReason::Resting)); }
         let open: Vec<BuildingId> = working_places(sim)
-            .filter(|p| (p.filled() < p.max_beavers || p.open_ended()) && b.can_work())
-            .filter(|p| { let bh = crate::agents::takes_builders(sim, p); p.open_seat(|r| bh || r.duty() != Duty::Build).is_some() })
+            .filter(|p| b.can_work() && empty_slot(sim, p.building, None).is_some())
             .map(|p| p.building).collect();
         if open.is_empty() {
-            let paused = sim.work.places.iter().any(|p| p.paused && b.can_work() && p.slots.iter().any(|s| s.beaver.is_none()));
+            let paused = sim.work.places.iter().any(|p| p.paused && b.can_work() && p.slots.iter().any(|s| s.beaver.is_none() && !s.off));
             return Some((id, if paused { IdleReason::Paused } else { IdleReason::NoOpenSlot }));
         }
         let reachable = sim.agents.get(id).is_none_or(|a| open.iter().take(4).filter_map(|&bid| sim.buildings.building(bid))
-            .any(|bd| bd.cells().any(|c| a.cell.0.abs_diff(c.0) + a.cell.1.abs_diff(c.1) == 1 || sim.nav.may_reach_beside(a.cell, c))));
+            .any(|bd| bd.cells().any(|c| a.cell.0.abs_diff(c.0) + a.cell.1.abs_diff(c.1) <= 1 || sim.nav.may_reach_beside(a.cell, c))));
         Some((id, if reachable { IdleReason::Free } else { IdleReason::Unreachable }))
     }).collect()
 }
@@ -151,9 +158,9 @@ fn free_beaver_check(sim: &SimState) -> Result<(), String> {
     Err(if any { "Beavers not ready yet" } else { "No free beavers" }.into())
 }
 
-fn empty_slot(sim: &SimState, b: BuildingId, role: Option<Job>) -> Option<(usize, Job, Cell)> {
+pub fn empty_slot(sim: &SimState, b: BuildingId, role: Option<Job>) -> Option<(usize, Job, Cell)> {
     let (p, bd) = (sim.work.place(b)?, sim.buildings.building(b)?);
-    if p.paused || !(bd.operational() || is_site(sim, p)) || sim.buildings.unusable(bd, &sim.water.depth) { return None; }
+    if !crate::agents::place_open(sim, p) { return None; }
     let bh = crate::agents::takes_builders(sim, p);
     let (i, r) = p.open_seat(|r| role.is_none_or(|want| r == want) && (bh || r.duty() != Duty::Build))?;
     Some((i, r, bd.pos))
@@ -214,12 +221,31 @@ pub fn workplace_error_reason(sim: &SimState, b: BuildingId) -> String {
     else { "Takes no beavers now" }.into()
 }
 
-pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
-    if sim.buildings.building(b).is_some_and(|bd| sim.buildings.unusable(bd, &sim.water.depth)) { return Err(invalid(workplace_error_reason(sim, b))); }
+pub(crate) fn seat_in_workplace(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
+    let able = sim.colony.beaver(who).map(|x| x.can_work()).ok_or_else(|| invalid("NoSuchBeaver"))?;
+    if !able { return Err(invalid("NotAdult")); }
+    let p = sim.work.place(b).ok_or_else(|| invalid(workplace_error_reason(sim, b)))?;
+    if !crate::agents::place_open(sim, p) { return Err(invalid(workplace_error_reason(sim, b))); }
+    let bh = crate::agents::takes_builders(sim, p);
+    let reopen = match p.slots.get(slot) {
+        None if slot == p.slots.len() && bh && (p.open_ended() || !p.slots.iter().any(|s| s.role.duty() == Duty::Build)) => !p.open_ended(),
+        None => return Err(invalid("SlotOutOfRange")),
+        Some(s) if s.beaver.is_some() => return Err(invalid("SlotTaken")),
+        Some(s) if s.off => return Err(invalid("Seat switched off")),
+        Some(s) if s.role.duty() == Duty::Build && !bh => return Err(invalid("Nothing to build")),
+        Some(_) => false,
+    };
+    if reopen && let Ok(p) = sim.work.place_mut(b) { p.slots.push(crate::work::Slot::empty(Job::with_duty(Duty::Build))); }
     sim.work.assign(b, slot, who).map_err(|e| invalid(format!("{e:?}")))?;
+    if let Ok(p) = sim.work.place_mut(b) { p.max_beavers = p.max_beavers.max(p.filled()); }
+    Ok(())
+}
+
+pub(crate) fn place_by_hand(sim: &mut SimState, b: BuildingId, slot: usize, who: BeaverId) -> Result<(), SimError> {
+    if !sim.agents.by_id.contains_key(&who) { return Err(invalid("no agent")); }
+    seat_in_workplace(sim, b, slot, who)?;
     sim.agents.assign(who, None);
-    let p = sim.work.place_mut(b).map_err(|e| invalid(format!("{e:?}")))?;
-    p.max_beavers = p.max_beavers.max(p.filled());
+    if let Some(ag) = sim.agents.by_id.get_mut(&who) { ag.queue.clear(); }
     Ok(())
 }
 
@@ -236,6 +262,7 @@ fn free_last(sim: &mut SimState, b: BuildingId, role: Option<Job>) -> Result<Bea
     sim.work.unassign(b, i).map_err(|e| invalid(format!("{e:?}")))?;
     let p = sim.work.place_mut(b).map_err(|e| invalid(format!("{e:?}")))?;
     p.max_beavers = p.filled();
+    sim.agents.assign(who, None);
     Ok(who)
 }
 
@@ -246,13 +273,19 @@ pub(crate) fn set_priority(sim: &mut SimState, b: BuildingId, priority: Priority
 pub(crate) fn set_slot_off(sim: &mut SimState, b: BuildingId, slot: usize, off: bool) -> Result<(), SimError> {
     let s = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no beaver slots", b.0)))?.slots.get_mut(slot).ok_or_else(|| invalid("SlotOutOfRange"))?;
     s.off = off;
-    if off { s.beaver = None; }
+    let freed = if off { s.beaver.take() } else { None };
+    if let Some(who) = freed { sim.agents.assign(who, None); }
     Ok(())
 }
 pub(crate) fn set_paused(sim: &mut SimState, b: BuildingId, paused: bool) -> Result<(), SimError> {
     let p = sim.work.place_mut(b).map_err(|_| invalid(format!("building {} has no beaver slots", b.0)))?;
     p.paused = paused;
-    if paused { for s in &mut p.slots { s.beaver = None; } }
+    if paused {
+        let mut freed: Vec<BeaverId> = p.slots.iter_mut().filter_map(|s| s.beaver.take()).collect();
+        sim.agents.build_targets.retain(|&w, t| if *t == b { freed.push(w); false } else { true });
+        sim.agents.maint_targets.retain(|&w, t| if *t == b { freed.push(w); false } else { true });
+        for w in freed { crate::agents::wake(sim, w); }
+    }
     Ok(())
 }
 
@@ -262,7 +295,12 @@ pub(crate) fn adjust_role(sim: &mut SimState, role: Job, delta: i32) -> Result<(
             match role_target(sim, role) {
                 Some((b, slot, pv)) => place_by_hand(sim, b, slot, pv.who),
                 None => match send_out_who(sim, role) {
-                    Some((who, a)) => { order(sim, who, Some(a)); sim.agents.assign(who, Some(a)); Ok(()) }
+                    Some((who, a)) => {
+                        order(sim, who, Some(a));
+                        sim.agents.assign(who, Some(a));
+                        if let Some(ag) = sim.agents.by_id.get_mut(&who) { ag.queue.clear(); }
+                        Ok(())
+                    }
                     None => Err(invalid(role_add_check(sim, role).err().unwrap_or_else(|| "Cannot assign job".into()))),
                 },
             }

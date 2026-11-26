@@ -32,12 +32,11 @@ pub struct Raft {
 pub struct Fleet {
     pub rafts: Vec<Raft>,
     next: u32,
-    /// Which stretch of raft water each cell is on (0: none), worked out once a day, and the
-    /// day it was.
+    /// Which stretch of raft water each cell is on (0: none), refreshed whenever nav topology/ice changes.
     #[serde(skip)]
     regions: Vec<u32>,
     #[serde(skip)]
-    regions_day: Option<i64>,
+    regions_key: Option<(u64, u64, u64, u64, usize, u64)>,
 }
 
 impl Fleet {
@@ -197,11 +196,11 @@ fn label_regions(sim: &mut SimState) {
 /// Keep each finished raft landing's rafts: new ones moored at its docks, those of a raft landing that
 /// is gone taken away, and any whose hauler has stopped using it let go.
 pub fn step(sim: &mut SimState) {
-    let day = sim.time_days.floor() as i64;
+    let key = sim.nav.refresh_key();
     let any = sim.buildings.buildings.iter().any(|b| b.kind.docks_rafts());
-    if any && sim.fleet.regions_day != Some(day) {
+    if any && (sim.fleet.regions.is_empty() || sim.fleet.regions_key != key) {
         label_regions(sim);
-        sim.fleet.regions_day = Some(day);
+        sim.fleet.regions_key = key;
     }
     let raft_landings: Vec<(BuildingId, Vec<Cell>)> = sim
         .buildings

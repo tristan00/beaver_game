@@ -3,6 +3,7 @@
 //! A pile rots away `SPOIL_DAYS` after it was dropped.
 include!(concat!(env!("OUT_DIR"), "/piles_constants.rs"));
 use crate::buildings::Good;
+use crate::inventory::Species;
 use crate::water::Cell;
 use crate::SimState;
 
@@ -14,6 +15,10 @@ pub struct Pile {
     pub amount: f32,
     /// The day it was dropped; goods added later move it on in proportion to how much they add.
     pub day: f64,
+    /// Whether this good was already counted as colony production (refunded/wrecked/hauled).
+    #[serde(default)] pub booked: bool,
+    /// Preserved seedling species, if applicable.
+    #[serde(default)] pub species: Option<Species>,
 }
 
 impl Pile {
@@ -33,18 +38,23 @@ impl Piles {
         self.items.iter().find(|p| p.id == id)
     }
 
-    /// Leave goods on a cell, on top of what is already lying there.
-    pub fn drop_at(&mut self, cell: Cell, good: Good, amount: f32, now: f64) {
+    /// Leave goods on a cell, on top of what is already lying there (preserving `booked` and `species`).
+    pub fn drop_load(&mut self, cell: Cell, good: Good, amount: f32, now: f64, booked: bool, species: Option<Species>) {
         if amount <= 0.0 {
             return;
         }
-        if let Some(p) = self.items.iter_mut().find(|p| p.cell == cell && p.good == good) {
+        if let Some(p) = self.items.iter_mut().find(|p| p.cell == cell && p.good == good && p.booked == booked && p.species == species) {
             p.day += (now - p.day) * (amount / (p.amount + amount)) as f64;
             p.amount += amount;
             return;
         }
         self.next_id += 1;
-        self.items.push(Pile { id: self.next_id, cell, good, amount, day: now });
+        self.items.push(Pile { id: self.next_id, cell, good, amount, day: now, booked, species });
+    }
+
+    /// Leave unbooked goods on a cell, on top of what is already lying there.
+    pub fn drop_at(&mut self, cell: Cell, good: Good, amount: f32, now: f64) {
+        self.drop_load(cell, good, amount, now, false, None);
     }
 
     /// Take up to `amount` from a pile; an emptied pile is gone.

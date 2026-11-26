@@ -222,19 +222,16 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
         (Some(HudAction::SetGate(id, g.cell, GateSetting::Shut)), gate_tip)
     };
     r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost: cost_chip(&works.works.gate), action, tip, hint: false, on: gate_there });
-    let lock_there = sim::locks::is_lock(s, g.cell) || sim::locks::pending(s, g.cell);
-    let lock_cost = if gate_there { works.works.lock.clone() } else { cost_sum(&works.works.gate, &works.works.lock) };
+    let lock_there = sim::locks::has(s, g.cell);
+    let lock_cost = sim::locks::order_cost(s, id, g.cell);
     let lock_tip = cost_lines(Tip::name("Lock").line("A gate beavers and rafts get past", ""), &lock_cost);
     let (action, tip) = if lock_there {
         (Some(HudAction::GateChip(id, g.cell)), lock_tip.line("Ordered", ""))
-    } else if !sim::locks::unlocked(s) {
-        (None, lock_tip.line("Needs a raft landing", ""))
-    } else if !gate_there && !sim::canals::gates_unlocked(s) {
-        (None, lock_tip.line("Needs a haul mound", ""))
-    } else if sim::locks::check_room(s, id, g.cell).is_err() {
-        (None, lock_tip.line("No room for a lock", ""))
     } else {
-        (Some(HudAction::UpgradeLock(id, g.cell)), lock_tip)
+        match sim::locks::check_order(s, id, g.cell) {
+            Ok(()) => (Some(HudAction::UpgradeLock(id, g.cell)), lock_tip),
+            Err(why) => (None, lock_tip.line(cap(&why), "")),
+        }
     };
     r.big_button(BigButton { icon: Icon::LockGates, word: "Lock", cost: cost_chip(&lock_cost), action, tip, hint: false, on: lock_there });
 }

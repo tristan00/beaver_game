@@ -9,14 +9,10 @@ pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32)
     }
     let extending = hud.extending;
     let res: Result<(), String> = match (hud.tool, extending) {
-        (Tool::Canal, Some(canal)) => {
-            let end = sim::canals::canal(sim, canal).map(|k| k.end());
-            let cells = hud.line.iter().copied().filter(|c| Some(*c) != end).collect();
-            sim.apply(sim::Command::GrowCanal { canal, growth: sim::CanalGrowth::Extend, cells }).map(|_| ()).map_err(|e| sim_error(&e.to_string()))
-        }
+        (Tool::Canal, Some(canal)) => sim.apply(sim::Command::GrowCanal { canal, growth: sim::CanalGrowth::Extend, cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
         (Tool::Canal, None) => sim.apply(sim::Command::PlaceCanal { cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
         (Tool::Dam, Some(dam)) => sim.apply(sim::Command::GrowDam { dam, growth: sim::DamGrowth::Extend, cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
-        (Tool::Dam, None) => build_logic::emit(sim, &BuildOrder::Dam { cells: hud.line.clone() }).map(|_| ()).map_err(|e| place_error(&e)),
+        (Tool::Dam, None) => sim.apply(sim::Command::PlaceDam { cells: hud.line.clone() }).map(|_| ()).map_err(|e| sim_error(&e.to_string())),
         _ => return None,
     };
     match res {
@@ -38,7 +34,7 @@ pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32)
     }
 }
 
-pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, now: f32) {
+pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, sel: &mut Selection, now: f32) {
     while let Some(item) = hud.undo.pop() {
         match item {
             UndoItem::Site(id) => {
@@ -46,6 +42,7 @@ pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, now: f32) {
                 let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::all().map(|g| (g, sim.buildings.stores.amount(g))).collect();
                 match sim.apply(sim::Command::CancelSite { building: id }).map(|_| stock.iter().map(|(g, a)| (*g, sim.buildings.stores.amount(*g) - a)).collect::<Vec<_>>()) {
                     Ok(back) => {
+                        clean_removed_site(sim, hud, sel, id);
                         let refund = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| format!("+{}", a.1.round() as i64));
                         let icon2 = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| (good_icon(a.0), good_color(a.0)));
                         hud.msg = Some((Msg { icon: Some((Icon::Undo, INK)), icon2: icon2.or(Some((building_icon(kind), INK))), text: refund.unwrap_or_default() }, now));
@@ -54,6 +51,16 @@ pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, now: f32) {
                 }
                 return;
             }
+        }
+    }
+}
+
+fn clean_removed_site(s: &sim::SimState, hud: &mut HudState, sel: &mut Selection, building: BuildingId) {
+    if s.buildings.building(building).is_none() {
+        hud.pinned.retain(|p| *p != Selection::Site(building));
+        hud.dam_cells.clear();
+        if *sel == Selection::Site(building) {
+            *sel = Selection::None;
         }
     }
 }
@@ -131,6 +138,7 @@ pub(super) fn button_actions(
                 let cells = if growth == sim::DamGrowth::Raise { picks_on(s, dam, &hud.dam_cells) } else { Vec::new() };
                 cmd(s, &mut hud, sim::Command::GrowDam { dam, growth, cells }, now);
                 hud.dam_ghost = None;
+                hud.dam_cells.clear();
             }
             HudAction::DamUpkeep(dam, on) => cmd(s, &mut hud, sim::Command::SetDamUpkeep { dam, on }, now),
             HudAction::Opening(dam, o) => {
@@ -266,20 +274,14 @@ pub(super) fn button_actions(
                 if hud.remove_armed.is_some_and(|(b, t)| b == building && now - t <= super::REMOVE_ARM_SECS) {
                     hud.remove_armed = None;
                     cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
-                    if s.buildings.building(building).is_none() {
-                        hud.pinned.retain(|p| *p != Selection::Site(building));
-                        hud.dam_cells.clear();
-                        if *sel == Selection::Site(building) {
-                            *sel = Selection::None;
-                        }
-                    }
+                    clean_removed_site(s, &mut hud, &mut sel, building);
                 } else {
                     hud.remove_armed = Some((building, now));
                 }
             }
             HudAction::CancelBuild(building) => {
                 cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
-                hud.pinned.retain(|p| *p != Selection::Site(building));
+                clean_removed_site(s, &mut hud, &mut sel, building);
             }
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
@@ -298,7 +300,7 @@ pub(super) fn button_actions(
 /// The picked cells that lie on this dam or canal: a pick on another one is not for it.
 fn picks_on(s: &sim::SimState, id: sim::buildings::BuildingId, picks: &[Cell]) -> Vec<Cell> {
     let Some(b) = s.buildings.building(id) else { return Vec::new() };
-    let on = |c: &Cell| b.dam.as_ref().is_some_and(|d| d.cells.iter().any(|x| x.cell == *c)) || b.canal.as_ref().is_some_and(|k| k.cells.iter().any(|x| x.cell == *c));
+    let on = |c: &Cell| b.dam.as_ref().is_some_and(|d| d.line().any(|x| x.cell == *c)) || b.canal.as_ref().is_some_and(|k| k.cells.iter().any(|x| x.cell == *c));
     picks.iter().copied().filter(|c| on(c)).collect()
 }
 

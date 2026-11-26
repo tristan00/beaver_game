@@ -51,10 +51,12 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     )
 }
 
-/// The pip under a beaver token: green working, amber free, blue resting or too young.
+/// The pip under a beaver token: green working, yellow waiting, amber free, blue resting or too young.
 pub(super) fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
     if !b.can_work() || b.resting {
         REST
+    } else if sim::jobs::waiting(s, b.id).is_some() {
+        WARN
     } else if s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) {
         GOOD
     } else {

@@ -179,15 +179,18 @@ impl FoodIndex {
         self.buckets.iter_mut().for_each(Vec::clear);
         self.buckets.resize(self.across * self.across, Vec::new());
         for r in sim.resources.items() {
-            let seedling = match r.kind {
-                k if k.is_food_plant() && !k.aquatic() => false,
-                k if k.is_tree() && r.stage() == Some(crate::forestry::TreeStage::Seedling) => true,
-                _ => continue,
-            };
+            let Some(seedling) = browse_kind(r) else { continue };
             let b = (r.cell.1 / FOOD_BUCKET).min(self.across - 1) * self.across + (r.cell.0 / FOOD_BUCKET).min(self.across - 1);
             self.buckets[b].push((r.cell, r.id, seedling));
         }
     }
+}
+
+/// `Some(true)` for a tree seedling, `Some(false)` for a grazeable land food plant.
+fn browse_kind(r: &crate::resources::Resource) -> Option<bool> {
+    if r.kind.is_food_plant() && !r.kind.aquatic() && !r.is_seedling() { Some(false) }
+    else if r.kind.is_tree() && r.is_seedling() { Some(true) }
+    else { None }
 }
 
 impl Default for Wildlife {
@@ -213,12 +216,12 @@ fn berth(sim: &SimState) -> f32 {
     AVOID_BASE + AVOID_PER_BUILDING * (sim.buildings.buildings.len() as f32).sqrt() * 2.0
 }
 
-/// Distance from `p` to the nearest building (any kind), or far.
+/// Distance from `p` to the nearest building (any kind, across all cells including dams/canals), or far.
 fn to_colony(sim: &SimState, p: (f32, f32)) -> f32 {
-    sim.buildings.buildings.iter().map(|b| {
-        let (w, d) = b.kind.spec().footprint;
-        dist(p, (b.pos.0 as f32 + w as f32 / 2.0, b.pos.1 as f32 + d as f32 / 2.0))
-    }).fold(f32::INFINITY, f32::min)
+    sim.buildings.buildings.iter()
+        .flat_map(|b| b.cells())
+        .map(|c| dist(p, centre(c)))
+        .fold(f32::INFINITY, f32::min)
 }
 
 fn cell_of(p: (f32, f32)) -> Cell {
@@ -301,9 +304,9 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
         if to_colony(sim, centre(c)) < berth || !walkable(sim, c) {
             continue;
         }
-        match sim.resources.get(id) {
-            Some(res) if !seedling && res.kind.is_food_plant() && !res.kind.aquatic() && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
-            Some(res) if seedling && res.stage() == Some(crate::forestry::TreeStage::Seedling) => return Some((c, Food::Seedling(id))),
+        match sim.resources.get(id).and_then(|res| browse_kind(res).map(|s| (res, s))) {
+            Some((res, false)) if !seedling && res.amount >= 1.0 => return Some((c, Food::Plant(id))),
+            Some((_, true)) if seedling => return Some((c, Food::Seedling(id))),
             _ => {}
         }
     }
@@ -380,21 +383,17 @@ fn edge_cell(sim: &SimState, wl: &mut Wildlife) -> Option<Cell> {
 
 fn eat(sim: &mut SimState, wl: &mut Wildlife, food: Food, amount: f32) -> f32 {
     match food {
-        Food::Plant(id) => match sim.resources.get_mut(id) {
-            Ok(r) if r.amount > 0.0 => {
-                let got = amount.min(r.amount);
-                r.amount -= got;
-                sim.resources.remove_if_bare(id);
-                got
-            }
-            _ => 0.0,
-        },
+        Food::Plant(id) => {
+            let got = sim.resources.take(id, amount).map_or(0.0, |(_, g)| g);
+            sim.resources.remove_if_bare(id);
+            got
+        }
         Food::Pile(id) => sim.work.piles.take(id, amount),
         Food::Seedling(id) => {
             // Nibbled to the ground: a seedling eaten is gone.
-            let had = sim.resources.get(id).is_some();
-            sim.resources.keep(|r| r.id != id);
-            if had {
+            if let Some(r) = sim.resources.get(id) {
+                crate::resources::note("GONE", r, format_args!("why=eaten by wildlife"));
+                sim.resources.keep(|r| r.id != id);
                 wl.seedlings_eaten += 1;
             }
             0.0
@@ -416,7 +415,7 @@ pub fn prey_for_wolf(sim: &SimState, at: (f32, f32), sight: f32, skip: &[u32]) -
     sim.wildlife
         .animals
         .iter()
-        .filter(|a| a.kind.prey() && !skip.contains(&a.id) && a.doing != Doing::Leave && dist(a.pos, at) <= sight && walkable(sim, cell_of(a.pos)))
+        .filter(|a| a.kind.prey() && !skip.contains(&a.id) && !matches!(a.doing, Doing::Leave | Doing::Caught) && dist(a.pos, at) <= sight && walkable(sim, cell_of(a.pos)))
         .min_by(|x, y| dist(x.pos, at).total_cmp(&dist(y.pos, at)).then(x.id.cmp(&y.id)))
         .map(|a| a.id)
 }
@@ -513,19 +512,18 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
             a.doing = Doing::Rest { until: now + 0.05 };
         }
         if now >= a.leave_by && !matches!(a.doing, Doing::Flee | Doing::Leave) {
-            let n = sim.nav.surface.width();
-            let edge = [(cell_of(a.pos).0, 0), (cell_of(a.pos).0, n - 1), (0, cell_of(a.pos).1), (n - 1, cell_of(a.pos).1)]
-                .into_iter()
-                .filter(|&c| a.kind == Kind::Bird || walkable(sim, c))
-                .min_by(|x, y| dist(centre(*x), a.pos).total_cmp(&dist(centre(*y), a.pos)));
-            match edge.filter(|&e| head_for(sim, a, e)) {
-                Some(_) => a.doing = Doing::Leave,
-                None => {
-                    // No way out: it goes at once.
-                    a.doing = Doing::Leave;
-                    a.path.clear();
-                }
-            }
+            let ok = if a.kind == Kind::Bird {
+                let n = sim.nav.surface.width();
+                let edge = [(cell_of(a.pos).0, 0), (cell_of(a.pos).0, n - 1), (0, cell_of(a.pos).1), (n - 1, cell_of(a.pos).1)]
+                    .into_iter()
+                    .min_by(|x, y| dist(centre(*x), a.pos).total_cmp(&dist(centre(*y), a.pos)));
+                edge.is_some_and(|e| head_for(sim, a, e))
+            } else {
+                a.path = crate::predators::land_path(sim, cell_of(a.pos), |c| crate::predators::edge_gap(&sim.nav, c) == 0, |c| crate::predators::edge_gap(&sim.nav, c) as f32, SEARCH_NODES * 4).unwrap_or_default();
+                !a.path.is_empty()
+            };
+            a.doing = Doing::Leave;
+            if !ok { a.path.clear(); }
         }
     }
     match a.doing {

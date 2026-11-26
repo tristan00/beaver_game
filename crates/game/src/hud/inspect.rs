@@ -49,8 +49,12 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
         Selection::Beaver(id) => Some(beaver(c, id)),
         Selection::Lodge(id) => Some(lodge(c, id)),
         Selection::Cell(cell) => {
-            let b = c.s.buildings.buildings.iter().find(|b| b.dam.is_some() && b.cells().any(|x| x == cell))?;
-            Some(super::dam_panel::dam_panel(c, b.id, b.dam.as_deref()?))
+            let b = c.s.buildings.buildings.iter().find(|b| (b.dam.is_some() || b.canal.is_some()) && b.cells().any(|x| x == cell))?;
+            match (b.dam.as_deref(), b.canal.as_deref()) {
+                (Some(d), _) => Some(super::dam_panel::dam_panel(c, b.id, d)),
+                (_, Some(k)) => Some(super::canal_panel::canal_panel(c, b.id, k)),
+                _ => None,
+            }
         }
         Selection::Tree(id) => resource(c, id),
         Selection::Wolf(key) => wolf(c, key),
@@ -59,7 +63,7 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
     }
 }
 
-fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str, Option<BuildingId>) {
+pub(super) fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str, Option<BuildingId>) {
     use sim::agents::Assignment;
     if !b.can_work() { return (Icon::Kit, REST, "Too young", None); }
     if let Some((bid, _, role)) = s.work.slot_of(b.id) { return (job_icon(role), GOOD, role.name(), Some(bid)); }
@@ -69,7 +73,7 @@ fn job(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Color, &'static str
         Some(Assignment::Resource(r)) => s.resources.get(r).map_or((Icon::Hammer, GOOD, "Gatherer", None), |res| gatherer(res.kind)),
         Some(Assignment::Area(kind, _)) => gatherer(kind),
         Some(Assignment::Slot(bid, _)) => (Icon::Hammer, GOOD, "Working here", Some(bid)),
-        Some(Assignment::Mend) => { let (i, c, n) = by_duty(sim::content::Duty::Mend); (i, c, n, None) }
+        Some(Assignment::Mend) => { let (i, c, n) = by_duty(sim::content::Duty::Mend); (i, c, n, s.agents.maint_targets.get(&b.id).copied()) }
         Some(Assignment::Build) => { let (i, c, n) = by_duty(sim::content::Duty::Build); (i, c, n, s.agents.build_targets.get(&b.id).copied()) }
         Some(Assignment::Go(_)) => (Icon::Walk, GOOD, "Sent", None),
         None => (Icon::Idle, ACCENT, "Free", None),
@@ -102,7 +106,7 @@ pub(super) fn activity(s: &sim::SimState, b: &sim::colony::Beaver) -> (Icon, Col
         Some(Task::Work { kind: WorkKind::Gate, .. }) => (building_icon(BuildingKind::dam()), GOOD, "Setting a gate"),
         Some(Task::Seed { .. }) => (good_icon(Good::seedling()), GOOD, "Taking seedlings"),
         Some(Task::Plant { .. }) => (good_icon(Good::seedling()), GOOD, "Planting"),
-        Some(Task::Rest) if sim::jobs::role_of(s, b.id).is_none() => (Icon::Idle, ACCENT, "Free"),
+        Some(Task::Rest) if !sim::jobs::is_busy(s, b.id) => (Icon::Idle, ACCENT, "Free"),
         Some(Task::Rest) => (Icon::Idle, REST, "Resting"),
         Some(Task::Watch { .. }) => (job_icon(sim::jobs::Job::with_duty(Duty::Watch)), GOOD, "On watch"),
         Some(Task::Raft { .. }) => (Icon::Raft, GOOD, "Rafting"),
@@ -229,34 +233,35 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
             let on = s.work.fills.contains(&id);
             toggle_row(u, Icon::Up, on, Tip::name("Fill").line("Haulers bring it from other stores", ""), HudAction::FillStore(id, !on), "Stop filling", "Fill");
         }
-        let Some(pl) = s.work.place(id).filter(|pl| !pl.slots.is_empty() && !b.kind.is_waterworks()) else { return };
-        if b.kind.seats(sim::content::Duty::Forest) {
-            for (i, sl) in pl.slots.iter().enumerate() {
-                let name = sl.role.name();
+        if let Some(pl) = s.work.place(id).filter(|pl| !pl.slots.is_empty() && !b.kind.is_waterworks()) {
+            if b.kind.seats(sim::content::Duty::Forest) {
+                for (i, sl) in pl.slots.iter().enumerate() {
+                    let name = sl.role.name();
+                    u.row(8.0, |r| {
+                        r.icon(job_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name));
+                        match sl.beaver.and_then(|w| s.colony.beaver(w)) {
+                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(name, "")); }
+                            None => { r.empty_token(22.0).tip(Tip::name(if sl.off { "Off" } else { "Nobody yet" })); }
+                        }
+                        r.spacer();
+                        r.pebble(if sl.off { Icon::Play } else { Icon::Pause }, 11.0, HudAction::SlotOff(id, i, !sl.off), if sl.off { Peb::Idle } else { Peb::Good }).tip(Tip::name(if sl.off { "Turn on" } else { "Turn off" }));
+                    });
+                }
+            } else {
+                u.rule();
                 u.row(8.0, |r| {
-                    r.icon(job_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name));
-                    match sl.beaver.and_then(|w| s.colony.beaver(w)) {
-                        Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(name, "")); }
-                        None => { r.empty_token(22.0).tip(Tip::name(if sl.off { "Off" } else { "Nobody yet" })); }
+                    for sl in &pl.slots {
+                        match sl.beaver.and_then(|w| s.colony.beaver(w)) {
+                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(sl.role.name(), "")); }
+                            None => { r.empty_token(22.0).tip(Tip::name("Nobody yet").line(sl.role.name(), "")); }
+                        }
                     }
                     r.spacer();
-                    r.pebble(if sl.off { Icon::Play } else { Icon::Pause }, 11.0, HudAction::SlotOff(id, i, !sl.off), if sl.off { Peb::Idle } else { Peb::Good }).tip(Tip::name(if sl.off { "Turn on" } else { "Turn off" }));
+                    r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
+                    r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
                 });
             }
-            return;
         }
-        u.rule();
-        u.row(8.0, |r| {
-            for sl in &pl.slots {
-                match sl.beaver.and_then(|w| s.colony.beaver(w)) {
-                    Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(sl.role.name(), "")); }
-                    None => { r.empty_token(22.0).tip(Tip::name("Nobody yet").line(sl.role.name(), "")); }
-                }
-            }
-            r.spacer();
-            r.pebble(Icon::Minus, 10.0, HudAction::RemoveBeaver(id), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
-            r.pebble(Icon::Plus, 10.0, HudAction::AddBeaver(id), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
-        });
         repair_row(c, u, id);
     })
 }

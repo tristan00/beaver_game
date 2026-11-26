@@ -21,6 +21,15 @@ pub fn on_water(sim: &SimState, cell: (usize, usize)) -> bool {
         || sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M)
 }
 
+pub(super) fn land_lift(sim: &SimState, cx: i32, cy: i32) -> f32 {
+    if cx >= 0 && cy >= 0
+        && sim.water.ice.get(cx as usize, cy as usize).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M)
+    {
+        return sim.water.depth.get(cx as usize, cy as usize).copied().unwrap_or(0.0).max(0.0) + 0.02;
+    }
+    -crate::terrain_render::channel_cut(sim, cx, cy)
+}
+
 fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
         Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
@@ -31,10 +40,7 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
             let gate = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5;
             depth.max(gate)
         }
-        // On ice, on top of it.
-        _ if sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) + 0.02,
-        // A dry river cell is drawn with its channel cut; walk on the drawn bed.
-        _ => -crate::terrain_render::channel_cut(sim, cell.0 as i32, cell.1 as i32),
+        _ => land_lift(sim, cell.0 as i32, cell.1 as i32),
     }
 }
 
@@ -65,13 +71,8 @@ pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
 fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let here = (ag.cell.0 as f32 + 0.5, ag.cell.1 as f32 + 0.5);
     let (mut frac, mut next) = (0.0, ag.cell);
-    if let Some(&(n, gait)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
-        let pace = sim::agents::travel_pace(&sim.nav, ag);
-        // As the simulation spends it: a swimmer's step is quicker with the current.
-        let cost = sim.nav.move_cost(ag.cell, n, pace).unwrap_or_else(|| gait_cost(gait) * sim::nav::step_length(ag.cell, n));
-        let pace = MOVE_COST_PER_DAY * pace;
-        // step_frac is remaining movement cost, not a normalized cell fraction.
-        frac = ((ag.step_frac + pending_days * pace) / cost).clamp(0.0, 1.0);
+    if let Some(&(n, _)) = ag.path.as_ref().and_then(|p| p.steps.first()) {
+        frac = step_progress(sim, ag, n, pending_days);
         next = n;
     }
     let to = (next.0 as f32 + 0.5, next.1 as f32 + 0.5);
@@ -90,11 +91,12 @@ pub fn moving_gait(ag: &Agent) -> Gait {
     [Gait::Climb, Gait::Swim].into_iter().find(|g| ag.trail.iter().any(|t| t.1 == *g)).unwrap_or(ag.gait)
 }
 
-pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
-    if is_moving(ag) {
+pub fn pose_of(sim: &SimState, ag: &Agent, moving: bool) -> Pose {
+    if moving {
         return match moving_gait(ag) {
             Gait::Swim => Pose::Swim,
             Gait::Climb => Pose::Climb,
+            Gait::Walk if sim.agents.fleeing.contains(&ag.id) => Pose::Run,
             Gait::Walk if ag.load.is_some() => Pose::Carry,
             Gait::Walk => Pose::Walk,
         };
@@ -131,8 +133,9 @@ pub fn pose_of(sim: &SimState, ag: &Agent) -> Pose {
 /// last moved it.
 pub(super) fn step_progress(sim: &SimState, ag: &Agent, next: (usize, usize), pending_days: f32) -> f32 {
     let pace = sim::agents::travel_pace(&sim.nav, ag);
-    let cost = sim.nav.move_cost(ag.cell, next, pace).unwrap_or(1.0).max(1e-3);
-    ((ag.step_frac + pending_days * sim::agents::MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0)
+    let gait = ag.path.as_ref().and_then(|p| p.steps.first()).filter(|s| s.0 == next).map_or(ag.gait, |s| s.1);
+    let cost = sim.nav.move_cost(ag.cell, next, pace).unwrap_or_else(|| gait_cost(gait) * sim::nav::step_length(ag.cell, next)).max(1e-3);
+    ((ag.step_frac + pending_days * MOVE_COST_PER_DAY * pace) / cost).clamp(0.0, 1.0)
 }
 
 pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
@@ -146,8 +149,12 @@ pub fn is_wet(sim: &SimState, ag: &Agent) -> bool {
     }
 }
 
+pub(super) fn is_pushing_raft(ag: &Agent) -> bool {
+    matches!(ag.task, Task::Raft { leg: 1 | 3 | 5, .. })
+}
+
 pub fn load_of(ag: &Agent) -> Option<(Good, f32)> {
-    ag.load.map(|l| (l.good, l.amount))
+    if matches!(ag.task, Task::Raft { .. }) { None } else { ag.load.map(|l| (l.good, l.amount)) }
 }
 
 pub fn facing_of(sim: &SimState, ag: &Agent) -> Option<f32> {
@@ -203,12 +210,11 @@ mod tests {
             history: std::collections::VecDeque::new(),
             next_work_probe: 0.0,
             next_home_probe: 0.0,
-            next_retarget: 0.0,
             next_meal_probe: 0.0,
             source: None,
             queue: Default::default(),
         };
-        assert_eq!(pose_of(&sim, &ag), Pose::Swim, "beaver on canal should use swim pose");
+        assert_eq!(pose_of(&sim, &ag, false), Pose::Swim, "beaver on canal should use swim pose");
         assert!(is_wet(&sim, &ag), "beaver on canal should be wet so its wake renders");
     }
 }

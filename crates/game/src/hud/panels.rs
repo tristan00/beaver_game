@@ -573,6 +573,20 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     let place = s.work.place(id);
     let (empty, slots) = place.map_or((0, 0), |pl| (pl.slots.iter().filter(|sl| sl.beaver.is_none()).count(), pl.slots.len()));
     if place.is_some_and(|p| p.paused) { return Some((Some(Icon::Pause), "Paused".into(), vec![], MUTED)); }
+    if let Some(d) = b.dam.as_deref() {
+        let h = sim::dams::health(s, d);
+        let work = sim::dams::has_work_for(s, id, false);
+        return Some(if work { (Some(Icon::Hammer), "Building".into(), vec![], GOOD) }
+            else if h < 0.8 { (Some(Icon::Warn), "Worn".into(), vec![], WARN) }
+            else { (Some(Icon::Drop), "Holding".into(), vec![], GOOD) });
+    }
+    if let Some(k) = b.canal.as_deref() {
+        let work = sim::canals::has_work_for(s, id, false);
+        let wet = k.status.as_ref().is_some_and(|st| st.wet > 0);
+        return Some(if work { (Some(Icon::Hammer), "Digging".into(), vec![], GOOD) }
+            else if wet { (Some(Icon::Drop), "Flowing".into(), vec![], GOOD) }
+            else { (Some(Icon::Drop), "Dry".into(), vec![], WARN) });
+    }
     if let Some(site) = place.and_then(|p| p.site.as_ref()) {
         let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();
         let stage = match s.maintenance.jobs.get(&id).map(|j| j.kind) {
@@ -582,7 +596,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
             None => "Building",
         };
         return Some(if !waiting.is_empty() && !site.labour_open() { (None, "Waiting".into(), waiting, WARN) }
-            else if slots > 0 && empty == slots { (Some(job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build))), "No builders".into(), vec![], MUTED) }
+            else if sim::agents::builders_on(s, id) == 0 { (Some(job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build))), "No builders".into(), vec![], MUTED) }
             else { (Some(Icon::Hammer), stage.into(), vec![], GOOD) });
     }
     if b.is_complete() && !b.operational() { return Some((Some(Icon::Hammer), "Ruined".into(), vec![], BAD)); }

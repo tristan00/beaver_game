@@ -111,11 +111,6 @@ impl Default for Stores {
 }
 
 impl Stores {
-    /// Book material actually delivered to a site, including freshly gathered loads.
-    /// Carried materials are outside stored inventory, so no capacity is involved.
-    pub(crate) fn book_site_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>) {
-        self.book_delivery(good, amount, fresh, Use::Sites);
-    }
     /// Book goods left where work uses them (a site, a gate, a building being mended): gone from
     /// the stores, and newly made if they came straight from whoever gathered them.
     pub(crate) fn book_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>, use_: Use) {

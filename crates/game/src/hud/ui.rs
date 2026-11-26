@@ -261,7 +261,7 @@ impl Ui {
                 if always { self.rule(); }
                 self.row(8.0, |r| {
                     if let Some(i) = icon { r.icon(i, 14.0, MUTED); }
-                    if always || icon.is_some() { r.bold(format!("{total}"), 12.0, MUTED); }
+                    r.bold(format!("{total}"), 12.0, MUTED);
                     r.spacer();
                     if total > page {
                         r.pebble(Icon::Up, 9.0, HudAction::Scroll(-step), if first == 0 { Peb::Faded } else { Peb::Idle });

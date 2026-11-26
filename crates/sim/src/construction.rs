@@ -100,7 +100,7 @@ impl SimState {
     fn tear_down_works(&mut self, id: buildings::BuildingId) -> Result<(), SimError> {
         let mut cells: Vec<crate::water::Cell> = crate::dams::dam(self, id).map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
         if let Some(k) = crate::canals::canal(self, id).filter(|k| k.gate.built) {
-            cells.push(k.gate.cell);
+            cells.extend(crate::gates::gate_cells(self, id, k.gate.cell));
         }
         for c in cells {
             self.water.clear_structure(c).map_err(|e| SimError::InvalidCommand(format!("{e:?}")))?;
@@ -108,11 +108,11 @@ impl SimState {
         Ok(())
     }
 
-    /// Return `amount` of `good` to stores, dropping any overflow onto the ground at `cell`.
+    /// Return `amount` of `good` to stores, dropping any overflow onto the ground at `cell` (marked already booked).
     pub(crate) fn refund_or_drop(&mut self, cell: crate::water::Cell, good: buildings::Good, amount: f32) -> f32 {
         let stored = self.buildings.stores.refund(good, amount).unwrap_or(0.0);
         if amount - stored > crate::work::EPS {
-            self.work.piles.drop_at(cell, good, amount - stored, self.time_days);
+            self.work.piles.drop_load(cell, good, amount - stored, self.time_days, true, None);
         }
         stored
     }
@@ -129,9 +129,9 @@ impl SimState {
         let spot = (pos.0 + w / 2, pos.1 + h / 2);
         for g in buildings::Good::all() {
             let held = self.buildings.stores.inventory.at(id, g);
-            let got = self.buildings.stores.take_from(id, g, held);
+            let (got, sp) = self.buildings.stores.take_kind_from(id, g, held);
             if got > 0.0 {
-                self.work.piles.drop_at(spot, g, got, self.time_days);
+                self.work.piles.drop_load(spot, g, got, self.time_days, true, sp);
             }
         }
         self.work.places.retain(|p| p.building != id);
@@ -154,11 +154,21 @@ impl SimState {
     }
 
     pub(crate) fn release_beavers(&mut self, id: buildings::BuildingId) {
+        let mut wake_ids: Vec<crate::colony::BeaverId> = Vec::new();
+        self.agents.build_targets.retain(|&w, t| if *t == id { wake_ids.push(w); false } else { true });
+        self.agents.maint_targets.retain(|&w, t| if *t == id { wake_ids.push(w); false } else { true });
+        if let Some(p) = self.work.places.iter_mut().find(|p| p.building == id) {
+            for s in &mut p.slots {
+                if let Some(w) = s.beaver.take() { wake_ids.push(w); }
+            }
+        }
         for ag in self.agents.by_id.values_mut() {
             if matches!(ag.assignment, Some(agents::Assignment::Slot(b, _)) if b == id) {
                 ag.assignment = None;
+                wake_ids.push(ag.id);
             }
         }
+        for w in wake_ids { agents::wake(self, w); }
     }
 }
 

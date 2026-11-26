@@ -1,5 +1,5 @@
 include!(concat!(env!("OUT_DIR"), "/stock_constants.rs"));
-use crate::agents::{accepts, is_store, load_size, Task, SUPPLIES};
+use crate::agents::{accepts, is_store, Task, SUPPLIES};
 use crate::buildings::{Building, BuildingId, Good};
 use crate::water::Cell;
 use crate::SimState;
@@ -31,13 +31,14 @@ fn in_flight(sim: &SimState) -> Vec<(BuildingId, BuildingId, Good, f32)> {
     use crate::agents::{Dest, Source};
     let mut out = Vec::new();
     for a in sim.agents.by_id.values() {
+        let cap = |g: Good| crate::agents::load_cap(sim, a.id, g);
         match (&a.task, a.load) {
             (Task::Move { from: Some(Source::Store(from)), to: Dest::Store(to), good, haul: true }, None) => {
-                out.push((*from, *to, *good, load_size(*good)));
+                out.push((*from, *to, *good, cap(*good)));
             }
             (Task::Move { to: Dest::Store(to), haul: true, .. }, Some(l)) => out.push((BuildingId(0), *to, l.good, l.amount)),
             (Task::Raft { from, to, good, leg, .. }, None) if *leg <= 2 => {
-                out.push((*from, *to, *good, (crate::raft_landing::RAFT_LOADS * load_size(*good)).min(sim.buildings.stores.stock_of(*from, *good))));
+                out.push((*from, *to, *good, (crate::raft_landing::RAFT_LOADS * cap(*good)).min(sim.buildings.stores.stock_of(*from, *good))));
             }
             (Task::Raft { to, leg, .. }, Some(l)) if *leg <= 4 => out.push((BuildingId(0), *to, l.good, l.amount)),
             _ => {}

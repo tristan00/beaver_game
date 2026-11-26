@@ -58,6 +58,7 @@ impl Plugin for EntitiesRenderPlugin {
             .init_resource::<CurrentSeason>()
             .init_resource::<CanopyView>()
             .init_resource::<sim_sync::PendingDays>()
+            .init_resource::<sim_sync::BuildingAnchors>()
             .init_resource::<BeaverDrawn>()
             .add_plugins((wolf::WolfPlugin, wildlife::WildlifePlugin, portrait::PortraitPlugin))
             .add_systems(Startup, (init_models, raft_landing::init_raft_landing_meshes))
