@@ -117,7 +117,7 @@ pub struct HudState {
     pub sort: (BeaverCol, bool),
     pub peek: Option<BeaverId>,
     pub journal_open: bool,
-    pub drowned: Option<(Vec<Cell>, Vec<BuildingId>)>,
+    pub paths_only: Option<Option<Job>>,
     undo: Vec<BuildingId>,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
@@ -189,8 +189,6 @@ pub enum HudAction {
     GrowDam(BuildingId, sim::DamGrowth),
     Opening(BuildingId, Opening),
     GateChip(BuildingId, Cell),
-    RemoveGate(BuildingId, Cell),
-    UpgradeLock(BuildingId, Cell),
     GrowCanal(BuildingId, sim::CanalGrowth),
     DamCell(Cell),
     DamTab(DamTab),
@@ -245,23 +243,32 @@ impl HudState {
         else if *sel != Selection::None || !self.selected.is_empty() { self.clear_selection(sel); }
         else if *lens != MapLens::World { *lens = MapLens::World; }
     }
+    /// Single entry point for changing selection so `Selection` and `HudState.selected` never desync.
+    pub(crate) fn select(&mut self, sel: &mut Selection, next: Selection) {
+        if *sel != next { self.dam_cells.clear(); }
+        *sel = next;
+        match next {
+            Selection::Beaver(id) => self.selected = vec![id],
+            _ => self.selected.clear(),
+        }
+        if self.follow.is_some_and(|f| !self.selected.contains(&f)) { self.follow = None; }
+    }
+    pub(crate) fn selected_beavers(&self, sel: Selection) -> Vec<BeaverId> {
+        if !self.selected.is_empty() { self.selected.clone() }
+        else if let Selection::Beaver(id) = sel { vec![id] }
+        else { Vec::new() }
+    }
     pub(crate) fn clear_selection(&mut self, sel: &mut Selection) {
-        *sel = Selection::None;
-        self.selected.clear();
-        self.follow = None;
-        self.dam_cells.clear();
+        self.select(sel, Selection::None);
     }
     pub(crate) fn select_beaver(&mut self, s: &sim::SimState, sel: &mut Selection, flow: &mut Flow, id: BeaverId) {
         let Some(b) = s.colony.beaver(id) else { return };
-        *sel = Selection::Beaver(id);
-        self.selected = vec![id];
+        self.select(sel, Selection::Beaver(id));
         flow.focus = Some(cell_world(&s.height, b.pos));
     }
     pub(crate) fn select_building(&mut self, s: &sim::SimState, sel: &mut Selection, flow: &mut Flow, id: BuildingId) {
         let Some(b) = s.buildings.building(id) else { return };
-        *sel = Selection::Site(id);
-        self.selected.clear();
-        self.dam_cells.clear();
+        self.select(sel, Selection::Site(id));
         flow.focus = Some(cell_world(&s.height, b.centre()));
     }
     pub(crate) fn set_overlay(&mut self, o: Option<Overlay>) {
@@ -294,7 +301,7 @@ impl HudState {
     pub fn set_tool_for_report(&mut self, t: Tool) { if self.tool != t { self.set_tool(t); } }
     pub fn draw_for_report(&mut self, corners: Vec<Cell>, dragging: bool) {
         self.set_tool(Tool::Dam);
-        self.line = build_logic::polyline(&corners);
+        self.line = sim::sandbox::line(&corners);
         self.drag_from = dragging.then(|| corners[0]);
         self.corners = if dragging { corners[..1].to_vec() } else { corners };
     }
@@ -420,13 +427,24 @@ fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
     }
 }
 
+fn env_lens() -> Option<MapLens> {
+    match std::env::var("BC_LENS").as_deref() {
+        Ok("water") => Some(MapLens::Water),
+        Ok("height") => Some(MapLens::Elevation),
+        Ok("deposits") => Some(MapLens::Deposits),
+        Ok("paths") => Some(MapLens::Paths),
+        _ => None,
+    }
+}
+
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_ui_font).init_resource::<Notices>().init_resource::<WolfCues>();
+        app.add_systems(Startup, load_ui_font).init_resource::<Notices>().init_resource::<WolfCues>()
+            .insert_resource(ActiveLens(env_lens().unwrap_or_default()));
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() { return; }
         paths::setup(app);
         app.init_resource::<HudState>().init_resource::<Hover>().init_resource::<PointerOverUi>()
-            .init_resource::<PointerOverPin>().init_resource::<CursorUi>().init_resource::<MapLens>().init_resource::<ActiveLens>()
+            .init_resource::<PointerOverPin>().init_resource::<CursorUi>().init_resource::<MapLens>()
             .init_resource::<MenuOpen>().init_resource::<Tips>()
             .init_resource::<Pops>().init_resource::<Floods>().init_resource::<LastProblems>()
             .init_resource::<elevation::Contours>().init_resource::<DamSettle>().init_resource::<scrollbar::ScrollDrag>()
@@ -453,13 +471,15 @@ fn fit_ui_scale(windows: Query<&Window, With<bevy::window::PrimaryWindow>>, menu
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DamLook { pub water: sim::dam_preview::Settled, pub new_wet: usize, pub trees: Vec<Cell> }
+pub struct DamLook { pub water: sim::dam_preview::Settled, pub new_wet: usize, pub trees: Vec<Cell>, pub drowned: Vec<BuildingId> }
 
 impl DamLook {
     fn new(s: &sim::SimState, water: sim::dam_preview::Settled) -> Self {
         let dry: HashSet<Cell> = water.flooded.iter().copied().filter(|&(x, y)| !build_logic::is_wet(s, x, y)).collect();
         let trees = s.resources.items().iter().filter(|r| r.kind.is_tree() && r.amount > 0.0 && dry.contains(&r.cell)).map(|r| r.cell).collect();
-        DamLook { water, new_wet: dry.len(), trees }
+        let depth: HashMap<Cell, f32> = water.flooded.iter().copied().zip(water.depths.iter().copied()).collect();
+        let drowned = sim::dam_preview::drowned_by(s, |x, y| depth.get(&(x, y)).copied().unwrap_or(0.0));
+        DamLook { water, new_wet: dry.len(), trees, drowned }
     }
 }
 
@@ -538,7 +558,6 @@ fn refresh_panels(
         let plan = sim::canals::plan_from(s, drawn, hud.extending);
         hud.canal_plan = Some((line, plan));
     }
-    update_drowned(s, &mut hud);
     if hud.opening().is_some_and(|(id, _)| *sel != Selection::Site(id) || sim::dams::dam(s, id).is_none()) { hud.set_tool(Tool::None); }
     if let Selection::Site(id) = *sel {
         if let Some(d) = sim::dams::dam(s, id) {
@@ -591,7 +610,7 @@ fn refresh_panels(
 fn refresh_fast(
     mut commands: Commands, icons: Res<Icons>, sim: Res<Sim>, hud: Res<HudState>, clock: Res<SimClock>,
     hover: Res<Hover>, cursor: Res<CursorUi>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    scale: Res<UiScale>, menu: Res<MenuOpen>, lens: Res<MapLens>, sel: Res<Selection>,
+    scale: Res<UiScale>, menu: Res<MenuOpen>, (lens, active_lens): (Res<MapLens>, Res<ActiveLens>), sel: Res<Selection>,
     (windows, pops, problems, time, wolf_drawn, orbit, beaver_drawn): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Option<Res<crate::entities_render::WolfDrawn>>, Res<crate::camera::OrbitCamera>, Option<Res<crate::entities_render::BeaverDrawn>>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
@@ -607,7 +626,7 @@ fn refresh_fast(
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, active_lens: *lens, hover: hover.cell(), works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs(), welcome: false };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, active_lens: active_lens.0, hover: hover.cell(), works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs(), welcome: false };
                 let mut tree = if matches!(hud.tool, Tool::Dam | Tool::Canal) {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
@@ -635,7 +654,7 @@ fn refresh_fast(
             }
             _ => match cams.single() {
                 Ok((cam, gt)) => {
-                    let mut tree = world::water_labels(s, cam, gt, scale.0, hover.cell(), &orbit, *lens);
+                    let mut tree = world::water_labels(s, cam, gt, scale.0, hover.cell(), &orbit, active_lens.0);
                     tree.extend(world::markers(s, beaver_drawn.as_deref(), cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.id))));
                     tree
                 }
@@ -646,27 +665,10 @@ fn refresh_fast(
     }
 }
 
-fn update_drowned(s: &sim::SimState, hud: &mut HudState) {
-    let Some(r) = hud.plan.as_ref().filter(|p| hud.tool == Tool::Dam && p.refusal.is_none()).and_then(|_| hud.dam_settled()) else {
-        hud.drowned = None;
-        return;
-    };
-    let key = hud.plan.as_ref().map(|p| p.line.clone()).unwrap_or_default();
-    if hud.drowned.as_ref().is_some_and(|d| d.0 == key) { return; }
-    let depth: HashMap<Cell, f32> = r.water.flooded.iter().copied().zip(r.water.depths.iter().copied()).collect();
-    hud.drowned = Some((key, sim::dam_preview::drowned_by(s, |x, y| depth.get(&(x, y)).copied().unwrap_or(0.0))));
-}
-
 fn sync_lens(keys: Res<ButtonInput<KeyCode>>, lens: Res<MapLens>, hud: Res<HudState>, mut active: ResMut<ActiveLens>) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    let shown = match std::env::var("BC_LENS").as_deref() {
-        Ok("water") => MapLens::Water,
-        Ok("height") => MapLens::Elevation,
-        Ok("deposits") => MapLens::Deposits,
-        Ok("paths") => MapLens::Paths,
-        _ if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) => MapLens::Water,
-        _ => *lens,
-    };
+    let shown = env_lens().unwrap_or_else(|| {
+        if alt || matches!(hud.tool, Tool::Dam | Tool::Canal) { MapLens::Water } else { *lens }
+    });
     if active.0 != shown { active.0 = shown; }
-    crate::terrain_render::MAP_LENS.store(shown.code(), std::sync::atomic::Ordering::Relaxed);
 }

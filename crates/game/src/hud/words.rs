@@ -1,4 +1,3 @@
-use crate::build_logic::PlaceError;
 use crate::icons::Icon;
 use bevy::prelude::Color;
 use sim::buildings::{BuildingKind, Good};
@@ -154,15 +153,17 @@ pub fn days(d: f32) -> String {
     format!("{}d", d.max(0.0).floor() as i64)
 }
 
-pub fn place_error(e: &PlaceError) -> String {
+pub fn place_error(e: &sim::buildings::BuildError) -> String {
+    use sim::buildings::BuildError;
     match e {
-        PlaceError::OutOfBounds => "Off map".into(),
-        PlaceError::Blocked => "Occupied".into(),
-        PlaceError::NeedsWater => "No water".into(),
-        PlaceError::TooClose => "Too close".into(),
-        PlaceError::BlocksDoor => "Blocks door".into(),
-        PlaceError::NoCells => String::new(),
-        PlaceError::Sim(m) => sim_error(m),
+        BuildError::OutOfBounds => "Off map".into(),
+        BuildError::Blocked | BuildError::SupplyPile => "Occupied".into(),
+        BuildError::NeedsWater => "No water".into(),
+        BuildError::TooClose => "Too close".into(),
+        BuildError::BlocksDoor => "Blocks door".into(),
+        BuildError::TooDeep => "Too deep".into(),
+        BuildError::Unexplored => "Unexplored".into(),
+        other => sim_error(&other.to_string()),
     }
 }
 

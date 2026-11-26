@@ -5,9 +5,9 @@
 # out the stores. Looks: model (a model id in the game), footing (mound, ring or piles, half-size across and along),
 # icon, the key that picks it to build, its place in the build menu, and whether its area is drawn round.
 # slots: the seats it has, each a job. stores: the goods it holds.
-# refits: Facing, Reinforce and ReinforcedRepair (the extra a reinforced building's repair takes): materials as a
-# fixed `cost` and `per_cell` of the building (a dam: per dam cell, each rounded up), labour (+ labour_per_cell, at
-# least min_labour), and how many times longer it lasts (lasts).
+# refits: Facing and Reinforce (materials as a fixed `cost` and `per_cell` of the building — a dam: per dam cell,
+# each rounded up — labour + labour_per_cell, at least min_labour, and how many times longer it lasts).
+# reinforced_repair: extra per-cell materials added to repairs on a mud-reinforced building.
 
 repair_fallback = [["Sticks", 1.0]]  # what repairing a building that cost nothing takes
 works = { gate = [["Sticks", 6.0]], lock = [["Sticks", 12.0], ["Mud", 4.0]], gate_needs = "HaulMound", lock_needs = "RaftLanding" }  # works that are not buildings: a gate, making one a lock, and the building each needs finished first
@@ -44,7 +44,7 @@ hotkey = "X"
 menu = 2
 refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
 refits.Reinforce = { cost = [["Sticks", 18.0], ["Mud", 8.0]], labour = 8.0, lasts = 1.75 }
-refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+reinforced_repair = [["Mud", 0.6]]
 
 [[building]]
 key = "StickPile"
@@ -65,7 +65,7 @@ hotkey = "C"
 menu = 3
 refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
 refits.Reinforce = { per_cell = [["Sticks", 2.0], ["Mud", 0.25]], labour = 4.0, labour_per_cell = 0.4, lasts = 1.5 }
-refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+reinforced_repair = [["Mud", 0.6]]
 
 [[building]]
 key = "Canal"
@@ -99,7 +99,7 @@ hotkey = "B"
 menu = 4
 refits.Facing = { per_cell = [["Pebbles", 1.5]], labour_per_cell = 0.6, lasts = 2.0 }
 refits.Reinforce = { per_cell = [["Sticks", 2.0], ["Mud", 0.25]], labour = 4.0, labour_per_cell = 0.4, lasts = 1.5 }
-refits.ReinforcedRepair = { per_cell = [["Mud", 0.6]] }
+reinforced_repair = [["Mud", 0.6]]
 
 [[building]]
 key = "PebbleHeap"

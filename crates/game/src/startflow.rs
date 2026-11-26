@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
-use crate::flow::{cell_world, Flow, Selection};
+use crate::flow::{cell_world, family_centre, Flow, Selection};
 use crate::sim_driver::SimClock;
 use crate::state::{PlannedDam, Sim};
 use bevy::prelude::*;
@@ -9,15 +9,9 @@ use sim::{Command, SimState};
 const ARRIVAL_DISTANCE: f32 = 18.0;
 const ARRIVAL_PITCH: f32 = 1.2;
 
-fn family_centre(sim: &SimState) -> (f32, f32) {
-    let n = sim.colony.beavers.len().max(1) as f32;
-    let sum = sim.colony.beavers.iter().fold((0.0, 0.0), |a, b| (a.0 + b.pos.0, a.1 + b.pos.1));
-    (sum.0 / n, sum.1 / n)
-}
-
 pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
     flow.arrive_left = 3.0;
-    let focus = family_centre(sim);
+    let focus = family_centre(sim).unwrap_or((0.0, 0.0));
 
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
@@ -208,12 +202,8 @@ fn begin_new_game(
         }
     }
     if std::env::var_os("BC_CLOSE").is_some() {
-        let bs = &sim.0.colony.beavers;
-        if !bs.is_empty() {
-            let n = bs.len() as f32;
-            let c = (bs.iter().map(|b| b.pos.0).sum::<f32>() / n, bs.iter().map(|b| b.pos.1).sum::<f32>() / n);
-            let p = crate::entities_render::sim_view::cell_xz(&sim.0, c);
-            orbit.target = Vec3::new(p.x, crate::entities_render::height_at(&sim.0.height, p.x, p.y), p.y);
+        if let Some(c) = family_centre(&sim.0) {
+            orbit.target = cell_world(&sim.0.height, c);
             orbit.distance = 16.0;
             orbit.pitch = 0.75;
         }

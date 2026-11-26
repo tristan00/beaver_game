@@ -277,7 +277,7 @@ pub fn markers(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cam: &Camera, gt:
         });
         if b.is_complete() && s.buildings.stranded(b, &s.water.depth) { icon = Some((Icon::Flood, WARN, "High and dry")); }
         if sim::buildings::flooded(b, &s.water.depth) { icon = Some((Icon::Flood, BAD, "Flooded")); }
-        if hud.tool == Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0 == hud.line && d.1.contains(&b.id)) { icon = Some((Icon::Flood, BAD, "This dam would flood it")); }
+        if hud.tool == Tool::Dam && hud.dam_settled().is_some_and(|r| r.drowned.contains(&b.id)) { icon = Some((Icon::Flood, BAD, "This dam would flood it")); }
         if let (Some((i, c, words)), Some(pos)) = (icon, place(b.centre(), 2.2)) {
             let mut v = pin(pos, i, c, Skin::Pebble, 28.0);
             v.action(super::HudAction::GoTo(super::NoticeAt::Building(b.id))).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str()).line(words, "")).pin();
@@ -311,10 +311,10 @@ fn water_anchor(cells: &[Cell]) -> Option<Cell> {
     cells.iter().copied().min_by(|a, b| ((a.0 as f32 - cx).powi(2) + (a.1 as f32 - cy).powi(2)).total_cmp(&((b.0 as f32 - cx).powi(2) + (b.1 as f32 - cy).powi(2))))
 }
 
-pub fn water_labels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hover: Option<Cell>, orbit: &crate::camera::OrbitCamera, lens: MapLens) -> Vec<VNode> {
-    let in_water = crate::terrain_render::map_lens() == crate::terrain_render::WATER_LENS;
+pub fn water_labels(s: &sim::SimState, cam: &Camera, gt: &GlobalTransform, scale: f32, hover: Option<Cell>, orbit: &crate::camera::OrbitCamera, active_lens: MapLens) -> Vec<VNode> {
+    let in_water = active_lens == MapLens::Water;
     let cam_h = (orbit.eye().y - orbit.target.y).max(0.0);
-    let name_alpha = if in_water { 1.0 } else if lens == MapLens::World && cam_h >= WATER_NAME_SHOW_HEIGHT {
+    let name_alpha = if in_water { 1.0 } else if active_lens == MapLens::World && cam_h >= WATER_NAME_SHOW_HEIGHT {
         ((cam_h - WATER_NAME_SHOW_HEIGHT) / (WATER_NAME_FULL_HEIGHT - WATER_NAME_SHOW_HEIGHT)).clamp(0.25, 1.0)
     } else { 0.0 };
     if !in_water && name_alpha <= 0.0 { return Vec::new(); }
@@ -668,12 +668,12 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<Hover>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, drawn: Option<Res<BeaverDrawn>>) {
+pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<Hover>, sel: Res<Selection>, active: Res<super::ActiveLens>, orbit: Res<crate::camera::OrbitCamera>, drawn: Option<Res<BeaverDrawn>>) {
     let _p = ::sim::prof::scope("game/draw world overlay");
-    let (s, h, lens) = (&sim.0, &sim.0.height, crate::terrain_render::map_lens());
+    let (s, h, lens) = (&sim.0, &sim.0.height, active.0);
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
     let (utx, uty) = (tx.max(0.0) as usize, ty.max(0.0) as usize);
-    if lens == MapLens::Water.code() {
+    if lens == MapLens::Water {
         draw_currents(&mut g, s, (tx, ty), orbit.distance);
         let r = (orbit.distance * 1.4).clamp(30.0, 110.0) as usize;
         draw_contours(&mut g, s, (utx, uty), r);
@@ -683,11 +683,11 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         }
         let [fr, fg, fb] = crate::terrain_render::FLOODED;
         for b in s.buildings.buildings.iter().filter(|b| sim::buildings::flooded(b, &s.water.depth)) { footprint_outline(&mut g, s, b, Color::srgb(fr, fg, fb)); }
-    } else if lens == MapLens::Forest.code() {
+    } else if lens == MapLens::Forest {
         for t in s.resources.items().iter().filter(|t| t.cell.0.abs_diff(utx) <= 40 && t.cell.1.abs_diff(uty) <= 40) {
             if let Some(st) = t.stage() { tree_dot(&mut g, h, t.cell, st); }
         }
-    } else if lens == MapLens::Deposits.code() {
+    } else if lens == MapLens::Deposits {
         for d in crate::terrain_render::shown_deposits(s).filter(|d| !d.kind.is_tree() && d.cell.0.abs_diff(utx) <= 40 && d.cell.1.abs_diff(uty) <= 40) {
             let depth = s.water.depth.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0);
             let [cr, cg, cb] = crate::terrain_render::deposit_color(d.kind);
@@ -725,7 +725,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             Selection::Site(id) => if let Some(b) = s.buildings.building(id) { for c in b.cells() { cell_outline(&mut g, h, c, surface_y(s, c), hover_col); } }
             _ => if let (Some(c), Selection::Cell(_)) = (hover.cell(), hover.order) { ring(&mut g, cell_at(h, c, 0.15), 0.4, hover_col); }
         }
-        let picked: Vec<BeaverId> = if !hud.selected.is_empty() { hud.selected.clone() } else if let Selection::Beaver(b) = *sel { vec![b] } else { Vec::new() };
+        let picked = hud.selected_beavers(*sel);
         for id in picked {
             let Some(ag) = s.agents.get(id) else { continue };
             if let Some(sim::agents::Assignment::Go(to)) = ag.assignment { double_ring(&mut g, cell_at(h, to, 0.15), 0.4, 0.3, 0.0, ACCENT); }
@@ -799,8 +799,8 @@ fn draw_line_ghost(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, hover: Opt
             shoreline(g, h, &r.water.flooded, r.water.level + 0.06, FOAM);
             for &t in &r.trees { double_ring(g, cell_at(h, t, 0.25), 0.55, 0.5, 0.04, WATER); }
         }
-        if let Some((_, ids)) = hud.drowned.as_ref().filter(|d| d.0 == hud.line) {
-            for b in ids.iter().filter_map(|id| s.buildings.building(*id)) { footprint_outline(g, s, b, BAD); }
+        if let Some(r) = hud.dam_settled() {
+            for b in r.drowned.iter().filter_map(|id| s.buildings.building(*id)) { footprint_outline(g, s, b, BAD); }
         }
         if let Some(c) = pv.spill_at.filter(|c| !hud.line.contains(c)) {
             ring(g, cell_y(h, c, pv.level.max(height_at(h, c.0 as f32 + 0.5, c.1 as f32 + 0.5)) + 0.1), 0.6, BAD);

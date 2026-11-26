@@ -307,6 +307,8 @@ pub struct Spec {
     #[serde(default)] pub stores: Vec<crate::buildings::Good>,
     /// The refits it can have; one it lacks it cannot.
     #[serde(default)] pub refits: BTreeMap<crate::maintenance::Refit, RefitRow>,
+    /// Extra per-cell material cost added to repairs once the building is mud-reinforced.
+    #[serde(default)] pub reinforced_repair: Vec<Amount>,
     /// How it goes up: dropped as a site, or drawn as a line of dam or canal cells.
     #[serde(default)] pub built_as: BuiltAs,
     /// Houses a family, behind a door kept clear.

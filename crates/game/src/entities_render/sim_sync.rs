@@ -1,4 +1,4 @@
-use super::scene::height_at;
+use crate::flow::height_at_world;
 use super::sim_view::*;
 use super::structures::{DamStage, DAM_STEP};
 use super::{models, BeaverSprite, Models, PlantLook, SimBeaver, Sway, TreeLod};
@@ -112,7 +112,7 @@ impl Motion {
 
     fn observe(&mut self, sim: &sim::SimState, ag: &sim::agents::Agent, game: bool) {
         let p = agent_world_pos(sim, ag, 0.0) + spread_in(sim, ag.cell, ag.id.0, game);
-        let ground = |xz: Vec2| height_at(&sim.height, xz.x, xz.y);
+        let ground = |xz: Vec2| height_at_world(&sim.height, xz.x, xz.y);
         if self.instance != sim.instance {
             self.samples.clear();
             self.observed_time = None;
@@ -283,7 +283,7 @@ pub(super) fn sync_sim_beavers(
         motion.observe(s, ag, clock.is_some());
         let mut heading = match motion.at(now, smooth_cells) {
             Some((xz, y, lift, dir)) => {
-                tr.translation = Vec3::new(xz.x, lift.map_or(y, |l| height_at(&s.height, xz.x, xz.y) + l), xz.y);
+                tr.translation = Vec3::new(xz.x, lift.map_or(y, |l| height_at_world(&s.height, xz.x, xz.y) + l), xz.y);
                 dir
             }
             None => { tr.translation = p; None }
@@ -500,7 +500,7 @@ fn res_visual(models: &Models, r: &sim::resources::Resource, season: models::Sea
 
 fn res_transform(sim: &sim::SimState, r: &sim::resources::Resource, scale: Vec3) -> Transform {
     let (c, p) = (r.cell, cell_mid(sim, r.cell));
-    let ground = height_at(&sim.height, p.x, p.y);
+    let ground = height_at_world(&sim.height, p.x, p.y);
     let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0).max(0.0);
     let y = match r.kind {
         k if k.is_tree() => ground - 0.05,
@@ -652,7 +652,7 @@ pub(super) fn sync_sim_resources(
 
 fn boulder_transform(sim: &sim::SimState, b: &sim::resources::Boulder) -> Transform {
     let p = cell_mid(sim, b.cell);
-    let ground = [(-0.45, -0.45), (0.45, -0.45), (-0.45, 0.45), (0.45, 0.45)].iter().map(|(dx, dz)| height_at(&sim.height, p.x + dx, p.y + dz)).fold(f32::MAX, f32::min);
+    let ground = [(-0.45, -0.45), (0.45, -0.45), (-0.45, 0.45), (0.45, 0.45)].iter().map(|(dx, dz)| height_at_world(&sim.height, p.x + dx, p.y + dz)).fold(f32::MAX, f32::min);
     Transform::from_xyz(p.x, ground, p.y).with_rotation(Quat::from_rotation_y((b.seed % 360) as f32 * std::f32::consts::TAU / 360.0)).with_scale(Vec3::new(b.size, b.size * 0.9, b.size))
 }
 
@@ -662,7 +662,7 @@ pub fn build_progress(sim: &sim::SimState, b: &sim::buildings::Building) -> f32 
 
 fn building_transform(sim: &sim::SimState, b: &sim::buildings::Building, anchor: Option<f32>) -> Transform {
     let c = cell_xz(sim, b.centre());
-    let grounds: Vec<f32> = b.cells().map(|c| { let p = cell_mid(sim, c); height_at(&sim.height, p.x, p.y) }).collect();
+    let grounds: Vec<f32> = b.cells().map(|c| { let p = cell_mid(sim, c); height_at_world(&sim.height, p.x, p.y) }).collect();
     let y = if models::footing_of(b.kind).is_some() {
         let mean = grounds.iter().sum::<f32>() / grounds.len().max(1) as f32;
         let surface = b.cells().filter_map(|(x, y)| Some(sim.height.get(x, y)? + sim.water.depth.get(x, y).copied().filter(|d| *d > 0.02)?)).fold(f32::MIN, f32::max);
@@ -705,7 +705,7 @@ pub(super) fn sync_sim_buildings(
         let (was_band, was_cond, mut puffed) = st.wear.get(&b.id).copied().unwrap_or((band, b.condition, -100.0));
         let c = cell_xz(sim, b.centre());
         if b.condition > was_cond + 0.002 && clock.0 - puffed > 1.2 {
-            puffs.push((Vec3::new(c.x, height_at(&sim.height, c.x, c.y) + 0.6, c.y), 1.4));
+            puffs.push((Vec3::new(c.x, height_at_world(&sim.height, c.x, c.y) + 0.6, c.y), 1.4));
             puffed = clock.0;
         }
         st.wear.insert(b.id, (band, b.condition, puffed));
@@ -875,7 +875,7 @@ pub struct DamSync {
 
 fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn(f32) -> f32) -> Transform {
     let p = cell_xz(sim, piece.centre());
-    Transform::from_xyz(p.x, lift(height_at(&sim.height, p.x, p.y)), p.y)
+    Transform::from_xyz(p.x, lift(height_at_world(&sim.height, p.x, p.y)), p.y)
         .with_rotation(Quat::from_rotation_y(piece.yaw() + if flip { std::f32::consts::PI } else { 0.0 }))
 }
 
@@ -886,7 +886,7 @@ pub(super) fn sync_sim_dams(
     let _p = ::sim::prof::scope("game/sync sim dams");
     let Some(mut models) = models else { return };
     let (changed, epoch, sim) = (sim.is_changed(), sim.0.instance, &sim.0);
-    if st.cells.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) { st.time = f64::NEG_INFINITY; }
+    if st.cells.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) { st.time = f64::NEG_INFINITY; st.key = None; st.walls.clear(); }
     if sim.time_days == st.time && !changed { return; }
     st.time = sim.time_days;
     let st = &mut *st;
@@ -1007,7 +1007,7 @@ pub(super) fn sync_ground_goods(
         if st.drawn.map.get(&key).is_some_and(|d| d.1 == sig) { continue; }
         let mat = if band == 0 { models.white.clone() } else { models.rot[(band - 1) as usize].clone() };
         let p = cell_mid(s, cell);
-        let ground = Vec3::new(p.x, height_at(&s.height, p.x, p.y), p.y);
+        let ground = Vec3::new(p.x, height_at_world(&s.height, p.x, p.y), p.y);
         let dropped = !loading && st.drawn.map.get(&key).is_none_or(|d| (d.1).1.0 < sig.1.0) && matches!(key, GroundKey::Pile(_));
         if dropped {
             let by: Vec<_> = s.agents.by_id.values().filter(|a| a.cell.0.abs_diff(cell.0) <= 1 && a.cell.1.abs_diff(cell.1) <= 1).map(|a| a.id.0).collect();

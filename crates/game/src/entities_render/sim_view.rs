@@ -1,5 +1,5 @@
-use super::scene::{height_at, Pose};
-use crate::terrain_render::CELL_SIZE as CELL;
+use super::scene::Pose;
+use crate::flow::height_at_world;
 use bevy::prelude::*;
 use sim::agents::{Agent, Task, MOVE_COST_PER_DAY};
 use sim::buildings::Good;
@@ -11,8 +11,7 @@ pub const WORLD_SCALE: f32 = 0.5;
 pub const DAM_TOP: f32 = 0.8;
 
 pub fn cell_xz(sim: &SimState, c: (f32, f32)) -> Vec2 {
-    let (w, h) = (sim.height.width() as f32, sim.height.height() as f32);
-    Vec2::new((c.0 - w / 2.0) * CELL, (c.1 - h / 2.0) * CELL)
+    crate::flow::cell_xz(&sim.height, c)
 }
 
 /// Whether a beaver on `cell` rides on the water's (or ice's) surface rather than the bare ground.
@@ -46,7 +45,7 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
 
 pub fn stand_y(sim: &SimState, cell: (usize, usize)) -> f32 {
     let p = cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
-    height_at(&sim.height, p.x, p.y) + lift_in(sim, cell)
+    height_at_world(&sim.height, p.x, p.y) + lift_in(sim, cell)
 }
 
 pub fn gait_cost(g: Gait) -> f32 {
@@ -82,7 +81,7 @@ fn agent_cells_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
         y0 + (y1 - y0) * frac
     } else {
         let (l0, l1) = (lift_in(sim, ag.cell), lift_in(sim, next));
-        height_at(&sim.height, xz.x, xz.y) + l0 + (l1 - l0) * frac
+        height_at_world(&sim.height, xz.x, xz.y) + l0 + (l1 - l0) * frac
     };
     Vec3::new(xz.x, y, xz.y)
 }

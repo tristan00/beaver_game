@@ -524,7 +524,7 @@ pub fn dam_tag(c: &Ctx, at: Vec2, pinned: bool, win: Vec2) -> Vec<VNode> {
                 x.icon(Icon::Drop, 17.0, WATER);
                 x.bold(rise.as_deref().unwrap_or("…"), 14.0, if rise.is_some() { INK } else { MUTED });
             }).tip(tip);
-            let drowned = c.hud.drowned.as_ref().filter(|d| d.0 == plan.line).map_or(&[][..], |d| &d.1[..]);
+            let drowned = look.map_or(&[][..], |r| &r.drowned[..]);
             if !drowned.is_empty() {
                 let mut tip = Tip::titled(Some((Icon::Flood, BAD)), "Buildings flooded").with_value(format!("{}", drowned.len()));
                 for b in drowned.iter().filter_map(|id| c.s.buildings.building(*id)) { tip.push(TipLine::new(b.kind.spec().name.as_str(), "").icon(building_icon(b.kind), INK).sub()); }
@@ -562,8 +562,8 @@ pub fn minimap(c: &Ctx) -> Vec<VNode> {
         });
     })];
     let leg_at = abs(Some(12.0), None, Some(LEGEND_TOP), None);
-    out.extend(super::paths::legend(c.s, c.active_lens, leg_at.clone()));
-    out.extend(super::water_legend::legend(leg_at));
+    out.extend(super::paths::legend(c.s, c.active_lens, c.hud.paths_only, leg_at.clone()));
+    out.extend(super::water_legend::legend(c.active_lens, leg_at));
     out
 }
 
@@ -589,7 +589,7 @@ pub fn status_line(s: &sim::SimState, id: BuildingId) -> Option<(Option<Icon>, S
     if let Some(site) = place.and_then(|p| p.site.as_ref()) {
         let waiting: Vec<Good> = site.needed.iter().filter(|a| site.missing(a.0) > 0.0).map(|a| a.0).collect();
         let stage = match s.maintenance.jobs.get(&id).copied() {
-            Some(sim::maintenance::Refit::Repair | sim::maintenance::Refit::ReinforcedRepair) => "Repairing",
+            Some(sim::maintenance::Refit::Repair) => "Repairing",
             Some(sim::maintenance::Refit::Reinforce) => "Reinforcing",
             Some(sim::maintenance::Refit::Facing) => "Facing with pebbles",
             None => "Building",

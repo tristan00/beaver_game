@@ -33,7 +33,7 @@ pub fn to_line(c: &Command) -> String {
         Command::PlaceDam { cells: v } => format!("dam {}", cells_str(v)),
         Command::GrowDam { dam, growth, cells: v } => format!("grow-dam {} {growth:?} {}", dam.0, cells_str(v)),
         Command::SetUpkeep { building, on } => format!("upkeep {} {}", building.0, flag(*on)),
-        Command::Refit { building, refit: Some(Refit::Repair | Refit::ReinforcedRepair) } => format!("repair {}", building.0),
+        Command::Refit { building, refit: Some(Refit::Repair) } => format!("repair {}", building.0),
         Command::Refit { building, refit: Some(Refit::Reinforce) } => format!("reinforce {}", building.0),
         Command::Refit { building, refit: Some(Refit::Facing) } => format!("pebble {}", building.0),
         Command::Refit { building, refit: None } => format!("cancel-refit {}", building.0),

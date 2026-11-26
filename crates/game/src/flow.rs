@@ -1,5 +1,4 @@
 use crate::camera::OrbitCamera;
-use crate::sim_driver::SimClock;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
@@ -47,9 +46,14 @@ impl Selection {
     }
 }
 
-pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {
+pub fn cell_xz(h: &HeightGrid, pos: (f32, f32)) -> Vec2 {
     let (ox, oz) = (h.width() as f32 * CELL_SIZE / 2.0, h.height() as f32 * CELL_SIZE / 2.0);
-    Vec3::new(pos.0 * CELL_SIZE - ox, height_at(h, pos.0, pos.1), pos.1 * CELL_SIZE - oz)
+    Vec2::new(pos.0 * CELL_SIZE - ox, pos.1 * CELL_SIZE - oz)
+}
+
+pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {
+    let p = cell_xz(h, pos);
+    Vec3::new(p.x, height_at(h, pos.0, pos.1), p.y)
 }
 
 pub fn world_cell(h: &HeightGrid, p: Vec3) -> (f32, f32) {
@@ -64,6 +68,13 @@ pub fn height_at(h: &HeightGrid, x: f32, y: f32) -> f32 {
 pub fn height_at_world(h: &HeightGrid, x: f32, z: f32) -> f32 {
     let (cx, cy) = world_cell(h, Vec3::new(x, 0.0, z));
     bilinear_at(h, cx, cy)
+}
+
+pub fn family_centre(sim: &sim::SimState) -> Option<(f32, f32)> {
+    let n = sim.colony.beavers.len();
+    if n == 0 { return None; }
+    let sum = sim.colony.beavers.iter().fold((0.0, 0.0), |a, b| (a.0 + b.pos.0, a.1 + b.pos.1));
+    Some((sum.0 / n as f32, sum.1 / n as f32))
 }
 
 pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell, Vec3, f32)> {
@@ -152,9 +163,7 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
 pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     let pos = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
     flow.arrive_left = 3.0;
-    let n = sim.colony.beavers.len().max(1) as f32;
-    let centre = sim.colony.beavers.iter().fold((0.0, 0.0), |p, b| (p.0 + b.pos.0 / n, p.1 + b.pos.1 / n));
-    flow.focus = Some(cell_world(&sim.height, if n > 0.0 { centre } else { pos }));
+    flow.focus = Some(cell_world(&sim.height, family_centre(sim).unwrap_or(pos)));
 }
 
 pub struct FlowPlugin;
@@ -167,7 +176,7 @@ impl Plugin for FlowPlugin {
     }
 }
 
-fn watch_collapse(mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
+fn watch_collapse(mut sim: ResMut<Sim>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
     use crate::hud::{NoticeAt, BAD, GOOD, INK, MUTED};
     use crate::icons::Icon;
     // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
@@ -222,9 +231,6 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>, mut notices
     }
     if names.len() != sim.0.colony.beavers.len() || !events.is_empty() {
         *names = sim.0.colony.beavers.iter().map(|b| (b.id.0, b.name.clone())).collect();
-    }
-    if sim.0.colony.is_collapsed() && !clock.paused {
-        clock.paused = true;
     }
 }
 

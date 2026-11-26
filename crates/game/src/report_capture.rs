@@ -101,7 +101,7 @@ fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usiz
                 c
             };
             let corners = vec![walk(-1), walk(1)];
-            let line = crate::build_logic::polyline(&corners);
+            let line = sim::sandbox::line(&corners);
             if line.len() <= 18 && crate::build_logic::check_dam(s, &line).is_ok() {
                 return Some((corners, start));
             }

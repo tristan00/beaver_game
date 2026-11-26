@@ -130,8 +130,8 @@ fn update_water_style(season: Res<Season>, water: Res<WaterChunks>, mut material
 }
 
 /// The water lens takes the water away altogether, so the bed shows its depth bands.
-fn hide_water_under_lens(mut q: Query<&mut Visibility, With<WaterSurface>>) {
-    let hide = crate::terrain_render::map_lens() == crate::terrain_render::WATER_LENS;
+fn hide_water_under_lens(active: Option<Res<crate::hud::ActiveLens>>, mut q: Query<&mut Visibility, With<WaterSurface>>) {
+    let hide = active.is_some_and(|l| l.0 == crate::hud::MapLens::Water);
     let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
     for mut v in &mut q {
         v.set_if_neq(want);
@@ -528,6 +528,7 @@ pub fn pond_view(s: &SimState) -> Option<Vec3> {
 fn update_water_chunks(
     mut commands: Commands,
     sim: Res<Sim>,
+    active: Option<Res<crate::hud::ActiveLens>>,
     mut water: ResMut<WaterChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
@@ -550,7 +551,8 @@ fn update_water_chunks(
     let n_chunks = cols * rows;
     let mut rebuilt = false;
     // The season colours the water through its material, not its mesh.
-    let view = (crate::terrain_render::map_lens(), 0);
+    let lens = active.map_or(0, |l| l.0.code());
+    let view = (lens, 0);
     let stamps = crate::terrain_render::water_stamps(s);
     let still = *settled == Some(stamps);
     for k in 0..n_chunks {
@@ -569,7 +571,7 @@ fn update_water_chunks(
         if known && slot.step == step {
             continue;
         }
-        let hash = if known { slot.hash } else { region_hash(s, cx, cy, WATER_PAD, 0, false).max(1) };
+        let hash = if known { slot.hash } else { region_hash(s, cx, cy, WATER_PAD, 0, false, lens).max(1) };
         if slot.hash == hash && slot.step == step {
             slot.seen = Some((stamp, view));
             continue;

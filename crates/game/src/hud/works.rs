@@ -43,15 +43,28 @@ pub fn works_panel(
     portrait: impl FnOnce(&mut Ui),
     body: impl FnOnce(&mut Ui),
 ) -> VNode {
-    let mut ui = Ui::default();
-    ui.node(Node { width: Val::Px(super::panels::RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        header(c, u, id, title, selected_here, health, cond_tip, portrait);
-        body(u);
-    });
-    let mut v = ui.nodes.pop().expect("panel node");
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(12.0));
-    v
+    let history = c.hud.dam_tab == DamTab::History;
+    super::inspect::panel_shell(
+        c,
+        Selection::Site(id),
+        selected_here,
+        |r| { r.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), padding: UiRect::all(Val::Px(5.0)), flex_shrink: 0.0, ..default() }, portrait).skin(Skin::Portrait); },
+        |r| {
+            r.col(7.0, |x| {
+                x.bold(title, 16.0, INK);
+                x.row(5.0, |y| {
+                    y.pips(health, level_color(health));
+                    y.text(format!("{:.0}%", health * 100.0), 11.0, MUTED);
+                }).tip(cond_tip);
+            });
+        },
+        |y| {
+            let next = if history { DamTab::Status } else { DamTab::History };
+            y.pebble(Icon::Hourglass, 11.0, HudAction::DamTab(next), if history { Peb::On } else { Peb::Bare }).tip(Tip::name(if history { "Back" } else { "History" }));
+        },
+        false,
+        body,
+    )
 }
 
 /// A box placed by its top left corner inside a side view.
@@ -72,33 +85,6 @@ pub fn dashes(u: &mut Ui, from: f32, to: f32, top: f32, col: Color) {
 pub fn label_left_of(u: &mut Ui, right: f32, top: f32, text: String, col: Color, tip: Tip) {
     u.node(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), width: Val::Px(right.max(0.0)), top: Val::Px(top), justify_content: JustifyContent::FlexEnd, ..default() }, |l| {
         l.bold(text, 12.0, col).tip(tip);
-    });
-}
-
-/// Name, condition, history, pin and close.
-#[allow(clippy::too_many_arguments)]
-pub fn header(c: &Ctx, u: &mut Ui, id: BuildingId, title: &str, selected_here: bool, health: f32, tip: Tip, portrait: impl FnOnce(&mut Ui)) {
-    let history = c.hud.dam_tab == DamTab::History;
-    let sel = Selection::Site(id);
-    let pinned = c.hud.pinned.contains(&sel);
-    u.row(10.0, |r| {
-        r.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), padding: UiRect::all(Val::Px(5.0)), flex_shrink: 0.0, ..default() }, portrait).skin(Skin::Portrait);
-        r.col(7.0, |x| {
-            x.bold(title, 16.0, INK);
-            x.row(5.0, |y| {
-                y.pips(health, level_color(health));
-                y.text(format!("{:.0}%", health * 100.0), 11.0, MUTED);
-            })
-            .tip(tip);
-        });
-        r.spacer();
-        r.row(4.0, |y| {
-            let next = if history { DamTab::Status } else { DamTab::History };
-            y.pebble(Icon::Hourglass, 11.0, HudAction::DamTab(next), if history { Peb::On } else { Peb::Bare }).tip(Tip::name(if history { "Back" } else { "History" }));
-            y.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
-            y.close_button(HudAction::ClosePanel(sel, selected_here), selected_here);
-        })
-        .style(|n| n.align_self = AlignSelf::FlexStart);
     });
 }
 
@@ -153,7 +139,7 @@ pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::G
             lock_button(r, s, id, g);
         }
         let what = if lock || sim::locks::pending(s, g.cell) { "Remove the gate and its lock" } else { "Remove the gate" };
-        r.small_button(Some(Icon::Remove), None, Some(HudAction::RemoveGate(id, g.cell)), Tip::name(what).line("What was brought goes back", ""), Small::Danger);
+        r.small_button(Some(Icon::Remove), None, Some(HudAction::Cmd(sim::Command::RemoveGate { building: id, cell: g.cell })), Tip::name(what).line("What was brought goes back", ""), Small::Danger);
     });
     row.node.padding = UiRect::axes(Val::Px(6.0), Val::Px(4.0));
     row.node.border_radius = BorderRadius::all(Val::Px(6.0));
@@ -187,7 +173,7 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
     }
     let tip = super::words::cost_lines(what, &locks::order_cost(s, id, g.cell));
     match locks::check_order(s, id, g.cell) {
-        Ok(()) => r.small_button(Some(Icon::LockGates), None, Some(HudAction::UpgradeLock(id, g.cell)), tip, Small::Idle),
+        Ok(()) => r.small_button(Some(Icon::LockGates), None, Some(HudAction::Cmd(sim::Command::UpgradeLock { building: id, cell: g.cell })), tip, Small::Idle),
         Err(why) => r.small_button(Some(Icon::LockGates), None, None, tip.line(cap(&why), ""), Small::Idle),
     };
 }

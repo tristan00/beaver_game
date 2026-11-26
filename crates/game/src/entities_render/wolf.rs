@@ -1,6 +1,6 @@
 //! The wolf and shared quadruped animation/tracking helpers used by `wildlife.rs`.
 use super::meshgen::{build_mesh, hex, mix, v, Mb};
-use super::scene::height_at;
+use crate::flow::height_at_world;
 use super::sim_view::cell_xz;
 use super::Models;
 use crate::seasonal::smooth as smooth01;
@@ -47,7 +47,7 @@ pub(super) fn ease_toward(w: &mut f32, on: bool, rate: f32, dt: f32) {
 
 pub(super) fn ground_pt(s: &sim::SimState, xz: Vec2) -> Vec3 {
     let c = crate::flow::world_cell(&s.height, Vec3::new(xz.x, 0.0, xz.y));
-    Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y) + super::sim_view::land_lift(s, c.0.floor() as i32, c.1.floor() as i32), xz.y)
+    Vec3::new(xz.x, height_at_world(&s.height, xz.x, xz.y) + super::sim_view::land_lift(s, c.0.floor() as i32, c.1.floor() as i32), xz.y)
 }
 
 pub(super) fn coat(p: Vec3, n: Vec3, top: [f32; 3], side: [f32; 3], under: [f32; 3], f: (f32, f32, f32), grain: f32) -> [f32; 3] {
@@ -279,7 +279,7 @@ fn slap_spot(s: &sim::SimState, id: sim::buildings::BuildingId) -> Option<Vec3> 
             s.water.depth.get(c.0, c.1).is_some_and(|d| *d > 0.05).then_some((c, (dx * dx + dy * dy) as usize))
         }).min_by_key(|x| x.1)?;
     let xz = cell_xz(s, (c.0 as f32 + 0.5, c.1 as f32 + 0.5));
-    Some(Vec3::new(xz.x, height_at(&s.height, xz.x, xz.y) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0), xz.y))
+    Some(Vec3::new(xz.x, height_at_world(&s.height, xz.x, xz.y) + s.water.depth.get(c.0, c.1).copied().unwrap_or(0.0), xz.y))
 }
 
 fn ring_spot(s: &sim::SimState, centre: (f32, f32), ring: f32, steps: usize) -> Option<(f32, f32)> {

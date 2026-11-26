@@ -112,10 +112,9 @@ fn asset(segs: &[[Vec3; 2]], w: usize, d: usize, color: Color) -> GizmoAsset {
 
 /// Contours of the ground round where the camera looks: light every 10 cm, bold every metre;
 /// redrawn as the view moves or the ground and dams change.
-pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, orbit: Res<crate::camera::OrbitCamera>, mut c: ResMut<Contours>, mut assets: ResMut<Assets<GizmoAsset>>) {
+pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, orbit: Res<crate::camera::OrbitCamera>, active: Res<super::ActiveLens>, mut c: ResMut<Contours>, mut assets: ResMut<Assets<GizmoAsset>>) {
     let _p = ::sim::prof::scope("game/update contours");
-    let on = crate::terrain_render::map_lens() == MapLens::Elevation.code();
-    if !on {
+    if active.0 != MapLens::Elevation {
         for e in c.shown.drain(..) {
             commands.entity(e).despawn();
         }
@@ -127,7 +126,8 @@ pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, o
     let (w, d) = (s.height.width(), s.height.height());
     // The window, snapped so small camera moves keep the same lines.
     let half = (orbit.distance * WINDOW_PER_DISTANCE).clamp(WINDOW_MIN, WINDOW_MAX) as i32;
-    let (cx, cy) = ((orbit.target.x / CELL_SIZE + w as f32 / 2.0) as i32, (orbit.target.z / CELL_SIZE + d as f32 / 2.0) as i32);
+    let (fx, fy) = crate::flow::world_cell(&s.height, orbit.target);
+    let (cx, cy) = (fx as i32, fy as i32);
     let snap = |v: i32| v.div_euclid(WINDOW_SNAP) * WINDOW_SNAP;
     let (x0, y0) = (snap(cx - half).clamp(0, w as i32 - 2), snap(cy - half).clamp(0, d as i32 - 2));
     let (x1, y1) = ((snap(cx + half) + WINDOW_SNAP).clamp(x0 + 2, w as i32), (snap(cy + half) + WINDOW_SNAP).clamp(y0 + 2, d as i32));

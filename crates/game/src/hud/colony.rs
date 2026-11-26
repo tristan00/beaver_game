@@ -49,7 +49,7 @@ pub(super) fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
         REST
     } else if sim::jobs::waiting(s, b.id).is_some() {
         WARN
-    } else if s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()) {
+    } else if sim::jobs::is_busy(s, b.id) {
         GOOD
     } else {
         ACCENT

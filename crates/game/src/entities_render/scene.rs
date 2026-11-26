@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use sim::SimState;
 
-pub use crate::flow::height_at_world as height_at;
-
 /// The ways a tree is drawn; each species' row names one (`look.model`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TreeStyle {
@@ -74,5 +72,5 @@ pub fn lodge_view(sim: &SimState) -> (Vec3, f32) {
         .map(|b| b.pos)
         .unwrap_or((sim.world.size / 2, sim.world.size / 2));
     let xz = super::sim_view::cell_xz(sim, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5));
-    (Vec3::new(xz.x, height_at(&sim.height, xz.x, xz.y), xz.y), 0.8)
+    (Vec3::new(xz.x, crate::flow::height_at_world(&sim.height, xz.x, xz.y), xz.y), 0.8)
 }

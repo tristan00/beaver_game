@@ -69,7 +69,7 @@ pub(super) fn hotkeys(
             if keys.just_pressed(k) && !locked {
                 let next = if hud.tool == t { Tool::None } else { t };
                 hud.set_tool(next);
-                *sel = Selection::None;
+                hud.select(&mut sel, Selection::None);
             }
         }
     }
@@ -134,8 +134,7 @@ pub(super) fn world_input(
     }
     if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) {
         if let Some(id) = commit_line(&mut sim.0, &mut hud) {
-            *sel = Selection::Site(id);
-            hud.selected.clear();
+            hud.select(&mut sel, Selection::Site(id));
         }
         return;
     }
@@ -159,21 +158,14 @@ pub(super) fn world_input(
     if mouse.just_pressed(MouseButton::Right) {
         if matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.corners.len() > usize::from(hud.extending.is_some()) {
             hud.corners.pop();
-            hud.line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&hud.corners) } else { build_logic::polyline(&hud.corners) };
+            hud.line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&hud.corners) } else { sim::sandbox::line(&hud.corners) };
             return;
         }
         if hud.tool != Tool::None {
             hud.set_tool(Tool::None);
             return;
         }
-        let who: Vec<BeaverId> = if hud.selected.is_empty() {
-            match *sel {
-                Selection::Beaver(b) => vec![b],
-                _ => Vec::new(),
-            }
-        } else {
-            hud.selected.clone()
-        };
+        let who = hud.selected_beavers(*sel);
         if !who.is_empty() && hover.order != Selection::None {
             order(&mut sim.0, &mut hud, &who, hover.order, shift);
         }
@@ -233,8 +225,7 @@ pub(super) fn world_input(
                     hud.extending = Some(id);
                     hud.corners = vec![end];
                     hud.drag_from = Some(end);
-                    hud.selected.clear();
-                    *sel = Selection::Site(id);
+                    hud.select(&mut sel, Selection::Site(id));
                     return;
                 }
             }
@@ -264,32 +255,17 @@ pub(super) fn world_input(
                     }
                     return;
                 }
-                if t != *sel {
-                    hud.dam_cells.clear();
-                }
                 match t {
                     Selection::Beaver(id) if shift => {
-                        if let (true, Selection::Beaver(x)) = (hud.selected.is_empty(), *sel) {
-                            hud.selected.push(x);
-                        }
                         if let Some(i) = hud.selected.iter().position(|x| *x == id) {
                             hud.selected.remove(i);
                         } else {
                             hud.selected.push(id);
                         }
                         *sel = if hud.selected.contains(&id) { Selection::Beaver(id) } else { hud.selected.first().map_or(Selection::None, |f| Selection::Beaver(*f)) };
+                        if hud.follow.is_some_and(|f| !hud.selected.contains(&f)) { hud.follow = None; }
                     }
-                    Selection::Beaver(id) => {
-                        hud.selected = vec![id];
-                        *sel = Selection::Beaver(id);
-                    }
-                    other => {
-                        hud.selected.clear();
-                        *sel = other;
-                    }
-                }
-                if hud.follow.is_some_and(|f| *sel != Selection::Beaver(f)) {
-                    hud.follow = None;
+                    other => hud.select(&mut sel, other),
                 }
             }
         }
@@ -317,8 +293,7 @@ pub(super) fn world_input(
                             hud.undo.push(id);
                             if !shift {
                                 hud.frame_req = Some(cell_world(&sim.0.height, b.centre()));
-                                hud.selected.clear();
-                                *sel = Selection::Site(id);
+                                hud.select(&mut sel, Selection::Site(id));
                             }
                         }
                         if !shift {
@@ -326,10 +301,7 @@ pub(super) fn world_input(
                         }
                         hud.swallow_click();
                     }
-                    Err(e) => {
-                        let w = place_error(&e);
-                        hud.say(Some((Icon::Cross, BAD)), Some((building_icon(kind), INK)), w);
-                    }
+                    Err(w) => hud.say(Some((Icon::Cross, BAD)), Some((building_icon(kind), INK)), w),
                 }
             }
         }
@@ -349,7 +321,7 @@ pub(super) fn world_input(
                 live.push(cell);
             }
             // A canal runs cell to cell across faces, never on a corner.
-            let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&live) } else { build_logic::polyline(&live) };
+            let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&live) } else { sim::sandbox::line(&live) };
             if line != hud.line {
                 hud.line = line;
             }
@@ -416,9 +388,6 @@ pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(
         .map(|bv| bv.id)
         .collect();
     if shift {
-        if let (true, Selection::Beaver(x)) = (hud.selected.is_empty(), *sel) {
-            hud.selected.push(x);
-        }
         for id in picked {
             if !hud.selected.contains(&id) {
                 hud.selected.push(id);

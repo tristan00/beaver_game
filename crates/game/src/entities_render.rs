@@ -24,7 +24,7 @@ use models::Season;
 use scene::*;
 use std::collections::HashMap;
 
-pub use scene::{height_at, lodge_view};
+pub use scene::lodge_view;
 pub use wolf::{AlarmSlaps, WolfDrawn};
 
 const BEAVER_NEAR: f32 = 260.0;

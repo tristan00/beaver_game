@@ -329,7 +329,10 @@ pub enum BuildError {
     Unexplored,
     OutOfBounds,
     Blocked,
-    BadTerrain(&'static str),
+    TooClose,
+    BlocksDoor,
+    NeedsWater,
+    TooDeep,
     Stores(StoresError),
     UnknownBuilding(BuildingId),
     /// Not unlocked yet: needs a finished building of this kind first.
@@ -341,6 +344,12 @@ impl fmt::Display for BuildError {
         match self {
             Self::SupplyPile => write!(f, "Blocked: the supply pile is there"),
             Self::Unexplored => write!(f, "Unexplored: the colony has not seen that ground"),
+            Self::OutOfBounds => write!(f, "Outside the map"),
+            Self::Blocked => write!(f, "Something is already built here"),
+            Self::TooClose => write!(f, "Leave a cell between buildings"),
+            Self::BlocksDoor => write!(f, "Would block a home's door"),
+            Self::NeedsWater => write!(f, "Must touch water"),
+            Self::TooDeep => write!(f, "Water is too deep"),
             Self::Locked(k) => write!(f, "Needs a finished {} first", k.spec().name.to_lowercase()),
             _ => write!(f, "{self:?}"),
         }
@@ -438,7 +447,7 @@ impl Buildings {
         // approach, trapping residents and deliveries in a one-cell pocket.
         if solid(kind) && self.buildings.iter().filter(|b|solid(b.kind)).any(|b|
             b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
-            return Err(BuildError::BadTerrain("leave one cell between buildings for access"));
+            return Err(BuildError::TooClose);
         }
         if solid(kind) && self.buildings.iter().any(|b| b.kind.is_home() && cells.contains(&crate::nav::lodge_entrance(b.pos))) {
             return Err(BuildError::Blocked);
@@ -470,14 +479,14 @@ impl Buildings {
                     }
                     _ => continue,
                 };
-                if !access { return Err(BuildError::BadTerrain("would block access to a home")); }
+                if !access { return Err(BuildError::BlocksDoor); }
             }
         }
         if kind.needs_water() && !cells.iter().any(|&(x, y)| terrain.wet(x, y)) {
-            return Err(BuildError::BadTerrain("needs water"));
+            return Err(BuildError::NeedsWater);
         }
         if solid(kind) && footprint_depth(kind, pos, |x, y| terrain.depth.get(x, y).copied().unwrap_or(0.0)) > MAX_BUILDING_DEPTH {
-            return Err(BuildError::BadTerrain("too deep"));
+            return Err(BuildError::TooDeep);
         }
         Ok(())
     }

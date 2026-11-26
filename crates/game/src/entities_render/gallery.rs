@@ -5,7 +5,7 @@
 //! `BC_GALLERY_WHAT=life` lines up the life poses (running, handling, mending, watch, courting,
 //! grooming, caught, dead) and, behind, every look (hungry, cold, hurt, worn out, old, unhappy,
 //! pregnant, a tail slap, a dive), the one-off ones on a loop. See `tools/gallery_shot.sh`.
-use super::scene::{height_at, Pose};
+use super::scene::Pose;
 use super::{models, BeaverSprite};
 use bevy::prelude::*;
 
@@ -60,7 +60,7 @@ pub(super) fn spawn_gallery(
         }
     }
     let (cx, cz) = crate::terrain_render::world_pos(s, best.1 .0 as i32, best.1 .1 as i32);
-    let ground = |x: f32, z: f32| height_at(&s.height, x, z);
+    let ground = |x: f32, z: f32| crate::flow::height_at_world(&s.height, x, z);
     let cam: Vec<f32> = spec.split(',').filter_map(|t| t.trim().parse().ok()).collect();
     orbit.target = Vec3::new(cx + cam.get(4).copied().unwrap_or(0.0), ground(cx, cz), cz + cam.get(3).copied().unwrap_or(0.0));
     orbit.distance = cam.first().copied().unwrap_or(20.0);
@@ -330,22 +330,24 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
             _ => out(b, &|_| true),
         }).map(|b| crate::flow::Selection::Beaver(b.id))
     } else if pick.is_some() {
-        s.colony.beavers.iter().find(|b| b.can_work() && (s.work.slot_of(b.id).is_some() || s.agents.get(b.id).is_some_and(|a| a.assignment.is_some()))).map(|b| crate::flow::Selection::Beaver(b.id))
+        s.colony.beavers.iter().find(|b| b.can_work() && sim::jobs::is_busy(s, b.id)).map(|b| crate::flow::Selection::Beaver(b.id))
     } else if std::env::var_os("BC_SELECT_LOOKOUT").is_some() {
         s.buildings.buildings.iter().find(|b| b.kind.watches()).map(|b| crate::flow::Selection::Site(b.id))
     } else {
         None
     };
-    if let Some(w) = want.filter(|w| *sel != *w) {
-        *sel = w;
-    }
-    if let (Some(mut hud), Some(crate::flow::Selection::Beaver(id))) = (hud, want) {
-        // Picked as a click picks it, so its selection ring shows.
-        if hud.selected != [id] {
-            hud.selected = vec![id];
-        }
-        if std::env::var_os("BC_DETAILS").is_some() && hud.page() != Some(crate::hud::Page::Beaver(id)) {
-            hud.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Beaver(id)));
+    if let Some(w) = want {
+        if let Some(mut hud) = hud {
+            if *sel != w || (matches!(w, crate::flow::Selection::Beaver(id) if hud.selected != [id])) {
+                hud.select(&mut sel, w);
+            }
+            if let crate::flow::Selection::Beaver(id) = w {
+                if std::env::var_os("BC_DETAILS").is_some() && hud.page() != Some(crate::hud::Page::Beaver(id)) {
+                    hud.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Beaver(id)));
+                }
+            }
+        } else if *sel != w {
+            *sel = w;
         }
     }
 }

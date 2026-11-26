@@ -243,8 +243,8 @@ fn hold_still(menu: Res<Menu>, mut open: ResMut<MenuOpen>, mut clock: ResMut<Sim
     if up && !clock.paused { clock.paused = true; }
 }
 
-fn pause_on_collapse(sim: Res<Sim>, mut menu: ResMut<Menu>, mut clock: ResMut<SimClock>) {
-    if sim.0.colony.is_collapsed() && menu.screen.is_none() { (clock.paused, menu.was_paused, menu.screen) = (true, true, Some(Screen::Pause)); }
+fn pause_on_collapse(sim: Res<Sim>, mut menu: ResMut<Menu>) {
+    if sim.0.colony.is_collapsed() && menu.screen.is_none() { (menu.was_paused, menu.screen) = (true, Some(Screen::Pause)); }
 }
 
 fn title_orbit(time: Res<Time>, menu: Res<Menu>, mut orbit: ResMut<OrbitCamera>) {

@@ -55,6 +55,7 @@ pub fn run_days(s: &mut SimState, days: f64) {
 
 pub fn line(points: &[Cell]) -> Vec<Cell> {
     let mut out: Vec<Cell> = Vec::new();
+    let mut seen: std::collections::HashSet<Cell> = std::collections::HashSet::new();
     for w in points.windows(2) {
         let (mut x, mut y) = (w[0].0 as i64, w[0].1 as i64);
         let (x1, y1) = (w[1].0 as i64, w[1].1 as i64);
@@ -63,7 +64,7 @@ pub fn line(points: &[Cell]) -> Vec<Cell> {
         let mut err = dx + dy;
         loop {
             let c = (x as usize, y as usize);
-            if out.last() != Some(&c) {
+            if seen.insert(c) {
                 out.push(c);
             }
             if x == x1 && y == y1 {

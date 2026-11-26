@@ -123,7 +123,7 @@ pub(super) fn button_actions(
                 let t = Tool::of(kind);
                 let next = if hud.tool == t { Tool::None } else { t };
                 hud.set_tool(next);
-                *sel = Selection::None;
+                hud.select(&mut sel, Selection::None);
             }
             HudAction::CancelTool => hud.set_tool(Tool::None),
             HudAction::GrowDam(dam, growth) => {
@@ -139,8 +139,7 @@ pub(super) fn button_actions(
                     hud.set_tool(Tool::Opening(dam, o));
                     hud.swallow_click();
                     hud.dam_cells.clear();
-                    *sel = Selection::Site(dam);
-                    hud.selected.clear();
+                    hud.select(&mut sel, Selection::Site(dam));
                     // Bring the dam into view if it is far from where the camera looks.
                     if let Some(mid) = sim::dams::dam(s, dam).and_then(|d| d.line().nth(d.line().count() / 2).map(|c| c.cell)) {
                         let (vx, vy) = crate::flow::world_cell(&s.height, orbit.target);
@@ -154,16 +153,6 @@ pub(super) fn button_actions(
                 hud.gate_sel = if hud.gate_sel == Some((building, cell)) { None } else { Some((building, cell)) };
                 if hud.opening().is_some() { hud.set_tool(Tool::None); }
                 flow.focus = Some(cell_world(&s.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)));
-            }
-            HudAction::RemoveGate(building, cell) => {
-                cmd(s, &mut hud, sim::Command::RemoveGate { building, cell });
-                if hud.gate_sel == Some((building, cell)) {
-                    hud.gate_sel = None;
-                }
-            }
-            HudAction::UpgradeLock(building, cell) => {
-                cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell });
-                hud.dam_cells.retain(|c| *c != cell);
             }
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {
@@ -189,8 +178,7 @@ pub(super) fn button_actions(
             HudAction::DamTab(t) => hud.dam_tab = t,
             HudAction::ConfirmLine => {
                 if let Some(id) = commit_line(s, &mut hud) {
-                    *sel = Selection::Site(id);
-                    hud.selected.clear();
+                    hud.select(&mut sel, Selection::Site(id));
                 }
             }
             HudAction::SetLens(l) => {
@@ -198,8 +186,7 @@ pub(super) fn button_actions(
                 hud.set_changed();
             }
             HudAction::PathsOnly(r) => {
-                super::paths::toggle_only(r);
-                hud.set_changed();
+                hud.paths_only = if hud.paths_only == Some(r) { None } else { Some(r) };
             }
             HudAction::Overlay(o) => hud.set_overlay(o),
             HudAction::PageBack => hud.page_back(),

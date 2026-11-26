@@ -15,8 +15,8 @@ fn swatch(u: &mut Ui, c: Color) {
 
 /// Over the lens rail while the water view is on (or a dam or canal is being drawn): its depth
 /// bands, up to the depths that flood buildings, and the current's colours, in one row.
-pub fn legend(node: Node) -> Option<VNode> {
-    if tr::map_lens() != tr::WATER_LENS {
+pub fn legend(active: super::MapLens, node: Node) -> Option<VNode> {
+    if active != super::MapLens::Water {
         return None;
     }
     let mut ui = Ui::default();

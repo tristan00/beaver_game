@@ -10,30 +10,55 @@ use bevy::prelude::*;
 use sim::buildings::{BuildingId, BuildingKind, Good};
 use sim::colony::BeaverId;
 
+/// Shared right-hand inspector shell: portrait, title, optional condition pips, header tools, Pin & Close.
 #[allow(clippy::too_many_arguments)]
-fn frame(c: &Ctx, sel: Selection, icon: Icon, icon_col: Color, name: String, condition: Option<f32>, tip: Tip, body: impl FnOnce(&mut Ui)) -> VNode {
+pub(super) fn panel_shell(
+    c: &Ctx,
+    sel: Selection,
+    selected_here: bool,
+    portrait: impl FnOnce(&mut Ui),
+    title: impl FnOnce(&mut Ui),
+    tools: impl FnOnce(&mut Ui),
+    divider: bool,
+    body: impl FnOnce(&mut Ui),
+) -> VNode {
     let pinned = c.hud.pinned.contains(&sel);
     let mut ui = Ui::default();
     ui.node(Node { width: Val::Px(RIGHT_W), flex_direction: FlexDirection::Column, row_gap: Val::Px(8.0), ..default() }, |u| {
-        u.row(12.0, |r| {
-            r.portrait(icon, icon_col);
+        u.row(10.0, |r| {
+            portrait(r);
+            title(r);
+            r.spacer();
+            r.row(4.0, |x| {
+                tools(x);
+                x.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
+                x.close_button(HudAction::ClosePanel(sel, selected_here), selected_here);
+            }).style(|n| n.align_self = AlignSelf::FlexStart);
+        });
+        if divider { u.rule(); }
+        body(u);
+    });
+    let mut v = ui.nodes.pop().expect("panel_shell");
+    panel(&mut v);
+    v.node.padding = UiRect::all(Val::Px(12.0));
+    v
+}
+
+#[allow(clippy::too_many_arguments)]
+fn frame(c: &Ctx, sel: Selection, icon: Icon, icon_col: Color, name: String, condition: Option<f32>, tip: Tip, body: impl FnOnce(&mut Ui)) -> VNode {
+    panel_shell(
+        c, sel, c.sel == sel,
+        |r| { r.portrait(icon, icon_col); },
+        |r| {
             r.col(7.0, |x| {
                 x.bold(name, 16.0, INK);
                 if let Some(cond) = condition { x.pips(cond, level_color(cond)); }
             }).tip(tip);
-            r.spacer();
-            r.row(4.0, |x| {
-                x.pebble(Icon::Pin, 10.0, HudAction::Pin(sel), if pinned { Peb::On } else { Peb::Bare }).tip(Tip::name(if pinned { "Unpin" } else { "Pin" }));
-                x.close_button(HudAction::ClosePanel(sel, c.sel == sel), c.sel == sel);
-            }).style(|n| n.align_self = AlignSelf::FlexStart);
-        });
-        u.rule();
-        body(u);
-    });
-    let mut v = ui.nodes.pop().expect("frame");
-    panel(&mut v);
-    v.node.padding = UiRect::all(Val::Px(12.0));
-    v
+        },
+        |_| {},
+        true,
+        body,
+    )
 }
 
 pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
@@ -296,7 +321,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
                 }
                 if let Some(p) = &b.pregnancy { r.icon(Icon::Kit, 14.0, GOOD); r.bold(format!("{:.0}d", (p.due_day - s.time_days).max(0.0)), 12.0, INK).tip(Tip::name(format!("{} kits on the way", p.litter))); }
             });
-            if s.work.slot_of(id).is_some() || s.agents.get(id).and_then(|a| a.assignment).is_some() {
+            if sim::jobs::is_busy(s, id) {
                 r.pebble(Icon::Minus, 11.0, HudAction::Cmd(sim::Command::Assign { who: vec![id], to: None, queue: false }), Peb::Idle).tip(Tip::name("Free"));
             }
             r.pebble(Icon::Journal, 13.0, HudAction::Overlay(Some(super::Overlay::Page(super::Page::Beaver(id)))), if c.hud.page() == Some(super::Page::Beaver(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Details").line("Life, family, skills", ""));

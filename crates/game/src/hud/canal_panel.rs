@@ -229,7 +229,7 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
         (Some(HudAction::GateChip(id, g.cell)), lock_tip.line("Ordered", ""))
     } else {
         match sim::locks::check_order(s, id, g.cell) {
-            Ok(()) => (Some(HudAction::UpgradeLock(id, g.cell)), lock_tip),
+            Ok(()) => (Some(HudAction::Cmd(sim::Command::UpgradeLock { building: id, cell: g.cell })), lock_tip),
             Err(why) => (None, lock_tip.line(cap(&why), "")),
         }
     };

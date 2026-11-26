@@ -12,11 +12,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Face, TextureFormat};
 use bevy::transform::TransformSystems;
 
-use super::scene::{height_at, Pose};
+use super::scene::Pose;
 use super::sim_sync::{look_of, BodySprite, BEAVER_SIZE};
 use super::sim_view::stand_y;
 use super::{age_scale_days, looks_size, BeaverSprite, Look, SimBeaver};
-use crate::terrain_render::CELL_SIZE as CELL;
 
 /// The image the details page shows.
 #[derive(Resource)]
@@ -180,13 +179,13 @@ struct Follow {
 }
 
 fn cell_of(s: &sim::SimState, p: Vec3) -> (usize, usize) {
-    let (w, h) = (s.height.width() as f32, s.height.height() as f32);
-    ((p.x / CELL + w / 2.0).clamp(0.0, w - 1.0) as usize, (p.z / CELL + h / 2.0).clamp(0.0, h - 1.0) as usize)
+    let (cx, cy) = crate::flow::world_cell(&s.height, p);
+    (cx.clamp(0.0, s.height.width() as f32 - 1.0) as usize, cy.clamp(0.0, s.height.height() as f32 - 1.0) as usize)
 }
 
 /// The ground, the water or the dam top under a point.
 fn floor(s: &sim::SimState, p: Vec3) -> f32 {
-    height_at(&s.height, p.x, p.z).max(stand_y(s, cell_of(s, p)))
+    crate::flow::height_at_world(&s.height, p.x, p.z).max(stand_y(s, cell_of(s, p)))
 }
 
 /// What stands up from the ground near the beaver, and how high: buildings, dams, trees, felled

@@ -159,14 +159,8 @@ pub fn at(g: &sim::Grid<f32>, x: i32, y: i32) -> f32 {
     g.as_slice()[y * g.width() + x]
 }
 
-pub static MAP_LENS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-pub fn map_lens() -> u8 {
-    MAP_LENS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, with_veg: bool) -> u64 {
-    let extra = extra ^ ((map_lens() as u64) << 48) ^ locks_hash(s);
+pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, with_veg: bool, lens: u8) -> u64 {
+    let extra = extra ^ ((lens as u64) << 48) ^ locks_hash(s);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ extra.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let (x0, y0) = ((cx * CHUNK) as i32 - pad, (cy * CHUNK) as i32 - pad);
     let n = CHUNK as i32 + 2 * pad;
@@ -178,7 +172,7 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             let d = at(&s.water.depth, x, y);
             let dq = if !with_veg {
                 (d * 500.0).round() as i32
-            } else if map_lens() == WATER_LENS {
+            } else if lens == WATER_LENS {
                 // The water lens colours water by band (`water_band`).
                 sim::water::shore_step(d) as i32 | (water_band(d) as i32) << 4
             } else {
@@ -261,14 +255,14 @@ pub(crate) fn locks_hash(s: &SimState) -> u64 {
 /// `region_hash` reads for terrain, and those `wet_ground` reads. Of the water only its edge
 /// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here,
 /// except in the water lens, which colours water by its depth.
-fn ground_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
+fn ground_stamp(s: &SimState, cx: usize, cy: usize, lens: u8) -> u64 {
     let h = fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.forestry.vegetation, s.water.riverbed, s.water.canal), locks_hash(s));
-    if map_lens() == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
+    if lens == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
 }
 
 /// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
-fn ground_stamps(s: &SimState) -> [(u64, u64); 8] {
-    let depth = if map_lens() == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
+fn ground_stamps(s: &SimState, lens: u8) -> [(u64, u64); 8] {
+    let depth = if lens == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
     [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.forestry.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth, (locks_hash(s), 0)]
 }
 
@@ -384,8 +378,8 @@ pub const SHORE_DEPTH: f32 = sim::buildings::WET_DEPTH;
 pub const BED_FILM: f32 = 0.003;
 
 /// Deposits the current lens tints into the ground: all of them in the deposits lens.
-fn lens_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource> {
-    let on = map_lens() == DEPOSIT_LENS;
+fn lens_deposits(s: &SimState, lens: u8) -> impl Iterator<Item = &sim::resources::Resource> {
+    let on = lens == DEPOSIT_LENS;
     shown_deposits(s).filter(move |_| on)
 }
 
@@ -408,12 +402,12 @@ pub fn shown_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Res
 
 /// Per-chunk fingerprint of the deposits in it (empty outside the deposits lens), so a
 /// chunk recolours when one appears, runs out or changes kind.
-fn deposit_hashes(s: &SimState, cols: usize, rows: usize) -> Vec<u64> {
-    if map_lens() != DEPOSIT_LENS {
+fn deposit_hashes(s: &SimState, cols: usize, rows: usize, lens: u8) -> Vec<u64> {
+    if lens != DEPOSIT_LENS {
         return Vec::new();
     }
     let mut out = vec![0u64; cols * rows];
-    for r in lens_deposits(s) {
+    for r in lens_deposits(s, lens) {
         let v = (r.cell.0 as u64) | (r.cell.1 as u64) << 20 | (r.kind.index() as u64) << 40;
         let v = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ v >> 7;
         // A cell on a chunk's low edge is also the last colour sample of the chunk before it.
@@ -498,6 +492,7 @@ pub fn spawn_terrain(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
     season: Res<Season>,
+    active: Option<Res<crate::hud::ActiveLens>>,
     cam: Query<&Transform, With<MainCamera>>,
 ) {
     chunks.material = materials.add(TerrainMaterial {
@@ -515,18 +510,19 @@ pub fn spawn_terrain(
     let (cols, rows) = chunk_dims(&sim.0);
     chunks.slots = (0..cols * rows).map(|_| Slot::default()).collect();
     let campos = cam.iter().next().map(|t| t.translation).unwrap_or(Vec3::new(0.0, 100.0, 100.0));
-    let range = terrain_range(&sim.0);
-    let deposits = deposit_hashes(&sim.0, cols, rows);
-    let view = (map_lens(), season.bucket());
+    let lens = active.map_or(0, |l| l.0.code());
+    let range = terrain_range(&sim.0, lens);
+    let deposits = deposit_hashes(&sim.0, cols, rows, lens);
+    let view = (lens, season.bucket());
     for idx in 0..cols * rows {
         let (cx, cy) = (idx % cols, idx / cols);
         let slot = &mut chunks.slots[idx];
         slot.wet = wet_ground(&sim.0, cx, cy);
         slot.step = if slot.wet { 1 } else { lod_step(campos, chunk_centre(&sim.0, cx, cy)) };
-        slot.hash = region_hash(&sim.0, cx, cy, 2, season.bucket() as u64, true);
+        slot.hash = region_hash(&sim.0, cx, cy, 2, season.bucket() as u64, true, lens);
         slot.deposits = deposits.get(idx).copied().unwrap_or(0);
-        slot.seen = Some((ground_stamp(&sim.0, cx, cy), view));
-        build_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, cx, cy, cols, range);
+        slot.seen = Some((ground_stamp(&sim.0, cx, cy, lens), view));
+        build_chunk(&mut commands, &mut chunks, &mut meshes, &sim.0, &season, cx, cy, cols, range, lens);
     }
 }
 
@@ -542,11 +538,12 @@ fn build_chunk(
     cy: usize,
     cols: usize,
     range: (f32, f32),
+    lens: u8,
 ) {
     let idx = cy * cols + cx;
     MESH_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let built = std::time::Instant::now();
-    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, chunks.slots[idx].step, range);
+    let mesh = build_chunk_mesh(s, &Palette::at(season.phase), cx, cy, chunks.slots[idx].step, range, lens);
     crate::perf::TERRAIN_MESH_NS.fetch_add(built.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     let material = chunks.material.clone();
     let slot = &mut chunks.slots[idx];
@@ -575,6 +572,7 @@ fn update_terrain_chunks(
     mut commands: Commands,
     sim: Res<Sim>,
     season: Res<Season>,
+    active: Option<Res<crate::hud::ActiveLens>>,
     mut chunks: ResMut<TerrainChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
     cam: Query<&Transform, With<MainCamera>>,
@@ -591,21 +589,22 @@ fn update_terrain_chunks(
         return;
     }
     let s = &sim.0;
-    let view = (map_lens(), season.bucket());
-    let stamps = ground_stamps(s);
+    let lens = active.map_or(0, |l| l.0.code());
+    let view = (lens, season.bucket());
+    let stamps = ground_stamps(s, lens);
     // Nothing written since every chunk's stamp was read: they need not be read again.
     let still = *settled == Some(stamps);
     let mut budget = REBUILD_BUDGET;
     let total = cols * rows;
     let mut range = None;
-    let deposits = deposit_hashes(s, cols, rows);
+    let deposits = deposit_hashes(s, cols, rows, lens);
     for k in 0..total {
         let idx = (*cursor + k) % total;
         let (cx, cy) = (idx % cols, idx / cols);
         let slot = &mut chunks.slots[idx];
         let stamp = match slot.seen {
             Some((stamp, _)) if still => stamp,
-            _ => ground_stamp(s, cx, cy),
+            _ => ground_stamp(s, cx, cy, lens),
         };
         if slot.seen.map(|seen| seen.0) != Some(stamp) {
             slot.wet = wet_ground(s, cx, cy);
@@ -616,7 +615,7 @@ fn update_terrain_chunks(
         if known && slot.step == step && slot.deposits == dep {
             continue;
         }
-        let hash = if known { slot.hash } else { region_hash(s, cx, cy, 2, season.bucket() as u64, true) };
+        let hash = if known { slot.hash } else { region_hash(s, cx, cy, 2, season.bucket() as u64, true, lens) };
         if slot.entity.is_some() && slot.hash == hash && slot.step == step && slot.deposits == dep {
             slot.seen = Some((stamp, view));
             continue;
@@ -627,8 +626,8 @@ fn update_terrain_chunks(
         }
         budget -= 1;
         (slot.hash, slot.step, slot.deposits, slot.seen) = (hash, step, dep, Some((stamp, view)));
-        let range = *range.get_or_insert_with(|| terrain_range(s));
-        build_chunk(&mut commands, &mut chunks, &mut meshes, s, &season, cx, cy, cols, range);
+        let range = *range.get_or_insert_with(|| terrain_range(s, lens));
+        build_chunk(&mut commands, &mut chunks, &mut meshes, s, &season, cx, cy, cols, range, lens);
     }
     *settled = Some(stamps);
     backlog.terrain = budget < REBUILD_BUDGET;
@@ -668,8 +667,8 @@ pub fn rock_weight(slope: f32) -> f32 {
     smooth(pal::ROCK_SLOPE_MIN, pal::ROCK_SLOPE_MIN + pal::ROCK_SLOPE_BLEND, slope)
 }
 
-fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: i32) -> Rgb {
-    match map_lens() {
+fn vertex_color(s: &SimState, p: &Palette, (minh, maxh): (f32, f32), x: i32, y: i32, lens: u8) -> Rgb {
+    match lens {
         0 => world_color(s, p, maxh, x, y),
         ELEVATION_LENS => elevation_color(s, minh, maxh, x, y),
         WATER_LENS => water_lens_color(s, maxh, x, y),
@@ -839,8 +838,8 @@ fn dried_bed(s: &SimState, x: i32, y: i32) -> f32 {
     at(&s.water.riverbed, x, y)
 }
 
-fn terrain_range(s: &SimState) -> (f32, f32) {
-    (if map_lens() == ELEVATION_LENS { min_height(s) } else { 0.0 }, max_height(s))
+fn terrain_range(s: &SimState, lens: u8) -> (f32, f32) {
+    (if lens == ELEVATION_LENS { min_height(s) } else { 0.0 }, max_height(s))
 }
 
 /// How finely a chunk is drawn: canals 4 vertices per cell, chunks with a mapped river (or
@@ -1003,7 +1002,7 @@ fn canal_blend(s: &SimState, x: f32, y: f32, base: f32) -> f32 {
     if weight > 0.0 { base + (sum / weight - base) * weight.min(1.0) } else { base }
 }
 
-pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize, range: (f32, f32)) -> Mesh {
+pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: usize, range: (f32, f32), lens: u8) -> Mesh {
     let maxh = range.1;
     let (w, d) = (s.height.width() as i32, s.height.height() as i32);
     let subdivisions = canal_subdivisions(s, cx, cy);
@@ -1016,11 +1015,11 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     let base_side = CHUNK / step + 1;
     let mut colours = Vec::with_capacity(base_side * base_side);
     for j in 0..base_side { for i in 0..base_side {
-        colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32));
+        colours.push(vertex_color(s, p, range, x0 + (i * step) as i32, y0 + (j * step) as i32, lens));
     } }
-    if map_lens() == DEPOSIT_LENS {
+    if lens == DEPOSIT_LENS {
         let span = (CHUNK + step) as i32;
-        for r in lens_deposits(s) {
+        for r in lens_deposits(s, lens) {
             let (dx, dy) = (r.cell.0 as i32 - x0, r.cell.1 as i32 - y0);
             if dx < 0 || dy < 0 || dx >= span || dy >= span {
                 continue;

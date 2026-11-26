@@ -210,7 +210,7 @@ impl SimulationThread {
     }
 }
 
-fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
+fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>) {
     let _p = ::sim::prof::scope("game/receive sim");
     if sim_thread.instance != sim.0.instance { return; }
     let Some(snapshot) = sim_thread.sim_thread.as_ref().and_then(|w| w.poll()) else { return; };
@@ -237,7 +237,6 @@ fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, m
         sim.0.colony.events = events;
     }
     sim.0.client_commands = Some(Vec::new());
-    if sim.0.colony.is_collapsed() { clock.paused = true; }
 }
 
 fn send_commands(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
@@ -257,6 +256,9 @@ fn send_commands(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>,
 }
 
 pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clock: ResMut<SimClock>, mut sim: ResMut<Sim>, mut sim_thread: ResMut<SimulationThread>) {
+    if sim.0.colony.is_collapsed() {
+        clock.paused = true;
+    }
     // Keep the existing standalone water sandbox and deterministic screenshot
     // runner on their original scheduling path.
     if sim.0.sandbox || cli.screenshot.is_some() {
@@ -282,7 +284,6 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clo
 }
 
 fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
-    if sim.0.colony.is_collapsed() { clock.paused = true; return; }
     if !sim.0.is_running() {
         return;
     }

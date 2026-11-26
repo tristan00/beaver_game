@@ -306,11 +306,6 @@ pub(crate) fn site_stalled(sim: &SimState, p: &Workplace) -> bool {
             || (promised(sim, Dest::Site(p.building), n.0, None) <= WORK_EPS && !has_good_source(sim, n.0))
     }))
 }
-pub(crate) fn place_stalled(sim: &SimState, p: &Workplace) -> bool {
-    site_stalled(sim, p)
-        || (sim.buildings.building(p.building).is_some_and(|b| b.dam.is_some()) && crate::dams::has_work_for(sim, p.building, false) && !has_good_source(sim, crate::dams::material()))
-        || (sim.buildings.building(p.building).is_some_and(|b| b.canal.is_some()) && frozen(sim) && crate::canals::has_work_for(sim, p.building, false))
-}
 pub(crate) fn site_waits_on(sim: &SimState, p: &Workplace) -> Option<Good> {
     let s = p.site.as_ref()?;
     site_stalled(sim, p).then(|| s.needed.iter().map(|n| n.0).find(|&g| s.missing(g) > WORK_EPS)).flatten()

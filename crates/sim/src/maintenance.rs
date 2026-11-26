@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, SimError, SimState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub enum Refit { Repair, Reinforce, Facing, ReinforcedRepair }
+pub enum Refit { Repair, Reinforce, Facing }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Maintenance {
@@ -56,8 +56,8 @@ pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
     let (w, h) = spec.footprint;
     let mut materials: Vec<Amount> = spec.cost.iter().map(|&(g, a)| (g, a * REPAIR_MATERIAL_SHARE)).filter(|v| v.1 > 0.0).collect();
     if materials.is_empty() { materials.extend(crate::content::content().repair_fallback.iter().copied()); }
-    if b.reinforced && let Some(r) = spec.refits.get(&Refit::ReinforcedRepair) {
-        materials.extend(r.per_cell.iter().map(|&(g, a)| (g, (w * h) as f32 * a)));
+    if b.reinforced {
+        materials.extend(spec.reinforced_repair.iter().map(|&(g, a)| (g, (w * h) as f32 * a)));
     }
     (materials, (spec.work * REPAIR_LABOUR_SHARE).max(REPAIR_MIN_LABOUR))
 }
@@ -140,7 +140,7 @@ pub fn finish(s: &mut SimState, id: BuildingId) -> bool {
     if let Some(b) = s.buildings.buildings.iter_mut().find(|b|b.id==id) {
         match kind {
             Refit::Reinforce => { b.reinforced=true; s.maintenance.reinforcements_completed+=1; }
-            Refit::Repair | Refit::ReinforcedRepair => {}
+            Refit::Repair => {}
             Refit::Facing => { b.pebbled = true; }
         }
     }

@@ -88,7 +88,7 @@ pub enum IdleReason { NoOpenSlot, Unreachable, Resting, Paused, Free }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wait { Good(Good), Frozen, StoreFull(Good), Paused, NoWork }
 
-fn place_wait(sim: &SimState, p: &crate::work::Workplace, is_upkeep: bool) -> Option<Wait> {
+pub(crate) fn place_wait(sim: &SimState, p: &crate::work::Workplace, is_upkeep: bool) -> Option<Wait> {
     if p.paused { return Some(Wait::Paused); }
     if let Some(g) = crate::agents::site_waits_on(sim, p) { return Some(Wait::Good(g)); }
     let mat = crate::dams::material();
@@ -339,7 +339,7 @@ fn send_out_who(sim: &SimState, role: Job) -> Option<(BeaverId, Assignment)> {
         }
         Duty::Build => {
             let target = sim.work.places.iter()
-                .filter(|p| crate::agents::place_needs_builders(sim, p.building) && !crate::agents::place_stalled(sim, p))
+                .filter(|p| crate::agents::place_needs_builders(sim, p.building) && place_wait(sim, p, false).is_none())
                 .min_by_key(|p| (crate::agents::builders_on(sim, p.building), p.building))
                 .and_then(|p| sim.buildings.building(p.building).map(|b| (b.id, b.pos)));
             let at = target.map_or_else(|| crate::agents::home_area(sim).map_or((0, 0), |h| h.0), |t| t.1);

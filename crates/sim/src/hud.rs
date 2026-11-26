@@ -17,8 +17,8 @@ pub const WINTER_RESERVE_DAYS: f32 = crate::calendar::SEASON_DAYS as f32;
 
 pub fn idle_beavers(sim: &SimState) -> Vec<BeaverId> {
     sim.colony.beavers.iter()
-        .filter(|b| b.can_work() && sim.work.slot_of(b.id).is_none()
-            && sim.agents.get(b.id).is_none_or(|a| a.assignment.is_none() && matches!(a.task, Task::Idle | Task::Rest)))
+        .filter(|b| b.can_work() && !crate::jobs::is_busy(sim, b.id)
+            && sim.agents.get(b.id).is_none_or(|a| matches!(a.task, Task::Idle | Task::Rest)))
         .map(|b| b.id).collect()
 }
 
@@ -277,7 +277,7 @@ pub fn problems(sim: &SimState) -> Vec<Problem> {
         sim.work.places.iter()
             .filter(|p| crate::agents::place_needs_builders(sim, p.building)
                 && crate::agents::site_workers(sim, p.building) == 0
-                && !crate::agents::place_stalled(sim, p))
+                && crate::jobs::place_wait(sim, p, false).is_none())
             .map(|p| p.building).collect()
     };
     if let Some(&first) = stalled.first() {
