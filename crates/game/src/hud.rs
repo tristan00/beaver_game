@@ -25,11 +25,11 @@ mod world;
 
 pub(crate) use ui::{font, ACCENT, BAD, BARK, FAINT, GOOD, INK, MUTED, PANEL, WARN, WATER};
 pub(crate) use words::job_icon;
-pub(crate) use world::{HoverPoint, HoverThing};
+pub(crate) use world::Hover;
 pub use crate::build_logic::LinePlan;
 
 use actions::{button_actions, commit_line, undo_last};
-use input::{box_select, follow_beaver, frame_camera, hotkeys, hover_cell, next_idle, pointer_over_ui, track_cursor, world_input};
+use input::{box_select, follow_beaver, frame_camera, hotkeys, next_idle, pointer_over_ui, track_cursor, world_input};
 use minimap::{minimap_click, setup_minimap, update_minimap, MinimapImage};
 use crate::build_logic;
 use crate::camera::MainCamera;
@@ -45,7 +45,7 @@ use sim::dam_preview::DamPreview;
 use sim::hud::Fix;
 use sim::jobs::Job;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use ui::{Mounted, Tag, TagComp, Tip, TipLine, Tips};
+use ui::{Mounted, Tag, Tip, TipLine, Tips};
 use words::*;
 
 pub(crate) fn text(p: &mut ChildSpawnerCommands, s: impl Into<String>, size: f32, color: Color) { p.spawn((Text::new(s.into()), font(size, false), TextColor(color))); }
@@ -55,15 +55,14 @@ pub(crate) fn hover_tip(label: impl Into<String>) -> (Interaction, ui::TipComp) 
 
 const REFRESH_SECS: f32 = 0.1;
 pub(crate) const REMOVE_ARM_SECS: f32 = 3.0;
-const MSG_SECS: f32 = 3.0;
 pub const POP_SECS: f32 = 2.4;
 pub const NOTICE_SECS: f32 = 7.0;
 pub const JOURNAL_KEPT: usize = 200;
 const UI_DESIGN_HEIGHT: f32 = 900.0;
 const SETTLE_AFTER_S: f32 = 0.2;
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub enum Tool { #[default] None, Building(BuildingKind), Dam, Canal, Harvest(Harvest) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Tool { #[default] None, Building(BuildingKind), Dam, Canal, Harvest(Harvest), Opening(BuildingId, Opening) }
 
 impl Tool {
     pub fn of(kind: BuildingKind) -> Tool {
@@ -87,10 +86,10 @@ pub enum Span { Season, Year, #[default] All }
 pub enum BeaverCol { #[default] Family, Name, Age, Job, Doing, Skill, Pace }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page { Beaver(BeaverId), Lodge(BuildingId), Works(BuildingId) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay { Colony(ColonyTab), Ledger(LedgerTab), Page(Page) }
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Msg { pub icon: Option<(Icon, Color)>, pub icon2: Option<(Icon, Color)>, pub text: String }
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum UndoItem { Site(BuildingId) }
 
 #[derive(Resource, Default)]
 pub struct HudState {
@@ -106,25 +105,20 @@ pub struct HudState {
     pub extending: Option<BuildingId>,
     pub dam_cells: Vec<Cell>,
     pub dam_tab: DamTab,
-    pub opening: Option<(BuildingId, Opening)>,
     pub gate_sel: Option<(BuildingId, Cell)>,
     pub remove_armed: Option<(BuildingId, f32)>,
     pub dam_ghost: Option<(BuildingId, f64, Vec<Cell>)>,
-    pub msg: Option<(Msg, f32)>,
+    pub msg: Option<Msg>,
     idle_cursor: usize,
-    pub colony: Option<ColonyTab>,
-    pub page: Option<Page>,
+    pub overlay: Option<Overlay>,
     pub kin: kin::KinFilter,
     pub back: Vec<Page>,
-    pub ledger: Option<LedgerTab>,
     pub span: Span,
     pub sort: (BeaverCol, bool),
-    pub scroll: usize,
     pub peek: Option<BeaverId>,
     pub journal_open: bool,
-    pub welcome: bool,
     pub drowned: Option<(Vec<Cell>, Vec<BuildingId>)>,
-    undo: Vec<UndoItem>,
+    undo: Vec<BuildingId>,
     pub selected: Vec<BeaverId>,
     pub follow: Option<BeaverId>,
     consume_left_release: bool,
@@ -144,11 +138,7 @@ impl MapLens {
 }
 
 #[derive(Resource, Default)]
-pub struct TextCapture(pub bool);
-#[derive(Resource, Default)]
 pub struct MenuOpen(pub bool);
-#[derive(Resource, Default)]
-pub struct HoverCell(pub Option<Cell>);
 #[derive(Clone, Debug)]
 pub struct Pop { pub at: PopAt, pub icons: Vec<(Icon, Color)>, pub text: String, pub born: f32 }
 #[derive(Clone, Copy, Debug)]
@@ -158,7 +148,7 @@ pub struct Pops(pub Vec<Pop>);
 #[derive(Clone, Debug)]
 pub struct Notice { pub icons: Vec<(Icon, Color)>, pub text: String, pub born: f32, pub day: f64, pub focus: Option<NoticeAt> }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum NoticeAt { Beaver(BeaverId), Building(BuildingId), Spot((f32, f32)), Wolf((f32, f32)) }
+pub enum NoticeAt { Beaver(BeaverId), Building(BuildingId), Spot((f32, f32)), Wolf(Option<(f32, f32)>) }
 #[derive(Resource, Default)]
 pub struct Notices(pub Vec<Notice>, pub f64);
 #[derive(Resource, Default)]
@@ -185,19 +175,38 @@ const SLOW_PANELS: [Panel; 10] = [Panel::Markers, Panel::Strip, Panel::Calendar,
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum HudAction {
-    Fix(Fix, Option<Cell>), OpenPage(Option<Page>), Kin(kin::KinFilter), FocusWolf, CycleIdle,
-    Pause, Speed(Speed), Pick(BuildingKind), CancelTool, GrowDam(BuildingId, sim::DamGrowth),
-    Upkeep(BuildingId, bool), Opening(BuildingId, Opening), GateChip(BuildingId, Cell),
-    RemoveGate(BuildingId, Cell), SetGate(BuildingId, Cell, sim::GateSetting), UpgradeLock(BuildingId, Cell),
-    GrowCanal(BuildingId, sim::CanalGrowth), DamCell(Cell), DamTab(DamTab),
-    ConfirmLine, SetLens(MapLens), PathsOnly(Option<Job>), Colony(Option<ColonyTab>), Ledger(Option<LedgerTab>),
-    Span(Span), Sort(BeaverCol), Scroll(i32), Journal(bool), GoTo(NoticeAt), SelectBeaver(BeaverId),
-    SelectBuilding(BuildingId), Follow(BeaverId), FreeBeaver(BeaverId), Staff(BuildingId, i32), Badge(String),
-    FillStore(BuildingId, bool), Balance(BuildingId, bool), CancelBuild(BuildingId),
-    RoleAdjust(Job, i32), ShoreLimit(Job, Option<u16>), Paused(BuildingId, bool),
-    Refit(BuildingId, Option<sim::maintenance::Refit>), SlotOff(BuildingId, usize, bool),
-    Pin(Selection), ClearPicks, PageBack, CloseWelcome,
-    ClosePanel(Selection, bool), RemoveWorks(BuildingId),
+    Cmd(sim::Command),
+    Fix(Fix, Option<Cell>),
+    Overlay(Option<Overlay>),
+    PageBack,
+    CloseWelcome,
+    Kin(kin::KinFilter),
+    CycleIdle,
+    Pause,
+    Speed(Speed),
+    Pick(BuildingKind),
+    CancelTool,
+    GrowDam(BuildingId, sim::DamGrowth),
+    Opening(BuildingId, Opening),
+    GateChip(BuildingId, Cell),
+    RemoveGate(BuildingId, Cell),
+    UpgradeLock(BuildingId, Cell),
+    GrowCanal(BuildingId, sim::CanalGrowth),
+    DamCell(Cell),
+    DamTab(DamTab),
+    ConfirmLine,
+    SetLens(MapLens),
+    PathsOnly(Option<Job>),
+    Span(Span),
+    Sort(BeaverCol),
+    Journal(bool),
+    GoTo(NoticeAt),
+    Follow(BeaverId),
+    Badge(String),
+    ClearPicks,
+    Pin(Selection),
+    ClosePanel(Selection, bool),
+    RemoveSite(BuildingId, bool),
 }
 
 pub fn reset_for_new_game(world: &mut World) {
@@ -211,29 +220,25 @@ impl HudState {
     pub(crate) fn swallow_click(&mut self) { self.consume_left_release = true; }
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
-        (self.drag_from, self.plan, self.canal_plan, self.extending, self.opening) = (None, None, None, None, None);
+        (self.drag_from, self.plan, self.canal_plan, self.extending) = (None, None, None, None);
         self.line.clear();
         self.corners.clear();
     }
     fn finish_placement(&mut self) { self.set_tool(Tool::None); }
-    pub fn page(&self) -> Option<Page> { self.page }
-    fn show_page(&mut self, p: Option<Page>) {
-        if matches!(p, Some(Page::Beaver(_))) && self.page != p { self.kin = kin::KinFilter::All; }
-        self.page = p;
-        self.scroll = 0;
-        if p.is_some() { self.ledger = None; }
-    }
-    pub fn is_busy(&self, sel: Selection, lens: MapLens) -> bool {
-        self.welcome || self.opening.is_some() || self.tool != Tool::None || self.page.is_some() || self.colony.is_some()
-            || self.ledger.is_some() || self.open_badge.is_some() || self.journal_open || self.follow.is_some()
+    pub fn page(&self) -> Option<Page> { match self.overlay { Some(Overlay::Page(p)) => Some(p), _ => None } }
+    pub fn colony(&self) -> Option<ColonyTab> { match self.overlay { Some(Overlay::Colony(t)) => Some(t), _ => None } }
+    pub fn ledger(&self) -> Option<LedgerTab> { match self.overlay { Some(Overlay::Ledger(t)) => Some(t), _ => None } }
+    pub fn opening(&self) -> Option<(BuildingId, Opening)> { match self.tool { Tool::Opening(id, o) => Some((id, o)), _ => None } }
+    pub fn is_busy(&self, sel: Selection, lens: MapLens, welcome: bool) -> bool {
+        welcome || self.tool != Tool::None || self.overlay.is_some()
+            || self.open_badge.is_some() || self.journal_open || self.follow.is_some()
             || sel != Selection::None || !self.selected.is_empty() || lens != MapLens::World
     }
-    pub fn dismiss_top(&mut self, sel: &mut Selection, lens: &mut MapLens) {
-        if self.welcome { self.welcome = false; }
-        else if self.opening.is_some() { self.opening = None; }
+    pub fn dismiss_top(&mut self, sel: &mut Selection, lens: &mut MapLens, welcome: &mut bool) {
+        if *welcome { *welcome = false; }
         else if self.tool != Tool::None { self.set_tool(Tool::None); }
-        else if self.page.is_some() { self.page_back(); }
-        else if self.colony.is_some() || self.ledger.is_some() { (self.colony, self.ledger) = (None, None); }
+        else if self.page().is_some() { self.page_back(); }
+        else if self.overlay.is_some() { self.overlay = None; }
         else if self.open_badge.is_some() { self.open_badge = None; }
         else if self.journal_open { self.journal_open = false; }
         else if self.follow.is_some() { self.follow = None; }
@@ -259,24 +264,31 @@ impl HudState {
         self.dam_cells.clear();
         flow.focus = Some(cell_world(&s.height, b.centre()));
     }
-    pub(crate) fn open_page(&mut self, p: Page) {
-        if let Some(now) = self.page().filter(|now| *now != p) {
-            self.back.push(now);
-            if self.back.len() > 16 { self.back.remove(0); }
+    pub(crate) fn set_overlay(&mut self, o: Option<Overlay>) {
+        match o {
+            Some(Overlay::Page(p)) => {
+                if let Some(now) = self.page().filter(|now| *now != p) {
+                    self.back.push(now);
+                    if self.back.len() > 16 { self.back.remove(0); }
+                }
+                if matches!(p, Page::Beaver(_)) && self.page() != Some(p) { self.kin = kin::KinFilter::All; }
+                self.overlay = Some(Overlay::Page(p));
+            }
+            other => {
+                self.back.clear();
+                self.overlay = other;
+            }
         }
-        self.show_page(Some(p));
     }
-    pub(crate) fn page_back(&mut self) { let p = self.back.pop(); self.show_page(p); }
-    pub(crate) fn close_pages(&mut self) { self.back.clear(); self.show_page(None); }
-    pub(crate) fn open_book(&mut self, colony: Option<ColonyTab>, ledger: Option<LedgerTab>) {
-        self.close_pages();
-        if ledger != self.ledger || colony != self.colony { self.scroll = 0; }
-        (self.colony, self.ledger) = (colony, ledger);
+    pub(crate) fn page_back(&mut self) {
+        let next = self.back.pop();
+        if matches!(next, Some(Page::Beaver(_))) && self.page() != next { self.kin = kin::KinFilter::All; }
+        self.overlay = next.map(Overlay::Page);
     }
-    fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>, now: f32) {
-        self.msg = Some((Msg { icon, icon2, text: text.into() }, now));
+    fn say(&mut self, icon: Option<(Icon, Color)>, icon2: Option<(Icon, Color)>, text: impl Into<String>) {
+        self.msg = Some(Msg { icon, icon2, text: text.into() });
     }
-    fn refuse(&mut self, why: impl Into<String>, now: f32) { self.say(Some((Icon::Cross, BAD)), None, why, now); }
+    fn refuse(&mut self, why: impl Into<String>) { self.say(Some((Icon::Cross, BAD)), None, why); }
     pub fn dam_preview(&self) -> Option<&DamPreview> { self.plan.as_ref().and_then(|p| p.preview.as_ref()) }
     pub fn dam_settled(&self) -> Option<&DamLook> { let plan = self.plan.as_ref()?; self.settled.as_ref().filter(|(line, _)| *line == plan.line).map(|(_, s)| s) }
     pub fn set_tool_for_report(&mut self, t: Tool) { if self.tool != t { self.set_tool(t); } }
@@ -306,7 +318,7 @@ fn notice_wolf(time: Res<Time>, sim: Res<Sim>, mut notices: ResMut<Notices>, mut
     for w in sim::predators::seen(s) {
         if !told.1.iter().any(|(id, _)| *id == w.id) {
             told.1.push((w.id, s.time_days));
-            notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), Some(NoticeAt::Wolf(w.pos)));
+            notices.push_at(vec![(Icon::Wolf, BAD)], "Wolf sighted", time.elapsed_secs(), Some(NoticeAt::Wolf(Some(w.pos))));
             cues.sighted += 1;
         }
     }
@@ -360,24 +372,6 @@ fn peek_hover(q: Query<(&Interaction, &ui::Peek)>, mut hud: ResMut<HudState>) {
     if hud.peek != on { hud.peek = on; }
 }
 
-pub(crate) fn scroll_max(s: &sim::SimState, hud: &HudState) -> usize {
-    match (hud.page, hud.ledger) {
-        (Some(Page::Beaver(id)), _) => s.lives.of.get(&id).map_or(0, |l| l.entries.len().saturating_sub(life::ROWS)),
-        (Some(_), _) => 0,
-        (None, Some(tab)) => ledger::scroll_max(s, tab),
-        (None, None) if hud.colony == Some(ColonyTab::Beavers) => ledger::beavers_scroll_max(s),
-        _ => 0,
-    }
-}
-
-fn scroll_lists(scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>, q: Query<(&TagComp, &bevy::ui::RelativeCursorPosition)>, sim: Res<Sim>, mut hud: ResMut<HudState>) {
-    if scroll.delta.y == 0.0 || (hud.ledger.is_none() && hud.page().is_none() && hud.colony != Some(ColonyTab::Beavers)) { return; }
-    if !q.iter().any(|(t, r)| t.0 == Tag::Scroll && r.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5)) { return; }
-    let lines = match scroll.unit { bevy::input::mouse::MouseScrollUnit::Line => scroll.delta.y, bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y / 20.0 };
-    let next = ((hud.scroll as i64 + (-lines * 2.0).round() as i64).max(0) as usize).min(scroll_max(&sim.0, &hud));
-    if next != hud.scroll { hud.scroll = next; }
-}
-
 #[derive(Default)]
 pub struct PopWatch { ready: bool, beavers: HashSet<u64>, worn: HashSet<Cell> }
 
@@ -386,7 +380,7 @@ fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState
     let now = time.elapsed_secs();
     pops.0.retain(|p| now - p.born < POP_SECS);
     let before = pops.0.len();
-    if let Some((m, _)) = hud.msg.take() {
+    if let Some(m) = hud.msg.take() {
         let at = cursor.0.map_or(Vec2::new(640.0, 300.0), |c| c + Vec2::new(0.0, -28.0));
         pops.0.push(Pop { at: PopAt::Screen(at), icons: [m.icon, m.icon2].into_iter().flatten().collect(), text: m.text, born: now });
     }
@@ -427,11 +421,10 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, load_ui_font).init_resource::<Notices>().init_resource::<WolfCues>();
         if app.world().resource::<crate::cli::Cli>().screenshot.is_some() && std::env::var_os("BC_HUD").is_none() { return; }
         paths::setup(app);
-        app.init_resource::<HudState>().init_resource::<HoverCell>().init_resource::<PointerOverUi>()
+        app.init_resource::<HudState>().init_resource::<Hover>().init_resource::<PointerOverUi>()
             .init_resource::<PointerOverPin>().init_resource::<CursorUi>().init_resource::<MapLens>()
-            .init_resource::<TextCapture>().init_resource::<MenuOpen>().init_resource::<Tips>()
+            .init_resource::<MenuOpen>().init_resource::<Tips>()
             .init_resource::<Pops>().init_resource::<Floods>().init_resource::<LastProblems>()
-            .init_resource::<world::HoverThing>().init_resource::<world::HoverPoint>().init_resource::<world::WorksSnap>()
             .init_resource::<elevation::Contours>().init_resource::<DamSettle>().init_resource::<scrollbar::ScrollDrag>()
             .insert_resource(RefreshTimer(Timer::from_seconds(REFRESH_SECS, TimerMode::Repeating)))
             .add_systems(Startup, (spawn_hosts, ui::spawn_tip_hosts, setup_minimap))
@@ -439,7 +432,7 @@ impl Plugin for HudPlugin {
             .add_systems(
                 Update,
                 (
-                    (pointer_over_ui, track_cursor, world::world_hover, hover_cell, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scroll_lists, scrollbar::scroll_wheel, scrollbar::scroll_drag),
+                    (pointer_over_ui, track_cursor, world::world_hover, hotkeys, world_input, box_select, frame_camera, follow_beaver, peek_hover, scrollbar::scroll_wheel, scrollbar::scroll_drag),
                     (button_actions, collect_pops, minimap_click, sync_lens, update_minimap, refresh_panels, refresh_fast, scrollbar::sync_scrollbars, ui::tip_logic, ui::tip_draw, ui::lift_hover, world::draw_world_overlay, world::lookout_range, paths::draw_paths),
                 ).chain().in_set(HudSet),
             )
@@ -516,17 +509,19 @@ pub(crate) fn add_beaver_tip(s: &sim::SimState, b: BuildingId) -> Tip {
 #[allow(clippy::too_many_arguments)]
 fn refresh_panels(
     mut commands: Commands, icons: Res<Icons>, time: Res<Time>, mut timer: ResMut<RefreshTimer>, sim: Res<Sim>,
-    mut hud: ResMut<HudState>, clock: Res<SimClock>, sel: Res<Selection>, hover: Res<HoverCell>, lens: Res<MapLens>,
+    mut hud: ResMut<HudState>, clock: Res<SimClock>, sel: Res<Selection>, hover: Res<Hover>, lens: Res<MapLens>,
     orbit: Res<crate::camera::OrbitCamera>, (minimap, portrait): (Option<Res<MinimapImage>>, Option<Res<crate::entities_render::portrait::PortraitImage>>),
-    menu: Res<MenuOpen>, flow: Res<Flow>, (cursor, mut last, notices, snap): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>, Res<world::WorksSnap>),
+    menu: Res<MenuOpen>, flow: Res<Flow>, (cursor, mut last, notices, mut last_hover): (Res<CursorUi>, ResMut<LastProblems>, Res<Notices>, Local<(Option<Cell>, Option<Cell>)>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
     let _p = ::sim::prof::scope("game/refresh panels");
     let due = timer.0.tick(time.delta()).just_finished();
-    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || (hover.is_changed() && hud.tool != Tool::None) || notices.is_changed();
+    let cur_hover = (hover.cell(), hover.works_cell);
+    let hover_changed = hud.tool != Tool::None && *last_hover != cur_hover;
+    *last_hover = cur_hover;
+    let changed = hud.is_changed() || sel.is_changed() || lens.is_changed() || menu.is_changed() || clock.is_changed() || flow.is_changed() || hover_changed || notices.is_changed();
     if !due && !changed { return; }
     let (now, s) = (time.elapsed_secs(), &sim.0);
-    if hud.msg.as_ref().is_some_and(|(_, t)| now - t > MSG_SECS) { hud.msg = None; }
     if hud.tool == Tool::Dam && !hud.line.is_empty() && hud.plan.as_ref().is_none_or(|p| p.line != hud.line) {
         hud.plan = Some(build_logic::line_plan(s, &hud.line, hud.extending));
     }
@@ -540,7 +535,7 @@ fn refresh_panels(
         hud.canal_plan = Some((line, plan));
     }
     update_drowned(s, &mut hud);
-    if hud.opening.is_some_and(|(id, _)| *sel != Selection::Site(id) || sim::dams::dam(s, id).is_none()) { hud.opening = None; }
+    if hud.opening().is_some_and(|(id, _)| *sel != Selection::Site(id) || sim::dams::dam(s, id).is_none()) { hud.set_tool(Tool::None); }
     if let Selection::Site(id) = *sel {
         if let Some(d) = sim::dams::dam(s, id) {
             let day = s.time_days.floor();
@@ -553,14 +548,14 @@ fn refresh_panels(
     let problems = sim::hud::problems(s);
     last.0 = problems.clone();
     let ctx = panels::Ctx {
-        s, hud: &hud, clock: &clock, sel: *sel, lens: *lens, hover: hover.0, works_cell: snap.0, problems: &problems,
+        s, hud: &hud, clock: &clock, sel: *sel, lens: *lens, hover: hover.cell(), works_cell: hover.works_cell, problems: &problems,
         minimap: minimap.as_deref(), portrait: portrait.as_deref(), view_cell: crate::flow::world_cell(&s.height, orbit.target),
-        cursor: cursor.0, journal: &notices.0, now,
+        cursor: cursor.0, journal: &notices.0, now, welcome: flow.welcome,
     };
     let founded = s.is_running();
     for (e, p, mut m) in &mut hosts {
         if !SLOW_PANELS.contains(p) { continue; }
-        if menu.0 || (!founded && flow.phase != crate::flow::Phase::Scouting) { ui::clear(&mut commands, e, &mut m); continue; }
+        if menu.0 { ui::clear(&mut commands, e, &mut m); continue; }
         let tree = match p {
             Panel::Bottom if !founded => panels::settle_chip(&ctx),
             _ if !founded => Vec::new(),
@@ -568,11 +563,18 @@ fn refresh_panels(
             Panel::Calendar => panels::calendar(&ctx),
             Panel::Right if ctx.hud.page().is_some() => Vec::new(),
             Panel::Right => panels::right(&ctx),
-            Panel::Rail if !ctx.placing() => panels::rail(&ctx),
+            Panel::Rail if matches!(ctx.hud.tool, Tool::None | Tool::Opening(_, _)) => panels::rail(&ctx),
+            Panel::Rail => Vec::new(),
             Panel::Bottom => panels::bottom(&ctx),
             Panel::Minimap => panels::minimap(&ctx),
-            Panel::Colony if ctx.hud.ledger.is_some() => ledger::screen(&ctx),
-            Panel::Colony => colony::screen(&ctx),
+            Panel::Colony => match ctx.hud.overlay {
+                Some(Overlay::Colony(tab)) => colony::screen(&ctx, tab),
+                Some(Overlay::Ledger(tab)) => ledger::screen(&ctx, tab),
+                Some(Overlay::Page(Page::Beaver(id))) => life::screen(&ctx, id),
+                Some(Overlay::Page(Page::Lodge(id))) => family::screen(&ctx, id),
+                Some(Overlay::Page(Page::Works(id))) => costs::screen(&ctx, id),
+                None => Vec::new(),
+            },
             Panel::Journal => journal::screen(&ctx),
             Panel::Welcome => welcome::screen(&ctx),
             _ => continue,
@@ -584,8 +586,8 @@ fn refresh_panels(
 #[allow(clippy::too_many_arguments)]
 fn refresh_fast(
     mut commands: Commands, icons: Res<Icons>, sim: Res<Sim>, hud: Res<HudState>, clock: Res<SimClock>,
-    hover: Res<HoverCell>, cursor: Res<CursorUi>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    scale: Res<UiScale>, menu: Res<MenuOpen>, flow: Res<Flow>, lens: Res<MapLens>, sel: Res<Selection>,
+    hover: Res<Hover>, cursor: Res<CursorUi>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    scale: Res<UiScale>, menu: Res<MenuOpen>, lens: Res<MapLens>, sel: Res<Selection>,
     (windows, pops, problems, time, wolf_drawn, orbit, beaver_drawn): (Query<&Window, With<bevy::window::PrimaryWindow>>, Res<Pops>, Res<LastProblems>, Res<Time>, Option<Res<crate::entities_render::WolfDrawn>>, Res<crate::camera::OrbitCamera>, Option<Res<crate::entities_render::BeaverDrawn>>),
     mut hosts: Query<(Entity, &Panel, &mut Mounted)>,
 ) {
@@ -595,13 +597,13 @@ fn refresh_fast(
         if !matches!(p, Panel::Cursor | Panel::Markers) { continue; }
         if menu.0 { ui::clear(&mut commands, e, &mut m); continue; }
         let tree = match p {
-            Panel::Cursor if !s.is_running() => match (hover.0, cursor.0) {
-                (Some(cell), Some(cur)) if flow.phase == crate::flow::Phase::Scouting => panels::settle_tag(s, &flow, cell, cur),
+            Panel::Cursor if !s.is_running() => match (hover.cell(), cursor.0) {
+                (Some(cell), Some(cur)) => panels::settle_tag(s, cell, cur),
                 _ => Vec::new(),
             },
             _ if !s.is_running() => Vec::new(),
             Panel::Cursor => {
-                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.0, works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs() };
+                let ctx = panels::Ctx { s, hud: &hud, clock: &clock, sel: Selection::None, lens: *lens, hover: hover.cell(), works_cell: None, problems: &[], minimap: None, portrait: None, view_cell: (0.0, 0.0), cursor: cursor.0, journal: &[], now: time.elapsed_secs(), welcome: false };
                 let mut tree = if matches!(hud.tool, Tool::Dam | Tool::Canal) {
                     let win = windows.single().map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01)).unwrap_or(Vec2::new(1280.0, 720.0));
                     let corner = hud.corners.last().and_then(|c| {
@@ -629,7 +631,7 @@ fn refresh_fast(
             }
             _ => match cams.single() {
                 Ok((cam, gt)) => {
-                    let mut tree = world::water_labels(s, cam, gt, scale.0, hover.0, &orbit, *lens);
+                    let mut tree = world::water_labels(s, cam, gt, scale.0, hover.cell(), &orbit, *lens);
                     tree.extend(world::markers(s, beaver_drawn.as_deref(), cam, gt, scale.0, &hud, *sel, &problems.0, &pops.0, time.elapsed_secs(), wolf_drawn.as_ref().and_then(|w| w.at(sim::predators::nearest_seen(s)?.id))));
                     tree
                 }

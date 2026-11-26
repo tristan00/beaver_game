@@ -236,11 +236,10 @@ fn volume_keys(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     menu: Option<Res<crate::hud::MenuOpen>>,
-    typing: Option<Res<crate::hud::TextCapture>>,
     mut vols: ResMut<AudioVolumes>,
     mut muted: Local<Option<f32>>,
 ) {
-    if menu.is_some_and(|m| m.0) || typing.is_some_and(|t| t.0) {
+    if menu.is_some_and(|m| m.0) {
         return;
     }
     if muted.is_some() && vols.0.master > 0.0 {

@@ -3,20 +3,18 @@ use super::colony::{doing, token_px};
 use super::panels::{status_line, Ctx};
 use super::ui::*;
 use super::words::*;
-use super::{BeaverCol, HudAction, LedgerTab, Span};
+use super::{BeaverCol, HudAction, LedgerTab, NoticeAt, Overlay, Span};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingKind, Good};
 use sim::colony::Beaver;
 
 pub const LEDGER_W: f32 = 640.0;
-const ROWS: usize = 16;
 const BARS: usize = 60;
 const CHART_W: f32 = 272.0;
 const CHART_H: f32 = 52.0;
 
-pub fn screen(c: &Ctx) -> Vec<VNode> {
-    let Some(tab) = c.hud.ledger else { return Vec::new() };
+pub fn screen(c: &Ctx, tab: LedgerTab) -> Vec<VNode> {
     let tabs = [
         (LedgerTab::Charts, Icon::Ledger, "Charts"),
         (LedgerTab::Dams, building_icon(BuildingKind::dam()), "Dams"),
@@ -28,10 +26,10 @@ pub fn screen(c: &Ctx) -> Vec<VNode> {
     Ui::book_shell(
         LEDGER_W,
         |r| {
-            for (t, icon, name) in tabs { r.pebble(icon, 16.0, HudAction::Ledger(Some(t)), if t == tab { Peb::On } else { Peb::Idle }).tip(Tip::name(name)); }
+            for (t, icon, name) in tabs { r.pebble(icon, 16.0, HudAction::Overlay(Some(Overlay::Ledger(t))), if t == tab { Peb::On } else { Peb::Idle }).tip(Tip::name(name)); }
             r.spacer();
             if matches!(tab, LedgerTab::Charts | LedgerTab::Dams | LedgerTab::Canals) { span_chips(c, r); }
-            r.close_button(HudAction::Ledger(None), true);
+            r.close_button(HudAction::Overlay(None), true);
         },
         |body| match tab {
             LedgerTab::Charts => charts(c, body),
@@ -193,18 +191,6 @@ pub(super) fn run(c: &Ctx, u: &mut Ui) {
     });
 }
 
-pub fn scroll_max(s: &sim::SimState, tab: LedgerTab) -> usize {
-    match tab {
-        LedgerTab::Dams => s.buildings.buildings.iter().filter(|b| b.kind.is_dam() && b.dam.is_some()).count().saturating_sub(4),
-        LedgerTab::Canals => s.buildings.buildings.iter().filter(|b| b.canal.is_some()).count().saturating_sub(4),
-        LedgerTab::Buildings => s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).count().saturating_sub(ROWS),
-        LedgerTab::Upkeep => super::costs::scroll_max(s),
-        LedgerTab::Charts | LedgerTab::Stores => 0,
-    }
-}
-
-pub fn beavers_scroll_max(s: &sim::SimState) -> usize { s.colony.beavers.len().saturating_sub(ROWS) }
-
 pub(super) fn span_chips(c: &Ctx, r: &mut Ui) {
     for (sp, label, name) in [(Span::Season, "90d", "Last season"), (Span::Year, "1y", "Last year"), (Span::All, "All", "Everything")] {
         chip(r, label, c.hud.span == sp, HudAction::Span(sp)).tip(Tip::name(name));
@@ -256,7 +242,6 @@ pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
         };
         (if desc { o.reverse() } else { o }).then(a.id.0.cmp(&b.id.0))
     });
-    let (n, first) = (list.len(), c.hud.scroll.min(list.len().saturating_sub(ROWS)));
     u.row(4.0, |r| {
         for (sort, icon, name, w) in COLS {
             let v = r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| {
@@ -268,9 +253,11 @@ pub(super) fn beavers(c: &Ctx, u: &mut Ui) {
         }
     });
     u.rule();
-    u.paged_list(first, ROWS, n, ROWS as i32, ROWS as f32 * 24.0, 2.0, Some((Some(Icon::Beaver), true)), |rows| {
-        for b in list.iter().skip(first).take(ROWS) { beaver_row(c, rows, b, &family(b)); }
+    u.col(2.0, |rows| {
+        for b in &list { beaver_row(c, rows, b, &family(b)); }
     });
+    u.rule();
+    u.row(8.0, |r| { r.icon(Icon::Beaver, 14.0, MUTED); r.bold(format!("{}", list.len()), 12.0, MUTED); });
 }
 
 fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
@@ -300,7 +287,7 @@ fn beaver_row(c: &Ctx, u: &mut Ui, b: &Beaver, family: &str) {
         if let Some((_, tip)) = paced { v.tip(tip); }
     });
     row.node.height = Val::Px(22.0);
-    row.peek(b.id).action(HudAction::SelectBeaver(b.id));
+    row.peek(b.id).action(HudAction::GoTo(NoticeAt::Beaver(b.id)));
 }
 
 fn stat(r: &mut Ui, icon: Icon, col: Color, value: String, value_col: Color, tip: Tip) {
@@ -318,9 +305,8 @@ fn dams(c: &Ctx, u: &mut Ui) {
     if list.is_empty() { empty_badge(u, building_icon(BuildingKind::dam()), Some(Tip::name("No dams yet").key("Z"))); return; }
     let total: f32 = list.iter().filter_map(|b| b.dam.as_deref()?.pond.as_ref()).map(|p| p.volume * cell_area).sum();
     u.row(10.0, |r| { r.icon(Icon::Drop, 16.0, WATER); r.bold(format!("{} m³", vol(total)), 14.0, INK); }).tip(Tip::name("Water held behind every dam"));
-    let first = c.hud.scroll.min(list.len().saturating_sub(4));
-    u.paged_list(first, 4, list.len(), 1, 320.0, 8.0, Some((None, false)), |cards| {
-        for (i, b) in list.iter().enumerate().skip(first).take(4) {
+    u.col(8.0, |cards| {
+        for (i, b) in list.iter().enumerate() {
             let d = b.dam.as_deref().expect("dam");
             let (health, built) = (sim::dams::health(s, d), d.cells.iter().filter(|c| sim::dams::built(s, c.cell) > 0.0).collect::<Vec<_>>());
             let weak = built.iter().filter(|c| sim::dams::integrity(s, c.cell) < sim::dams::REPAIR_BELOW).count();
@@ -331,13 +317,13 @@ fn dams(c: &Ctx, u: &mut Ui) {
                 k.row(10.0, |r| {
                     r.icon(building_icon(BuildingKind::dam()), 18.0, MUD);
                     r.bold(sim::names::pond_name(s, b.id).map_or_else(|| format!("Dam {}", i + 1), |n| n.to_string()), 14.0, INK);
-                    r.pips(health, super::works::condition_colour(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
+                    r.pips(health, level_color(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Weakest cell", format!("{:.0}%", lowest * 100.0)).line("Cells to repair", format!("{weak}")));
                     r.spacer();
                     let left = sim::dams::loads_left(s, b.id);
                     if left > 0 { stat(r, good_icon(sim::dams::material()), good_color(sim::dams::material()), format!("{left}"), INK, Tip::name("Loads still to carry")); }
-                    r.pebble(Icon::Hammer, 11.0, HudAction::Upkeep(b.id, !d.upkeep), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if d.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    r.pebble(Icon::Hammer, 11.0, HudAction::Cmd(sim::Command::SetUpkeep { building: b.id, on: !d.upkeep }), if d.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if d.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if d.upkeep { "Stop" } else { "Keep in repair" }, ""));
                     super::costs::page_button(c, r, b.id);
-                    r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
+                    r.pebble(Icon::Focus, 11.0, HudAction::GoTo(NoticeAt::Building(b.id)), Peb::Idle).tip(Tip::name("Open"));
                 });
                 super::costs::upkeep_over(c, k, b.id, c.hud.span);
                 k.row(8.0, |r| {
@@ -383,20 +369,19 @@ fn canals(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let list: Vec<_> = s.buildings.buildings.iter().filter(|b| b.canal.is_some()).collect();
     if list.is_empty() { empty_badge(u, building_icon(BuildingKind::canal()), Some(Tip::name("No canals yet"))); return; }
-    let first = c.hud.scroll.min(list.len().saturating_sub(4));
-    u.paged_list(first, 4, list.len(), 1, 320.0, 8.0, Some((None, false)), |cards| {
-        for (i, b) in list.iter().enumerate().skip(first).take(4) {
+    u.col(8.0, |cards| {
+        for (i, b) in list.iter().enumerate() {
             let k = b.canal.as_ref().expect("canal");
             let (health, st) = (sim::canals::health(s, k), k.status.as_ref());
             cards.col(6.0, |card| {
                 card.row(10.0, |r| {
                     r.icon(building_icon(BuildingKind::canal()), 18.0, MUD);
                     r.bold(format!("Canal {}", i + 1), 14.0, INK);
-                    r.pips(health, super::works::condition_colour(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{}", st.map_or(0, |x| x.silted))));
+                    r.pips(health, level_color(health)).tip(Tip::name("Condition").with_value(format!("{:.0}%", health * 100.0)).line("Silted cells", format!("{}", st.map_or(0, |x| x.silted))));
                     r.spacer();
-                    r.pebble(Icon::Hammer, 11.0, HudAction::Upkeep(b.id, !k.upkeep), if k.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if k.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if k.upkeep { "Stop" } else { "Keep in repair" }, ""));
+                    r.pebble(Icon::Hammer, 11.0, HudAction::Cmd(sim::Command::SetUpkeep { building: b.id, on: !k.upkeep }), if k.upkeep { Peb::Good } else { Peb::Idle }).tip(Tip::name(if k.upkeep { "Kept in repair" } else { "Not kept in repair" }).line(if k.upkeep { "Stop" } else { "Keep in repair" }, ""));
                     super::costs::page_button(c, r, b.id);
-                    r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(b.id), Peb::Idle).tip(Tip::name("Open"));
+                    r.pebble(Icon::Focus, 11.0, HudAction::GoTo(NoticeAt::Building(b.id)), Peb::Idle).tip(Tip::name("Open"));
                 });
                 super::costs::upkeep_over(c, card, b.id, c.hud.span);
                 if let Some(st) = st {
@@ -417,15 +402,15 @@ fn buildings(c: &Ctx, u: &mut Ui) {
     let mut list: Vec<_> = s.buildings.buildings.iter().filter(|b| !b.kind.is_waterworks()).collect();
     list.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
     if list.is_empty() { empty_badge(u, Icon::Building, None); return; }
-    let (max, n, first) = (sim::buildings::MAX_BUILDING_DEPTH, list.len(), c.hud.scroll.min(list.len().saturating_sub(ROWS)));
+    let max = sim::buildings::MAX_BUILDING_DEPTH;
     u.row(8.0, |r| {
         for (icon, name, w) in [(Icon::Building, "Building", 150.0), (Icon::Check, "State", 110.0), (Icon::Health, "Condition", 80.0), (Icon::Drop, "Water it stands in, of the most it can", 140.0), (Icon::Beaver, "Beavers", 60.0)] {
             r.node(Node { width: Val::Px(w), flex_shrink: 0.0, ..row_node(2.0) }, |h| { h.icon(icon, 14.0, MUTED); }).tip(Tip::name(name));
         }
     });
     u.rule();
-    u.paged_list(first, ROWS, n, ROWS as i32, ROWS as f32 * 24.0, 2.0, Some((Some(Icon::Building), false)), |rows| {
-        for b in list.iter().skip(first).take(ROWS) {
+    u.col(2.0, |rows| {
+        for b in &list {
             let (depth, flooded) = (sim::buildings::flood_depth(b, &s.water.depth), sim::buildings::flooded(b, &s.water.depth));
             let dcol = if flooded { BAD } else if depth > 0.75 * max { WARN } else { WATER };
             let row = rows.row(8.0, |r| {
@@ -449,7 +434,7 @@ fn buildings(c: &Ctx, u: &mut Ui) {
                 });
             });
             row.node.height = Val::Px(22.0);
-            row.action(HudAction::SelectBuilding(b.id));
+            row.action(HudAction::GoTo(NoticeAt::Building(b.id)));
         }
     });
 }

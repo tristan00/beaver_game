@@ -20,7 +20,7 @@ pub fn update_pending(clock: Option<Res<SimClock>>, mut p: ResMut<PendingDays>) 
 
 /// Shared world-epoch + entity map used by all sim-to-Bevy sync systems.
 pub(super) struct SyncedMap<K, V> {
-    epoch: Option<(u64, u32)>,
+    epoch: Option<u64>,
     pub map: HashMap<K, V>,
 }
 
@@ -29,8 +29,8 @@ impl<K, V> Default for SyncedMap<K, V> {
 }
 
 impl<K: Eq + Hash + Copy, V> SyncedMap<K, V> {
-    /// If the `(seed, generation)` epoch changed, despawn every tracked entry and return `true`.
-    pub fn reset_if(&mut self, epoch: (u64, u32), commands: &mut Commands, mut despawn: impl FnMut(&mut Commands, V)) -> bool {
+    /// If the `SimState.instance` changed, despawn every tracked entry and return `true`.
+    pub fn reset_if(&mut self, epoch: u64, commands: &mut Commands, mut despawn: impl FnMut(&mut Commands, V)) -> bool {
         if self.epoch == Some(epoch) { return false; }
         for (_, v) in self.map.drain() { despawn(commands, v); }
         self.epoch = Some(epoch);
@@ -577,12 +577,12 @@ fn plant_water(sim: &sim::SimState) -> Vec<(u64, u64)> {
 
 pub(super) fn sync_sim_resources(
     mut commands: Commands, sim: Res<Sim>, season: Res<CurrentSeason>, models: Option<Res<Models>>,
-    flow: Option<Res<crate::flow::Flow>>, mut st: Local<ResourceSync>, clock: Res<super::RenderClock>,
+    mut st: Local<ResourceSync>, clock: Res<super::RenderClock>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim resources");
     let Some(models) = models else { return };
-    let (sim, generation) = (&sim.0, flow.map_or(0, |f| f.generation));
-    if st.res.reset_if((sim.seed, generation), &mut commands, |c, (e, _)| c.entity(e).despawn()) {
+    let sim = &sim.0;
+    if st.res.reset_if(sim.instance, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
         for e in st.rocks.drain(..).flatten() { commands.entity(e).despawn(); }
         st.drawn = None;
     }
@@ -672,13 +672,13 @@ pub struct ReinforcementSync {
 }
 
 pub(super) fn sync_reinforcements(
-    mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
+    mut commands: Commands, sim: Res<Sim>, models: Option<Res<Models>>,
     anchors: Res<BuildingAnchors>, mut meshes: ResMut<Assets<Mesh>>, mut state: Local<ReinforcementSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync reinforcements");
     let Some(models) = models else { return };
     let s = &sim.0;
-    state.drawn.reset_if((s.seed, flow.generation), &mut commands, |c, (e, _)| c.entity(e).despawn());
+    state.drawn.reset_if(s.instance, &mut commands, |c, (e, _)| c.entity(e).despawn());
     let mut live = HashSet::new();
     for (b, pebbled, _) in s.buildings.buildings.iter().flat_map(|b| [(b, false, b.reinforced), (b, true, !b.kind.is_dam() && b.pebbled)]).filter(|l| l.2) {
         let key = (b.id, pebbled);
@@ -720,11 +720,11 @@ fn wear_band(condition: f32) -> u8 {
 pub(super) fn sync_sim_buildings(
     mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>,
-    mut anchors: ResMut<BuildingAnchors>, clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<BuildingSync>,
+    mut anchors: ResMut<BuildingAnchors>, clock: Res<super::RenderClock>, mut st: Local<BuildingSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim buildings");
     let Some(mut models) = models else { return };
-    let (changed, epoch, sim) = (sim.is_changed(), (sim.0.seed, flow.map_or(0, |f| f.generation)), &sim.0);
+    let (changed, epoch, sim) = (sim.is_changed(), sim.0.instance, &sim.0);
     if st.bld.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) {
         anchors.0.clear();
         st.time = f64::NEG_INFINITY;
@@ -916,11 +916,11 @@ fn piece_transform(sim: &sim::SimState, piece: &Piece, flip: bool, lift: impl Fn
 
 pub(super) fn sync_sim_dams(
     mut commands: Commands, sim: Res<Sim>, models: Option<ResMut<Models>>, mut meshes: ResMut<Assets<Mesh>>,
-    clock: Res<super::RenderClock>, flow: Option<Res<crate::flow::Flow>>, mut st: Local<DamSync>,
+    clock: Res<super::RenderClock>, mut st: Local<DamSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync sim dams");
     let Some(mut models) = models else { return };
-    let (changed, epoch, sim) = (sim.is_changed(), (sim.0.seed, flow.map_or(0, |f| f.generation)), &sim.0);
+    let (changed, epoch, sim) = (sim.is_changed(), sim.0.instance, &sim.0);
     if st.cells.reset_if(epoch, &mut commands, |c, (e, _)| c.entity(e).despawn()) { st.time = f64::NEG_INFINITY; }
     if sim.time_days == st.time && !changed { return; }
     st.time = sim.time_days;
@@ -1019,14 +1019,14 @@ pub struct GroundSync {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_ground_goods(
-    mut commands: Commands, sim: Res<Sim>, flow: Res<crate::flow::Flow>, models: Option<Res<Models>>,
+    mut commands: Commands, sim: Res<Sim>, models: Option<Res<Models>>,
     mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut puff_mesh: ResMut<super::effects::PuffMesh>,
     beavers: Query<(Entity, &Transform, &BeaverSprite), With<SimBeaver>>, clock: Res<super::RenderClock>, mut st: Local<GroundSync>,
 ) {
     let _p = ::sim::prof::scope("game/sync ground goods");
     let Some(models) = models else { return };
     let s = &sim.0;
-    let loading = st.drawn.reset_if((s.seed, flow.generation), &mut commands, |c, (e, _)| c.entity(e).despawn());
+    let loading = st.drawn.reset_if(s.instance, &mut commands, |c, (e, _)| c.entity(e).despawn());
     let mut want: Vec<_> = s.work.piles.items.iter().map(|p| {
         let rot = (1.0 - p.days_left(s.time_days) / sim::piles::SPOIL_DAYS) as f32;
         let band = if rot < 0.45 { 0 } else if rot < 0.8 { 1 } else { 2 };

@@ -100,8 +100,8 @@ impl Default for CurrentSeason { fn default() -> Self { Self(Season::at(0.0)) } 
 pub(crate) struct CanopyView(pub bool);
 impl Default for CanopyView { fn default() -> Self { Self(std::env::var_os("BC_CUTAWAY").is_some()) } }
 
-fn canopy_key(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<crate::hud::TextCapture>>, menu: Option<Res<crate::hud::MenuOpen>>, mut view: ResMut<CanopyView>) {
-    if !typing.is_some_and(|t| t.0) && !menu.is_some_and(|m| m.0) && keys.just_pressed(KeyCode::F8) { view.0 = !view.0; }
+fn canopy_key(keys: Res<ButtonInput<KeyCode>>, menu: Option<Res<crate::hud::MenuOpen>>, mut view: ResMut<CanopyView>) {
+    if !menu.is_some_and(|m| m.0) && keys.just_pressed(KeyCode::F8) { view.0 = !view.0; }
 }
 
 #[derive(Resource)]
@@ -693,7 +693,7 @@ fn season_at_pos(pos: Vec3, phase: f32) -> Season {
 fn update_tree_lod(
     season: Res<crate::terrain_render::Season>, canopy: Res<CanopyView>, models: Option<Res<Models>>,
     cam: Query<&GlobalTransform, With<MainCamera>>, sim: Res<crate::state::Sim>, hud: Option<Res<crate::hud::HudState>>,
-    hover: Option<Res<crate::hud::HoverCell>>, selection: Option<Res<crate::flow::Selection>>,
+    hover: Option<Res<crate::hud::Hover>>, selection: Option<Res<crate::flow::Selection>>,
     mut trees: Query<(&Transform, &mut TreeLod, &mut Mesh3d)>,
 ) {
     let _p = ::sim::prof::scope("game/update tree lod");
@@ -704,7 +704,7 @@ fn update_tree_lod(
         if let Some(b) = sim.0.buildings.building(id) { clear.push(crate::flow::cell_world(&sim.0.height, (b.pos.0 as f32 + 0.5, b.pos.1 as f32 + 0.5))); }
     }
     if !sim.0.is_running() || hud.as_ref().is_some_and(|h| h.tool != crate::hud::Tool::None) {
-        if let Some(cell) = hover.and_then(|h| h.0) { clear.push(crate::flow::cell_world(&sim.0.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5))); }
+        if let Some(cell) = hover.and_then(|h| h.cell()) { clear.push(crate::flow::cell_world(&sim.0.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5))); }
     }
     for (t, mut lod, mut mesh) in &mut trees {
         let d2 = t.translation.distance_squared(c);

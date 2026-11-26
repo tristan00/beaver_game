@@ -1,6 +1,7 @@
 //! Minimap image updates and navigation. The map shows only explored ground, framed to fit it,
 //! and turns with the camera: the way the camera looks is always up.
 use super::*;
+use super::ui::TagComp;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::RelativeCursorPosition;

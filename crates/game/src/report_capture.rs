@@ -141,7 +141,7 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
                 if bench_started.is_none() {
                     *bench_started = Some((time.elapsed_secs_f64(), sim.0.time_days));
                     clock.set_speed(crate::sim_driver::Speed::X3);
-                    hud.colony = None;
+                    hud.overlay = None;
                     canopy.0 = false;
                     if let Some(home)=sim.0.buildings.buildings.iter().find(|b|b.is_complete()&&b.kind.is_home()) {
                         orbit.target=crate::flow::cell_world(&sim.0.height,(home.pos.0 as f32,home.pos.1 as f32));
@@ -165,8 +165,13 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         *ready = (0, 0);
         std::fs::create_dir_all(dir).expect("create report directory");
         canopy.0 = shot != 0 && shot != 14;
-        hud.colony = match shot { 2 => Some(ColonyTab::Population), 3 => Some(ColonyTab::Jobs), _ => None };
-        hud.ledger = match shot { 4 => Some(crate::hud::LedgerTab::Dams), 13 => Some(crate::hud::LedgerTab::Stores), _ => None };
+        hud.overlay = match shot {
+            2 => Some(crate::hud::Overlay::Colony(ColonyTab::Population)),
+            3 => Some(crate::hud::Overlay::Colony(ColonyTab::Jobs)),
+            4 => Some(crate::hud::Overlay::Ledger(crate::hud::LedgerTab::Dams)),
+            13 => Some(crate::hud::Overlay::Ledger(crate::hud::LedgerTab::Stores)),
+            _ => None,
+        };
         *lens = if shot == 1 { MapLens::Water } else { MapLens::World };
         *selection = Selection::None;
         hud.set_tool_for_report(crate::hud::Tool::None);

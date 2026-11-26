@@ -1,4 +1,3 @@
-use crate::flow::Flow;
 use sim::fog::EXPLORED;
 use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
@@ -19,7 +18,7 @@ struct FogSheet;
 
 #[derive(Resource, Default)]
 struct FogState {
-    generation: Option<u32>,
+    instance: Option<u64>,
     next: f32,
 }
 
@@ -46,7 +45,6 @@ fn update_fog(
     mut commands: Commands,
     time: Res<Time>,
     mut sim: ResMut<Sim>,
-    flow: Res<Flow>,
     mut state: ResMut<FogState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -57,7 +55,7 @@ fn update_fog(
         return;
     }
     let now = time.elapsed_secs();
-    let fresh = state.generation != Some(flow.generation);
+    let fresh = state.instance != Some(sim.0.instance);
     if !fresh && (!sim.0.fog.dirty || now < state.next) {
         return;
     }
@@ -70,7 +68,7 @@ fn update_fog(
         }
         let material = materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, double_sided: true, cull_mode: None, ..default() });
         commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), Transform::IDENTITY, FogSheet, bevy::light::NotShadowCaster));
-        state.generation = Some(flow.generation);
+        state.instance = Some(sim.0.instance);
     } else if let Some((_, m)) = sheets.iter().next() {
         if let Some(mut old) = meshes.get_mut(&m.0) {
             *old = mesh;

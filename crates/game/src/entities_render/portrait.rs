@@ -88,7 +88,7 @@ fn choose(
     stand_in: Query<(Entity, &BeaverSprite), With<StandIn>>,
     mut cam: Query<(Entity, &mut Camera, Option<&RenderLayers>), With<PortraitCam>>,
 ) {
-    let want = hud.as_ref().and_then(|h| match h.page { Some(crate::hud::Page::Beaver(id)) => Some(id.0), _ => None });
+    let want = hud.as_ref().and_then(|h| match h.page() { Some(crate::hud::Page::Beaver(id)) => Some(id.0), _ => None });
     if focus.0 != want {
         focus.0 = want;
     }

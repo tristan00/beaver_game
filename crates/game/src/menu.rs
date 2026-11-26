@@ -87,14 +87,14 @@ fn spawn_root(mut commands: Commands) {
 
 fn menu_keys(
     keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<Menu>, hud: Option<Res<hud::HudState>>,
-    lens: Option<Res<hud::MapLens>>, sel: Res<Selection>, typing: Option<Res<hud::TextCapture>>, mut clock: ResMut<SimClock>,
+    lens: Option<Res<hud::MapLens>>, sel: Res<Selection>, flow: Res<Flow>, mut clock: ResMut<SimClock>,
 ) {
-    if menu.loading || !keys.just_pressed(KeyCode::Escape) || typing.is_some_and(|t| t.0) { return; }
+    if menu.loading || !keys.just_pressed(KeyCode::Escape) { return; }
     match menu.screen {
         Some(Screen::Pause) => { menu.screen = None; clock.paused = menu.was_paused; }
         Some(Screen::Settings | Screen::Load) => menu.screen = Some(menu.back_to),
         Some(Screen::Start) => {}
-        None => if !hud.as_ref().is_some_and(|h| h.is_busy(*sel, lens.as_deref().copied().unwrap_or(hud::MapLens::World))) {
+        None => if !hud.as_ref().is_some_and(|h| h.is_busy(*sel, lens.as_deref().copied().unwrap_or(hud::MapLens::World), flow.welcome)) {
             menu.saved = None;
             menu.was_paused = clock.paused;
             clock.paused = true;

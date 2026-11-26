@@ -5,7 +5,7 @@
 use super::panels::{good_tip, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, HudAction};
+use super::{ColonyTab, HudAction, NoticeAt, Overlay};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::Good;
@@ -19,28 +19,20 @@ const TABS: [(ColonyTab, Icon, &str); 4] = [
     (ColonyTab::Run, Icon::Hourglass, "This run"),
 ];
 
-pub fn screen(c: &Ctx) -> Vec<VNode> {
-    if let Some(page) = c.hud.page {
-        return match page {
-            super::Page::Beaver(id) => super::life::screen(c, id),
-            super::Page::Lodge(l) => super::family::screen(c, l),
-            super::Page::Works(b) => super::costs::screen(c, b),
-        };
-    }
-    let Some(tab) = c.hud.colony else { return Vec::new() };
+pub fn screen(c: &Ctx, tab: ColonyTab) -> Vec<VNode> {
     let width = if matches!(tab, ColonyTab::Beavers | ColonyTab::Run) { super::ledger::LEDGER_W } else { DRAWER_W };
     Ui::book_shell(
         width,
         |r| {
             for (t, icon, name) in TABS {
                 let on = t == tab;
-                r.pebble(icon, 16.0, HudAction::Colony(Some(t)), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
+                r.pebble(icon, 16.0, HudAction::Overlay(Some(Overlay::Colony(t))), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name));
             }
             r.spacer();
             if tab == ColonyTab::Run {
                 super::ledger::span_chips(c, r);
             }
-            r.close_button(HudAction::Colony(None), true);
+            r.close_button(HudAction::Overlay(None), true);
         },
         |body| match tab {
             ColonyTab::Population => beavers(c, body),
@@ -90,7 +82,7 @@ fn beavers(c: &Ctx, u: &mut Ui) {
                     .line("Age", span(b.age_days as f64))
                     .line("Health", format!("{:.0}", b.health * 100.0))
                     .line("Mood", format!("{:.0}", b.mood * 100.0));
-                r.token(Icon::Beaver, token_px(b.stage), Some(doing(s, b))).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(t);
+                r.token(Icon::Beaver, token_px(b.stage), Some(doing(s, b))).action(HudAction::GoTo(NoticeAt::Beaver(b.id))).peek(b.id).tip(t);
             }
         });
         u.rule();
@@ -122,7 +114,7 @@ fn work(c: &Ctx, u: &mut Ui) {
                 for i in 0..row.slots.min(12) {
                     match row.beavers.get(i).and_then(|id| s.colony.beaver(*id)) {
                         Some(b) => {
-                            t.token(Icon::Beaver, 18.0, None).action(HudAction::SelectBeaver(b.id)).peek(b.id).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()));
+                            t.token(Icon::Beaver, 18.0, None).action(HudAction::GoTo(NoticeAt::Beaver(b.id))).peek(b.id).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()));
                         }
                         None if i < row.filled => {
                             t.token(Icon::Beaver, 18.0, None);
@@ -144,7 +136,7 @@ fn work(c: &Ctx, u: &mut Ui) {
                     None => Some(SHORE_STEPS[0]),
                     Some(n) => SHORE_STEPS.iter().copied().find(|&k| k < n),
                 };
-                r.pebble(Icon::Drop, 11.0, HudAction::ShoreLimit(role, next), if now.is_some() { Peb::On } else { Peb::Idle })
+                r.pebble(Icon::Drop, 11.0, HudAction::Cmd(sim::Command::SetShoreLimit { role, cells: next }), if now.is_some() { Peb::On } else { Peb::Idle })
                     .tip(Tip::name("Distance from water").with_value(now.map_or("Any".into(), |n| format!("{n}"))));
                 if let Some(n) = now {
                     r.bold(format!("{n}"), 12.0, INK);
@@ -154,8 +146,8 @@ fn work(c: &Ctx, u: &mut Ui) {
                 Ok(p) => (Peb::Idle, Tip::name("Add one").line(s.colony.beaver(p.who).map(|b| b.name.clone()).unwrap_or_default(), "free")),
                 Err(why) => (Peb::Faded, Tip::name("Can't add").line(why, "")),
             };
-            r.pebble(Icon::Minus, 10.0, HudAction::RoleAdjust(role, -1), if row.filled > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free one"));
-            r.pebble(Icon::Plus, 10.0, HudAction::RoleAdjust(role, 1), add_look).tip(add_tip);
+            r.pebble(Icon::Minus, 10.0, HudAction::Cmd(sim::Command::AdjustRole { role, delta: -1 }), if row.filled > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free one"));
+            r.pebble(Icon::Plus, 10.0, HudAction::Cmd(sim::Command::AdjustRole { role, delta: 1 }), add_look).tip(add_tip);
         });
     }
 }

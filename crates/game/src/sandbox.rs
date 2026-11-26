@@ -1,4 +1,4 @@
-use crate::hud::{HoverCell, MenuOpen, TextCapture};
+use crate::hud::{Hover, MenuOpen};
 use crate::state::Sim;
 use bevy::prelude::*;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -27,8 +27,8 @@ fn sandbox_panel(mut commands: Commands, sim: Res<Sim>, cli: Res<crate::cli::Cli
     ));
 }
 
-fn climate_keys(keys: Res<ButtonInput<KeyCode>>, typing: Option<Res<TextCapture>>, menu: Option<Res<MenuOpen>>, mut sim: ResMut<Sim>) {
-    if !sim.0.sandbox || typing.is_some_and(|t| t.0) || menu.is_some_and(|m| m.0) { return; }
+fn climate_keys(keys: Res<ButtonInput<KeyCode>>, menu: Option<Res<MenuOpen>>, mut sim: ResMut<Sim>) {
+    if !sim.0.sandbox || menu.is_some_and(|m| m.0) { return; }
     if keys.just_pressed(KeyCode::F6) {
         use sim::water::Weather::*;
         sim.0.water.weather = match sim.0.water.weather {
@@ -58,18 +58,17 @@ pub fn breach_line(s: &mut sim::SimState, at: (usize, usize)) -> usize {
 fn breach_under_cursor(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut events: MessageReader<KeyboardInput>,
-    hover: Option<Res<HoverCell>>,
+    hover: Option<Res<Hover>>,
     selected: Option<Res<crate::flow::Selection>>,
-    typing: Option<Res<TextCapture>>,
     menu: Option<Res<MenuOpen>>,
     mut sim: ResMut<Sim>,
 ) {
     let logical_delete = events.read().any(|e| e.state == bevy::input::ButtonState::Pressed && e.logical_key == Key::Delete);
     let delete = logical_delete || keys.is_some_and(|k| k.just_pressed(KeyCode::Delete));
-    if !sim.0.sandbox || !delete || typing.is_some_and(|t| t.0) || menu.is_some_and(|m| m.0) {
+    if !sim.0.sandbox || !delete || menu.is_some_and(|m| m.0) {
         return;
     }
-    let at = hover.and_then(|h| h.0).filter(|c| sim.0.water.has_dam(c.0, c.1)).or_else(|| {
+    let at = hover.and_then(|h| h.cell()).filter(|c| sim.0.water.has_dam(c.0, c.1)).or_else(|| {
         selected.and_then(|sel| match *sel {
             crate::flow::Selection::Cell(c) if sim.0.water.has_dam(c.0, c.1) => Some(c),
             _ => None,

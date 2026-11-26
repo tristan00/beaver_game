@@ -205,7 +205,7 @@ fn finish(mut commands: Commands, time: Res<Time<Real>>, mut rec: ResMut<Recorde
         };
         badge(&mut commands, &mut rec, color, now);
         if let Some(hud) = hud.as_mut() {
-            hud.msg = Some((msg, time.elapsed_secs()));
+            hud.msg = Some(msg);
         }
     }
 }

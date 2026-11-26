@@ -52,11 +52,11 @@ pub(crate) fn stamp() -> String {
 fn scene(
     sim: &sim::SimState, window: &Window, cam: Option<&GlobalTransform>,
     hud: &crate::hud::HudState, selection: &crate::flow::Selection,
-    point: &crate::hud::HoverPoint, thing: &crate::hud::HoverThing, over: &crate::hud::PointerOverUi,
+    hover: &crate::hud::Hover, over: &crate::hud::PointerOverUi,
     clock: &crate::sim_driver::SimClock,
 ) -> String {
     let mut s = format!("cursor={:?} over_ui={}", window.cursor_position().map(|p| (p.x.round(), p.y.round())), over.0);
-    if let Some((c, p)) = point.0 {
+    if let Some((c, p)) = hover.point {
         let h = sim.height.get(c.0, c.1).copied().unwrap_or(0.0);
         let d = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
         s += &format!(" cell={c:?} at=({:.2},{:.2}) ground={h:.2} depth={d:.2} surface={:.2} explored={}", p.0, p.1, h + d, sim.fog.explored(c));
@@ -67,7 +67,7 @@ fn scene(
     } else {
         s += " cell=None";
     }
-    s += &format!(" thing={:?} tool={:?}", thing.0, hud.tool);
+    s += &format!(" thing={:?} tool={:?}", hover.thing, hud.tool);
     if !hud.corners.is_empty() || !hud.line.is_empty() {
         s += &format!(" corners={:?} line={}..{:?}({} cells) extending={:?}", hud.corners, hud.line.first().map_or(String::new(), |c| format!("{c:?}")), hud.line.last(), hud.line.len(), hud.extending);
     }
@@ -86,14 +86,14 @@ fn record(
     windows: Query<&Window, With<PrimaryWindow>>, cams: Query<&GlobalTransform, With<crate::camera::MainCamera>>,
     time: Res<Time<Real>>, sim: Res<crate::state::Sim>, clock: Res<crate::sim_driver::SimClock>,
     hud: Res<crate::hud::HudState>, selection: Res<crate::flow::Selection>,
-    point: Res<crate::hud::HoverPoint>, thing: Res<crate::hud::HoverThing>, over: Res<crate::hud::PointerOverUi>,
+    hover: Res<crate::hud::Hover>, over: Res<crate::hud::PointerOverUi>,
     held: Res<ButtonInput<KeyCode>>,
     mut last: Local<(Option<Vec2>, f64, Option<String>, String)>,
 ) {
     for f in focus.read() { sim::trace::event(format!("FOCUS {}", f.focused)); }
     let Ok(window) = windows.single() else { return };
     let cam = cams.single().ok();
-    let here = || scene(&sim.0, window, cam, &hud, &selection, &point, &thing, &over, &clock);
+    let here = || scene(&sim.0, window, cam, &hud, &selection, &hover, &over, &clock);
     let mods = || {
         let on = |a, b| held.pressed(a) || held.pressed(b);
         [("ctrl", on(KeyCode::ControlLeft, KeyCode::ControlRight)), ("shift", on(KeyCode::ShiftLeft, KeyCode::ShiftRight)), ("alt", on(KeyCode::AltLeft, KeyCode::AltRight))]
@@ -121,7 +121,7 @@ fn record(
         last.1 = now;
     }
     // Every message the game shows, when it first appears.
-    let msg = hud.msg.as_ref().map(|(m, at)| format!("{at:.3} {:?} {:?} {:?}", m.icon.map(|i| i.0), m.icon2.map(|i| i.0), m.text));
+    let msg = hud.msg.as_ref().map(|m| format!("{:?} {:?} {:?}", m.icon.map(|i| i.0), m.icon2.map(|i| i.0), m.text));
     if msg != last.2 {
         if let Some(m) = &msg { sim::trace::event(format!("MESSAGE {m}")); }
         last.2 = msg;
@@ -140,14 +140,14 @@ fn capture(
     windows: Query<&Window, With<PrimaryWindow>>, cams: Query<&GlobalTransform, With<crate::camera::MainCamera>>,
     sim: Res<crate::state::Sim>, clock: Res<crate::sim_driver::SimClock>,
     mut hud: ResMut<crate::hud::HudState>, selection: Res<crate::flow::Selection>,
-    point: Res<crate::hud::HoverPoint>, thing: Res<crate::hud::HoverThing>, over: Res<crate::hud::PointerOverUi>,
+    hover: Res<crate::hud::Hover>, over: Res<crate::hud::PointerOverUi>,
     mut toast: Local<Option<f32>>,
 ) {
     let now = time.elapsed_secs();
     // Confirm a moment later, so the picture shows the screen as it was.
     if toast.is_some_and(|at| now >= at) {
         *toast = None;
-        hud.msg = Some((crate::hud::Msg { icon: Some((crate::icons::Icon::Check, crate::hud::GOOD)), icon2: None, text: String::new() }, now));
+        hud.msg = Some(crate::hud::Msg { icon: Some((crate::icons::Icon::Check, crate::hud::GOOD)), icon2: None, text: String::new() });
     }
     if !keys.just_pressed(KeyCode::F12) {
         return;
@@ -156,7 +156,7 @@ fn capture(
     let name = format!("shot-{}", stamp());
     let dir = captures();
     let png = dir.join(format!("{name}.png"));
-    let here = scene(&sim.0, window, cams.single().ok(), &hud, &selection, &point, &thing, &over, &clock);
+    let here = scene(&sim.0, window, cams.single().ok(), &hud, &selection, &hover, &over, &clock);
     sim::trace::event(format!("SCREENSHOT {} | {here}", png.display()));
     sim::trace::flush();
     let mut text = format!("Screenshot {}\nAt the moment of F12: {here}\n\nLast {CAPTURE_SECONDS:.0} s of input (seconds since the session started):\n", png.display());

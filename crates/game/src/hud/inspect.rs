@@ -47,18 +47,10 @@ pub fn inspector(c: &Ctx, sel: Selection) -> Option<VNode> {
             })
         }
         Selection::Beaver(id) => Some(beaver(c, id)),
-        Selection::Cell(cell) => {
-            let b = c.s.buildings.buildings.iter().find(|b| (b.dam.is_some() || b.canal.is_some()) && b.cells().any(|x| x == cell))?;
-            match (b.dam.as_deref(), b.canal.as_deref()) {
-                (Some(d), _) => Some(super::dam_panel::dam_panel(c, b.id, d)),
-                (_, Some(k)) => Some(super::canal_panel::canal_panel(c, b.id, k)),
-                _ => None,
-            }
-        }
         Selection::Tree(id) => resource(c, id),
         Selection::Wolf(key) => wolf(c, key),
         Selection::Animal(id) => animal(c, id),
-        Selection::None => None,
+        Selection::Cell(_) | Selection::None => None,
     }
 }
 
@@ -129,14 +121,14 @@ fn family_rows(c: &Ctx, u: &mut Ui, residents: &[&sim::colony::Beaver], room: us
                 r.icon(good_icon(l.good), 14.0, good_color(l.good)).tip(Tip::name("Carrying").line(l.good.name(), num(l.amount)));
             }
             r.icon(icon, 16.0, col).tip(Tip::name(word));
-        }).action(HudAction::SelectBeaver(b.id)).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line(word, ""));
+        }).action(HudAction::GoTo(super::NoticeAt::Beaver(b.id))).tip(Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone()).line(word, ""));
     }
     if residents.len() < room {
         u.row(6.0, |r| for _ in residents.len()..room { r.empty_token(16.0); }).tip(Tip::name("Room").with_value(format!("{}", room - residents.len())));
     }
 }
 
-fn refit_tip(b: &sim::buildings::Building, refit: sim::maintenance::Refit, title: &str, show_lasts: bool) -> Tip {
+pub(super) fn refit_tip(b: &sim::buildings::Building, refit: sim::maintenance::Refit, title: &str, show_lasts: bool) -> Tip {
     let mut tip = Tip::name(title);
     if show_lasts { tip = tip.line("Lasts", format!("{}×", num(sim::maintenance::lasts(b.kind, refit)))); }
     for (g, a) in sim::maintenance::cost(b, refit).0 { tip.push(TipLine::new(g.name(), num(a)).icon(good_icon(g), good_color(g))); }
@@ -151,18 +143,18 @@ fn repair_row(c: &Ctx, u: &mut Ui, id: BuildingId) {
         if let Some(&kind) = s.maintenance.jobs.get(&id) {
             let what = match kind { Refit::Reinforce => "Reinforcing with mud", Refit::Facing => "Facing with pebbles", _ => "Repairing" };
             r.icon(Icon::Hammer, 18.0, GOOD).tip(Tip::name(what));
-            r.pebble(Icon::Undo, 12.0, HudAction::Refit(id, None), Peb::Idle).tip(Tip::name("Stop").line("Delivered materials come back", ""));
+            r.pebble(Icon::Undo, 12.0, HudAction::Cmd(sim::Command::Refit { building: id, refit: None }), Peb::Idle).tip(Tip::name("Stop").line("Delivered materials come back", ""));
             return;
         }
         if b.condition < 0.98 {
-            r.pebble(Icon::Hammer, 15.0, HudAction::Refit(id, Some(Refit::Repair)), if b.condition < 0.55 { Peb::Primary } else { Peb::Good }).tip(refit_tip(b, Refit::Repair, "Repair", false));
+            r.pebble(Icon::Hammer, 15.0, HudAction::Cmd(sim::Command::Refit { building: id, refit: Some(Refit::Repair) }), if b.condition < 0.55 { Peb::Primary } else { Peb::Good }).tip(refit_tip(b, Refit::Repair, "Repair", false));
         }
         if !b.reinforced && maintenance::can_reinforce(b.kind) {
             let icon = maintenance::cost(b, Refit::Reinforce).0.last().map_or(Icon::Hammer, |c| good_icon(c.0));
-            r.pebble(icon, 15.0, HudAction::Refit(id, Some(Refit::Reinforce)), Peb::Idle).tip(refit_tip(b, Refit::Reinforce, "Reinforce with mud", true));
+            r.pebble(icon, 15.0, HudAction::Cmd(sim::Command::Refit { building: id, refit: Some(Refit::Reinforce) }), Peb::Idle).tip(refit_tip(b, Refit::Reinforce, "Reinforce with mud", true));
         }
         if !b.pebbled && maintenance::can_pebble(b.kind) {
-            r.pebble(Icon::Pebbles, 15.0, HudAction::Refit(id, Some(Refit::Facing)), Peb::Idle).tip(refit_tip(b, Refit::Facing, "Face with pebbles", true));
+            r.pebble(Icon::Pebbles, 15.0, HudAction::Cmd(sim::Command::Refit { building: id, refit: Some(Refit::Facing) }), Peb::Idle).tip(refit_tip(b, Refit::Facing, "Face with pebbles", true));
         }
     });
 }
@@ -216,7 +208,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 family_rows(c, u, &residents, sim::colony::LODGE_CAPACITY);
                 u.row(6.0, |r| {
                     r.spacer();
-                    r.pebble(Icon::Journal, 13.0, HudAction::OpenPage(Some(super::Page::Lodge(id))), if c.hud.page == Some(super::Page::Lodge(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Family").line("Who lives here, and the family tree", ""));
+                    r.pebble(Icon::Journal, 13.0, HudAction::Overlay(Some(super::Overlay::Page(super::Page::Lodge(id)))), if c.hud.page() == Some(super::Page::Lodge(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Family").line("Who lives here, and the family tree", ""));
                 });
             } else if !building { u.empty_token(22.0).tip(Tip::name("No family yet")); }
         }
@@ -224,7 +216,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
         super::costs::upkeep_row(c, u, id);
         if b.kind.balances() {
             let on = s.work.balanced.contains(&id);
-            toggle_row(u, Icon::Haul, on, Tip::name("Balance stores").line("Haulers even out every store", ""), HudAction::Balance(id, !on), "Stop balancing", "Balance");
+            toggle_row(u, Icon::Haul, on, Tip::name("Balance stores").line("Haulers even out every store", ""), HudAction::Cmd(sim::Command::SetBalance { building: id, on: !on }), "Stop balancing", "Balance");
         } else if !b.kind.spec().stores.is_empty() {
             let cap = b.kind.spec().capacity.max(1.0);
             for g in Good::all().filter(|&g| sim::agents::accepts(b.kind, g)) {
@@ -233,7 +225,7 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     .tip(Tip::name(g.name()).with_value(format!("{} / {}", have.round() as i64, cap.round() as i64)));
             }
             let on = s.work.fills.contains(&id);
-            toggle_row(u, Icon::Up, on, Tip::name("Fill").line("Haulers bring it from other stores", ""), HudAction::FillStore(id, !on), "Stop filling", "Fill");
+            toggle_row(u, Icon::Up, on, Tip::name("Fill").line("Haulers bring it from other stores", ""), HudAction::Cmd(sim::Command::FillStore { store: id, on: !on }), "Stop filling", "Fill");
         }
         if let Some(pl) = s.work.place(id).filter(|pl| !pl.slots.is_empty() && pl.site.is_none() && !b.kind.is_waterworks()) {
             if b.kind.seats(sim::content::Duty::Forest) {
@@ -242,11 +234,11 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                     u.row(8.0, |r| {
                         r.icon(job_icon(sl.role), 18.0, if sl.off { MUTED } else { INK }).tip(Tip::name(name));
                         match sl.beaver.and_then(|w| s.colony.beaver(w)) {
-                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(name, "")); }
+                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::GoTo(super::NoticeAt::Beaver(bv.id))).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(name, "")); }
                             None => { r.empty_token(22.0).tip(Tip::name(if sl.off { "Off" } else { "Nobody yet" })); }
                         }
                         r.spacer();
-                        r.pebble(if sl.off { Icon::Play } else { Icon::Pause }, 11.0, HudAction::SlotOff(id, i, !sl.off), if sl.off { Peb::Idle } else { Peb::Good }).tip(Tip::name(if sl.off { "Turn on" } else { "Turn off" }));
+                        r.pebble(if sl.off { Icon::Play } else { Icon::Pause }, 11.0, HudAction::Cmd(sim::Command::SetSlotOff { building: id, slot: i, off: !sl.off }), if sl.off { Peb::Idle } else { Peb::Good }).tip(Tip::name(if sl.off { "Turn on" } else { "Turn off" }));
                     });
                 }
             } else {
@@ -254,13 +246,13 @@ fn building(c: &Ctx, id: BuildingId) -> VNode {
                 u.row(8.0, |r| {
                     for sl in &pl.slots {
                         match sl.beaver.and_then(|w| s.colony.beaver(w)) {
-                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::SelectBeaver(bv.id)).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(sl.role.name(), "")); }
+                            Some(bv) => { r.token(Icon::Beaver, 22.0, Some(GOOD)).action(HudAction::GoTo(super::NoticeAt::Beaver(bv.id))).tip(Tip::titled(Some((stage_icon(bv.stage), INK)), bv.name.clone()).line(sl.role.name(), "")); }
                             None => { r.empty_token(22.0).tip(Tip::name("Nobody yet").line(sl.role.name(), "")); }
                         }
                     }
                     r.spacer();
-                    r.pebble(Icon::Minus, 10.0, HudAction::Staff(id, -1), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
-                    r.pebble(Icon::Plus, 10.0, HudAction::Staff(id, 1), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
+                    r.pebble(Icon::Minus, 10.0, HudAction::Cmd(sim::Command::StaffBuilding { building: id, delta: -1 }), if pl.filled() > 0 { Peb::Idle } else { Peb::Faded }).tip(Tip::name("Free a beaver"));
+                    r.pebble(Icon::Plus, 10.0, HudAction::Cmd(sim::Command::StaffBuilding { building: id, delta: 1 }), if sim::jobs::add_beaver_check(s, id).is_ok() { Peb::Idle } else { Peb::Faded }).tip(super::add_beaver_tip(s, id));
                 });
             }
         }
@@ -280,7 +272,7 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
                 .skin(Skin::Portrait).tip(Tip::name(job_name));
             r.col(4.0, |x| { x.bold(job_name, 14.0, job_col); if now_i != job_i { x.icon(now_i, 14.0, now_col).tip(Tip::name(now_name)); } });
             if let Some(bb) = place.and_then(|bid| s.buildings.building(bid)) {
-                r.pebble(building_icon(bb.kind), 14.0, HudAction::SelectBuilding(bb.id), Peb::Idle).tip(Tip::name(bb.kind.spec().name.as_str()).line("Show", ""));
+                r.pebble(building_icon(bb.kind), 14.0, HudAction::GoTo(super::NoticeAt::Building(bb.id)), Peb::Idle).tip(Tip::name(bb.kind.spec().name.as_str()).line("Show", ""));
             }
             r.spacer();
             if let Some(l) = s.agents.get(id).and_then(|a| a.load.as_ref()) {
@@ -298,16 +290,16 @@ fn beaver(c: &Ctx, id: BeaverId) -> VNode {
         u.row(8.0, |r| {
             r.node(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, flex_grow: 1.0, flex_shrink: 1.0, min_width: Val::Px(0.0), column_gap: Val::Px(8.0), row_gap: Val::Px(4.0), align_items: AlignItems::Center, ..default() }, |r| {
                 if let Some(f) = s.colony.family(b.family) { r.icon(Icon::Home, 16.0, MUD).tip(Tip::name(f.name.clone())); }
-                if let Some(m) = b.mate.and_then(|m| s.colony.beaver(m)) { r.token(Icon::Beaver, 20.0, None).action(HudAction::SelectBeaver(m.id)).tip(Tip::name(m.name.clone()).line("Mate", "")); }
+                if let Some(m) = b.mate.and_then(|m| s.colony.beaver(m)) { r.token(Icon::Beaver, 20.0, None).action(HudAction::GoTo(super::NoticeAt::Beaver(m.id))).tip(Tip::name(m.name.clone()).line("Mate", "")); }
                 for k in s.colony.beavers.iter().filter(|k| k.stage != sim::colony::Stage::Adult && (k.mother == Some(id) || k.father == Some(id))) {
-                    r.token(Icon::Beaver, 14.0, None).action(HudAction::SelectBeaver(k.id)).tip(Tip::name(k.name.clone()).line("Young", ""));
+                    r.token(Icon::Beaver, 14.0, None).action(HudAction::GoTo(super::NoticeAt::Beaver(k.id))).tip(Tip::name(k.name.clone()).line("Young", ""));
                 }
                 if let Some(p) = &b.pregnancy { r.icon(Icon::Kit, 14.0, GOOD); r.bold(format!("{:.0}d", (p.due_day - s.time_days).max(0.0)), 12.0, INK).tip(Tip::name(format!("{} kits on the way", p.litter))); }
             });
             if s.work.slot_of(id).is_some() || s.agents.get(id).and_then(|a| a.assignment).is_some() {
-                r.pebble(Icon::Minus, 11.0, HudAction::FreeBeaver(id), Peb::Idle).tip(Tip::name("Free"));
+                r.pebble(Icon::Minus, 11.0, HudAction::Cmd(sim::Command::Assign { who: vec![id], to: None, queue: false }), Peb::Idle).tip(Tip::name("Free"));
             }
-            r.pebble(Icon::Journal, 13.0, HudAction::OpenPage(Some(super::Page::Beaver(id))), if c.hud.page == Some(super::Page::Beaver(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Details").line("Life, family, skills", ""));
+            r.pebble(Icon::Journal, 13.0, HudAction::Overlay(Some(super::Overlay::Page(super::Page::Beaver(id)))), if c.hud.page() == Some(super::Page::Beaver(id)) { Peb::On } else { Peb::Idle }).tip(Tip::name("Details").line("Life, family, skills", ""));
             r.pebble(Icon::Follow, 13.0, HudAction::Follow(id), if c.hud.follow == Some(id) { Peb::On } else { Peb::Idle }).tip(Tip::name("Follow"));
         });
     })
@@ -350,7 +342,7 @@ fn resource(c: &Ctx, id: sim::resources::ResourceId) -> Option<VNode> {
                 u.row(8.0, |x| {
                     x.icon(good_icon(Good::seedling()), 16.0, GOOD);
                     match &name {
-                        Some(n) => { x.token(Icon::Beaver, 16.0, None).action(HudAction::SelectBeaver(who)).tip(Tip::name(n.clone()).line("Show", "")); x.bold(n.clone(), 13.0, INK); }
+                        Some(n) => { x.token(Icon::Beaver, 16.0, None).action(HudAction::GoTo(super::NoticeAt::Beaver(who))).tip(Tip::name(n.clone()).line("Show", "")); x.bold(n.clone(), 13.0, INK); }
                         None => { x.icon(Icon::Beaver, 16.0, MUTED); }
                     }
                     x.spacer();

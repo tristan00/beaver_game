@@ -113,7 +113,7 @@ pub enum Kind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Tag { #[default] None, Minimap, TipLayer(u8), Scroll }
+pub enum Tag { #[default] None, Minimap, TipLayer(u8) }
 
 #[derive(Clone, Debug)]
 pub struct VNode {
@@ -236,40 +236,17 @@ impl Ui {
         v.node.padding = UiRect::all(Val::Px(14.0));
         vec![page_area(v, false)]
     }
-    pub fn full_page_shell(scroll_tag: bool, header: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui)) -> Vec<VNode> {
+    pub fn full_page_shell(header: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui)) -> Vec<VNode> {
         let mut ui = Ui::default();
-        let node = ui.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() }, |u| {
+        ui.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(10.0), overflow: Overflow::clip(), ..default() }, |u| {
             u.row(14.0, header).style(|n| n.align_items = AlignItems::FlexStart);
             u.rule();
             body(u);
         });
-        if scroll_tag { node.tag(Tag::Scroll); }
         let mut v = ui.nodes.pop().unwrap();
         panel(&mut v);
         v.node.padding = UiRect::all(Val::Px(18.0));
         vec![page_area(v, true)]
-    }
-    /// Scroll-tagged paged list with optional slice scrollbar and Up/Down footer buttons.
-    #[allow(clippy::too_many_arguments)]
-    pub fn paged_list(&mut self, first: usize, page: usize, total: usize, step: i32, bar_h: f32, row_gap: f32, footer: Option<(Option<Icon>, bool)>, body: impl FnOnce(&mut Ui)) {
-        self.node(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), width: Val::Percent(100.0), ..default() }, |wrap| {
-            wrap.node(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(row_gap), flex_grow: 1.0, min_width: Val::Px(0.0), ..default() }, body);
-            if bar_h > 0.0 { wrap.slice_scrollbar(first, page, total, bar_h); }
-        }).tag(Tag::Scroll).solid();
-        if let Some((icon, always)) = footer {
-            if always || total > page {
-                if always { self.rule(); }
-                self.row(8.0, |r| {
-                    if let Some(i) = icon { r.icon(i, 14.0, MUTED); }
-                    r.bold(format!("{total}"), 12.0, MUTED);
-                    r.spacer();
-                    if total > page {
-                        r.pebble(Icon::Up, 9.0, HudAction::Scroll(-step), if first == 0 { Peb::Faded } else { Peb::Idle });
-                        r.pebble(Icon::Down, 9.0, HudAction::Scroll(step), if first + page >= total { Peb::Faded } else { Peb::Idle });
-                    }
-                });
-            }
-        }
     }
     pub fn rule(&mut self) -> &mut VNode {
         self.node(Node { flex_direction: FlexDirection::Column, width: Val::Percent(100.0), margin: UiRect::vertical(Val::Px(3.0)), flex_shrink: 0.0, ..default() }, |u| {
@@ -371,16 +348,6 @@ impl Ui {
         let v = self.node(Node { width: Val::Px(52.0), height: Val::Px(52.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, |p| { p.icon(icon, 32.0, col); });
         v.skin(Skin::Portrait);
         v
-    }
-    pub fn slice_scrollbar(&mut self, first: usize, visible: usize, total: usize, height: f32) {
-        if total <= visible || height <= 1.0 { return; }
-        let w = super::scrollbar::TRACK_W;
-        let thumb = ((visible as f32 / total as f32) * height).clamp(24.0f32.min(height), height);
-        let at = (first as f32 / (total - visible) as f32).clamp(0.0, 1.0) * (height - thumb);
-        self.node(Node { width: Val::Px(w), height: Val::Px(height), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::all(Val::Px(1.0)), border_radius: BorderRadius::all(Val::Px(w * 0.5)), ..default() }, |bar| {
-            bar.add(VNode::new(Node { height: Val::Px(at), flex_shrink: 0.0, ..default() }));
-            bar.add(VNode::new(Node { width: Val::Px(w - 2.0), height: Val::Px(thumb), border_radius: BorderRadius::all(Val::Px((w - 2.0) * 0.5)), flex_shrink: 0.0, ..default() })).bg(BARK.with_alpha(0.84));
-        }).bg(GROOVE).border(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)));
     }
 }
 
@@ -491,7 +458,7 @@ fn spawn_tree(p: &mut ChildSpawnerCommands, icons: &Icons, v: &VNode) -> Mounted
     if let Some(b) = v.peek { ec.insert(Peek(b)); }
     if v.tag != Tag::None {
         ec.insert(TagComp(v.tag));
-        if matches!(v.tag, Tag::Minimap | Tag::TipLayer(_) | Tag::Scroll) { ec.insert(RelativeCursorPosition::default()); }
+        if matches!(v.tag, Tag::Minimap | Tag::TipLayer(_)) { ec.insert(RelativeCursorPosition::default()); }
     }
     let e = ec.id();
     let mut children = Vec::new();

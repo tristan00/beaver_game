@@ -127,7 +127,7 @@ enum Through {
 fn through(c: &Ctx, id: BuildingId, d: &Dam) -> Option<(Cell, Through)> {
     let s = c.s;
     let on_line = |cell: Cell| d.line().any(|x| x.cell == cell);
-    if let (Some((dam, o)), Some(cell)) = (c.hud.opening, c.works_cell) {
+    if let (Some((dam, o)), Some(cell)) = (c.hud.opening(), c.works_cell) {
         if dam == id && on_line(cell) {
             return Some((cell, Through::Placing(works::opening_fits(s, id, cell, o))));
         }
@@ -286,18 +286,15 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
 /// Face it with pebbles: then it wears more slowly.
 fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     let Some(b) = s.buildings.building(id) else { return };
-    let slower = format!("{}× slower", num(sim::maintenance::lasts(sim::buildings::BuildingKind::dam(), sim::maintenance::Refit::Facing)));
     if b.pebbled {
+        let slower = format!("{}× slower", num(sim::maintenance::lasts(b.kind, sim::maintenance::Refit::Facing)));
         r.stat(Icon::Pebbles, GOOD, "Faced", None, GOOD, Tip::name("Pebble faced").line("Wears", slower));
     } else if s.maintenance.jobs.get(&id) == Some(&sim::maintenance::Refit::Facing) {
-        r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::Refit(id, None)), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
+        r.small_button(Some(Icon::Pebbles), Some("Stop"), Some(HudAction::Cmd(sim::Command::Refit { building: id, refit: None })), Tip::name("Facing with pebbles").line("Stop", "").line("Delivered pebbles come back", ""), Small::On);
     } else {
-        let mut tip = Tip::name("Face with pebbles").line("Wears", slower);
-        for (g, a) in sim::maintenance::cost(b, sim::maintenance::Refit::Facing).0 {
-            tip.push(TipLine::new(g.name(), num(a)).icon(good_icon(g), good_color(g)));
-        }
+        let tip = super::inspect::refit_tip(b, sim::maintenance::Refit::Facing, "Face with pebbles", true);
         if b.is_complete() {
-            r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::Refit(id, Some(sim::maintenance::Refit::Facing))), tip, Small::Idle);
+            r.small_button(Some(Icon::Pebbles), Some("Face"), Some(HudAction::Cmd(sim::Command::Refit { building: id, refit: Some(sim::maintenance::Refit::Facing) })), tip, Small::Idle);
         } else {
             r.small_button(Some(Icon::Pebbles), Some("Face"), None, tip.line("Finish the dam first", ""), Small::Idle);
         }
@@ -308,7 +305,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, fix: Fix) {
     let builders = sim::agents::builders_on(c.s, id);
     u.row(6.0, |r| {
         works::crew_button(r, builders, crate::hud::words::job_icon(sim::jobs::Job::with_duty(sim::content::Duty::Build)), "Builders here", fix == Fix::Assign);
-        works::upkeep_button(r, d.upkeep, HudAction::Upkeep(id, !d.upkeep), "Menders repair worn cells", fix == Fix::Upkeep);
+        works::upkeep_button(r, d.upkeep, HudAction::Cmd(sim::Command::SetUpkeep { building: id, on: !d.upkeep }), "Menders repair worn cells", fix == Fix::Upkeep);
         face_button(c.s, r, id);
         works::pause_button(r, c.s, id);
         r.spacer();
@@ -336,9 +333,8 @@ pub fn dam_panel(c: &Ctx, id: BuildingId, d: &Dam) -> VNode {
     let health = sim::dams::health(s, d);
     let o = offers(c, id, d);
     let (word, col, why, fix) = status(s, id, d, &o);
-    let selected_here = c.sel == Selection::Site(id) || matches!(c.sel, Selection::Cell(cell) if d.cells.iter().any(|x| x.cell == cell));
     let title = sim::names::pond_name(s, id).unwrap_or(sim::buildings::BuildingKind::dam().name());
-    works::works_panel(c, id, title, selected_here, health, condition_tip(s, d, health), |p| portrait(p, health), |u| {
+    works::works_panel(c, id, title, c.sel == Selection::Site(id), health, condition_tip(s, d, health), |p| portrait(p, health), |u| {
         if c.hud.dam_tab == DamTab::History {
             history(u, d);
             return;

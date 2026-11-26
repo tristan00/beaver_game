@@ -219,7 +219,7 @@ fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
     } else if !sim::canals::gates_unlocked(s) {
         (None, gate_tip.line("Needs a haul mound", ""))
     } else {
-        (Some(HudAction::SetGate(id, g.cell, GateSetting::Shut)), gate_tip)
+        (Some(HudAction::Cmd(sim::Command::SetGate { building: id, cell: g.cell, setting: GateSetting::Shut })), gate_tip)
     };
     r.big_button(BigButton { icon: Icon::Lock, word: "Gate", cost: cost_chip(&works.works.gate), action, tip, hint: false, on: gate_there });
     let lock_there = sim::locks::has(s, g.cell);
@@ -240,7 +240,7 @@ fn footer(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, fix: Fix) {
     let crew = sim::agents::builders_on(c.s, id);
     u.row(6.0, |r| {
         works::crew_button(r, crew, Icon::Beaver, "Diggers here", fix == Fix::Assign);
-        works::upkeep_button(r, k.upkeep, HudAction::Upkeep(id, !k.upkeep), "Menders clear silt", fix == Fix::Upkeep);
+        works::upkeep_button(r, k.upkeep, HudAction::Cmd(sim::Command::SetUpkeep { building: id, on: !k.upkeep }), "Menders clear silt", fix == Fix::Upkeep);
         works::pause_button(r, c.s, id);
         r.spacer();
         super::costs::page_button(c, r, id);

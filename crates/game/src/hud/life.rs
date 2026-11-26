@@ -4,13 +4,12 @@ use super::panels::{stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
 use super::world::mood_icon;
-use super::{HudAction, Page};
+use super::{HudAction, NoticeAt, Overlay, Page};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::colony::{Beaver, BeaverId, DeathCause, Job, Stage};
 use sim::lives::{Life, What};
 
-pub(super) const ROWS: usize = 22;
 const PORTRAIT_ASPECT: f32 = crate::entities_render::portrait::WIDTH as f32 / crate::entities_render::portrait::HEIGHT as f32;
 const COL_MAX: f32 = 430.0;
 const HARMS: [&str; 5] = ["Hunger", "Cold", "Injury", "Exhaustion", "Old age"];
@@ -185,7 +184,7 @@ fn work(c: &Ctx, u: &mut Ui, b: &Beaver) {
             r.text("Works at", 12.0, MUTED).style(|n| n.width = Val::Px(110.0));
             r.text(bb.kind.spec().name.as_str(), 12.0, INK);
             r.spacer();
-            r.pebble(Icon::Focus, 11.0, HudAction::SelectBuilding(bid), Peb::Idle).tip(Tip::name("Show"));
+            r.pebble(Icon::Focus, 11.0, HudAction::GoTo(NoticeAt::Building(bid)), Peb::Idle).tip(Tip::name("Show"));
         });
     }
     if let Some(a) = s.agents.get(b.id) {
@@ -207,7 +206,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         r.bold("Family", 14.0, INK);
         r.spacer();
         match b.and_then(|b| b.lodge) {
-            Some(l) => r.small_button(Some(hi), Some("Family tree"), Some(HudAction::OpenPage(Some(Page::Lodge(l)))), Tip::name("Family page").line("Who lives in its lodge, and the family tree", ""), Small::Idle),
+            Some(l) => r.small_button(Some(hi), Some("Family tree"), Some(HudAction::Overlay(Some(Overlay::Page(Page::Lodge(l))))), Tip::name("Family page").line("Who lives in its lodge, and the family tree", ""), Small::Idle),
             None => r.small_button(Some(hi), Some("Family tree"), None, Tip::name("Family page").line("No home: a family page belongs to a lodge", ""), Small::Idle),
         };
     });
@@ -258,7 +257,7 @@ fn family(c: &Ctx, u: &mut Ui, id: BeaverId, b: Option<&Beaver>, life: Option<&L
         u.row(6.0, |r| {
             r.text(word, 11.0, MUTED).style(|n| n.width = Val::Px(92.0));
             r.row(5.0, |x| { x.token(Icon::Beaver, 13.0, None); x.bold(nm.clone(), 12.0, if s.colony.beaver(o).is_some() { INK } else { MUTED }); })
-                .style(|n| n.width = Val::Px(104.0)).action(HudAction::OpenPage(Some(Page::Beaver(o)))).tip(Tip::name(nm).line("Open their page", ""));
+                .style(|n| n.width = Val::Px(104.0)).action(HudAction::Overlay(Some(Overlay::Page(Page::Beaver(o))))).tip(Tip::name(nm).line("Open their page", ""));
             r.text(litter, 11.0, INK).style(|n| n.width = Val::Px(84.0)).tip(ltip);
             r.text(note, 11.0, MUTED);
         });
@@ -404,9 +403,8 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
     u.heading(Icon::Journal, "Life in the colony");
     let Some(life) = life else { u.text("No record yet: it starts with the next look at the colony", 12.0, MUTED); return; };
     if let Some(d) = life.arrived() { fact(u, Icon::Hourglass, MUTED, "In the colony", format!("since {} ({})", date(d), span(s.time_days - d))); }
-    let (her, hi, total) = (if life.sex == sim::colony::Sex::Male { "his" } else { "her" }, building_icon(sim::buildings::BuildingKind::home()), life.entries.len());
-    let skip = c.hud.scroll.min(total.saturating_sub(1));
-    for e in life.entries.iter().rev().skip(skip).take(ROWS) {
+    let (her, hi) = (if life.sex == sim::colony::Sex::Male { "his" } else { "her" }, building_icon(sim::buildings::BuildingKind::home()));
+    for e in life.entries.iter().rev() {
         let (icon, col, words) = match e.what {
             What::Known => (Icon::Beaver, MUTED, "In the colony when its records began".into()),
             What::Born { mother, father } => {
@@ -429,13 +427,11 @@ fn chronology(c: &Ctx, u: &mut Ui, life: Option<&Life>) {
         };
         u.row(8.0, |r| { r.text(date(e.day), 11.0, MUTED).style(|n| n.width = Val::Px(92.0)); r.icon(icon, 14.0, col); r.text(words, 12.0, INK); });
     }
-    if total > ROWS { u.text(format!("{}–{} of {total} · scroll for more", skip + 1, (skip + ROWS).min(total)), 11.0, MUTED); }
 }
 
 pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
     let (s, b, life) = (c.s, c.s.colony.beaver(id), c.s.lives.of.get(&id));
     Ui::full_page_shell(
-        true,
         |r| {
             r.col(4.0, |x| {
                 x.bold(full_name(s, id, &name_of(s, id)), 20.0, INK);
@@ -448,8 +444,8 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
                 }
             });
             r.spacer();
-            if b.is_some() { r.small_button(Some(Icon::Focus), None, Some(HudAction::SelectBeaver(id)), Tip::name("Show on the map"), Small::Idle); }
-            page_controls(c, r, HudAction::OpenPage(None));
+            if b.is_some() { r.small_button(Some(Icon::Focus), None, Some(HudAction::GoTo(NoticeAt::Beaver(id))), Tip::name("Show on the map"), Small::Idle); }
+            page_controls(c, r, HudAction::Overlay(None));
         },
         |u| {
             u.row(28.0, |cols| {

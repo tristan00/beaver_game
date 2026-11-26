@@ -3,13 +3,11 @@ use super::ledger::{chart, Bar};
 use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
-use super::HudAction;
+use super::{HudAction, NoticeAt, Overlay};
 use crate::icons::Icon;
 use bevy::prelude::*;
 use sim::buildings::{BuildingId, Good};
 use sim::works::{Spend, Tally, SEASON};
-
-const ROWS: usize = 12;
 
 pub(super) fn structure_name(s: &sim::SimState, id: BuildingId) -> String {
     match s.buildings.building(id) {
@@ -61,7 +59,7 @@ pub(super) fn upkeep_over(c: &Ctx, u: &mut Ui, id: BuildingId, span: super::Span
 }
 
 pub(super) fn page_button(c: &Ctx, r: &mut Ui, id: BuildingId) {
-    r.pebble(Icon::Journal, 13.0, HudAction::OpenPage(Some(super::Page::Works(id))), if c.hud.page == Some(super::Page::Works(id)) { Peb::On } else { Peb::Idle })
+    r.pebble(Icon::Journal, 13.0, HudAction::Overlay(Some(Overlay::Page(super::Page::Works(id)))), if c.hud.page() == Some(super::Page::Works(id)) { Peb::On } else { Peb::Idle })
         .tip(Tip::name("Details").line("What it has cost, and who worked on it", ""));
 }
 
@@ -90,17 +88,16 @@ pub fn screen(c: &Ctx, id: BuildingId) -> Vec<VNode> {
     crew.sort_by(|a, b| (b.1 + b.2).total_cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
     let cond = match (b.dam.as_deref(), b.canal.as_ref()) { (Some(d), _) => sim::dams::health(s, d), (_, Some(k)) => sim::canals::health(s, k), _ => b.condition };
     Ui::full_page_shell(
-        false,
         |r| {
             r.portrait(building_icon(b.kind), MUD);
             r.col(6.0, |x| {
                 x.bold(structure_name(s, id), 20.0, INK);
                 x.text(b.kind.name(), 12.0, MUTED);
-                x.pips(cond, super::works::condition_colour(cond)).tip(Tip::name("Condition").with_value(format!("{:.0}%", cond * 100.0)));
+                x.pips(cond, level_color(cond)).tip(Tip::name("Condition").with_value(format!("{:.0}%", cond * 100.0)));
             });
             r.spacer();
-            r.pebble(Icon::Focus, 13.0, HudAction::SelectBuilding(id), Peb::Idle).tip(Tip::name("Show on the map"));
-            super::life::page_controls(c, r, HudAction::OpenPage(None));
+            r.pebble(Icon::Focus, 13.0, HudAction::GoTo(NoticeAt::Building(id)), Peb::Idle).tip(Tip::name("Show on the map"));
+            super::life::page_controls(c, r, HudAction::Overlay(None));
         },
         |u| {
             u.row(28.0, |cols| {
@@ -124,7 +121,7 @@ pub fn screen(c: &Ctx, id: BuildingId) -> Vec<VNode> {
                             r.spacer();
                             r.text(format!("{}d building · {}d upkeep", num(built / per_day), num(mended / per_day)), 11.0, MUTED);
                             r.icon(Icon::Next, 10.0, MUTED);
-                        }).action(HudAction::OpenPage(Some(super::Page::Beaver(who))))
+                        }).action(HudAction::Overlay(Some(Overlay::Page(super::Page::Beaver(who)))))
                             .tip(Tip::name(name).line("Building", work(built / per_day)).line("Upkeep", work(mended / per_day)).line("Open their page", ""));
                     }
                 });
@@ -154,8 +151,6 @@ fn costliest(s: &sim::SimState) -> Vec<(BuildingId, Tally)> {
     v
 }
 
-pub(super) fn scroll_max(s: &sim::SimState) -> usize { costliest(s).len().saturating_sub(ROWS) }
-
 pub(super) fn upkeep_tab(c: &Ctx, u: &mut Ui) {
     let (s, today) = (c.s, sim::works::today(c.s));
     let (last, seasons, life) = (s.works.colony.last_season(today), s.works.colony.by_season(today), s.works.colony.life().clone());
@@ -171,9 +166,8 @@ pub(super) fn upkeep_tab(c: &Ctx, u: &mut Ui) {
     u.rule();
     let list = costliest(s);
     if list.is_empty() { u.text("Nothing needed upkeep last season", 12.0, MUTED); return; }
-    let first = c.hud.scroll.min(list.len().saturating_sub(ROWS));
-    u.paged_list(first, ROWS, list.len(), ROWS as i32, 0.0, 4.0, Some((None, false)), |rows| {
-        for (id, t) in list.iter().skip(first).take(ROWS) {
+    u.col(4.0, |rows| {
+        for (id, t) in &list {
             let Some(b) = s.buildings.building(*id) else { continue };
             let row = rows.row(8.0, |r| {
                 r.icon(building_icon(b.kind), 14.0, MUD);
@@ -182,7 +176,7 @@ pub(super) fn upkeep_tab(c: &Ctx, u: &mut Ui) {
                 amounts(r, t, Spend::Upkeep);
             });
             row.node.height = Val::Px(22.0);
-            let open = if b.dam.is_some() || b.canal.is_some() { HudAction::OpenPage(Some(super::Page::Works(*id))) } else { HudAction::SelectBuilding(*id) };
+            let open = if b.dam.is_some() || b.canal.is_some() { HudAction::Overlay(Some(Overlay::Page(super::Page::Works(*id)))) } else { HudAction::GoTo(NoticeAt::Building(*id)) };
             row.action(open).tip(lines(Tip::name(structure_name(s, *id)).line("Upkeep, last season", ""), t, Spend::Upkeep));
         }
     });

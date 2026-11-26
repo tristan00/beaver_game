@@ -168,11 +168,10 @@ impl Plugin for SimDriverPlugin {
 
 fn time_keys(
     keys: Res<ButtonInput<KeyCode>>,
-    typing: Option<Res<crate::hud::TextCapture>>,
     menu: Option<Res<crate::hud::MenuOpen>>,
     mut clock: ResMut<SimClock>,
 ) {
-    if typing.is_some_and(|t| t.0) || menu.is_some_and(|m| m.0) {
+    if menu.is_some_and(|m| m.0) {
         return;
     }
     if keys.just_pressed(KeyCode::Space) {

@@ -2,7 +2,7 @@
 use super::panels::{stage_icon, status_line};
 use super::ui::*;
 use super::words::*;
-use super::{HoverCell, HudState, MapLens, Tool};
+use super::{HudState, MapLens, Tool};
 use crate::build_logic;
 use crate::camera::MainCamera;
 use crate::entities_render::BeaverDrawn;
@@ -13,51 +13,19 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use sim::buildings::{BuildingId, Good};
 use sim::colony::BeaverId;
-use sim::resources::ResourceId;
 use std::collections::{HashSet, VecDeque};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Thing {
-    Beaver(BeaverId), Building(BuildingId), Resource(ResourceId),
-    Cell(Cell), Wolf(u32), Animal(u32),
-}
-
-impl Thing {
-    pub fn key(self) -> u64 {
-        match self {
-            Thing::Beaver(b) => 1 << 60 | b.0,
-            Thing::Building(b) => 2 << 60 | b.0 as u64,
-            Thing::Resource(r) => 3 << 60 | r.0 as u64,
-            Thing::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
-            Thing::Wolf(id) => 6 << 60 | id as u64,
-            Thing::Animal(id) => 7 << 60 | id as u64,
-        }
-    }
-    pub fn selection(self) -> Selection {
-        match self {
-            Thing::Beaver(b) => Selection::Beaver(b),
-            Thing::Building(b) => Selection::Site(b),
-            Thing::Resource(r) => Selection::Tree(r),
-            Thing::Cell(c) => Selection::Cell(c),
-            Thing::Wolf(k) => Selection::Wolf(k),
-            Thing::Animal(id) => Selection::Animal(id),
-        }
-    }
-}
-
-impl From<crate::picking::Target> for Thing {
-    fn from(t: crate::picking::Target) -> Self {
-        use crate::picking::Target;
-        match t { Target::Building(id) => Self::Building(id), Target::Beaver(id) => Self::Beaver(id), Target::Resource(id) => Self::Resource(id) }
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct HoverThing(pub Option<Thing>, pub Option<Thing>);
-#[derive(Resource, Default)]
-pub struct HoverPoint(pub Option<(Cell, (f32, f32))>);
 #[derive(Resource, Default, PartialEq)]
-pub struct WorksSnap(pub Option<Cell>);
+pub struct Hover {
+    pub point: Option<(Cell, (f32, f32))>,
+    pub thing: Selection,
+    pub order: Selection,
+    pub works_cell: Option<Cell>,
+}
+
+impl Hover {
+    pub fn cell(&self) -> Option<Cell> { self.point.map(|p| p.0) }
+}
 
 const SNAP_M: f32 = 0.9;
 const WATER_NAME_SHOW_HEIGHT: f32 = 50.0;
@@ -111,20 +79,21 @@ fn animal_on_ray(s: &sim::SimState, ray: Ray3d) -> Option<(u32, f32)> {
         }).min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-pub fn pick(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cell: Cell, p: (f32, f32)) -> Thing {
+pub fn pick(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cell: Cell, p: (f32, f32)) -> Selection {
     let d2 = |a: (f32, f32)| (a.0 - p.0).powi(2) + (a.1 - p.1).powi(2);
     if let Some((id, _)) = s.colony.beavers.iter().filter_map(|b| beaver_at(s, drawn, b.id).map(|q| (b.id, d2(q)))).filter(|x| x.1 < 0.81).min_by(|a, b| a.1.total_cmp(&b.1)) {
-        return Thing::Beaver(id);
+        return Selection::Beaver(id);
     }
-    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Thing::Wolf(w.id); }
-    if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) { return Thing::Building(b.id); }
-    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) { return Thing::Resource(r.id); }
-    Thing::Cell(cell)
+    if let Some(w) = sim::predators::seen(s).filter(|w| d2(w.pos) < 1.44).min_by(|a, b| d2(a.pos).total_cmp(&d2(b.pos))) { return Selection::Wolf(w.id); }
+    if let Some(b) = s.buildings.buildings.iter().find(|b| b.cells().any(|c| c == cell)) { return Selection::Site(b.id); }
+    if let Some(r) = s.resources.at(cell).find(|r| r.amount > 0.0 || r.kind.flowing()) { return Selection::Tree(r.id); }
+    Selection::Cell(cell)
 }
 
-pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
+pub fn thing_tip(s: &sim::SimState, t: Selection) -> Tip {
     match t {
-        Thing::Beaver(id) => {
+        Selection::None => Tip::default(),
+        Selection::Beaver(id) => {
             let Some(b) = s.colony.beaver(id) else { return Tip::default() };
             let mut tip = Tip::titled(Some((stage_icon(b.stage), INK)), b.name.clone());
             if let Some(role) = sim::jobs::role_of(s, id) { tip.push(TipLine::new(role.name(), "").icon(job_icon(role), INK)); }
@@ -142,7 +111,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             tip.push(TipLine::new("Health", format!("{:.0}", b.health * 100.0)).icon(Icon::Health, if b.health < 0.5 { BAD } else { GOOD }));
             tip
         }
-        Thing::Building(id) => {
+        Selection::Site(id) => {
             let Some(b) = s.buildings.building(id) else { return Tip::default() };
             let mut tip = Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str());
             if let Some((icon, words, goods, col)) = status_line(s, id) {
@@ -159,7 +128,7 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             tip
         }
-        Thing::Resource(rid) => {
+        Selection::Tree(rid) => {
             let Some(r) = s.resources.get(rid) else { return Tip::default() };
             let mut tip = Tip::titled(Some((resource_icon(r.kind), GOOD)), r.plant.map(|p| p.name()).or(r.species.map(|t| t.name())).unwrap_or(resource_name(r.kind)));
             let yields = match r.kind {
@@ -191,15 +160,15 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
             }
             tip
         }
-        Thing::Wolf(_) => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
-        Thing::Animal(id) => {
+        Selection::Wolf(_) => Tip::titled(Some((Icon::Wolf, BAD)), "Wolf"),
+        Selection::Animal(id) => {
             let Some(a) = s.wildlife.get(id) else { return Tip::default() };
             let (icon, doing) = animal_doing(a);
             let mut tip = Tip::titled(Some((animal_icon(a.kind), INK)), animal_name(a.kind));
             tip.push(TipLine::new(doing, "").icon(icon, MUTED));
             tip
         }
-        Thing::Cell(c) => {
+        Selection::Cell(c) => {
             let mut tip = Tip::default();
             for (i, col, name, v) in cell_rows(s, c) { tip.push(TipLine::new(name, v).icon(i, col)); }
             tip
@@ -210,12 +179,12 @@ pub fn thing_tip(s: &sim::SimState, t: Thing) -> Tip {
 #[allow(clippy::too_many_arguments)]
 pub fn world_hover(
     cli: Res<crate::cli::Cli>, windows: Query<&Window, With<PrimaryWindow>>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    sim: Res<Sim>, over: Res<super::PointerOverUi>, hud: Res<HudState>, mut point: ResMut<HoverPoint>,
-    mut thing: ResMut<HoverThing>, mut tips: ResMut<Tips>, menu: Res<super::MenuOpen>, picker: crate::picking::Picker,
-    sel: Res<Selection>, mut snap: ResMut<WorksSnap>, drawn: Option<Res<BeaverDrawn>>,
+    sim: Res<Sim>, over: Res<super::PointerOverUi>, hud: Res<HudState>, mut hover: ResMut<Hover>,
+    mut tips: ResMut<Tips>, menu: Res<super::MenuOpen>, picker: crate::picking::Picker,
+    sel: Res<Selection>, drawn: Option<Res<BeaverDrawn>>,
 ) {
     let _p = ::sim::prof::scope("game/world hover");
-    let (mut model, mut on_works_cell) = (None, None);
+    let (mut model, mut on_works_cell) = (Selection::None, None);
     let p = (|| {
         if over.0 || menu.0 || cli.report_dir.is_some() { return None; }
         let (cam, gt) = cams.single().ok()?;
@@ -223,9 +192,9 @@ pub fn world_hover(
         if let Selection::Site(id) = *sel { on_works_cell = works_cell_on_ray(&sim.0, id, ray.origin, *ray.direction); }
         let ground = crate::flow::ray_surface(ray.origin, *ray.direction, &sim.0.height, &sim.0.water.depth);
         let hit = picker.cast_at(ray, ground.as_ref().map(|g| g.2));
-        model = hit.map(|(t, _)| Thing::from(t));
+        model = hit.map_or(Selection::None, |(t, _)| Selection::from(t));
         if let Some((id, t)) = animal_on_ray(&sim.0, ray) {
-            if hit.is_none_or(|(_, d)| t < d) { model = Some(Thing::Animal(id)); }
+            if hit.is_none_or(|(_, d)| t < d) { model = Selection::Animal(id); }
         }
         let on_works = hit.and_then(|(t, d)| match t {
             crate::picking::Target::Building(id) => sim.0.buildings.building(id).filter(|b| b.kind.is_waterworks()).map(|_| d),
@@ -239,14 +208,13 @@ pub fn world_hover(
             ground.map(|(c, hit, _)| (c, crate::flow::world_cell(&sim.0.height, hit)))
         }
     })();
-    if point.0 != p { point.0 = p; }
-    if snap.0 != on_works_cell { snap.0 = on_works_cell; }
-    if p.is_some_and(|(c, _)| crate::fog_render::unexplored(&sim.0, c)) { model = None; }
-    let ground = p.filter(|(c, _)| !crate::fog_render::unexplored(&sim.0, *c)).map(|(c, p)| pick(&sim.0, drawn.as_deref(), c, p));
-    let t = model.or(ground);
-    let order = if matches!(model, Some(Thing::Resource(_) | Thing::Animal(_))) { ground } else { t };
-    if thing.0 != t || thing.1 != order { (thing.0, thing.1) = (t, order); }
-    if let (Some((c, _)), Tool::None, Some(Thing::Cell(_))) = (p, hud.tool, t) {
+    if p.is_some_and(|(c, _)| crate::fog_render::unexplored(&sim.0, c)) { model = Selection::None; }
+    let ground = p.filter(|(c, _)| !crate::fog_render::unexplored(&sim.0, *c)).map_or(Selection::None, |(c, p)| pick(&sim.0, drawn.as_deref(), c, p));
+    let t = if model != Selection::None { model } else { ground };
+    let order = if matches!(model, Selection::Tree(_) | Selection::Animal(_)) { ground } else { t };
+    let next = Hover { point: p, thing: t, order, works_cell: on_works_cell };
+    if *hover != next { *hover = next; }
+    if let (Some((c, _)), Tool::None, Selection::Cell(_)) = (p, hud.tool, t) {
         if sim.0.work.supplies == Some(c) {
             let mut tip = Tip::titled(Some((Icon::Haul, INK)), "Supplies");
             for g in Good::all() {
@@ -266,7 +234,7 @@ pub fn world_hover(
             return;
         }
     }
-    tips.world = match (t, hud.tool) { (Some(t), Tool::None) => Some((t.key(), thing_tip(&sim.0, t))), _ => None };
+    tips.world = match (t, hud.tool) { (t, Tool::None) if t != Selection::None => Some((t.tip_key(), thing_tip(&sim.0, t))), _ => None };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,7 +280,7 @@ pub fn markers(s: &sim::SimState, drawn: Option<&BeaverDrawn>, cam: &Camera, gt:
         if hud.tool == Tool::Dam && hud.drowned.as_ref().is_some_and(|d| d.0 == hud.line && d.1.contains(&b.id)) { icon = Some((Icon::Flood, BAD, "This dam would flood it")); }
         if let (Some((i, c, words)), Some(pos)) = (icon, place(b.centre(), 2.2)) {
             let mut v = pin(pos, i, c, Skin::Pebble, 28.0);
-            v.action(super::HudAction::SelectBuilding(b.id)).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str()).line(words, "")).pin();
+            v.action(super::HudAction::GoTo(super::NoticeAt::Building(b.id))).tip(Tip::titled(Some((building_icon(b.kind), INK)), b.kind.spec().name.as_str()).line(words, "")).pin();
             out.push(v);
         }
     }
@@ -540,8 +508,8 @@ fn draw_work_area(g: &mut Gizmos, h: &sim::grid::HeightGrid, a: sim::work::Area,
     }
 }
 
-fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) -> Vec<((f32, f32), f32)> {
-    let mut out: Vec<((f32, f32), f32)> = [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Some(Thing::Building(id)) => Some(id), _ => None }]
+fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Selection) -> Vec<((f32, f32), f32)> {
+    let mut out: Vec<((f32, f32), f32)> = [match sel { Selection::Site(id) => Some(id), _ => None }, match thing { Selection::Site(id) => Some(id), _ => None }]
         .into_iter().flatten().filter_map(|id| s.buildings.building(id).filter(|b| b.kind.watches()).map(|b| (sim::predators::lookout_centre(b), sim::predators::lookout_sight(s, b)))).collect();
     if let (Tool::Building(kind), Some(c)) = (hud.tool, hover) && kind.watches() {
         let b = sim::buildings::Building::new(BuildingId(0), kind, build_logic::anchor(kind, c), sim::buildings::Status::Site);
@@ -553,14 +521,14 @@ fn shown_lookouts(s: &sim::SimState, hud: &HudState, hover: Option<Cell>, sel: S
 
 #[allow(clippy::too_many_arguments)]
 pub fn lookout_range(
-    mut commands: Commands, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>,
-    thing: Res<HoverThing>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands, sim: Res<Sim>, hud: Res<HudState>, hover: Res<Hover>, sel: Res<Selection>,
+    mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>,
     mut shown: Local<Option<(Entity, (i32, i32, i32))>>,
 ) {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
     let s = &sim.0;
-    let want = shown_lookouts(s, &hud, hover.0, *sel, thing.0).first().copied();
+    let want = shown_lookouts(s, &hud, hover.cell(), *sel, hover.thing).first().copied();
     let key = want.map(|(c, r)| ((c.0 * 2.0) as i32, (c.1 * 2.0) as i32, (r * 4.0) as i32));
     if shown.map(|x| x.1) == key && (key.is_none() || shown.is_some()) { return; }
     if let Some((e, _)) = shown.take() { commands.entity(e).despawn(); }
@@ -582,9 +550,9 @@ pub fn lookout_range(
     *shown = Some((commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), Transform::default(), bevy::light::NotShadowCaster)).id(), key));
 }
 
-fn draw_sight(g: &mut Gizmos, s: &sim::SimState, drawn: Option<&BeaverDrawn>, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Option<Thing>) {
+fn draw_sight(g: &mut Gizmos, s: &sim::SimState, drawn: Option<&BeaverDrawn>, hud: &HudState, hover: Option<Cell>, sel: Selection, thing: Selection) {
     let h = &s.height;
-    let mut beavers: Vec<BeaverId> = [match sel { Selection::Beaver(b) => Some(b), _ => None }, match thing { Some(Thing::Beaver(b)) => Some(b), _ => None }].into_iter().flatten().collect();
+    let mut beavers: Vec<BeaverId> = [match sel { Selection::Beaver(b) => Some(b), _ => None }, match thing { Selection::Beaver(b) => Some(b), _ => None }].into_iter().flatten().collect();
     beavers.dedup();
     for b in beavers {
         if let Some(at) = beaver_at(s, drawn, b) {
@@ -592,7 +560,7 @@ fn draw_sight(g: &mut Gizmos, s: &sim::SimState, drawn: Option<&BeaverDrawn>, hu
             dashed_ellipse(g, h, at, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::WHITE.with_alpha(0.75));
         }
     }
-    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.id) || (w.seen && thing == Some(Thing::Wolf(w.id)))) {
+    for w in s.predators.wolves.iter().filter(|w| sel == Selection::Wolf(w.id) || (w.seen && thing == Selection::Wolf(w.id))) {
         let r = sim::predators::WOLF_SIGHT;
         dashed_ellipse(g, h, w.pos, r, r, ((r * 4.0) as usize).clamp(48, 400) & !1, 0.2, Color::srgb(0.92, 0.36, 0.3));
     }
@@ -700,7 +668,7 @@ fn draw_currents(g: &mut Gizmos, s: &sim::SimState, (tx, ty): (f32, f32), distan
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<HoverCell>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, thing: Res<HoverThing>, snap: Res<WorksSnap>, drawn: Option<Res<BeaverDrawn>>) {
+pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hover: Res<Hover>, sel: Res<Selection>, orbit: Res<crate::camera::OrbitCamera>, drawn: Option<Res<BeaverDrawn>>) {
     let _p = ::sim::prof::scope("game/draw world overlay");
     let (s, h, lens) = (&sim.0, &sim.0.height, crate::terrain_render::map_lens());
     let (tx, ty) = crate::flow::world_cell(h, orbit.target);
@@ -726,7 +694,7 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
             cell_outline(&mut g, h, d.cell, (depth > 0.03).then(|| h.get(d.cell.0, d.cell.1).copied().unwrap_or(0.0) + depth), Color::srgb(cr, cg, cb));
         }
     }
-    if let Some(c) = snap.0 {
+    if let Some(c) = hover.works_cell {
         let at = cell_y(h, c, works_top(s, c) + 0.06);
         ring(&mut g, at, 0.55, Color::WHITE.with_alpha(0.95));
         ring(&mut g, at, 0.48, Color::WHITE.with_alpha(0.6));
@@ -751,11 +719,11 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
     }
     if hud.tool == Tool::None {
         let hover_col = Color::WHITE.with_alpha(0.8);
-        match thing.0 {
-            Some(Thing::Resource(id)) => if let Some(r) = s.resources.get(id) { ring(&mut g, cell_at(h, r.cell, 0.15), if r.kind.is_tree() || r.kind.is_felled() { 0.6 } else { 0.45 }, hover_col); }
-            Some(Thing::Beaver(id)) => if let Some(w) = beaver_world(s, drawn.as_deref(), id) { ring(&mut g, w + Vec3::Y * 0.1, 0.45, hover_col); }
-            Some(Thing::Building(id)) => if let Some(b) = s.buildings.building(id) { for c in b.cells() { cell_outline(&mut g, h, c, surface_y(s, c), hover_col); } }
-            _ => if let (Some(c), Some(Thing::Cell(_))) = (hover.0, thing.1) { ring(&mut g, cell_at(h, c, 0.15), 0.4, hover_col); }
+        match hover.thing {
+            Selection::Tree(id) => if let Some(r) = s.resources.get(id) { ring(&mut g, cell_at(h, r.cell, 0.15), if r.kind.is_tree() || r.kind.is_felled() { 0.6 } else { 0.45 }, hover_col); }
+            Selection::Beaver(id) => if let Some(w) = beaver_world(s, drawn.as_deref(), id) { ring(&mut g, w + Vec3::Y * 0.1, 0.45, hover_col); }
+            Selection::Site(id) => if let Some(b) = s.buildings.building(id) { for c in b.cells() { cell_outline(&mut g, h, c, surface_y(s, c), hover_col); } }
+            _ => if let (Some(c), Selection::Cell(_)) = (hover.cell(), hover.order) { ring(&mut g, cell_at(h, c, 0.15), 0.4, hover_col); }
         }
         let picked: Vec<BeaverId> = if !hud.selected.is_empty() { hud.selected.clone() } else if let Selection::Beaver(b) = *sel { vec![b] } else { Vec::new() };
         for id in picked {
@@ -772,8 +740,8 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
         }
     }
     match hud.tool {
-        Tool::None => {}
-        Tool::Building(kind) => if let Some(c) = hover.0 {
+        Tool::None | Tool::Opening(_, _) => {}
+        Tool::Building(kind) => if let Some(c) = hover.cell() {
             let pv = build_logic::site_preview(s, kind, c);
             if let Some(a) = kind.work_area_at(pv.pos) { draw_work_area(&mut g, h, a, kind.row().round_area, Color::WHITE.with_alpha(0.6)); }
             for &c in &pv.cells {
@@ -785,15 +753,15 @@ pub fn draw_world_overlay(mut g: Gizmos, sim: Res<Sim>, hud: Res<HudState>, hove
                 }
             }
         },
-        Tool::Dam => draw_line_ghost(&mut g, s, &hud, hover.0),
-        Tool::Canal => draw_canal_ghost(&mut g, s, &hud, hover.0),
-        Tool::Harvest(_) => match (hud.drag_from, hover.0) {
+        Tool::Dam => draw_line_ghost(&mut g, s, &hud, hover.cell()),
+        Tool::Canal => draw_canal_ghost(&mut g, s, &hud, hover.cell()),
+        Tool::Harvest(_) => match (hud.drag_from, hover.cell()) {
             (Some(a), Some(b)) => area_outline(&mut g, h, sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }, ACCENT),
             (None, Some(c)) => ring(&mut g, cell_at(h, c, 0.2), 0.45, ACCENT),
             _ => {}
         },
     }
-    draw_sight(&mut g, s, drawn.as_deref(), &hud, hover.0, *sel, thing.0);
+    draw_sight(&mut g, s, drawn.as_deref(), &hud, hover.cell(), *sel, hover.thing);
     draw_dam_wear(&mut g, s);
 }
 
@@ -928,7 +896,7 @@ fn draw_dam(g: &mut Gizmos, s: &sim::SimState, hud: &HudState, id: BuildingId, d
         }
         if hud.dam_cells.contains(&c.cell) { cell_outline(g, h, c.cell, Some(works_top(s, c.cell) + 0.12), SELECT); }
     }
-    if let Some((_, o)) = hud.opening.filter(|p| p.0 == id) {
+    if let Some((_, o)) = hud.opening().filter(|p| p.0 == id) {
         for &c in &line {
             if super::works::opening_fits(s, id, c, o).is_ok() {
                 cell_outline(g, h, c, Some(works_top(s, c) + 0.1), GOOD);

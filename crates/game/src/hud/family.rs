@@ -232,7 +232,7 @@ fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]
         (true, false) => v.bg(Color::srgba(1.0, 1.0, 1.0, 0.08)).border(BorderColor::all(LINE)),
         (false, _) => v.border(BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.1))),
     };
-    v.action(HudAction::OpenPage(Some(super::Page::Beaver(id)))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
+    v.action(HudAction::Overlay(Some(super::Overlay::Page(super::Page::Beaver(id))))).tip(Tip::name(name_of(s, id)).line(about(s, id), "").line("Open their page", ""));
 }
 
 pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
@@ -243,18 +243,17 @@ pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
     let home = residents(s, lodge);
     let tree = draw(s, &home);
     Ui::full_page_shell(
-        false,
         |r| {
             r.portrait(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), MUD);
             r.col(6.0, |x| {
                 x.bold(title, 20.0, INK);
                 if let Some(l) = l {
                     let cond = l.home_condition(&s.water.depth);
-                    x.pips(cond, super::works::condition_colour(cond));
+                    x.pips(cond, level_color(cond));
                 }
             });
             r.spacer();
-            super::life::page_controls(c, r, HudAction::OpenPage(None));
+            super::life::page_controls(c, r, HudAction::Overlay(None));
         },
         |u| {
             u.row(28.0, |cols| {
@@ -276,7 +275,7 @@ pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
                             }
                             r.icon(Icon::Next, 10.0, MUTED);
                         })
-                        .action(HudAction::OpenPage(Some(super::Page::Beaver(id))))
+                        .action(HudAction::Overlay(Some(super::Overlay::Page(super::Page::Beaver(id)))))
                         .tip(Tip::name(b.name.clone()).line("Open their page", ""));
                     }
                     if home.is_empty() {

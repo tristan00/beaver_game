@@ -1,6 +1,6 @@
 use super::ui::*;
 use super::words::*;
-use super::{ColonyTab, Harvest, HudAction, HudState, LedgerTab, MapLens, Tool};
+use super::{ColonyTab, Harvest, HudAction, HudState, LedgerTab, MapLens, NoticeAt, Overlay, Tool};
 use crate::build_logic;
 use crate::flow::{Cell, Selection};
 use crate::icons::Icon;
@@ -26,9 +26,8 @@ pub struct Ctx<'a> {
     pub cursor: Option<Vec2>,
     pub journal: &'a [super::Notice],
     pub now: f32,
+    pub welcome: bool,
 }
-
-impl Ctx<'_> { pub fn placing(&self) -> bool { self.hud.tool != Tool::None } }
 
 pub const RIGHT_W: f32 = 320.0;
 pub const LEGEND_TOP: f32 = 52.0;
@@ -151,7 +150,7 @@ pub fn strip(c: &Ctx) -> Vec<VNode> {
             r.icon(Icon::Beaver, 20.0, FUR);
             r.bold(format!("{}", s.colony.population()), 16.0, INK);
             if !free.is_empty() { r.add(VNode::new(Node { width: Val::Px(8.0), height: Val::Px(8.0), border_radius: BorderRadius::all(Val::Px(4.0)), margin: UiRect::bottom(Val::Px(12.0)), ..default() })).bg(ACCENT); }
-        }).tip(tip).action(if free.is_empty() { HudAction::Colony(Some(ColonyTab::Population)) } else { HudAction::CycleIdle });
+        }).tip(tip).action(if free.is_empty() { HudAction::Overlay(Some(Overlay::Colony(ColonyTab::Population))) } else { HudAction::CycleIdle });
     })]
 }
 
@@ -291,7 +290,7 @@ pub fn badges(c: &Ctx) -> Vec<VNode> {
                 k.icon(icon, if value.is_empty() { 22.0 } else { 18.0 }, col);
                 if !value.is_empty() { k.bold(value.clone(), 11.0, INK); }
             });
-            t.skin(skin).tip(alert_tip(c, p)).action(if p.kind == ProblemKind::Wolf { HudAction::FocusWolf } else { HudAction::Badge(key.clone()) });
+            t.skin(skin).tip(alert_tip(c, p)).action(if p.kind == ProblemKind::Wolf { HudAction::GoTo(NoticeAt::Wolf(None)) } else { HudAction::Badge(key.clone()) });
             if open == Some(key.as_str()) {
                 let mut v = panel_box(Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)), ..default() }.with_col(6.0), |k| {
                     k.row(8.0, |row| {
@@ -320,7 +319,7 @@ pub fn right(c: &Ctx) -> Vec<VNode> {
     let mut ui = Ui::default();
     if let Some(id) = c.hud.peek.filter(|id| c.s.colony.beaver(*id).is_some()) {
         if let Some(v) = super::inspect::inspector(c, Selection::Beaver(id)) { ui.add(v); }
-    } else if c.hud.tool == Tool::None {
+    } else if matches!(c.hud.tool, Tool::None | Tool::Opening(_, _)) {
         for &p in c.hud.pinned.iter().filter(|p| **p != c.sel).chain(std::iter::once(&c.sel)) {
             if let Some(v) = super::inspect::inspector(c, p) { ui.add(v); }
         }
@@ -340,9 +339,9 @@ pub fn rail(c: &Ctx) -> Vec<VNode> {
             u.pebble(icon, 17.0, HudAction::SetLens(if l == MapLens::World || on { MapLens::World } else { l }), if on { Peb::On } else { Peb::Idle }).tip(Tip::name(name).key(key));
         }
         u.rule().style(|n| n.width = Val::Px(28.0));
-        let (co, lo) = (c.hud.colony.is_some(), c.hud.ledger.is_some());
-        u.pebble(Icon::Colony, 17.0, HudAction::Colony(if co { None } else { Some(ColonyTab::Jobs) }), if co { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony").key("Tab"));
-        u.pebble(Icon::Territory, 17.0, HudAction::Ledger(if lo { None } else { Some(LedgerTab::Charts) }), if lo { Peb::On } else { Peb::Idle }).tip(Tip::name("Territory").key("L"));
+        let (co, lo) = (c.hud.colony().is_some(), c.hud.ledger().is_some());
+        u.pebble(Icon::Colony, 17.0, HudAction::Overlay(if co { None } else { Some(Overlay::Colony(ColonyTab::Jobs)) }), if co { Peb::On } else { Peb::Idle }).tip(Tip::name("Colony").key("Tab"));
+        u.pebble(Icon::Territory, 17.0, HudAction::Overlay(if lo { None } else { Some(Overlay::Ledger(LedgerTab::Charts)) }), if lo { Peb::On } else { Peb::Idle }).tip(Tip::name("Territory").key("L"));
     })]
 }
 
@@ -383,7 +382,7 @@ pub fn settle_chip(_c: &Ctx) -> Vec<VNode> {
     }))]
 }
 
-pub fn settle_tag(s: &sim::SimState, _flow: &crate::flow::Flow, cell: Cell, cur: Vec2) -> Vec<VNode> {
+pub fn settle_tag(s: &sim::SimState, cell: Cell, cur: Vec2) -> Vec<VNode> {
     let mut v = VNode::new(Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)), column_gap: Val::Px(6.0), align_items: AlignItems::Center, border_radius: BorderRadius::all(Val::Px(5.0)), ..abs(Some(cur.x + 18.0), None, Some(cur.y + 14.0), None) });
     v.bg = Color::srgba(0.08, 0.07, 0.06, 0.88);
     let mut ui = Ui::default();

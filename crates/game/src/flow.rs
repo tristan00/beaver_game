@@ -5,34 +5,8 @@ use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
 use sim::colony::BeaverId;
 use sim::grid::HeightGrid;
-use sim::worldgen::World;
 
 pub type Cell = (usize, usize);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
-    Scouting,
-    Settled,
-    GameOver,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlowEvent {
-    Settle,
-    Collapse,
-}
-
-impl Phase {
-    pub fn on(self, ev: FlowEvent) -> Option<Phase> {
-        use FlowEvent::*;
-        use Phase::*;
-        match (self, ev) {
-            (Scouting, Settle) => Some(Settled),
-            (Settled, Collapse) => Some(GameOver),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Selection {
@@ -46,6 +20,31 @@ pub enum Selection {
     Wolf(u32),
     /// A wild animal, by its id in `sim::wildlife`.
     Animal(u32),
+}
+
+impl From<crate::picking::Target> for Selection {
+    fn from(t: crate::picking::Target) -> Self {
+        use crate::picking::Target;
+        match t {
+            Target::Building(id) => Self::Site(id),
+            Target::Beaver(id) => Self::Beaver(id),
+            Target::Resource(id) => Self::Tree(id),
+        }
+    }
+}
+
+impl Selection {
+    pub fn tip_key(self) -> u64 {
+        match self {
+            Selection::None => 0,
+            Selection::Beaver(b) => 1 << 60 | b.0,
+            Selection::Site(b) => 2 << 60 | b.0 as u64,
+            Selection::Tree(r) => 3 << 60 | r.0 as u64,
+            Selection::Cell(c) => 5 << 60 | ((c.0 as u64) << 20) | c.1 as u64,
+            Selection::Wolf(id) => 6 << 60 | id as u64,
+            Selection::Animal(id) => 7 << 60 | id as u64,
+        }
+    }
 }
 
 pub fn cell_world(h: &HeightGrid, pos: (f32, f32)) -> Vec3 {
@@ -124,42 +123,16 @@ fn ray_level(origin: Vec3, dir: Vec3, h: &HeightGrid, level: impl Fn(f32, f32) -
 
 pub use sim::site::{can_settle, score as site_hint, SettleError};
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Flow {
-    pub phase: Phase,
     pub focus: Option<Vec3>,
-    pub real_secs: f32,
-    pub generation: u32,
-    pub settled_at: Option<f32>,
+    pub arrive_left: f32,
     /// A new colony has just settled: the HUD shows its one welcome card.
     pub welcome: bool,
 }
 
-impl Flow {
-    pub fn new(_world: &World) -> Flow {
-        Flow {
-            phase: Phase::Scouting,
-            focus: None,
-            real_secs: 0.0,
-            generation: 0,
-            settled_at: None,
-            welcome: false,
-        }
-    }
-
-    pub fn fire(&mut self, ev: FlowEvent) -> bool {
-        match self.phase.on(ev) {
-            Some(p) => {
-                self.phase = p;
-                true
-            }
-            None => false,
-        }
-    }
-}
-
 pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<(), String> {
-    if flow.phase != Phase::Scouting {
+    if sim.is_running() {
         return Err("The colony can only be founded while choosing the settling place".into());
     }
     can_settle(sim, cell).map_err(|e| format!("{e:?}"))?;
@@ -173,8 +146,7 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
 
 pub fn after_settle(sim: &sim::SimState, flow: &mut Flow, cell: Cell) {
     let pos = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
-    flow.fire(FlowEvent::Settle);
-    flow.settled_at = Some(flow.real_secs);
+    flow.arrive_left = 3.0;
     let n = sim.colony.beavers.len().max(1) as f32;
     let centre = sim.colony.beavers.iter().fold((0.0, 0.0), |p, b| (p.0 + b.pos.0 / n, p.1 + b.pos.1 / n));
     flow.focus = Some(cell_world(&sim.height, if n > 0.0 { centre } else { pos }));
@@ -184,29 +156,13 @@ pub struct FlowPlugin;
 
 impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
-        let flow = Flow::new(&app.world().resource::<Sim>().0.world);
-        app.insert_resource(flow)
+        app.init_resource::<Flow>()
             .init_resource::<Selection>()
-            .add_systems(
-                Update,
-                (advance_flow, watch_collapse, ease_camera)
-                    .chain(),
-            );
+            .add_systems(Update, (watch_collapse, ease_camera).chain());
     }
 }
 
-fn advance_flow(
-    time: Res<Time>,
-    sim: Res<Sim>,
-    orbit: Res<OrbitCamera>,
-    mut flow: ResMut<Flow>,
-) {
-    let dt = time.delta_secs().min(0.1);
-    flow.real_secs += dt;
-    let _ = (&orbit, &sim);
-}
-
-fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
+fn watch_collapse(mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
     use crate::hud::{NoticeAt, BAD, GOOD, INK, MUTED};
     use crate::icons::Icon;
     // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
@@ -262,15 +218,17 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut flow: ResMut<Flow>, mut clock: ResMu
     if names.len() != sim.0.colony.beavers.len() || !events.is_empty() {
         *names = sim.0.colony.beavers.iter().map(|b| (b.id.0, b.name.clone())).collect();
     }
-    if flow.phase == Phase::Settled && sim.0.colony.is_collapsed() {
-        flow.fire(FlowEvent::Collapse);
+    if sim.0.colony.is_collapsed() && !clock.paused {
         clock.paused = true;
     }
 }
 
 fn ease_camera(time: Res<Time>, mut flow: ResMut<Flow>, mut orbit: ResMut<OrbitCamera>) {
+    if flow.arrive_left > 0.0 {
+        flow.arrive_left = (flow.arrive_left - time.delta_secs().min(0.1)).max(0.0);
+    }
     let Some(f) = flow.focus else { return };
-    let arriving = flow.settled_at.is_some_and(|t| flow.real_secs - t < 3.0);
+    let arriving = flow.arrive_left > 0.0;
     let (next, arrived) = ease_step(*orbit, f, (time.delta_secs() * 2.5).min(1.0), arriving);
     if arrived {
         flow.focus = None;

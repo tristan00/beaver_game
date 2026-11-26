@@ -1,6 +1,5 @@
 //! Keyboard, pointer, selection and camera interaction.
 use super::*;
-use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::window::PrimaryWindow;
 
 /// Whether the pointer is on a panel (which keeps every click from the map), or only on a pin
@@ -23,30 +22,17 @@ pub(super) fn track_cursor(windows: Query<&Window, With<PrimaryWindow>>, scale: 
     }
 }
 
-pub(super) fn hover_cell(point: Res<world::HoverPoint>, mut hover: ResMut<HoverCell>) {
-    let cell = point.0.map(|p| p.0);
-    if hover.0 != cell {
-        hover.0 = cell;
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     sim: Res<Sim>,
-    typing: Res<TextCapture>,
     mut hud: ResMut<HudState>,
     mut sel: ResMut<Selection>,
     mut lens: ResMut<MapLens>,
     mut flow: ResMut<Flow>,
     menu: Res<MenuOpen>,
 ) {
-    // A colony just settled opens on its welcome card, once.
-    if flow.welcome {
-        flow.welcome = false;
-        hud.welcome = true;
-    }
-    if typing.0 || menu.0 {
+    if menu.0 {
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -56,12 +42,12 @@ pub(super) fn hotkeys(
         }
     }
     if keys.just_pressed(KeyCode::Tab) {
-        let open = hud.colony.is_some() && hud.page().is_none();
-        hud.open_book(if open { None } else { Some(ColonyTab::Jobs) }, None);
+        let open = hud.colony().is_some();
+        hud.set_overlay(if open { None } else { Some(Overlay::Colony(ColonyTab::Jobs)) });
     }
     if keys.just_pressed(KeyCode::KeyL) && !ctrl {
-        let open = hud.ledger.is_some();
-        hud.open_book(None, if open { None } else { Some(LedgerTab::Charts) });
+        let open = hud.ledger().is_some();
+        hud.set_overlay(if open { None } else { Some(Overlay::Ledger(LedgerTab::Charts)) });
     }
     if keys.just_pressed(KeyCode::KeyJ) {
         hud.journal_open = !hud.journal_open;
@@ -78,7 +64,7 @@ pub(super) fn hotkeys(
                 Tool::Dam => sim.0.unlocked(BuildingKind::dam()).is_err(),
                 Tool::Canal => sim.0.unlocked(BuildingKind::canal()).is_err(),
                 Tool::Building(b) => sim.0.unlocked(b).is_err(),
-                Tool::Harvest(_) | Tool::None => false,
+                Tool::Harvest(_) | Tool::Opening(_, _) | Tool::None => false,
             };
             if keys.just_pressed(k) && !locked {
                 let next = if hud.tool == t { Tool::None } else { t };
@@ -90,7 +76,7 @@ pub(super) fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         // Esc always lets go of the camera: a glide to a notice ends where it is.
         flow.focus = None;
-        hud.dismiss_top(&mut sel, &mut lens);
+        hud.dismiss_top(&mut sel, &mut lens, &mut flow.welcome);
     }
 }
 
@@ -108,39 +94,33 @@ pub(super) fn next_idle(s: &sim::SimState, hud: &mut HudState, sel: &mut Selecti
 pub(super) fn world_input(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    _scroll: Res<AccumulatedMouseScroll>,
-    time: Res<Time>,
-    hover: Res<HoverCell>,
+    hover: Res<Hover>,
     over: Res<PointerOverUi>,
     on_pin: Res<PointerOverPin>,
-    thing: Res<world::HoverThing>,
-    point: Res<world::HoverPoint>,
     cursor: Res<CursorUi>,
     mut sim: ResMut<Sim>,
     mut hud: ResMut<HudState>,
     mut sel: ResMut<Selection>,
     menu: Res<MenuOpen>,
     mut flow: ResMut<Flow>,
-    snap: Res<world::WorksSnap>,
 ) {
     if menu.0 {
         return;
     }
-    let now = time.elapsed_secs();
     if hud.consume_left_release {
         if mouse.just_released(MouseButton::Left) { hud.consume_left_release = false; return; }
         if mouse.pressed(MouseButton::Left) { return; }
     }
     if !sim.0.is_running() {
-        if flow.phase == crate::flow::Phase::Scouting && !over.0 && mouse.just_pressed(MouseButton::Left) {
-            if let Some(cell) = hover.0 {
+        if !over.0 && mouse.just_pressed(MouseButton::Left) {
+            if let Some(cell) = hover.cell() {
                 match crate::flow::can_settle(&sim.0, cell) {
                     Ok(()) => {
                         if let Err(e) = crate::flow::settle(&mut sim.0, &mut flow, cell) {
-                            hud.refuse(sim_error(&e), now);
+                            hud.refuse(sim_error(&e));
                         }
                     }
-                    Err(e) => hud.refuse(settle_error(e), now),
+                    Err(e) => hud.refuse(settle_error(e)),
                 }
             }
         }
@@ -149,11 +129,11 @@ pub(super) fn world_input(
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {
-        undo_last(&mut sim.0, &mut hud, &mut sel, now);
+        undo_last(&mut sim.0, &mut hud, &mut sel);
         return;
     }
     if keys.just_pressed(KeyCode::Enter) && matches!(hud.tool, Tool::Dam | Tool::Canal) {
-        if let Some(id) = commit_line(&mut sim.0, &mut hud, now) {
+        if let Some(id) = commit_line(&mut sim.0, &mut hud) {
             *sel = Selection::Site(id);
             hud.selected.clear();
         }
@@ -176,40 +156,6 @@ pub(super) fn world_input(
     if over.0 {
         return;
     }
-    if mouse.just_pressed(MouseButton::Right) && hud.opening.is_some() {
-        hud.opening = None;
-        return;
-    }
-    // Placing a gate or lock: a click on a lit cell of the dam places it (shift: keep placing).
-    if let Some((dam, o)) = hud.opening {
-        if mouse.just_released(MouseButton::Left) {
-            let on_dam = snap.0.or(hover.0).filter(|c| sim::dams::dam(&sim.0, dam).is_some_and(|d| d.line().any(|x| x.cell == *c)));
-            match on_dam {
-                Some(cell) => match super::works::opening_fits(&sim.0, dam, cell, o) {
-                    Ok(()) => {
-                        let c = match o {
-                            super::Opening::Gate => sim::Command::AddDamGate { dam, cell },
-                            super::Opening::Lock => sim::Command::UpgradeLock { building: dam, cell },
-                        };
-                        match sim.0.apply(c) {
-                            Ok(_) => {
-                                hud.gate_sel = Some((dam, cell));
-                                if !shift {
-                                    hud.opening = None;
-                                }
-                            }
-                            Err(e) => hud.refuse(sim_error(&e.to_string()), now),
-                        }
-                    }
-                    Err(e) => hud.refuse(e, now),
-                },
-                None => hud.opening = None,
-            }
-        }
-        if mouse.pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-            return;
-        }
-    }
     if mouse.just_pressed(MouseButton::Right) {
         if matches!(hud.tool, Tool::Dam | Tool::Canal) && hud.corners.len() > usize::from(hud.extending.is_some()) {
             hud.corners.pop();
@@ -228,9 +174,35 @@ pub(super) fn world_input(
         } else {
             hud.selected.clone()
         };
-        if !who.is_empty() {
-            if let Some(t) = thing.1 {
-                order(&mut sim.0, &mut hud, &who, t, shift, now);
+        if !who.is_empty() && hover.order != Selection::None {
+            order(&mut sim.0, &mut hud, &who, hover.order, shift);
+        }
+        return;
+    }
+    // Placing a gate or lock: a click on a lit cell of the dam places it (shift: keep placing).
+    if let Tool::Opening(dam, o) = hud.tool {
+        if mouse.just_released(MouseButton::Left) {
+            let on_dam = hover.works_cell.or(hover.cell()).filter(|c| sim::dams::dam(&sim.0, dam).is_some_and(|d| d.line().any(|x| x.cell == *c)));
+            match on_dam {
+                Some(cell) => match super::works::opening_fits(&sim.0, dam, cell, o) {
+                    Ok(()) => {
+                        let c = match o {
+                            super::Opening::Gate => sim::Command::AddDamGate { dam, cell },
+                            super::Opening::Lock => sim::Command::UpgradeLock { building: dam, cell },
+                        };
+                        match sim.0.apply(c) {
+                            Ok(_) => {
+                                hud.gate_sel = Some((dam, cell));
+                                if !shift {
+                                    hud.set_tool(Tool::None);
+                                }
+                            }
+                            Err(e) => hud.refuse(sim_error(&e.to_string())),
+                        }
+                    }
+                    Err(e) => hud.refuse(e),
+                },
+                None => hud.set_tool(Tool::None),
             }
         }
         return;
@@ -239,15 +211,15 @@ pub(super) fn world_input(
     if on_pin.0 {
         return;
     }
-    let Some(cell) = hover.0.or_else(|| match thing.0 {
-        Some(world::Thing::Building(id)) => sim.0.buildings.building(id).map(|b|b.pos),
-        Some(world::Thing::Beaver(id)) => sim.0.agents.get(id).map(|a|a.cell),
+    let Some(cell) = hover.cell().or_else(|| match hover.thing {
+        Selection::Site(id) => sim.0.buildings.building(id).map(|b| b.pos),
+        Selection::Beaver(id) => sim.0.agents.get(id).map(|a| a.cell),
         _ => None,
     }) else { return };
     match hud.tool {
         Tool::None => {
             if mouse.just_pressed(MouseButton::Left) {
-                hud.grab = dam_end_near(&sim.0, *sel, thing.0, cell);
+                hud.grab = dam_end_near(&sim.0, *sel, hover.thing, cell);
                 hud.box_from = cursor.0;
             }
             // Dragging away from a dam's end extends it from that end, and dragging from a canal
@@ -275,31 +247,28 @@ pub(super) fn world_input(
                         return;
                     }
                 }
-                let t = thing.0.unwrap_or(world::Thing::Cell(cell));
+                let t = if hover.thing != Selection::None { hover.thing } else { Selection::Cell(cell) };
                 // On the dam or canal already selected, a click picks the cell it is ringed
-                // on (`WorksSnap`), or failing that the one under it (for a gate or lock, or to
+                // on (`hover.works_cell`), or failing that the one under it (for a gate or lock, or to
                 // raise or deepen just there); shift adds to the pick.
                 let on_works = match (t, *sel) {
-                    (_, Selection::Site(_)) if snap.0.is_some() => snap.0,
-                    (world::Thing::Building(id), Selection::Site(sid)) if id == sid && on_line(&sim.0, id, cell) => Some(cell),
+                    (_, Selection::Site(_)) if hover.works_cell.is_some() => hover.works_cell,
+                    (Selection::Site(id), Selection::Site(sid)) if id == sid && on_line(&sim.0, id, cell) => Some(cell),
                     _ => None,
                 };
                 if let Some(cell) = on_works {
                     match hud.dam_cells.iter().position(|x| *x == cell) {
-                        Some(i) => {
-                            hud.dam_cells.remove(i);
-                        }
+                        Some(i) => { hud.dam_cells.remove(i); }
                         None if shift => hud.dam_cells.push(cell),
                         None => hud.dam_cells = vec![cell],
                     }
                     return;
                 }
-                if t.selection() != *sel {
+                if t != *sel {
                     hud.dam_cells.clear();
                 }
                 match t {
-                    world::Thing::Beaver(id) if shift => {
-                        // Shift adds to the beaver already selected, or takes one away.
+                    Selection::Beaver(id) if shift => {
                         if let (true, Selection::Beaver(x)) = (hud.selected.is_empty(), *sel) {
                             hud.selected.push(x);
                         }
@@ -310,32 +279,32 @@ pub(super) fn world_input(
                         }
                         *sel = if hud.selected.contains(&id) { Selection::Beaver(id) } else { hud.selected.first().map_or(Selection::None, |f| Selection::Beaver(*f)) };
                     }
-                    world::Thing::Beaver(id) => {
+                    Selection::Beaver(id) => {
                         hud.selected = vec![id];
                         *sel = Selection::Beaver(id);
                     }
                     other => {
                         hud.selected.clear();
-                        *sel = other.selection();
+                        *sel = other;
                     }
                 }
                 if hud.follow.is_some_and(|f| *sel != Selection::Beaver(f)) {
                     hud.follow = None;
                 }
-                let _ = point;
             }
         }
+        Tool::Opening(_, _) => {}
         Tool::Harvest(h) => {
             if mouse.just_pressed(MouseButton::Left) {
                 hud.drag_from = Some(cell);
             } else if mouse.just_released(MouseButton::Left) {
                 if let Some(from) = hud.drag_from.take() {
-                    harvest(&mut sim.0, &mut hud, h, from, cell, now);
+                    harvest(&mut sim.0, &mut hud, h, from, cell);
                 }
             }
         }
         Tool::Building(_) | Tool::Dam | Tool::Canal if mouse.just_pressed(MouseButton::Left) && !sim.0.fog.explored(cell) => {
-            hud.refuse("Unexplored", now);
+            hud.refuse("Unexplored");
         }
         Tool::Building(kind) => {
             if mouse.just_pressed(MouseButton::Left) {
@@ -345,7 +314,7 @@ pub(super) fn world_input(
                         // Shift keeps the building in hand for the next spot.
                         if let Some(b) = sim.0.buildings.buildings.last() {
                             let id = b.id;
-                            hud.undo.push(UndoItem::Site(id));
+                            hud.undo.push(id);
                             if !shift {
                                 hud.frame_req = Some(cell_world(&sim.0.height, b.centre()));
                                 hud.selected.clear();
@@ -359,7 +328,7 @@ pub(super) fn world_input(
                     }
                     Err(e) => {
                         let w = place_error(&e);
-                        hud.say(Some((Icon::Cross, BAD)), Some((building_icon(kind), INK)), w, now);
+                        hud.say(Some((Icon::Cross, BAD)), Some((building_icon(kind), INK)), w);
                     }
                 }
             }
@@ -391,40 +360,40 @@ pub(super) fn world_input(
 /// A right-click order for the selected beavers. On a tree, plant or deposit they work the one
 /// clicked, then the nearest of its kind once it is used up. With `queue` (Shift held) the order
 /// waits behind the ones they already have, and starts once those are done.
-fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: world::Thing, queue: bool, now: f32) {
+fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: Selection, queue: bool) {
     use sim::agents::Assignment;
     let give = |s: &mut sim::SimState, who: Vec<BeaverId>, to: Assignment| {
         s.apply(sim::Command::Assign { who, to: Some(to), queue })
     };
     match t {
-        world::Thing::Resource(rid) => {
+        Selection::Tree(rid) => {
             let Some(r) = s.resources.get(rid) else { return };
             let workers: Vec<BeaverId> = who.iter().copied().filter(|id| s.colony.beaver(*id).is_some_and(|b| b.can_work())).collect();
             if workers.is_empty() {
-                hud.refuse("Too young", now);
+                hud.refuse("Too young");
                 return;
             }
             let kind = r.kind;
             match give(s, workers.clone(), Assignment::Resource(rid, kind)) {
-                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", workers.len()), now),
-                Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+                Ok(_) => hud.say(Some((resource_icon(kind), GOOD)), None, format!("{}", workers.len())),
+                Err(e) => hud.refuse(sim_error(&e.to_string())),
             }
         }
-        world::Thing::Cell(c) => {
+        Selection::Cell(c) => {
             match give(s, who.to_vec(), Assignment::Go(c)) {
-                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len()), now),
-                Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+                Ok(_) => hud.say(Some((Icon::Walk, INK)), None, format!("{}", who.len())),
+                Err(e) => hud.refuse(sim_error(&e.to_string())),
             }
         }
-        world::Thing::Building(b) => {
+        Selection::Site(b) => {
             let workers: Vec<BeaverId> = who.iter().copied().filter(|id| s.colony.beaver(*id).is_some_and(|bv| bv.can_work())).collect();
             if workers.is_empty() {
-                hud.refuse("Too young", now);
+                hud.refuse("Too young");
                 return;
             }
             match give(s, workers.clone(), Assignment::Work(b)) {
-                Ok(_) => hud.say(Some((Icon::Building, GOOD)), None, format!("{}", workers.len()), now),
-                Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+                Ok(_) => hud.say(Some((Icon::Building, GOOD)), None, format!("{}", workers.len())),
+                Err(e) => hud.refuse(sim_error(&e.to_string())),
             }
         }
         _ => {}
@@ -481,8 +450,6 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
     }
 }
 
-/// The end of the selected dam under the pointer: grabbing it starts an extension.
-/// The dam end at or next to `cell`, on the dam under the pointer or else the selected one.
 /// Whether `cell` is on the line of dam or canal `id` (a cell the panels let you pick).
 fn on_line(s: &sim::SimState, id: BuildingId, cell: Cell) -> bool {
     sim::dams::dam(s, id).is_some_and(|d| d.line().any(|c| c.cell == cell)) || sim::canals::canal(s, id).is_some_and(|k| k.cells.iter().any(|c| c.cell == cell))
@@ -490,9 +457,9 @@ fn on_line(s: &sim::SimState, id: BuildingId, cell: Cell) -> bool {
 
 /// The dam end, or the canal's open end, that a press at `cell` grabs: a dam by either end, a
 /// canal anywhere along it (it can only grow from its open end).
-fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Option<world::Thing>, cell: Cell) -> Option<(BuildingId, Cell)> {
+fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Selection, cell: Cell) -> Option<(BuildingId, Cell)> {
     let under = match thing {
-        Some(world::Thing::Building(id)) => Some(id),
+        Selection::Site(id) => Some(id),
         _ => None,
     };
     let selected = match sel {
@@ -514,11 +481,11 @@ fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Option<world::Thing>, 
 }
 
 /// Send beavers to gather or cut: one spot gathers around it, a drag covers the area.
-fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Cell, now: f32) {
+fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Cell) {
     use sim::resources::ResourceKind as R;
     let who = panels::order_crew(s, hud);
     if who.is_empty() {
-        hud.say(Some((Icon::Beaver, BAD)), Some((Icon::Cross, BAD)), "0", now);
+        hud.say(Some((Icon::Beaver, BAD)), Some((Icon::Cross, BAD)), "0");
         return;
     }
     let max = s.world.size - 1;
@@ -536,15 +503,15 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     let here = |k: R| s.resources.items().iter().any(|r| r.kind == k && area.contains(r.cell) && (r.amount > 0.0 || k.flowing()));
     let at_click = s.resources.at(a).find(|r| wanted.contains(&r.kind)).map(|r| r.kind);
     let Some(kind) = at_click.or_else(|| wanted.iter().copied().find(|k| here(*k))) else {
-        hud.say(Some((if h == Harvest::Cut { crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()) } else { crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)) }, BAD)), Some((Icon::Cross, BAD)), "", now);
+        hud.say(Some((if h == Harvest::Cut { crate::hud::words::resource_icon(sim::resources::ResourceKind::tree()) } else { crate::hud::words::resource_icon(sim::resources::ResourceKind::food_plant(false)) }, BAD)), Some((Icon::Cross, BAD)), "");
         return;
     };
     match s.apply(sim::Command::Assign { who: who.clone(), to: Some(sim::agents::Assignment::Area(kind, area)), queue: false }) {
         Ok(_) => {
-            hud.say(Some((resource_icon(kind), GOOD)), Some((Icon::Beaver, ui::FUR)), format!("{}", who.len()), now);
+            hud.say(Some((resource_icon(kind), GOOD)), Some((Icon::Beaver, ui::FUR)), format!("{}", who.len()));
             hud.set_tool(Tool::None);
         }
-        Err(e) => hud.refuse(sim_error(&e.to_string()), now),
+        Err(e) => hud.refuse(sim_error(&e.to_string())),
     }
 }
 

@@ -291,15 +291,14 @@ pub(super) struct LockSync { drawn: SyncedMap<(usize, usize), Entity> }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_locks(
-    mut commands: Commands, sim: Res<Sim>, clock: Option<Res<crate::sim_driver::SimClock>>, flow: Option<Res<crate::flow::Flow>>,
+    mut commands: Commands, sim: Res<Sim>, clock: Option<Res<crate::sim_driver::SimClock>>,
     time: Res<Time>, models: Option<Res<Models>>, hm: Option<Res<RaftLandingMeshes>>, mut st: Local<LockSync>,
     mut q: Query<&mut LockVis>, mut parts: Query<&mut Transform, Without<LockVis>>,
     mut meshes: ResMut<Assets<Mesh>>, water: Option<Res<crate::water_render::SharedWater>>,
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
-    let epoch = (0, flow.map_or(0, |f| f.generation));
-    st.drawn.reset_if(epoch, &mut commands, |c, e| { if let Ok(v) = q.get(e) { c.entity(v.water).despawn(); } c.entity(e).despawn(); });
     let s = &sim.0;
+    st.drawn.reset_if(s.instance, &mut commands, |c, e| { if let Ok(v) = q.get(e) { c.entity(v.water).despawn(); } c.entity(e).despawn(); });
     let built: Vec<_> = sim::locks::built(s).collect();
     st.drawn.retain_keys(|cell| built.iter().any(|l| l.cell == *cell), &mut commands, |c, e| {
         if let Ok(v) = q.get(e) { c.entity(v.water).despawn(); }
@@ -357,7 +356,7 @@ pub(super) struct RaftSync { drawn: SyncedMap<u32, (Entity, Entity, Option<sim::
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_rafts(
-    mut commands: Commands, sim: Res<Sim>, flow: Option<Res<crate::flow::Flow>>, models: Option<Res<Models>>,
+    mut commands: Commands, sim: Res<Sim>, models: Option<Res<Models>>,
     hm: Option<Res<RaftLandingMeshes>>, clock: Res<RenderClock>, mut meshes: ResMut<Assets<Mesh>>,
     mut st: Local<RaftSync>, beavers: Query<(&super::BeaverSprite, &Transform), Without<RaftMark>>,
     mut tr: Query<(&mut Transform, &mut Visibility), With<RaftMark>>,
@@ -365,8 +364,8 @@ pub(super) fn sync_rafts(
 ) {
     let (Some(m), Some(hm)) = (models, hm) else { return };
     let despawn_raft = |c: &mut Commands, (e, h, _): (Entity, Entity, Option<sim::buildings::Good>)| { c.entity(e).despawn(); c.entity(h).despawn(); };
-    st.drawn.reset_if((0, flow.map_or(0, |f| f.generation)), &mut commands, despawn_raft);
     let s = &sim.0;
+    st.drawn.reset_if(s.instance, &mut commands, despawn_raft);
     st.drawn.retain_keys(|id| s.fleet.get(*id).is_some(), &mut commands, despawn_raft);
     for b in &s.fleet.rafts {
         let entry = st.drawn.map.entry(b.id).or_insert_with(|| {

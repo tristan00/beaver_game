@@ -3,7 +3,7 @@ use super::*;
 
 /// Build the drawn line: a new dam or canal, or more cells on the one being extended.
 /// Returns the building id so its panel can open.
-pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32) -> Option<BuildingId> {
+pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState) -> Option<BuildingId> {
     if hud.line.is_empty() || !matches!(hud.tool, Tool::Dam | Tool::Canal) {
         return None;
     }
@@ -19,7 +19,7 @@ pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32)
         Ok(()) => {
             let id = extending.or_else(|| sim.buildings.buildings.last().map(|b| b.id));
             if extending.is_none() {
-                hud.undo.extend(id.map(UndoItem::Site));
+                hud.undo.extend(id);
                 hud.dam_cells.clear();
             } else {
                 hud.dam_ghost = None;
@@ -28,30 +28,26 @@ pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState, now: f32)
             id
         }
         Err(msg) => {
-            hud.refuse(msg, now);
+            hud.refuse(msg);
             None
         }
     }
 }
 
-pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, sel: &mut Selection, now: f32) {
-    while let Some(item) = hud.undo.pop() {
-        match item {
-            UndoItem::Site(id) => {
-                let Some(kind) = sim.buildings.building(id).map(|b| b.kind) else { continue };
-                let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::all().map(|g| (g, sim.buildings.stores.amount(g))).collect();
-                match sim.apply(sim::Command::CancelSite { building: id }).map(|_| stock.iter().map(|(g, a)| (*g, sim.buildings.stores.amount(*g) - a)).collect::<Vec<_>>()) {
-                    Ok(back) => {
-                        clean_removed_site(sim, hud, sel, id);
-                        let refund = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| format!("+{}", a.1.round() as i64));
-                        let icon2 = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| (good_icon(a.0), good_color(a.0)));
-                        hud.msg = Some((Msg { icon: Some((Icon::Undo, INK)), icon2: icon2.or(Some((building_icon(kind), INK))), text: refund.unwrap_or_default() }, now));
-                    }
-                    Err(e) => hud.say(Some((Icon::Undo, INK)), Some((Icon::Cross, BAD)), sim_error(&e.to_string()), now),
-                }
-                return;
+pub(super) fn undo_last(sim: &mut sim::SimState, hud: &mut HudState, sel: &mut Selection) {
+    while let Some(id) = hud.undo.pop() {
+        let Some(kind) = sim.buildings.building(id).map(|b| b.kind) else { continue };
+        let stock: Vec<(sim::buildings::Good, f32)> = sim::buildings::Good::all().map(|g| (g, sim.buildings.stores.amount(g))).collect();
+        match sim.apply(sim::Command::CancelSite { building: id }).map(|_| stock.iter().map(|(g, a)| (*g, sim.buildings.stores.amount(*g) - a)).collect::<Vec<_>>()) {
+            Ok(back) => {
+                clean_removed_site(sim, hud, sel, id);
+                let refund = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| format!("+{}", a.1.round() as i64));
+                let icon2 = back.iter().filter(|a| a.1 > 0.05).max_by(|a, b| a.1.total_cmp(&b.1)).map(|a| (good_icon(a.0), good_color(a.0)));
+                hud.msg = Some(Msg { icon: Some((Icon::Undo, INK)), icon2: icon2.or(Some((building_icon(kind), INK))), text: refund.unwrap_or_default() });
             }
+            Err(e) => hud.say(Some((Icon::Undo, INK)), Some((Icon::Cross, BAD)), sim_error(&e.to_string())),
         }
+        return;
     }
 }
 
@@ -85,12 +81,13 @@ pub(super) fn button_actions(
         sim::trace::event(format!("HUD_ACTION {a:?}"));
         let s = &mut sim.0;
         match a {
+            HudAction::Cmd(c) => cmd(s, &mut hud, c),
             HudAction::Fix(fix, at) => match fix {
                 Fix::Place(kind) => hud.set_tool(Tool::of(kind)),
-                Fix::OpenJobs => hud.open_book(Some(ColonyTab::Jobs), None),
+                Fix::OpenJobs => hud.set_overlay(Some(Overlay::Colony(ColonyTab::Jobs))),
                 Fix::OpenDam { dam } => {
-                    *sel = Selection::Site(dam);
-                    hud.selected.clear();
+                    if hud.page().is_some() { hud.set_overlay(None); }
+                    hud.select_building(s, &mut sel, &mut flow, dam);
                     if let Some(c) = at {
                         flow.focus = Some(cell_world(&s.height, (c.0 as f32 + 0.5, c.1 as f32 + 0.5)));
                     }
@@ -102,18 +99,13 @@ pub(super) fn button_actions(
                 }
                 f => {
                     if let Err(e) = sim::hud::apply_fix(s, f) {
-                        hud.refuse(sim_error(&e), now);
+                        hud.refuse(sim_error(&e));
                     }
                 }
             },
-            HudAction::FocusWolf => {
-                if let Some(to) = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)) {
-                    flow.focus = Some(cell_world(&s.height, to));
-                }
-            }
             HudAction::CycleIdle => {
                 if shift {
-                    hud.open_book(Some(ColonyTab::Jobs), None);
+                    hud.set_overlay(Some(Overlay::Colony(ColonyTab::Jobs)));
                 } else {
                     next_idle(s, &mut hud, &mut sel, &mut flow);
                 }
@@ -136,24 +128,23 @@ pub(super) fn button_actions(
             HudAction::CancelTool => hud.set_tool(Tool::None),
             HudAction::GrowDam(dam, growth) => {
                 let cells = if growth == sim::DamGrowth::Raise { picks_on(s, dam, &hud.dam_cells) } else { Vec::new() };
-                cmd(s, &mut hud, sim::Command::GrowDam { dam, growth, cells }, now);
+                cmd(s, &mut hud, sim::Command::GrowDam { dam, growth, cells });
                 hud.dam_ghost = None;
                 hud.dam_cells.clear();
             }
-            HudAction::Upkeep(building, on) => cmd(s, &mut hud, sim::Command::SetUpkeep { building, on }, now),
             HudAction::Opening(dam, o) => {
-                if hud.opening == Some((dam, o)) {
-                    hud.opening = None;
-                } else {
+                if hud.opening() == Some((dam, o)) {
                     hud.set_tool(Tool::None);
-                    hud.opening = Some((dam, o));
+                } else {
+                    hud.set_tool(Tool::Opening(dam, o));
+                    hud.swallow_click();
                     hud.dam_cells.clear();
                     *sel = Selection::Site(dam);
                     hud.selected.clear();
                     // Bring the dam into view if it is far from where the camera looks.
                     if let Some(mid) = sim::dams::dam(s, dam).and_then(|d| d.line().nth(d.line().count() / 2).map(|c| c.cell)) {
                         let (vx, vy) = crate::flow::world_cell(&s.height, orbit.target);
-                        if (vx as f32 - mid.0 as f32).hypot(vy as f32 - mid.1 as f32) > 24.0 {
+                        if (vx - mid.0 as f32).hypot(vy - mid.1 as f32) > 24.0 {
                             flow.focus = Some(cell_world(&s.height, (mid.0 as f32 + 0.5, mid.1 as f32 + 0.5)));
                         }
                     }
@@ -161,24 +152,21 @@ pub(super) fn button_actions(
             }
             HudAction::GateChip(building, cell) => {
                 hud.gate_sel = if hud.gate_sel == Some((building, cell)) { None } else { Some((building, cell)) };
-                hud.opening = None;
+                if hud.opening().is_some() { hud.set_tool(Tool::None); }
                 flow.focus = Some(cell_world(&s.height, (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5)));
             }
             HudAction::RemoveGate(building, cell) => {
-                cmd(s, &mut hud, sim::Command::RemoveGate { building, cell }, now);
+                cmd(s, &mut hud, sim::Command::RemoveGate { building, cell });
                 if hud.gate_sel == Some((building, cell)) {
                     hud.gate_sel = None;
                 }
             }
-            HudAction::SetGate(building, cell, setting) => cmd(s, &mut hud, sim::Command::SetGate { building, cell, setting }, now),
             HudAction::UpgradeLock(building, cell) => {
-                cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell }, now);
+                cmd(s, &mut hud, sim::Command::UpgradeLock { building, cell });
                 hud.dam_cells.retain(|c| *c != cell);
             }
             HudAction::GrowCanal(canal, growth) => {
                 if growth == sim::CanalGrowth::Extend {
-                    // Draw on from the open end: the player drags (or clicks corners) the new
-                    // run out; the click on the button itself draws nothing.
                     if let Some(end) = sim::canals::canal(s, canal).map(|k| k.end()) {
                         hud.set_tool(Tool::Canal);
                         hud.extending = Some(canal);
@@ -187,22 +175,20 @@ pub(super) fn button_actions(
                     }
                 } else {
                     let cells = picks_on(s, canal, &hud.dam_cells);
-                    cmd(s, &mut hud, sim::Command::GrowCanal { canal, growth, cells }, now);
+                    cmd(s, &mut hud, sim::Command::GrowCanal { canal, growth, cells });
                     hud.dam_cells.clear();
                 }
             }
             HudAction::DamCell(c) => {
                 match hud.dam_cells.iter().position(|x| *x == c) {
-                    Some(i) => {
-                        hud.dam_cells.remove(i);
-                    }
+                    Some(i) => { hud.dam_cells.remove(i); }
                     None if shift => hud.dam_cells.push(c),
                     None => hud.dam_cells = vec![c],
                 }
             }
             HudAction::DamTab(t) => hud.dam_tab = t,
             HudAction::ConfirmLine => {
-                if let Some(id) = commit_line(s, &mut hud, now) {
+                if let Some(id) = commit_line(s, &mut hud) {
                     *sel = Selection::Site(id);
                     hud.selected.clear();
                 }
@@ -215,49 +201,30 @@ pub(super) fn button_actions(
                 super::paths::toggle_only(r);
                 hud.set_changed();
             }
-            HudAction::OpenPage(p) => match p {
-                Some(p) => hud.open_page(p),
-                None => hud.close_pages(),
-            },
+            HudAction::Overlay(o) => hud.set_overlay(o),
             HudAction::PageBack => hud.page_back(),
-            HudAction::CloseWelcome => hud.welcome = false,
-            HudAction::Kin(f) => {
-                hud.kin = f;
-            }
-            HudAction::Colony(t) => hud.open_book(t, None),
-            HudAction::Ledger(t) => hud.open_book(None, t),
+            HudAction::CloseWelcome => flow.welcome = false,
+            HudAction::Kin(f) => hud.kin = f,
             HudAction::Span(sp) => hud.span = sp,
             HudAction::Sort(col) => {
                 hud.sort = if hud.sort.0 == col { (col, !hud.sort.1) } else { (col, !matches!(col, BeaverCol::Name | BeaverCol::Family | BeaverCol::Job | BeaverCol::Doing)) };
-                hud.scroll = 0;
-            }
-            HudAction::Scroll(n) => {
-                let max = super::scroll_max(s, &hud);
-                hud.scroll = ((hud.scroll as i64 + n as i64).max(0) as usize).min(max);
             }
             HudAction::Journal(open) => hud.journal_open = open,
-            HudAction::GoTo(at) => match at {
-                NoticeAt::Beaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
-                NoticeAt::Building(id) => hud.select_building(s, &mut sel, &mut flow, id),
-                NoticeAt::Spot(p) => flow.focus = Some(cell_world(&s.height, p)),
-                NoticeAt::Wolf(p) => {
-                    let to = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)).unwrap_or(p);
-                    flow.focus = Some(cell_world(&s.height, to));
+            HudAction::GoTo(at) => {
+                if hud.page().is_some() { hud.set_overlay(None); }
+                match at {
+                    NoticeAt::Beaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
+                    NoticeAt::Building(id) => hud.select_building(s, &mut sel, &mut flow, id),
+                    NoticeAt::Spot(p) => flow.focus = Some(cell_world(&s.height, p)),
+                    NoticeAt::Wolf(fallback) => {
+                        if let Some(to) = sim::predators::in_sight(s).or_else(|| sim::predators::last_seen(s)).or(fallback) {
+                            flow.focus = Some(cell_world(&s.height, to));
+                        }
+                    }
                 }
-            },
-            HudAction::SelectBeaver(id) => hud.select_beaver(s, &mut sel, &mut flow, id),
-            HudAction::SelectBuilding(id) => hud.select_building(s, &mut sel, &mut flow, id),
+            }
             HudAction::Follow(id) => hud.follow = if hud.follow == Some(id) { None } else { Some(id) },
-            HudAction::FreeBeaver(id) => cmd(s, &mut hud, sim::Command::Assign { who: vec![id], to: None, queue: false }, now),
-            HudAction::Staff(building, delta) => cmd(s, &mut hud, sim::Command::StaffBuilding { building, delta }, now),
             HudAction::Badge(key) => hud.open_badge = if hud.open_badge.as_ref() == Some(&key) { None } else { Some(key) },
-            HudAction::FillStore(store, on) => cmd(s, &mut hud, sim::Command::FillStore { store, on }, now),
-            HudAction::Balance(building, on) => cmd(s, &mut hud, sim::Command::SetBalance { building, on }, now),
-            HudAction::RoleAdjust(role, delta) => cmd(s, &mut hud, sim::Command::AdjustRole { role, delta }, now),
-            HudAction::ShoreLimit(role, cells) => cmd(s, &mut hud, sim::Command::SetShoreLimit { role, cells }, now),
-            HudAction::Paused(building, paused) => cmd(s, &mut hud, sim::Command::SetPaused { building, paused }, now),
-            HudAction::Refit(building, refit) => cmd(s, &mut hud, sim::Command::Refit { building, refit }, now),
-            HudAction::SlotOff(building, slot, off) => cmd(s, &mut hud, sim::Command::SetSlotOff { building, slot, off }, now),
             HudAction::ClearPicks => hud.dam_cells.clear(),
             HudAction::ClosePanel(p, selected) => {
                 hud.pinned.retain(|x| *x != p);
@@ -265,18 +232,14 @@ pub(super) fn button_actions(
                     hud.clear_selection(&mut sel);
                 }
             }
-            HudAction::RemoveWorks(building) => {
-                if hud.remove_armed.is_some_and(|(b, t)| b == building && now - t <= super::REMOVE_ARM_SECS) {
+            HudAction::RemoveSite(building, confirm) => {
+                if !confirm || hud.remove_armed.is_some_and(|(b, t)| b == building && now - t <= super::REMOVE_ARM_SECS) {
                     hud.remove_armed = None;
-                    cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
+                    cmd(s, &mut hud, sim::Command::CancelSite { building });
                     clean_removed_site(s, &mut hud, &mut sel, building);
                 } else {
                     hud.remove_armed = Some((building, now));
                 }
-            }
-            HudAction::CancelBuild(building) => {
-                cmd(s, &mut hud, sim::Command::CancelSite { building }, now);
-                clean_removed_site(s, &mut hud, &mut sel, building);
             }
             HudAction::Pin(p) => {
                 if let Some(i) = hud.pinned.iter().position(|x| *x == p) {
@@ -299,8 +262,8 @@ fn picks_on(s: &sim::SimState, id: sim::buildings::BuildingId, picks: &[Cell]) -
     picks.iter().copied().filter(|c| on(c)).collect()
 }
 
-fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command, now: f32) {
+fn cmd(s: &mut sim::SimState, hud: &mut HudState, c: sim::Command) {
     if let Err(e) = s.apply(c) {
-        hud.refuse(sim_error(&e.to_string()), now);
+        hud.refuse(sim_error(&e.to_string()));
     }
 }

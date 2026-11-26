@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::cli::Cli;
-use crate::flow::{cell_world, Flow, Phase, Selection};
+use crate::flow::{cell_world, Flow, Selection};
 use crate::sim_driver::SimClock;
 use crate::state::{PlannedDam, Sim};
 use bevy::prelude::*;
@@ -16,8 +16,7 @@ fn family_centre(sim: &SimState) -> (f32, f32) {
 }
 
 pub fn begin(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
-    flow.phase = Phase::Settled;
-    flow.settled_at = Some(flow.real_secs);
+    flow.arrive_left = 3.0;
     let focus = family_centre(sim);
 
     flow.focus = None;
@@ -45,8 +44,7 @@ pub fn begin_play(sim: &mut SimState, flow: &mut Flow, clock: &mut SimClock, orb
 }
 
 pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection, around: Option<(usize, usize)>) {
-    flow.phase = Phase::Scouting;
-    flow.settled_at = None;
+    flow.arrive_left = 0.0;
     let focus = around.map(|c| (c.0 as f32 + 0.5, c.1 as f32 + 0.5)).unwrap_or((sim.world.size as f32 / 2.0, sim.world.size as f32 / 2.0));
     flow.focus = None;
     orbit.target = cell_world(&sim.height, focus);
@@ -58,8 +56,7 @@ pub fn begin_scouting(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orb
 }
 
 pub fn begin_sandbox(sim: &SimState, flow: &mut Flow, clock: &mut SimClock, orbit: &mut OrbitCamera, sel: &mut Selection) {
-    flow.phase = Phase::Settled;
-    flow.settled_at = Some(flow.real_secs);
+    flow.arrive_left = 3.0;
     flow.focus = None;
     let half = sim.world.size as f32 / 2.0;
     let n = sim.world.size;
@@ -88,8 +85,7 @@ fn install_valley(
     setup: impl FnOnce(&mut SimState, &mut Flow) -> Result<(), String>,
 ) -> Result<(), String> {
     start_recording(&mut s);
-    let mut next_flow = Flow::new(&s.world);
-    next_flow.generation = flow.generation + 1;
+    let mut next_flow = Flow::default();
     setup(&mut s, &mut next_flow)?;
     sim.0 = s;
     planned.0 = dam;

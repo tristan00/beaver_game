@@ -255,12 +255,12 @@ pub(super) fn shuffle_gallery(time: Res<Time>, clock: Res<super::RenderClock>, m
 }
 
 /// `BC_WELCOME=1`: show the guidance card a newly settled colony gets, for screenshots.
-pub(super) fn show_welcome(hud: Option<ResMut<crate::hud::HudState>>, mut done: Local<bool>) {
+pub(super) fn show_welcome(flow: Option<ResMut<crate::flow::Flow>>, mut done: Local<bool>) {
     if *done || std::env::var_os("BC_WELCOME").is_none() {
         return;
     }
-    if let Some(mut hud) = hud {
-        hud.welcome = true;
+    if let Some(mut flow) = flow {
+        flow.welcome = true;
         *done = true;
     }
 }
@@ -273,8 +273,8 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
     }
     let nth = std::env::var("BC_SELECT_HOME").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
     let (Some(mut sel), Some(l)) = (sel, sim.0.buildings.buildings.iter().filter(|b| b.is_home_ready()).nth(nth)) else { return };
-    if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page != Some(crate::hud::Page::Lodge(l.id))) {
-        hud.page = Some(crate::hud::Page::Lodge(l.id));
+    if let Some(mut hud) = hud.filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page() != Some(crate::hud::Page::Lodge(l.id))) {
+        hud.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Lodge(l.id)));
     }
     let want = crate::flow::Selection::Site(l.id);
     if *sel != want {
@@ -292,20 +292,19 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     // `BC_LEDGER=charts|dams|buildings|stores|upkeep`: that page of the territory stays open;
     // `=beavers|run`: that page of the colony.
     if let (Some(page), Some(h)) = (std::env::var("BC_LEDGER").ok(), hud.as_mut()) {
-        use crate::hud::{ColonyTab, LedgerTab};
-        let (colony, ledger) = match page.as_str() {
-            "beavers" => (Some(ColonyTab::Beavers), None),
-            "run" => (Some(ColonyTab::Run), None),
-            "dams" => (None, Some(LedgerTab::Dams)),
-            "canals" => (None, Some(LedgerTab::Canals)),
-            "buildings" => (None, Some(LedgerTab::Buildings)),
-            "stores" => (None, Some(LedgerTab::Stores)),
-            "upkeep" => (None, Some(LedgerTab::Upkeep)),
-            _ => (None, Some(LedgerTab::Charts)),
-        };
-        if h.ledger != ledger || h.colony != colony {
-            h.ledger = ledger;
-            h.colony = colony;
+        use crate::hud::{ColonyTab, LedgerTab, Overlay};
+        let want = Some(match page.as_str() {
+            "beavers" => Overlay::Colony(ColonyTab::Beavers),
+            "run" => Overlay::Colony(ColonyTab::Run),
+            "dams" => Overlay::Ledger(LedgerTab::Dams),
+            "canals" => Overlay::Ledger(LedgerTab::Canals),
+            "buildings" => Overlay::Ledger(LedgerTab::Buildings),
+            "stores" => Overlay::Ledger(LedgerTab::Stores),
+            "upkeep" => Overlay::Ledger(LedgerTab::Upkeep),
+            _ => Overlay::Ledger(LedgerTab::Charts),
+        });
+        if h.overlay != want {
+            h.overlay = want;
         }
     }
     let Some(mut sel) = sel else { return };
@@ -313,8 +312,8 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel; with
     // `BC_DETAILS=1` too, its page is open.
     if let Some(id) = std::env::var("BC_SELECT_BUILDING").ok().and_then(|v| v.parse::<u64>().ok()) {
-        if let Some(h) = hud.as_mut().filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page != Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)))) {
-            h.page = Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)));
+        if let Some(h) = hud.as_mut().filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page() != Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)))) {
+            h.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Works(sim::buildings::BuildingId(id))));
         }
         let want = crate::flow::Selection::Site(sim::buildings::BuildingId(id));
         if *sel != want {
@@ -345,8 +344,8 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
         if hud.selected != [id] {
             hud.selected = vec![id];
         }
-        if std::env::var_os("BC_DETAILS").is_some() && hud.page != Some(crate::hud::Page::Beaver(id)) {
-            hud.page = Some(crate::hud::Page::Beaver(id));
+        if std::env::var_os("BC_DETAILS").is_some() && hud.page() != Some(crate::hud::Page::Beaver(id)) {
+            hud.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Beaver(id)));
         }
     }
 }

@@ -16,7 +16,7 @@ const LINES: [&str; 4] = [
 ];
 
 pub fn screen(c: &Ctx) -> Vec<VNode> {
-    if !c.hud.welcome {
+    if !c.welcome {
         return Vec::new();
     }
     let mut ui = Ui::default();
