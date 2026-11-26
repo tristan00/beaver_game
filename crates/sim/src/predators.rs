@@ -497,14 +497,11 @@ pub fn flee(sim: &mut SimState, ag: &mut Agent, dt: f32) -> bool {
     if !matches!(ag.task, Task::Idle | Task::Rest) { return false; }
     ag.trail.clear();
     if is_refuge(sim, ag.cell) { (ag.path, ag.task) = (None, Task::Idle); return false; }
-    if !ag.path.as_ref().and_then(|p| p.steps.last()).is_some_and(|s| is_refuge(sim, s.0)) {
-        let Some(r) = nearest_water(sim, ag.cell) else { return false };
-        ag.path = sim.nav.find_path(ag.id, ag.cell, Goal::Cell(r));
-    }
-    let load = ag.load.take();
-    ag.step_frac += dt * crate::agents::MOVE_COST_PER_DAY * (FLEE_PACE - 1.0);
-    let moved = crate::agents::follow(&mut sim.nav, ag, dt);
+    if !ag.path.as_ref().and_then(|p| p.steps.last()).is_some_and(|s| is_refuge(sim, s.0)) { ag.path = None; }
+    let (load, boost) = (ag.load.take(), dt * crate::agents::MOVE_COST_PER_DAY * (FLEE_PACE - 1.0));
+    ag.step_frac += boost;
+    let went = crate::agents::walk(sim, ag, dt, |sim, ag| sim.nav.find_path(ag.id, ag.cell, Goal::Cell(nearest_water(sim, ag.cell)?)));
+    if went.is_none() { ag.step_frac -= boost; }
     ag.load = load;
-    crate::agents::note(ag, moved);
-    true
+    went.is_some()
 }

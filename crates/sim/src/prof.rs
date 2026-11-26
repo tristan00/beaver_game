@@ -1,4 +1,4 @@
-//! Named timers for the profile the `speed` example prints: where a step's time goes, by part
+//! Named timers for the profile `perf` prints: where a step's time goes, by part
 //! of the step and by what each beaver is doing. Off unless `enable` is called, and then a
 //! timer costs two clock reads; while off it costs one load.
 use std::sync::Mutex;

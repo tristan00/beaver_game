@@ -93,14 +93,12 @@ pub fn waiting(sim: &SimState, id: BeaverId) -> Option<Wait> {
     let a = sim.agents.get(id)?;
     if !matches!(a.task, crate::agents::Task::Idle | crate::agents::Task::Rest) || a.load.is_some() { return None; }
     let role = role_of(sim, id)?;
-    let place_id = sim.work.slot_of(id).map(|(b, _, _)| b)
-        .or_else(|| (a.assignment == Some(Assignment::Build)).then(|| sim.agents.build_targets.get(&id).copied()).flatten())
-        .or_else(|| (a.assignment == Some(Assignment::Mend)).then(|| sim.agents.maint_targets.get(&id).copied()).flatten());
+    let place_id = crate::agents::place_of(sim, a).map(|p| p.0);
     if let Some(p) = place_id.and_then(|b| sim.work.place(b)) {
         if p.paused { return Some(Wait::Paused); }
         if let Some(g) = crate::agents::site_waits_on(sim, p) { return Some(Wait::Good(g)); }
         let mat = crate::dams::material();
-        let is_upkeep = sim.agents.maint_targets.contains_key(&id);
+        let is_upkeep = crate::agents::upkeep(sim, id);
         if sim.buildings.building(p.building).is_some_and(|b| b.dam.is_some())
             && crate::dams::has_work_for(sim, p.building, is_upkeep)
             && !crate::agents::has_good_source(sim, mat)
@@ -112,7 +110,7 @@ pub fn waiting(sim: &SimState, id: BeaverId) -> Option<Wait> {
     }
     if crate::agents::frozen(sim) && frozen_out(role) { return Some(Wait::Frozen); }
     if let Some(g) = crate::hud::gathered_good(role)
-        .filter(|&g| sim.buildings.stores.capacity(g) > crate::work::EPS && !crate::agents::worth_fetching(sim, a.cell, g))
+        .filter(|&g| sim.buildings.stores.capacity(g) > crate::work::EPS && !crate::agents::worth_fetching(sim, g))
     {
         return Some(Wait::StoreFull(g));
     }

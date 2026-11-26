@@ -146,9 +146,8 @@ pub struct Grid<T> {
     width: usize,
     height: usize,
     data: Vec<T>,
-    #[serde(serialize_with = "stamp", deserialize_with = "loaded_identity")]
+    #[serde(deserialize_with = "loaded_identity")]
     identity: u64,
-    #[serde(serialize_with = "stamp")]
     revision: u64,
     /// The grid (and its revision) this one was last copied from. While that grid and this
     /// copy are both unchanged since, copying it here again has nothing to do.
@@ -334,11 +333,3 @@ pub type HeightGrid = Grid<f32>;
 pub type WaterGrid = Grid<f32>;
 pub type VegetationGrid = Grid<f32>;
 
-/// While set, grids encode without their identity and revision: both only tell caches apart,
-/// so two worlds holding the same cells then encode equally (the `speed` example compares
-/// runs this way). Never set while a game is being saved.
-pub static CONTENT_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-fn stamp<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
-    use serde::Serialize;
-    if CONTENT_ONLY.load(Ordering::Relaxed) { 0u64.serialize(s) } else { v.serialize(s) }
-}

@@ -155,7 +155,7 @@ pub fn save_recording(time: Res<Time>, mut last: Local<(usize, f32)>, sim: Res<S
         return;
     }
     *last = (log.len(), now);
-    let header = format!("# map seed {} — replay: cargo run --release -p sim --example play -- <script with 'replay {}'>\n", sim.0.seed, path);
+    let header = format!("# map seed {}\n", sim.0.seed);
     let _ = std::fs::write(&path, header + &sim::script::write_log(log));
 }
 
