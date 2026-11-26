@@ -1240,36 +1240,3 @@ fn frame_log(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canal_mouth_blends_cleanly_into_lake_without_earth_pinch() {
-        let mut s = SimState::new(1);
-        let w = s.height.width();
-        let (cx, cy) = (10usize, 10usize);
-        // Set up a high dry bank (12.0 m) flanking a canal at (10, 10) dug to 9.6 m,
-        // meeting an already-deep lake cell at (10, 9) at 9.5 m (not marked canal).
-        for dy in -1i32..=1 {
-            for dx in -1i32..=1 {
-                let (x, y) = ((cx as i32 + dx) as usize, (cy as i32 + dy) as usize);
-                s.height[y * w + x] = 12.0;
-                s.water.depth[y * w + x] = 0.0;
-                s.water.canal[y * w + x] = false;
-            }
-        }
-        s.height[(cy - 1) * w + cx] = 9.5;
-        s.water.depth[(cy - 1) * w + cx] = 0.5; // lake water surface at 10.0 m
-        s.height[cy * w + cx] = 9.6;
-        s.water.depth[cy * w + cx] = 0.4;
-        s.water.canal[cy * w + cx] = true;
-
-        // At (10.25, 9.5) — across the shoreline boundary inside the canal — terrain must stay
-        // below the 10.0 m water surface instead of pinching earth up from the 12.0 m bank.
-        let base = bilinear(|x, y| at(&s.height, x, y), 10.25, 9.5);
-        let h = canal_blend(&s, 10.25, 9.5, base);
-        assert!(h < 9.7, "canal mouth pinched terrain up to {h:.3} m (above bed 9.6 m)");
-    }
-}

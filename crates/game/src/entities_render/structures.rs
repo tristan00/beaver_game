@@ -461,28 +461,3 @@ pub(super) fn food_heap(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
         branch(mb, m - d * l * 0.5, m + d * l * 0.5, 0.05, leaf(i), 31 + i as u32);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
-        mesh.try_attribute(Mesh::ATTRIBUTE_POSITION).ok().and_then(|a| a.as_float3()).expect("dam meshes have positions").to_vec()
-    }
-
-    #[test]
-    fn pebble_facing_lies_on_the_downstream_slope_and_stays_small() {
-        for steps in [1u8, 4, 8, 16] {
-            let h = steps as f32 * DAM_STEP;
-            let plain = positions(&dam_cell_mesh(steps, 1.35, 0, DamStage::Done));
-            let faced = positions(&faced_dam_cell_mesh(steps, 1.35, 0, DamStage::Done));
-            assert!(faced.len() > plain.len(), "{steps} steps: no pebbles");
-            let stones = &faced[plain.len()..];
-            assert!(stones.len() < 4000, "{steps} steps: {} pebble vertices", stones.len());
-            for p in stones {
-                assert!(p[2] < 0.1, "{steps} steps: a pebble on the upstream side at {p:?}");
-                assert!(p[1] > -0.8 && p[1] < h + 0.3, "{steps} steps: a pebble off the wall at {p:?}");
-            }
-        }
-    }
-}

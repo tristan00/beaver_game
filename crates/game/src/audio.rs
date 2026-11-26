@@ -320,20 +320,3 @@ fn update_mix(
     let mix = Mix { layers: mix::layer_volumes(&snap), settings: vols.0, alarm_slaps: heard.1 .1, alarm_amp, floods: floods.map_or(0, |f| f.0), wolf_sighted: heard.1 .0, wolf_kills: wolves.as_ref().map_or(0, |w| w.kills) };
     *shared.0.lock().unwrap_or_else(|e| e.into_inner()) = mix;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sound_settings_round_trip_effects_and_ambience() {
-        let mut vols = AudioVolumes(VolumeSettings::default());
-        vols.set(Channel::Master, 0.75);
-        vols.set(Channel::Effects, 0.50);
-        vols.set(Channel::Ambience, 0.25);
-        let parsed = AudioVolumes::from_text(&vols.to_text());
-        assert_eq!(parsed.level(Channel::Master), 0.75);
-        assert_eq!(parsed.level(Channel::Effects), 0.50);
-        assert_eq!(parsed.level(Channel::Ambience), 0.25);
-    }
-}

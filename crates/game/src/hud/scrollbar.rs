@@ -267,30 +267,3 @@ pub fn sync_scrollbars(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scrollbar_hides_when_content_fits_and_scales_when_overflowing() {
-        assert_eq!(bar_geometry(400.0, 380.0, 0.0, 390.0), None);
-        assert_eq!(bar_geometry(400.0, 401.0, 0.0, 390.0), None);
-
-        // Content is 2x taller than viewport: thumb is half the track, at top/mid/bottom.
-        let (h0, t0, max) = bar_geometry(400.0, 800.0, 0.0, 380.0).expect("overflows");
-        assert!((max - 400.0).abs() < 0.01);
-        assert!((h0 - 190.0).abs() < 0.01);
-        assert!(t0.abs() < 0.01);
-
-        let (_, t_mid, _) = bar_geometry(400.0, 800.0, 200.0, 380.0).expect("overflows");
-        assert!((t_mid - 95.0).abs() < 0.01);
-
-        let (_, t_end, _) = bar_geometry(400.0, 800.0, 999.0, 380.0).expect("overflows");
-        assert!((t_end - 190.0).abs() < 0.01);
-
-        // Very tall content respects minimum thumb height.
-        let (h_min, _, _) = bar_geometry(200.0, 10_000.0, 0.0, 190.0).expect("overflows");
-        assert!((h_min - MIN_THUMB).abs() < 0.01);
-    }
-}

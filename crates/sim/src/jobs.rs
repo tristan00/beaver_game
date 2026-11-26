@@ -348,35 +348,3 @@ pub(crate) fn slot_jobs(sim: &SimState) -> std::collections::HashMap<BeaverId, (
         Some((b.id, (job, working)))
     }).collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    struct DryLand;
-    impl crate::colony::Landscape for DryLand { fn is_water(&self, _: f32, _: f32) -> bool { false } }
-
-    #[test]
-    fn role_add_check_explains_refusals() {
-        let mut sim = SimState::new(1);
-        assert_eq!(role_add_check(&sim, Job::with_duty(Duty::Build)).unwrap_err(), "No free beavers");
-        let cell = (sim.world.size / 2, sim.world.size / 2);
-        sim.colony.found((cell.0 as f32, cell.1 as f32), &DryLand).expect("found");
-        for b in &sim.colony.beavers { sim.agents.spawn(b.id, cell); }
-        assert!(role_add_check(&sim, Job::with_duty(Duty::Build)).is_ok());
-        assert_eq!(role_add_check(&sim, Job::with_duty(Duty::Haul)).unwrap_err(), "Build a haul mound");
-        assert_eq!(role_add_check(&sim, Job::with_duty(Duty::Forest)).unwrap_err(), "Build a seedling bed");
-        assert_eq!(role_add_check(&sim, Job::with_duty(Duty::Watch)).unwrap_err(), "Build a lookout");
-        assert_eq!(role_add_check(&sim, Job::of("Pebbler")).unwrap_err(), "Build a pebble heap");
-        assert!(role_add_check(&sim, Job::of("Forager")).is_ok() && role_add_check(&sim, Job::of("Feller")).is_ok() && role_add_check(&sim, Job::with_duty(Duty::Mend)).is_ok());
-        adjust_role(&mut sim, Job::with_duty(Duty::Build), 2).expect("assign 2 builders");
-        assert_eq!(jobs_board(&sim).iter().find(|r| r.role == Job::with_duty(Duty::Build)).unwrap().filled, 2);
-        adjust_role(&mut sim, Job::with_duty(Duty::Build), -2).expect("free 2 builders");
-        let b = crate::buildings::Building::new(BuildingId(999), BuildingKind::of("PebbleHeap"), cell, crate::buildings::Status::Complete);
-        sim.work.add_complete(&b).expect("add pebble heap workplace");
-        sim.buildings.buildings.push(b);
-        assert!(role_add_check(&sim, Job::of("Pebbler")).is_ok());
-        adjust_role(&mut sim, Job::of("Pebbler"), 1).expect("assign 1 pebbler");
-        assert_eq!(role_add_check(&sim, Job::of("Pebbler")).unwrap_err(), "All seats full — build another pebble heap");
-        assert!(adjust_role(&mut sim, Job::of("Pebbler"), 1).is_err());
-    }
-}

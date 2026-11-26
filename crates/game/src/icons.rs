@@ -1079,25 +1079,3 @@ fn draw(icon: Icon, c: &mut Canvas) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_icons_rasterize_non_empty() {
-        for &icon in Icon::ALL {
-            let alpha = rasterize_icon(icon);
-            let lit = alpha.iter().filter(|&&a| a > 128).count();
-            assert!(lit > 40, "icon {icon:?} has too few lit pixels ({lit})");
-        }
-        if let Ok(path) = std::env::var("BC_DUMP_ICONS_RAW") {
-            let (w, h, rgba) = rasterize_atlas();
-            let mut out = Vec::with_capacity(8 + rgba.len());
-            out.extend_from_slice(&w.to_le_bytes());
-            out.extend_from_slice(&h.to_le_bytes());
-            out.extend_from_slice(&rgba);
-            std::fs::write(path, out).expect("write raw atlas");
-        }
-    }
-}

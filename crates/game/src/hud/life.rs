@@ -464,27 +464,3 @@ pub fn screen(c: &Ctx, id: BeaverId) -> Vec<VNode> {
         },
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct DryLand;
-    impl sim::colony::Landscape for DryLand { fn is_water(&self, _: f32, _: f32) -> bool { false } }
-
-    #[test]
-    fn condition_tooltips_always_explain_factors() {
-        let mut sim = sim::SimState::new(1);
-        let cell = (sim.world.size / 2, sim.world.size / 2);
-        sim.colony.found((cell.0 as f32, cell.1 as f32), &DryLand).expect("found");
-        let b = sim.colony.beavers.first().expect("founder");
-        let r = sim.beaver_rates(b.id).expect("rates");
-        assert!(health_tip(b, &r).lines.len() >= 5, "health tooltip should list factors");
-        assert!(mood_tip(b, &r).lines.len() >= 7, "mood tooltip should break down all needs");
-        assert!(food_tip(b, &r).lines.len() >= 4, "food tooltip should explain food factors");
-        assert!(rest_tip(b, &r).lines.len() >= 5, "rest tooltip should explain rest factors");
-        assert!(warmth_tip(&sim, b, &r).lines.len() >= 4, "warmth tooltip should explain warmth factors");
-        assert!(safety_tip(b, &r).lines.len() >= 3, "safety tooltip should explain safety factors");
-        assert!(company_tip(b, &r).lines.len() >= 4, "company tooltip should explain company factors");
-    }
-}

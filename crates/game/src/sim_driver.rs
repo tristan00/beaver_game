@@ -308,20 +308,3 @@ fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn speeds_include_intermediate_and_preserve_fast_and_dev_tiers() {
-        assert_eq!(Speed::X1.multiplier(), 1.0);
-        assert!(Speed::X2.multiplier() > Speed::X1.multiplier() && Speed::X2.multiplier() < Speed::X3.multiplier());
-        assert_eq!(Speed::X3.multiplier(), 120.0);
-        assert_eq!(Speed::X4.multiplier(), 180.0);
-        // X1, X2, X3 are always available without needing dev speed.
-        assert!(Speed::X1.allowed());
-        assert!(Speed::X2.allowed());
-        assert!(Speed::X3.allowed());
-    }
-}

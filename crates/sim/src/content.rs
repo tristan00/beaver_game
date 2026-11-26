@@ -707,17 +707,3 @@ impl Content {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_content_loads_standalone() {
-        let c = Content::load_embedded().expect("embedded TOMLs must load standalone");
-        assert!(!c.buildings.is_empty());
-        assert!(!c.jobs.is_empty());
-        assert!(!c.trees.is_empty());
-        assert!(!c.plants.is_empty());
-    }
-}

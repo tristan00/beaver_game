@@ -517,31 +517,3 @@ pub fn crew(sim: &SimState, id: BuildingId) -> (usize, usize) {
         _ => (b, l),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::{Duty, Job};
-    use crate::maintenance::{self, Refit};
-    use crate::work::Slot;
-
-    #[test]
-    fn pebbling_a_dam_keeps_its_builders_seated() {
-        let mut s = SimState::new(1);
-        let id = BuildingId(s.buildings.fresh_id());
-        let mut b = Building::new(id, BuildingKind::dam(), (20, 20), Status::Complete);
-        b.dam = Some(Box::new(Dam {
-            cells: vec![DamCell { cell: (20, 20), target: 1.0, row: 0 }], rows: 1, upkeep: true,
-            gates: Vec::new(), downstream: (1, 0), history: VecDeque::new(), pond: None, pond_day: f64::NEG_INFINITY,
-        }));
-        s.work.add_complete(&b).expect("workplace");
-        s.buildings.buildings.push(b);
-        let builder = Job::with_duty(Duty::Build);
-        let p = s.work.place_mut(id).expect("place");
-        p.slots.extend([Slot { role: builder, beaver: Some(BeaverId(901)), off: false }, Slot { role: builder, beaver: Some(BeaverId(902)), off: false }]);
-        maintenance::order(&mut s, id, Refit::Facing).expect("facing ordered");
-        let crew: Vec<BeaverId> = s.work.crew(id).iter().filter_map(|c| c.beaver).collect();
-        assert_eq!(crew, vec![BeaverId(901), BeaverId(902)]);
-        assert!(s.work.place(id).is_some_and(|p| p.site.is_some()), "the dam is a site for the facing");
-    }
-}

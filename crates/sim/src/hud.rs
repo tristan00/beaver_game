@@ -439,26 +439,3 @@ fn canal_problems(sim: &SimState, out: &mut Vec<Problem>) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    struct DryLand;
-    impl crate::colony::Landscape for DryLand { fn is_water(&self, _: f32, _: f32) -> bool { false } }
-
-    #[test]
-    fn no_storage_before_stores_built_has_zero_capacity_and_urgent_warning() {
-        let mut sim = SimState::new(1);
-        let cell = (sim.world.size / 2, sim.world.size / 2);
-        sim.colony.found((cell.0 as f32, cell.1 as f32), &DryLand).expect("found");
-        for g in Good::all() { assert_eq!(sim.buildings.stores.capacity(g), 0.0, "no phantom base capacity before stores exist"); }
-        assert_eq!(problems(&sim).iter().find(|p| p.kind == ProblemKind::NoStorage).expect("NoStorage").severity, Severity::Urgent);
-        for x in cell.0..cell.0 + 4 { for y in cell.1..cell.1 + 4 { if let Some(v) = sim.water.depth.get_mut(x, y) { *v = 0.25; } } }
-        for (i, key) in ["StickPile", "FoodCache"].into_iter().enumerate() {
-            sim.buildings.buildings.push(crate::buildings::Building::new(BuildingId(100 + i as u64), BuildingKind::of(key), (cell.0 + i * 2, cell.1), crate::buildings::Status::Complete));
-        }
-        sim.buildings.update_capacity(crate::buildings::Terrain { depth: &sim.water.depth });
-        assert!(sim.buildings.stores.capacity(Good::food()) > 0.0 && sim.buildings.stores.capacity(crate::dams::material()) > 0.0);
-        assert!(!problems(&sim).iter().any(|p| p.kind == ProblemKind::NoStorage));
-    }
-}

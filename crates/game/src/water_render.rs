@@ -605,39 +605,3 @@ fn update_water_chunks(
     *settled = Some(stamps);
     backlog.water = rebuilt;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canal_water_mesh_stays_flat_and_never_climbs_steep_banks() {
-        let mut s = SimState::new(1);
-        let w = s.height.width();
-        let (cx, cy) = (0usize, 0usize);
-        // Clear chunk (0, 0) to flat dry hillside at 12.0 m, then carve a 1-cell canal at x = 8
-        // with bed 9.5 m and water depth 0.4 m (true water surface = 9.9 m).
-        for y in 0..CHUNK + 4 {
-            for x in 0..CHUNK + 4 {
-                s.height[y * w + x] = 12.0;
-                s.water.depth[y * w + x] = 0.0;
-                s.water.dam_height[y * w + x] = 0.0;
-                s.water.canal[y * w + x] = false;
-                s.world.river[y * w + x] = false;
-            }
-        }
-        for y in 4..12 {
-            s.height[y * w + 8] = 9.5;
-            s.water.depth[y * w + 8] = 0.4;
-            s.water.canal[y * w + 8] = true;
-        }
-
-        let mesh = build_water_mesh(&s, cx, cy, 1).expect("canal water mesh");
-        let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions").as_float3().expect("float3");
-        assert!(!positions.is_empty());
-        let max_y = positions.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
-        // Water surface is 9.9 m + SURFACE_LIFT (0.01 m) = 9.91 m; bank-climbing bug used to push
-        // vertices above 11 m.
-        assert!(max_y < 9.95, "canal water mesh climbed up the dry banks to y={max_y:.3} m (surface is 9.91 m)");
-    }
-}

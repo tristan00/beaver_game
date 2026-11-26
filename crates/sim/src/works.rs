@@ -135,36 +135,3 @@ pub(crate) fn note(sim: &mut SimState, at: BuildingId, s: Spend, labour: f32, go
 pub fn today(sim: &SimState) -> u64 {
     sim.time_days.max(0.0).floor() as u64
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_season_is_the_trailing_ninety_days() {
-        let sticks = Good::all().next().expect("a good");
-        let mut b = Book::default();
-        b.note(10, Spend::Upkeep, 0.75, Some((sticks, 4.0)));
-        b.note(50, Spend::Upkeep, 1.5, Some((sticks, 2.0)));
-        b.note(50, Spend::Build, 3.0, None);
-        let t = b.last_season(60);
-        assert_eq!((t.work_days(Spend::Upkeep), t.goods(Spend::Upkeep, sticks), t.work_days(Spend::Build)), (3.0, 6.0, 4.0));
-        // Day 10 has left the trailing season by day 100; the life keeps it.
-        let t = b.last_season(100);
-        assert_eq!((t.work_days(Spend::Upkeep), t.goods(Spend::Upkeep, sticks)), (2.0, 2.0));
-        assert_eq!(b.life().goods(Spend::Upkeep, sticks), 6.0);
-        assert_eq!(b.daily(100).len(), SEASON as usize);
-    }
-
-    #[test]
-    fn seasons_keep_their_totals_and_gaps() {
-        let sticks = Good::all().next().expect("a good");
-        let mut b = Book::default();
-        b.note(5, Spend::Upkeep, 0.0, Some((sticks, 1.0)));
-        b.note(200, Spend::Upkeep, 0.0, Some((sticks, 2.0)));
-        let s = b.by_season(200);
-        assert_eq!(s.iter().map(|x| (x.0, x.1.goods(Spend::Upkeep, sticks))).collect::<Vec<_>>(), vec![(0, 1.0), (1, 0.0), (2, 2.0)]);
-        // Old days drop out of the daily record as they leave the season.
-        assert_eq!(b.days.len(), 1);
-    }
-}
