@@ -4,7 +4,7 @@ A beaver colony builder and river simulation. Dam streams, flood valleys into po
 
 ## How to Play
 
-Double-click **beaver_colony.exe** to start playing.
+Download the latest `beaver_colony-*-windows-x86_64.exe` from [Releases](https://github.com/tristan00/beaver_game/releases/latest) and double-click it to start playing.
 
 ---
 
@@ -119,3 +119,16 @@ Water plants grow in ponds and slow shallows, and become inaccessible when still
 | **Deer** | Wildlife | 15 | Food plants, seedlings | Grazes across the valley; unafraid of beavers, flees wolves, and is hunted by wolves. |
 | **Bird** | Wildlife | 10 | Food plants, ground food piles | Roams and pecks at plants and dropped food; flies away from beavers and wolves. |
 | **Wolf** | Predator | 3 | Beavers on land, rabbits, deer | Hunts on land and never enters water. Beavers spotted far from water are at risk; Sentries at Lookouts spot wolves early and warn the colony. |
+
+---
+
+## Releasing
+
+Bump `version` under `[workspace.package]` in `Cargo.toml`, commit, then tag and push:
+
+```
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+CI runs the tests, builds each supported platform, and publishes a GitHub Release with the binaries.
