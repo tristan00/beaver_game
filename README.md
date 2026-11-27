@@ -124,11 +124,12 @@ Water plants grow in ponds and slow shallows, and become inaccessible when still
 
 ## Releasing
 
-Bump `version` under `[workspace.package]` in `Cargo.toml`, commit, then tag and push:
+Pushes and merges never change the version or publish anything; CI on `master` and pull requests only checks that the workspace compiles.
+
+To release, run the **Release** workflow by hand from the Actions tab, or:
 
 ```
-git tag v0.2.0
-git push origin v0.2.0
+gh workflow run release.yml -f bump=patch   # or minor / major
 ```
 
-CI runs the tests, builds each supported platform, and publishes a GitHub Release with the binaries.
+It bumps `version` in `Cargo.toml`, builds the Windows exe, and only if the build succeeds commits `Release vX.Y.Z` to `master`, tags it, and publishes a GitHub Release with the binary.
