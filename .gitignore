@@ -5,3 +5,4 @@ tmp_build.log
 captures/
 saves/
 *.exe
+__pycache__/
