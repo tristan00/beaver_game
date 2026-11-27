@@ -1,11 +1,7 @@
-//! Local diagnostics shared by the interface and command dispatcher. The game starts it for
-//! every play session; headless runs and tests never write anything.
 use std::{collections::VecDeque, fs::File, io::{BufWriter, Write}, path::Path, sync::{Mutex, OnceLock, atomic::{AtomicBool, Ordering}}, time::Instant};
 
-/// Lines kept in memory for a capture, about the last few minutes of play.
 const RECENT_LINES: usize = 20_000;
 
-/// The open log: buffered, and written out at least every `FLUSH_SECONDS`.
 struct Sink { out: BufWriter<File>, flushed: Instant }
 const FLUSH_SECONDS: f64 = 0.5;
 
@@ -20,7 +16,6 @@ fn open(path: &Path) -> std::io::Result<Sink> {
     Ok(Sink { out, flushed: Instant::now() })
 }
 
-/// Write out everything buffered (before a capture, or on the way out).
 pub fn flush() {
     if let Ok(mut slot) = trace().file.lock() {
         if let Some(sink) = slot.as_mut() {
@@ -30,8 +25,6 @@ pub fn flush() {
     }
 }
 
-/// Whether a log is open, kept beside the lock so the many checks deep in the sim cost a load
-/// rather than a lock. Set wherever the open log is set or dropped, under the lock.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn trace() -> &'static Trace {
@@ -46,7 +39,6 @@ fn trace() -> &'static Trace {
     })
 }
 
-/// Record to `path`, unless `BC_INPUT_LOG` already chose a file.
 pub fn start(path: &Path) {
     let trace = trace();
     if let Ok(mut slot) = trace.file.lock() {
@@ -60,7 +52,6 @@ pub fn start(path: &Path) {
 }
 
 pub fn enabled() -> bool {
-    // The first call opens a log `BC_INPUT_LOG` names.
     let _ = trace();
     ENABLED.load(Ordering::Acquire)
 }
@@ -68,19 +59,16 @@ pub fn enabled() -> bool {
 static SIM_DAY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SIM_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The sim time lines from deep in the sim (stores, resources) are stamped with.
 pub fn set_clock(day: f64, step: u64) {
     SIM_DAY.store(day.to_bits(), std::sync::atomic::Ordering::Relaxed);
     SIM_STEP.store(step, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// `day=… step=…` of the step being run.
 pub fn sim_stamp() -> String {
     let day = f64::from_bits(SIM_DAY.load(std::sync::atomic::Ordering::Relaxed));
     format!("day={day:.4} step={}", SIM_STEP.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Seconds since the session started, the clock every line is stamped with.
 pub fn clock() -> f64 { trace().started.elapsed().as_secs_f64() }
 
 pub fn event(message: impl std::fmt::Display) {
@@ -108,7 +96,6 @@ pub fn event(message: impl std::fmt::Display) {
     }
 }
 
-/// The lines recorded in the last `seconds`, stamped as in the file.
 pub fn recent(seconds: f64) -> Vec<String> {
     let trace = trace();
     let now = trace.started.elapsed().as_secs_f64();

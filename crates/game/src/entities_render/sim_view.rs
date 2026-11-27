@@ -14,7 +14,6 @@ pub fn cell_xz(sim: &SimState, c: (f32, f32)) -> Vec2 {
     crate::flow::cell_xz(&sim.height, c)
 }
 
-/// Whether a beaver on `cell` rides on the water's (or ice's) surface rather than the bare ground.
 pub fn on_water(sim: &SimState, cell: (usize, usize)) -> bool {
     matches!(sim.nav.surface_at(cell), Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance | Surface::Lock))
         || sim.water.ice.get(cell.0, cell.1).is_some_and(|&t| t >= sim::tuning::water::ICE_WALK_M)
@@ -33,7 +32,6 @@ fn lift_in(sim: &SimState, cell: (usize, usize)) -> f32 {
     match sim.nav.surface_at(cell) {
         Some(Surface::Dam) => sim.water.dam_height.get(cell.0, cell.1).copied().filter(|h| *h > 0.0).unwrap_or(DAM_TOP),
         Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0),
-        // In a lock's chamber: water depth, or half way up its gate where the gate holds back a drop.
         Some(Surface::Lock) => {
             let depth = sim.water.depth.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0);
             let gate = sim.water.dam_height.get(cell.0, cell.1).copied().unwrap_or(0.0).max(0.0) * 0.5;
@@ -60,8 +58,6 @@ pub fn is_moving(ag: &Agent) -> bool {
     !ag.trail.is_empty() || ag.path.as_ref().is_some_and(|p| !p.steps.is_empty())
 }
 
-/// Where a beaver is drawn: on its way from cell to cell, or wherever it is in a lock's working
-/// (`raft landing::lock_pose`).
 pub fn agent_world_pos(sim: &SimState, ag: &Agent, pending_days: f32) -> Vec3 {
     let base = agent_cells_pos(sim, ag, pending_days);
     super::raft_landing::lock_pose(sim, ag, pending_days, base).map_or(base, |p| p.0)
@@ -100,7 +96,6 @@ pub fn pose_of(sim: &SimState, ag: &Agent, moving: bool) -> Pose {
             Gait::Walk => Pose::Walk,
         };
     }
-    // Packing a dam cell is work, even standing in the stream.
     if matches!(ag.task, Task::Work { kind: sim::agents::WorkKind::Dam, .. }) {
         return Pose::Work;
     }
@@ -128,8 +123,6 @@ pub fn pose_of(sim: &SimState, ag: &Agent, moving: bool) -> Pose {
     }
 }
 
-/// How far through its step to the next cell a beaver is, `pending_days` after the simulation
-/// last moved it.
 pub(super) fn step_progress(sim: &SimState, ag: &Agent, next: (usize, usize), pending_days: f32) -> f32 {
     let pace = sim::agents::travel_pace(&sim.nav, ag);
     let gait = ag.path.as_ref().and_then(|p| p.steps.first()).filter(|s| s.0 == next).map_or(ag.gait, |s| s.1);

@@ -1,17 +1,11 @@
 #!/bin/sh
-# usage: tools/render_shadow.sh OUTDIR [VIEW...] -> per view (docs/STYLE.md shared lighting rule):
-#   NAME.png         product frame
-#   NAME_noglow.png  same without the warm UI glow overlay (colours measurable over the whole frame)
-#   NAME_lit.png     same without sun shadows (classifies terrain colours)
-#   NAME_mask.png    terrain painted by sun visibility: shadow magenta, penumbra cyan, lit yellow
-#   NAME_table.md    tools/shadow_check.py on the no-glow frame, then on the product frame outside the glow
 out=$1; shift; mkdir -p "$out"
 bin=./target/release/beaver_colony
 fail=0
-r() { # name seed cam season
+r() {
   args="--start 1 --seed $2 --cam $3"
   rm -f "$out/$1.png" "$out/$1_lit.png" "$out/$1_mask.png" "$out/$1_noglow.png"
-  shot() { # file env...
+  shot() {
     f=$1; shift
     env BEAVER_SEASON=$season "$@" $bin $args --screenshot "$out/$f" > "$out/$f.log" 2>&1 || { echo "render $f failed:"; grep -i error "$out/$f.log"; exit 2; }
     rm -f "$out/$f.log"

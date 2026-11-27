@@ -12,8 +12,6 @@ use bevy::window::PresentMode;
 use sim::SimState;
 
 pub const CELL_SIZE: f32 = 1.0;
-/// A chunk of terrain or water is one of the simulation's tiles, so the stamp the simulation
-/// keeps for each tile of a grid says whether the chunk's cells were written.
 pub const CHUNK: usize = sim::grid::TILE;
 const REBUILD_BUDGET: usize = 10;
 const LOD1_DISTANCE: f32 = 150.0;
@@ -120,8 +118,6 @@ pub(crate) fn update_season(sim: Res<Sim>, mut season: ResMut<Season>) {
     }
 }
 
-/// The season's sky and light, dulled under cloud and greyer still in rain and snow. The
-/// weather eases in over a few seconds rather than jumping with each simulation step.
 fn update_sky_and_light(
     sim: Res<Sim>,
     season: Res<Season>,
@@ -166,14 +162,10 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
     let n = CHUNK as i32 + 2 * pad;
     for y in y0..=y0 + n {
         for x in x0..=x0 + n {
-            // Terrain colour needs depth only to a few centimetres (wet ground, submerged bed);
-            // water meshes follow it to 2 mm. These are the steps the simulation stamps its
-            // tiles by (`ground_stamp`): a change it does not stamp must not change the hash.
             let d = at(&s.water.depth, x, y);
             let dq = if !with_veg {
                 (d * 500.0).round() as i32
             } else if lens == WATER_LENS {
-                // The water lens colours water by band (`water_band`).
                 sim::water::shore_step(d) as i32 | (water_band(d) as i32) << 4
             } else {
                 sim::water::shore_step(d) as i32
@@ -181,7 +173,6 @@ pub fn region_hash(s: &SimState, cx: usize, cy: usize, pad: i32, extra: u64, wit
             let mut v = at(&s.height, x, y).to_bits() as u64 ^ ((dq as u32 as u64) << 32);
             v ^= (at(&s.water.dam_height, x, y).to_bits() as u64).rotate_left(9);
             if with_veg {
-                // Ground this deep under water is drawn as bed alone (`world_color`).
                 let vq = if d >= 0.03 { 0 } else { (at(&s.forestry.vegetation, x, y) * sim::forestry::COVER_STEPS).round() as i32 };
                 v ^= (vq as u32 as u64).rotate_left(17);
                 let bq = (at(&s.water.riverbed, x, y) * sim::water::RIVERBED_STEPS).round() as u64;
@@ -205,14 +196,10 @@ pub fn lod_step(cam: Vec3, centre: Vec3) -> usize {
     if cam.distance(centre) > LOD1_DISTANCE { 2 } else { 1 }
 }
 
-/// Water, a riverbed, a canal or a mapped river in the chunk or within two cells of it. Such
-/// a chunk is never drawn coarsely: a one-cell stream or dug canal would be smoothed into its
-/// banks. The halo also keeps the terrain on both sides of a chunk seam at the same resolution.
 pub fn wet_ground(s: &SimState, cx: usize, cy: usize) -> bool {
     for y in (cy * CHUNK).saturating_sub(2)..((cy + 1) * CHUNK + 3).min(s.height.height()) {
         for x in (cx * CHUNK).saturating_sub(2)..((cx + 1) * CHUNK + 3).min(s.height.width()) {
             let i = y * s.height.width() + x;
-            // In the steps the simulation stamps tiles by: water on the cell, a bed part bare.
             let bed = (s.water.riverbed.as_slice()[i] * sim::water::RIVERBED_STEPS).round() >= 2.0;
             if sim::water::shore_step(s.water.depth.as_slice()[i]) > 0 || bed || s.water.canal.as_slice()[i] || s.world.river.as_slice()[i] {
                 return true;
@@ -227,9 +214,6 @@ fn fold(h: u64, v: u64) -> u64 {
     h ^ h >> 29
 }
 
-/// One number for the stamps of several grids at chunk (cx, cy): it changes whenever the
-/// simulation has written a cell of any of them in the chunk or within `sim::grid::REACH`
-/// cells of it (or the grid is another).
 macro_rules! stamp_near {
     ($cx:expr, $cy:expr, $($g:expr),+) => {{
         let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -238,11 +222,8 @@ macro_rules! stamp_near {
     }};
 }
 
-/// The lens and the season's step a chunk is drawn for.
 pub(crate) type View = (u8, u32);
 
-/// Fingerprint of all built locks, so terrain and water chunks rebuild immediately when a lock
-/// finishes building or is removed (cutting its chamber hole and lowering its chamber bed).
 pub(crate) fn locks_hash(s: &SimState) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for l in sim::locks::built(s) {
@@ -251,22 +232,16 @@ pub(crate) fn locks_hash(s: &SimState) -> u64 {
     h
 }
 
-/// Changes when anything the ground of chunk (cx, cy) is drawn from may have: the cells
-/// `region_hash` reads for terrain, and those `wet_ground` reads. Of the water only its edge
-/// counts (`Water::shore`), so a pond rising and falling over its bed changes nothing here,
-/// except in the water lens, which colours water by its depth.
 fn ground_stamp(s: &SimState, cx: usize, cy: usize, lens: u8) -> u64 {
     let h = fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.shore, s.forestry.vegetation, s.water.riverbed, s.water.canal), locks_hash(s));
     if lens == WATER_LENS { fold(h, stamp_near!(cx, cy, s.water.depth)) } else { h }
 }
 
-/// The same for the whole map: while it stands, no chunk's `ground_stamp` has moved.
 fn ground_stamps(s: &SimState, lens: u8) -> [(u64, u64); 8] {
     let depth = if lens == WATER_LENS { s.water.depth.stamp() } else { (0, 0) };
     [s.height.stamp(), s.water.dam_height.stamp(), s.water.shore.stamp(), s.forestry.vegetation.stamp(), s.water.riverbed.stamp(), s.water.canal.stamp(), depth, (locks_hash(s), 0)]
 }
 
-/// As `ground_stamp`, for the water's surface.
 pub(crate) fn water_stamp(s: &SimState, cx: usize, cy: usize) -> u64 {
     fold(stamp_near!(cx, cy, s.height, s.water.dam_height, s.water.depth, s.water.velocity, s.water.ice, s.water.shore, s.water.riverbed, s.water.canal), locks_hash(s))
 }
@@ -284,8 +259,6 @@ pub fn chunk_centre(s: &SimState, cx: usize, cy: usize) -> Vec3 {
     ) * Vec3::new(CELL_SIZE, 1.0, CELL_SIZE)
 }
 
-/// Grid value (x, y) is drawn at the centre of cell (x, y), where that cell's beavers, plants
-/// and buildings stand: world x = (x + GRID_OFFSET - width / 2) * CELL_SIZE.
 pub const GRID_OFFSET: f32 = 0.5;
 
 pub fn world_pos(s: &SimState, x: i32, y: i32) -> (f32, f32) {
@@ -295,9 +268,6 @@ pub fn world_pos(s: &SimState, x: i32, y: i32) -> (f32, f32) {
     )
 }
 
-/// The drawn ground on the map's river cells sits this far below the simulated ground, so a
-/// creek a few centimetres deep reads as water in a channel with banks. Display only: the water
-/// level, volumes and walking heights come from the simulation.
 pub const CHANNEL_CUT_M: f32 = 0.3;
 
 fn river_cell(s: &SimState, x: i32, y: i32) -> f32 {
@@ -309,8 +279,6 @@ fn river_cell(s: &SimState, x: i32, y: i32) -> f32 {
     (s.world.river.as_slice()[i] && !s.water.canal.as_slice()[i] && s.water.dam_height.as_slice()[i] <= 0.0) as i32 as f32
 }
 
-/// The river mask softened over each cell's four neighbours, so the channel's outline is a
-/// smooth band along the cells instead of their square staircase.
 fn river_mask(s: &SimState, x: i32, y: i32) -> f32 {
     0.4 * river_cell(s, x, y) + 0.15 * (river_cell(s, x - 1, y) + river_cell(s, x + 1, y) + river_cell(s, x, y - 1) + river_cell(s, x, y + 1))
 }
@@ -331,14 +299,10 @@ pub fn bilinear(f: impl Fn(i32, i32) -> f32, x: f32, y: f32) -> f32 {
     top + (bot - top) * v
 }
 
-/// The drawn ground at grid value (x, y): simulated height less the channel cut.
 pub fn ground_at(s: &SimState, x: i32, y: i32) -> f32 {
     at(&s.height, x, y) - channel_cut(s, x, y)
 }
 
-/// Which diagonal splits a grid square with corners a (x, y), b (x+1, y), c (x, y+1),
-/// e (x+1, y+1): true joins a-e, false joins b-c. The lower pair is joined so valleys and
-/// creeks run along triangle edges instead of being cut into a chain of diamonds.
 pub fn split_ae(a: f32, b: f32, c: f32, e: f32) -> bool {
     a + e < b + c - 1e-4
 }
@@ -355,10 +319,6 @@ pub fn min_height(s: &SimState) -> f32 {
     s.height.as_slice().iter().cloned().fold(f32::MAX, f32::min).min(max_height(s) - 0.5)
 }
 
-/// The water lens (`MapLens::Water`): the water taken away to show its depth in bands, the
-/// shallows rafts cannot use apart, and water near or past the depth that floods buildings
-/// in colours of their own; currents, the bed's deposits and its depth lines are drawn over it
-/// (hud::world).
 pub const WATER_LENS: u8 = 1;
 pub const ELEVATION_LENS: u8 = 4;
 
@@ -372,36 +332,26 @@ pub fn elevation_ramp(t: f32) -> Rgb {
 pub const ELEVATION_WATER: Rgb = [0.31, 0.56, 0.86];
 
 pub const DEPOSIT_LENS: u8 = 5;
-/// The shoreline drawn over the water lens: water deep enough to count as water (`WET_DEPTH`).
 pub const SHORE_DEPTH: f32 = sim::buildings::WET_DEPTH;
-/// The thinnest film still drawn as bed rather than land.
 pub const BED_FILM: f32 = 0.003;
 
-/// Deposits the current lens tints into the ground: all of them in the deposits lens.
 fn lens_deposits(s: &SimState, lens: u8) -> impl Iterator<Item = &sim::resources::Resource> {
     let on = lens == DEPOSIT_LENS;
     shown_deposits(s).filter(move |_| on)
 }
 
-/// A deposit worth outlining on the bed in the water lens: water plants, mud and pebbles
-/// that lie under water.
 pub fn underwater_deposit(s: &SimState, r: &sim::resources::Resource) -> bool {
     (r.kind.aquatic() || r.kind.behaviour() == sim::resources::Behaviour::Deposit) && at(&s.water.depth, r.cell.0 as i32, r.cell.1 as i32) > BED_FILM
 }
 
-/// The deposits lens: one saturated colour per kind, none grey or blue, so they stand
-/// apart from the lens's grey land and blue-grey water.
 pub fn deposit_color(k: sim::resources::ResourceKind) -> Rgb {
     k.row().lens_colour
 }
 
-/// Deposits that still hold something, as the deposits lens shows them.
 pub fn shown_deposits(s: &SimState) -> impl Iterator<Item = &sim::resources::Resource> {
     s.resources.items().iter().filter(|r| r.has_yield())
 }
 
-/// Per-chunk fingerprint of the deposits in it (empty outside the deposits lens), so a
-/// chunk recolours when one appears, runs out or changes kind.
 fn deposit_hashes(s: &SimState, cols: usize, rows: usize, lens: u8) -> Vec<u64> {
     if lens != DEPOSIT_LENS {
         return Vec::new();
@@ -410,7 +360,6 @@ fn deposit_hashes(s: &SimState, cols: usize, rows: usize, lens: u8) -> Vec<u64> 
     for r in lens_deposits(s, lens) {
         let v = (r.cell.0 as u64) | (r.cell.1 as u64) << 20 | (r.kind.index() as u64) << 40;
         let v = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ v >> 7;
-        // A cell on a chunk's low edge is also the last colour sample of the chunk before it.
         let span = |c: usize, n: usize| {
             let k = (c / CHUNK).min(n - 1);
             (if c % CHUNK == 0 && k > 0 { k - 1 } else { k })..=k
@@ -442,12 +391,8 @@ struct Slot {
     mesh: Handle<Mesh>,
     hash: u64,
     step: usize,
-    /// The deposits tinted into it (`deposit_hashes`).
     deposits: u64,
-    /// The chunk's `ground_stamp` and the view when its cells were last hashed: until either
-    /// changes, `hash` stands and the cells are not read again.
     seen: Option<(u64, View)>,
-    /// `wet_ground`, as of `seen`.
     wet: bool,
 }
 
@@ -526,7 +471,6 @@ pub fn spawn_terrain(
     }
 }
 
-/// Make chunk (cx, cy)'s mesh afresh, at the detail its slot asks for.
 #[allow(clippy::too_many_arguments)]
 fn build_chunk(
     commands: &mut Commands,
@@ -564,9 +508,6 @@ pub struct MeshBacklog {
     pub water: bool,
 }
 
-/// Rebuild the chunks whose ground changed. The simulation stamps each tile of a grid it
-/// writes to, so only chunks with a new stamp have their cells read (and hashed, to see
-/// whether what is drawn of them changed); the rest cost a comparison.
 #[allow(clippy::too_many_arguments)]
 fn update_terrain_chunks(
     mut commands: Commands,
@@ -578,7 +519,6 @@ fn update_terrain_chunks(
     cam: Query<&Transform, With<MainCamera>>,
     mut backlog: ResMut<MeshBacklog>,
     mut cursor: Local<usize>,
-    // The grids' stamps when every chunk was last up to date.
     mut settled: Local<Option<[(u64, u64); 8]>>,
 ) {
     let _p = ::sim::prof::scope("game/update terrain chunks");
@@ -592,7 +532,6 @@ fn update_terrain_chunks(
     let lens = active.map_or(0, |l| l.0.code());
     let view = (lens, season.bucket());
     let stamps = ground_stamps(s, lens);
-    // Nothing written since every chunk's stamp was read: they need not be read again.
     let still = *settled == Some(stamps);
     let mut budget = REBUILD_BUDGET;
     let total = cols * rows;
@@ -686,24 +625,17 @@ fn elevation_color(s: &SimState, minh: f32, maxh: f32, x: i32, y: i32) -> Rgb {
     mix(land, ELEVATION_WATER, smooth(WET_EPS, 0.15, at(&s.water.depth, x, y)))
 }
 
-/// Depth bands of the water lens, from shallow to deep: each band's deepest edge and colour.
-/// Water shallower than rafts need is a pale sand-green; water within `FLOOD_NEAR` of the
-/// depth that floods buildings (`MAX_BUILDING_DEPTH`) is amber, and from there on red.
 pub const RAFT_SHALLOWS: Rgb = [0.78, 0.86, 0.70];
 pub const DEPTH_BANDS: [(f32, Rgb); 2] = [(0.5, [0.55, 0.78, 0.93]), (f32::INFINITY, [0.30, 0.56, 0.86])];
 pub const FLOOD_RISK: Rgb = [0.96, 0.62, 0.18];
 pub const FLOODED: Rgb = [0.86, 0.20, 0.24];
-/// How far short of flooding buildings water counts as a risk (m).
 pub const FLOOD_NEAR: f32 = 0.2;
 
-/// Depth (m) from which water is drawn as a flood risk, and from which it floods buildings.
 pub fn flood_depths() -> (f32, f32) {
     let max = sim::buildings::MAX_BUILDING_DEPTH;
     ((max - FLOOD_NEAR).max(0.0), max)
 }
 
-/// The water lens's band for a depth: 0 the raft shallows, then `DEPTH_BANDS`, then the flood
-/// risk, then flooded.
 pub fn water_band(depth: f32) -> u8 {
     let (near, max) = flood_depths();
     if depth >= max {
@@ -718,7 +650,6 @@ pub fn water_band(depth: f32) -> u8 {
     1 + DEPTH_BANDS.iter().position(|b| depth < b.0).unwrap_or(DEPTH_BANDS.len() - 1) as u8
 }
 
-/// The colour of a `water_band`.
 pub fn band_color(band: u8) -> Rgb {
     match band as usize {
         0 => RAFT_SHALLOWS,
@@ -728,8 +659,6 @@ pub fn band_color(band: u8) -> Rgb {
     }
 }
 
-/// The water lens's colour for a point: water by its band (a lock is never the shallows'),
-/// dry ground grey.
 fn water_lens_color(s: &SimState, maxh: f32, x: i32, y: i32) -> Rgb {
     let ground = at(&s.height, x, y);
     let depth = at(&s.water.depth, x, y);
@@ -801,8 +730,6 @@ fn world_color(s: &SimState, p: &Palette, maxh: f32, x: i32, y: i32) -> Rgb {
         let silt = mix(rgb(0xA88A66), rgb(0xD8C6A2), mottle);
         c = mix(c, silt, dried * 0.9);
     }
-    // Snow collects in irregular drifts instead of bleaching every dry tile.
-    // Exposed rock, wet banks, and sunny slopes retain their underlying colour.
     let drift = smooth(-0.35, 0.4, patch_noise(x as f32, y as f32, 12.0, 11) * 0.7
         + patch_noise(x as f32, y as f32, 4.0, 12) * 0.3);
     let cover = p.winter * 0.72 * drift * (1.0 - rock * 0.7)
@@ -842,9 +769,6 @@ fn terrain_range(s: &SimState, lens: u8) -> (f32, f32) {
     (if lens == ELEVATION_LENS { min_height(s) } else { 0.0 }, max_height(s))
 }
 
-/// How finely a chunk is drawn: canals 4 vertices per cell, chunks with a mapped river (or
-/// one within two cells) RIVER_SUBDIVISIONS, so banks curve instead of following the cells'
-/// staircase.
 pub const RIVER_SUBDIVISIONS: usize = 2;
 pub fn canal_subdivisions(s: &SimState, cx: usize, cy: usize) -> usize {
     let (x0, y0) = ((cx * CHUNK).saturating_sub(2), (cy * CHUNK).saturating_sub(2));
@@ -878,8 +802,6 @@ pub fn terrain_sample(s: &SimState, x: f32, y: f32, step: usize) -> f32 {
     }
 }
 
-/// Grid values over one chunk and a margin, read once so a finely drawn chunk doesn't
-/// recompute the river mask and heights for every vertex.
 pub struct Field {
     x0: i32,
     y0: i32,
@@ -911,8 +833,6 @@ impl Field {
     }
 }
 
-/// The drawn ground around one chunk: heights, softened river mask, and any built lock
-/// chambers overlapping the chunk.
 pub struct GroundField {
     height: Field,
     mask: Field,
@@ -942,12 +862,10 @@ impl GroundField {
         }
     }
 
-    /// `ground_at` from the cached values.
     pub fn at(&self, x: i32, y: i32) -> f32 {
         self.height.get(x, y) - cut_of_mask(self.mask.get(x, y))
     }
 
-    /// `canal_ground` from the cached values.
     pub fn fine(&self, s: &SimState, x: f32, y: f32) -> f32 {
         let base = self.height.bilinear(x, y) - cut_of_mask(self.mask.bilinear(x, y));
         let mut h = if self.canal { canal_blend(s, x, y, base) } else { base };
@@ -971,10 +889,6 @@ impl GroundField {
     }
 }
 
-/// Give excavated cells a visible floor instead of a V-shaped point. Where a canal meets
-/// already-deep water (not marked `canal` because it needed no digging), include those wet
-/// cells so the canal mouth opens cleanly without banks pinching earth across the shoreline.
-/// This is a local reconstruction of the rendered bed; simulation heights/volumes stay unchanged.
 fn canal_blend(s: &SimState, x: f32, y: f32, base: f32) -> f32 {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
     let mut any_canal = false;
@@ -1010,8 +924,6 @@ pub fn build_chunk_mesh(s: &SimState, p: &Palette, cx: usize, cy: usize, step: u
     let spacing = step as f32 / subdivisions as f32;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
     let st = step as i32;
-    // Terrain colour is low frequency; interpolate its metre samples instead of
-    // recomputing vegetation/noise for every refined canal vertex.
     let base_side = CHUNK / step + 1;
     let mut colours = Vec::with_capacity(base_side * base_side);
     for j in 0..base_side { for i in 0..base_side {

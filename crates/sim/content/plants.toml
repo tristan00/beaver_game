@@ -1,10 +1,3 @@
-# Food plants: habitat (Upland moist open ground, Meadow wet ground, Shore the waterline out to max_depth, Water
-# between min_depth and max_depth), the most food it holds, and a day in full growing season how much it regrows,
-# the chance it creeps by its roots into a neighbouring cell and that its seed takes root further off. keep is the
-# share of its food it holds through winter in roots, rhizomes or canes. look: a drawing style (model: sedge,
-# canary_grass, forb, raspberry, horsetail, cattail, arrowhead, lily, pondweed) and, for a forb, its height and
-# colours (0xrrggbb); variant is a forb's flat-topped head or a lily's white flower.
-
 [[plant]]
 key = "Sedge"
 name = "Sedge"
@@ -68,6 +61,6 @@ look = { model = "lily", variant = true }
 [[plant]]
 key = "Pondweed"
 name = "Pondweed"
-flow = 4.0  # bears water this much faster than other water plants
+flow = 4.0
 spec = { habitat = "Water", food = 9.0, regrow = 0.9, creep = 0.02, seed = 0.0015, keep = 0.15, min_depth = 0.3, max_depth = 2.2 }
 look = { model = "pondweed" }

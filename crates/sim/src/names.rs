@@ -1,13 +1,3 @@
-//! Names. A beaver is named with its litter: each litter draws one theme (water, stone, sky,
-//! the map's own trees and plants...) and every kit in it a word from that theme, and no two
-//! beavers alive share a name. A family is named after its lodge's place, from what stands
-//! there on this map (the trees, the water, the ground) and the region's own words for land
-//! and water. A pond takes the name of the first family settled on it, and keeps it for the
-//! rest of the game, through dams lost and rebuilt on the same water.
-//!
-//! The word pools live in `content/names.toml`. Names are given by the world
-//! (`step`), not the colony, which knows nothing of the map: the colony leaves new beavers and
-//! families unnamed, and the next sweep names them before anything reads them.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::buildings::BuildingId;
@@ -16,22 +6,16 @@ use crate::trees::Tree;
 use crate::water::Cell;
 use crate::SimState;
 
-/// The words of one pool, none if the content has no such pool.
 pub fn pool(key: &str) -> &'static [&'static str] {
     crate::content::content().names.get(key).map_or(&[], |w| w.as_slice())
 }
 
-/// The litter themes. "flora" is the map's own trees and plants.
 const THEMES: [&str; 8] = ["water", "stone", "sky", "wood", "shore", "creature", "light", "flora"];
 
-/// How far round a lodge its place is read (cells).
 const SITE_REACH: i64 = 6;
-/// A lodge this close to a pond's water is settled on it (cells).
 const POND_REACH: i64 = 2;
-/// Cells of each pond kept to find its water again.
 const POND_SAMPLE: usize = 48;
 
-/// A draw that is the same each time the same world names the same thing.
 struct Draw(u64);
 
 impl Draw {
@@ -60,7 +44,6 @@ impl Draw {
     }
 }
 
-/// The region whose words a map's names use.
 pub fn region(map: &str) -> &'static str {
     match map {
         m if m.starts_with("adirondacks") => "adirondacks",
@@ -72,17 +55,14 @@ pub fn region(map: &str) -> &'static str {
     }
 }
 
-/// A pond's name and where its water is.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pond {
-    /// The dam holding it now; none while no dam does.
     pub dam: Option<BuildingId>,
     pub name: String,
     cells: Vec<Cell>,
 }
 
 impl Pond {
-    /// Sample cells of this named body of water.
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -91,17 +71,13 @@ impl Pond {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Names {
     pub ponds: Vec<Pond>,
-    /// The last day ponds were looked at.
     day: i64,
 }
 
-/// The name of the pond behind a dam, once a family has settled on it.
 pub fn pond_name(sim: &SimState, dam: BuildingId) -> Option<&str> {
     sim.names.ponds.iter().find(|p| p.dam == Some(dam)).map(|p| p.name.as_str())
 }
 
-/// Name whatever is unnamed: new beavers, new families, and (once a day) ponds with a family
-/// settled on them.
 pub fn step(sim: &mut SimState) {
     if sim.colony.beavers.iter().any(|b| b.name.is_empty()) {
         name_beavers(sim);
@@ -116,9 +92,6 @@ pub fn step(sim: &mut SimState) {
     }
 }
 
-// ---- Beavers ------------------------------------------------------------------------------
-
-/// The words of a litter theme on this map.
 fn theme_words(theme: &str, map: &str) -> Vec<&'static str> {
     if theme != "flora" {
         return pool(&format!("litter/{theme}")).to_vec();
@@ -133,7 +106,6 @@ fn theme_words(theme: &str, map: &str) -> Vec<&'static str> {
     out
 }
 
-/// The theme a name was drawn from, if it was.
 fn theme_of(name: &str, map: &str) -> Option<&'static str> {
     THEMES.into_iter().find(|t| theme_words(t, map).contains(&name))
 }
@@ -141,8 +113,6 @@ fn theme_of(name: &str, map: &str) -> Option<&'static str> {
 fn name_beavers(sim: &mut SimState) {
     let map = sim.resources.flora.clone();
     let mut taken: BTreeSet<String> = sim.colony.beavers.iter().filter(|b| !b.name.is_empty()).map(|b| b.name.clone()).collect();
-    // Kits born together to one mother are a litter; a beaver with no mother here (a founder
-    // parent, a newcomer) is a litter of its own.
     let mut litters: BTreeMap<(u64, u64), Vec<BeaverId>> = BTreeMap::new();
     for b in sim.colony.beavers.iter().filter(|b| b.name.is_empty()) {
         let key = match b.mother { Some(m) => (m.0, 0), None => (u64::MAX, b.id.0) };
@@ -151,7 +121,6 @@ fn name_beavers(sim: &mut SimState) {
     for ((mother, _), kits) in litters {
         let first = kits.iter().map(|k| k.0).min().unwrap_or(0);
         let mut d = Draw::new(sim.seed, first ^ 0x4B17);
-        // Not the theme of the mother's last litter.
         let last = (mother != u64::MAX).then(|| {
             sim.colony.beavers.iter()
                 .filter(|b| b.mother == Some(BeaverId(mother)) && !b.name.is_empty())
@@ -170,7 +139,6 @@ fn name_beavers(sim: &mut SimState) {
     }
 }
 
-/// A name no living beaver has: from the litter's theme, or the next theme once it is spent.
 fn draw_name(d: &mut Draw, themes: &[&str], map: &str, taken: &BTreeSet<String>) -> String {
     for theme in themes {
         let free: Vec<&str> = theme_words(theme, map).into_iter().filter(|w| !taken.contains(*w)).collect();
@@ -178,7 +146,6 @@ fn draw_name(d: &mut Draw, themes: &[&str], map: &str, taken: &BTreeSet<String>)
             return w.to_string();
         }
     }
-    // Every word in use: a little one of a name already taken.
     let all: Vec<&str> = themes.iter().flat_map(|t| theme_words(t, map)).collect();
     for _ in 0..64 {
         let w = format!("Little {}", d.pick(&all).unwrap_or("Kit"));
@@ -189,9 +156,6 @@ fn draw_name(d: &mut Draw, themes: &[&str], map: &str, taken: &BTreeSet<String>)
     format!("Kit {}", d.next() % 1000)
 }
 
-// ---- Families -----------------------------------------------------------------------------
-
-/// What stands round a lodge: what its place is named from.
 #[derive(Default)]
 struct Site {
     trees: BTreeMap<Tree, u32>,
@@ -251,7 +215,6 @@ fn survey(sim: &SimState, at: Cell) -> Site {
     s
 }
 
-/// The land a lodge stands on, for its landform word.
 fn setting(s: &Site, cell_m: f32) -> &'static str {
     if s.lake > s.river.max(4) || s.deep > 30 {
         "still"
@@ -264,7 +227,6 @@ fn setting(s: &Site, cell_m: f32) -> &'static str {
     }
 }
 
-/// The ways this place could be named, each a whole name.
 fn candidates(sim: &SimState, s: &Site, d: &mut Draw) -> Vec<String> {
     let region = region(&sim.resources.flora);
     let land = |d: &mut Draw| d.pick(pool(&format!("landform/{region}/{}", setting(s, sim.water.cell_m)))).unwrap_or("Pond");
@@ -307,7 +269,6 @@ fn candidates(sim: &SimState, s: &Site, d: &mut Draw) -> Vec<String> {
     out
 }
 
-/// A name for a lodge's place that no living family has.
 fn place_name(sim: &SimState, at: Cell, salt: u64, taken: &BTreeSet<String>) -> String {
     let mut d = Draw::new(sim.seed, salt ^ 0xFA11);
     let site = survey(sim, at);
@@ -341,8 +302,6 @@ fn name_families(sim: &mut SimState) {
     }
 }
 
-// ---- Ponds --------------------------------------------------------------------------------
-
 fn name_ponds(sim: &mut SimState) {
     let standing: HashSet<BuildingId> = sim.buildings.buildings.iter().map(|b| b.id).collect();
     for p in sim.names.ponds.iter_mut().filter(|p| p.dam.is_some_and(|d| !standing.contains(&d))) {
@@ -355,7 +314,6 @@ fn name_ponds(sim: &mut SimState) {
         .collect();
     for (dam, cells) in held {
         let wet: HashSet<Cell> = cells.iter().copied().collect();
-        // Water that already has a name: another dam on it, or one lost and built again.
         let known = sim.names.ponds.iter().position(|p| p.cells.iter().any(|c| wet.contains(c)));
         let sample: Vec<Cell> = cells.iter().step_by((cells.len() / POND_SAMPLE).max(1)).copied().take(POND_SAMPLE).collect();
         if let Some(i) = known {
@@ -368,7 +326,6 @@ fn name_ponds(sim: &mut SimState) {
             }
             continue;
         }
-        // The first family settled on it gives it its name.
         let on = |pos: (f32, f32)| {
             let (x, y) = (pos.0 as i64, pos.1 as i64);
             (-POND_REACH..=POND_REACH).any(|dy| (-POND_REACH..=POND_REACH).any(|dx| {
@@ -376,7 +333,6 @@ fn name_ponds(sim: &mut SimState) {
                 cx >= 0 && cy >= 0 && wet.contains(&(cx as usize, cy as usize))
             }))
         };
-        // The first occupied lodge built on this pond gives it its family's name.
         let first = sim.buildings.buildings.iter()
             .filter(|b| b.is_home_ready() && on(b.centre()))
             .filter_map(|b| Some((b.id, sim.colony.lodge_family(b.id)?)))

@@ -57,8 +57,6 @@ pub fn place_building(sim: &mut SimState, kind: BuildingKind, pos: Cell) -> Resu
     sim.apply(Command::PlaceSite { kind, pos }).map_err(|e| crate::hud::words::sim_error(&e.to_string()))
 }
 
-/// A drawn dam line worked out: its targets, the pond it would make, its cost,
-/// and the reason it cannot be built, if any.
 #[derive(Clone, Debug)]
 pub struct LinePlan {
     pub line: Vec<Cell>,
@@ -66,7 +64,6 @@ pub struct LinePlan {
     pub preview: Option<sim::dam_preview::DamPreview>,
     pub sticks: f32,
     pub refusal: Option<(crate::icons::Icon, String)>,
-    /// The cells and heights the water engine is asked to settle (see `sim::dam_preview::settle`).
     pub settle_cells: Vec<Cell>,
     pub settle_heights: Vec<f32>,
 }
@@ -76,7 +73,6 @@ fn sentence(m: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-/// Work out a drawn line: a new dam, or more cells for `extending`.
 pub fn line_plan(sim: &SimState, line: &[Cell], extending: Option<sim::buildings::BuildingId>) -> LinePlan {
     use crate::icons::Icon;
     let mut out = LinePlan { line: line.to_vec(), targets: Vec::new(), preview: None, sticks: 0.0, refusal: None, settle_cells: Vec::new(), settle_heights: Vec::new() };

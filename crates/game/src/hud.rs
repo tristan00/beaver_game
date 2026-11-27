@@ -243,7 +243,6 @@ impl HudState {
         else if *sel != Selection::None || !self.selected.is_empty() { self.clear_selection(sel); }
         else if *lens != MapLens::World { *lens = MapLens::World; }
     }
-    /// Single entry point for changing selection so `Selection` and `HudState.selected` never desync.
     pub(crate) fn select(&mut self, sel: &mut Selection, next: Selection) {
         if *sel != next { self.dam_cells.clear(); }
         *sel = next;
@@ -414,7 +413,6 @@ fn collect_pops(time: Res<Time>, cursor: Res<CursorUi>, mut hud: ResMut<HudState
 }
 
 pub struct HudPlugin;
-/// Effective lens shown on screen after `BC_LENS`, `Alt`, and dam/canal tool overrides.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveLens(pub MapLens);
 

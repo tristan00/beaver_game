@@ -15,9 +15,7 @@ pub enum Selection {
     Beaver(BeaverId),
     Tree(sim::resources::ResourceId),
     Site(sim::buildings::BuildingId),
-    /// A wolf, by its id in `sim::predators`.
     Wolf(u32),
-    /// A wild animal, by its id in `sim::wildlife`.
     Animal(u32),
 }
 
@@ -81,8 +79,6 @@ pub fn ray_heightfield(origin: Vec3, dir: Vec3, h: &HeightGrid) -> Option<(Cell,
     ray_level(origin, dir, h, |x, y| height_at(h, x, y))
 }
 
-/// Where the ray meets the ground or, over water, the water's surface: the place the pointer is
-/// seen to touch. Testing the ground alone lands a deep pond's cells away from the pointer.
 pub fn ray_surface(origin: Vec3, dir: Vec3, h: &HeightGrid, depth: &sim::grid::Grid<f32>) -> Option<(Cell, Vec3, f32)> {
     ray_level(origin, dir, h, |x, y| height_at(h, x, y) + bilinear_at(depth, x, y))
 }
@@ -143,7 +139,6 @@ pub use sim::site::{can_settle, score as site_hint, SettleError};
 pub struct Flow {
     pub focus: Option<Vec3>,
     pub arrive_left: f32,
-    /// A new colony has just settled: the HUD shows its one welcome card.
     pub welcome: bool,
 }
 
@@ -154,8 +149,6 @@ pub fn settle(sim: &mut sim::SimState, flow: &mut Flow, cell: Cell) -> Result<()
     can_settle(sim, cell).map_err(|e| format!("{e:?}"))?;
     sim.apply(sim::Command::Settle { cell }).map_err(|e| e.to_string())?;
     after_settle(sim, flow, cell);
-    // Every new campaign settles here, by Play or by the player's own pick: it opens on the
-    // welcome card.
     flow.welcome = true;
     Ok(())
 }
@@ -179,11 +172,8 @@ impl Plugin for FlowPlugin {
 fn watch_collapse(mut sim: ResMut<Sim>, mut notices: ResMut<crate::hud::Notices>, mut wolf_cues: ResMut<crate::hud::WolfCues>, time: Res<Time>, mut names: Local<std::collections::HashMap<u64, String>>) {
     use crate::hud::{NoticeAt, BAD, GOOD, INK, MUTED};
     use crate::icons::Icon;
-    // Leave the world untouched (and so unchanged, for what is drawn from it) when it has
-    // nothing to tell.
     let events = if sim.0.colony.events.is_empty() { Vec::new() } else { sim.0.colony.take_events() };
     let now = time.elapsed_secs();
-    // A beaver that has died is gone from the colony by now: its name is kept from before.
     let name_of = |names: &std::collections::HashMap<u64, String>, s: &sim::SimState, id: sim::colony::BeaverId| {
         s.colony.beaver(id).map(|b| b.name.clone()).or_else(|| names.get(&id.0).cloned()).unwrap_or_default()
     };
@@ -211,10 +201,8 @@ fn watch_collapse(mut sim: ResMut<Sim>, mut notices: ResMut<crate::hud::Notices>
             E::Departed { id } => notices.push_at(vec![(Icon::Beaver, MUTED), (Icon::Back, MUTED)], format!("{} left", name_of(&names, s, *id)), now, None),
             E::Immigrated { id } => notices.push_at(vec![(Icon::Beaver, GOOD), (Icon::Plus, GOOD)], format!("{} joined", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
             E::LeftHome { id, .. } => notices.push_at(vec![(Icon::Adult, INK), (Icon::Home, INK)], format!("{} moved out", name_of(&names, s, *id)), now, Some(NoticeAt::Beaver(*id))),
-            // An epithet earned: the beaver by its new name, with the work it was earned in.
             E::Epithet { id } => {
                 if let (Some(b), Some(e)) = (s.colony.beaver(*id), s.deeds.get(*id).and_then(|r| r.epithet.as_ref())) {
-                    // A greater epithet replacing one held: the old name, and the new beside it.
                     let (icons, text) = match &e.was {
                         Some(was) => (vec![(crate::hud::job_icon(e.job), GOOD), (Icon::Up, GOOD)], format!("{} {was} → {}", b.name, e.word)),
                         None => (vec![(crate::hud::job_icon(e.job), GOOD)], format!("{} {}", b.name, e.word)),

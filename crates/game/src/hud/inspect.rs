@@ -1,4 +1,3 @@
-//! One inspector frame for every selectable entity: portrait, name, condition pips, and kind-specific rows.
 use super::colony::doing;
 use super::panels::{stage_icon, Ctx, RIGHT_W};
 use super::ui::*;
@@ -10,7 +9,6 @@ use bevy::prelude::*;
 use sim::buildings::{BuildingId, BuildingKind, Good};
 use sim::colony::BeaverId;
 
-/// Shared right-hand inspector shell: portrait, title, optional condition pips, header tools, Pin & Close.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn panel_shell(
     c: &Ctx,

@@ -7,12 +7,8 @@ pub const EXPLORED: f32 = 0.5;
 pub struct Fog {
     pub size: usize,
     pub seen: Vec<f32>,
-    /// The cell each beaver last looked around from. Sight only ever clears fog, so looking
-    /// again from the same cell changes nothing and is skipped.
     #[serde(skip)]
     sighted: std::collections::HashMap<crate::colony::BeaverId, (Cell, u16)>,
-    /// Counts the times more ground was explored, so a viewer can tell when to look again at
-    /// what the fog hid.
     #[serde(skip)]
     pub revision: u64,
 }
@@ -32,7 +28,6 @@ impl Fog {
     pub fn explored(&self, c: Cell) -> bool {
         self.get(c) >= EXPLORED
     }
-    /// What a beaver at `cell` sees (`radius` around the cell's centre).
     pub fn sight(&mut self, who: crate::colony::BeaverId, cell: Cell, radius: f32) {
         let key = (cell, (radius * 10.0).round() as u16);
         if self.sighted.get(&who) == Some(&key) {

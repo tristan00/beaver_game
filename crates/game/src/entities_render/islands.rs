@@ -1,9 +1,3 @@
-//! The colony's work buildings, built as beavers build: in the shallows where they are safe,
-//! of sticks, mud and stones, each on its own island heaped up out of the water as a lodge's
-//! base is (or, for the food cache and the forester, in the water itself). `f` is how far
-//! built, 0 to 1; each rises from a marked-out site as it is built. The origin is just above
-//! the water; the footing (`structures::footing`) reaches down to the bed. Mouths and slides
-//! face -z.
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::models::{branch, col, mud_lump, site_markers, stick, stick_c};
 use super::structures::{dam_cell, pebble_cairn, stick_crib, DamStage};
@@ -12,13 +6,10 @@ use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use super::meshgen::v;
 
-/// How far a building's later parts have got, once `from` of the work is done.
 fn after(f: f32, from: f32) -> f32 {
     ((f - from) / (1.0 - from)).clamp(0.0, 1.0)
 }
 
-/// A stick-and-mud island heaped out of the water: mud `h` high, sticks crossed over its sides.
-/// `rx`, `rz` are its half sizes at the water; `f` how far built (it rises as it is built).
 fn island(mb: &mut Mb, rx: f32, rz: f32, h: f32, f: f32, seed: u32) {
     let mut r = Rng(seed);
     let h = h * (0.3 + 0.7 * (f / 0.5).min(1.0));
@@ -48,14 +39,12 @@ fn island(mb: &mut Mb, rx: f32, rz: f32, h: f32, f: f32, seed: u32) {
     }
 }
 
-/// Builds a part in its own frame and sets it at `at`, turned by `yaw`.
 fn placed(mb: &mut Mb, at: Vec3, yaw: f32, f: impl FnOnce(&mut Mb)) {
     let start = mb.len();
     f(mb);
     mb.place(start, Mat4::from_rotation_translation(Quat::from_rotation_y(yaw), at));
 }
 
-/// A hood of sticks and mud, open on its -z side over a dark mouth; `g` how far raised.
 fn hood(mb: &mut Mb, c: Vec3, w: f32, g: f32, r: &mut Rng) {
     if g <= 0.0 {
         return;
@@ -75,8 +64,6 @@ fn hood(mb: &mut Mb, c: Vec3, w: f32, g: f32, r: &mut Rng) {
     }
 }
 
-/// The stockpile: an island with three hooded bays of sticks and mud, sticks, mud and pebbles
-/// each before its own mouth.
 pub fn cache_island(mb: &mut Mb, f: f32) {
     let mut r = Rng(11);
     let h = 0.45;
@@ -99,8 +86,6 @@ pub fn cache_island(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The food cache, as beavers really keep winter food: a feed pile of leafy branches pushed
-/// into the shallows, butts stuck in the mud bed and tips standing out of the water.
 pub fn feed_pile(mb: &mut Mb, f: f32) {
     let mut r = Rng(22);
     mb.ellipsoid_g(v(0.0, -0.1, 0.0), v(1.6, 0.25 + 0.1 * f, 1.3), col(palette::MUD_WET), col(palette::DAM_MUD), 12, 5);
@@ -122,8 +107,6 @@ pub fn feed_pile(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The pebble heap, as a stone cache: an island walled round with stacked stones, pebbles heaped
-/// inside, peeled sticks and gnawed chips about its rim.
 pub fn stone_cache(mb: &mut Mb, f: f32) {
     let mut r = Rng(33);
     let h = 0.4;
@@ -156,9 +139,6 @@ pub fn stone_cache(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The forester, as willow shallows: a low ring of piled sticks and mud closing off a calm
-/// patch of shallow water, willow and aspen stems pushed into its bed to root, standing out
-/// of the water in rows.
 pub fn willow_shallows(mb: &mut Mb, f: f32) {
     let mut r = Rng(44);
     let wall = 12;
@@ -185,8 +165,6 @@ pub fn willow_shallows(mb: &mut Mb, f: f32) {
     }
 }
 
-/// Haul mound, as a haul island: loads stacked on an island, a slick slide worn down its side
-/// into the water and sticks laid across its top as skids.
 pub fn haul_island(mb: &mut Mb, f: f32) {
     let mut r = Rng(55);
     let h = 0.55;
@@ -209,8 +187,6 @@ pub fn haul_island(mb: &mut Mb, f: f32) {
     }
 }
 
-/// The lookout, as a watch mound: a tall, narrow cone of sticks and mud rising out of the
-/// shallows, a trodden flat top to sit up on, marked with scent. It rises as it is built.
 pub fn watch_mound(mb: &mut Mb, f: f32) {
     let mut r = Rng(66);
     let tall = 0.25 + 0.75 * f;

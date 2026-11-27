@@ -1,9 +1,6 @@
-//! Keyboard, pointer, selection and camera interaction.
 use super::*;
 use bevy::window::PrimaryWindow;
 
-/// Whether the pointer is on a panel (which keeps every click from the map), or only on a pin
-/// over the map (which takes left clicks but lets right-click orders through).
 pub(super) fn pointer_over_ui(q: Query<(&Interaction, Has<ui::MapPin>), With<Blocks>>, mut over: ResMut<PointerOverUi>, mut pin: ResMut<PointerOverPin>) {
     let panel = q.iter().any(|(i, p)| *i != Interaction::None && !p);
     let on_pin = q.iter().any(|(i, p)| *i != Interaction::None && p);
@@ -56,7 +53,6 @@ pub(super) fn hotkeys(
         next_idle(&sim.0, &mut hud, &mut sel, &mut flow);
     }
     if !ctrl {
-        // Each building's key from its row, then the harvest tools.
         let mut tools: Vec<(KeyCode, Tool)> = BuildingKind::all().filter_map(|k| Some((letter(k.row().hotkey.as_deref()?)?, Tool::of(k)))).collect();
         tools.extend([(KeyCode::KeyG, Tool::Harvest(Harvest::Gather)), (KeyCode::KeyT, Tool::Harvest(Harvest::Cut))]);
         for (k, t) in tools {
@@ -74,7 +70,6 @@ pub(super) fn hotkeys(
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
-        // Esc always lets go of the camera: a glide to a notice ends where it is.
         flow.focus = None;
         hud.dismiss_top(&mut sel, &mut lens, &mut flow.welcome);
     }
@@ -138,8 +133,6 @@ pub(super) fn world_input(
         }
         return;
     }
-    // A box dragged out on the map selects even when let go over a panel; a press that never
-    // reached the map leaves no box behind.
     if hud.box_from.is_some() && !mouse.pressed(MouseButton::Left) && !mouse.just_released(MouseButton::Left) {
         hud.box_from = None;
     }
@@ -171,7 +164,6 @@ pub(super) fn world_input(
         }
         return;
     }
-    // Placing a gate or lock: a click on a lit cell of the dam places it (shift: keep placing).
     if let Tool::Opening(dam, o) = hud.tool {
         if mouse.just_released(MouseButton::Left) {
             let on_dam = hover.works_cell.or(hover.cell()).filter(|c| sim::dams::dam(&sim.0, dam).is_some_and(|d| d.line().any(|x| x.cell == *c)));
@@ -199,7 +191,6 @@ pub(super) fn world_input(
         }
         return;
     }
-    // A pin takes its own left click.
     if on_pin.0 {
         return;
     }
@@ -214,8 +205,6 @@ pub(super) fn world_input(
                 hud.grab = dam_end_near(&sim.0, *sel, hover.thing, cell);
                 hud.box_from = cursor.0;
             }
-            // Dragging away from a dam's end extends it from that end, and dragging from a canal
-            // extends it from its open end; a plain click selects it.
             if let Some((id, end)) = hud.grab {
                 let moved = matches!((hud.box_from, cursor.0), (Some(a), Some(b)) if a.distance(b) > 8.0);
                 if mouse.pressed(MouseButton::Left) && moved {
@@ -239,9 +228,6 @@ pub(super) fn world_input(
                     }
                 }
                 let t = if hover.thing != Selection::None { hover.thing } else { Selection::Cell(cell) };
-                // On the dam or canal already selected, a click picks the cell it is ringed
-                // on (`hover.works_cell`), or failing that the one under it (for a gate or lock, or to
-                // raise or deepen just there); shift adds to the pick.
                 let on_works = match (t, *sel) {
                     (_, Selection::Site(_)) if hover.works_cell.is_some() => hover.works_cell,
                     (Selection::Site(id), Selection::Site(sid)) if id == sid && on_line(&sim.0, id, cell) => Some(cell),
@@ -287,7 +273,6 @@ pub(super) fn world_input(
                 let p = build_logic::site_preview(&sim.0, kind, cell);
                 match build_logic::place_building(&mut sim.0, kind, p.pos) {
                     Ok(()) => {
-                        // Shift keeps the building in hand for the next spot.
                         if let Some(b) = sim.0.buildings.buildings.last() {
                             let id = b.id;
                             hud.undo.push(id);
@@ -306,8 +291,6 @@ pub(super) fn world_input(
             }
         }
         Tool::Dam | Tool::Canal => {
-            // A click adds a corner; a drag draws a straight run to where it ends.
-            // Moving without a button held changes nothing, so the confirm tag stays put.
             if mouse.just_pressed(MouseButton::Left) {
                 if hud.corners.is_empty() {
                     hud.corners.push(cell);
@@ -320,7 +303,6 @@ pub(super) fn world_input(
             if hud.drag_from.is_some() && live.last() != Some(&cell) {
                 live.push(cell);
             }
-            // A canal runs cell to cell across faces, never on a corner.
             let line = if hud.tool == Tool::Canal { sim::sandbox::canal_line(&live) } else { sim::sandbox::line(&live) };
             if line != hud.line {
                 hud.line = line;
@@ -329,9 +311,6 @@ pub(super) fn world_input(
     }
 }
 
-/// A right-click order for the selected beavers. On a tree, plant or deposit they work the one
-/// clicked, then the nearest of its kind once it is used up. With `queue` (Shift held) the order
-/// waits behind the ones they already have, and starts once those are done.
 fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: Selection, queue: bool) {
     use sim::agents::Assignment;
     let give = |s: &mut sim::SimState, who: Vec<BeaverId>, to: Assignment| {
@@ -372,8 +351,6 @@ fn order(s: &mut sim::SimState, hud: &mut HudState, who: &[BeaverId], t: Selecti
     }
 }
 
-/// Every beaver inside the box dragged out on the map, kits too; with Shift held, added to
-/// those already selected.
 pub(super) fn box_select(mut hud: ResMut<HudState>, sim: Res<Sim>, cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>, scale: Res<UiScale>, keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selection>, drawn: Option<Res<crate::entities_render::BeaverDrawn>>) {
     let Some((a, b)) = hud.box_done.take() else { return };
     let Ok((cam, gt)) = cams.single() else { return };
@@ -419,13 +396,10 @@ pub(super) fn follow_beaver(hud: Res<HudState>, sim: Res<Sim>, mut flow: ResMut<
     }
 }
 
-/// Whether `cell` is on the line of dam or canal `id` (a cell the panels let you pick).
 fn on_line(s: &sim::SimState, id: BuildingId, cell: Cell) -> bool {
     sim::dams::dam(s, id).is_some_and(|d| d.line().any(|c| c.cell == cell)) || sim::canals::canal(s, id).is_some_and(|k| k.cells.iter().any(|c| c.cell == cell))
 }
 
-/// The dam end, or the canal's open end, that a press at `cell` grabs: a dam by either end, a
-/// canal anywhere along it (it can only grow from its open end).
 fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Selection, cell: Cell) -> Option<(BuildingId, Cell)> {
     let under = match thing {
         Selection::Site(id) => Some(id),
@@ -449,7 +423,6 @@ fn dam_end_near(s: &sim::SimState, sel: Selection, thing: Selection, cell: Cell)
     })
 }
 
-/// Send beavers to gather or cut: one spot gathers around it, a drag covers the area.
 fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Cell) {
     use sim::resources::ResourceKind as R;
     let who = panels::order_crew(s, hud);
@@ -464,7 +437,6 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     } else {
         sim::work::Area { min: (a.0.min(b.0), a.1.min(b.1)), max: (a.0.max(b.0), a.1.max(b.1)) }
     };
-    // Cutting takes trees; gathering what grows or lies on land and needs no tools.
     let wanted: Vec<R> = R::all().filter(|k| match h {
         Harvest::Cut => k.is_tree(),
         Harvest::Gather => !k.is_tree() && !k.is_felled() && !k.aquatic() && k.row().needs.is_none(),
@@ -484,7 +456,6 @@ fn harvest(s: &mut sim::SimState, hud: &mut HudState, h: Harvest, a: Cell, b: Ce
     }
 }
 
-/// The key for a letter a content row names.
 fn letter(s: &str) -> Option<KeyCode> {
     use KeyCode::*;
     const KEYS: [KeyCode; 26] = [KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ];

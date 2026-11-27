@@ -1,10 +1,3 @@
-# Tree species: multipliers against the reference tree. growth is set so a tree on ordinary ground turns
-# mature at half its real seed-bearing age (USDA Silvics of North America): aspen and willow 10 years, birch 15,
-# alder 4 (red alder), pine 20 (eastern white pine), spruce 30, maple and beech 40. Mature is 1080 days.
-# look: a drawing style (model: slim, twin, weeping, clump, dome, spread, tufted, spire), its build, colours
-# as 0xrrggbb, and leaves as [shade, light] for spring, summer, autumn and late autumn.
-
-
 [[tree]]
 key = "Aspen"
 name = "Aspen"

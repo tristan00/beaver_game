@@ -1,6 +1,3 @@
-//! Family ties for the beaver and lodge pages: who is whose parent, partner, brother or aunt,
-//! which litter each beaver came in (its mother's first, second...), and when. Works for the
-//! living and for those only remembered (see `sim::lives`).
 use sim::colony::{BeaverId, Sex};
 use sim::lives::What;
 use sim::SimState;
@@ -9,7 +6,6 @@ pub fn name_of(s: &SimState, id: BeaverId) -> String {
     s.colony.beaver(id).map(|b| b.name.clone()).or_else(|| s.lives.of.get(&id).map(|l| l.name.clone())).unwrap_or_else(|| "Unknown".into())
 }
 
-/// A beaver's parents, whether it is still here or only remembered.
 pub fn parents(s: &SimState, id: BeaverId) -> [Option<BeaverId>; 2] {
     match s.colony.beaver(id) {
         Some(b) => [b.mother, b.father],
@@ -25,36 +21,29 @@ pub fn partner_of(s: &SimState, id: BeaverId) -> Option<BeaverId> {
     s.colony.beaver(id).and_then(|b| b.mate)
 }
 
-/// Every beaver the colony has known, living or remembered.
 pub fn everyone(s: &SimState) -> Vec<BeaverId> {
     s.colony.beavers.iter().map(|b| b.id).chain(s.lives.of.keys().copied()).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
 }
 
-/// Its kits, oldest first.
 pub fn children(s: &SimState, all: &[BeaverId], id: BeaverId) -> Vec<BeaverId> {
     let mut v: Vec<BeaverId> = all.iter().copied().filter(|&c| parents(s, c).contains(&Some(id))).collect();
     v.sort_by(|a, b| born(s, *a).unwrap_or(f64::MAX).total_cmp(&born(s, *b).unwrap_or(f64::MAX)).then(a.cmp(b)));
     v
 }
 
-/// The day it was born, if the colony saw it or can tell from its age.
 pub fn born(s: &SimState, id: BeaverId) -> Option<f64> {
     let noted = s.lives.of.get(&id).and_then(|l| l.entries.iter().find(|e| matches!(e.what, What::Born { .. }))).map(|e| e.day);
     noted.or_else(|| s.colony.beaver(id).map(|b| s.time_days - b.age_days as f64))
 }
 
-/// A birth year in words: "Y3", or before the colony began.
 pub fn year_word(y: i64) -> String {
     if y >= 1 { format!("Y{y}") } else { "before Y1".into() }
 }
 
-/// The colony year it was born in, from 1 (0 or less: before the colony).
 pub fn born_year(s: &SimState, id: BeaverId) -> Option<i64> {
     born(s, id).map(|d| (d / sim::calendar::YEAR_DAYS).floor() as i64 + 1)
 }
 
-/// Its litter: its mother, the year, and which of her litters it was (1 for her first). A
-/// mother has at most one litter a year, so the year tells litters apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Litter {
     pub mother: BeaverId,
@@ -72,22 +61,17 @@ pub fn litter(s: &SimState, all: &[BeaverId], id: BeaverId) -> Option<Litter> {
     Some(Litter { mother, year, number })
 }
 
-/// Who is in a litter, in the order they were noted.
 pub fn litter_mates(s: &SimState, all: &[BeaverId], l: Litter) -> Vec<BeaverId> {
     all.iter().copied().filter(|&c| parents(s, c)[0] == Some(l.mother) && born_year(s, c) == Some(l.year)).collect()
 }
 
-/// The order of a lodge-mate who is no kin.
 pub const LODGER: u8 = 20;
 
-/// The kind of tie, for filtering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum KinFilter {
     #[default]
     All,
-    /// Partner, parents, kits, brothers and sisters.
     Close,
-    /// Those living in its lodge.
     Home,
     Partner,
     Parents,
@@ -112,7 +96,6 @@ impl KinFilter {
             KinFilter::Other => "Other",
         }
     }
-    /// The filter a tie falls under, by its order from `kinship`.
     pub fn of(order: u8) -> KinFilter {
         match order {
             0 => KinFilter::Partner,
@@ -123,8 +106,6 @@ impl KinFilter {
             _ => KinFilter::Other,
         }
     }
-    /// Whether a tie of this order shows under the filter; `home`: they share a lodge. A lodge-mate
-    /// who is not kin shows only under Home.
     pub fn takes(self, order: u8, home: bool) -> bool {
         if order == LODGER {
             return self == KinFilter::Home;
@@ -138,8 +119,6 @@ impl KinFilter {
     }
 }
 
-/// How `other` is related to `me`, closest tie first, in words that follow its sex; with an
-/// order to list relatives in (nearest first).
 pub fn kinship(s: &SimState, me: BeaverId, other: BeaverId) -> Option<(u8, &'static str)> {
     if me == other {
         return None;

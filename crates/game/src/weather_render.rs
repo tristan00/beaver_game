@@ -1,6 +1,3 @@
-//! Rain and snow falling around the camera's view: a sparse veil of thin streaks or drifting
-//! flakes, thicker the harder it comes down, slanted by the wind. Kept light so the valley
-//! stays easy to read; the sky's dimming under cloud is in `terrain_render`.
 use crate::camera::OrbitCamera;
 use crate::state::Sim;
 use bevy::light::NotShadowCaster;
@@ -14,11 +11,9 @@ impl Plugin for WeatherRenderPlugin {
     }
 }
 
-/// How many streaks and flakes there can be at most.
 const RAIN: usize = 900;
 const SNOW: usize = 700;
 
-/// One streak or flake: which, and its place in the pattern.
 #[derive(Component)]
 struct Precip {
     snow: bool,
@@ -45,8 +40,6 @@ fn hash(i: u32, salt: u32) -> f32 {
     ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// `x` brought into the span of `width` centred on `centre`, so the pattern stays put in the
-/// world as the view moves over it.
 fn wrap(x: f32, centre: f32, width: f32) -> f32 {
     centre + (x - centre + width * 0.5).rem_euclid(width) - width * 0.5
 }
@@ -56,11 +49,9 @@ fn fall(time: Res<Time>, sim: Res<Sim>, orbit: Option<Res<OrbitCamera>>, mut q: 
     let s = &sim.0;
     let now = s.water.sky.at(s.time_days);
     let (rain_mm, snow_mm) = (now.rain * 1000.0, now.snow * 1000.0);
-    // How full the veil is: a drizzle shows a few streaks, a downpour its full count.
     let amount = |mm: f32| if mm < 0.4 { 0.0 } else { (0.2 + mm / 35.0).min(1.0) };
     let (rain_on, snow_on) = (amount(rain_mm), amount(snow_mm));
     let t = time.elapsed_secs();
-    // The box the veil fills: around what the camera looks at, sized to the view.
     let d = orbit.distance;
     let (w, h) = ((d * 1.3).clamp(12.0, 260.0), (d * 0.7).clamp(8.0, 140.0));
     let c = orbit.target;
@@ -78,7 +69,6 @@ fn fall(time: Res<Time>, sim: Res<Sim>, orbit: Option<Res<OrbitCamera>>, mut q: 
         }
         let (hx, hz, hy) = (hash(p.i, 1), hash(p.i, 2), hash(p.i, 3));
         if p.snow {
-            // Flakes drift down slowly, swaying, blown along by the wind.
             let speed = 1.1 + 0.6 * hash(p.i, 4);
             let fallen = t * speed * scale.sqrt() + hy * h;
             let y = c.y + h * 0.8 - fallen.rem_euclid(h);
@@ -87,7 +77,6 @@ fn fall(time: Res<Time>, sim: Res<Sim>, orbit: Option<Res<OrbitCamera>>, mut q: 
             let z = wrap(hz * 600.0 + wind.y * fallen * 1.5, c.z, w);
             *tr = Transform::from_xyz(x, y, z).with_scale(Vec3::splat(0.07 * scale.sqrt()));
         } else {
-            // Rain falls fast in straight streaks, slanting with the wind.
             let speed = 11.0 + 4.0 * hash(p.i, 4);
             let fallen = t * speed * scale.sqrt() + hy * h;
             let y = c.y + h * 0.8 - fallen.rem_euclid(h);

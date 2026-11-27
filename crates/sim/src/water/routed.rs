@@ -1,11 +1,7 @@
-//! Gameplay hydrology: finite reservoirs and directed, branching stream reaches.
-//! There are no gravity-wave substeps. Up to fifteen minutes of inflow are routed through
-//! the drainage graph, retaining channel storage and water below reservoir sills.
 use super::{Water, edge_bed, neighbours4};
 use std::{cmp::Reverse, collections::BinaryHeap};
 
 const NONE: usize = usize::MAX;
-/// Tuning: stream reaches drain by their steepest link only.
 const SINGLE_PATH_REACHES: bool = true;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -295,8 +291,6 @@ impl Flow {
                 }
             }
         }
-        // A stream reach keeps only its steepest way down, so a thin creek stays one
-        // channel instead of splitting into films over every lower neighbour.
         if SINGLE_PATH_REACHES {
             for node in self.nodes.iter_mut().filter(|n| !n.reservoir && n.fixed.is_none()) {
                 let inner: Vec<usize> = (0..node.links.len()).filter(|&k| node.links[k].to != NONE).collect();
@@ -322,8 +316,6 @@ impl Flow {
     pub(super) fn advance(&mut self, w: &mut Water, seconds: f64) {
         let mut left = seconds;
         while left > 1.0e-6 {
-            // The storage/outflow solve is implicit. Use quarter-hour reaches
-            // and absorb the tiny f32 calendar residual in the same sweep.
             let dt = if left <= 900.001 { left } else { 900.0 };
             self.stamp += 1;
             let stamp = self.stamp;
@@ -349,8 +341,6 @@ impl Flow {
                     node.volume -= input;
                 }
                 if node.volume <= 1.0e-10 && node.fixed.is_none() {
-                    // Account for drying a sub-visible trace instead of silently
-                    // losing it when the reach leaves the active set.
                     w.books.seepage += node.volume;
                     w.lost_volume += node.volume;
                     node.volume = 0.0;
@@ -424,9 +414,6 @@ impl Flow {
                 let mut vector = (0.0, 0.0);
                 for li in 0..self.nodes[id].links.len() {
                     let link = &self.nodes[id].links[li];
-                    // An external lake held at a fixed level is in balance with the water
-                    // beyond the map edge: it neither drains into it nor through another
-                    // fixed lake. Only real outflow into the map moves (and shows as current).
                     if fixed && (link.to == NONE || self.nodes[link.to].fixed.is_some()) {
                         continue;
                     }
@@ -486,8 +473,6 @@ impl Flow {
         let (mut rain, mut evaporation, mut seepage) = (0.0, 0.0, 0.0);
         for &id in &self.wet {
             let node = &mut self.nodes[id];
-            // External lakes are boundary reservoirs. Local rain/losses do not
-            // change their prescribed level; only exchange with the map is booked.
             if node.fixed.is_some() {
                 continue;
             }

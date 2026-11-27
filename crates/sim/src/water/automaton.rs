@@ -1,38 +1,17 @@
-//! Game-tuned cellular automaton on the fine grid (after WCA2D, Guidolin et al. 2016).
-//! Each tick the wet cells are swept from the highest water surface down (Gauss-Seidel), so
-//! water runs the length of a channel in one tick. A sender solves its own end level
-//! implicitly against Manning/critical conveyance on its faces, never drops below a receiver's
-//! surface, and only fills a receiver that cannot hand water on (a hollow, or the cell that fed
-//! it this tick) up to its own level. Connected water that is deep and nearly flat is one pool:
-//! it holds one level, takes in what reaches it and lets out what crosses its rim, so ponds and
-//! lakes stay flat and still. Cells that receive water after their turn get a second sweep;
-//! water still left standing well above all its neighbours settles into its hollow.
 use super::{Water, WEIR};
 use std::collections::BinaryHeap;
 
-/// Automaton tick in seconds; shorter advances are carried over to the next tick.
 const TICK_S: f64 = 900.0;
-/// Surface drop in metres below which a face carries nothing (keeps still water still).
 const EPS_DROP: f64 = 1.0e-5;
-/// Drop in metres below an edge lake's level before the lake tops up the water next to it.
 const EPS_LAKE: f64 = 2.0e-3;
-/// Depth in metres water must reach on a dry cell to spread onto it sideways (else steepest face only).
 const H_SPREAD: f64 = 0.08;
-/// Depth in metres a neighbour needs to count as wet for the stay-together rule.
 const H_WET: f64 = 5.0e-3;
-/// Depth in metres under which a cell's water is a trace and soaks away at the environment step.
 const H_TRACE: f64 = 5.0e-4;
-/// Depth in metres below which a film clings to the ground and does not flow.
 const H_STILL: f64 = 2.0e-4;
-/// Depth in metres a cell needs to join its neighbours in one level pool.
 const H_POOL: f64 = 0.01;
-/// Largest surface step in metres between two neighbours of one pool.
 const POOL_STEP: f64 = 0.003;
-/// Extra surface step allowed within a pool, as a fraction of the shallower depth (deep water levels fast).
 const POOL_REL: f64 = 0.2;
-/// Newton iterations allowed for one implicit level solve.
 const MAX_IT: usize = 16;
-/// Volume residual (metres of depth on one cell) at which the implicit solve stops.
 const TOL: f64 = 5.0e-5;
 
 const W: u8 = 0;
@@ -40,35 +19,23 @@ const E: u8 = 1;
 const N: u8 = 2;
 const S: u8 = 3;
 const NONE: u32 = u32::MAX;
-/// Surface step in metres above every neighbour at which leftover water is settled into its hollow.
 const SETTLE_STEP: f64 = 0.2;
-/// Largest hollow (cells) one settle may fill.
 const SETTLE_MAX: usize = 64;
-/// Settle-and-sweep rounds per tick.
 const SETTLE_ROUNDS: usize = 2;
-/// Times a cell or pool may be swept in one tick (more water may reach it after its turn).
 const MAX_VISITS: u8 = 2;
-/// Depth in metres a delivery must bring to sweep a cell (or pool) again in the same tick.
 const REVISIT_MIN: f64 = 0.005;
-/// Times a pool may be swept in one tick.
 const MAX_POOL_VISITS: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Cand {
-    /// Cell the water leaves from (a pool member for pools).
     from: usize,
-    /// Receiving cell, or usize::MAX for the open edge.
     j: usize,
     dir: u8,
-    /// Receiver surface, face crest and the level the sender must exceed.
     s: f64,
     zf: f64,
     thr: f64,
-    /// Fill the receiver at most up to the sender's level.
     cap: bool,
-    /// Plan area (cells) over which the receiver rises when capped.
     area: f64,
-    /// Receiver absorbs (open edge or fixed lake): booked as an edge loss.
     sink: bool,
     t: f64,
 }
@@ -86,14 +53,10 @@ struct Pool {
     volume: f64,
     level: f64,
     dirty: bool,
-    /// Times the pool has been swept this tick.
     visits: u8,
-    /// Some member can let water out of the pool (a lower non-member neighbour or open edge).
     outlet: bool,
-    /// Members on the pool's rim, as a range of `rim`.
     rim_start: usize,
     rim_len: usize,
-    /// Members holding water at the pool's level.
     area: f64,
 }
 
@@ -102,13 +65,9 @@ pub(super) struct Automaton {
     version: Option<((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool)>,
     n: usize,
     dx: f64,
-    /// Bed and depth per cell, kept together for locality.
     c: Vec<Cell>,
-    /// Boundary cells held at an external lake level.
     fix: Vec<bool>,
-    /// Fixed external lake level on boundary cells, NaN elsewhere.
     lake: Vec<f64>,
-    /// Bit per side (W, E, N, S) where water may leave the map.
     open: Vec<u8>,
     active: Vec<u32>,
     in_active: Vec<bool>,
@@ -117,11 +76,9 @@ pub(super) struct Automaton {
     visits: Vec<u8>,
     mark: Vec<u32>,
     mark_id: u32,
-    /// Tick in which water last crossed each face, per direction: [x faces +, x faces -, y +, y -].
     crossed: [Vec<u32>; 4],
     tick: u32,
     heap: BinaryHeap<(u64, u32)>,
-    /// Depth each cell ended its last tick at: the warm start for its level solve.
     last: Vec<f32>,
     pool_of: Vec<u32>,
     pools: Vec<Pool>,
@@ -134,7 +91,6 @@ pub(super) struct Automaton {
     fy_list: Vec<u32>,
     flux_s: f64,
     published: Vec<u32>,
-    /// Seconds advanced but not yet ticked.
     pending: f64,
 }
 
@@ -144,7 +100,6 @@ fn key(s: f64) -> u64 {
     if b >> 63 == 0 { b | (1 << 63) } else { !b }
 }
 
-/// Cube root to ~1e-7 relative: a bit-level guess refined by two Newton steps.
 #[inline]
 fn cbrt(x: f64) -> f64 {
     let mut y = f64::from_bits(x.to_bits() / 3 + 0x2A9F_7893_782D_A1CE);
@@ -153,7 +108,6 @@ fn cbrt(x: f64) -> f64 {
     y
 }
 
-/// Level at which `volume` (metres of depth summed over cells) rests on beds sorted ascending.
 fn fill_level(beds: &[f64], volume: f64) -> f64 {
     let mut sum = 0.0;
     for (k, &b) in beds.iter().enumerate() {
@@ -166,7 +120,6 @@ fn fill_level(beds: &[f64], volume: f64) -> f64 {
     beds[0] + volume
 }
 
-/// Face transfer over the tick (metres of depth on the sender) and its derivative in level.
 #[inline]
 fn eval(c: &mut [Cand], l: f64, coef: f64, inv_n: f64, inv_dx: f64) -> (f64, f64) {
     let (mut sum, mut dsum) = (0.0, 0.0);
@@ -193,8 +146,6 @@ fn eval(c: &mut [Cand], l: f64, coef: f64, inv_n: f64, inv_dx: f64) -> (f64, f64
     (sum, dsum)
 }
 
-/// End level L of a sender of plan area `area` (cells) starting at `s`: area·(s − L) = Σ t(L).
-/// Returns the total sent; `c[..].t` hold the transfers. Never lands below a receiver's surface.
 fn solve(c: &mut [Cand], s: f64, floor: f64, area: f64, guess: f64, coef: f64, inv_n: f64, inv_dx: f64) -> f64 {
     let min_thr = c.iter().map(|c| c.thr).fold(f64::INFINITY, f64::min);
     let (mut lo, mut hi) = (floor.max(min_thr), s);
@@ -202,8 +153,6 @@ fn solve(c: &mut [Cand], s: f64, floor: f64, area: f64, guess: f64, coef: f64, i
         return 0.0;
     }
     let g_at = |c: &mut [Cand], l: f64| area * (l - s) + eval(c, l, coef, inv_n, inv_dx).0;
-    // A face's flux rises like sqrt just above the receiver's surface. Bracket the root between
-    // consecutive receiver levels, highest first, so no such corner lies inside the bracket.
     let mut thr: [f64; 8] = [f64::NEG_INFINITY; 8];
     let mut k = 0;
     for cand in c.iter() {
@@ -219,7 +168,6 @@ fn solve(c: &mut [Cand], s: f64, floor: f64, area: f64, guess: f64, coef: f64, i
         }
         if g_at(c, t) >= 0.0 { hi = t } else { lo = t; break }
     }
-    // Newton in u = sqrt(L - lo), safeguarded by the bracket.
     let span = hi - lo;
     let (mut ulo, mut uhi) = (0.0f64, span.sqrt());
     let g0 = guess - lo;
@@ -314,7 +262,6 @@ impl Automaton {
         }
     }
 
-    /// Hold every fixed lake cell at its lake level, booking the exchange.
     fn pin_lakes(&mut self, w: &mut Water) {
         for i in 0..self.c.len() {
             if !self.fixed(i) {
@@ -383,7 +330,6 @@ impl Automaton {
         self.pools.clear();
     }
 
-    /// Group deep water standing in hollows into pools of one level.
     fn build_pools(&mut self) {
         self.clear_pools();
         let joins = |s: &Self, i: usize| !s.fixed(i) && s.c[i].h > H_POOL;
@@ -436,7 +382,6 @@ impl Automaton {
         }
     }
 
-    /// Spread a pool's volume over its members at one level.
     fn level(&mut self, p: usize) {
         let pool = self.pools[p];
         let cells = &self.members[pool.start..pool.start + pool.len];
@@ -465,7 +410,6 @@ impl Automaton {
             l = next;
         }
         if !settled {
-            // Shoreline still moving: fill the sorted beds exactly.
             let mut beds: Vec<f64> = cells.iter().map(|&m| self.c[m as usize].z).collect();
             beds.sort_unstable_by(f64::total_cmp);
             l = fill_level(&beds, pool.volume.max(0.0));
@@ -484,14 +428,12 @@ impl Automaton {
                 deepest = m;
             }
         }
-        // Keep the books exact: the rounding residual goes to the deepest member.
         self.c[deepest].h = (self.c[deepest].h + pool.volume - spread).max(0.0);
         self.pools[p].level = l;
         self.pools[p].area = area;
         self.pools[p].dirty = false;
     }
 
-    /// Whether cell j could hand water on this tick (an outlet at or below it).
     fn drains(&self, j: usize, from: usize) -> bool {
         if self.open[j] != 0 {
             return true;
@@ -528,7 +470,6 @@ impl Automaton {
         false
     }
 
-    /// Face of cell i on side dir: (horizontal, index, +1 if leaving i through it runs along +x/+y).
     #[inline]
     fn face(&self, i: usize, dir: u8) -> (bool, usize, f64) {
         let n = self.n;
@@ -541,16 +482,13 @@ impl Automaton {
         }
     }
 
-    /// Whether water crossed face (i, dir) into i this tick.
     #[inline]
     fn fed_by(&self, i: usize, dir: u8) -> bool {
         let (horizontal, face, sign) = self.face(i, dir);
-        // Into i is the opposite direction to leaving it.
         let slot = (if horizontal { 0 } else { 2 }) + if sign > 0.0 { 1 } else { 0 };
         self.crossed[slot][face] == self.tick
     }
 
-    /// Whether cell j (or its pool) has used up its sweeps this tick.
     #[inline]
     fn exhausted(&self, j: usize) -> bool {
         let p = self.pool_of[j];
@@ -571,7 +509,6 @@ impl Automaton {
         }
     }
 
-    /// Faces from cell i (level si) to lower neighbours outside its own pool.
     fn gather(&mut self, i: usize, si: f64, fixed: bool) {
         let zi = self.c[i].z;
         let pool = self.pool_of[i];
@@ -601,7 +538,6 @@ impl Automaton {
         }
     }
 
-    /// Faces into one receiving pool share its rise allowance.
     fn share_pools(&mut self) {
         for a in 0..self.cands.len() {
             let j = self.cands[a].j;
@@ -614,8 +550,6 @@ impl Automaton {
         }
     }
 
-    /// Stay together: water spreads onto dry ground only down its steepest face, or where it
-    /// would stand at least H_SPREAD deep. Keeps creeks one channel and stops thin sheets.
     fn keep_together(&mut self, level: f64) {
         let dry = |s: &Self, c: &Cand| c.j != usize::MAX && !s.fixed(c.j) && s.c[c.j].h < H_WET;
         let mut best = usize::MAX;
@@ -635,7 +569,6 @@ impl Automaton {
         self.cands.truncate(kept);
     }
 
-    /// Hand the transfers in `cands` to their receivers.
     fn deliver(&mut self, w: &mut Water) {
         let cands = std::mem::take(&mut self.cands);
         for c in &cands {
@@ -659,7 +592,6 @@ impl Automaton {
                 let pool = &mut self.pools[p as usize];
                 pool.volume += c.t;
                 pool.dirty = true;
-                // Rough new level until it is levelled: keeps the sweep order by surface.
                 pool.level += c.t / pool.len as f64;
                 if pool.visits == 0 || (pool.visits < MAX_POOL_VISITS && c.t > REVISIT_MIN * pool.len as f64) {
                     self.heap.push((key(pool.level), j as u32));
@@ -737,7 +669,6 @@ impl Automaton {
         if total <= 0.0 {
             return;
         }
-        // Take the water from the sending members, then let the pool settle to one level.
         for c in &self.cands {
             self.c[c.from].h -= c.t;
         }
@@ -746,7 +677,6 @@ impl Automaton {
         self.level(p);
     }
 
-    /// Sweep the queued cells and pools from the highest surface down.
     fn sweep(&mut self, w: &mut Water, dt: f64) -> u64 {
         let mut updates = 0;
         while let Some((k, i)) = self.heap.pop() {
@@ -754,7 +684,6 @@ impl Automaton {
             let p = self.pool_of[i];
             if p != NONE {
                 let pool = &self.pools[p as usize];
-                // Skip used-up pools and entries superseded by a later, higher one.
                 if pool.visits >= MAX_POOL_VISITS || (pool.visits > 0 && k != key(pool.level)) {
                     continue;
                 }
@@ -775,9 +704,6 @@ impl Automaton {
         updates
     }
 
-    /// Spread water standing well above every neighbour over the hollow it sits in, filling up to
-    /// the rim; anything above the rim is handed to the outlet cell and queued. Returns whether
-    /// anything was queued.
     fn settle(&mut self, w: &mut Water) -> bool {
         let mut towers: Vec<(u64, u32)> = Vec::new();
         for k in 0..self.active.len() + self.added.len() {
@@ -815,8 +741,6 @@ impl Automaton {
         }
     }
 
-    /// Flood-fill from cell i: grow the region over its lowest neighbour until the level rests
-    /// below every neighbour, or a neighbour that drains elsewhere takes the overflow.
     fn fill(&mut self, w: &mut Water, i: usize) -> bool {
         self.mark_id = self.mark_id.wrapping_add(1);
         if self.mark_id == 0 {
@@ -859,7 +783,6 @@ impl Automaton {
             let held: f64 = beds.iter().map(|&b| (target - b).max(0.0)).sum();
             excess = (volume - held).max(0.0);
         }
-        // Spread the region at the target level; the rounding residual stays with the deepest cell.
         let mut spread = 0.0;
         let mut deepest = region[0];
         for &r in &region {
@@ -936,8 +859,6 @@ impl Automaton {
                 self.level(p);
             }
         }
-        // Water that could not move on this tick (it reached hollows after their turn) settles
-        // where it would come to rest, spilling the rest on towards the next outlet.
         self.clear_pools();
         for _ in 0..SETTLE_ROUNDS {
             if !self.settle(w) {
@@ -949,7 +870,6 @@ impl Automaton {
         self.compact(w);
     }
 
-    /// Drop dried cells from the active list and merge in the newly wetted ones, in index order.
     fn compact(&mut self, w: &Water) {
         let keep = |s: &Self, i: usize| s.c[i].h > 0.0 || s.fixed(i) || w.src[i] > 0.0;
         let dried = self.active.iter().any(|&i| !keep(self, i as usize));
@@ -984,7 +904,6 @@ impl Automaton {
         if seconds <= 0.0 {
             return;
         }
-        // Ticks have a fixed length; shorter calls are carried over to the next one.
         self.pending += seconds;
         let ticks = ((self.pending + 0.01) / TICK_S).floor() as usize;
         if ticks == 0 {

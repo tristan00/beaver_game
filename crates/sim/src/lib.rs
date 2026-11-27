@@ -79,8 +79,6 @@ impl fmt::Display for SimError {
 }
 impl std::error::Error for SimError {}
 
-// Fifteen-minute colony decisions. The routed water solve is implicit and does
-// not require wave-sized time steps; all game speeds share this same calendar.
 pub const STEP_DAYS: f32 = 1.0 / 96.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -119,7 +117,6 @@ pub struct SimState {
     pub agents: agents::Agents,
     pub work: work::Work,
     pub maintenance: maintenance::Maintenance,
-    /// What each structure has cost to build and keep up.
     pub works: works::Works,
     pub society: society::Society,
     pub ledger: ledger::Ledger,
@@ -129,29 +126,20 @@ pub struct SimState {
     pub recorder: Option<Vec<(u64, Command)>>,
     pub forestry: forestry::Forestry,
     pub predators: predators::Predators,
-    /// Each raft landing's rafts.
     pub fleet: raft_landing::Fleet,
-    /// Rabbits, deer and birds.
     pub wildlife: wildlife::Wildlife,
-    /// Every beaver's life story.
     pub lives: lives::Lives,
-    /// The run's tallies.
     pub run: run::RunStats,
-    /// Ponds' names.
     pub names: names::Names,
-    /// Each beaver's life's work and epithet.
     pub deeds: deeds::Deeds,
-    /// Materials brought to gates, locks and buildings being mended.
     pub supplies: supply::Supplies,
     pub sandbox: bool,
     #[serde(skip)]
     pub step_timings: StepTimings,
-    /// What the session journal has written so far (only used while a session trace is open).
     #[serde(skip)]
     pub journal: journal::Journal,
 }
 
-/// A number no other world in this run has: the interface restarts its beaver when it changes.
 pub fn next_instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -209,10 +197,6 @@ impl SimState {
         sim
     }
 
-    /// Gameplay, sandbox and scripted playtests share the same physical clock.
-/// From here on this copy of the world is a guess: whoever shows the world applies commands
-    /// to its copy before the simulation has answered, to show at once what they should do.
-    /// What changes from now is marked as guessed, to be looked at again when the answer comes.
     pub fn guess_ahead(&mut self) {
         self.resources.guess_ahead();
     }
@@ -225,7 +209,6 @@ impl SimState {
             let clock = std::time::Instant::now();
             self.time_days += dt_days as f64;
             self.steps += 1;
-            // The sandbox is for watching the water answer each change at once.
             self.water.take_ground(&self.height);
             self.water.step(&self.height, dt_days);
             self.step_timings.water_s += clock.elapsed().as_secs_f64();
@@ -307,7 +290,6 @@ impl SimState {
 
         {
             let _p = prof::scope("step/ledger");
-            // Counting the colony walks every tree: only when a day closes.
             let closes = self.ledger.closes_day(self.time_days);
             let census = if closes { self.census() } else { ledger::Census::default() };
             if closes {
@@ -322,17 +304,14 @@ impl SimState {
         Ok(())
     }
 
-    /// What moves a beaver's needs, health and mood now, on this map (see `colony::Rates`).
     pub fn beaver_rates(&self, id: colony::BeaverId) -> Option<colony::Rates> {
         self.colony.rates(id, &WorldLand { world: &self.world, depth: &self.water.depth }, &self.buildings.buildings, &self.water.depth)
     }
 
-    /// Whether a female beaver can conceive now (see `colony::Colony::conception`).
     pub fn beaver_conception(&self, id: colony::BeaverId) -> Option<Result<f32, &'static str>> {
         self.colony.conception(id, &self.buildings, &self.water.depth)
     }
 
-    /// The colony counted now, for the ledger's long record.
     pub fn census(&self) -> ledger::Census {
         let cell_area = self.water.cell_m * self.water.cell_m;
         ledger::Census {
@@ -382,7 +361,6 @@ macro_rules! impl_sim_clone {
             fn clone(&self) -> Self {
                 Self { $($c: self.$c,)* $($f: self.$f.clone(),)* }
             }
-            /// Reuses snapshot buffers instead of reallocating the whole world each tick.
             fn clone_from(&mut self, src: &Self) {
                 let Self { $($c,)* $($f,)* } = src;
                 $(self.$c = *$c;)*

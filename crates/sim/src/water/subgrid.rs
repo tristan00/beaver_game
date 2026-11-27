@@ -1,83 +1,36 @@
-//! Semi-implicit shallow water on coarse cells with subgrid bathymetry (Casulli 2009;
-//! Stelling, 3Di). Each C×C block of fine cells is split into regions (4-connected fine
-//! cells of one kind: ground, dam, fixed edge lake; blocks near dams are kept cell by cell).
-//! A region stores one level and its volume/wet-area curves come from its sorted fine beds.
-//! Regions exchange water through faces made of fine-cell strips whose sill is the higher
-//! bed of the two cells, so dam crests and banks shape the flow. Strip momentum has no
-//! advection and implicit Manning friction, capped at critical flow.
-//!
-//! Each step, faces submerged on both sides use Casulli's frozen upwind depth (linear in the
-//! levels); faces whose downstream side is below the sill carry what the upstream head drives,
-//! implicitly. Submerged faces join regions into clusters, solved upstream first: one region
-//! by safeguarded Newton, larger clusters by Newton with two-level preconditioned CG, and
-//! flat ones (lakes, ponds) as a single reservoir level. Volumes are then updated from the
-//! face fluxes, so mass is exact; residuals inside clusters are routed along a spanning tree,
-//! and water left above sills outside the step spills over them.
 use super::{Water, edge_bed};
 
-/// Fine cells per coarse block side.
 const C: usize = 4;
-/// Longest time step in seconds.
 const DT: f64 = 900.0;
-/// Share of last step's velocity carried into the next (local inertia; 0 = diffusive wave).
 const INERTIA: f64 = 0.0;
-/// Calendar time is banked until this much has gone by, then stepped (s).
 const BANK_S: f64 = 900.0;
-/// Gravity (m/s²).
 const GRAV: f64 = 9.81;
-/// Most Newton iterations per step.
 const NEWTON_MAX: usize = 30;
-/// Newton stops in multi-region clusters when every level error is below this (m).
 const LEVEL_TOL: f64 = 1.0e-5;
-/// Largest level change per Newton iteration in a multi-region cluster (m).
 const STEP_MAX: f64 = 1.0;
-/// Newton stops when every region's level residual is below this (m).
 const NEWTON_TOL: f64 = 1.0e-4;
-/// Most CG iterations per Newton iteration.
 const LIN_MAX: usize = 200;
-/// The linear solve stops when the level residual has fallen by this factor.
 const LIN_REL: f64 = 1.0e-2;
-/// Clusters with at least this many regions get a coarse-grid correction in CG.
 const AGG_MIN: usize = 48;
-/// Aggregate side in coarse blocks for that correction.
 const AGG: usize = 8;
-/// Most aggregates (the coarse matrix is dense).
 const AGG_MAX: usize = 160;
-/// Extra rounds re-solving clusters that got inflow after they were solved (free-face cycles).
 const REDO_ROUNDS: usize = 6;
-/// Clusters of at least this many regions may be solved as one reservoir.
 const POOL_MIN: usize = 16;
-/// ... when their levels agree within this (m).
 const POOL_SPREAD: f64 = 0.02;
-/// Water standing this far over a face left out of the step spills across it (m).
 const SPILL_MIN: f64 = 0.005;
-/// Water this far over the sill of a face in the step spills across it too (m).
 const TOWER: f64 = 0.25;
-/// Largest head used in the free-face law (a safety bound, m).
 const H_CAP: f64 = 5.0;
-/// Most rounds of the outflow limiter (chains of draining regions need one round per link).
 const LIMIT_ROUNDS: usize = 200;
-/// Most spill moves per step.
 const SPILL_MOVES: usize = 20000;
-/// Blocks within this many blocks of a dam are resolved cell by cell.
 const DAM_HALO: usize = 1;
-/// Rings of neighbours around wet regions taken into each step.
 const RINGS: u8 = 1;
-/// Faces join the step when water on either side is within this of their lowest sill (m).
 const MARGIN: f64 = 0.05;
-/// Strip velocity cap as a Froude number (critical flow).
 const FROUDE_CAP: f64 = 1.0;
-/// Strip depths below this carry no flow (m).
 const H_MIN: f64 = 1.0e-6;
-/// Volumes below this (m of depth summed over cells) dry out, booked as seepage.
 const TRACE: f64 = 1.0e-9;
-/// Regions moving less than this (m³/s) publish no velocity inside.
 const Q_STILL: f64 = 1.0e-6;
-/// Regions whose level moved less than this since the last publish keep their depths (m).
 const PUB_EPS: f64 = 1.0e-4;
-/// Least-squares regularisation for the published surface slope (cells²).
 const LS_REG: f64 = 0.5;
-/// Smallest wet area used in the Newton Jacobian (cells).
 const JAC_FLOOR: f64 = 1.0;
 
 const NONE: u32 = u32::MAX;
@@ -95,7 +48,6 @@ type Version = ((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool);
 pub(super) struct Subgrid {
     version: Option<Version>,
     n: usize,
-    // Regions.
     owner: Vec<u32>,
     cell_start: Vec<u32>,
     cells: Vec<u32>,
@@ -108,7 +60,6 @@ pub(super) struct Subgrid {
     source: Vec<f64>,
     source_key: Option<u64>,
     source_regions: Vec<u32>,
-    // Faces and their strips.
     face_lr: Vec<(u32, u32)>,
     face_dx: Vec<f64>,
     face_sill: Vec<f64>,
@@ -122,14 +73,12 @@ pub(super) struct Subgrid {
     strip_q: Vec<f64>,
     rf_start: Vec<u32>,
     rf: Vec<u32>,
-    // Open map edges.
     out_start: Vec<u32>,
     out_z: Vec<f64>,
     out_slope: Vec<f64>,
     out_code: Vec<u32>,
     out_q: Vec<f64>,
     edge_regions: Vec<u32>,
-    // Active sets.
     wet: Vec<u32>,
     published: Vec<u32>,
     mark: Vec<u64>,
@@ -163,7 +112,6 @@ pub(super) struct Subgrid {
     coarse_y: Vec<f64>,
     ring: Vec<u8>,
     fric: f64,
-    // Local vectors over unknowns.
     x: Vec<f64>,
     f: Vec<f64>,
     d: Vec<f64>,
@@ -175,7 +123,6 @@ pub(super) struct Subgrid {
     theta: Vec<f64>,
     inflow: Vec<f64>,
     outflow: Vec<f64>,
-    // Publishing scratch.
     regq: Vec<(f64, f64)>,
     pub_stamp: u64,
     pub_mark: Vec<u64>,
@@ -219,7 +166,6 @@ impl Subgrid {
         (self.cell_start[r] as usize, self.cell_start[r + 1] as usize)
     }
 
-    /// Volume (m × cells) and wet area (cells) of region `r` at level `eta`.
     fn storage(&self, r: usize, eta: f64) -> (f64, f64) {
         let (s, e) = self.span(r);
         let beds = &self.beds[s..e];
@@ -267,8 +213,6 @@ impl Subgrid {
         self.owner = vec![NONE; n * n];
         self.cells.clear();
         self.cell_start = vec![0];
-        // Blocks with a dam, and those within DAM_HALO blocks of one, keep every fine cell as
-        // its own region, so crests, ends and the ground around them act at full resolution.
         let nb = (n + C - 1) / C;
         let mut dam_block = vec![false; nb * nb];
         for i in 0..n * n {
@@ -348,7 +292,6 @@ impl Subgrid {
             self.centroid[r] = (sx / m, sy / m);
             self.fixed[r] = level;
         }
-        // Faces: every pair of 4-adjacent fine cells in different regions is one strip.
         let mut raw: Vec<(u32, u32, u32)> = Vec::new();
         for y in 0..n {
             for x in 0..n {
@@ -398,7 +341,6 @@ impl Subgrid {
         self.strip_start.push(self.strip_code.len() as u32);
         let nf = self.face_lr.len();
         let ns = self.strip_code.len();
-        // Region -> faces.
         let mut count = vec![0u32; nreg + 1];
         for &(a, b) in &self.face_lr {
             count[a as usize + 1] += 1;
@@ -416,7 +358,6 @@ impl Subgrid {
             }
         }
         self.rf_start = count;
-        // Open map edges: free outflow across boundary cells that are not walls or lakes.
         let mut outs: Vec<(u32, u32, f64, f64)> = Vec::new();
         if w.config.open_edges {
             let closed = w.closed_edge.as_slice();
@@ -480,8 +421,6 @@ impl Subgrid {
         let (terrain, dam) = w.bed_version.unwrap();
         let version = (terrain, dam, w.closed_edge.version(), w.lake_level.version(), w.config.open_edges);
         let rebuilt = self.version != Some(version);
-        // On a rebuild the water is carried over cell by cell from the engine's own levels
-        // (exact volumes), not from the published depths, which are drawn for the eye.
         let carry: Option<Vec<f64>> = (rebuilt && self.version.is_some()).then(|| {
             let mut d = vec![0.0; self.n * self.n];
             for r in 0..self.nreg() {
@@ -544,7 +483,6 @@ impl Subgrid {
             }
             self.wet = (0..nreg as u32).filter(|&r| self.is_wet(r as usize)).collect();
             if rebuilt {
-                // Cells published before the rebuild hold water, so they lie in wet regions.
                 self.published.clone_from(&self.wet);
                 self.pub_mark = vec![0; nreg];
                 self.pub_eta = vec![f64::NAN; nreg];
@@ -578,7 +516,6 @@ impl Subgrid {
         if seconds <= 0.0 {
             return;
         }
-        // Short calendar chunks are banked and stepped together.
         self.pending += seconds;
         if self.pending + 1.0e-6 < BANK_S {
             return;
@@ -606,9 +543,6 @@ impl Subgrid {
         self.spill(w);
     }
 
-    /// Fill and spill: water standing above the sill of a face that was not part of the step
-    /// pours across it into the lower neighbour, highest regions first, conserving volume.
-    /// Those faces join the solve on the next step.
     fn spill(&mut self, w: &mut Water) {
         let stamp = self.stamp;
         let key = |z: f64| {
@@ -638,8 +572,6 @@ impl Subgrid {
                 }
                 let (a, b) = self.face_lr[f];
                 let o = if a as usize == r { b } else { a } as usize;
-                // Faces in the step spill when they were set to flow towards r, or when the
-                // water stands far above their sill (a pocket the solve could not drain).
                 if self.fmark[f] == stamp && lvl - sill < TOWER {
                     let kind = self.af_kind[self.face_k[f] as usize];
                     let into_r = if a as usize == r { kind == FREE_R } else { kind == FREE_L };
@@ -657,7 +589,6 @@ impl Subgrid {
             }
             let Some((sill, o)) = best else { continue };
             let lo = if self.fixed[o].is_finite() { self.fixed[o] } else { self.eta[o] };
-            // Pour until the giver is down to the sill or both stand at one level.
             let floor = sill.max(lo);
             let dv = if self.fixed[o].is_finite() {
                 self.vol[r] - self.storage(r, floor).0
@@ -700,8 +631,6 @@ impl Subgrid {
     fn solve_step(&mut self, w: &mut Water, dt: f64) {
         self.stamp += 1;
         let stamp = self.stamp;
-        // Active regions: wet ones and sources, then up to RINGS rings of neighbours across
-        // faces whose lowest sill is within MARGIN of the water on either side.
         self.act.clear();
         self.af.clear();
         let (nw, ns) = (self.wet.len(), self.source_regions.len());
@@ -741,7 +670,6 @@ impl Subgrid {
                 }
             }
         }
-        // Momentum of faces that fell out of the active set is lost.
         for k in 0..self.af_prev.len() {
             let f = self.af_prev[k] as usize;
             if self.fmark[f] != stamp {
@@ -775,9 +703,6 @@ impl Subgrid {
         self.fric = GRAV * dt * nman * nman;
         self.dt = dt;
         let wfac = 1.0 / w.cell_m as f64;
-        // Classify faces. Submerged faces (water above the lowest sill on both sides, so the
-        // level difference is below the upwind depth) use Casulli's frozen upwind depth and
-        // become linear. Free faces carry what the upstream head drives, implicitly.
         let nfa = self.af.len();
         self.af_loc.clear();
         self.af_g.clear();
@@ -804,7 +729,6 @@ impl Subgrid {
                 self.af_dn[k] = el.min(er);
             }
         }
-        // Clusters: regions joined by submerged faces.
         self.uf.clear();
         self.uf.extend(0..m as u32);
         for k in 0..nfa {
@@ -832,7 +756,6 @@ impl Subgrid {
             self.cl_of[li] = self.cl_of[root];
         }
         let ncl = ncl as usize;
-        // A free face inside a cluster is solved with the cluster, in submerged form.
         for k in 0..nfa {
             let kind = self.af_kind[k];
             if kind == FREE_L || kind == FREE_R {
@@ -842,7 +765,6 @@ impl Subgrid {
                 }
             }
         }
-        // Members, flat faces and free faces leaving each cluster, as CSR lists.
         let mut count = vec![0u32; ncl + 1];
         for li in 0..m {
             count[self.cl_of[li] as usize + 1] += 1;
@@ -886,7 +808,6 @@ impl Subgrid {
                 fcount[c as usize] += 1;
             }
         }
-        // Reservoirs: large clusters whose levels agree within POOL_SPREAD.
         let mut lo_x = vec![f64::INFINITY; ncl];
         let mut hi_x = vec![f64::NEG_INFINITY; ncl];
         for li in 0..m {
@@ -898,9 +819,6 @@ impl Subgrid {
         for c in 0..ncl {
             self.cl_pool.push(self.cl_start[c + 1] - self.cl_start[c] >= POOL_MIN as u32 && hi_x[c] - lo_x[c] <= POOL_SPREAD);
         }
-        // Frozen per step (Casulli) on submerged faces: upwind strip depths and friction
-        // factors from the velocity predicted with the start-of-step slope, so the flux is
-        // linear in the levels. Faces inside reservoirs carry no flux of their own.
         for k in 0..nfa {
             if self.af_kind[k] != FLAT {
                 continue;
@@ -944,7 +862,6 @@ impl Subgrid {
             self.af_a[k] = fa * wfac;
             self.af_b[k] = fb * wfac;
         }
-        // Free faces fed by a fixed lake deliver their flow up front.
         for k in 0..nfa {
             let kind = self.af_kind[k];
             let (ll, lr) = self.af_loc[k];
@@ -962,9 +879,6 @@ impl Subgrid {
                 self.af_done[k] = 1;
             }
         }
-        // Upstream-first order of clusters along free faces (Kahn). When only cycles remain,
-        // the highest remaining cluster goes next; clusters that get inflow after they were
-        // solved are solved again.
         let mut indeg = vec![0u32; ncl];
         let mut top = vec![f64::NEG_INFINITY; ncl];
         for li in 0..m {
@@ -1023,7 +937,6 @@ impl Subgrid {
     }
 
     fn finish_step(&mut self, w: &mut Water, dt: f64, nman: f64, wfac: f64, nfa: usize, m: usize) {
-        // Final fluxes from the solved levels.
         for k in 0..nfa {
             let (ll, lr) = self.af_loc[k];
             let f = self.af[k] as usize;
@@ -1058,8 +971,6 @@ impl Subgrid {
         self.af.clone_from(&self.af_prev);
     }
 
-    /// Hands cluster c's free outflow to the clusters below it. The flow already handed
-    /// over is kept in af_q, so a cluster solved again only hands on the change.
     #[allow(clippy::too_many_arguments)]
     fn solve_free(&mut self, c: usize, dt: f64, wfac: f64, indeg: &mut [u32], queued: &mut [bool], order: &mut Vec<u32>, done: &[bool], dirty: &mut [bool], redo: &mut Vec<u32>) {
         for fi in self.clf_start[c]..self.clf_start[c + 1] {
@@ -1093,8 +1004,6 @@ impl Subgrid {
         }
     }
 
-    /// Discharge (volume units per second) through free face k for upstream level `xu`,
-    /// and its derivative. With `keep`, strip depths and signed velocities are stored.
     fn free_flux(&mut self, k: usize, xu: f64, wfac: f64, keep: bool) -> (f64, f64) {
         let f = self.af[k] as usize;
         let sign = if self.af_kind[k] == FREE_L { 1.0 } else { -1.0 };
@@ -1132,7 +1041,6 @@ impl Subgrid {
         (q * wfac, dq * wfac)
     }
 
-    /// Free outflow across the open map edge from region r at level `eta`.
     fn edge_flux(&mut self, r: usize, eta: f64, nman: f64, wfac: f64, keep: bool) -> (f64, f64) {
         let (mut q, mut dq) = (0.0, 0.0);
         for s in self.out_start[r] as usize..self.out_start[r + 1] as usize {
@@ -1155,8 +1063,6 @@ impl Subgrid {
         (q * wfac, dq * wfac)
     }
 
-    /// A large cluster whose levels agree within POOL_SPREAD is one reservoir: solve for its
-    /// common level with the internal faces cancelling. Returns false if it is not flat.
     fn solve_pool(&mut self, c: usize, dt: f64, nman: f64, wfac: f64) -> bool {
         let (m0, m1) = (self.cl_start[c] as usize, self.cl_start[c + 1] as usize);
         if !self.cl_pool[c] {
@@ -1231,7 +1137,6 @@ impl Subgrid {
         true
     }
 
-    /// Newton on one cluster with the inflow from upstream clusters fixed.
     fn solve_cluster(&mut self, c: usize, dt: f64, w: &Water) {
         let nman = w.config.manning as f64;
         let wfac = 1.0 / w.cell_m as f64;
@@ -1242,7 +1147,6 @@ impl Subgrid {
         let mut it = 0;
         let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
         loop {
-            // Residual and Jacobian.
             for j in m0..m1 {
                 let li = self.cl_mem[j] as usize;
                 let r = self.unk[li] as usize;
@@ -1279,15 +1183,11 @@ impl Subgrid {
                         self.f[up as usize] += dt * q;
                         self.d[up as usize] += dt * dq;
                         if dn != NONE && self.cl_of[dn as usize] as usize == c {
-                            // A free face inside the cluster: its inflow is lagged.
                             self.f[dn as usize] -= dt * q;
                         }
                     }
                 }
             }
-            // Single regions keep their residual as volume, so it is measured over their
-            // area; inside clusters the settling tree absorbs volume residuals, so only the
-            // level error (residual over the Jacobian diagonal) and the cluster total count.
             let (mut err, tol): (f64, f64) = (0.0, if m1 - m0 == 1 { NEWTON_TOL } else { LEVEL_TOL });
             let (mut fsum, mut asum) = (0.0, 0.0);
             for j in m0..m1 {
@@ -1295,7 +1195,6 @@ impl Subgrid {
                 if m1 - m0 == 1 {
                     err = err.max(self.f[li].abs() / self.area[li].max(1.0));
                 } else {
-                    // Converged when either the level error or the volume error is small.
                     let a = self.f[li].abs();
                     err = err.max((a / self.d[li]).min(a / self.area[li].max(1.0) * (LEVEL_TOL / NEWTON_TOL)));
                     fsum += self.f[li];
@@ -1310,13 +1209,11 @@ impl Subgrid {
             }
             it += 1;
             if m1 - m0 == 1 {
-                // Safeguarded scalar Newton: F rises with the level.
                 let li = self.cl_mem[m0] as usize;
                 let r = self.unk[li] as usize;
                 let (x, f) = (self.x[li], self.f[li]);
                 if f < 0.0 {
                     lo = lo.max(x);
-                    // Holding the missing volume without extra outflow overshoots the root.
                     hi = hi.min(self.level_for(r, self.storage(r, x).0 - f).max(x));
                 } else {
                     hi = hi.min(x);
@@ -1341,7 +1238,6 @@ impl Subgrid {
         }
     }
 
-    /// Slope of V just above `eta` (at least one cell).
     fn right_area(&self, r: usize, eta: f64) -> f64 {
         let (s, e) = self.span(r);
         (self.beds[s..e].partition_point(|&z| z <= eta) as f64).max(JAC_FLOOR)
@@ -1366,8 +1262,6 @@ impl Subgrid {
         }
     }
 
-    /// Coarse spaces for large clusters: aggregates of AGG×AGG blocks (grown until there are
-    /// at most AGG_MAX of them), with the Galerkin matrix factored by Cholesky.
     fn build_coarse(&mut self, c: usize, dt: f64) -> bool {
         let (m0, m1) = (self.cl_start[c] as usize, self.cl_start[c + 1] as usize);
         if m1 - m0 < AGG_MIN {
@@ -1423,7 +1317,6 @@ impl Subgrid {
                 e[bi * na + ai] -= cb;
             }
         }
-        // In-place Cholesky (lower triangle).
         for j in 0..na {
             let mut s = e[j * na + j];
             for k in 0..j {
@@ -1445,7 +1338,6 @@ impl Subgrid {
         true
     }
 
-    /// z = D⁻¹ r, plus the coarse correction when there is one.
     fn precond(&mut self, c: usize, coarse: bool, r: &[f64], z: &mut [f64]) {
         let (m0, m1) = (self.cl_start[c] as usize, self.cl_start[c + 1] as usize);
         for j in m0..m1 {
@@ -1484,7 +1376,6 @@ impl Subgrid {
         }
     }
 
-    /// Preconditioned CG on one cluster for J·dx = −F.
     fn cg_cluster(&mut self, c: usize, tol: f64) {
         let dt = self.dt;
         let (m0, m1) = (self.cl_start[c] as usize, self.cl_start[c + 1] as usize);
@@ -1557,7 +1448,6 @@ impl Subgrid {
         self.work = wk;
     }
 
-    /// Conservative update from the final fluxes, limiting outflow to the water available.
     fn finish(&mut self, w: &mut Water, dt: f64) {
         let m = self.unk.len();
         for li in 0..m {
@@ -1616,8 +1506,6 @@ impl Subgrid {
                 self.strip_q[s] = u * self.strip_h[s];
             }
         }
-        // New volumes, then route each cluster's leftover Newton residual along a spanning
-        // tree of its submerged faces so every region holds exactly its solved level.
         for li in 0..m {
             let r = self.unk[li] as usize;
             self.f[li] = self.vn[li] + dt * self.source[r] + self.inflow[li] - self.outflow[li];
@@ -1641,7 +1529,6 @@ impl Subgrid {
             w.added_volume += input;
             let mut v = self.f[li];
             if v < 0.0 {
-                // Rounding residue of the limiter.
                 w.books.sources -= v;
                 w.added_volume -= v;
                 v = 0.0;
@@ -1672,8 +1559,6 @@ impl Subgrid {
         }
     }
 
-    /// Moves each multi-region cluster's volume residual to its first region along a BFS
-    /// tree of internal submerged faces, adjusting those face fluxes. Mass is unchanged.
     fn settle_clusters(&mut self, dt: f64) {
         let m = self.unk.len();
         let nfa = self.af.len();
@@ -1735,15 +1620,10 @@ impl Subgrid {
                 let up = if ll as usize == li { lr } else { ll } as usize;
                 self.f[li] -= excess;
                 self.f[up] += excess;
-                // The child sends `excess` to its parent.
                 self.af_q[k] += if ll as usize == li { excess / dt } else { -excess / dt };
             }
-            // Whatever the root holds beyond its level is spread over the cluster by area,
-            // as one level change, again along the tree.
             let rr = self.unk[root as usize] as usize;
             let left = self.f[root as usize] - self.storage(rr, self.x[root as usize]).0;
-            // A surplus spreads by area; a deficit is taken in proportion to the water each
-            // region holds, so none goes below empty.
             let weight = |s: &Self, li: usize| if left >= 0.0 { s.area[li].max(1.0) } else { s.storage(s.unk[li] as usize, s.x[li]).0 };
             let total: f64 = order.iter().map(|&li| weight(self, li as usize)).sum();
             for &li in &order {
@@ -1762,7 +1642,6 @@ impl Subgrid {
                 self.f[li] += take;
                 self.f[up] -= take;
                 self.dx[up] += take;
-                // The parent sends `take` (its subtree's share) to the child.
                 self.af_q[k] -= if ll as usize == li { take / dt } else { -take / dt };
             }
         }
@@ -1799,7 +1678,6 @@ impl Subgrid {
             }
             let v = self.vol[id] + change;
             if v < 0.0 {
-                // Losses are limited per cell; any rounding residue is taken from seepage.
                 seepage += v;
             }
             self.vol[id] = v.max(0.0);
@@ -1831,7 +1709,6 @@ impl Subgrid {
             self.pub_mark[self.wet[k] as usize] = stamp;
         }
         let mut changed = std::mem::take(&mut self.rows_dirty);
-        // Regions that dried out.
         for k in 0..self.published.len() {
             let r = self.published[k] as usize;
             if self.pub_mark[r] == stamp {
@@ -1845,8 +1722,6 @@ impl Subgrid {
                 w.h[i] = 0.0;
             }
         }
-        // Face fluxes: clear what was written last time, then the strips on region
-        // boundaries carry the computed discharge.
         for &code in &self.pub_faces {
             if code & Y_FACE != 0 {
                 w.qy[(code & IDX) as usize] = 0.0;
@@ -1900,8 +1775,6 @@ impl Subgrid {
                 }
             }
         }
-        // Depths: a sloped surface through each region, holding exactly its volume. Regions
-        // whose level moved less than PUB_EPS keep what they published.
         for k in 0..self.wet.len() {
             let r = self.wet[k] as usize;
             let eta = if self.fixed[r].is_finite() { self.fixed[r] } else { self.eta[r] };
@@ -1921,7 +1794,6 @@ impl Subgrid {
             }
             let _ = (lo, hi);
             let sorted = &mut sorted[..len];
-            // A surface with the reconstructed slope, raised until it holds the region's volume.
             let top = if gx == 0.0 && gy == 0.0 {
                 eta
             } else {
@@ -1949,7 +1821,6 @@ impl Subgrid {
                 w.h[i] = h;
             }
         }
-        // Inside a region, spread its discharge over the wet cells by conveyance.
         let w1 = n + 1;
         for k in 0..self.wet.len() {
             let r = self.wet[k] as usize;
@@ -2026,8 +1897,6 @@ impl Subgrid {
         debug_assert!(w.h.iter().chain(&w.qx).chain(&w.qy).all(|v| v.is_finite()), "subgrid published a non-finite depth or flux");
     }
 
-    /// Least-squares slope of the water surface through region r from its wet neighbours,
-    /// limited so no cell centre rises above or falls below the neighbouring levels.
     fn surface_slope(&self, r: usize) -> (f64, f64, f64, f64) {
         let n = self.n;
         let eta = self.eta[r];

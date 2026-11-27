@@ -1,7 +1,3 @@
-//! What the dam and canal panels share. Both are laid out the same way, top to bottom: header
-//! (history behind its hourglass), the side view with the state drawn on it and a chip for each
-//! gate and lock, the build buttons, the strip of the gate picked, and the footer.
-//! A button that can't be used now stays where it is, faded, and its tooltip says why.
 use super::panels::Ctx;
 use super::ui::*;
 use super::words::num;
@@ -16,12 +12,9 @@ use sim::GateSetting;
 pub const WOOD: Color = Color::srgb(0.95, 0.85, 0.66);
 pub const DEEP: Color = Color::srgb(0.12, 0.54, 0.72);
 pub const SHALLOW: Color = Color::srgb(0.44, 0.83, 0.88);
-/// The ground under a side view.
 pub const EARTH: Color = Color::srgb(0.29, 0.23, 0.16);
-/// The width a side view or chart takes inside the panel.
 pub const VIEW_W: f32 = 294.0;
 
-/// One history sparkline row for a dam or canal panel.
 pub fn history_row(u: &mut Ui, icon: Icon, col: Color, name: &str, days: usize, max_days: usize, fracs: impl IntoIterator<Item = f32>) {
     let w = ((VIEW_W - 20.0) / max_days as f32).floor().max(2.0);
     u.row(6.0, |r| {
@@ -31,7 +24,6 @@ pub fn history_row(u: &mut Ui, icon: Icon, col: Color, name: &str, days: usize, 
     .tip(Tip::name(name).line("Days", format!("{days}")));
 }
 
-/// Standard right-hand panel shell shared by dams and canals.
 #[allow(clippy::too_many_arguments)]
 pub fn works_panel(
     c: &Ctx,
@@ -67,12 +59,10 @@ pub fn works_panel(
     )
 }
 
-/// A box placed by its top left corner inside a side view.
 pub fn abs_box(left: f32, top: f32, w: f32, h: f32) -> Node {
     Node { position_type: PositionType::Absolute, left: Val::Px(left), top: Val::Px(top), width: Val::Px(w.max(0.0)), height: Val::Px(h.max(0.0)), ..default() }
 }
 
-/// A short dashed line across a side view.
 pub fn dashes(u: &mut Ui, from: f32, to: f32, top: f32, col: Color) {
     let mut x = from;
     while x < to {
@@ -81,7 +71,6 @@ pub fn dashes(u: &mut Ui, from: f32, to: f32, top: f32, col: Color) {
     }
 }
 
-/// A word on a side view, its right end at `right`.
 pub fn label_left_of(u: &mut Ui, right: f32, top: f32, text: String, col: Color, tip: Tip) {
     u.node(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), width: Val::Px(right.max(0.0)), top: Val::Px(top), justify_content: JustifyContent::FlexEnd, ..default() }, |l| {
         l.bold(text, 12.0, col).tip(tip);
@@ -96,8 +85,6 @@ fn setting_name(st: GateSetting) -> &'static str {
     }
 }
 
-/// One gate: its state, Shut / Level / Open, the sill while it holds a level, and (on dams) its
-/// lock upgrade. `usable`: why the settings can't be touched yet, if they can't.
 pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Gate, pond: Option<f32>, show_lock: bool, usable: Result<(), &str>) {
     let brought = supplied(s, id, g.cell);
     let wanted = g.wanted();
@@ -146,8 +133,6 @@ pub fn gate_row(u: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::G
     row.bg(FAINT);
 }
 
-/// Lower and raise a Level gate's sill a step from where it stands; at its floor or top the
-/// button stays, faded.
 fn sill_steps(r: &mut Ui, id: BuildingId, g: &sim::gates::Gate, level_at: f32) {
     let sill = g.sill_of(GateSetting::Level(level_at));
     let step = sim::canals::GATE_STEP;
@@ -159,7 +144,6 @@ fn sill_steps(r: &mut Ui, id: BuildingId, g: &sim::gates::Gate, level_at: f32) {
     r.small_button(Some(Icon::Plus), None, up.then_some(HudAction::Cmd(sim::Command::SetGate { building: id, cell: g.cell, setting: GateSetting::Level(sill + step) })), Tip::name("Raise the sill").line(if up { cm.as_str() } else { "As high as it goes" }, ""), Small::Idle);
 }
 
-/// A gate's lock: one already, one coming, the upgrade, or why it can't be had yet.
 fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Gate) {
     use sim::locks;
     let what = Tip::name("Lock").line("Beavers and rafts get past", "");
@@ -178,7 +162,6 @@ fn lock_button(r: &mut Ui, s: &sim::SimState, id: BuildingId, g: &sim::gates::Ga
     };
 }
 
-/// Menders keep it up, or not.
 pub fn upkeep_button(r: &mut Ui, on: bool, action: HudAction, what: &str, hint: bool) {
     let look = if hint { Small::Hint } else if on { Small::On } else { Small::Idle };
     r.small_button(Some(Icon::Hammer), Some("Mend"), Some(action), Tip::name("Mend").line(if on { "On" } else { "Off" }, "").line(what, ""), look);
@@ -189,7 +172,6 @@ pub fn pause_button(r: &mut Ui, s: &sim::SimState, id: BuildingId) {
     r.small_button(Some(if paused { Icon::Play } else { Icon::Pause }), None, Some(HudAction::Cmd(sim::Command::SetPaused { building: id, paused: !paused })), Tip::name(if paused { "Resume work" } else { "Pause work" }), if paused { Small::On } else { Small::Idle });
 }
 
-/// Take the dam or canal away: red, apart from the rest, and only on a second click.
 pub fn remove_button(c: &Ctx, r: &mut Ui, id: BuildingId) {
     let s = c.s;
     let Some(b) = s.buildings.building(id) else { return };
@@ -210,14 +192,11 @@ pub fn remove_button(c: &Ctx, r: &mut Ui, id: BuildingId) {
     r.small_button(Some(Icon::Remove), armed.then_some("Sure?"), Some(HudAction::RemoveSite(id, true)), tip, if armed { Small::Armed } else { Small::Danger });
 }
 
-/// Upper-case the first letter of a sim message for a tooltip.
 pub fn cap(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-/// What has been brought to a gate for the work ordered there, against what it needs; None
-/// when it needs nothing brought.
 pub fn supplied(s: &sim::SimState, id: BuildingId, cell: Cell) -> Option<(f32, f32)> {
     let spot = sim::supply::Spot { building: id, cell };
     let needs = sim::supply::needs(s, spot);
@@ -226,7 +205,6 @@ pub fn supplied(s: &sim::SimState, id: BuildingId, cell: Cell) -> Option<(f32, f
     (need > 0.0).then_some((got, need))
 }
 
-/// Why a gate or lock can't go on this cell of a dam.
 pub fn opening_fits(s: &sim::SimState, id: BuildingId, cell: Cell, o: Opening) -> Result<(), String> {
     match o {
         Opening::Gate => sim::dams::plan_gate(s, id, cell).map(|_| ()).map_err(|e| cap(&e)),
@@ -234,8 +212,6 @@ pub fn opening_fits(s: &sim::SimState, id: BuildingId, cell: Cell, o: Opening) -
     }
 }
 
-/// The build button for a gate or a lock on a dam: lit while it is being placed, faded with
-/// the reason when it fits nowhere on the dam.
 pub fn opening_button(c: &Ctx, r: &mut Ui, id: BuildingId, d: &sim::dams::Dam, o: Opening) {
     let s = c.s;
     let fits: Vec<Result<(), String>> = d.line().map(|x| opening_fits(s, id, x.cell, o)).collect();
@@ -253,9 +229,6 @@ pub fn opening_button(c: &Ctx, r: &mut Ui, id: BuildingId, d: &sim::dams::Dam, o
     r.big_button(BigButton { icon, word, cost: super::words::cost_chip(&cost), action, tip, hint: false, on });
 }
 
-/// A chip for each gate and lock over a side view: its height, or what has been brought for
-/// it; a click shows its settings and takes the camera there. Chips that don't fit merge
-/// into the last, with a count.
 pub fn chips(c: &Ctx, u: &mut Ui, id: BuildingId, gates: &[sim::gates::Gate], room: f32) {
     let s = c.s;
     const CHIP_W: f32 = 52.0;
@@ -303,8 +276,6 @@ pub fn chips(c: &Ctx, u: &mut Ui, id: BuildingId, gates: &[sim::gates::Gate], ro
     });
 }
 
-/// The builders or diggers on the works, as a button to the jobs; marked when work waits for
-/// one.
 pub fn crew_button(r: &mut Ui, n: usize, icon: Icon, what: &str, hint: bool) {
     let word = format!("{n}");
     r.small_button(Some(icon), Some(&word), Some(HudAction::Overlay(Some(super::Overlay::Colony(super::ColonyTab::Jobs)))), Tip::name(what).line("Open the jobs", ""), if hint { Small::Hint } else { Small::Idle });

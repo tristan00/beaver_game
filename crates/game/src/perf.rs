@@ -1,19 +1,9 @@
-//! Where each frame's time goes, logged every few seconds when `BC_PERF=SECONDS` is set.
-//!
-//! `BC_SPEED=1|2|3` starts the clock at that game speed and `BC_PERF_EXIT=SECONDS` quits after
-//! that long. Set `BC_SETTLE=1` to found the selected map automatically; for example,
-//! `BC_PERF=5 BC_SPEED=3 BC_PERF_EXIT=30 BC_SETTLE=1 beaver_colony --map telemark`.
-//! `BC_PERF_SHOT=FILE.png` saves the window as it is drawn a few seconds before quitting: the
-//! game as played, on its simulation thread, where `--screenshot` steps the world in place.
-
 use crate::sim_driver::{SimClock, Speed, BASE_DAYS_PER_SECOND};
 use crate::state::Sim;
 use bevy::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Nanoseconds spent building water meshes (added to by the water renderer).
 pub static WATER_MESH_NS: AtomicU64 = AtomicU64::new(0);
-/// Nanoseconds spent building terrain meshes.
 pub static TERRAIN_MESH_NS: AtomicU64 = AtomicU64::new(0);
 
 pub struct PerfPlugin;
@@ -28,8 +18,6 @@ fn env_f32(name: &str) -> Option<f32> {
     std::env::var(name).ok().and_then(|v| v.parse().ok())
 }
 
-/// While the colony runs, hold the speed `BC_SPEED` asks for (the start flow pauses the clock
-/// when it settles the family, so this keeps applying it).
 fn start_speed(mut clock: ResMut<SimClock>, sim: Res<Sim>) {
     if !sim.0.is_running() {
         return;
@@ -69,8 +57,6 @@ fn report(time: Res<Time<Real>>, sim: Res<Sim>, clock: Res<SimClock>, mut w: Loc
         }
     }
     let s = &sim.0;
-    // `BC_PROFILE=1` times every part of a step from the first step at speed, and prints the
-    // table on the way out.
     if w.profile_from.is_none() && std::env::var_os("BC_PROFILE").is_some() && s.is_running() && !clock.paused {
         sim::prof::reset();
         sim::prof::enable();

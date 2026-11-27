@@ -1,8 +1,3 @@
-//! Themed vertical scrollbars for any panel whose content extends past its visible height.
-//!
-//! Styled to match the carved-plate HUD: a recessed dark groove track with a warm bark thumb
-//! that brightens to amber on hover or drag, and hides automatically when everything fits.
-
 use super::ui::{ACCENT, BARK, GROOVE};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
@@ -14,17 +9,14 @@ const THUMB_W: f32 = 6.0;
 const MIN_THUMB: f32 = 24.0;
 const WHEEL_PX_PER_LINE: f32 = 44.0;
 
-/// Marks a scrollable viewport (`Overflow::scroll_y()` + `ScrollPosition`).
 #[derive(Component)]
 pub struct ScrollViewport;
 
-/// Recessed scrollbar track anchored beside a `ScrollViewport`.
 #[derive(Component)]
 pub struct ScrollTrack {
     pub target: Entity,
 }
 
-/// Draggable thumb pill inside a `ScrollTrack`.
 #[derive(Component)]
 pub struct ScrollThumb {
     pub target: Entity,
@@ -40,8 +32,6 @@ struct DragState {
 #[derive(Resource, Default)]
 pub struct ScrollDrag(Option<DragState>);
 
-/// Pure scrollbar thumb geometry in logical pixels: `Some((thumb_h, thumb_top, max_scroll))`
-/// when `content_h` overflows `view_h`, or `None` when everything fits.
 pub fn bar_geometry(view_h: f32, content_h: f32, scroll_y: f32, track_h: f32) -> Option<(f32, f32, f32)> {
     let max_scroll = content_h - view_h;
     if view_h <= 1.0 || track_h <= 1.0 || max_scroll <= 1.5 {
@@ -54,7 +44,6 @@ pub fn bar_geometry(view_h: f32, content_h: f32, scroll_y: f32, track_h: f32) ->
     Some((thumb_h, thumb_top, max_scroll))
 }
 
-/// Spawn a themed scrollbar track + thumb positioned inside the right edge of a panel shell.
 pub fn spawn_scrollbar(parent: &mut ChildSpawnerCommands, target: Entity, top: f32, bottom: f32, right: f32) {
     parent
         .spawn((
@@ -96,7 +85,6 @@ pub fn spawn_scrollbar(parent: &mut ChildSpawnerCommands, target: Entity, top: f
         });
 }
 
-/// Mouse wheel scrolls the overflowing `ScrollViewport` under the pointer.
 pub fn scroll_wheel(
     scroll: Res<AccumulatedMouseScroll>,
     mut viewports: Query<(&ComputedNode, &RelativeCursorPosition, &mut ScrollPosition), With<ScrollViewport>>,
@@ -108,7 +96,6 @@ pub fn scroll_wheel(
         MouseScrollUnit::Line => -scroll.delta.y * WHEEL_PX_PER_LINE,
         MouseScrollUnit::Pixel => -scroll.delta.y,
     };
-    // Pick the smallest (innermost) overflowing viewport under the pointer.
     let mut best: Option<(f32, f32, Mut<ScrollPosition>)> = None;
     for (computed, rel, pos) in &mut viewports {
         let over = rel.normalized.is_some_and(|p| p.x.abs() <= 0.5 && p.y.abs() <= 0.5);
@@ -132,7 +119,6 @@ pub fn scroll_wheel(
     }
 }
 
-/// Click or drag on any themed scrollbar track or thumb to scroll smoothly.
 #[allow(clippy::too_many_arguments)]
 pub fn scroll_drag(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -148,7 +134,6 @@ pub fn scroll_drag(
 
     if mouse.just_pressed(MouseButton::Left) {
         if let Some(cp) = cursor_phys {
-            // Check thumb press first (preserves grab offset).
             for (thumb, inter, thumb_comp, thumb_tf, parent) in &thumbs {
                 if *inter != Interaction::None {
                     let thumb_top_phys = thumb_tf.translation.y - thumb_comp.size().y * 0.5;
@@ -157,7 +142,6 @@ pub fn scroll_drag(
                     break;
                 }
             }
-            // Otherwise check track press (jumps thumb center to click point).
             if drag.0.is_none() {
                 for (track_e, track, inter, track_comp, track_tf) in &tracks {
                     if *inter != Interaction::None {
@@ -211,7 +195,6 @@ pub fn scroll_drag(
     }
 }
 
-/// Sync scrollbar visibility, thumb size/position, and hover highlight with each viewport's layout.
 pub fn sync_scrollbars(
     drag: Res<ScrollDrag>,
     mut viewports: Query<(&ComputedNode, &mut ScrollPosition), With<ScrollViewport>>,

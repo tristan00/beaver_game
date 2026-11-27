@@ -1,4 +1,3 @@
-//! Wolves: roaming, hunting beavers and wildlife, lookout alarms, and fleeing.
 include!(concat!(env!("OUT_DIR"), "/predators_constants.rs"));
 
 use std::cmp::Reverse;

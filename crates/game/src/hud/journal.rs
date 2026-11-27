@@ -1,5 +1,3 @@
-//! The journal, bottom right: what happened, a line each — births and deaths, buildings
-//! finished, a wolf seen. Problems that want the player stay as badges at the top.
 use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
@@ -16,7 +14,6 @@ fn shown(c: &Ctx) -> usize {
     c.journal.len().min(if c.hud.journal_open { MANY } else { FEW })
 }
 
-/// How tall the journal stands, so the inspectors above it stop short of it.
 pub fn height(c: &Ctx) -> f32 {
     if !c.s.is_running() {
         return 0.0;

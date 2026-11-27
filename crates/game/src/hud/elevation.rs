@@ -3,11 +3,8 @@ use crate::state::Sim;
 use crate::terrain_render::CELL_SIZE;
 use bevy::prelude::*;
 
-/// A light line every 10 cm of height, a bold one every metre.
 pub const STEP_M: f32 = 0.1;
 pub const MAJOR_EVERY: i32 = 10;
-/// Where the ground rises more than this across one triangle (m), the 10 cm lines would bunch
-/// into a smear: only the metre lines are drawn there.
 const LIGHT_MAX_RELIEF: f32 = 0.5;
 const LIFT: f32 = 0.05;
 const CHECK_SECS: f32 = 0.5;
@@ -16,8 +13,6 @@ const DAM_QUANTUM: f32 = 1.0 / 32.0;
 pub const MINOR_COLOR: Color = Color::srgba(0.16, 0.12, 0.08, 0.32);
 pub const MAJOR_COLOR: Color = Color::srgba(0.12, 0.08, 0.05, 0.85);
 
-/// The window drawn round the camera's target: this many cells per unit of camera distance
-/// either side, within bounds; it moves in steps of `WINDOW_SNAP` cells.
 const WINDOW_PER_DISTANCE: f32 = 0.9;
 const WINDOW_MIN: f32 = 32.0;
 const WINDOW_MAX: f32 = 160.0;
@@ -110,8 +105,6 @@ fn asset(segs: &[[Vec3; 2]], w: usize, d: usize, color: Color) -> GizmoAsset {
     g
 }
 
-/// Contours of the ground round where the camera looks: light every 10 cm, bold every metre;
-/// redrawn as the view moves or the ground and dams change.
 pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, orbit: Res<crate::camera::OrbitCamera>, active: Res<super::ActiveLens>, mut c: ResMut<Contours>, mut assets: ResMut<Assets<GizmoAsset>>) {
     let _p = ::sim::prof::scope("game/update contours");
     if active.0 != MapLens::Elevation {
@@ -124,7 +117,6 @@ pub fn update_contours(mut commands: Commands, time: Res<Time>, sim: Res<Sim>, o
     let now = time.elapsed_secs();
     let s = &sim.0;
     let (w, d) = (s.height.width(), s.height.height());
-    // The window, snapped so small camera moves keep the same lines.
     let half = (orbit.distance * WINDOW_PER_DISTANCE).clamp(WINDOW_MIN, WINDOW_MAX) as i32;
     let (fx, fy) = crate::flow::world_cell(&s.height, orbit.target);
     let (cx, cy) = (fx as i32, fy as i32);

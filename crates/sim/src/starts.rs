@@ -17,9 +17,6 @@ impl std::fmt::Display for StartError {
 }
 impl std::error::Error for StartError {}
 
-// Spring arrival: these are the previous spring's offspring. They become
-// yearlings around the arrival of this year's litter, then adults next spring.
-
 pub(crate) fn dist2(a: Cell, b: Cell) -> usize {
     a.0.abs_diff(b.0).pow(2) + a.1.abs_diff(b.1).pow(2)
 }
@@ -170,10 +167,6 @@ fn settle_water(sim: &mut SimState) {
     sim.water.reset_books();
 }
 
-/// Where the river network is richest: dry banks with the most separate river branches
-/// within `RIVERS_RADIUS`, such as a junction or two streams running side by side. A branch
-/// counts once however often it meanders in and out; the reach below a junction adds nothing.
-/// Best first, at least a radius apart, with the river cells in reach breaking ties.
 fn river_spots(sim: &SimState) -> Vec<(usize, Cell)> {
     const STRIDE: usize = 4;
     const BANK: usize = 10;
@@ -221,7 +214,6 @@ fn river_spots(sim: &SimState) -> Vec<(usize, Cell)> {
     spots
 }
 
-/// A dry camp with a river bank and trees in reach, outside `pond`.
 fn camp_fits(sim: &SimState, c: Cell, pond: &std::collections::HashSet<Cell>, trees: &[Cell]) -> bool {
     let size = sim.world.size;
     let wet = |(x, y): Cell| {
@@ -260,9 +252,6 @@ fn camp_near(sim: &SimState, dam: &[Cell], height: f32) -> Option<Cell> {
         .find(|&c| camp_fits(sim, c, &pond, &trees))
 }
 
-/// Start where the rivers are richest: a camp beside the best river spot, and the first dam
-/// suggested as near that camp as one can be found. Only a map with no rich spot that has room
-/// for a camp falls back to the best dam anywhere and a camp beside it.
 fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
     settle_water(sim);
     let reach = RIVERS_RADIUS;
@@ -290,7 +279,6 @@ fn river_plan(sim: &mut SimState) -> Option<RiverPlan> {
 
 const SPOTS_TRIED: usize = 6;
 
-/// How good a first dam is: fills and shows, keeps a fall below it, then how close it comes.
 type DamKey = (u8, bool, f32);
 
 fn dam_key(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamKey> {
@@ -299,8 +287,6 @@ fn dam_key(sim: &SimState, dam: &[Cell], height: f32) -> Option<DamKey> {
     Some((effect.fills as u8 + effect.is_visible() as u8, effect.drop >= MIN_DROP, effect.closeness()))
 }
 
-/// The nearest dam that fills and shows a pond and leaves the camp dry; failing that, the
-/// best of the rest.
 fn best_dam(sim: &SimState, candidates: Vec<(f32, Vec<Cell>, f32)>, camp: Cell) -> Option<(Vec<Cell>, f32)> {
     let trees = trees(sim);
     let mut fit: Vec<(DamKey, usize, Vec<Cell>, f32)> = candidates.into_iter()
@@ -329,8 +315,6 @@ fn swim_cells(sim: &SimState, landing: Cell, n: usize) -> Vec<Cell> {
         .filter(|&(x, y)| sim.world.river.get(x, y).copied().unwrap_or(false))
         .collect();
     river.sort_by_key(|&c| (dist2(c, landing), c.1, c.0));
-    // Find enough nearby landing cells for the family, not a path from every
-    // river cell on the map before the player can start.
     let linked: Vec<Cell> = river.iter().copied()
         .filter(|&c| dist2(c, landing) <= SWIM_REACH * SWIM_REACH)
         .filter(|&c| nav.find_path(who, c, Goal::Beside(landing)).is_some())
@@ -430,7 +414,6 @@ fn build_river_on(mut sim: SimState) -> Result<(SimState, DamSite), StartError> 
     Ok((sim, DamSite { cells: plan.dam, height: plan.height, camp: plan.camp }))
 }
 
-/// Mud banks within `START_MUD_REACH` of the camp, counted as `mud_near_camp` counts them.
 pub(crate) fn mud_near(sim: &SimState, camp: Cell) -> f32 {
     let r = START_MUD_REACH;
     sim.resources.items().iter()
@@ -439,8 +422,6 @@ pub(crate) fn mud_near(sim: &SimState, camp: Cell) -> f32 {
         .sum()
 }
 
-/// Early mud: where the map left too little near the camp, a few mud banks along the
-/// river nearest it, clear of the camp itself, the starting supplies and the first pond.
 fn mud_near_camp(sim: &mut SimState, camp: Cell, dam: &[Cell], height: f32) {
     let mut have = mud_near(sim, camp);
     if have >= START_MUD {
@@ -491,7 +472,6 @@ pub fn new_game_on_world(info: &crate::maps::MapInfo, world: crate::worldgen::Wo
     build_river_on(on_flora(SimState::from_world(info.seed(), world), &info.id))
 }
 
-/// The world with its plants drawn from this map's flora.
 fn on_flora(mut sim: SimState, map: &str) -> SimState {
     crate::wetland::set_flora(&mut sim, map);
     sim

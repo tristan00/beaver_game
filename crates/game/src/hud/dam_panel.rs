@@ -1,8 +1,3 @@
-//! The panel a dam opens: the picture is the panel. A side cut through the dam shows the pond,
-//! the mound, how far the pond is from spilling and the drop below, with the dam's state and a
-//! chip for each gate and lock drawn on it. Under it the build buttons (Raise, Widen, Extend,
-//! Gate, Lock), the strip of the gate picked, and the footer (builders, Mend, Face, Pause,
-//! Remove). History is behind the hourglass in the header. Detail lives in tooltips.
 use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
@@ -16,14 +11,11 @@ use sim::dams::{Dam, Spill};
 use sim::DamGrowth;
 
 const VIEW_H: f32 = 124.0;
-/// Room over the picture for the state and the chips.
 const HEAD: f32 = 34.0;
 const FLOOR: f32 = 8.0;
-/// Where the mound stands across the picture.
 const MOUND_X: f32 = 118.0;
 const MOUND_W: f32 = 32.0;
 
-/// A small painted view of the dam: deep water behind, a stick wall, the stream below.
 fn portrait(p: &mut Ui, health: f32) {
     p.node(Node { width: Val::Px(42.0), height: Val::Px(42.0), overflow: Overflow::clip(), ..default() }, |p| {
         p.add(VNode::new(abs_box(0.0, 10.0, 19.0, 32.0))).bg(DEEP);
@@ -36,7 +28,6 @@ fn portrait(p: &mut Ui, health: f32) {
     });
 }
 
-/// What can be done to the dam now, worked out once for the state and the buttons.
 struct Offers {
     picks: Vec<Cell>,
     raise: Result<f32, String>,
@@ -57,7 +48,6 @@ fn offers(c: &Ctx, id: BuildingId, d: &Dam) -> Offers {
     }
 }
 
-/// The button the state points at, marked with the "!".
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fix {
     None,
@@ -68,7 +58,6 @@ enum Fix {
     Upkeep,
 }
 
-/// What the dam as a whole is doing, in a word, its colour, why, and the one fix.
 fn status(s: &sim::SimState, id: BuildingId, d: &Dam, o: &Offers) -> (&'static str, Color, &'static str, Fix) {
     let builders = sim::agents::builders_on(s, id);
     let building = sim::dams::has_work_for(s, id, false);
@@ -112,18 +101,12 @@ fn condition_tip(s: &sim::SimState, d: &Dam, health: f32) -> Tip {
     tip.line("Rows", format!("{}", d.rows)).line("Height limit", format!("{} m", num(d.cap())))
 }
 
-/// What the side cut goes through.
 enum Through {
-    /// A cell a gate or lock is being placed on: whether it fits there.
     Placing(Result<(), String>),
-    /// The gate picked.
     Gate(sim::gates::Gate),
-    /// The lowest finished cell of the crest: where the dam would spill first.
     Lowest,
 }
 
-/// The cell the side cut is drawn through: the one being placed on, else the gate picked, else
-/// the lowest finished cell of the crest.
 fn through(c: &Ctx, id: BuildingId, d: &Dam) -> Option<(Cell, Through)> {
     let s = c.s;
     let on_line = |cell: Cell| d.line().any(|x| x.cell == cell);
@@ -143,9 +126,6 @@ fn through(c: &Ctx, id: BuildingId, d: &Dam) -> Option<(Cell, Through)> {
     Some((cell, Through::Lowest))
 }
 
-/// The side cut: water behind the dam, the dam at one of its cells, the water below; how much
-/// more the pond can rise there before it spills, and how far it stands above the water below.
-/// The state is written over it, and a chip for each gate and lock.
 fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &str), picks: usize) {
     let s = c.s;
     let Some((cell, what)) = through(c, id, d) else { return };
@@ -154,7 +134,6 @@ fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &
         Through::Gate(g) if g.built => Some(*g),
         _ => None,
     };
-    // A built gate's cell stands at its sill; the mound either side stands at the gate's top.
     let crest = gate.map_or(ground + sim::dams::built(s, cell), |g| g.top);
     let pond = d.pond.as_ref();
     let level = pond.map(|p| p.level);
@@ -195,7 +174,6 @@ fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &
             let wall = v.add(VNode::new(Node { border_radius: BorderRadius::top(Val::Px(4.0)), ..abs_box(MOUND_X, y(crest), MOUND_W, earth - y(crest)) }));
             wall.bg = if worn { BAD.with_alpha(0.7) } else { MUD };
         }
-        // A gate: the gap down to its sill, its board, and the water going through.
         if let Some(g) = gate {
             let sill = g.sill();
             v.add(VNode::new(abs_box(MOUND_X + 8.0, y(crest), MOUND_W - 16.0, y(sill) - y(crest)))).bg(FAINT);
@@ -204,7 +182,6 @@ fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &
                 v.add(VNode::new(abs_box(MOUND_X + MOUND_W - 8.0, y(sill) - 1.0, 4.0, below.map_or(earth, y) - y(sill) + 1.0))).bg(WATER.with_alpha(0.8));
             }
         }
-        // Placing: the gate it would be, outlined; or why it can't go here.
         if let Through::Placing(fit) = &what {
             let col = if fit.is_ok() { SELECT } else { BAD };
             let outline = v.add(VNode::new(Node { border: UiRect::all(Val::Px(1.5)), ..abs_box(MOUND_X + 6.0, y(crest), MOUND_W - 12.0, earth - y(crest)) }));
@@ -247,7 +224,6 @@ fn side_cut(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, state: (&str, Color, &
                 }
             }
         }
-        // The state, and the picked cells if any.
         v.node(Node { position_type: PositionType::Absolute, left: Val::Px(8.0), top: Val::Px(6.0), flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), align_items: AlignItems::Center, ..default() }, |r| {
             r.bold(state.0, 13.0, state.1).tip(Tip::name(state.0).line(state.2, ""));
             if picks > 0 {
@@ -283,7 +259,6 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, d: &Dam, o: &Offers, fix: Fix) {
     });
 }
 
-/// Face it with pebbles: then it wears more slowly.
 fn face_button(s: &sim::SimState, r: &mut Ui, id: BuildingId) {
     let Some(b) = s.buildings.building(id) else { return };
     if b.pebbled {

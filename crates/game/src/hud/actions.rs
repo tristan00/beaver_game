@@ -1,8 +1,5 @@
-//! Turns HUD actions into simulation commands and user feedback.
 use super::*;
 
-/// Build the drawn line: a new dam or canal, or more cells on the one being extended.
-/// Returns the building id so its panel can open.
 pub(super) fn commit_line(sim: &mut sim::SimState, hud: &mut HudState) -> Option<BuildingId> {
     if hud.line.is_empty() || !matches!(hud.tool, Tool::Dam | Tool::Canal) {
         return None;
@@ -140,7 +137,6 @@ pub(super) fn button_actions(
                     hud.swallow_click();
                     hud.dam_cells.clear();
                     hud.select(&mut sel, Selection::Site(dam));
-                    // Bring the dam into view if it is far from where the camera looks.
                     if let Some(mid) = sim::dams::dam(s, dam).and_then(|d| d.line().nth(d.line().count() / 2).map(|c| c.cell)) {
                         let (vx, vy) = crate::flow::world_cell(&s.height, orbit.target);
                         if (vx - mid.0 as f32).hypot(vy - mid.1 as f32) > 24.0 {
@@ -242,7 +238,6 @@ pub(super) fn button_actions(
     }
 }
 
-/// The picked cells that lie on this dam or canal: a pick on another one is not for it.
 fn picks_on(s: &sim::SimState, id: sim::buildings::BuildingId, picks: &[Cell]) -> Vec<Cell> {
     let Some(b) = s.buildings.building(id) else { return Vec::new() };
     let on = |c: &Cell| b.dam.as_ref().is_some_and(|d| d.line().any(|x| x.cell == *c)) || b.canal.as_ref().is_some_and(|k| k.cells.iter().any(|x| x.cell == *c));

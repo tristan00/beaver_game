@@ -32,7 +32,6 @@ pub const PAGE_TOP: f32 = 84.0;
 pub const PAGE_RIGHT: f32 = 20.0;
 pub const PAGE_BOTTOM: f32 = 190.0;
 
-/// Standard three-band status colour for health, needs, and building condition.
 pub fn level_color(v: f32) -> Color {
     if v < 0.35 { BAD } else if v < 0.6 { WARN } else { GOOD }
 }

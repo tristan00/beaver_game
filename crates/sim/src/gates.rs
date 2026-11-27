@@ -1,4 +1,3 @@
-//! Gates on dams and canals, plus shared waterworks helpers.
 use std::collections::VecDeque;
 
 use crate::agents::{Task, WorkKind};

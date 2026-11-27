@@ -1,7 +1,3 @@
-# Word pools for names: litter/<theme> (a litter's first names), flora/<species>, landform/<region>/<still|stream|wet|slope>
-# and compound/<region> (family and pond names), colour/..., feature/..., count, position; epithet/<job>[/<how>] and
-# epithet2/<job>/<job>. Every epithet is "the" + a word, and no word is in two pools.
-
 [names]
 "colour/deep" = ["Black", "Dark", "Still"]
 "colour/green" = ["Green", "Rushy"]

@@ -1,12 +1,3 @@
-# Jobs. duty: what the job does: Gather (the kinds of resource whose `role` is this job), Build, Haul, Forest (take
-# collect wild seedlings of trees and food plants to a seedling bed and plant them round it), Watch (keep watch at a lookout) or Mend (repair buildings and keep dams
-# and canals in order, without a seat); one job does each duty but Gather.
-# name: the job, plural: its beavers; skill: the skill it builds, in words. priority: its place on the colony panel, first first.
-# shore_limit: the player may keep it near the water. skill_trait: what its skill does for the beaver (Speed: works
-# this job faster; HeavyLoads, Sight, Steady, Healing: go with the beaver into any job; see `growth`), and
-# skill_effect, that in words. icon, and path_colour (sRGB) for its beavers' paths. Epithet pools are keyed by the
-# job's key in lower case (names.toml).
-
 [[job]]
 key = "Forager"
 name = "Forager"

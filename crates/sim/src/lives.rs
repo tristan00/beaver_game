@@ -1,8 +1,3 @@
-//! Each beaver's life in the colony, kept for the player to read back: how it came (born,
-//! with its parents, or joined as a newcomer), each job it took, each partner, each home,
-//! growing up, and how it ended. Worked out by looking at the colony a few times a day and
-//! noting what changed since the last look, so nothing else has to report to it. Kept for the
-//! dead too, so family links still lead somewhere. Saved after the world (see `save`).
 use std::collections::BTreeMap;
 
 use crate::buildings::BuildingId;
@@ -10,20 +5,15 @@ use crate::colony::{BeaverId, DeathCause, Sex, Stage};
 use crate::jobs::Job;
 use crate::SimState;
 
-/// Days between looks.
 const LOOK_DAYS: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum What {
-    /// Already in the colony when its records began (a founder, or a game from before them).
     Known,
     Born { mother: Option<BeaverId>, father: Option<BeaverId> },
-    /// Came in as a newcomer.
     Joined,
     Grew(Stage),
-    /// Took up a job; `None` is left free.
     Job(Option<Job>),
-    /// Paired with a partner; `None` is the partner lost.
     Partner(Option<BeaverId>),
     Moved(Option<BuildingId>),
     Died(DeathCause),
@@ -36,7 +26,6 @@ pub struct Entry {
     pub what: What,
 }
 
-/// What was true of a beaver at the last look.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Seen {
     job: Option<Job>,
@@ -48,26 +37,21 @@ struct Seen {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Life {
     pub name: String,
-    /// Kept so family ties can still be named once it is gone.
     pub sex: Sex,
     pub mother: Option<BeaverId>,
     pub father: Option<BeaverId>,
     pub entries: Vec<Entry>,
-    /// Still in the colony (false once dead or gone).
     pub here: bool,
     seen: Seen,
 }
 
 impl Life {
-    /// When it came to the colony (born or joined), if the records saw it.
     pub fn arrived(&self) -> Option<f64> {
         self.entries.iter().find(|e| matches!(e.what, What::Born { .. } | What::Joined)).map(|e| e.day)
     }
-    /// The day it took up with its current partner.
     pub fn partnered_since(&self) -> Option<f64> {
         self.entries.iter().rev().find(|e| matches!(e.what, What::Partner(Some(_)))).map(|e| e.day)
     }
-    /// The day it moved into its current home.
     pub fn home_since(&self) -> Option<f64> {
         self.entries.iter().rev().find(|e| matches!(e.what, What::Moved(_) | What::Born { .. } | What::Joined | What::Known)).map(|e| e.day)
     }
@@ -90,8 +74,6 @@ pub fn step(sim: &mut SimState) {
     for b in &sim.colony.beavers {
         let seen = Seen { job: crate::jobs::role_of(sim, b.id), lodge: b.lodge, partner: b.mate, stage: b.stage };
         let Some(life) = lives.of.get_mut(&b.id) else {
-            // A new face: born here if young enough to have been born since the last look,
-            // else a newcomer, or (at the very first look) already here.
             let what = if first {
                 What::Known
             } else if b.mother.is_some() && (b.age_days as f64) <= LOOK_DAYS + 1.0 {
@@ -125,7 +107,6 @@ pub fn step(sim: &mut SimState) {
         life.seen = seen;
         life.name.clone_from(&b.name);
     }
-    // Those no longer here: dead (a body lies somewhere), or gone off.
     for (id, life) in lives.of.iter_mut().filter(|(_, l)| l.here) {
         if sim.colony.beaver(*id).is_some() {
             continue;

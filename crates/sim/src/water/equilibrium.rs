@@ -1,54 +1,22 @@
-//! Equilibrium water: a fill–spill–merge depression hierarchy with steady reach discharge
-//! (after Barnes, Callaghan & Wickert 2021, "Computing water flow through complex
-//! landscapes, Part 3: Fill–Spill–Merge").
-//!
-//! On every bed change the map is rebuilt: a priority flood from the outlets gives the
-//! drainage tree of the filled surface (each cell drains to the neighbour that flooded it,
-//! which is also how the map generator laid out its rivers), and steepest descent on the
-//! raw bed labels every pit's watershed. Joining watersheds at their lowest saddles builds
-//! the depression hierarchy: leaves are pits, a meta-depression appears where two of them
-//! meet, and a root depression is one that spills to an outlet.
-//!
-//! Each step pushes the source discharge down the drainage graph in topological order.
-//! A reach cell holds the channel storage of Manning normal flow for its discharge, so a
-//! rising flow fills the channel first and its front moves at the water speed. Water that
-//! reaches a depression fills it; a full depression sends its excess to its sibling or,
-//! when both are full, to the merged parent. Roots spill over their crest by the weir law.
 use super::{Water, edge_bed, neighbours8};
 use std::collections::BinaryHeap;
 
-/// Longest routing step in seconds.
 const MAX_STEP_S: f64 = 900.0;
-/// Gradient the priority flood lays across flats (the map generator's value).
 const FLOW_EPS: f32 = 1.0e-3;
-/// Channel width per square root of discharge, w = a·Q^0.5 (m per (m³/s)^0.5).
 const WIDTH_A: f64 = 3.5;
-/// Narrowest hydraulic channel (m); it is drawn at least one cell wide.
 const WIDTH_MIN: f64 = 0.1;
-/// Widest channel (m); a channel wider than a cell is spread sideways at one stage.
 const WIDTH_MAX: f64 = 4.0;
-/// Floor on the friction slope of reaches on the filled surface.
 const SLOPE_MIN: f64 = 1.0e-3;
-/// Cap on the friction slope (lidar steps are not waterfalls).
 const SLOPE_MAX: f64 = 0.15;
-/// Cells downstream over which the reach slope is averaged.
 const SLOPE_CELLS: usize = 6;
-/// Roughness multiplier on the configured Manning n for shallow creeks.
 const ROUGHNESS: f64 = 1.75;
-/// Rim cells within this of the spill level form the weir crest (m).
 const RIM_TOL: f32 = 0.02;
-/// Widest weir a spill concentrates into (m); overflow finds the low gap.
 pub(crate) const WEIR_MAX_M: usize = 2;
-/// Depth above which stranded water is held as a draining pool after a rebuild (m).
 const POOL_MIN: f32 = 0.08;
-/// Breach width of a stranded pool's outlet weir (m).
 const POOL_WEIR_M: f64 = 0.1;
-/// A pool whose head over its outlet falls below this dissolves into the reach (m).
 const POOL_END: f64 = 0.01;
-/// Reach storage below this is dry (m³).
 const DRY_M3: f64 = 1.0e-7;
 
-/// Overflows one depression may send on in a step before it holds the rest (cycle sentry).
 const LOOP_LIMIT: u32 = 16;
 
 const NONE: u32 = u32::MAX;
@@ -58,13 +26,11 @@ type Version = ((u64, u64), (u64, u64), (u64, u64), (u64, u64), bool);
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Equilibrium {
-    /// Which rebuild the drainage tables come from: a copy holding the same one keeps its own.
     #[serde(skip)]
     built: u64,
     version: Option<Version>,
     n: usize,
     zbed: Vec<f32>,
-    // Static, per bed.
     recv: Vec<u32>,
     key: Vec<u64>,
     slope: Vec<f32>,
@@ -76,7 +42,6 @@ pub(super) struct Equilibrium {
     dcells: Vec<u32>,
     dbeds: Vec<f64>,
     dprefix: Vec<f64>,
-    // Dynamic.
     own: Vec<f64>,
     slow: Vec<bool>,
     full: Vec<bool>,
@@ -89,8 +54,6 @@ pub(super) struct Equilibrium {
     pools: Vec<Pool>,
     pool_of: Vec<u32>,
     carry: Vec<(u32, f64)>,
-    // Per step. Work known when the step begins is sorted once into `seeds`; `heap` takes
-    // only what turns up while routing. Together they pop in the order one heap would.
     heap: BinaryHeap<(u64, u32)>,
     #[serde(skip)]
     seeds: Vec<(u64, u32)>,
@@ -100,7 +63,6 @@ pub(super) struct Equilibrium {
     seeds_prev: Vec<(u64, u32)>,
     #[serde(skip)]
     seeding: bool,
-    /// Worked out again when needed; a copy starts without them.
     #[serde(skip)]
     lake_orders: Vec<LakeOrder>,
     pend: Vec<f64>,
@@ -120,7 +82,6 @@ pub(super) struct Equilibrium {
     dt: f64,
     last_dt: f64,
     fresh: bool,
-    // Publishing.
     written: Vec<u32>,
     wmark: Vec<bool>,
     fx: Vec<f32>,
@@ -133,9 +94,6 @@ pub(super) struct Equilibrium {
     prev_y: Vec<u32>,
 }
 
-/// `Clone` field by field, as `grid::clone_fields`, but with the tables that only a rebuild
-/// writes copied just when the copy holds those of another rebuild. They are most of the
-/// engine's memory, and a snapshot is taken many times a second.
 macro_rules! clone_split {
     ($t:ident, $stamp:ident, built { $($s:ident),* }, moving { $($d:ident),* }, scratch { $($c:ident),* }) => {
         impl Clone for $t {
@@ -162,12 +120,10 @@ fn next_build() -> u64 {
 
 clone_split!(Equilibrium, built, built { zbed, recv, key, slope, own_of, pit_leaf, outlet, lake_cells, deps, dcells, dbeds, dprefix }, moving { version, n, own, slow, full, lvl, dirty, wet_deps, wet_flag, store, wet, pools, pool_of, carry, heap, seeds, seeds_asked, seeds_prev, seeding, pend, inq, vstamp, s0, iacc, oacc, touched, dstamp, dfwd, dcnt, crests, dinq, lake_roots, stamp, dt, last_dt, fresh, written, wmark, fx, fy, cx, cy, faces_x, faces_y, prev_x, prev_y }, scratch { lake_orders });
 
-/// A lake's cells in map order (see `lake_order`).
 #[derive(Clone, Debug, Default)]
 struct LakeOrder {
     top: u32,
     built: u64,
-    /// Own cells are listed up to this level.
     upto: f64,
     cells: Vec<LakeCell>,
 }
@@ -175,8 +131,6 @@ struct LakeOrder {
 #[derive(Clone, Copy, Debug)]
 struct LakeCell {
     cell: u32,
-    /// One of the top depression's own cells, under water only below the level; the rest lie
-    /// in depressions merged beneath it and are always under.
     own: bool,
     bed: f64,
 }
@@ -195,7 +149,6 @@ struct Dep {
     target: u32,
     root: u32,
     zmin: f32,
-    // Root only.
     weir: f64,
     rim: Vec<u32>,
     lake: f64,
@@ -221,7 +174,6 @@ fn hkey(v: f32, sec: u32) -> u64 {
     ((ord(v) as u64) << 32) | sec as u64
 }
 
-/// Level for `v` of water over `c` cells at `base` plus sorted `beds` (with prefix sums).
 fn level_on(v: f64, c: f64, base: f64, beds: &[f64], prefix: &[f64]) -> f64 {
     let k_max = beds.len();
     let at = |k: usize| (v + c * base + prefix[k]) / (c + k as f64);
@@ -276,12 +228,10 @@ impl Equilibrium {
         self.deps[d].desc + (self.deps[d].end - self.deps[d].start) as f64
     }
 
-    /// Whether `p` holds one merged lake over its children.
     fn merged(&self, p: usize) -> bool {
         self.own[p] > 0.0 || (self.full[p] && self.deps[p].own_cap <= 0.0)
     }
 
-    /// The depression whose level is the water surface over `d`.
     fn top(&self, mut d: usize) -> usize {
         loop {
             let p = self.deps[d].parent;
@@ -292,7 +242,6 @@ impl Equilibrium {
         }
     }
 
-    /// Every lake with its own surface.
     fn tops(&self) -> Vec<usize> {
         let mut t: Vec<usize> = self.wet_deps.iter().filter(|&&d| self.own[d as usize] > 0.0).map(|&d| self.top(d as usize)).collect();
         t.sort_unstable();
@@ -362,7 +311,6 @@ impl Equilibrium {
         }
     }
 
-    /// Add water to depression `d`, spilling a full non-root depression's excess.
     fn deposit(&mut self, mut d: usize, mut vol: f64) {
         let kids = self.deps[d].kids;
         if kids[0] != NONE && !(self.full[kids[0] as usize] && self.full[kids[1] as usize]) {
@@ -406,7 +354,6 @@ impl Equilibrium {
         }
     }
 
-    /// Take up to `amount` from depression `d`, from its children when it runs dry.
     fn drain(&mut self, d: usize, amount: f64) -> f64 {
         let mut got = 0.0;
         let mut stack = vec![(d, amount)];
@@ -426,7 +373,6 @@ impl Equilibrium {
         got
     }
 
-    /// Cells under the water of top lake `t` at level `l`.
     fn covered(&self, t: usize, l: f64, out: &mut Vec<u32>) {
         let mut stack = vec![t];
         let mut first = true;
@@ -447,14 +393,8 @@ impl Equilibrium {
         }
     }
 
-    /// The list of top lake `t`'s cells in map order, good for level `l`: its own cells up to
-    /// a little above the level, and everything in the depressions merged under it. Sends
-    /// over a whole lake run along the map's rows this way, instead of jumping from cell to
-    /// cell in order of bed height. Made again when the lake outgrows it or falls well below.
     fn lake_order(&mut self, t: usize, l: f64) -> usize {
-        /// How far above the level the list reaches when made (m).
         const ROOM: f64 = 0.25;
-        /// How far below its reach the level may fall before the list is cut down (m).
         const SLACK: f64 = 1.0;
         if self.lake_orders.iter().any(|o| o.built != self.built) {
             self.lake_orders.clear();
@@ -491,8 +431,6 @@ impl Equilibrium {
         at
     }
 
-    /// Order-free lists put in one order, so that equal waters encode equally (for comparing
-    /// two runs).
     pub(super) fn canonical(&mut self) {
         self.written.sort_unstable();
     }
@@ -501,7 +439,6 @@ impl Equilibrium {
         (WIDTH_A * q.max(0.0).sqrt()).clamp(WIDTH_MIN, WIDTH_MAX)
     }
 
-    /// Manning normal depth (m) of discharge `q` (m³/s) in a channel of width `wd`.
     fn normal_depth(q: f64, wd: f64, slope: f64, manning: f64) -> f64 {
         if q <= 0.0 {
             return 0.0;
@@ -511,7 +448,6 @@ impl Equilibrium {
 
     pub(super) fn prepare(&mut self, w: &mut Water, sync: bool) {
         if self.built == 0 {
-            // Tables read from a save: name them, so copies can tell they hold the same.
             self.built = next_build();
         }
         let (terrain, dam) = w.bed_version.unwrap();
@@ -519,7 +455,6 @@ impl Equilibrium {
         if self.version == Some(version) && !sync {
             return;
         }
-        // A new version stamp on an unchanged bed needs no rebuild.
         if let Some(old) = self.version {
             if !sync && old.2 == version.2 && old.3 == version.3 && old.4 == version.4 && self.zbed == w.z {
                 self.version = Some(version);
@@ -545,7 +480,6 @@ impl Equilibrium {
         self.init(w, h, correction, !first);
     }
 
-    /// The water of the current state, cell by cell (m³).
     fn cell_volumes(&mut self, w: &Water) -> Vec<f64> {
         let nn = self.n * self.n;
         let area = (w.cell_m * w.cell_m) as f64;
@@ -603,7 +537,6 @@ impl Equilibrium {
             let (a, b) = ((i / n) * n + j % n, (j / n) * n + i % n);
             if dam[a] > 0.0 || dam[b] > 0.0 { zz[a].min(zz[b]) } else { f32::NEG_INFINITY }
         };
-        // Priority flood from the outlets: the drainage tree of the filled surface.
         let mut surf = zz.clone();
         let mut parent = vec![NONE; nn];
         let mut done = vec![false; nn];
@@ -630,7 +563,6 @@ impl Equilibrium {
                 }
             }
         }
-        // Steepest descent on the raw bed, flats drained by distance, pits grouped.
         let mut d8 = vec![NONE; nn];
         let mut dist = vec![0u32; nn];
         for i in 0..nn {
@@ -713,7 +645,6 @@ impl Equilibrium {
             }
             path.clear();
         }
-        // Lowest saddles between watersheds, joined in order (Kruskal) into the hierarchy.
         let mut edges: Vec<(u32, u32, u32)> = Vec::new();
         for i in 0..nn {
             for j in neighbours8(n, i) {
@@ -818,7 +749,6 @@ impl Equilibrium {
             uf[rb] = ra as u32;
             topd[ra] = m as u32;
         }
-        // Each inside cell belongs to the lowest depression whose spill is above it.
         let mut own_of = vec![NONE; nn];
         let mut order: Vec<(u32, u32, u32)> = (0..nn)
             .filter(|&i| label[i] != OCEAN)
@@ -876,7 +806,6 @@ impl Equilibrium {
         for d in (0..nd).rev() {
             deps[d].root = if deps[d].parent == NONE { d as u32 } else { deps[deps[d].parent as usize].root };
         }
-        // A full depression overflows into its sibling: aim at the first inside cell downhill.
         for d in 0..nd {
             if deps[d].parent == NONE {
                 continue;
@@ -889,7 +818,6 @@ impl Equilibrium {
             }
             deps[d].target = t as u32;
         }
-        // A root pours where the flood first entered it, so its outflow never runs back in.
         let mut entry: Vec<(u32, u32)> = vec![(u32::MAX, u32::MAX); nd];
         for i in 0..nn {
             if own_of[i] != NONE {
@@ -906,7 +834,6 @@ impl Equilibrium {
                 }
             }
         }
-        // Roots: the crest cells their spill pours over, and fixed-lake links.
         let mut rims: Vec<Vec<(u32, u32)>> = vec![Vec::new(); nd];
         for i in 0..nn {
             if own_of[i] != NONE {
@@ -943,7 +870,6 @@ impl Equilibrium {
                 deps[d].lake = lake[t] as f64;
             }
         }
-        // Routing graph: outside depressions the filled-surface tree, inside steepest descent.
         self.recv = vec![NONE; nn];
         self.key = vec![0; nn];
         for i in 0..nn {
@@ -1009,7 +935,6 @@ impl Equilibrium {
         }
     }
 
-    /// State from the published depths `w.h`, plus a volume correction (m³).
     fn init(&mut self, w: &mut Water, mut h: Vec<f64>, correction: f64, pools: bool) {
         let n = w.n;
         let nn = n * n;
@@ -1071,8 +996,6 @@ impl Equilibrium {
         for d in 0..nd {
             self.refresh_full(d);
         }
-        // Water a merged level holds above children that are not full fills them first;
-        // what a full depression cannot hold belongs to its parent.
         for d in 0..nd {
             let kids = self.deps[d].kids;
             if kids[0] != NONE && self.own[d] > 0.0 && !(self.full[kids[0] as usize] && self.full[kids[1] as usize]) {
@@ -1089,7 +1012,6 @@ impl Equilibrium {
                 self.set_own(p as usize, self.own[p as usize] + x);
             }
         }
-        // Water outside depressions is channel storage, or a stranded pool after a rebuild.
         let mut cand = vec![false; nn];
         for i in 0..nn {
             if self.own_of[i] == NONE && h[i] > 0.0 {
@@ -1103,7 +1025,6 @@ impl Equilibrium {
         }
         if pools {
             self.make_pools(w, &cand, &h);
-            // Water a rebuild leaves standing above a spill drains through a breach-sized weir.
             for d in 0..nd {
                 let dep = &self.deps[d];
                 if dep.parent == NONE && dep.spill.is_finite() && self.own[d] - dep.own_cap > POOL_MIN as f64 * self.area(d) {
@@ -1113,7 +1034,6 @@ impl Equilibrium {
         }
     }
 
-    /// Fill the children of `d` (deepest first) with up to `x`; return what is left.
     fn fill(&mut self, d: usize, mut x: f64) -> f64 {
         let mut stack: Vec<(usize, bool)> = self.deps[d].kids.iter().rev().map(|&k| (k as usize, false)).collect();
         while let Some((k, expanded)) = stack.pop() {
@@ -1268,7 +1188,6 @@ impl Equilibrium {
             }
         }
         self.seeding = false;
-        // The same work as last step (the usual case) is already in order.
         if self.seeds_asked != self.seeds_prev {
             self.seeds.clone_from(&self.seeds_asked);
             self.seeds.sort_unstable_by(|a, b| b.cmp(a));
@@ -1278,7 +1197,6 @@ impl Equilibrium {
         let mut next = 0;
         let _route = crate::prof::scope("step/water/engine advance/route");
         loop {
-            // The larger of the next seed and the heap's top, as one heap would pop them.
             let id = match (self.seeds.get(next).copied(), self.heap.peek().copied()) {
                 (None, None) => break,
                 (Some(s), top) if top.is_none_or(|t| s >= t) => {
@@ -1371,7 +1289,6 @@ impl Equilibrium {
             }
             return;
         }
-        // A reach: hold the channel storage of normal flow, send on the rest.
         let i_rate = self.iacc[c];
         let wd = Self::width(i_rate);
         let hn = Self::normal_depth(i_rate, wd, self.slope[c] as f64, manning);
@@ -1396,7 +1313,6 @@ impl Equilibrium {
         }
     }
 
-    /// Everything cell `c` holds or receives this step, taken for a lake.
     fn absorb(&mut self, c: usize, rate: f64, dt: f64) -> f64 {
         let v = rate * dt + std::mem::take(&mut self.store[c]);
         self.s0[c] = 0.0;
@@ -1432,7 +1348,6 @@ impl Equilibrium {
             }
             return;
         }
-        // A·H + c·H^1.5 = x: the head the weir leaves after this step.
         let c = super::WEIR as f64 * b * dt;
         let mut hd = (x / a).min((x / c).powf(2.0 / 3.0));
         for _ in 0..30 {
@@ -1467,14 +1382,11 @@ impl Equilibrium {
         }
         let pool = &self.pools[p];
         let total = pool.vol + pool.fwd;
-        // What the outlet weir lets out in this step with `v` left in the pool.
         let k = super::WEIR as f64 * POOL_WEIR_M * dt;
         let spill = |v: f64| {
             let head = (Self::pool_level(pool, v) - pool.crest).max(0.0);
             k * head * head.sqrt()
         };
-        // The volume left, v + spill(v) = total, bracketed from both sides: secant steps
-        // (Illinois) with a bisection every third, to well within the water's own rounding.
         let (mut lo, mut hi) = (0.0, total);
         let (mut under, mut over) = (-total, spill(total));
         let (mut side, mut tries) = (0i8, 0u32);
@@ -1710,7 +1622,6 @@ impl Equilibrium {
                         let d = self.dir(j, c);
                         dir.0 += d.0;
                         dir.1 += d.1;
-                        // The lake draws towards its outlet.
                         self.flux(j, qc / near.len() as f64, d);
                     }
                     self.flux(c, qc, dir);
@@ -1764,7 +1675,6 @@ impl Equilibrium {
                 }
             };
             self.flux(c, q / wd, dir);
-            // A channel wider than a cell spreads sideways at the same stage.
             let side = ((wd / w.cell_m as f64 - 1.0) / 2.0).round() as i64;
             if side > 0 && h > 0.0 {
                 let stage = w.z[c] as f64 + h;

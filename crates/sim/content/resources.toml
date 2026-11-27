@@ -1,17 +1,5 @@
-# Kinds of resource beavers gather. behaviour: Tree (grows, is felled into the Felled kind, seeds), Felled (logs, then
-# branches, and bark foragers strip for food), FoodPlant (regrows, spreads, dies back) or Deposit (dug until gone; a
-# `flowing` one is refilled by its stream).
-# yields: the goods gathering it gives. aquatic: grows in open water. freezes: closed while the ground is frozen.
-# group: what gatherers of it work (see [groups]); role: the job that gathers it; gatherers: how many at once;
-# gather_rate: a day for one beaver of ordinary skill; needs: a building whose tools must stand finished; solid: in the
-# way of walking. Looks: fill_steps it is drawn in, the words for gathering it, icon, its colour on the deposits lens
-# (sRGB), model and pose.
-
-# Each group's kinds, best first: a gatherer takes the nearest of the best kind about, kinds in one list alike.
 groups = { wood = [["Felled"], ["Tree"]], food = [["Felled"], ["Plant", "WaterPlant"]], mud = [["RiverMud", "MudBank"]], pebbles = [["Pebbles"]] }
 
-# The kinds the world's making puts down: pebble outcrops and stream gravel, a stream's mud, banks and pockets of mud,
-# and a canal's spoil.
 roles = { outcrop = "Pebbles", gravel = "Pebbles", stream_mud = "RiverMud", bank_mud = "MudBank", spoil = "MudBank" }
 
 [[resource]]

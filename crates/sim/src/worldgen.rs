@@ -10,7 +10,6 @@ const LAKE_MIN_DEPTH: f32 = 0.5;
 const CULVERT_MAX_M: f32 = 25.0;
 const CULVERT_FALL_M: f32 = 0.05;
 const CULVERT_ROUNDS: usize = 12;
-// ESA WorldCover classes.
 pub(crate) const OPEN_WATER: u8 = 80;
 pub(crate) const TREE_COVER: u8 = 10;
 const LAKE_COVER_MIN_M2: f32 = 200.0;
@@ -21,8 +20,6 @@ const LAKE_AREA_M2: std::ops::RangeInclusive<f32> = 50.0..=20_000.0;
 const FLOW_EPS: f32 = 1e-3;
 const MIN_SIZE: usize = 64;
 const MOISTURE_REACH_M: f32 = 15.0;
-/// Banks of streams and lakes are open: no trees start within this distance of the water (crowns
-/// over a stream would hide it, and beaver country is cleared along its banks).
 const RIPARIAN_CLEAR_M: f32 = 6.0;
 const TREES_PER_M2: [(u8, f32); 5] = [(10, 0.06), (20, 0.025), (90, 0.012), (30, 0.002), (100, 0.002)];
 pub const INFLOW_WALL_M: f32 = 12.0;
@@ -93,7 +90,6 @@ pub struct RealMap<'a> {
     pub cell_m: f32,
     pub inflows: &'a [(usize, usize, f32)],
     pub cover: Option<&'a [u8]>,
-    /// Map id selecting the species mix (`tree_flora`).
     pub flora: &'a str,
 }
 
@@ -449,8 +445,6 @@ pub fn from_heights(seed: u64, size: usize, raw: Vec<f32>, map: &RealMap) -> Res
         let class = map.cover.map_or(10, |c| c[i]);
         let per_m2 = TREES_PER_M2.iter().find(|(c, _)| *c == class).map_or(0.0, |t| t.1);
         if hash01(seed, i) < per_m2 * cell_m * cell_m {
-            // Separate from the density draw: conditioning the same random value
-            // on a tree being present would bias sparse forests to one species.
             let habitat = crate::trees::Habitat { moisture: moisture[i], slope: slope[i], height: (surface[i] - low) / (high - low).max(1.0), cover: class };
             forest[i] = Some(crate::trees::choose(mix, habitat, hash01(seed ^ 0x5452_4545, i)));
         }

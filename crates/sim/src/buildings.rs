@@ -6,10 +6,7 @@ pub use crate::tuning::buildings::*;
 pub use crate::content::{Good, PerId};
 
 impl Good {
-    /// The good beavers eat (the one row marked `edible`).
     pub fn food() -> Good { crate::content::content().food }
-    /// The good that keeps the tree species it grows into (the one row marked `carries_species`):
-    /// what planters plant.
     pub fn seedling() -> Good { crate::content::content().seedling }
 }
 
@@ -101,8 +98,6 @@ impl Default for Stores {
 }
 
 impl Stores {
-    /// Book goods left where work uses them (a site, a gate, a building being mended): gone from
-    /// the stores, and newly made if they came straight from whoever gathered them.
     pub(crate) fn book_delivery(&mut self, good: Good, amount: f32, fresh: Option<Producer>, use_: Use) {
         if let Some(who) = fresh {
             self.produced_total[good] += amount;
@@ -111,7 +106,6 @@ impl Stores {
         self.consumed_total[good] += amount;
         self.consumed_by[use_.index()][good] += amount;
     }
-    /// Book carried goods used up away from any store, such as a seedling planted.
     pub(crate) fn book_used(&mut self, good: Good, amount: f32, use_: Use) {
         self.consumed_total[good] += amount;
         self.consumed_by[use_.index()][good] += amount;
@@ -132,7 +126,6 @@ impl Stores {
         self.deposit_by(g, amount, Producer::Other)
     }
 
-    /// For the session journal: one store transaction and the stock it leaves.
     fn note(&self, op: &str, g: Good, asked: f32, moved: f32, detail: std::fmt::Arguments) {
         if (asked > 0.0 || moved > 0.0) && crate::trace::enabled() {
             crate::trace::event(format!("STORE {op} {} good={g:?} asked={asked:.3} moved={moved:.3} stock={:.2}/{:.0} {detail}", crate::trace::sim_stamp(), self.amount(g), self.capacity(g)));
@@ -180,23 +173,19 @@ impl Stores {
         Ok(())
     }
 
-    /// Transfer from a physical store into a carried load. This is not consumption.
     pub fn take_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> f32 {
         let got = self.inventory.take(owner, good, amount);
         self.note("TAKE", good, amount, got, format_args!("from={}", owner.0));
         got
     }
-    /// One store's stock of a good, kind by kind (seedlings by species).
     pub fn kinds_at(&self, owner: BuildingId, good: Good) -> Vec<(Kind, f32)> {
         self.inventory.kinds(owner, good)
     }
-    /// Take a load of one kind, such as seedlings of one species, and say which kind.
     pub fn take_kind_from(&mut self, owner: BuildingId, good: Good, amount: f32) -> (f32, Kind) {
         let got = self.inventory.take_kind(owner, good, amount);
         self.note("TAKE", good, amount, got.0, format_args!("from={} kind={:?}", owner.0, got.1));
         got
     }
-    /// Take a load of this one kind, such as seedlings of one species.
     pub fn take_this_kind_from(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> f32 {
         let got = self.inventory.take_this(owner, good, kind, amount);
         self.note("TAKE", good, amount, got, format_args!("from={} kind={kind:?}", owner.0));
@@ -225,7 +214,6 @@ impl BuildingKind {
         !self.is_waterworks()
     }
 
-    /// Dams and canals: drawn on the map and built a cell at a time, not dropped as a site.
     pub fn is_waterworks(self) -> bool {
         self.is_dam() || self.is_canal()
     }
@@ -257,9 +245,7 @@ pub struct Building {
     pub reinforced: bool,
     pub pebbled: bool,
     pub water_bound: bool,
-    /// A dam owns its cells; every other building is its footprint.
     pub dam: Option<Box<crate::dams::Dam>>,
-    /// A canal owns its cells, like a dam.
     pub canal: Option<Box<crate::canals::Canal>>,
 }
 
@@ -335,7 +321,6 @@ pub enum BuildError {
     TooDeep,
     Stores(StoresError),
     UnknownBuilding(BuildingId),
-    /// Not unlocked yet: needs a finished building of this kind first.
     Locked(BuildingKind),
 }
 
@@ -376,18 +361,15 @@ impl Terrain<'_> {
 pub struct Buildings {
     pub stores: Stores,
     pub buildings: Vec<Building>,
-    /// Buildings that wore to nothing and fell apart, for the journal. Not saved.
     #[serde(skip)]
     pub wrecked: std::collections::BTreeSet<BuildingId>,
     next_id: u64,
 }
 
-/// The mean water depth over a building's footprint (m); none for dams and canals.
 pub fn flood_depth(b: &Building, depth: &Grid<f32>) -> f32 {
     footprint_depth(b.kind, b.pos, |x, y| depth.get(x, y).copied().unwrap_or(0.0))
 }
 
-/// The mean depth over a footprint, the depth of each cell read from `at`.
 pub fn footprint_depth(kind: BuildingKind, pos: (usize, usize), at: impl Fn(usize, usize) -> f32) -> f32 {
     if kind.is_waterworks() {
         return 0.0;
@@ -397,14 +379,11 @@ pub fn footprint_depth(kind: BuildingKind, pos: (usize, usize), at: impl Fn(usiz
     (0..h).flat_map(|dy| (0..w).map(move |dx| (pos.0 + dx, pos.1 + dy))).map(|(x, y)| at(x, y).max(0.0)).sum::<f32>() / n
 }
 
-/// Beaver buildings stand in shallow water, not deep: past `MAX_BUILDING_DEPTH` a finished
-/// one cannot be used and wears away fast.
 pub fn flooded(b: &Building, depth: &Grid<f32>) -> bool {
     b.is_complete() && !b.kind.is_waterworks() && flood_depth(b, depth) > MAX_BUILDING_DEPTH
 }
 
 impl Buildings {
-    /// Out of use: high and dry, or too deep under water.
     pub fn unusable(&self, b: &Building, depth: &Grid<f32>) -> bool {
         self.stranded(b, depth) || flooded(b, depth)
     }
@@ -438,13 +417,7 @@ impl Buildings {
         if self.buildings.iter().any(|b| b.cells().any(|c| cells.contains(&c))) {
             return Err(BuildError::Blocked);
         }
-        // A lodge's door is one cell outside its 3x3 footprint. Reserve it from
-        // the moment the site is placed, in both placement orders. Dams may
-        // share it; an interior of another lodge may not.
         let solid = |k: BuildingKind| !k.is_waterworks();
-        // Keep a continuous access lane around occupied structures. Reserving
-        // only a lodge door still allowed later buildings to enclose its whole
-        // approach, trapping residents and deliveries in a one-cell pocket.
         if solid(kind) && self.buildings.iter().filter(|b|solid(b.kind)).any(|b|
             b.cells().any(|p|cells.iter().any(|c|p.0.abs_diff(c.0).max(p.1.abs_diff(c.1))<=1))) {
             return Err(BuildError::TooClose);
@@ -467,9 +440,6 @@ impl Buildings {
             let open = |c: (usize, usize)| terrain.depth.in_bounds(c.0, c.1)
                 && !cells.contains(&c)
                 && !self.buildings.iter().any(|b| solid(b.kind) && b.cells().any(|p| p == c));
-            // Reserve an approach to homes as well as the doorway itself.
-            // Otherwise a final building can seal a burrow's only access cell
-            // or surround a lodge entrance while meeting footprint checks.
             for (home, at) in self.buildings.iter().map(|b| (b.kind, b.pos)).chain(std::iter::once((kind, pos))) {
                 let access = match home {
                     h if h.is_home() => {

@@ -13,8 +13,6 @@ use std::num::NonZero;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-// Field recordings, all CC0 from freesound.org (see `audio/SOURCES.md`), stored at the rate
-// the game plays so starting them is only decoding.
 static BROOK: &[u8] = include_bytes!("../audio/brook.ogg");
 static RIVER: &[u8] = include_bytes!("../audio/river.ogg");
 static SLAPS: [&[u8]; 3] = [include_bytes!("../audio/slap_1.ogg"), include_bytes!("../audio/slap_2.ogg"), include_bytes!("../audio/slap_3.ogg")];
@@ -22,11 +20,9 @@ static FLOOD: &[u8] = include_bytes!("../audio/flood.ogg");
 static GROWL: &[u8] = include_bytes!("../audio/growl.ogg");
 static HOWL: &[u8] = include_bytes!("../audio/howl.ogg");
 
-/// The player's volumes, kept between games in a small file beside the saves.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct AudioVolumes(VolumeSettings);
 
-/// What a volume control turns up or down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Master,
@@ -91,7 +87,6 @@ fn sound_path() -> std::path::PathBuf {
     crate::savegame::save_dir().join(SOUND_FILE)
 }
 
-/// Writes the volumes once they have stopped changing for half a second.
 fn keep_volumes(time: Res<Time>, vols: Res<AudioVolumes>, mut waiting: Local<Option<f32>>) {
     if vols.is_changed() && !vols.is_added() {
         *waiting = Some(0.0);
@@ -243,7 +238,6 @@ fn volume_keys(
         return;
     }
     if muted.is_some() && vols.0.master > 0.0 {
-        // Turned back up some other way.
         *muted = None;
     }
     let step = time.delta_secs() * 0.4;
@@ -274,11 +268,8 @@ fn volume_keys(
     }
 }
 
-/// Game days between two wolf sounds (a sighting's growl, the lookouts' tail slaps).
 const WOLF_SOUND_DAYS: f64 = 30.0;
 
-/// The wolf cues seen so far (sightings, slaps), those let through to be heard, and the game
-/// day the last was heard.
 type WolfSound = (((u32, u32), (u32, u32)), Option<f64>);
 
 fn update_mix(
@@ -303,8 +294,6 @@ fn update_mix(
     let snap = mix::snapshot(&SimWorld { sim: &sim.0 }, orbit.target.x, orbit.target.z, orbit.distance);
     let (slapped, alarm_amp) = slaps.map_or((0, 0.0), |s| (s.count, s.amp));
     let sighted = wolves.as_ref().map_or(0, |w| w.sighted);
-    // A wolf sighted (the growl) and the lookouts' alarm (tail slaps) sound at most once in
-    // `WOLF_SOUND_DAYS` of game time; the slaps still show, unheard.
     let (heard, last) = &mut *wolf_sound;
     let (seen_before, slaps_before) = heard.0;
     if sighted != seen_before || slapped != slaps_before {

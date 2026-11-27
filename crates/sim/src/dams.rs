@@ -1,4 +1,3 @@
-//! Dams: single buildings grown one cell at a time, with pond measurement and gates.
 include!(concat!(env!("OUT_DIR"), "/dams_constants.rs"));
 use std::collections::{BTreeSet, HashSet, VecDeque};
 

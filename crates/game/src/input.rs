@@ -14,10 +14,8 @@ impl Plugin for InputPlugin {
 }
 
 const PAN_PER_DISTANCE: f32 = 0.9;
-/// Cursor within this many pixels of a window edge pans the camera that way.
 const EDGE_PX: f32 = 8.0;
 
-/// Pan direction (forward, right) from the cursor touching a window edge.
 fn edge_pan(window: &Window) -> (f32, f32) {
     let Some(p) = window.cursor_position().filter(|_| window.focused) else { return (0.0, 0.0) };
     let (w, h) = (window.width(), window.height());

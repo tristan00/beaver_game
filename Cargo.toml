@@ -12,8 +12,6 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
-# The simulation runs the water engine every step; optimise it in dev and test builds too, or
-# long tests and `cargo run` crawl.
 [profile.dev.package.sim]
 opt-level = 3
 

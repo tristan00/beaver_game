@@ -1,5 +1,3 @@
-//! Locks. Once a Raft landing stands, a built gate can be upgraded into a lock: a pair of gates with
-//! a chamber between. Lock state lives directly on each `Gate` (`LockState`).
 include!(concat!(env!("OUT_DIR"), "/locks_constants.rs"));
 
 use crate::buildings::BuildingId;
@@ -10,9 +8,7 @@ use crate::{SimError, SimState};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Lock {
     pub cell: Cell,
-    /// The dam or canal whose gate it is.
     pub building: BuildingId,
-    /// Built once a builder has brought its materials; until then the gate is a plain gate.
     pub built: bool,
 }
 
@@ -20,7 +16,6 @@ fn invalid(m: impl Into<String>) -> SimError {
     SimError::InvalidCommand(m.into())
 }
 
-/// Every lock (pending or built) across all dams and canals.
 pub fn all(sim: &SimState) -> impl Iterator<Item = Lock> + '_ {
     sim.buildings.buildings.iter().flat_map(|b| {
         b.gates().iter().filter(|g| g.lock != LockState::None).map(move |g| Lock {
@@ -31,17 +26,14 @@ pub fn all(sim: &SimState) -> impl Iterator<Item = Lock> + '_ {
     })
 }
 
-/// Every finished lock across all dams and canals.
 pub fn built(sim: &SimState) -> impl Iterator<Item = Lock> + '_ {
     all(sim).filter(|l| l.built)
 }
 
-/// Whether a lock (pending or built) exists at `c`.
 pub fn has(sim: &SimState, c: Cell) -> bool {
     all(sim).any(|l| l.cell == c)
 }
 
-/// Whether locks can be built: the building they need (`works.lock_needs`) stands finished.
 pub fn unlocked(sim: &SimState) -> bool {
     crate::content::content().works.lock_needs.is_none_or(|k| sim.buildings.buildings.iter().any(|b| b.kind == k && sim.finished(b)))
 }
@@ -170,7 +162,6 @@ pub fn pending(sim: &SimState, c: Cell) -> bool {
     all(sim).any(|l| !l.built && l.cell == c)
 }
 
-/// Combined material cost to order a lock at `(building, cell)` (includes gate cost if no gate is built yet).
 pub fn order_cost(sim: &SimState, building: BuildingId, cell: Cell) -> Vec<crate::buildings::Amount> {
     let mut cost: Vec<crate::buildings::Amount> = crate::gates::cost(crate::gates::Piece::Lock).0.to_vec();
     if crate::gates::gate_of(sim, building, cell).is_none_or(|g| !g.built) {
@@ -181,7 +172,6 @@ pub fn order_cost(sim: &SimState, building: BuildingId, cell: Cell) -> Vec<crate
     cost
 }
 
-/// Single eligibility check for ordering a lock on a dam or canal gate.
 pub fn check_order(sim: &SimState, building: BuildingId, cell: Cell) -> Result<(), String> {
     if !unlocked(sim) {
         let need = crate::content::content().works.lock_needs.map_or("raft landing", |k| k.name());

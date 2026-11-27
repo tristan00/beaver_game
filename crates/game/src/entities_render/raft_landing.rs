@@ -1,4 +1,3 @@
-//! Raft landings, rafts and locks: procedural models, moored/pushed rafts, and animated lock chambers.
 use super::meshgen::{build_mesh, mix, v, Mb, Rng};
 use super::models::{col, stick, stick_c};
 use super::sim_sync::{cell_mid, SyncedMap};

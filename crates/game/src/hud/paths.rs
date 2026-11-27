@@ -5,7 +5,6 @@ use crate::flow::{cell_world, height_at};
 use bevy::prelude::*;
 use sim::jobs::Job;
 
-/// Whether this role's paths are drawn.
 fn shown(only: Option<Option<Job>>, r: Option<Job>) -> bool {
     only.is_none_or(|picked| picked == r)
 }
@@ -21,7 +20,6 @@ pub fn role_color(r: Option<Job>) -> Color {
     })
 }
 
-/// The paths' own line width, thicker than the other overlays'.
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct PathGizmos;
 
@@ -29,12 +27,10 @@ pub fn setup(app: &mut App) {
     app.insert_gizmo_config(PathGizmos, GizmoConfig { line: GizmoLineConfig { width: WIDTH, ..default() }, depth_bias: -0.01, ..default() });
 }
 
-/// Each beaver's path still to walk, with its role.
 fn walking(s: &sim::SimState) -> impl Iterator<Item = (&sim::agents::Agent, Option<Job>)> {
     s.agents.by_id.values().filter(|a| a.path.as_ref().is_some_and(|p| !p.steps.is_empty())).map(|a| (a, sim::jobs::role_of(s, a.id)))
 }
 
-/// The paths view: every beaver's way still to go, in its role's colour, ringed where it ends.
 pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>, active: Res<super::ActiveLens>, hud: Res<super::HudState>) {
     if active.0 != super::MapLens::Paths {
         return;
@@ -63,9 +59,6 @@ pub fn draw_paths(mut g: Gizmos<PathGizmos>, sim: Res<crate::state::Sim>, active
     }
 }
 
-/// Over the lens rail while the paths view is on, in one row: every role's icon on its colour,
-/// each a button that shows only that role's paths (and every path again on a second click).
-/// Roles no one is walking for now are dimmed; the name is in the tooltip.
 pub fn legend(s: &sim::SimState, active: super::MapLens, only: Option<Option<Job>>, node: Node) -> Option<VNode> {
     if active != super::MapLens::Paths {
         return None;

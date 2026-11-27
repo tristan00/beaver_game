@@ -450,7 +450,6 @@ fn bad_icon_badge(r: &mut Ui, icon: Icon, icon_col: Color, title_icon: Icon, why
     }).tip(Tip::titled(Some((title_icon, INK)), why));
 }
 
-/// Shared floating/pinned tag shell for both `dam_tag` and `canal_tag`.
 #[allow(clippy::too_many_arguments)]
 fn line_tag_shell(at: Vec2, pinned: bool, win: Vec2, width: (f32, f32), confirm_word: &str, refusal: Option<&str>, body: impl FnOnce(&mut Ui)) -> Vec<VNode> {
     let bad = refusal.is_some();

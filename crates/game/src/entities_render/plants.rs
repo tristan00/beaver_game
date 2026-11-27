@@ -1,12 +1,3 @@
-//! Food plants: a model for each species for every step of the year. Land and shore plants
-//! stand on the ground; water plants float on, or rise from, the water (their origin is the
-//! surface). Each has the look a player can learn: sedge a low arching tussock, reed canary
-//! grass taller with plumes, meadowsweet frothy cream heads, Joe-Pye weed tall pink domes, wild
-//! raspberry arching canes hung with red berries, horsetail a brush of jointed stems, cattail
-//! straps and brown heads, arrowhead arrow leaves and white flowers, yellow pond lily cleft
-//! pads and yellow balls, white water lily round pads and white stars, pondweed a raft of
-//! small leaves. They green up in spring, flower in summer, turn in autumn, and stand dead
-//! and pale in winter (the water plants die back under the ice).
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::models::Season;
 use bevy::prelude::*;
@@ -15,7 +6,6 @@ use std::f32::consts::TAU;
 use crate::seasonal::smooth;
 use super::meshgen::v;
 
-/// Where a plant is in its year: how green it is, flowering, turning, dead, snowed on.
 #[derive(Clone, Copy)]
 struct Year {
     green: f32,
@@ -40,15 +30,11 @@ fn year(phase: f32) -> Year {
     }
 }
 
-/// A leaf colour through the year: fresh in spring, `summer` in summer, `autumn` as it turns,
-/// `straw` once dead.
 fn leaf(y: Year, spring: u32, summer: u32, autumn: u32, straw: u32) -> [f32; 3] {
     let live = mix(hex(spring), hex(summer), smooth(0.6, 1.0, y.green));
     mix(mix(live, hex(autumn), y.fall), hex(straw), y.dead)
 }
 
-/// A flat strip leaf rising from `base` toward `out`, arching over by `arch` (0 upright, 1
-/// bent well over), tapering to a point.
 fn blade(mb: &mut Mb, base: Vec3, out: Vec3, h: f32, w: f32, arch: f32, lo: [f32; 3], hi: [f32; 3]) {
     let out = v(out.x, 0.0, out.z).normalize_or(Vec3::X);
     let side = out.cross(Vec3::Y).normalize_or_zero() * w * 0.5;
@@ -62,7 +48,6 @@ fn blade(mb: &mut Mb, base: Vec3, out: Vec3, h: f32, w: f32, arch: f32, lo: [f32
     }
 }
 
-/// A floating pad: a disc on the water with a slit cut to its middle.
 fn pad(mb: &mut Mb, c: Vec3, r: f32, yaw: f32, slit: f32, col: [f32; 3], tilt: f32) {
     let n = 12;
     let at = |a: f32| {
@@ -89,7 +74,6 @@ fn sedge(mb: &mut Mb, y: Year, r: &mut Rng) {
         let out = v(a.cos(), 0.0, a.sin());
         blade(mb, out * 0.06, out, h * r.range(0.8, 1.2), 0.035, 0.45 + 0.4 * r.next() + 0.3 * y.dead, lo, hi);
     }
-    // Brown spikelets on thin stems in summer.
     if y.flower + y.fruit > 0.1 {
         for k in 0..4 {
             let a = k as f32 * 1.7 + 0.3;
@@ -108,7 +92,6 @@ fn canary_grass(mb: &mut Mb, y: Year, r: &mut Rng) {
         let out = v(a.cos(), 0.0, a.sin());
         blade(mb, out * 0.05, out, h * r.range(0.75, 1.1), 0.04, 0.25 + 0.4 * r.next() + 0.3 * y.dead, snowed(lo, y), snowed(hi, y));
     }
-    // Plumes: purple in early summer, straw later.
     let plume = mix(mix(hex(0x9A6A8A), hex(0xC8B47A), y.fruit), hex(0xD8CCA8), y.dead);
     if y.flower + y.fruit + y.dead > 0.2 {
         for k in 0..5 {
@@ -120,7 +103,6 @@ fn canary_grass(mb: &mut Mb, y: Year, r: &mut Rng) {
     }
 }
 
-/// A few upright stems with paired leaves, crowned with flower heads in summer.
 fn forb(mb: &mut Mb, y: Year, r: &mut Rng, tall: f32, stem: u32, leafc: (u32, u32), bloom: u32, dome: bool) {
     let lc = leaf(y, 0x6EA050, leafc.0, 0x9A7A3A, 0x8A6E4E);
     let lc2 = leaf(y, 0x9CC874, leafc.1, 0xB89A50, 0xA88A64);
@@ -140,7 +122,6 @@ fn forb(mb: &mut Mb, y: Year, r: &mut Rng, tall: f32, stem: u32, leafc: (u32, u3
                 }
             }
         }
-        // Heads: frothy and cream (meadowsweet) or a pink dome (Joe-Pye); brown seed heads after.
         let head = mix(mix(hex(0x6A8A48), hex(bloom), y.flower), hex(0x7A5A40), (1.0 - y.flower) * (y.fruit + y.dead).min(1.0));
         if y.flower > 0.05 || y.fruit + y.dead > 0.3 {
             let n = if dome { 7 } else { 6 };
@@ -213,7 +194,6 @@ fn cattail(mb: &mut Mb, y: Year, r: &mut Rng) {
         let out = v(a.cos(), 0.0, a.sin());
         blade(mb, out * 0.05, out, h * r.range(0.8, 1.1), 0.05, 0.12 + 0.2 * r.next() + 0.45 * y.dead * r.next(), lo, hi);
     }
-    // The brown heads stand from midsummer through winter, fluffing out pale as they seed.
     if y.fruit + y.dead + y.fall > 0.2 || y.flower > 0.5 {
         let head = mix(mix(hex(0x5A3A24), hex(0x6E4A2C), y.fruit), hex(0xB8A488), y.dead * 0.6);
         let stalk = mix(hex(0x6E8A48), hex(0xB8A47A), y.dead);
@@ -242,7 +222,6 @@ fn arrowhead(mb: &mut Mb, y: Year, r: &mut Rng) {
         let foot = v(a.cos() * 0.05, 0.0, a.sin() * 0.05);
         let top = foot + v(a.cos() * 0.08, r.range(0.22, 0.34) * g, a.sin() * 0.08);
         mb.cyl(foot, top, 0.012, 0.01, stem, stem, 3);
-        // The arrow: a point and two back lobes, standing near upright.
         let face = Quat::from_rotation_y(-a) * Quat::from_rotation_z(1.2);
         let s = 0.1 * g;
         mb.ellipsoid_r(top + face * v(s * 0.6, 0.0, 0.0), v(s, s * 0.08, s * 0.45), face, c2);
@@ -262,7 +241,6 @@ fn arrowhead(mb: &mut Mb, y: Year, r: &mut Rng) {
     }
 }
 
-/// A bed of floating pads. Under the ice in winter nothing shows but a stub just under water.
 fn lily(mb: &mut Mb, y: Year, r: &mut Rng, white: bool) {
     if y.green < 0.08 {
         mb.ellipsoid(v(0.0, -0.12, 0.0), v(0.08, 0.02, 0.08), hex(0x3A4A30));
@@ -276,7 +254,6 @@ fn lily(mb: &mut Mb, y: Year, r: &mut Rng, white: bool) {
         let a = k as f32 * 2.399 + r.range(-0.3, 0.3);
         let d = if k == 0 { 0.0 } else { r.range(0.18, 0.42) };
         let rr = if white { r.range(0.1, 0.14) } else { r.range(0.13, 0.18) } * g;
-        // Spatterdock holds a few leaves up out of the water.
         let tilt = if !white && k % 3 == 1 { 0.9 } else { 0.0 };
         let h = if tilt > 0.0 { 0.08 } else { 0.02 };
         pad(mb, v(a.cos() * d, h, a.sin() * d), rr, r.range(0.0, TAU), if white { 0.25 } else { 0.5 }, mix(c, c2, r.next()), tilt);

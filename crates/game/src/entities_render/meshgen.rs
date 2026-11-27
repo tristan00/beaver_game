@@ -208,9 +208,6 @@ impl Mb {
         }
     }
 
-    /// A smooth tube through `rings` of (centre, half-width, half-height), each ring square to
-    /// the path; the width is along x, so paths should run in the y-z plane. Closed ends need a
-    /// tiny first and last ring.
     pub fn loft(&mut self, rings: &[(Vec3, f32, f32)], seg: usize, col: [f32; 3]) {
         let n = rings.len();
         if n < 2 {
@@ -264,7 +261,6 @@ impl Mb {
 
     pub fn len(&self) -> usize { self.pos.len() }
 
-    /// Recolours vertices `from..` by position, normal and old colour.
     pub fn paint(&mut self, from: usize, f: impl Fn(Vec3, Vec3, [f32; 3]) -> [f32; 3]) {
         for i in from..self.pos.len() {
             let c = self.col[i];
@@ -273,15 +269,12 @@ impl Mb {
         }
     }
 
-    /// Moves vertices `from..` (normals are left as they were: for small, organic wobbles).
     pub fn displace(&mut self, from: usize, f: impl Fn(Vec3) -> Vec3) {
         for p in &mut self.pos[from..] {
             *p = f(Vec3::from(*p)).to_array();
         }
     }
 
-    /// Normals of vertices `from..` worked out again from the faces they are on, after a
-    /// `displace` that changed the shape too much to keep the old ones (rocks, heaps).
     pub fn renormal(&mut self, from: usize) {
         let mut acc = vec![Vec3::ZERO; self.pos.len() - from.min(self.pos.len())];
         for t in self.idx.chunks_exact(3) {
@@ -297,7 +290,6 @@ impl Mb {
         }
         for (i, n) in acc.into_iter().enumerate() {
             if n.length_squared() > 1e-12 {
-                // Keep the side the old normal faced (lathes wind either way).
                 let old = Vec3::from(self.nor[from + i]);
                 let n = n.normalize();
                 self.nor[from + i] = if n.dot(old) < 0.0 { (-n).to_array() } else { n.to_array() };
@@ -305,8 +297,6 @@ impl Mb {
         }
     }
 
-    /// Moves and turns vertices `from..` (normals turned with them): a part built in its own
-    /// frame, set in place.
     pub fn place(&mut self, from: usize, m: Mat4) {
         let nm = Mat3::from_mat4(m).inverse().transpose();
         for i in from..self.pos.len() {
@@ -315,7 +305,6 @@ impl Mb {
         }
     }
 
-    /// A flat strip quad, visible from both sides.
     pub fn quad2(&mut self, q: [Vec3; 4], col: [f32; 3]) {
         let (m, nm) = (Mat4::IDENTITY, Mat3::IDENTITY);
         let base = self.pos.len() as u32;

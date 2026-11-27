@@ -1,19 +1,10 @@
-//! A model gallery for iterating on beavers and buildings: `BC_GALLERY=dist,yaw,pitch[,dz,dx]`
-//! lines up every building stage and every beaver pose on the flattest dry ground of the map
-//! and aims the camera there. `BC_SELECT_HOME=1` opens the first family's inspector. `BC_GALLERY_WHAT=build|beaver|wolf|wild|life|raft landing|all` picks the rows and
-//! `BC_GALLERY_POSE=n` shows a single pose (`BC_GALLERY_LOAD=n` gives every pose that load).
-//! `BC_GALLERY_WHAT=life` lines up the life poses (running, handling, mending, watch, courting,
-//! grooming, caught, dead) and, behind, every look (hungry, cold, hurt, worn out, old, unhappy,
-//! pregnant, a tail slap, a dive), the one-off ones on a loop. See `tools/gallery_shot.sh`.
 use super::scene::Pose;
 use super::{models, BeaverSprite};
 use bevy::prelude::*;
 
-/// A gallery beaver: where it stands, and whether it paces back and forth so its gait runs.
 #[derive(Component)]
 pub(super) struct GalleryBeaver(Vec3, bool);
 
-/// A one-off shown again and again in the gallery: a fall, a tail slap, a dive.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub(super) enum GalleryLoop {
     Fall,
@@ -86,14 +77,12 @@ pub(super) fn spawn_gallery(
                 commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, ground(x, z), z)));
             }
         }
-        // Behind them, a pebble-faced wall from one step high to twelve, its face toward the camera.
         for (i, steps) in [1u8, 2, 4, 4, 6, 8, 8, 12].into_iter().enumerate() {
             let (x, z) = (cx - 4.0 + i as f32, cz - 46.0);
             let mesh = meshes.add(faced_dam_cell_mesh(steps, 1.35, i as u32 % 3, DamStage::Done));
             commands.spawn((Mesh3d(mesh), MeshMaterial3d(white.clone()), Transform::from_xyz(x, ground(x, z), z).with_rotation(Quat::from_rotation_y(std::f32::consts::PI))));
         }
     }
-    // Every species (across) in spring, summer, autumn and winter (rows, nearest first).
     if what == "trees" {
         let tree = super::sim_sync::TREE_SCALE;
         for (row, phase) in [0.125f32, 0.375, 0.6, 0.875].into_iter().enumerate() {
@@ -104,8 +93,6 @@ pub(super) fn spawn_gallery(
             }
         }
     }
-    // Food plants (across) in spring, summer, autumn and winter (rows, nearest first); behind
-    // them the boulders, pebble heaps and gravel bars by quarters left, and the two muds.
     if what == "res" {
         let place = |commands: &mut Commands, mesh: Handle<Mesh>, mat: &Handle<StandardMaterial>, x: f32, z: f32, s: f32| {
             commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::from_xyz(x, ground(x, z), z).with_scale(Vec3::splat(s))));
@@ -138,7 +125,6 @@ pub(super) fn spawn_gallery(
     if what == "life" {
         use super::Look;
         let yaw = std::env::var("BC_GALLERY_YAW").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0f32);
-        // `BC_GALLERY_POSE=n` shows entry n alone at the centre (a pair counts as one).
         let only: Option<u64> = std::env::var("BC_GALLERY_POSE").ok().and_then(|v| v.parse().ok());
         let entry = |id: u64| if id >= 140 { id - 140 + 9 } else if id >= 120 { 7 + (id - 120) / 2 } else { id - 100 };
         let mut put = |id: u64, pose: Pose, look: Look, x: f32, z: f32, yaw: f32, paces: bool, lp: Option<GalleryLoop>| {
@@ -172,7 +158,6 @@ pub(super) fn spawn_gallery(
         for (i, (pose, look, paces, lp)) in row.into_iter().enumerate() {
             put(100 + i as u64, pose, look, cx + (i as f32 - 3.0) * step, cz + 1.5, yaw, paces, lp);
         }
-        // Pairs facing each other: courting, and grooming.
         for (k, pose) in [Pose::Court, Pose::Groom].into_iter().enumerate() {
             let x = cx + (k as f32 * 2.0 - 1.0) * 2.4;
             let z = cz - 1.5;
@@ -213,7 +198,6 @@ pub(super) fn spawn_gallery(
             }
             let x = if only.is_some() { cx } else { cx + (i as f32 - POSES.len() as f32 / 2.0) * 1.4 };
             let good = std::env::var("BC_GALLERY_LOAD").ok().and_then(|v| v.parse::<usize>().ok()).and_then(|i| sim::buildings::Good::all().nth(i));
-            // With a load picked, every pose carries it; otherwise only the carrier does.
             let load = if pose == Pose::Carry { Some(good.unwrap_or(sim::dams::material())) } else { good };
             spawn(i as u64 + 1, pose, load, x, cz + 1.5, 1.0);
         }
@@ -228,13 +212,10 @@ pub(super) fn spawn_gallery(
     }
 }
 
-/// Pacing poses run back and forth along their facing at full walking speed, so the gait
-/// (and its switch to a bound) shows as it does in play.
 pub(super) fn shuffle_gallery(time: Res<Time>, clock: Res<super::RenderClock>, mut q: Query<(&mut Transform, &GalleryBeaver, &mut BeaverSprite, Option<&GalleryLoop>)>) {
     let speed: f32 = std::env::var("BC_GALLERY_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let t = clock.0;
     for (mut tr, g, mut s, lp) in &mut q {
-        // One-offs again every few seconds.
         match lp {
             Some(GalleryLoop::Fall) => s.look.dead = s.look.dead.map(|(_, c)| (t - t.rem_euclid(3.0), c)),
             Some(GalleryLoop::Slap) => s.look.slap = t - t.rem_euclid(1.5),
@@ -247,14 +228,12 @@ pub(super) fn shuffle_gallery(time: Res<Time>, clock: Res<super::RenderClock>, m
         if !g.1 {
             continue;
         }
-        // A runner covers ground as fast as it runs.
         let pace = if s.pose == Pose::Run { 3.2 } else { 1.0 };
         let fwd = Vec3::new(s.yaw.sin(), 0.0, s.yaw.cos());
         tr.translation = g.0 + fwd * (time.elapsed_secs() * speed * pace).rem_euclid(2.0 * pace);
     }
 }
 
-/// `BC_WELCOME=1`: show the guidance card a newly settled colony gets, for screenshots.
 pub(super) fn show_welcome(flow: Option<ResMut<crate::flow::Flow>>, mut done: Local<bool>) {
     if *done || std::env::var_os("BC_WELCOME").is_none() {
         return;
@@ -265,8 +244,6 @@ pub(super) fn show_welcome(flow: Option<ResMut<crate::flow::Flow>>, mut done: Lo
     }
 }
 
-/// `BC_SELECT_HOME=1`: keep the first family's home selected, for screenshots of its inspector;
-/// with `BC_DETAILS=1` too, its family page is opened (`BC_SELECT_HOME=2` for the second lodge...).
 pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, hud: Option<ResMut<crate::hud::HudState>>) {
     if std::env::var_os("BC_SELECT_HOME").is_none() {
         return;
@@ -282,15 +259,7 @@ pub(super) fn select_home(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate:
     }
 }
 
-/// `BC_SELECT_BEAVER=1`: keep the colony's first working beaver selected (`BC_SELECT_BUILDING=id`
-/// a building instead), and `BC_SELECT_LOOKOUT=1`
-/// its first lookout, for screenshots of the inspector and the lookout's range.
-/// `BC_SELECT_BEAVER=out` picks the first beaver out of its lodge instead, `=load` the first carrying
-/// something, `=swim` the first swimming. With `BC_DETAILS=1` too, the beaver's story is opened.
-/// `BC_LEDGER=page` keeps that page of the colony ledger open.
 pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate::flow::Selection>>, mut hud: Option<ResMut<crate::hud::HudState>>) {
-    // `BC_LEDGER=charts|dams|buildings|stores|upkeep`: that page of the territory stays open;
-    // `=beavers|run`: that page of the colony.
     if let (Some(page), Some(h)) = (std::env::var("BC_LEDGER").ok(), hud.as_mut()) {
         use crate::hud::{ColonyTab, LedgerTab, Overlay};
         let want = Some(match page.as_str() {
@@ -309,8 +278,6 @@ pub(super) fn select_debug(sim: Res<crate::state::Sim>, sel: Option<ResMut<crate
     }
     let Some(mut sel) = sel else { return };
     let s = &sim.0;
-    // `BC_SELECT_BUILDING=id`: that building (a dam, a canal) stays selected, for its panel; with
-    // `BC_DETAILS=1` too, its page is open.
     if let Some(id) = std::env::var("BC_SELECT_BUILDING").ok().and_then(|v| v.parse::<u64>().ok()) {
         if let Some(h) = hud.as_mut().filter(|h| std::env::var_os("BC_DETAILS").is_some() && h.page() != Some(crate::hud::Page::Works(sim::buildings::BuildingId(id)))) {
             h.overlay = Some(crate::hud::Overlay::Page(crate::hud::Page::Works(sim::buildings::BuildingId(id))));

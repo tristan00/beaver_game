@@ -15,7 +15,6 @@ macro_rules! icons {
         impl Icon {
             pub const ALL: &'static [Icon] = &[$(Icon::$name),*];
             pub fn index(self) -> usize { self as usize }
-            /// The icon a content row names.
             pub fn named(name: &str) -> Option<Icon> {
                 match name { $(stringify!($name) => Some(Icon::$name),)* _ => None }
             }
@@ -429,10 +428,7 @@ fn head(c: &mut Canvas) {
     c.cut(seg(32.0, 48.0, 32.0, 60.0, 2.2));
 }
 
-/// A beaver-chewed tree: a solid trunk with a deep wedge gnawed out of one side, bark roots
-/// below, crown branches above, and flying wood chips.
 fn gnawed_stump(c: &mut Canvas) {
-    // Trunk with flared roots and a deep side chew-notch on the right.
     c.add(
         poly(&[
             (18.0, 18.0),
@@ -446,14 +442,11 @@ fn gnawed_stump(c: &mut Canvas) {
         ])
         .grow(1.2),
     );
-    // Small leafy branch sprouting off the top so it never reads as an hourglass.
     c.add(circle(28.0, 15.0, 11.0).or(circle(17.0, 20.0, 7.5)).or(circle(39.0, 19.0, 7.5)));
-    // Flying wood chips from the chew-notch.
     c.add(poly(&[(41.0, 34.0), (54.0, 29.0), (51.0, 39.0)]).grow(0.8));
     c.add(poly(&[(45.0, 43.0), (57.0, 42.0), (52.0, 50.0)]).grow(0.6));
 }
 
-/// Woven stick-and-stake beaver craft: two upright stakes bound by horizontal logs.
 fn wattle_work(c: &mut Canvas) {
     c.add(seg(21.0, 9.0, 21.0, 55.0, 7.0));
     c.add(seg(43.0, 9.0, 43.0, 55.0, 7.0));
@@ -462,22 +455,18 @@ fn wattle_work(c: &mut Canvas) {
     c.cut(circle(10.0, 22.0, 2.0).or(circle(54.0, 42.0, 2.0)));
 }
 
-/// A beaver repair patch: two bold crossed sticks binding a woven repair.
 fn mend_patch(c: &mut Canvas) {
     c.add(rect(32.0, 32.0, 19.0, 19.0, 7.0));
     c.cut(seg(19.0, 32.0, 45.0, 32.0, 7.0).or(seg(32.0, 19.0, 32.0, 45.0, 7.0)));
 }
 
-/// A lashed bundle of sticks/logs carried by a hauler.
 fn stick_bundle(c: &mut Canvas) {
     c.add(seg(9.0, 21.0, 55.0, 21.0, 7.5));
     c.add(seg(7.0, 33.0, 57.0, 33.0, 7.5));
     c.add(seg(11.0, 45.0, 53.0, 45.0, 7.5));
-    // Vertical lashing band holding the bundle together.
     c.knock(rect_c(26.0, 12.0, 38.0, 54.0, 3.0));
 }
 
-/// Smooth river pebbles.
 fn pebbles_shape(c: &mut Canvas) {
     c.add(poly(&[(5.0, 57.0), (9.0, 40.0), (21.0, 31.0), (33.0, 36.0), (37.0, 57.0)]).grow(2.0));
     c.knock(poly(&[(27.0, 57.0), (31.0, 29.0), (44.0, 17.0), (57.0, 28.0), (59.0, 57.0)]).grow(2.0));
@@ -493,14 +482,12 @@ fn berries(c: &mut Canvas) {
     c.add(leaf((35.0, 11.0), (57.0, 7.0), 11.0));
 }
 
-/// A solid beaver lodge dome (for generic Building / Home / Flood).
 fn lodge_silhouette(c: &mut Canvas) {
     c.add(seg(21.0, 7.0, 39.0, 28.0, 5.5));
     c.add(seg(43.0, 7.0, 25.0, 28.0, 5.5));
     c.knock(ellipse(32.0, 56.0, 27.0, 33.0).above(56.0));
 }
 
-/// A watchful almond eye.
 fn eye(c: &mut Canvas) {
     c.add(circle(32.0, 52.0, 32.0).and(circle(32.0, 12.0, 32.0)).grow(1.0));
     c.cut(circle(32.0, 32.0, 11.5));
@@ -557,7 +544,6 @@ fn heart() -> S {
         .or(poly(&[(10.5, 28.5), (32.0, 52.0), (53.5, 28.5), (32.0, 24.0)]).grow(1.5))
 }
 
-/// A puffy cloud, flat along its bottom.
 fn cloud() -> S {
     union(vec![circle(21.0, 36.0, 11.0), circle(35.0, 28.0, 15.0), circle(48.0, 37.0, 10.0), rect_c(10.0, 36.0, 58.0, 47.0, 5.5)])
 }
@@ -568,7 +554,6 @@ fn sun(c: &mut Canvas, r: f32, ray0: f32, ray1: f32) {
 }
 
 fn face(c: &mut Canvas) {
-    // Beaver-eared mood face.
     c.add(circle(14.5, 16.0, 7.5).or(circle(49.5, 16.0, 7.5)));
     c.add(circle(32.0, 34.0, 23.0));
     c.cut(circle(23.5, 28.0, 3.8).or(circle(40.5, 28.0, 3.8)));
@@ -586,7 +571,6 @@ fn slash(c: &mut Canvas) {
     c.knock(seg(10.0, 10.0, 54.0, 54.0, W));
 }
 
-/// A food plant: three leaves from one root.
 fn sprout(c: &mut Canvas) {
     c.add(leaf((32.0, 57.0), (32.0, 6.0), 17.0));
     c.knock(leaf((30.0, 57.0), (5.0, 26.0), 13.0));
@@ -659,7 +643,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(4.0, 56.0, 60.0, 56.0, 4.5));
         }
         StickPile => {
-            // A stick-and-mud cache island heaped with crossed logs over shallow water.
             c.add(seg(10.0, 33.0, 38.0, 11.0, 6.0));
             c.add(seg(54.0, 33.0, 26.0, 11.0, 6.0));
             c.add(seg(18.0, 29.0, 48.0, 17.0, 5.5));
@@ -675,7 +658,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RoleBuilder => role(c, 0.0, wattle_work),
         RoleMender => role(c, 0.0, mend_patch),
         HaulMound => {
-            // A stick-and-mud staging mound with opposing haul arrows above it.
             c.add(seg(14.0, 16.0, 46.0, 16.0, 5.0));
             c.add(tri_rounded(&[(55.0, 16.0), (43.0, 8.0), (43.0, 24.0)]));
             c.add(seg(18.0, 29.0, 50.0, 29.0, 5.0));
@@ -687,12 +669,9 @@ fn draw(icon: Icon, c: &mut Canvas) {
         RolePebbler => role(c, 0.0, pebbles_shape),
         RoleSentry => role(c, 0.0, eye),
         RaftLanding => {
-            // A timber landing on piles over waves with a lashed log raft moored beside it.
             c.add(rect_c(5.0, 24.0, 31.0, 31.0, 2.0));
             c.add(seg(11.0, 31.0, 11.0, 47.0, 4.5).or(seg(25.0, 31.0, 25.0, 47.0, 4.5)));
-            // Mooring post on the landing edge.
             c.add(seg(29.0, 14.0, 29.0, 24.0, 4.5));
-            // Lashed log raft floating on the right with a small load.
             for x in [38.0, 47.0, 56.0] {
                 c.add(circle(x, 42.0, 4.8));
             }
@@ -700,14 +679,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(4.0, 60.0, 55.0, 2.5, 2.0, 4.5));
         }
         LockGates => {
-            // Two pairs of mitre gates between walls, water between.
             c.add(seg(10.0, 6.0, 10.0, 58.0, 5.0).or(seg(54.0, 6.0, 54.0, 58.0, 5.0)));
             c.add(seg(12.0, 14.0, 32.0, 22.0, 4.0).or(seg(52.0, 14.0, 32.0, 22.0, 4.0)));
             c.add(seg(12.0, 42.0, 32.0, 50.0, 4.0).or(seg(52.0, 42.0, 32.0, 50.0, 4.0)));
             c.add(wave(14.0, 50.0, 33.0, 2.5, 1.0, 4.0));
         }
         Raft => {
-            // Lashed log raft on waves carrying a tied load of sticks.
             for x in [12.0, 25.0, 39.0, 52.0] {
                 c.add(circle(x, 42.0, 6.2));
                 c.cut(circle(x, 42.0, 2.2));
@@ -717,14 +694,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(4.0, 60.0, 56.0, 2.5, 2.0, 4.5));
         }
         Lookout => {
-            // A tall beaver watch-mound over water, crowned with a watchful almond eye.
             c.part(32.0, 17.0, 0.80, 0.0, 0.0, eye);
             c.add(ellipse(32.0, 52.0, 25.0, 18.0).above(52.0));
             c.cut(seg(13.0, 44.0, 31.0, 41.0, 2.8).or(seg(33.0, 41.0, 51.0, 44.0, 2.8)));
             c.add(wave(6.0, 58.0, 56.0, 2.5, 2.0, 4.5));
         }
         ViewWorld => {
-            // Normal valley view: rolling hills, winding river and a sun.
             c.add(circle(46.0, 16.0, 8.0));
             c.add(poly(&[(4.0, 56.0), (4.0, 36.0), (22.0, 20.0), (40.0, 38.0), (50.0, 30.0), (60.0, 40.0), (60.0, 56.0)]).grow(1.5));
             c.cut(qbez((32.0, 35.0), (20.0, 45.0), (42.0, 58.0), 6.0));
@@ -743,7 +718,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(circle(28.0, 29.0, 5.5));
         }
         ViewDeposits => {
-            // Natural resources: a sprouting plant above river pebbles and a mud mound.
             c.part(32.0, 19.0, 0.56, 0.0, 0.0, seedling);
             c.part(18.0, 44.0, 0.48, 0.0, 0.0, pebbles_shape);
             c.part(45.0, 45.0, 0.48, 0.0, 2.5, mud_pile);
@@ -810,7 +784,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         }
         Expand => c.add(tri_rounded(&[(24.0, 17.0), (45.0, 32.0), (24.0, 47.0)])),
         Colony => {
-            // A beaver settlement: two overlapping timber-and-mud lodges over water.
             c.add(seg(37.0, 18.0, 48.0, 31.0, 4.2));
             c.add(seg(51.0, 18.0, 40.0, 31.0, 4.2));
             c.add(ellipse(44.0, 46.0, 16.0, 19.0).above(46.0));
@@ -821,7 +794,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(6.0, 58.0, 55.0, 2.8, 2.0, 4.8));
         }
         Jobs => {
-            // A working beaver holding a stout stick in its teeth.
             c.part(32.0, 25.0, 0.78, 0.0, 0.0, head);
             c.knock(seg(8.0, 48.0, 56.0, 44.0, 7.5));
         }
@@ -838,7 +810,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(seg(11.0, 25.0, 11.0, 39.0, 4.5).or(seg(53.0, 25.0, 53.0, 39.0, 4.5)));
         }
         Haul => {
-            // A lashed stick bundle moving forward.
             c.part(24.0, 38.0, 0.72, 0.0, 0.0, stick_bundle);
             c.add(seg(22.0, 15.0, 49.0, 15.0, 5.5));
             c.add(tri_rounded(&[(58.0, 15.0), (45.0, 6.0), (45.0, 24.0)]));
@@ -901,7 +872,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
         Pebbles => pebbles_shape(c),
         Seedling => seedling(c),
         FoodCache => {
-            // A waterside feed pile: berries and leafy twigs cached in shallow water.
             c.part(32.0, 25.0, 0.72, 0.0, 0.0, berries);
             c.knock(ellipse(32.0, 49.0, 24.0, 9.0).above(49.0));
             c.add(wave(6.0, 58.0, 56.0, 2.8, 2.0, 4.8));
@@ -914,7 +884,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(ellipse(32.0, 51.0, 5.5, 3.8));
         }
         Deer => {
-            // A stag's head: antlers over two ears and a long face.
             c.add(polyline(&[(24.0, 20.0), (16.0, 10.0), (12.0, 2.0)], 3.5).or(polyline(&[(16.0, 10.0), (6.0, 8.0)], 3.0)));
             c.add(polyline(&[(40.0, 20.0), (48.0, 10.0), (52.0, 2.0)], 3.5).or(polyline(&[(48.0, 10.0), (58.0, 8.0)], 3.0)));
             c.add(ellipse(14.0, 26.0, 9.0, 4.5).or(ellipse(50.0, 26.0, 9.0, 4.5)));
@@ -922,14 +891,12 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(circle(26.0, 32.0, 2.8).or(circle(38.0, 32.0, 2.8)));
         }
         Rabbit => {
-            // Two long ears over a round head.
             c.add(ellipse(23.0, 18.0, 6.0, 16.0).or(ellipse(41.0, 18.0, 6.0, 16.0)));
             c.add(ellipse(32.0, 44.0, 18.0, 15.0));
             c.cut(circle(25.0, 41.0, 2.8).or(circle(39.0, 41.0, 2.8)));
             c.cut(ellipse(32.0, 51.0, 3.5, 2.5));
         }
         Bird => {
-            // Side on: body, head, beak, tail and a cut-out wing.
             c.add(ellipse(30.0, 38.0, 19.0, 13.0));
             c.add(circle(46.0, 24.0, 9.0));
             c.add(poly(&[(53.0, 20.0), (62.0, 25.0), (53.0, 28.0)]));
@@ -938,20 +905,17 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.cut(circle(47.0, 22.0, 2.2));
         }
         SeedlingBed => {
-            // A seedling bed: a tree seedling and a food-plant sprout inside a shallow-water ring.
             c.add(ellipse(32.0, 48.0, 25.0, 10.0).outline(4.8));
             c.part(24.0, 26.0, 0.62, -6.0, 2.5, seedling);
             c.part(42.0, 31.0, 0.5, 8.0, 2.5, sprout);
         }
         PebbleHeap => {
-            // A stacked heap of smooth river pebbles on a shallow-water mound.
             c.add(ellipse(20.0, 41.0, 12.0, 9.0));
             c.knock(ellipse(44.0, 41.0, 12.0, 9.0));
             c.knock(ellipse(32.0, 25.0, 12.0, 9.5));
             c.add(wave(6.0, 58.0, 56.0, 2.6, 2.0, 4.6));
         }
         WaterPlant => {
-            // A cleft lily pad with a flower standing on it.
             c.add(ellipse(31.0, 45.0, 28.0, 14.0));
             c.cut(poly(&[(31.0, 45.0), (60.0, 36.0), (60.0, 52.0)]));
             c.knock(poly(&[(14.0, 30.0), (20.0, 12.0), (27.0, 24.0), (32.0, 6.0), (37.0, 24.0), (44.0, 12.0), (50.0, 30.0), (32.0, 38.0)]).grow(1.0));
@@ -1010,7 +974,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(wave(16.0, 54.0, 57.0, 2.5, 1.0, W));
         }
         Remove => {
-            // A bin: lid with a handle, and a tapered body with two grooves.
             c.add(rect_c(8.0, 13.0, 56.0, 20.0, 2.0));
             c.add(rect_c(24.0, 6.0, 40.0, 13.0, 2.0).outline(4.0));
             c.add(poly(&[(13.0, 24.0), (51.0, 24.0), (47.0, 58.0), (17.0, 58.0)]).grow(1.0));
@@ -1021,7 +984,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(polyline(&[(32.0, 14.0), (52.0, 32.0), (32.0, 50.0)], 8.0));
         }
         Site => {
-            // Two wooden stakes with a slack surveyor cord and a starter pile of sticks between them.
             c.add(seg(13.0, 13.0, 13.0, 55.0, 6.5));
             c.add(seg(51.0, 13.0, 51.0, 55.0, 6.5));
             c.add(qbez((13.0, 20.0), (32.0, 31.0), (51.0, 20.0), 4.0));
@@ -1054,7 +1016,6 @@ fn draw(icon: Icon, c: &mut Canvas) {
             c.add(rect_c(42.0, 8.0, 54.0, 50.0, 2.0));
         }
         Territory => {
-            // A compass rose: outer ring with cardinal ticks and a tilted diamond needle.
             c.add(ring(32.0, 32.0, 24.5, 5.5));
             c.add(
                 seg(32.0, 4.0, 32.0, 12.0, 4.5)

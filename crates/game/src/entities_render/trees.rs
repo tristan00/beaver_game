@@ -1,11 +1,3 @@
-//! Trees: a model for each species, grown on its branches, for every step of the year and three
-//! levels of detail. Each keeps its real outline, bark and autumn colour, so good food trees
-//! (aspen, willow) can be told from poor ones (beech, the conifers) at a glance:
-//! aspen a slim pale trunk under a small round crown that turns gold; birch two white stems
-//! banded black; willow a leaning trunk under a weeping curtain; alder a shrubby clump of grey
-//! stems that stays green late and hangs cones in winter; maple a broad dome that turns red;
-//! beech a low wide spread on a silver trunk that keeps its dead leaves through winter; pine a
-//! tall bare trunk under flat tufts; spruce a dark, narrow spire of drooping boughs.
 use super::meshgen::{hex, mix, Mb, Rng};
 use super::models::Season;
 use super::scene::TreeStyle;
@@ -24,8 +16,6 @@ fn foliage(t: Tree, s: Season) -> ([f32; 3], [f32; 3]) {
     let k = t.row().look.leaves;
     let dark = k.map(|(a, _)| palette::rgb(a));
     let light = k.map(|(_, b)| palette::rgb(b));
-    // A little richer than the keys: under the strong ambient light, crowns at the keys'
-    // saturation read as a pale olive haze.
     let richer = |c: [f32; 3]| {
         let g = (c[0] + c[1] + c[2]) / 3.0;
         c.map(|x| (g + (x - g) * FOLIAGE_SATURATION).clamp(0.0, 1.0))
@@ -34,8 +24,6 @@ fn foliage(t: Tree, s: Season) -> ([f32; 3], [f32; 3]) {
     (colour(&dark), colour(&light))
 }
 
-/// How much of a full crown is in leaf, and how much of that is last year's dead leaves (beech
-/// keeps its leaves, brown, until spring).
 fn leaf_cover(t: Tree, phase: f32) -> (f32, f32) {
     const KEPT: f32 = 0.45;
     let l = crate::seasonal::leaves(phase);
@@ -43,10 +31,8 @@ fn leaf_cover(t: Tree, phase: f32) -> (f32, f32) {
     if look.evergreen { (1.0, 0.0) } else if look.keeps_leaves { (l.max(KEPT), smooth01(KEPT, 0.08, l)) } else { (l, 0.0) }
 }
 
-/// A species' build: bark, trunk, and the crown its branches carry.
 struct Shape {
     bark: u32,
-    /// The trunk's foot: darker, rougher, or (birch) black.
     foot: u32,
     trunk_r: f32,
     fork: Vec3,
@@ -54,9 +40,7 @@ struct Shape {
     radius: Vec3,
     tips: usize,
     clump: f32,
-    /// Clumps squashed to flat sprays (beech) or round (1).
     flat: f32,
-    /// How far outer tips hang down.
     droop: f32,
     limb: f32,
     seed: u32,
@@ -74,7 +58,6 @@ fn root_flare(mb: &mut Mb, at: Vec3, r: f32, bark: [f32; 3]) {
     mb.lathe(Mat4::from_translation(at), &[(0.0, -0.1), (r * 1.8, -0.1), (r * 1.2, 0.1), (r, 0.4)], 8, mix(bark, hex(INK), 0.25), bark, true);
 }
 
-/// A stem from `a` to `b`, its lowest `foot_h` in the darker foot colour.
 fn stem(mb: &mut Mb, a: Vec3, b: Vec3, r0: f32, r1: f32, foot: [f32; 3], bark: [f32; 3], foot_h: f32, seg: usize) {
     let d = b - a;
     let t = (foot_h / d.length().max(0.01)).clamp(0.0, 0.9);
@@ -84,7 +67,6 @@ fn stem(mb: &mut Mb, a: Vec3, b: Vec3, r0: f32, r1: f32, foot: [f32; 3], bark: [
     mb.cyl(m, b, rm, r1, mix(foot, bark, 0.6), bark, seg);
 }
 
-/// A lumpy ellipsoid: a clump of leaves rather than a ball.
 fn clump(mb: &mut Mb, c: Vec3, r: Vec3, lo: [f32; 3], hi: [f32; 3], (seg, rings): (usize, usize), seed: f32) {
     let start = mb.len();
     mb.ellipsoid_g(c, r, lo, hi, seg, rings);
@@ -96,11 +78,6 @@ fn clump(mb: &mut Mb, c: Vec3, r: Vec3, lo: [f32; 3], hi: [f32; 3], (seg, rings)
     });
 }
 
-/// A broadleaf crown grown on its branches. Limbs rise from the nearest fork, curve outward and
-/// split; every tip carries a clump of leaves that swells from a bud in spring to an overlapping
-/// crown in summer and thins again in autumn, with more clumps filling the inside so few limbs
-/// show through a crown in leaf. Fine twigs show only on a crown that is nearly bare. Returns
-/// the tips, for blossom, catkins and hanging strands.
 fn crown(mb: &mut Mb, sh: &Shape, forks: &[Vec3], leaves: f32, bark: [f32; 3], dark: [f32; 3], light: [f32; 3], detail: bool) -> Vec<(Vec3, f32)> {
     let mut rng = Rng(sh.seed * 7919 + 13);
     let n = if detail { sh.tips } else { (sh.tips / 2).max(5) };
@@ -143,8 +120,6 @@ fn crown(mb: &mut Mb, sh: &Shape, forks: &[Vec3], leaves: f32, bark: [f32; 3], d
     let grow = leaves.powf(0.6);
     let fill = smooth01(0.3, 1.0, leaves);
     let res = if detail { (9, 6) } else { (6, 4) };
-    // Clumps darken toward their undersides and the crown's base, so a crown has form in mostly
-    // ambient light.
     let col = |y: f32, j: f32| {
         let up = (y * 0.5 + 0.5).clamp(0.0, 1.0);
         let lo = mix(mix(dark, hex(INK), 0.18 * (1.0 - up)), light, (0.02 + 0.28 * up + j).clamp(0.0, 1.0));
@@ -167,7 +142,6 @@ fn crown(mb: &mut Mb, sh: &Shape, forks: &[Vec3], leaves: f32, bark: [f32; 3], d
             let (lo, hi) = col(y, rng.range(-0.1, 0.1));
             clump(mb, f, v(s, s * 0.82 * sh.flat, s), lo, hi, res, rng.range(0.0, 9.0));
         }
-        // Clumps in the gaps between the tips, half way out.
         for i in 0..n / 2 {
             let a = i as f32 * 2.399_963 * 2.0 + 1.1;
             let y = rng.range(-0.3, 0.75);
@@ -181,8 +155,6 @@ fn crown(mb: &mut Mb, sh: &Shape, forks: &[Vec3], leaves: f32, bark: [f32; 3], d
     tips
 }
 
-/// Willow: from each outer tip, thin golden withies droop to below the crown, hung with long
-/// narrow leaves in season, so the crown falls in a streaked curtain.
 fn willow_strands(mb: &mut Mb, sh: &Shape, tips: &[(Vec3, f32)], leaves: f32, dark: [f32; 3], light: [f32; 3], detail: bool) {
     let withy = hex(0xB0984A);
     let grow = leaves.powf(0.6);
@@ -215,7 +187,6 @@ fn willow_strands(mb: &mut Mb, sh: &Shape, tips: &[(Vec3, f32)], leaves: f32, da
     }
 }
 
-/// Aspen's black "eyes" where branches fell off the pale bark.
 fn bark_eyes(mb: &mut Mb, h: f32, r0: f32, r1: f32, n: usize, seed: u32) {
     let mut rng = Rng(seed);
     for _ in 0..n {
@@ -227,7 +198,6 @@ fn bark_eyes(mb: &mut Mb, h: f32, r0: f32, r1: f32, n: usize, seed: u32) {
     }
 }
 
-/// Birch's black bands: short dashes across a white stem from `a` to `b`.
 fn birch_dashes(mb: &mut Mb, a: Vec3, b: Vec3, r0: f32, r1: f32, n: usize, seed: u32) {
     let mut rng = Rng(seed);
     let d = (b - a).normalize_or_zero();
@@ -242,7 +212,6 @@ fn birch_dashes(mb: &mut Mb, a: Vec3, b: Vec3, r0: f32, r1: f32, n: usize, seed:
     }
 }
 
-/// The stems a species grows from the ground: (foot, top, foot radius, top radius).
 fn stems(style: TreeStyle, sh: &Shape) -> Vec<(Vec3, Vec3, f32, f32)> {
     let r = sh.trunk_r;
     match style {
@@ -282,7 +251,6 @@ fn broadleaf(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light
         bark_eyes(mb, 4.4, sh.trunk_r, sh.trunk_r * 0.35, 10, 11);
     }
     let mut forks: Vec<Vec3> = match style {
-        // Limbs leave each stem part way up.
         TreeStyle::Twin | TreeStyle::Clump => used.iter().map(|&(a, b, ..)| a.lerp(b, 0.62)).collect(),
         TreeStyle::Weeping => {
             let top = stems[0].1;
@@ -303,7 +271,6 @@ fn broadleaf(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light
         TreeStyle::Dome if detail => {
             let bloom = crate::seasonal::bloom(phase) * (1.0 - smooth01(0.4, 0.8, leaves));
             if bloom > 0.1 {
-                // Red flowers on bare twigs before the leaves.
                 let mut r = Rng(77);
                 let reach = sh.clump * leaves.powf(0.6).max(0.45);
                 for &(t, _) in &tips {
@@ -314,7 +281,6 @@ fn broadleaf(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light
                 }
             }
         }
-        // Last year's cones and this year's catkins hang on the bare twigs.
         TreeStyle::Clump if detail && leaves < 0.5 => {
             let mut r = Rng(29);
             for &(t, _) in &tips {
@@ -328,8 +294,6 @@ fn broadleaf(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light
     }
 }
 
-/// Pine: a tall trunk, grey-brown low and orange up high, bare most of its height, with whorls
-/// of near-level limbs ending in flat tufts of needles and a plume at the top.
 fn pine(mb: &mut Mb, sh: &Shape, dark: [f32; 3], light: [f32; 3], snow: f32, lod: u8) {
     let (bark, foot) = (hex(sh.bark), hex(sh.foot));
     let top = mix(light, hex(0xE6EEF0), snow * 0.45);
@@ -369,8 +333,6 @@ fn pine(mb: &mut Mb, sh: &Shape, dark: [f32; 3], light: [f32; 3], snow: f32, lod
     mb.ellipsoid_g(v(0.0, 5.35, 0.0), v(0.5, 0.45, 0.5), mix(dark, hex(INK), 0.1), top, res.0, res.1);
 }
 
-/// Spruce: a dense, narrow spire of drooping boughs from near the ground to a spike at the top,
-/// their ragged edges dark, their tops catching the light (and the snow).
 fn spruce(mb: &mut Mb, sh: &Shape, dark: [f32; 3], light: [f32; 3], snow: f32, lod: u8) {
     let (bark, foot) = (hex(sh.bark), hex(sh.foot));
     let top = mix(mix(dark, light, 0.6), hex(0xEAF0F2), snow * 0.5);
@@ -388,7 +350,6 @@ fn spruce(mb: &mut Mb, sh: &Shape, dark: [f32; 3], light: [f32; 3], snow: f32, l
         let prof = [(0.1, y0 + 0.2), (rr * 0.92, y0 - 0.16), (rr, y0 - 0.05), (rr * 0.7, y0 + h * 0.35), (rr * 0.3, y0 + h * 0.75), (0.0, y0 + h)];
         let start = mb.len();
         mb.lathe(Mat4::from_rotation_y(k as f32 * 0.9), &prof, seg, under, mix(top, light, 0.1 * t), true);
-        // Ragged bough ends rather than a turned cone.
         let ph = k as f32 * 1.7;
         mb.displace(start, move |p| {
             let a = p.z.atan2(p.x);
@@ -414,7 +375,6 @@ pub fn tree_mesh(t: Tree, season: Season, lod: u8) -> Mesh {
     mb.build()
 }
 
-/// The far view: a stem and one lumpy crown (or a bare stem with its main limbs).
 fn far_tree(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light: [f32; 3], snow: f32) {
     let (bark, foot) = (hex(sh.bark), hex(sh.foot));
     let (leaves, dead) = leaf_cover(t, phase);
@@ -439,7 +399,6 @@ fn far_tree(mb: &mut Mb, t: Tree, sh: &Shape, phase: f32, dark: [f32; 3], light:
     clump(mb, sh.centre, sh.radius * v(s, sh.flat.max(0.75) * s, s), mix(dark, hex(INK), 0.1), mix(dark, light, 0.6), (7, 4), sh.seed as f32);
 }
 
-/// What shows of a tree cut away so a beaver or a site behind it can be seen: a dark stump.
 pub fn tree_cutaway_mesh(t: Tree) -> Mesh {
     let mut mb = Mb::new();
     let sh = shape(t);
@@ -453,7 +412,6 @@ pub fn tree_cutaway_mesh(t: Tree) -> Mesh {
     mb.build()
 }
 
-/// A dead standing tree: grey, broken off, its last limbs bare, moss at its foot.
 pub fn snag_mesh() -> Mesh {
     let mut mb = Mb::new();
     let (g0, g1) = (hex(0x6e675d), hex(0x9a9283));

@@ -1,16 +1,5 @@
-//! The weather: the air's temperature, rain or snow, wind and cloud at any moment, drawn from
-//! the real climate of the place a map is taken from (its monthly means, see `maps::Climate`).
-//! Days swing about those means the way they do there: cold snaps and thaws lasting days, wet
-//! spells and dry ones, rain coming as a shower of some hours, now and then a storm.
-//!
-//! It is a pure function of the world's seed and the time, so it needs no saving, does not
-//! depend on frame rate or solver substeps, and every system reads the same sky.
-//!
-//! The game year starts with spring in mid-April, when the ice goes out on these northern
-//! waters; a game month is 30 days.
 use crate::maps::Climate;
 
-/// What the sky is doing, as the player is told it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Clear,
@@ -34,51 +23,37 @@ impl Kind {
     }
 }
 
-/// The weather at one moment.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Now {
-    /// Air temperature, °C.
     pub temp_c: f32,
-    /// How cold it feels out in the open, wind chill included, °C.
     pub feels_c: f32,
-    /// Rain and snow (as water) falling now, metres a day.
     pub rain: f32,
     pub snow: f32,
-    /// 0 calm to 1 a gale.
     pub wind: f32,
-    /// 0 clear sky to 1 overcast.
     pub cloud: f32,
     pub kind: Kind,
-    /// The last few days' air, which the ground and still water follow: frozen ground below 0.
     pub ground_c: f32,
 }
 
 impl Now {
-    /// Ground too hard to dig mud or mud from.
     pub fn ground_frozen(&self) -> bool {
         self.ground_c < FROZEN_GROUND_C
     }
 
-    /// Weather to stay in the lodge through.
     pub fn bitter(&self) -> bool {
         self.feels_c < HOLE_UP_FEELS_C || self.kind == Kind::Blizzard
     }
 }
 
-/// How cold `celsius` is for a beaver, 0 (none) to 1 (as cold as it gets).
 pub fn cold(celsius: f32) -> f32 {
     use crate::tuning::colony::{COLD_FROM_C, COLD_SPAN_C};
     ((COLD_FROM_C - celsius) / COLD_SPAN_C).clamp(0.0, 1.0)
 }
 
-/// Ground below this (the last days' air) is frozen hard.
 pub const FROZEN_GROUND_C: f32 = -3.0;
-/// Out in the open colder than this (wind chill included), beavers keep to their lodges.
 pub const HOLE_UP_FEELS_C: f32 = -18.0;
-/// Beavers come out again once it feels warmer than this.
 pub const COME_OUT_FEELS_C: f32 = -14.0;
 
-/// A temperate continental climate (central Ontario) for worlds not taken from a real place.
 const DEFAULT: Climate = Climate {
     temp_c: [-10.8, -9.8, -4.6, 2.4, 10.7, 16.0, 18.6, 17.8, 13.9, 7.0, 0.3, -6.4],
     precip_mm: [72.0, 52.0, 63.0, 83.0, 83.0, 90.0, 85.0, 88.0, 92.0, 94.0, 87.0, 73.0],
@@ -88,7 +63,6 @@ const DEFAULT: Climate = Climate {
     ice_days: Some((338, 113)),
 };
 
-/// One world's sky: its seed and its place's climate.
 #[derive(Clone, Copy, Debug)]
 pub struct Sky {
     seed: u64,
@@ -107,8 +81,6 @@ impl PartialEq for Sky {
     }
 }
 
-/// Each map's climate by its seed. A map without its own climate in its header takes the
-/// nearest one that has one: the same lakes and forests, a few kilometres off.
 fn climates() -> &'static [(u64, Climate)] {
     static CACHE: std::sync::OnceLock<Vec<(u64, Climate)>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
@@ -128,13 +100,11 @@ fn climates() -> &'static [(u64, Climate)] {
 }
 
 impl Sky {
-    /// The sky over the world with this seed: its map's climate, or a temperate default.
     pub fn for_seed(seed: u64) -> Sky {
         let climate = climates().iter().find(|(s, _)| *s == seed).map_or(&DEFAULT, |(_, c)| c);
         Sky { seed, climate }
     }
 
-    /// The weather at `time` (game days).
     pub fn at(&self, time: f64) -> Now {
         let temp_c = self.temp(time);
         let (rain_total, cloud, storm) = self.precip(time);
@@ -142,7 +112,6 @@ impl Sky {
         let (rain, snow) = if snowing { (0.0, rain_total) } else { (rain_total, 0.0) };
         let gust = noise(self.seed ^ 0x5717, time, 2.0) * 0.5 + 0.5;
         let wind = (0.12 + 0.3 * gust + if storm { 0.5 } else { 0.0 } + 0.15 * cloud).min(1.0);
-        // Wind chill: about a degree for every tenth of a gale, more the colder it is.
         let feels_c = temp_c - wind * (4.0 + (-temp_c).max(0.0) * 0.35);
         let mm = rain_total * 1000.0;
         let kind = match (snowing, mm) {
@@ -156,8 +125,6 @@ impl Sky {
         Now { temp_c, feels_c, rain, snow, wind, cloud, kind, ground_c: self.ground(time) }
     }
 
-    /// How much more (or less) the streams bring than the year's mean: the month's runoff,
-    /// raised after the last days' rain.
     pub fn inflow(&self, time: f64) -> f32 {
         let c = self.climate;
         let month = self.usual_inflow(time);
@@ -178,31 +145,25 @@ impl Sky {
         month * storm
     }
 
-    /// The streams as they usually run this time of year, against the year's mean.
     pub fn usual_inflow(&self, time: f64) -> f32 {
         let c = self.climate;
         monthly(&c.runoff_mm, time) / (c.runoff_mm.iter().sum::<f32>() / 12.0).max(1e-3)
     }
 
-    /// Open water lost to the air, as a share of `tuning::water::EVAPORATION` a day: the month's
-    /// evaporation, less under cloud.
     pub fn evaporation(&self, time: f64) -> f32 {
         let per_day_m = monthly(&self.climate.evap_mm, time) / MONTH_DAYS as f32 / 1000.0;
         let (_, cloud, _) = self.precip(time);
         per_day_m / crate::tuning::water::EVAPORATION * (1.2 - 0.6 * cloud)
     }
 
-    /// The air temperature: the month's mean plus the day's swing from it.
     fn temp(&self, time: f64) -> f32 {
         let c = self.climate;
         let mean = monthly(&c.temp_c, time);
-        // Spread about the mean: wider in winter, when arctic air and thaws take turns.
         let sigma = (2.6 + 0.3 * (6.0 - mean).max(0.0)).min(8.5);
         let swing = (0.75 * noise(self.seed ^ 0x7e41, time, 4.0) + 0.85 * noise(self.seed ^ 0x3c9d, time, 11.0)) / 0.62;
         mean + sigma * swing.clamp(-2.6, 2.6)
     }
 
-    /// The last week's daily means, the latest counting most.
     fn ground(&self, time: f64) -> f32 {
         let day = time.floor();
         let (mut sum, mut weight) = (0.0, 0.0);
@@ -215,13 +176,11 @@ impl Sky {
         sum / weight
     }
 
-    /// The share of days with rain or snow this time of year.
     fn wet_share(&self, day: i64) -> f32 {
         let p = monthly(&self.climate.precip_mm, day as f64 + 0.5);
         (p / (p + 80.0)).clamp(0.12, 0.6)
     }
 
-    /// Whether a day is wet: a chain from a week before, a wet day likelier after a wet one.
     fn wet(&self, day: i64) -> bool {
         let mut wet = unit(self.seed, day - 8, 1) < self.wet_share(day - 8);
         for d in day - 7..=day {
@@ -232,8 +191,6 @@ impl Sky {
         wet
     }
 
-    /// The rain or snow (as water) a day brings, mm: none on a dry day; on a wet one, the
-    /// month's total shared out over its wet days, most days light and a few heavy.
     fn wet_amount_mm(&self, day: i64) -> f32 {
         if !self.wet(day) {
             return 0.0;
@@ -243,8 +200,6 @@ impl Sky {
         mean_wet * (-(1.0 - unit(self.seed, day, 2) * 0.995).ln()).min(6.0)
     }
 
-    /// Rain or snow falling now (m/day), the cloud (0 to 1) and whether it is a storm. A wet
-    /// day's water falls over a spell of six to eighteen hours, which can run past midnight.
     fn precip(&self, time: f64) -> (f32, f32, bool) {
         let day = time.floor() as i64;
         let (mut rate, mut cloud, mut storm) = (0.0f32, 0.0f32, false);
@@ -256,7 +211,6 @@ impl Sky {
             let start = d as f64 + unit(self.seed, d, 3) as f64 * 0.6;
             let len = 0.25 + 0.5 * unit(self.seed, d, 4) as f64;
             let x = (time - start) / len;
-            // Cloud gathers a few hours before and lingers after.
             let near = 1.0 - ((x - 0.5).abs() - 0.5).max(0.0) / 0.4;
             cloud = cloud.max(near.clamp(0.0, 1.0) as f32);
             if (0.0..1.0).contains(&x) {
@@ -272,21 +226,14 @@ impl Sky {
 }
 
 const MONTH_DAYS: f64 = crate::calendar::SEASON_DAYS / 3.0;
-/// Where in the real year the game year starts, in months from the first of January: the
-/// middle of April.
 pub const START_MONTH: f64 = 3.5;
-/// Rain or snow: snow below this.
 const SNOW_BELOW_C: f32 = 0.5;
-/// How much likelier a wet day is after a wet one.
 const WET_PERSISTENCE: f32 = 0.35;
-/// A wet day bringing this many times the usual, and at least `STORM_MIN_MM`, is a storm.
 const STORM_TIMES_MEAN: f32 = 2.2;
 const STORM_MIN_MM: f32 = 12.0;
-/// How quickly the streams forget rain, and the ground the air, a day.
 const RUNOFF_MEMORY: f32 = 0.6;
 const GROUND_MEMORY: f32 = 0.7;
 
-/// A monthly value (January first) at a game time, eased from one month's middle to the next.
 pub fn monthly(values: &[f32; 12], time: f64) -> f32 {
     let x = crate::calendar::day_of_year(time) / MONTH_DAYS + START_MONTH - 0.5;
     let a = x.floor();
@@ -303,12 +250,10 @@ fn hash(seed: u64, i: i64, salt: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A number in [0, 1) for this day and purpose.
 fn unit(seed: u64, day: i64, salt: u64) -> f32 {
     (hash(seed, day, salt) >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// Smooth noise in [-1, 1], changing over about `period` days.
 fn noise(seed: u64, time: f64, period: f64) -> f32 {
     let x = time / period;
     let a = x.floor();

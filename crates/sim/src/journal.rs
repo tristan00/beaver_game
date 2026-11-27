@@ -1,7 +1,3 @@
-//! A very verbose record of the sim for play sessions, written to the session trace (see
-//! `trace`): every colony event with its context, every task change, wolf moves, building
-//! changes, and regular polls of every beaver and of the whole map. Nothing is written, and
-//! nothing is computed, unless a session trace is open.
 use crate::agents::{Assignment, Task};
 use crate::buildings::{BuildingId, Good};
 use crate::colony::{Beaver, BeaverId, Event, Job};
@@ -11,22 +7,15 @@ use crate::{trace, SimState};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
-/// How often every beaver is written out, in days: every game hour.
 const BEAVER_POLL_DAYS: f64 = 1.0 / 24.0;
-/// How often the map state is written out, in days.
 const MAP_POLL_DAYS: f64 = 0.25;
 
-/// What a task line is made of: the task's variant, whether indoors, and the good carried. The
-/// line is written out only when this changes, so most steps compare a few words, not strings.
 type TaskSig = (std::mem::Discriminant<Task>, bool, Option<Good>);
-/// What a job line is made of.
 type JobSig = (Option<Job>, Option<(BuildingId, usize, Job)>, Option<Assignment>, Option<Job>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Journal {
     started: bool,
-    /// Where this step's colony events start: the log's length and drop count when the step
-    /// began. The interface drains the log between steps, so only counts within a step hold.
     seen: usize,
     dropped: u64,
     buildings: BTreeMap<BuildingId, String>,
@@ -36,11 +25,9 @@ pub struct Journal {
     wolf: String,
     next_beavers: f64,
     next_map: f64,
-    /// Reused for each building's line, so an unchanged building allocates nothing.
     line: String,
 }
 
-/// Everything a beaver's record holds that matters for why it lives or dies.
 pub fn describe(b: &Beaver) -> String {
     let mut out = String::new();
     describe_into(&mut out, b);
@@ -58,7 +45,6 @@ fn describe_into(out: &mut String, b: &Beaver) {
     );
 }
 
-/// The first word of a debug print: the enum variant, without its fields.
 fn variant(s: &str) -> &str {
     s.split(|c: char| c == ' ' || c == '{' || c == '(').next().unwrap_or(s)
 }
@@ -92,7 +78,6 @@ fn stamp(sim: &SimState) -> String {
     format!("day={:.4} step={}", sim.time_days, sim.steps)
 }
 
-/// Write what changed since the last call. `phase` names the part of the step just done.
 pub fn scan(sim: &mut SimState, phase: &str) {
     if !trace::enabled() {
         return;
@@ -113,8 +98,6 @@ pub fn scan(sim: &mut SimState, phase: &str) {
     sim.journal = j;
 }
 
-/// Events added between steps (by commands) are written at the next scan; if the interface
-/// drained the log since, start again from what is left.
 pub fn begin_step(sim: &mut SimState) {
     if !trace::enabled() {
         return;
@@ -166,7 +149,6 @@ fn tasks(sim: &SimState, j: &mut Journal) {
             trace::event(format!("TASK {} beaver={} {} -> {} | {}", stamp(sim), id.0, before, now, agent_context(sim, *id)));
         }
     }
-    // Every agent is in the record by now, so it holds more only when some have gone.
     if j.tasks.len() > sim.agents.by_id.len() {
         let gone: Vec<BeaverId> = j.tasks.keys().filter(|id| !sim.agents.by_id.contains_key(id)).copied().collect();
         for id in gone {
@@ -176,7 +158,6 @@ fn tasks(sim: &SimState, j: &mut Journal) {
     }
 }
 
-/// The job a beaver holds: its colony job, the work slot it fills, and any standing order.
 fn jobs(sim: &SimState, j: &mut Journal) {
     for b in &sim.colony.beavers {
         let slot = sim.work.slot_of(b.id);
@@ -194,7 +175,6 @@ fn jobs(sim: &SimState, j: &mut Journal) {
             trace::event(format!("JOB {} beaver={} {before} -> {now}", stamp(sim), b.id.0));
         }
     }
-    // Every beaver is in the record by now, so it holds more only when some have gone.
     if j.jobs.len() > sim.colony.beavers.len() {
         j.jobs.retain(|id, _| sim.colony.beaver(*id).is_some());
     }
@@ -202,7 +182,6 @@ fn jobs(sim: &SimState, j: &mut Journal) {
 
 fn wolf(sim: &SimState, j: &mut Journal) {
     for w in &sim.predators.wolves {
-        // Every step it is on the map: where, doing what, and the beavers it could see.
         let near = sim.agents.by_id.values().filter(|a| !a.inside)
             .map(|a| (((a.cell.0 as f32 + 0.5 - w.pos.0).powi(2) + (a.cell.1 as f32 + 0.5 - w.pos.1).powi(2)).sqrt(), a))
             .min_by(|a, b| a.0.total_cmp(&b.0));
@@ -249,11 +228,8 @@ fn building_line_into(out: &mut String, sim: &SimState, b: &crate::buildings::Bu
     }
 }
 
-/// Each building's line is written into one reused buffer and compared with the last one
-/// written, so only new, changed and gone buildings allocate.
 fn buildings(sim: &SimState, j: &mut Journal) {
     let mut line = std::mem::take(&mut j.line);
-    // The id, the line before (none for a new building) and the line now, written in id order.
     let mut changed: Vec<(BuildingId, Option<String>, String)> = Vec::new();
     for b in &sim.buildings.buildings {
         line.clear();
@@ -277,7 +253,6 @@ fn buildings(sim: &SimState, j: &mut Journal) {
             Some(old) => trace::event(format!("BUILDING_CHANGE {} id={} {old} -> {line}", stamp(sim), id.0)),
         }
     }
-    // Every building is in the record by now, so it holds more only when some have gone.
     if j.buildings.len() > sim.buildings.buildings.len() {
         let live: std::collections::BTreeSet<BuildingId> = sim.buildings.buildings.iter().map(|b| b.id).collect();
         let gone: Vec<BuildingId> = j.buildings.keys().filter(|id| !live.contains(id)).copied().collect();
@@ -301,7 +276,6 @@ fn colony_brief(sim: &SimState) -> String {
     )
 }
 
-/// Write every beaver, and the whole map, when their times come.
 pub fn poll(sim: &mut SimState) {
     if !trace::enabled() || !sim.journal.started {
         return;
@@ -339,7 +313,6 @@ fn map(sim: &SimState) {
         let _ = write!(goods, " {g:?}={:.1}/{:.0}", stores.amount(g), stores.capacity(g));
     }
     trace::event(format!("POLL_STORES {s}{goods}"));
-    // Row by row, as the grids are laid out; ice and velocity share the depth grid's size.
     let (ice, velocity) = (sim.water.ice.as_slice(), sim.water.velocity.as_slice());
     let (mut wet, mut sum, mut deepest, mut iced, mut fast) = (0usize, 0.0f64, 0.0f32, 0usize, 0.0f32);
     for (i, &depth) in sim.water.depth.as_slice().iter().enumerate() {
@@ -355,7 +328,6 @@ fn map(sim: &SimState) {
         }
     }
     trace::event(format!("POLL_WATER {s} wet_cells={wet} mean_depth={:.3} max_depth={deepest:.2} iced_cells={iced} max_velocity={fast:.3}", if wet > 0 { sum / wet as f64 } else { 0.0 }));
-    // Tallied per kind (there are a handful), then written in the order of the kinds' names.
     let mut kinds: Vec<(ResourceKind, (usize, f32, usize))> = Vec::new();
     for r in sim.resources.items() {
         let e = match kinds.iter().position(|(k, _)| *k == r.kind) {

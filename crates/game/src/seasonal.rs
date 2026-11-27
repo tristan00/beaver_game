@@ -1,4 +1,3 @@
-//! Shared visual calendar. Terrain, foliage and lighting must follow the same year.
 pub fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -19,11 +18,8 @@ pub fn phase(time_days: f64) -> f32 {
         .unwrap_or_else(|| sim::calendar::year_phase(time_days))
 }
 
-/// Days in the game year; every curve below is in days of the year.
 const YEAR: f32 = sim::calendar::YEAR_DAYS as f32;
 
-/// Spring colour arrives with the thaw, rather than taking half of spring to appear.
-/// The final interval wraps continuously from winter to the next spring.
 pub fn blend<T: Copy>(keys: &[T; 4], phase: f32, lerp: impl Fn(T, T, f32) -> T) -> T {
     const DAYS: [f32; 5] = [15.0, 135.0, 225.0, 305.0, 375.0];
     let mut day = phase.rem_euclid(1.0) * YEAR;

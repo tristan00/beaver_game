@@ -9,15 +9,12 @@ pub use crate::tuning::water::*;
 pub type Cell = (usize, usize);
 
 const DAY_S: f64 = 86_400.0;
-/// A game day advances the same water and environmental day on every device.
 mod climate;
 mod routed;
 mod subgrid;
 mod automaton;
 pub(crate) mod equilibrium;
 
-/// Which water engine moves the water. Chosen once per world with `BC_WATER_ENGINE`
-/// (routed, subgrid, automaton, equilibrium); the player's Settings choice otherwise, equilibrium by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EngineKind {
     Routed,
@@ -26,18 +23,15 @@ pub enum EngineKind {
     Equilibrium,
 }
 
-/// The engine new worlds start with unless the player picks another.
 pub const DEFAULT_ENGINE: EngineKind = EngineKind::Equilibrium;
 static CHOSEN_ENGINE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(u8::MAX);
 
-/// The player's setting: new worlds use this engine.
 pub fn set_default_engine(kind: EngineKind) {
     CHOSEN_ENGINE.store(kind as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl EngineKind {
     pub const ALL: [EngineKind; 4] = [EngineKind::Routed, EngineKind::Subgrid, EngineKind::Automaton, EngineKind::Equilibrium];
-    /// `BC_WATER_ENGINE` (tools and tests) wins, then the player's setting, then the default.
     pub fn from_env() -> Self {
         if let Some(k) = std::env::var("BC_WATER_ENGINE").ok().and_then(|v| Self::parse(&v)) {
             return k;
@@ -117,32 +111,19 @@ macro_rules! each_engine {
 pub use climate::{Forcing, Weather};
 pub use crate::calendar::Season;
 const FACE_DRY: f32 = 1.0e-4;
-/// Depth above which a cell's bed turns to bare sediment (m).
 const RIVERBED_WET: f32 = 0.005;
-/// Water deeper than this before and after a step has crossed none of the depths anything
-/// waits on (wading, the riverbed, the shore), and `publish` skips it.
 const SHALLOW: f32 = if crate::buildings::WET_DEPTH > 0.03 { crate::buildings::WET_DEPTH } else { 0.03 };
 const _: () = assert!(RIVERBED_WET <= SHALLOW);
 
-/// The ground is drawn by how deep the water's edge lies on it: in whole centimetres, up to
-/// three (`Water::shore`). A pond rising a metre over ground already under water changes none
-/// of it.
 pub fn shore_step(depth: f32) -> u8 {
     (depth >= 0.005) as u8 + (depth >= 0.015) as u8 + (depth >= 0.025) as u8
 }
 
-/// The riverbed is drawn in this many steps from turf to bare silt (see `DEPTH_STEP`).
 pub const RIVERBED_STEPS: f32 = 16.0;
 
-/// How far the depth (m) on some cell a tile reads must move before the tile of `depth` is
-/// stamped as changed, and likewise the speed (m/s) for `velocity`: the water is drawn no
-/// finer. Measured from when the tile was last stamped, so a pond creeping up a hair every
-/// step is reported once for each such step up, not at every one.
 pub const DEPTH_STEP: f32 = 0.002;
 pub const SPEED_STEP: f32 = 0.05;
 
-/// What follows when shallow water on a cell changes depth. Kept apart from the loop over every
-/// published cell, which rarely needs any of it.
 struct Edge<'a> {
     nav_revision: &'a mut u64,
     nav_marked: &'a mut Vec<bool>,
@@ -154,7 +135,6 @@ struct Edge<'a> {
 }
 
 impl Edge<'_> {
-    /// Cell `i`, at (x, y), went from `was` deep to `h`.
     #[cold]
     #[inline(never)]
     fn moved(&mut self, i: usize, x: usize, y: usize, was: f32, h: f32) {
@@ -166,7 +146,6 @@ impl Edge<'_> {
             }
         }
         if (was > RIVERBED_WET) != (h > RIVERBED_WET) {
-            // Water came or went: the riverbed here starts changing.
             if let Some(live) = self.bed_live.as_mut() {
                 if !self.bed_marked[i] {
                     self.bed_marked[i] = true;
@@ -182,26 +161,20 @@ impl Edge<'_> {
     }
 }
 
-/// What was last told of the grids that are drawn only so finely (`Water::note_changes`).
 #[derive(Debug, Default)]
 struct Told {
     depth: crate::grid::Told<f32>,
     speed: crate::grid::Told<(f32, f32)>,
     riverbed: crate::grid::Told<f32>,
-    /// The tiles with water published, and with riverbed changed, since they were looked at.
     wet: crate::grid::Due,
     bed: crate::grid::Due,
-    /// Stamp when asked (`note_changes`), not at every publish.
     on_request: bool,
 }
 
 const EDGE_SLOPE_MIN: f32 = 1.0e-3;
 const MOVING: f32 = 0.02;
 
-/// How often ice is worked out, in days: six game hours.
 const ICE_EVERY_DAYS: f64 = 0.25;
-/// How often the work of beavers on the ground (digging, silt, dams built up) is taken into the
-/// water, in days. Gates, breaches and failures are taken at once.
 const BED_EVERY_DAYS: f64 = 1.0;
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterConfig {
@@ -279,14 +252,12 @@ impl fmt::Display for WaterError {
 }
 impl std::error::Error for WaterError {}
 
-/// Map an f32 to an order-preserving u32 key for integer priority queues.
 #[inline]
 pub(crate) fn ordered_f32(v: f32) -> u32 {
     let b = v.to_bits();
     if b & 0x8000_0000 == 0 { b ^ 0x8000_0000 } else { !b }
 }
 
-/// Where the water engine spends its time, accumulated since the last `reset_timings`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WaterTimings {
     pub faces_s: f64,
@@ -324,12 +295,10 @@ pub struct Water {
     pub dam_integrity: Grid<f32>,
     pub dam_durability: Grid<f32>,
     pub canal: Grid<bool>,
-    /// Gate cells: a dam cell whose height the player sets (a sill). Gates don't erode.
     pub gate: Grid<bool>,
     pub closed_edge: Grid<bool>,
     pub width: Grid<f32>,
     pub channel: Grid<bool>,
-    /// Exposed mineral bed, retained after water recedes (0 = turf, 1 = silt/gravel).
     pub riverbed: Grid<f32>,
     pub discharge: Grid<f32>,
     pub velocity: Grid<(f32, f32)>,
@@ -342,7 +311,6 @@ pub struct Water {
     pub lost_volume: f64,
     pub cell_m: f32,
     pub physics_seconds: f64,
-    /// Changes when published water or navigable waterworks change.
     pub revision: u64,
     pub(crate) nav_revision: u64,
     pub(crate) topology_revision: u64,
@@ -362,38 +330,27 @@ pub struct Water {
     source_cells: Vec<usize>,
     rows: Vec<Vec<(u32, u32)>>,
     topology_dirty: bool,
-    /// Rows stepped at the last publish; cells outside them and the current rows did not change.
     pub_rows: Vec<Vec<(u32, u32)>>,
     full_publish: bool,
     dam_cells: Vec<u32>,
     ice_any: bool,
     since_environment: f64,
-    /// Cells whose riverbed is still turning to silt or back to turf; `None` until a full sweep
-    /// lists them. Every other cell is at rest: bare under water or in a canal, turf when dry.
     #[serde(skip)]
     bed_live: Option<Vec<u32>>,
     #[serde(skip)]
     bed_marked: Vec<bool>,
-    /// Whether the published grids match `h` (not so between an engine's publish and ours).
     #[serde(skip)]
     h_published: bool,
-    /// `shore_step` of each cell's depth. Its tiles are stamped when the water's edge moves,
-    /// where `depth`'s are stamped by every ripple.
     #[serde(skip)]
     pub shore: Grid<u8>,
     #[serde(skip)]
     told: crate::grid::Own<Told>,
-    /// Cells whose published `velocity` changed since the nav last took the currents
-    /// (`current_changes`), each listed once.
     #[serde(skip)]
     current_cells: Vec<u32>,
     #[serde(skip)]
     current_marked: Vec<bool>,
-    /// A gate moved, a dam breached or failed: the water takes the ground at its next step
-    /// rather than at its next daily look (`BED_EVERY_DAYS`).
     #[serde(skip)]
     ground_now: bool,
-    /// The place's weather (see `weather`): set from the world's seed, so never saved.
     #[serde(skip)]
     pub sky: crate::weather::Sky,
 }
@@ -402,13 +359,8 @@ crate::grid::clone_fields!(Water { engine, routed_needs_sync, depth, ice, dam_he
 
 const FORCING_EVERY_S: f64 = 300.0;
 
-/// Water thinner than this is not drawn (a damp film reads as wet ground, not water).
 pub const SHOW_MIN_M: f32 = 0.003;
-/// A thin film on a cell with no wet neighbour is damp ground, not a pool.
 pub const LONE_FILM_M: f32 = 0.02;
-/// Water standing on a dam cell shallower than this (rain on the crest, the last of a spill)
-/// is not drawn: a sheet at crest height would show through the wall. A gate's water is always
-/// drawn, and so is a real overtopping.
 pub const DAM_FILM_M: f32 = 0.12;
 
 impl Water {
@@ -417,13 +369,11 @@ impl Water {
         self.depth.as_slice()[(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize]
     }
 
-    /// A thin film with no water on any of its four sides.
     pub fn lone_film(&self, x: i32, y: i32) -> bool {
         let h = self.depth_at(x, y);
         h < LONE_FILM_M && [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|&(dx, dy)| self.depth_at(x + dx, y + dy) <= SHOW_MIN_M)
     }
 
-    /// A thin sheet on a dam's crest (not at a gate).
     pub fn dam_film(&self, x: i32, y: i32) -> bool {
         let (cx, cy) = (x.max(0) as usize, y.max(0) as usize);
         self.depth_at(x, y) < DAM_FILM_M
@@ -431,7 +381,6 @@ impl Water {
             && !self.gate.get(cx, cy).copied().unwrap_or(false)
     }
 
-    /// Whether this cell is shown as water: what the player sees is what play goes by.
     pub fn shown(&self, x: i32, y: i32) -> bool {
         self.depth_at(x, y) > SHOW_MIN_M && !self.lone_film(x, y) && !self.dam_film(x, y)
     }
@@ -511,9 +460,6 @@ impl Water {
             *c = closed;
         }
         w.lake_level = world.lake_level.clone();
-        // Only the part of an external lake crossing the map boundary is a fixed
-        // reservoir. Interior lake cells store finite water and respond to dams,
-        // drainage canals, rain and drought just like other ponds.
         for y in 1..n - 1 {
             for x in 1..n - 1 {
                 w.lake_level.as_mut_slice()[y * n + x] = f32::NAN;
@@ -572,8 +518,6 @@ impl Water {
         self.books = Budget::default();
     }
 
-    /// Put the engine's order-free lists in one order, so that two waters holding the same
-    /// water encode equally. Only for comparing runs: the order never changes what happens.
     pub fn canonical(&mut self) {
         if let Engine::Equilibrium(e) = &mut self.engine {
             e.canonical();
@@ -588,13 +532,10 @@ impl Water {
 
     pub fn forcing(&self) -> Forcing { climate::forcing(self.time_days, self.weather, &self.sky) }
 
-    /// Stored water in metres of depth summed over cells (or m³ for Equilibrium).
     pub fn total_volume(&self) -> f64 {
         each_engine!(&self.engine, e => e.total_volume()).unwrap_or_else(|| self.h.iter().map(|&h| h as f64).sum())
     }
 
-    /// Hand the water to another engine mid-game. The new engine starts from the current
-    /// depths, so no water is gained or lost by switching.
     pub fn set_engine(&mut self, kind: EngineKind) {
         if kind == self.engine.kind() {
             return;
@@ -642,7 +583,6 @@ impl Water {
         self.dam_height.get(x, y).is_some_and(|&h| h > 0.0)
     }
 
-    /// All surviving cells of the connected dam, including diagonal sections.
     pub fn dam_line_at(&self, seed: Cell) -> Vec<Cell> {
         if !self.has_dam(seed.0, seed.1) {
             return Vec::new();
@@ -738,8 +678,6 @@ impl Water {
         Ok(())
     }
 
-    /// Take away whatever dam or gate stands on a cell (a cancelled dam or canal gate), so the
-    /// water runs over its ground again.
     pub fn clear_structure(&mut self, cell: Cell) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
         if self.dam_height.as_slice()[i] <= 0.0 && !self.gate.as_slice()[i] {
@@ -756,8 +694,6 @@ impl Water {
         Ok(())
     }
 
-    /// Set a gate's sill: `height` above this cell's ground, 0 for wide open. The cell is
-    /// marked as a gate so overtopping never wears it away.
     pub fn set_gate(&mut self, cell: Cell, height: f32) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
         if !height.is_finite() || height < 0.0 {
@@ -778,8 +714,6 @@ impl Water {
         Ok(())
     }
 
-    /// A gate taken off a dam: the cell keeps its height as an ordinary dam cell, which
-    /// overtopping wears and builders raise back to the dam's height.
     pub fn unset_gate(&mut self, cell: Cell) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
         if !self.gate.as_slice()[i] {
@@ -794,7 +728,6 @@ impl Water {
         Ok(())
     }
 
-    /// Silt settles back into a dug canal cell; it stops being a canal once filled to `ground`.
     pub fn silt_canal(&mut self, height: &mut HeightGrid, cell: Cell, amount: f32, ground: f32) -> Result<(), WaterError> {
         let i = self.check(cell.0, cell.1)?;
         Self::check_positive("silt", amount)?;
@@ -833,7 +766,6 @@ impl Water {
         self.current_cells.clear();
     }
 
-    /// Cells whose current changed since the navigation changes were last cleared.
     pub(crate) fn current_changes(&self) -> &[u32] {
         &self.current_cells
     }
@@ -843,12 +775,10 @@ impl Water {
         self.publish();
     }
 
-    /// Take changes to the ground into the water now, not at its next look (see `BED_EVERY_DAYS`).
     pub(crate) fn take_ground(&mut self, height: &HeightGrid) {
         self.load_bed(height);
     }
 
-    /// Bed = terrain + dams.
     fn load_bed(&mut self, height: &HeightGrid) {
         assert_eq!((height.width(), height.height()), (self.n, self.n), "terrain size must match water size");
         let version=(height.version(),self.dam_height.version());
@@ -885,7 +815,6 @@ impl Water {
         let n = self.n;
         for s in &self.sources {
             let rate = s.rate * (1.0 + s.seasonality * (inflow - 1.0)).max(0.0);
-            // Source rates are metres of depth per day on their cell; src is metres per second.
             self.src[s.y * n + s.x] += rate / DAY_S as f32;
             if rate > 0.0 { source_cells.push(s.y * n + s.x); }
         }
@@ -903,8 +832,6 @@ impl Water {
 
     fn step_physics(&mut self, height: &HeightGrid, dt_days: f32) {
         let t0 = std::time::Instant::now();
-        // Ground dug, silted or dammed reaches the water every `BED_EVERY_DAYS`, all at once:
-        // each change has the drainage worked out afresh over the whole map.
         let due = self.bed_version.is_none() || self.ground_now || !dt_days.is_finite()
             || ((self.time_days + dt_days as f64) / BED_EVERY_DAYS).floor() > (self.time_days / BED_EVERY_DAYS).floor();
         if due {
@@ -920,7 +847,6 @@ impl Water {
         self.run_engine(dt_days as f64 * DAY_S, true);
         let t0 = std::time::Instant::now();
         { let _p = crate::prof::scope("step/water/dam wear"); self.update_dams(height, dt_days); }
-        // Ice thickens and thaws over days: every `ICE_EVERY_DAYS`, for that long, is plenty.
         let turns = ((self.time_days / ICE_EVERY_DAYS).floor() - ((self.time_days - dt_days as f64) / ICE_EVERY_DAYS).floor()).max(0.0);
         if turns > 0.0 {
             let _p = crate::prof::scope("step/water/ice");
@@ -931,7 +857,6 @@ impl Water {
         self.publish();
     }
 
-    /// Move water and apply weather on the same fifteen-minute clock, whichever engine runs.
     fn run_engine(&mut self, seconds:f64, losses:bool) {
         if self.topology_dirty {
             self.dam_cells = (0..self.n * self.n).filter(|&i| self.dam_height.as_slice()[i] > 0.0).map(|i| i as u32).collect();
@@ -945,17 +870,11 @@ impl Water {
     }
 }
 
-/// What every water engine provides. Engines read the bed (`z`, terrain plus dams), the
-/// source rates (`src`, metres per second on `source_cells`), the fixed edge-lake levels
-/// (`lake_level`), the edges (`closed_edge`, `config.open_edges`) and the weather, and
-/// publish depth (`h`), face fluxes (`qx`, `qy` in m²/s) and the active row spans (`rows`).
-/// Every volume entering or leaving is booked in `books` and `added_volume`/`lost_volume`.
 pub(crate) trait WaterEngine {
     fn prepare(&mut self, w: &mut Water, sync: bool);
     fn advance(&mut self, w: &mut Water, seconds: f64);
     fn environment(&mut self, w: &mut Water, days: f64);
     fn publish(&mut self, w: &mut Water);
-    /// Stored water in cubic metres per square metre of cell, if the engine keeps its own.
     fn total_volume(&self) -> Option<f64>;
 }
 
@@ -964,8 +883,6 @@ impl Water {
         let mut left=seconds;
         while left>1.0e-6 {
             let limit=if losses {900.0-self.since_environment} else {seconds};
-            // f32 calendar steps arrive a few microseconds over 900 seconds.
-            // Do not run the entire graph again for that rounding remainder.
             let dt=if left<=limit+1.0e-3 {left} else {limit};
             self.refresh_sources();
             let started=std::time::Instant::now();
@@ -988,16 +905,11 @@ impl Water {
         }
     }
 
-    /// Remember bare sediment after floodwater recedes. Only cells still changing are visited:
-    /// a cell at rest stays there until its water comes or goes (`publish` wakes it) or a
-    /// canal is dug through it.
     fn update_riverbed(&mut self, dt: f32) {
         let next = |bed: f32, canal: bool, h: f32| {
             if canal {
                 1.0
             } else if h > RIVERBED_WET {
-                // Newly flooded turf becomes bare soil over half a day. Established beds
-                // remain exposed through a dry season; regrowth is deliberately slow.
                 (bed + dt * 2.0).min(1.0)
             } else {
                 (bed - dt / 180.0).max(0.0)
@@ -1005,7 +917,6 @@ impl Water {
         };
         let resting = |bed: f32, canal: bool, h: f32| bed == if canal || h > RIVERBED_WET { 1.0 } else { 0.0 };
         if !self.h_published {
-            // Depths moved without going through `publish`: nothing was woken.
             self.bed_live = None;
         }
         let canal = self.canal.as_slice();
@@ -1044,9 +955,6 @@ impl Water {
         self.bed_live = Some(live);
     }
 
-    /// One explicit step of the local-inertial shallow-water equations (Bates et al. 2010):
-    /// momentum per face from the water-surface slope with semi-implicit Manning friction, then
-    /// mass per cell. Pools take what crosses their rim and hold one level. Returns the step in s.
     fn publish(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         let t0 = std::time::Instant::now();
@@ -1060,7 +968,6 @@ impl Water {
         self.told.0.wet.sized(n);
         let full = std::mem::take(&mut self.full_publish);
         if full {
-            // Every cell may have changed: list the changing riverbed afresh.
             self.bed_live = None;
         }
         {
@@ -1072,7 +979,6 @@ impl Water {
                 *current_marked = vec![false; n * n];
                 current_cells.clear();
             }
-            // A cell whose current is no longer what the nav took is listed for it.
             let mut flowed = |i: usize, was: (f32, f32), now: (f32, f32)| {
                 if (was.0.to_bits() != now.0.to_bits() || was.1.to_bits() != now.1.to_bits()) && !current_marked[i] {
                     current_marked[i] = true;
@@ -1082,14 +988,11 @@ impl Water {
             let w1 = n + 1;
             let dx = *cell_m;
             let lake = lake_level.as_slice();
-            // Depth and speed are stamped in `note_changes`, which looks at the tiles written here.
             let wet = &mut told.0.wet;
             let (depth, velocity) = (depth.cells_and_marks().0, velocity.cells_and_marks().0);
             let (shore, shore_marks) = shore.cells_and_marks();
             let mut edge = Edge { nav_revision, nav_marked, nav_cells, bed_live, bed_marked, shore, shore_marks };
             let (width, discharge, channel) = (width.as_mut_slice(), discharge.as_mut_slice(), channel.as_mut_slice());
-            // Each row's spans (and, where they changed, last time's too: water that has gone
-            // must be cleared), copied to the grids the rest of the world reads.
             let whole = [(0u32, n as u32)];
             for y in 0..n {
                 let (now, before): (&[(u32, u32)], &[(u32, u32)]) = if full {
@@ -1110,8 +1013,6 @@ impl Water {
                         let i = y * n + x;
                         let h = h[i];
                         let was = depth[i];
-                        // Deep water staying deep (most of a pond) crosses none of the depths anything
-                        // waits on, nor does a cell left as it was (the dry ground between a row's waters).
                         if (was.to_bits() != h.to_bits()) & ((was <= SHALLOW) | (h <= SHALLOW)) {
                             edge.moved(i, x, y, was, h);
                         }
@@ -1120,7 +1021,6 @@ impl Water {
                         depth[i] = h;
                         width[i] = if h > 0.0 { dx } else { 0.0 };
                         if qxc.to_bits() == 0 && qyc.to_bits() == 0 {
-                            // Still water (most of a pond): the same zeros, without the roots and divisions.
                             discharge[i] = 0.0;
                             flowed(i, velocity[i], (0.0, 0.0));
                             velocity[i] = (0.0, 0.0);
@@ -1148,15 +1048,10 @@ impl Water {
         }
     }
 
-    /// From now on, `depth`, `velocity` and `riverbed` are stamped only when `note_changes` is called:
-    /// for an owner that shows the world less often than it steps it.
     pub fn note_on_request(&mut self) {
         self.told.0.on_request = true;
     }
 
-    /// Stamp the tiles of `depth`, `velocity` and `riverbed` in which some cell has moved by
-    /// more than is drawn of it (`DEPTH_STEP`, `SPEED_STEP`, a step of `RIVERBED_STEPS`) since
-    /// the tile was last stamped. Only tiles written since the last call are looked at.
     pub fn note_changes(&mut self) {
         let _p = crate::prof::scope("note changes");
         let told = &mut self.told.0;
@@ -1169,21 +1064,16 @@ impl Water {
         told.bed.clear();
     }
 
-    /// How much of a cell the ice covers, 0 to 1: a skin at first, whole once `ICE_COVER_M` thick.
     pub fn ice_cover(&self, x: usize, y: usize) -> f32 {
         self.ice.get(x, y).map_or(0.0, |t| (t / ICE_COVER_M).min(1.0))
     }
 
-    /// Ice (metres thick) follows the last days' air: it thickens on still water while that is
-    /// below freezing, quickly at first and slower as it thickens, and melts once it is above.
-    /// Water running fast stays open, so a winter river keeps open leads and rapids.
     fn update_ice(&mut self, dt_days: f32) {
         let air = self.sky.at(self.time_days).ground_c;
         if air >= 0.0 && !self.ice_any {
             return;
         }
         let (mut any, mut changed) = (false, false);
-        // Cells whose ice now bears a beaver, or no longer does: walked, not swum (see `nav`).
         let mut firm: Vec<usize> = Vec::new();
         let velocity = self.velocity.as_slice();
         let (cells, mut marks) = self.ice.cells_and_marks();
@@ -1192,10 +1082,8 @@ impl Water {
             let now = if d <= WET_EPS {
                 0.0
             } else if air < 0.0 && still > 0.0 {
-                // Stefan's law: growth slows as the ice thickens.
                 (*ice + ICE_STEFAN * -air / (*ice + ICE_SEED_M) * still * dt_days).min(MAX_ICE)
             } else {
-                // Thawing air, or water running too fast to stay frozen.
                 let thaw = ICE_MELT_PER_DEGREE_DAY * air.max(0.0) + ICE_FLOW_MELT * (1.0 - still);
                 (*ice - thaw * dt_days).max(0.0)
             };
@@ -1222,8 +1110,6 @@ impl Water {
         }
     }
 
-    /// Integrity a dam cell loses a day: from age, and from water running over its crest
-    /// (deeper than the allowance), each divided by the cell's durability (pebble facing).
     pub fn dam_cell_wear(&self, height: &HeightGrid, i: usize) -> (f32, f32) {
         let w = self.n;
         let (terrain, dam, depth) = (height.as_slice(), self.dam_height.as_slice(), &self.h);
@@ -1294,10 +1180,6 @@ pub fn corner(bed: &[f32], dammed: impl Fn(usize) -> bool, n: usize, i: usize, j
     if i % n == j % n || i / n == j / n || !(dammed(a) || dammed(b)) { f32::NEG_INFINITY } else { bed[a].min(bed[b]) }
 }
 
-/// For a dam line crossing water: a test of which side of it a neighbouring cell lies, by the
-/// line's own run there (positive downstream, negative upstream, zero along the line).
-/// Downstream is where the current over the wet cells runs, or failing that the side where the
-/// water beside them stands lower. `None` when the line crosses no water to tell by.
 fn dam_sides<'a>(state: &'a SimState, cells: &'a [Cell], idx: &'a [usize]) -> Option<impl Fn(usize, usize) -> i32 + 'a> {
     let water = &state.water;
     let depth = water.depth.as_slice();
@@ -1333,8 +1215,6 @@ fn dam_sides<'a>(state: &'a SimState, cells: &'a [Cell], idx: &'a [usize]) -> Op
     Some(move |k: usize, m: usize| raw(k, m) * sign as i32)
 }
 
-/// The still pond behind planned dam heights: found once, then asked for the pond itself and
-/// for how far flowing water spreads over it (a dam's estimate needs both).
 pub(crate) struct StillPond {
     n: usize,
     flooded: Vec<usize>,
@@ -1370,12 +1250,8 @@ impl StillPond {
         let dams = water.dam_height.as_slice();
         let sill = |i: usize, j: usize| bed[i].max(bed[j]).max(corner(&bed, |k| is_new[k] || dams[k] > 0.0, n, i, j));
         let drains_to = |i: usize| neighbours8(n, i).filter(|&j| terrain[j] < terrain[i]).min_by(|&a, &b| terrain[a].total_cmp(&terrain[b]).then(a.cmp(&b)));
-        // Which side of the line is downstream, from the water it crosses: where its current
-        // runs, else the side its water stands lower. The ground's slope alone can't say: on
-        // a long dam mostly over land, the banks on both sides slope down to the line.
         let side = (idx.len() > 1).then(|| dam_sides(state, cells, &idx)).flatten();
         let mut seeds: Vec<usize> = Vec::new();
-        // Cells just below the dam: the flood has found its way round once it reaches one.
         let mut below = vec![false; n * n];
         let mut any_below = false;
         match &side {
@@ -1452,7 +1328,6 @@ impl StillPond {
             }
         }
         crate::prof::count("+still pond/flood/cells", flooded.len() as u64);
-        // In map order from here on: every use wants it sorted.
         flooded.sort_unstable();
         drop(_p);
         Ok(StillPond { n, flooded, level, crest, spill_at })

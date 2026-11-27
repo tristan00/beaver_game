@@ -101,7 +101,6 @@ pub fn install_game(
     install_valley(s, dam, sim, planned, flow, |s, f| begin_play(s, f, clock, orbit, sel, camp))
 }
 
-/// Put a freshly built valley behind the start screen, unsettled, as a new game starts on it.
 pub fn install_preview(
     s: SimState,
     dam: Option<sim::starts::DamSite>,
@@ -165,7 +164,6 @@ fn begin_new_game(
         return;
     }
     if sim.0.colony.is_founded() {
-        // A loaded game: carry on where it was.
         begin(&sim.0, &mut flow, &mut clock, &mut orbit, &mut sel);
         clock.paused = cli.screenshot.is_some();
         return;

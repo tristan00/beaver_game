@@ -16,8 +16,6 @@ pub fn holders(sim: &SimState, good: Good) -> Vec<BuildingId> {
     out
 }
 
-/// A haul mound has its haulers balancing the stores (from when it is finished, until
-/// switched off).
 pub fn balancing(sim: &SimState) -> bool {
     sim.buildings.buildings.iter().any(|b| b.kind.balances() && b.is_complete() && sim.work.balanced.contains(&b.id))
 }
@@ -26,7 +24,6 @@ fn open_store(sim: &SimState, b: &Building) -> bool {
     b.is_complete() && is_store(b.kind) && !sim.buildings.unusable(b, &sim.water.depth)
 }
 
-/// Store-to-store loads currently in flight (foot hauls and raft trips): `(from, to, good, amount)`.
 fn in_flight(sim: &SimState) -> Vec<(BuildingId, BuildingId, Good, f32)> {
     use crate::agents::{Dest, Source};
     let mut out = Vec::new();
@@ -47,8 +44,6 @@ fn in_flight(sim: &SimState) -> Vec<(BuildingId, BuildingId, Good, f32)> {
     out
 }
 
-/// The next load for a store the player asked to have filled: its good from the store that
-/// has the most of it, until the store is full or no other store has any.
 pub fn fill_move(sim: &SimState) -> Option<(BuildingId, BuildingId, Good)> {
     if sim.work.fills.is_empty() {
         return None;
@@ -75,7 +70,6 @@ pub fn fill_move(sim: &SimState) -> Option<(BuildingId, BuildingId, Good)> {
     None
 }
 
-/// A fill order is done once its store is full or gone.
 pub fn retire_fills(sim: &mut SimState) {
     let done: Vec<BuildingId> = sim.work.fills.iter().copied().filter(|&id| {
         sim.buildings.building(id).is_none_or(|b| {
@@ -88,7 +82,6 @@ pub fn retire_fills(sim: &mut SimState) {
     }
 }
 
-/// The next load that evens out the stores, when a haul mound's haulers balance.
 pub fn balance_move(sim: &SimState, at: Option<BuildingId>) -> Option<(BuildingId, BuildingId, Good)> {
     if !balancing(sim) {
         return None;

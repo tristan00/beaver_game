@@ -7,9 +7,7 @@ use std::f32::consts::TAU;
 pub const HEAD_PIVOT: Vec3 = Vec3::new(0.0, 0.85, 0.62);
 pub const TAIL_PIVOT: Vec3 = Vec3::new(0.0, 0.36, -0.6);
 pub const LEG_PIVOTS: [Vec3; 4] = [Vec3::new(-0.3, 0.34, 0.4), Vec3::new(0.3, 0.34, 0.4), Vec3::new(-0.3, 0.36, -0.28), Vec3::new(0.3, 0.36, -0.28)];
-/// Where a load hugged in the forepaws sits, in body space (moved by the pose).
 pub const CHEST_HOLD: Vec3 = Vec3::new(0.0, 0.45, 0.85);
-/// Where a load carried in the teeth sits, in head space.
 pub const MOUTH: Vec3 = Vec3::new(0.0, -0.28, 0.72);
 
 use crate::palette::{self, pack};
@@ -23,9 +21,6 @@ const INK: u32 = pack(palette::INK);
 fn skin() -> [f32; 3] { mix(hex(FUR_DARK), hex(INK), 0.7) }
 fn skin_light() -> [f32; 3] { mix(hex(FUR_DARK), hex(INK), 0.35) }
 
-/// Fur shaded by which way it faces: a dark back (what the camera mostly sees, so a beaver
-/// reads against grass and water), warm sides, a light belly. One rule for every fur piece,
-/// so the overlapping shapes don't show as bands.
 fn fur_paint(n: Vec3, old: [f32; 3]) -> [f32; 3] {
     let back = mix(hex(FUR_DARK), hex(INK), 0.6);
     let (side, belly) = (hex(FUR), hex(FUR_LIGHT));
@@ -43,7 +38,6 @@ fn beaver_body_d(mb: &mut Mb, o: Vec3, detail: bool) {
     mb.ellipsoid_g(o + v(0.0, 0.6, 0.3), v(0.43, 0.43, 0.46), fd, f, 12, 8);
     mb.ellipsoid_g(o + v(0.0, 0.43, 0.16), v(0.37, 0.29, 0.55), mix(f, fl, 0.55), fl, 10, 6);
     for s in [-1.0, 1.0] {
-        // Haunches stay inside the body's outline, not bulging out like saddlebags.
         mb.ellipsoid_g(o + v(0.3 * s, 0.47, -0.32), v(0.24, 0.31, 0.36), fd, f, 10, 6);
     }
     if detail {
@@ -63,7 +57,6 @@ fn beaver_head_d(mb: &mut Mb, o: Vec3, detail: bool) {
     let start = mb.len();
     mb.ellipsoid_g(o + v(0.0, 0.05, 0.26), v(0.41, 0.37, 0.39), f, fl, 12, 8);
     mb.ellipsoid_g(o + v(0.0, 0.26, 0.2), v(0.3, 0.14, 0.26), f, mix(f, fd, 0.3), 10, 5);
-    // The crown darkens like the back; the face stays light.
     mb.paint(start, |p, n, c| if p.z - o.z < 0.45 { fur_paint(n, c) } else { c });
     for s in [-1.0, 1.0] {
         mb.ellipsoid(o + v(0.1 * s, -0.11, 0.58), v(0.15, 0.13, 0.15), fl);
@@ -78,7 +71,6 @@ fn beaver_head_d(mb: &mut Mb, o: Vec3, detail: bool) {
         mb.ellipsoid(o + v(0.27 * s, 0.37, 0.12), v(0.07, 0.06, 0.05), hex(0xd89a8a));
         mb.ellipsoid(o + v(0.3 * s, -0.05, 0.42), v(0.1, 0.09, 0.09), fl);
         mb.ellipsoid(o + v(0.3 * s, 0.02, 0.47), v(0.06, 0.035, 0.03), mix(fl, hex(0xe89a8a), 0.55));
-        // Short incisors set under the lip, the warm orange of real beaver enamel.
         mb.cuboid(o + v(0.045 * s, -0.27, 0.685), v(0.04, 0.062, 0.026), Quat::IDENTITY, hex(0xE9A55C), hex(0xFFE6BC));
         if detail {
             mb.ellipsoid(o + v(0.03 * s, 0.025, 0.79), v(0.022, 0.014, 0.012), hex(0xd8c4b8));
@@ -100,7 +92,6 @@ pub fn beaver_lids(mb: &mut Mb) {
     }
 }
 
-/// Grizzled grey fur on an old beaver's muzzle and brows, laid over the head.
 pub fn beaver_grey(mb: &mut Mb) {
     let g = hex(0xb8b3ab);
     mb.ellipsoid(v(0.0, -0.14, 0.66), v(0.2, 0.1, 0.12), g);
@@ -118,7 +109,6 @@ pub fn gnaw_chips(mb: &mut Mb) {
 
 pub fn beaver_tail(mb: &mut Mb, o: Vec3) { beaver_tail_d(mb, o, true) }
 
-/// The paddle is broad and dark: from above it is what tells a beaver from any other lump.
 fn beaver_tail_d(mb: &mut Mb, o: Vec3, detail: bool) {
     let (rx, rz, cz) = (0.46f32, 0.66f32, -0.7f32);
     mb.ellipsoid(o + v(0.0, 0.0, -0.08), v(0.17, 0.12, 0.22), mix(hex(FUR_DARK), hex(INK), 0.3));
@@ -181,9 +171,6 @@ pub fn beaver_static(mb: &mut Mb) {
     }
 }
 
-/// A V of foam trailing back from the bow (at the origin) with a small bow wave in front.
-/// Its length is scaled with speed; it is never a closed ring, so it can't be taken for
-/// the selection marker.
 pub fn wake(mb: &mut Mb) {
     let foam = hex(0xF4FBF6);
     for s in [-1.0f32, 1.0] {
@@ -217,7 +204,6 @@ pub fn blob_shadow(mb: &mut Mb) {
 pub struct Season(u8);
 
 impl Season {
-    // Shared meshes sampled 24 times a year; individual trees stagger their changes.
     pub const COUNT: usize = 24;
     pub fn all() -> impl Iterator<Item = Self> { (0..Self::COUNT as u8).map(Self) }
     pub fn at(phase: f32) -> Self { Self(((phase.rem_euclid(1.0) * Self::COUNT as f32).round() as usize % Self::COUNT) as u8) }
@@ -225,9 +211,7 @@ impl Season {
     pub(super) fn phase(self) -> f32 { self.0 as f32 / Self::COUNT as f32 }
 }
 
-/// Construction shows in this many steps before a building is complete.
 pub const STAGES: u8 = 6;
-/// A finished building left high and dry: decayed.
 pub const DRY_STAGE: u8 = u8::MAX;
 
 pub fn stage_of(progress: f32) -> u8 {
@@ -236,7 +220,6 @@ pub fn stage_of(progress: f32) -> u8 {
 
 pub(super) fn col(c: palette::Rgb) -> [f32; 3] { hex(pack(c)) }
 
-/// A sprig of bright autumn leaves: how beavers' sites are marked, readable on grass and water.
 pub(super) fn leaf_sprig(mb: &mut Mb, p: Vec3, seed: u32) {
     let mut r = Rng(seed * 31 + 7);
     for k in 0..4 {
@@ -246,7 +229,6 @@ pub(super) fn leaf_sprig(mb: &mut Mb, p: Vec3, seed: u32) {
     }
 }
 
-/// A peeled marker stick pushed into the ground, leaning a little, with a sprig on top.
 pub(super) fn stake(mb: &mut Mb, p: Vec3, h: f32, flag: bool) {
     let top = p + v(0.08, h, 0.04);
     stick_c(mb, p + v(0.0, -0.4, 0.0), top, 0.05, col(palette::PEELED));
@@ -255,7 +237,6 @@ pub(super) fn stake(mb: &mut Mb, p: Vec3, h: f32, flag: bool) {
     }
 }
 
-/// A building site: marker sticks at the corners and peeled twigs laid along its edges.
 pub(super) fn site_markers(mb: &mut Mb, hx: f32, hz: f32, y: f32) {
     let corners = [v(-hx, y, -hz), v(hx, y, -hz), v(hx, y, hz), v(-hx, y, hz)];
     let mut r = Rng(97);
@@ -271,7 +252,6 @@ pub(super) fn site_markers(mb: &mut Mb, hx: f32, hz: f32, y: f32) {
     }
 }
 
-/// A stick: bark with cut ends a shade lighter (not bright, or sticks read as matches).
 pub(super) fn stick(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, k: f32) {
     let bark = mix(col(palette::BARK), col(palette::BARK_LIGHT), k);
     stick_c(mb, a, b, r, bark);
@@ -296,7 +276,6 @@ pub(super) fn mud_lump(mb: &mut Mb, c: Vec3, s: f32) {
     mb.ellipsoid_g(c, v(0.55 * s, 0.26 * s, 0.45 * s), col(palette::MUD_DARK), hex(0x77573a), 8, 5);
 }
 
-/// A leafy branch: a stick with clumps of leaves along its outer half.
 pub(super) fn branch(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, leaf: [f32; 3], seed: u32) {
     let mut rng = Rng(seed);
     stick(mb, a, b, r, rng.next());
@@ -307,7 +286,6 @@ pub(super) fn branch(mb: &mut Mb, a: Vec3, b: Vec3, r: f32, leaf: [f32; 3], seed
     }
 }
 
-/// A building's footing, as its row gives it.
 pub fn footing_of(kind: BuildingKind) -> Option<structures::Footing> {
     use structures::Footing::*;
     let row = kind.row();
@@ -367,7 +345,6 @@ pub fn reinforcement_mesh(kind: BuildingKind) -> Mesh {
                 }
             }
         }
-        // Mud and stones heaped round each corner post.
         structures::Footing::Piles(x, z) => {
             let mut r = Rng(55);
             for a in [-1.0, 1.0] {
@@ -386,7 +363,6 @@ pub fn reinforcement_mesh(kind: BuildingKind) -> Mesh {
     mb.build()
 }
 
-/// Grey pebbles set shoulder to shoulder round the footing.
 pub fn pebble_facing_mesh(kind: BuildingKind) -> Mesh {
     let mut mb = Mb::new();
     let (dark, light) = (hex(0x6e6e74), hex(0xc2c0bc));
@@ -414,8 +390,6 @@ fn seedling_sprig(mb: &mut Mb, a: Vec3, b: Vec3) {
     mb.ellipsoid_g(a, v(0.11, 0.08, 0.11), col(palette::MUD_DARK), hex(0x77573a), 6, 4);
 }
 
-/// A lodge: a rough cone of crossed sticks bedded in mud, with its entrance under water and a
-/// loose vent of sticks at the top. It rises from a low ring as it is built.
 fn lodge(mb: &mut Mb, f: f32) {
     let (rad, hgt) = (3.3f32, 3.0f32);
     let done = f >= 1.0;
@@ -433,11 +407,9 @@ fn lodge(mb: &mut Mb, f: f32) {
     let start = mb.len();
     mb.lathe(Mat4::IDENTITY, &prof, 20, col(palette::MUD_DARK), col(palette::DAM_MUD), true);
     if !done {
-        // The open top of an unfinished lodge: the dark chamber inside.
         let y = hgt * top_t;
         mb.lathe(Mat4::from_translation(v(0.0, y - 0.04, 0.0)), &[(shape(top_t) * 0.92, 0.0), (0.0, -0.3)], 18, hex(0x24170e), hex(0x24170e), false);
     }
-    // Lumpy, not turned on a lathe.
     let wob = |p: Vec3| {
         let a = p.z.atan2(p.x);
         let k = 1.0 + 0.06 * (3.0 * a + 1.3 + p.y * 0.8).sin() + 0.04 * (7.0 * a + p.y * 2.1).sin();
@@ -455,7 +427,6 @@ fn lodge(mb: &mut Mb, f: f32) {
         let around = v(-a.sin(), 0.0, a.cos());
         let out = around.cross(down).normalize_or_zero();
         let out = if out.dot(v(p.x, 0.0, p.z)) < 0.0 { -out } else { out };
-        // Crossed: half lean one way across the slope, half the other.
         let phi = if i % 2 == 0 { r.range(0.35, 1.2) } else { -r.range(0.35, 1.2) };
         let dir = (down * phi.cos() + around * phi.sin()).normalize();
         let l = r.range(1.0, 1.9);
@@ -470,7 +441,6 @@ fn lodge(mb: &mut Mb, f: f32) {
     }
     if done {
         let mut m = Rng(4321);
-        // Mud plastered over the sticks in patches, thickest low down.
         for _ in 0..16 {
             let (t, a) = (m.range(0.05, 0.7), m.range(0.0, TAU));
             let p = surface(t, a);
@@ -478,7 +448,6 @@ fn lodge(mb: &mut Mb, f: f32) {
             let s = m.range(0.4, 0.65);
             mb.ellipsoid_r(p, v(s, 0.06, s * 0.8), Quat::from_rotation_arc(Vec3::Y, up), mix(col(palette::MUD_DARK), col(palette::DAM_MUD), 0.4 + 0.4 * m.next()));
         }
-        // The vent: bare sticks, no mud, so air gets in.
         for k in 0..7 {
             let a = k as f32 * TAU / 7.0 + m.range(-0.2, 0.2);
             let base = v(a.cos() * 0.35, hgt * 0.9, a.sin() * 0.35);
@@ -497,7 +466,6 @@ fn lodge(mb: &mut Mb, f: f32) {
     }
 }
 
-/// What a beaver carries in its teeth, centred on the mouth.
 pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
     let mut mb = Mb::new();
     match good.row().model.as_str() {
@@ -515,9 +483,7 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
         "pebbles" => {
             mb.ellipsoid_g(v(0.0, -0.02, 0.02), v(0.18, 0.13, 0.15), hex(0x66666b), hex(0xb5b3ae), 7, 5);
         }
-        // A rooted seedling held by the stem, leaves up.
         "seedlings" => seedling_sprig(&mut mb, v(-0.05, -0.15, 0.0), v(0.05, 0.4, 0.02)),
-        // A leafy sprig held crosswise.
         "food" => {
             stick_c(&mut mb, v(-0.4, 0.0, 0.0), v(0.4, 0.05, 0.02), 0.025, hex(0x6f8a3a));
             for k in 0..5 {
@@ -530,7 +496,6 @@ pub fn load_mesh(good: sim::buildings::Good) -> Mesh {
     mb.build()
 }
 
-/// What a beaver hugs in its forepaws, centred on the hold point.
 pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
     let mut mb = Mb::new();
     match good.row().model.as_str() {
@@ -547,7 +512,6 @@ pub fn paw_load_mesh(good: sim::buildings::Good) -> Mesh {
         "pebbles" => {
             mb.ellipsoid_g(v(0.0, 0.0, 0.0), v(0.27, 0.2, 0.22), hex(0x5f5f64), hex(0xbab8b3), 8, 5);
         }
-        // Held slanted across the chest so the leaves stand clear of the head.
         "seedlings" => seedling_sprig(&mut mb, v(-0.12, -0.12, 0.02), v(0.42, 0.3, 0.2)),
         "food" => {
             for k in 0..3 {
@@ -592,7 +556,6 @@ fn stump_low() -> Mb {
     mb
 }
 
-/// Goods lying on the ground, about one load's worth; scaled with the amount.
 pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
     let mut mb = Mb::new();
     match good.row().model.as_str() {
@@ -614,9 +577,6 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
                 seedling_sprig(&mut mb, v(x, 0.0, 0.05 * k as f32), v(x + 0.05, 0.45, 0.05 * k as f32));
             }
         }
-        // A cache of cut food left on the ground, made to read apart from a growing plant: a patch
-        // of trodden earth, cut branches laid crosswise (peeled white and in their bark), curls
-        // of stripped bark, and bundled greens heaped in a mound on top.
         "food" => {
             mb.disc(v(0.0, 0.015, 0.0), 0.56, 0.5, mix(col(palette::MUD_DARK), col(palette::BARK), 0.3), 14);
             let mut r = Rng(77);
@@ -641,7 +601,6 @@ pub fn heap_mesh(good: sim::buildings::Good) -> Mesh {
     mb.build()
 }
 
-/// The family's starting supplies: a tied bundle of sticks, mud and a heap of food.
 pub fn supplies_mesh() -> Mesh {
     let mut mb = Mb::new();
     for k in 0..9 {

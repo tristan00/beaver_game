@@ -1,4 +1,3 @@
-
 include!(concat!(env!("OUT_DIR"), "/calendar_constants.rs"));
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Season {
@@ -53,8 +52,6 @@ pub fn year_phase(time_days: f64) -> f32 {
     (day_of_year(time_days) / YEAR_DAYS) as f32
 }
 
-/// Food vegetation uses the colony's calendar. Spring greens emerge over 15
-/// days; growth winds down through the last half of autumn and stops in winter.
 pub fn vegetation_growth(time_days: f64) -> f32 {
     let day = day_of_year(time_days);
     let smooth = |t: f64| { let t=t.clamp(0.0,1.0); (t*t*(3.0-2.0*t)) as f32 };

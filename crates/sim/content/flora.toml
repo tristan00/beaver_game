@@ -1,6 +1,3 @@
-# Each map's flora: trees as [dry, wet, upland, open] shares, food plants by how common.
-# Every map and `default` need one.
-
 [flora.adirondacks_fork]
 trees.Aspen = [0.15, 0.12, 0.0, 0.1]
 trees.Willow = [0.01, 0.2, 0.0, 0.1]

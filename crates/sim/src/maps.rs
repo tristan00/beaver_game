@@ -30,8 +30,6 @@ pub struct MapInfo {
     pub climate: Option<Climate>,
 }
 
-/// The place's real weather, month by month (January first), from the map header. The game's
-/// weather is drawn from it (see `weather`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Climate {
     pub temp_c: [f32; 12],
@@ -39,7 +37,6 @@ pub struct Climate {
     pub snow_mm: [f32; 12],
     pub evap_mm: [f32; 12],
     pub runoff_mm: [f32; 12],
-    /// Day of the year the ice forms and breaks up, when it does.
     pub ice_days: Option<(u16, u16)>,
 }
 
@@ -48,7 +45,6 @@ impl Climate {
         self.runoff_mm.iter().sum()
     }
 
-    /// Months of the year under ice.
     pub fn ice_months(&self) -> f32 {
         self.ice_days.map_or(0.0, |(on, off)| ((365 + off as i32 - on as i32) % 365) as f32 / 365.0 * 12.0)
     }
@@ -89,8 +85,6 @@ impl fmt::Display for MapError {
 
 impl std::error::Error for MapError {}
 
-/// A map file's header: what it is and where, whether a cover layer follows the heights, and
-/// where the header ends.
 fn parse_header(bytes: &[u8]) -> Result<(MapInfo, bool, usize), MapError> {
     let bad = |m: &str| MapError::Corrupt(m.to_string());
     let end = bytes.windows(4).position(|w| w == b"---\n").ok_or_else(|| bad("no header end"))?;
@@ -148,7 +142,6 @@ pub fn parse(bytes: &[u8]) -> Result<MapData, MapError> {
     Ok(MapData { info, heights, cover: has_cover.then(|| c.to_vec()) })
 }
 
-/// The `climate_*` header keys: all of them, or none.
 fn climate(kv: &std::collections::HashMap<&str, &str>) -> Result<Option<Climate>, String> {
     const MONTHLY: [&str; 5] = ["climate_temp_c", "climate_precip_mm", "climate_snow_mm", "climate_evap_mm", "climate_runoff_mm"];
     if MONTHLY.iter().all(|k| !kv.contains_key(k)) {
@@ -172,7 +165,6 @@ fn climate(kv: &std::collections::HashMap<&str, &str>) -> Result<Option<Climate>
     }))
 }
 
-/// Every shipped map's id.
 pub fn ids() -> impl Iterator<Item = &'static str> {
     FILES.iter().map(|f| f.0)
 }
@@ -181,22 +173,16 @@ pub fn all() -> Vec<MapInfo> {
     infos().to_vec()
 }
 
-/// Every shipped map's header, read once.
 pub fn infos() -> &'static [MapInfo] {
     static CACHE: std::sync::OnceLock<Vec<MapInfo>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| FILES.iter().filter_map(|(_, b)| parse_header(b).ok().map(|(i, _, _)| i)).collect())
 }
 
-/// What a player choosing a map wants to know, read from the map file alone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapStats {
-    /// Streams flowing in from beyond the map edge.
     pub streams: usize,
-    /// Share of the map under forest.
     pub forest: f32,
-    /// Share of the map that is open water at the start.
     pub water: f32,
-    /// Lowest to highest ground, metres.
     pub relief_m: f32,
     pub climate: Option<Climate>,
 }

@@ -1,6 +1,3 @@
-//! Game content: built into the binary by default, or overridden from a `content/` folder
-//! beside the executable, `crates/sim/content`, or `BEAVER_CONTENT`. Each row has a stable
-//! `key`, written in saves, and ids are positions in their table.
 use crate::buildings::Amount;
 use std::marker::PhantomData;
 use crate::plants::PlantSpec;
@@ -10,7 +7,6 @@ use std::{cell::RefCell, collections::BTreeMap, path::{Path, PathBuf}, sync::Onc
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
 
-/// Built-in content tables compiled into the binary so the executable runs standalone anywhere.
 static EMBEDDED: [(&str, &str); 8] = [
     ("buildings.toml", include_str!("../content/buildings.toml")),
     ("flora.toml", include_str!("../content/flora.toml")),
@@ -22,7 +18,6 @@ static EMBEDDED: [(&str, &str); 8] = [
     ("trees.toml", include_str!("../content/trees.toml")),
 ];
 
-/// The loaded content. Loads overrides from disk when present, else the embedded defaults.
 pub fn content() -> &'static Content {
     CONTENT.get_or_init(|| {
         let loaded = match default_path() {
@@ -33,15 +28,10 @@ pub fn content() -> &'static Content {
     })
 }
 
-/// Use other content (a test fixture, a mod) for the rest of this process. Must run before
-/// anything reads content.
 pub fn init(dir: &Path) -> Result<(), String> {
     CONTENT.set(Content::load(dir)?).map_err(|_| "content was already loaded".to_string())
 }
 
-/// Optional external content directory: `BEAVER_CONTENT` if set, else a `content/` folder
-/// beside the executable, else `crates/sim/content` in the current working directory.
-/// Returns `None` when running standalone (uses the embedded default content).
 pub fn default_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("BEAVER_CONTENT") {
         return Some(PathBuf::from(dir));
@@ -58,9 +48,7 @@ pub fn default_path() -> Option<PathBuf> {
     None
 }
 
-/// An id into one content table.
 pub trait Id: Copy + Eq + Ord + 'static {
-    /// Its table's name in the content files.
     const TABLE: &'static str;
     fn index(self) -> usize;
     fn at(index: usize) -> Self;
@@ -69,11 +57,9 @@ pub trait Id: Copy + Eq + Ord + 'static {
 }
 
 thread_local! {
-    /// While content loads: each table's keys, so rows can name rows of any table by key.
     static LOADING: RefCell<Option<BTreeMap<&'static str, Vec<String>>>> = const { RefCell::new(None) };
 }
 
-/// The id with this key: in the content being loaded, if any, else in the loaded content.
 pub fn by_key<T: Id>(key: &str) -> Option<T> {
     let loading = LOADING.with(|l| l.borrow().as_ref().map(|t| t.get(T::TABLE).and_then(|keys| keys.iter().position(|k| k == key))));
     match loading {
@@ -95,7 +81,6 @@ macro_rules! content_id {
             fn key(self) -> &'static str { &self.row().key }
         }
         impl $T {
-            /// Every row, in table order.
             pub fn all() -> impl DoubleEndedIterator<Item = $T> + ExactSizeIterator + Clone {
                 (0..$crate::content::content().$field.len()).map(|i| $T(i as u16))
             }
@@ -103,7 +88,6 @@ macro_rules! content_id {
             pub fn key(self) -> &'static str { &self.row().key }
             pub fn name(self) -> &'static str { &self.row().name }
             pub fn row(self) -> &'static $Row { &$crate::content::content().$field[self.0 as usize] }
-            /// The row with this key; panics if there is none (tests and tools).
             pub fn of(key: &str) -> $T { $crate::content::by_key(key).unwrap_or_else(|| panic!("no {} {key}", $table)) }
         }
         impl std::fmt::Debug for $T {
@@ -122,28 +106,21 @@ macro_rules! content_id {
 }
 
 content_id!(
-    /// A kind of building: a dam, a lodge, a store and the rest.
     BuildingKind, Spec, buildings, "building"
 );
 content_id!(
-    /// A good beavers carry and store.
     Good, GoodRow, goods, "good"
 );
 content_id!(
-    /// A kind of thing on the map beavers gather from: a tree, a felled trunk, a food plant, a
-    /// deposit of mud or pebbles.
     ResourceKind, ResourceRow, resources, "resource"
 );
 content_id!(
-    /// A job a beaver can be given: gathering something, building, hauling and the rest.
     Job, JobRow, jobs, "job"
 );
 content_id!(
-    /// A tree species.
     Tree, TreeRow, trees, "tree"
 );
 content_id!(
-    /// A food plant species.
     Plant, PlantRow, plants, "plant"
 );
 
@@ -152,28 +129,19 @@ content_id!(
 pub struct GoodRow {
     pub key: String,
     pub name: String,
-    /// The most one beaver carries at once.
     pub load: f32,
-    /// Share of full pace carrying it in water or on wet ground, and over dry ground.
     pub pace: f32,
     pub land_pace: f32,
-    /// Costs nothing to tow along a canal deep enough to swim.
     #[serde(default)] pub floats: bool,
-    /// Beavers eat it; it spoils in store.
     #[serde(default)] pub edible: bool,
-    /// Each unit keeps the tree species it grows into.
     #[serde(default)] pub carries_species: bool,
-    /// Shown as this icon, in this colour (sRGB), and drawn with this model carried or lying.
     pub icon: String,
     pub colour: [f32; 3],
     pub model: String,
-    /// Hugged in the forepaws when carried, else carried in the teeth; shown in the paws while
-    /// building or digging.
     #[serde(default)] pub held_in_paws: bool,
     #[serde(default)] pub worked_in_paws: bool,
 }
 
-/// One value per row of a content table, indexed by its id. Saved as (key, value) pairs.
 #[derive(Clone, PartialEq)]
 pub struct PerId<K, V> {
     values: Vec<V>,
@@ -227,42 +195,31 @@ pub struct TreeRow {
     pub key: String,
     pub name: String,
     pub spec: TreeSpec,
-    /// Pale-barked: places among these trees may be named for it.
     #[serde(default)] pub pale: bool,
     pub look: TreeLook,
 }
 
-/// How a tree species is drawn: a drawing style (a model id in the game) and its build and
-/// colours (`0xrrggbb`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TreeLook {
     pub model: String,
     pub bark: u32,
-    /// The trunk's foot: darker, rougher, or black.
     pub foot: u32,
     pub trunk_r: f32,
-    /// Heights of the first fork and of the crown's centre, and the crown's size.
     pub fork: f32,
     pub centre: f32,
     pub radius: [f32; 3],
     pub tips: usize,
     pub clump: f32,
-    /// Clumps squashed to flat sprays (below 1) or round (1).
     pub flat: f32,
-    /// How far outer tips hang down.
     pub droop: f32,
     pub limb: f32,
     pub seed: u32,
-    /// Leaf colour through the year (spring, summer, autumn, late autumn): a shade and a light.
     pub leaves: [(u32, u32); 4],
-    /// Keeps its needles all year; keeps its dead leaves through winter.
     #[serde(default)] pub evergreen: bool,
     #[serde(default)] pub keeps_leaves: bool,
 }
 
-/// How a food plant is drawn: a drawing style (a model id in the game) and, for the styles that
-/// take them, its height and colours (`0xrrggbb`) and a second form (`variant`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlantLook {
@@ -280,20 +237,17 @@ pub struct PlantRow {
     pub key: String,
     pub name: String,
     pub spec: PlantSpec,
-    /// How much faster water it bears than other water plants.
     #[serde(default = "one")] pub flow: f32,
     pub look: PlantLook,
 }
 
 fn one() -> f32 { 1.0 }
 
-/// One kind of building's definition: construction, staffing, storage and progression.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
     pub key: String,
     pub name: String,
-    /// Very short (2–4 word) description of what the building does.
     #[serde(default)] pub summary: String,
     pub footprint: (usize, usize),
     #[serde(default)] pub cost: Vec<Amount>,
@@ -301,24 +255,14 @@ pub struct Spec {
     #[serde(default)] pub slots: Vec<Job>,
     #[serde(default)] pub area: Option<(usize, usize)>,
     #[serde(default)] pub capacity: f32,
-    /// A building that must be finished before this one can be placed.
     #[serde(default)] pub requires: Option<BuildingKind>,
-    /// The goods it stores.
     #[serde(default)] pub stores: Vec<crate::buildings::Good>,
-    /// The refits it can have; one it lacks it cannot.
     #[serde(default)] pub refits: BTreeMap<crate::maintenance::Refit, RefitRow>,
-    /// Extra per-cell material cost added to repairs once the building is mud-reinforced.
     #[serde(default)] pub reinforced_repair: Vec<Amount>,
-    /// How it goes up: dropped as a site, or drawn as a line of dam or canal cells.
     #[serde(default)] pub built_as: BuiltAs,
-    /// Houses a family, behind a door kept clear.
     #[serde(default)] pub home: bool,
-    /// Rafts load and unload at it.
     #[serde(default)] pub docks_rafts: bool,
-    /// Condition lost a day, before weather and water.
     pub wear: f32,
-    /// Looks: a model id in the game, its footing (`mound`, `ring` or `piles`) and half-size,
-    /// its icon, the key that picks it, its place in the build menu, and a round work area.
     pub model: String,
     #[serde(default)] pub footing: Option<String>,
     #[serde(default)] pub footing_size: (f32, f32),
@@ -328,14 +272,12 @@ pub struct Spec {
     #[serde(default)] pub round_area: bool,
 }
 
-/// How a building goes up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 pub enum BuiltAs { #[default] Site, Dam, Canal }
 
 impl BuildingKind {
     pub fn spec(self) -> &'static Spec { self.row() }
     fn one(f: impl Fn(&Spec) -> bool) -> BuildingKind { Self::all().find(|k| f(k.row())).expect("validated on load") }
-    /// The one kind built as a dam, the one built as a canal, and the first that is a home.
     pub fn dam() -> BuildingKind { Self::one(|r| r.built_as == BuiltAs::Dam) }
     pub fn canal() -> BuildingKind { Self::one(|r| r.built_as == BuiltAs::Canal) }
     pub fn home() -> BuildingKind { Self::one(|r| r.home) }
@@ -343,43 +285,33 @@ impl BuildingKind {
     pub fn is_canal(self) -> bool { self.row().built_as == BuiltAs::Canal }
     pub fn is_home(self) -> bool { self.row().home }
     pub fn docks_rafts(self) -> bool { self.row().docks_rafts }
-    /// A seat of a job with this duty.
     pub fn seats(self, d: Duty) -> bool { self.row().slots.iter().any(|j| j.duty() == d) }
-    /// Its sentry keeps watch; its haulers even out the stores.
     pub fn watches(self) -> bool { self.seats(Duty::Watch) }
     pub fn balances(self) -> bool { self.seats(Duty::Haul) }
-    /// The first kind that stores a good.
     pub fn store_for(g: Good) -> Option<BuildingKind> { Self::all().find(|k| k.row().stores.contains(&g)) }
 }
 
-/// Materials for works that are not buildings.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Works {
-    /// A gate in a dam or canal, and what making a gate a lock adds.
     pub gate: Vec<Amount>,
     pub lock: Vec<Amount>,
-    /// The building that must stand finished before a gate, or a lock, can be ordered.
     #[serde(default)] pub gate_needs: Option<BuildingKind>,
     #[serde(default)] pub lock_needs: Option<BuildingKind>,
 }
 
-/// What a refit of one kind of building takes, and what it gives (see `maintenance::cost`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefitRow {
-    /// Materials: a fixed amount, and so much more per cell of the building (a dam: per dam cell).
     #[serde(default)] pub cost: Vec<Amount>,
     #[serde(default)] pub per_cell: Vec<Amount>,
     #[serde(default)] pub labour: f32,
     #[serde(default)] pub labour_per_cell: f32,
     #[serde(default)] pub min_labour: f32,
-    /// How many times longer the building lasts once refitted.
     #[serde(default = "one")] pub lasts: f32,
 }
 
 impl RefitRow {
-    /// The materials (each rounded up) and labour for a building of `cells` cells.
     pub fn quote(&self, cells: f32) -> (Vec<Amount>, f32) {
         let mut materials: Vec<Amount> = self.cost.clone();
         for &(g, a) in &self.per_cell {
@@ -393,16 +325,11 @@ impl RefitRow {
     }
 }
 
-/// The mechanics a kind of resource follows; all else about it is its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Behaviour {
-    /// Grows through its stages, is felled into the `Felled` kind and seeds new trees.
     Tree,
-    /// A felled trunk: logs, then branches, and bark that foragers strip for food.
     Felled,
-    /// Regrows, spreads and dies back (see `wetland`).
     FoodPlant,
-    /// Dug until it is gone, or refilled by its stream if `flowing`.
     Deposit,
 }
 
@@ -412,36 +339,26 @@ pub struct ResourceRow {
     pub key: String,
     pub name: String,
     pub behaviour: Behaviour,
-    /// The goods gathering it gives.
     #[serde(default)] pub yields: Vec<crate::buildings::Good>,
-    /// Grows in open water; refilled by its stream.
     #[serde(default)] pub aquatic: bool,
     #[serde(default)] pub flowing: bool,
-    /// Closed while the ground is frozen.
     #[serde(default)] pub freezes: bool,
-    /// The group its gatherers work, and the job that gathers it.
     pub group: String,
     pub role: Job,
-    /// How many beavers work one at once, and how much one of ordinary skill takes a day.
     pub gatherers: usize,
     pub gather_rate: f32,
-    /// A building whose tools must stand finished before any is gathered.
     #[serde(default)] pub needs: Option<BuildingKind>,
-    /// In the way of walking.
     #[serde(default)] pub solid: bool,
-    /// Looks: the steps its fill is drawn in, the words for gathering it, icon, model and pose.
     pub fill_steps: u8,
     pub doing: String,
     pub icon: String,
     pub lens_colour: [f32; 3],
     pub model: String,
     pub pose: String,
-    /// Its group's kinds, best first, and the first kind alike to it there (filled in on load).
     #[serde(skip)] pub sources: Vec<ResourceKind>,
     #[serde(skip)] pub alike: Option<ResourceKind>,
 }
 
-/// The kinds the world's making puts down.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roles {
@@ -452,34 +369,22 @@ pub struct Roles {
     pub spoil: ResourceKind,
 }
 
-/// What a job's skill does for a beaver. `Speed` is for its own job only; the others go with the
-/// beaver into whatever job it works (see `growth`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum SkillTrait {
-    /// Works its own job faster.
     Speed,
-    /// Heavy loads slow it down less.
     HeavyLoads,
-    /// Spots wolves from farther away.
     Sight,
-    /// Tiredness slows its work less.
     Steady,
-    /// Heals faster.
     Healing,
 }
 
-/// The kind of work a job does; which job does it, and what it is called, is its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Duty {
-    /// Gathers the kinds of resource whose `role` is this job.
     Gather,
     Build,
     Haul,
-    /// Collects wild seedlings of trees and food plants to a seedling bed and plants them round it.
     Forest,
-    /// Keeps watch at a lookout.
     Watch,
-    /// Repairs buildings and keeps dams and canals in order, without a seat.
     Mend,
 }
 
@@ -488,37 +393,25 @@ pub enum Duty {
 pub struct JobRow {
     pub key: String,
     pub name: String,
-    /// Its beavers, in words.
     pub plural: String,
-    /// The skill it builds, in words.
     pub skill: String,
     pub duty: Duty,
-    /// Its place on the colony panel, first first.
     pub priority: u32,
-    /// The player may keep it near the water.
     #[serde(default)] pub shore_limit: bool,
-    /// What its skill does for the beaver, in any job it works (see `growth`).
     pub skill_trait: SkillTrait,
-    /// That, in words.
     pub skill_effect: String,
     pub icon: String,
-    /// The colour of its beavers' paths (sRGB).
     pub path_colour: [f32; 3],
 }
 
 impl Job {
     pub fn duty(self) -> Duty { self.row().duty }
-    /// The one job that does a duty (not `Gather`: many jobs gather).
     pub fn with_duty(d: Duty) -> Job {
         Job::all().find(|j| j.duty() == d).unwrap_or_else(|| panic!("no job does {d:?}"))
     }
-    /// Its skill makes it go faster at its own work.
     pub fn skill_speeds(self) -> bool { self.row().skill_trait == SkillTrait::Speed }
-    /// The job whose skill gives a trait (`Speed` aside, one job gives each).
     pub fn with_trait(t: SkillTrait) -> Option<Job> { Job::all().find(|j| j.row().skill_trait == t) }
-    /// The job that gathers a kind of resource.
     pub fn gathering(k: ResourceKind) -> Job { k.row().role }
-    /// Every job in the colony panel's order.
     pub fn by_priority() -> Vec<Job> {
         static ORDER: std::sync::OnceLock<Vec<Job>> = std::sync::OnceLock::new();
         ORDER.get_or_init(|| {
@@ -529,7 +422,6 @@ impl Job {
     }
 }
 
-/// One map's flora as written: trees by mix, food plants by how common.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Flora {
@@ -537,8 +429,6 @@ struct Flora {
     #[serde(default)] plants: BTreeMap<Plant, f32>,
 }
 
-/// One content file: any part of the content. A folder's files are read in name order and added
-/// together, so a mod or a test can add rows in a file of its own.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct File {
@@ -560,13 +450,10 @@ struct File {
 #[derive(Debug)]
 pub struct Content {
     pub goods: Vec<GoodRow>,
-    /// The good beavers eat, and the good that carries a tree species (see `Good`).
     pub food: Good,
     pub seedling: Good,
-    /// What repairing a building that cost nothing takes.
     pub repair_fallback: Vec<Amount>,
     pub works: Works,
-    /// What a new colony starts with.
     pub start: Vec<Amount>,
     pub buildings: Vec<Spec>,
     pub resources: Vec<ResourceRow>,
@@ -574,10 +461,8 @@ pub struct Content {
     pub jobs: Vec<JobRow>,
     pub trees: Vec<TreeRow>,
     pub plants: Vec<PlantRow>,
-    /// Each map's tree mix and food plant weights, by id; `default` for maps without their own.
     pub tree_flora: BTreeMap<String, Vec<Mix>>,
     pub plant_flora: BTreeMap<String, Vec<f32>>,
-    /// Word pools for names (see `names`).
     pub names: BTreeMap<String, Vec<&'static str>>,
 }
 
@@ -604,7 +489,6 @@ impl Content {
     }
 
     fn load_texts(texts: &[(String, String)]) -> Result<Content, String> {
-        // Every row's key first, so that rows can name rows in any table or file.
         let mut keys: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
         for (text, label) in texts {
             let table: toml::Table = text.parse().map_err(|e| format!("content: {label}: {e}"))?;

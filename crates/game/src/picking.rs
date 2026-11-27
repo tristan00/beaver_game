@@ -1,4 +1,3 @@
-//! Select the visible object under the pointer, using its rendered geometry.
 use bevy::{camera::primitives::Aabb, ecs::system::SystemParam, mesh::Indices, prelude::*};
 use bevy::picking::mesh_picking::ray_cast::{Backfaces, ray_aabb_intersection_3d, ray_mesh_intersection};
 
@@ -6,7 +5,6 @@ use bevy::picking::mesh_picking::ray_cast::{Backfaces, ray_aabb_intersection_3d,
 pub enum Target {
     Building(sim::buildings::BuildingId),
     Beaver(sim::colony::BeaverId),
-    /// A tree or felled trunk, picked by its model so its crown can be clicked.
     Resource(sim::resources::ResourceId),
 }
 
@@ -18,7 +16,6 @@ pub struct Picker<'w, 's> {
 
 impl Picker<'_, '_> {
 
-    /// The nearest object along the ray and how far along it the ray meets it.
     pub fn cast_at(&self, ray: Ray3d, ground_distance: Option<f32>) -> Option<(Target, f32)> {
         let mut nearest = ground_distance.unwrap_or(f32::INFINITY);
         let mut picked = None;

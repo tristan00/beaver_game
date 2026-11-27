@@ -1,15 +1,3 @@
-//! `runner --map ID --policy PROGRAM [--days N] [--speed DAYS_PER_SECOND] [--log FILE] [--save-end FILE] [-- POLICY ARGS]`
-//!
-//! Runs the map's designed start at a fixed game speed for `--days` (five years by default) with
-//! the policy program playing it from a separate process (see the library docs for the protocol).
-//! The game keeps its own clock: states go to the policy whenever it is ready for one and its
-//! commands are carried out at the next step after they arrive, however late.
-//!
-//! The last line printed is the result: `map=… goal=… score=… …`. With `--score wet` (the
-//! default) the score is the number of wet cells gained since the colony settled
-//! (`runner::score`); with `--score beavers` it is the number of beavers alive at the end; with
-//! `--score blend` it is `runner::blend`: beavers × wet cells over the start × the share of top
-//! speed the sim held over the run's last year (`speed=`, game days per second spent stepping).
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command as Process, Stdio};
@@ -55,11 +43,9 @@ fn args() -> Result<Args, String> {
     Ok(Args { map: map.ok_or("--map is required")?, policy: policy.ok_or("--policy is required")?, policy_args, days, speed, log, save_end, goal })
 }
 
-/// Where the sim thread leaves a copy of the world for the thread that sends it.
 struct Mailbox {
     slot: Mutex<Option<sim::SimState>>,
     filled: Condvar,
-    /// The sender is idle and wants the next state.
     wanted: AtomicBool,
     over: AtomicBool,
 }
@@ -100,7 +86,6 @@ fn main() {
         .spawn()
         .unwrap_or_else(|e| panic!("could not start {}: {e}", a.policy.display()));
 
-    // Sender: hands the policy the latest state each time it has taken the last one.
     let mail = Arc::new(Mailbox { slot: Mutex::new(None), filled: Condvar::new(), wanted: AtomicBool::new(false), over: AtomicBool::new(false) });
     let (spare_tx, spare_rx) = mpsc::channel::<sim::SimState>();
     let sent = Arc::new(AtomicU64::new(0));
@@ -130,7 +115,6 @@ fn main() {
         })
     };
 
-    // Reader: the policy's commands, as they come.
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
     let reader = {
         let out = child.stdout.take().expect("policy stdout");
@@ -150,8 +134,6 @@ fn main() {
     let begun = Instant::now();
     let mut due = begun;
     let (mut applied, mut rejected, mut behind) = (0u64, 0u64, Duration::ZERO);
-    // Time the sim spends applying commands and stepping over the run's last year: the speed
-    // the blend scores. Copying states for the policy is not counted.
     let window_from = (a.days - runner::SPEED_WINDOW_DAYS).max(0.0);
     let (mut window_days, mut window_busy) = (0.0f64, Duration::ZERO);
     note(&log, format!("runner: map={} days={} speed={} policy={}", a.map, a.days, a.speed, a.policy.display()));
@@ -194,7 +176,6 @@ fn main() {
             *slot = Some(copy);
             mail.filled.notify_one();
         }
-        // The clock runs on whatever the policy does; a step that ran long is not made up.
         due += step_real;
         let now = Instant::now();
         if due > now {
@@ -211,7 +192,6 @@ fn main() {
         mail.over.store(true, Ordering::Release);
     }
     mail.filled.notify_all();
-    // A policy that is still running at the end is stopped; one that quit early is reported.
     let policy = match child.try_wait() {
         Ok(Some(st)) => format!("exited({})", st.code().map_or("?".into(), |c| c.to_string())),
         _ => "ran".to_string(),

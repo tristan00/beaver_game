@@ -6,8 +6,6 @@ use bevy::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::prelude::*;
 
-/// How high the fog lies over the ground and water it hides. Nothing standing in the fog is
-/// drawn (see `unexplored`), so it only has to cover the ground itself.
 const LIFT: f32 = 1.0;
 const DENSITY: f32 = 1.0;
 pub const UNEXPLORED_COLOR: [f32; 3] = [0.20, 0.23, 0.17];
@@ -28,8 +26,6 @@ fn no_fog() -> bool {
     *NO_FOG.get_or_init(|| std::env::var_os("BC_NO_FOG").is_some())
 }
 
-/// Whether `cell` is still hidden by the fog of war: nothing on it is drawn or can be pointed
-/// at (`BC_NO_FOG` lifts the fog for screenshots).
 pub fn unexplored(s: &sim::SimState, cell: (usize, usize)) -> bool {
     !no_fog() && !s.fog.explored(cell)
 }
@@ -96,8 +92,6 @@ fn fog_mesh(s: &sim::SimState) -> Mesh {
                 }
             }
             let t = (unseen / k).clamp(0.0, 1.0);
-            // A blanket laid over the ground, solid a little way in from the explored edge, so
-            // nothing under it shows from any angle.
             let u = (t / 0.3).clamp(0.0, 1.0);
             let a = u * u * (3.0 - 2.0 * u) * DENSITY;
             pos.push([(x as f32 + 0.5) * CELL_SIZE - ox, top + LIFT, (y as f32 + 0.5) * CELL_SIZE - oz]);

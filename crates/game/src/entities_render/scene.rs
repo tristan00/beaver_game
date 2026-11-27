@@ -1,24 +1,15 @@
 use bevy::prelude::*;
 use sim::SimState;
 
-/// The ways a tree is drawn; each species' row names one (`look.model`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TreeStyle {
-    /// A slim pale trunk with dark bark eyes under a small round crown.
     Slim,
-    /// Two white stems banded black.
     Twin,
-    /// A leaning trunk under a weeping curtain.
     Weeping,
-    /// A shrubby clump of stems that hangs cones in winter.
     Clump,
-    /// A broad dome that flowers red before its leaves.
     Dome,
-    /// A low wide spread.
     Spread,
-    /// A tall bare trunk under flat tufts of needles.
     Tufted,
-    /// A narrow spire of drooping boughs.
     Spire,
 }
 
@@ -41,28 +32,17 @@ pub enum Pose {
     Gnaw,
     Carry,
     Climb,
-    /// Building: pressing mud into place.
     Work,
-    /// Scooping mud or mud out of a bank.
     Dig,
-    /// Sitting up, eating a plant.
     Forage,
     Rest,
-    /// Running from a wolf: a flat-out bound, head low, tail up.
     Run,
-    /// Taking up or putting down a load at a store, pile or site.
     Handle,
-    /// Mending: patting fresh mud on, tamping it with the tail.
     Mend,
-    /// A sentry on watch: sitting up tall, looking about.
     Watch,
-    /// A new pair meeting at their lodge: nose to nose.
     Court,
-    /// Grooming a family member beside it.
     Groom,
-    /// Pinned under the wolf, struggling.
     Caught,
-    /// Dead: fallen on its side, or curled up.
     Dead,
 }
 

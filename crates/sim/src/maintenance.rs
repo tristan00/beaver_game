@@ -1,7 +1,3 @@
-//! Repairs are mended on the spot by menders, who bring the materials a load at a time
-//! (see `supply`) and use them as they work; a repair order only marks a building to be
-//! mended first. Mud reinforcement and pebble facing are refits: paid work through the normal
-//! material-delivery and labour system.
 include!(concat!(env!("OUT_DIR"), "/maintenance_constants.rs"));
 use std::collections::{BTreeMap, BTreeSet};
 use crate::{buildings::{Amount, Building, BuildingId, BuildingKind as K}, SimError, SimState};
@@ -12,7 +8,6 @@ pub enum Refit { Repair, Reinforce, Facing }
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Maintenance {
     pub jobs: BTreeMap<BuildingId, Refit>,
-    /// Buildings currently being auto-mended past `AUTO_REPAIR_BELOW` up to `1.0`.
     pub mending: BTreeSet<BuildingId>,
     pub repairs_completed: u32,
     pub reinforcements_completed: u32,
@@ -22,17 +17,14 @@ pub fn can_reinforce(kind: K) -> bool {
     kind.spec().refits.contains_key(&Refit::Reinforce)
 }
 
-/// Dams and buildings can be faced with pebbles; canals cannot.
 pub fn can_pebble(kind: K) -> bool {
     kind.spec().refits.contains_key(&Refit::Facing)
 }
 
-/// How many times longer a building lasts for a refit it has had.
 pub fn lasts(kind: K, refit: Refit) -> f32 {
     kind.spec().refits.get(&refit).map_or(1.0, |r| r.lasts)
 }
 
-/// The cells a refit is costed by: a dam's cells, else the building's footprint.
 fn cells(b: &Building) -> f32 {
     let (w, h) = b.kind.spec().footprint;
     b.dam.as_ref().map_or((w * h) as f32, |d| d.cells.len().max(1) as f32)
@@ -49,8 +41,6 @@ pub fn cost(b: &Building, kind: Refit) -> (Vec<Amount>, f32) {
     (materials, (per_unit * damage).max(REPAIR_MIN_LABOUR))
 }
 
-/// What mending costs for each whole unit of condition put back: the materials, brought to the
-/// building as the work goes, and the labour.
 pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
     let spec = b.kind.spec();
     let (w, h) = spec.footprint;
@@ -62,9 +52,6 @@ pub fn mend_rates(b: &Building) -> (Vec<Amount>, f32) {
     (materials, (spec.work * REPAIR_LABOUR_SHARE).max(REPAIR_MIN_LABOUR))
 }
 
-/// Buildings menders mend: finished buildings (not dams or canals, which have their own
-/// upkeep) that are worn below `AUTO_REPAIR_BELOW`, marked for repair, or already being mended,
-/// until they are whole again.
 pub fn needs_mending(s: &SimState, b: &Building) -> bool {
     b.is_complete() && !b.kind.is_waterworks() && b.condition < 1.0
         && (b.condition < AUTO_REPAIR_BELOW
@@ -72,11 +59,8 @@ pub fn needs_mending(s: &SimState, b: &Building) -> bool {
             || s.maintenance.mending.contains(&b.id))
 }
 
-/// How much condition a mender's visit is worth bringing materials for: it starts work once
-/// this much (or the whole repair, if less) can be done with what has been brought.
 const MEND_BATCH: f32 = 0.05;
 
-/// Whether enough has been brought to a building being mended to start on it.
 pub fn mend_ready(s: &SimState, id: BuildingId) -> bool {
     let Some(b) = s.buildings.building(id).filter(|b| needs_mending(s, b)) else { return false };
     let spot = crate::supply::Spot { building: id, cell: b.pos };
@@ -85,8 +69,6 @@ pub fn mend_ready(s: &SimState, id: BuildingId) -> bool {
     materials.iter().all(|&(g, a)| crate::supply::delivered(s, spot, g) + 1e-4 >= a * step)
 }
 
-/// Put back `labour` worth of condition, using the materials brought to the building: as much
-/// as they cover. Returns false when they cover none.
 pub fn mend(s: &mut SimState, id: BuildingId, labour: f32) -> bool {
     let Some(b) = s.buildings.building(id) else { return false };
     let spot = crate::supply::Spot { building: id, cell: b.pos };
@@ -122,7 +104,6 @@ pub fn order(s: &mut SimState, id: BuildingId, kind: Refit) -> Result<(), SimErr
         if b.reinforced {return Err(bad("already mud-reinforced"));}
     } else if b.condition >= REPAIR_CONDITION_THRESHOLD {return Err(bad("this building does not need repairs"));}
     if kind == Refit::Repair {
-        // Mended first by the menders; the building keeps working meanwhile.
         s.maintenance.jobs.insert(id, kind);
         return Ok(());
     }
@@ -166,14 +147,10 @@ pub fn cancel(s: &mut SimState, id: BuildingId) -> Result<Vec<Amount>, SimError>
     Ok(refunds)
 }
 
-/// What wears a building down each day: the base rate for its kind, times the cold and a
-/// flooding, divided by mud reinforcement and pebble facing. Every factor is 1 when it does
-/// not apply. Dams wear cell by cell in the water model instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wear { pub base: f32, pub cold: f32, pub flooded: f32, pub reinforced: f32, pub pebbled: f32 }
 
 impl Wear {
-    /// Condition lost a day, as a share of full.
     pub fn per_day(&self) -> f32 {
         self.base * self.cold * self.flooded / (self.reinforced * self.pebbled)
     }
@@ -187,7 +164,6 @@ pub fn wear(s: &SimState, b: &Building) -> Option<Wear> {
     Some(Wear {
         base: b.kind.spec().wear,
         cold: 1.0+COLD_WEAR_SCALE*cold,
-        // Too deep under water, a building wears away fast.
         flooded: if crate::buildings::flooded(b,&s.water.depth) {FLOODED_WEAR_SCALE} else {1.0},
         reinforced: b.durability(),
         pebbled: if b.pebbled { lasts(b.kind, Refit::Facing) } else { 1.0 },
@@ -201,7 +177,6 @@ pub fn step(s: &mut SimState, dt: f32) {
             b.condition=(b.condition-rate*dt).max(0.0);
         }
     }
-    // Worn to nothing, a building falls apart. Dams and canals keep their own upkeep.
     let wrecked: Vec<BuildingId> = s.buildings.buildings.iter()
         .filter(|b| b.is_complete() && !b.kind.is_waterworks() && b.condition <= 0.0)
         .map(|b| b.id).collect();

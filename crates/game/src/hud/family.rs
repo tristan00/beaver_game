@@ -1,10 +1,3 @@
-//! A lodge's family page, full screen, opened from the lodge card or from a beaver's page: who
-//! lives there, and the family tree. The tree runs in generations, one row each, from the
-//! residents' oldest known forebears (up to their grandparents) down: a couple side by side,
-//! joined by a line, with their kits hung below them. Kits with no family of their own stand in
-//! short columns under their parents; one with a partner or kits gets a place of its own, with
-//! its partner beside it and its kits below. The living are drawn solid, the dead faint with a
-//! cross, and those living in this lodge are ringed. Every beaver is a link to its page.
 use super::kin::{self, name_of};
 use super::life::about;
 use super::panels::{stage_icon, Ctx};
@@ -17,24 +10,17 @@ use sim::buildings::BuildingId;
 use sim::colony::BeaverId;
 use std::collections::BTreeSet;
 
-/// One beaver in the tree.
 const CHIP_W: f32 = 92.0;
 const CHIP_H: f32 = 24.0;
-/// Between partners (the line joining them).
 const LINK: f32 = 16.0;
-/// Between neighbours in a row.
 const GAP: f32 = 14.0;
-/// Between columns of kits, and between kits in a column.
 const COL_GAP: f32 = 6.0;
 const STACK: f32 = 4.0;
-/// Between generations.
 const DROP: f32 = 34.0;
-/// The room the tree has: wider trees stack kits in taller columns.
 const TREE_W: f32 = 1080.0;
 const WIRE: f32 = 2.0;
 const WIRE_COL: Color = Color::srgba(0.78, 0.66, 0.5, 0.55);
 
-/// A beaver with its partners, its kits that have families of their own, and those that don't.
 struct Unit {
     id: BeaverId,
     partners: Vec<BeaverId>,
@@ -48,7 +34,6 @@ fn residents(s: &sim::SimState, lodge: BuildingId) -> Vec<BeaverId> {
     v.into_iter().map(|b| b.id).collect()
 }
 
-/// The family trees of a lodge: one per oldest known forebear of its residents.
 fn forest(s: &sim::SimState, home: &[BeaverId]) -> Vec<Unit> {
     let all = kin::everyone(s);
     let up = |ids: &BTreeSet<BeaverId>| -> BTreeSet<BeaverId> { ids.iter().flat_map(|&i| kin::parents(s, i)).flatten().collect() };
@@ -68,7 +53,6 @@ fn unit(s: &sim::SimState, all: &[BeaverId], id: BeaverId, depth: usize, seen: &
         return None;
     }
     let kits: Vec<BeaverId> = kin::children(s, all, id).into_iter().filter(|k| !seen.contains(k)).collect();
-    // Partners: its mate, and anyone it had kits with; shown beside it, not again on their own.
     let mut partners: Vec<BeaverId> = kin::partner_of(s, id).into_iter().filter(|p| !seen.contains(p)).collect();
     for &k in &kits {
         for p in kin::parents(s, k).into_iter().flatten().filter(|&p| p != id && !seen.contains(&p)) {
@@ -90,7 +74,6 @@ fn unit(s: &sim::SimState, all: &[BeaverId], id: BeaverId, depth: usize, seen: &
     Some(Unit { id, partners, kids, leaves })
 }
 
-/// What the tree is drawn with: chips (a beaver, where) and wires (a line, where).
 #[derive(Default)]
 struct Drawing {
     chips: Vec<(BeaverId, Vec2)>,
@@ -98,8 +81,6 @@ struct Drawing {
     size: Vec2,
 }
 
-/// Sizes of a tree laid out with at most `per` kits to a column. Every generation's row is a
-/// chip high: a column of kits hangs down beside the row below, where nothing else stands.
 struct Layout {
     per: usize,
 }
@@ -127,11 +108,9 @@ impl Layout {
     fn top(&self, d: usize) -> f32 {
         d as f32 * (CHIP_H + DROP)
     }
-    /// Place a unit at `x`, generation `d`; where its own chip is, for the wire from its parents.
     fn place(&self, u: &Unit, x: f32, d: usize, out: &mut Drawing) -> f32 {
         let w = self.width(u);
         let y = self.top(d);
-        // Where the kits hang from: under the middle of their row of anchors.
         let mut anchors = Vec::new();
         let mut cx = x + (w - self.kids_w(u)) / 2.0;
         for k in &u.kids {
@@ -147,7 +126,6 @@ impl Layout {
                 anchors.push(at.x + CHIP_W / 2.0);
             }
         }
-        // The couple, centred over its kits where it can be.
         let cw = Self::couple_w(u);
         let hang_off = if u.partners.is_empty() { CHIP_W / 2.0 } else { CHIP_W + LINK / 2.0 };
         let mid = if anchors.is_empty() { x + w / 2.0 } else { (anchors[0] + anchors[anchors.len() - 1]) / 2.0 };
@@ -174,7 +152,6 @@ impl Layout {
     }
 }
 
-/// The lodge's trees, laid out side by side, kits stacked as tall as it takes to fit the room.
 fn draw(s: &sim::SimState, home: &[BeaverId]) -> Drawing {
     let trees = forest(s, home);
     let mut lay = Layout { per: 4 };
@@ -196,8 +173,6 @@ fn draw(s: &sim::SimState, home: &[BeaverId]) -> Drawing {
     out
 }
 
-/// A beaver in the tree: a link to its page. Solid while it lives, faint with a cross once gone,
-/// ringed when it lives here.
 fn chip(u: &mut Ui, s: &sim::SimState, id: BeaverId, at: Vec2, home: &[BeaverId]) {
     let b = s.colony.beaver(id);
     let here = home.contains(&id);
@@ -257,7 +232,6 @@ pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
         },
         |u| {
             u.row(28.0, |cols| {
-                // Who lives here.
                 cols.node(Node { width: Val::Px(300.0), height: Val::Percent(100.0), min_height: Val::Px(0.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), flex_shrink: 0.0, ..default() }, |u| {
                     u.row(8.0, |r| {
                         r.icon(crate::hud::words::building_icon(sim::buildings::BuildingKind::home()), 16.0, MUD);
@@ -283,7 +257,6 @@ pub fn screen(c: &Ctx, lodge: BuildingId) -> Vec<VNode> {
                     }
                 })
                 .scroll_y();
-                // The family tree.
                 cols.node(Node { flex_grow: 1.0, align_self: AlignSelf::Stretch, flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), overflow: Overflow::clip(), ..default() }, |u| {
                     u.row(8.0, |r| {
                         r.icon(Icon::Beaver, 16.0, FUR);

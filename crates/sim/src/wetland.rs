@@ -19,21 +19,16 @@ pub fn is_shore(sim: &SimState, c: Cell) -> bool {
             .any(|n| d.get(n.0, n.1).is_some_and(|&x| x >= WET_DEPTH))
 }
 
-/// Water running slower than `k` times what a plant can root in.
 fn slow(sim: &SimState, c: Cell, k: f32) -> bool {
     let (vx, vy) = sim.water.velocity.get(c.0, c.1).copied().unwrap_or((0.0, 0.0));
     vx.hypot(vy) < MUD_MIN_VELOCITY * 10.0 * k
 }
 
-/// Water a plant can root in: deep enough to stay wet, not so deep it drowns, barely flowing.
 fn in_still_water(sim: &SimState, c: Cell) -> bool {
     let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
     depth >= WET_DEPTH && depth <= WATER_PLANT_DEEP && !sim.water.has_dam(c.0, c.1) && slow(sim, c, 1.0)
 }
 
-/// Whether a species grows in this cell as the water now stands: water plants between their
-/// depths in still water (pondweed takes a gentle current), shore plants on the waterline out to
-/// their depth, meadow plants on wet ground, raspberries on moist open ground.
 pub fn suits(sim: &SimState, p: Plant, c: Cell) -> bool {
     let spec = p.spec();
     let depth = sim.water.depth.get(c.0, c.1).copied().unwrap_or(0.0);
@@ -49,8 +44,6 @@ pub fn suits(sim: &SimState, p: Plant, c: Cell) -> bool {
     }
 }
 
-/// The habitat the map gives a cell before any water has settled, for plants set out with the
-/// world.
 fn ground_class(sim: &SimState, c: Cell, kind: ResourceKind) -> Habitat {
     if kind.aquatic() {
         Habitat::Water
@@ -67,9 +60,6 @@ fn flora(sim: &SimState) -> &str {
     if sim.resources.flora.is_empty() { "default" } else { &sim.resources.flora }
 }
 
-/// A species for a new plant of this kind in this cell, chosen by the map's flora: one of its
-/// ground's habitat that grows there now, else any that grows there now, else one of its
-/// ground's habitat.
 fn species_for(sim: &SimState, c: Cell, kind: ResourceKind, roll: f32) -> Option<Plant> {
     let map = flora(sim);
     let class = ground_class(sim, c, kind);
@@ -79,8 +69,6 @@ fn species_for(sim: &SimState, c: Cell, kind: ResourceKind, roll: f32) -> Option
         .or_else(|| crate::plants::choose(map, roll, |p| p.kind() == kind))
 }
 
-/// Give every food plant that has none a species from the map's flora, its food scaled to
-/// that species' (plants set out with the world, and plants from a save made before species).
 pub fn assign_plants(sim: &mut SimState) {
     let todo: Vec<(usize, Plant)> = sim
         .resources
@@ -104,7 +92,6 @@ pub fn assign_plants(sim: &mut SimState) {
     }
 }
 
-/// Set the map whose flora the plants come from, and give the plants their species.
 pub fn set_flora(sim: &mut SimState, map: &str) {
     sim.resources.flora = map.to_string();
     let ids: Vec<_> = sim.resources.items().iter().filter(|r| r.kind.is_food_plant()).map(|r| r.id).collect();
@@ -127,17 +114,14 @@ fn add_plant(sim: &mut SimState, c: Cell, p: Plant, share: f32, seedling: bool) 
     id
 }
 
-/// A planter's seedling of a food plant, put in the ground: a seedling, as one spread by seed.
 pub(crate) fn plant_sprout(sim: &mut SimState, c: Cell, p: Plant) -> crate::resources::ResourceId {
     add_plant(sim, c, p, sprout_share(p), true)
 }
 
-/// Grown enough to spread: by its roots and seed, and to give a planter a seedling.
 pub fn spreads(r: &crate::resources::Resource) -> bool {
     r.plant.is_some() && !r.is_seedling() && r.wet && r.amount >= 0.5 * r.max_amount
 }
 
-/// Where food plants stand now, to tell where another would crowd them (as spreading does).
 pub(crate) struct Crowding {
     n: usize,
     land: Vec<u8>,
@@ -153,7 +137,6 @@ impl Crowding {
         }
         Self { n, land, water }
     }
-    /// Too many plants of its kind about for one more of `p` here.
     pub(crate) fn crowded(&self, p: Plant, c: Cell) -> bool {
         let (grid, limit, r) = if p.aquatic() { (&self.water, WATER_CROWDED, WATER_CROWD_RADIUS) } else { (&self.land, CROWDED, SPROUT_CROWD_RADIUS) };
         let mut k = 0;
@@ -166,7 +149,6 @@ impl Crowding {
     }
 }
 
-/// A new plant's share of its full food.
 fn sprout_share(p: Plant) -> f32 {
     if p.aquatic() { WATER_PLANT_SPROUT_AMOUNT / WATER_PLANT_MAX } else { SPROUT_AMOUNT / PLANT_MAX }
 }
@@ -178,8 +160,6 @@ fn taken_cells(sim: &SimState) -> HashSet<Cell> {
         .collect()
 }
 
-/// The first water plants: a few small beds in still shallows along the shore, each a species
-/// that roots at its depth.
 pub fn seed_water_plants(sim: &mut SimState) {
     if sim.resources.water_plants_seeded || sim.time_days < WATER_PLANT_SEED_DAY as f64 {
         return;
@@ -203,7 +183,6 @@ pub fn seed_water_plants(sim: &mut SimState) {
             taken.insert(c);
         }
     }
-    // Each bed is a plant and a neighbour or two of the same kind.
     let mut beds = Vec::new();
     for &(c, p) in &placed {
         beds.push((c, p));
@@ -258,7 +237,6 @@ pub fn step(sim: &mut SimState, day: u64) {
         crate::resources::note("DROWNED", &sim.resources.items()[i], format_args!("depth={depth:.2}"));
         sim.resources.remove_at(i);
     }
-    // A plant grows only while it stands in its habitat.
     let wet: Vec<bool> = sim.resources.items().iter().map(|r| match (r.kind, r.plant) {
         (_, Some(p)) => suits(sim, p, r.cell),
         (k, None) if k.is_food_plant() && !k.aquatic() => is_shore(sim, r.cell) || sim.world.moisture.get(r.cell.0, r.cell.1).is_some_and(|&m| m >= WET_MOISTURE),
@@ -280,8 +258,6 @@ pub fn step(sim: &mut SimState, day: u64) {
     let mut taken = taken_cells(sim);
     let mut crowding = Crowding::of(sim);
     let mut new: Vec<(Cell, Plant)> = Vec::new();
-    // Grown plants spread: by their roots into the ground beside them, and now and then by seed
-    // further off, wherever their kind grows and the ground is not already crowded.
     let parents: Vec<(Cell, Plant, u64)> = sim.resources.items().iter()
         .filter(|r| spreads(r))
         .filter_map(|r| r.plant.map(|p| (r.cell, p, r.id.0)))
@@ -310,7 +286,6 @@ pub fn step(sim: &mut SimState, day: u64) {
             new.push((t, p));
         }
     }
-    // Birds carry water plants' seed to still water no plant has reached yet, such as a new pond.
     let rooting = WATER_PLANT_SPROUT_PER_DAY * growth;
     let reach = 2 * crate::resources::WATER_PLANT_SPACING;
     let alone = |lilies: &[u8], c: Cell| {

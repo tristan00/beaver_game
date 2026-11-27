@@ -26,7 +26,6 @@ impl Plugin for WaterRenderPlugin {
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterStyle>;
 
-/// Colours and look of the water surface (see water.wesl).
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct WaterStyle {
     #[uniform(100)]
@@ -37,7 +36,6 @@ pub struct WaterStyle {
     pub foam: Vec4,
     #[uniform(100)]
     pub ice: Vec4,
-    /// x: depth at which water reads deep (m), y: alpha of a film, z: alpha when deep, w: ice.
     #[uniform(100)]
     pub look: Vec4,
 }
@@ -54,10 +52,7 @@ struct WSlot {
     mesh: Handle<Mesh>,
     hash: u64,
     step: usize,
-    /// The chunk's `water_stamp` and the view when its cells were last hashed (as the
-    /// terrain's slots keep theirs).
     seen: Option<(u64, crate::terrain_render::View)>,
-    /// `wet_ground`, as of `seen`.
     wet: bool,
 }
 
@@ -81,20 +76,15 @@ fn style_for(p: &Palette) -> WaterStyle {
     }
 }
 
-/// Water colours: a clear green-teal where the bed shows through, river blue where it is deep.
 const SURFACE_SHALLOW: [f32; 3] = [0.32, 0.68, 0.72];
 const SURFACE_DEEP: [f32; 3] = [0.13, 0.40, 0.55];
-/// Depth at which water shows its own deep colour rather than its bed.
 const WATER_DEEP_M: f32 = 0.6;
 const WATER_FILM_ALPHA: f32 = 0.72;
 const WATER_DEEP_ALPHA: f32 = 0.93;
 
-/// The water surface's material, for water drawn elsewhere to look the same (a lock's chamber).
 #[derive(Resource, Clone)]
 pub struct SharedWater(pub Handle<WaterMaterial>);
 
-/// A flat sheet of water in the water surface's own look: corners at height 0 in the mesh's
-/// coordinate space (positioned by its transform), `depth` metres deep, `ice` 0 open to 1 frozen.
 pub fn water_sheet(corners: [Vec3; 4], depth: f32, ice: f32) -> Mesh {
     let tri = [0usize, 1, 2, 0, 2, 3];
     let pos: Vec<[f32; 3]> = tri.iter().map(|&i| corners[i].to_array()).collect();
@@ -129,7 +119,6 @@ fn update_water_style(season: Res<Season>, water: Res<WaterChunks>, mut material
     }
 }
 
-/// The water lens takes the water away altogether, so the bed shows its depth bands.
 fn hide_water_under_lens(active: Option<Res<crate::hud::ActiveLens>>, mut q: Query<&mut Visibility, With<WaterSurface>>) {
     let hide = active.is_some_and(|l| l.0 == crate::hud::MapLens::Water);
     let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
@@ -143,7 +132,6 @@ pub const WATER_PAD: i32 = 3;
 #[derive(Clone, Copy)]
 struct WV {
     p: [f32; 3],
-    /// Where the water is drawn: positive inside, zero on the outline.
     edge: f32,
     depth: f32,
     white: f32,
@@ -156,7 +144,6 @@ fn lerp_wv(a: &WV, b: &WV, t: f32) -> WV {
     WV { p: [l(a.p[0], b.p[0]), l(a.p[1], b.p[1]), l(a.p[2], b.p[2])], edge: l(a.edge, b.edge), depth: l(a.depth, b.depth), white: l(a.white, b.white), vel: [l(a.vel[0], b.vel[0]), l(a.vel[1], b.vel[1])], ice: l(a.ice, b.ice) }
 }
 
-/// The part of a polygon inside the water's outline.
 fn clip_poly(poly: &[WV]) -> Vec<WV> {
     let mut out = Vec::with_capacity(poly.len() + 2);
     for k in 0..poly.len() {
@@ -172,27 +159,18 @@ fn clip_poly(poly: &[WV]) -> Vec<WV> {
     out
 }
 
-/// 1 where a cell's water is drawn at all (lone films left out; dam crests are drawn by
-/// `vertex_water`, which leaves out their films too).
 fn shows_water(s: &SimState, x: i32, y: i32) -> f32 {
     let h = at(&s.water.depth, x, y);
     (h > SHOW_MIN_M && !s.water.lone_film(x, y)) as i32 as f32
 }
 
-/// Wet cells softened over their four neighbours (WaterField::wet) and interpolated between
-/// cell centres. The water's outline is where this falls to WET_EDGE, so a stream one cell wide
-/// is a smooth band rather than the staircase of its cells, even where the bank is no higher
-/// than the water.
 const WET_EDGE: f32 = 0.3;
-/// Metres of outline margin per unit of wetness above WET_EDGE.
 const EDGE_M: f32 = 0.4;
 
 use sim::water::SHOW_MIN_M;
 use crate::seasonal::smooth as smooth_step;
 const SURFACE_LIFT: f32 = 0.01;
 
-/// Water at one mesh vertex: the surface level, velocity and white water of the visibly wet
-/// cells it stands for (the step x step block at and after it).
 fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2], f32, f32)> {
     let n = s.height.width() as i32;
     let (mut level, mut vx, mut vy, mut white, mut k) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
@@ -218,22 +196,14 @@ fn vertex_water(s: &SimState, x: i32, y: i32, step: i32) -> Option<(f32, [f32; 2
     (k > 0.0).then(|| (level / k, [vx / k, vy / k], white, ice / k))
 }
 
-/// Cells either side of a wet cell whose levels are averaged into its drawn surface.
 const SMOOTH_CELLS: i32 = 2;
-/// A level difference to a neighbour beyond this is a fall, left out of the smoothing.
 const FALL_KEEP_M: f32 = 0.25;
-/// Simulated water is drawn at least this far above the drawn ground, so a creek a few
-/// centimetres deep is never hidden where the drawn ground, smoothed or coarser at a distance,
-/// stands a little higher than the simulated bed.
 const SHOWN_ABOVE_GROUND_M: f32 = 0.03;
 
-/// Where the surface drops this much between neighbouring vertices (a dam crest, a weir, a
-/// riffle) the water is drawn white, so a spill reads as a fall instead of a tilted pane.
 const FALL_WHITE_M: [f32; 2] = [0.4, 0.8];
 
 type CellWater = Option<(f32, [f32; 2], f32, f32)>;
 
-/// `vertex_water` at step 1 for one chunk and a margin, read once per mesh build.
 struct WaterField {
     x0: i32,
     y0: i32,
@@ -251,9 +221,6 @@ impl WaterField {
                 cells.push(vertex_water(s, x0 + i, y0 + j, 1));
             }
         }
-        // A stream's surface, smoothed over the wet cells around each: the simulated level follows
-        // every bump of the bed a few centimetres up, which draws as tilted plates at odd heights.
-        // A neighbour more than FALL_KEEP_M away is a real fall (a crest, a weir) and stays sharp.
         let raw: Vec<Option<f32>> = cells.iter().map(|c| c.map(|w| w.0)).collect();
         for j in 0..n {
             for i in 0..n {
@@ -273,9 +240,6 @@ impl WaterField {
                 if let Some(c) = cells[(j * n + i) as usize].as_mut() { c.0 = sum / k; }
             }
         }
-        // The drawn current, per cell: the surface slope over a 3x3 block of wet cells, then
-        // averaged with the wet neighbours, so it turns smoothly from vertex to vertex (a field that
-        // jumps shears the moving ripples into triangle seams).
         let get = |cells: &Vec<CellWater>, i: i32, j: i32| if i < 0 || j < 0 || i >= n || j >= n { None } else { cells[(j * n + i) as usize] };
         let mut flow = vec![[0.0f32; 2]; (n * n) as usize];
         for j in 0..n {
@@ -324,10 +288,6 @@ impl WaterField {
     }
 }
 
-/// The current drawn on the surface. Engines report creek speeds of a few cm/s or none (much of
-/// a reach is routed cell to cell without face fluxes), which reads as still water. Where the
-/// surface slopes, the water is drawn running downhill at a speed that grows with the slope;
-/// level lakes and ponds stay still.
 fn shown_flow(vel: [f32; 2], grad: [f32; 2]) -> [f32; 2] {
     let slope = (grad[0] * grad[0] + grad[1] * grad[1]).sqrt();
     let speed = smooth_step(FLOW_SLOPE[0], FLOW_SLOPE[1], slope) * (0.3 + 3.0 * slope).min(0.8);
@@ -370,7 +330,6 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     let spacing = step as f32 / subdivisions as f32;
     let side = CHUNK / step * subdivisions + 1;
     let (x0, y0) = ((cx * CHUNK) as i32, (cy * CHUNK) as i32);
-    // Sample one vertex beyond the chunk on every side, so shorelines extrapolate across seams.
     let ext = side + 2;
     let field = WaterField::new(s, cx, cy);
     let ground_field = GroundField::new(s, cx, cy, subdivisions == 4);
@@ -393,8 +352,6 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             let (x, y) = (x0 as f32 + i as f32 * spacing, y0 as f32 + j as f32 * spacing);
             let at_ext = |di: i32, dj: i32| own[(j as i32 + 1 + dj) as usize * ext + (i as i32 + 1 + di) as usize].0;
             let all_wet = own[(j + 1) * ext + (i + 1)].1;
-            // A dry vertex takes the level of the water beside it, so the waterline falls where
-            // that level meets the ground between them.
             let (level, vel, white, ice) = match at_ext(0, 0) {
                 Some(w) => {
                     let mut drop = 0.0f32;
@@ -421,23 +378,17 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
             };
             let bare = if subdivisions > 1 { ground_field.fine(s, x, y) } else { terrain_sample(s, x, y, step) };
             let ground = bare + at(&s.water.dam_height, x.round() as i32, y.round() as i32);
-            // Lift only vertices wholly inside wet cells; bank-straddling sub-cell vertices must
-            // keep the real water level so shore triangles clip flat against steep canal banks.
             let level = if all_wet { level.max(ground + SHOWN_ABOVE_GROUND_M) } else { level };
             let depth = if level.is_finite() { level - ground } else { -1.0 };
             let edge = depth.min((field.wet.bilinear(x, y) - WET_EDGE) * EDGE_M);
             let (wx, wz) = ((x + GRID_OFFSET - s.height.width() as f32 / 2.0) * CELL_SIZE, (y + GRID_OFFSET - s.height.height() as f32 / 2.0) * CELL_SIZE);
-            // Clip the actual surface against the bank; lifting dry vertices to the bank
-            // before clipping bends shore triangles up over the soil.
             let shown = if level.is_finite() { level } else { ground - 1.0 };
-            // Colour depth fades to nothing at the outline, so shallow tint and lace sit on the edge.
             let depth = depth.min(edge.max(0.0) * 6.0);
             verts.push(WV { p: [wx, shown + SURFACE_LIFT, wz], edge, depth, white, vel, ice });
             grounds.push(bare);
         }
     }
     let (mut pos, mut col, mut uv, mut uv1) = (vec![], vec![], vec![], vec![]);
-    // A lock's chamber holds its own water (drawn with the lock), not the pond's.
     let holes = crate::entities_render::raft_landing::chamber_holes(s);
     let in_hole = |t: &[WV; 3]| {
         let c = Vec2::new(t[0].p[0] + t[1].p[0] + t[2].p[0], t[0].p[2] + t[1].p[2] + t[2].p[2]) / 3.0;
@@ -446,7 +397,6 @@ pub fn build_water_mesh(s: &SimState, cx: usize, cy: usize, step: usize) -> Opti
     for j in 0..side - 1 {
         for i in 0..side - 1 {
             let (a, b, c, e) = (j * side + i, j * side + i + 1, (j + 1) * side + i, (j + 1) * side + i + 1);
-            // Split each square along the same diagonal as the terrain under it.
             let tris = if split_ae(grounds[a], grounds[b], grounds[c], grounds[e]) { [[a, c, e], [a, e, b]] } else { [[a, c, b], [b, c, e]] };
             for tri in tris {
                 let t = [verts[tri[0]], verts[tri[1]], verts[tri[2]]];
@@ -522,8 +472,6 @@ pub fn pond_view(s: &SimState) -> Option<Vec3> {
     Some(Vec3::new(wx, at(&s.height, fx, fy) + at(&s.water.depth, fx, fy), wz))
 }
 
-/// Rebuild the chunks whose water changed, found by the simulation's stamps as the terrain's
-/// are (`update_terrain_chunks`).
 #[allow(clippy::too_many_arguments)]
 fn update_water_chunks(
     mut commands: Commands,
@@ -550,7 +498,6 @@ fn update_water_chunks(
     let started = std::time::Instant::now();
     let n_chunks = cols * rows;
     let mut rebuilt = false;
-    // The season colours the water through its material, not its mesh.
     let lens = active.map_or(0, |l| l.0.code());
     let view = (lens, 0);
     let stamps = crate::terrain_render::water_stamps(s);

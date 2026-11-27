@@ -1,6 +1,3 @@
-//! The HUD's few materials, drawn once at startup: carved plates, pebble
-//! buttons, alert tokens and the season ring. Each is a small texture that the
-//! UI stretches as a nine-slice, so corners keep their cut at any size.
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
@@ -9,27 +6,16 @@ use std::f32::consts::{FRAC_1_SQRT_2, PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Skin {
-    /// The panel every piece of the HUD sits on.
     Plate,
-    /// A plate with a red edge: something is not allowed or is failing.
     PlateBad,
-    /// A plate that marks the selection or the suggested thing.
     PlateAccent,
-    /// A button at rest.
     Pebble,
-    /// A button that is on.
     PebbleOn,
-    /// The one main action: solid amber.
     PebblePrimary,
-    /// A button whose action keeps something sound (repair, upkeep).
     PebbleGood,
-    /// An alert that needs the player now.
     TokenBad,
-    /// An alert that will need the player soon.
     TokenWarn,
-    /// The dark frame behind a portrait.
     Portrait,
-    /// The year as four coloured quarters, spring at the top.
     SeasonRing,
 }
 
@@ -48,7 +34,6 @@ impl Skin {
         Skin::SeasonRing,
     ];
 
-    /// Pixels of the texture kept unstretched at each edge.
     pub fn slice(self) -> f32 {
         match self {
             Skin::Plate | Skin::PlateBad | Skin::PlateAccent => 12.0,
@@ -73,7 +58,6 @@ const WARN: Rgba = [0.94, 0.75, 0.29, 1.0];
 const PORTRAIT: Rgba = [0.165, 0.141, 0.125, 1.0];
 const CARVE: Rgba = [1.0, 1.0, 1.0, 0.07];
 
-/// Signed distance to a rectangle with its corners cut at 45 degrees.
 fn chamfer(p: Vec2, size: Vec2, cut: f32) -> f32 {
     let q = (p - size * 0.5).abs();
     let h = size * 0.5;
@@ -93,7 +77,6 @@ fn over(dst: Rgba, src: Rgba, a: f32) -> Rgba {
     [mix(0), mix(1), mix(2), oa]
 }
 
-/// A cut-corner shape: a fill, an edge of `edge` pixels, and an optional carved line inside.
 fn carved(size: u32, cut: f32, fill: Rgba, edge_col: Rgba, edge: f32, carve: bool) -> Vec<Rgba> {
     let s = Vec2::splat(size as f32);
     let mut out = vec![[0.0; 4]; (size * size) as usize];
@@ -133,7 +116,6 @@ fn season_ring(size: u32) -> Vec<Rgba> {
             if a <= 0.0 {
                 continue;
             }
-            // Clockwise from the top, as the year runs.
             let ang = (p.x.atan2(-p.y) + TAU) % TAU;
             let q = ((ang / (PI * 0.5)) as usize).min(3);
             let gap = {
@@ -168,7 +150,6 @@ pub fn image(skin: Skin) -> Image {
     let (n, px) = texture(skin);
     let mut data = Vec::with_capacity(px.len() * 4);
     for c in px {
-        // Straight alpha in sRGB bytes.
         data.extend(c.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8));
     }
     let mut img = Image::new(Extent3d { width: n, height: n, depth_or_array_layers: 1 }, TextureDimension::D2, data, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);

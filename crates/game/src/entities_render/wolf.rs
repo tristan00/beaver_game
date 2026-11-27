@@ -1,4 +1,3 @@
-//! The wolf and shared quadruped animation/tracking helpers used by `wildlife.rs`.
 use super::meshgen::{build_mesh, hex, mix, v, Mb};
 use crate::flow::height_at_world;
 use super::sim_view::cell_xz;
@@ -30,8 +29,6 @@ impl Plugin for WolfPlugin {
             .add_systems(Update, (tail_slaps, force_lookout, select_wolf));
     }
 }
-
-// ---- Shared quadruped & animal rendering helpers (also used by wildlife.rs) ----
 
 pub(super) type GaitTable = [([f32; 4], f32, f32, f32); 3];
 
@@ -105,8 +102,6 @@ pub(super) fn quadruped_legs(body: Transform, pivots: [Vec3; 4], front: (f32, f3
         (up - pitch, low)
     })
 }
-
-// ---- Wolf meshes & components ----
 
 #[derive(Resource)]
 pub(super) struct WolfMeshes {

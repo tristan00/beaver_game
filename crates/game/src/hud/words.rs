@@ -5,12 +5,10 @@ use sim::calendar::Season;
 use sim::resources::ResourceKind;
 use sim::jobs::Job;
 
-/// A good's icon and colour, as its row gives them.
 pub fn good_icon(g: Good) -> Icon {
     Icon::named(&g.row().icon).unwrap_or_else(|| panic!("good {}: no icon {}", g.key(), g.row().icon))
 }
 
-/// A cost as tooltip lines, one per good.
 pub fn cost_lines(mut t: crate::hud::ui::Tip, cost: &[(Good, f32)]) -> crate::hud::ui::Tip {
     for &(g, a) in cost {
         t = t.line(g.name(), num(a));
@@ -18,13 +16,11 @@ pub fn cost_lines(mut t: crate::hud::ui::Tip, cost: &[(Good, f32)]) -> crate::hu
     t
 }
 
-/// A cost as a button's chip: its first good's icon and the whole amount.
 pub fn cost_chip(cost: &[(Good, f32)]) -> Option<(Icon, Color, String)> {
     let g = cost.first()?.0;
     Some((good_icon(g), good_color(g), format!("{}", cost.iter().map(|c| c.1).sum::<f32>().round() as i64)))
 }
 
-/// Two costs added together, good by good.
 pub fn cost_sum(a: &[(Good, f32)], b: &[(Good, f32)]) -> Vec<(Good, f32)> {
     let mut out = a.to_vec();
     for &(g, x) in b {
@@ -36,7 +32,6 @@ pub fn cost_sum(a: &[(Good, f32)], b: &[(Good, f32)]) -> Vec<(Good, f32)> {
     out
 }
 
-/// "<prefix> <word in lower case>", made once for each pair.
 pub fn phrase(prefix: &'static str, word: &'static str) -> &'static str {
     use std::{collections::HashMap, sync::Mutex};
     static MADE: Mutex<Option<HashMap<(&'static str, &'static str), &'static str>>> = Mutex::new(None);
@@ -57,7 +52,6 @@ pub fn building_icon(k: BuildingKind) -> Icon {
     Icon::named(&k.row().icon).unwrap_or_else(|| panic!("building {}: no icon {}", k.key(), k.row().icon))
 }
 
-/// The button that cancels an unfinished building site.
 pub fn cancel_build(r: &mut super::ui::Ui, s: &sim::SimState, id: sim::buildings::BuildingId) {
     let Some(b) = s.buildings.building(id) else { return };
     if b.is_complete() {
@@ -83,7 +77,6 @@ pub fn animal_name(k: sim::wildlife::Kind) -> &'static str {
     }
 }
 
-/// What a wild animal is doing, as an icon and a few words.
 pub fn animal_doing(a: &sim::wildlife::Animal) -> (Icon, &'static str) {
     use sim::wildlife::{Doing, Food};
     match a.doing {
@@ -136,13 +129,11 @@ pub fn num(v: f32) -> String {
     }
 }
 
-/// A game day as a date, "Y2 Spring 14": the one way the HUD writes a date.
 pub fn date(day: f64) -> String {
     let d = sim::calendar::Date::at(day);
     format!("Y{} {} {}", d.year, d.season.name(), d.day)
 }
 
-/// A length of time in years and days, "1y 40d" (or "40d" under a year).
 pub fn span(days: f64) -> String {
     let y = sim::calendar::YEAR_DAYS;
     let (years, rest) = ((days.max(0.0) / y).floor() as i64, (days.max(0.0) % y).floor() as i64);
@@ -207,8 +198,6 @@ pub fn sim_error(m: &str) -> String {
     if let Some((_, v)) = table.iter().find(|(k, _)| l.contains(k)) {
         return (*v).to_string();
     }
-    // Pass through plain, human-readable refusal reasons (such as job refusal details)
-    // instead of hiding them behind "Refused".
     if !clean.is_empty() && clean.len() <= 64 && clean.contains(' ') && !clean.contains('{') {
         let mut chars = clean.chars();
         if let Some(first) = chars.next() {
@@ -218,12 +207,10 @@ pub fn sim_error(m: &str) -> String {
     "Refused".into()
 }
 
-/// A job's icon, as its row names it.
 pub fn job_icon(j: Job) -> Icon {
     Icon::named(&j.row().icon).unwrap_or_else(|| panic!("job {}: no icon {}", j.key(), j.row().icon))
 }
 
-/// A beaver's name with its epithet, if it has earned one.
 pub fn full_name(s: &sim::SimState, id: sim::colony::BeaverId, name: &str) -> String {
     sim::deeds::full_name(s, id, name)
 }

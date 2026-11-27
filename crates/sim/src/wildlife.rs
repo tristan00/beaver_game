@@ -1,13 +1,3 @@
-//! Wild animals: rabbits, deer and birds roaming the map. They come in from the edges, stay
-//! a few weeks and wander off again; there are only ever a few of each (`*_COUNT`), more
-//! than there are wolves.
-//!
-//! They are soft competition for the beavers' food: they graze the same food plants, deer and
-//! rabbits nibble seedlings, and birds and rabbits pick at food left lying on the ground. They
-//! keep away from the colony (the more it has built, the wider the berth: `AVOID_BASE` plus
-//! `AVOID_PER_BUILDING` a building), though a hungry one sometimes slips in for food left out.
-//! They bolt from wolves, and rabbits and birds from beavers too. A wolf hunts rabbits and
-//! deer as well as beavers (see `predators`); birds fly off.
 include!(concat!(env!("OUT_DIR"), "/wildlife_constants.rs"));
 
 use rand_core::{Rng, SeedableRng};
@@ -33,7 +23,6 @@ impl Kind {
             Kind::Bird => BIRD_COUNT,
         }
     }
-    /// Cells a day ambling and bolting.
     fn paces(self) -> (f32, f32) {
         match self {
             Kind::Rabbit => (RABBIT_PACE, RABBIT_FLEE_PACE),
@@ -41,7 +30,6 @@ impl Kind {
             Kind::Bird => (BIRD_PACE, BIRD_FLY_PACE),
         }
     }
-    /// How near a beaver comes before it bolts (deer don't mind beavers).
     fn beaver_fear(self) -> f32 {
         match self {
             Kind::Rabbit => RABBIT_BEAVER_FEAR,
@@ -49,7 +37,6 @@ impl Kind {
             Kind::Bird => BIRD_BEAVER_FEAR,
         }
     }
-    /// Food it eats a day while feeding.
     pub fn appetite(self) -> f32 {
         match self {
             Kind::Rabbit => RABBIT_EATS_PER_DAY,
@@ -57,29 +44,19 @@ impl Kind {
             Kind::Bird => BIRD_EATS_PER_DAY,
         }
     }
-    /// A wolf can catch it (birds fly off).
     pub fn prey(self) -> bool {
         self != Kind::Bird
     }
 }
 
-/// What an animal is doing.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Doing {
-    /// Ambling to somewhere new.
     Wander,
-    /// Eating where it stands until the day given: a plant, a seedling, or food on the ground.
     Feed { food: Food, until: f64 },
-    /// Sitting still a while.
     Rest { until: f64 },
-    /// Running (or flying) from danger.
     Flee,
-    /// On its way off the map.
     Leave,
-    /// Pinned by a wolf; dead when the wolf's kill ends.
     Caught,
-    /// Sitting a while between bites by the food it is eating, then back to it: it keeps to
-    /// one plant until the plant is gone, unless something (danger, time to leave) comes between.
     Digest { food: Food, until: f64 },
 }
 
@@ -90,9 +67,6 @@ pub enum Food {
     Pile(u64),
 }
 
-/// Where a wild animal or a wolf has stood at the end of each of its last steps that moved it:
-/// for drawing it along its real way when the interface sees the world only every few steps
-/// (at speed). Not saved.
 #[derive(Clone, Debug, Default)]
 pub struct Track(pub std::collections::VecDeque<(f64, (f32, f32))>);
 
@@ -114,24 +88,17 @@ impl Track {
 pub struct Animal {
     pub id: u32,
     pub kind: Kind,
-    /// Where it is, in cells (cell `c` spans `c..c+1`).
     pub pos: (f32, f32),
-    /// Facing, as `atan2(dx, dy)` in cell coordinates.
     pub heading: f32,
-    /// Cells a day it moved over the last step (0 standing).
     pub pace: f32,
     pub doing: Doing,
-    /// It wanders off the map after this day.
     pub leave_by: f64,
-    /// Where it is going (a land route; a bird flies straight to the last cell).
     path: Vec<Cell>,
-    /// When it next looks round for danger and for food.
     next_look: f64,
     #[serde(skip)]
     pub track: Track,
 }
 
-/// A dead animal, left lying a while.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Carcass {
     pub kind: Kind,
@@ -146,17 +113,12 @@ pub struct Wildlife {
     pub animals: Vec<Animal>,
     pub carcasses: Vec<Carcass>,
     next_id: u32,
-    /// Food eaten by wild animals, for the colony's books.
     pub eaten: f32,
     pub seedlings_eaten: u32,
-    /// Where the food plants and seedlings are, by area, redrawn daily (see `FoodIndex`).
     #[serde(skip)]
     food: FoodIndex,
 }
 
-/// Food plants and seedlings bucketed by `FOOD_BUCKET`-cell squares, so an animal looks only
-/// at what grows near it rather than at every source on the map. Rebuilt once a day; whether
-/// one still has food is checked when it is picked.
 #[derive(Clone, Debug, Default)]
 struct FoodIndex {
     day: Option<i64>,
@@ -186,7 +148,6 @@ impl FoodIndex {
     }
 }
 
-/// `Some(true)` for a tree seedling, `Some(false)` for a grazeable land food plant.
 fn browse_kind(r: &crate::resources::Resource) -> Option<bool> {
     if r.kind.is_food_plant() && !r.kind.aquatic() && !r.is_seedling() { Some(false) }
     else if r.kind.is_tree() && r.is_seedling() { Some(true) }
@@ -211,12 +172,10 @@ impl Wildlife {
     }
 }
 
-/// How far an animal keeps from the colony's buildings.
 fn berth(sim: &SimState) -> f32 {
     AVOID_BASE + AVOID_PER_BUILDING * (sim.buildings.buildings.len() as f32).sqrt() * 2.0
 }
 
-/// Distance from `p` to the nearest building (any kind, across all cells including dams/canals), or far.
 fn to_colony(sim: &SimState, p: (f32, f32)) -> f32 {
     sim.buildings.buildings.iter()
         .flat_map(|b| b.cells())
@@ -228,7 +187,6 @@ fn cell_of(p: (f32, f32)) -> Cell {
     (p.0.max(0.0) as usize, p.1.max(0.0) as usize)
 }
 
-/// Where danger is for this animal: a wolf, or a beaver too close, nearest first.
 fn danger(sim: &SimState, a: &Animal) -> Option<(f32, f32)> {
     let wolf = sim.predators.wolves.iter().map(|w| w.pos).filter(|&p| dist(p, a.pos) <= WOLF_FEAR).min_by(|x, y| dist(*x, a.pos).total_cmp(&dist(*y, a.pos)));
     if wolf.is_some() {
@@ -244,7 +202,6 @@ fn danger(sim: &SimState, a: &Animal) -> Option<(f32, f32)> {
     None
 }
 
-/// A spot away from `from`, `far` cells off, that the animal can be on.
 fn away(sim: &SimState, wl: &mut Wildlife, a: &Animal, from: (f32, f32), far: f32) -> Option<Cell> {
     let base = (a.pos.1 - from.1).atan2(a.pos.0 - from.0);
     let n = sim.nav.surface.width() as f32;
@@ -262,16 +219,11 @@ fn away(sim: &SimState, wl: &mut Wildlife, a: &Animal, from: (f32, f32), far: f3
     None
 }
 
-/// Somewhere to feed near the animal: a food plant (or, now and then, a seedling or food the
-/// beavers left lying on the ground), picked at random from what grows within `SEARCH_RADIUS`, outside the
-/// colony's berth unless the food is left out on the ground.
 fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Food)> {
 
     let berth = berth(sim);
     let n = sim.nav.surface.width();
     let r = SEARCH_RADIUS as f32;
-    // Food the beavers gathered and left lying, not carried to a store: any of them go for
-    // it, even close to the colony.
     if wl.unit() < PILE_CHANCE {
         let pile = sim.work.piles.items.iter().filter(|p| p.good == crate::buildings::Good::food() && dist(centre(p.cell), a.pos) <= r * 2.0).min_by(|x, y| dist(centre(x.cell), a.pos).total_cmp(&dist(centre(y.cell), a.pos)));
         if let Some(p) = pile {
@@ -280,7 +232,6 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
     }
     let seedlings = a.kind != Kind::Bird && wl.unit() < SEEDLING_CHANCE;
     let _ = n;
-    // Everything of the right sort within reach, then a few of them at random, checked.
     let mut near: Vec<(Cell, crate::resources::ResourceId, bool)> = Vec::new();
     let (lo, hi) = ((a.pos.0 - r, a.pos.1 - r), (a.pos.0 + r, a.pos.1 + r));
     let across = wl.food.across;
@@ -313,7 +264,6 @@ fn find_food(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<(Cell, Foo
     None
 }
 
-/// A place to wander to, outside the colony's berth.
 fn wander_spot(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<Cell> {
     let berth = berth(sim);
     let n = sim.nav.surface.width() as f32;
@@ -331,7 +281,6 @@ fn wander_spot(sim: &SimState, wl: &mut Wildlife, a: &Animal) -> Option<Cell> {
     None
 }
 
-/// Head for `to`: a land route for rabbits and deer, a straight flight for birds.
 fn head_for(sim: &SimState, a: &mut Animal, to: Cell) -> bool {
     if a.kind == Kind::Bird {
         a.path = vec![to];
@@ -342,11 +291,9 @@ fn head_for(sim: &SimState, a: &mut Animal, to: Cell) -> bool {
     !a.path.is_empty()
 }
 
-/// Move along the route at `pace` cells a day for `dt`; returns how far it went.
 fn travel(sim: &SimState, a: &mut Animal, pace: f32, dt: f32) -> f32 {
     let budget = pace * dt;
     if a.kind == Kind::Bird {
-        // Flying: straight there.
         let Some(&to) = a.path.last() else { return 0.0 };
         let t = centre(to);
         let d = dist(a.pos, t);
@@ -363,7 +310,6 @@ fn travel(sim: &SimState, a: &mut Animal, pace: f32, dt: f32) -> f32 {
     crate::predators::walk_route(sim, &mut a.pos, &mut a.heading, &mut a.path, budget)
 }
 
-/// A map-edge cell the animal can come in or go out at, far from every beaver.
 fn edge_cell(sim: &SimState, wl: &mut Wildlife) -> Option<Cell> {
     let n = sim.nav.surface.width();
     for _ in 0..40 {
@@ -390,7 +336,6 @@ fn eat(sim: &mut SimState, wl: &mut Wildlife, food: Food, amount: f32) -> f32 {
         }
         Food::Pile(id) => sim.work.piles.take(id, amount),
         Food::Seedling(id) => {
-            // Nibbled to the ground: a seedling eaten is gone.
             if let Some(r) = sim.resources.get(id) {
                 crate::resources::note("GONE", r, format_args!("why=eaten by wildlife"));
                 sim.resources.keep(|r| r.id != id);
@@ -403,14 +348,12 @@ fn eat(sim: &mut SimState, wl: &mut Wildlife, food: Food, amount: f32) -> f32 {
 
 fn food_left(sim: &SimState, food: Food) -> bool {
     match food {
-        // Eaten until it dies (`eat` removes it once bare).
         Food::Plant(id) => sim.resources.get(id).is_some(),
         Food::Seedling(id) => sim.resources.get(id).is_some(),
         Food::Pile(id) => sim.work.piles.get(id).is_some_and(|p| p.amount > 0.05),
     }
 }
 
-/// The nearest wild animal a wolf at `at` can see and catch, on land.
 pub fn prey_for_wolf(sim: &SimState, at: (f32, f32), sight: f32, skip: &[u32]) -> Option<u32> {
     sim.wildlife
         .animals
@@ -420,7 +363,6 @@ pub fn prey_for_wolf(sim: &SimState, at: (f32, f32), sight: f32, skip: &[u32]) -
         .map(|a| a.id)
 }
 
-/// A wolf has caught this animal: it is pinned until killed.
 pub fn catch(sim: &mut SimState, id: u32) {
     if let Some(a) = sim.wildlife.animals.iter_mut().find(|a| a.id == id) {
         a.doing = Doing::Caught;
@@ -429,7 +371,6 @@ pub fn catch(sim: &mut SimState, id: u32) {
     }
 }
 
-/// A wolf's kill: the animal dies and lies where it fell.
 pub fn kill(sim: &mut SimState, id: u32) {
     let now = sim.time_days;
     if let Some(i) = sim.wildlife.animals.iter().position(|a| a.id == id) {
@@ -438,7 +379,6 @@ pub fn kill(sim: &mut SimState, id: u32) {
     }
 }
 
-/// Each animal's and wolf's place at the end of this step, into its track.
 pub fn note_tracks(sim: &mut SimState) {
     let now = sim.time_days;
     for a in &mut sim.wildlife.animals {
@@ -455,7 +395,6 @@ pub fn step(sim: &mut SimState, dt: f32, new_day: bool) {
     }
     let now = sim.time_days;
     sim.wildlife.carcasses.retain(|c| now - c.died < CARCASS_DAYS);
-    // Newcomers wander in from the edges while there are fewer than there should be.
     if new_day {
         for kind in Kind::ALL {
             let have = sim.wildlife.animals.iter().filter(|a| a.kind == kind).count();
@@ -495,7 +434,6 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
     if a.doing == Doing::Caught {
         return;
     }
-    // Look round now and then: danger first.
     if now >= a.next_look {
         a.next_look = now + LOOK_DAYS as f64;
         if let Some(from) = danger(sim, a) {
@@ -559,7 +497,6 @@ fn act(sim: &mut SimState, wl: &mut Wildlife, a: &mut Animal, dt: f32, now: f64)
         }
         Doing::Wander => {
             if a.path.is_empty() {
-                // Hungry most of the time: look for food, else wander on.
                 if let Some((c, food)) = find_food(sim, wl, a) {
                     if head_for(sim, a, c) || cell_of(a.pos) == c {
                         a.doing = Doing::Feed { food, until: now + FEED_DAYS as f64 * (0.5 + wl.unit() as f64) };

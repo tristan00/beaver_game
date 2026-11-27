@@ -1,9 +1,6 @@
-//! Building placement, paid construction and cancellation. Dams are placed
-//! and grown through `dams`; everything else is a paid site.
 use crate::{SimError, SimState, agents, buildings, maintenance, water};
 
 impl SimState {
-    /// A building is unlocked once the one it needs has been finished; a placed site is not enough.
     pub fn unlocked(&self, kind: buildings::BuildingKind) -> Result<(), buildings::BuildError> {
         match kind.spec().requires {
             Some(need) if !self.buildings.buildings.iter().any(|b| b.kind == need && self.finished(b)) => Err(buildings::BuildError::Locked(need)),
@@ -11,15 +8,12 @@ impl SimState {
         }
     }
 
-    /// Built in full. Dams and canals stand as soon as they are drawn and are raised or dug
-    /// cell by cell, so they are finished only once no cell is left to build.
     pub fn finished(&self, b: &buildings::Building) -> bool {
         b.is_complete()
             && (b.dam.is_none() || !crate::dams::has_work_for(self, b.id, false))
             && b.canal.as_deref().is_none_or(|k| k.cells.iter().all(|c| c.done))
     }
 
-    /// Shared by command execution, placement previews and the scripted player.
     pub fn check_site(&self, kind: buildings::BuildingKind, pos: water::Cell) -> Result<(), buildings::BuildError> {
         use buildings::BuildError;
         self.unlocked(kind)?;
@@ -64,8 +58,6 @@ impl SimState {
 
     pub fn cancel_site(&mut self, id: buildings::BuildingId) -> Result<Vec<buildings::Amount>, SimError> {
         if self.maintenance.jobs.contains_key(&id) {
-            // A refit on a dam or canal is dropped and the works come down all the same;
-            // on any other building the refit is all there is to cancel.
             let works = self.buildings.building(id).is_some_and(|b| b.dam.is_some() || b.canal.is_some());
             if !works {
                 return maintenance::cancel(self, id);
@@ -93,9 +85,6 @@ impl SimState {
         Ok(refunded)
     }
 
-    /// A cancelled dam or canal: the dam's built cells and any gate come down, so the water
-    /// runs free again, and its locks go with them. A canal's dug cells stay dug: ground once
-    /// dug is just low ground.
     fn tear_down_works(&mut self, id: buildings::BuildingId) -> Result<(), SimError> {
         let mut cells: Vec<crate::water::Cell> = crate::dams::dam(self, id).map(|d| d.cells.iter().map(|c| c.cell).collect()).unwrap_or_default();
         if let Some(k) = crate::canals::canal(self, id).filter(|k| k.gate.built) {
@@ -107,7 +96,6 @@ impl SimState {
         Ok(())
     }
 
-    /// Return `amount` of `good` to stores, dropping any overflow onto the ground at `cell` (marked already booked).
     pub(crate) fn refund_or_drop(&mut self, cell: crate::water::Cell, good: buildings::Good, amount: f32) -> f32 {
         let stored = self.buildings.stores.refund(good, amount).unwrap_or(0.0);
         if amount - stored > crate::work::EPS {
@@ -116,8 +104,6 @@ impl SimState {
         stored
     }
 
-    /// A finished building worn to nothing falls apart: what it held is left lying where it
-    /// stood, its beavers and residents go, and the ground is free again.
     pub(crate) fn wreck(&mut self, id: buildings::BuildingId) {
         let Some(b) = self.buildings.building(id) else { return };
         let (kind, pos) = (b.kind, b.pos);
@@ -167,8 +153,6 @@ use crate::buildings::{BuildingId, BuildingKind};
 use crate::water::Cell;
 use crate::Command;
 
-/// Place a building site on the nearest good spot around `around`, keeping `keep_clear` free
-/// and never walling the family off from its supplies.
 pub fn place_best(s: &mut SimState, kind: BuildingKind, around: Cell, keep_clear: &[Cell]) -> Result<BuildingId, String> {
     place_ring(s, kind, around, 2..=29, keep_clear)
 }

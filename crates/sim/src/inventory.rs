@@ -1,10 +1,8 @@
-//! Physical stored goods.
 use std::collections::BTreeMap;
 use crate::buildings::{BuildingId, Good};
 use crate::plants::Plant;
 use crate::trees::Tree;
 
-/// What a seedling grows into: a tree, or a food plant on land or in water.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Species {
     Tree(Tree),
@@ -18,7 +16,6 @@ impl Species {
             Species::Plant(p) => p.name(),
         }
     }
-    /// Which of the three sorts of plant it is: a tree, a land plant or a water plant.
     pub fn sort(self) -> SeedlingSort {
         match self {
             Species::Tree(_) => SeedlingSort::Tree,
@@ -28,7 +25,6 @@ impl Species {
     }
 }
 
-/// The three sorts of plant a seedling bed raises, kept in balance (see `agents::seed_task`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SeedlingSort {
     Tree,
@@ -36,7 +32,6 @@ pub enum SeedlingSort {
     Water,
 }
 
-/// What kind of a good: seedlings keep the species they will grow into; every other good is `None`.
 pub type Kind = Option<Species>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -59,7 +54,6 @@ impl Inventory {
     pub fn at(&self, owner: BuildingId, good: Good) -> f32 {
         self.0.range((owner, good, None)..).take_while(|((o, g, _), _)| (*o, *g) == (owner, good)).map(|(_, a)| *a).sum()
     }
-    /// One store's stock of a good, kind by kind.
     pub fn kinds(&self, owner: BuildingId, good: Good) -> Vec<(Kind, f32)> {
         self.0.range((owner, good, None)..).take_while(|((o, g, _), _)| (*o, *g) == (owner, good)).map(|((_, _, k), a)| (*k, *a)).collect()
     }
@@ -70,7 +64,6 @@ impl Inventory {
         assert!(amount.is_finite() && amount >= 0.0);
         if amount > 0.0 { *self.0.entry((owner, good, kind)).or_default() += amount; }
     }
-    /// Take of any kinds, the first kinds first.
     pub(crate) fn take(&mut self, owner: BuildingId, good: Good, amount: f32) -> f32 {
         let mut taken = 0.0;
         while taken < amount {
@@ -80,12 +73,10 @@ impl Inventory {
         }
         taken
     }
-    /// Take of one kind only, the one most stocked, so a load is all one kind.
     pub(crate) fn take_kind(&mut self, owner: BuildingId, good: Good, amount: f32) -> (f32, Kind) {
         let Some(kind) = self.kinds(owner, good).into_iter().max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0))).map(|k| k.0) else { return (0.0, None) };
         (self.take_this(owner, good, kind, amount), kind)
     }
-    /// Take of this one kind only.
     pub(crate) fn take_this(&mut self, owner: BuildingId, good: Good, kind: Kind, amount: f32) -> f32 {
         assert!(amount.is_finite() && amount >= 0.0);
         let have = self.0.entry((owner, good, kind)).or_default();

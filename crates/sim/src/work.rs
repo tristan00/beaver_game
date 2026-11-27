@@ -18,7 +18,6 @@ impl Area {
     pub fn contains(&self, c: Cell) -> bool {
         c.0 >= self.min.0 && c.0 <= self.max.0 && c.1 >= self.min.1 && c.1 <= self.max.1
     }
-    /// Inside the circle that fits the area: a seedling bed's reach.
     pub fn reaches(&self, c: Cell) -> bool {
         let (rx, ry) = ((self.max.0 - self.min.0) as f32 / 2.0 + 0.5, (self.max.1 - self.min.1) as f32 / 2.0 + 0.5);
         let (cx, cy) = ((self.min.0 + self.max.0) as f32 / 2.0, (self.min.1 + self.max.1) as f32 / 2.0);
@@ -34,7 +33,6 @@ impl Area {
 pub struct Slot {
     pub role: Job,
     pub beaver: Option<BeaverId>,
-    /// Switched off by the player: nobody is sent to it.
     pub off: bool,
 }
 
@@ -64,7 +62,6 @@ impl Workplace {
     pub fn is_open_site(&self) -> bool {
         self.site.as_ref().is_some_and(|s| !s.is_done())
     }
-    /// The first empty seat `want` takes.
     pub fn open_seat(&self, want: impl Fn(Job) -> bool) -> Option<(usize, Job)> {
         let i = self.slots.iter().position(|s| s.beaver.is_none() && !s.off && want(s.role))?;
         Some((i, self.slots[i].role))
@@ -133,15 +130,10 @@ pub enum WorkError {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Work {
     pub places: Vec<Workplace>,
-    /// Haul mounds whose haulers balance the stores: each from when it is finished,
-    /// until the player switches it off.
     pub balanced: BTreeSet<BuildingId>,
-    /// Stores the player asked haulers to fill to the brim.
     pub fills: BTreeSet<BuildingId>,
     pub supplies: Option<Cell>,
-    /// Goods lying on the ground.
     pub piles: crate::piles::Piles,
-    /// How far from water, in cells, each job's beavers are sent to work.
     pub shore_limits: BTreeMap<crate::jobs::Job, u16>,
 }
 
@@ -178,7 +170,6 @@ impl Work {
             }
         }
     }
-    /// A site has no worker seats: colony-wide builders and menders work it directly.
     pub fn add_site(&mut self, b: BuildingId, kind: BuildingKind, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
         if self.place(b).is_some() {
             return Err(WorkError::AlreadyRegistered);
@@ -187,7 +178,6 @@ impl Work {
         self.places.push(Workplace::new(b, kind, Vec::new(), None, Some(site)));
         Ok(())
     }
-    /// Attach a refit site onto an existing workplace without replacing it.
     pub fn start_site(&mut self, b: BuildingId, needed: &[Amount], labour: f32) -> Result<(), WorkError> {
         let site = SiteProgress::new(needed, labour)?;
         self.place_mut(b)?.site = Some(site);
@@ -246,7 +236,6 @@ impl Work {
         self.balance_from_the_start(b, kind);
         Ok(())
     }
-    /// A finished haul mound's haulers balance the stores until switched off.
     fn balance_from_the_start(&mut self, b: BuildingId, kind: BuildingKind) {
         if kind.balances() {
             self.balanced.insert(b);

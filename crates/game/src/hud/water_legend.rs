@@ -13,8 +13,6 @@ fn swatch(u: &mut Ui, c: Color) {
     u.add(VNode::new(Node { width: Val::Px(14.0), height: Val::Px(10.0), ..default() })).bg(c);
 }
 
-/// Over the lens rail while the water view is on (or a dam or canal is being drawn): its depth
-/// bands, up to the depths that flood buildings, and the current's colours, in one row.
 pub fn legend(active: super::MapLens, node: Node) -> Option<VNode> {
     if active != super::MapLens::Water {
         return None;
@@ -31,7 +29,6 @@ pub fn legend(active: super::MapLens, node: Node) -> Option<VNode> {
                 r.tip(Tip::name(t));
             }
         };
-        // Each band up to its deepest edge; the last, flooded, from the flood depth on.
         let (near, max) = tr::flood_depths();
         let n = tr::DEPTH_BANDS.len() as u8;
         for band in 0..=n + 2 {

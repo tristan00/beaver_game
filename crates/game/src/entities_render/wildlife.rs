@@ -1,4 +1,3 @@
-//! Wild animals (deer, rabbits, birds): procedural rigs, sim tracking, and pose animation.
 use super::meshgen::{build_mesh, hex, mix, v, Mb};
 use super::sim_view::cell_xz;
 use super::wolf::{ax, coat as base_coat, ease_toward, env_floats, gait_mix, gallery_env, ground_pt, lerp_t, quadruped_feet, quadruped_legs, GaitTable, WolfTrack};
@@ -101,8 +100,6 @@ fn coat(p: Vec3, n: Vec3, top: [f32; 3], side: [f32; 3], under: [f32; 3]) -> [f3
     base_coat(p, n, top, side, under, (53.0, 47.0, 43.0), 0.04)
 }
 
-// ---- Deer meshes ----
-
 fn deer_coat(p: Vec3, n: Vec3) -> [f32; 3] { coat(p, n, hex(0x7a5233), hex(0xa2724a), hex(0xe9e1d3)) }
 
 fn deer_body(mb: &mut Mb) {
@@ -178,8 +175,6 @@ fn deer_lower(mb: &mut Mb, front: bool) {
     mb.paint(start, |p, n, c| mix(coat(p, n, hex(0x7a5233), hex(0xa2724a), hex(0xa98058)), c, smooth01(-0.02, -0.15, p.y)));
     mb.ellipsoid(v(0.0, -len + 0.022, 0.02), v(0.03, 0.024, 0.04), hex(0x1d1713));
 }
-
-// ---- Rabbit & bird meshes ----
 
 fn rabbit_coat(p: Vec3, n: Vec3) -> [f32; 3] { coat(p, n, hex(0x6d5b48), hex(0x9a8670), hex(0xdcd3c4)) }
 
@@ -293,8 +288,6 @@ fn init_meshes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
         bird_leg: build_mesh(&mut meshes, bird_leg),
     });
 }
-
-// ---- Spawning & driving ----
 
 fn spawn(commands: &mut Commands, wm: &WildMeshes, m: &Models, kind: Kind, id: u32, at: Transform) -> Entity {
     let part = |commands: &mut Commands, h: &Handle<Mesh>, pos: Vec3, parent: Entity| {
@@ -448,8 +441,6 @@ fn follow(mut orbit: ResMut<crate::camera::OrbitCamera>, beasts: Query<(&Transfo
     if let Some(&y) = p.get(2) { orbit.yaw = y; }
     if let Some(&pt) = p.get(3) { orbit.pitch = pt; }
 }
-
-// ---- Pose animation ----
 
 #[allow(clippy::too_many_arguments)]
 fn animate(b: &mut Beast, speed: f32, doing: Doing, dead: bool, alt: Option<f32>, t: f32, dt: f32, parts: &mut Query<&mut Transform, Without<Beast>>) {

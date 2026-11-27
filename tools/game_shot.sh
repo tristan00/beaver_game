@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Screenshot the running game at one spot of a map, the way a player sees it.
-#
-#   tools/game_shot.sh MAP X,Y[,DIST[,YAW[,PITCH]]] OUT.png [DAYS] [notrees]
-#
-# Builds nothing: run `cargo build -p game --release` first. Starts a new game on MAP, settles the
-# family at the planned camp (BC_SETTLE), runs DAYS of sim time (default 0), lifts the fog of war,
-# aims the camera at map cell (X, Y) (DIST default 30 cells, top-down-ish pitch 1.1) and saves a
-# 1600x900 picture. `notrees` hides standing trees so the ground and streams under the canopy show.
 set -euo pipefail
 map=$1; at=$2; out=$3; days=${4:-0}; trees=${5:-}
 IFS=, read -r x y dist yaw pitch <<<"$at"

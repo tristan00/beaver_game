@@ -1,7 +1,5 @@
-//! Player commands and their validation/dispatch boundary.
 use crate::{SimError, SimState, agents, buildings, canals, colony, dams, gates, invalid, jobs, maintenance, sandbox, society, starts, water};
 
-/// How a dam grows when the player asks for more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DamGrowth {
     Raise,
@@ -13,50 +11,33 @@ pub enum DamGrowth {
 pub enum Command {
     Regenerate { seed: u64 },
     BuildDam { cells: Vec<water::Cell>, height: f32 },
-    /// Draw a new dam along these cells; beavers then build every cell.
     PlaceDam { cells: Vec<water::Cell> },
-    /// Grow a dam; `cells` narrows a raise to those cells.
     GrowDam { dam: buildings::BuildingId, growth: DamGrowth, cells: Vec<water::Cell> },
-    /// Toggle mender upkeep on a dam or canal.
     SetUpkeep { building: buildings::BuildingId, on: bool },
-    /// Order a repair, mud reinforcement, or pebble facing (`Some`), or cancel one (`None`).
     Refit { building: buildings::BuildingId, refit: Option<maintenance::Refit> },
-    /// Switch one beaver slot on or off.
     SetSlotOff { building: buildings::BuildingId, slot: usize, off: bool },
     Settle { cell: water::Cell },
     BreachDam { x: usize, y: usize },
     DigCanal { cells: Vec<water::Cell>, depth: f32 },
-    /// Draw a new canal from water along these cells; diggers then dig every cell.
     PlaceCanal { cells: Vec<water::Cell> },
-    /// Grow a canal; `cells` narrows Deepen and Widen to those cells, or is the route Extend adds.
     GrowCanal { canal: buildings::BuildingId, growth: canals::CanalGrowth, cells: Vec<water::Cell> },
-    /// Make a dam cell a gate.
     AddDamGate { dam: buildings::BuildingId, cell: water::Cell },
-    /// Ask for a gate setting on a dam or canal; a builder makes the change.
     SetGate { building: buildings::BuildingId, cell: water::Cell, setting: gates::GateSetting },
-    /// Upgrade a built gate into a lock (needs a finished Raft landing); a builder visits to build it.
     UpgradeLock { building: buildings::BuildingId, cell: water::Cell },
-    /// Take a gate (and any lock on it) off a dam or canal; what was brought for it goes back.
     RemoveGate { building: buildings::BuildingId, cell: water::Cell },
-    /// Give these beavers an order now (`queue: false`, clearing any queued orders) or append it
-    /// to their queue (`queue: true`, starting immediately if free).
     Assign { who: Vec<colony::BeaverId>, to: Option<agents::Assignment>, #[serde(default)] queue: bool },
     PlaceSite { kind: buildings::BuildingKind, pos: (usize, usize) },
-    /// Add (`delta > 0`) or remove (`delta < 0`) seated workers on a workplace.
     StaffBuilding { building: buildings::BuildingId, delta: i32 },
     SetPaused { building: buildings::BuildingId, paused: bool },
     AdjustRole { role: jobs::Job, delta: i32 },
     SetBalance { building: buildings::BuildingId, on: bool },
-    /// Have haulers fill this store to the brim from the others (or stop).
     FillStore { store: buildings::BuildingId, on: bool },
     AnswerJoin { id: society::RequestId, answer: society::Answer },
     CancelSite { building: buildings::BuildingId },
-    /// Keep a role's beavers within `cells` of water (None: no limit).
     SetShoreLimit { role: jobs::Job, cells: Option<u16> },
 }
 
 impl Command {
-    /// False for river-sandbox god tools that bypass colony play.
     pub fn is_player_command(&self) -> bool {
         !matches!(self, Command::Regenerate { .. } | Command::BuildDam { .. } | Command::BreachDam { .. } | Command::DigCanal { .. })
     }

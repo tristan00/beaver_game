@@ -1,4 +1,3 @@
-"""Enforce the game's source budget without excluding tests or generated source."""
 from pathlib import Path
 import sys
 

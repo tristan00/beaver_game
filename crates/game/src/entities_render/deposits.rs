@@ -1,32 +1,24 @@
-//! Rock and mud: the boulders of rocky outcrops (scenery, never gathered), the pebbles that
-//! are the resource (heaps of small mixed stones on land, gravel bars in the streams), and mud
-//! (wet heaps on the banks, slick grey seams where a river lays it down).
 use super::meshgen::{hex, mix, Mb, Rng};
 use bevy::prelude::*;
 use std::f32::consts::TAU;
 use super::meshgen::v;
 
-/// Shapes of boulder the outcrops pick from.
 pub const BOULDER_VARIANTS: usize = 8;
 
-/// A boulder about one unit across, bedded in the ground at its origin: no two alike. Granite,
-/// banded gneiss or dark rock; rounded by ice or broken blocky; lichen on what faces the sky and
-/// moss on some tops.
 pub fn boulder_mesh(variant: usize) -> Mesh {
     let mut mb = Mb::new();
     let mut r = Rng(variant as u32 * 7919 + 101);
     let (base, light, banded) = match variant % 4 {
-        0 => (0x8A7C78, 0xC4B4AC, false), // pink-grey granite
-        1 => (0x7A7A7E, 0xB6B4B0, true),  // banded gneiss
-        2 => (0x5E6064, 0x8E9090, false), // dark rock
-        _ => (0x8E8A80, 0xC2BCB0, false), // pale weathered stone
+        0 => (0x8A7C78, 0xC4B4AC, false),
+        1 => (0x7A7A7E, 0xB6B4B0, true),
+        2 => (0x5E6064, 0x8E9090, false),
+        _ => (0x8E8A80, 0xC2BCB0, false),
     };
     let blocky = variant % 3 == 1;
     let squat = 0.55 + 0.25 * r.next();
     let (rx, rz) = (0.5 * r.range(0.85, 1.15), 0.5 * r.range(0.75, 1.05));
     let start = mb.len();
     mb.ellipsoid_g(v(0.0, 0.12, 0.0), v(rx, squat, rz), hex(base), hex(light), 14, 9);
-    // Broken faces: planes the rock is cut back to, then a little roughness over all.
     let planes: Vec<(Vec3, f32)> = (0..if blocky { 7 } else { 4 })
         .map(|_| {
             let n = v(r.range(-1.0, 1.0), r.range(-0.2, 1.0), r.range(-1.0, 1.0)).normalize_or(Vec3::Y);
@@ -44,7 +36,6 @@ pub fn boulder_mesh(variant: usize) -> Mesh {
         }
         let k = 1.0 + 0.06 * (q.x * 9.0 + ph).sin() * (q.z * 8.0 - ph).cos() + 0.03 * (q.y * 17.0 + ph).sin();
         let mut out = q * k + v(0.0, 0.12, 0.0);
-        // Bedded: the underside sinks flat into the ground.
         if out.y < -0.05 {
             out.y = -0.05 - (out.y + 0.05) * 0.2;
         }
@@ -60,7 +51,6 @@ pub fn boulder_mesh(variant: usize) -> Mesh {
             let band = ((p.y * 11.0 + p.x * 3.0).sin() * 0.5 + 0.5).powi(3);
             c = mix(c, hex(0x4A4A50), band * 0.5);
         }
-        // Speckle, so it reads as stone and not cement.
         let s = ((p.x * 37.0).sin() * (p.z * 41.0).cos() * (p.y * 29.0).sin()).abs();
         c = mix(c, if s > 0.6 { hex(0x3A3A3E) } else { pale }, 0.12 * s);
         let blot = (p.x * 6.3 + 1.7).sin() * (p.z * 5.9 - 0.4).cos() + 0.4 * (p.y * 7.0).sin();
@@ -70,27 +60,22 @@ pub fn boulder_mesh(variant: usize) -> Mesh {
         if moss && n.y > 0.75 && blot > -0.1 {
             c = mix(c, hex(0x5E7E3A), 0.7);
         }
-        // Darker where it meets the ground.
         mix(c, hex(0x3A342C), (1.0 - (p.y + 0.05) / 0.25).clamp(0.0, 1.0) * 0.45)
     });
     mb.build()
 }
 
-/// One small stone: rounded, its colour from the mix a river or outcrop gives.
 fn stone(mb: &mut Mb, c: Vec3, s: f32, yaw: f32, col: [f32; 3], r: &mut Rng) {
     let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(r.range(-0.4, 0.4));
     mb.ellipsoid_m(Mat4::from_rotation_translation(rot, c) * Mat4::from_scale(v(s * r.range(1.0, 1.5), s * r.range(0.55, 0.8), s)), 6, 4, mix(col, hex(0x2E2A26), 0.3), col);
 }
 
-/// The colours pebbles come in: grey, warm tan, rust, white quartz, slate.
 pub(super) fn pebble_colour(r: &mut Rng, bleached: bool) -> [f32; 3] {
     let cols = [0x9A968E, 0xB8A890, 0x9A6A4A, 0xE6E0D6, 0x6E7680, 0x86827A, 0xC8BCA8];
     let c = hex(cols[(r.next() * cols.len() as f32) as usize % cols.len()]);
     if bleached { mix(c, hex(0xD8D4CC), 0.3) } else { c }
 }
 
-/// Pebbles heaped on the ground: a gravelly patch and on it a low heap of small mixed stones,
-/// as many as are left (`q` quarters). Plainly smaller than any boulder.
 pub fn pebble_heap_mesh(q: u8) -> Mesh {
     let mut mb = Mb::new();
     let mut r = Rng(4040 + q as u32);
@@ -107,11 +92,8 @@ pub fn pebble_heap_mesh(q: u8) -> Mesh {
     mb.build()
 }
 
-/// How high a gravel bar stands above its foot.
 pub const GRAVEL_BAR_H: f32 = 0.35;
 
-/// A gravel bar along a stream: a low ridge of washed, rounded stones heaped up from the bed,
-/// its top `GRAVEL_BAR_H` above its foot, so it breaks the surface of a shallow stream.
 pub fn gravel_bar_mesh(q: u8) -> Mesh {
     let mut mb = Mb::new();
     let mut r = Rng(5050 + q as u32);
@@ -131,14 +113,10 @@ pub fn gravel_bar_mesh(q: u8) -> Mesh {
     mb.build()
 }
 
-/// A mud deposit on the bank: a wet, glistening heap of grey-brown mud over a dark puddle of
-/// slick mud, a scoop dug out of one side showing the paler mud inside, and a few lumps rolled
-/// ready to carry. Wet mud reads apart from the dark earth and from the dams' mud.
 pub fn mud_heap_mesh() -> Mesh {
     let mut mb = Mb::new();
     let mut r = Rng(6060);
     let (wet, mud, pale) = (hex(0x3A2E26), hex(0x645244), hex(0x8E7C66));
-    // The slick puddle round it.
     let start = mb.len();
     mb.ellipsoid_g(v(0.0, -0.02, 0.0), v(0.62, 0.05, 0.5), wet, mix(wet, mud, 0.3), 14, 4);
     mb.displace(start, |p| {
@@ -146,25 +124,21 @@ pub fn mud_heap_mesh() -> Mesh {
         let k = 1.0 + 0.12 * (3.0 * a + 0.7).sin() + 0.06 * (7.0 * a).cos();
         v(p.x * k, p.y, p.z * k)
     });
-    // The heap.
     let start = mb.len();
     mb.ellipsoid_g(v(0.05, 0.02, 0.0), v(0.42, 0.26, 0.34), mud, pale, 14, 8);
     mb.displace(start, |p| {
         let q = p - v(0.05, 0.02, 0.0);
         let a = q.z.atan2(q.x);
         let k = 1.0 + 0.08 * (4.0 * a + q.y * 6.0).sin() + 0.05 * (9.0 * a).cos();
-        // The scoop: cut back on one side.
         let scoop = (-(q.x + 0.25).powi(2) * 18.0 - (q.z - 0.05).powi(2) * 12.0).exp() * 0.12;
         v(0.05 + q.x * k + scoop, q.y * k * (1.0 - scoop * 2.0), q.z * k)
     });
     mb.renormal(start);
-    // Drying cracks across the top.
     for k in 0..5 {
         let a = k as f32 * 1.3 + 0.4;
         let p = v(0.05 + a.cos() * 0.15, 0.25 - 0.02 * k as f32, a.sin() * 0.12);
         mb.ellipsoid_r(p, v(0.09, 0.006, 0.008), Quat::from_rotation_y(a + 0.8), hex(0x5A4A3A));
     }
-    // Lumps rolled and set aside.
     for k in 0..3 {
         let a = 3.6 + k as f32 * 0.5;
         let s = r.range(0.07, 0.09);
@@ -173,8 +147,6 @@ pub fn mud_heap_mesh() -> Mesh {
     mb.build()
 }
 
-/// River mud: a smooth, slick grey seam the current lays along the bank, its edge dark with
-/// water, showing grey and ochre layers where it is cut.
 pub fn river_mud_mesh() -> Mesh {
     let mut mb = Mb::new();
     let (grey, slick, ochre) = (hex(0x6E7274), hex(0xA2A6A4), hex(0xA0804E));
@@ -187,7 +159,6 @@ pub fn river_mud_mesh() -> Mesh {
     });
     mb.renormal(start);
     mb.paint(start, move |p, _, c| {
-        // Layers where it is cut: bands of ochre in the grey.
         let band = ((p.y * 70.0).sin() * 0.5 + 0.5).powi(4);
         mix(c, ochre, band * 0.35 * (1.0 - (p.y / 0.15).clamp(0.0, 1.0)))
     });

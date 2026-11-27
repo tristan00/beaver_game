@@ -8,13 +8,9 @@ pub const SAMPLE_RATE: u32 = 44_100;
 pub struct Mix {
     pub layers: LayerVolumes,
     pub settings: VolumeSettings,
-    /// Alarm tail slaps so far (a new one sounds each time it goes up) and how loud.
     pub alarm_slaps: u32,
     pub alarm_amp: f32,
-    /// Buildings gone under water so far (each rise sounds the flood).
     pub floods: u32,
-    /// Wolves sighted so far (each rise sounds a growl) and beavers they have killed (each a
-    /// distant howl).
     pub wolf_sighted: u32,
     pub wolf_kills: u32,
 }
@@ -25,10 +21,8 @@ impl Default for Mix {
     }
 }
 
-/// A recording, stereo at `SAMPLE_RATE`.
 pub type Sound = Arc<[[f32; 2]]>;
 
-/// Every recording the game plays.
 pub struct Bank {
     pub brook: Sound,
     pub river: Sound,
@@ -38,8 +32,6 @@ pub struct Bank {
     pub howl: Sound,
 }
 
-/// Brings a recording to stereo at `SAMPLE_RATE`, with windowed-sinc resampling cut off below
-/// the lower of the two Nyquists so nothing folds back.
 pub fn resample(samples: &[f32], channels: usize, rate: u32) -> Option<Vec<[f32; 2]>> {
     if channels == 0 || rate == 0 {
         return None;
@@ -70,7 +62,6 @@ pub fn resample(samples: &[f32], channels: usize, rate: u32) -> Option<Vec<[f32;
                     }
                     let t = PI as f64 * d * cut;
                     let sinc = if t.abs() < 1e-9 { 1.0 } else { t.sin() / t };
-                    // Blackman-Harris, centred: keeps what's past the cut-off some 90 dB down.
                     let p = PI as f64 * w;
                     let window = 0.35875 + 0.48829 * p.cos() + 0.14128 * (2.0 * p).cos() + 0.01168 * (3.0 * p).cos();
                     let k = cut * sinc * window;
@@ -83,8 +74,6 @@ pub fn resample(samples: &[f32], channels: usize, rate: u32) -> Option<Vec<[f32;
     )
 }
 
-/// A recording ready to loop forever: evened out to one loudness, with its last few seconds
-/// faded into its first so there's no seam.
 pub fn make_loop(samples: &[f32], channels: usize, rate: u32) -> Option<Sound> {
     let a = resample(samples, channels, rate)?;
     let n = a.len();
@@ -109,7 +98,6 @@ pub fn make_loop(samples: &[f32], channels: usize, rate: u32) -> Option<Sound> {
     Some(out.into())
 }
 
-/// A short recording played once, as cut.
 pub fn make_clip(samples: &[f32], channels: usize, rate: u32) -> Option<Sound> {
     resample(samples, channels, rate).map(Into::into)
 }
@@ -120,8 +108,6 @@ struct Voice {
     amp: f32,
 }
 
-/// Plays the beds under everything and a cue on each new alarm slap, flood, wolf sighted (a
-/// growl) or beaver killed by a wolf (a distant howl).
 pub struct Player {
     bank: Option<Arc<Bank>>,
     pos: [usize; 2],
@@ -141,7 +127,6 @@ impl Player {
         self.bank.is_some()
     }
 
-    /// Starts the recordings, the beds fading in from silence.
     pub fn set_bank(&mut self, bank: Arc<Bank>) {
         self.bank = Some(bank);
     }
@@ -159,7 +144,6 @@ impl Player {
         if floods != mix.floods {
             self.voices.push(Voice { sound: bank.flood.clone(), pos: 0, amp: 0.9 });
         }
-        // Low and short: heard, not startling.
         if sighted != mix.wolf_sighted {
             self.voices.push(Voice { sound: bank.growl.clone(), pos: 0, amp: 0.55 });
         }
@@ -178,7 +162,6 @@ impl Player {
             return;
         };
         let beds = [&bank.brook, &bank.river];
-        // The water steps back while a cue sounds, quickly, and returns slowly after.
         let (duck_in, duck_out) = (1.0 / (0.03 * SAMPLE_RATE as f32), 1.0 / (1.5 * SAMPLE_RATE as f32));
         for frame in out.chunks_exact_mut(2) {
             let (mut bed, mut fx) = ([0.0f32; 2], [0.0f32; 2]);

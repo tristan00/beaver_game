@@ -32,9 +32,6 @@ mod weather_render;
 
 use bevy::prelude::*;
 
-/// Fullscreen by default; `BEAVER_WINDOW=WxH` asks for a fixed-size window instead (screenshot tools).
-/// Automated runs render into a hidden window (default 1600x900) that never takes focus or shows in
-/// the taskbar, so they don't disturb whoever is using the desktop.
 fn primary_window(automated: bool) -> Window {
     let size = std::env::var("BEAVER_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))));
     if automated {
@@ -61,7 +58,6 @@ fn main() -> AppExit {
         }
     };
     os_timer::high_resolution();
-    // Screenshots, colony scripts, reports, the gallery (a screenshot) and benchmarks.
     let automated = cli.is_automated();
     let mut app = App::new();
     let mut tp = TaskPoolOptions::default();

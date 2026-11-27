@@ -1,6 +1,3 @@
-//! Records every input of a play session, with what the game saw and decided, to
-//! `captures/session-*.log`. F12 saves a screenshot and the last few minutes of that record
-//! beside it, so a problem can be replayed from what was pressed and where.
 use bevy::{
     input::{keyboard::KeyboardInput, mouse::{MouseButtonInput, MouseWheel}},
     prelude::*,
@@ -9,7 +6,6 @@ use bevy::{
 };
 use std::path::PathBuf;
 
-/// Inputs written beside each screenshot.
 const CAPTURE_SECONDS: f64 = 180.0;
 
 pub struct InputTracePlugin;
@@ -30,11 +26,9 @@ pub(crate) fn captures() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join("captures")
 }
 
-/// UTC date and time for file names, YYYYMMDD-HHMMSS.
 pub(crate) fn stamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -47,7 +41,6 @@ pub(crate) fn stamp() -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
-/// What the game sees at the cursor and what it would do there, as one line.
 #[allow(clippy::too_many_arguments)]
 fn scene(
     sim: &sim::SimState, window: &Window, cam: Option<&GlobalTransform>,
@@ -112,7 +105,6 @@ fn record(
     for w in wheel.read() {
         sim::trace::event(format!("WHEEL x={} y={} unit={:?}", w.x, w.y, w.unit));
     }
-    // Pointer travel, at most ten lines a second, so a drag can be followed cell by cell.
     let cursor = window.cursor_position();
     let now = time.elapsed_secs_f64();
     if cursor != last.0 && now - last.1 >= 0.1 {
@@ -120,13 +112,11 @@ fn record(
         last.0 = cursor;
         last.1 = now;
     }
-    // Every message the game shows, when it first appears.
     let msg = hud.msg.as_ref().map(|m| format!("{:?} {:?} {:?}", m.icon.map(|i| i.0), m.icon2.map(|i| i.0), m.text));
     if msg != last.2 {
         if let Some(m) = &msg { sim::trace::event(format!("MESSAGE {m}")); }
         last.2 = msg;
     }
-    // The state an input left behind, once it has been handled.
     let after = format!("tool={:?} selection={:?} corners={:?} line_cells={} extending={:?}", hud.tool, *selection, hud.corners, hud.line.len(), hud.extending);
     if acted || after != last.3 {
         sim::trace::event(format!("STATE {after}"));
@@ -144,7 +134,6 @@ fn capture(
     mut toast: Local<Option<f32>>,
 ) {
     let now = time.elapsed_secs();
-    // Confirm a moment later, so the picture shows the screen as it was.
     if toast.is_some_and(|at| now >= at) {
         *toast = None;
         hud.msg = Some(crate::hud::Msg { icon: Some((crate::icons::Icon::Check, crate::hud::GOOD)), icon2: None, text: String::new() });

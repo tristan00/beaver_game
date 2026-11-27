@@ -1,4 +1,3 @@
-//! Canals: single buildings dug one cell at a time, with siltation, gates, and growth.
 include!(concat!(env!("OUT_DIR"), "/canals_constants.rs"));
 use std::collections::{BTreeSet, HashMap, VecDeque};
 

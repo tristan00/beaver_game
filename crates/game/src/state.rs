@@ -2,16 +2,13 @@ use bevy::prelude::*;
 use sim::starts::DamSite;
 use sim::SimState;
 
-/// The maps the start screen offers, in order, and how hard each is.
 const MENU_MAPS: [(&str, Difficulty); 4] = [
-    // Kabetogama Twin Creeks: a couple of spots that dam easily.
     ("voyageurs_twin", Difficulty::Easy),
     ("algonquin_mizzy", Difficulty::Medium),
     ("agder_tarn", Difficulty::Medium),
     ("voyageurs_forks", Difficulty::Hard),
 ];
 
-/// How hard a map is to start on, shown on the start screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Difficulty {
     Easy,
@@ -27,7 +24,6 @@ impl Difficulty {
             Difficulty::Hard => "Hard",
         }
     }
-    /// 1 to 3, for the pips.
     pub fn level(self) -> usize {
         self as usize + 1
     }
@@ -46,13 +42,11 @@ impl MapChoice {
             .unwrap_or(MapChoice::Generated(1))
     }
 
-    /// The maps the start screen cycles through, in order. The others still load by id.
     pub fn menu() -> Vec<MapChoice> {
         let shipped = sim::maps::all();
         MENU_MAPS.iter().filter(|(id, _)| shipped.iter().any(|m| m.id == *id)).map(|(id, _)| MapChoice::Real(id.to_string())).collect()
     }
 
-    /// How hard the map is, for those the start screen offers.
     pub fn difficulty(&self) -> Option<Difficulty> {
         match self {
             MapChoice::Real(id) => MENU_MAPS.iter().find(|(m, _)| m == id).map(|(_, d)| *d),

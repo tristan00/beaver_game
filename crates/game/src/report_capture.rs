@@ -1,4 +1,3 @@
-//! Native screenshots of one scripted colony state, with no desktop automation.
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use crate::{camera::OrbitCamera, cli::Cli, entities_render::CanopyView, flow::Selection,
@@ -70,11 +69,8 @@ impl Plugin for ReportCapturePlugin {
     }
 }
 
-/// The views a report saves, one per HUD state worth checking by eye.
 const FILES: [&str; 16] = ["01-overview.png", "02-water.png", "03-book-beavers.png", "04-book-work.png", "05-book-water.png", "06-downstream.png", "07-beaver.png", "08-lodge.png", "09-dam-drawing.png", "10-dam-refused.png", "11-dam-closeup.png", "12-stick_pile.png", "13-dam-panel.png", "14-book-stores.png", "15-wide.png", "16-dam-dragging.png"];
 
-/// A line straight across the water a few cells upstream of the first dam,
-/// reaching one dry cell onto each bank, for the drawing views.
 fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
     let d = s.buildings.buildings.iter().find_map(|b| b.dam.as_deref())?;
     let line: Vec<(usize, usize)> = d.line().map(|c| c.cell).collect();
@@ -110,7 +106,6 @@ fn upstream_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usiz
     None
 }
 
-/// A short line on dry ground beside the first lodge: the refused case.
 fn dry_line(s: &sim::SimState) -> Option<(Vec<(usize, usize)>, (usize, usize))> {
     let home = s.buildings.buildings.iter().find(|b| b.kind.is_home())?.pos;
     for r in 6..30usize {
@@ -236,8 +231,6 @@ fn capture(mut frame: Local<u32>, cli: Res<Cli>, sim: Res<Sim>, mut clock: ResMu
         }
     }
     if (*frame - 120) % 60 == 40 {
-        // A real map has more chunks than forty frames can recolour. Wait for
-        // both mesh queues and several upload frames before capturing a lens.
         ready.0 = if backlog.terrain || backlog.water { 0 } else { ready.0 + 1 };
         ready.1 += 1;
         if ready.0 < 8 {

@@ -1,5 +1,3 @@
-//! The one word of guidance the game gives: a card when a new colony settles, closed once and
-//! never shown again for that colony.
 use super::panels::Ctx;
 use super::ui::*;
 use super::HudAction;

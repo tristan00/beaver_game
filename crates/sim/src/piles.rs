@@ -1,6 +1,3 @@
-//! Goods left on the ground. With no store to take them, gatherers drop what they gather
-//! where they are; builders pick it up for their work and hungry beavers eat from them when stores run dry.
-//! A pile rots away `SPOIL_DAYS` after it was dropped.
 include!(concat!(env!("OUT_DIR"), "/piles_constants.rs"));
 use crate::buildings::Good;
 use crate::inventory::Species;
@@ -13,11 +10,8 @@ pub struct Pile {
     pub cell: Cell,
     pub good: Good,
     pub amount: f32,
-    /// The day it was dropped; goods added later move it on in proportion to how much they add.
     pub day: f64,
-    /// Whether this good was already counted as colony production (refunded/wrecked/hauled).
     #[serde(default)] pub booked: bool,
-    /// Preserved seedling species, if applicable.
     #[serde(default)] pub species: Option<Species>,
 }
 
@@ -38,7 +32,6 @@ impl Piles {
         self.items.iter().find(|p| p.id == id)
     }
 
-    /// Leave goods on a cell, on top of what is already lying there (preserving `booked` and `species`).
     pub fn drop_load(&mut self, cell: Cell, good: Good, amount: f32, now: f64, booked: bool, species: Option<Species>) {
         if amount <= 0.0 {
             return;
@@ -52,12 +45,10 @@ impl Piles {
         self.items.push(Pile { id: self.next_id, cell, good, amount, day: now, booked, species });
     }
 
-    /// Leave unbooked goods on a cell, on top of what is already lying there.
     pub fn drop_at(&mut self, cell: Cell, good: Good, amount: f32, now: f64) {
         self.drop_load(cell, good, amount, now, false, None);
     }
 
-    /// Take up to `amount` from a pile; an emptied pile is gone.
     pub fn take(&mut self, id: u64, amount: f32) -> f32 {
         let Some(i) = self.items.iter().position(|p| p.id == id) else { return 0.0 };
         let taken = amount.min(self.items[i].amount).max(0.0);
@@ -68,8 +59,6 @@ impl Piles {
         taken
     }
 
-    /// Take up to `amount` of `good` across any piles lying on the ground.
-    /// Returns `(booked, unbooked)` amounts taken so callers can book ledger usage accurately.
     pub fn take_good(&mut self, good: Good, mut want: f32) -> (f32, f32) {
         let (mut booked, mut unbooked) = (0.0, 0.0);
         for p in &mut self.items {
@@ -83,13 +72,11 @@ impl Piles {
         (booked, unbooked)
     }
 
-    /// Piles older than `SPOIL_DAYS` rot away.
     pub fn spoil(&mut self, now: f64) {
         self.items.retain(|p| p.days_left(now) > 0.0);
     }
 }
 
-/// How much of a good lies on the ground.
 pub fn lying(sim: &SimState, good: Good) -> f32 {
     sim.work.piles.items.iter().filter(|p| p.good == good).map(|p| p.amount).sum()
 }

@@ -11,7 +11,6 @@ use sim::resources::ResourceId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 
-/// Shared world-epoch + entity map used by all sim-to-Bevy sync systems.
 pub(super) struct SyncedMap<K, V> {
     epoch: Option<u64>,
     pub map: HashMap<K, V>,
@@ -22,7 +21,6 @@ impl<K, V> Default for SyncedMap<K, V> {
 }
 
 impl<K: Eq + Hash + Copy, V> SyncedMap<K, V> {
-    /// If the `SimState.instance` changed, despawn every tracked entry and return `true`.
     pub fn reset_if(&mut self, epoch: u64, commands: &mut Commands, mut despawn: impl FnMut(&mut Commands, V)) -> bool {
         if self.epoch == Some(epoch) { return false; }
         for (_, v) in self.map.drain() { despawn(commands, v); }
@@ -30,7 +28,6 @@ impl<K: Eq + Hash + Copy, V> SyncedMap<K, V> {
         true
     }
 
-    /// Despawn and remove every entry whose key fails `keep`.
     pub fn retain_keys(&mut self, keep: impl Fn(&K) -> bool, commands: &mut Commands, mut despawn: impl FnMut(&mut Commands, V)) {
         let gone: Vec<K> = self.map.keys().copied().filter(|k| !keep(k)).collect();
         for k in gone {
@@ -52,7 +49,6 @@ struct MotionSample {
     t: f64,
     xz: Vec2,
     y: f32,
-    /// Ground-relative lift on land; `None` on water/canals/locks so steep banks never pull a floater.
     ground_lift: Option<f32>,
 }
 

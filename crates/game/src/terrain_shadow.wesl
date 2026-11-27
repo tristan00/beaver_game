@@ -1,8 +1,3 @@
-// Terrain fragment shader: StandardMaterial lighting, but sun shadows are a colour, not a darkening
-// (docs/STYLE.md shared lighting rule). Where the key light's shadow map says "occluded", the pixel is the lit
-// colour blended `blend` toward Plum in sRGB, so every terrain hex gets the same plum shadow and
-// lit ground stays on its hex. Cost: one extra cascade lookup per terrain fragment (the stock
-// lookup is skipped because shadow receiving is switched off for the lighting call).
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
@@ -15,11 +10,7 @@ import bevy_pbr::render::{
 import bevy_render::color_operations::{linear_to_srgb, srgb_to_linear};
 
 struct PlumShadow {
-    // rgb: shadow colour (sRGB), a: blend toward it
     plum: vec4<f32>,
-    // x, y: visibility window mapped to shadow..lit (narrow = crisp edge); z > 0.5: mask mode
-    // w: share of the sun/slope lighting relief kept on top of the vertex colours
-    // (terrain: fully shadowed magenta, penumbra cyan, lit yellow) for tools/shadow_check.py
     edge: vec4<f32>,
 }
 @group(3) @binding(100) var<uniform> plum_shadow: PlumShadow;
@@ -40,9 +31,6 @@ fn sun_visibility(p: ptr<function, bevy_pbr::render::pbr_types::PbrInput>) -> f3
     return fetch_directional_shadow(0u, (*p).world_position, (*p).world_normal, view_z, (*p).frag_coord.xy);
 }
 
-// The camera's tone mapping (Tonemapping::SomewhatBoringDisplayTransform, bevy_core_pipeline
-// tonemapping.wesl), copied so terrain can aim at display colours: it compresses mid-tones
-// (1 - e^-v on luminance), so a scene value equal to the palette colour would show darker.
 fn tm_curve(v: f32) -> f32 {
     return 1.0 - exp(-v);
 }
@@ -58,7 +46,6 @@ fn display_transform(col: vec3<f32>) -> vec3<f32> {
     return mix(tm0, tm1, bt * bt) * 0.97;
 }
 
-/// Scene-linear value that `display_transform` maps to the display-linear colour `d`.
 fn undo_display_transform(d: vec3<f32>) -> vec3<f32> {
     let goal = clamp(d, vec3(1e-4), vec3(0.95));
     var x = goal;
@@ -76,10 +63,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let vis = smoothstep(plum_shadow.edge.x, plum_shadow.edge.y, sun_visibility(&pbr_input));
     pbr_input.flags = pbr_input.flags & ~MESH_FLAGS_SHADOW_RECEIVER_BIT;
     let raw = apply_pbr_lighting(pbr_input);
-    // Flat, white, unshadowed ground under the same lights: dividing by it puts sunlit flat ground on
-    // its palette albedo (vertex colour) whatever the season's sun and ambient; slopes keep `edge.w` of
-    // their relief (the vertex gradient already lifts sun-facing grass, STYLE.md section 2).
-    // `lit` and `shade` are display-linear colours; `undo_display_transform` cancels the tone mapping.
     var flat = pbr_input;
     flat.material.base_color = vec4(1.0);
     flat.N = vec3(0.0, 1.0, 0.0);

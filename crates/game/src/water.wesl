@@ -1,8 +1,3 @@
-// Water surface. The mesh carries, per vertex: colour.r = depth (m), colour.g = white water
-// (0..1, from the Froude number), uv = world xz, uv_b = surface velocity (m/s, world xz).
-// Ripples and streaks are advected along the velocity with a two-phase flow map, so rivers visibly
-// run downstream and ponds only shiver in the wind; depth sets colour and how much bed shows
-// through; foam gathers on the waterline and where water runs fast or falls over a step.
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::main_pass_post_lighting_processing,
@@ -12,13 +7,10 @@ import bevy_pbr::render::{
 import bevy_render::color_operations::{linear_to_srgb, srgb_to_linear};
 
 struct WaterStyle {
-    // rgb: display colours (linear)
     shallow: vec4<f32>,
     deep: vec4<f32>,
     foam: vec4<f32>,
     ice: vec4<f32>,
-    // x: depth (m) at which water reads deep, y: alpha in a film, z: alpha when deep,
-    // w: ice cover 0..1 (winter)
     look: vec4<f32>,
 }
 @group(3) @binding(100) var<uniform> water: WaterStyle;
@@ -28,7 +20,6 @@ fn hash2(p: vec2<f32>) -> vec2<f32> {
     return fract(sin(q) * 43758.5453) * 2.0 - 1.0;
 }
 
-// Gradient noise in -1..1.
 fn noise(p: vec2<f32>) -> f32 {
     let i = floor(p);
     let f = fract(p);
@@ -40,9 +31,6 @@ fn noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 1.6;
 }
 
-// Ripple height at p. Running water draws its ripples out into streaks along the flow by
-// averaging samples a short way upstream (local offsets only: rotating world coordinates by a
-// direction that varies over the surface would shear the pattern into stripes).
 fn ripples(p: vec2<f32>, dir: vec2<f32>, stretch: f32, detail: f32) -> f32 {
     var h = 0.0;
     for (var k = 0; k < 3; k++) {
@@ -52,15 +40,11 @@ fn ripples(p: vec2<f32>, dir: vec2<f32>, stretch: f32, detail: f32) -> f32 {
     return h / 3.0;
 }
 
-// Two flow-map phases half a period apart. Screen derivatives below supply the
-// normal, avoiding three complete noise evaluations per phase.
 fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> f32 {
-    // Fast water drags the pattern no faster than this, or streaks shear into stripes.
     let vel = vel_in * min(1.0, 1.2 / max(length(vel_in), 1e-4));
     let speed = length(vel);
     let dir = select(vec2(1.0, 0.0), vel / max(speed, 1e-4), speed > 1e-3);
     let stretch = smoothstep(0.03, 0.4, speed);
-    // Still water drifts slowly with the wind.
     let drift = vec2(0.05, 0.03);
     let flow = vel + drift * (1.0 - stretch);
     let period = 2.0;
@@ -75,8 +59,6 @@ fn surface(p: vec2<f32>, vel_in: vec2<f32>, t: f32, detail: f32) -> f32 {
     return acc;
 }
 
-// The camera's tone mapping (copied from the terrain shader) and its inverse, so water can aim at
-// display colours like the rest of the palette.
 fn tm_curve(v: f32) -> f32 {
     return 1.0 - exp(-v);
 }
@@ -118,31 +100,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     let p = in.world_position.xz;
     let t = view_bindings::globals.time;
-    // Ripples finer than a pixel or two only shimmer; fade them with the pixel footprint.
     let pix = length(fwidth(p));
     let detail = 1.0 - smoothstep(0.08, 0.35, pix);
     let s = surface(p, vel, t, detail) * (1.0 - frozen);
     let speed = length(vel);
 
-    // Normal from the ripple slopes; calmer when deep and still, livelier when it runs.
     let amp = (0.06 + 0.18 * smoothstep(0.05, 0.6, speed)) * (1.0 - 0.7 * smoothstep(0.15, 0.8, pix));
-    // Ripples on a level base: the mesh's own tilt (steps between cells on a steep reach) would
-    // otherwise light every triangle differently, like crumpled foil.
     let displaced = vec3(in.world_position.x, s * amp, in.world_position.z);
     let normal = normalize(cross(dpdy(displaced), dpdx(displaced)));
     let n = select(-normal, normal, normal.y >= 0.0);
     let v = normalize(view_bindings::view.world_position - in.world_position.xyz);
 
-    // Colour: shallow water is mostly the bed seen through a tint; deep water is its own colour.
     let deep = 1.0 - exp(-depth / water.look.x);
     var col = mix(water.shallow.rgb, water.deep.rgb, deep);
-    // Streaks: brighter and darker bands carried by the current.
     col *= 1.0 + 0.16 * s * (0.4 + 1.2 * smoothstep(0.03, 0.4, speed));
     let streak = smoothstep(0.1, 0.35, s) * smoothstep(0.04, 0.35, speed);
     col = mix(col, water.shallow.rgb * 1.35, streak * 0.45);
     var alpha = mix(water.look.y, water.look.z, 1.0 - exp(-depth / 0.25));
 
-    // Sky reflection at grazing angles and a glint of the sun.
     let fresnel = pow(1.0 - max(dot(n, v), 0.0), 4.0);
     col = mix(col, vec3(0.80, 0.89, 0.93), fresnel * 0.2);
     var glint = 0.0;
@@ -152,28 +127,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         glint = pow(max(dot(n, h), 0.0), 60.0) * 0.35;
     }
 
-    // Foam: a lacy line along the waterline, and white water where it runs fast or falls.
     let lace = noise(p * 2.3 + vec2(t * 0.15, -t * 0.11)) * 0.5 + 0.5;
     let shore = (1.0 - smoothstep(0.0, 0.025, depth)) * smoothstep(0.3, 0.8, lace) * 0.35;
-    // White water boils: two layers carried downstream at different rates, so a fall or riffle
-    // churns even where the current is slow.
     let run = select(vec2(0.0), vel / max(speed, 1e-4), speed > 1e-3) * max(speed, 0.6);
     let churn = 0.5 + 0.3 * noise((p - run * t * 1.1) * 3.1) + 0.2 * noise((p - run * t * 1.9) * 6.3 + vec2(t * 0.4, -t * 0.3));
     let rapids = white * smoothstep(0.35, 0.7, churn + white * 0.3);
     let foam = clamp(max(shore * 0.85, rapids), 0.0, 1.0);
     col = mix(col, water.foam.rgb, foam);
-    // Soft waterline: the surface fades into the wet ground over its first few centimetres.
     alpha *= smoothstep(0.0, 0.008, depth);
     alpha = max(alpha, foam * 0.9);
     col += vec3(glint);
     alpha = min(1.0, alpha + glint);
 
-    // Blue translucent ice remains distinct from snow-covered ground. Broad
-    // tonal patches and fine dark seams give the frozen sheet some structure.
     let ice = frozen * smoothstep(0.0, 0.008, depth);
     let ice_grain = noise(p * 0.18) * 0.5 + 0.5;
     let cracks = 1.0 - smoothstep(0.0, 0.055, abs(noise(p * 0.35 + vec2(8.0, 3.0))));
-    // Frost and blown snow whiten the sheet in drifts, so ice never reads as open water.
     let frost = smoothstep(-0.2, 0.5, noise(p * 0.11 + vec2(2.0, 5.0)));
     var ice_col = mix(water.ice.rgb * (0.86 + ice_grain * 0.14), vec3(0.88, 0.93, 0.95), 0.4 + 0.45 * frost);
     ice_col = mix(ice_col, water.deep.rgb * 0.7, cracks * 0.3);

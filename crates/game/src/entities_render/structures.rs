@@ -9,8 +9,6 @@ fn peeled() -> [f32; 3] { col(palette::PEELED) }
 
 pub const DAM_STEP: f32 = 0.25;
 
-/// How far a dam cell has come: a marker stick, a wall going up beside its
-/// stick pile, or a finished wall.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DamStage {
     Staked,
@@ -18,24 +16,17 @@ pub enum DamStage {
     Done,
 }
 
-/// Half-width of a dam wall's crest.
 const WALL_CREST: f32 = 0.22;
-/// How deep a dam wall goes into the ground below its foot.
 const WALL_BURY: f32 = 0.45;
 
-/// How far out a dam wall `h` high reaches at its foot: upstream, downstream.
 fn wall_feet(h: f32) -> (f32, f32) {
     (0.28 + 0.55 * h, 0.3 + 0.95 * h)
 }
 
-/// Half-width of a dam wall `h` high at height `t * h` on the side whose foot is `base` out:
-/// a slight belly, rounded into the crest.
 fn wall_face(h: f32, t: f32, base: f32) -> f32 {
     base + (WALL_CREST - base) * t + 0.12 * h.min(1.5) * t * (1.0 - t)
 }
 
-/// One cell of dam wall, running along x. The upstream face (+z) is steep and plastered with
-/// mud; the downstream face (-z) is a long, low slope of sticks.
 pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
     if stage == DamStage::Staked {
         stake(mb, v(0.0, 0.0, 0.0), 0.9, true);
@@ -65,7 +56,6 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
     mb.extrude_x(&prof, -hl, hl, mud_lo, mix(mud_lo, mud_hi, 0.85));
     let mut r = Rng(9001 + variant * 7717 + (h * 8.0) as u32 * 31);
     let dark_bark = |r: &mut Rng| mix(col(palette::BARK_DARK), col(palette::BARK), r.next());
-    // Downstream: sticks laid up the slope, a few across.
     let n = (len * h * 16.0) as usize + 6;
     for _ in 0..n {
         let t = r.range(0.04, 0.95);
@@ -87,14 +77,12 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
             stick(mb, c - d * l * 0.5, c + d * l * 0.5, rad, r.range(0.0, 0.6));
         }
     }
-    // Upstream: smooth wet mud, a few stick ends showing through.
     for _ in 0..((len * h * 3.0) as usize + 1) {
         let t = r.range(0.2, 0.9);
         let c = v(r.range(-hl, hl), t * h, up(t) + 0.01);
         let d = v(r.range(-1.0, 1.0), r.range(-0.3, 0.3), 0.15).normalize();
         stick(mb, c - d * 0.25, c + d * 0.25, 0.04, r.next());
     }
-    // Along the crest.
     for k in 0..3 {
         let z = (k as f32 - 1.0) * wt * 0.6 + r.range(-0.04, 0.04);
         let (x0, x1) = (-hl - r.range(0.0, 0.2), hl + r.range(0.0, 0.2));
@@ -122,20 +110,16 @@ pub fn dam_cell(mb: &mut Mb, h: f32, len: f32, variant: u32, stage: DamStage) {
     }
     if site {
         stake(mb, v(0.0, 0.0, -down_b - 0.3), 0.9, true);
-        // Every cell being worked keeps its pile of sticks beside it.
         stick_pile(mb, v(0.0, 0.0, -down_b - 0.8), 0.0, 4, 3 + variant);
     }
 }
 
-/// One cell's stretch of dam wall, `len` long along x (a little more than the stretch, so
-/// neighbouring pieces overlap into one wall).
 pub fn dam_cell_mesh(steps: u8, len: f32, variant: u32, stage: DamStage) -> Mesh {
     let mut mb = Mb::new();
     dam_cell(&mut mb, steps.max(1) as f32 * DAM_STEP, len, variant, stage);
     mb.build()
 }
 
-/// The same stretch of wall with its downstream face armoured in pebbles.
 pub fn faced_dam_cell_mesh(steps: u8, len: f32, variant: u32, stage: DamStage) -> Mesh {
     let mut mb = Mb::new();
     let h = steps.max(1) as f32 * DAM_STEP;
@@ -146,17 +130,11 @@ pub fn faced_dam_cell_mesh(steps: u8, len: f32, variant: u32, stage: DamStage) -
     mb.build()
 }
 
-/// Pebbles packed in courses up the downstream slope (-z) of a dam cell `h` high and `len`
-/// long, bedded half into its sticks and mud: big stones at the toe, smaller ones higher up,
-/// the odd gap where the sticks show through, and the crest left bare. The courses start
-/// below the foot, along the buried part of the wall, so where the bank falls away the
-/// stones still lie on the wall and never hang in the air.
 pub fn pebble_face(mb: &mut Mb, h: f32, len: f32, variant: u32) {
     let h = h.max(0.1);
     let hl = len * 0.5;
     let (_, down_b) = wall_feet(h);
     let top = if h < 0.4 { 0.7 } else { 0.82 };
-    // The slope in (out, up), out being -z: from the buried foot up to the last course.
     let mut line = vec![Vec2::new(down_b + WALL_BURY * 0.6, -WALL_BURY)];
     for k in 0..=12 {
         let t = top * k as f32 / 12.0;
@@ -167,7 +145,6 @@ pub fn pebble_face(mb: &mut Mb, h: f32, len: f32, variant: u32) {
         cum[i] = cum[i - 1] + line[i].distance(line[i - 1]);
     }
     let end = cum[line.len() - 1];
-    // A point that far up the slope, and the slope's direction there.
     let at = |s: f32| {
         let i = cum.partition_point(|&c| c < s).clamp(1, line.len() - 1);
         let seg = (cum[i] - cum[i - 1]).max(1e-6);
@@ -182,13 +159,11 @@ pub fn pebble_face(mb: &mut Mb, h: f32, len: f32, variant: u32) {
         let up = s / end;
         let k = size * (1.3 - 0.45 * up);
         let (_, d) = at(s);
-        // Out of the slope: away from the wall and up.
         let n = v(0.0, -d.x, -d.y).normalize_or(Vec3::Y);
         let across = ((2.0 * hl) / (2.2 * k)).ceil().max(1.0) as usize;
         let step = 2.0 * hl / across as f32;
         let (count, shift) = if course % 2 == 0 { (across, 0.5) } else { (across + 1, 0.0) };
         for i in 0..count {
-            // Gaps, never in the toe.
             if course >= 2 && r.next() < 0.07 {
                 continue;
             }
@@ -198,7 +173,6 @@ pub fn pebble_face(mb: &mut Mb, h: f32, len: f32, variant: u32) {
             let c = v(x, sp.y, -sp.x) + n * thick * 0.35;
             let rot = Quat::from_rotation_arc(Vec3::Y, n) * Quat::from_rotation_y(r.range(-0.4, 0.4)) * Quat::from_rotation_z(r.range(-0.15, 0.15));
             let scale = v(k * r.range(1.15, 1.45), thick, k * r.range(0.9, 1.1));
-            // Washed grey and brown stones, muddier toward the foot.
             let colour = mix(super::deposits::pebble_colour(&mut r, false), mud, 0.25 * (1.0 - up) + 0.05);
             mb.ellipsoid_m(Mat4::from_rotation_translation(rot, c) * Mat4::from_scale(scale), 6, 3, mix(colour, hex(0x2E2A26), 0.35), colour);
         }
@@ -213,7 +187,6 @@ pub const FOOTING_DEPTH: f32 = 4.2;
 pub enum Footing {
     Mound(f32),
     Piles(f32, f32),
-    /// A wall of mud and sticks round open water, down to the bed (the forester's shallows).
     Ring(f32),
 }
 
@@ -256,7 +229,6 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
             let (lo, hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
             mb.lathe(Mat4::IDENTITY, &[(rad * 0.85, -d), (rad * 1.2, -d), (rad * 1.08, -0.3), (rad * 1.02, 0.0), (rad * 0.88, 0.0), (rad * 0.85, -d)], 20, lo, hi, false);
         }
-        // A raft of logs on rough posts driven into the bed, packed round with mud.
         Footing::Piles(hx, hz) => {
             let logs = ((hz * 2.0 + 0.4) / 0.34) as usize;
             for i in 0..logs {
@@ -296,8 +268,6 @@ pub fn footing(mb: &mut Mb, f: Footing, dry: bool) {
     }
 }
 
-/// A finished building left high and dry: it slumps, greys and grows over. Dark and solid, so it
-/// is never taken for a see-through placement preview.
 pub fn decay(mb: &mut Mb, hx: f32, hz: f32) {
     mb.displace(0, |p| if p.y > 0.2 { v(p.x * (1.0 + 0.04 * p.y), 0.2 + (p.y - 0.2) * 0.82, p.z * (1.0 + 0.04 * p.y)) } else { p });
     mb.weather(col(palette::DECAY), 0.4);
@@ -311,7 +281,6 @@ pub fn decay(mb: &mut Mb, hx: f32, hz: f32) {
             mb.cyl(p, p + v(b.cos() * 0.15, r.range(0.35, 0.6), b.sin() * 0.15), 0.05, 0.01, grass.0, grass.1, 3);
         }
     }
-    // Sticks that have slid off and lie about the base.
     for _ in 0..7 {
         let a = r.range(0.0, TAU);
         let p = v(a.cos() * (hx + r.range(0.2, 0.9)), 0.08, a.sin() * (hz + r.range(0.2, 0.9)));
@@ -320,9 +289,6 @@ pub fn decay(mb: &mut Mb, hx: f32, hz: f32) {
     }
 }
 
-/// A raft landing: a plank pier on piles out over the water with mooring posts, a pole crane with a
-/// bundle swinging from its boom, and loads stacked waiting on the deck. Piles go in first,
-/// then the deck, then the crane and the loads.
 pub fn raft_landing(mb: &mut Mb, f: f32) {
     let (hx, hz) = (2.4f32, 2.2f32);
     let done = f >= 1.0;
@@ -336,20 +302,17 @@ pub fn raft_landing(mb: &mut Mb, f: f32) {
         }
     }
     if f > 0.35 {
-        // The deck: planks across, as far as it has got.
         let n = 16;
         let laid = ((f - 0.35) / 0.35 * n as f32).min(n as f32) as usize;
         for k in 0..laid {
             let z = -hz + (k as f32 + 0.5) * 2.0 * hz / n as f32;
             stick(mb, v(-hx, deck, z), v(hx, deck + r.range(-0.02, 0.02), z), 0.13, r.next());
         }
-        // Stringers under it.
         for x in [-hx + 0.3, 0.0, hx - 0.3] {
             stick(mb, v(x, deck - 0.12, -hz), v(x, deck - 0.12, hz), 0.08, r.next());
         }
     }
     if f > 0.7 {
-        // Mooring posts along the waterfront (+z) and a rail on the far side.
         for x in [-hx + 0.4, 0.0, hx - 0.4] {
             stick_c(mb, v(x, deck - 0.2, hz + 0.05), v(x, deck + 0.55, hz + 0.05), 0.1, peeled());
             mb.ellipsoid(v(x, deck + 0.58, hz + 0.05), v(0.13, 0.05, 0.13), col(palette::BARK));
@@ -360,7 +323,6 @@ pub fn raft_landing(mb: &mut Mb, f: f32) {
         }
     }
     if f > 0.85 || done {
-        // The crane: a tall pole, a boom out over the water, a line with a bundle of sticks.
         let foot = v(hx - 0.6, deck, hz - 0.8);
         let head = foot + v(0.0, 2.6, 0.0);
         stick(mb, foot, head, 0.11, r.next());
@@ -372,7 +334,6 @@ pub fn raft_landing(mb: &mut Mb, f: f32) {
             let o = (k as f32 - 1.5) * 0.09;
             stick(mb, tip + v(-0.35, -1.45 + o * 0.3, o), tip + v(0.35, -1.45 - o * 0.3, o), 0.06, r.next());
         }
-        // Loads waiting on the deck.
         stick_crib(mb, v(-1.2, deck, -0.9), 0.55, &mut r);
         mud_mound(mb, v(0.3, deck, -1.2), 0.5, &mut r);
         food_heap(mb, v(-1.6, deck, 0.5), 0.45, &mut r);
@@ -382,7 +343,6 @@ pub fn raft_landing(mb: &mut Mb, f: f32) {
     }
 }
 
-/// Collected pebbles heaped in a low cairn.
 pub(super) fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let n = (3.0 + 9.0 * grow) as usize;
     for i in 0..n {
@@ -395,7 +355,6 @@ pub(super) fn pebble_cairn(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     }
 }
 
-/// Cut sticks stacked in crossing layers, cut ends out.
 pub(super) fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let layers = (1.0 + 5.0 * grow) as usize;
     let rad = 0.13;
@@ -419,7 +378,6 @@ pub(super) fn stick_crib(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     }
 }
 
-/// Wet mud heaped up with lumps of mud worked into balls on top.
 pub(super) fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let (lo, hi) = (col(palette::MUD_WET), col(palette::DAM_MUD));
     let (rx, ry, rz) = (0.8, 0.25 + 0.9 * grow, 1.35);
@@ -436,12 +394,10 @@ pub(super) fn mud_mound(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
         let e = r.range(0.35, 1.0);
         let p = c + v(a.cos() * rx * 0.75 * (1.0 - e * 0.5), ry * e, a.sin() * rz * 0.75 * (1.0 - e * 0.5));
         let s = r.range(0.17, 0.24);
-        // Mud is a warmer ochre than the mud it sits on.
         mb.ellipsoid_g(p, v(s, s * 0.85, s), hex(0x9A5E36), hex(0xC48A58), 8, 5);
     }
 }
 
-/// Leafy branches piled into a rounded heap, leaves out.
 pub(super) fn food_heap(mb: &mut Mb, c: Vec3, grow: f32, r: &mut Rng) {
     let (rx, top, rz) = (0.85f32, 0.3 + 1.15 * grow, 1.4f32);
     mb.ellipsoid_g(c, v(rx, top, rz), col(palette::BARK_DARK), mix(col(palette::BARK), hex(0x8a7a3a), 0.4), 12, 7);

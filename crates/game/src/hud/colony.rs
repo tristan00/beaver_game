@@ -1,7 +1,3 @@
-//! The colony (Tab): everything about the beavers — the families in their lodges, the work,
-//! every beaver in a table, and this run. The first two are a drawer beside the map that
-//! never covers the pond; the table and the run are wider pages (drawn in `ledger`).
-//! Beavers are tokens, amounts are ticks, and words live in tooltips.
 use super::panels::{good_tip, stage_icon, Ctx};
 use super::ui::*;
 use super::words::*;
@@ -43,7 +39,6 @@ pub fn screen(c: &Ctx, tab: ColonyTab) -> Vec<VNode> {
     )
 }
 
-/// The pip under a beaver token: green working, yellow waiting, amber free, blue resting or too young.
 pub(super) fn doing(s: &sim::SimState, b: &sim::colony::Beaver) -> Color {
     if !b.can_work() || b.resting {
         REST
@@ -64,7 +59,6 @@ pub(super) fn token_px(st: sim::colony::Stage) -> f32 {
     }
 }
 
-/// One row per family: its name, then its beavers as tokens.
 fn beavers(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     for f in &s.colony.families {
@@ -100,10 +94,8 @@ fn beavers(c: &Ctx, u: &mut Ui) {
     }
 }
 
-/// Shore limits a role steps through, widest first, in cells from water.
 const SHORE_STEPS: [u16; 4] = [40, 20, 10, 5];
 
-/// Who does what: one row per kind of work, its beavers as tokens and open places as rings.
 fn work(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     for row in sim::jobs::jobs_board(s) {
@@ -130,7 +122,6 @@ fn work(c: &Ctx, u: &mut Ui) {
             });
             r.spacer();
             if role.row().shore_limit {
-                // Each click tightens the limit a step, then lifts it.
                 let now = s.work.shore_limits.get(&role).copied();
                 let next = match now {
                     None => Some(SHORE_STEPS[0]),
@@ -152,7 +143,6 @@ fn work(c: &Ctx, u: &mut Ui) {
     }
 }
 
-/// Each store as ticks of its capacity, with the last sixty days beside it.
 pub(super) fn stores(c: &Ctx, u: &mut Ui) {
     let s = c.s;
     let st = &s.buildings.stores;

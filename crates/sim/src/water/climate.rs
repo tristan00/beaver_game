@@ -1,7 +1,5 @@
 use crate::weather::Sky;
 
-/// The weather the water runs under: the place's own (`Seasonal`, the game's), or one held
-/// fixed for the river sandbox.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Weather {
     #[default]
@@ -37,15 +35,11 @@ impl Weather {
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Forcing {
-    /// Metres of rain falling a day (snow lies where it falls), and the evaporation multiplier.
     pub rain: f32,
     pub evaporation: f32,
-    /// Catchment response, multiplied by each source's own seasonality.
     pub inflow: f32,
 }
 
-/// The rain, evaporation and streams at `time`: the place's weather (see `weather`), or a
-/// sandbox's fixed weather over the place's seasons.
 pub fn forcing(time: f64, weather: Weather, sky: &Sky) -> Forcing {
     let evaporation = sky.evaporation(time);
     let base = |rain: f32, runoff: f32, evap: f32| Forcing { rain, evaporation: evaporation * evap, inflow: sky.usual_inflow(time) * runoff };

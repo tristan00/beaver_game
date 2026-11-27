@@ -1,8 +1,3 @@
-//! The panel a canal opens, laid out like the dam's (see `works`): the picture is the panel.
-//! Its profile shows every cell from the intake, with the pond level, the depth a raft needs
-//! and the cells too shallow for one, and the canal's state and its gate's chip drawn on it.
-//! Under it Deepen, Widen, Extend, Gate and Lock, the gate's strip, and the footer (diggers,
-//! Mend, Pause, Remove). History is behind the hourglass in the header.
 use super::panels::Ctx;
 use super::ui::*;
 use super::words::*;
@@ -16,12 +11,9 @@ use sim::canals::{Canal, CanalGrowth};
 use sim::GateSetting;
 
 const PROFILE_H: f32 = 64.0;
-/// Room above the profile for the state, the gate's chip and two readings.
 const HEAD: f32 = 46.0;
-/// The pond's own column at the left of the profile.
 const POND_W: f32 = 18.0;
 
-/// A small painted view: a channel of water between two muddy banks.
 fn portrait(p: &mut Ui, dry: bool) {
     p.node(Node { width: Val::Px(42.0), height: Val::Px(42.0), overflow: Overflow::clip(), ..default() }, |p| {
         p.add(VNode::new(works::abs_box(0.0, 0.0, 42.0, 42.0))).bg(EARTH);
@@ -44,7 +36,6 @@ enum Fix {
     Upkeep,
 }
 
-/// What the canal is doing, in a word, its colour, why, and the one fix.
 fn status(s: &sim::SimState, id: BuildingId, k: &Canal, deepen_ok: bool) -> (&'static str, Color, &'static str, Fix) {
     let waiting = sim::canals::has_work_for(s, id, false);
     let crew = sim::agents::builders_on(s, id);
@@ -64,9 +55,6 @@ fn status(s: &sim::SimState, id: BuildingId, k: &Canal, deepen_ok: bool) -> (&'s
     }
 }
 
-/// Every cell along the route from the intake: ground, bed, water, the depth a raft needs
-/// (the short dashes) and, marked, the wet cells too shallow for one. The pond stands at the
-/// left, its level dashed across.
 fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, state: (&str, Color, Tip), picks: usize) {
     let s = c.s;
     let route: Vec<&sim::canals::CanalCell> = k.route().collect();
@@ -90,7 +78,6 @@ fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, state: (&str, Color, 
     let total_h = PROFILE_H + 4.0 + HEAD;
     u.node(Node { width: Val::Px(VIEW_W), height: Val::Px(total_h), border_radius: BorderRadius::all(Val::Px(5.0)), overflow: Overflow::clip(), ..default() }, |w| {
         w.node(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), flex_direction: FlexDirection::Row, align_items: AlignItems::FlexEnd, height: Val::Px(PROFILE_H + 4.0), ..default() }, |bars| {
-            // The pond the canal draws from.
             bars.node(Node { width: Val::Px(POND_W), height: Val::Px(PROFILE_H + 4.0), flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd, margin: UiRect::right(Val::Px(4.0)), ..default() }, |b| {
                 if let Some(l) = level {
                     b.add(VNode::new(Node { width: Val::Px(POND_W), height: Val::Px(((l - low) * px).max(2.0)), ..default() })).bg(DEEP);
@@ -131,7 +118,6 @@ fn profile(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, state: (&str, Color, 
                     let bed = b.add(VNode::new(Node { width: Val::Px(bar_w), height: Val::Px(base), border: UiRect::top(Val::Px(1.5)), ..default() }));
                     bed.bg = MUD;
                     bed.border = Some(BorderColor::all(WOOD.with_alpha(0.7)));
-                    // The depth a raft needs over this cell's floor, and a mark on water short of it.
                     if cell.done || d > 0.01 {
                         b.add(VNode::new(Node { position_type: PositionType::Absolute, bottom: Val::Px(base + undug + float), width: Val::Px(bar_w), height: Val::Px(1.0), ..default() })).bg(INK.with_alpha(0.6));
                     }
@@ -207,8 +193,6 @@ fn build(c: &Ctx, u: &mut Ui, id: BuildingId, k: &Canal, picks: &[Cell], fix: Fi
     });
 }
 
-/// The canal's one gate stands at its intake: Gate orders it, Lock makes it a lock. Once
-/// ordered, the button stays lit and takes the camera there.
 fn gate_buttons(s: &sim::SimState, r: &mut Ui, id: BuildingId, k: &Canal) {
     let g = &k.gate;
     let works = sim::content::content();

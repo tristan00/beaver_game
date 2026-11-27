@@ -1,7 +1,3 @@
-//! F11 records the game to `captures/clip-*.mp4` until it is pressed again, from the main menu
-//! into a game and back: H.264 at up to 30 frames a second, encoded on its own thread through
-//! Windows Media Foundation (on the graphics card when it can). A dot in the corner shows for a
-//! moment when recording starts (red) and when the clip is saved (green), and stays out of the clip.
 use bevy::{
     app::AppExit,
     prelude::*,
@@ -14,13 +10,9 @@ use std::{
     time::Duration,
 };
 
-/// Frames a second the clip is captured at.
 const FPS: u32 = 30;
-/// Captured frames waiting for the encoder before new ones are dropped.
 const BACKLOG: usize = 8;
-/// How long the corner dot shows.
 const BADGE_SECONDS: f32 = 0.5;
-/// The first frame is taken once the start dot is gone.
 const START_DELAY: f32 = 0.6;
 
 pub struct RecordingPlugin;
@@ -34,13 +26,11 @@ impl Plugin for RecordingPlugin {
     }
 }
 
-/// One frame for the encoder: its time in the clip, in seconds, and the picture.
 struct Frame {
     at: f64,
     image: Image,
 }
 
-/// What a finished clip holds.
 struct Clip {
     frames: u32,
     seconds: f64,
@@ -52,7 +42,6 @@ struct Live {
     dropped: Arc<AtomicU32>,
     worker: JoinHandle<Result<Clip, String>>,
     path: PathBuf,
-    /// Real time the clip starts at, and the next frame is due at.
     started: f32,
     next: f32,
 }
@@ -79,7 +68,6 @@ impl Recorder {
             self.finishing.push(Finishing { stop: live.stop, dropped: live.dropped, worker: live.worker, path: live.path });
         }
     }
-    /// Wait for every clip to be written (the game is closing).
     fn finish_all(&mut self) {
         self.stop();
         for f in self.finishing.drain(..) {
@@ -169,7 +157,6 @@ fn capture(mut commands: Commands, time: Res<Time<Real>>, mut rec: ResMut<Record
         return;
     }
     let step = 1.0 / FPS as f32;
-    // After a long frame (a game loading), carry on from now rather than catching up.
     live.next = if now - live.next > step { now + step } else { live.next + step };
     let at = f64::from(now - live.started);
     let (tx, dropped) = (live.tx.clone(), live.dropped.clone());
@@ -216,7 +203,6 @@ fn stop_on_exit(mut exits: MessageReader<AppExit>, mut rec: ResMut<Recorder>) {
     }
 }
 
-/// Encode frames as they come until told to stop, then write out the file.
 fn encode(rx: mpsc::Receiver<Frame>, stop: &AtomicBool, path: &Path) -> Result<Clip, String> {
     let mut writer: Option<mf::Writer> = None;
     let mut pixels = Vec::new();
@@ -224,7 +210,6 @@ fn encode(rx: mpsc::Receiver<Frame>, stop: &AtomicBool, path: &Path) -> Result<C
     loop {
         let frame = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(f) => f,
-            // Frames asked for before the stop arrive a few frames later; a quiet spell ends the clip.
             Err(mpsc::RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -234,11 +219,9 @@ fn encode(rx: mpsc::Receiver<Frame>, stop: &AtomicBool, path: &Path) -> Result<C
             continue;
         }
         let w_out = writer.get_or_insert_with_result(|| mf::Writer::create(path, w & !1, h & !1, FPS))?;
-        // A window resized mid-clip: keep the size the clip started with.
         if w_out.width() > w || w_out.height() > h {
             continue;
         }
-        // 100 ns units, strictly increasing.
         let t = ((frame.at * 1e7) as i64).max(last + 1);
         w_out.write(&pixels, w, t, 10_000_000 / i64::from(FPS))?;
         last = t;
@@ -261,7 +244,6 @@ impl<T> GetOrInsertResult<T> for Option<T> {
     }
 }
 
-/// The picture as tightly packed 8-bit BGRA rows, top row first. False when it can't be read.
 fn bgra(image: Image, out: &mut Vec<u8>) -> bool {
     let format = image.texture_descriptor.format;
     let n = image.width() as usize * image.height() as usize * 4;
@@ -300,7 +282,6 @@ mod mf {
         Win32::{Media::MediaFoundation::*, System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED}},
     };
 
-    /// An MP4 file being written, H.264 from 32-bit RGB frames.
     pub struct Writer {
         sink: IMFSinkWriter,
         stream: u32,
@@ -318,11 +299,9 @@ mod mf {
                 return Err(format!("the window is too small to record ({w}x{h})"));
             }
             unsafe {
-                // Fails harmlessly when this thread already has COM.
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(|e| format!("Media Foundation is unavailable: {e}"))?;
             }
-            // The graphics card's encoder first, then Windows' own.
             let made = Self::open(path, w, h, fps, true).or_else(|_| Self::open(path, w, h, fps, false));
             made.map_err(|e| {
                 unsafe {
@@ -369,7 +348,6 @@ mod mf {
         pub fn width(&self) -> u32 { self.w }
         pub fn height(&self) -> u32 { self.h }
 
-        /// One frame of packed BGRA rows `src_w` pixels wide, top row first, at `time` for `duration`.
         pub fn write(&mut self, bgra: &[u8], src_w: u32, time: i64, duration: i64) -> std::result::Result<(), String> {
             self.write_inner(bgra, src_w, time, duration).map_err(|e| format!("a frame could not be encoded: {e}"))
         }
@@ -383,7 +361,6 @@ mod mf {
                 let mut p = std::ptr::null_mut();
                 buf.Lock(&mut p, None, None)?;
                 let dst = std::slice::from_raw_parts_mut(p, len);
-                // 32-bit RGB frames are stored bottom row first.
                 for (y, out) in dst.chunks_exact_mut(row).enumerate() {
                     let src = (self.h as usize - 1 - y) * src_row;
                     out.copy_from_slice(&bgra[src..src + row]);

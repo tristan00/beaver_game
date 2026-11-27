@@ -16,7 +16,6 @@ use crate::work::Area;
 use crate::{SimError, SimState};
 
 const FLOOD_GRID_EVERY_DAYS: f32 = 0.25;
-/// Plant cover is drawn in this many steps from bare to full.
 pub const COVER_STEPS: f32 = 64.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -43,7 +42,6 @@ impl TreeStage {
         }
     }
 
-    /// Logs, branches and bark (food) from felling a tree of this stage and species.
     pub fn fell_yield(self, species: Tree) -> Option<(f32, f32, f32)> {
         let (logs, branches, bark) = match self {
             TreeStage::Seedling => return None,
@@ -70,7 +68,6 @@ impl Resource {
         }
     }
 
-    /// A tiny plant in the world: a tree in its seedling stage, or a food plant's seedling.
     pub fn is_seedling(&self) -> bool {
         if self.kind.is_tree() { self.stage() == Some(TreeStage::Seedling) } else { self.kind.is_food_plant() && self.seedling }
     }
@@ -79,21 +76,16 @@ impl Resource {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Forestry {
     pub history: VecDeque<(f64, usize)>,
-    /// Tree cover density (written daily by `derive_ecology`), with tile change stamps for terrain rendering.
     pub vegetation: VegetationGrid,
     pub flood_days: Grid<f32>,
     flood_pending_days: f32,
-    /// The cover each tile of `vegetation` reads, as it was when the tile was last stamped.
     #[serde(skip)]
     told: crate::grid::Own<crate::grid::Told<f32>>,
-    /// Remade whole each day and only read in between, so a snapshot shares them.
     growth: std::sync::Arc<Vec<f32>>,
     flood_plan: std::sync::Arc<BTreeSet<Cell>>,
     unreachable: BTreeMap<Cell, f64>,
     day: Option<i64>,
     rng: Pcg32,
-    /// Trees and plants a beaver planted: who, and on what day. A planted seedling is not
-    /// collected again.
     pub planted: BTreeMap<ResourceId, (BeaverId, f64)>,
 }
 
@@ -167,7 +159,6 @@ pub fn start_age(seed: u64, cell: Cell) -> f32 {
     }
 }
 
-/// Days in floodwater deeper than the species stands before a tree of this stage drowns.
 pub fn drown_days(stage: TreeStage, species: Tree) -> f32 {
     let base = match stage {
         TreeStage::Seedling => SEEDLING_FLOOD_DAYS,
@@ -177,7 +168,6 @@ pub fn drown_days(stage: TreeStage, species: Tree) -> f32 {
     base * species.spec().flood
 }
 
-/// How far a standing tree is towards drowning, 0 to 1, while the water over it is too deep.
 pub fn drowning(sim: &SimState, r: &Resource) -> Option<f32> {
     let sp = r.species?;
     let stage = r.stage().filter(|s| *s != TreeStage::Snag)?;
@@ -189,13 +179,11 @@ pub fn drowning(sim: &SimState, r: &Resource) -> Option<f32> {
     Some((fd / drown_days(stage, sp)).clamp(0.0, 1.0))
 }
 
-/// The ground's growth multiplier at a cell: faster near water, slower on dry ground.
 pub fn ground_growth(sim: &SimState, cell: Cell) -> f32 {
     let n = sim.forestry.vegetation.width();
     if cell.0 < n && cell.1 < n { sim.forestry.growth.get(cell.1 * n + cell.0).copied().unwrap_or(1.0) } else { 1.0 }
 }
 
-/// Days of growing season until a tree reaches its next stage, at today's growth rate.
 pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f32)> {
     let sp = r.species?;
     let (next, at) = match r.stage()? {
@@ -208,7 +196,6 @@ pub fn days_to_next_stage(sim: &SimState, r: &Resource) -> Option<(TreeStage, f3
     Some((next, (at - r.age_days).max(0.0) / rate.max(1e-3)))
 }
 
-/// Trees the world generator placed where the river already runs too deep for them.
 pub fn clear_drowned(sim: &mut SimState) {
     let depth = &sim.water.depth;
     sim.resources.keep(|r| {
@@ -295,7 +282,6 @@ fn daily(sim: &mut SimState, day: i64) {
             let fd = f.flood_days.get(x, y).copied().unwrap_or(0.0);
             let dp = depth.get(x, y).copied().unwrap_or(0.0);
             if r.snag {
-                // A dead tree standing in water soon falls; on dry ground it stands for years.
                 r.age_days += 1.0;
                 let rot = if dp > crate::tuning::ecology::FLOOD_DEPTH { SNAG_WATER_ROT_DAYS } else { SNAG_ROT_DAYS };
                 if r.age_days >= rot {
@@ -348,7 +334,6 @@ fn daily(sim: &mut SimState, day: i64) {
     let f = &mut sim.forestry;
     let today = day as f64;
     f.unreachable.retain(|_, until| *until > today);
-    // Trees felled or gone are forgotten.
     let planted = std::mem::take(&mut sim.forestry.planted);
     sim.forestry.planted = planted.into_iter().filter(|(id, _)| sim.resources.get(*id).is_some()).collect();
     drop(_trees);
@@ -363,7 +348,6 @@ fn refresh_growth(sim: &mut SimState) {
         || river.get(i).copied().unwrap_or(false)
         || lake.get(i).copied().unwrap_or(false);
     let r = MOIST_RANGE;
-    // Water within `r` cells along the row, from running counts of wet cells...
     let mut rows = vec![false; n * n];
     let mut count = vec![0u32; n + 1];
     for y in 0..n {
@@ -374,7 +358,6 @@ fn refresh_growth(sim: &mut SimState) {
             rows[y * n + x] = count[(x + r).min(n - 1) + 1] > count[x.saturating_sub(r)];
         }
     }
-    // ...then within `r` rows up or down, from how many of those rows have it at this column.
     let mut growth = vec![1.0; n * n];
     let mut near = vec![0u32; n];
     for y in 0..r.min(n) {
@@ -402,8 +385,6 @@ fn refresh_growth(sim: &mut SimState) {
     sim.forestry.growth = std::sync::Arc::new(growth);
 }
 
-/// The cells the dams being built will flood once finished: nothing is sown there. It only
-/// changes when a dam, its plan or the ground does, so yesterday's is kept until then.
 fn refresh_flood_plan(sim: &mut SimState) {
     type Kept = (Vec<crate::dam_preview::GroundKey>, std::sync::Arc<BTreeSet<Cell>>);
     thread_local! {
@@ -413,7 +394,6 @@ fn refresh_flood_plan(sim: &mut SimState) {
     for b in sim.buildings.buildings.iter().filter(|b| b.dam.is_some() && crate::dams::has_work(sim, b.id)) {
         let d = b.dam.as_deref().expect("filtered dams");
         let (cells, heights): (Vec<_>, Vec<_>) = d.cells.iter().map(|c| (c.cell, c.target)).filter(|c| c.1 > 0.0).unzip();
-        // Only the still pond's cells are wanted: none of the estimate's flows and losses.
         if let Some((key, ground)) = crate::dam_preview::flooded_kept(sim, &cells, &heights) {
             keys.push(key);
             ponds.push(ground);
@@ -421,7 +401,6 @@ fn refresh_flood_plan(sim: &mut SimState) {
     }
     let kept = LAST.with(|last| last.borrow().as_ref().filter(|(k, _)| *k == keys).map(|(_, plan)| plan.clone()));
     sim.forestry.flood_plan = kept.unwrap_or_else(|| {
-        // Sorted first, the set is built in one sweep instead of cell by cell.
         let mut cells: Vec<Cell> = ponds.iter().flat_map(|g| g.flooded.iter().copied()).collect();
         cells.sort_unstable();
         let plan = std::sync::Arc::new(cells.into_iter().collect::<BTreeSet<Cell>>());
@@ -441,8 +420,6 @@ fn derive_ecology(sim: &mut SimState) {
             cover[r.cell.1 * n + r.cell.0] = 1.0;
         }
     }
-    // The share of grown trees in each cell's 3x3: row sums first, then the rows above and
-    // below (whole numbers, so the order they are added in changes nothing).
     let mut across = vec![0.0f32; n * n];
     for y in 0..n {
         for x in 0..n {
@@ -516,10 +493,8 @@ fn plantable_with(sim: &SimState, c: Cell, occupied: &HashSet<Cell>, near: &Hash
     !occupied.contains(&c) && !near.contains(&c) && plantable_ground(sim, c)
 }
 
-/// The ground itself takes a seedling, whatever stands on or round it.
 fn plantable_ground(sim: &SimState, c: Cell) -> bool {
     let n = sim.world.size;
-    // Planting on every other row and column keeps lanes open through the grown wood.
     c.0 < n && c.1 < n && c.0 % 2 == 0 && c.1 % 2 == 0
         && is_dry(sim, c)
         && sim.work.supplies != Some(c)
@@ -529,7 +504,6 @@ fn plantable_ground(sim: &SimState, c: Cell) -> bool {
         && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)
 }
 
-/// A seedling of this species can still go here (no species: a tree's).
 pub fn plantable(sim: &SimState, c: Cell, species: Option<Species>) -> bool {
     let near_building = sim.buildings.buildings.iter().any(|b| b.cells().any(|k| k.0.abs_diff(c.0) <= 2 && k.1.abs_diff(c.1) <= 2));
     if near_building || sim.resources.at(c).next().is_some() || sim.resources.boulder_at(c)
@@ -543,8 +517,6 @@ pub fn plantable(sim: &SimState, c: Cell, species: Option<Species>) -> bool {
     }
 }
 
-/// The ground takes a food plant's seedling: where the plant grows (`wetland::suits`), and
-/// water plants not under ice.
 fn plant_ground(sim: &SimState, p: Plant, c: Cell) -> bool {
     let n = sim.world.size;
     c.0 < n && c.1 < n
@@ -555,11 +527,6 @@ fn plant_ground(sim: &SimState, p: Plant, c: Cell) -> bool {
         && sim.forestry.unreachable.get(&c).is_none_or(|until| sim.time_days >= *until)
 }
 
-/// Where a planter puts its next seedling: anywhere in its bed's area where that seedling grows,
-/// picked at random so the planting spreads across the area instead of filling in beside the
-/// building. Trees go where the ground grows them well (in broad bands only, so a slightly
-/// richer patch doesn't draw every seedling to it); food plants where their kind grows and isn't
-/// crowded, as when they spread.
 pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId, species: Option<Species>) -> Option<Cell> {
     let claimed: HashSet<Cell> = sim
         .agents
@@ -572,7 +539,6 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId, species
     let plant = match species { Some(Species::Plant(p)) => Some(p), _ => None };
     let crowding = plant.map(|_| crate::wetland::Crowding::of(sim));
     let n = sim.world.size;
-    // A fresh draw every few hours and for each planter, the same within one.
     let draw = (sim.time_days * 6.0).floor() as u64 ^ who.0.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let lot = |c: Cell| {
         let mut z = draw ^ ((c.0 as u64) << 32 | c.1 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -605,7 +571,6 @@ pub fn plant_cell(sim: &SimState, area: Area, from: Cell, who: BeaverId, species
     best.map(|b| b.1)
 }
 
-/// Try this cell again later; nobody could walk to it.
 pub(crate) fn mark_unreachable(sim: &mut SimState, c: Cell) {
     let until = sim.time_days + crate::agents::UNREACHABLE_RETRY_DAYS;
     sim.forestry.unreachable.insert(c, until);

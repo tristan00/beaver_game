@@ -1,4 +1,3 @@
-//! Structure cost rows, dam/canal cost pages, and the colony upkeep ledger tab.
 use super::ledger::{chart, Bar};
 use super::panels::Ctx;
 use super::ui::*;

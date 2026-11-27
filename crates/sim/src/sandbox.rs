@@ -87,8 +87,6 @@ pub fn line(points: &[Cell]) -> Vec<Cell> {
     out
 }
 
-/// A canal needs face-connected cells: a diagonal-only raster leaves a series of
-/// separate pits in a solver that exchanges water across cardinal faces.
 pub fn canal_line(points: &[Cell]) -> Vec<Cell> {
     let path = line(points);
     let mut out = Vec::with_capacity(path.len() * 2);

@@ -1,11 +1,4 @@
-# Goods beavers carry and store. `key` goes in saves; `name` is shown.
-# load: the most one beaver carries. pace / land_pace: share of full pace carrying it in water or on wet ground /
-# over dry ground; floats: costs nothing to tow along a canal deep enough to swim.
-# edible: beavers eat it (it spoils in store); carries_species: each unit keeps the tree it grows into.
-# Looks: icon (an icon id), colour (sRGB), model (how it is drawn carried or lying), held_in_paws (else in
-# the teeth), worked_in_paws (shown in the paws while building or digging).
-
-start = []  # what a new colony starts with, as [good, amount]
+start = []
 
 [[good]]
 key = "Food"

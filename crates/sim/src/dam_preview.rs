@@ -3,8 +3,6 @@ use crate::buildings::{Amount, BuildingId, BuildingKind};
 use crate::water::Cell;
 use std::collections::HashSet;
 
-/// Loads needed to bring a drawn line to these heights: one load per step per metre of wall
-/// (a diagonal cell stands for about 1.4 m).
 pub fn loads_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> usize {
     let spans = crate::dams::spans(cells);
     cells.iter().zip(heights).zip(spans).map(|((&c, &h), w)| {
@@ -13,7 +11,6 @@ pub fn loads_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> usiz
     }).sum()
 }
 
-/// Materials and packing labour to build these heights.
 pub fn cost_for(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> (Vec<Amount>, f32) {
     let loads = loads_for(sim, cells, heights) as f32;
     let cost = BuildingKind::dam().spec().cost.iter().map(|&(g, a)| (g, a * loads)).filter(|c| c.1 > 1e-3).collect();
@@ -57,22 +54,15 @@ pub fn preview(sim: &crate::SimState, cells: &[Cell], height: f32) -> Option<Dam
     preview_heights(sim, cells, &vec![height; cells.len()])
 }
 
-/// The part of a dam's estimate that follows from the ground alone (terrain and dams): the
-/// still pond and the land draining to it. It is most of the work, and a dam nobody is
-/// building on asks for the same one every day.
 pub(crate) struct Ground {
     level: f32,
     crest: f32,
     spill_at: Option<Cell>,
-    /// The still pond's cells, in map order and as a mask.
     pub(crate) flooded: Vec<Cell>,
     in_pond: Vec<bool>,
-    /// The dam, its pond and every cell draining to them.
     watershed: Vec<bool>,
 }
 
-/// The line as the estimate takes it: no repeated cell, and only cells that need a wall
-/// (a line drawn up onto a bank always has some whose ground already stands at the crest).
 fn wall(cells: &[Cell], heights: &[f32]) -> Option<(Vec<Cell>, Vec<f32>)> {
     let unique: HashSet<&Cell> = cells.iter().collect();
     if unique.len() != cells.len() || heights.len() != cells.len() {
@@ -117,26 +107,19 @@ pub fn preview_heights(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -
     estimate(sim, &cells, &heights, &ground(sim, &cells, &heights)?)
 }
 
-/// What `Ground` was worked out from: the world, its terrain and dam grids as they stood, and
-/// the line.
 pub(crate) type GroundKey = (u64, (u64, u64), (u64, u64), Vec<Cell>, Vec<u32>);
-/// Grounds kept, each a few megabytes on a full map.
 const GROUNDS_KEPT: usize = 12;
 
 thread_local! {
     static GROUNDS: std::cell::RefCell<Vec<(GroundKey, std::rc::Rc<Ground>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// As `preview_heights`, keeping the ground's part for the next call: a dam's daily look at
-/// its pond repeats it until terrain or a dam somewhere changes.
 pub fn preview_heights_kept(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<DamPreview> {
     let (cells, heights) = wall(cells, heights)?;
     let (_, ground) = kept_ground(sim, &cells, &heights)?;
     estimate(sim, &cells, &heights, &ground)
 }
 
-/// The ground's part of the estimate for this line (already through `wall`), from those kept
-/// or worked out and kept; with what it was worked out from.
 fn kept_ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<(GroundKey, std::rc::Rc<Ground>)> {
     let key: GroundKey = (sim.instance, sim.height.version(), sim.water.dam_height.version(), cells.to_vec(), heights.iter().map(|h| h.to_bits()).collect());
     let kept = GROUNDS.with(|g| {
@@ -164,8 +147,6 @@ fn kept_ground(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option
     Some((key, ground))
 }
 
-/// The still pond behind these heights, kept as `preview_heights_kept` keeps it: its cells in
-/// map order, with what they were worked out from.
 pub(crate) fn flooded_kept(sim: &crate::SimState, cells: &[Cell], heights: &[f32]) -> Option<(GroundKey, std::rc::Rc<Ground>)> {
     let (cells, heights) = wall(cells, heights)?;
     kept_ground(sim, &cells, &heights)
@@ -227,8 +208,6 @@ fn estimate(sim: &crate::SimState, cells: &[Cell], heights: &[f32], ground: &Gro
     })
 }
 
-/// The buildings the water would put too deep to use (see `buildings::MAX_BUILDING_DEPTH`) if
-/// each cell's depth became `then(x, y)`, leaving out those already that deep.
 pub fn drowned_by(sim: &crate::SimState, then: impl Fn(usize, usize) -> f32) -> Vec<BuildingId> {
     let now = |x: usize, y: usize| sim.water.depth.get(x, y).copied().unwrap_or(0.0);
     let max = crate::buildings::MAX_BUILDING_DEPTH;
@@ -239,19 +218,11 @@ pub fn drowned_by(sim: &crate::SimState, then: impl Fn(usize, usize) -> f32) -> 
         .collect()
 }
 
-/// What the water really does once a dam stands: the game's own engine runs on from today
-/// twice, with the dam and without it, until the water behind the dam stops rising. The pond
-/// is every wet cell, reached from the dam, standing higher than it would without it, so the
-/// river's own rise and fall over those hours is not counted. It takes a fraction of a second,
-/// so the game runs it in the background.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Settled {
-    /// The most the dam deepens the water anywhere in its pond.
     pub rise: f32,
-    /// The pond's cells, and the highest surface among them.
     pub flooded: Vec<Cell>,
     pub level: f32,
-    /// The depth each of `flooded` settles to.
     pub depths: Vec<f32>,
 }
 
@@ -265,7 +236,6 @@ pub fn settle(water: crate::water::Water, height: &crate::grid::HeightGrid, cell
     let mut without = water.clone();
     let mut with = water;
     with.raise_dam(&pairs).ok()?;
-    // The dam stands from the first step, not from the water's next look at the ground.
     with.refresh(height);
     let mut t = 0.0;
     let mut last: Option<f32> = None;
@@ -294,9 +264,6 @@ fn run(water: &mut crate::water::Water, height: &crate::grid::HeightGrid, from: 
     }
 }
 
-/// The cells the dam holds water over: from beside the dam, through every cell whose water it
-/// changes by more than `POND_RISE_M` (the channel it starves below, the way round it finds),
-/// the wet ones standing that much above the water without it.
 fn pond(with: &crate::water::Water, without: &crate::water::Water, height: &crate::grid::HeightGrid, cells: &[Cell]) -> Settled {
     let n = height.width();
     let (ground, on, off) = (height.as_slice(), with.depth.as_slice(), without.depth.as_slice());
@@ -321,10 +288,6 @@ fn pond(with: &crate::water::Water, without: &crate::water::Water, height: &crat
     out
 }
 
-/// How the background run settles: it compares the water every `SETTLE_CHUNK_DAYS`, stops
-/// once the dam's rise moves less than `SETTLE_STILL_M` between looks (a big pond takes a day
-/// or more to fill), and stops waiting at `SETTLE_MAX_DAYS`. A cell counts as pond when it
-/// stands `POND_RISE_M` above the water without the dam.
 const SETTLE_CHUNK_DAYS: f32 = 0.25;
 const SETTLE_STILL_M: f32 = 0.01;
 const SETTLE_MAX_DAYS: f32 = 3.0;

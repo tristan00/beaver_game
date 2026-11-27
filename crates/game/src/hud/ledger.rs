@@ -1,4 +1,3 @@
-//! The territory (L) and colony-wide tables: charts, dams, canals, buildings, beavers, and run stats.
 use super::colony::{doing, token_px};
 use super::panels::{status_line, Ctx};
 use super::ui::*;

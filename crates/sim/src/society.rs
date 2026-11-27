@@ -31,8 +31,6 @@ pub struct Society {
     pub requests: Vec<JoinRequest>,
     next_id: u64,
     rng: u64,
-    /// The year newcomers last came asking, and how many that year: as many a year at most as
-    /// may join (`MAX_IMMIGRANTS_PER_YEAR`).
     #[serde(default)]
     asked: Option<(i64, u32)>,
 }
@@ -61,7 +59,6 @@ impl Society {
         Ok(id)
     }
 
-    /// How many beavers a year ask to join now, or what stops them.
     pub fn newcomers(&self, sim_time: f64, colony: &Colony, food: f32) -> Result<f32, &'static str> {
         if colony.migration_remaining() == 0 {
             return Err("This year's newcomers have joined");
@@ -75,7 +72,6 @@ impl Society {
         if food / (colony.beavers.len().max(1) as f32) < JOIN_MIN_FOOD_PER_HEAD {
             return Err("Too little food a head");
         }
-        // A single newcomer at a time, and no more a year than may join.
         let year = (sim_time / crate::calendar::YEAR_DAYS).floor() as i64;
         if self.asked.is_some_and(|(y, n)| y == year && n >= crate::colony::MAX_IMMIGRANTS_PER_YEAR) {
             return Err("This year's newcomers have asked");
@@ -83,13 +79,11 @@ impl Society {
         Ok(JOIN_REQUESTS_PER_YEAR)
     }
 
-    /// Days left before an unanswered request is taken as a yes.
     pub fn days_to_answer(r: &JoinRequest, sim_time: f64) -> f64 {
         (JOIN_EXPIRES_DAYS - (sim_time - r.arrived_day)).max(0.0)
     }
 
     pub fn step(&mut self, dt_days: f32, sim_time: f64, colony: &mut Colony, buildings: &crate::buildings::Buildings) {
-        // Unanswered for long enough, a newcomer joins: no answer is a yes.
         let (due, waiting): (Vec<JoinRequest>, Vec<JoinRequest>) = std::mem::take(&mut self.requests).into_iter().partition(|r| sim_time - r.arrived_day >= JOIN_EXPIRES_DAYS);
         self.requests = waiting;
         for r in due {

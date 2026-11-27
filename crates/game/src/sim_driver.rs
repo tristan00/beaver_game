@@ -5,8 +5,6 @@ pub const FIXED_DT_DAYS: f32 = sim::STEP_DAYS;
 pub const BASE_DAYS_PER_SECOND: f32 = 1.0 / 30.0;
 pub const MAX_STEPS_PER_FRAME: u32 = 64;
 const FRAME_SIM_BUDGET_S: f32 = 0.012;
-// At fast-forward speeds, spend more of a frame advancing large river maps. Keep
-// ordinary play's shorter budget and the bounded catch-up queue unchanged.
 const FAST_FRAME_SIM_BUDGET_S: f32 = 0.030;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,10 +25,6 @@ impl Speed {
         }
     }
 
-    /// How much of the 1x easing drawn motion keeps at this speed: the time constants of the
-    /// render-side easing (turning, following, pose blends, lock glides) are scaled by it.
-    /// Easing that runs in real seconds trails further behind the faster the colony runs and then
-    /// catches up like a rubber band, so 24x keeps a little and 120x/180x none.
     pub fn smoothing(self) -> f32 {
         match self {
             Speed::X1 => 1.0,
@@ -40,8 +34,6 @@ impl Speed {
     }
 }
 
-/// The share of the way to its target an eased value moves in a frame of `dt` seconds, easing
-/// at `rate` a second at 1x, scaled by `smoothing` (`Speed::smoothing`): all the way at none.
 pub fn ease_k(dt: f32, rate: f32, smoothing: f32) -> f32 {
     if smoothing <= 0.0 { 1.0 } else { 1.0 - (-dt * rate / smoothing).exp() }
 }
@@ -60,9 +52,6 @@ impl Default for SimClock {
     }
 }
 
-/// Whether the dev speed (`Speed::X4`) may be used: off unless the player turns on dev
-/// speed in Settings, since it runs too fast to follow. Kept between games in a small file
-/// beside the saves.
 static DEV_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
 const DEV_SPEED_FILE: &str = "dev_speed.txt";
 
@@ -91,14 +80,12 @@ pub fn set_dev_speed(on: bool) {
 }
 
 impl Speed {
-    /// Whether the player may pick this speed now.
     pub fn allowed(self) -> bool {
         self != Speed::X4 || dev_speed()
     }
 }
 
 impl SimClock {
-    /// The speed asked for, unless it is the fastest and dev speed is off.
     pub fn pick_speed(&mut self, s: Speed) {
         if s.allowed() {
             self.set_speed(s);
@@ -125,10 +112,6 @@ impl SimClock {
         let shown = self.presentation_days.get_or_insert(latest);
         if !self.paused && real_dt.is_finite() && real_dt > 0.0 {
             let rate = BASE_DAYS_PER_SECOND as f64 * self.speed.multiplier() as f64;
-            // Play the received movement history at display frequency. Never
-            // predict past the latest completed simulation step.
-            // Anything more than a step behind (a long frame, a late snapshot) is made up
-            // over a fraction of a second, so what is drawn never drifts behind the colony.
             let behind = (latest - *shown - FIXED_DT_DAYS as f64).max(0.0);
             *shown = (*shown + real_dt.min(0.25) * rate + behind * (real_dt * 4.0).min(1.0)).min(latest);
         }
@@ -148,8 +131,6 @@ impl SimClock {
     }
 
     fn discard_backlog(&mut self, step: f32) {
-        // Overload slows the entire simulation. It must not schedule days of
-        // catch-up work or let animation interpolate beyond simulated state.
         self.acc_days %= step as f64;
     }
 
@@ -187,7 +168,6 @@ fn time_keys(
             clock.pick_speed(s);
         }
     }
-    // Dev speed turned off while running at it: down to the fastest left.
     if !clock.speed.allowed() {
         clock.set_speed(Speed::X3);
     }
@@ -221,13 +201,9 @@ fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>) {
         }
     }
     let events = std::mem::take(&mut sim.0.colony.events);
-    // The world it replaces goes back to the sim_thread, which copies the next snapshot into it.
     let old = std::mem::replace(&mut sim.0, snapshot.state);
     if let Some(owner) = &sim_thread.sim_thread { owner.recycle(old); }
     for event in events.into_iter().rev() { sim.0.colony.events.push_front(event); }
-    // Reapply only commands newer than the received snapshot. They remain in
-    // the sim_thread's queue and are not transmitted twice. What they change here is a guess
-    // until the simulation has applied them itself.
     if !sim_thread.pending.is_empty() {
         sim.0.guess_ahead();
     }
@@ -241,8 +217,6 @@ fn receive_sim(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>) {
 
 fn send_commands(mut sim_thread: ResMut<SimulationThread>, mut sim: ResMut<Sim>, mut clock: ResMut<SimClock>) {
     if sim_thread.instance != sim.0.instance { return; }
-    // Only touch the world when there is something to send: a write marks it changed, and
-    // everything drawn from it would then redo its work every frame.
     if sim.0.client_commands.as_ref().is_none_or(|c| c.is_empty()) { return; }
     let commands = sim.0.client_commands.as_mut().map(std::mem::take).unwrap_or_default();
     for command in commands {
@@ -259,8 +233,6 @@ pub(crate) fn step_sim(time: Res<Time<Real>>, cli: Res<crate::cli::Cli>, mut clo
     if sim.0.colony.is_collapsed() {
         clock.paused = true;
     }
-    // Keep the existing standalone water sandbox and deterministic screenshot
-    // runner on their original scheduling path.
     if sim.0.sandbox || cli.screenshot.is_some() {
         synchronous_step(&time, &mut clock, &mut sim);
         return;
@@ -289,7 +261,6 @@ fn synchronous_step(time: &Time<Real>, clock: &mut SimClock, sim: &mut Sim) {
     }
     let started = std::time::Instant::now();
     let budget = if clock.speed != Speed::X1 { FAST_FRAME_SIM_BUDGET_S } else { FRAME_SIM_BUDGET_S };
-    // Speed changes the number of fixed steps, not the duration of a step.
     let dt = FIXED_DT_DAYS;
     let count = clock.queue(time.delta_secs_f64(), dt);
     for _ in 0..count {

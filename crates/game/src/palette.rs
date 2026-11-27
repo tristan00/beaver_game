@@ -27,7 +27,6 @@ pub const SHADOW_MIX: f32 = 0.40;
 
 pub const AUTUMN_RUST: Rgb = rgb(0xD9814E);
 pub const DAM_MUD: Rgb = rgb(0x8F6E52);
-// Beaver building materials: every structure is sticks, peeled wood, mud, leaves and stones.
 pub const BARK: Rgb = rgb(0x7A5230);
 pub const BARK_LIGHT: Rgb = rgb(0x9A6E3E);
 pub const BARK_DARK: Rgb = rgb(0x5D3A20);

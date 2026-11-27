@@ -23,24 +23,17 @@ impl Open {
     }
 }
 
-/// How many days the colony's own record keeps: four years.
 pub const COLONY_DAYS: usize = 4 * crate::calendar::YEAR_DAYS as usize;
 
-/// The colony counted at the close of a day.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Census {
     pub beavers: u16,
-    /// Kits and yearlings among them.
     pub young: u16,
-    /// Water held in dam ponds (m³).
     pub water: f32,
-    /// Living trees standing.
     pub trees: u32,
-    /// Seedlings planted since the colony began.
     pub planted: u32,
 }
 
-/// One day of the colony's record: its census, each good's flow and stock, and (for recent days) per-producer/use breakdown.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColonyDay {
     pub day: u64,
@@ -55,14 +48,11 @@ pub struct ColonyDay {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     open: Option<Open>,
-    /// Daily colony record (census, stock, flows, and recent breakdowns).
     pub colony: VecDeque<ColonyDay>,
-    /// Seedlings planted so far: trees, land plants and water plants (`inventory::SeedlingSort`).
     pub planted: [u32; 3],
 }
 
 impl Ledger {
-    /// Whether the next `record` at this time closes a day (and so asks for a census).
     pub fn closes_day(&self, time_days: f64) -> bool {
         let today = time_days.max(0.0).floor() as u64;
         self.open.as_ref().is_some_and(|o| today > o.day)

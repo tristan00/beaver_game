@@ -1,4 +1,3 @@
-//! A beaver's full-screen life page: live portrait, condition meters, job, family, skills, life's work, and chronology.
 use super::kin::{self, name_of, KinFilter};
 use super::panels::{stage_icon, Ctx};
 use super::ui::*;

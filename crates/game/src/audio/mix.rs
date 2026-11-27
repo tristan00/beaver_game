@@ -24,7 +24,6 @@ pub fn warmth(phase: f32) -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Snapshot {
     pub year_phase: f32,
-    /// How much of what's around the view is water, 0 to 1.
     pub water: f32,
     pub zoom: f32,
 }
@@ -49,8 +48,6 @@ impl VolumeSettings {
     }
 }
 
-/// How loud each recorded bed plays: the gentle brook always, the running river by the water
-/// in view; both hushed under winter ice and from far up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerVolumes {
     pub brook: f32,
@@ -82,7 +79,6 @@ pub trait AudioWorld {
     fn cell(&self, x: f32, z: f32) -> Option<Cell>;
 }
 
-/// How much of the ground within `radius` of a point is under water, weighted toward the middle.
 pub fn water_around(world: &dyn AudioWorld, cx: f32, cz: f32, radius: f32) -> f32 {
     const N: i32 = 4;
     let step = radius.max(1.0) / N as f32;

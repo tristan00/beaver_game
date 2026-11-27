@@ -1,12 +1,3 @@
-//! Raft landings and rafts. A finished Raft landing keeps `RAFTS_PER_RAFT_LANDING` rafts moored at its
-//! waterfront and lets gates be upgraded into locks (see `locks`).
-//!
-//! A hauler with at least two loads of a good to move between two stores that both stand on
-//! raft water (at least `RAFT_DEPTH` deep), joined by it, takes a free raft: it fetches the
-//! raft, pushes it to the first store, loads up to `RAFT_LOADS` loads, pushes it to the
-//! second, unloads, and takes it back to its raft landing. A raft goes at `RAFT_PACE` of a
-//! swimmer's speed (with the current, as a swimmer does) and crosses dams only through locks;
-//! it carries far more than a beaver, so over any distance it moves goods faster.
 include!(concat!(env!("OUT_DIR"), "/raft_landing_constants.rs"));
 
 use std::cmp::Reverse;
@@ -22,9 +13,7 @@ use crate::SimState;
 pub struct Raft {
     pub id: u32,
     pub raft_landing: BuildingId,
-    /// Where it floats: moored, or wherever its hauler has pushed it.
     pub cell: Cell,
-    /// The hauler using it, if any.
     pub hauler: Option<BeaverId>,
 }
 
@@ -32,7 +21,6 @@ pub struct Raft {
 pub struct Fleet {
     pub rafts: Vec<Raft>,
     next: u32,
-    /// Which stretch of raft water each cell is on (0: none), refreshed whenever nav topology/ice changes.
     #[serde(skip)]
     regions: Vec<u32>,
     #[serde(skip)]
@@ -46,28 +34,21 @@ impl Fleet {
     pub fn get_mut(&mut self, id: u32) -> Option<&mut Raft> {
         self.rafts.iter_mut().find(|b| b.id == id)
     }
-    /// The raft this hauler is pushing.
     pub fn of(&self, who: BeaverId) -> Option<&Raft> {
         self.rafts.iter().find(|b| b.hauler == Some(who))
     }
 }
 
-/// Ice this thick (m) stops a raft: the ice that bears a beaver.
 pub const RAFT_ICE_M: f32 = crate::tuning::water::ICE_WALK_M;
-
-/// Water a raft can float on: open water, a canal or a lock, at least `RAFT_DEPTH` deep (a
-/// lock always is), and not iced over.
 
 pub fn raft_water(sim: &SimState, c: Cell) -> bool {
     match sim.nav.surface_at(c) {
         Some(Surface::Lock) => true,
-        // Ice thick enough to walk on holds a raft fast.
         Some(Surface::Water | Surface::Canal | Surface::LodgeEntrance) => sim.water.depth.get(c.0, c.1).is_some_and(|&d| d >= RAFT_DEPTH) && sim.water.ice.get(c.0, c.1).is_none_or(|&t| t < RAFT_ICE_M),
         _ => false,
     }
 }
 
-/// Raft water beside a building, where a raft ties up to it.
 pub fn docks(sim: &SimState, b: &Building) -> Vec<Cell> {
     let cells: Vec<Cell> = b.cells().collect();
     let mut out: Vec<Cell> = cells
@@ -80,7 +61,6 @@ pub fn docks(sim: &SimState, b: &Building) -> Vec<Cell> {
     out
 }
 
-/// The quickest raft route from `from` to any of `to`, on raft water only, at raft pace.
 pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
     if to.is_empty() {
         return None;
@@ -118,8 +98,6 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
             if !raft_water(sim, n) {
                 continue;
             }
-            // No shortcut across a corner past a bank, except into or out of a lock: on a diagonal dam
-            // the water either side of a lock meets it only at its corners.
             if dx != 0 && dy != 0 && !corner_ok(sim, c, n) {
                 continue;
             }
@@ -143,7 +121,6 @@ pub fn route(sim: &SimState, from: Cell, to: &[Cell]) -> Option<Path> {
     Some(Path { steps, cost: total })
 }
 
-/// Whether raft water joins these two stores (worked out at most once a day for each pair).
 pub fn joined(sim: &SimState, a: BuildingId, b: BuildingId) -> bool {
     let (Some(x), Some(y)) = (sim.buildings.building(a), sim.buildings.building(b)) else { return false };
     let w = sim.nav.surface.width();
@@ -152,15 +129,11 @@ pub fn joined(sim: &SimState, a: BuildingId, b: BuildingId) -> bool {
     docks(sim, y).into_iter().map(region).any(|r| r != 0 && here.contains(&r))
 }
 
-/// Whether a raft may go corner to corner from `a` to `b` (both raft water): round no bank,
-/// unless one end is a lock, whose far side on a diagonal dam touches it only at a corner.
 fn corner_ok(sim: &SimState, a: Cell, b: Cell) -> bool {
     let lock = |c: Cell| sim.nav.surface_at(c) == Some(Surface::Lock);
     lock(a) || lock(b) || (raft_water(sim, (b.0, a.1)) && raft_water(sim, (a.0, b.1)))
 }
 
-/// Label the stretches of raft water, each joined cell to cell (diagonals round no bank, but
-/// into and out of a lock; see `corner_ok`).
 fn label_regions(sim: &mut SimState) {
     let (w, h) = (sim.nav.surface.width(), sim.nav.surface.height());
     let mut regions = vec![0u32; w * h];
@@ -193,8 +166,6 @@ fn label_regions(sim: &mut SimState) {
     sim.fleet.regions = regions;
 }
 
-/// Keep each finished raft landing's rafts: new ones moored at its docks, those of a raft landing that
-/// is gone taken away, and any whose hauler has stopped using it let go.
 pub fn step(sim: &mut SimState) {
     let key = sim.nav.refresh_key();
     let any = sim.buildings.buildings.iter().any(|b| b.kind.docks_rafts());
@@ -230,8 +201,6 @@ pub fn step(sim: &mut SimState) {
     }
 }
 
-/// A free raft for a trip from `from` to `to`, the nearest one to `at`, if raft water joins
-/// them and the raft can get to `from`.
 pub fn free_raft(sim: &SimState, at: Cell) -> Option<u32> {
     sim.fleet
         .rafts

@@ -1,4 +1,3 @@
-//! Compiles the tuning numbers in `tuning.toml` into constants, one file per module.
 use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 fn number(v: &toml::Value) -> String {
@@ -20,7 +19,6 @@ fn main() {
                     ("usize" | "u32", toml::Value::Integer(i)) => format!("{ty} = {}", u32::try_from(*i).expect("u32 range")),
                     ("f32" | "f64", toml::Value::Array(a)) => format!("[{ty}; {}] = [{}]", a.len(), a.iter().map(number).collect::<Vec<_>>().join(",")),
                     ("f32" | "f64", toml::Value::String(r)) => {
-                        // "<factor> * <module>::<NAME>": another constant times a factor.
                         let (factor, target) = r.split_once(" * ").expect("<factor> * <module>::<NAME>");
                         let (m, n) = target.split_once("::").expect("<module>::<NAME>");
                         assert!(tuning.get(m).and_then(|t| t.as_table()).is_some_and(|t| t.values().any(|c| c.get(n).is_some())), "unknown constant {target}");
